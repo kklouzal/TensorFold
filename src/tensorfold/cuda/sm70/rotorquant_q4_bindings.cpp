@@ -45,8 +45,8 @@ void controls(const T& owner, const O& position, const O& status, const O& live,
               int codec, int error, int layer) {
     const auto* prop = at::cuda::getDeviceProperties(owner.get_device());
     TORCH_CHECK(prop->major == 7 && prop->minor == 0, "RotorQuant FP16 native codec requires SM70");
-    TORCH_CHECK((codec >= 1 && codec <= 5) || codec == 9,
-                "native Q4 codec requires a registered basis 1..5 or pinned compact Planar4 9");
+    TORCH_CHECK((codec >= 1 && codec <= 5) || codec == 9 || codec == 10,
+                "native Q4 codec requires a registered basis 1..5, compact Planar4 9 or Iso4 10");
     TORCH_CHECK(error == 1 || error == 2 || error == 4 || error == 8 || error == 16,
                 "one declared KV numeric error bit required");
     TORCH_CHECK(layer >= -1, "KV error layer must be a model layer or MTP -1");

@@ -31,6 +31,7 @@ version `1`, and these fields:
 | `artifacts` | Exact logical filename to `{size, sha256}` map |
 | `evidence` | Optional list of `{path, sha256}` receipt references relative to the packet |
 | `profiles` | Optional `tensorfold.execution-profiles` version 1 table |
+| `preparation` | Optional fixed native attention workspace/partial-graph preparation; see below |
 
 The artifact inventory is derived from the actual loader. `target/` contains
 every selected original GGUF shard. `metadata/` contains the prepared config,
@@ -72,6 +73,60 @@ belong to measurement telemetry and are not immutable profile keys.
 `GET /v1/runtime` exposes the bound identity through the controller/profile
 receipt even when the profile table is empty. The header capacity estimate,
 actual allocated windows and measured execution evidence remain distinct.
+
+## Opt-in native preparation and qualification trials
+
+No preparation section means no additional native workspace, compilation or
+capture for this feature. The following source candidate is not a qualified
+V100 performance configuration:
+
+```json
+"preparation": {
+  "kernel_family": "sm70-paged-owner-q8-compact-v1",
+  "graph_family": "owner-attention-v1",
+  "graph_budget_bytes": 67108864,
+  "trial": true
+}
+```
+
+Use `graph_family: "uncaptured"` and zero graph allowance for the same native
+pipeline without captures. The allowance is an administrator ceiling across
+all prepared roles, not a measured optimum. Optional `row_buckets` maps
+`decode`, `mtp` and/or `prefill` to strictly increasing row lists ending at the
+actual owner workspace bound; omitted roles use powers of two plus that exact
+endpoint. A role absent from the selected method is rejected.
+
+The engine validates the section before CUDA setup, compiles/loads the selected
+native module, and prepares zero-active header-only workspaces before capacity
+planning and weight loading. All TP8 ranks agree on role shapes and codecs.
+The serving buffers adopt those exact objects. Their persistent bytes are
+already excluded from physical free, so geometry retains only future temporary
+work. An absolute CUDA cap deducts the proven preallocation once from its
+remaining grant. Private graph-pool spare is never credited without a settled
+allocator proof; unsupported accounting retains physical-only admission and
+cannot establish an absolute-cap commitment.
+
+These are partial attention graphs: native statistics, normalization, packed
+PV and their ordered collectives. Query preparation, canonical indexer
+selection, model-state updates and sampling remain outside capture. Captured
+and uncaptured modes execute the same native pipeline and padded row policy.
+Capture is startup-only and quiescent; a new request, session identity or layer
+does not create another graph key. Startup source-built framework/library and
+eight-V100 component, model, numerical, resource and performance gates remain
+pending until actually executed.
+
+`trial: true` explicitly selects the candidate for qualification and reports
+performance qualification as pending. Preparation with `trial: false` leaves
+reference execution selected until verified correctness/resource/performance
+receipts select both `kernel_family` and `graph_family` in a profile's execution
+scope. The trial marker does not change qualification identity; the actual
+family, codecs, resources and bucket policy do. Preparation is fixed for the
+loaded profile and cannot be changed by a later `profile_manifest` registration.
+
+The source-built foundation audit and actual loaded binaries govern release
+eligibility. Running source-level CPU controls with an older reference image
+does not qualify that image for the new native stack.
+
 
 ## Evidence receipts
 

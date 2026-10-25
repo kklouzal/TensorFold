@@ -265,10 +265,12 @@ void prep_format(const T& projection, const T& position, const T& qw, const T& k
                 "query/indexer output geometry");
     auto admitted = [](int bits, int codec) {
         return (bits == 0 && codec == 0) || (bits == 8 && codec == 0)
-            || (bits == 4 && (codec == 4 || codec == 5 || codec == 9));
+            || (bits == 4 && (codec == 4 || codec == 5 || codec == 9 || codec == 10));
     };
     TORCH_CHECK(admitted(kbits, kcodec) && admitted(vbits, vcodec) && (STAGED || kcodec != 0 || vcodec != 0),
-                "Rotor Q4 preparation requires raw/int8/CODEC4/5/9 Q4 sides with at least one Q4 side");
+                "Rotor Q4 preparation requires raw/int8/CODEC4/5/9/10 Q4 sides with at least one Q4 side");
+    TORCH_CHECK((kcodec != 10 && vcodec != 10) || (kbits == 4 && vbits == 4 && kcodec == 10 && vcodec == 10),
+                "initial compact Iso4 preparation requires symmetric K/V codec10");
     TORCH_CHECK(kc.dim() == 3 && vc.dim() == 3 && kc.size(0) == vc.size(0)
                 && kc.size(0) <= std::numeric_limits<int>::max() && kc.size(1) == kvheads && vc.size(1) == kvheads
                 && (STAGED ? index_cache.size(0) >= rows : index_cache.size(0) == kc.size(0)), "attention cache geometry");

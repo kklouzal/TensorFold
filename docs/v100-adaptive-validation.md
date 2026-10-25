@@ -49,13 +49,16 @@ Ordinary INT8 retains the H32 transformation, signed byte payload, and FP16
 scales per 32 values. Existing `rotorquant-signed128-4` and
 `rotorquant-signed64-norm4` remain distinct formats with their original evidence.
 
-The new `rotorquant-planar4-sm70-v1` format pins the CUDA Planar4 implementation
+The initial `rotorquant-iso4-sm70-v1` format pins the CUDA ISO4 implementation
 at `llama-cpp-turboquant` commit
 `08e025c06ab521e4fa9e5c08b80af57614543e53`. A 128-value block has 64 code bytes,
 an FP16 norm, and a reserved FP16 field. TensorFold stores code bytes and the
 opaque four-byte metadata word separately; wire controls verify their combined
-68-byte representation. The pinned reference's CPU and CUDA rotation constants
-differ, so the format explicitly selects its CUDA authority. Native long-prompt
+68-byte representation. ISO4 uses the pinned 32 quaternion rotations.
+The distinct `rotorquant-planar4-sm70-v1` remains the first later equal-memory
+comparison; it is not an alias or a substitute for initial ISO4 qualification.
+The pinned reference's CPU and CUDA rotation constants differ, so these formats
+explicitly select their CUDA authority. Native long-prompt
 packing, attention, quality, and performance require their own V100 runs.
 
 Stock MTP and `--draft-method none` have explicit resource and tail conventions.

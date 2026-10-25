@@ -12,7 +12,10 @@ import json
 from types import MappingProxyType
 
 from .cuda.rotorquant_ref import FormatDescriptor, descriptor, variant_id
-from tensorfold.cuda.sm70.rotorquant_compact import CompactDescriptor, descriptor as compact_descriptor, NAME as COMPACT_Q4
+from tensorfold.cuda.sm70.rotorquant_compact import (
+    CompactDescriptor, descriptor as compact_descriptor, variant_codec as compact_variant_codec,
+    NAME as COMPACT_Q4, ISO_NAME as COMPACT_ISO4,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,7 +39,9 @@ class KVFormat:
                                       or self.scale_bytes != 4 or not self.codec):
             raise ValueError("Rotor KV format differs from its pinned descriptor")
         if self.compact is not None and (type(self.compact) is not CompactDescriptor or self.rotor is not None
-                                        or (self.bits, self.codec, self.group, self.scale_bytes) != (4, 9, 128, 4)
+                                        or self.bits != 4 or self.codec not in (9, 10)
+                                        or (self.group, self.scale_bytes) != (128, 4)
+                                        or compact_variant_codec(self.compact.variant) != self.codec
                                         or (self.compact.bits, self.compact.group, self.compact.scale_dtype)
                                         != (4, 128, "float32")):
             raise ValueError("compact Planar4 differs from its pinned descriptor")
@@ -103,6 +108,7 @@ FORMATS = (
     # Metadata is an opaque four-byte word: FP16 corrected L2 + FP16 zero.
     # Existing FP32-RMS variants retain their identities and arithmetic.
     KVFormat(COMPACT_Q4, 4, 9, 128, 4, compact=compact_descriptor()),
+    KVFormat(COMPACT_ISO4, 4, 10, 128, 4, compact=compact_descriptor(10)),
     KVFormat("rotorquant-iso64-norm4", 4, 3, 128, 4, descriptor(4, "iso64-norm")),
     KVFormat("rotorquant-signed128-4", 4, 4, 128, 4, descriptor(4, "signed-iso128")),
     KVFormat("rotorquant-signed64-norm4", 4, 5, 128, 4, descriptor(4, "signed-iso64-norm")),

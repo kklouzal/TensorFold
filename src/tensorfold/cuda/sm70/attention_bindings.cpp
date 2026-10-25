@@ -37,10 +37,12 @@ void run_impl(const T& q, const T& k, const T& v, const T& position, const T& sp
     const auto* prop = at::cuda::getDeviceProperties(q.get_device());
     TORCH_CHECK(prop->major == 7 && prop->minor == 0, "fixed-position attention requires SM70");
     TORCH_CHECK(q.dim() == 3 && rows >= 0 && rows <= 24 && q.size(0) >= rows && q.size(1) == 3 && q.size(2) == 256, "query geometry");
-    const bool kr = kbits == 4 && (kcodec == 4 || kcodec == 5 || kcodec == 9);
-    const bool vr = vbits == 4 && (vcodec == 4 || vcodec == 5 || vcodec == 9);
+    const bool kr = kbits == 4 && (kcodec == 4 || kcodec == 5 || kcodec == 9 || kcodec == 10);
+    const bool vr = vbits == 4 && (vcodec == 4 || vcodec == 5 || vcodec == 9 || vcodec == 10);
     TORCH_CHECK((kr || (kcodec == 0 && (kbits == 0 || kbits == 8))) &&
-                (vr || (vcodec == 0 && (vbits == 0 || vbits == 8))), "raw/int8 or CODEC4/5/9 Q4 key/value formats required");
+                (vr || (vcodec == 0 && (vbits == 0 || vbits == 8))), "raw/int8 or CODEC4/5/9/10 Q4 key/value formats required");
+    TORCH_CHECK((kcodec != 10 && vcodec != 10) || (kbits == 4 && vbits == 4 && kcodec == 10 && vcodec == 10),
+                "initial compact Iso4 attention requires symmetric K/V codec10");
     check(k, q, kr ? at::kByte : kbits ? at::kChar : at::kHalf, "keys");
     check(v, q, vr ? at::kByte : vbits ? at::kChar : at::kHalf, "values");
     TORCH_CHECK(k.dim() == 3 && v.dim() == 3 && v.size(0) == k.size(0) && v.size(1) == k.size(1)

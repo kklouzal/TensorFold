@@ -190,6 +190,7 @@ def decoder_round(monkeypatch):
     decoder.w = SimpleNamespace(comm=None, meta={})
     decoder.buf = SimpleNamespace(h=torch.zeros((6, 1), dtype=torch.float16))
     decoder.pbuf, decoder.kv_host = SimpleNamespace(), None
+    decoder.mbuf = None
     decoder.pdl, decoder.converged = False, False
     decoder.filling, decoder.held, decoder.streams = [], {}, {}
     decoder.kept, decoder.fills = [], {}

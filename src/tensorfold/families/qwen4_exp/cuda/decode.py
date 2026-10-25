@@ -172,7 +172,7 @@ class Engine:
         self.capacity = capacity
         self.rows, self.prefill_rows = max_rows, prefill_rows
         self.buf = Buffers(w, max_rows, capacity, moe_prefill=True)       # the experts' arithmetic MultiDecoder's use
-        self.mbuf = Buffers(w, max_rows, capacity) if w.mtp is not None else None
+        self.mbuf = Buffers(w, max_rows, capacity, owner_role="mtp") if w.mtp is not None else None
         self.pbuf = Buffers(w, prefill_rows, capacity, prefill=True)
         from .hc_plans import enroll
 

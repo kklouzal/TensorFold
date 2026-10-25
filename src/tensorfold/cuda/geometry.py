@@ -568,6 +568,10 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
     conv = linear * (int(t["linear_conv_kernel_dim"]) - 1) * (2 * nk * dk + nv * dv) * 2
     tail = (int(t.get("ple_conv_kernel_size", 4)) - 1) * int(t.get("ngram_size", 3)) * hc * d * 2
     state_bytes = streams * (2 * rec + conv + tail + linear * each * (nk * dk * 4 + nv * dv * 4 + nv * 8))
+    if history_placement is not None:
+        from tensorfold.cuda.sm70.paged_attention import generation_bytes
+
+        state_bytes += generation_bytes(streams)  # stable slot/ownership words per full-window State
     recovery_bytes = (keep + streams * points) * (rec + conv + tail + int(mtp) * hc * d * 2)
     fixed = state_bytes + recovery_bytes  # retained plus a pass's points
     slots = int(t.get("num_experts_per_tok", 1)) + 1
@@ -608,9 +612,11 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
                 # only the main KV and pooled history acquire replacements.
                 replacement -= indexer_raw_device_bytes
         chunks = (min(capacity, budget + ratio - 1) + 511) // 512
-        scratch = ((1 + mtp) * rows + PREFILL_ATT_ROWS) * (h * (hd + 2) * chunks + blocks + budget + ratio) * 4
-        scratch += (1 + mtp) * qsa_select_bytes(rows, blocks) + qsa_select_bytes(PREFILL_ATT_ROWS, blocks)
-        scratch += (2 + mtp) * (CENTROID_TABLE_BYTES + THRESHOLD_TABLE_BYTES)
+        legacy_partials = h * (hd + 2) * chunks if history_placement is None else 0
+        scratch = ((1 + mtp) * rows + PREFILL_ATT_ROWS) * (legacy_partials + blocks + budget + ratio) * 4
+        if history_placement is None:
+            scratch += (1 + mtp) * qsa_select_bytes(rows, blocks) + qsa_select_bytes(PREFILL_ATT_ROWS, blocks)
+            scratch += (2 + mtp) * (CENTROID_TABLE_BYTES + THRESHOLD_TABLE_BYTES)
         return {"session_state": state_bytes, "retained_recovery": recovery_bytes,
                 "execution_arenas": fixed - state_bytes - recovery_bytes - static_bytes - graph_bytes,
                 "slot_metadata": static_bytes, "history": cache, "replacement_overlap": replacement,

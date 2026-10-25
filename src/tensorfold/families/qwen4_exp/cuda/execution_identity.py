@@ -122,12 +122,19 @@ def begin_execution_manifest(engine, path):
     stats = _opened_stats(files)
     _expected_files(manifest, files, stats)
     engine._execution_preload = {"manifest": digest(manifest), "artifacts": stats}
+    return manifest
 
 
 def _manifest_schema(manifest):
     if (manifest.get("schema") != SCHEMA or type(manifest.get("version")) is not int or manifest["version"] != VERSION
-            or set(manifest).difference({"schema", "version", "artifacts", "evidence", "profiles"})):
+            or set(manifest).difference({"schema", "version", "artifacts", "evidence", "profiles", "preparation"})):
         raise ValueError("unsupported execution profile manifest")
+    if "preparation" in manifest:
+        from .owner_preparation import parse_preparation
+
+        if manifest["preparation"] is None:
+            raise ValueError("an explicit preparation section must be a bounded object")
+        parse_preparation(manifest["preparation"])
 
 
 def _expected_files(manifest, files, stats):
@@ -627,14 +634,15 @@ def _rendezvous(engine, channel, stage):
                timedelta(seconds=3600))  # Same startup/cohort wait contract as NCCL.ready.
 
 
-def _retire_store(engine, channel):
+def _retire_store(engine, channel, *, stages=None):
     """All consumers acknowledge before the coordinator removes owned keys."""
     store = engine.comm.store
     _rendezvous(engine, channel, "retirement")
     store.set(f"{channel}/retired/{engine.rank}", "1")
     if engine.rank == 0:
         store.wait([f"{channel}/retired/{rank}" for rank in range(engine.tp)], timedelta(seconds=60))
-        keys = [f"{channel}/phase/{stage}/{rank}" for stage in _PHASES for rank in range(engine.tp)]
+        keys = [f"{channel}/phase/{stage}/{rank}" for stage in (_PHASES if stages is None else stages)
+                for rank in range(engine.tp)]
         keys += [f"{channel}/ready/retirement/{rank}" for rank in range(engine.tp)]
         keys += [f"{channel}/retired/{rank}" for rank in range(engine.tp)]
         finish((lambda key=key: store.delete_key(key) for key in keys))
@@ -702,6 +710,12 @@ def _prepare_manifest(engine, manifest_path, *, rebind, manifest_root):
             Path(manifest_path).expanduser().resolve(strict=True))
     manifest = _json(path)
     _manifest_schema(manifest)
+    from .owner_preparation import parse_preparation
+
+    actual_preparation = getattr(engine, "_owner_preparation", None)
+    expected_preparation = None if actual_preparation is None else actual_preparation.specification
+    if parse_preparation(manifest.get("preparation")) != expected_preparation:
+        raise ValueError("native preparation is fixed at startup; profile rebind cannot replace its resource envelope")
     if (engine.execution_provider != "sm70" or engine.multi is None or engine.multi.controller is None
             or engine.indexer_history != "gpu"):
         raise ValueError("execution profiles require the resident SM70 GPU-history controller")
@@ -766,6 +780,9 @@ def _profile_identity(engine, context, ranks, contents):
                  "recovery_points_enabled": engine.points is not None,
                  "recovery_points_per_piece": POINTS, "interior_points": CUTS, "minimum_gap": MIN_GAP,
                  "execution_envelope": engine.capacity_plan["execution_envelope"]}
+    preparation = getattr(engine, "_owner_preparation", None)
+    if preparation is not None:
+        retention["owner_preparation"] = preparation.identity()
     identity = {
         "target": digest({"files": group("target/"), "config": contents["metadata/config.json"]}),
         "draft": digest({"files": group("draft/")}) if group("draft/") else "none",

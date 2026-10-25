@@ -14,6 +14,7 @@ from tensorfold.families.qwen4_exp.cuda.sm70_kv import (
     ROTOR_Q4,
     ROTOR_Q4_NORM,
     COMPACT_Q4,
+    COMPACT_ISO4,
     check_kernel_fields,
     check_pair,
 )
@@ -21,7 +22,8 @@ from tests.test_cuda_geometry import allocations  # noqa: F401
 from tests.test_cuda_capacity import fake_runtime, small_config  # noqa: F401
 from tests.test_cuda_growing_caches import weights
 
-PAIRS = tuple(product(FORMATS, repeat=2))
+PAIRS = tuple((key, value) for key, value in product(FORMATS, repeat=2)
+              if COMPACT_ISO4 not in (key, value) or key == value == COMPACT_ISO4)
 
 
 def model(world=1, *, mtp=True, dtype="float16"):
@@ -77,7 +79,7 @@ def test_native_flags_cannot_widen_registered_codec_support(fields):
 
 
 @pytest.mark.parametrize("head_dim", [0, True, 64, 192, 384])
-@pytest.mark.parametrize("format_name", [ROTOR_Q4, ROTOR_Q4_NORM, COMPACT_Q4])
+@pytest.mark.parametrize("format_name", [ROTOR_Q4, ROTOR_Q4_NORM, COMPACT_Q4, COMPACT_ISO4])
 def test_q4_geometry_fails_before_allocation(head_dim, format_name):
     with pytest.raises(ValueError, match="head dim|head_dim"):
         check_pair(get_pair(format_name), head_dim=head_dim)
@@ -113,7 +115,8 @@ def test_half_state_uses_real_packed_and_scale_bytes_through_clone_resize_copy(k
     w = model(8, mtp=mtp)
     source = State(w, 37, 4, kv_pair=pair, limit=128)
     expected_row = sum({"fp16": 512, "int8": 272, ROTOR_Q4: 136, ROTOR_Q4_NORM: 136,
-                        COMPACT_Q4: 128 + 2 * (2 + 2)}[side] for side in (key, value))
+                        COMPACT_Q4: 128 + 2 * (2 + 2), COMPACT_ISO4: 128 + 2 * (2 + 2)}[side]
+                       for side in (key, value))
     layers = 2 + int(mtp)
     expected = layers * (37 * (expected_row + 256) + 10 * 256 + pair.dummy_bytes)
     assert source.cache_bytes() == source.owned_cache_bytes() == expected
@@ -209,7 +212,8 @@ def test_full_window_forecast_counts_q4_packing_fp32_scales_and_replace_overlap(
     base = indexed_stream_geometry(text, **kwargs, kv_pair=((8, 32, 2),) * 2)
     candidate = indexed_stream_geometry(text, **kwargs, kv_pair=specs)
     row = sum({"fp16": 512, "int8": 272, ROTOR_Q4: 128 + 2 * 4, ROTOR_Q4_NORM: 128 + 2 * 4,
-               COMPACT_Q4: 128 + 2 * (2 + 2)}[name] for name in (key, value))
+               COMPACT_Q4: 128 + 2 * (2 + 2), COMPACT_ISO4: 128 + 2 * (2 + 2)}[name]
+              for name in (key, value))
     # Every full slot owns all target/MTP caches. A replacement retains one
     # additional layer; indexer/pool, graph/status and workspace bytes cancel.
     copies = slots * (2 + int(mtp)) + 1

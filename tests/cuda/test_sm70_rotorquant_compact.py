@@ -18,7 +18,7 @@ pytestmark = pytest.mark.skipif(
 
 GOLDENS = json.loads((Path(__file__).parents[1] / 'fixtures/rotorquant_planar4_sm70.json').read_text())
 COMPACT_PAIRS = tuple(KVPairFormat(get(key), get(value)) for key, value in itertools.product(SM70_FORMATS, repeat=2)
-                      if compact.NAME in (key, value))
+                      if compact.NAME in (key, value) and compact.ISO_NAME not in (key, value))
 
 
 @pytest.mark.parametrize('case', GOLDENS['fixtures'], ids=lambda case: case['name'])

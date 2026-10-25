@@ -52,6 +52,7 @@ def _worker(rank, port, format_name):
                      iq=torch.empty((3, 2, 128), dtype=torch.float16, device=device),
                      attn_o=torch.empty((3, 1, 256), dtype=torch.float16, device=device),
                      attn=scratch, prefill=False)
+        buffers.owner_kernel_family, buffers.owner_graph_family, buffers.owner_graphs = "torch-reference", "uncaptured", None
         buffers.history_owner = OwnerBuffers(w, 3, scratch)
         layer = NS(index=0, attn=NS(q_scale=torch.ones(256, device=device), k_scale=torch.ones(256, device=device),
                                   iq_scale=torch.ones(128, device=device), ik_scale=torch.ones(128, device=device)))

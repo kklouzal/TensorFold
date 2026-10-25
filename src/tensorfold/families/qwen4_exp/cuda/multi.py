@@ -72,7 +72,7 @@ class MultiDecoder:
                  share: float = SHARE, points=None, vision=None, workspace_bytes: int = 0, kv_pair=None,
                  kv_key_dtype: str | None = None, kv_value_dtype: str | None = None, graphs: bool = False,
                  graph_budget=..., graph_header_room: int | None = None, vision_workspace_bytes: int = 0,
-                 full_windows: int | None = None, execution_rows: int | None = None) -> None:
+                 full_windows: int | None = None, execution_rows: int | None = None, memory_live=None) -> None:
         if w.comm is not None and w.meta.get("execution_provider") != "sm70":
             raise ValueError("concurrent tensor-parallel Flash Next requires the SM70 execution provider")
         budget = (multi_graphs.budget_bytes() if graphs else 0) if graph_budget is ... else graph_budget
@@ -80,6 +80,8 @@ class MultiDecoder:
             raise ValueError("captured-round budget must be nonnegative integer bytes or automatic")
         if full_windows is not None and (type(full_windows) is not int or full_windows < 1):
             raise ValueError("full KV windows must be a positive integer")
+        if memory_live is not None and not callable(memory_live):
+            raise ValueError("prepared memory admission must provide a callable live-byte reader")
         self.full_windows = full_windows
         self.w, self.depth, self.confidence, self.capacity = w, depth, confidence, capacity
         from .rotor_decoder import RotorDecoderPolicy
@@ -106,7 +108,7 @@ class MultiDecoder:
         # rounds beside a filling prompt size its pass so decoding keeps ``share`` of the pass's time (0: whole passes)
         self.share, self.round_s, self.row_s = share, None, None
         self.buf = Buffers(w, rows, capacity, moe_prefill=True)
-        self.mbuf = Buffers(w, rows, capacity) if w.mtp is not None else None
+        self.mbuf = Buffers(w, rows, capacity, owner_role="mtp") if w.mtp is not None else None
         self.speculation = MethodGeometry("mtp" if self.mbuf is not None else
                                           "dspark" if getattr(w, "dspark", None) is not None else "none",
                                           depth)
@@ -176,7 +178,8 @@ class MultiDecoder:
         self.failed_slots: list[State] = []          # bounded by slots; exclusive owners until retirement succeeds
         self.slot_bytes = sum(t.numel() * t.element_size() for t in _tensors(self.free[0]))
         self.window_bytes = self.free[0].cache_bytes(capacity)          # one stream's caches at the full window
-        free = torch_live(torch, available_bytes) if torch.cuda.is_available() else None
+        free = memory_live if memory_live is not None else (
+            torch_live(torch, available_bytes) if torch.cuda.is_available() else None)
         # the mapped n-gram tables are not held back (they barely fit on a Spark); lookups page from disk instead
         live = free
         reserve = max(2 * GIB, workspace_bytes)
@@ -780,7 +783,17 @@ class MultiDecoder:
                 raise ValueError("this decoder has no adaptive execution controller")
             return
         self.controller.accept(plan)
+        self.apply_execution_family()
         self._execution_plan = plan
+
+    def apply_execution_family(self):
+        if self.controller is None:
+            return
+        family = self.controller.effective_family
+        for buffers in (self.buf, self.mbuf, self.pbuf):
+            if buffers is not None:
+                buffers.owner_kernel_family = family["kernel_family"]
+                buffers.owner_graph_family = family["graph_family"]
 
     def _proposal_limit(self):
         return self.depth if self.controller is None else self.controller.effective["proposal_limit"]
@@ -1179,6 +1192,7 @@ class MultiDecoder:
         if self.controller is not None and plan is None:
             plan = self.freeze_execution()
             self.controller.accept(plan)
+            self.apply_execution_family()
         self._migrate_boundary(None if plan is None else plan["migration"])
         pdl.ON = self.pdl                                # this decoder's launch policy (one process global)
         ended = self._make_room()                      # every stream's caches hold this round, or the newest wait

@@ -15,6 +15,7 @@ import re
 from contextlib import contextmanager
 
 from tensorfold.cleanup import raise_failures
+from .owner_execution import FAMILY_FIELDS, GRAPH_FAMILY, KERNEL_FAMILY, REFERENCE, UNCAPTURED
 
 IDENTITY_DIGESTS = frozenset({"target", "draft", "tokenizer", "codec", "numerics", "source",
                              "kernel_build", "runtime", "topology", "retention", "target_weight_encoding", "placement"})
@@ -105,6 +106,50 @@ class AdaptiveController:
         self.applied_migration = None
         self._profile_reservation = None
         self._deferred_migration = None
+        self.native_prepared = False
+        self.graph_rows = 0
+        self.trial_family = None
+        self.effective_family = dict(REFERENCE)
+
+    def configure_execution_families(self, *, native=False, graph_rows=0, trial=None):
+        """Register startup-owned preparation; compiling alone never selects it.
+
+        The engine supplies actual native/graph preparation results before
+        warmup or identity binding. A trial tuple is an explicit maintained
+        qualification run, never a production performance promotion.
+        """
+        if type(native) is not bool or type(graph_rows) is not int or graph_rows < 0 or graph_rows and not native:
+            raise ValueError("native execution preparation requires explicit capability and graph row bounds")
+        with self._lock:
+            if self.epoch or self.steps or self.rounds or self.identity is not None or self._profile_reservation is not None:
+                raise RuntimeError("execution families must be prepared before startup workload or profile binding")
+            original = self.native_prepared, self.graph_rows
+            self.native_prepared, self.graph_rows = native, graph_rows
+            try:
+                selected = None if trial is None else dict(trial)
+                if selected is not None:
+                    self._check_family(selected, self.maximum["row_budget"])
+            except BaseException:
+                self.native_prepared, self.graph_rows = original
+                raise
+            self.trial_family = selected
+            self.effective_family = dict(REFERENCE if selected is None else selected)
+
+    def _check_family(self, family, rows):
+        if not isinstance(family, dict) or set(family) != FAMILY_FIELDS:
+            raise ValueError("an execution family requires its kernel and graph choices")
+        if family == REFERENCE:
+            return
+        if family["kernel_family"] != KERNEL_FAMILY or not self.native_prepared:
+            raise ValueError("native owner kernel family was not prepared at startup")
+        if family["graph_family"] == UNCAPTURED:
+            return
+        if family["graph_family"] != GRAPH_FAMILY or rows > self.graph_rows:
+            raise ValueError("owner graph family does not cover this execution row envelope")
+
+    def _profile_family(self, execution):
+        return ({name: execution[name] for name in FAMILY_FIELDS}
+                if FAMILY_FIELDS.issubset(execution) else dict(REFERENCE))
 
     def _validate(self, values):
         for name, value in values.items():
@@ -136,24 +181,38 @@ class AdaptiveController:
             if self.pending is not None:
                 self.effective = self.pending
                 self.pending = None
+                self.selected_profile = None
+                self.effective_family = dict(REFERENCE if self.trial_family is None else self.trial_family)
             return dict(self.effective)
 
-    def freeze_boundary(self, settings=None):
+    def freeze_boundary(self, settings=None, *, family=None, profile_id=...):
         """Freeze effective settings for every ordered TP operation, without a new plan epoch."""
         with self._lock:
             values = dict(self.effective) if settings is None else dict(settings)
             if set(values) != set(self.maximum):
                 raise ValueError("boundary settings differ from the allocated execution contract")
             self._validate(values)
-            return {"epoch": self.epoch, "settings": values}
+            selected = self.selected_profile if profile_id is ... else profile_id
+            chosen = dict(self.effective_family if family is None else family)
+            if family is None and selected is None:
+                chosen = dict(REFERENCE if self.trial_family is None else self.trial_family)
+            self._check_family(chosen, values["row_budget"])
+            return {"epoch": self.epoch, "settings": values, **chosen, "profile_id": selected}
 
     def apply_boundary(self, boundary):
         """Publish the coordinator's validated settings before any admission/model work."""
-        if (not isinstance(boundary, dict) or set(boundary) != {"epoch", "settings"}
+        if (not isinstance(boundary, dict) or set(boundary) != {"epoch", "settings", "profile_id", *FAMILY_FIELDS}
                 or type(boundary["epoch"]) is not int or not isinstance(boundary["settings"], dict)
                 or set(boundary["settings"]) != set(self.maximum)):
             raise ValueError("invalid tensor-parallel execution boundary")
         self._validate(boundary["settings"])
+        if boundary["profile_id"] is not None and (not isinstance(boundary["profile_id"], str)
+                                                   or not 1 <= len(boundary["profile_id"]) <= 128):
+            raise ValueError("execution boundary profile identity is invalid")
+        family = {name: boundary[name] for name in FAMILY_FIELDS}
+        self._check_family(family, boundary["settings"]["row_budget"])
+        if family != REFERENCE and boundary["profile_id"] is None and family != self.trial_family:
+            raise ValueError("native owner execution requires a frozen qualified profile or explicit startup trial")
         with self._lock:
             if boundary["epoch"] != self.epoch:
                 raise ValueError("execution boundary epoch differs from the ordered plan stream")
@@ -161,6 +220,8 @@ class AdaptiveController:
             # This operation owns only its frozen effective values, never that
             # newer configured/pending request or the next plan's epoch.
             self.effective = dict(boundary["settings"])
+            self.effective_family = family
+            self.selected_profile = boundary["profile_id"]
 
     def freeze(self, sessions, *, workload=None):
         """Issue one globally ordered plan; peers must not choose from local load."""
@@ -173,9 +234,11 @@ class AdaptiveController:
             values = dict(self.configured)
             selected = None if workload is None else next(
                 (profile for profile in self.profiles.values() if _covers(profile["workload"], workload)), None)
-            if selected is not None and all(selected["execution"][name] <= values[name]
-                                            for name in EXECUTION_FIELDS):
-                values.update(selected["execution"])
+            family = dict(REFERENCE if self.trial_family is None else self.trial_family)
+            if (selected is not None and all(selected["execution"][name] <= values[name] for name in EXECUTION_FIELDS)
+                    and (self.trial_family is None or self._profile_family(selected["execution"]) == self.trial_family)):
+                values.update({name: selected["execution"][name] for name in EXECUTION_FIELDS})
+                family = self._profile_family(selected["execution"])
                 profile_id = selected["id"]
             else:
                 profile_id = None
@@ -190,7 +253,7 @@ class AdaptiveController:
             after = next((index for index, sid in enumerate(order) if sid > self.last_served), len(order))
             order = order[after:] + order[:after]
         return {"epoch": self.epoch + 1, **values, "order": order,
-                "profile_id": profile_id, "migration": migration}
+                "profile_id": profile_id, "migration": migration, **family}
 
     def admission_limit(self):
         with self._lock:
@@ -342,6 +405,8 @@ class AdaptiveController:
         staged = AdaptiveController(slots=self.slots, row_budget=self.maximum["row_budget"],
                                     proposal_limit=self.maximum["proposal_limit"],
                                     prefill_tokens=self.maximum["prefill_tokens"])
+        staged.configure_execution_families(native=self.native_prepared, graph_rows=self.graph_rows,
+                                            trial=self.trial_family)
         staged.bind_identity(identity, evidence=evidence)
         staged.install_profiles(table)
         with self._lock:
@@ -370,11 +435,12 @@ class AdaptiveController:
                 if (not isinstance(profile, dict) or set(profile) != {"id", "workload", "execution", "evidence"}
                         or not isinstance(profile["id"], str) or not 1 <= len(profile["id"]) <= 128
                         or profile["id"] in names or not isinstance(profile["execution"], dict)
-                        or set(profile["execution"]) != EXECUTION_FIELDS
+                        or set(profile["execution"]) not in (EXECUTION_FIELDS, EXECUTION_FIELDS | FAMILY_FIELDS)
                         or not isinstance(profile["evidence"], dict) or set(profile["evidence"]) != EVIDENCE_ROLES):
                     raise ValueError("execution-profile record is incomplete or duplicated")
                 work = self._region(profile["workload"])
-                self._validate({**self.maximum, **profile["execution"]})
+                self._validate({**self.maximum, **{name: profile["execution"][name] for name in EXECUTION_FIELDS}})
+                self._check_family(self._profile_family(profile["execution"]), profile["execution"]["row_budget"])
                 if any(_overlaps(profile["workload"], existing["workload"]) for existing in checked.values()):
                     raise ValueError("measured profile regions overlap without an evidence-backed winner ordering")
                 for role, digest in profile["evidence"].items():
@@ -430,7 +496,7 @@ class AdaptiveController:
 
     def accept(self, plan):
         """Validate the leader's bounded plan before any state or collective work."""
-        if set(plan) != {"epoch", "order", "profile_id", "migration", *self.maximum}:
+        if set(plan) != {"epoch", "order", "profile_id", "migration", *self.maximum, *FAMILY_FIELDS}:
             raise ValueError("execution plan fields do not match the supported contract")
         values = {name: plan[name] for name in self.maximum}
         self._validate(values)
@@ -444,6 +510,10 @@ class AdaptiveController:
         profile = plan["profile_id"]
         if profile is not None and (not isinstance(profile, str) or not 1 <= len(profile) <= 128):
             raise ValueError("execution plan profile identity is invalid")
+        family = {name: plan[name] for name in FAMILY_FIELDS}
+        self._check_family(family, values["row_budget"])
+        if family != REFERENCE and profile is None and family != self.trial_family:
+            raise ValueError("native owner execution requires a frozen qualified profile or explicit startup trial")
         migration = plan["migration"]
         if migration is not None:
             if (self.migration is None or not isinstance(migration, dict)
@@ -457,6 +527,7 @@ class AdaptiveController:
             self.effective = values
             self.epoch = plan["epoch"]
             self.selected_profile = profile
+            self.effective_family = family
             if migration is not None:
                 self.applied_migration = dict(migration)
             if migration is not None and migration["request_epoch"] > self.migration["request_epoch"]:
@@ -514,8 +585,9 @@ class AdaptiveController:
                 "pending": None if self.pending is None else dict(self.pending),
                 "effective": dict(self.effective), "allocated_maximum": dict(self.maximum),
                 "epoch": self.epoch, "steps": self.steps, "rounds": self.rounds,
-                "selection": "qualified-workload-region" if self.selected_profile is not None else
-                             "bounded-static-envelope-fair-rotation",
+                "selection": ("qualified-workload-region" if self.selected_profile is not None else
+                              "qualification-trial" if self.trial_family is not None else
+                              "bounded-static-envelope-fair-rotation"),
                 "performance_qualification": "registered-workload-region" if self.selected_profile is not None else "pending",
                 "profile_identity": None if self.identity is None else dict(self.identity),
                 "binding_invalidated_reason": self.binding_invalidated_reason,
@@ -523,6 +595,10 @@ class AdaptiveController:
                 "deferred_migration": self._deferred_migration,
                 "profile_table_sha256": self.profile_table_digest, "registered_profiles": len(self.profiles),
                 "selected_profile": self.selected_profile,
+                "execution_families": {"effective": dict(self.effective_family),
+                                       "native_prepared": self.native_prepared,
+                                       "graph_rows": self.graph_rows,
+                                       "trial": None if self.trial_family is None else dict(self.trial_family)},
                 "migration": None if self.migration is None else dict(self.migration),
                 "applied_migration": None if self.applied_migration is None else dict(self.applied_migration),
                 "last_step": dict(self.observation),

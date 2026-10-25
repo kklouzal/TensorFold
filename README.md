@@ -8,6 +8,13 @@ separate source checks from the pending eight-V100 model, quality and performanc
 gates. Historical results below keep their original source and layout.
 Measured execution profiles use a separate
 [content-verified identity and evidence manifest](docs/execution-profile-manifest.md).
+Its optional native preparation section builds bounded partial attention graphs
+before admission; explicit qualification trials remain unqualified until the
+source-built V100 stack and actual device/model gates pass.
+The initial compact Q4 candidate is the distinct `rotorquant-iso4-sm70-v1`
+format; `rotorquant-planar4-sm70-v1` remains its later equal-memory comparison.
+Wire/source checks and reference-stack compilation do not qualify either
+candidate's V100 quality, long-context execution or performance.
 
 The optional `--indexer-history ram` path keeps raw FP16 indexer history in
 NUMA-local system memory, with bounded GPU ring/staging buffers; pooled indexer
