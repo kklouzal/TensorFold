@@ -8,6 +8,14 @@ separate source checks from the pending eight-V100 model, quality and performanc
 gates. Historical results below keep their original source and layout.
 Measured execution profiles use a separate
 [content-verified identity and evidence manifest](docs/execution-profile-manifest.md).
+A manifest-selected [software NVFP4 SM70 candidate](docs/sm70-nvfp4.md) now
+retains supported original packed weights and decodes bounded FP16 tiles through
+the shared family engine. It requires an explicit numerical/source manifest and
+`--precision full`; artifact quality, actual V100 execution and performance
+remain unqualified. Existing Blackwell paths retain their current selection.
+CPU/source controls cover bounded hashing, operand ownership and descriptor
+device boundaries. Protected source-SDK SM70 compile/link/import checks pass;
+actual device and model gates remain open.
 Its optional native preparation section builds bounded partial attention graphs
 before admission; explicit qualification trials remain unqualified until the
 source-built V100 stack and actual device/model gates pass.

@@ -74,6 +74,27 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
     """Refuse KV cache, draft rule, image, tokenizer, share, slot and precision options the backend or family can't
     serve."""
 
+    family_manifest = getattr(args, "family_manifest", None)
+    if family_manifest is not None:
+        from tensorfold.cuda.tensor_file import read_metadata_json
+        from tensorfold.families.qwen4_exp.cuda.sm70_weight_manifest import PROFILE
+
+        declared = read_metadata_json(family_manifest)
+        numerical = declared.get("numerical")
+        if (backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next")
+                or getattr(args, "precision", None) != "full"
+                or not isinstance(numerical, dict) or numerical.get("profile") != PROFILE
+                or declared.get("transforms") != []):
+            raise ValueError("--family-manifest requires the declared Flash Next SM70 NVFP4 profile and explicit --precision full")
+        if getattr(args, "execution_profile_manifest", None) is not None:
+            raise ValueError("SM70 NVFP4 measured execution profiles require separate qualification; this recipe executes the reference provider")
+        if any(getattr(args, name, None) is not None for name in
+               ("tokenizer_file", "chat_template_file", "chat_template_name")):
+            raise ValueError("this SM70 family manifest pins the source's default tokenizer/template; overrides require a different implemented profile")
+        if any(getattr(args, name, None) is None for name in ("max_pending_requests", "max_http_connections")):
+            raise ValueError("adaptive SM70 serving requires explicit positive --max-pending-requests and --max-http-connections")
+        if getattr(args, "indexer_history", "gpu") != "gpu":
+            raise ValueError("--family-manifest requires compact GPU indexing; full raw RAM archives are unsupported")
     method = getattr(args, "draft_method", "auto")
     if method not in ("auto", "none", "mtp", "dspark"):
         raise ValueError("--draft-method must be auto, none, mtp or dspark")
@@ -105,7 +126,7 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         from tensorfold.families.qwen4_exp.gguf import resolve_gguf
 
         source = config_dir if config_dir is not None else getattr(args, "model", None)
-        if source is None or resolve_gguf(source) is None:
+        if source is None or resolve_gguf(source) is None and family_manifest is None:
             raise ValueError("--indexer-history ram requires a local Flash Next GGUF checkpoint")
     manifest = getattr(args, "execution_profile_manifest", None)
     if manifest is not None:
@@ -122,7 +143,7 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
             raise ValueError("--kv-full-windows is supported by Flash Next CUDA only")
         from tensorfold.families.qwen4_exp.ram_experts import check_kv_full_windows
         from tensorfold.families.qwen4_exp.gguf import resolve_gguf
-        resident_gguf = config_dir is not None and resolve_gguf(config_dir) is not None
+        resident_gguf = family_manifest is not None or config_dir is not None and resolve_gguf(config_dir) is not None
         adaptive_gguf = resident_gguf and history == "gpu" and getattr(args, "vram_experts", None) is None
         if windows == "auto":
             if not adaptive_gguf:
@@ -224,7 +245,7 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         from tensorfold.families.qwen4_exp.gguf import resolve_gguf
 
         if (backend != "cuda" or getattr(family, "model_type", "") != "qwen4_exp"
-                or resolve_gguf(config_dir or args.model) is None):
+                or resolve_gguf(config_dir or args.model) is None and family_manifest is None):
             raise ValueError("--kv-dtype fp16 requires the Flash Next GGUF FP16 execution provider")
     for name in ("kv_key_dtype", "kv_value_dtype"):
         value = getattr(args, name, None)
@@ -278,7 +299,8 @@ def _cuda_topology(args: argparse.Namespace, family: Any) -> None:
     from tensorfold.families.qwen4_exp.gguf import resolve_gguf
 
     gguf = (getattr(family, "model_type", "") in ("qwen4_exp", "qwen3_8_flash_next")
-            and resolve_gguf(getattr(args, "model", "")) is not None)
+            and (resolve_gguf(getattr(args, "model", "")) is not None
+                 or getattr(args, "family_manifest", None) is not None))
     if type(tp) is not int or tp not in (1, 2, 4, 8) or tp == 8 and not gguf:
         raise ValueError("--tp must be 1, 2 or 4; Flash Next GGUF additionally supports 8")
     if type(rank) is not int or rank < 0:
