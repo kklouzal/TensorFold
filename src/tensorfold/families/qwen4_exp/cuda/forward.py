@@ -680,12 +680,18 @@ def read_ahead(w: Weights, history: np.ndarray, tokens: Sequence[int]) -> None:
 
 
 def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True, context: int | None = None,
-            ends: Sequence[int] = (), cuts: Sequence[Cut] = (), features=None, check: bool = True):
+            ends: Sequence[int] = (), cuts: Sequence[Cut] = (), features=None, check: bool = True,
+            input_embeddings: torch.Tensor | None = None):
     """The forward's GPU work on staged rows (capturable); ``context`` bounds attention, ``ends`` get the head, ``cuts`` keep states.
     ``check=False``: the codec status stays pending for the caller's check (``_kv_check`` or ``KVWords``) before any
     of the frame's rows are used."""
 
     R = segs[-1][2]
+    if input_embeddings is not None and (
+            not isinstance(input_embeddings, torch.Tensor) or input_embeddings.shape != (R, w.cfg.hidden)
+            or input_embeddings.dtype != b.h.dtype or input_embeddings.device != b.h.device
+            or input_embeddings.requires_grad):
+        raise ValueError("merged target inputs must cover the admitted window on its exact dtype/device")
     runtime = getattr(w, "dspark", None)
     dflash2 = getattr(w, "dflash2", None)
     if runtime is not None and dflash2 is not None:
@@ -699,9 +705,12 @@ def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True,
             history_runtime.begin(segs, prefill=b.prefill)
         _kv_begin(segs)
         c = w.cfg
-        _embed(w, b.ids[:R], c.streams, b.h[:R])
-        if b.prefill:
-            image_rows.embed(segs, b, c.streams)
+        if input_embeddings is None:
+            _embed(w, b.ids[:R], c.streams, b.h[:R])
+            if b.prefill:
+                image_rows.embed(segs, b, c.streams)
+        else:
+            b.h[:R].view(R, c.streams, c.hidden).copy_(input_embeddings[:, None, :])
         if features is not None:
             target, source = features
             b.h.index_copy_(0, target, source.to(b.h.dtype).repeat(1, c.streams))
@@ -847,10 +856,16 @@ def converges(w: Weights) -> bool:
 
 
 def compute_mixed(w: Weights, dsegs: Sequence[Seg], db: Buffers, psegs: Sequence[Seg], pb: Buffers, *,
-                  ends: Sequence[int] = (), cuts: Sequence[Cut] = ()) -> tuple:
+                  ends: Sequence[int] = (), cuts: Sequence[Cut] = (),
+                  prefill_embeddings: torch.Tensor | None = None) -> tuple:
     """A decode window and a prompt pass in one forward, each on its own kernels and bits, experts read once."""
 
     dflash2 = getattr(w, "dflash2", None)
+    if prefill_embeddings is not None and (
+            not isinstance(prefill_embeddings, torch.Tensor) or prefill_embeddings.shape != (psegs[-1][2], w.cfg.hidden)
+            or prefill_embeddings.dtype != pb.h.dtype or prefill_embeddings.device != pb.h.device
+            or prefill_embeddings.requires_grad):
+        raise ValueError("merged mixed-prefill inputs differ from the admitted window")
     d_capture = p_capture = None
     try:
         if dflash2 is not None:
@@ -868,8 +883,11 @@ def compute_mixed(w: Weights, dsegs: Sequence[Seg], db: Buffers, psegs: Sequence
         if Rp + Rd > pb.rows:
             raise ValueError(f"a pass of {Rp} rows and a window of {Rd} exceed the prompt buffers' {pb.rows}")
         _embed(w, db.ids[:Rd], c.streams, db.h[:Rd])
-        _embed(w, pb.ids[:Rp], c.streams, pb.h[:Rp])
-        image_rows.embed(psegs, pb, c.streams)
+        if prefill_embeddings is None:
+            _embed(w, pb.ids[:Rp], c.streams, pb.h[:Rp])
+            image_rows.embed(psegs, pb, c.streams)
+        else:
+            pb.h[:Rp].view(Rp, c.streams, c.hidden).copy_(prefill_embeddings[:, None, :])
         dp = pp = None
         for layer in w.layers:
             _pre_moe(layer, w, dsegs, db, Rd, dp)
@@ -913,8 +931,15 @@ def forward(w: Weights, st: State, b: Buffers, tokens: Sequence[int], *, logits:
 
     if cut is not None and not (b.prefill and cut.at == 0 and 0 < cut.row < len(tokens)):
         raise ValueError(f"a prompt chunk of {len(tokens)} rows has no kept point at row {cut.row}")
-    return compute(w, stage(w, b, [(st, tokens)]), b, logits=logits,
-                   cuts=() if cut is None else (cut,), features=features)
+    windows = [(st, tokens)]
+    segs = stage(w, b, windows)
+    if b.prefill:
+        from .media_mtp import target_inputs
+
+        with target_inputs(w, b, windows, segs) as merged:
+            return compute(w, segs, b, logits=logits, cuts=() if cut is None else (cut,), features=features,
+                           **({"input_embeddings": merged} if merged is not None else {}))
+    return compute(w, segs, b, logits=logits, cuts=() if cut is None else (cut,), features=features)
 
 
 @triton.jit
@@ -996,7 +1021,8 @@ def commit(w: Weights, st: State, b: Buffers, R: int, keep: int, at: int = 0, st
         raise
 
 
-def cut_snapshot(w: Weights, st: State, b: Buffers, cut: Cut, mtp_len: int) -> dict:
+def cut_snapshot(w: Weights, st: State, b: Buffers, cut: Cut, mtp_len: int, *, mtp_boundary=...,
+                 defer_media: bool = False) -> dict:
     """``State.snapshot`` at a kept point inside a prompt piece, before ``commit``: the n-gram windows after its rows."""
 
     c = w.cfg
@@ -1005,8 +1031,13 @@ def cut_snapshot(w: Weights, st: State, b: Buffers, cut: Cut, mtp_len: int) -> d
         before, tokens = st.ple_last
         history = np.concatenate([before, tokens[:cut.row]])[-(c.ngram_size - 1):]
         shift_windows(tail[None], b.ple_nrow[None, cut.at:cut.at + cut.row], cut.row, tail.shape[1])
+    media = {}
+    if getattr(st, "media_profile_identity", None) is not None and not defer_media:
+        from .media_mtp import snapshot_state
+
+        media = snapshot_state(st, position=st.pos + cut.row, mtp_len=mtp_len, boundary=mtp_boundary)
     return {"pos": st.pos + cut.row, "rec": cut.rec, "conv": cut.conv, "ple_tail": tail,
             "ple_history": None if history is None else history.copy(), "mtp_len": mtp_len,
-            **st.kv_snapshot_metadata(),
+            **st.kv_snapshot_metadata(), **media,
             **(w.dspark.snapshot(st, st.pos + cut.row) if getattr(w, "dspark", None) is not None else {}),
             **({"dflash2": w.dflash2.snapshot(st, st.pos + cut.row)} if getattr(w, "dflash2", None) is not None else {})}

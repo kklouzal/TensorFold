@@ -276,20 +276,30 @@ class Engine:
                                   with_prob=True)
         return toks[0], probs[0]
 
-    def mtp_forward(self, next_tokens: Sequence[int], streams: torch.Tensor) -> torch.Tensor:
-        if self.graphs is not None:
+    def mtp_forward(self, next_tokens: Sequence[int], streams: torch.Tensor, *,
+                    next_inputs: torch.Tensor | None = None,
+                    indexer_coordinates: torch.Tensor | None = None) -> torch.Tensor:
+        if (self.graphs is not None and next_inputs is None and indexer_coordinates is None
+                and getattr(self.st, "media_profile_identity", None) is None):
             return self.graphs.mtp_forward(next_tokens, streams)
-        return mtp_forward(self.w, self.st, self.mbuf, next_tokens, streams)
+        # Existing captured MTP graphs perform token lookup. A supplied merged
+        # visual input uses the explicit eager tensor path until that distinct
+        # graph contract has been implemented and qualified.
+        return mtp_forward(self.w, self.st, self.mbuf, next_tokens, streams,
+                           **({"next_inputs": next_inputs} if next_inputs is not None else {}),
+                           **({"indexer_coordinates": indexer_coordinates} if indexer_coordinates is not None else {}))
 
 
-def absorb(e: Engine, streams: torch.Tensor, next_tokens: Sequence[int]) -> torch.Tensor:
+def absorb(e: Engine, streams: torch.Tensor, next_tokens: Sequence[int], *,
+           next_inputs: torch.Tensor | None = None) -> torch.Tensor:
     """The MTP cache takes positions with main-model streams [n, S*D] and next tokens; logits of the last."""
 
     st = e.st
     if st.mtp_drafted:
         st.set_mtp_len(st.mtp_len - st.mtp_drafted)
         st.mtp_drafted = 0
-    logits = e.mtp_forward(next_tokens, streams)
+    logits = e.mtp_forward(next_tokens, streams,
+                          **({"next_inputs": next_inputs} if next_inputs is not None else {}))
     st.set_mtp_len(st.mtp_len + len(next_tokens))
     return logits
 
@@ -345,13 +355,22 @@ def prefill_begin(e: Engine, prompt: Sequence[int], *, mtp: bool = True, resume:
             e.reset()
         else:
             e.reset(new_sequence=False)
+        if hasattr(e.st, "media_mtp_enabled"):
+            e.st.media_mtp_enabled = _absorbs(e, mtp)
         return 0
     st = e.st
     if new_sequence:
         st.begin_sequence_generation()
     st.restore(resume["state"])
+    if hasattr(st, "media_mtp_enabled"):
+        st.media_mtp_enabled = _absorbs(e, mtp)
     if not 0 < st.pos < len(prompt):
         raise ValueError("a resumed prompt must extend the cached tokens")
+    if getattr(st, "media_profile_identity", None) is not None:
+        # A restored media boundary waits for the new request's admitted ready
+        # input. The next row may be visual; token lookup is not its embedding.
+        e.last_streams = None if st.mtp_boundary is None else st.mtp_boundary.hidden
+        return st.pos
     if _absorbs(e, mtp) and resume.get("tail") is not None:
         mtp_forward(e.w, st, e.pbuf, [prompt[st.pos]], resume["tail"], logits=False)
         st.set_mtp_len(st.mtp_len + 1)
@@ -377,8 +396,28 @@ def prefill_chunk(e: Engine, prompt: Sequence[int], start: int, *, mtp: bool = T
     # only the prompt's last row is sampled: the head runs on the final chunk alone
     logits = forward(w, st, pb, chunk, logits=final, cut=cut)
     last = logits.clone() if final else None
-    e.last_streams = pb.streams[R - 1:R].clone()
     use_mtp = _absorbs(e, mtp)
+    if getattr(st, "media_input_span", None) is not None:
+        from .media_mtp import CommittedMTPChunk, condition_chunks, snapshot_state
+
+        valid = max(0, keep_at - 1) if use_mtp and point else st.mtp_len
+        snap = cut_snapshot(w, st, pb, cut, valid, defer_media=True) if cut is not None else None
+        commit(w, st, pb, R, R)
+        results = condition_chunks(w, pb, [CommittedMTPChunk(st, list(prompt), start, end, pb.streams[:R],
+                                                               (keep_at,) if cut is not None else ())]) if use_mtp else []
+        e.last_streams = results[0][0].hidden if results else None
+        st.retire_media_input_span(cancelled=False)
+        if point:
+            if snap is None:
+                snap = {**st.snapshot(), "mtp_len": valid}
+            else:
+                boundary = results[0][1][keep_at] if use_mtp else None
+                snap.update(snapshot_state(st, position=keep_at, mtp_len=valid, boundary=boundary, take_boundary=True))
+            snap.update(st.indexer_snapshot_metadata(snap["pos"], valid))
+            tail = snap["media_state"]["mtp_boundary"]["hidden"] if use_mtp else None
+            e.kept = {"state": snap, "tail": tail}
+        return last
+    e.last_streams = pb.streams[R - 1:R].clone()
     if point:                    # before the MTP head writes the streams: the point's tail, its state inside the chunk
         mtp_len = st.mtp_len + point - 1 if use_mtp else st.mtp_len       # every row but the point's last
         tail = pb.streams[point - 1:point].clone() if use_mtp else None

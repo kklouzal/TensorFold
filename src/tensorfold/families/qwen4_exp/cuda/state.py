@@ -214,6 +214,11 @@ class State:
         dev = w.device
         bf = execution_dtype(w)
         self.execution_dtype = bf
+        self.media_hidden_size = c.hidden
+        self.mtp_hidden_width = c.streams * c.hidden if w.mtp is not None else 0
+        self.media_mtp_enabled = w.mtp is not None
+        self.media_profile_identity = self.media_identity = None
+        self.media_input_span = self.mtp_boundary = None
         from .history_placement import for_weights
 
         self.history_placement = for_weights(w)
@@ -466,6 +471,12 @@ class State:
         if any(type(snap.get(name)) is not int or not 0 <= snap[name] <= self.capacity
                for name in ("pos", "mtp_len")):
             raise ValueError("KV snapshot positions must be integer rows within its sequence cache")
+        if getattr(self, "media_input_span", None) is not None:
+            raise ValueError("merged input staging must retire before State restoration")
+        if getattr(self, "media_profile_identity", None) is not None or "media_state" in snap:
+            from .media_mtp import validate_snapshot
+
+            validate_snapshot(self, snap.get("media_state"), snap["pos"], snap["mtp_len"])
         runtime = getattr(self, "dflash2_runtime", None)
         if runtime is not None:
             runtime.validate_snapshot(self, snap.get("dflash2"), snap["pos"])
@@ -732,6 +743,11 @@ class State:
             generations = self.history_generations
             if generations is not None and generations.is_cuda:
                 torch.cuda.current_stream(generations.device).synchronize()
+            if getattr(self, "media_input_span", None) is not None:
+                self.retire_media_input_span(cancelled=True)
+            self.mtp_boundary = None
+            self.media_profile_identity = self.media_identity = None
+            self.media_mtp_enabled = bool(getattr(self, "mtp_hidden_width", 0))
             runtime = getattr(self, "dflash2_runtime", None)
             if runtime is not None:
                 runtime.discard(self)
@@ -766,6 +782,9 @@ class State:
                     raise self._kv_error if self._kv_error is not None else self._resize_error
                 if self._history_error is not None:
                     raise self._history_error
+            if getattr(self, "media_input_span", None) is not None:
+                self.retire_media_input_span(cancelled=True)
+            self.mtp_boundary = None
             if getattr(self, "dflash2_runtime", None) is not None:
                 self.dflash2_runtime.reset(self)
                 self._kv_error = None
@@ -877,6 +896,21 @@ class State:
         self.rope_delta = int(delta)
         self.rope_delta_dev.fill_(int(delta))
 
+    def bind_media_context(self, profile_identity, media_identity):
+        from .media_mtp import bind_context
+
+        bind_context(self, profile_identity, media_identity)
+
+    def attach_media_input_span(self, span, *, profile_identity, media_identity):
+        from .media_mtp import attach_span
+
+        attach_span(self, span, profile_identity=profile_identity, media_identity=media_identity)
+
+    def retire_media_input_span(self, *, cancelled=False):
+        from .media_mtp import retire_span
+
+        retire_span(self, cancelled=cancelled)
+
     def clone(self) -> "State":
         """An independent copy (tests and A/B checks)."""
 
@@ -888,6 +922,8 @@ class State:
         other = copy.copy(self)
         # Auxiliary state is an owned window, never a shallow-copy alias.
         other.dflash2 = None
+        other.media_input_span = None  # operational producer leases never become a cloned reader
+        other.mtp_boundary = None
         for name, value in vars(self).items():
             if isinstance(value, torch.Tensor):
                 setattr(other, name, value.clone())
@@ -915,6 +951,11 @@ class State:
             self.dspark_runtime.clone_state(self, other)
         if getattr(self, "dflash2_runtime", None) is not None:
             self.dflash2_runtime.clone_state(self, other)
+        boundary = getattr(self, "mtp_boundary", None)
+        if boundary is not None:
+            if boundary.generation != self.slot_generation:
+                raise ValueError("MTP boundary belongs to another slot generation")
+            other.mtp_boundary = boundary.clone(other.slot_generation)
         return other
 
     def set_mtp_len(self, n: int) -> None:
@@ -923,6 +964,9 @@ class State:
             self._indexer_commit(self.pos, n)
         self.mtp_len = n
         self.mtp_pos.fill_(n)
+        boundary = getattr(self, "mtp_boundary", None)
+        if boundary is not None and n > boundary.row:
+            self.mtp_boundary = None
 
     def copy_prefix(self, source: "State", pos: int, mtp_len: int) -> None:
         """Copy only valid cache rows and complete pools; the caller restores the kept point's recurrent snapshot."""
@@ -988,10 +1032,15 @@ class State:
         if any(c != p for c in self.cur):
             raise RuntimeError("DeltaNet layers out of step")
         history = self.indexer_snapshot_metadata(self.pos, self.mtp_len - self.mtp_drafted)
+        media = {}
+        if getattr(self, "media_profile_identity", None) is not None:
+            from .media_mtp import snapshot_state
+
+            media = snapshot_state(self)
         return {"pos": self.pos, "rec": self.rec[p].clone(), "conv": self.conv.clone(),
                 "ple_tail": self.ple_tail.clone(),
                 "ple_history": None if self.ple_history is None else self.ple_history.copy(),
-                "mtp_len": self.mtp_len - self.mtp_drafted, **metadata, **history,
+                "mtp_len": self.mtp_len - self.mtp_drafted, **metadata, **history, **media,
                 **(self.dspark_runtime.snapshot(self) if getattr(self, "dspark_runtime", None) is not None else {}),
                 **({"dflash2": self.dflash2_runtime.snapshot(self)} if getattr(self, "dflash2_runtime", None) is not None else {})}
 
@@ -1022,7 +1071,13 @@ class State:
                 self.dspark_runtime.restore(self, snap)
             if getattr(self, "dflash2_runtime", None) is not None:
                 self.dflash2_runtime.restore(self, snap["dflash2"])
-        except BaseException:
+            if "media_state" in snap:
+                from .media_mtp import restore_state
+
+                restore_state(self, snap["media_state"])
+        except BaseException as error:
+            if getattr(self, "media_profile_identity", None) is not None:
+                self._history_error = self._kv_error = error
             if getattr(self, "dflash2", None) is not None:
                 self.dflash2.poisoned = True
             raise
