@@ -8,6 +8,7 @@ import json
 import math
 import os
 from pathlib import Path
+import struct
 from types import SimpleNamespace
 
 import numpy as np
@@ -29,6 +30,13 @@ FIXTURES = Path(__file__).with_name("fixtures") / "dflash2"
 
 def initial_config():
     return json.loads((FIXTURES / "config.json").read_text())
+
+
+def initial_header():
+    raw = (FIXTURES / "header.bin").read_bytes()
+    if len(raw) < 8 or struct.unpack("<Q", raw[:8])[0] != len(raw) - 8:
+        raise ValueError("the reference fixture must contain one exact safetensors header prefix")
+    return json.loads(raw[8:])
 
 
 def small_config():
@@ -89,7 +97,7 @@ def target(c):
 
 def test_real_independent_header_matches_exact_tp8_payload_and_replicated_codebooks():
     c = DFlash2Config.from_dict(initial_config())
-    header = json.loads((FIXTURES / "header.json").read_text())
+    header = initial_header()
     assert len(header) == 81
     assert sum(row["data_offsets"][1] - row["data_offsets"][0] for row in header.values()) == 1206131200
     for rank in range(8):
@@ -127,7 +135,7 @@ def test_unsupported_manifests_fail_before_weight_allocation(mutation):
 
 def test_source_namespace_and_shared_target_shape_are_hard_boundaries():
     c = DFlash2Config.from_dict(initial_config())
-    header = json.loads((FIXTURES / "header.json").read_text())
+    header = initial_header()
     header["embed_tokens.weight"] = {"dtype": "BF16", "shape": [c.vocab, c.hidden]}
     with pytest.raises(ValueError, match="namespace"):
         plan_weights(c, header)

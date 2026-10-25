@@ -63,4 +63,3 @@ class Capture:
             raise ValueError("DFlash2 completed-layer feature capture is incomplete")
         self.published = True
         return self.owner.features[:self.segs[-1][2]].flatten(1)
-

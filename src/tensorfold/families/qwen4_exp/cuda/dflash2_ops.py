@@ -94,4 +94,3 @@ def attention(q, k, v, past_k, past_v, positions, past_positions, *, window):
 def mlp(x, gate, up, down, comm):
     gated = (F.silu(linear(x, gate).float()) * linear(x, up).float()).half()
     return tp_sum(linear(gated, down, fp32=True), comm)
-

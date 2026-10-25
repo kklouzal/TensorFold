@@ -135,4 +135,3 @@ class DFlash2Config:
         local = self.partition(0, tp)
         window = min(self.window, self.context if context is None else count(context, "context"))
         return 2 * self.layers * window * local["kv_heads"] * self.head_dim * 2
-
