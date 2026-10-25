@@ -52,6 +52,15 @@ The MLX engine of `glm5_next` (`src/tensorfold/families/glm5_next/`: the forward
 
 ## CUDA
 
+The GGML IQ codebooks in `families/qwen4_exp/gguf_tables.py` and their generated
+SM70 header retain the integer bits of `ggml/src/ggml-common.h` from
+[llama.cpp revision b3fa69955ea81c3b60e77e3c1e2224c4a826ffb9](https://github.com/ggml-org/llama.cpp/tree/b3fa69955ea81c3b60e77e3c1e2224c4a826ffb9).
+The original GGML block layouts and dequantization contracts guide the owned
+CPU/CUDA implementations. Independent wire fixtures are generated with the
+unmodified selected functions from that revision's `ggml-quants.c`. GGML uses
+the MIT License, Copyright (c) 2023-2026 The ggml authors; the full notice is in
+[LICENSES/GGML-MIT.txt](LICENSES/GGML-MIT.txt).
+
 CUDA backends use [PyTorch](https://github.com/pytorch/pytorch), BSD-3-Clause, and
 [Triton](https://github.com/triton-lang/triton), MIT, supplied by NVIDIA's container rather than bundled.
 Dense Qwen implements mlx-lm's model math. CUDA DFlash2 implementations port z-lab's architecture under

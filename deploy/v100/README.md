@@ -7,6 +7,16 @@ qualification; historical live receipts below describe their original layouts.
 The [governing specification](../../docs/v100-adaptive-inference-design.md)
 defines the complete stage and acceptance gates.
 
+The revised initial SC117 `IQ3_S` target retains its original mixed GGUF bytes:
+BF16, F32, F16, Q2_0, Q4_K, Q5_K, Q6_K, Q8_0, IQ2_S, IQ3_XXS, IQ3_S,
+IQ4_NL and IQ4_XS. Bounded CPU imports and native row/expert decode accept these
+formats without whole-bank FP16 conversion. The new six-format host controls
+use fixtures produced by unmodified GGML dequantizers at revision
+`b3fa69955ea81c3b60e77e3c1e2224c4a826ffb9`. Actual SM70 decode, integrated model
+quality/performance and the revised full-context/media resource envelope remain
+unqualified. Run `tests/test_gguf_mixed_formats.py` for the host wire controls and
+`tests/cuda/test_sm70_gguf_mixed_formats.py` on an actual V100.
+
 This AMD64 development profile builds the installed TensorFold wheel with the
 SM70 FP16 provider. Original GGUF encodings remain separate from affine/EXL3/
 NVFP4 readers. The same family engine, scheduler, HTTP server, prefix states,
