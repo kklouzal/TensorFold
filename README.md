@@ -738,7 +738,7 @@ Use `http://127.0.0.1:8080/v1` as an OpenAI-compatible client base URL and an ID
 | `GET /v1/models`, `GET /v1/models/{model}` | Advertised model IDs/aliases with their `max_model_len`; an unknown ID is 404, as it is on every generation route. |
 | `GET /metrics` | Prometheus-compatible service metrics, vLLM's names and meanings where they apply. |
 | `GET /stats` | One JSON snapshot for clients: server identity and start, model, limits, load, KV memory, prefix cache and totals (schema 1). |
-| `GET/POST /v1/runtime` | Adaptive GGUF CUDA only: current/pending execution settings, retained sessions, bounded placement controls and verified profile registration. Same API-key policy; [control contract](docs/v100-adaptive-validation.md#runtime-control). |
+| `GET/POST /v1/runtime` | Adaptive GGUF CUDA only: current/pending execution settings, request and prefix-cache counts, bounded placement controls and verified profile registration. Same API-key policy; [control contract](docs/v100-adaptive-validation.md#runtime-control). |
 | `POST /v1/chat/completions` | Chat, tools, reasoning, optional image input and SSE. |
 | `POST /v1/completions` | Legacy text completions, including streaming. |
 | `/v1/responses` | OpenAI Responses-style input/output and typed streaming; documented storage operations; `POST /v1/responses/input_tokens` counts a request's input without generating. |
@@ -757,6 +757,18 @@ Flash Next CUDA probability output is supported on one GPU for **non-streamed te
 `ignore_eos` is a boolean; it does not disable explicit stop strings. Combining `ignore_eos: true` with active structured output or strict tools returns HTTP 400 before generation. EOS/stop completion reports `stop`, while reply-budget exhaustion reports `length`. Returned token IDs and usage can include a hidden EOS token even when displayed text does not. Tool/reasoning fields follow the selected model's template; not every family supports the same template behavior.
 
 Chat/completion streaming uses SSE `data` events, optional usage and `[DONE]`; Responses uses typed events. Under an explicit CUDA `--parallel N`, an open stream also gets an SSE comment line (`: keepalive`) every 15 s while its request waits or its prompt prefills; SSE clients skip comment lines. A failure after a stream opens is an error event rather than a new HTTP status. CUDA validates its context before opening SSE; default MLX context refusal can occur after opening, while configured admission defers headers to return capacity errors as JSON first.
+
+Adaptive CUDA sequences are request-scoped. Completion or cancellation retires the
+request claim; bounded prompt-prefix caching can preserve reusable bytes without
+creating a persistent GPU session. Runtime receipts report active requests,
+allocated slots and derived prefix-cache slots separately, with intentional
+retained sessions at zero. Temporarily selecting zero proposals keeps the
+enabled drafter warm within the active request; `draft: false` keeps that call
+serial. A new request starts a new slot generation even when it reuses a prefix. Runtime
+work receipts separate logical prompt/cache/replay counts, submitted target and
+MTP rows, and verifier acceptance histograms from useful committed output.
+Indexer fields describe causal logical work; expert group size and device stage
+timing remain unknown until measured without additional critical waits.
 
 Closing a client socket cancels its live request. Ordinary one-GPU CUDA stops at the next round, and a Flash Next prompt still prefilling under `--parallel N` stops before its next prompt pass; some tensor-parallel Flash Next, Nemotron and GLM requests finish on both ranks. Queued cancellation must not start new engine work, and admission is held until retained work actually retires. Deleting a stored Response deletes storage; it is not a live-generation cancellation API. Idle health should show zero logical requests, but its own connection counts toward a configured HTTP cap.
 

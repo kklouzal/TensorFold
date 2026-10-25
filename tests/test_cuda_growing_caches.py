@@ -60,6 +60,7 @@ def decoder(multi, state, torch, room: int):
     dec.kv_pair = state.kvcache.get_pair()
     dec.graphs = dec._failed_graphs = dec._memory_error = None
     dec.failed_slots = []
+    dec.controller, dec.retained, dec.retain_sessions = None, {}, False
     dec.used, dec.clock = {}, 0
     dec.filling, dec.fills, dec.held = [], {}, {}
     dec.memory_gate = importlib.import_module("tensorfold.cuda.memory_gate").MemoryGate(room, reserve=0)

@@ -15,7 +15,7 @@ from tensorfold.families.qwen4_exp.cuda import padded_linears
 def geometry_wrapper(monkeypatch, streams, each, mtp, native):
     source = Path(__file__).parents[1] / "src/tensorfold/families/qwen4_exp/cuda/engine.py"
     tree = ast.parse(source.read_text())
-    node = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "geometry"
+    node = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "gguf_geometry"
                 and any(isinstance(c, ast.Name) and c.id == "padded_bytes" for c in ast.walk(n)))
     monkeypatch.setattr(family_ops, "_NATIVE_FAMILY", native)
     monkeypatch.setattr(family_ops, "_NATIVE_ATTENTION", native)
@@ -25,11 +25,13 @@ def geometry_wrapper(monkeypatch, streams, each, mtp, native):
     monkeypatch.setattr(attention_native, "workspace_bytes", lambda rows, heads, dim, cap: rows*cap)
     base = Geometry(lambda cap: cap*10, 123, 7)
     observed = []
-    env = {"__package__": "tensorfold.families.qwen4_exp.cuda", "original_geometry":
-           lambda text: observed.append(text) or base, "tp": 8, "streams": streams,
-           "each": each, "mtp": mtp, "rows0": 2048, "head_dim": 256}
+    env = {"__package__": "tensorfold.families.qwen4_exp.cuda", "target_geometry":
+           lambda text, count: observed.append(text) or base, "tp": 8, "streams": streams,
+           "each": each, "mtp": mtp, "rows0": 2048, "head_dim": 256,
+           "concurrent": streams > 1, "row_envelope": lambda count: count * each,
+           "history_placement": None}
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(source), "exec"), env)
-    return env["geometry"], base, calls, observed
+    return env["gguf_geometry"], base, calls, observed
 
 
 @pytest.mark.parametrize("streams,each,mtp,native", [

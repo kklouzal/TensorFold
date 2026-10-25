@@ -131,23 +131,22 @@ def test_empty_step_retains_the_ready_profile_and_reports_work_categories_separa
     assert record["last_step"]["max_history_tokens"] == 262140
 
 
-@pytest.mark.parametrize("final_endpoint", [False, True])
-def test_zero_proposal_steps_absorb_mtp_conditioning_without_sampling(monkeypatch, final_endpoint):
+@pytest.mark.parametrize("provisional", [0, 1])
+def test_zero_proposal_steps_absorb_mtp_conditioning_without_sampling(monkeypatch, provisional):
     import torch
     from tensorfold.families.qwen4_exp.cuda import multi
     from tensorfold.families.qwen4_exp.cuda.speculation import MethodGeometry
 
     decoder = object.__new__(multi.MultiDecoder)
     decoder.controller = controller(slots=1, rows=4)
-    if not final_endpoint:
-        decoder.controller.request(proposal_limit=0)
-        decoder.controller.boundary()
+    decoder.controller.request(proposal_limit=0)
+    decoder.controller.boundary()
     decoder.depth, decoder.capacity = 3, 1000
     decoder.speculation = MethodGeometry("mtp", 3)
     decoder.w, decoder.mbuf = SimpleNamespace(dspark=None), object()
     decoder.buf = SimpleNamespace(streams=torch.tensor([[1.0], [2.0]]), rows=4)
     decoder.kv_host, decoder.graphs = None, None
-    state = SimpleNamespace(mtp_len=5, mtp_drafted=1, pos=6)
+    state = SimpleNamespace(mtp_len=5, mtp_drafted=provisional, pos=6)
     state.set_mtp_len = lambda length: setattr(state, "mtp_len", length)
     stream = SimpleNamespace(st=state, sid=0, out=[], count=100, drafts=[9])
     staged, settled = [], []
@@ -172,9 +171,9 @@ def test_zero_proposal_steps_absorb_mtp_conditioning_without_sampling(monkeypatc
 
     decoder._mtp = mtp
     decoder._picks = lambda *args: pytest.fail("a zero-proposal step consumed a sample")
-    decoder._draft_all([(stream, 0, [7, 8])], maintenance_only={0} if final_endpoint else ())
+    decoder._draft_all([(stream, 0, [7, 8])])
     assert len(staged) == 1 and staged[0][1] == [7, 8]
-    assert state.mtp_len == 6 and state.mtp_drafted == 0
+    assert state.mtp_len == 7 - provisional and state.mtp_drafted == 0
     assert stream.drafts == [] and settled == [True]
 
 
@@ -186,6 +185,7 @@ def decoder_round(monkeypatch):
 
     decoder = object.__new__(multi.MultiDecoder)
     decoder.controller = controller(slots=5, rows=6, proposals=2)
+    decoder.controller.work_observations.configure_indexer(ratio=4, budget=2048, heads=4, target_caches=12)
     decoder._execution_plan, decoder._memory_error = None, None
     decoder.w = SimpleNamespace(comm=None, meta={})
     decoder.buf = SimpleNamespace(h=torch.zeros((6, 1), dtype=torch.float16))
@@ -194,8 +194,6 @@ def decoder_round(monkeypatch):
     decoder.pdl, decoder.converged = False, False
     decoder.filling, decoder.held, decoder.streams = [], {}, {}
     decoder.kept, decoder.fills = [], {}
-    decoder.retained = {}
-    decoder.retain_sessions = False
     decoder.arrived = lambda: False
     decoder.graphs = None
     decoder._rotor_lookup = lambda *args: False
@@ -754,33 +752,9 @@ def test_telemetry_failure_preserves_an_original_inference_failure(decoder_round
     assert caught.value is primary and caught.value.__cause__ is secondary
 
 
-def test_all_resident_idle_endpoints_keep_their_own_state_without_extra_snapshots(decoder_round):
-    decoder, _ = decoder_round
-    decoder.retain_sessions = True
-    decoder.retention_clock = decoder.retention_retirements = 0
-    decoder.retained, decoder.free, decoder.kept = {}, [], []
-    decoder.last_retirement = None
-    decoder._shrink = lambda state: pytest.fail("finished retained state was reset before a new admission")
-    streams = list(decoder.streams.values())
-    states = [stream.st for stream in streams]
-    for slot, state in enumerate(states):
-        state.history_slot, state.slot_generation = slot, 3
-        state.unique_context = [slot, slot + 1, slot + 2]
-    decoder.finish(streams)
-    assert len(decoder.retained) == len(states) == 5
-    assert all(entry["state"] is state for entry, state in zip(decoder.retained.values(), states))
-    # Four idle histories remain unchanged while one occupied slot is explicitly
-    # retired for a new admission. This metadata contains no copied state.
-    before = [list(state.unique_context) for state in states]
-    decoder._retire_retained(states[0], reason="new_admission")
-    assert decoder.retention_retirements == 1 and len(decoder.retained) == 4
-    assert [state.unique_context for state in states] == before
-    assert decoder.retained_states() == tuple(states[1:])
-
-
-@pytest.mark.parametrize("retained", [False, True])
-def test_serial_request_prefill_and_retirement_preserve_the_enabled_mtp_prefix(
-        decoder_round, monkeypatch, retained):
+@pytest.mark.parametrize("enabled", [False, True])
+def test_request_lifecycle_keeps_enabled_zero_proposal_mtp_warm_only_until_retirement(
+        decoder_round, monkeypatch, enabled):
     """Run serving orchestration; token-recording operators replace GPU math only."""
     import torch
     from tensorfold.cuda.streams import Stream
@@ -789,14 +763,16 @@ def test_serial_request_prefill_and_retirement_preserve_the_enabled_mtp_prefix(
 
     decoder, _ = decoder_round
     decoder.controller = controller(slots=1, rows=3, proposals=2)
-    decoder.retain_sessions = decoder.full_resident = retained
+    decoder.controller.work_observations.configure_indexer(ratio=4, budget=2048, heads=4, target_caches=12)
+    decoder.full_resident = True
     decoder.depth, decoder.capacity, decoder.prefill_rows = 2, 64, 2
     decoder.share, decoder.round_s, decoder.row_s = 0.0, None, None
     decoder.confidence, decoder.copy, decoder.next_id = 0.0, False, 0
-    decoder.retention_clock = decoder.retention_retirements = 0
-    decoder.last_retirement = None
+    decoder.controller.request(proposal_limit=0)
+    decoder.controller.boundary()
     decoder.points = decoder.vision = decoder._draft_map = None
     decoder.streams, decoder.filling, decoder.fills, decoder.passed = {}, [], {}, {}
+    decoder.keep, decoder.used, decoder.clock = 0, {}, 0
     decoder.buf.rows, decoder.buf.streams = 6, torch.zeros((6, 1))
     decoder.pbuf.rows, decoder.pbuf.streams = 2, torch.zeros((2, 1))
     decoder.mbuf = SimpleNamespace(h=torch.zeros((6, 1), dtype=torch.float16), rows=6)
@@ -809,14 +785,26 @@ def test_serial_request_prefill_and_retirement_preserve_the_enabled_mtp_prefix(
 
     class State:
         history_slot = slot_generation = 0
-        kv_pair = object()
+        from tensorfold.families.qwen4_exp.kv_formats import get_pair
+        kv_pair = get_pair("fp16")
         image_positions = None
         reset_calls = 0
 
-        def reset(self, weights):
+        def begin_sequence_generation(self):
+            self.slot_generation += 1
+
+        def reset(self, weights, *, new_sequence=True):
+            if new_sequence:
+                self.begin_sequence_generation()
             self.reset_calls += 1
             self.pos = self.mtp_len = self.mtp_drafted = 0
             self.mtp_history = []
+
+        def snapshot(self):
+            return {"pos": self.pos, "mtp_len": self.mtp_len}
+
+        def kv_validate_snapshot(self, snapshot):
+            assert 0 <= snapshot["mtp_len"] <= snapshot["pos"]
 
         def set_mtp_len(self, length):
             assert length == len(self.mtp_history), "MTP publication skipped or repeated conditioning inputs"
@@ -870,24 +858,127 @@ def test_serial_request_prefill_and_retirement_preserve_the_enabled_mtp_prefix(
     monkeypatch.setattr(multi.image_rows, "begin", lambda *args: None)
     monkeypatch.setattr(multi.image_rows, "finish", lambda *args: None)
 
-    stream = Stream([11, 12, 13, 14, 15], 3, draft=False)
+    stream = Stream([11, 12, 13, 14, 15], 3, draft=enabled)
     decoder.admit(stream)
-    assert decoder.fills[stream.sid][1] is retained
+    assert decoder.fills[stream.sid][1] is enabled
     for _ in range(8):
         done = decoder.round()
         if done:
             break
     else:
         pytest.fail("the bounded prefill/decode lifecycle did not finish")
+    assert stream.error is None
     assert stream.out == [40, 50, 50] and stream.drafts == []
     assert state.pos == len(stream.prompt) + len(stream.out) - 1
-    if retained:
-        # Stock MTP consumes shifted prompt inputs, then every pending anchor,
-        # even though this request never asks for a speculative proposal.
-        assert state.mtp_history == stream.prompt[1:] + stream.out
-        assert state.mtp_len == state.pos and state.mtp_drafted == 0
+    if enabled:
+        # Zero proposals keep conditioning fresh while this request can run
+        # another round; completion needs no idle endpoint maintenance.
+        assert state.mtp_history == stream.prompt[1:] + stream.out[:-1]
+        assert state.mtp_len == state.pos - 1 and state.mtp_drafted == 0
     else:
         assert state.mtp_history == [] and state.mtp_len == 0
+    observation = decoder.controller.record()["work_observations"]
+    totals = observation["totals"]
+    assert totals["logical_prompt_tokens"] == len(stream.prompt)
+    assert totals["target_prefill_rows_submitted"] == len(stream.prompt)
+    assert totals["target_decode_rows_submitted"] == 2
+    assert totals["mtp_prefill_rows_submitted"] == (4 if enabled else 0)
+    assert totals["mtp_refresh_rows_submitted"] == (2 if enabled else 0)
+    assert totals["mtp_zero_proposal_refresh_rows"] == (2 if enabled else 0)
+    assert totals["mtp_proposal_rows_submitted"] == 0
+    assert observation["counts_complete"]
     decoder.finish(done)
-    assert len(decoder.retained_states()) == int(retained)
-    assert state.reset_calls == (1 if retained else 2)
+    assert not hasattr(decoder, "retained_states")
+    assert state.reset_calls == 2 and state.pos == state.mtp_len == 0
+
+
+def test_round_publishes_actual_logical_work_and_verifier_histogram(decoder_round):
+    decoder, executed = decoder_round
+    decoder.round()
+    reading = decoder.controller.record()["work_observations"]
+    totals = reading["totals"]
+    assert len(executed[0]) == 2
+    assert totals["target_decode_rows_submitted"] == 6
+    assert totals["indexer_query_rows_submitted"] == 6 * 12
+    assert totals["verification_windows"] == 2
+    assert totals["verified_candidates"] == 4
+    assert totals["accepted_candidates_before_text_limits"] == 0
+    assert reading["windows_by_offered_candidates"] == [0, 0, 2]
+    assert reading["accepted_prefix_histogram_before_text_limits"] == [2, 0, 0]
+    assert reading["expert_group_max"] is None and reading["counts_complete"]
+
+
+def test_verifier_histogram_precedes_text_stop_and_useful_output_is_not_fabricated(decoder_round):
+    decoder, _ = decoder_round
+    stream = next(iter(decoder.streams.values()))
+    decoder.streams = {stream.sid: stream}
+    stream.drafts = [50, 50]
+    stream.token_limit = lambda _new, _prefix: (0, True)
+    decoder.round()
+    reading = decoder.controller.record()
+    work = reading["work_observations"]
+    assert work["totals"]["verified_candidates"] == 2
+    assert work["totals"]["accepted_candidates_before_text_limits"] == 2
+    assert work["accepted_prefix_histogram_before_text_limits"] == [0, 0, 1]
+    assert stream.out == [10] and reading["total_committed_tokens"] == 0
+
+
+def test_partial_forward_remains_unknown_and_preserves_original_failure(decoder_round, monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda import multi
+
+    decoder, _ = decoder_round
+    primary = KeyboardInterrupt("controlled partial submission")
+    def fail(*_args, **_kwargs):
+        raise primary
+    monkeypatch.setattr(multi, "compute", fail)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        decoder.round()
+    assert caught.value is primary
+    work = decoder.controller.record()["work_observations"]
+    assert work["totals"]["incomplete_forward_submissions"] == 1
+    assert work["totals"]["target_decode_rows_submitted"] == 0
+    assert not work["counts_complete"]
+
+
+def test_partial_prefill_interrupt_is_visible_without_counting_unsubmitted_rows(decoder_round, monkeypatch):
+    from tensorfold.cuda.streams import Stream
+    from tensorfold.families.qwen4_exp.cuda import multi
+
+    decoder, _ = decoder_round
+    stream = Stream([11, 12], 3)
+    stream.sid, stream.st = 9, SimpleNamespace(pos=0)
+    decoder.streams, decoder.filling = {}, [stream]
+    decoder._pass_rows = lambda: 2
+    decoder._pieces = lambda rows=None: [(stream, 0, 2)]
+    decoder._note_passed = lambda pieces: None
+    decoder._read_ahead = lambda pieces: None
+    decoder._end_rows = lambda pieces, segments: [1]
+    decoder._cuts = lambda pieces, segments: []
+    primary = KeyboardInterrupt("partial prompt forward")
+    def fail(*args, **kwargs):
+        raise primary
+    monkeypatch.setattr(multi, "compute", fail)
+    with pytest.raises(KeyboardInterrupt) as caught:
+        decoder._pass()
+    assert caught.value is primary
+    reading = decoder.controller.record()["work_observations"]
+    assert reading["totals"]["incomplete_forward_submissions"] == 1
+    assert reading["totals"]["target_prefill_rows_submitted"] == 0
+    assert not reading["counts_complete"]
+
+
+def test_synthetic_warmup_is_cleared_from_every_serving_measurement_plane():
+    control = controller(slots=5, rows=6, proposals=2)
+    control.work_observations.configure_indexer(ratio=4, budget=2048, heads=4, target_caches=12)
+    control.observe(active=1, scheduled=1, target_rows=3, prefill_tokens=5, committed_tokens=2,
+                    max_history_tokens=5, elapsed_s=0.1)
+    control.observe_round(before=(0, 0, 0), elapsed_s=0.2, migration_s=0.0, outcome="ok")
+    control.work_observations.admission(SimpleNamespace(prompt=[0] * 5, carry=None, cached=0))
+    settings, epoch = control.configured.copy(), control.epoch
+    control.reset_observations()
+    reading = control.record()
+    assert reading["total_committed_tokens"] == reading["total_prefill_tokens"] == reading["total_target_rows"] == 0
+    assert reading["last_step"] == reading["last_round"] == {}
+    assert not any(reading["work_observations"]["totals"].values())
+    assert control.configured == settings and control.epoch == epoch
+    assert reading["work_observations"]["indexer_geometry"]["target_caches"] == 12

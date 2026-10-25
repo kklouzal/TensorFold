@@ -241,10 +241,14 @@ def test_fused_native_proxy_preserves_call_and_qualifies_without_standalone_enco
 
 
 def test_required_native_coverage_names_match_exact_sm70_candidates():
-    from tensorfold.families.qwen4_exp.cuda.sm70_kv import ROTOR_FORMATS
+    from tensorfold.families.qwen4_exp.cuda.sm70_kv import ROTOR_Q4, ROTOR_Q4_NORM, COMPACT_Q4
 
-    assert quality.Q4_FORMATS == frozenset(ROTOR_FORMATS)
-    for name in ROTOR_FORMATS:
+    # This frozen 714-step quality tool observes the historical Signed128 and
+    # Signed64-norm kernels. Compact Planar4 has separate codec/native gates;
+    # adding its registered name cannot transfer this tool's native coverage.
+    assert quality.Q4_FORMATS == frozenset((ROTOR_Q4, ROTOR_Q4_NORM))
+    assert COMPACT_Q4 not in quality.Q4_FORMATS
+    for name in (ROTOR_Q4, ROTOR_Q4_NORM):
         assert name in quality.Q4_FORMATS
         assert not quality.native_coverage({}, q4_required=name in quality.Q4_FORMATS)["passed"]
 

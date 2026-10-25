@@ -39,6 +39,7 @@ def joining(sid, sampling, got):
 
 def decoder(streams):
     dec = object.__new__(MultiDecoder)
+    dec.controller, dec.retained, dec.retain_sessions = None, {}, False
     dec.w = SimpleNamespace(meta={}, comm=None)
     dec.eos, dec.depth, dec.confidence = (VOCAB - 1,), 0, 0.0
     dec.streams, dec.kept, dec.free, dec._shrink = {}, [], [], lambda st: None

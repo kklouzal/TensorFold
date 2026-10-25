@@ -103,6 +103,9 @@ class MultiDecoder:
 
             self.controller = AdaptiveController(slots=slots, row_budget=rows, proposal_limit=depth,
                                                  prefill_tokens=prefill_rows)
+            self.controller.work_observations.configure_indexer(
+                ratio=w.cfg.index_ratio, budget=w.cfg.index_budget, heads=w.cfg.index_heads,
+                target_caches=sum(not layer.linear for layer in w.layers))
         # a round's window and a prompt pass share each layer's expert launch: the pass's buffers hold both
         self.converged, self.prefill_rows = converges(w), prefill_rows
         # rounds beside a filling prompt size its pass so decoding keeps ``share`` of the pass's time (0: whole passes)
@@ -160,10 +163,6 @@ class MultiDecoder:
         # A full-window promise owns every selected cache before startup returns.
         # Legacy and explicitly shared modes keep the original growing floors.
         self.full_resident = full_windows is not None and full_windows >= slots
-        self.retain_sessions = self.controller is not None and self.full_resident
-        self.retained = {}
-        self.retention_clock = self.retention_retirements = 0
-        self.last_retirement = None
         initial_capacity = capacity if self.full_resident else min(capacity, FIRST)
         self.free = [State(w, initial_capacity, depth + 1, kv_dtype, limit=capacity, kv_pair=kv_pair,
                            kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, slot=slot)
@@ -324,7 +323,6 @@ class MultiDecoder:
     def _quarantine(self, st: State) -> None:
         """Retain a failed exclusive slot; neither admission nor kept prefixes may borrow it."""
 
-        self._retire_retained(st, reason="failed_slot_quarantine")
         if all(owned is not st for owned in self.failed_slots):
             self.failed_slots.append(st)
         self._drop_kept(st)
@@ -361,8 +359,7 @@ class MultiDecoder:
         st = prefixes.evict(self, keep, protect)
         if st is None:
             return False
-        if not (self.retain_sessions and id(st) in self.retained):
-            self._shrink(st)
+        self._shrink(st)
         if all(f is not st for f in self.free):
             self.free.append(st)
         return True
@@ -434,7 +431,6 @@ class MultiDecoder:
             try:
                 source.kv_validate_snapshot(snap)
             except KVNumericError:
-                self._retire_retained(source, reason="numeric_state_failure")
                 self._drop_kept(source)
                 if id(source) not in self._busy():
                     self._shrink(source)
@@ -442,19 +438,6 @@ class MultiDecoder:
                         self.free.append(source)
                 raise
         return prefixes.slot_for(self, prompt, reuse)
-
-    def _retire_retained(self, state, *, reason):
-        """New admission explicitly retires one idle endpoint before overwriting it."""
-        previous = self.retained.get(id(state))
-        if previous is None:
-            return
-        self.retained = {key: entry for key, entry in self.retained.items() if key != id(state)}
-        self.retention_retirements += 1
-        self.last_retirement = {"slot": state.history_slot, "slot_generation": state.slot_generation,
-                                "request_sid": previous["request_sid"], "reason": reason}
-
-    def retained_states(self):
-        return tuple(entry["state"] for entry in self.retained.values())
 
     def _remember(self, ids: list[int], st: State, snap: dict, tail) -> None:
         st.kv_validate_snapshot(snap)
@@ -507,6 +490,8 @@ class MultiDecoder:
             self.free.append(s.st)
         if self.graph_record["reason"] is None and self.graphs is None:
             self.capture_graphs()
+        if self.controller is not None:
+            self.controller.reset_observations()
 
     @torch.no_grad()
     def _prepare_graph_floor(self):
@@ -705,9 +690,9 @@ class MultiDecoder:
         e = _slot(self.w, st, self.buf, self.mbuf, self.pbuf, self.capacity, self.prefill_rows,
                   logical_context=getattr(self, "logical_context", None))
         e._draft_map = self._draft_map
-        mtp = (s.draft or self.retain_sessions) and self.depth > 0 and self.mbuf is not None
+        mtp = s.draft and self.depth > 0 and self.mbuf is not None
         try:
-            begin = prefill_begin(e, s.prompt, mtp=mtp, resume=resume)
+            begin = prefill_begin(e, s.prompt, mtp=mtp, resume=resume, new_sequence=False)
             image = s.vision is not None
             image_rows.begin(e, s, self.vision)
             if image:
@@ -720,6 +705,22 @@ class MultiDecoder:
         e.stops = sorted({p for p in self.points(s.prompt) if begin + MIN_GAP <= p < entry_end(s.prompt)}) \
             if s.draft and st.image_positions is None and self.points is not None else []
         s.sid, s.st = self.next_id, st
+        if self.controller is not None:
+            observation = self.controller.work_observations
+            try:
+                if mtp and resume is not None and resume.get("tail") is not None:
+                    observation.admission(s, prefix_mtp_position=resume["state"]["mtp_len"],
+                                          zero_proposals=self._proposal_limit() == 0)
+                else:
+                    observation.admission(s)
+            except BaseException as primary:
+                observation.failed_observation = True
+                try:
+                    self._quarantine(st)
+                    self._retire_failed_slot(st)
+                except BaseException as cleanup:
+                    raise_failures(primary, [cleanup])
+                raise
         self.next_id += 1
         if self.copy and s.draft:
             from tensorfold.families.qwen3_5.cuda.decode import CopyIndex
@@ -763,15 +764,12 @@ class MultiDecoder:
             return None
         active = [s for s in (*self.streams.values(), *self.filling) if not s.done]
         sessions = sorted({s.sid for s in active})
-        retained = {id(s.st): s.st for s in active if s.st is not None}
-        retained.update({id(point[1]): point[1] for point in self.kept})
-        retained.update({key: entry["state"] for key, entry in self.retained.items()})
         lengths = [s.st.pos for s in active if s.st is not None]
         workload = {"active_requests": len(sessions),
                     "decode_requests": sum(not s.done and not s.waiting for s in self.streams.values()),
                     "prefill_requests": sum(not s.done for s in self.filling),
                     "max_history_tokens": max(lengths, default=0), "history_tokens": sum(lengths),
-                    "retained_sessions": len(retained),
+                    "retained_sessions": 0,
                     "pending_prompt_tokens": sum(len(s.prompt) - self.fills[s.sid][2]
                                                  for s in self.filling if not s.done),
                     "pending_arrivals": bool(self.arrived()), "indexer_work": None, "expert_group_max": None}
@@ -838,11 +836,14 @@ class MultiDecoder:
 
     def history_record(self):
         records = [state.history_record() for state in self.states]
-        retained = self.retained
+        active = self._busy()
+        cached = {id(point[1]) for point in self.kept}
         for state, record in zip(self.states, records):
-            record["retained_idle"] = id(state) in retained
-        return {"slots": records, "retained_endpoints": len(retained),
-                "retirement_count": self.retention_retirements, "last_retirement": self.last_retirement,
+            record["request_active"] = id(state) in active
+            record["derived_prefix_cache"] = id(state) in cached
+        return {"slots": records, "active_request_slots": len(active),
+                "intentional_retained_sessions": 0, "derived_prefix_slots": len(cached),
+                "derived_prefix_entries": len(self.kept),
                 "migration": None if self.controller is None else
                 self.controller.record()["migration"]}
 
@@ -956,7 +957,15 @@ class MultiDecoder:
                 self._read_ahead(pieces)
                 segs = stage(self.w, self.pbuf, [(s.st, s.prompt[a:a + n]) for s, a, n in pieces])
                 ends, cuts = self._end_rows(pieces, segs), self._cuts(pieces, segs)
-                logits = compute(self.w, segs, self.pbuf, logits=bool(ends), ends=ends, cuts=cuts)
+                try:
+                    logits = compute(self.w, segs, self.pbuf, logits=bool(ends), ends=ends, cuts=cuts)
+                except BaseException as primary:
+                    if self.controller is not None:
+                        self.controller.work_observations.incomplete(primary)
+                    raise
+                if self.controller is not None:
+                    self.controller.work_observations.target(
+                        segs, prefill=True, replay_rows=sum(n for stream, _, n in pieces if stream.carry is not None))
                 heads = logits[:len(ends)].clone() if ends else None
                 lasts = self._absorb(pieces, segs, cuts)
                 completed = True
@@ -969,6 +978,7 @@ class MultiDecoder:
         finally:
             if self.controller is not None:
                 try:
+                    self.controller.work_observations.publish()
                     self.controller.observe(
                         active=active_count, scheduled=0, target_rows=0,
                         prefill_tokens=sum(n for _, _, n in pieces) if completed else 0,
@@ -1042,7 +1052,15 @@ class MultiDecoder:
                   for (s, a, n), (_, a0, _) in zip(pieces, segs) if self.fills[s.sid][1] and a + 1 < len(s.prompt)]
         if absorb:                   # the MTP head absorbs each prompt's rows (its cache in position order)
             absorb = [(st, nxt, streams[:len(nxt)]) for st, nxt, streams in absorb]
-            mtp_compute(self.w, mtp_stage(self.pbuf, absorb), self.pbuf, logits=False)
+            segments = mtp_stage(self.pbuf, absorb)
+            try:
+                mtp_compute(self.w, segments, self.pbuf, logits=False)
+            except BaseException as primary:
+                if self.controller is not None:
+                    self.controller.work_observations.incomplete(primary)
+                raise
+            if self.controller is not None:
+                self.controller.work_observations.mtp(segments, role="prefill")
             for st, nxt, _ in absorb:
                 st.set_mtp_len(st.mtp_len + len(nxt))
         for s, mtp_len, _, snap in points:
@@ -1119,10 +1137,22 @@ class MultiDecoder:
             if e.mbuf is not None:
                 e.mbuf.rotor_lookup = e.buf.rotor_lookup
             has_draft = s.draft and (mtp or self.depth > 0 and getattr(self.w, "dspark", None) is not None)
-            if (has_draft and not s.done and s.count > 1) or self.retain_sessions and mtp:
+            if has_draft and not s.done and s.count > 1:
                 count = self._proposal_count(s, s.count - 1) if has_draft and not s.done else 0
-                s.drafts = draft(e, last, [first], st.pos + 1, count, s.sampling,
-                                 self.confidence)
+                mtp_position = st.mtp_len
+                try:
+                    s.drafts = draft(e, last, [first], st.pos + 1, count, s.sampling,
+                                     self.confidence)
+                except BaseException as primary:
+                    if self.controller is not None and mtp:
+                        self.controller.work_observations.incomplete(primary)
+                    raise
+                if self.controller is not None and mtp:
+                    observation = self.controller.work_observations
+                    observation.mtp([(st, 0, 1)], role="refresh", position=mtp_position,
+                                    zero_proposal_rows=int(count == 0))
+                    if st.mtp_drafted:
+                        observation.mtp([(st, 0, st.mtp_drafted)], role="proposal", position=mtp_position + 1)
             if s.done:
                 joined.append(s)
         return joined
@@ -1174,6 +1204,7 @@ class MultiDecoder:
             primary = error
         errors = []
         try:
+            self.controller.work_observations.publish()
             self.controller.observe_round(before=before, elapsed_s=time.perf_counter() - started,
                                           migration_s=self._round_migration_s, outcome=outcome)
         except BaseException as error:
@@ -1266,6 +1297,16 @@ class MultiDecoder:
                 logits = self.graphs.verify_forward(segs) if self.graphs is not None else None
                 if logits is None:
                     logits = compute(self.w, segs, self.buf, check=False)     # the frame's status: checked below
+            if self.controller is not None:
+                self.controller.work_observations.target(segs)
+                if pieces:
+                    self.controller.work_observations.target(
+                        psegs, prefill=True,
+                        replay_rows=sum(n for stream, _, n in pieces if stream.carry is not None))
+        except BaseException as primary:
+            if self.controller is not None:
+                self.controller.work_observations.incomplete(primary)
+            raise
         finally:
             self.buf.gdn_tables = self.buf.attn_step = None
         if self.w.comm is not None:
@@ -1302,6 +1343,9 @@ class MultiDecoder:
                            for a0, a1, pos, sampling in zip(starts, starts[1:], positions, samplings)]
         paths = [accept(tokens, list(range(-1, len(tokens) - 1)), rows, s.count - len(s.out), self._ends(s))
                  for s, (_, tokens), rows in zip(live, windows, sampled)]
+        if self.controller is not None:
+            for (_, tokens), (path, _end) in zip(windows, paths):
+                self.controller.work_observations.verification(len(tokens) - 1, max(0, len(path) - 1))
         proposed = [[tokens[r] for r in path[1:]] + [end]
                     for (_, tokens), (path, end) in zip(windows, paths)]
         boundaries = self._prefix_limits(live, proposed)
@@ -1331,16 +1375,9 @@ class MultiDecoder:
                     s.error = exc
             last = terminal or s.error is not None or len(s.out) + len(new) >= s.count or end in self._ends(s)
             kept.append((s, a0, rows[:len(path)], new, last))
-        maintaining = {s.sid for s, _, keep, _, last in kept
-                       if self.retain_sessions and self.mbuf is not None and s.error is None and (last or not s.draft)}
-        for s, _, keep, _, _last in kept:
-            if s.sid in maintaining and not keep and s.st.mtp_drafted:
-                s.st.set_mtp_len(s.st.mtp_len - s.st.mtp_drafted)
-                s.st.mtp_drafted = 0
-        self._draft_all([(s, a0, keep) for s, a0, keep, _, last in kept
-                         if keep and (s.draft and not last or s.sid in maintaining)],
+        self._draft_all([(s, a0, keep) for s, a0, keep, _, last in kept if keep and s.draft and not last],
                         {s.sid: fresh for s, _, _, fresh, last in kept
-                         if getattr(s, "copies", None) is not None and not last}, maintenance_only=maintaining)
+                         if getattr(s, "copies", None) is not None and not last})
         for (s, _, _, new, _), (_count, terminal) in zip(kept, boundaries):
             if s.error is not None:
                 s.done = True
@@ -1361,11 +1398,10 @@ class MultiDecoder:
                                     elapsed_s=time.perf_counter() - t0)
         done = [s for s in live if s.done]
         for s in done:                                   # a finished stream's state is never read again
-            if not self.retain_sessions or s.error is not None:
-                self.held.pop(s.sid, None)
+            self.held.pop(s.sid, None)
         return failed + done + ended
 
-    def _draft_all(self, streams: list, new: dict | None = None, *, maintenance_only=()) -> None:
+    def _draft_all(self, streams: list, new: dict | None = None) -> None:
         """Every drafting stream absorbs its kept rows and chains drafts, all streams in one step a depth.
         A stream whose context repeats earlier text drafts that continuation instead of an MTP row. A step's codec
         status words are read back in the next draft readback (``KVWords``); its MTP entries count once they are."""
@@ -1393,8 +1429,7 @@ class MultiDecoder:
 
         bound = getattr(getattr(self, "graphs", None), "bound", None)
         handoff = getattr(bound, "greedy", None)
-        room = {s.sid: 0 if s.sid in maintenance_only else
-                self._proposal_count(s, s.count - len(s.out) - len(keep)) for s, _, keep in streams}
+        room = {s.sid: self._proposal_count(s, s.count - len(s.out) - len(keep)) for s, _, keep in streams}
         if (handoff is not None and self._proposal_limit() == self.depth
                 and all(count == self.depth for count in room.values()) and handoff.try_draft(streams, new)):
             return
@@ -1415,6 +1450,10 @@ class MultiDecoder:
         segs = mtp_stage(self.mbuf, windows)
         proposing = any(room[s.sid] > 0 for s, _, _ in todo)
         logits = self._mtp(segs) if proposing else self._mtp(segs, logits=False)
+        if self.controller is not None:
+            self.controller.work_observations.mtp(
+                segs, role="refresh", zero_proposal_rows=sum(len(keep) for stream, _, keep in todo
+                                                            if room[stream.sid] == 0))
 
         def absorbed():                                  # the absorb's entries, once its status words are valid
             for (s, _, keep), (st, a0, a1) in zip(todo, segs):
@@ -1464,6 +1503,8 @@ class MultiDecoder:
             windows = [(s.st, [d], self.mbuf.streams[row:row + 1]) for s, row, d in nxt]
             segs = mtp_stage(self.mbuf, windows)
             logits = self._mtp(segs)
+            if self.controller is not None:
+                self.controller.work_observations.mtp(segs, role="proposal")
 
             def chained(nxt=nxt):                        # the step's entries, once its status words are valid
                 for s, _, _ in nxt:
@@ -1489,6 +1530,10 @@ class MultiDecoder:
             if self.w.comm is not None:
                 _kv_check(segs, comm=self.w.comm, workspace=getattr(self, "kv_cohort", None))
             return out
+        except BaseException as primary:
+            if self.controller is not None:
+                self.controller.work_observations.incomplete(primary)
+            raise
         finally:
             self.mbuf.attn_step = None
 
@@ -1596,19 +1641,10 @@ class MultiDecoder:
         return out
 
     def finish(self, done: list[Stream]) -> None:
-        """Drop finished streams; a slot whose prompt state is kept stays with it, the rest are free again."""
+        """Retire each request; only bounded derived prompt prefixes can keep its slot's bytes."""
 
         for s in done:
             self.streams.pop(s.sid, None)
-            if self.retain_sessions and s.error is None:
-                self._flush(s)
-                self.retention_clock += 1
-                self.retained = {**self.retained, id(s.st): {"state": s.st, "last_use": self.retention_clock,
-                                                          "request_sid": s.sid,
-                                                          "emitted_length": s.st.pos + int(bool(s.out))}}
-                if not any(k[1] is s.st for k in self.kept) and all(f is not s.st for f in self.free):
-                    self.free.append(s.st)
-                continue
             if not any(k[1] is s.st for k in self.kept) and all(f is not s.st for f in self.free):
                 self._shrink(s.st)
                 self.free.append(s.st)

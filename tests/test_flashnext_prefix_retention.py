@@ -13,9 +13,13 @@ from tensorfold.families.qwen4_exp.cuda import prefixes
 class Slot:
     def __init__(self, name):
         self.name, self.copied = name, None
+        self.slot_generation = 0
 
     def __repr__(self):
         return self.name
+
+    def begin_sequence_generation(self):
+        self.slot_generation += 1
 
     def copy_prefix(self, source, pos, mtp_len):
         self.copied = (source, pos)

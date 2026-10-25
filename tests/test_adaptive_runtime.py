@@ -1,4 +1,4 @@
-"""Runtime controls preserve retained state and apply only bounded batch settings."""
+"""Runtime controls preserve request and derived-cache state and apply only bounded batch settings."""
 
 from __future__ import annotations
 
@@ -35,7 +35,10 @@ def test_runtime_updates_are_pending_and_do_not_modify_retained_state():
     before = runtime.snapshot(app)
     assert before["execution"]["timing_scope"] == "host_wall_including_observed_waits"
     assert before["execution"]["device_step_elapsed_s"] is None
-    assert before["sessions"]["retained"] == before["sessions"]["active"] == 1
+    assert before["sessions"]["retained"] == 0
+    assert before["sessions"]["active"] == 1
+    assert before["sessions"]["derived_prefix_slots"] == 1
+    assert before["sessions"]["derived_prefix_entries"] == 2
     update = runtime.request(app, {"row_budget": 16, "proposal_limit": 0, "session_ceiling": 1})
     assert update["execution"]["effective"]["session_ceiling"] == 40
     assert update["execution"]["pending"]["session_ceiling"] == 1
@@ -227,14 +230,16 @@ def test_closed_scheduler_refuses_before_runtime_publication():
     assert not published
 
 
-def test_actual_idle_endpoints_count_as_retained_without_prefix_reuse():
+def test_idle_derived_prefix_bytes_are_not_intentional_retained_sessions():
     app = app_for()
     decoder = app.engine.scheduler.decoder
-    idle = [object(), object()]
-    decoder.retained_states = lambda: tuple(idle)
+    decoder.streams = {}
     reading = runtime.snapshot(app)
-    assert reading["sessions"]["retained"] == 3
-    assert reading["sessions"]["active"] == 1
+    assert reading["sessions"]["lifetime"] == "request_scoped"
+    assert reading["sessions"]["retained"] == reading["sessions"]["active"] == 0
+    assert reading["sessions"]["derived_prefix_slots"] == 1
+    assert reading["sessions"]["derived_prefix_entries"] == 2
+    assert reading["sessions"]["allocated_slots"] == 40
 
 
 def test_manifest_install_runs_on_owner_boundary_and_preserves_newer_request():

@@ -488,7 +488,7 @@ def test_failed_admission_retires_partial_storage_and_preserves_following_reques
         assert dec.drop() == []
     assert dec.free == [st] and dec.failed_slots == []
     assert st._resize_error is None and st.pos == st.mtp_len == 0
-    monkeypatch.setattr(multi, "_slot", lambda *args: NS())
+    monkeypatch.setattr(multi, "_slot", lambda *args, **kwargs: NS())
     monkeypatch.setattr(multi, "prefill_begin", lambda *args, **kwargs: 0)
     monkeypatch.setattr(multi.image_rows, "begin", lambda *args: None)
     following = Stream([2, 3, 4], 1, draft=False)

@@ -688,7 +688,7 @@ class State:
             raise self._history_error
         generation = self.slot_generation
         if type(generation) is not int or not 0 <= generation < 2**63 - 1:
-            raise OverflowError("history slot generation exhausted; retire the slot without reuse")
+            raise RuntimeError("history slot generation is invalid or exhausted; retire the slot without reuse")
         try:
             for reader in tuple(self.history_native_readers):
                 reader.wait_native_reuse()
@@ -699,9 +699,16 @@ class State:
                 generations[0].fill_(generation + 1)
             self.slot_generation = generation + 1
         except BaseException as error:
-            self._history_error = RuntimeError("history generation publication failed; this slot requires exclusive retirement")
-            self._history_error.__cause__ = error
-            self._kv_error = self._history_error
+            # Poison existing fields before allocating diagnostic context. A
+            # failed wrapper allocation cannot make ambiguous device writes
+            # look healthy or permit this slot to be reused.
+            self._history_error = self._kv_error = error
+            try:
+                failure = RuntimeError("history generation publication failed; this slot requires exclusive retirement")
+                failure.__cause__ = error
+            except BaseException as diagnostic:
+                raise_failures(error, [diagnostic])
+            self._history_error = self._kv_error = failure
             raise
         return self.slot_generation
 

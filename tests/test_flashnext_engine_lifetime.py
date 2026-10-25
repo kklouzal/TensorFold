@@ -282,13 +282,13 @@ class LifetimeControls(unittest.TestCase):
     def test_rank_one_follow_uses_the_same_terminal_boundary(self):
         e = engine()
         e.served = 0
-        requests = iter([([1], 1, None, False, 0, [], True, []), None])
+        requests = iter([([1], 1, None, False, 0, [], True, [], False), None])
         e._receive = lambda: next(requests)
         e.follow()
         self.assertEqual(e.served, 1)
         self.assertFalse(e._calls)
         e.close()
-        e._receive = lambda: ([1], 1, None, False, 0, [], True, [])
+        e._receive = lambda: ([1], 1, None, False, 0, [], True, [], False)
         with self.assertRaisesRegex(RuntimeError, "closing or closed"):
             e.follow()
 
@@ -350,7 +350,7 @@ class LifetimeControls(unittest.TestCase):
         for target, event in (("_begin_request", "return"), ("generate", "line"), ("follow", "line")):
             e = engine()
             e.served = 0
-            e._receive = lambda: ([1], 1, None, False, 0, [], True, [])
+            e._receive = lambda: ([1], 1, None, False, 0, [], True, [], False)
             primary = KeyboardInterrupt("controlled registration cancellation")
             injected = False
 

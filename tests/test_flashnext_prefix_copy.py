@@ -1,5 +1,7 @@
 """Prefix copies preserve cache codes and scales exactly and never copy a future partial pool."""
 
+import weakref
+
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -17,7 +19,9 @@ def slot(dtype, capacity, pos):
     st.kv_key_dtype, st.kv_value_dtype = st.kv_pair.key_dtype, st.kv_pair.value_dtype
     st.kv_identity = (st.kv_pair.identity, "stored-basis-native64-v1")
     st.kv_status, st._kv_pending, st._kv_error = None, False, None
-    st._resize_error = st._resize_frames_pending = None
+    st._resize_error = st._resize_frames_pending = st._history_error = None
+    st.slot_generation, st.history_generations = 0, None
+    st.history_native_readers = weakref.WeakSet()
     st.kc = [KVCache(capacity, 2, 64, "cpu", dtype) for _ in range(2)]
     st.ikc = [torch.empty((capacity, 16), dtype=torch.bfloat16) for _ in st.kc]
     st.pooled = [torch.empty(((capacity + 3) // 4, 16), dtype=torch.bfloat16) for _ in st.kc]

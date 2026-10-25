@@ -193,7 +193,7 @@ def test_slot_generation_has_exact_device_words_and_no_signed_wrap():
     state.slot_generation = 2**63 - 1
     state.history_generations[0].fill_(state.slot_generation)
     before = state.conv.clone()
-    with pytest.raises(OverflowError, match="generation exhausted"):
+    with pytest.raises(RuntimeError, match="invalid or exhausted"):
         state.reset(weights)
     assert state.slot_generation == 2**63 - 1 and state.history_generations[0] == 2**63 - 1
     assert torch.equal(state.conv, before)
@@ -244,6 +244,35 @@ def test_ambiguous_generation_publication_cannot_be_erased_by_reset(monkeypatch)
                       lambda: state.reset(weights), lambda: state.reset(weights, new_sequence=False)):
         with pytest.raises(RuntimeError, match="exclusive retirement"):
             operation()
+
+
+def test_generation_poison_survives_diagnostic_allocation_failure(monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda import state as state_module
+
+    weights = _weights()
+    state = State(weights, 257, 4, "int8")
+    primary = RuntimeError("actual ambiguous generation write")
+    original = torch.Tensor.fill_
+
+    def fail_after_write(tensor, value):
+        result = original(tensor, value)
+        if tensor.data_ptr() == state.history_generations.data_ptr() and tensor.numel() == 1:
+            raise primary
+        return result
+
+    def no_diagnostic(*_args):
+        raise MemoryError("diagnostic allocation failed")
+
+    monkeypatch.setattr(torch.Tensor, "fill_", fail_after_write)
+    monkeypatch.setattr(state_module, "RuntimeError", no_diagnostic, raising=False)
+    with pytest.raises(type(primary)) as caught:
+        state.begin_sequence_generation()
+    assert caught.value is primary
+    assert state._history_error is state._kv_error is primary
+    assert state.history_generations[0] == 1 and state.slot_generation == 0
+    with pytest.raises(type(primary)) as repeated:
+        state.reset(weights, new_sequence=False)
+    assert repeated.value is primary
 
 
 def test_generated_descriptor_order_change_fails_before_pointer_table_creation(monkeypatch):

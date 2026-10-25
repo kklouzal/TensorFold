@@ -35,13 +35,9 @@ def snapshot(app: Any) -> dict[str, Any] | None:
     streams = list(getattr(decoder, "streams", {}).values())
     filling = list(getattr(decoder, "filling", ()))
     kept = list(getattr(decoder, "kept", ()))
-    # Several prefix points can name the same slot. A finished request's kept
-    # state still owns its window even with no active inference work.
-    retained = {id(stream.st) for stream in (*streams, *filling) if stream.st is not None}
-    retained.update(id(point[1]) for point in kept)
-    idle = getattr(decoder, "retained_states", None)
-    if idle is not None:
-        retained.update(id(state) for state in idle())
+    # Prefix bytes are an evictable derived cache, not a persistent user session.
+    # This API creates request-scoped sequences and has no retained-session owner.
+    cached_slots = {id(point[1]) for point in kept}
     placement = getattr(decoder, "history_record", None)
     manifest = getattr(scheduler, "execution_manifest_record", None)
     return {
@@ -49,7 +45,9 @@ def snapshot(app: Any) -> dict[str, Any] | None:
         "context_tokens": getattr(engine, "context_window", None),
         "capacity_plan": deepcopy(getattr(engine, "capacity_plan", None)),
         "execution": execution,
-        "sessions": {"retained": len(retained), "active": len(streams) + len(filling),
+        "sessions": {"lifetime": "request_scoped", "retained": 0,
+                     "active": len(streams) + len(filling),
+                     "derived_prefix_slots": len(cached_slots), "derived_prefix_entries": len(kept),
                      "decode": len(streams), "prefill": len(filling),
                      "allocated_slots": controller.slots,
                      "admission_ceiling": controller.admission_limit(),
