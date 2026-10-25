@@ -10,6 +10,13 @@ The revised design's shared-GGUF MTP importer preserves the selected target
 embedding/head, validates the ordered token-ID mapping, and declares QSA ratio
 four with a 2,048-token complete-group budget. Import controls do not qualify
 MTP execution, acceptance, quality, or performance on the new V100 stack.
+The revised V100 foundation is a
+[CUDA 12.9 source-build candidate](deploy/v100/source-foundation.md).
+The historical cu126 wheel image is reference evidence and does not qualify
+the selected combined dependency stack.
+Its [process-issued software binding](docs/sm70-software-binding.md) verifies
+sealed source-stack inputs without granting compiler/device/model qualification.
+Required image/video processor dependencies from the revised design remain pending.
 Measured execution profiles use a separate
 [content-verified identity and evidence manifest](docs/execution-profile-manifest.md).
 Its optional native preparation section builds bounded partial attention graphs
@@ -27,6 +34,17 @@ The initial compact Q4 candidate is the distinct `rotorquant-iso4-sm70-v1`
 format; `rotorquant-planar4-sm70-v1` remains its later equal-memory comparison.
 Wire/source checks and reference-stack compilation do not qualify either
 candidate's V100 quality, long-context execution or performance.
+
+The revised initial target is the pinned SC117 `IQ3_S` split checkpoint in the
+specification. Its mixed tensor inventory includes Q2_0, Q6_K, IQ2_S, IQ3_XXS,
+IQ3_S and IQ4_XS; the host and SM70 decoders preserve those original blocks.
+Independent pinned GGML wire checks cover the host decoders. New SM70 device,
+full-model, media and capacity qualification remains pending; historical model
+results below do not qualify this target.
+The GGUF recurrent importer preserves stored FP32 `A_neg=-exp(A_log)` and its
+coupled value-head permutation; the FP16 chain consumes that representation
+directly. HF-backed providers retain their `A_log` representation. Source
+import/recurrence controls are separate from pending V100 numerical qualification.
 
 Adaptive V100 serving requires explicit positive `--max-pending-requests` and
 `--max-http-connections` limits before model loading. The V100 Compose profile

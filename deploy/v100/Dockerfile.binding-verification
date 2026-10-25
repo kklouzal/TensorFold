@@ -1,0 +1,8 @@
+# Consumer-only increment: reuse the verified source SDK, rebuild the actual app wheel.
+ARG SOURCE_IMAGE=tensorfold-v100:source-sealed-binding-950289ab-r2
+FROM ${SOURCE_IMAGE}
+COPY . /src
+RUN --network=none python -m pip wheel --no-build-isolation --no-deps /src --wheel-dir /binding-wheels \
+    && python -m pip install --force-reinstall --no-deps /binding-wheels/tensorfold-*.whl
+COPY tests /verification/tests
+WORKDIR /verification

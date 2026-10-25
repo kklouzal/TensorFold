@@ -17,11 +17,14 @@ import struct
 from types import MappingProxyType
 
 # ggml type -> (name, logical block width, stored block bytes).
-# These include every encoding in the host's verified Huihui UD-Q4_K_XL V2.
+# Pinned GGML layouts, including the complete SC117 mixed IQ3_S source set.
 FORMATS = MappingProxyType({
     0: ("F32", 1, 4), 1: ("F16", 1, 2), 7: ("Q5_1", 32, 24),
     8: ("Q8_0", 32, 34), 12: ("Q4_K", 256, 144),
-    13: ("Q5_K", 256, 176), 20: ("IQ4_NL", 32, 18), 30: ("BF16", 1, 2),
+    13: ("Q5_K", 256, 176), 14: ("Q6_K", 256, 210),
+    18: ("IQ3_XXS", 256, 98), 20: ("IQ4_NL", 32, 18),
+    21: ("IQ3_S", 256, 110), 22: ("IQ2_S", 256, 82),
+    23: ("IQ4_XS", 256, 136), 30: ("BF16", 1, 2), 42: ("Q2_0", 64, 18),
 })
 _SCALARS = {0: "B", 1: "b", 2: "H", 3: "h", 4: "I", 5: "i", 6: "f", 7: "?", 10: "Q", 11: "q", 12: "d"}
 _SPLIT = re.compile(r"(.+)-(\d{5})-of-(\d{5})\.gguf")
@@ -326,6 +329,10 @@ def decode_rows(tensor, packed):
     if raw.dtype != np.uint8 or raw.ndim != 2 or raw.shape[1] != tensor.row_bytes:
         raise ValueError("decode expects uint8 [rows, exact packed row bytes]")
     raw = np.ascontiguousarray(raw)
+    if tensor.ggml_type in (14, 18, 21, 22, 23, 42):
+        from .gguf_iq import decode
+
+        return decode(raw, tensor.ggml_type, tensor.shape[-1], FORMATS[tensor.ggml_type][2])
     if tensor.encoding in ("F32", "F16"):
         return raw.view("<f4" if tensor.encoding == "F32" else "<f2").astype(np.float32)
     if tensor.encoding == "BF16":
@@ -338,7 +345,9 @@ def decode_rows(tensor, packed):
         if tensor.encoding == "Q8_0":
             values = payload.view(np.int8).astype(np.float32)
         else:
-            grid = np.array([-127, -104, -83, -65, -49, -35, -22, -10, 1, 13, 25, 38, 53, 69, 89, 113], np.float32)
+            from .gguf_tables import KVALUES_IQ4NL
+
+            grid = np.array(KVALUES_IQ4NL, np.float32)
             values = grid[np.concatenate((payload & 15, payload >> 4), axis=-1)]
         return (values * scale).reshape(raw.shape[0], tensor.shape[-1])
     if tensor.encoding == "Q5_1":

@@ -10,7 +10,7 @@
 void sm70_gdn_chain_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
                          const at::Tensor&, const at::Tensor&, const at::Tensor&, double, int64_t,
                          at::Tensor&, at::Tensor&, at::Tensor&, at::Tensor&, at::Tensor&, at::Tensor&, at::Tensor&,
-                         const std::optional<at::Tensor>&);
+                         const std::optional<at::Tensor>&, bool);
 void sm70_gdn_replay_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
                           const at::Tensor&, int64_t, at::Tensor&);
 
@@ -49,7 +49,7 @@ void chain(const at::Tensor& projection, const at::Tensor& conv, const at::Tenso
            const at::Tensor& initial, const at::Tensor& log, const at::Tensor& bias,
            const at::Tensor& norm, double eps, int64_t rows, at::Tensor output, at::Tensor sums,
            at::Tensor final, at::Tensor keys, at::Tensor values, at::Tensor decay, at::Tensor beta,
-           std::optional<at::Tensor> keep_rows) {
+           std::optional<at::Tensor> keep_rows, bool negative_decay) {
     state_check(initial, projection.device());
     state_check(final, projection.device());
     TORCH_CHECK(rows >= 0 && rows <= std::numeric_limits<int>::max(), "invalid GDN row count");
@@ -93,7 +93,7 @@ void chain(const at::Tensor& projection, const at::Tensor& conv, const at::Tenso
     }
     c10::cuda::CUDAGuard guard(device);
     sm70_gdn_chain_cuda(projection, conv, weight, initial, log, bias, norm, eps, rows, output, sums,
-                         final, keys, values, decay, beta, keep_rows);
+                         final, keys, values, decay, beta, keep_rows, negative_decay);
 }
 
 void replay(const at::Tensor& initial, const at::Tensor& keys, const at::Tensor& values,

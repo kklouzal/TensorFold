@@ -1,0 +1,3 @@
+# Generated exact local-wheel closure; provenance URLs remain in its companion receipt.
+packaging==25.0 --hash=sha256:29572ef2b1f17581046b3a2227d5c611fb25ec70ca1ba8554b24b0e69331a484
+pip==25.3 --hash=sha256:9655943313a94722b7774661c21049070f6bbb0a1516bf02f7c8d5d9201514cd

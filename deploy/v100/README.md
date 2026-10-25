@@ -7,6 +7,25 @@ qualification; historical live receipts below describe their original layouts.
 The [governing specification](../../docs/v100-adaptive-inference-design.md)
 defines the complete stage and acceptance gates.
 
+The revised initial SC117 `IQ3_S` target retains its original mixed GGUF bytes:
+BF16, F32, F16, Q2_0, Q4_K, Q5_K, Q6_K, Q8_0, IQ2_S, IQ3_XXS, IQ3_S,
+IQ4_NL and IQ4_XS. Bounded CPU imports and native row/expert decode accept these
+formats without whole-bank FP16 conversion. The new six-format host controls
+use fixtures produced by unmodified GGML dequantizers at revision
+`b3fa69955ea81c3b60e77e3c1e2224c4a826ffb9`. Actual SM70 decode, integrated model
+quality/performance and the revised full-context/media resource envelope remain
+unqualified. Run `tests/test_gguf_mixed_formats.py` for the host wire controls and
+`tests/cuda/test_sm70_gguf_mixed_formats.py` on an actual V100.
+
+The recurrent importer keeps GGML's stored negative exponential in FP32 rather
+than reconstructing a logarithm. Its projection, convolution, decay/bias and
+output-column plans restore the coupled value-head order before TP partitioning.
+`tests/test_flashnext_gdn_decay.py` checks import bits, all supported TP planning
+geometries and the analytic zero-key recurrence/replay control. Run
+`tests/cuda/test_sm70_gdn_decay.py` on V100 for captured native direct-decay
+controls. These source controls do not transfer historical model-quality results
+to the revised arithmetic; full reference parity remains required.
+
 This AMD64 development profile builds the installed TensorFold wheel with the
 SM70 FP16 provider. Original GGUF encodings remain separate from affine/EXL3/
 NVFP4 readers. The same family engine, scheduler, HTTP server, prefix states,
@@ -20,7 +39,28 @@ missing `--max-pending-requests` or `--max-http-connections` before loading the
 model; other providers keep their existing optional limits. A full generation
 request limit returns HTTP503 with the existing retry header.
 
-## Selected foundation
+## Selected source foundation and historical reference
+
+The governing specification now selects the coherent
+[source-built CUDA 12.9 stack](source-foundation.md). Its source producer,
+compile receipts and remaining V100 gates are separate from the historical
+wheel-based configuration below. A successful old cu126 import or model test
+does not qualify the new framework/library combination. No serving-time
+dependency fallback is provided.
+
+Build the selected development image with the external source artifact context:
+
+```bash
+docker build --network=none \
+  --build-context source_artifacts=/path/to/foundation-state/release \
+  --target verification -f deploy/v100/Dockerfile -t tensorfold-v100:source-development .
+docker run --rm --network none tensorfold-v100:source-development \
+  /opt/tensorfold-pins/source_foundation.py audit
+```
+
+The [source foundation procedure](source-foundation.md) prepares that bundle and
+records the remaining device/compiler/model gates. The following wheel matrix,
+build examples and serving receipts are historical reference information.
 
 The adaptive native source candidate targets the source-built foundation in
 the governing specification. When its protected source installation receipt is
@@ -30,6 +70,8 @@ roots and actual content/flags cache identity. See the
 The wheel-based image described below remains the historical reference build;
 its source/CPU or compile checks do not qualify the new source-built stack.
 
+## Historical cu126 reference
+
 The native AMD64 CPython 3.12 profile pins the official CUDA **12.9.2** development
 image by child and index digest, with official **Torch 2.14.1+cu126**,
 **TorchVision 0.29.1+cu126** and **Triton 3.8.0** wheels by SHA256. CUDA 12.9.2 is
@@ -38,7 +80,7 @@ recorded separately. A newer CUDA toolkit alone does not prove that a framework
 wheel contains Volta kernels. The probe requires `sm_70` in Torch's actual
 compiled targets and executes the selected operators on a V100.
 
-The cu126 wheels are selected because newer cu128/cu129 PyTorch wheels removed
+The historical cu126 wheels were selected because newer cu128/cu129 PyTorch wheels removed
 Volta. See [PyTorch's packaging notice](https://dev-discuss.pytorch.org/t/dropping-volta-support-from-cuda-12-8-binaries-for-release-2-11/3290)
 and [CUDA 12.9.2 compiler targets](https://docs.nvidia.com/cuda/archive/12.9.2/cuda-compiler-driver-nvcc/index.html#gpu-name-gpuname-arch).
 Triton is retained as a framework dependency; this SM70 provider does not invoke
@@ -61,7 +103,7 @@ the generated manifest retains its identity and dependency closure.
 From the repository root:
 
 ```bash
-docker build --target verification -f deploy/v100/Dockerfile -t tensorfold-v100:verified .
+docker build --target verification -f deploy/v100/Dockerfile.cu126-reference -t tensorfold-v100:verified .
 docker run --rm tensorfold-v100:verified -m pytest -q \
   tests/test_flashnext_gguf.py tests/test_flashnext_gguf_weights.py \
   tests/test_gguf_assets.py tests/test_sm70_mtp_weights.py \

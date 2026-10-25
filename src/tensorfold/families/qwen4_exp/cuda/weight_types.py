@@ -151,10 +151,15 @@ class HC:
 class GDNW:
     proj: Q4                  # [qkv | z | b | a] x D
     conv: torch.Tensor        # [conv_dim, taps] bf16
-    a_log: torch.Tensor       # [nv] fp32
+    a_log: torch.Tensor | None  # [nv] FP32 HF A_log; absent for stored GGUF A_neg
     dt_bias: torch.Tensor     # [nv] fp32
     norm: torch.Tensor        # [dv] bf16 (the gated RMSNorm's weight, used as stored)
     out: Q4
+    a_neg: torch.Tensor | None = None  # [nv] FP32 GGUF -exp(A_log), consumed directly
+
+    def __post_init__(self):
+        if (self.a_log is None) == (self.a_neg is None):
+            raise ValueError("GDN weights require exactly one declared decay representation")
 
     @property
     def kernel(self) -> str:
@@ -234,6 +239,7 @@ class Weights:
 
     dspark: Any = None       # explicit separate draft owner; never an MTPW
     dflash2: Any = None      # bounded-window DFlash2 owner; target storage is borrowed
+    positions: Any = None    # explicit immutable positional binding; None preserves the existing platform policy
 
     @property
     def device(self) -> torch.device:

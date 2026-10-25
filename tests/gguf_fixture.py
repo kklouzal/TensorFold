@@ -94,9 +94,11 @@ def write(path, tensors, metadata):
     return Path(path)
 
 
-def tiny_model(path):
+def tiny_model(path, *, linear_heads=(8, 16), linear_head_dim=32):
     """Two blocks, with real TP8 width80 and independently packed experts."""
     prefix = "qwen4exp."
+    nk, nv = linear_heads
+    conv = (2 * nk + nv) * linear_head_dim
     fields = {
         "general.architecture": "qwen4exp", "tokenizer.ggml.eos_token_id": 14,
         "tokenizer.ggml.bos_token_id": 13,
@@ -107,8 +109,8 @@ def tiny_model(path):
             "rope.dimension_sections": (1, 1, 2, 0), "rope.freq_base": 10000.0,
             "expert_count": 2, "expert_used_count": 1,
             "expert_feed_forward_length": 640, "expert_shared_feed_forward_length": 640,
-            "ssm.conv_kernel": 4, "ssm.state_size": 32, "ssm.group_count": 8,
-            "ssm.time_step_rank": 16, "ssm.inner_size": 512, "full_attention_interval": 2,
+            "ssm.conv_kernel": 4, "ssm.state_size": linear_head_dim, "ssm.group_count": nk,
+            "ssm.time_step_rank": nv, "ssm.inner_size": nv * linear_head_dim, "full_attention_interval": 2,
             "hyper_connection.count": 4, "hyper_connection.low_rank": 32,
             "attention.indexer.head_count": 2, "attention.indexer.key_length": 32,
             "attention.indexer.top_k": 8, "attention.compress_ratios": (0, 4),
@@ -148,15 +150,15 @@ def tiny_model(path):
         add(base + "ffn_gate_inp.weight", (2, 256), 0)
         add(base + "ffn_gate_inp_shexp.weight", (256,), 0)
         if layer == 0:
-            add(base + "attn_qkv.weight", (1024, 256))
-            add(base + "attn_gate.weight", (512, 256))
-            add(base + "ssm_alpha.weight", (16, 256), 0)
-            add(base + "ssm_beta.weight", (16, 256), 0)
-            add(base + "ssm_a", (16,), 0, -1)
-            add(base + "ssm_dt.bias", (16,), 0)
-            add(base + "ssm_norm.weight", (32,), 0, 1)
-            add(base + "ssm_conv1d.weight", (1024, 4), 0)
-            add(base + "ssm_out.weight", (256, 512))
+            add(base + "attn_qkv.weight", (conv, 256))
+            add(base + "attn_gate.weight", (nv * linear_head_dim, 256))
+            add(base + "ssm_alpha.weight", (nv, 256), 0)
+            add(base + "ssm_beta.weight", (nv, 256), 0)
+            add(base + "ssm_a", (nv,), 0, -1)
+            add(base + "ssm_dt.bias", (nv,), 0)
+            add(base + "ssm_norm.weight", (linear_head_dim,), 0, 1)
+            add(base + "ssm_conv1d.weight", (conv, 4), 0)
+            add(base + "ssm_out.weight", (256, nv * linear_head_dim))
         else:
             add(base + "attn_q.weight", (512, 256))
             add(base + "attn_k.weight", (64, 256))

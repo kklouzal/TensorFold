@@ -619,10 +619,11 @@ def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft
                            planner.matrix(base + "ssm_beta.weight", rows=values),
                            planner.matrix(base + "ssm_alpha.weight", rows=values)))
         return GDNW(proj, planner.array(base + "ssm_conv1d.weight", channels, dtype="float16"),
-                    planner.array(base + "ssm_a", values, transform="log_negative"),
+                    None,
                     planner.array(base + "ssm_dt.bias", values),
                     planner.array(base + "ssm_norm.weight", dtype="float16"),
-                    planner.matrix(base + "ssm_out.weight", columns=tuple((h * full.dv, full.dv) for h in values)))
+                    planner.matrix(base + "ssm_out.weight", columns=tuple((h * full.dv, full.dv) for h in values)),
+                    a_neg=planner.array(base + "ssm_a", values, transform="negative_exp"))
 
     def attention(base):
         hd = full.head_dim
@@ -671,6 +672,8 @@ def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft
         raise ValueError("unmapped GGUF Flash Next tensors: " + ", ".join(sorted(unused)))
     prototype.meta.update(full=full, rank=rank, world=world, vocab_offset=rank * (full.vocab // world),
                           execution_provider="sm70", execution_dtype="float16", gguf_entrypoint=str(entry),
+                          gdn_decay_representation="ggml-stored-negative-exp-fp32",
+                          gdn_head_order="restored-key-major-before-tp",
                           draft_host_id_bytes=0 if selected is None else selected.nbytes + prototype.draft_ids.nbytes)
     if checkpoint.metadata.get("tokenizer.ggml.tokens"):
         from ..gguf import token_id_identity
@@ -798,10 +801,9 @@ def _array(plan, reader, device):
     values = decode_rows(source, raw.numpy()).reshape(source.shape)
     if plan.indices is not None:
         values = values[np.asarray(plan.indices)]
-    if plan.transform == "log_negative":
-        if not np.all(values < 0):
-            raise ValueError("GGUF ssm_a must contain negative exp(A_log)")
-        values = np.log(-values)
+    if plan.transform == "negative_exp":
+        if not np.all(np.isfinite(values) & (values < 0)):
+            raise ValueError("GGUF ssm_a must contain finite negative exp(A_log)")
     elif plan.transform == "half_to_float":
         # Router arithmetic consumes FP32 of the selected FP16 coefficients.
         # Retain that exact rounding while storing its already-cast Tensor.
