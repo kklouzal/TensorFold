@@ -36,6 +36,7 @@ class OwnerAttentionGraphs:
         self.device = workspace.queries.device
         self.side = self.pool = self.votes = None
         self.graphs = {}
+        self.replays = {}
         self.pending = []
         self.measurements = []
         self.room_bytes = self.capture_s = 0
@@ -46,9 +47,61 @@ class OwnerAttentionGraphs:
         self.prepared = self.closed = False
         self.failure = None
         self.hits = self.eager_calls = 0
+        self.tensor_leases, self.comm_leases = {}, ()
+        self._transport = None
+        self._lease_resources()
+        construction = getattr(comm, "_profile_construction", None)
+        if construction is not None:
+            construction.bind_protocol(self, "_capture", "owner/capture", refusal=())
         self.side = torch.cuda.Stream(device=self.device)
         self.pool = torch.cuda.graph_pool_handle()
         self.votes = torch.empty((1 + comm.world,), dtype=torch.int64, device=self.device)
+
+    @staticmethod
+    def _tensor_signature(tensor, storage):
+        return (id(tensor), tensor.data_ptr(), storage.data_ptr(), storage.nbytes(), tuple(tensor.shape),
+                tuple(tensor.stride()), tensor.storage_offset(), tensor.dtype, tensor.device)
+
+    @staticmethod
+    def _comm_signature(comm):
+        if comm.closed or not comm.comm.value:
+            raise RuntimeError("owner graphs require live initialized communicators")
+        return (id(comm), comm.comm.value, comm.world, comm.rank, comm.device)
+
+    def _lease_resources(self):
+        # Retaining a Tensor alone does not retain its old storage after set_().
+        # Lease both, and validate the no-resize/no-rebind contract at capture
+        # and final model adoption. Addresses remain private runtime checks.
+        for name, tensor in self.workspace.graph_tensors().items():
+            storage = tensor.untyped_storage()
+            self.tensor_leases[name] = (tensor, storage, self._tensor_signature(tensor, storage))
+        self.comm_leases = tuple((owner, self._comm_signature(owner))
+                                 for owner in (self.comm, self.workspace.native_comm))
+        self._transport = self._execution_signature()
+
+    def _execution_signature(self):
+        owner, pair = self.workspace, self.workspace.native_pair
+        return (owner.rows, owner.rank, owner.heads, owner.head_dim, owner.native_page_tokens,
+                owner.native_buckets, pair.key.bits, pair.key.codec, pair.value.bits, pair.value.codec,
+                owner.native_collective, owner.native_comm.world)
+
+    def validate_adoption(self):
+        """Startup boundary; no file/pointer checks added to each replay."""
+        try:
+            current = self.workspace.graph_tensors()
+            if set(current) != set(self.tensor_leases):
+                raise RuntimeError("owner graph tensor catalogue changed after capture")
+            for name, (_, storage, signature) in self.tensor_leases.items():
+                if self._tensor_signature(current[name], current[name].untyped_storage()) != signature:
+                    raise RuntimeError("owner graph tensor/storage contract changed after capture: " + name)
+            if (self._execution_signature() != self._transport
+                    or self.workspace.native_comm is not self.comm_leases[1][0]
+                    or self.workspace.comm is not self.comm_leases[0][0]
+                    or any(self._comm_signature(owner) != signature for owner, signature in self.comm_leases)):
+                raise RuntimeError("owner graph communicator contract changed after capture")
+        except BaseException as error:
+            self._poison(error)
+            raise
 
     def _agree(self, allowed):
         self.votes[:1].fill_(int(allowed))
@@ -68,9 +121,7 @@ class OwnerAttentionGraphs:
     def _free(self):
         return int(torch.cuda.mem_get_info(self.device)[0])
 
-    def _capture(self, run):
-        graph = torch.cuda.CUDAGraph()
-        self.pending.append(graph)  # Journal before any fallible native capture operation.
+    def _capture(self, graph, run):
         graph.capture_begin(pool=self.pool, capture_error_mode="global")
         primary = None
         try:
@@ -111,12 +162,14 @@ class OwnerAttentionGraphs:
                 raise RuntimeError("owner attention graph preparation is a one-time startup operation")
             if not self._agree(bool(quiescent())):
                 raise RuntimeError("owner attention graphs require globally quiescent startup preparation")
+            self.validate_adoption()
             pair = self.workspace.native_pair
             # Different catalogues could otherwise agree for a common prefix
             # and then enter different collective counts or CUDA graph modes.
             signature = (self.rows, len(self.buckets), *self.buckets, self.workspace.heads, self.workspace.head_dim,
                          self.workspace.selection.shape[1], self.workspace.native_page_tokens,
-                         pair.key.bits, pair.key.codec, pair.value.bits, pair.value.codec)
+                         pair.key.bits, pair.key.codec, pair.value.bits, pair.value.codec,
+                         self.workspace.native_comm.world)
             for value in signature:
                 if not self._same(value):
                     raise ValueError("owner attention graph geometry/codecs differ across tensor-parallel ranks")
@@ -127,18 +180,25 @@ class OwnerAttentionGraphs:
                 # Inactive frames never dereference session pointers. Transport
                 # inputs are initialized too; no uninitialized padding is sent.
                 self.workspace.clear_native_inputs(rows)
+                self.workspace.warm_native_transport(rows)
                 self.workspace.wait_native_inputs()
                 run = partial(self.workspace.native_run, rows)
                 run()  # Kernel/module/NCCL lazy initialization precedes capture.
                 torch.cuda.synchronize(self.device)
                 before = self._free()
                 self.side.wait_stream(torch.cuda.current_stream(self.device))
+                graph = torch.cuda.CUDAGraph()
+                self.pending.append(graph)  # Allocate/journal before the construction protocol GO.
                 with torch.cuda.stream(self.side):
-                    graph = self._capture(run)
+                    graph = self._capture(graph, run)
                 torch.cuda.current_stream(self.device).wait_stream(self.side)
                 torch.cuda.synchronize(self.device)
                 after = self._free()
                 self.graphs[rows] = graph
+                self.replays[rows] = graph.replay
+                construction = getattr(self.comm, "_profile_construction", None)
+                if construction is not None:
+                    construction.bind_mapping_submit(self.replays, rows, "owner/replay")
                 self.pending.remove(graph)
                 self.room_bytes = max(self.room_bytes, beginning - after, 0)
                 self.measurements.append({"rows": rows, "physical_free_before": before,
@@ -193,7 +253,7 @@ class OwnerAttentionGraphs:
             if graph:
                 if not self.prepared:
                     raise RuntimeError("owner attention graphs were not prepared before admission")
-                self.graphs[rows].replay()
+                self.replays[rows]()
                 self.hits += 1
             else:
                 self.workspace.native_run(rows)
@@ -223,6 +283,10 @@ class OwnerAttentionGraphs:
         if self.failure is not None:
             raise RuntimeError("failed owner capture retains its native borrowers for terminal cohort retirement") from self.failure
         try:
+            construction = getattr(self.comm, "_profile_construction", None)
+            if construction is not None:
+                construction.retire_bindings(self)
+                construction.retire_bindings(self.replays)
             torch.cuda.synchronize(self.device)
             errors = []
             for rows, graph in tuple(self.graphs.items()):
@@ -232,6 +296,8 @@ class OwnerAttentionGraphs:
                 except BaseException as error:
                     errors.append(error)
             raise_failures(None, errors)
+            self.replays.clear()
+            self.tensor_leases, self.comm_leases = {}, ()
             self.votes = self.side = self.pool = None
             self.workspace = self.comm = None
             self.closed = True

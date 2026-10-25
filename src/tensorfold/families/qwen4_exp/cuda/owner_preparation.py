@@ -8,8 +8,9 @@ the real serving buffers, never allocated a second time by their geometry.
 from __future__ import annotations
 
 from copy import deepcopy
+from functools import partial
 from tensorfold.cleanup import finish, raise_failures
-from .owner_execution import GRAPH_FAMILY, KERNEL_FAMILY, UNCAPTURED, row_buckets
+from .owner_execution import FULL_COLLECTIVE, HEAD_COLLECTIVE, GRAPH_FAMILY, KERNEL_FAMILY, UNCAPTURED, row_buckets
 
 _ROLES = frozenset({"decode", "mtp", "prefill"})
 _CHANNEL = "tensorfold/owner-preparation/v1"
@@ -20,7 +21,8 @@ def parse_preparation(value):
         return None
     required = {"kernel_family", "graph_family", "graph_budget_bytes", "trial"}
     if (not isinstance(value, dict) or not required <= value.keys()
-            or set(value).difference(required | {"row_buckets"})
+            or set(value).difference(required | {"row_buckets", "collective_family"})
+            or value.get("collective_family", FULL_COLLECTIVE) not in (FULL_COLLECTIVE, HEAD_COLLECTIVE)
             or value["kernel_family"] != KERNEL_FAMILY
             or value["graph_family"] not in (UNCAPTURED, GRAPH_FAMILY)
             or type(value["trial"]) is not bool or type(value["graph_budget_bytes"]) is not int
@@ -36,6 +38,7 @@ def parse_preparation(value):
         row_buckets(rows[-1], rows)
     return {"kernel_family": value["kernel_family"], "graph_family": value["graph_family"],
             "graph_budget_bytes": value["graph_budget_bytes"], "trial": value["trial"],
+            "collective_family": value.get("collective_family", FULL_COLLECTIVE),
             "row_buckets": deepcopy(buckets)}
 
 
@@ -51,6 +54,9 @@ class OwnerPreparation:
                         for role, rows in self.role_rows.items()}
         self.manifest_sha256 = manifest_sha256
         self.workspaces, self.graphs = {}, {}
+        self.head_comm = None
+        self.comm = self._open_head = None
+        self.source_foundation = None
         self.phases = []
         self.before = self.after = None
         self.graph_physical_bytes = 0
@@ -80,6 +86,8 @@ class OwnerPreparation:
 
         if self.prepared or self.closed:
             raise RuntimeError("native owner preparation is a one-time startup operation")
+        self.comm = engine.comm
+        construction = getattr(engine.comm, "_profile_construction", None)
         contract = {"specification": self.specification, "manifest_sha256": self.manifest_sha256,
                     "roles": self.role_rows, "page_tokens": page_tokens, "pair": pair.identity,
                     "heads": text["num_attention_heads"], "kv_heads": text["num_key_value_heads"],
@@ -91,12 +99,48 @@ class OwnerPreparation:
         contract = json.loads(canonical_runtime_json(contract, max_bytes=4 << 20))
         primary = None
         try:
-            peers = self._phase(engine, "contract", lambda: contract)
-            if any(peer != contract for peer in peers):
+            def prepared_contract():
+                from tensorfold.cuda.sm70.foundation_headers import selected_identity
+
+                self.source_foundation = selected_identity()
+                return {**contract, "source_foundation": self.source_foundation}
+
+            peers = self._phase(engine, "contract", prepared_contract)
+            if any(peer != peers[0] for peer in peers):
                 raise ValueError("native owner preparation differs across TP8 ranks")
             torch.cuda.synchronize(device)
             torch.cuda.empty_cache()
             self.before = self._memory(torch, device)
+            if self.specification["collective_family"] == HEAD_COLLECTIVE:
+                def head_owner():
+                    from tensorfold.cuda.comm import NCCL
+
+                    self.head_comm = NCCL()  # Journal before fallible native initialization.
+                    self._open_head = partial(self.head_comm.open, engine.rank % 4, 4, "", 0, store=engine.comm.store,
+                                              key=_CHANNEL + "/head/" + str(engine.rank // 4))
+                    if construction is not None:
+                        construction.bind_protocol(self, "_open_head", "owner/head-init", refusal=())
+                    return {"members": list(range(engine.rank // 4 * 4, engine.rank // 4 * 4 + 4))}
+
+                # CPU owner/arguments/hooks finish on all8 before any raw init
+                # GO. A post-operation phase vote alone cannot establish this.
+                self._phase(engine, "head-owner", head_owner, may_refuse=False)
+                def head_group():
+                    self._open_head()
+                    if construction is not None:
+                        construction.bind_submit(self.head_comm, "all_gather", "owner/head-gather")
+                    return {"members": list(range(engine.rank // 4 * 4, engine.rank // 4 * 4 + 4))}
+
+                self._phase(engine, "head-group", head_group, may_refuse=False)
+                # Every subgroup member has consumed its UID before this phase
+                # completes. Fixed two keys cannot grow with sessions/buckets.
+                def retire_uids():
+                    if engine.rank == 0:
+                        for group in range(2):
+                            engine.comm.store.delete_key(_CHANNEL + "/head/" + str(group))
+                    return {}
+
+                self._phase(engine, "head-uid-retirement", retire_uids, may_refuse=False)
             for role, rows in self.role_rows.items():
                 def allocate(role=role, rows=rows):
                     owner = OwnerBuffers.from_text(text, rows=rows, prefill=role == "prefill",
@@ -104,11 +148,18 @@ class OwnerPreparation:
                         rank=engine.rank, device=device, comm=engine.comm,
                         register=lambda owner: self.workspaces.__setitem__(role, owner))
                     owner.prepare_native(pair=pair, page_tokens=page_tokens, buckets=self.buckets[role])
+                    owner.configure_native_transport(self.specification["collective_family"],
+                                                     self.head_comm or engine.comm)
                     return owner.allocation_record()
 
                 records = self._phase(engine, "allocate-" + role, allocate, may_refuse=False)
                 self.allocations[role] = records
                 owner = self.workspaces[role]
+                def reference_wire(owner=owner):
+                    owner.warm_reference_transport()
+                    return {"full8_reference_rows": owner.rows}
+
+                self._phase(engine, "reference-wire-" + role, reference_wire, may_refuse=False)
                 if self.specification["graph_family"] == GRAPH_FAMILY:
                     remaining = self.specification["graph_budget_bytes"] - self.graph_physical_bytes
                     before_graph = self._memory(torch, device)
@@ -141,6 +192,7 @@ class OwnerPreparation:
                     def warm(owner=owner, role=role):
                         for bucket in self.buckets[role]:
                             owner.clear_native_inputs(bucket)
+                            owner.warm_native_transport(bucket)
                             owner.wait_native_inputs()
                             owner.native_run(bucket)
                             torch.cuda.synchronize(device)
@@ -185,6 +237,12 @@ class OwnerPreparation:
             raise RuntimeError("native resources were not prepared before model admission")
         if weights.meta.get("owner_workspaces") is not self.workspaces:
             raise RuntimeError("model weights did not publish the exact prepared owner workspace catalogue")
+        from tensorfold.cuda.sm70.foundation_headers import selected_identity
+
+        if selected_identity() != self.source_foundation:
+            raise ValueError("selected source foundation differs from native preparation")
+        for graphs in self.graphs.values():
+            graphs.validate_adoption()
         for owner in self.workspaces.values():
             owner.bind_native_states(decoder.states)
         for role, buffers in (("decode", decoder.buf), ("mtp", decoder.mbuf), ("prefill", decoder.pbuf)):
@@ -237,6 +295,7 @@ class OwnerPreparation:
         # changes neither representation nor resources. Excluding it permits
         # the resulting verified execution proof to be installed for release.
         return {"specification": {name: deepcopy(value) for name, value in self.specification.items() if name != "trial"},
+                "source_foundation_headers": deepcopy(self.source_foundation),
                 "roles": dict(self.role_rows),
                 "row_buckets": {role: list(rows) for role, rows in self.buckets.items()},
                 "allocations": deepcopy(self.allocations),
@@ -261,7 +320,16 @@ class OwnerPreparation:
     def close(self):
         if self.closed:
             return
+        construction = None if self.comm is None else getattr(self.comm, "_profile_construction", None)
+        if construction is not None:
+            construction.retire_bindings(self)
         finish((graph.close for graph in self.graphs.values()))
         finish((owner.close for owner in self.workspaces.values()))
+        if self.head_comm is not None:
+            if construction is not None:
+                construction.retire_bindings(self.head_comm)
+            self.head_comm.close()
+            self.head_comm = None
+        self.comm = self._open_head = None
         self.graphs, self.workspaces = {}, {}
         self.closed = True

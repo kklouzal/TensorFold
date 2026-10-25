@@ -66,8 +66,8 @@ def test_live_grant_never_credits_unknown_private_pool_or_omits_outside_cap_comm
     assert prepared.live_bytes() == expected
 
 
-@pytest.mark.parametrize("trial", [False, True])
-def test_eight_ranks_prepare_once_adopt_the_same_owners_and_retire_metadata(monkeypatch, trial):
+@pytest.mark.parametrize("trial,head4", [(False, False), (True, False), (True, True)])
+def test_eight_ranks_prepare_once_adopt_the_same_owners_and_retire_metadata(monkeypatch, trial, head4):
     import torch
     from tensorfold.cuda import capacity
     from tensorfold.families.qwen4_exp.cuda import history_owner
@@ -99,14 +99,44 @@ def test_eight_ranks_prepare_once_adopt_the_same_owners_and_retire_metadata(monk
 
     store = Store()
     memory = [{"free": 1 << 30, "active": 0, "reserved": 0} for _ in range(8)]
-    created = []
+    created, groups, group_owners, bound_heads, retired, init_frontiers = [], [], [], [], [], []
+    from tensorfold.cuda import comm as comm_module
+
+    class HeadGroup:
+        def __init__(self):
+            group_owners.append(self)
+
+        def open(self, rank, world, master, port, *, store, key):
+            assert len(group_owners) == 8  # CPU owner/argument phase precedes every raw init.
+            group = int(key.rsplit("/", 1)[1])
+            self.rank, self.world, self.global_rank = rank, world, 4 * group + rank
+            self.closed = False
+            if rank == 0:
+                store.set(key, b"group-id")
+            else:
+                store.wait([key], None)
+                assert store.get(key) == b"group-id"
+            memory[self.global_rank]["free"] -= 64  # Driver-owned, outside Torch.
+            groups.append(self)
+
+        def all_gather(self, send, target):
+            raise AssertionError("fake owner kernels must not submit native device work")
+
+        def close(self):
+            assert self in retired
+            assert all(owner.closed for owner in created if owner.rank == self.global_rank)
+            memory[self.global_rank]["free"] += 64
+            self.closed = True
+
+    monkeypatch.setattr(comm_module, "NCCL", HeadGroup)
 
     class Owner:
         def __init__(self, rank, rows, prefill):
             self.rank, self.rows, self.prefill = rank, rows, prefill
             self.bytes = 0
             self.closed = False
-            self.warmed = []
+            self.warmed, self.wire_shapes = [], []
+            self.reference_transport_rows = 0
 
         def allocate(self, count):
             self.bytes += count
@@ -122,11 +152,20 @@ def test_eight_ranks_prepare_once_adopt_the_same_owners_and_retire_metadata(monk
             return {"rank": self.rank, "rows": self.rows, "prefill": self.prefill,
                     "device_tensor_bytes": self.bytes, "host_staging_bytes": self.rows * 128}
 
+        def configure_native_transport(self, policy, comm):
+            self.transport = (policy, comm)
+
         def clear_native_inputs(self, rows):
             assert rows in self.native_buckets
 
         def wait_native_inputs(self):
             pass
+
+        def warm_native_transport(self, rows):
+            self.wire_shapes.append(rows)
+
+        def warm_reference_transport(self):
+            self.reference_transport_rows = self.rows
 
         def native_run(self, rows):
             self.warmed.append(rows)
@@ -158,9 +197,27 @@ def test_eight_ranks_prepare_once_adopt_the_same_owners_and_retire_metadata(monk
 
     def prepare(rank):
         engine = NS(rank=rank, tp=8, comm=NS(world=8, rank=rank, store=store), multi=None, _calls={})
+        if head4:
+            def bind_protocol(target, attribute, label, *, refusal):
+                assert label == "owner/head-init" and refusal == ()
+                original = getattr(target, attribute)
+                def after_cpu_phase():
+                    assert len(group_owners) == 8
+                    init_frontiers.append(rank)
+                    return original()
+                setattr(target, attribute, after_cpu_phase)
+            def bind_submit(target, attribute, label):
+                assert attribute == "all_gather" and label == "owner/head-gather"
+                assert callable(getattr(target, attribute))
+                bound_heads.append(target)
+            engine.comm._profile_construction = NS(bind_protocol=bind_protocol, bind_submit=bind_submit,
+                                                   retire_bindings=lambda target: retired.append(target))
         # Insertion order differs deliberately; the operation protocol must not.
         roles = {"decode": 4, "mtp": 4, "prefill": 8} if rank % 2 else {"prefill": 8, "mtp": 4, "decode": 4}
-        prepared = OwnerPreparation(specification(trial=trial), role_rows=roles, manifest_sha256="a" * 64)
+        spec = specification(trial=trial)
+        if head4:
+            spec["collective_family"] = "head4-allgather-v1"
+        prepared = OwnerPreparation(spec, role_rows=roles, manifest_sha256="a" * 64)
         prepared.prepare(engine, text, get_pair("int8"), page_tokens=128, device=rank)
         return prepared
 
@@ -169,8 +226,13 @@ def test_eight_ranks_prepare_once_adopt_the_same_owners_and_retire_metadata(monk
     assert values == {} and len(created) == 24
     assert all(item.identity() == prepared[0].identity() for item in prepared)
     for rank, item in enumerate(prepared):
-        assert item.committed_bytes() == sum(owner.bytes for owner in item.workspaces.values())
+        assert item.committed_bytes() == sum(owner.bytes for owner in item.workspaces.values()) + (64 if head4 else 0)
+        if head4:
+            assert item.head_comm.global_rank == rank
+            assert all(owner.transport[1] is item.head_comm for owner in item.workspaces.values())
         assert all(owner.warmed == list(owner.native_buckets) for owner in item.workspaces.values())
+        assert all(owner.wire_shapes == list(owner.native_buckets) for owner in item.workspaces.values())
+        assert all(owner.reference_transport_rows == owner.rows for owner in item.workspaces.values())
         buffers = {role: NS(history_owner=owner, rows=owner.rows) for role, owner in item.workspaces.items()}
         decoder = NS(states=(object(),), buf=buffers["decode"], mbuf=buffers["mtp"], pbuf=buffers["prefill"],
                      controller=AdaptiveController(slots=2, row_budget=4, proposal_limit=1, prefill_tokens=8))
@@ -180,3 +242,7 @@ def test_eight_ranks_prepare_once_adopt_the_same_owners_and_retire_metadata(monk
         assert len(created) == 24  # Adoption did not create a second serving allocation.
         item.close()
         assert memory[rank] == {"free": 1 << 30, "active": 0, "reserved": 0}
+    assert len(groups) == (8 if head4 else 0) and all(group.closed for group in groups)
+    if head4:
+        assert sorted(init_frontiers) == list(range(8))
+        assert len(bound_heads) == 8 and all(group in bound_heads for group in groups)

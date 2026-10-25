@@ -22,6 +22,14 @@ request limit returns HTTP503 with the existing retry header.
 
 ## Selected foundation
 
+The adaptive native source candidate targets the source-built foundation in
+the governing specification. When its protected source installation receipt is
+present, owned SM70 JIT modules use its explicitly ordered CCCL/CUTLASS include
+roots and actual content/flags cache identity. See the
+[preparation and header binding contract](../../docs/execution-profile-manifest.md#opt-in-native-preparation-and-qualification-trials).
+The wheel-based image described below remains the historical reference build;
+its source/CPU or compile checks do not qualify the new source-built stack.
+
 The native AMD64 CPython 3.12 profile pins the official CUDA **12.9.2** development
 image by child and index digest, with official **Torch 2.14.1+cu126**,
 **TorchVision 0.29.1+cu126** and **Triton 3.8.0** wheels by SHA256. CUDA 12.9.2 is

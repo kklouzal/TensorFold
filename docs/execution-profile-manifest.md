@@ -96,6 +96,22 @@ all prepared roles, not a measured optimum. Optional `row_buckets` maps
 actual owner workspace bound; omitted roles use powers of two plus that exact
 endpoint. A role absent from the selected method is rejected.
 
+Optional `collective_family` defaults to `tp8-allgather-v1`. The distinct
+`head4-allgather-v1` trial prepares two fixed logical rank groups, `[0,1,2,3]`
+and `[4,5,6,7]`, before capacity planning or weight loading. Each process joins
+its own group. Native queries, softmax statistics and normalized PV use that
+group; target weights and canonical indexer selections still use TP8. The native
+kernels keep global rank indices and the same four rank FP32 merge order.
+No communicator is created or changed in response to active request count.
+The actual subgroup residency is measured with all other preparation before
+the capacity baseline. All finite native bucket shapes and datatypes warm
+before admission. The still-eligible Torch reference uses exact counts, so
+startup also warms its full8 query, selection, statistics and PV transports for
+every count from1 through the owner bound (at most256). Reference execution
+keeps its existing shapes and arithmetic. The policy and rank membership bind profile identity;
+neither variant qualifies the other. ReduceScatter is a separate unimplemented
+numerical/performance candidate.
+
 The engine validates the section before CUDA setup, compiles/loads the selected
 native module, and prepares zero-active header-only workspaces before capacity
 planning and weight loading. All TP8 ranks agree on role shapes and codecs.
@@ -114,6 +130,45 @@ Capture is startup-only and quiescent; a new request, session identity or layer
 does not create another graph key. Startup source-built framework/library and
 eight-V100 component, model, numerical, resource and performance gates remain
 pending until actually executed.
+
+Graph owners retain both tensors and their original storage objects, together
+with initialized communicator owners, until replay retirement. Capture and
+final serving adoption validate addresses, shapes, strides and the fixed group
+policy. These private runtime addresses never enter a persistent profile key.
+Prepared workspaces have no serving resize or communicator replacement API.
+During supported in-process construction, subgroup initialization follows an
+all8 CPU owner/argument preparation phase. Subgroup submissions, capture entry
+and bare replay then use globally ordered construction frontiers on all8 ranks;
+each rank submits to its fixed quartet at the same global stage. Graph objects
+exist before capture readiness. Once GO is published, failure is fatal to the
+affected cohort. Close retires temporary object/replay-map/communicator bindings
+before resetting graphs or clearing their maps, including constructor rollback.
+Publication restores direct callables; serving adds no construction wait or
+context lookup to these native submission paths.
+
+On the selected source foundation, SM70 builds consume the protected
+`/opt/tensorfold-pins/v100-source-foundation.json` v1 installation receipt.
+Packaging can select another canonical absolute receipt with
+`TENSORFOLD_SM70_FOUNDATION_MANIFEST`. Its `include_roots` must name `cccl` and
+`cutlass`, and `artifacts` must cover every regular file under both directories,
+including metadata. The consumer verifies actual bytes before compilation;
+the explicit include roots precede toolkit/framework includes. Module names
+bind the receipt, complete header digests, ordered build flags and compiler
+environment. Startup, serving adoption and profile rebind reject changed
+header/flag bindings; replacing them requires retiring the process. Cached
+native launches do no filesystem work. A missing default receipt leaves other
+reference images unchanged; an explicit missing or invalid receipt fails.
+With this binding active, NVCC's prepend/append argument channels and the C++
+`CPATH`/`CPLUS_INCLUDE_PATH` search channels must be unset (empty NVCC argument
+strings add no flags). Caller-provided include roots, forced includes,
+preprocessor forwarding and response files are refused before compiling;
+recording their filenames or environment text cannot bind the consumed bytes.
+Ordinary ordered optimization flags remain supported. Torch2.14's JIT does not
+consume `CPPFLAGS`/`CXXFLAGS`, and these C++ inputs do not consume
+`C_INCLUDE_PATH`; those variables are not blanket-banned. Other hardware and
+images without selected-source authority keep their existing builder behavior.
+The foundation's complete software audit and actual device qualification remain
+separate required gates.
 
 `trial: true` explicitly selects the candidate for qualification and reports
 performance qualification as pending. Preparation with `trial: false` leaves
