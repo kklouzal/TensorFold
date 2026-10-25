@@ -4,9 +4,10 @@ from pathlib import Path
 
 import numpy as np
 import pytest
-import torch
 
-from tensorfold.cuda.sm70.gguf_ops import decode
+torch = pytest.importorskip("torch")
+
+from tensorfold.cuda.sm70.gguf_ops import decode  # noqa: E402 - optional backend guard precedes CUDA imports
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_device_capability() != (7, 0),
                                 reason="mixed GGUF requires an actual SM70 device")
