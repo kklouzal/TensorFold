@@ -16,6 +16,8 @@ The historical cu126 wheel image is reference evidence and does not qualify
 the selected combined dependency stack.
 Its [process-issued software binding](docs/sm70-software-binding.md) verifies
 sealed source-stack inputs without granting compiler/device/model qualification.
+Its combined source/media authority also checks the protected CPU processor and
+decoder closure; a source-only record cannot satisfy the combined verifier.
 The additive [CPU media source image](deploy/v100/media-foundation.md) supplies
 the pinned TorchVision/Transformers processors and PyAV/FFmpeg decoder stack.
 CPU software controls remain distinct from pending media service, SC117/mmproj,

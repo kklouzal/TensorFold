@@ -20,6 +20,7 @@ _ROOT = Path("/opt/tensorfold-pins")
 _PROTECTED = (_ROOT / "v100-source-foundation.json", _ROOT / "source-pins.json",
               _ROOT / "source_foundation.py")
 _MAX_METADATA = 16 << 20
+_MAX_ARTIFACTS = 100000
 _ADMIN_UID = 0
 _ISSUER = object()
 _PENDING = ("compiler-6111901", "V100-device-graphs-collectives", "model-quality-performance",
@@ -95,11 +96,11 @@ def _decode(raw):
     return value
 
 
-def _inputs(manifest):
+def _inputs(manifest, protected=None):
     rows = manifest.get("artifacts")
-    if not isinstance(rows, list) or not 1 <= len(rows) <= 100000:
+    if not isinstance(rows, list) or not 1 <= len(rows) <= _MAX_ARTIFACTS:
         raise SoftwareBindingError("protected software artifact inventory exceeds its bound")
-    paths = set(_PROTECTED)
+    paths = set(_PROTECTED if protected is None else protected)
     for row in rows:
         name = row.get("path") if isinstance(row, dict) else None
         if not isinstance(name, str) or not Path(name).is_absolute():
@@ -108,14 +109,16 @@ def _inputs(manifest):
     return paths
 
 
-def _snapshot(paths):
-    return {path: _state(path, protected=path in _PROTECTED) for path in paths}
+def _snapshot(paths, protected=None):
+    protected = _PROTECTED if protected is None else protected
+    return {path: _state(path, protected=path in protected) for path in paths}
 
 
-def _protected_location():
-    if _ROOT.resolve(strict=True) != _ROOT:
+def _protected_location(root=None):
+    root = _ROOT if root is None else root
+    if root.resolve(strict=True) != root:
         raise SoftwareBindingError("protected source software directory must not be aliased")
-    for path in (_ROOT, *_ROOT.parents):
+    for path in (root, *root.parents):
         info = path.stat(follow_symlinks=False)
         if not stat.S_ISDIR(info.st_mode) or info.st_uid != _ADMIN_UID or info.st_mode & 0o022:
             raise SoftwareBindingError("protected source software directory must be administrator-owned and immutable")
@@ -180,12 +183,17 @@ def _issued(authority):
         raise SoftwareBindingError("source software authority is forged, unverified or from another process")
 
 
-def issue_source_binding(*, required=False):
-    """Issue software-only evidence from the fixed protected image artifacts.
+class _SourcePreparation:
+    """Owned verified metadata/producer bytes awaiting the final process audit."""
 
-    Only absence of all three files permits explicit reference status. Partial,
-    malformed or changed files and audit failures always propagate as failures.
-    """
+    __slots__ = ("module", "manifest", "pins", "states", "protected")
+
+    def __init__(self, module, manifest, pins, states, protected):
+        self.module, self.manifest, self.pins = module, manifest, pins
+        self.states, self.protected = states, protected
+
+
+def _prepare_source(*, required):
     if type(required) is not bool:
         raise TypeError("required must be a boolean")
     available = []
@@ -217,6 +225,18 @@ def issue_source_binding(*, required=False):
     if any(states[path] != item[1] for path, item in zip(_PROTECTED, read)):
         raise SoftwareBindingError("protected source software metadata changed before audit")
     module = _load_producer(producer_raw, producer_path)
+    protected = {path.name: {"path": str(path), "bytes": len(item[0]),
+                            "sha256": hashlib.sha256(item[0]).hexdigest()}
+                 for path, item in zip(_PROTECTED, read)}
+    return _SourcePreparation(module, manifest, pins, states, protected)
+
+
+def _issue_prepared_source(prepared):
+    module, manifest, pins = prepared.module, prepared.manifest, prepared.pins
+    states = dict(prepared.states)
+    _protected_location()
+    if _snapshot(states) != states:
+        raise SoftwareBindingError("immutable source software inputs changed before audit")
     # Discover process-owned inputs through the same protected implementation
     # before its content audit, so a concurrent mapping/file change cannot be
     # silently accepted into the issued lifetime after the audit has returned.
@@ -234,10 +254,19 @@ def issue_source_binding(*, required=False):
             path = Path(row["path"])
             if path not in states:
                 raise SoftwareBindingError("source software runtime changed during issuance; reissue after warmup")
-    protected = {path.name: {"path": str(path), "bytes": len(item[0]),
-                            "sha256": hashlib.sha256(item[0]).hexdigest()}
-                 for path, item in zip(_PROTECTED, read)}
-    return SourceSoftwareBinding(_ISSUER, module, manifest, pins, states, audit, protected)
+    return SourceSoftwareBinding(_ISSUER, module, manifest, pins, states, audit, prepared.protected)
+
+
+def issue_source_binding(*, required=False):
+    """Issue software-only evidence from the fixed protected image artifacts.
+
+    Only absence of all three files permits explicit reference status. Partial,
+    malformed or changed files and audit failures always propagate as failures.
+    """
+    prepared = _prepare_source(required=required)
+    if type(prepared) is ReferenceSoftwareStatus:
+        return prepared
+    return _issue_prepared_source(prepared)
 
 
 def verify_source_binding(authority):
