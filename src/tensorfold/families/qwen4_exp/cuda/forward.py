@@ -179,7 +179,7 @@ def gdn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int
     for st, a0, a1 in segs:
         cur = st.cur[li]
         gdn_mod.chain(b.proj[li, a0:a1], st.conv[li], g.conv, st.rec[cur, li], g.a_log, g.dt_bias, g.norm, c.eps,
-                      a1 - a0, st.scratch[li], st.rec[1 - cur, li], b.gout[a0:a1], b.gxs[a0:a1])
+                      a1 - a0, st.scratch[li], st.rec[1 - cur, li], b.gout[a0:a1], b.gxs[a0:a1], a_neg=g.a_neg)
     return _out_proj(w, b, b.gout[:R], g.out, b.gxs[:R], R)
 
 
@@ -197,7 +197,7 @@ def _prefill_chain(g, st: State, li: int, b: Buffers, a0: int, a1: int, c, cuts:
                 shift_windows(conv[None], p[None, :start], start, c.conv_dim)
             gdn_mod.chain(p[start:end], conv, g.conv, st.rec[cur, li], g.a_log, g.dt_bias, g.norm, c.eps,
                           end - start, b.prefill_gdn_scratch, st.rec[1 - cur, li], b.gout[a0 + start:a0 + end],
-                          b.gxs[a0 + start:a0 + end])
+                          b.gxs[a0 + start:a0 + end], a_neg=g.a_neg)
             cur = 1 - cur
             if cut is not None:
                 if cut.rec is None:

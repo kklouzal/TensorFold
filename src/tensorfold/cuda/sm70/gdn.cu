@@ -1,8 +1,9 @@
 // Flash Next's Gated DeltaNet on SM70 (FP16 storage, FP32 state): one block of 1024 threads per value head, a chain of R rows.
 //
 // Per row: the depthwise conv over [conv state; projection rows] (4 taps, fp32) with SiLU (one fp16
-// rounding), fp32 L2 norms of q and k (eps inside the sum, q times DK^-0.5), g = exp(-exp(A_log) *
-// softplus(a + dt_bias)) in fp32, beta = fp16(sigmoid(b)), the delta-rule update and read-out in fp32,
+// rounding), fp32 L2 norms of q and k (eps inside the sum, q times DK^-0.5),
+// g = exp(rate * softplus(a + dt_bias)) in fp32, with rate=-exp(A_log)
+// for HF weights or the stored GGUF A_neg directly, beta = fp16(sigmoid(b)), the delta-rule update and read-out in fp32,
 // and the sigmoid-gated RMSNorm of the read-out. Warp w owns state rows 4w .. 4w + 3, lane l the columns
 // 4l .. 4l + 3. The state update is one routine (``update``) shared with ``replay``, compiled without FMA
 // contraction, so a replayed prefix of a window gives the bits of the serial steps.
@@ -13,6 +14,7 @@
 #include <cuda_runtime.h>
 #include <c10/cuda/CUDAException.h>
 #include <optional>
+#include <type_traits>
 
 namespace {
 
@@ -48,11 +50,11 @@ __device__ __forceinline__ void update(float (&s)[4][4], const float (&kk)[4], c
     }
 }
 
-template <int NK, int NV>
+template <int NK, int NV, bool NegativeDecay>
 __global__ void __launch_bounds__(1024) chain_kernel(
         const __half* __restrict__ P, const __half* __restrict__ cs,
         const __half* __restrict__ cw, const float* __restrict__ state_in,
-        const float* __restrict__ a_log, const float* __restrict__ dt_bias,
+        const float* __restrict__ decay_parameter, const float* __restrict__ dt_bias,
         const __half* __restrict__ norm_w, float eps, int rows,
         __half* __restrict__ out, float* __restrict__ xs, float* __restrict__ state_out,
         float* __restrict__ k_save, __half* __restrict__ v_save, float* __restrict__ g_save,
@@ -110,7 +112,8 @@ __global__ void __launch_bounds__(1024) chain_kernel(
         } else if (warp == 2 && lane == 0) {
             const float b = __half2float(P[(size_t)r * PW + C + NV * DV + hv]);
             const float a = __half2float(P[(size_t)r * PW + C + NV * DV + NV + hv]);
-            gates[0] = expf(-expf(a_log[hv]) * softplusf_(a + dt_bias[hv]));
+            const float rate = NegativeDecay ? decay_parameter[hv] : -expf(decay_parameter[hv]);
+            gates[0] = expf(rate * softplusf_(a + dt_bias[hv]));
             gates[1] = bf(sigmoidf_(b));
         }
         __syncthreads();
@@ -195,24 +198,29 @@ template <typename T>
 static T* ptr(const at::Tensor& x) { return x.defined() && x.numel() ? (T*)x.data_ptr() : nullptr; }
 
 void sm70_gdn_chain_cuda(const at::Tensor& P, const at::Tensor& cs, const at::Tensor& cw, const at::Tensor& state_in,
-                    const at::Tensor& a_log, const at::Tensor& dt_bias, const at::Tensor& norm_w, double eps,
+                    const at::Tensor& decay_parameter, const at::Tensor& dt_bias, const at::Tensor& norm_w, double eps,
                     int64_t rows, at::Tensor& out, at::Tensor& xs, at::Tensor& state_out, at::Tensor& k_save,
                     at::Tensor& v_save, at::Tensor& g_save, at::Tensor& b_save,
-                    const std::optional<at::Tensor>& keep_rows) {
+                    const std::optional<at::Tensor>& keep_rows, bool negative_decay) {
     auto stream = at::cuda::getCurrentCUDAStream();
-    const int nv = (int)a_log.numel();
+    const int nv = (int)decay_parameter.numel();
     auto launch = [&](auto kernel, int blocks) {
         kernel<<<blocks, 1024, 0, stream>>>(
         ptr<__half>(P), ptr<__half>(cs), ptr<__half>(cw), ptr<float>(state_in),
-        ptr<float>(a_log), ptr<float>(dt_bias), ptr<__half>(norm_w), (float)eps, (int)rows,
+        ptr<float>(decay_parameter), ptr<float>(dt_bias), ptr<__half>(norm_w), (float)eps, (int)rows,
         ptr<__half>(out), ptr<float>(xs), ptr<float>(state_out), ptr<float>(k_save),
         ptr<__half>(v_save), ptr<float>(g_save), ptr<float>(b_save), keep_rows ? ptr<int>(*keep_rows) : nullptr);
     };
-    if (nv == 48) launch(chain_kernel<16, 48>, 48);
-    else if (nv == 24) launch(chain_kernel<8, 24>, 24);
-    else if (nv == 12) launch(chain_kernel<4, 12>, 12);
-    else if (nv == 6) launch(chain_kernel<2, 6>, 6);
-    else TORCH_CHECK(false, "gdn chain: 48, 24, 12 or 6 value heads");
+    auto dispatch = [&](auto negative) {
+        constexpr bool direct = decltype(negative)::value;
+        if (nv == 48) launch(chain_kernel<16, 48, direct>, 48);
+        else if (nv == 24) launch(chain_kernel<8, 24, direct>, 24);
+        else if (nv == 12) launch(chain_kernel<4, 12, direct>, 12);
+        else if (nv == 6) launch(chain_kernel<2, 6, direct>, 6);
+        else TORCH_CHECK(false, "gdn chain: 48, 24, 12 or 6 value heads");
+    };
+    if (negative_decay) dispatch(std::true_type{});
+    else dispatch(std::false_type{});
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 

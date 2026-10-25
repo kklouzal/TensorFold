@@ -23,9 +23,10 @@ def extension():
                       extra_cuda_cflags=["-O3", "--fmad=false"], extra_cflags=["-O3"])
 
 
-def chain(p, conv, weight, initial, log, bias, norm, eps, rows, scratch, final, output, sums):
-    return extension().chain(p, conv, weight, initial, log, bias, norm, eps, rows, output, sums, final,
-                             scratch.k, scratch.v, scratch.g, scratch.b, getattr(scratch, "keep_rows", None))
+def chain(p, conv, weight, initial, decay_parameter, bias, norm, eps, rows, scratch, final, output, sums,
+          *, negative_decay=False):
+    return extension().chain(p, conv, weight, initial, decay_parameter, bias, norm, eps, rows, output, sums, final,
+                             scratch.k, scratch.v, scratch.g, scratch.b, getattr(scratch, "keep_rows", None), negative_decay)
 
 
 def replay(initial, scratch, rows, final):

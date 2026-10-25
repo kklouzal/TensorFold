@@ -1,45 +1,44 @@
 # TensorFold V100 Adaptive Inference Design
 
-**Platform:** Supermicro SYS-4029GP-TVRT with eight 32 GiB V100 SXM2 GPUs.\
-**Model family:** Qwen3.8-Flash-Next variants with administrator-selected target and compatible speculative artifacts.\
-**Initial target:** non-Swift `SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF`, `IQ3_S`, pinned below.\
-**Required capabilities:** stock QSA MTP, separately selected IncoAI DFlash2, and image/video understanding with text output.\
-**Purpose:** maximum useful prompt-processing and decode throughput across supported concurrency, automatic capacity planning, and no runtime tuning restarts.\
-**Design basis:** the discussion and supplied startup accounting dated 2026-10-25 04:16 UTC.\
-**Status:** implementation design with an initial target/MTP/DFlash pairing and contracts for additional GGUF, NVFP4, and draft artifacts. Startup observations, artifact/header measurements, capacity estimates, and V100 workload qualification are distinct evidence classes.
+**Platform:** Supermicro SYS-4029GP-TVRT; eight 32 GiB V100 SXM2 GPUs.\
+**Initial target:** non-Swift `SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF`, `IQ3_S`.\
+**Required:** QSA MTP, separately selectable IncoAI DFlash2, image/video → text.\
+**Scope:** implementation design for qualified family variants, GGUF/NVFP4 and compatible drafts.\
+**Basis:** discussion and startup receipt dated 2026-10-25 04:16 UTC.\
+**Evidence:** supplied observations, artifact/header measurements, arithmetic estimates and V100 workload qualification are distinct (Section 25).
 
 ## 1 Governing operating contract
 
-Use one serving implementation for qualified Qwen3.8-Flash-Next variants on the fixed eight-V100 server. The administrator selects the target, runtime weight representation, context, target KV format, speculative artifact/method, and service limits. TensorFold computes full-context capacity and selects qualified plans for the pairing and actual workload. The pinned SC117 IQ3_S target, shared-Q8 MTP companion, and IncoAI DFlash2 define the initial implementation profiles. Additional qualified artifacts use the same engine contracts.
+Use one engine for qualified Qwen3.8-Flash-Next variants. Administrators select target/runtime weights, context/RoPE, KV codec, speculative artifact/method and service limits; TensorFold computes full-context capacity and selects qualified workload plans. Initial profiles use SC117 IQ3_S, shared-Q8 MTP and IncoAI DFlash2. Additional artifacts use the same contracts.
 
-Maximize useful throughput at every relevant concurrency while evaluating low-load responsiveness, aggregate throughput, and mixed-workload latency. Measure prompt processing and committed decode separately under the selected model, quality, context, and hardware constraints (Section 5).
+**Mission:** maximize qualified sessions at the selected context, weight/KV quantizations, speculative method and media envelope, then maximize aggregate committed decode tokens/s with all sessions active. Adapt safe execution to actual activity for useful prefill/decode throughput, preserving context, quality, fairness and no-restart commitments. Report the measured context/capacity/throughput tradeoff; never silently sacrifice one to improve another (Section 5).
 
 ### Settled requirements
 
 | Area | Governing requirement |
 |---|---|
-| Hardware | Optimize for this eight-V100 SXM2 server, including its actual NVLink, PCIe, NUMA, and SM70 behavior. |
-| Target model | Start with non-Swift SC117 IQ3_S; preserve its learned mixed-format weights through qualified import. Retain target TP8 and its actual resident inventory, with all eight ranks available at low concurrency. |
-| Context | Equal administrator-selected allowance for admitted sessions. Expanded text/visual prompt rows, retained conversation, and generated reasoning/reply share it. The initial limit is 262,144 positions; validate each profile's positions and media bounds. |
-| Capacity | Maximum resident/admitted sessions is computed from the complete worst-rank budget. It is not a permanently fixed 20, 24, 32, or power-of-two count. |
-| Speculation | Implement QSA MTP as a required deliverable and default initial method, using the pinned shared-Q8 companion. Implement IncoAI DFlash2 as a separately selectable method. Explicit no-speculation operation remains available for reference and administration; it cannot substitute for required MTP implementation. |
-| Q4 | Integrate RotorQuant-family `iso4` for both K and V first, using the pinned format in Section 13. SAW-style evaluation follows after the core system works. |
-| Q8 | Retain a precisely specified ordinary Q8 format. Do not invent an unspecified native RotorQuant eight-bit encoding. |
-| Histories | Store unique attention KV and completed pooled indexer history in VRAM, with bounded raw pending-group state. The raw-history RAM archive remains off. |
-| Multimodal | Implement text, images, and video frames to text using the pinned vision/processor contract, bounded execution, and separate multimodal MTP/DFlash qualification. Audio and media generation are outside this profile. |
-| Adaptation | Adapt batches, kernels, graphs, prefill budgets, proposal lengths, and justified attention placement to actual work. |
-| Restarts | Runtime adaptation must not restart the container, workers, or CUDA context. A setting without a safe online transition stays at its qualified maximum-concurrency configuration. |
-| Migration | Between-batch changes and bounded state-preserving cache migration are authorized. Preserve every admitted sequence and its context commitment throughout its declared lifetime. |
-| Simplicity | Refactor the serving path directly. Use one homogeneous numerical/speculative profile for all resident sequences initially. Avoid simultaneous speculative systems, duplicated full histories, and unnecessary framework layers. |
-| Evidence | Capacity and throughput claims require complete accounting and representative execution. Header arithmetic, startup allocation, and live workload qualification are different evidence classes. |
+| Hardware | Optimize for this server's measured NVLink/PCIe/NUMA and SM70 behavior (Section 2). |
+| Target | Non-Swift SC117 IQ3_S; qualified mixed-format import; TP8 baseline with all eight ranks available at low load. Section 20 governs alternatives. |
+| Residency | One distributed target, at most one speculative model; qualified no-speculation transition releases both speculative systems. No extra full-model or persistent weight/vision copies for throughput. Preserve unique histories; charge required rank-local parameters and bounded activation/communication/recovery/migration storage. |
+| Context | Equal administrator-selected windows shared by expanded text/media, retained conversation and reasoning/reply. Native 262,144 rows; required RoPE/YaRN extension needs separate row/coordinate qualification (Section 6). |
+| Capacity | Compute the complete worst-rank integer maximum; 20/24/32 and power-of-two counts are not fixed limits (Sections 7–8). |
+| Speculation | Required/default shared-Q8 QSA MTP; separately selectable IncoAI DFlash2; explicit no-speculation reference/admin profile cannot replace MTP implementation (Sections 12, 14). |
+| KV | Ordinary precisely specified Q8 or RotorQuant `iso4` K/V. No unspecified native RotorQuant Q8. RotorQuant first; SAW later (Section 13). |
+| Histories | Unique attention KV and completed pooled indexer history in VRAM; bounded raw pending state; RAM raw-history archive off (Section 9). |
+| Multimodal | Required text/images/video → text, pinned vision/processor, bounded execution and separate MTP/DFlash qualification. Native audio/media generation excluded (Sections 2, 16). |
+| Adaptation | Workload-driven batches, kernels, graphs, prefill budgets, proposals and justified attention placement (Sections 10–18). |
+| Restarts | No container/worker/CUDA-context restart. Non-live settings stay at qualified maximum-concurrency values during adaptation or await a supported administrator in-process transition (Section 19). |
+| Migration | Batch-boundary changes and bounded state-preserving migration retain every admitted sequence's lifetime/context commitment (Section 11). |
+| Simplicity | Refactor one serving path directly; initially one homogeneous numerical/speculative resident profile. No simultaneous speculative systems, duplicate full histories or unnecessary framework layers. |
+| Evidence | Complete accounting and representative execution support capacity/performance claims; header arithmetic, startup allocation and live qualification remain distinct (Sections 21, 25). |
 
-The selected SC117 profiles have no established resident-session maximum until their post-import target, selected speculative method, vision, state, recovery, execution, and placement allocations are reconciled. Section 8 supplies geometry-only cross-checks. Earlier 20-Q8/32-Q4 goals are reference operating points, not admission promises; compute the supported count without a permanent threshold ceiling.
+SC117 capacity requires reconciled post-import target/method/vision, state, recovery, execution and placement allocations. Section 8 gives geometry-only cross-checks; 20-Q8/32-Q4 are reference points, not admission promises or ceilings.
 
 ### Boundaries of the design
 
 Preserve the target's sparse/indexed attention, recurrent equations, masks, pooling, positions, and sampling semantics while changing storage ownership and scheduling. Qualify quality-changing codecs separately.
 
-The no-restart contract covers normal serving adaptation and supported administrator reconfiguration. Hardware/driver faults and software deployment have separate lifecycles; recovery from every GPU or process fault without restart is not promised.
+No-restart applies to serving adaptation and supported administrator changes. Hardware/driver faults and software deployment have separate lifecycles; universal GPU/process fault recovery without restart is not promised.
 
 Preserve the selected tokenizer and operators; declare every weight conversion and numerical choice in the effective profile. Pin the custom Torch-based fork's revision rather than assuming public TensorFold interfaces match it.
 
@@ -64,7 +63,7 @@ Record `nvidia-smi topo -m`, NVLink status, CPU/NUMA inventory, and transfer/col
 
 ### SM70 execution stack
 
-Select the newest stable CUDA 12.x and newest mutually compatible libraries/tools supporting the required SM70 paths; build and qualify native SM70 code. CUDA 13 removes offline compilation below compute capability 7.5; NVIDIA directs older architectures to CUDA 12.9 and R580. Resolve the newest appropriate R580 host patch. Pin packages, source revisions, build flags, host compiler, linked libraries, and loaded paths after qualification. Installation or CUDA 12 compatibility alone does not prove V100 execution. Sources: [NVIDIA architecture guidance](https://developer.nvidia.com/blog/navigating-gpu-architecture-support-a-guide-for-nvidia-cuda-developers/) and [CUDA archive](https://developer.nvidia.com/cuda-toolkit-archive).
+Use the newest stable CUDA 12.x and mutually compatible SM70 libraries/tools; build and qualify native SM70 code. CUDA 13 removes offline compilation below 7.5; NVIDIA directs older GPUs to CUDA 12.9/R580. Resolve the newest appropriate R580 patch. Pin packages, source revisions, flags, host compiler, linked libraries and loaded paths. Installation/CUDA compatibility alone does not qualify V100 execution. Sources: [NVIDIA architecture guidance](https://developer.nvidia.com/blog/navigating-gpu-architecture-support-a-guide-for-nvidia-cuda-developers/); [CUDA archive](https://developer.nvidia.com/cuda-toolkit-archive).
 
 Volta Tensor Cores use FP16 matrix operands with FP16 or FP32 accumulation. Packed Q4/Q8 needs an explicitly supported compute path; do not assume newer GPUs' native INT4, INT8, FP8, or BF16 Tensor Core paths. Source: [Volta tuning guide](https://docs.nvidia.com/cuda/archive/12.9.1/volta-tuning-guide/index.html).
 
@@ -87,17 +86,17 @@ Release targets checked on 2026-10-25 follow. Deployment requires Section 21's c
 
 Toolkit/library versions: [CUDA 12.9.2 component manifest](https://docs.nvidia.com/cuda/archive/12.9.2/cuda-toolkit-release-notes/index.html), [cuBLAS patch releases](https://docs.nvidia.com/cuda/cublas-patch-release-notes/), [CUTLASS releases and compatibility](https://github.com/NVIDIA/cutlass), [NCCL release](https://github.com/NVIDIA/nccl/releases/tag/v2.32.3-1), [NCCL build rules](https://github.com/NVIDIA/nccl/blob/master/makefiles/common.mk), [CCCL 3.5.0 release](https://github.com/NVIDIA/cccl/releases/tag/v3.5.0) and [exact-release architecture policy](https://github.com/NVIDIA/cccl/blob/v3.5.0/README.md), [cuDNN support matrix](https://docs.nvidia.com/deeplearning/cudnn/backend/v9.10.2/reference/support-matrix.html) and [9.11 removal](https://docs.nvidia.com/deeplearning/cudnn/backend/v9.11.0/release-notes.html). Current NCCL source includes SM70 under CUDA 12.x; this does not replace exact-release binary inspection.
 
-CCCL 3.x excludes older-toolkit-only architectures from regular upstream testing without intentionally disabling every older path. Retained 3.5.0 primitive policies justify candidacy, not V100 qualification. Compile and run the required scan, sort, compaction, reduction, and warp/block operations; verify numerical/selection semantics, graph/stream integration, temporary-storage bounds, and complete-step performance. Resolve framework-vendored headers coherently. If the newest candidate fails, select the newest earlier release passing these gates. [CCCL 2.8.5](https://github.com/NVIDIA/cccl/releases/tag/v2.8.5) is a toolkit-wide-contract comparison baseline, not a version ceiling or LTS claim. Pin one deployment release, without serving-time library fallback. Policy: [issue 6226](https://github.com/NVIDIA/cccl/issues/6226) and [clarification 6229](https://github.com/NVIDIA/cccl/pull/6229).
+CCCL 3.x omits older-toolkit-only architectures from regular testing without disabling every path. Qualify 3.5.0 scan/sort/compaction/reduction and warp/block primitives for numerics/selection, graphs/streams, bounded scratch and whole-step performance; resolve vendored headers coherently. If it fails, select the newest earlier passing release. CCCL 2.8.5 is a comparison baseline, not a ceiling or LTS claim. Pin one deployment release; no serving-time library fallback. Sources: [CCCL 2.8.5](https://github.com/NVIDIA/cccl/releases/tag/v2.8.5); [issue 6226](https://github.com/NVIDIA/cccl/issues/6226); [clarification 6229](https://github.com/NVIDIA/cccl/pull/6229).
 
 Tools/framework evidence: [Nsight Compute history](https://developer.nvidia.com/nsight-compute-history) and [2025.3 support boundary](https://developer.nvidia.com/tools-overview/nsight-compute/get-started-2025_3), [Nsight Systems boundary](https://docs.nvidia.com/nsight-systems/ReleaseNotes/), [Sanitizer history](https://docs.nvidia.com/compute-sanitizer/ReleaseNotes/index.html), [NVIDIA published package builds](https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/), [PyTorch 2.14.1](https://github.com/pytorch/pytorch/releases/tag/v2.14.1), and [PyTorch CUDA 12 packaging policy](https://dev-discuss.pytorch.org/t/notice-cuda-12-6-wheels-will-no-longer-be-published-from-pytorch-2-15-drops-maxwell-pascal-volta/3432). A package index identifies a build; it does not select the server's OS. Source builds must resolve framework-vendored headers and transitive libraries coherently, rather than overriding individual libraries inside an incompatible wheel.
 
-Keep dependencies immutable during serving. Library/compiler/driver replacement follows the software-deployment lifecycle (Section 1) and invalidates affected algorithm, graph, numerical, resource, and performance qualification. Active-count adaptation selects already qualified plans; it does not hot-swap or upgrade dependencies.
+Keep dependencies immutable during serving. Library/compiler/driver replacement follows Section 1's deployment lifecycle and invalidates affected algorithm, graph, numerical, resource and performance qualification. Adaptation selects qualified plans; it never upgrades dependencies.
 
 Use NUMA-aware scheduling/transfer workers and bounded pinned staging. Pin an evictable file mapping only with measured need and a host-memory budget. Initially use one worker per GPU and one distributed coordinator; another process model needs synchronization and performance qualification.
 
 ### Model profile contract
 
-Validate a small manifest for each target/speculative pairing. Retain family-specific operators and one scheduler, allocator, planner, and execution path across publishers and encodings. The values below describe the initial artifacts; similar names do not establish identical geometry, values, tokenizer behavior, or draft compatibility.
+Validate each target/speculative manifest using family-specific operators and one scheduler, allocator, planner and serving path across publishers/encodings. Initial artifact values do not establish another artifact's geometry, numerics, tokenizer or compatibility.
 
 | Manifest field | Required content |
 |---|---|
@@ -107,9 +106,9 @@ Validate a small manifest for each target/speculative pairing. Retain family-spe
 | Speculative pairing | Embedded or separately supplied MTP; or draft architecture, feature taps/transforms, embedding/head ownership, tokenizer alignment, masks, position/window rules, selector/proposal probabilities, and commit/recovery convention |
 | Qualification identity | Source/conversion hashes, kernel/runtime build, selected target/draft KV formats, capacity ledger, and measured execution profiles for this numerical pairing |
 
-Before device allocation, validate tensor names, shapes, transformations, and operators. Derive planner dimensions from the manifest; specialize kernels without publisher/filename hardcoding. Unsupported Qwen3.8-Flash-Next geometry/operators require an implementation extension before admission. Apply the two-KV-head placement proof and 12/13-cache formulas only where their geometry assumptions hold.
+Before device allocation, validate tensor names/shapes/transforms/operators and derive planner dimensions from the manifest. Specialize kernels without publisher/filename hardcoding. Unsupported geometry/operators require implementation before admission; the two-head placement proof and 12/13-cache formulas apply only to matching geometry.
 
-Keep container, source encoding, runtime weights, compute precision, target KV, and draft KV separate. GGUF is a container; NVFP4 is a numerical representation. Inspect per-tensor formats rather than repository suffixes. Target weight quantization does not select the KV codec.
+Keep container/source encoding, runtime weights, compute precision and target/draft KV independent. GGUF is a container, NVFP4 a numerical representation; inspect per-tensor formats, not repository suffixes. Weight quantization does not select KV.
 
 ### NVFP4 sources on V100
 
@@ -125,7 +124,7 @@ Initially retain packed NVFP4 weights and decode bounded tiles into the existing
 
 Inspect activation quantization, calibration transforms, and QAT computation. Weight decoding alone does not reproduce native W4A4. Declare activation/accumulation policy and separately qualify departures from the source recipe. Conversion cannot restore lost quantization information; validate finite range and reconstruction error before serving.
 
-Prepare, hash, and reuse converted/repacked artifacts once per source/recipe identity with bounded host/device memory; do not convert on admission. Budget preparation if serving continues concurrently. Record source/derived identities and reject unsupported or infeasible selections without substituting model, precision, or offload policy.
+Prepare/hash converted or repacked artifacts once per source/recipe with bounded host/device memory; reuse them, never convert on admission. Budget concurrent preparation. Record source/derived identities and reject unsupported/infeasible choices without substituting model, precision or offload policy.
 
 ### Initial target artifact
 
@@ -154,7 +153,7 @@ The initial implementation targets the following base-family geometry from `Qwen
 | QSA indexer | Four query heads; one history head of dimension 128; compression ratio 4; 512 selected complete four-token groups plus up to three visible tail tokens |
 | Recurrent geometry | 16 key heads and 48 value heads, each dimension 128; convolution width 4; FP32 state |
 | MoE | 512 routed experts, ten selected per token; routed and shared intermediate width 640 |
-| Context | 262,144 positions; prompt and generated output share the selected allowance |
+| Context | Native configured allowance 262,144; extended allowances use Section 6's qualified RoPE/YaRN profiles. Prompt and generated output share the selected allowance. |
 | Positional encoding | Target theta 10,000,000; 64 rotary dimensions out of each 256-dimensional head; preserve the supplied mRoPE conventions |
 | Vocabulary | 248,320 entries; target embedding and output head are distinct tensors |
 | PLE | N-gram size 3; depthwise causal convolution width 4, dilation 3, nine prior activation rows; base config layer identifier 2 is one-based and corresponds to GGUF `blk.1` |
@@ -163,11 +162,11 @@ Preserve all four residual streams within target computation; do not average the
 
 ### Mixed weight import
 
-`IQ3_S` denotes a learned mixed tensor allocation. The publisher lists BF16, F32, F16, Q2_0, Q4_K, Q5_K, Q6_K, Q8_0, IQ2_S, IQ3_XXS, IQ3_S, IQ4_NL, and IQ4_XS. Treat that as the required initial decoder set; derive exact counts/payloads from both selected shard headers rather than treating the card's histogram as a complete two-shard census. Source: [pinned SC117 inventory and method](https://huggingface.co/SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF/blob/90a3350cd800ec1fe0d1660a38414ad9e985782f/README.md).
+`IQ3_S` is a learned mixed allocation. Initial decoders must support the publisher's BF16, F32, F16, Q2_0, Q4_K, Q5_K, Q6_K, Q8_0, IQ2_S, IQ3_XXS, IQ3_S, IQ4_NL and IQ4_XS list. Obtain exact counts/payloads from both shard headers; the card histogram is not a complete census. Sources: [pinned SC117 inventory and method](https://huggingface.co/SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF/blob/90a3350cd800ec1fe0d1660a38414ad9e985782f/README.md).
 
 Preserve the selected learned values, scales and codebooks through layout repacking. Use artifact-specific packed offsets and hashes. An unsupported format must not trigger uniform requantization, a different publisher's pack, or whole-model FP16 expansion. Any changed numerical representation is a separately selected and qualified profile.
 
-Reconcile every retained, decoded, replicated, sharded, or aliased tensor into a fresh worst-rank VRAM inventory, including MTP/DFlash and vision. Bind Section 15's recurrent decay and head-order transformations during import. Keep PLE as the explicitly identified host mapping. Qualify BF16-to-FP16 conversion, finite range and sensitive accumulation, including indexer selection stability. The historical 107.371 GiB loader receipt is not this selected artifact's runtime plan.
+Inventory every retained/decoded/replicated/sharded/aliased tensor per rank, including speculation and vision. Bind Section 15's decay/head-order transforms; identify the host-mapped PLE tensor explicitly. Qualify BF16→FP16 range, sensitive accumulation and indexer selection stability. The historical 107.371 GiB receipt is not this runtime plan.
 
 ### Tokenization and positions
 
@@ -190,7 +189,7 @@ Use the official base processor files at `de4b8e4d43b917e7706784d8bb445c9af86a35
 | [preprocessor_config.json](https://huggingface.co/Qwen/Qwen3.8-Flash-Next/resolve/de4b8e4d43b917e7706784d8bb445c9af86a3540/preprocessor_config.json) | 390 | `27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516` |
 | [video_preprocessor_config.json](https://huggingface.co/Qwen/Qwen3.8-Flash-Next/resolve/de4b8e4d43b917e7706784d8bb445c9af86a3540/video_preprocessor_config.json) | 385 | `7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13` |
 
-Both select `Qwen3VLProcessor`. Pin the torchvision `Qwen2VLImageProcessor` backend resolved from the image file's legacy `Fast` name, and `Qwen3VLVideoProcessor`; dependency fallback must not silently change preprocessing.
+Both select `Qwen3VLProcessor`. Pin the torchvision `Qwen2VLImageProcessor` resolved from the legacy `Fast` name and `Qwen3VLVideoProcessor`; no silent preprocessing-backend substitution.
 
 | Contract | Image | Video |
 |---|---|---|
@@ -323,11 +322,11 @@ Every retained or peak allocation must have:
 - A maximum derived from the effective profile and implementation limits.
 - A measurement or construction proof for allocations made by libraries outside the explicit allocator.
 
-The per-rank budget includes target, selected method and placed vision weights; target/method histories; recurrent, convolution, raw pending-group, pooling, draft, sampling/constraint, output-processing and media-position state; bounded language/visual features and execution; verification/recovery; graphs; communication; replacement/migration overlap; metadata and padding. Host decoded-media, replay-source and pinned-staging budgets are separate admission constraints, not VRAM KV capacity.
+Per-rank budgets cover target/method/vision weights and histories; recurrent/convolution/raw-pending/pooling/draft/sampling/constraint/output/media-position state; bounded language/visual execution/features; verification/recovery; graphs/communication; replacement/migration overlap; metadata/padding. Host media, replay and pinned staging are separate admission constraints, not KV capacity.
 
 Take the maximum for proven mutually exclusive workspaces and sum overlapping occupancy. Use one bounded execution arena where it can replace per-slot maximum slabs; reuse only after all asynchronous readers retire.
 
-Guarantee allocation with fixed-size typed history-page arenas and bounded execution/graph arenas. Track available page counts by required class and rank, not aggregate bytes, and allocate matched layer bundles before execution needs them. All admitted future pages must remain allocatable through fragmentation, graph replacement, and migration without fresh general-purpose device allocation per page at maximum residency.
+Use fixed-size typed history-page arenas and bounded execution/graph arenas. Track free classes/counts per rank, not aggregate bytes; reserve matching layer bundles before execution. Full admitted windows must remain allocatable despite fragmentation, graph replacement and migration, without fresh general-purpose device allocation per page at maximum residency.
 
 Before publishing capacity, initialize or conservatively budget every eligible kernel/communicator/library family's lazy residency. Every selected plan must fit admitted commitments and the overlap envelope. Deleting a graph does not prove its pool was released. Enforce these invariants in the existing allocator/planner.
 
@@ -361,9 +360,13 @@ Test one active request with all permitted histories resident. Idle retained his
 
 ### Optimization objective
 
+Hold context/position, quantizations, method and media bounds fixed. Establish the largest qualified resident count with useful execution resources; measure sustained committed decode with all sessions active and near-full histories. Tune every active count through capacity, including full idle histories elsewhere. Report per-session rate/latency; empty-context batch rates do not establish full-load performance.
+
+Administrators choose context using the measured context/capacity/throughput frontier. Load adaptation must not resize windows, downgrade Q8/Q4 or disable the selected method. It may tune safe batches, proposals, prefill/media quotas, kernels/graphs and ownership within the selected profile.
+
 Measure text prompt tokens/s, expanded visual rows/s, and committed output tokens/s separately, including per-request output rate, TTFT, TPOT percentiles, queue delay and fairness. Report media pixels/frames and preprocessing/encoding time; visual rows are not ordinary text-token throughput. Rejected candidates are not delivered output.
 
-Count each target prompt row once. Report prefix/media-cache hits, replay, MTP construction/refresh and other conditioning separately while including media preparation, encoding, transfers and maintenance in complete-operation timing. Also track successful-task latency and total reasoning/output tokens so shorter answers are not confused with higher raw token/s.
+Count each target prompt row once; report prefix/media hits, replay and MTP/other conditioning separately. Include media preparation/encoding, transfers and maintenance in complete-operation timing. Track successful-task latency and reasoning/output counts so shorter answers are not mistaken for higher token/s.
 
 Avoid batch-filling delay at low activity; maximize aggregate committed throughput within administrator latency limits at high activity. Mixed load must advance both prefill and decode. Optimize whole iterations, including routing, features, draft maintenance/drafting, verification, rejection/replay, communication, sampling, and commit.
 
@@ -376,7 +379,7 @@ Establish this fork's measured performance frontier at relevant operating points
 Expose only implemented, qualified choices:
 
 - A qualified Qwen3.8-Flash-Next target manifest and runtime weight representation, initially non-Swift SC117 IQ3_S.
-- Equal context allowance, within the target's supported position limit.
+- Equal context allowance and a qualified native or extended RoPE/YaRN profile, with explicit target/MTP/draft coordinate bounds; 262,144 is the native baseline, not a permanent engine ceiling.
 - Target KV format and its pinned implementation.
 - Speculative method: none, stock MTP, or DFlash.
 - Compatible MTP/DFlash artifact and supported method-weight/KV choices; initial MTP KV matches target KV, while initial DFlash KV is FP16.
@@ -399,6 +402,7 @@ target:
   revision: 90a3350cd800ec1fe0d1660a38414ad9e985782f
   weight_directory: IQ3_S
 context_tokens: 262144
+position_profile: native  # immutable resolved RoPE/MTP/draft manifest; qualified YaRN profiles may extend this
 kv_format: q8
 speculation:
   method: mtp
@@ -412,12 +416,34 @@ multimodal:
 max_sessions: auto
 history_residency: gpu
 performance:
-  objective: throughput
+  objective: max_sessions_then_full_load_decode_throughput
 ```
 
 An integer session setting caps physically supported capacity; it cannot force unsafe allocation. Any future minimum-capacity setting must fail if infeasible, without silently shortening context or changing quality.
 
 Keep configured, pending, and effective profiles distinct. Key each by target/method/vision hashes and revisions, conversion/runtime representations, tokenizer/template/processor, media policy, feature/position contracts, codecs, arithmetic, topology, kernel build, dependencies, and execution geometry. Prior geometry may seed tuning; release a new pairing only after its affected acceptance, quality, allocation, and performance gates pass.
+
+### RoPE/YaRN context profiles
+
+Implement context extension in the same engine. The pinned official model card recommends RoPE scaling/YaRN beyond 262,144 tokens; it establishes no reliable maximum for SC117 IQ3_S, either KV codec or speculative companion. Native/extended profiles require distinct qualification identities. Sources: [official model card](https://huggingface.co/Qwen/Qwen3.8-Flash-Next/blob/de4b8e4d43b917e7706784d8bb445c9af86a3540/README.md).
+
+**Configuration.** Resolve native/default or YaRN into an immutable manifest: algorithm/revision, original reference length, requested maximum rows, coordinate bounds, theta, rotary width/layout, factor, ramp, amplitude/attention scaling and rounding/clamping. Record numerical defaults separately for target attention/indexer, MTP attention/indexer and DFlash. Before allocation, reject nonfinite parameters, nonpositive reference lengths/amplitudes, invalid theta/factors/ramp bounds or inconsistent geometry; warnings are insufficient. Resolve GGUF/external conflicts explicitly or reject; never scale twice. Automatic factor selection may depend on the configured maximum, never live load or prompt length.
+
+First YaRN candidates use the pinned native reference length 262,144, theta 10,000,000 and 64 rotary dimensions, verified against import/reference code. Windows 524,288/1,048,576 imply factors two/four; these are qualification targets, not released limits or quality guarantees. Keep reference length separate from runtime maximum. Resolve beta/ramp/amplitude defaults from the selected implementation and qualify borrowed tuning. Other qualified, including non-power-of-two, windows remain eligible.
+
+**Numerical execution.** Match YaRN interpolation/amplitude, partial rotary dimensions and interleaved M-RoPE `[11,11,10]`; preserve nonrotary channels, THW assignment, timestamps and continuation delta. Target attention/indexer use the declared compatible transform; indexer rotation remains 64 of 128 dimensions with FP32 pooling at group-first coordinates. Define amplitude/score scaling once per operator: cos/sin amplitude s multiplies only the rotary Q·K contribution by s², leaving the nonrotary contribution unchanged. Uniform full-score scaling is not equivalent; test both contributions. Library support alone does not qualify this model/indexer/M-RoPE combination. Longer text context changes neither vision positions nor QSA grouping/selection budgets.
+
+Preserve Section 13's RoPE/codec order. Compare Q8 and iso4 with immediate quantization under identical positions; YaRN neither compresses history nor restores quantization loss. Distinguish row counts, integer absolute/M-RoPE positions and physical ring slots. Build phases/range reduction in qualified FP32-or-higher arithmetic, never FP16/BF16 absolute positions; check large-coordinate precision, launch/index limits and byte addressing. Budget bounded shared/tiled/on-demand phase generation, never uncharged per-session full-window replicas; include bounds/epochs in graph validity.
+
+**Speculation.** Every released extended point requires MTP attention/indexer positions, feature alignment, full-prefix initialization/refresh, sampling and recovery qualification with each selected KV codec; declare MTP settings explicitly rather than assuming target overrides propagate. DFlash2 keeps separate theta, absolute scalar rows and its bounded 2,048-row window. The window does not qualify positions beyond the configured 262,144 maximum. Validate an explicit draft extension policy and its target-feature effects, acceptance and whole-round speed; original frequencies may remain only if qualified at extended coordinates. Copying target YaRN or wrapping positions modulo the ring is insufficient. Verification preserves the selected extended target distribution, not its task quality. Reject unsupported target/method/position combinations before admission; never substitute methods.
+
+**Admission/capacity.** Bound extended context by positional quality, implementation limits and the complete worst-rank proof, not scaling factor alone. Expanded input, retained conversation and reasoning/reply share one window. Validate target/MTP axes and draft absolute positions, including lookahead, separately from rows; guard rows extend no position limit. Charge positional buffers, pooled scan/top-k, descriptors/rounding, recurrent/PLE recovery and media/replay costs. Section 8 rates apply only to unchanged geometry/codecs. Bounded selected attention does not bound pooled-indexer scan work.
+
+**Transitions/identity.** Fix frequencies, amplitude and algorithm for resident-state lifetime; active-count adaptation never retunes them. An allowance increase with unchanged transform needs Section 19's all-resident reservation/compatibility proof. A transform/reference-policy change initially drains affected sequences and retires state/graphs before in-process activation. Updating constants or re-rotating keys alone cannot convert quantized KV/pooled keys, recurrence, features and draft conditioning. Future replay conversion needs a bounded full-state proof. Include the complete positional manifest/epoch in session/prefix/checkpoint/draft/graph/tuning identities; forbid incompatible reuse. Expose configured/pending/effective state without container/worker/CUDA-context restart.
+
+**Release evidence.** Test native/extended windows at native/new-limit boundaries, arbitrary chunk/group/ring splits, long generation, rejection/rollback and media continuation. Compare reference/one-shot/chunked logits and state under identical settings. Predeclare quality thresholds for short-context regression, retrieval across depths, multi-needle and order-sensitive reasoning plus representative user tasks; one needle test is insufficient. Cover Q8/Q4, required MTP, separate DFlash and image/video cases. For every released profile, run Section 21's integer activity sweep and near-full-history/full-concurrency tests; report acceptance, prefill/committed decode, TTFT/TPOT, fairness and resources. Keep unsupported candidates visibly unqualified; never silently clamp.
+
+Reference algorithm background: [YaRN paper](https://arxiv.org/abs/2309.00071) and [Transformers RoPE parameters](https://huggingface.co/docs/transformers/main/en/internal/rope_utils). The initial frequency/amplitude construction reference is [`_compute_yarn_parameters` at the pinned Transformers revision](https://github.com/huggingface/transformers/blob/50e35cc0ca18ec19b80653690de553e6decf74f5/src/transformers/modeling_rope_utils.py); resolve and record its factor, original length, beta values, truncation and mscale/attention-factor conventions explicitly. This routine is independent of current sequence length; generic dynamic-NTK behavior is not a substitute. Pin the exact algorithm implementation/hash used for release; these references do not establish V100 performance or SC117 extended-context quality.
 
 ### Retention and admission
 
@@ -427,7 +453,7 @@ Bound the fair admission queue, define its queue-full response, and use aging wh
 
 ## 7 Automatic capacity planner
 
-The planner calculates the largest supported resident count for a useful qualified execution envelope:
+For the selected context and positional/numerical/method/media profile, the planner calculates the largest supported resident count for a useful qualified execution envelope. At that count, select the measured envelope with the best aggregate committed decode throughput under service limits; retain useful prefill/media progress and fairness. Report the measured capacity/throughput tradeoff when a smaller count is faster, without silently lowering the requested capacity objective:
 
 ```text
 Nmax = max N such that, for every rank r:
@@ -438,15 +464,16 @@ Nmax = max N such that, for every rank r:
   + retained_recovery_checkpoints[r, N, method]
   + peak_language_visual_execution_and_recovery[r, envelope]
   + graph_and_communication_residency[r]
+  + positional_tables_and_scratch[r, position_profile, envelope]
   + replacement_obligations[r, N]
   + migration_overlap_limit[r]
   + metadata_and_padding[r]
   <= usable_serving_budget[r]
 ```
 
-An execution envelope specifies target rows, expanded prompt rows, proposal limits, largest supported media work unit, visual microbatches and permitted overlap. Enforce separate host/pinned/replay-storage bounds. Capacity must support useful selected speculation and the promised visual envelope at full residency; visual encoding can be queued rather than multiplied by all resident sessions.
+Execution envelopes bound target/expanded-prompt rows, proposals, the largest media unit, visual microbatches and overlap. Enforce separate host/pinned/replay bounds. Full residency must support useful selected speculation and promised media work; visual encoding may queue instead of multiplying its workspace by all sessions.
 
-Target weights exclude separate MTP/DFlash and vision weights, charged once under their own terms; real target embedding/head aliases add no payload. Use a fresh SC117 receipt, not the historical 13.421 GiB/GPU aggregate that includes a different MTP plan.
+Ledger terms are disjoint allocation/lifetime categories. Charge exclusive positional tables/scratch there; reference shared language/graph arenas without double-counting. Target weights exclude separately charged speculation/vision; actual embedding/head aliases add no payload. Use fresh SC117 allocations, not the historical 13.421 GiB/GPU aggregate with another MTP plan.
 
 For the compact indexer, growing histories contain attention KV and completed pooled keys. Raw pending rings and saved tail versions belong to retained state/recovery; raw prefill/verification spans belong to bounded execution.
 
@@ -470,7 +497,7 @@ Capacity may fall between policy thresholds: retain a computed 18. Buckets aid e
 
 ### Method-specific resource description
 
-Each method supplies its retained weights and state, history geometry, proposal convention, target verification rows, per-session target/draft tentative rows, feature rows, recovery requirements, supported execution shapes, state-validity maintenance, and stop/commit rules.
+Each method declares weights/state, history geometry, proposals/verification rows, target/draft tentative and feature rows, recovery, supported shapes, validity maintenance and stop/commit rules.
 
 Guard rows follow the method's tail policy and page/pooling rounding. The reported +4 belongs to the historical receipt's verification geometry, not every MTP depth or DFlash block.
 
@@ -513,6 +540,10 @@ These are **ideal average growing-history costs**, excluding raw rings/staging/r
 | 65,536 | 0.114258 GiB | 0.060303 GiB |
 | 131,072 | 0.228516 GiB | 0.120605 GiB |
 | 262,144 | 0.457031 GiB | 0.241211 GiB |
+| 524,288 | 0.914062 GiB | 0.482422 GiB |
+| 1,048,576 | 1.828125 GiB | 0.964844 GiB |
+
+The two extended-window rows are arithmetic examples pending Section 6's positional/quality qualification, not advertised supported lengths.
 
 Add the selected profile's actual target/MTP/vision weights, all retained state, recovery, execution, graph/communication residency and overlap obligations. Neither a count in this table nor an earlier loader receipt establishes SC117 capacity. Fixed/session costs also prevent a rule that halving context doubles capacity.
 
@@ -553,7 +584,7 @@ Session state distinguishes:
 
 Guard slot reuse with lifetime/generation checks and reader retirement so stale graphs, transfers, or completion callbacks cannot write into a new sequence.
 
-Align page size with quantization blocks and four-token indexer pooling. Qualify 128-token pages as an initial candidate. Charge actual payload/metadata strides, including row padding caused by odd-sized quantization structures.
+Choose token-page lengths aligned with four-token indexer pooling; qualify 128-token pages as an initial candidate. Quantization blocks partition the head/value dimension, not the token axis: preserve their independent alignment and row strides without imposing a 128-token page requirement merely because iso4 uses 128-value blocks. Charge actual payload/metadata strides, including row padding caused by odd-sized quantization structures.
 
 ### Compact indexer construction
 
@@ -580,7 +611,7 @@ For each target attention layer:
 
 Batch routing and collectives by layer, not request. Preserve per-row causal boundaries, masking, pooling, ties, deterministic logical positions, and exact sparse selection. Later tentative appends must remain invisible to earlier queries. Replicated histories do not establish replicated indexer query inputs.
 
-Small transient projection duplication may remain initially to avoid unnecessary changes, provided persistent history stays unique. Optimize it only for a measured gain.
+Transient projection duplication is initially permitted; persistent histories remain unique. Optimize it only for measured benefit.
 
 ### Prefix reuse
 
@@ -657,7 +688,7 @@ Pause only affected work where supported; other requests can run between transfe
 
 ### Intermediate ownership is normal executable state
 
-If migration stops midway, committed moves remain authoritative: execute from the mixed owner table using the qualified union of current holders. Discard only uncommitted copies; never restore an old session mapping after freeing its pages.
+After partial migration, execute committed moves through the qualified union of current holders in the mixed owner table. Discard only uncommitted copies; never restore mappings whose source pages were freed.
 
 New pages follow the published future-allocation policy; existing pages follow recorded owners. Neither follows a stale session-level degree. Appends during partial migration retain balanced-bundle reservations.
 
@@ -667,7 +698,7 @@ Seal or quiesce mutable tails before copying. Preserve lengths, raw pending tail
 
 ### Cost policy
 
-At threshold crossings, evaluate workload persistence, remaining generation, measured transfer bandwidth, interruption, interference with other requests, and an uncertainty margin before choosing a move.
+Before moving, assess workload persistence, remaining generation, measured bandwidth, interruption/interference and uncertainty.
 
 Under the twelve-layer geometry, full owner-to-degree-4 redistribution moves about three quarters of unique target KV: approximately 1.20 GiB Q4 or 2.39 GiB Q8 across the box per full session, excluding indexer movement. These are transfer volumes, not timing predictions.
 
@@ -726,7 +757,7 @@ Verify one-token prompts, text/visual chunk boundaries, timestamps/delimiters, r
 
 ### Warm capability versus current proposal length
 
-Zero proposals is an execution choice: immediate reactivation requires resident weights, current history/state, and execution prerequisites, with maintenance included in timing. The planner cannot reclaim these resources while promising instant reuse. Removing the method is a configuration transition that changes capacity and may require later reconstruction.
+Zero proposals retains weights, valid history/state and execution prerequisites for immediate reactivation; include maintenance time. Reclaiming method resources requires a configuration transition and may require reconstruction.
 
 ### Accepted-prefix transaction
 
@@ -760,7 +791,7 @@ Use bounded asynchronous per-request output queues. Backpressure pauses that req
 
 Verify speculation against the configured target computation and sampling policy. Greedy matching does not establish stochastic acceptance/rejection. Apply temperature, truncation, penalties, constraints, and stops at the correct conditional prefix. Candidate-selector DFlash requires the corresponding proposal probabilities.
 
-Lossless speculation is relative to the selected numerical target, not Q4/Q8 equivalence. Reduction-order changes can affect results; specify numerical tolerances and sampling guarantees without promising universal bit-identical text.
+Lossless speculation is relative to the configured numerical target, not Q4/Q8 equivalence. Declare tolerances and sampling guarantees for reduction-order differences; universal bit-identical text is not promised.
 
 Keep per-sequence RNG ownership independent of batch permutation and migration. Padded rows must not advance another sequence's RNG or state.
 
@@ -808,9 +839,9 @@ Review SAW's modern-GPU attention and full-history prefill expansion for the V10
 
 ### Additional draft profiles
 
-Support administrator-selected compatible DFlash checkpoints and source/runtime weight formats through the same interface. Validate target feature boundaries/HC reduction, projection shapes, tokenizer/vocabulary alignment, embedding/head ownership or sharing, masks, RoPE/position limits, block/proposal convention, selector, and acceptance/recovery. Family resemblance is insufficient; narrowed/remapped vocabularies require correct explicit token/probability mapping and supported verification semantics.
+Use the same interface for administrator-selected DFlash checkpoints and source/runtime formats. Validate feature/HC boundaries, shapes, tokenizer/vocabulary and embedding/head alignment, masks, RoPE/window bounds, block conventions, selector/proposal probabilities and commit/recovery. Family resemblance is insufficient; narrowed vocabularies need explicit token/probability mapping and verification.
 
-Derive physical retention per layer from its actual full-prefix, sliding-window, or other supported policy. Full-prefix storage grows with context; windows save memory only through bounded allocation. Do not transfer the initial Inco profile's geometry, state, block convention, or memory totals to another draft. Budget actual persistent recurrence/convolution state, feature buffers, selector tables, and extra embedding/head copies.
+Derive physical retention per layer from its actual full-prefix, sliding-window, or other supported policy. Full-prefix storage grows with context; windows save memory only through bounded allocation. Do not transfer the initial Inco profile's geometry, state, block convention, or memory totals to another draft. Budget actual persistent recurrence/convolution state, feature buffers and selector tables. Reused target embeddings/heads require real storage sharing or qualified owner-served access with bounded activation transfer; do not add persistent copies for throughput. Independently learned draft tensors are distinct parameters and require their own numerical and residency inventory.
 
 Qualify acceptance and useful throughput against exact target weights, effective arithmetic, KV codec, and generation policy. Matching dimensions do not preserve profitable proposal length, capacity, or state compatibility. Cache identity includes the numerical target/draft and feature contract; model changes cannot reuse KV, recurrence, or draft conditioning based only on shapes.
 
@@ -841,7 +872,7 @@ Sources: [PixelML artifact](https://huggingface.co/PixelML/Qwen3.8-Flash-Next-NV
 | Target feature taps | Completed zero-based blocks 5, 15, 25, 35, 45 |
 | Feature input | Mean over four HC streams at each tap; concatenate five width-2,560 vectors to width 12,800 |
 | Draft attention | All five layers use a 2,048-token sliding window and checkpoint-defined non-causal block attention |
-| Position configuration | Maximum 262,144; draft RoPE theta 10,000 |
+| Position configuration | Published configuration maximum 262,144; draft RoPE theta 10,000. Extended absolute positions need Section 6's separately qualified draft policy; the 2,048-row ring does not extend this limit. |
 | Configured / initial serving block | Configuration says eight; initial qualification candidate uses four |
 | Candidate selector | Rank 256; top 16 candidates |
 | Dynamic convolutions | Kernel width two; group size 16; block-local and stateless across blocks |
@@ -870,7 +901,7 @@ Reference placement shards attention/MLP projections and replicates feature proj
 
 The two selector codebooks account for 254,279,680 bytes per replicated rank. Dividing the whole checkpoint by eight would undercount this placement. Source: [pinned SGLang DFlash model implementation](https://github.com/sgl-project/sglang/blob/3c560089e1818a5217a73f2168273485a5350341/python/sglang/srt/models/dflash.py).
 
-Add padding, persistent FP32 conversions, fused-layout copies, activations, graphs, communication, feature buffers, and sampling scratch to this payload. KV-materialization helpers must alias source weights or charge stacked copies. Target embedding/head sharing must share storage; charge any full decoded copies.
+Account for padding, qualified replacement-format residency, activations, graphs, communication, feature buffers and sampling scratch. KV-materialization helpers must use source-weight aliases or bounded tile decoding; target embedding/head access must share actual storage or use the qualified owner service. A replacement FP32 or fused runtime representation releases its superseded GPU copy after bounded conversion/validation. Do not retain additional full stacked or decoded weight copies for throughput; charge all permitted conversion overlap and tile workspace.
 
 At TP8, each draft rank can own one of its eight KV heads. An unreplicated FP16 window costs:
 
@@ -886,11 +917,11 @@ Preserve absolute scalar sequence-row positions and draft theta 10,000 when reus
 
 ### Bounded prefill and warm maintenance
 
-Apply feature FC and hidden normalization, then each draft layer's K/V projections. Apply per-head K RMSNorm and draft RoPE to K, neither to V. Apply V scaling only if the checkpoint declares it; this checkpoint declares none. Release features after bounded K/V materialization. For known complete prompts, retain only the ending draft window and skip older draft-KV materialization when lifecycle/projection semantics permit. The target still processes the full prompt; bounded conditioning initialization needs no full-prefix draft-attention pass.
+Apply feature FC/hidden norm, then each layer's K/V projections. Apply per-head K RMSNorm and draft RoPE only to K. This checkpoint has no V scale; honor one only if declared. Release features after bounded KV construction. For complete prompts, materialize only the ending window when lifecycle/projection semantics permit. Target prefill still covers the full prompt; draft conditioning needs no full-prefix attention pass.
 
 A full FP16 [262144,12800] feature array costs 6.25 GiB/replica. Use bounded target-prefill chunks or proven necessary tail captures, accounting for overlap with target execution.
 
-Prefix reuse, resumption, and interrupted/streamed prefill must supply the correct ending conditioning window. Current target KV cannot generally reconstruct missing features; evaluating only the last 2,048 tokens from an empty target is not equivalent. Reuse compatible draft state or reconstruct from a valid prior target-state boundary.
+Prefix reuse, resumption and interrupted/streamed prefill require the correct ending conditioning window. Target KV generally cannot reconstruct missing features; a fresh target pass over only the last 2,048 tokens is not equivalent. Reuse compatible draft state or replay from a valid target-state boundary.
 
 During skipped proposals, maintain the enabled method's window through committed target progress, track draft-valid position, and include maintenance time. Rejected features/tentative KV never become permanent conditioning.
 
@@ -909,7 +940,7 @@ To shorten proposals initially, choose a count of one, two, or three before draw
 
 Qualify genuine block-two/block-three execution separately: it changes non-causal interactions, grouped-convolution boundaries, masks, scratch, and graphs. Configured block eight is not qualification for target verification. Near the position limit, skip fixed-block drafting that would evaluate unsupported positions unless a smaller valid block is qualified.
 
-Longer blocks require per-sequence QSA/recurrence verification support as well as aggregate row capacity; enlarging R32 alone is insufficient.
+Longer blocks require per-sequence QSA/recurrence support and aggregate row capacity; a larger R32 envelope alone is insufficient.
 
 ### Selector, masks, and sampling
 
@@ -933,7 +964,7 @@ Compute capacity from twelve target attention/indexer caches plus actual DFlash 
 
 Compare committed throughput against no speculation and imported MTP with identical target numerics, reasoning/sampling modes, histories, and workloads. Select the best qualified execution within the enabled profile, including zero proposals when beneficial.
 
-Family compatibility makes Inco a SC117 test candidate without guaranteeing useful acceptance. If acceptance is poor, consider exact-target fine-tuning: generate verified HC features and continuations/distributions from the selected SC117 numerical target, bind its intended embedding/head, and consistently train/validate the backbone, block convolutions, and selector. SC117 training cost and V100 speedup remain unestablished.
+Inco is a SC117 candidate, not guaranteed useful speculation. Poor acceptance may justify exact-target fine-tuning using verified SC117 numerical-target HC features/continuations/distributions and its intended embedding/head, consistently training/validating backbone, block convolutions and selector. Training cost and V100 speedup remain unestablished.
 
 ## 15 SM70 kernel and model execution work
 
@@ -974,9 +1005,9 @@ PLE convolves normalized gated-value activations across all four 2,560-wide HC s
 
 cuBLASLt provides reusable algorithms and workspace constraints; CUTLASS supports SM70 FP16 TensorOp/WMMA, and its grouped GEMM can be specialized for Volta. Sources: [cuBLAS API](https://docs.nvidia.com/cuda/archive/12.9.1/cublas/index.html), [CUTLASS functionality](https://docs.nvidia.com/cutlass/latest/media/docs/cpp/functionality.html), and [grouped-GEMM specialization](https://github.com/NVIDIA/cutlass/issues/888). Inventory existing calls and traces before replacing work already using an appropriate library; these options still require measured TensorFold benefit.
 
-Keep handles, descriptors, and bounded per-stream workspaces persistent. Tune outside the serving loop; key algorithm choices by shape, layout/strides, alignment, numerical mode, workspace allowance, architecture, and exact library build. Concurrent work needs separate scratch or proven serialized reuse. Ordinary cuBLAS stream changes reset workspace binding: bind workspace after setting the stream. Budget lazy library residency and algorithm scratch before publishing capacity; larger-workspace algorithms require the resource-envelope protocol.
+Keep handles/descriptors and bounded per-stream scratch persistent; tune outside serving. Key choices by shape, layout/strides, alignment, numerics, workspace, architecture and exact library build. Concurrent scratch must be separate or provably serialized. Set cuBLAS stream before rebinding workspace; stream changes reset it. Budget lazy residency/scratch before admission; larger workspaces require the resource-envelope protocol.
 
-For packed weights, compare fused tile decode against bounded FP16 staging plus library GEMM where row reuse amortizes staging. Count added reads, writes, launches, and peak storage; do not expand the full model or long KV history to enable a library call. Specify FP32 accumulation and reduction behavior so narrow intermediate reductions cannot silently change the numerical profile. Select expert kernels using actual routed rows without requiring per-layer host readback merely to populate a grouped-library call.
+Compare fused packed-weight tile decode with bounded FP16 staging/library GEMM where row reuse amortizes staging. Count reads/writes/launches and peak memory; no full-model/KV expansion for BLAS. Specify FP32 accumulation/reduction to prevent silent numerical changes. Select expert kernels from actual routed rows without per-layer host readback merely to populate library calls.
 
 Use cuDNN or ordinary cuSPARSE only for a matching operator with measured complete-step benefit. cuBLASXt's competing multi-GPU distribution policy is outside fixed TP8. cuSPARSELt requires SM80 or newer structured-sparsity hardware; cuBLASDx 0.6.0 removes Volta. Neither is a baseline dependency. Sources: [cuSPARSELt support](https://docs.nvidia.com/cuda/cusparselt/index.html) and [cuBLASDx release notes](https://docs.nvidia.com/cuda/cublasdx/0.6.0/release_notes.html).
 
@@ -1005,7 +1036,7 @@ Include tokenization, CPU media decode/preprocessing, request assembly, output d
 
 ### Multimodal execution
 
-Use the same admission planner, scheduler and target state path for text and visual requests. Before publishing capacity, the effective profile declares supported media formats, bounded upload/decoded sizes, image counts/pixels, video frames/duration/sampling/timestamps, expanded visual-row allowance, encoder placement/representation, work limits and CPU/GPU staging/replay budgets. Reject inputs outside these limits with a specific reason. Resolution, frame selection and media fidelity are request/profile semantics, not active-count controls.
+Use one admission/scheduling/state path for text/media. Before publishing capacity, declare media formats, upload/decoded-size bounds, image counts/pixels, video frames/duration/sampling/timestamps, expanded-row allowance, encoder placement/numerics and CPU/GPU staging/replay/work budgets. Reject violations specifically. Media fidelity/resolution/frame policy are request/profile semantics, never activity controls.
 
 #### Preparation, positions and context
 
@@ -1017,13 +1048,13 @@ Preserve original expanded token IDs for PLE/hash state while replacing visual i
 
 #### Bounded visual execution
 
-Initially qualify one resident FP16 encoder/projector copy on one fixed GPU, choosing the rank by topology, worst-rank headroom and mixed-work latency. Supported sharding or bounded replication may replace this candidate only after implementation and measured benefit; publish its complete placement/resource plan before admission. Placement stays fixed during serving. Route projected embeddings through the target TP8 input contract; eight target ranks do not require eight visual copies.
+Initially qualify one resident FP16 encoder/projector copy on one fixed GPU, choosing the rank by topology, worst-rank headroom and mixed-work latency. Qualified sharding of that same encoder may replace this placement after implementation and measured benefit; do not introduce additional encoder replicas for throughput. Publish its complete placement/resource plan before admission. Placement stays fixed during serving. Route projected embeddings through the target TP8 input contract; eight target ranks do not require eight visual copies.
 
 Adapt bounded CPU preprocessing workers, legal image/frame microbatches, attention tiles and language-prefill quotas at coordinated boundaries. Independent images or valid temporal/attention segments may batch together; arbitrary spatial splitting must not remove noncausal attention edges. Use exact bounded attention tiling, preserving segment boundaries, positional interpolation and merger order, rather than an unbounded score tensor or an approximation.
 
 Charge placed vision weights, encoder activations, projected embeddings, staging, graph pools and communication for permitted overlap. Encoding concurrency may be lower than resident session capacity. Queue visual work fairly while preserving every full-context commitment; the largest supported media work unit must fit at full residency. Idle visual execution does not release promised reserve for additional guaranteed contexts.
 
-Use bounded host/pinned buffers and an immutable bounded replay source or equivalent reproducible representation. Release transient embeddings after target consumption and required MTP/DFlash conditioning unless retention is explicitly budgeted. A `[262144,2560]` FP16 embedding archive costs 1.25 GiB per copy and is not allocated by default. Optional media caches are bounded and keyed by content, processor/settings, visual weights/numerics, grids and order; capacity must remain valid on misses. Target-prefix reuse also needs Section 9's full state/profile identity.
+Use bounded host/pinned buffers and immutable bounded replay sources or reproducible equivalents. Release embeddings after target/speculative conditioning unless explicitly retained/budgeted; a `[262144,2560]` FP16 archive costs 1.25 GiB/copy and is not default. Bound media caches by content, processor/settings, vision weights/numerics, grids/order; capacity must hold on misses. Target-prefix reuse also requires Section 9's complete state/profile identity.
 
 #### Multimodal speculation
 
@@ -1056,7 +1087,7 @@ Observe active sequences, request multiplicity, history lengths, selected indexe
 | Other counts | Use a correctly masked qualified covering profile; measure every integer count and investigate performance breakpoints |
 | Above 32 | Extend the same policy when shorter contexts or other qualified settings permit |
 
-For every released context/precision/method profile, sweep throughput/latency at every integer count from one through computed resident capacity. Detailed long-context and transition tests cover named thresholds, exact endpoints, and observed breakpoints. Clip testing to capacity without rounding capacity to a threshold: test 18 if capacity is 18, and the higher regime if it is 40. A safe covering graph does not prove optimal intermediate-count throughput; add buckets only for measured end-to-end gains.
+For each released context/precision/method, measure every integer active count through capacity. Detailed long-context/transition tests cover named thresholds, endpoints and observed breakpoints; test 18 when capacity is 18 and extend above 32 when feasible. Masked covering graphs prove safety, not optimal intermediate throughput; add buckets only for measured end-to-end gains.
 
 Handle an immediate jump from one active sequence to the configured maximum through the canonical path, using bounded smaller batches when necessary. Hysteresis must never permit oversized batches on undersized buffers or unsupported graphs.
 
@@ -1092,7 +1123,7 @@ Capture/replacement follows framework quiescence rules. Another host thread does
 
 Expose configured, pending, and effective values separately. Normal adaptation and supported administrator changes must not restart containers, workers, or CUDA contexts; worker replacement is not a live update.
 
-Drain/readiness rules cover every affected resident sequence. Request-scoped work must finish or cancel and retire; intentionally retained sessions follow their close, expiry, or supported reconstruction contract. Zero active requests does not release retained histories, draft conditioning, recurrent/position state, retained media dependencies or recovery obligations; conversely, no retained sessions does not permit unloading while request-scoped work still owns state or is in flight.
+Drains cover every affected resident sequence: request-scoped work must finish/cancel and retire; retained sessions follow close/expiry/reconstruction rules. Zero activity leaves retained history, draft, recurrent/position/media and recovery obligations intact. No retained sessions does not authorize unloading request-scoped or in-flight state.
 
 | Adjustment | Implementation policy |
 |---|---|
@@ -1100,20 +1131,21 @@ Drain/readiness rules cover every affected resident sequence. Request-scoped wor
 | KV ownership and attention degree | Use bounded byte-preserving migration and a published mapping epoch |
 | Resident-sequence ceiling decrease | Restrict new admissions; preserve existing sequences and context commitments |
 | Resident-sequence ceiling increase | Require the complete maximum-context and execution-envelope proof |
-| Larger context | Activate for all resident sequences together after reserving enlarged commitments and validating position/state compatibility; otherwise keep pending until the affected profile drains |
+| Larger context with unchanged effective positional transform | Activate for all resident sequences together only after reserving enlarged commitments and validating qualified positions, state and execution bounds; otherwise keep pending until the affected profile drains |
+| RoPE/YaRN algorithm, frequencies, factor, original-reference length or amplitude change | Initially drain affected resident state and retire dependent graphs/caches; validate and activate the prepared profile in process. Never change from active-count adaptation or reuse incompatible state (Section 6). |
 | Smaller context | Preserve existing windows; keep pending until the homogeneous resident profile drains |
 | Codec, target/visual weights, processor/numerics, structural encoder placement, draft checkpoint or speculative method | Use a qualified in-process transition, or drain all affected resident sequences and reinitialize in process |
 | No supported in-process transition | Fix the setting at its qualified maximum-concurrency value; expose no live control |
 
-Initially use one homogeneous resident profile for equal context, recovery, capacity, and graph ownership. Simultaneous quality/context profiles require a separately budgeted extension.
+Initially use one homogeneous context/quality profile for recovery, capacity and graph ownership; simultaneous profiles need separate budgeting.
 
 Structural drains stop admissions that could indefinitely extend the old profile. Define resume/closure behavior while existing sessions finish or close under their retention contract. An idle retained session can keep the change pending: report its blocking condition or resource without forced deletion, restart, or a promise to switch at the next zero-active instant.
 
 Byte-preserving GPU page moves retain the quantized representation. Q4-to-Q8 conversion cannot recover discarded information; enabling another speculative method may require historical features/state never retained. Neither is a lossless migration. Use qualified reconstruction where supported; otherwise drain affected sessions. Within an enabled method, zero-proposal operation is a scheduling choice only while conditioning remains valid. The active-count controller does not change MTP/DFlash, draft checkpoints, or KV precision.
 
-Target or effective weight-representation changes initially require every affected sequence to drain, followed by graph/reader/state retirement and loading of a prepared replacement without keeping two full models resident. When layouts/weights cannot coexist within bounded transition memory, use this empty-resident in-process transition rather than an unbudgeted second model. Queue requests or report pending status under service policy; uninterrupted service is not implied. Bind queued requests to their requested model/media profile so they cannot silently use another model, tokenizer, processor or fidelity policy. Retained media must not be reprocessed under changed settings without an explicitly qualified transition.
+Target/runtime-weight changes initially drain affected sequences, retire graphs/readers/state and load a prepared replacement. If old/new layouts cannot coexist in bounded memory, use an empty-resident in-process transition; uninterrupted service is not promised. Queue or report pending per service policy. Bind queued work to its complete requested model/context/RoPE/KV/method/tokenizer/processor/media profile; reject or retain incompatible work pending. Retained media cannot be reprocessed under changed settings without a qualified transition.
 
-Before publishing the replacement or its capacity, every rank must finish loading, allocation, target/draft binding, execution-bound initialization, and required kernel/library residency. Retire or rebuild affected graphs and rebuild measured-plan selection. Recoverable preparation/load failure leaves the candidate failed or pending and unavailable: coherently retire partial state and advertise no unready capacity. If the old model was released, old-profile service is not implied. Retry or reload a prepared supported profile in process without requiring two full models resident.
+Publish a replacement/capacity only after all ranks finish loading, allocation, target/draft binding, bound initialization and required library/kernel residency. Retire/rebuild affected graphs and tuning plans. On recoverable preparation/load failure, coherently retire partial state and expose failed/pending, never unready capacity. Releasing the old model ends its service guarantee. Retry/reload a prepared profile in process without two full resident models.
 
 ## 20 Host memory and deferred architecture alternatives
 
@@ -1123,9 +1155,11 @@ Profile cold/warm lookups, page faults, CPU execution, NUMA access, and bounded 
 
 Budget host media decode, normalized pixels, optional retained projected embeddings, immutable replay sources/caches and pinned transfer stages separately from PLE and history. Bound CPU worker concurrency, queued decoded media and every buffer lifetime; do not allocate maximum video working sets for all resident sessions. These media resources do not provide attention-KV capacity.
 
-The raw-indexer RAM archive remains disabled. The compact indexer has no growing raw array to archive. The historical archive's approximately 13.038 MiB/session/GPU ring/staging cost belongs to that earlier full-raw layout; it is not an allocation or capacity-saving option for the initial compact profiles.
+Keep the raw-indexer RAM archive disabled. Compact indexing has no growing raw array. The historical 13.038 MiB/session/GPU ring/staging cost belongs to the full-raw layout, not an initial compact allocation or capacity-saving option.
 
-Host paging of attention KV or retained expert weights is unimplemented in the supplied receipt and cannot supply advertised capacity or silently rescue overcommitment. Smaller independent TP groups with expert parallelism, or pipeline layouts, need new per-rank weight plans, routing/communication, memory proofs, and performance qualification. They are neither fixed-TP8 prerequisites nor live active-count controls.
+Host paging of attention KV or retained expert weights is unimplemented in the supplied receipt and cannot supply advertised capacity or silently rescue overcommitment. The eligible structural comparison is topology-aware TP8 versus TP4 × PP2 with one distributed target. Independent TP4 model replicas and the proposed TP4 attention/dense plus EP2 layout that duplicates shardable nonexpert weights are excluded. A nonduplicating expert-placement change remains eligible only with an exact inventory and measured benefit. The TP8-specific contracts in this document govern the implementation baseline until an alternative receives separate qualification.
+
+The pipeline candidate requires stage-specific weight/state plans, full HC transfer, transactional scheduling and a worst-rank resource proof. Keep the selected target embedding at its owning stage and serve MTP/DFlash lookups through bounded vector transfers; the final-stage target head can remain shared with its local draft. Include lookup latency in complete speculative rounds and keep the owner service schedulable during feedback waits to prevent a dependency deadlock. Add no persistent target embedding or vision copies. Changing TP/PP placement is a separate in-process weight-and-state transition, not a cache-only active-count control; retain the selected maximum-concurrency layout if that transition cannot meet the no-restart contract.
 
 ## 21 Observability and qualification
 
@@ -1133,7 +1167,7 @@ Host paging of attention KV or retained expert weights is unimplemented in the s
 
 Publish a compact machine-readable effective-profile/capacity receipt and user-facing limiting-resource explanation. Include:
 
-- Exact target/MTP/DFlash/visual/processor/codec IDs, hardware/runtime manifest, context, media envelope/placement, configured ceiling, computed resident capacity, and qualification status.
+- Exact target/MTP/DFlash/visual/processor/codec IDs, hardware/runtime manifest, immutable resolved RoPE/YaRN and companion position manifests/epochs, native/reference versus configured/qualified maxima, context, media envelope/placement, configured ceiling, computed resident capacity, and qualification status.
 - API request counts; separate request-scoped/retained, active, queued and scheduled sequences; text/visual prefill rows, frames/pixels, prefix/media-cache hits, maintenance/replay work and target verification rows.
 - Proposal policy, draft-valid state, acceptance distribution, recovery/replay work, and committed generated tokens.
 - Timestamped per-rank weights, history pages, state, graph pools, language/visual workspaces, external allocations, physical free memory and protected commitments; bounded host/pinned/media-store use and queue occupancy.
@@ -1147,7 +1181,7 @@ Separate startup/current readings, measured allocations, logical reservations, a
 | Axis | Required cases |
 |---|---|
 | Artifacts, precision and method | Every released target/runtime-weight pairing and supported target KV with none/MTP; every DFlash pairing/draft format; selected NVFP4 import/conversion/activation semantics |
-| Context | Short, intermediate and selected maximum windows, near 262,144 initially; expanded media/text, markers/timestamps and requested output fit the window |
+| Context and RoPE/YaRN | Native and every released extended positional profile; short/intermediate/near-full histories, native/new-limit boundaries, coordinate-versus-row bounds, invalid/nonfinite profile rejection, partial-RoPE amplitude parity, Q8/Q4 quality, required MTP and separately qualified DFlash, media, profile identity and in-process changes; input plus output fits the allowance |
 | Concurrency | Integer sweep from 1 through capacity; detailed thresholds, exact endpoints and measured breakpoints; burst from 1 to maximum |
 | Retention | Request-scoped release and intentional retention; one resident/one active, all resident/one active, all resident/all active; partial/near-full histories; supported multi-sequence accounting |
 | Workload mix | Prefill only, decode only, mixed long prompts/decode, heterogeneous acceptance, routed expert skew; visual bursts with decode fairness |
@@ -1206,7 +1240,7 @@ Use Section 2's dependency/processor manifests and Section 15's operator/library
 | 8 | Add bounded graphs, global controller and mixed media/prefill/decode scheduling | Safe immediate load changes; integer sweep and detailed threshold/breakpoint evidence |
 | 9 | Add bounded migration, epoch publication and hysteresis | Intermediate states fit; serving remains correct; adopted migrations yield net gains |
 | 10 | Integrate IncoAI DFlash2, TP8 HC capture, FP16 kernels/selector, qualified stochastic verifier and bounded SWA/features with separate draft positions | Independently qualified SC117/Q8-KV and SC117/RotorQ4-KV text/visual correctness, supported sampling, capacity, acceptance and performance |
-| 11 | Complete in-process administration, observability, sustained-load tests and operations | No tuning restart; lifetime commitments, readiness/failure contracts and reproducible receipts/benchmarks |
+| 11 | Complete in-process administration, observability, sustained-load tests and operations; implement native/YaRN positional profiles and extended Q8/Q4 capacity/quality qualification with required MTP and separately qualified DFlash | No tuning restart; immutable position identity, bounded phase resources, native/extended parity and quality, lifetime commitments, readiness/failure contracts and full-load receipts/benchmarks |
 | Additional profiles | Qualify other target/draft artifacts, including the NVFP4 source/runtime contract | Conversion parity, quality/acceptance, actual allocations and recomputed activity/capacity profiles in one serving path |
 | Later | Evaluate SAW and other architectural alternatives | Separate quality/capacity/performance evidence before inclusion |
 
@@ -1218,36 +1252,36 @@ Retain each stage's commit/build ID, workload, resource receipt, results and lim
 
 The model choices are settled; implementation supplies these remaining bindings and measurements:
 
-1. **Artifacts/fork:** selected SC117 binary-header census, embedded tokenizer/template, target/MTP/DFlash/vision tensor maps, source-to-runtime transforms and actual allocations. Bind ordinary Q8, RotorQuant Q4 and explicit MTP QSA; historical receipts are comparison evidence.
-2. **Server/stack:** installed CPU/DIMMs, GPU UUID/rank mapping, links, PCIe/NUMA and firmware; newest compatible Section 2 build/library IDs, SM70 paths and applicable compiler/library gates.
-3. **Multimodal:** Section 2's pinned processor/decoder execution, explicit service media bounds, selected fixed encoder placement, operator/position parity, peak CPU/GPU/pinned/replay resources and task quality.
-4. **Speculation:** shared MTP import/norm/HC and text/visual prefix refresh; Inco DFlash2 TP8 features, FP16 conversion, selector, SWA ring, position separation and useful block sizes against SC117 with each KV codec.
+1. **Artifacts/fork (Sections 2, 12–15):** SC117 binary census; tokenizer/template; target/MTP/DFlash/vision tensor maps/transforms and allocations; ordinary Q8, RotorQuant Q4 and explicit MTP QSA bindings. Historical receipts remain comparisons.
+2. **Server/stack (Section 2):** installed CPU/DIMMs, GPU UUID/ranks, links, PCIe/NUMA, firmware and newest compatible build/library IDs; SM70 and compiler/library qualification.
+3. **Multimodal (Sections 2, 16):** pinned processor/decoder, service media bounds, fixed encoder placement, operator/position parity, CPU/GPU/pinned/replay peaks and task quality.
+4. **Speculation (Sections 12, 14):** MTP import/norm/HC and text/visual refresh; Inco DFlash2 TP8 features, FP16 conversion, selector, SWA, separate positions and useful blocks for SC117 with each KV codec.
 5. **Recovery:** checkpoint counts/cadence, retained media/replay requirements, replacement overlap, failure behavior and proven shared lifetimes.
-6. **Execution:** row/prefill/visual budgets, recurrent/convolution kernels and chunk sizes, graphs, ownership degree, draft width, migration allowance and hysteresis across every active count and workload regime.
-7. **Service/API:** throughput-first objectives with bounded fairness; latency/queue limits, sequence lifetimes/multiplicity, input commit/cancellation, output backpressure, structural drains and readiness/failure behavior.
+6. **Execution (Sections 10–18):** row/prefill/media budgets, recurrent/convolution kernels/chunks, graphs, ownership degree, draft width, migration cap and hysteresis across all activity/workload regimes.
+7. **Service/API (Sections 5–7, 19):** context/position selection and quality thresholds; maximum capacity then full-load decode with fairness/latency/queue limits; lifetimes/multiplicity, input commit/cancellation, output backpressure, drains and readiness/failure behavior.
 
-Maximum Q8/Q4 resident counts are outputs of the complete post-import ledger and qualification for the selected context, method and media envelope. Earlier weight receipts do not establish SC117 limits; 20-Q8/32-Q4 remain useful comparison points, not promised capacities. Publish the computed integer maximum even when it falls between or above controller thresholds.
+Publish the qualified integer maximum from the complete post-import ledger for the selected context/method/media envelope. Historical weights establish no SC117 limit; 20-Q8/32-Q4 remain reference points, never promises or threshold ceilings.
 
 ## 24 Acceptance checklist
 
-Implementation is complete when all applicable checks pass:
+All detailed requirements and applicable Section 21 gates remain mandatory. Release also requires this cross-section checklist:
 
-- Administrator inputs resolve to explicit context, numerical/method and media profiles, capacity and a limiting-resource explanation.
-- The newest mutually compatible SM70 stack has exact build/loaded-library identities, resolved applicable compiler/library issues, and combined-stack qualification. Its workspace/communication residency fits the capacity contract.
-- Validated target/DFlash manifests use one serving path; GGUF/NVFP4 source encodings, runtime weights/activations, and target/draft KV are independent. Capacity uses post-import allocations.
-- Every admitted sequence can reach its full expanded text/media-plus-reply allowance with selected speculation and recovery throughout its lifetime. Required images/video-to-text execution is correct within declared media bounds; native audio and media generation are outside this profile.
-- Request-scoped state retires at the declared completion boundary; retention follows the API. Independent sequences are fully accounted for; partial-prefill cancellation/resumption preserves transcript and model state.
-- Weight TP8 remains stable; attention KV and pooled indexer history use unique storage and verified balanced placement. Raw indexer storage stays bounded through chunking, speculation, rollback and prefix reuse.
-- RotorQuant Q4 and ordinary Q8 have tested byte layouts/SM70 kernels; Signed128 evidence does not qualify RotorQuant.
-- Worst-rank accounting covers selected MTP or DFlash, placed vision weights, retained media/position state, graphs, tails, snapshots, migration and non-Torch allocations, plus separate host/pinned/replay bounds. Capacity supports useful prefill/verification and the largest promised media work unit.
-- Low-load batches, kernels, graphs, speculation, and placement avoid unnecessary waits. Every integer count through capacity has performance evidence, plus detailed thresholds/endpoints/breakpoints; supported shorter contexts can exceed 32.
+- Explicit context/RoPE, numerical/method/media profiles, capacity and limiting-resource explanation; extended windows pass every Section 6 gate.
+- Exact SM70 build/loaded-library identities and resolved compiler/library issues; combined-stack qualification and bounded workspace/communication (Sections 2, 21).
+- One manifest-driven serving path; independent source/runtime weight, activation and target/draft KV choices; capacity from imported allocations (Sections 2, 7).
+- Every sequence can reach its promised expanded input-plus-reply window with selected speculation/recovery. Image/video → text passes declared media bounds; native audio/media generation stays outside scope (Sections 6–7, 16).
+- Account for independent sequences; retire request-scoped state at completion and preserve retained/input-commit semantics through prefill cancellation/resumption (Sections 6, 16).
+- Stable TP8 baseline or Section 20-qualified single-target alternative; no additional persistent target/vision copies for throughput. Unique, balanced KV/pooled histories and bounded raw state pass chunk/speculation/rollback/prefix tests (Sections 9–11).
+- Q8/RotorQuant Q4 layouts and SM70 kernels pass Section 13 gates; Signed128 results do not qualify RotorQuant.
+- Complete worst-rank and host/pinned/replay ledgers support useful prefill/verification and the largest promised media unit at full residency (Sections 4, 7).
+- Maximize qualified capacity, then near-full-history/full-active committed decode; preserve commitments at low load. Measure every integer activity count, thresholds/endpoints/breakpoints, without a 32-session ceiling (Sections 5, 17, 21).
 - Sudden load increases, partial migrations, cancellations, and slot reuse are correct and bounded.
-- Accepted-prefix commit/recovery covers recurrence, PLE, indexer, draft and sampling/constraint/output bookkeeping; masked rows cannot mutate live sessions. Unsupported verifier policies reject before state mutation; streaming/cancellation respects canonical commit.
-- Supported adjustments need no container/worker/CUDA-context restart. Unsupported live knobs stay fixed at their qualified maximum-concurrency configuration or pending for a supported in-process transition.
-- Structural changes preserve lifetime commitments and never silently reduce quality, context, media fidelity or selected-method availability.
-- Replacement profiles publish only after all ranks have validated bounds and readiness. Recoverable load failure reports unavailable/pending status and permits in-process recovery without duplicate full-model residency.
-- Receipts distinguish current allocations, future commitments, startup observations, estimates and qualified limits. Performance separates useful text/visual prefill and committed decode, media processing, latency, fairness and overhead.
-- Required MTP uses the separately pinned shared-Q8 companion, complete validated tensor coverage, SC117 embedding/head aliases, explicit QSA policy, full-prefix text/visual conditioning and selected target KV codec. Independently qualify IncoAI DFlash2 on this target/V100 stack, including TP8 HC features, physically bounded SWA and distinct draft positions. Each additional pairing validates its own weights, features, history and recovery. SAW follows core implementation.
+- Every Section 12 state type commits/recovers correctly; padded rows cannot mutate sessions. Unsupported verification rejects before mutation; publication/cancellation follows canonical commit.
+- No tuning container/worker/CUDA-context restart; unsupported live settings remain fixed or pending under Section 19.
+- Structural changes preserve lifetime, quality, context, media fidelity and selected-method commitments (Section 19).
+- All-rank readiness precedes replacement publication. Recoverable failure exposes pending/unavailable state and in-process recovery without duplicate full models (Section 19).
+- Section 21 receipts distinguish observations, allocations, commitments, estimates and qualification; report useful text/visual prefill, committed decode, media work, latency, fairness and overhead separately.
+- Required shared-Q8 QSA MTP passes Section 12's import/alias/norm, full-prefix text/visual conditioning and selected-KV gates. IncoAI DFlash2 independently passes Section 14's SC117/V100/TP8 feature, bounded-window and position gates. Additional pairings require their own complete qualification; SAW follows core implementation.
 
 ## 25 Evidence and source register
 

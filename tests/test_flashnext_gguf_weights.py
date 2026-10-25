@@ -36,7 +36,8 @@ def test_tp8_plans_use_legal_block_views_and_replicated_kv(tmp_path, rank):
     assert experts.down.column_offset == (rank * 80) % 32
     gdn = weights.layers[0].gdn
     expected_values = [h % 2 * 8 + h // 2 for h in range(rank * 2, rank * 2 + 2)]
-    assert list(gdn.a_log.indices) == expected_values
+    assert gdn.a_log is None and gdn.a_neg.transform == "negative_exp"
+    assert list(gdn.a_neg.indices) == expected_values
     assert gdn.out.columns == tuple((h * 32, 32) for h in expected_values)
     assert weights.layers[0].attn_hc.down is weights.layers[0].attn_hc.prefill_down
     estimate = weight_byte_plan(path, (rank, 8))

@@ -37,6 +37,10 @@ IQ3_S and IQ4_XS; the host and SM70 decoders preserve those original blocks.
 Independent pinned GGML wire checks cover the host decoders. New SM70 device,
 full-model, media and capacity qualification remains pending; historical model
 results below do not qualify this target.
+The GGUF recurrent importer preserves stored FP32 `A_neg=-exp(A_log)` and its
+coupled value-head permutation; the FP16 chain consumes that representation
+directly. HF-backed providers retain their `A_log` representation. Source
+import/recurrence controls are separate from pending V100 numerical qualification.
 
 Adaptive V100 serving requires explicit positive `--max-pending-requests` and
 `--max-http-connections` limits before model loading. The V100 Compose profile

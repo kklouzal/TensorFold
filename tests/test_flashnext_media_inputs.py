@@ -1,17 +1,32 @@
 """Merged visual rows retain request identity and bounded consumer ownership."""
 
 import pytest
-import torch
 
-from tensorfold.families.qwen4_exp.cuda.media_inputs import ReadyInputSpan
+torch = pytest.importorskip("torch")
+
+from tensorfold.families.qwen4_exp.cuda.media_inputs import ReadyInputSpan  # noqa: E402 - optional backend guard precedes CUDA imports
+from tensorfold.families.qwen4_exp.cuda.position_coordinates import IssuedCoordinates, issue_coordinates  # noqa: E402
+from tensorfold.families.qwen4_exp.position_profile import PositionOperands, PositionRole  # noqa: E402
+from tensorfold.families.qwen4_exp.rope import RopeParameters  # noqa: E402
+
+
+def position():
+    rope = RopeParameters("default", 1e7, 64, 128, 128)
+    role = PositionRole("target", rope, 128, (128, 128, 128), "d" * 64, "control")
+    return PositionOperands(torch.ones(32), 1., (11, 11, 10), role, "c" * 64, 0)
 
 
 def prepared(**changes):
     fields = dict(start=7, token_ids=(10, 99, 99, 11), values=torch.arange(32).reshape(4, 8).half(),
                   positions=torch.tensor([[7, 7, 7], [8, 3, 4], [8, 3, 5], [9, 9, 9]], dtype=torch.int32),
                   rope_delta=-1, profile_identity="a" * 64, generation=3, media_identity="b" * 64,
-                  max_rows=4, hidden_size=8, vocab_size=100, roles=("target", "mtp"))
+                  max_rows=4, hidden_size=8, vocab_size=100, roles=("target", "mtp"), position=position())
     fields.update(changes)
+    if type(fields["positions"]) is not IssuedCoordinates:
+        fields["positions"] = issue_coordinates(fields["positions"], position=fields["position"],
+            profile_identity=fields["profile_identity"], generation=fields["generation"],
+            media_identity=fields["media_identity"], row_start=fields["start"], max_rows=fields["max_rows"],
+            device=fields["values"].device)
     return ReadyInputSpan(**fields)
 
 
@@ -93,8 +108,10 @@ def test_storage_rebinding_poison_retains_original_storage_for_fenced_retirement
 
 
 def test_coordinates_on_another_device_are_refused_before_event_creation():
+    coordinates = issue_coordinates(torch.zeros(4, 3, dtype=torch.int32), position=position(),
+        profile_identity="a" * 64, generation=3, media_identity="b" * 64, row_start=7, max_rows=4, device="cpu")
     with pytest.raises(ValueError, match="share the value device"):
-        prepared(positions=torch.empty((4, 3), dtype=torch.int32, device="meta"))
+        prepared(positions=coordinates, values=torch.empty((4, 8), dtype=torch.float16, device="meta"))
 
 
 def test_cancellation_flag_cannot_skip_an_unused_consumer_through_coercion():
