@@ -26,8 +26,13 @@ class HistoryPlacement:
     degree: int = 1
     page_tokens: int = 128
 
+    @staticmethod
+    def supports(world: int, global_kv_heads: int) -> bool:
+        """Pure layout eligibility; deployment/history policy remains caller-owned."""
+        return type(world) is int and type(global_kv_heads) is int and (world, global_kv_heads) == (8, 2)
+
     def __post_init__(self) -> None:
-        if (self.world, self.global_kv_heads) != (8, 2):
+        if not self.supports(self.world, self.global_kv_heads):
             raise ValueError("unique SM70 history currently requires TP8 and two global KV heads")
         _int(self.target_layers, "target attention layers", 1)
         if self.degree not in (1, 2, 4) or type(self.degree) is not int:

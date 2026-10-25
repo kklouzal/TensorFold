@@ -92,14 +92,14 @@ def _native_mtp(raw):
                           source.native_context, mrope_section=source.mrope_section)
 
 
-def _mtp_source_defaults(raw, target_raw):
+def _mtp_source_defaults(raw, source_reference):
     """The stock companion's undeclared positions use target SOURCE-native defaults.
 
     This is the existing native MTP family contract, made explicit. It never
     receives a target CLI override, and retains every actual companion value.
     The receipt still hashes the actual unmodified companion configuration.
     """
-    native = _native_mtp(target_raw)
+    native = source_reference
     text = dict(raw if raw.get("text_config") is None else raw["text_config"])
     dim = text.get("head_dim")
     if dim is None:
@@ -123,6 +123,15 @@ def _mtp_source_defaults(raw, target_raw):
     text["rope_parameters"] = defaults
     text.setdefault("max_position_embeddings", native.native_context)
     return {"text_config": text}
+
+
+def mtp_source_parameters(raw, source_reference: RopeParameters):
+    """Resolve actual companion declarations with explicit source-native defaults.
+
+    Only theta, rotary width/layout and original reference are borrowed; a
+    target runtime YaRN factor or amplitude never supplies a missing MTP policy.
+    """
+    return RopeParameters.from_config(_mtp_source_defaults(raw, source_reference))
 
 
 def _resolve_rope(raw, declaration, *, yarn_factor=None, native_mtp=False):
@@ -375,7 +384,7 @@ def resolve_position_profile(model_dir, *, requested_context, yarn_factor=None, 
     if "mtp" in companions:
         mtp_raw, mtp_files, mtp_digest = _source(companions["mtp"])
         inputs.update(mtp_files)
-        mtp_raw = _mtp_source_defaults(mtp_raw, raw)
+        mtp_raw = _mtp_source_defaults(mtp_raw, _native_mtp(raw))
         mtp_origin = "actual-companion-with-explicit-source-native-defaults"
     mtp_declaration = None if manifest is None else manifest["mtp"]
     if mtp_declaration is not None and "mtp" not in companions:

@@ -37,7 +37,8 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
          draft_vocab: int | str | None = None, ple_on_ssd: bool = False, table_reads: list | None = None,
          rope: RopeParameters | None = None, vram_experts: float | str | None = None, expert_loader=None,
          vram_experts_pin: str = "off", _pin_future_bytes: int = 0, eos_token_ids=None,
-         mtp_model_dir=None, _draft_ids=None, _prefill_plan=None) -> Weights:
+         mtp_model_dir=None, _draft_ids=None, _prefill_plan=None, family_manifest=None,
+         _sm70_plan=None, _sm70_workspace=None, _sm70_weight_plan=None) -> Weights:
     """Load rank ``tp``'s shares; ``draft_vocab`` selects default/file ids or ids below N, None scores all ids."""
 
     import time
@@ -46,6 +47,14 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
     from . import exl3
 
     model_dir = Path(model_dir)
+    if family_manifest is not None:
+        from .sm70_nvfp4_weights import load as load_sm70
+
+        return load_sm70(model_dir, family_manifest, device, mtp=mtp, tp=tp, rope=rope,
+                         eos_token_ids=eos_token_ids, mtp_model_dir=mtp_model_dir, _plan=_sm70_plan,
+                         _workspace=_sm70_workspace, _weight_plan=_sm70_weight_plan,
+                         ple_on_ssd=ple_on_ssd, table_reads=table_reads,
+                         vram_experts=vram_experts, expert_loader=expert_loader)
     from ..gguf import resolve_gguf
     if resolve_gguf(model_dir) is not None:
         from .gguf_weights import load_gguf
