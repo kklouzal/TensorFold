@@ -10,6 +10,9 @@ The revised V100 foundation is a
 [CUDA 12.9 source-build candidate](deploy/v100/source-foundation.md).
 The historical cu126 wheel image is reference evidence and does not qualify
 the selected combined dependency stack.
+Its [process-issued software binding](docs/sm70-software-binding.md) verifies
+sealed source-stack inputs without granting compiler/device/model qualification.
+Required image/video processor dependencies from the revised design remain pending.
 Measured execution profiles use a separate
 [content-verified identity and evidence manifest](docs/execution-profile-manifest.md).
 

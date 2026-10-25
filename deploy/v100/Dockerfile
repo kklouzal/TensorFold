@@ -32,8 +32,8 @@ ENV PATH="/opt/venv/bin:${PATH}" \
 COPY --from=source_artifacts /native /opt/tensorfold-native
 COPY --from=source_artifacts /probes /opt/tensorfold-probes
 COPY --from=source_artifacts /build-inputs /opt/tensorfold-pins/build-inputs
-COPY deploy/v100/source-pins.json /opt/tensorfold-pins/source-pins.json
-COPY deploy/v100/source_foundation.py /opt/tensorfold-pins/source_foundation.py
+COPY --chmod=0444 deploy/v100/source-pins.json /opt/tensorfold-pins/source-pins.json
+COPY --chmod=0444 deploy/v100/source_foundation.py /opt/tensorfold-pins/source_foundation.py
 RUN --network=none --mount=from=source_artifacts,source=/wheels,target=/source-wheels \
     python -m pip install --no-deps /source-wheels/torch-*.whl \
     && python -m pip check \
@@ -42,6 +42,9 @@ RUN --network=none --mount=from=source_artifacts,source=/wheels,target=/source-w
        --build-receipt /opt/tensorfold-pins/build-inputs/source-build.json \
        --receipt-root /opt/tensorfold-pins/build-inputs --wheel /source-wheels/torch-*.whl \
        --output /opt/tensorfold-pins/v100-source-foundation.json \
+    && find /opt/tensorfold-pins/build-inputs -type f -exec chmod 0444 {} + \
+    && chmod 0444 /opt/tensorfold-pins/v100-source-foundation.json \
+    && chmod 0555 /opt/tensorfold-pins /opt/tensorfold-pins/build-inputs \
     && python /opt/tensorfold-pins/source_foundation.py audit
 COPY . /src
 RUN --network=none python -m pip wheel --no-build-isolation --no-deps /src --wheel-dir /wheels \
