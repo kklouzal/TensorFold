@@ -74,6 +74,8 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     endpoint.add_argument("--max-engine-calls", type=int, default=None,
                           help="MLX only: optional positive cap on queued and running engine RPC callbacks, "
                                "including timed-out callers (default: uncapped; unsupported on CUDA)")
+    endpoint.add_argument("--serving-profile-root", type=Path, default=None,
+                          help="local prepared serving-profile directory for in-process resident Flash Next SM70 model/context/KV/method transitions; requires finite request/socket limits")
     endpoint.add_argument("--name", default="", help="model id clients ask for (default: the model's name)")
     endpoint.add_argument("--alias", action="append", default=[], help="another model id to answer to")
     endpoint.add_argument("--name-priority", action="append", default=[], metavar="ID=background",
@@ -230,6 +232,9 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     speed.add_argument("--execution-profile-manifest", type=Path, default=None, metavar="PATH",
                        help="Flash Next GGUF GPU-history SM70: load measured execution profiles only after their "
                             "checkpoint, codec, runtime, kernel and hardware identities match this deployment")
+    speed.add_argument("--family-manifest", type=Path, default=None, metavar="PATH",
+                       help="Flash Next SM70: explicit source/numerical manifest for retained software NVFP4; "
+                            "requires --precision full and separately pending model/device qualification")
     speed.add_argument("--indexer-history", choices=("gpu", "ram"), default="gpu",
                        help="Flash Next GGUF/SM70: full GPU raw indexer history (default), or a bounded GPU "
                             "working ring with asynchronous NUMA-local RAM archive; pooled history stays on GPU")

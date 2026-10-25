@@ -459,31 +459,77 @@ class DFlash2Runtime:
             target.dflash2.kv = None
         target.dflash2 = None
 
+    def _feature_reader_owners(self):
+        """Validate the complete live catalogue without changing any claim."""
+        states = [state for ref in self._states if (state := ref()) is not None]
+        frames = [frame for ref in self._frames if (frame := ref()) is not None]
+        for frame in frames:
+            readers = sum(state.pending is not None and state.pending.frame is frame for state in states)
+            if type(frame.readers) is not int or frame.readers != readers:
+                raise RuntimeError("DFlash2 retirement retains an unowned feature reader")
+        for state in states:
+            pending = state.pending
+            if pending is not None:
+                if all(pending.frame is not frame for frame in frames):
+                    raise RuntimeError("DFlash2 retirement lost its feature frame owner")
+        return states, frames
+
+    def retire_request_after_fence(self, states, *, fenced):
+        """Settle only affected request claims after actual cleanup and its fence.
+
+        The actor retains primary error trees/tracebacks until this operation
+        succeeds. An empty tuple covers a refusal before slot acquisition.
+        Known unrelated readers/windows remain intact; uncertain ownership or
+        failed slot cleanup refuses retirement and requires fatal containment.
+        """
+        if fenced is not True or type(states) is not tuple or self.closed:
+            raise ValueError("request retirement requires a live runtime, bounded State tuple and completed fence")
+        affected = []
+        try:
+            owned = [state for ref in self._states if (state := ref()) is not None]
+            if len(states) > len(owned):
+                raise ValueError("request retirement exceeds its owned window catalogue")
+            for target in states:
+                window = getattr(target, "dflash2", None)
+                if (getattr(target, "dflash2_runtime", None) is not self
+                        or all(window is not candidate for candidate in owned)
+                        or any(window is candidate for candidate in affected)):
+                    raise ValueError("request retirement lost its unique runtime/window owner")
+                affected.append(window)
+                if (window.closed or window.poisoned or window.kv is None
+                        or window.generation != target.slot_generation
+                        or any(getattr(target, name, None) is not None for name in (
+                            "_resize_error", "_resize_frames_pending", "_history_error", "_kv_error"))):
+                    raise ValueError("request retirement retains an invalid or unsuccessfully reset State")
+                pending = window.pending
+                if (window.enabled and window.end != target.pos
+                        or not window.enabled and pending is not None):
+                    raise ValueError("request retirement has not resolved its target/draft frontier")
+                if pending is not None and (
+                        pending.generation != pending.frame.generation
+                        or pending.slot_generation != window.generation or pending.start != window.end):
+                    raise ValueError("request retirement retains a stale feature claim")
+            self._feature_reader_owners()
+            for target in states:
+                self.discard(target)
+            self._feature_reader_owners()
+        except BaseException:
+            for window in affected:
+                window.poisoned = True
+            raise
+
     def retire_after_fence(self, *, fenced):
         """Retire constructor/failed-frame owners after coordinated quiescence.
 
         The engine/structural construction owner retains every traceback and
         partial Buffer/State until its device fence AND this retirement finish.
-        A successful fence cannot excuse an unknown feature reader: validate
-        that every lease is owned by a catalogued pending window before any
-        mutation. Failure retains the catalogue and poisoned owners for fatal
-        containment; callers may not clear constructor frames on that path.
+        Unknown feature readers retain the catalogue for fatal containment;
+        callers may not clear constructor frames on that path.
         """
         if fenced is not True:
             raise ValueError("DFlash2 retirement requires the owning coordinated device fence")
-        states = [state for ref in self._states if (state := ref()) is not None]
-        frames = [frame for ref in self._frames if (frame := ref()) is not None]
-        for frame in frames:
-            readers = sum(state.pending is not None and state.pending.frame is frame for state in states)
-            if frame.readers != readers:
-                for state in states:
-                    state.poisoned = True
-                raise RuntimeError("DFlash2 retirement retains an unowned feature reader")
-        for state in states:
-            if state.pending is not None and all(state.pending.frame is not frame for frame in frames):
-                state.poisoned = True
-                raise RuntimeError("DFlash2 retirement lost its feature frame owner")
         try:
+            states, _frames = self._feature_reader_owners()
             for state in states:
                 if state.pending is not None:
                     state.pending.frame.readers -= 1
@@ -491,8 +537,10 @@ class DFlash2Runtime:
                 state.closed = True
                 state.kv = None
         except BaseException:
-            for state in states:
-                state.poisoned = True
+            for ref in self._states:
+                state = ref()
+                if state is not None:
+                    state.poisoned = True
             raise
 
     def close(self):

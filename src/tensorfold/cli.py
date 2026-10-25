@@ -361,8 +361,13 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
         options.update(expert_ranks=args.expert_ranks, expert_shards=args.expert_shards)
     if getattr(args, "kv_full_windows", None) is not None:
         options["kv_full_windows"] = args.kv_full_windows
+    if getattr(args, "serving_profile_root", None) is not None:
+        options["serving_profile_root"] = args.serving_profile_root
     if getattr(args, "execution_profile_manifest", None) is not None:
         options["execution_profile_manifest"] = args.execution_profile_manifest
+    if getattr(args, "family_manifest", None) is not None:
+        options["family_manifest"] = args.family_manifest
+        options["_prepared_family_plan"] = getattr(args, "_prepared_family_plan", None)
     if getattr(args, "indexer_history", "gpu") != "gpu":
         options["indexer_history"] = args.indexer_history
     if getattr(args, "vram_experts_pin", "off") != "off":
@@ -405,6 +410,9 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
     chosen = getattr(args, "precision", None)
     precision.set_mode(chosen or precision.CHECKPOINT, asked=chosen is not None)
     engine = family.package.cuda_engine(model_dir, **options)
+    if getattr(args, "family_manifest", None) is not None:
+        args._prepared_family_plan = None
+        options.pop("_prepared_family_plan", None)
     owners = {"engine": engine}
     primary = None
     try:
@@ -538,7 +546,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
             )
     settings = families.read_config(config_dir)
     families.require_readable(family, settings, backend)
-    if families.quant_method(settings) == "gguf" and not getattr(args, "_kv_dtype_explicit", False):
+    if (families.quant_method(settings) == "gguf" or getattr(args, "family_manifest", None) is not None
+            ) and not getattr(args, "_kv_dtype_explicit", False):
         args.kv_dtype = "fp16"
     _check_model_overrides(args, config_dir, settings)
     _sampling_defaults(args, config_dir)
@@ -546,6 +555,19 @@ def cmd_serve(args: argparse.Namespace) -> int:
     _note_untested(family, args.model)
     required_files = getattr(family.package, "REQUIRED_FILES", {}).get(args.model, ())
     check = getattr(family.package, "check", None)
+    if getattr(args, "family_manifest", None) is not None:
+        from tensorfold.families.qwen4_exp.cuda.sm70_nvfp4_weights import model_plan
+
+        def check(directory):
+            # This explicit recipe owns the complete per-tensor contract;
+            # the unchanged legacy checker only admits expert-only NVFP4.
+            previous = getattr(args, "_prepared_family_plan", None)
+            if previous is not None and previous[1].directory == Path(directory).resolve():
+                previous[1].manifest.check_cached(args.family_manifest, directory)
+                return
+            selected_rope = family.package.rope_parameters(directory, getattr(args, "yarn_factor", None))
+            args._prepared_family_plan = model_plan(directory, args.family_manifest,
+                (int(args.rank), int(args.tp)), rope=selected_rope, eos_token_ids=getattr(args, "eos_token_ids", None))
     if check is not None:
         check(config_dir)  # refuse an unsupported checkpoint before downloading its weights
     native_context = _model_context(config_dir)

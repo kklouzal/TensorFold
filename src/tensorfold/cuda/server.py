@@ -50,7 +50,7 @@ _MADE = threading.Lock()                # guards the lazily made per-app ``Turns
 _SAMPLING_FIELDS = ("temperature", "top_p", "top_k", "min_p", "seed")
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, weakref_slot=True)
 class PreparedRequest:
     prompt: list[int]
     max_tokens: int
@@ -65,6 +65,20 @@ class PreparedRequest:
     calls: Any = None       # strict tools' call grammar and reader (server.strict_tools.Plan), or None
     thought_open: bool = False   # the Gemma prompt ends inside the thought channel it opened: the reply begins in it
     penalties: Any = None   # active presence/frequency/repetition penalties (engine.penalties.Penalties), or None
+
+    profile_binding: Any = None
+    _profile_finalizer: Any = None
+    _profile_use: Any = None
+    _admission: Any = None
+
+    def close(self):
+        """Retire an unused/consumed prepared model binding; safe to repeat."""
+        if self._profile_finalizer is not None:
+            from tensorfold.cleanup import finish
+
+            operations = (self.profile_binding.close,) + (() if self._admission is None else (self._admission.close,))
+            finish(operations)
+            self._profile_finalizer.detach()
 
 
 def applies_penalties(engine: Any) -> bool:
@@ -125,7 +139,8 @@ class App:
             scheduler = getattr(engine, "scheduler", None)
             if scheduler is not None:
                 scheduler.configure_requests(self._request_limit)
-            self.run = self._request_limit.wrap(self.run)
+            if getattr(engine, "serving_profiles", None) is None:
+                self.run = self._request_limit.wrap(self.run)
             self.decisions = self._request_limit.wrap(self.decisions)
         from tensorfold.token_metadata import load_tokenizer
 
@@ -164,6 +179,11 @@ class App:
         if self.context_window < 0:
             raise ValueError("context_window must be 0 or a positive token count")
         self.turns = Turns()                # one request at a time where the engine decodes one
+        profiles = getattr(engine, "serving_profiles", None)
+        if profiles is not None:
+            from tensorfold.cuda.profile_app import AppProfiles
+
+            self._profiles = AppProfiles(self, profiles)
 
     @property
     def thinking_markers(self):
@@ -249,6 +269,8 @@ class App:
         largest = (getattr(self.engine, "capacity_plan", None) or {}).get("largest_window")
         if largest is None or need > largest:
             return ""
+        if getattr(self.engine, "serving_profiles", None) is not None:
+            return f", or select a prepared serving profile with context {need} or more through /v1/runtime"
         return f", or restart{ranks} with --context {need} or more (this memory admits up to {largest})"
 
     def _context_limit(self) -> int | None:
@@ -707,12 +729,15 @@ class App:
                 delta: dict[str, Any] = {}
                 if len(reasoning) > sent["reasoning"]:
                     delta["reasoning_content"] = reasoning[sent["reasoning"]:]
-                    sent["reasoning"] = len(reasoning)
                 if len(answer) > sent["content"]:
                     delta["content"] = answer[sent["content"]:]
-                    sent["content"] = len(answer)
-                if delta and not emit(delta):
-                    stopped["client"] = True
+                if delta:
+                    if not emit(delta):
+                        stopped["client"] = True
+                    else:
+                        # Callback acceptance follows canonical token commit.
+                        # HTTP's callback includes write+flush, not peer receipt.
+                        sent["reasoning"], sent["content"] = len(reasoning), len(answer)
                 if calls_stream is not None and not stopped["client"]:
                     for call_delta in calls_stream.feed(answer_raw[0]):   # never the reasoning
                         if not emit(call_delta):
