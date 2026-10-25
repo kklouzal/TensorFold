@@ -257,3 +257,42 @@ def test_dflash_finish_omits_unused_candidate_collective_and_ordinary_finish_ret
     weights.dflash2 = None
     assert forward.finish(weights, None, buffers, 2, pending=None) is not None
     assert calls == ["candidate-collective"]
+def test_new_sequence_retires_native_and_draft_readers_before_generation_publication(monkeypatch):
+    import weakref
+    from types import SimpleNamespace
+    from tensorfold.families.qwen4_exp.cuda.state import State
+
+    events = []
+    target = object.__new__(State)
+    target._resize_error = target._kv_error = target._history_error = None
+    target.slot_generation = 4
+    target.dflash2 = SimpleNamespace(generation=4)
+
+    class Reader:
+        def wait_native_reuse(self):
+            events.append("reader")
+
+    class Words:
+        is_cuda = True
+        device = "cuda:0"
+
+        def __getitem__(self, index):
+            assert index == 0
+            return self
+
+        def fill_(self, generation):
+            assert target.slot_generation == 4 and target.dflash2.generation == generation == 5
+            events.append("word")
+
+    def discard(state):
+        assert state is target and state.dflash2.generation == 4
+        events.append("draft")
+
+    reader = Reader()
+    target.history_native_readers = weakref.WeakSet([reader])
+    target.history_generations = Words()
+    target.dflash2_runtime = SimpleNamespace(discard=discard)
+    monkeypatch.setattr(torch.cuda, "current_stream", lambda _device: SimpleNamespace(
+        synchronize=lambda: events.append("fence")))
+    assert target.begin_sequence_generation() == 5
+    assert events == ["reader", "fence", "draft", "word"]

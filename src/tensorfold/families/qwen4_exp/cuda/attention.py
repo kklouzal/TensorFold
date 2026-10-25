@@ -311,14 +311,16 @@ def _merge_row(PO, PM, PL, OUT, n, r, h, H: tl.constexpr, D: tl.constexpr, CH: t
 
 class AttnScratch:
     def __init__(self, rows: int, heads: int, head_dim: int, capacity: int, device, *, budget: int = 2048,
-                 ratio: int = 4, dtype=torch.bfloat16) -> None:
+                 ratio: int = 4, dtype=torch.bfloat16, selection_only: bool = False) -> None:
         # a row reads at most budget + ratio - 1 keys (dense below the budget, its selected blocks and tail past it)
         self.capacity = capacity
-        self.nch = -(-min(capacity, budget + ratio - 1) // CHUNK)
-        self.po = torch.zeros((rows, self.nch, heads, head_dim), dtype=torch.float32, device=device)
-        self.pm = torch.zeros((rows, self.nch, heads), dtype=torch.float32, device=device)
-        self.pl = torch.zeros((rows, self.nch, heads), dtype=torch.float32, device=device)
-        self.out = torch.empty((rows, heads, head_dim), dtype=dtype, device=device)
+        self.selection_only = selection_only
+        if not selection_only:
+            self.nch = -(-min(capacity, budget + ratio - 1) // CHUNK)
+            self.po = torch.zeros((rows, self.nch, heads, head_dim), dtype=torch.float32, device=device)
+            self.pm = torch.zeros((rows, self.nch, heads), dtype=torch.float32, device=device)
+            self.pl = torch.zeros((rows, self.nch, heads), dtype=torch.float32, device=device)
+            self.out = torch.empty((rows, heads, head_dim), dtype=dtype, device=device)
         # sparse attention (QSA): each row's key list, its length, whether it is sparse, block scores
         self.budget, self.ratio = budget, ratio
         self.idw = budget + ratio
@@ -328,6 +330,8 @@ class AttnScratch:
         self.nk = torch.zeros((rows,), dtype=torch.int32, device=device)
         self.sparse = torch.zeros((rows,), dtype=torch.int32, device=device)
         self.scores = torch.zeros((rows, self.nb), dtype=torch.float32, device=device) if self.qsa else None
+        if selection_only:
+            return  # Unique-owner attention has its own bounded stats/PV/output slabs.
         # T's rows (fewer than MULTI_ROWS): radix histograms (zeroed by each call) and their slices' placement counts
         # (written by the last pass before placement reads them), at most ``cw`` slices a row
         self.cw = min(SELECT_SLICES, triton.next_power_of_2(-(-self.nb // SELECT_TB)))
@@ -360,6 +364,8 @@ def attention(q: torch.Tensor, kc: torch.Tensor, vc: torch.Tensor, pos0: torch.T
     original shader dispatch; optional side traits are an all-or-none plan.
     ``prompt`` (a prompt pass's row blocks) decodes six-bit sides' centroids by register gather, the same bits.
     """
+    if scratch.selection_only:
+        raise ValueError("selection-only history scratch cannot execute legacy chunk attention")
     if q.dtype == torch.float16:
         return _half_ops.attention(q, kc, vc, pos0, scratch, rows, scale, out, context=context, ks=ks, vs=vs, bits=bits, codec=codec, k_bits=k_bits, k_codec=k_codec, v_bits=v_bits, v_codec=v_codec, rotor_lookup=rotor_lookup, prompt=prompt)
 

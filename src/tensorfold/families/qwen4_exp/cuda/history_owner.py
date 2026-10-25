@@ -8,26 +8,69 @@ This source implementation requires separate native/full-model qualification.
 from __future__ import annotations
 
 from copy import copy
+from dataclasses import dataclass
 import traceback
+from types import SimpleNamespace
 
 import torch
 
 from tensorfold.cuda.sm70 import family_ops as ops
 
-from .kvcache import KVCache
+from .kvcache import KVCache, KVPairFormat
+
+
+@dataclass(frozen=True)
+class HistoryPageClass:
+    """One allocator class: codec pair, geometry and a full fixed token page."""
+    pair: KVPairFormat
+    head_dim: int
+    tokens: int
+
+    def __post_init__(self):
+        if type(self.tokens) is not int or self.tokens <= 0 or self.tokens % 4:
+            raise ValueError("typed history pages need complete positive pooling groups")
+        self.pair.row_bytes(1, self.head_dim)
+
+    @property
+    def nbytes(self):
+        return self.tokens * self.pair.row_bytes(1, self.head_dim)
+
+
+class HistoryArena(KVCache):
+    """Preallocated per-rank typed pages, reserved before model execution."""
+    __slots__ = ("page_class", "page_capacity", "reserved_pages", "rank")
+
+    def __init__(self, page_class, pages, device, *, rank):
+        if type(pages) is not int or pages < 0 or type(rank) is not int or not 0 <= rank < 8:
+            raise ValueError("typed history arena page count must be nonnegative")
+        self.rank = rank
+        self.page_class, self.page_capacity, self.reserved_pages = page_class, pages, 0
+        super().__init__(pages * page_class.tokens, 1, page_class.head_dim, device, pair=page_class.pair)
+
+    @property
+    def free_pages(self):
+        return self.page_capacity - self.reserved_pages
+
+    def reserve(self, page_class, pages):
+        if page_class != self.page_class or type(pages) is not int or not 0 <= pages <= self.free_pages:
+            raise ValueError("matching typed history pages are unavailable in the admitted rank arena")
+        first = self.reserved_pages * self.page_class.tokens
+        self.reserved_pages += pages
+        return first
 
 
 class OwnedKVCache(KVCache):
     """Packed local pages; logical positions remain independent of rank offsets."""
 
     __slots__ = ("placement", "slot", "layer", "rank", "logical_capacity", "offsets", "page_offsets",
-                 "arena", "reserved_rows", "owners")
+                 "arena", "reserved_rows", "owners", "page_class")
 
     def __init__(self, rows, kv_heads, head_dim, device, *, pair, placement, slot, layer, rank,
                  arena=None, arena_offset=0, owners=None):
         if kv_heads != 1:
             raise ValueError("unique history expects one weight-shard KV head")
         self.placement, self.slot, self.layer, self.rank = placement, slot, layer, rank
+        self.page_class = HistoryPageClass(pair, head_dim, placement.page_tokens)
         self.logical_capacity = rows
         offsets, owned = [], 0
         head = rank // placement.group_size
@@ -40,7 +83,7 @@ class OwnedKVCache(KVCache):
         for page in range((rows + placement.page_tokens - 1) // placement.page_tokens):
             if self.owners[page] == rank:
                 offsets.append(arena_offset + owned)
-                owned += placement.page_rows(rows, page)
+                owned += placement.physical_page_rows(rows, page)
             else:
                 offsets.append(-1)
         self.offsets = tuple(offsets)
@@ -51,6 +94,8 @@ class OwnedKVCache(KVCache):
         else:
             if not pair.key.quantized or not pair.value.quantized or arena.pair != pair:
                 raise ValueError("shared history arenas require matching quantized K/V sides")
+            if isinstance(arena, HistoryArena) and (arena.rank != rank or arena.page_class != self.page_class):
+                raise ValueError("shared typed history arena differs from its admitted rank/page class")
             if arena_offset < 0 or arena_offset + owned > arena.capacity:
                 raise ValueError("history share exceeds the admitted rank arena")
             self._pair, self._capacity, self._kv_heads, self._head_dim = pair, arena.capacity, 1, head_dim
@@ -114,7 +159,20 @@ class OwnedKVCache(KVCache):
         return other
 
     def clone(self):
-        other = self.resized(self.logical_capacity, self.logical_capacity)
+        other = OwnedKVCache(self.logical_capacity, 1, self.head_dim, self.k.device, pair=self.pair,
+                             placement=self.placement, slot=self.slot, layer=self.layer,
+                             rank=self.rank, owners=self.owners)
+        for page, source in enumerate(self.offsets):
+            if source < 0:
+                continue
+            target, count = other.offsets[page], self.placement.page_tokens
+            for original, copied in ((self.k, other.k), (self.v, other.v)):
+                copied[target:target + count].copy_(original[source:source + count])
+            for original, copied, format in ((self.ks, other.ks, self.key_format), (self.vs, other.vs, self.value_format)):
+                if format.quantized:
+                    copied[target:target + count].copy_(original[source:source + count])
+                else:
+                    copied.copy_(original)
         return other
 
     def local_indices(self, logical):
@@ -131,12 +189,13 @@ def allocate_target_caches(rows, head_dim, device, *, pair, placement, slot, ran
         return [OwnedKVCache(rows, 1, head_dim, device, pair=pair, placement=placement,
                              slot=slot, layer=layer, rank=rank) for layer in range(placement.target_layers)]
     counts = [placement.local_rows(slot, layer, rows, rank) for layer in range(placement.target_layers)]
-    arena = KVCache(sum(counts), 1, head_dim, device, pair=pair)
-    result, offset = [], 0
+    page_class = HistoryPageClass(pair, head_dim, placement.page_tokens)
+    arena = HistoryArena(page_class, sum(counts) // placement.page_tokens, device, rank=rank)
+    result = []
     for layer, count in enumerate(counts):
+        offset = arena.reserve(page_class, count // placement.page_tokens)
         result.append(OwnedKVCache(rows, 1, head_dim, device, pair=pair, placement=placement,
                                    slot=slot, layer=layer, rank=rank, arena=arena, arena_offset=offset))
-        offset += count
     return result
 
 
@@ -300,20 +359,378 @@ def normalized_partial(query, cache, selected, visible, scale, maximum, denomina
 class OwnerBuffers:
     """Layer-batched communication slabs shared across every session/cache."""
 
-    def __init__(self, weights, rows, scratch):
+    def _empty_resources(self):
+        self.rows = self.heads = self.head_dim = self.idw = self.rank = self.device = self.prefill = self.comm = None
+        self.queries = self.selection = self.selections = self.partial = self.partials = self.position = None
+        self.native_states, self.native_owners, self.native_pair, self.native_buckets = None, (), None, ()
+        self.descriptors = self.descriptors_host = self.global_stats = self.lane_rows = self.native_layer = None
+        self.descriptor_upload = self.native_done = None
+        self._upload_pending = self._native_pending = self._base_ready = self._construction_started = False
+        self.closed = False
+
+    def __init__(self, weights, rows, scratch, *, prefill=False):
+        if vars(self).get("_construction_started", False):
+            raise RuntimeError("owner workspace construction is one-shot; retire and construct a new owner")
+        self._empty_resources()
+        self._construction_started = True
         c, device = weights.cfg, weights.device
         world, group = 8, 4
-        self.rows, self.heads = rows, c.heads
+        self.rows, self.heads, self.prefill = rows, c.heads, prefill
+        self.head_dim, self.rank, self.idw = c.head_dim, int(weights.meta.get("rank", 0)), scratch.idw
+        self.device, self.comm = torch.device(device), getattr(weights, "comm", None)
         self.queries = torch.empty((world, rows, c.heads, c.head_dim), dtype=torch.float16, device=device)
+        self.device = self.queries.device
         self.selection = torch.zeros((rows, scratch.idw + 2), dtype=torch.int32, device=device)
         self.selections = torch.empty((world, rows, scratch.idw + 2), dtype=torch.int32, device=device)
-        self.partial = torch.empty((rows, group * c.heads, c.head_dim + 2), dtype=torch.float32, device=device)
-        self.partials = torch.empty((world, rows, group * c.heads, c.head_dim + 2), dtype=torch.float32, device=device)
+        # Statistics and normalized PV are sequential phases. Every consumer
+        # uses a flat prefix; the two stats words never coexist with PV here.
+        extent = max(c.head_dim, 2)
+        self.partial = torch.empty((rows, group * c.heads, extent), dtype=torch.float32, device=device)
+        self.partials = torch.empty((world, rows, group * c.heads, extent), dtype=torch.float32, device=device)
         self.position = torch.zeros((1,), dtype=torch.int32, device=device)
+        self._base_ready = True
+
+    @classmethod
+    def from_text(cls, text, *, rows, prefill, idw, world, rank, device, comm, register=None):
+        """Header-only factory: no target/draft weights or State allocation."""
+        if (type(world) is not int or world != 8 or type(rank) is not int or not 0 <= rank < world
+                or type(rows) is not int or rows < 1 or type(prefill) is not bool):
+            raise ValueError("owner preflight requires the actual TP8 rank and bounded execution role")
+        if comm is None or comm.world != world or comm.rank != rank:
+            raise ValueError("owner preflight requires the active matching TP8 communicator")
+        if register is not None and not callable(register):
+            raise ValueError("owner preflight registration must be callable")
+        heads, kv_heads = text["num_attention_heads"], text["num_key_value_heads"]
+        if type(heads) is not int or heads <= 0:
+            raise ValueError("native owner header requires positive integer query heads")
+        dim = text.get("head_dim") or text["hidden_size"] // heads
+        budget, ratio = text.get("indexer_budget", 2048), text.get("indexer_compress_ratio", 4)
+        if (any(type(value) is not int or value <= 0 for value in (heads, kv_heads, dim, budget, ratio))
+                or heads % world or kv_heads != 2 or (heads // world, dim) != (3, 256)
+                or type(idw) is not int or idw != budget + ratio):
+            raise ValueError("native owner header geometry differs from TP8 H3/D256 and its canonical index width")
+        weights = SimpleNamespace(cfg=SimpleNamespace(heads=heads // world, head_dim=dim),
+                                  device=torch.device(device), meta={"rank": rank, "world": world}, comm=comm)
+        owner = object.__new__(cls)
+        owner._empty_resources()
+        if register is not None:
+            register(owner)  # Journal the canonical partial owner before any fallible device allocation.
+        owner.__init__(weights, min(rows, 256), SimpleNamespace(idw=idw), prefill=prefill)
+        return owner
+
+    def allocation_record(self):
+        """Owned tensor extents, separated from observed driver/graph residency.
+
+        A pre-capacity owner is already present in the physical-free baseline;
+        its adoption removes the matching future allocation from geometry. This
+        receipt does not credit unused allocator or CUDA graph-pool reservation.
+        """
+        native = self.native_record()
+        extras = sum(native[name] for name in ("descriptor_bytes", "global_statistics_bytes",
+                                               "lane_control_bytes", "layer_control_bytes"))
+        return {"rows": self.rows, "prefill": self.prefill, "heads": self.heads,
+                "head_dim": self.head_dim, "index_width": self.idw,
+                "rank": self.rank, "device": str(self.device), "complete": self._base_ready,
+                "device_tensor_bytes": self.nbytes,
+                "communication_tensor_bytes": self.nbytes - extras,
+                "native_tensor_bytes": extras, "host_staging_bytes": native["host_descriptor_bytes"],
+                "pinned_host_staging_bytes": native["pinned_descriptor_bytes"],
+                "qualification": "construction extents; not physical allocator or execution qualification"}
+
+    def prepare_native(self, states=None, *, pair=None, page_tokens=128, buckets=None):
+        """Prepare fixed pointer tables before capture/admission; never select a kernel.
+
+        A header-only caller may supply ``pair`` and no States. Zero descriptor
+        rows are executable inactive work for startup capture. The canonical
+        pool is bound later without replacing table/workspace addresses.
+        """
+        if not self._base_ready or self.closed:
+            raise RuntimeError("native preparation requires a complete open owner workspace")
+        from tensorfold.cuda.sm70.paged_attention import DESCRIPTOR_WORDS
+        from tensorfold.cuda.sm70.paged_attention_descriptor import ABI_VERSION, WORD_BYTES, FIELDS
+        from .owner_execution import row_buckets
+
+        # The hot tuple below is intentionally direct. Its semantic field order
+        # is checked once against the generated ABI authority before any pointer
+        # table exists; a reordered interface cannot quietly reinterpret addresses.
+        expected = ("K_DATA", "V_DATA", "K_METADATA", "V_METADATA", "PAGE_OFFSETS", "GENERATIONS",
+                    "STATUS", "POSITION", "LIVE_ROWS", "EXPECTED_SLOT", "EXPECTED_OWNER",
+                    "LOGICAL_CAPACITY", "PHYSICAL_ROWS", "PAGE_COUNT", "ROW_OFFSET", "INDEXER_OWNER")
+        if ABI_VERSION != 1 or WORD_BYTES != 8 or FIELDS != expected:
+            raise RuntimeError("native descriptor packing differs from its generated schema")
+        prepared_buckets = self.native_buckets if buckets is None and self.native_buckets else row_buckets(self.rows, buckets)
+        if self.native_buckets and self.native_buckets != prepared_buckets:
+            raise ValueError("prepared native row catalogue cannot change during serving")
+        if self.heads != 3 or self.head_dim != 256:
+            raise ValueError("native paged owner attention requires local H3/D256")
+        states = None if states is None else tuple(states)
+        if pair is None and states:
+            pair = states[0].kv_pair
+        if pair is None:
+            raise ValueError("native preparation needs the selected homogeneous KV format")
+        fields = (pair.key.bits, pair.key.codec, pair.value.bits, pair.value.codec)
+        if fields not in ((8, 0, 8, 0), (4, 9, 4, 9), (4, 10, 4, 10)):
+            raise ValueError("native paged owner attention requires homogeneous ordinary Q8 or compact Q4")
+        if self.native_pair is not None and self.native_pair != pair:
+            raise ValueError("a prepared native owner workspace cannot change its codec identity")
+        if type(page_tokens) is not int or page_tokens < 1 or page_tokens % 4:
+            raise ValueError("native history pages must contain complete positive pooling groups")
+        if self.native_pair is not None and self.native_page_tokens != page_tokens:
+            raise ValueError("prepared native graphs cannot change their page geometry")
+        if self.descriptors is None:
+            device = self.queries.device
+            self.descriptors = torch.zeros((self.rows, DESCRIPTOR_WORDS), dtype=torch.int64, device=device)
+            self.descriptors_host = torch.zeros((self.rows, DESCRIPTOR_WORDS), dtype=torch.int64,
+                                                pin_memory=self.queries.is_cuda)
+            self.global_stats = torch.empty((self.rows, 12, 2), dtype=torch.float32, device=device)
+            self.lane_rows = torch.zeros((self.rows,), dtype=torch.int32, device=device)
+            self.native_layer = torch.zeros((1,), dtype=torch.int32, device=device)
+            if self.queries.is_cuda:
+                self.descriptor_upload = torch.cuda.Event()
+                self.native_done = torch.cuda.Event()
+        self.native_pair = pair
+        self.native_page_tokens = page_tokens
+        self.native_buckets = prepared_buckets
+        if self.queries.is_cuda:
+            from tensorfold.cuda.sm70.paged_attention import extension
+
+            extension()  # Compilation/module initialization is outside native_run/capture.
+        if states is not None:
+            self.bind_native_states(states)
+
+    @staticmethod
+    def _state_storage(state):
+        tensors = [state.history_generations, state.kv_status, state.pos_dev]
+        if hasattr(state, "mtp_kc"):
+            tensors.append(state.mtp_pos)
+        for cache in [*state.kc, *([state.mtp_kc] if hasattr(state, "mtp_kc") else [])]:
+            tensors.extend((cache.k, cache.v, cache.ks, cache.vs, cache.page_offsets))
+        return tuple(tensors)
+
+    @staticmethod
+    def _storage_signature(tensors):
+        return tuple((tensor.data_ptr(), tuple(tensor.shape), tensor.dtype, tensor.device) for tensor in tensors)
+
+    def bind_native_states(self, states):
+        """Retain every address owner through graph/operation retirement.
+
+        The catalogue is the already bounded canonical State pool, not a cache
+        of arbitrary encountered requests. Replacing storage requires explicit
+        drain/retirement before rebinding; same-pointer publication is not enough.
+        """
+        if self.descriptors is None:
+            raise RuntimeError("prepare native owner tables before binding State storage")
+        catalogue, owners = {}, []
+        for state in states:
+            if (id(state) in catalogue or state.history_placement is None or state.kv_pair != self.native_pair
+                    or state.history_placement.page_tokens != self.native_page_tokens):
+                raise ValueError("native catalogue needs distinct unique-history States of one codec")
+            tensors = self._state_storage(state)
+            if any(not isinstance(tensor, torch.Tensor) or tensor.device != self.queries.device for tensor in tensors):
+                raise ValueError("native catalogue storage must share its workspace device")
+            controls = [(state.history_generations, torch.int64, (2,)), (state.kv_status, torch.int32, (2,)),
+                        (state.pos_dev, torch.int32, (1,))]
+            if hasattr(state, "mtp_kc"):
+                controls.append((state.mtp_pos, torch.int32, (1,)))
+            if any(tensor.dtype != dtype or tuple(tensor.shape) != shape or not tensor.is_contiguous()
+                   for tensor, dtype, shape in controls):
+                raise ValueError("native State controls require the exact contiguous generation/status/position schema")
+            for cache in [*state.kc, *([state.mtp_kc] if hasattr(state, "mtp_kc") else [])]:
+                pages = (state.capacity + self.native_page_tokens - 1) // self.native_page_tokens
+                if (cache.logical_capacity != state.capacity or cache.pair != self.native_pair
+                        or cache.page_offsets.dtype != torch.int64 or cache.page_offsets.shape != (pages,)
+                        or not cache.page_offsets.is_contiguous()):
+                    raise ValueError("native cache page table differs from its immutable logical/codec plan")
+                for payload, scales, fmt in ((cache.k, cache.ks, cache.key_format),
+                                             (cache.v, cache.vs, cache.value_format)):
+                    if (payload.dtype != getattr(torch, fmt.payload_dtype)
+                            or scales.dtype != getattr(torch, fmt.scale_dtype)
+                            or payload.shape != (cache.capacity, 1, 256 * fmt.bits // 8)
+                            or scales.shape != (cache.capacity, 1, 256 // fmt.group)
+                            or not payload.is_contiguous() or not scales.is_contiguous()):
+                        raise ValueError("native packed cache tensors differ from their admitted physical row schema")
+            catalogue[id(state)] = (state, self._storage_signature(tensors))
+            owners.extend((state, *tensors))
+        if self.native_states and self.native_states != catalogue:
+            raise RuntimeError("native State storage changed; retire its borrowers before rebinding")
+        self.native_states, self.native_owners = catalogue, tuple(owners)
+        for state, _ in catalogue.values():
+            state.history_native_readers.add(self)
+
+    def wait_native_reuse(self):
+        if self._native_pending:
+            torch.cuda.current_stream(self.queries.device).wait_event(self.native_done)
+
+    def stage_native_descriptors(self, segments, layer, base, count, *, mtp=False, bucket_rows=None):
+        if self.descriptors is None or self.native_states is None:
+            raise RuntimeError("native State catalogue is not prepared")
+        bucket = count if bucket_rows is None else bucket_rows
+        if (type(base) is not int or base < 0 or type(count) is not int or type(bucket) is not int
+                or not 0 < count <= bucket <= self.rows):
+            raise ValueError("native descriptor frame exceeds its bounded row envelope")
+        if bucket not in self.native_buckets:
+            raise ValueError("native descriptor bucket was not prepared before admission")
+        spans, cursor = [], base
+        for state, first, last in segments:
+            if type(first) is not int or type(last) is not int or not 0 <= first < last or last - first > 2**31 - 1:
+                raise ValueError("native lanes need bounded nonempty contiguous row ranges")
+            begin, end = max(base, first), min(base + count, last)
+            if begin >= end:
+                continue
+            if begin != cursor:
+                raise ValueError("native descriptor lanes have a gap or overlap")
+            registered = self.native_states.get(id(state))
+            current = self._state_storage(state)
+            if registered is None or registered[0] is not state or registered[1] != self._storage_signature(current):
+                raise RuntimeError("native descriptor points outside its retained canonical storage catalogue")
+            if (type(state.slot_generation) is not int or type(state.history_generation) is not int
+                    or not 0 <= state.slot_generation <= 2**63 - 1 or not 0 <= state.history_generation <= 2**63 - 1):
+                raise OverflowError("native descriptor generation exceeds signed int64")
+            if mtp and not hasattr(state, "mtp_kc"):
+                raise ValueError("native MTP descriptors require the selected resident MTP cache")
+            ai = state.history_placement.target_layers if mtp else state.att_index[layer.index]
+            cache = state.mtp_kc if mtp else state.kc[ai]
+            position = state.mtp_pos if mtp else state.pos_dev
+            index_owner = state.history_placement.indexer_owner(state.history_slot, ai,
+                                                               include_mtp=hasattr(state, "mtp_kc"))
+            spans.append((state, first, last, begin, end, cache, position, index_owner))
+            cursor = end
+        if cursor != base + count:
+            raise ValueError("native descriptor lanes do not cover the live execution prefix")
+        if self._upload_pending:
+            self.descriptor_upload.synchronize()  # Retire only host DMA, not the complete model iteration.
+        self.wait_native_reuse()
+        host = self.descriptors_host[:bucket]
+        host.zero_()
+        self.lane_rows[:bucket].zero_()
+        self.native_layer.fill_(layer.index)
+        for lane, (state, first, last, begin, end, cache, position, index_owner) in enumerate(spans):
+            self.lane_rows[lane].fill_(last - first)
+            live_pointer = self.lane_rows.data_ptr() + lane * self.lane_rows.element_size()
+            for row in range(begin, end):
+                words = (cache.k.data_ptr(), cache.v.data_ptr(), cache.ks.data_ptr(), cache.vs.data_ptr(),
+                         cache.page_offsets.data_ptr(), state.history_generations.data_ptr(), state.kv_status.data_ptr(),
+                         position.data_ptr(), live_pointer, state.slot_generation, state.history_generation,
+                         state.capacity, cache.capacity, cache.page_offsets.numel(), row - first, index_owner)
+                host[row - base].copy_(torch.tensor(words, dtype=torch.int64))
+        self.descriptors[:bucket].copy_(host, non_blocking=self.queries.is_cuda)
+        if self.descriptor_upload is not None:
+            self.descriptor_upload.record(torch.cuda.current_stream(self.queries.device))
+            self._upload_pending = True
+
+    def native_views(self, rows):
+        if self.descriptors is None or type(rows) is not int or not 1 <= rows <= self.rows:
+            raise ValueError("native views require a prepared bounded row bucket")
+        q = self.queries.reshape(-1)[:8 * rows * 3 * 256].view(8, rows, 3, 256)
+        selection = self.selections.reshape(-1)[:8 * rows * self.selection.shape[1]].view(8, rows, self.selection.shape[1])
+        local_stats = self.partial.reshape(-1)[:rows * 12 * 2].view(rows, 12, 2)
+        all_stats = self.partials.reshape(-1)[:8 * rows * 12 * 2].view(8, rows, 12, 2)
+        local_values = self.partial.reshape(-1)[:rows * 12 * 256].view(rows, 12, 256)
+        all_values = self.partials.reshape(-1)[:8 * rows * 12 * 256].view(8, rows, 12, 256)
+        # Final value merge runs after normalized PV has consumed all queries.
+        # Reuse that FP16 slab for output without another row-output allocation.
+        out = self.queries.reshape(-1)[:rows * 3 * 256].view(rows, 3, 256)
+        return {"q_all": q, "selected_all": selection, "row_table": self.descriptors[:rows],
+                "local_stats": local_stats, "all_stats": all_stats, "global_stats": self.global_stats[:rows],
+                "local_values": local_values, "all_values": all_values, "out": out}
+
+    def native_bucket(self, actual_rows):
+        if type(actual_rows) is not int or not 1 <= actual_rows <= self.rows or not self.native_buckets:
+            raise ValueError("native owner rows exceed the prepared execution catalogue")
+        return next(bucket for bucket in self.native_buckets if actual_rows <= bucket)
+
+    def clear_native_inputs(self, rows):
+        self.wait_native_reuse()
+        views = self.native_views(rows)
+        for name in ("q_all", "selected_all", "row_table"):
+            views[name].zero_()
+        self.selection[:rows].zero_()
+        self.lane_rows[:rows].zero_()
+        self.native_layer.zero_()
+        if self.descriptor_upload is not None:
+            self.descriptor_upload.record(torch.cuda.current_stream(self.queries.device))
+            self._upload_pending = True
+
+    def wait_native_inputs(self):
+        if self._upload_pending:
+            torch.cuda.current_stream(self.queries.device).wait_event(self.descriptor_upload)
+
+    def native_run(self, rows):
+        """The same preallocated partial-attention pipeline for eager and graphs."""
+        from tensorfold.cuda.sm70 import paged_attention as native
+
+        if rows not in self.native_buckets:
+            raise ValueError("native owner execution shape was not prepared before admission")
+        views = self.native_views(rows)
+        if self.comm is None or self.comm.world != 8 or self.comm.rank != self.rank:
+            raise ValueError("native owner execution requires its active TP8 communicator")
+        bits, codec = self.native_pair.key.bits, self.native_pair.key.codec
+        common = {"group_start": self.rank // 4 * 4, "page_tokens": self.native_page_tokens, "layer": self.native_layer}
+        native.local_statistics(views["q_all"], views["selected_all"], views["row_table"], views["local_stats"],
+                                key_bits=bits, key_codec=codec, scale=256 ** -0.5, **common)
+        self.comm.all_gather(views["local_stats"], views["all_stats"])
+        native.merge_statistics(views["all_stats"], views["row_table"], views["global_stats"], **common)
+        native.normalized_partial(views["q_all"], views["selected_all"], views["row_table"], views["global_stats"],
+                                  views["local_values"], key_bits=bits, key_codec=codec,
+                                  value_bits=bits, value_codec=codec, scale=256 ** -0.5, **common)
+        self.comm.all_gather(views["local_values"], views["all_values"])
+        native.merge_values(views["all_values"], views["row_table"], views["out"], rank=self.rank,
+                             page_tokens=self.native_page_tokens, layer=self.native_layer, value_bits=bits, value_codec=codec)
+        return views["out"]
+
+    def mark_native_submitted(self):
+        if self.native_done is not None:
+            self.native_done.record(torch.cuda.current_stream(self.queries.device))
+            self._native_pending = True
+
+    def retire_native(self):
+        """Caller stops graph replays first; storage remains owned if a fence fails."""
+        device_owned = any(isinstance(value, torch.Tensor) and value.is_cuda for value in vars(self).values())
+        if device_owned:
+            torch.cuda.synchronize(self.device)
+        if self.descriptors is not None:
+            self.descriptors.zero_()
+            if self.lane_rows is not None:
+                self.lane_rows.zero_()
+            if device_owned:
+                torch.cuda.synchronize(self.device)
+        if self.native_states is not None:
+            for state, _ in self.native_states.values():
+                state.history_native_readers.discard(self)
+        self.native_states, self.native_owners = None, ()
+        self._upload_pending = self._native_pending = False
+
+    def close(self):
+        """After graph retirement, release even partially initialized tensor owners.
+
+        A constructor failure may remain in a traceback. Clearing these slots
+        after proven retirement releases their allocations despite that reference.
+        Failed fences retain the complete owner for terminal cleanup reporting.
+        """
+        if self.closed:
+            return
+        self.retire_native()
+        self.queries = self.selection = self.selections = self.partial = self.partials = self.position = None
+        self.descriptors = self.descriptors_host = self.global_stats = self.lane_rows = self.native_layer = None
+        self.descriptor_upload = self.native_done = None
+        self.closed, self._base_ready = True, False
+
+    def native_record(self):
+        return {"prepared": self.descriptors is not None,
+                "native_rows": list(self.native_buckets),
+                "bound_states": 0 if self.native_states is None else len(self.native_states),
+                "descriptor_bytes": 0 if self.descriptors is None else self.descriptors.nbytes,
+                "global_statistics_bytes": 0 if self.global_stats is None else self.global_stats.nbytes,
+                "lane_control_bytes": 0 if self.lane_rows is None else self.lane_rows.nbytes,
+                "layer_control_bytes": 0 if self.native_layer is None else self.native_layer.nbytes,
+                "host_descriptor_bytes": 0 if self.descriptors_host is None else self.descriptors_host.nbytes,
+                "pinned_descriptor_bytes": (self.descriptors_host.nbytes if self.descriptors_host is not None
+                                             and self.descriptors_host.is_pinned() else 0)}
 
     @property
     def nbytes(self):
-        return sum(value.nbytes for value in vars(self).values() if isinstance(value, torch.Tensor))
+        return sum(value.nbytes for name, value in vars(self).items()
+                   if isinstance(value, torch.Tensor) and name != "descriptors_host")
 
 
 def attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False):
@@ -327,6 +744,20 @@ def attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False)
     if comm is None or comm.world != 8 or comm.rank != rank:
         raise ValueError("unique history requires its live TP8 communicator")
     owner = buffers.history_owner
+    family = buffers.owner_kernel_family
+    native_selected = family != "torch-reference"
+    if buffers.owner_graph_family not in ("uncaptured", "owner-attention-v1"):
+        raise ValueError("unsupported owner attention graph family")
+    if buffers.owner_graph_family != "uncaptured" and (not native_selected or buffers.owner_graphs is None):
+        raise RuntimeError("owner attention graph family was not prepared before serving")
+    if native_selected:
+        from tensorfold.cuda.sm70.paged_attention import KERNEL_FAMILY
+
+        if family != KERNEL_FAMILY:
+            raise ValueError("unsupported owner attention kernel family")
+        if owner.native_states is None or any(id(state) not in owner.native_states for state, _, _ in segments):
+            raise RuntimeError("native owner kernel and its canonical State catalogue were not prepared before serving")
+    owner.wait_native_reuse()  # Prior raw-pointer readers retire before any new persistent cache write.
     if any(getattr(state, "graph_rows", None) is not None for state, _, _ in segments):
         raise ValueError("unique owner attention needs exact live rows; padded graph envelopes are not qualified")
     # All input rows belong to exactly one live segment; reject gaps/overlaps
@@ -352,9 +783,18 @@ def attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False)
                          sections=c.mrope_section, rope_scale=c.rope_attention_factor)
     for base in range(0, total_rows, owner.rows):
         count = min(owner.rows, total_rows - base)
-        query_all = owner.queries.reshape(-1)[:8 * count * c.heads * c.head_dim].view(8, count, c.heads, c.head_dim)
-        comm.all_gather(buffers.q[base:base + count], query_all)
-        selection = owner.selection[:count]
+        graph_manager = buffers.owner_graphs if native_selected else None
+        bucket = (owner.native_bucket(count) if graph_manager is None else graph_manager.bucket(count)) if native_selected else count
+        query_all = owner.queries.reshape(-1)[:8 * bucket * c.heads * c.head_dim].view(8, bucket, c.heads, c.head_dim)
+        if native_selected:
+            owner.wait_native_reuse()
+            send = query_all[rank]
+            send[:count].copy_(buffers.q[base:base + count])
+            send[count:].zero_()
+            comm.all_gather(send, query_all)  # Exactly this rank's legal in-place receive slice.
+        else:
+            comm.all_gather(buffers.q[base:base + count], query_all)
+        selection = owner.selection[:bucket]
         selection.zero_()
         selected_segments = []
         for state, first, last in segments:
@@ -380,8 +820,20 @@ def attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False)
                 selection[begin - base:end - base, :buffers.attn.idw].copy_(scratch.ids)
                 selection[begin - base:end - base, buffers.attn.idw].copy_(scratch.nk)
                 selection[begin - base:end - base, buffers.attn.idw + 1].copy_(scratch.sparse)
-        selections = owner.selections.reshape(-1)[:8 * count * selection.shape[1]].view(8, count, selection.shape[1])
+        selections = owner.selections.reshape(-1)[:8 * bucket * selection.shape[1]].view(8, bucket, selection.shape[1])
         comm.all_gather(selection, selections)
+        if native_selected:
+            owner.stage_native_descriptors(segments, layer, base, count, mtp=mtp, bucket_rows=bucket)
+            if graph_manager is None:
+                owner.wait_native_inputs()
+                output = owner.native_run(bucket)[:count]
+            else:
+                output = graph_manager.run(count, graph=buffers.owner_graph_family
+                                           == "owner-attention-v1")
+            owner.wait_native_reuse()
+            buffers.attn_o[base:base + count].copy_(output)
+            owner.mark_native_submitted()  # The lease includes this last consumer of the reused query/output slab.
+            continue
         partial = owner.partial.reshape(-1)[:count * 4 * c.heads * 2].view(count, 4 * c.heads, 2)
         group_start = rank // 4 * 4
         jobs = []
@@ -559,9 +1011,11 @@ def migrate_next_bundle(state):
         if old_local == new_local:
             pending["next_bundle"] += 1
             continue
+        if state.history_generation >= 2**63 - 1:
+            raise OverflowError("history ownership generation exhausted; retire the session without migration")
         if sorted(old_local) != list(range(4)) or sorted(new_local) != list(range(4)):
             raise RuntimeError("history bundle is not a balanced quartet permutation")
-        count = placement.page_rows(state.capacity, page)
+        count = placement.physical_page_rows(state.capacity, page)
         model_cache = state.kc[layers[0]]
         temporary_bytes = 2 * model_cache.pair.nbytes(count, 1, model_cache.head_dim)
         if temporary_bytes > pending["overlap_bytes"]:
@@ -642,9 +1096,13 @@ def migrate_next_bundle(state):
                 cache.page_offsets[page].fill_(offsets[page])
                 cache.offsets = tuple(offsets)
                 cache.owners[page] = rank // 4 * 4 + new
+            next_generation = state.history_generation + 1
+            generations = getattr(state, "history_generations", None)
+            if generations is not None:
+                generations[1].fill_(next_generation)
             _fence(state)
             comm.barrier()  # Publish the ownership generation only after all device tables agree.
-            state.history_generation += 1
+            state.history_generation = next_generation
             pending["next_bundle"] += 1
             completed = True
         except BaseException as error:

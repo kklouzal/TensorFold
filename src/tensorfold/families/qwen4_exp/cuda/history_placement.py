@@ -61,9 +61,13 @@ class HistoryPlacement:
         return (slot * layers + layer) % self.world
 
     def page_rows(self, rows: int, page: int) -> int:
+        """Logical valid extent; a partly valid page still owns a full class."""
         _int(rows, "logical rows")
         _int(page, "logical page")
         return min(self.page_tokens, max(0, rows - page * self.page_tokens))
+
+    def physical_page_rows(self, rows: int, page: int) -> int:
+        return self.page_tokens if self.page_rows(rows, page) else 0
 
     def local_rows(self, slot: int, layer: int, rows: int, rank: int) -> int:
         self._indices(slot, layer)
@@ -76,19 +80,17 @@ class HistoryPlacement:
         if residue >= degree or pages <= residue:
             return 0
         count = (pages - 1 - residue) // degree + 1
-        padded = count * self.page_tokens
-        if (pages - 1) % degree == residue:
-            padded -= pages * self.page_tokens - rows
-        return padded
+        return count * self.page_tokens
 
     def layer_rank_bytes(self, slot: int, layer: int, rows: int, rank: int, kv_row_bytes: int,
                          kv_dummy_bytes: int = 0, *, index_dim: int = 128,
                          ratio: int = 4, include_mtp: bool = True) -> int:
-        """Exact tensor bytes, including empty-cache dummies and partial pools.
+        """Exact tensor bytes, including full tail pages, dummies and partial pools.
 
         ``kv_row_bytes`` describes one global KV head's combined K/V row,
         including codec metadata. Per-row allocator padding must already be
-        included by its codec authority; pages introduce no extra row padding.
+        included by its codec authority. Physical tail pages retain their full
+        fixed class; logical validity never changes their reserved footprint.
         """
         _int(kv_row_bytes, "KV bytes per head row", 1)
         _int(kv_dummy_bytes, "KV dummy metadata bytes")
@@ -126,7 +128,19 @@ def for_weights(weights) -> HistoryPlacement | None:
                             degree=weights.meta.get("attention_degree", 1))
 
 
-def owner_workspace_bytes(text, rows: int, world: int = 8) -> dict[str, int]:
+def native_owner_workspace_bytes(rows: int) -> dict[str, int]:
+    """Exact added native tables; communication and output slabs are reused."""
+    _int(rows, "native execution rows", 1)
+    from tensorfold.cuda.sm70.paged_attention import DESCRIPTOR_BYTES, LAYER_BYTES, workspace_bytes
+
+    chunk = min(rows, 256)
+    descriptors, operator = chunk * DESCRIPTOR_BYTES, workspace_bytes(chunk)
+    return {"descriptor_bytes": descriptors, "global_statistics_bytes": operator - descriptors,
+            "lane_control_bytes": chunk * 4, "layer_control_bytes": LAYER_BYTES,
+            "device_bytes": operator + chunk * 4 + LAYER_BYTES, "host_staging_bytes": descriptors}
+
+
+def owner_workspace_bytes(text, rows: int, world: int = 8, *, native: bool = False) -> dict[str, int]:
     """Construction-derived owner slabs and a conservative ATen work envelope.
 
     ATen/native library-private allocations require the runtime's independent
@@ -153,7 +167,11 @@ def owner_workspace_bytes(text, rows: int, world: int = 8) -> dict[str, int]:
     chunk, idw = min(rows, 256), budget + ratio
     persistent = (world * chunk * heads * dims * 2
                   + (world + 1) * chunk * (idw + 2) * 4
-                  + (world + 1) * chunk * 4 * heads * (dims + 2) * 4 + 4)
+                  + (world + 1) * chunk * 4 * heads * max(dims, 2) * 4 + 4)
+    native_bytes = native_owner_workspace_bytes(rows) if native else {"device_bytes": 0, "host_staging_bytes": 0}
+    if native and (heads != 3 or dims != 256):
+        raise ValueError("native owner workspace requires H3/D256")
+    persistent += native_bytes["device_bytes"]
     prepare = rows * (2 * heads * dims + 8 * dims + 2 * (index_heads + 1) * index_dim) * 32
     pooled = (context + ratio - 1) // ratio
     # Progressive pooling gathers only groups completed by the append plus
@@ -164,5 +182,6 @@ def owner_workspace_bytes(text, rows: int, world: int = 8) -> dict[str, int]:
     indexer = pool_work + chunk * pooled * 32
     attention = 128 * dims * 64 + 4 * heads * (128 + dims) * 32
     prefix = 128 * (2 * dims * 2 + 2 * index_dim)
-    return {"persistent_bytes": persistent,
+    return {"persistent_bytes": persistent, "host_staging_bytes": native_bytes["host_staging_bytes"],
+            "native_device_bytes": native_bytes["device_bytes"],
             "temporary_bytes": prepare + indexer + attention + prefix}

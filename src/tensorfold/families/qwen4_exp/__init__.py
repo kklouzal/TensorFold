@@ -238,7 +238,7 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
 
     pair = get_pair(kv_dtype, kv_key_dtype, kv_value_dtype)  # before weights or Torch are loaded
     if not gguf and any(side.compact is not None for side in (pair.key, pair.value)):
-        raise ValueError("compact Planar4 KV requires the GGUF SM70 execution provider")
+        raise ValueError("compact Planar4/Iso4 KV requires the GGUF SM70 execution provider")
     depth = 0 if no_drafts else DEPTH if mtp_drafts is None else int(mtp_drafts)
     if method == "mtp" and depth == 0:
         raise ValueError("explicit MTP requires a positive maximum depth; use runtime proposal_limit 0 to retain "

@@ -167,3 +167,48 @@ def test_declined_policy_preserves_original_absorb_codec_error_precedence(monkey
         multi.MultiDecoder._picks(NS(), torch.zeros(1, 3), [13], [policy],
                                  NS(settle=lambda: events.append("healthy codec")))
     assert events == ["codec", "healthy codec"]
+
+
+@pytest.mark.parametrize("failed", [False, True])
+def test_device_handoff_observes_each_submitted_graph_span_without_a_new_readback(monkeypatch, failed):
+    from tensorfold.families.qwen4_exp.cuda import mtp
+    from tensorfold.families.qwen4_exp.cuda.adaptive_controller import AdaptiveController
+
+    controller = AdaptiveController(slots=1, row_budget=4, proposal_limit=3, prefill_tokens=4)
+    controller.work_observations.configure_indexer(ratio=4, budget=11, heads=4, target_caches=12)
+    state = NS(mtp_len=9, mtp_drafted=1, _kv_error=None)
+    state.set_mtp_len = lambda value: setattr(state, "mtp_len", value)
+    stream = NS(st=state, drafts=[])
+    owner = object.__new__(GreedyHandoff)
+    owner.busy, owner.error, owner.completed, owner.steps = False, None, 0, 0
+    owner.dec = NS(controller=controller, mbuf=NS(streams=torch.zeros((2, 1))),
+                   buf=NS(streams=torch.zeros((2, 1))))
+    submitted = []
+    def submit(segments, *, mtp_positions, device_tokens):
+        submitted.append((mtp_positions[0], segments[-1][2]))
+        return torch.zeros((1, 2))
+    owner.dec.graphs = NS(mtp_step=submit)
+    owner.storage = torch.zeros(1)
+    owner.input_token = torch.zeros(1, dtype=torch.int32)
+    owner.eligible = lambda streams, new: (stream, 0, [40, 50], 3, 8)
+    primary = RuntimeError("controlled failed handoff")
+    def gather(step, logits, state):
+        if failed:
+            raise primary
+    owner.gather = gather
+    owner.finish = lambda state, count, start, kept: [60, 70, 80]
+    monkeypatch.setattr(mtp, "mtp_stage", lambda buffer, windows:
+                        [(windows[0][0], 0, len(windows[0][1]))])
+    if failed:
+        with pytest.raises(RuntimeError) as caught:
+            owner.try_draft([(stream, 0, [40, 50])], None)
+        assert caught.value is primary and state._kv_error is not None
+    else:
+        assert owner.try_draft([(stream, 0, [40, 50])], None)
+    controller.work_observations.publish()
+    reading = controller.record()["work_observations"]
+    assert reading["totals"]["mtp_refresh_rows_submitted"] == 2
+    assert reading["totals"]["mtp_proposal_rows_submitted"] == (0 if failed else 2)
+    assert submitted == ([(8, 2)] if failed else [(8, 2), (10, 1), (11, 1)])
+    assert reading["totals"]["incomplete_forward_submissions"] == int(failed)
+    assert reading["expert_group_max"] is None and not owner.busy

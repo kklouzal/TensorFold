@@ -136,7 +136,7 @@ def test_failed_graph_replay_does_not_record_successful_submission(monkeypatch):
 
 
 def buffer():
-    return NS(rotor_lookup=False, prefill=False, streams=torch.zeros((4, 2)), proj=torch.zeros((1, 4, 2)),
+    return NS(rows=4, rotor_lookup=False, prefill=False, streams=torch.zeros((4, 2)), proj=torch.zeros((1, 4, 2)),
               ple_nrow=torch.zeros((4, 2)), logits=torch.zeros((4, 2)))
 
 

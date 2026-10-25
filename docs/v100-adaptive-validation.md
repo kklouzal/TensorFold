@@ -35,7 +35,7 @@ overrides remain ceilings.
 limiting resource/rank, and rank costs. `capacity_plan.execution_envelope`
 separates verification rows, prompt work, and proposal depth from resident
 capacity. Splitting verification into fair complete-request microbatches does
-not reduce the number of retained sessions. Planning and materialized
+not reduce the number of allocated full-context slots. Planning and materialized
 allocation fields must be read with their evidence labels.
 
 Target weights stay TP8. Unique GPU histories apply only to the supported
@@ -49,13 +49,16 @@ Ordinary INT8 retains the H32 transformation, signed byte payload, and FP16
 scales per 32 values. Existing `rotorquant-signed128-4` and
 `rotorquant-signed64-norm4` remain distinct formats with their original evidence.
 
-The new `rotorquant-planar4-sm70-v1` format pins the CUDA Planar4 implementation
+The initial `rotorquant-iso4-sm70-v1` format pins the CUDA ISO4 implementation
 at `llama-cpp-turboquant` commit
 `08e025c06ab521e4fa9e5c08b80af57614543e53`. A 128-value block has 64 code bytes,
 an FP16 norm, and a reserved FP16 field. TensorFold stores code bytes and the
 opaque four-byte metadata word separately; wire controls verify their combined
-68-byte representation. The pinned reference's CPU and CUDA rotation constants
-differ, so the format explicitly selects its CUDA authority. Native long-prompt
+68-byte representation. ISO4 uses the pinned 32 quaternion rotations.
+The distinct `rotorquant-planar4-sm70-v1` remains the first later equal-memory
+comparison; it is not an alias or a substitute for initial ISO4 qualification.
+The pinned reference's CPU and CUDA rotation constants differ, so these formats
+explicitly select their CUDA authority. Native long-prompt
 packing, attention, quality, and performance require their own V100 runs.
 
 Stock MTP and `--draft-method none` have explicit resource and tail conventions.
@@ -97,9 +100,9 @@ Values must fit that engine's reported `allocated_maximum`. The example values
 are illustrative, not a V100 performance recommendation. The response reports
 configured, pending, and effective values. The coordinator applies changes
 between batches and shares a single ordered execution plan with TP peers.
-Lowering the admission ceiling preserves running and retained sessions; raising
-it cannot exceed the capacity already allocated. Existing histories are not
-workspace when only one request is active.
+Lowering the admission ceiling preserves running requests; raising it cannot
+exceed the capacity already allocated. Active requests keep their full-context
+reservation until completion/cancellation and retirement of their readers.
 
 Structural changes to context, codec, model, or method are not writable through
 this endpoint. They require the specification's state-preserving in-process
@@ -107,8 +110,9 @@ transition; a new setting must not silently evict sessions or be presented as a
 live control before that transition exists. The endpoint never replaces
 workers or restarts the CUDA context.
 
-The runtime receipt is an advisory host snapshot, including unique retained
-slots, active/queued work, the current execution epoch, useful committed tokens,
+The runtime receipt is an advisory host snapshot, including active requests,
+allocated slots, bounded derived prefix-cache slots/entries, the current
+execution epoch, useful committed tokens,
 and the capacity receipt. `/stats` includes this section for adaptive engines.
 Reading it does not synchronize GPUs or turn startup planning into a current
 physical-free-memory measurement.
@@ -116,6 +120,36 @@ Step elapsed time is host wall time, including waits actually observed by that
 thread. Device-completion time is unmeasured and reported as null; asynchronous
 maintenance must be included by a complete workload measurement before using a
 timing sample as performance evidence.
+
+The execution receipt includes `work_observations`, published by the serialized
+worker at operation boundaries. It separates fresh logical prompt admissions,
+request/replay prefix hits, submitted target prefill/decode and replay rows, and
+MTP prefill/target-conditioned refresh/provisional proposal rows, including the
+existing cached-prefix boundary refresh at its saved position. Warm runtime
+zero-proposal refresh has its own count. Synthetic startup warmup is cleared
+before serving. None of these row counts is generated output or device time.
+
+Indexer counts are derived from actual submitted query ranges: visible complete
+pooled groups, visible sparse group/query-head score pairs, and selected key rows
+including incomplete tails. They count the canonical logical work once across
+TP ranks, with no factor for replicated scratch or masked physical launches.
+They are not measured memory traffic or a claim that every implementation
+executes only visible arithmetic. Partial failed forward submissions are marked
+unknown; complete totals are not fabricated. The prospective profile-table
+`indexer_work` axis remains unknown until its separate covering contract is
+established. `expert_group_max` remains null; batch size is not a substitute for
+actual routed expert occupancy.
+
+Acceptance histograms are fixed to the allocated proposal maximum, including
+maxima above32. They count the existing verifier's accepted prefix after its
+reply/EOS rules and before the text-stop prefix callback. Offered widths and
+accepted totals by offered width are separate. The existing useful-output count
+continues to exclude owed replay and failed grammar publication. No per-stage
+durations are guessed. A failed admission observation retires or quarantines its borrowed slot and rolls
+back the attempted counters. A separate failure latch invalidates completeness
+even when publishing another snapshot cannot allocate. Counter exhaustion is
+visible and invalidates completeness instead of silently wrapping; these host snapshots are diagnostic readings, not
+new capacity or performance proofs.
 
 Unique-history placement requests use standalone `{"attention_degree": 2}`
 updates. Migration copies packed bytes through balanced bundles and publishes
@@ -129,13 +163,22 @@ Managed TP launches signal their supervisor on a fatal cohort operation so a
 peer blocked in a collective cannot strand process retirement. Unmanaged
 launches retain their external containment responsibility.
 
-Idle endpoint retention is independent of optional prompt-prefix reuse.
-Adaptive full-window slots preserve committed recurrent/history/draft state
-after request completion; the last emitted anchor can still await target
-consumption. New admissions explicitly retire an idle LRU endpoint when reusing
-its slot. Other idle contexts survive that admission and all supported runtime
-updates. This does not enable unqualified Q4 prefix borrowing or duplicate full
-state snapshots.
+The CUDA generation and Responses APIs create request-scoped sequences. They
+have no GPU retained-session close/expiry contract; storing or deleting a
+Response affects message/response JSON rather than GPU ownership. Completion
+or cancellation retires the request claim after its readers, transfers and
+callbacks finish. Full-window allocations can remain reusable, and the legacy
+bounded prompt-prefix cache can retain evictable derived bytes. Neither is an
+intentional retained session: `sessions.retained` reports zero, while `active`,
+`allocated_slots`, `derived_prefix_slots` and `derived_prefix_entries` report
+those separate quantities. New admissions increment the destination slot's
+logical generation before prefix copy/restore, including qualified prefix hits;
+rollback within the same request preserves its generation.
+
+A zero proposal setting keeps enabled MTP conditioning current only while its
+request is active. A per-request `draft: false` switch disables speculative
+work for that call. Request completion does not maintain an idle endpoint in
+anticipation of an unspecified future resumption.
 
 Execution profile registration uses either startup-bound proof references or a
 standalone `{"profile_manifest": "new/manifest.json"}` request. Verification is

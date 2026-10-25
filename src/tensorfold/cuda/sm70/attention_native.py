@@ -47,7 +47,7 @@ def extension():
     sources = [root / "attention_bindings.cpp", root / "attention.cu"]
     identity = hashlib.sha256(prepared.__name__.encode())
     headers = [root.parent / "kernels/tensor_contracts.cuh", root / "pv_dispatch.cuh",
-               root / "rotorquant_q4.cuh", root / "rotorquant_q4_tables.cuh"]
+               root / "rotorquant_q4.cuh", root / "rotorquant_q4_tables.cuh", root / "packed_kv_decode.cuh"]
     for source in [*sources, *headers]:
         identity.update(source.name.encode() + b"\0" + source.read_bytes())
     staged = stage_sources(sources, headers=headers, source_root=root.parent)

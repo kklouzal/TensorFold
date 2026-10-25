@@ -5,9 +5,9 @@ completion. Prepare the extension before capture. Encoding uses fixed FP32
 128-coordinate reductions, original RMS (CODEC4), exact existing staged basis
 and lower-midpoint indices. Selected reconstructions must be representable as
 FP16 for the SM70 working policy; errors are contained before cache publication.
-CODEC9 is separately pinned CUDA Planar4: corrected FP16 L2 norm plus reserved
-FP16 zero in each opaque four-byte metadata word. It does not use FP32 RMS and
-does not inherit Signed128 format or quality evidence.
+CODEC9 is pinned CUDA Planar4 and CODEC10 is pinned CUDA Iso4: corrected FP16
+L2 norm plus reserved FP16 zero in each opaque four-byte metadata word. Neither
+uses FP32 RMS or inherits Signed128 format or quality evidence.
 No inactive encoding row writes any cache byte or scale. Decode and rotation
 zero inactive scratch rows, while preserving output rows beyond ``rows``.
 
@@ -50,7 +50,7 @@ def encode(x, codes, scales, *, codec=4, position=None, status=None, error=2, la
     """[R,H,D] FP16/FP32 -> uint8 [C,H,D/2], four-byte metadata [C,H,D/128].
 
     The metadata tensor dtype is float32. CODEC1..5 store numerical FP32
-    scales; CODEC9 stores the bits of FP16 corrected norm and reserved zero.
+    scales; CODEC9/10 store the bits of FP16 corrected norm and reserved zero.
 
     Source head rows may have a larger leading stride. A nullable CUDA int32 or
     int64 ``position[1]`` selects the destination base; bounds are checked on
