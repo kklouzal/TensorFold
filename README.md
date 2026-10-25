@@ -6,6 +6,10 @@ full-context capacity planning, unique GPU histories, bounded execution and live
 controls. [Implementation and qualification boundaries](docs/v100-adaptive-validation.md)
 separate source checks from the pending eight-V100 model, quality and performance
 gates. Historical results below keep their original source and layout.
+The revised V100 foundation is a
+[CUDA 12.9 source-build candidate](deploy/v100/source-foundation.md).
+The historical cu126 wheel image is reference evidence and does not qualify
+the selected combined dependency stack.
 Measured execution profiles use a separate
 [content-verified identity and evidence manifest](docs/execution-profile-manifest.md).
 

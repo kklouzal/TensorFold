@@ -14,7 +14,28 @@ sampling and cleanup contracts are used. Full-model validation is recorded in
 [the qualification note](../../docs/v100-flashnext-validation.md); do not infer
 quality or throughput from the component matrix alone.
 
-## Selected foundation
+## Selected source foundation and historical reference
+
+The governing specification now selects the coherent
+[source-built CUDA 12.9 stack](source-foundation.md). Its source producer,
+compile receipts and remaining V100 gates are separate from the historical
+wheel-based configuration below. A successful old cu126 import or model test
+does not qualify the new framework/library combination. No serving-time
+dependency fallback is provided.
+
+Build the selected development image with the external source artifact context:
+
+```bash
+docker build --network=none \
+  --build-context source_artifacts=/path/to/foundation-state/release \
+  --target verification -f deploy/v100/Dockerfile -t tensorfold-v100:source-development .
+docker run --rm --network none tensorfold-v100:source-development \
+  /opt/tensorfold-pins/source_foundation.py audit
+```
+
+The [source foundation procedure](source-foundation.md) prepares that bundle and
+records the remaining device/compiler/model gates. The following wheel matrix,
+build examples and serving receipts are historical reference information.
 
 The native AMD64 CPython 3.12 profile pins the official CUDA **12.9.2** development
 image by child and index digest, with official **Torch 2.14.1+cu126**,
@@ -24,7 +45,7 @@ recorded separately. A newer CUDA toolkit alone does not prove that a framework
 wheel contains Volta kernels. The probe requires `sm_70` in Torch's actual
 compiled targets and executes the selected operators on a V100.
 
-The cu126 wheels are selected because newer cu128/cu129 PyTorch wheels removed
+The historical cu126 wheels were selected because newer cu128/cu129 PyTorch wheels removed
 Volta. See [PyTorch's packaging notice](https://dev-discuss.pytorch.org/t/dropping-volta-support-from-cuda-12-8-binaries-for-release-2-11/3290)
 and [CUDA 12.9.2 compiler targets](https://docs.nvidia.com/cuda/archive/12.9.2/cuda-compiler-driver-nvcc/index.html#gpu-name-gpuname-arch).
 Triton is retained as a framework dependency; this SM70 provider does not invoke
@@ -47,7 +68,7 @@ the generated manifest retains its identity and dependency closure.
 From the repository root:
 
 ```bash
-docker build --target verification -f deploy/v100/Dockerfile -t tensorfold-v100:verified .
+docker build --target verification -f deploy/v100/Dockerfile.cu126-reference -t tensorfold-v100:verified .
 docker run --rm tensorfold-v100:verified -m pytest -q \
   tests/test_flashnext_gguf.py tests/test_flashnext_gguf_weights.py \
   tests/test_gguf_assets.py tests/test_sm70_mtp_weights.py \
