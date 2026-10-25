@@ -1,5 +1,12 @@
 # Flash Next on eight V100 GPUs
 
+Optional [prepared serving profiles](../../docs/serving-profiles.md) use
+`--serving-profile-root` and the existing runtime endpoint for in-process
+model/context/KV/method changes. All-rank readiness and request leases guard
+replacement; expected load refusal after retirement remains unavailable until
+an explicit retry. This source behavior still requires actual V100 A-to-B-to-A,
+quality, capacity and performance qualification on the selected runtime stack.
+
 The [adaptive implementation](../../docs/v100-adaptive-validation.md) changes
 GGUF GPU-history admission to computed full-context capacity. Its unique-history
 and compact-Planar4 paths require new native/model/quality/performance

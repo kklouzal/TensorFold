@@ -136,6 +136,9 @@ def make_handler(app: App):
                     return self._refuse(error)
                 except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
                     return self._json(400, {"error": invalid_request("the request body is not JSON")})
+                except Exception as error:
+                    _log_error(error)
+                    return self._json(500, {"error": server_error(_error_message(error))})
                 return self._json(200, reply)
             if path.endswith("/decisions"):
                 return self._post_decisions()
@@ -366,6 +369,16 @@ def make_handler(app: App):
                     return
             self._json(200, payload)
 
+    engine = getattr(app, "engine", None)
+    if (getattr(engine, "execution_provider", None) == "sm70"
+            and (getattr(engine, "adaptive_sessions", False)
+                 or (getattr(engine, "capacity_plan", None) or {}).get("session_capacity") is not None)):
+        Handler.requires_finite_limits = True
+        Handler.pending_request_limit = app.max_pending_requests
+    if getattr(engine, "serving_profiles", None) is not None:
+        from tensorfold.cuda.profile_app import bind_http
+
+        bind_http(Handler, app)
     from tensorfold.server.auth_http import handler
     return handler(Handler, app)
 

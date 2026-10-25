@@ -7,6 +7,12 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Sequence
 
 
+def mark_error_state_retired(error):
+    """The decoder completed request rollback/reset; device readers still need a fence."""
+    BaseException.__dict__["__dict__"].__get__(error)["_tensorfold_request_state_retired"] = True
+    return error
+
+
 def prefix_limit(callback: Callable | None, new: Sequence[int], prefix: Sequence[int]) -> tuple[int, bool]:
     """Validate a pure precommit decision before cache/recurrent publication.
 
@@ -70,7 +76,7 @@ class Stream:
     admitted: float = 0.0                                 # when a lane took it
     on_fill: Callable[[int], None] | None = None         # prompt rows its state holds, after each prefill pass
     token_limit: Callable[[Sequence[int], Sequence[int]], tuple[int, bool]] | None = None
-    profile_epoch: int | None = None                  # immutable serving-profile lease; None disables profile switching
+    profile_epoch: int | None = None  # identity only; ProfileGate/queue own the request lifetime
     committed_output_tokens: int = 0                 # unique accepted output; replay and delivery do not advance it
 
     def take(self, new: list[int], eos: Sequence[int] = ()) -> None:
