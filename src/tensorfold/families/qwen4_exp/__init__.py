@@ -220,8 +220,9 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         raise ValueError("indexer_history must be gpu or ram")
     if history == "ram" and not gguf:
         raise ValueError("indexer_history ram requires the GGUF SM70 provider")
+    serving_root = options.get("serving_profile_root")
     execution_manifest = options.get("execution_profile_manifest")
-    if execution_manifest is not None and not (gguf and history == "gpu" and vram_experts is None):
+    if (execution_manifest is not None or serving_root is not None) and not (gguf and history == "gpu" and vram_experts is None):
         raise ValueError("execution_profile_manifest requires resident Flash Next GGUF GPU histories on SM70")
     method = options.get("draft_method", "auto")
     if method not in CUDA_DRAFT_METHODS:
@@ -284,6 +285,8 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
                               session_ceiling=None if automatic else int(parallel))
         if options.get("execution_rows") is not None:
             engine_options["execution_rows"] = options["execution_rows"]
+        if serving_root is not None:
+            engine_options["serving_profile_root"] = Path(serving_root)
         if execution_manifest is not None:
             engine_options["execution_profile_manifest"] = Path(execution_manifest)
     if vram_experts_pin != "off":

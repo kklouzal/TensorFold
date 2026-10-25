@@ -8,6 +8,10 @@ separate source checks from the pending eight-V100 model, quality and performanc
 gates. Historical results below keep their original source and layout.
 Measured execution profiles use a separate
 [content-verified identity and evidence manifest](docs/execution-profile-manifest.md).
+Opt-in [serving profiles](docs/serving-profiles.md) implement model/context/KV/method
+transitions on the existing worker and communicator, including unavailable-state
+load retry. Host protocol/lifetime checks are separate from pending actual
+eight-V100 loading, quality and performance qualification.
 
 The optional `--indexer-history ram` path keeps raw FP16 indexer history in
 NUMA-local system memory, with bounded GPU ring/staging buffers; pooled indexer

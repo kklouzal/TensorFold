@@ -7,6 +7,12 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Sequence
 
 
+def mark_error_state_retired(error):
+    """The decoder completed request rollback/reset; device readers still need a fence."""
+    BaseException.__dict__["__dict__"].__get__(error)["_tensorfold_request_state_retired"] = True
+    return error
+
+
 def prefix_limit(callback: Callable | None, new: Sequence[int], prefix: Sequence[int]) -> tuple[int, bool]:
     """Validate a pure precommit decision before cache/recurrent publication.
 
@@ -70,6 +76,7 @@ class Stream:
     admitted: float = 0.0                                 # when a lane took it
     on_fill: Callable[[int], None] | None = None         # prompt rows its state holds, after each prefill pass
     token_limit: Callable[[Sequence[int], Sequence[int]], tuple[int, bool]] | None = None
+    profile_epoch: int | None = None  # identity only; ProfileGate/queue own the request lifetime
 
     def take(self, new: list[int], eos: Sequence[int] = ()) -> None:
         """Append a round's tokens and emit them; the stream ends at its count, an end token or a stop."""
@@ -115,7 +122,7 @@ class Stream:
         grammar starts again with it."""
 
         return Stream(self.prompt, self.count, self.sampling, draft=self.draft, stop_eos=self.stop_eos, emit=self.emit,
-                      token_limit=self.token_limit,
+                      token_limit=self.token_limit, profile_epoch=self.profile_epoch,
                       background=self.background, probabilities=self.probabilities, penalties=self.penalties,
                       constraint=self.constraint.fresh() if self.constraint is not None else None,
                       carry=self.stats(), owed=[*self.out, *self.owed], cancel=self.cancel)

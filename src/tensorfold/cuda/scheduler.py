@@ -13,7 +13,7 @@ from tensorfold.cleanup import finish, raise_failures, rollback
 from tensorfold.server.request_limits import RequestLimit, optional_limit
 
 from .memory_gate import NoRoom
-from .streams import Stream
+from .streams import Stream, mark_error_state_retired
 
 TICK_S = 15.0           # a request waiting this long for tokens (queued or prefilling) ticks ``emit([])``: a keepalive
 
@@ -85,6 +85,7 @@ class Scheduler:
         self.max_pending_requests = optional_limit(max_pending_requests, "max_pending_requests")
         self._request_limit = RequestLimit(max_pending_requests) if max_pending_requests is not None else None
         self._request_boxes: set[queue.Queue] = set()
+        self._error_retirements = {}
         self._submitted = False
         self.waiting = Waiting()
         self.held: tuple | None = None               # a request waiting for memory, admitted before any other
@@ -94,6 +95,9 @@ class Scheduler:
         self._stop_published = False
         self._stopping = False                    # worker consumed the marker; accepted work still drains
         self._failure: BaseException | None = None
+        self.serving_profiles = None
+        self._serving_profile_epoch = None
+        self._serving_profile_available = True
         self._pending_manifest = None
         self._manifest_sequence = 0
         self._manifest_status = {"configured": None, "pending": False, "effective": None,
@@ -131,6 +135,10 @@ class Scheduler:
         with self._state_lock:
             if self._closing:
                 raise RuntimeError("CUDA scheduler is closing; runtime updates are rejected")
+            if self.serving_profiles is not None:
+                profile = self.serving_profiles.record()
+                if not profile["available"] or profile["pending"] is not None:
+                    raise ValueError("execution controls require a ready serving profile with no pending structural transition")
             result = publish()
             self.waiting.wake()
             return result
@@ -147,6 +155,10 @@ class Scheduler:
         with self._state_lock:
             if self._closing:
                 raise RuntimeError("CUDA scheduler is closing; runtime updates are rejected")
+            if self.serving_profiles is not None:
+                profile = self.serving_profiles.record()
+                if not profile["available"] or profile["pending"] is not None:
+                    raise ValueError("execution controls require a ready serving profile with no pending structural transition")
             if getattr(self.decoder, "execution_manifest_installer", None) is None:
                 raise ValueError("execution profile verification was not enabled at startup")
             self._manifest_sequence += 1
@@ -165,7 +177,14 @@ class Scheduler:
         """Configured logical ownership count; uncapped mode has no such registry."""
         return self._request_limit.used if self._request_limit is not None else None
 
-    def _terminal(self, box: queue.Queue, kind: str, value: Any) -> None:
+    def _terminal(self, box: queue.Queue, kind: str, value: Any, *, retired=False) -> None:
+        if kind == "error" and self.serving_profiles is not None:
+            if not retired:
+                value = self.serving_profiles.error_outcome(value)
+            if self.serving_profiles.failure is None:
+                signal = self._error_retirements.get(box)
+                if signal is not None:
+                    signal.set()
         if self._request_limit is not None:
             with self._state_lock:
                 self._request_limit.release(box)
@@ -175,6 +194,12 @@ class Scheduler:
                 self._request_boxes.discard(box)
         else:
             box.put((kind, value))
+        self._error_retirements.pop(box, None)
+
+    def _unregister_unpublished(self, box, signal=None):
+        finish((lambda: self._error_retirements.pop(box, None), lambda: self._request_boxes.discard(box)))
+        if signal is not None:
+            signal.set()  # No model work was published; a completed rollback is safe for this caller.
 
     def _stop_requests(self) -> None:
         """Caller holds the publication lock; wake a draining worker after closing admission."""
@@ -253,18 +278,20 @@ class Scheduler:
                emit: Callable[[list[int]], bool | None], stop_eos: bool = True, *, vision: Any = None,
                constraint: Any = None, background: bool = False, probabilities: Any = None,
                progress: Callable[[int, int, int, float], bool] | None = None, penalties: Any = None,
-               token_limit: Callable[[list[int], list[int]], tuple[int, bool]] | None = None) -> dict:
+               token_limit: Callable[[list[int], list[int]], tuple[int, bool]] | None = None, profile_epoch: int | None = None, _error_retired=None) -> dict:
         """Decode one request; ``emit`` runs on the calling thread and returns True to stop. Returns its stats.
         While no tokens come (queued, or a long prompt filling) ``emit([])`` ticks every TICK_S: the caller keeps its
         connection alive and says whether its client left, and a request whose client left stops even mid-prompt.
         ``progress(total, cached, processed, ms since admission)``, also on the calling thread, hears the prompt's
         rows when a lane takes it and after each prefill pass a decoder reports (``Stream.on_fill``); True stops it."""
 
+        if profile_epoch is not None and (type(profile_epoch) is not int or profile_epoch < 0):
+            raise ValueError("a serving profile requires a nonnegative integer epoch")
         box: queue.Queue = queue.Queue()
         cancel = threading.Event()
         stream = Stream(list(prompt), max(1, count), sampling, draft=draft, stop_eos=stop_eos, vision=vision,
                         constraint=constraint, background=background, probabilities=probabilities, cancel=cancel,
-                        penalties=penalties, token_limit=token_limit)
+                        penalties=penalties, token_limit=token_limit, profile_epoch=profile_epoch)
         stream.emit = lambda new: (box.put(("tokens", new)), cancel.is_set())[1]
         if progress is not None:
             stream.on_fill = lambda rows: box.put(("filled", rows))
@@ -275,13 +302,25 @@ class Scheduler:
             with self._state_lock:
                 if self._closing:
                     raise RuntimeError("CUDA scheduler is closing; new requests are rejected")
-                if self._request_limit is not None:
-                    try:
+                if self.serving_profiles is not None:
+                    binding = self.serving_profiles.gate.current()
+                    if binding is None or not binding.scope.locked() or binding.epoch != profile_epoch:
+                        from .profile_binding import ProfileUnavailable
+
+                        raise ProfileUnavailable("scheduler submission requires an admitted model-profile lease")
+                self._check_profile(stream.profile_epoch)
+                try:
+                    if self._request_limit is not None:
                         self._request_limit.borrow(box)
                         self._request_boxes.add(box)
-                    except BaseException as primary:
+                    if _error_retired is not None:
+                        self._error_retirements[box] = _error_retired
+                except BaseException as primary:
+                    if self._request_limit is not None:
                         self._request_limit.rollback_registration(
-                            self, box, primary, lambda: self._request_boxes.discard(box), self._stop_requests)
+                            self, box, primary, lambda: self._unregister_unpublished(box, _error_retired), self._stop_requests)
+                    else:
+                        rollback(self, primary, lambda: self._unregister_unpublished(box, _error_retired))
                 self._submitted = True
                 try:
                     self.waiting.put((stream, box))
@@ -338,31 +377,51 @@ class Scheduler:
                 self._reply(stream, "done", stream.stats())     # its client left while it waited: nothing to fill
                 continue
             try:
+                self._check_profile(stream.profile_epoch)
                 self.decoder.admit(stream)
                 stream.admitted = time.perf_counter()             # one clock read an admission, not a round
                 stream.queue_s += stream.admitted - stream.queued
                 if stream.on_fill is not None:                    # its prefill starts from the rows it resumed
                     stream.on_fill(stream.cached)
             except NoRoom as exc:
-                self.boxes.pop(id(stream))
+                if self.serving_profiles is not None:
+                    self._retire_admission_error(exc)
                 if self.decoder.live():              # waits, first in line, until a live stream finishes
                     self.held = (stream, box)
+                    self.boxes.pop(id(stream), None)
                     break
-                if self._request_limit is None:
-                    box.put(("error", exc))
-                else:
-                    self._terminal(box, "error", exc)
+                self._terminal(box, "error", exc, retired=self.serving_profiles is not None)
+                self.boxes.pop(id(stream), None)
                 continue
             except Exception as exc:                 # noqa: BLE001  (this request fails, the others go on)
-                box = self.boxes.pop(id(stream))
-                if self._request_limit is None:
-                    box.put(("error", exc))
-                else:
-                    self._terminal(box, "error", exc)
+                if self.serving_profiles is not None:
+                    self._retire_admission_error(exc)
+                box = self.boxes[id(stream)]
+                self._terminal(box, "error", exc, retired=self.serving_profiles is not None)
+                self.boxes.pop(id(stream), None)
                 continue
             if stream.done:
                 done.append(stream)
         return done
+
+    def _retire_admission_error(self, error):
+        coordinated = getattr(self.decoder, "retire_admission_error", None)
+        if coordinated is not None and getattr(self.decoder, "_operation_error", None) is error:
+            coordinated()
+        else:
+            self.serving_profiles.error_outcome(error)
+
+    def _check_profile(self, epoch):
+        """Acceptance lock or serialized GPU worker; epoch supplies no ownership."""
+        from .profile_binding import ProfileUnavailable
+
+        current = self._serving_profile_epoch
+        if current is None:
+            if epoch is not None:
+                raise mark_error_state_retired(ProfileUnavailable("serving profile bindings are not enabled for this scheduler"))
+            return
+        if not self._serving_profile_available or epoch != current:
+            raise mark_error_state_retired(ProfileUnavailable("the request belongs to a retired or unavailable serving profile"))
 
     def _yield(self) -> None:
         """Lanes full, a foreground request waiting: the newest background stream (no images) re-queues."""
@@ -388,13 +447,11 @@ class Scheduler:
         gone = [s for s in getattr(self.decoder, "filling", ()) if s.cancel is not None and s.cancel.is_set()]
         return drop(gone) if drop is not None and gone else []
 
-    def _reply(self, s: Stream, kind: str, value: Any) -> None:
-        box = self.boxes.pop(id(s), None)            # None: the stream's request has had its reply
+    def _reply(self, s: Stream, kind: str, value: Any, *, retired=False) -> None:
+        box = self.boxes.get(id(s))                 # Journal until fallible outcome publication completes.
         if box is not None:
-            if self._request_limit is None:
-                box.put((kind, value))
-            else:
-                self._terminal(box, kind, value)
+            self._terminal(box, kind, value, retired=retired)
+            self.boxes.pop(id(s), None)
 
     def _clear_failure_frames(self) -> None:
         """Keep failure objects/context without retaining foreign decoder frames.
@@ -404,6 +461,8 @@ class Scheduler:
         worker's and cleanup's frames are removed before publication and again
         at joined shutdown. Failed cleanup still retains its explicit decoder.
         """
+        if self.serving_profiles is not None and self.serving_profiles.failure is not None:
+            return  # Unknown profile owners stay intact until fenced retirement/process containment.
         pending = [self._failure, self._cleanup_failure, self._start_error]
         seen = set()
         while pending:
@@ -434,7 +493,14 @@ class Scheduler:
                 self._failure = exc
                 if self._request_limit is not None:
                     self._request_limit.close()
-            if started:
+            if started and self.serving_profiles is not None:
+                if self.serving_profiles.failure is None:
+                    try:
+                        self.serving_profiles._poison(exc)
+                    except BaseException as containment:
+                        errors.append(containment)
+                self._cleanup_failure = exc  # Do not issue new model work or drop unknown raw owners.
+            elif started:
                 try:
                     self.decoder.drop()
                 except BaseException as cleanup:
@@ -525,6 +591,10 @@ class Scheduler:
         return self.max_streams if controller is None else min(self.max_streams, controller.admission_limit())
 
     def _execution_boundary(self) -> None:
+        if self.serving_profiles is not None:
+            self.serving_profiles.boundary(self)
+            if not self._serving_profile_available:
+                return
         controller = getattr(self.decoder, "controller", None)
         if controller is not None:
             controller.boundary()
@@ -552,6 +622,18 @@ class Scheduler:
     def _run(self) -> None:
         while True:
             self._execution_boundary()
+            if not self._serving_profile_available:
+                # Keep the same worker/transport alive while a refused profile
+                # awaits an explicit in-process retry. No model method is valid.
+                item = self.waiting.get()
+                if item is None:
+                    return
+                if not self.waiting.is_wake(item):
+                    stream, box = item
+                    from .profile_binding import ProfileUnavailable
+
+                    self._terminal(box, "error", mark_error_state_retired(ProfileUnavailable("the serving profile is unavailable")))
+                continue
             self._yield()
             idle = not self.decoder.live() and self.held is None
             if idle and self._stopping:
@@ -563,13 +645,29 @@ class Scheduler:
                 return                                                                # close()
             if idle:
                 self._execution_boundary()  # a control may arrive while the worker waits on the queue
+                if not self._serving_profile_available:
+                    if first is not None and not self.waiting.is_wake(first):
+                        self.waiting.put(first)
+                    continue
             done = self._admit(first)
             try:
                 done += self._cancelled()
                 done += self.decoder.round()
             except Exception as exc:                 # noqa: BLE001  (the live requests fail)
-                for s in self.decoder.drop():
-                    self._reply(s, "error", exc)
+                dropped = self.decoder.drop()
+                if self.serving_profiles is not None:
+                    self.serving_profiles.error_outcome(exc, state_retired=True,
+                        states=tuple(s.st for s in dropped if s.st is not None))
+                for s in dropped:
+                    if self.serving_profiles is not None:
+                        s.st = s.snap = s.copies = s.vision = None
+                    self._reply(s, "error", exc, retired=self.serving_profiles is not None)
             self.decoder.finish(done)
+            if self.serving_profiles is not None:
+                for s in done:
+                    if s.error is not None:
+                        self.serving_profiles.error_outcome(s.error, state_retired=True, states=() if s.st is None else (s.st,))
+                    s.st = s.snap = s.copies = s.vision = None
             for s in done:
-                self._reply(s, *(("error", s.error) if s.error is not None else ("done", s.stats())))
+                self._reply(s, *(("error", s.error) if s.error is not None else ("done", s.stats())),
+                            retired=self.serving_profiles is not None and s.error is not None)

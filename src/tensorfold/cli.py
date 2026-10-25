@@ -361,6 +361,8 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
         options.update(expert_ranks=args.expert_ranks, expert_shards=args.expert_shards)
     if getattr(args, "kv_full_windows", None) is not None:
         options["kv_full_windows"] = args.kv_full_windows
+    if getattr(args, "serving_profile_root", None) is not None:
+        options["serving_profile_root"] = args.serving_profile_root
     if getattr(args, "execution_profile_manifest", None) is not None:
         options["execution_profile_manifest"] = args.execution_profile_manifest
     if getattr(args, "indexer_history", "gpu") != "gpu":

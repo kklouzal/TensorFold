@@ -626,9 +626,13 @@ Profile manifests are opt-in and hash actual checkpoint/tokenizer/source inputs;
 geometry or filenames alone cannot authorize a profile. See the
 [manifest schema and trust boundary](execution-profile-manifest.md) and
 [V100 implementation/qualification limits](v100-adaptive-validation.md).
-Context, precision, target weights and speculative method are fixed profile
-properties here; this endpoint does not expose unsupported structural changes
-or restart a worker/container/CUDA context.
+With startup `--serving-profile-root`, a standalone
+`{"serving_profile":"B.json"}` selects a prepared resident Flash Next SM70
+model/context/KV/method profile. The existing worker and communicator drain old
+borrowers, retire old resources and publish only after all-rank readiness.
+Expected load refusal after retirement reports unavailable and permits an
+in-process retry. `GET /v1/runtime` includes `serving_profile` status even when
+no model is available. See [lifetime, manifest and qualification contracts](serving-profiles.md).
 
 ## Metrics
 

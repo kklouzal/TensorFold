@@ -107,15 +107,23 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         source = config_dir if config_dir is not None else getattr(args, "model", None)
         if source is None or resolve_gguf(source) is None:
             raise ValueError("--indexer-history ram requires a local Flash Next GGUF checkpoint")
+    serving_root = getattr(args, "serving_profile_root", None)
+    if serving_root is not None:
+        from tensorfold.families.qwen4_exp.cuda.serving_profiles import profile_root
+        from tensorfold.server.request_limits import require_finite_endpoint_limits
+
+        require_finite_endpoint_limits(max_pending_requests=getattr(args, "max_pending_requests", None),
+                                      max_http_connections=getattr(args, "max_http_connections", None))
+        profile_root(serving_root)
     manifest = getattr(args, "execution_profile_manifest", None)
-    if manifest is not None:
+    if manifest is not None or serving_root is not None:
         from tensorfold.families.qwen4_exp.gguf import resolve_gguf
 
         source = config_dir if config_dir is not None else getattr(args, "model", None)
         if (backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next")
                 or history != "gpu" or getattr(args, "vram_experts", None) is not None
                 or source is None or resolve_gguf(source) is None):
-            raise ValueError("--execution-profile-manifest requires resident Flash Next GGUF GPU histories on SM70")
+            raise ValueError("execution/serving profile selection requires resident Flash Next GGUF GPU histories on SM70")
     windows = getattr(args, "kv_full_windows", None)
     if windows is not None:
         if backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next"):

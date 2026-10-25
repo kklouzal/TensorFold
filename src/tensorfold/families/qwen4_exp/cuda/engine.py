@@ -59,7 +59,19 @@ def _expert_authority(cache) -> tuple[str, dict | None]:
 class FlashNextEngine:
     """``eos``, ``generate`` (rank 0 or one GPU) and ``follow`` (peer ranks), as the CUDA server expects."""
 
-    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None, mtp_model_dir: Path | None=None, dspark_model_dir: Path | None=None, indexer_history: str="gpu", adaptive_sessions: bool=False, session_ceiling: int | None=None, execution_rows: int | None=None, execution_profile_manifest: Path | None=None) -> None:
+    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None, mtp_model_dir: Path | None=None, dspark_model_dir: Path | None=None, indexer_history: str="gpu", adaptive_sessions: bool=False, session_ceiling: int | None=None, execution_rows: int | None=None, execution_profile_manifest: Path | None=None, serving_profile_root: Path | None=None) -> None:
+        if serving_profile_root is not None:
+            from .serving_profiles import profile_root
+
+            serving_profile_root = profile_root(serving_profile_root)
+            if not adaptive_sessions or indexer_history != "gpu" or expert_session is not None or vram_experts is not None:
+                raise ValueError("serving profiles require resident adaptive Flash Next GGUF GPU histories")
+        profile_options = dict(locals())
+        profile_options.pop("self")
+        profile_options.pop("model_dir")
+        profile_options.pop("serving_profile_root")
+        self._profile_build = None
+        self.serving_profiles = None
         self._lifecycle = threading.Condition()
         self._closing = self._closed = self._close_running = False
         self._calls: dict[object, int] = {}
@@ -72,6 +84,10 @@ class FlashNextEngine:
         self._startup_reads: list = []
         try:
             self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, expert_session=expert_session, kv_full_windows=kv_full_windows, vram_experts_pin=vram_experts_pin, eos_token_ids=eos_token_ids, chat_template_file=chat_template_file, chat_template_name=chat_template_name, mtp_model_dir=mtp_model_dir, dspark_model_dir=dspark_model_dir, indexer_history=indexer_history, adaptive_sessions=adaptive_sessions, session_ceiling=session_ceiling, execution_rows=execution_rows, execution_profile_manifest=execution_profile_manifest)
+            if serving_profile_root is not None:
+                from .serving_runtime import ServingProfiles
+
+                self.serving_profiles = ServingProfiles(self, serving_profile_root, profile_options)
         except BaseException as primary:
             self._abort_comm = True
             rollback(self, primary, self._rollback_startup)
@@ -249,9 +265,11 @@ class FlashNextEngine:
 
             self._sm70_attention_identity = runtime_identity(torch.device("cuda", torch.cuda.current_device()))
         self.streams, self.graphs_enabled = int(streams), bool(graphs)
-        self.comm = None
+        managed = self._profile_build is not None
+        if not managed:
+            self.comm = None
         self.vision = None                   # the image tower (``QwenCudaVision``) with --vision
-        if tp > 1:
+        if tp > 1 and not managed:
             from tensorfold.cuda.comm import open_comm
 
             self.comm = open_comm(rank, tp, master, port)
@@ -756,6 +774,8 @@ class FlashNextEngine:
 
             self.model_dir = Path(model_dir)
             begin_execution_manifest(self, execution_profile_manifest)
+        if managed:
+            self._profile_build.phase("loading_weights")
         w = load(model_dir, mtp=stock_mtp, tp=(rank, tp) if tp > 1 else None,
                  draft_vocab=draft_vocab if stock_mtp else None, ple_on_ssd=ple_on_ssd,
                  table_reads=reads if prefetch and not ple_on_ssd else None, rope=self.rope,
@@ -767,7 +787,9 @@ class FlashNextEngine:
                     {"vram_experts": vram_experts} if vram_experts is not None else {}),
                  **({"vram_experts_pin": vram_experts_pin, "_pin_future_bytes": self._pin_future_bytes}
                     if vram_experts_pin != "off" else {}))
-        self.w, self.scheduler = w, None
+        self.w = w
+        if not managed:
+            self.scheduler = None
         if history_placement is not None:
             w.meta.update(history_layout="unique", attention_degree=history_placement.degree)
         if self._indexer_history_session is not None:
@@ -845,13 +867,17 @@ class FlashNextEngine:
                   f"workspace reserved{'; https URLs allowed' if vision_urls else ''}", flush=True)
         # ``streams`` > 1: up to that many requests decoded together, every stream's chain in one forward
         self.concurrent = concurrent
-        self.multi = self.scheduler = None
+        self.multi = None
+        if not managed:
+            self.scheduler = None
         if self.concurrent:
             from tensorfold.cuda.scheduler import Scheduler
 
             from .multi import MultiDecoder
 
             self.e = None
+            if managed:
+                self._profile_build.phase("allocating_state")
             self.multi = MultiDecoder(w, slots=streams, capacity=self.max_len, depth=self.depth,
                                       confidence=self.confidence, keep=KEEP, points=self.points,
                                       kv_pair=self.kv_pair, share=share, vision=self.vision,
@@ -891,13 +917,16 @@ class FlashNextEngine:
                                        f"({self.multi.graph_record['reason'] or 'capturable'})")
             if automatic_experts:
                 self._configure_auto_experts(torch, streams, vision_workspace_bytes=workspace)
-            if self.comm is not None:
-                from .tp_scheduler import TensorParallelDecoder
+            # A managed replacement binds the persistent adapter only after
+            # all ranks have loaded, allocated and warmed successfully.
+            if not managed:
+                if self.comm is not None:
+                    from .tp_scheduler import TensorParallelDecoder
 
-                self.tp_decoder = TensorParallelDecoder(self.multi, self)
-                self.scheduler = Scheduler(self.tp_decoder, max_streams=streams) if rank == 0 else None
-            else:
-                self.scheduler = Scheduler(self.multi, max_streams=streams)
+                    self.tp_decoder = TensorParallelDecoder(self.multi, self)
+                    self.scheduler = Scheduler(self.tp_decoder, max_streams=streams) if rank == 0 else None
+                else:
+                    self.scheduler = Scheduler(self.multi, max_streams=streams)
         else:
             self.e = Engine(w, capacity=self.max_len, max_rows=max(8, self.depth + 1), graphs=graphs,
                             kv_pair=self.kv_pair, prefill_rows=self.prefill_rows)
@@ -977,6 +1006,8 @@ class FlashNextEngine:
         captured = self.e.graphs.warm(self.depth + 1) if self.e is not None and self.e.graphs is not None else 0
         started = time.perf_counter()
         if self.concurrent:
+            if managed:
+                self._profile_build.phase("warming")
             self.multi.warm()                            # and captures its rounds' graphs
             if (graph_bytes and not self.multi.graph_budget and self.multi.graphs is None
                     and self.multi._failed_graphs is None):
@@ -1062,9 +1093,11 @@ class FlashNextEngine:
         if execution_profile_manifest is not None:
             from .execution_identity import bind_execution_manifest
 
-            self.capacity_plan["execution_profile_binding"] = bind_execution_manifest(self, execution_profile_manifest)
+            self.capacity_plan["execution_profile_binding"] = (
+                self._profile_build.bind_execution_manifest(execution_profile_manifest) if managed else
+                bind_execution_manifest(self, execution_profile_manifest))
             self.multi.execution_manifest_installer = self._install_execution_manifest
-        if self.scheduler is not None:
+        if self.scheduler is not None and not managed:
             self.scheduler.start()            # warmup's synthetic streams belong solely to the constructor
 
     def _install_execution_manifest(self, relative_name):
@@ -1561,14 +1594,14 @@ class FlashNextEngine:
             self._calls.pop(request, None)
             self._lifecycle.notify_all()
 
-    def _retire_request(self, request, primary) -> None:
+    def _retire_request(self, request, primary, *, retired=False) -> None:
         """Report cancellation while completing its idempotent owner retirement."""
         try:
-            self._end_request(request, failed=primary is not None)
+            self._end_request(request, failed=primary is not None and not retired)
         except BaseException as cleanup:
             if isinstance(cleanup, KeyboardInterrupt):
                 try:
-                    self._end_request(request, failed=primary is not None)
+                        self._end_request(request, failed=primary is not None and not retired)
                 except BaseException as retry:
                     raise primary if primary is not None else cleanup from retry
             if primary is not None:
@@ -1631,7 +1664,7 @@ class FlashNextEngine:
                         self._close_running = False
                     lifecycle.notify_all()
 
-    def _close_resources(self) -> None:
+    def _close_resources(self, *, preserve_transport: bool = False) -> None:
         """After request drain, keep owners intact until their device fence."""
         seen_graphs = set()
         for decoder in (getattr(self, "multi", None), getattr(self, "e", None), getattr(self, "serial", None)):
@@ -1640,8 +1673,21 @@ class FlashNextEngine:
                 if graphs is not None and id(graphs) not in seen_graphs:
                     graphs.close()
                     seen_graphs.add(id(graphs))
+        preparation = getattr(self, "_owner_preparation", None)
+        if preparation is not None:
+            preparation.close()
+            decoder = getattr(self, "multi", None)
+            for name in ("buf", "mbuf", "pbuf"):
+                buffers = getattr(decoder, name, None)
+                if buffers is not None:
+                    buffers.owner_graphs = None
+                    buffers.history_owner = None
+            weights = getattr(self, "w", None)
+            if weights is not None:
+                weights.meta.pop("owner_workspaces", None)
+            self._owner_preparation = None
         comm = getattr(self, 'comm', None)
-        if comm is not None:
+        if comm is not None and not preserve_transport:
             comm.close(abort=getattr(self, '_abort_comm', False))
             self.comm = None
         session = getattr(self, "expert_session", None)
@@ -1689,6 +1735,7 @@ class FlashNextEngine:
         ``progress``: the prompt's prefill progress under ``--parallel`` (``Scheduler.submit``), else unused."""
 
         request = threading.Lock()
+        error_retired = threading.Event() if getattr(self, "serving_profiles", None) is not None else None
         with request:
             primary = None
             try:
@@ -1711,7 +1758,9 @@ class FlashNextEngine:
                                             probabilities=probabilities,
                                             **({"token_limit": token_limit} if token_limit is not None else {}),
                                             **({"vision": vision} if vision is not None else {}),
-                                            **({"progress": progress} if progress is not None else {}))
+                                            **({"profile_epoch": self.serving_profiles.gate.current().epoch, "_error_retired": error_retired}
+                                        if getattr(self, "serving_profiles", None) is not None else {}),
+                                     **({"progress": progress} if progress is not None else {}))
                 reuse = draft
                 if draft:
                     from .prefix_policy import serial_reuse_allowed
@@ -1736,7 +1785,7 @@ class FlashNextEngine:
                 primary = error
                 raise
             finally:
-                self._retire_request(request, primary)
+                self._retire_request(request, primary, retired=error_retired is not None and error_retired.is_set())
 
     def score_labels(self, prompt_ids, label_ids) -> tuple[list[float], float]:
         """Score caller-prepared token sequences through a fresh, journaled one-token generation."""

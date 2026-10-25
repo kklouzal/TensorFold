@@ -23,7 +23,7 @@ from tensorfold.cuda.sampling import (
     validate_policy,
     validate_rows,
 )
-from tensorfold.cuda.streams import Stream, accept, prefix_limit
+from tensorfold.cuda.streams import Stream, accept, mark_error_state_retired, prefix_limit
 from tensorfold.engine.exact_sampling import MARGIN, choose_rows
 from tensorfold.engine.grammar import GrammarError
 
@@ -653,10 +653,11 @@ class MultiDecoder:
             raise error
         room = self.capacity - len(s.prompt) - self.depth - 1
         if room < 1:
-            raise ValueError(f"a prompt of {len(s.prompt)} tokens leaves no room in the {self.capacity}-token context")
+            raise mark_error_state_retired(ValueError(
+                f"a prompt of {len(s.prompt)} tokens leaves no room in the {self.capacity}-token context"))
         s.count = max(1, min(s.count, room))
         if any(x.waiting for x in self.streams.values()):
-            raise NoRoom("streams already wait for memory; a new request waits until one finishes")
+            raise mark_error_state_retired(NoRoom("streams already wait for memory; a new request waits until one finishes"))
         t0 = time.perf_counter()
         from .prefix_policy import reuse_allowed
 
@@ -666,11 +667,12 @@ class MultiDecoder:
         try:
             if not self._grow(st, len(s.prompt) + self.depth + 2, alone=not self.streams and not self.filling):
                 raise NoRoom(f"a {len(s.prompt)}-token prompt waits for memory until a live stream finishes")
-        except NoRoom:
+        except NoRoom as error:
             if resume is None:
                 self.free.append(st)
             else:
                 self._remember(list(s.prompt[:s.cached]), st, resume["state"], resume["tail"])
+            mark_error_state_retired(error)
             raise
         except BaseException as primary:  # noqa: BLE001 - recover the popped slot even after interrupted growth
             try:
@@ -678,6 +680,7 @@ class MultiDecoder:
                 self._retire_failed_slot(st)
             except BaseException as cleanup:  # noqa: BLE001 - preserve every cleanup failure with its primary
                 raise_failures(primary, [cleanup])
+            mark_error_state_retired(primary)
             raise
         e = _slot(self.w, st, self.buf, self.mbuf, self.pbuf, self.capacity, self.prefill_rows,
                   logical_context=getattr(self, "logical_context", None))
@@ -689,10 +692,14 @@ class MultiDecoder:
             image_rows.begin(e, s, self.vision)
             if image:
                 torch.cuda.empty_cache()                 # the tower's scratch back before the prompt's passes
-        except Exception:
-            self._drop_kept(st)
-            self._shrink(st)
-            self.free.append(st)
+        except Exception as primary:
+            try:
+                self._drop_kept(st)
+                self._shrink(st)
+                self.free.append(st)
+            except BaseException as cleanup:
+                raise_failures(primary, [cleanup])
+            mark_error_state_retired(primary)
             raise
         e.stops = sorted({p for p in self.points(s.prompt) if begin + MIN_GAP <= p < entry_end(s.prompt)}) \
             if s.draft and st.image_positions is None and self.points is not None else []
@@ -1557,9 +1564,18 @@ class MultiDecoder:
 
         for s in done:
             self.streams.pop(s.sid, None)
-            if not any(k[1] is s.st for k in self.kept) and all(f is not s.st for f in self.free):
-                self._shrink(s.st)
-                self.free.append(s.st)
+            try:
+                if s.error is not None:
+                    self._drop_kept(s.st)  # A failed request does not retain deferred conditioning through prefix aliases.
+                if not any(k[1] is s.st for k in self.kept) and all(f is not s.st for f in self.free):
+                    self._shrink(s.st)
+                    self.free.append(s.st)
+            except BaseException as cleanup:
+                if s.error is not None:
+                    raise_failures(s.error, [cleanup])
+                raise
+            if s.error is not None:
+                mark_error_state_retired(s.error)
 
     def drop(self) -> list[Stream]:
         prior, errors = tuple(self.failed_slots), []

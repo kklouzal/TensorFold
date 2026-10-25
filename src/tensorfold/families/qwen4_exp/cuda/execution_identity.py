@@ -86,6 +86,22 @@ def _json(path, *, with_content=False):
     return (body, raw) if with_content else body
 
 
+def draft_artifact_files(directory, method):
+    """The actual selected SM70 draft loader's source inputs, independent of GPU state."""
+    from ..gguf import GGUFCheckpoint, resolve_gguf
+
+    if method not in ("mtp", "dspark", "dflash2"):
+        raise ValueError("unsupported speculative source inventory")
+    root = Path(directory).resolve(strict=True)
+    entry = resolve_gguf(root) if method == "mtp" else None
+    if entry is not None:
+        companion = GGUFCheckpoint.open(entry)
+        return {file.name: checkpoint_path(file.parent, file.name) for file in companion.paths}
+    # These providers read the single file directly; a neighbouring shard index
+    # does not select a different payload or replace the real consumed file.
+    return {name: checkpoint_path(root, name) for name in ("config.json", "model.safetensors")}
+
+
 def artifact_files(engine):
     """Derive the actual loader's complete selected input closure."""
     from ..gguf import GGUFCheckpoint, resolve_gguf
@@ -105,12 +121,16 @@ def artifact_files(engine):
     if not {"metadata/config.json", "metadata/tokenizer.json", "metadata/tokenizer_config.json"} <= result.keys():
         raise ValueError("execution profiles require the actual target config and tokenizer assets")
     draft = (engine.mtp_model_dir if engine.method_geometry.method == "mtp" else
-             engine.dspark_model_dir if engine.method_geometry.method == "dspark" else None)
+             engine.dspark_model_dir if engine.method_geometry.method == "dspark" else
+             engine.dflash2_model_dir if engine.method_geometry.method == "dflash2" else None)
+    if engine.method_geometry.method == "dflash2":
+        from tensorfold.token_metadata import tokenizer_override
+
+        override = tokenizer_override()
+        if override is not None:
+            result["metadata/tokenizer_override.json"] = override.path.resolve(strict=True)
     if draft is not None:
-        root = Path(draft).resolve()
-        # Both selected SM70 draft providers explicitly consume these two files.
-        for name in ("config.json", "model.safetensors"):
-            result["draft/" + name] = checkpoint_path(root, name)
+        result.update({"draft/" + name: path for name, path in draft_artifact_files(draft, engine.method_geometry.method).items()})
     return result, checkpoint
 
 

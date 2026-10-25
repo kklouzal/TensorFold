@@ -76,6 +76,25 @@ class TensorParallelDecoder:
         self.failure = None
         self.prefix_operation = None
         self.prefix_sequence = 0
+        self._operation_error = None
+        decoder.arrived = lambda: self._arrival
+        decoder._pass_rows = lambda: self._rows
+        decoder.prefix_decisions = self._prefix_decisions
+        decoder.poison_control = self._poison_control
+
+    def suspend_profile(self):
+        if self.requests or self.wires or self._operation_error is not None:
+            raise RuntimeError("TP request owners must retire before profile replacement")
+        self.decoder = None
+        self._pass_rows = self._points = None
+        self._rows = 0
+
+    def bind_profile(self, decoder):
+        if self.decoder is not None or self.requests or self.wires:
+            raise RuntimeError("a TP profile can bind only after predecessor retirement")
+        self.decoder = decoder
+        self._pass_rows, self._points = decoder._pass_rows, decoder.points
+        self._rows = decoder.prefill_rows
         decoder.arrived = lambda: self._arrival
         decoder._pass_rows = lambda: self._rows
         decoder.prefix_decisions = self._prefix_decisions
@@ -136,7 +155,7 @@ class TensorParallelDecoder:
                 "sampling": None if sampling is None else [sampling.seed, sampling.temperature, sampling.top_k,
                                                            sampling.top_p, sampling.min_p],
                 "grammar": pack(stream.constraint), "owed": stream.owed, "carry": stream.carry,
-                "token_limit": stream.token_limit is not None}
+                "token_limit": stream.token_limit is not None, "profile_epoch": stream.profile_epoch}
 
     def _unpack(self, body):
         from tensorfold.engine.exact_sampling import Sampling
@@ -150,7 +169,7 @@ class TensorParallelDecoder:
                       None if body["sampling"] is None else Sampling(*body["sampling"]),
                       draft=bool(body["draft"]), stop_eos=bool(body["stop_eos"]),
                       background=bool(body["background"]), constraint=constraint,
-                      owed=list(body["owed"]), carry=body["carry"])
+                      owed=list(body["owed"]), carry=body["carry"], profile_epoch=body["profile_epoch"])
         stream._tp_token_limit = bool(body.get("token_limit", False))
         return stream
 
@@ -208,7 +227,7 @@ class TensorParallelDecoder:
             boundary = controller.freeze_boundary(settings)
             result["execution_boundary"] = boundary
             quota = getattr(self.decoder, "pass_rows_for", None)
-        result["pass_rows"] = self._pass_rows() if quota is None else quota(boundary["settings"])
+        result["pass_rows"] = (0 if self._pass_rows is None else self._pass_rows()) if quota is None else quota(boundary["settings"])
         return result
 
     def _apply_controls(self, body):
@@ -238,13 +257,29 @@ class TensorParallelDecoder:
         controller = getattr(self.decoder, "controller", None)
         execution = None if controller is None else [controller.epoch, controller.effective,
                                                      controller.last_served]
-        return hashlib.sha256(json.dumps([state, execution], separators=(",", ":")).encode()).hexdigest()
+        return hashlib.sha256(json.dumps([state, execution,
+            None if getattr(self.engine, "serving_profiles", None) is None else [self.engine.serving_profiles.gate.epoch,
+                                                               self.engine.serving_profiles.gate.available]], separators=(",", ":")).encode()).hexdigest()
 
     def _dispatch(self, body, source=None):
         self.prefix_operation = body["sequence"]
         self.prefix_sequence = 0
         self._apply_controls(body["control"])
         kind = body["kind"]
+        if kind == "retire_admission_error":
+            if self._operation_error is None:
+                raise RuntimeError("no admission error ownership to retire")
+            self.engine.serving_profiles.error_outcome(self._operation_error)
+            self._operation_error = None
+            return None
+        if kind in ("serving_prepare", "serving_replace"):
+            try:
+                owner = self.engine.serving_profiles
+                return (owner.preflight(body["profile"], body["request_epoch"]) if kind == "serving_prepare"
+                        else owner.replace())
+            except BaseException as failure:
+                self._poison_control(failure)
+                raise
         if kind == "admit":
             wire = body["wire"]
             if wire not in self.requests:
@@ -270,11 +305,22 @@ class TensorParallelDecoder:
             streams = [self.requests[wire] for wire in body["wires"]]
             result = getattr(self.decoder, kind)(streams)
             if kind == "finish":
+                profiles = getattr(self.engine, "serving_profiles", None)
+                if profiles is not None:
+                    for stream in streams:
+                        if stream.error is not None:
+                            profiles.error_outcome(stream.error, state_retired=True, states=() if stream.st is None else (stream.st,))
+                        stream.st = stream.snap = stream.copies = stream.vision = None
                 for wire in body["wires"]:
                     self._forget(wire)
             return result
         if kind == "drop":
             result = self.decoder.drop()
+            profiles = getattr(self.engine, "serving_profiles", None)
+            if profiles is not None and self._operation_error is not None:
+                profiles.error_outcome(self._operation_error, state_retired=True,
+                    states=tuple(stream.st for stream in result if stream.st is not None))
+                self._operation_error = None
             # MultiDecoder.drop retires only unfinished streams. Scheduler
             # still calls finish(done) for streams cancelled before the failed
             # round; retain their wire owners until that normal retirement.
@@ -291,6 +337,10 @@ class TensorParallelDecoder:
             result = self._dispatch(body, source)
         except BaseException as caught:
             error = caught
+            if getattr(self.engine, "serving_profiles", None) is not None and body["kind"] in ("admit", "round"):
+                if self._operation_error is not None:
+                    self.engine.serving_profiles._poison(caught)
+                self._operation_error = caught
         finally:
             for stream in self.requests.values():
                 stream.cancel.active = False
@@ -335,7 +385,7 @@ class TensorParallelDecoder:
             # a later operation after uncertain peer execution or retirement.
             self._poison_control(failure)
             raise
-        if error is not None and not isinstance(error, (NoRoom, ValueError)):
+        if error is not None and not self._recoverable_operation(error, body["kind"]):
             self._poison_control(error)
         if self.failure is not None:
             self.engine._abort_comm = True
@@ -358,6 +408,27 @@ class TensorParallelDecoder:
         if freeze is not None:
             body["execution"] = freeze()
         return self._invoke(body)
+
+    def prepare_serving_profile(self, profile, request_epoch):
+        return self._invoke({"kind": "serving_prepare", "profile": profile, "request_epoch": request_epoch})
+
+    def replace_serving_profile(self):
+        return self._invoke({"kind": "serving_replace"})
+
+    def retire_admission_error(self):
+        return self._invoke({"kind": "retire_admission_error"})
+
+    def _recoverable_operation(self, error, kind):
+        if isinstance(error, (NoRoom, ValueError)):
+            return True
+        if getattr(self.engine, "serving_profiles", None) is None or kind not in ("admit", "round"):
+            return False
+        from tensorfold.engine.grammar import GrammarError
+        from tensorfold.server.cancellation import RequestCancelled
+
+        namespace = BaseException.__dict__["__dict__"].__get__(error)
+        return (isinstance(error, (GrammarError, RequestCancelled))
+                or dict.get(namespace, "_tensorfold_request_state_retired") is True)
 
     def install_execution_manifest(self, relative_name):
         return self._invoke({"kind": "profile_manifest", "name": relative_name})
@@ -413,6 +484,6 @@ class TensorParallelDecoder:
         except BaseException as failure:
             self._poison_control(failure)
             raise
-        if error is not None and not isinstance(error, (NoRoom, ValueError)):
+        if error is not None and not self._recoverable_operation(error, body["kind"]):
             self._poison_control(error)
             raise RuntimeError("tensor-parallel scheduler peer failed; retire all rank owners") from error

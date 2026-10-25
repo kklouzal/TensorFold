@@ -11,6 +11,8 @@ from __future__ import annotations
 import copy
 from functools import partial
 
+from .profile_construction import replay as profile_replay
+
 import torch
 
 from . import history_runtime
@@ -422,7 +424,7 @@ class BoundStateGraphs:
             history_runtime.begin(bound, prefill=b.prefill, mtp=kind == "mtp", counts=rows)
         _kv_begin(segs)
         for graph in pieces.graphs:
-            graph.replay()
+            profile_replay(graph, self.dec.w.comm)
         if archive:
             history_runtime.submitted(bound, prefill=b.prefill, mtp=kind == "mtp")
         # Match RoundGraphs' ordinary contract: status remains pending for the
