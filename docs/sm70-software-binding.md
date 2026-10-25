@@ -46,6 +46,64 @@ Records remain software-only with `release_qualified=false` and pending
 compiler/device/model/media gates. They preserve the source specification and
 component identities actually recorded by the image. Existing text-scope source
 artifacts do not qualify the revised SC117 image/video target, processor stack,
-resource envelope or acceptance. TorchVision/PyAV/processor provisioning is a
-separate pending increment. Profile/evidence promotion is owned by the runtime;
+resource envelope or acceptance. Media dependency software has a separate
+combined authority below. Profile/evidence promotion is owned by the runtime;
 software binding does not clear compiler issue 6111901.
+
+## Required source and media software together
+
+`tensorfold.cuda.sm70.media_software_binding` joins that source authority with
+the same protected media producer's `audit_install` implementation. A source-only
+authority or a serialized software record cannot satisfy the combined verifier.
+
+```python
+from tensorfold.cuda.sm70.media_software_binding import (
+    issue_media_binding, reissue_media_binding, verify_media_binding,
+)
+
+authority = issue_media_binding()  # coordinated load/preparation; no reference downgrade
+record = verify_media_binding(authority)  # before adopting/replacing a vision dependency scope
+# After supported model/JIT warmup adds process code, explicitly observe new state:
+authority = reissue_media_binding(authority)
+record = verify_media_binding(authority)
+```
+
+Issuance requires the fixed producer
+`/opt/tensorfold-pins/media_foundation.py` and `media-install.json`,
+`media-pins.json`, `media-build.json`, `preprocessor_config.json`, and
+`video_preprocessor_config.json` under `/opt/tensorfold-media-pins`. Missing,
+partial, aliased, writable, malformed or inconsistent metadata refuses. Producer
+bytes match both the sealed installation artifact and completed-build inputs;
+the build's source-producer identity must match the actual source preparation.
+The media producer receives that privately verified source helper module without
+replacing or trusting the process's same-name `sys.modules` entry.
+
+The protected media audit checks added package/native/configuration bytes and
+materializes its declared CPU metadata/providers before final source-process
+issuance. Both protected directory hierarchies and all immutable input identities
+are checked around the operation. Metadata uses the existing descriptor-bound
+native stream owner, retaining primary failures and any unretired file scope.
+No target/vision weights are loaded by this software adapter.
+
+`verify_media_binding` checks the exact issued type/issuer/PID before filesystem
+or producer work, then verifies both source and media audits. It never repairs a
+stale object. `reissue_media_binding` also checks the old immutable anchor first:
+package, provider, metadata or configuration file changes cannot be repaired by
+reissuing. Only supported new warm process observations with unchanged original
+files can create a replacement authority. Previously observed files remain in
+that immutable anchor even if their process mappings disappear. The cumulative
+anchor is bounded by three existing 100,000-entry inventory namespaces (source,
+media and process observations); exhaustion refuses rather than evicting an old
+identity. The caller must retain/quiesce its
+scope at these preparation/adoption boundaries. These calls perform file audits
+and must never be added to a request or kernel-launch path; `record()` only
+returns a detached observational copy.
+
+Combined records retain all inherited pending gates and add explicit
+service/media/SC117/position/YaRN/device/resource/quality/performance gates. The
+verified CPU software dependency list does not clear the broader inherited
+image/video stack gate. They remain `software_only=true` and
+`release_qualified=false`: source/processor/decoder dependency verification alone
+does not qualify a vision model, service media policy or release. Production
+vision callers must adopt this exact combined authority, with their remaining
+model/device/quality/resource gates checked separately.
