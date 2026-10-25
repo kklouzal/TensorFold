@@ -10,7 +10,7 @@ import torch
 
 from tensorfold.families.qwen4_exp.position_profile import (
     DFLASH_ALGORITHM, MAX_EPOCH, NATIVE_ALGORITHM, YARN_ALGORITHM, resolve_position_profile,
-    bind_position_profile, position_for, position_vector_bytes,
+    bind_position_profile, position_for, position_vector_bytes, prepare_position_vectors,
 )
 
 
@@ -96,7 +96,7 @@ def test_explicit_companion_yarn_has_own_source_identity_without_target_override
     companion = put(tmp_path / "mtp", mtp_raw)
     p = resolve_position_profile(target.parent, requested_context=524288, yarn_factor=2,
                                   companion_configs={"mtp": companion})
-    assert p.mtp.rope.rope_type == "yarn" and p.mtp.origin == "actual-companion-source"
+    assert p.mtp.rope.rope_type == "yarn" and p.mtp.origin == "actual-companion-with-explicit-source-native-defaults"
     assert p.mtp.source_config_sha256 != p.target.source_config_sha256
     assert set(p.required_input_files()) == {target.resolve(), companion.resolve()}
     p.validate_method("mtp", "q8-wire-v1", 2)
@@ -215,8 +215,9 @@ def test_prepared_target_mtp_vectors_have_exact_alias_and_byte_ownership(tmp_pat
     p = resolve_position_profile(target.parent, requested_context=1024, yarn_factor=factor)
     weights = SimpleNamespace(cfg=SimpleNamespace(rope=p.target.rope), inv_freq=p.target.rope.inverse_frequencies(torch),
                               positions=None, mtp=object(), device=torch.device("cpu"))
-    bound = bind_position_profile(weights, p, mtp_active=True)
-    assert bind_position_profile(weights, p, mtp_active=True) is bound
+    prepared = prepare_position_vectors(p, mtp_active=True)
+    bound = bind_position_profile(weights, p, mtp_active=True, prepared=prepared)
+    assert bind_position_profile(weights, p, mtp_active=True, prepared=prepared) is bound
     target_operand, mtp_operand = position_for(weights), position_for(weights, mtp=True)
     assert target_operand.inv_freq is weights.inv_freq
     assert (mtp_operand.inv_freq is weights.inv_freq) is (factor is None)
@@ -227,7 +228,8 @@ def test_prepared_target_mtp_vectors_have_exact_alias_and_byte_ownership(tmp_pat
         "target_vector_bytes": 128, "mtp_extra_vector_bytes": 0 if factor is None else 128, "total_vector_bytes": actual}
     changed = resolve_position_profile(target.parent, requested_context=1023, yarn_factor=factor)
     with pytest.raises(ValueError, match="retiring"):
-        bind_position_profile(weights, changed, mtp_active=True)
+        bind_position_profile(weights, changed, mtp_active=True,
+                              prepared=prepare_position_vectors(changed, mtp_active=True))
     with pytest.raises(FrozenInstanceError):
         target_operand.amplitude = 2
 
@@ -238,7 +240,7 @@ def test_inactive_mtp_has_no_vector_or_implicit_runtime_substitution(tmp_path):
     weights = SimpleNamespace(cfg=SimpleNamespace(rope=p.target.rope), inv_freq=p.target.rope.inverse_frequencies(torch),
                               positions=None, mtp=None, device=torch.device("cpu"))
     assert position_vector_bytes(p, mtp_active=False)["mtp_extra_vector_bytes"] == 0
-    bind_position_profile(weights, p, mtp_active=False)
+    bind_position_profile(weights, p, mtp_active=False, prepared=prepare_position_vectors(p, mtp_active=False))
     with pytest.raises(ValueError, match="not admitted/prepared"):
         position_for(weights, mtp=True)
 
@@ -322,7 +324,8 @@ def test_frequency_alias_ignores_distinct_bounds_and_separate_rotary_amplitudes(
                                   companion_configs={"mtp": companion})
     weights = SimpleNamespace(cfg=SimpleNamespace(rope=p.target.rope), inv_freq=p.target.rope.inverse_frequencies(torch),
                               positions=None, mtp=object(), device=torch.device("cpu"))
-    bound = bind_position_profile(weights, p, mtp_active=True)
+    prepared = prepare_position_vectors(p, mtp_active=True)
+    bound = bind_position_profile(weights, p, mtp_active=True, prepared=prepared)
     assert bound.target.inv_freq is bound.mtp.inv_freq
     assert bound.target.amplitude != bound.mtp.amplitude
     assert position_vector_bytes(p, mtp_active=True)["total_vector_bytes"] == 128
@@ -346,3 +349,62 @@ def test_unselected_source_native_defaults_keep_existing_rope_parameter_behavior
     target = put(tmp_path / "target", raw)
     p = resolve_position_profile(target.parent, requested_context=262144)
     assert p.target.rope.rope_type == "default" and p.target.rope.factor == 1
+
+
+def test_exact_cpu_preparation_refuses_combined_fp32_overflow_before_retention(tmp_path):
+    raw = config()
+    raw["text_config"]["rope_parameters"]["rope_theta"] = 3e38
+    target = put(tmp_path / "target", raw)
+    p = resolve_position_profile(target.parent, requested_context=262144, yarn_factor=32)
+    # Metadata can describe this finite candidate, but its exact existing FP32
+    # builder overflows factor*pos_freqs and produces forbidden zero inverses.
+    assert p.target.rope.theta == 3e38 and p.target.rope.factor == 32
+    with pytest.raises(ValueError, match="nonfinite or zero"):
+        prepare_position_vectors(p, mtp_active=False)
+    with pytest.raises(ValueError, match="exact CPU preparation"):
+        bind_position_profile(SimpleNamespace(), p, mtp_active=False)
+
+
+def test_preparation_forces_cpu_and_bind_refuses_stale_vectors(tmp_path):
+    target = put(tmp_path / "target", config())
+    p = resolve_position_profile(target.parent, requested_context=64, yarn_factor=2)
+    with torch.inference_mode(), torch.device("meta"):
+        prepared = prepare_position_vectors(p, mtp_active=True)
+    assert prepared.target_cpu.device.type == prepared.mtp_cpu.device.type == "cpu"
+    prepared.target_cpu.add_(1)
+    with pytest.raises(ValueError, match="stale positional CPU preparation"):
+        bind_position_profile(SimpleNamespace(), p, mtp_active=True, prepared=prepared)
+
+
+def test_visual_row_allowance_and_lookahead_do_not_use_thw_units(tmp_path):
+    target = put(tmp_path / "target", config())
+    base = resolve_position_profile(target.parent, requested_context=64)
+    path, body = manifest(tmp_path, base, rows=64)
+    body["target"]["coordinate_limits"] = [16, 16, 16]
+    path.write_text(json.dumps(body))
+    p = resolve_position_profile(target.parent, requested_context=64, manifest_path=path)
+    assert p.target.max_rows == 64 and p.target.coordinate_limits == (16, 16, 16)
+    coordinates = torch.arange(64).remainder(16)[:, None].expand(-1, 3)
+    assert coordinates.shape == (64, 3)
+    p.target.validate_span(0, 64, coordinate_min=tuple(coordinates.amin(0).tolist()),
+                           coordinate_max=tuple(coordinates.amax(0).tolist()))
+    # More than16 proposal rows may still share coordinates below16. Row
+    # lookahead is constrained by the64-row window, never a THW axis limit.
+    p.validate_method("mtp", "actual-codec", 20, media_bounds=(15, 15, 15))
+    with pytest.raises(ValueError, match="coordinate"):
+        p.target.validate_span(0, 1, coordinate_min=(0, 0, 0), coordinate_max=(16, 0, 0))
+    with pytest.raises(ValueError, match="lookahead block"):
+        p.validate_method("mtp", "actual-codec", 64)
+
+
+def test_legacy_mtp_undeclared_positions_use_explicit_target_source_native_defaults(tmp_path):
+    target_raw = config()
+    target_raw["text_config"]["rope_parameters"]["rope_theta"] = 20000000
+    target = put(tmp_path / "target", target_raw)
+    companion = put(tmp_path / "mtp", {"head_dim": 256, "hidden_size": 2560, "num_attention_heads": 24})
+    p = resolve_position_profile(target.parent, requested_context=64, yarn_factor=2,
+                                  companion_configs={"mtp": companion})
+    assert p.target.rope.rope_type == "yarn" and p.mtp.rope.rope_type == "default"
+    assert p.mtp.rope.theta == 20000000 and p.mtp.rope.native_context == 262144
+    assert p.mtp.rope.attention_factor == 1
+    assert companion.resolve() in p.required_input_files()
