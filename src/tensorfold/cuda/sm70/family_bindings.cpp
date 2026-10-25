@@ -5,6 +5,7 @@
 #include <cmath>
 #include <optional>
 #include <algorithm>
+#include <limits>
 
 using T = at::Tensor;
 using O = std::optional<T>;
@@ -23,6 +24,9 @@ void family_partial_cuda(const T&, const T&, T&, int);
 void family_shift_cuda(T&, const T&, int, int);
 void family_prep_cuda(const T&, const T&, const T&, const T&, const T&, const T&, T&, T&, T&, T&, T&,
                       const O&, const O&, const O&, const O&, const O&, int, int, int, int, int, int, int, int, float, float, bool);
+void family_prep_q4_cuda(const T&, const T&, const T&, const T&, const T&, const T&, T&, T&, T&, T&, T&,
+                         const O&, const O&, const O&, const O&, const O&, int, int, int, int, int, int, int, int,
+                         float, float, bool, int, int);
 void family_pool_cuda(const T&, T&, const T&, const T&, const T&, const O&, int, int, float, float);
 void family_qsa_dense_cuda(const T&, T&, T&, int);
 void family_qsa_rows_cuda(const T&, const T&, const T&, T&, T&, T&, T&, int, int, int, int);
@@ -216,6 +220,74 @@ void prep(const T& projection, const T& position, const T& qw, const T& kw, cons
                      float(eps), float(rope_scale), independent_rows);
 }
 
+void prep_q4(const T& projection, const T& position, const T& qw, const T& kw, const T& iw, const T& frequency,
+             T queries, T kc, T vc, T index_queries, T index_cache, O ks, O vs, O status, O delta, O valid_rows,
+             int qheads, int kvheads, int dim, int index_heads, int index_dim, int kbits, int vbits, int layer,
+             double eps, double rope_scale, bool independent_rows, int kcodec, int vcodec) {
+    check_half(projection);
+    auto positive_float = [](double value, const char* name) {
+        TORCH_CHECK(std::isfinite(value) && value > 0 && value <= std::numeric_limits<float>::max(),
+                    name, " must be finite, positive and representable as float32");
+        const float result = static_cast<float>(value);
+        TORCH_CHECK(result > 0.f, name, " underflows float32");
+        return result;
+    };
+    const float native_eps = positive_float(eps, "epsilon");
+    const float native_rope_scale = positive_float(rope_scale, "rotary scale");
+    TORCH_CHECK(layer >= -1, "KV error layer must be a model layer or MTP -1");
+    TORCH_CHECK(projection.dim() == 2 && qheads > 0 && kvheads > 0 && index_heads > 0
+                && (dim == 128 || dim == 256) && index_dim > 0 && index_dim <= 256 && index_dim % 32 == 0,
+                "Rotor Q4 preparation dimensions");
+    const int64_t units = int64_t(qheads) + 2 * int64_t(kvheads) + index_heads + 1;
+    const int64_t packed = 2 * int64_t(qheads) * dim + 2 * int64_t(kvheads) * dim
+                           + (int64_t(index_heads) + 1) * index_dim;
+    const int64_t rows = projection.size(0);
+    TORCH_CHECK(units <= std::numeric_limits<int>::max() && packed <= std::numeric_limits<int>::max()
+                && rows <= std::numeric_limits<int>::max() / units && projection.size(1) == packed,
+                "Rotor Q4 packed projection and launch geometry");
+    for (const auto* x : std::initializer_list<const T*>{&queries, &index_queries, &index_cache}) same_half(*x, projection);
+    for (const auto* x : {&qw, &kw, &iw, &frequency}) check(*x, projection, at::kFloat, "attention norm/frequency");
+    TORCH_CHECK(qw.numel() == dim && kw.numel() == dim && iw.numel() == index_dim && frequency.dim() == 1
+                && frequency.numel() > 0 && frequency.numel() <= std::min(dim, index_dim) / 2,
+                "attention norm/frequency geometry");
+    TORCH_CHECK(queries.dim() == 3 && queries.size(0) >= rows && queries.size(1) == qheads && queries.size(2) == dim
+                && index_queries.dim() == 3 && index_queries.size(0) >= rows && index_queries.size(1) == index_heads
+                && index_queries.size(2) == index_dim && index_cache.dim() == 2 && index_cache.size(1) == index_dim,
+                "query/indexer output geometry");
+    auto admitted = [](int bits, int codec) {
+        return (bits == 0 && codec == 0) || (bits == 8 && codec == 0) || (bits == 4 && (codec == 4 || codec == 5));
+    };
+    TORCH_CHECK(admitted(kbits, kcodec) && admitted(vbits, vcodec) && (kcodec != 0 || vcodec != 0),
+                "Rotor Q4 preparation requires raw/int8/CODEC4-or-5 Q4 sides with at least one Q4 side");
+    TORCH_CHECK(kc.dim() == 3 && vc.dim() == 3 && kc.size(0) == vc.size(0)
+                && kc.size(0) <= std::numeric_limits<int>::max() && kc.size(1) == kvheads && vc.size(1) == kvheads
+                && index_cache.size(0) == kc.size(0), "attention cache geometry");
+    auto side = [&](const T& cache, const O& scales, int bits, int codec, const char* name) {
+        const auto dtype = codec ? at::kByte : bits == 8 ? at::kChar : at::kHalf;
+        check(cache, projection, dtype, name);
+        TORCH_CHECK(cache.size(2) == (codec ? dim / 2 : dim), "attention cache packed width");
+        if (bits) {
+            TORCH_CHECK(scales.has_value(), "quantized cache scales missing");
+            check(*scales, projection, codec ? at::kFloat : at::kHalf, "attention cache scales");
+            TORCH_CHECK(scales->dim() == 3 && scales->size(0) == cache.size(0)
+                        && scales->size(1) == kvheads && scales->size(2) == dim / (codec ? 128 : 32),
+                        "attention cache scale geometry");
+        }
+    };
+    side(kc, ks, kbits, kcodec, "key payload"); side(vc, vs, vbits, vcodec, "value payload");
+    TORCH_CHECK(position.scalar_type() == at::kInt || position.scalar_type() == at::kLong, "position dtype");
+    check(position, projection, position.scalar_type(), "attention position");
+    TORCH_CHECK(position.numel() == 1, "position geometry");
+    for (const auto* control : {&status, &delta, &valid_rows}) if (*control) {
+        check(**control, projection, at::kInt, "attention control");
+        TORCH_CHECK((*control)->numel() == (control == &status ? 2 : 1), "attention control geometry");
+    }
+    c10::cuda::CUDAGuard guard(projection.device());
+    family_prep_q4_cuda(projection, position, qw, kw, iw, frequency, queries, kc, vc, index_queries, index_cache,
+                        ks, vs, status, delta, valid_rows, qheads, kvheads, dim, index_heads, index_dim,
+                        kbits, vbits, layer, native_eps, native_rope_scale, independent_rows, kcodec, vcodec);
+}
+
 void pool(const T& cache, T pooled, const T& position, const T& weight, const T& frequency,
           O delta, int ratio, int rows, double eps, double rope_scale) {
     check_half(cache); same_half(pooled, cache); epsilon(eps);
@@ -260,6 +332,6 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("writeback", &writeback); m.def("normed", &normed); m.def("act", &act); m.def("mix", &mix);
     m.def("rms", &rms); m.def("gate", &gate); m.def("ple_embed", &ple_embed); m.def("ple_gate", &ple_gate);
     m.def("ple_conv", &ple_conv); m.def("add", &add); m.def("partial", &partial); m.def("shift", &shift);
-    m.def("prep", &prep); m.def("pool", &pool); m.def("qsa_dense", &qsa_dense);
+    m.def("prep", &prep); m.def("prep_q4", &prep_q4); m.def("pool", &pool); m.def("qsa_dense", &qsa_dense);
     m.def("qsa_rows", &qsa_rows);
 }

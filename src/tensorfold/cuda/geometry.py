@@ -545,7 +545,9 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
     fixed += (1 + mtp) * (linear * rows * width * 2 + 32 * max(rows, 4) * 2560 * 4) + 16 * max(64, rows) * extent * 4
     fixed += prefill_rows * _indexed_prefill_row(t, world, h, hk, hd, nv, dv, width, slots, moe)
     if kv_status:
-        fixed += 8 * streams  # each slot's status words (its steps' status pointers sit in the static step tables)
+        # Each State owns two local words and, with TP, an independent peer
+        # packet. The cohort's send/receive/host arrays are charged separately.
+        fixed += 8 * streams * (1 + (world if world > 1 else 0))
     fixed += multi_static_bytes(t, streams, each, mtp) + graph_bytes     # static round tables, captured rounds
     count = attention + int(mtp)
     row, dummies = _kv_pair_bytes(hd, kv_bits, kv_group, kv_scale_bytes, kv_pair)

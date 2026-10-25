@@ -112,8 +112,10 @@ class FlashNextEngine:
         if type(tp) is not int or tp not in supported_tp or type(rank) is not int or rank not in range(tp):
             raise ValueError(f"rank {rank} of {tp}: Flash Next supports tensor-parallel sizes {supported_tp} "
                              f"for {'GGUF SM70' if gguf else 'this checkpoint'}")
-        if gguf and any(side.name not in ("fp16", "int8") for side in (self.kv_pair.key, self.kv_pair.value)):
-            raise ValueError("the GGUF SM70 execution path requires fp16 or int8 on each KV cache side")
+        if gguf:
+            from .sm70_kv import check_pair
+
+            self._sm70_kv_policy = check_pair(self.kv_pair)
         if not gguf and any(side.name == "fp16" for side in (self.kv_pair.key, self.kv_pair.value)):
             raise ValueError("fp16 KV caches require the GGUF SM70 execution provider")
         if gguf and (vram_experts is not None or expert_session is not None):
@@ -166,6 +168,9 @@ class FlashNextEngine:
             kv_heads = int(text["num_key_value_heads"])
             if kv_heads <= 0 or (kv_heads % tp if kv_heads >= tp else tp % kv_heads):
                 raise ValueError("GGUF KV heads must shard evenly or replicate in complete rank groups")
+            # Codec geometry is a pure format boundary, before any CUDA setup.
+            check_pair(self.kv_pair, head_dim=int(text.get("head_dim") or
+                       int(text["hidden_size"]) // int(text["num_attention_heads"])))
         dspark_plan = None
         if self.dspark_model_dir is not None and int(depth) > 0:
             from .dspark_admission import inspect as inspect_dspark
@@ -218,7 +223,8 @@ class FlashNextEngine:
                                else int(text["num_key_value_heads"]) // tp, head_dim)
         kv_geometry = tuple((side.bits, side.group, side.scale_bytes)
                             for side in (self.kv_pair.key, self.kv_pair.value))
-        kv_status = (not self.kv_pair.symmetric or bool(self.kv_pair.key.codec or self.kv_pair.value.codec))
+        kv_status = (not self.kv_pair.symmetric or bool(self.kv_pair.key.codec or self.kv_pair.value.codec)
+                     or gguf and self.kv_pair.key.quantized)
         rows0 = chunk or PREFILL_ROWS
         native_a4, checkpoint_math, a4_banks, a4_workspace = False, False, (), 0
         a4_scalar_host = 0
@@ -1049,6 +1055,8 @@ class FlashNextEngine:
                   getattr(getattr(self, "_dspark_plan", None), "identity", None),
                   expert_policy, proposal_policy, context_policy, attention_policy,
                   getattr(self, "sm70_profile", None), prefix_policy, getattr(self, "kv_full_windows", None)]
+        if getattr(self, "_sm70_kv_policy", None) == "stored-rotor-basis-fp16-fp32acc-v1":
+            policy.append(["sm70-kv-working-policy", self._sm70_kv_policy])
         policy_digest = int.from_bytes(hashlib.sha256(json.dumps(policy).encode()).digest()[:8], "big") & (2**63 - 1)
         confidence_bits = struct.unpack("<q", struct.pack("<d", self.confidence))[0]
         mine = torch.tensor([self.depth, confidence_bits, self.max_len,
@@ -1423,7 +1431,13 @@ class FlashNextEngine:
                                             probabilities=probabilities,
                                             **({"vision": vision} if vision is not None else {}),
                                             **({"progress": progress} if progress is not None else {}))
-                hit = self._resume(prompt) if draft else None
+                reuse = draft
+                if draft:
+                    from .prefix_policy import serial_reuse_allowed
+
+                    reuse = serial_reuse_allowed(self.w, sampling, draft=draft,
+                                                  position=len(prompt), kv_pair=self.kv_pair)
+                hit = self._resume(prompt) if reuse else None
                 points = None
                 if self.tp > 1:                      # every peer decodes the leader's exact request
                     prompt, max_tokens, sampling, draft, _, _, stop_eos, points = self._share(

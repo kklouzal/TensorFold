@@ -184,10 +184,10 @@ All four finite closeouts are complete.100single-request decode tokens/s remains
 unmet; optimization pauses at the user's agreed stopping point. No full262K
 prompt/generation quality workload is claimed.
 
-KV choices on this host remain rawFP16 or nativeINT8 independently for K/V.
+The C22 shipping image admitted rawFP16 or nativeINT8 independently for K/V.
 CurrentINT8 uses H32 groups of32 and FP16 scales; it is lossy and distinct from
-RotorQuant. INT4/RotorQuant codecs in other fork providers are rejected by this
-SM70 path before payload loading. The fixed numerical authority uses the same
+RotorQuant. That image rejected the other fork codecs before payload loading;
+the Q4 extension below adds two existing four-bit descriptors. The fixed numerical authority uses the same
 INT8 cache baseline, so these gates do not establish FP16-KV equivalence.
 Changing cache precision needs fresh memory admission and configuration fit.
 
@@ -932,3 +932,150 @@ for that cancelled peer. No HTTP requests, throughput samples or crossover
 were possible under these settings. This experiment is closed unqualified,
 with no gain selected and no reserve changes. The separate bounded component
 proof of C17's lane-admission behavior remains valid.
+
+## RotorQuant Q4 on V100
+
+The SM70 implementation admits the existing `rotorquant-signed128-4` (CODEC4)
+and `rotorquant-signed64-norm4` (CODEC5) descriptors, independently on K/V.
+Raw FP16/INT8 keep their existing working policy. Q4 uses uint8 packed nibbles,
+one FP32 scale per128components, staged signed-basis rotation, FP16 reconstructed
+Q/K/V operands, FP32 accumulation and FP32 inverse value rotation before final
+Half output. These are existing pinned formats, not an invented INT4 wire codec.
+Other RotorQuant/INT4 formats remain unadmitted on this provider.
+
+### Component and same-format evidence
+
+Canonical installed R3 image`e82b37d8bd17d81904cdf0ac5945b40ead5f5d3e990248c865fb41c4e3e11d85`
+matched614runtime source hashes and passed2983CPU cases (2skips,41subtests).
+Native cohorts passed59codec/copy,177fused-prep/legacy,653attention/legacy/capacity,
+and8full-forward fallback GPU cases. All16ordered raw/INT8/CODEC4/CODEC5 pairs
+have component coverage. Encoder comparisons use existing analytic index/scale
+rounding envelopes; rotation, decode and stored-basis attention use exact output
+oracles. No tolerance was widened. Original prep kernel/launcher/binding stayed
+byte-identical; new malformed scalar conversions are range-checked before
+narrowing. No persistent attention workspace was added.
+
+An additional forced-hybrid32-key INT8 MTP control failed one of12288Half
+intermediate values by3.0517578125e-5. The SAMEindex/value/failure reproduced on
+old shipping image1443fc46 with only the canonical test mounted read-only, so it
+predates Q4. It forcesNativeFamily=True/NativeAttention=False, outside both
+service profiles and the real-query-end65 native qualification. Reproducer,
+strict assertions and full failure logs remain; no whole-legacy-suite pass is
+claimed. Applicable new Q4 actual-model/profile gates are reported separately.
+
+Native attention retains localH3/KV1/D256, at most24rows per State, and real
+query ends65–8192. Other frames retain their selected codec through the original
+per-query Torch path and bounded working decode. Component/native cache capacity
+coverage includes a physical262144-slot owner. Full configured262K windows below
+are allocation evidence, not a complete262K prompt/quality workload.
+
+### Fixed target-distribution comparison
+
+Both variants completed all21cases/714teacher steps and723prefill/decodeframes
+with the ordinary target-only optimized engine, context8192, fixed2048prompt
+pieces, depth0/noMTP/graphsFalse, and literal frozen input/teacher IDs. The
+reference is the original INT8 C21 authority manifest
+`9cf873c58c295c2649e9fb89a9c15a79977ec1689c41528fc52276bd3c9469d1`.
+All complete Float32 vocabulary vectors and checksums were verified; no prompts
+were retokenized. These cross-format measurements are distinct from native-Q4
+implementation correctness.
+
+| Format / suite | Mean KL | Perplexity ratio vsINT8 | Top-1 agreement |
+| --- | --- | --- | --- |
+| signed128 Q4 /325 | 0.00303164314 | 0.99605870067 | 0.99692307692 |
+| signed128 Q4 /389 | 0.00533592937 | 1.00652224383 | 0.97429305913 |
+| signed128 Q4 /714 | 0.00428705959 | 1.00174586609 | 0.98459383754 |
+| signed64-norm Q4 /325 | 0.00229689506 | 1.00064709104 | 0.99384615385 |
+| signed64-norm Q4 /389 | 0.00466476362 | 1.00804118734 | 0.97686375321 |
+| signed64-norm Q4 /714 | 0.00358695230 | 1.00466877664 | 0.98459383754 |
+
+The unchanged historical thresholds KL≤0.0001/PPL≤1.001/top1≥0.995 failed for
+both formats. Quantization is an explicitly lossy configuration choice; these
+results do not establish INT8/FP16 equivalence or justify silently changing the
+user's earlier quality requirement. CODEC4 quality image384083f2... and CODEC5
+imagee82b37d8... each observed8676teacher fusedQ4preps and5376nativeQ4attention
+calls; CODEC5 setup/last fields were explicitly5/5. Full raw per-step/per-case/
+rank/source/foundation/native-binary records remain in
+`task-artifacts/v100-rotorquant-q4/quality-q4-r2/` and `quality-norm-q4-r3/`.
+
+### Prompt reuse qualification and live checks
+
+A real signed128 Q4 cold serial/cold MTP pair matched all128IDs/messages.
+Reusing the same127-token prompt suffix first changed output at61. Four short
+filler prompts restored cold state and exact identity. This isolates cached
+preparation, not a specific floating-point operator. The invalid warm result is
+preserved and excluded as an admissible performance reference.
+
+R4 image`f1c1c3e1c881e29edf25d4ec2a101fc00db5994dc0b9783d7bc078219621701f`
+therefore qualifies Q4 for cold prompt preparation in serial/twin and concurrent
+paths. Drafting and request-local KV stay active. Raw/INT8 reuse policies stay
+unchanged; malformed-sampling precedence is preserved. Registered immutable
+pairs and a versioned policy enter worker agreement before payload loading.
+Both profiles are covered by old-peer-refusal and actual-generate CPU controls.
+Prefix snapshots/cuts remain because their complete in-request role was not
+proved removable. The cost is cold TTFT on repeated Q4 prompts.
+
+Both Q4 variants passed28actual live checks:12original-budget plus9seeded
+serial/MTP pairs,4concurrent complete128-token replies, fullSSE, cancellation,
+and recovery; all IDs/messages matched fresh SAME-format references. Every
+completed drafted reply reportedcached0 under explicit `--prefix-reuse cold`.
+Public peak in-flight count was4, withall8rank materialization receipts. Raw
+HTTP exchanges, usage, counters, source/tool hashes and summaries are in
+`live-functional-c4-r4/` and `live-functional-c5-r4/`. Old INT8 reply IDs were not
+substituted as same-Q4 correctness oracles.
+
+R4 selectedCPU initially reported3044PASS/onefixturefailure: a hand-constructed
+oldprefix-fork decoder lacked the newly owned immutable pair. The fixture was
+corrected from its actual State;101focused cases then passed with no assertion
+relaxation. Final canonical R5 installed-image checks passed3046CPU cases
+(2skips,41subtests,43.97s) with614runtime source hashes matching, plus295
+source-relative tool/deployment/permission/probe cases (4.07s). All affected
+Python files and the named pre-push Ruff checks passed.
+New canonical source-relative quality/live tools have separate CPU/fault tests;
+they reuse the existing protocol/output helpers. A C6tool-only retirement fix
+preserves primary+cleanup failures and prior native cause/context, verified by
+46CPU adversarial tests and a same-target structural proof that the normal
+model body/constants/gates stayed unchanged. It does not require reinterpreting
+or rerunning the earlier arithmetic results.
+
+### Capacity and quiet configuration screens
+
+All8ranks physically allocated four262148-slot caches (262144context plus
+speculation),8069964032ownedcache bytes/rank, preserving4GiBdevice floor and
+2GiBworkspace. Automatic graph allowance1432787312bytes remained protected.
+Header-only canonical plans also predict DSpark three262140-token Q4 windows
+with551069852bytesgraphroom; actual DSpark compatibility checks are separate.
+
+Same pinned target/host/TP8/optimized profile, MTPdepth3/confidence0,128prompt
+and512greedy output tokens, thinking disabled, no profiler/otherGPUjob:
+
+| Configuration | Full windows | Three decode tokens/s | Repeated prompt |
+| --- | --- | --- | --- |
+| INT8 C22 shipping reference | 3×262144 | 54.0358 /54.4202 /59.7780 | cached127 |
+| signed128 Q4 R4 | 4×262144 | 51.2476 /50.2409 /50.2750 | cold0 |
+| signed64-norm Q4 R4 | 4×262144 | 51.5636 /52.5942 /50.4676 | cold0 |
+
+Signed128 Q4 cold128-token prefill was1.6512/1.6418/1.6255s (77.52/77.96/78.75
+prefill tokens/s); repeated-prompt TTFT1.6291s. The INT8 reference's prefix-hit
+TTFT was0.1393s. Format/output/cache state/concurrency differ, so these are
+configuration tradeoffs, not isolated kernel gains, equivalence proofs or a
+global optimum. No100single-request decode tokens/s result is claimed.
+
+The user was asked which format should remain the production default after
+these concrete quality/latency tradeoffs. No answer or elapsed-time approval is
+assumed; the previous INT8 configuration remains the known admissible fallback.
+
+### DSpark compatibility closeout
+
+The Q4/DSpark3-window262140 startup estimate fit, but the longer live corpus
+exhausted its551069852-byte shared graph allowance. All ranks retired under
+the declared poisoned-cohort policy. The startup and failed live request/logs
+are preserved; this is not a qualified three-full-maximum DSpark service.
+
+One registered fallback used the canonical header calculation for1GiBgraphs:
+three equal245713-token windows, unchanged4GiBfloor/2GiBworkspace. All8ranks
+materialized the caches (7123834176bytes/rank), with1073769276graphbytes.
+All27same-format checks passed:21serial/DSpark pairs,3concurrent replies,
+SSE,cancellation and recovery, withcached0. This establishes actualDSpark
+compatibility for that configuration. MTP's four262144windows remain separate.
+No further layout/depth/memory experiment was opened.

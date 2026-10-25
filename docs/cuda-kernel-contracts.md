@@ -28,16 +28,52 @@ by the loader, without changing other checkpoint readers.
 The same family interfaces dispatch FP16 HC, PLE, routing, indexed causal
 attention and KV operations. Attention masks both scores and V operands so
 stale nonfinite rows outside the causal/QSA selection cannot contaminate a
-retained prefix. SM70 admits raw FP16 and the existing INT8 H32 KV descriptor,
-including mixed sides; modern BF16 providers reject raw FP16. Storage identity
-and execution policy are part of state reuse and rank agreement. INT8 changes
-cache arithmetic; its scales and codes retain the existing format identity.
+retained prefix. SM70 admits raw FP16, the existing INT8 H32 descriptor, and
+the existing `rotorquant-signed128-4` / `rotorquant-signed64-norm4` Q4 descriptors,
+including independently selected sides. Modern BF16 providers reject raw FP16.
+Storage identity and execution policy participate in state reuse and rank
+agreement. Quantized formats change cache arithmetic and keep their distinct
+codebook, scale, basis and norm identities.
+
+SM70 Q4 stores two four-bit centroid indices per byte (even coordinate in the
+low nibble), with one FP32 scale per 128 components. The fixed-group FP32
+encoder reduction is independent of batch padding; its near-threshold index
+and scale validity is checked against the existing analytic rounding envelope.
+This is not universal byte identity with a different library reduction tree.
+Query basis rotation uses staged FP32 operations then FP16 storage; reconstructed
+K/V operands round centroid-times-scale to FP16 before FP32-accumulating QK/PV.
+The merged value sum is inverse-rotated in FP32 before its final FP16 boundary.
+CODEC4 uses the signed Iso128/original-RMS policy; CODEC5 retains the existing
+signed64/reconstruction-norm policy. Equal packed widths do not authorize
+cross-format prefix/snapshot reuse or a changed rank policy.
+
+Fused Q4 preparation and native codec/row-copy primitives validate device
+controls before cache access and leave inactive cache rows unchanged. Source,
+metadata, reconstructed FP16 overflow and invalid controls latch the existing
+sticky status and first-layer word; a failed frame retires before token
+publication. All producers, controls, status, output and cache storage remain
+owned through current-stream completion or captured replay. The Q4 paths add
+no persistent attention workspace or per-call host readback.
+
+SM70 Rotor Q4 prompt-prefix borrowing is not yet numerically qualified. A real
+cold serial/MTP pair matched all128 IDs while a cached127suffix first differed
+at61; no particular floating-point operator was proved responsible. The request
+policy therefore denies borrowing for registered Rotor sides in both supported
+SM70 profiles, without changing codec math or drafting. Serial/twin selection
+applies the same qualification before `_resume`/peer request sharing. Immutable
+ordered format ownership and the versioned prefix policy participate in worker
+agreement. Raw/INT8 policies are preserved. This explicitly costs cached-prompt
+latency; no superiority claim includes that unqualified warm-cache route.
 
 Preparation/compilation happens before graph capture. Captured tensors retain
 their owners through every replay under the stream rules below. Component and
-tiny-family graph replay checks do not enable full-model capture: the SM70
-serving profile uses an explicit eager fallback, and concurrent TP still needs
-qualified pointer routing for captured rounds. TP uses the ordinary NCCL owner,
+tiny-family graph replay checks alone do not enable full-model capture. The
+explicit optimized profile uses qualified pointer routing and admitted graph
+owners; native attention retains real-query ends 65–8192, local H3/KV1/D256
+and at most 24 rows per State. Other frames decline native binding and retain
+the selected format through original per-query Torch attention and bounded
+working decode. Full-model Q4 quality/performance remains a separate gate.
+TP uses the ordinary NCCL owner,
 per-peer acknowledgements and shared scheduler; numeric cache failures reach
 rank consensus before publishing tokens or entering later sampling collectives.
 See [the V100 qualification](v100-flashnext-validation.md) for actual installed

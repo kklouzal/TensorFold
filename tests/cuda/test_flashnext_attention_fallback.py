@@ -13,7 +13,7 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA requ
 
 
 @pytest.mark.parametrize("rows", [1, 3])
-@pytest.mark.parametrize("cache", ["fp16", "int8"])
+@pytest.mark.parametrize("cache", ["fp16", "int8", "rotorquant-signed128-4", "rotorquant-signed64-norm4"])
 def test_unqualified_decode_uses_existing_position_and_exact_serial_attention(monkeypatch, rows, cache):
     if torch.cuda.get_device_capability() != (7, 0):
         pytest.skip("SM70 fallback gate")

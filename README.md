@@ -1,5 +1,24 @@
 # TensorFold fork
 
+**RotorQuant Q4 on V100 (2026-10-25):** native SM70 now supports the existing
+`rotorquant-signed128-4` and `rotorquant-signed64-norm4` cache formats,
+independently for K/V. Both preserve the fork's packed descriptors and use fused
+preparation, packed native attention, FP16 working operands and FP32 reductions.
+Four equal **262,144-token windows** were physically allocated on every rank.
+
+The signed128 mode passed 21 live serial/MTP comparisons, four concurrent
+replies, SSE, cancellation and recovery. Its quiet 128-input/512-output replies
+measured **50.24–51.25 decode tokens/s**. Q4 uses cold prompt preparation:
+cross-request prefix borrowing is unqualified and disabled; per-request KV
+caching and MTP remain active. INT8/FP16 borrowing policies are preserved.
+
+Q4 is a lossy choice, not quality-equivalent to INT8. On the fixed broader
+389-step suite, signed128 Q4 measured perplexity ratio **1.00652** and top-1
+agreement **97.43%**; norm-preserving Q4 measured **1.00804** and **97.69%**.
+Both completed all 714 teacher steps but failed the old INT8 comparison gates.
+The INT8 service configuration remains the default pending the user's quality/
+latency choice. [Q4 evidence and limitations](docs/v100-flashnext-validation.md#rotorquant-q4-on-v100).
+
 **Flash Next on eight V100s (2026-10-24):** the native mixed-GGUF SM70 provider
 uses the existing CUDA engine, scheduler and HTTP API, with FP16 execution and
 FP32 recurrent state. The selected C22 configuration uses **stock MTP depth 3,
@@ -653,7 +672,7 @@ Persistent prefix snapshots use format 2 and explicit current-model registries. 
 
 ## KV cache formats
 
-Flash Next's modern CUDA provider supports the following **16 formats**, with independent K/V selection; **BF16 is its default**. `--kv-dtype` selects both sides; `--kv-key-dtype` and `--kv-value-dtype` override only their respective side. All **256 ordered combinations** are selectable on that provider when head geometry supports them; this is configuration support, not a completed quality/performance matrix for all combinations. The GGUF SM70 provider instead admits `fp16` (its CLI default) and `int8`, including either ordered mixed pair. Raw FP16 stores 512 bytes per 256-value K or V head, with a distinct storage identity; its indexer/pooled state is FP16. Other formats are refused before weight loading on SM70.
+Flash Next's modern CUDA provider supports the following **16 formats**, with independent K/V selection; **BF16 is its default**. `--kv-dtype` selects both sides; `--kv-key-dtype` and `--kv-value-dtype` override only their respective side. All **256 ordered combinations** are selectable on that provider when head geometry supports them; this is configuration support, not a completed quality/performance matrix for all combinations. The GGUF SM70 provider admits `fp16` (its CLI default), `int8`, `rotorquant-signed128-4` and `rotorquant-signed64-norm4`, including all16ordered side pairs. Raw FP16 stores 512 bytes per 256-value K or V head, with a distinct storage identity; its indexer/pooled state is FP16. Other formats are refused before weight loading on SM70.
 
 | Family | Exact names | Bytes for one 256-value K **or** V head |
 | --- | --- | ---: |

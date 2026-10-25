@@ -167,6 +167,9 @@ class MultiDecoder:
 
             self.memory_gate = SharedMemoryGate(self.memory_gate, w.comm)
         self._memory_error: BaseException | None = None
+        # All slots share this validated immutable descriptor. Prefix reuse is
+        # qualified by numerical format as well as the request's sampler.
+        self.kv_pair = self.free[0].kv_pair
         self.streams: dict[int, Stream] = {}
         self.filling: list[Stream] = []                  # admitted, prompts still prefilling (oldest first)
         # stream id -> [its engine, drafts?, next row, kept states, the streams row before the next (its MTP tail)]
@@ -594,7 +597,8 @@ class MultiDecoder:
         t0 = time.perf_counter()
         from .prefix_policy import reuse_allowed
 
-        reuse = reuse_allowed(self.w, s.sampling, draft=s.draft, vision=s.vision, position=len(s.prompt))
+        reuse = reuse_allowed(self.w, s.sampling, draft=s.draft, vision=s.vision,
+                              position=len(s.prompt), kv_pair=self.kv_pair)
         st, resume, s.cached = self._slot_for(list(s.prompt), reuse)
         try:
             if not self._grow(st, len(s.prompt) + self.depth + 2, alone=not self.streams and not self.filling):

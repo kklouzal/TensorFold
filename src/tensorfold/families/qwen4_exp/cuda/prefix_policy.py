@@ -1,22 +1,29 @@
-"""Reuse only qualified prompt state for the optimized SM70 sampling path."""
+"""Reuse only qualified prompt state for SM70 request paths."""
 
-IDENTITY = "sm70-optimized-stochastic-prefix-cold-v1"
+IDENTITY = "sm70-stochastic-or-unqualified-rotor-prefix-cold-v2"
 
 
 def identity(profile):
-    """Immutable startup identity; the request's sampling fields already share the worker wire."""
-    return IDENTITY if profile == "optimized" else None
+    """Sampler and ordered cache descriptors already share the worker wire."""
+    return IDENTITY if profile in ("optimized", "reference") else None
 
 
-def reuse_allowed(w, sampling, *, draft, vision, position):
-    """Decline cached suffixes only for validated positive-temperature optimized SM70 requests.
+def reuse_allowed(w, sampling, *, draft, vision, position, kv_pair=None):
+    """Borrow only qualified SM70 prompt state; drafting remains independent.
 
-    Drafting and prefix creation remain independent. Malformed policies retain
-    their original path so validation does not overtake a producing KV error.
+    Cold serial/drafted Q4 frames match, but cached-suffix preparation has not
+    met same-format output identity. Its preparation and quantization history
+    require separate qualification before borrowing. FP16/INT8
+    keep their existing policy. Malformed sampling retains the original error
+    path so this decision cannot overtake a producing KV failure.
     """
     ordinary = draft and vision is None
-    if (not ordinary or w.meta.get("execution_provider") != "sm70"
-            or w.meta.get("sm70_profile") != "optimized" or sampling is None):
+    if not ordinary or w.meta.get("execution_provider") != "sm70":
+        return ordinary
+    rotor = kv_pair is not None and (kv_pair.key.codec or kv_pair.value.codec)
+    if sampling is None:
+        return ordinary and not rotor
+    if not rotor and w.meta.get("sm70_profile") != "optimized":
         return ordinary
     from tensorfold.cuda.sampling import validate_policy
 
@@ -25,4 +32,12 @@ def reuse_allowed(w, sampling, *, draft, vision, position):
         stochastic = sampling.temperature > 0
     except (ValueError, TypeError, OverflowError):
         return ordinary
-    return ordinary and not stochastic
+    return ordinary and not rotor and not stochastic
+
+
+def serial_reuse_allowed(w, sampling, *, draft, position, kv_pair):
+    """Serial/twin Q4 has the same qualification; legacy serial policy stays intact."""
+    if (not draft or w.meta.get("execution_provider") != "sm70"
+            or not (kv_pair.key.codec or kv_pair.value.codec)):
+        return draft
+    return reuse_allowed(w, sampling, draft=draft, vision=None, position=position, kv_pair=kv_pair)

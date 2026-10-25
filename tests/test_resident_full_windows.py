@@ -82,7 +82,7 @@ def test_full_geometry_charges_each_window_initial_floor_resize_and_workspace(wi
         assert new.bytes_at(capacity) - old.bytes_at(capacity) == expected
         assert new.reserve == old.reserve == 4
         status = indexed_stream_geometry(TEXT, **args, full_windows=windows, workspace_bytes=2 * GIB, kv_status=True)
-        assert status.bytes_at(capacity) - new.bytes_at(capacity) == 8 * streams
+        assert status.bytes_at(capacity) - new.bytes_at(capacity) == 8 * streams * 9  # TP8 local and peer words.
 
 
 class Array:

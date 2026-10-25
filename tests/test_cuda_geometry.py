@@ -102,7 +102,7 @@ def test_indexed_stream_status_and_independent_kv_sides_remain_budgeted_per_rank
         # with a 68-byte INT8 row, independently of K's unchanged BF16 side.
         difference = (2 + int(mtp)) * (rows * heads * (128 - 68) + 3 * 2)
         assert bf16.bytes_at(slots) - mixed.bytes_at(slots) == difference
-        assert checked.bytes_at(slots) - mixed.bytes_at(slots) == 8 * 3     # each slot's two status words
+        assert checked.bytes_at(slots) - mixed.bytes_at(slots) == 8 * 3 * (1 + (world if world > 1 else 0))
 
 
 MULTI_TEXT = {"hidden_size": 512, "num_attention_heads": 8, "num_key_value_heads": 2, "head_dim": 64,

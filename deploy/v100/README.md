@@ -112,7 +112,10 @@ For the matching separate stock BF16 MTP head, replace `--no-drafts` with
 reads, explicit FP16 execution arrays and the target's shared embedding/head.
 `--kv-dtype int8`, or mixed `--kv-key-dtype`/`--kv-value-dtype` FP16/INT8 pairs,
 select the existing INT8 H32 codec and its scales; they do not mean FP8 or
-RotorQuant. Other formats fail before allocating model weights on SM70.
+RotorQuant. The `rotorquant-signed128-4` and `rotorquant-signed64-norm4` SM70 paths use
+their existing signed bases, packed four-bit centroid indices and FP32 scales.
+They have separate measured quantization-quality tradeoffs; see below. Other formats fail before allocating model weights
+on SM70.
 
 The maintained [Compose profile](compose.yaml) selects the matching stock MTP
 head, two slots and an 8,192-token window by default. Set `MODEL_ROOT` to the
@@ -217,7 +220,8 @@ full-window behavior.
 Native attention scratch is capped at its qualified8192-token dispatch range,
 while KV remains allocated at the full context limit. Longer queries retain
 original Torch attention. Targeted large-cache/refusal/replay and fallback
-allocation controls passed; actual full-service allocation and timing are pending.
+allocation controls passed. Actual full-service allocations and short-prompt
+timing are recorded in the C22/Q4 sections below.
 
 ## Measured full-window host configuration (C22)
 
@@ -259,3 +263,77 @@ windows. Its128-input/512-output quiet decode measured54.04/54.42/59.78tokens/s;
 all complete benchmark outputs and three simultaneous responses matched the
 qualified candidate. Existing C3 remains stopped for rollback. The finite
 closeouts are complete;100single-request tokens/s remains unmet.
+
+## RotorQuant Q4 validation
+
+Use `--kv-dtype rotorquant-signed128-4` for both sides, or combine it with
+`--kv-key-dtype` / `--kv-value-dtype` to select independent FP16/INT8/Q4 sides.
+The descriptor and codec identity are unchanged from the existing fork format.
+The V100 implementation uses FP16 working Q/K/V operands with FP32 reductions
+and inverse value rotation; it does not invoke Triton or reinterpret INT4 bytes.
+Native/same-format live checks and actual four-window allocations passed;
+full714quantization comparisons and quiet throughput are reported below.
+The result is not INT8 quality equivalence.
+
+### Q4 configuration and acceptance
+
+Build/select a Q4-capable verified image first. The old C22 INT8 rollback
+image rejects Q4; an existing host `.env` can otherwise keep that old image
+pinned. The signed128 Q4 live configuration has four equal full native windows:
+
+```bash
+export TENSORFOLD_V100_IMAGE=local/tensorfold-v100:rotor-q4-r5
+export TF_SM70_PROFILE=optimized TF_KV_DTYPE=rotorquant-signed128-4
+export TF_CONTEXT=262144 TF_PARALLEL=4 TF_KV_FULL_WINDOWS=4
+export TF_DRAFT_METHOD=mtp DRAFTER_DIRECTORY=/models/mtp-stock
+export TF_DRAFTS=3 TF_DRAFT_CONFIDENCE=0
+docker compose -f deploy/v100/compose.yaml up -d
+```
+
+Each rank materialized four262148-slot caches (context plus speculation),
+8069964032owned bytes, with4GiBdevice floor and2GiBworkspace preserved.
+Use `TF_KV_DTYPE=rotorquant-signed64-norm4` for the existing norm-preserving
+variant. Both formats force cold preparation in serial and concurrent serving
+until prompt-prefix reuse meets same-format identity checks. Request-local KV
+caching, MTP, cache precision, copy/resize and mixed-side interfaces remain.
+Repeated prompts therefore have cold TTFT rather than the INT8 prefix-hit cost.
+
+Signed128 Q4 passed21serial/draft pairs,4concurrent replies,SSE,cancellation and
+recovery. Short128-input/512-output greedy decode measured51.2476/50.2409/
+50.2750tokens/s, with coldprefill1.6512/1.6418/1.6255s. These are descriptive
+configuration screens; format/output/cache state differs from the INT8 screen,
+so no isolated speed gain/equivalence or global optimum is claimed.
+The broader quality suite measuredPPLratio1.006522/top1agreement.974293 for
+signed128, versus1.008041/.976864 for signed64norm; old numerical comparison
+gates failed for both. Their native implementation gates passed separately.
+Production selection remains subject to the user's quality/latency preference.
+
+The canonical live procedure compares against fresh replies in the SAMEformat,
+not old INT8 IDs, and explicitly enforces the current prefix capability:
+
+```bash
+python tools/v100_rotorquant_live.py --url http://127.0.0.1:8001 \
+  --cases-dir /path/to/frozen-request-data --output-dir /path/to/new-results \
+  --parallel 4 --tokens 128 --context 262144 \
+  --kv-dtype rotorquant-signed128-4 --prefix-reuse cold
+```
+
+For source-relative tool tests inside the verification image (installed wheel
+imports, matching `/src` fixtures), use:
+
+```bash
+docker run --rm -e PYTHONPATH=/src tensorfold-v100:verified -m pytest \
+  -c /verification/pytest.ini -q /src/tests/test_v100_rotorquant_quality.py \
+  /src/tests/test_v100_rotorquant_live.py
+```
+
+A `/verification/tests` invocation alone lacks the tool-source fixtures; do not
+repair installed code to compensate. Build from canonical source and preserve
+the source/image identities reported by the quality and live tools.
+
+Q4 DSpark was also checked through real requests. Three full262140windows
+left too little graph room for the longer corpus and the cohort was retired.
+The bounded compatible configuration uses3equal245713-token windows with
+1GiBgraph allowance, preservingtheexisting4GiBfloor/2GiBworkspace, and passed
+all27serial/draft/concurrent/SSE/cancel/recovery checks. It is not a claim of
+three simultaneous full262KDSpark workloads or of better output quality.

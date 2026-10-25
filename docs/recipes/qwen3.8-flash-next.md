@@ -62,7 +62,9 @@ family engine, with FP16 activations and FP32 recurrent state. It supports
 TP1/2/4/8, including complete-group KV-head replication, and TP concurrency
 through the existing scheduler. The packed model requires enough aggregate GPU
 memory; the local host uses eight 32 GB V100s. GGUF defaults to raw
-`--kv-dtype fp16`; `int8` and mixed FP16/INT8 sides use the existing cache descriptor. Other
+`--kv-dtype fp16`; `int8` and mixed FP16/INT8 sides use the existing cache descriptor.
+The new `rotorquant-signed128-4` SM70 path adds packed Q4 with independently
+selectable keys/values; full-model qualification is pending. Other
 cache formats and modern BF16 checkpoint providers retain their own admission.
 Use `--no-drafts` for a baseline, or `--drafter /path/to/matching/stock-mtp` with
 `--mtp-drafts 2` for the matching separate stock head. The original GGUF is never
@@ -433,7 +435,7 @@ Maintain this recipe and the main README in the same change whenever supported K
 deployment requirements, or published quality and performance results change.
 
 The modern CUDA provider defaults to `--kv-dtype bf16` and supports the BF16/INT8/INT4/RotorQuant formats
-described in this section. The GGUF SM70 provider defaults to raw `--kv-dtype fp16` and admits only FP16/INT8
+described in this section. The GGUF SM70 provider defaults to raw `--kv-dtype fp16` and admits FP16/INT8/`rotorquant-signed128-4`
 on each side; its indexer and pooled cache are FP16. Raw FP16 uses 512 bytes per 256-value key or value head,
 with a storage identity distinct from BF16. See the [V100 profile](../../deploy/v100/README.md) for its qualification.
 
@@ -587,3 +589,13 @@ preallocate three complete windows; full-window concurrency/SSE/cancel/prefix
 and9+12live quality cases passed. DSpark's bounded best depth was3 with two
 262140-token windows. See the validation note for measured workload/quality
 limits; these allocations are not a full262K numerical benchmark.
+
+For native V100 Q4, select `--kv-dtype rotorquant-signed128-4` or
+`--kv-dtype rotorquant-signed64-norm4`; both use the existing registered
+128-component/group, four-bit payload/FP32-scale descriptors with distinct
+basis/norm identities. Four full262144-token windows were materialized on the
+eight-V100 host. Q4 prompt-prefix borrowing is currently unqualified: serial
+and concurrent requests prefill cold while retaining request-local KV and MTP.
+Both modes completed714teacher steps; their broader PPL ratios1.00652/1.00804
+versusINT8 mean they are explicit lossy choices, not quality-equivalent defaults.
+See the V100 validation before selecting a production format.

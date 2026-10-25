@@ -10,12 +10,15 @@ def extension():
     from tensorfold.cuda import build
     from .provider import _native
     from .source_cache import stage_sources
+    from .rotorquant_q4_tables import verify
 
+    verify()
     prepared = _native()
     root = Path(__file__).parent
     sources = [root / "family_bindings.cpp", root / "family.cu"]
     identity = hashlib.sha256(prepared.__name__.encode())
-    headers = [root / "torch_reduce.cuh", root.parent / "kernels/tensor_contracts.cuh"]
+    headers = [root / "torch_reduce.cuh", root.parent / "kernels/tensor_contracts.cuh",
+               root / "rotorquant_q4.cuh", root / "rotorquant_q4_tables.cuh"]
     for source in [*sources, *headers]:
         identity.update(source.name.encode() + b"\0" + source.read_bytes())
     staged = stage_sources(sources, headers=headers)

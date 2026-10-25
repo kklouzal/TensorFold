@@ -37,6 +37,7 @@ def decoder(*, busy=False, room=True):
     dec.free, dec.filling, dec.fills, dec.failed_slots = [spare], [], {}, []
     dec.streams = {1: SimpleNamespace(st=source, waiting=False)} if busy else {}
     dec.depth, dec.capacity = 3, 1024
+    dec.kv_pair = source.kv_pair
     growth = []
     def grow(st, rows, **kwargs):
         growth.append((st, rows, kwargs))

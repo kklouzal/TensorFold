@@ -723,5 +723,22 @@ MTP or DSpark auxiliary KV and serving workspace; the context limit applies to
 each lane. Without the flag, the existing shared growth policy remains.
 On the optimized SM70 profile, positive-temperature requests prefill cold
 because cached suffixes have not met output-identity checks; drafting remains
-enabled. Greedy requests retain prefix borrowing. Independent cold prompts
+enabled. Raw FP16/INT8 greedy requests retain prefix borrowing; SM70 Rotor Q4
+requests prepare cold for either sampler. Independent cold prompts
 retain separate prefill passes while decode windows still batch.
+
+The Flash Next GGUF/SM70 provider additionally admits the existing
+`rotorquant-signed128-4` and `rotorquant-signed64-norm4` cache descriptors,
+independently on K/V through the ordinary precision flags. Native and same-format live checks passed; actual allocation supports four
+full262144-token windows. The measured cross-format quality and latency
+tradeoffs remain explicit, and INT8 remains the reference/default pending
+the user's production-format choice. RotorQuant/INT4 codecs other than those two named Q4 formats are not admitted
+by this SM70 path.
+
+SM70 also admits `rotorquant-signed64-norm4`, retaining its existing distinct
+ordered cache identity. For either SM70 Q4 variant, valid requests prepare cold
+and report `tensorfold.cached == 0`; MTP stays enabled when requested. This
+qualification applies to serial/twin and concurrent serving. The prior raw/INT8
+reuse policy is unchanged. Same-format functional checks do not imply INT8
+quality equivalence; measured quality/performance tradeoffs are documented in
+the V100 validation record.

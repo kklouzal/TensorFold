@@ -7,6 +7,7 @@
 #include <math_constants.h>
 #include <optional>
 #include "pv_dispatch.cuh"
+#include "rotorquant_q4.cuh"
 
 using T = at::Tensor;
 using O = std::optional<T>;
@@ -29,9 +30,15 @@ __device__ __forceinline__ bool visible(int key, int row, int end, bool qsa,
     }
     return low < counts[row] && ids[int64_t(row) * id_stride + low] == key;
 }
-__device__ __forceinline__ __half decoded(const void* data, const __half* scales, bool quantized, int64_t at) {
-    if (!quantized) return static_cast<const __half*>(data)[at];
-    float value = ((float(static_cast<const int8_t*>(data)[at]) + 0.5f) * __half2float(scales[at / 32])) * (1.f / 128.f);
+__device__ __forceinline__ __half decoded(const void* data, const void* scales, int bits, int codec, int64_t at) {
+    if (!bits) return static_cast<const __half*>(data)[at];
+    if (codec == 4 || codec == 5) {
+        const unsigned byte = static_cast<const uint8_t*>(data)[at / 2];
+        const int index = (byte >> (4 * (at & 1))) & 15;
+        return __float2half_rn(__fmul_rn(tf_rq4::centroid(index), static_cast<const float*>(scales)[at / 128]));
+    }
+    float value = ((float(static_cast<const int8_t*>(data)[at]) + 0.5f) *
+                   __half2float(static_cast<const __half*>(scales)[at / 32])) * (1.f / 128.f);
     return __float2half_rn(value);
 }
 __device__ __forceinline__ float warp_sum(float value) {
@@ -97,7 +104,7 @@ __device__ __forceinline__ float register_softmax_reduce(const float* scores, in
 }
 
 template<int DIM>
-__global__ void scores_kernel(const __half* q, const void* keys, const __half* scales, bool quantized,
+__global__ void scores_kernel(const __half* q, const void* keys, const void* scales, int bits, int codec,
                                const void* position, bool pos_long, const int* sparse, const int* counts,
                                const int* ids, int id_stride, bool qsa, float* scores,
                                int score_stride, int rows, int heads, int kvheads, int context, float scale) {
@@ -119,7 +126,7 @@ __global__ void scores_kernel(const __half* q, const void* keys, const __half* s
     for (int at = threadIdx.x; at < SCORE_TILE * DIM; at += blockDim.x) {
         int key = first_key + at / DIM, col = at % DIM;
         key_tile[at] = key < min(context, position0 + max_row + 1)
-            ? decoded(keys, scales, quantized, (int64_t(key) * kvheads + kvhead) * DIM + col) : __float2half_rn(0.f);
+            ? decoded(keys, scales, bits, codec, (int64_t(key) * kvheads + kvhead) * DIM + col) : __float2half_rn(0.f);
         serial_keys[col * (SCORE_TILE + 1) + at / DIM] = key_tile[at];
     }
     __syncthreads();
@@ -241,7 +248,7 @@ __device__ __forceinline__ int pv_chunk(int end, int splits) {
 
 template<int DIM>
 __global__ void values_kernel(const __half* probabilities, int probability_stride,
-                               const void* values, const __half* scales, bool quantized,
+                               const void* values, const void* scales, int bits, int codec,
                                const void* position, bool pos_long, const int* sparse, const int* counts,
                                const int* ids, int id_stride, bool qsa, float* partials,
                                int partial_stride, int heads, int kvheads, int context) {
@@ -264,7 +271,7 @@ __global__ void values_kernel(const __half* probabilities, int probability_strid
                 for (int key = part * chunk; key < min(end, (part + 1) * chunk); ++key) {
                     bool keep = visible(key, row, end, qsa, sparse, counts, ids, id_stride);
                     float p = __half2float(probabilities[int64_t(query) * probability_stride + key]);
-                    float v = keep ? __half2float(decoded(values, scales, quantized,
+                    float v = keep ? __half2float(decoded(values, scales, bits, codec,
                                 (int64_t(key) * kvheads + kvhead) * DIM + col)) : 0.f;
                     accum[part] = __fadd_rn(accum[part], __fmul_rn(p, v));
                 }
@@ -298,7 +305,7 @@ __global__ void values_kernel(const __half* probabilities, int probability_strid
             for (int at = threadIdx.x; at < 16 * VALUE_DIMS; at += blockDim.x) {
                 const int key = first_key + at / VALUE_DIMS, col = at % VALUE_DIMS;
                 const bool keep = key < high && visible(key, row, end, qsa, sparse, counts, ids, id_stride);
-                value_tile[at] = keep ? decoded(values, scales, quantized,
+                value_tile[at] = keep ? decoded(values, scales, bits, codec,
                     (int64_t(key) * kvheads + kvhead) * DIM + first_col + col) : __float2half_rn(0.f);
             }
             __syncthreads();
@@ -316,7 +323,8 @@ __global__ void values_kernel(const __half* probabilities, int probability_strid
 
 template<int DIM>
 __global__ void reduce_kernel(const float* partials, __half* out, const void* position, bool pos_long,
-                              int partial_stride, int heads, int context, bool inverse) {
+                              int partial_stride, int heads, int context, int bits, int codec) {
+    __shared__ float rotor[DIM];
     const int query = blockIdx.x, row = query / heads, col = threadIdx.x;
     const int end = min(context, base_position(position, pos_long) + row + 1);
     if (end < 1 || end > 8192) return;
@@ -325,7 +333,11 @@ __global__ void reduce_kernel(const float* partials, __half* out, const void* po
     if (col < DIM) for (int tile = 0; tile < tiles; ++tile)
         value += partials[(int64_t(query) * partial_stride + tile) * DIM + col];
     if (col >= DIM) return;
-    if (inverse) {
+    if (codec == 4) {
+        value = tf_rq4::inverse_component(value, col, rotor);
+    } else if (codec == 5) {
+        value = tf_rq4::rotate_component<5, true>(value, col, rotor);
+    } else if (bits) {
 #pragma unroll
         for (int offset = 1; offset <= 16; offset *= 2) {
             float cross = __shfl_xor_sync(0xffffffffu, value, offset);
@@ -341,32 +353,33 @@ template<typename V> V* ptr(const T& tensor) { return reinterpret_cast<V*>(tenso
 
 void sm70_attention_cuda(const T& q, const T& k, const T& v, const T& position, const T& sparse,
                          const T& counts, const T& ids, T& scores, T& probabilities, T& partials, T& out,
-                         const O& ks, const O& vs, int rows, int context, int kbits, int vbits, bool qsa, float scale) {
+                         const O& ks, const O& vs, int rows, int context, int kbits, int vbits, bool qsa, float scale,
+                         int kcodec, int vcodec) {
     const int heads = q.size(1), kvheads = k.size(1), dim = q.size(2), stride = scores.size(2), pstride = partials.size(2);
     const bool pos_long = position.scalar_type() == at::kLong;
     auto stream = at::cuda::getCurrentCUDAStream();
     auto launch_scores = [&](auto kernel) {
         kernel<<<dim3((context + SCORE_TILE - 1) / SCORE_TILE, (rows * (heads / kvheads) + 15) / 16, kvheads), 128, 0, stream>>>(
-            ptr<__half>(q), k.data_ptr(), ks ? ptr<__half>(*ks) : nullptr, bool(kbits), position.data_ptr(), pos_long,
+            ptr<__half>(q), k.data_ptr(), ks ? ks->data_ptr() : nullptr, kbits, kcodec, position.data_ptr(), pos_long,
             ptr<int>(sparse), ptr<int>(counts), ptr<int>(ids), ids.size(1), qsa, ptr<float>(scores), stride,
             rows, heads, kvheads, context, scale);
     };
     auto launch_values = [&](auto kernel) {
         kernel<<<dim3(pstride, dim / VALUE_DIMS, rows * heads), 128, 0, stream>>>(
-            ptr<__half>(probabilities), stride, v.data_ptr(), vs ? ptr<__half>(*vs) : nullptr, bool(vbits),
+            ptr<__half>(probabilities), stride, v.data_ptr(), vs ? vs->data_ptr() : nullptr, vbits, vcodec,
             position.data_ptr(), pos_long, ptr<int>(sparse), ptr<int>(counts), ptr<int>(ids), ids.size(1), qsa,
             ptr<float>(partials), pstride, heads, kvheads, context);
     };
     auto launch_reduce = [&](auto kernel) {
         kernel<<<rows * heads, 256, 0, stream>>>(ptr<float>(partials), ptr<__half>(out), position.data_ptr(), pos_long,
-            pstride, heads, context, bool(vbits));
+            pstride, heads, context, vbits, vcodec);
     };
     if (rows) {
-        if (dim == 256) launch_scores(scores_kernel<256>); else launch_scores(scores_kernel<128>);
+        launch_scores(scores_kernel<256>);
         probabilities_kernel<<<rows * heads, 256, 0, stream>>>(ptr<float>(scores), ptr<__half>(probabilities),
             position.data_ptr(), pos_long, stride, heads, context);
-        if (dim == 256) { launch_values(values_kernel<256>); launch_reduce(reduce_kernel<256>); }
-        else { launch_values(values_kernel<128>); launch_reduce(reduce_kernel<128>); }
+        launch_values(values_kernel<256>);
+        launch_reduce(reduce_kernel<256>);
     }
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }

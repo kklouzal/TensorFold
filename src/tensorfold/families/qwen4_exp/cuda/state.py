@@ -190,12 +190,15 @@ class State:
             if kv_dtype != "bf16" and kv_pair != kvcache.get_pair(kv_dtype):
                 raise ValueError("KV dtype shorthand conflicts with the explicit pair")
         self.kv_pair = kv_pair if kv_pair is not None else kvcache.get_pair(kv_dtype, kv_key_dtype, kv_value_dtype)
-        if bf == torch.float16 and any(name not in ("fp16", "int8") for name in
-                                      (self.kv_pair.key_dtype, self.kv_pair.value_dtype)):
-            raise ValueError("SM70 FP16 execution requires explicit fp16 or int8 KV cache storage")
+        if bf == torch.float16:
+            from .sm70_kv import check_pair
+
+            working_policy = check_pair(self.kv_pair)
+        else:
+            working_policy = "stored-basis-native64-v1"
         self.kv_pair.row_bytes(c.kv_heads, c.head_dim)
         self.kv_key_dtype, self.kv_value_dtype = self.kv_pair.key_dtype, self.kv_pair.value_dtype
-        self.kv_working_policy = "stored-basis-fp16-fp32acc-v1" if bf == torch.float16 else "stored-basis-native64-v1"
+        self.kv_working_policy = working_policy
         self.kv_identity = (self.kv_pair.identity, self.kv_working_policy)
         self.kv_key_bits = 0 if self.kv_pair.key.bits == 16 else self.kv_pair.key.bits
         self.kv_value_bits = 0 if self.kv_pair.value.bits == 16 else self.kv_pair.value.bits

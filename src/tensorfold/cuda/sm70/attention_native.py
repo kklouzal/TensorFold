@@ -38,13 +38,16 @@ def workspace_bytes(rows, heads, head_dim, capacity):
 def extension():
     from tensorfold.cuda import build
     from .provider import _native
+    from .rotorquant_q4_tables import verify
     from .source_cache import stage_sources
 
+    verify()
     prepared = _native()
     root = Path(__file__).parent
     sources = [root / "attention_bindings.cpp", root / "attention.cu"]
     identity = hashlib.sha256(prepared.__name__.encode())
-    headers = [root.parent / "kernels/tensor_contracts.cuh", root / "pv_dispatch.cuh"]
+    headers = [root.parent / "kernels/tensor_contracts.cuh", root / "pv_dispatch.cuh",
+               root / "rotorquant_q4.cuh", root / "rotorquant_q4_tables.cuh"]
     for source in [*sources, *headers]:
         identity.update(source.name.encode() + b"\0" + source.read_bytes())
     staged = stage_sources(sources, headers=headers, source_root=root.parent)
@@ -65,8 +68,14 @@ class Workspace:
         self.partials = torch.empty((rows, heads, partial_slots(capacity), dim), dtype=torch.float32, device=device)
 
 
-def attention(q, k, v, position, scratch, rows, scale, out, context, ks, vs, kbits, vbits):
-    if (q.shape[1:] != (3, 256) or k.shape[1:] != (1, 256)
+def attention(q, k, v, position, scratch, rows, scale, out, context, ks, vs, kbits, vbits,
+              *, kcodec=0, vcodec=0):
+    from tensorfold.families.qwen4_exp.cuda.sm70_kv import check_kernel_fields
+
+    check_kernel_fields(kbits, kcodec, vbits, vcodec)
+    kwidth, vwidth = (128 if kcodec else 256), (128 if vcodec else 256)
+    if (q.shape[1:] != (3, 256) or k.shape[1:] != (1, kwidth) or v.shape[1:] != (1, vwidth)
+            or k.shape[0] != v.shape[0]
             or not 0 <= rows <= 24 or not 65 <= context <= 8192):
         raise ValueError("native attention requires qualified H3/KV1/HD256 rows<=24 and context65..8192")
     workspace = getattr(scratch, "native_workspace", None)
@@ -76,8 +85,13 @@ def attention(q, k, v, position, scratch, rows, scale, out, context, ks, vs, kbi
         scratch.native_workspace = workspace
     if workspace.capacity < context:
         raise ValueError("native attention context exceeds its workspace capacity")
-    extension().run(q, k, v, position, scratch.sparse, scratch.nk, scratch.ids,
-                    workspace.scores, workspace.probabilities, workspace.partials, out,
-                    ks if kbits else None, vs if vbits else None, rows, context,
-                    kbits, vbits, scratch.qsa, scale)
+    operands = (q, k, v, position, scratch.sparse, scratch.nk, scratch.ids,
+                workspace.scores, workspace.probabilities, workspace.partials, out,
+                ks if kbits else None, vs if vbits else None, rows, context,
+                kbits, vbits, scratch.qsa, scale)
+    native = extension()
+    if kcodec or vcodec:
+        native.run_rotor(*operands, kcodec, vcodec)
+    else:
+        native.run(*operands)
     return out

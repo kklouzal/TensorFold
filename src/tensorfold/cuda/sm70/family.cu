@@ -6,8 +6,10 @@
 #include <math_constants.h>
 #include <optional>
 #include <algorithm>
+#include <type_traits>
 #include <cub/block/block_radix_sort.cuh>
 #include "torch_reduce.cuh"
+#include "rotorquant_q4.cuh"
 
 using T = at::Tensor;
 using O = std::optional<T>;
@@ -377,6 +379,103 @@ __global__ void prep_kernel(const __half* p, const void* position, bool pos_long
     else ikc[cache_row * index_dim + col] = __float2half_rn(value);
 }
 
+// Keep the qualified raw/INT8 prep_kernel above intact. This separate Q4
+// specialization preserves its stored Half boundaries without adding branches
+// or codec registers to the existing launch. The codec owns its staged basis,
+// normalization, codebook and packed stores in the shared Q4 header.
+template<bool NORM5_POSSIBLE>
+__global__ void prep_q4_kernel(const __half* p, const void* position, bool pos_long, const float* qw,
+                               const float* kw, const float* iw, const float* freq, __half* queries,
+                               void* kc, void* vc, __half* iq, __half* ikc, void* ks, void* vs,
+                               int* status, const int* delta, const int* live, int qheads, int kvheads,
+                               int dim, int index_heads, int index_dim, int kbits, int vbits, int layer,
+                               int rotary_half, int capacity, int rows, float eps, float rope_scale,
+                               bool independent_rows, int kcodec, int vcodec) {
+    __shared__ float shared[512], normalized[256];
+    const int units = qheads + 2 * kvheads + index_heads + 1;
+    const int unit = blockIdx.x % units, row = blockIdx.x / units, col = threadIdx.x;
+    const int count = live ? *live : rows;
+    if (count < 0 || count > rows) {
+        if (!col && status) { atomicOr(status, 16); atomicCAS(status + 1, -2, layer); }
+        return;
+    }
+    if (row >= count) return;  // Padded rows do not read source or mutate cache.
+    const int64_t start_row = position_value(position, pos_long);
+    if (start_row < 0 || start_row >= capacity || row >= int64_t(capacity) - start_row) {
+        if (!col && status) { atomicOr(status, 16); atomicCAS(status + 1, -2, layer); }
+        return;
+    }
+    const int64_t cache_row = start_row + row;
+    int kind, head, width, start, flag;
+    if (unit < qheads) { kind = 0; head = unit; width = dim; start = head * 2 * dim; flag = 1; }
+    else if (unit < qheads + kvheads) { kind = 1; head = unit - qheads; width = dim; start = 2 * qheads * dim + head * dim; flag = 2; }
+    else if (unit < qheads + 2 * kvheads) { kind = 2; head = unit - qheads - kvheads; width = dim;
+        start = 2 * qheads * dim + kvheads * dim + head * dim; flag = 4; }
+    else if (unit < units - 1) { kind = 3; head = unit - qheads - 2 * kvheads; width = index_dim;
+        start = 2 * qheads * dim + 2 * kvheads * dim + head * index_dim; flag = 16; }
+    else { kind = 4; head = 0; width = index_dim; start = 2 * qheads * dim + 2 * kvheads * dim + index_heads * index_dim; flag = 16; }
+    const int packed = 2 * qheads * dim + 2 * kvheads * dim + (index_heads + 1) * index_dim;
+    float value = col < width ? guarded(__half2float(p[int64_t(row) * packed + start + col]), status, flag, layer, row, live) : 0.f;
+    if (kind == 0 || kind == 1 || kind == 3) {
+        normalized[col] = value;
+        __syncthreads();
+        const int norm_heads = kind == 0 ? qheads : kind == 1 ? kvheads : index_heads;
+        const int outputs = independent_rows ? norm_heads : max(1, count * norm_heads);
+        float total = torch_sum(FloatSquareReader{normalized}, width, outputs, shared);
+        float inv = rsqrtf(total * (1.f / float(width)) + eps);
+        const float* gamma = kind == 0 ? qw : kind == 1 ? kw : iw;
+        normalized[col] = col < width ? half_round((value * inv) * gamma[col]) : 0.f;
+        __syncthreads();
+        value = normalized[col];
+        if (col < 2 * rotary_half) {
+            const int pair = col % rotary_half;
+            float angle = float(cache_row + (delta ? *delta : 0)) * freq[pair];
+            float sine = sinf(angle), cosine = cosf(angle);
+            sine *= rope_scale; cosine *= rope_scale;
+            float cross = normalized[col < rotary_half ? col + rotary_half : col - rotary_half];
+            value = half_round(value * cosine + (col < rotary_half ? -cross : cross) * sine);
+        }
+        value = guarded(value, status, flag, layer, row, live);
+    }
+    if ((kind == 1 && (kcodec == 4 || (NORM5_POSSIBLE && kcodec == 5)))
+            || (kind == 2 && (vcodec == 4 || (NORM5_POSSIBLE && vcodec == 5)))) {
+        tf_rq4::Encoded item;
+        if constexpr (NORM5_POSSIBLE) {
+            const int selected = kind == 1 ? kcodec : vcodec;
+            item = selected == 5 ? tf_rq4::encode_component<5>(value, col, shared, flag)
+                                 : tf_rq4::encode_component<4>(value, col, shared, flag);
+        } else item = tf_rq4::encode_component<4>(value, col, shared, flag);
+        if (item.errors && status) { atomicOr(status, item.errors); atomicCAS(status + 1, -2, layer); }
+        const int64_t base = (cache_row * kvheads + head) * dim;
+        tf_rq4::store_encoded(item, col, shared,
+            static_cast<uint8_t*>(kind == 1 ? kc : vc), static_cast<float*>(kind == 1 ? ks : vs),
+            base, dim, true);
+        return;
+    }
+    if (kind == 0 && (kcodec == 4 || (NORM5_POSSIBLE && kcodec == 5))) {
+        if constexpr (NORM5_POSSIBLE) {
+            value = kcodec == 5 ? tf_rq4::rotate_component<5, false>(value, col, shared)
+                                : tf_rq4::rotate_component<4, false>(value, col, shared);
+        } else value = tf_rq4::rotate_component<4, false>(value, col, shared);
+        value = half_round(value);
+        value = guarded(value, status, flag, layer, row, live);
+    }
+    if (col >= width) return;
+    if (kind == 0) {
+        if (kbits == 8) value = half_round(hadamard(value));
+        queries[(int64_t(row) * qheads + head) * dim + col] = __float2half_rn(value);
+    } else if (kind == 1) {
+        const int64_t base = (cache_row * kvheads + head) * dim;
+        if (kbits == 8) quantized_store(value, static_cast<int8_t*>(kc), static_cast<__half*>(ks), base, col, status, layer, row, live);
+        else static_cast<__half*>(kc)[base + col] = __float2half_rn(value);
+    } else if (kind == 2) {
+        const int64_t base = (cache_row * kvheads + head) * dim;
+        if (vbits == 8) quantized_store(value, static_cast<int8_t*>(vc), static_cast<__half*>(vs), base, col, status, layer, row, live);
+        else static_cast<__half*>(vc)[base + col] = __float2half_rn(value);
+    } else if (kind == 3) iq[(int64_t(row) * index_heads + head) * index_dim + col] = __float2half_rn(value);
+    else ikc[cache_row * index_dim + col] = __float2half_rn(value);
+}
+
 __global__ void pool_kernel(const __half* cache, __half* pooled, const void* position, bool pos_long,
                             const float* weight, const float* freq, const int* delta,
                             int ratio, int rows, int dim, int rotary_half, float eps, float rope_scale) {
@@ -565,6 +664,29 @@ void family_prep_cuda(const T& p, const T& position, const T& qw, const T& kw, c
         ks ? ptr<__half>(*ks) : nullptr, vs ? ptr<__half>(*vs) : nullptr, status ? ptr<int>(*status) : nullptr,
         delta ? ptr<int>(*delta) : nullptr, live ? ptr<int>(*live) : nullptr, qheads, kvheads, dim, index_heads,
         index_dim, kbits, vbits, layer, frequency.numel(), kc.size(0), p.size(0), eps, rope_scale, independent_rows);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+void family_prep_q4_cuda(const T& p, const T& position, const T& qw, const T& kw, const T& iw, const T& frequency,
+                         T& q, T& kc, T& vc, T& iq, T& ikc, const O& ks, const O& vs, const O& status,
+                         const O& delta, const O& live, int qheads, int kvheads, int dim, int index_heads,
+                         int index_dim, int kbits, int vbits, int layer, float eps, float rope_scale,
+                         bool independent_rows, int kcodec, int vcodec) {
+    if (p.size(0)) {
+        // CODEC4 keeps a separate compiled path without CODEC5's norm work or
+        // register lifetimes; mixed CODEC4/5 follows the extended specialization.
+        auto launch = [&](auto norm5) {
+            prep_q4_kernel<decltype(norm5)::value><<<p.size(0) * (qheads + 2 * kvheads + index_heads + 1),
+                                                    THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+                ptr<__half>(p), position.data_ptr(), position.scalar_type() == at::kLong,
+                ptr<float>(qw), ptr<float>(kw), ptr<float>(iw), ptr<float>(frequency), ptr<__half>(q),
+                kc.data_ptr(), vc.data_ptr(), ptr<__half>(iq), ptr<__half>(ikc),
+                ks ? ks->data_ptr() : nullptr, vs ? vs->data_ptr() : nullptr, status ? ptr<int>(*status) : nullptr,
+                delta ? ptr<int>(*delta) : nullptr, live ? ptr<int>(*live) : nullptr, qheads, kvheads, dim, index_heads,
+                index_dim, kbits, vbits, layer, frequency.numel(), kc.size(0), p.size(0), eps, rope_scale,
+                independent_rows, kcodec, vcodec);
+        };
+        if (kcodec == 5 || vcodec == 5) launch(std::true_type{}); else launch(std::false_type{});
+    }
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 void family_pool_cuda(const T& cache, T& pooled, const T& position, const T& weight, const T& frequency,

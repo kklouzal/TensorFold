@@ -57,6 +57,7 @@ def decoder(multi, state, torch, room: int):
 
     dec = multi.MultiDecoder.__new__(multi.MultiDecoder)
     dec.w, dec.depth, dec.streams, dec.free, dec.kept, dec.keep = weights(), 3, {}, [], [], 8
+    dec.kv_pair = state.kvcache.get_pair()
     dec.graphs = dec._failed_graphs = dec._memory_error = None
     dec.failed_slots = []
     dec.used, dec.clock = {}, 0

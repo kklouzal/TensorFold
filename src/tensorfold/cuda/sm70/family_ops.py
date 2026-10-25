@@ -54,12 +54,128 @@ def _kv_plan(bits, codec, k_bits, k_codec, v_bits, v_codec):
     fields = (k_bits, k_codec, v_bits, v_codec)
     if all(field is None for field in fields):
         fields = (bits, codec, bits, codec)
-    if any(type(field) is not int for field in fields):
-        raise ValueError("SM70 KV requires one complete exact integer key/value plan")
-    kb, kf, vb, vf = fields
-    if kb not in (0, 8) or vb not in (0, 8) or kf or vf:
-        raise ValueError("SM70 currently admits raw fp16 or native int8 KV, with independent sides")
-    return kb, vb
+    from tensorfold.families.qwen4_exp.cuda.sm70_kv import check_kernel_fields
+
+    return check_kernel_fields(*fields)
+
+
+def _kv_payload_dtype(bits):
+    return torch.float16 if not bits else torch.int8 if bits == 8 else torch.uint8
+
+
+def _rotor_variant(codec):
+    if codec == 4:
+        return "signed-iso128"
+    if codec == 5:
+        return "signed-iso64-norm"
+    raise ValueError("SM70 Rotor Q4 requires an admitted signed basis")
+
+
+def _rotor_rotate(value, out, *, codec=4, inverse=False, status=None, error=1, layer=0, valid_rows=None):
+    """The selected cache basis has a single staged FP32 rotation authority.
+
+    CUDA uses the capture-safe native primitive even when the surrounding
+    family operation uses Torch. The independent CPU reference is also useful
+    for callers without a CUDA execution context; it is not a GPU readback.
+    """
+    if value.is_cuda:
+        from .rotorquant_q4_native import rotate
+
+        return rotate(value, out, codec=codec, inverse=inverse, status=status, error=error,
+                      layer=layer, valid_rows=valid_rows)
+    from tensorfold.families.qwen4_exp.cuda.rotorquant_ref import rotate_ref
+
+    result = rotate_ref(value, _rotor_variant(codec), inverse=inverse)
+    stored = result.to(out.dtype)
+    stored = _guard(stored, status, error, layer, valid_rows)
+    out.copy_(stored)
+    return out
+
+
+def _rotor_encode(value, codes, scales, position, *, codec=4, status=None, error=2, layer=0, valid_rows=None):
+    """Write only live cache rows; their payload and metadata keep one owner."""
+    if value.is_cuda:
+        from .rotorquant_q4_native import encode
+
+        return encode(value, codes, scales, codec=codec, position=position, status=status, error=error,
+                      layer=layer, valid_rows=valid_rows)
+    from tensorfold.families.qwen4_exp.cuda.rotorquant_ref import quantize_ref, dequant_ref
+
+    live = value.shape[0] if valid_rows is None else int(valid_rows.reshape(-1)[0])
+    base = int(position.reshape(-1)[0])
+    if not 0 <= live <= value.shape[0] or live and not 0 <= base <= codes.shape[0] - live:
+        if status is None:
+            raise ValueError("Rotor Q4 live rows and position must fit the owned cache")
+        status[0].bitwise_or_(16)
+        if status[1] == -2:
+            status[1] = layer
+        return codes, scales
+    if not live:
+        return codes, scales
+    guarded = _guard(value[:live], status, error, layer)
+    variant = _rotor_variant(codec)
+    payload, metadata = quantize_ref(guarded, 4, variant)
+    # Storage validity alone does not prove the FP16 working operand finite.
+    working = dequant_ref(payload, metadata, 4, variant).half()
+    bad = ~torch.isfinite(working)
+    if bool(bad.any()):
+        if status is None:
+            raise ValueError("Rotor Q4 reconstruction exceeds finite FP16 working operands")
+        status[0].bitwise_or_(8)
+        if status[1] == -2:
+            status[1] = layer
+        payload.zero_()
+        metadata.zero_()
+    codes[base:base + live].copy_(payload)
+    scales[base:base + live].copy_(metadata)
+    return codes, scales
+
+
+def _copy_rotor_frame_rows(target, values, positions, valid_rows, status, layer):
+    """A Torch-prepared Q4 frame still preserves inactive raw/index cache rows.
+
+    The native row copy avoids a CUDA nonzero/readback for dynamic live counts.
+    Invalid positions poison the existing status before an invalid access.
+    """
+    rows = values.shape[0]
+    if not rows:
+        return
+    if values.is_cuda:
+        from .rotorquant_q4_native import copy_rows
+
+        copy_rows(values, target, positions[:1], status=status, valid_rows=valid_rows, layer=layer)
+        return
+    live = rows if valid_rows is None else int(valid_rows.reshape(-1)[0])
+    if not 0 <= live <= rows:
+        if status is None:
+            raise ValueError("Rotor Q4 live row count must fit its frame")
+        status[0].bitwise_or_(16)
+        if status[1] == -2:
+            status[1] = layer
+        return
+    for row in range(live):
+        position = int(positions[row])
+        if not 0 <= position < target.shape[0]:
+            if status is None:
+                raise ValueError("Rotor Q4 row must fit its owned cache")
+            status[0].bitwise_or_(16)
+            if status[1] == -2:
+                status[1] = layer
+        else:
+            target[position].copy_(values[row])
+
+
+def _rotor_decode(codes, scales, width, codec):
+    """Reconstruct only an FP16 working view, leaving packed ownership intact."""
+    out = torch.empty((*codes.shape[:-1], width), dtype=torch.float16, device=codes.device)
+    if codes.is_cuda:
+        from .rotorquant_q4_native import decode
+
+        return decode(codes, scales, out, codec=codec)
+    from tensorfold.families.qwen4_exp.cuda.rotorquant_ref import dequant_ref
+
+    out.copy_(dequant_ref(codes, scales, 4, _rotor_variant(codec)))
+    return out
 
 
 def _live_mask(value, valid_rows):
@@ -242,16 +358,25 @@ def attn_prep(p, pos0, q_scale, k_scale, i_scale, inv_freq, q, kc, vc, iq, ikc, 
               status=None, layer=0, k_bits=None, k_codec=None, v_bits=None, v_codec=None,
               centroids=None, thresholds=None, valid_rows=None, independent_rows=False):
     kb, vb = _kv_plan(bits, codec, k_bits, k_codec, v_bits, v_codec)
+    kf = codec if k_codec is None else k_codec
+    vf = codec if v_codec is None else v_codec
     native = _fused(p) if rope is None and head_dim <= 256 and index_dim <= 256 else None
     if native is not None:
+        if kf or vf:
+            return native.prep_q4(p, pos0, q_scale, k_scale, i_scale, inv_freq, q, kc, vc, iq, ikc,
+                                  ks if kb else None, vs if vb else None, status, delta, valid_rows,
+                                  q_heads, kv_heads, head_dim, index_heads, index_dim, kb, vb, layer,
+                                  eps, rope_scale, independent_rows, kf, vf)
         return native.prep(p, pos0, q_scale, k_scale, i_scale, inv_freq, q, kc, vc, iq, ikc,
                            ks if kb else None, vs if vb else None, status, delta, valid_rows,
                            q_heads, kv_heads, head_dim, index_heads, index_dim, kb, vb, layer, eps, rope_scale,
                            independent_rows)
-    if kc.dtype != (torch.int8 if kb else torch.float16) or vc.dtype != (torch.int8 if vb else torch.float16):
-        raise ValueError("SM70 execution requires its declared FP16/int8 KV payload identity")
+    if kc.dtype != _kv_payload_dtype(kb) or vc.dtype != _kv_payload_dtype(vb):
+        raise ValueError("SM70 execution requires its declared FP16/int8/Rotor Q4 KV payload identity")
     if (kb and ks is None) or (vb and vs is None):
-        raise ValueError("native int8 cache sides require their own FP16 scales")
+        raise ValueError("quantized cache sides require their own declared scales")
+    if kf and ks.dtype != torch.float32 or vf and vs.dtype != torch.float32:
+        raise ValueError("Rotor Q4 cache metadata must use FP32 scales")
     rows = p.shape[0]
 
     def normalize(value, weight):
@@ -269,24 +394,40 @@ def attn_prep(p, pos0, q_scale, k_scale, i_scale, inv_freq, q, kc, vc, iq, ikc, 
     at += index_heads * index_dim
     index_keys = _guard(p[:, at:at + index_dim], status, 16, layer, valid_rows)
     positions = pos0.reshape(-1)[0].long() + torch.arange(rows, device=p.device)
+
+    def store(target, value):
+        if kf or vf:
+            _copy_rotor_frame_rows(target, value, positions, valid_rows, status, layer)
+        else:
+            target.index_copy_(0, positions, value)
+
     options = dict(rope=rope, delta=delta, length=length, sections=sections, scale=rope_scale)
     prepared_q = _guard(rotary(normalize(queries, q_scale), inv_freq, positions, **options), status, 1, layer, valid_rows)
-    q[:rows].copy_(h32(prepared_q).half() if kb else prepared_q)
+    if kf:
+        _rotor_rotate(prepared_q, q[:rows], codec=kf, status=status, error=1, layer=layer, valid_rows=valid_rows)
+    else:
+        q[:rows].copy_(h32(prepared_q).half() if kb else prepared_q)
     normalized = _guard(rotary(normalize(keys, k_scale), inv_freq, positions, **options), status, 2, layer, valid_rows)
-    if kb:
+    if kf:
+        _rotor_encode(normalized, kc, ks, pos0, codec=kf, status=status, error=2,
+                      layer=layer, valid_rows=valid_rows)
+    elif kb:
         encoded, scales = quantize_int8(normalized, status=status, layer=layer, valid_rows=valid_rows)
-        kc.index_copy_(0, positions, encoded)
-        ks.index_copy_(0, positions, scales)
+        store(kc, encoded)
+        store(ks, scales)
     else:
-        kc.index_copy_(0, positions, normalized)
-    if vb:
+        store(kc, normalized)
+    if vf:
+        _rotor_encode(values, vc, vs, pos0, codec=vf, status=status, error=4,
+                      layer=layer, valid_rows=valid_rows)
+    elif vb:
         encoded, scales = quantize_int8(values, status=status, layer=layer, valid_rows=valid_rows)
-        vc.index_copy_(0, positions, encoded)
-        vs.index_copy_(0, positions, scales)
+        store(vc, encoded)
+        store(vs, scales)
     else:
-        vc.index_copy_(0, positions, values.half())
+        store(vc, values.half())
     iq[:rows].copy_(_guard(rotary(normalize(index_queries, i_scale), inv_freq, positions, **options), status, 16, layer, valid_rows))
-    ikc.index_copy_(0, positions, index_keys.half())
+    store(ikc, index_keys.half())
 
 
 def _torch_attn_gate(o, p, out, xs, *, q_heads, head_dim):
@@ -401,8 +542,10 @@ def attention(q, kc, vc, pos0, scratch, rows, scale, out=None, *, context=None, 
               bits=0, codec=0, k_bits=None, k_codec=None, v_bits=None, v_codec=None,
               rotor_lookup=False, prompt=False, _native_allowed=True):
     kb, vb = _kv_plan(bits, codec, k_bits, k_codec, v_bits, v_codec)
-    if kc.dtype != (torch.int8 if kb else torch.float16) or vc.dtype != (torch.int8 if vb else torch.float16):
-        raise ValueError("SM70 attention requires matching FP16/int8 K/V payloads")
+    kf = codec if k_codec is None else k_codec
+    vf = codec if v_codec is None else v_codec
+    if kc.dtype != _kv_payload_dtype(kb) or vc.dtype != _kv_payload_dtype(vb):
+        raise ValueError("SM70 attention requires matching FP16/int8/Rotor Q4 K/V payloads")
     keys = kc.shape[0] if context is None else min(context, kc.shape[0])
     out = scratch.out if out is None else out
     if (_native_allowed and _NATIVE_FAMILY and _NATIVE_ATTENTION and q.is_cuda and q.dtype == torch.float16):
@@ -413,14 +556,19 @@ def attention(q, kc, vc, pos0, scratch, rows, scale, out=None, *, context=None, 
                     capability=torch.cuda.get_device_capability(q.device), prompt=prompt):
             from .attention_native import attention as fixed_attention
 
+            if kf or vf:
+                return fixed_attention(q, kc, vc, pos0, scratch, rows, scale, out, keys, ks, vs, kb, vb,
+                                       kcodec=kf, vcodec=vf)
             return fixed_attention(q, kc, vc, pos0, scratch, rows, scale, out, keys, ks, vs, kb, vb)
     heads, kh = q.shape[1], kc.shape[1]
     if heads % kh:
         raise ValueError("query heads must be divisible by local KV heads")
     group = heads // kh
     positions = torch.arange(keys, device=q.device)
-    key_data = dequantize_int8(kc[:keys], ks[:keys]) if kb else kc[:keys]
-    value_data = dequantize_int8(vc[:keys], vs[:keys]) if vb else vc[:keys]
+    key_data = (_rotor_decode(kc[:keys], ks[:keys], q.shape[2], kf) if kf else
+                dequantize_int8(kc[:keys], ks[:keys]) if kb else kc[:keys])
+    value_data = (_rotor_decode(vc[:keys], vs[:keys], q.shape[2], vf) if vf else
+                  dequantize_int8(vc[:keys], vs[:keys]) if vb else vc[:keys])
     for row in range(rows):
         end = pos0.reshape(-1)[0] + row + 1
         visible = positions < end
@@ -440,7 +588,11 @@ def attention(q, kc, vc, pos0, scratch, rows, scale, out=None, *, context=None, 
             scores.masked_fill_(~visible[None], -torch.inf)
             probabilities = scores.softmax(-1).half()
             result = _matmul32(probabilities, visible_values[:, head])
-            if vb:
+            if vf:
+                rotated = torch.empty_like(result)
+                _rotor_rotate(result[None], rotated[None], codec=vf, inverse=True)
+                result = rotated
+            elif vb:
                 result = h32(result)
             out[row, head * group:(head + 1) * group].copy_(result.half())
     return out

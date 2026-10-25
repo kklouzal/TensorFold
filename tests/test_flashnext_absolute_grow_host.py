@@ -140,6 +140,7 @@ class AbsoluteGrowthTests(unittest.TestCase):
         self.dec = cls()
         self.dec.capacity, self.dec.depth = 81920, 0
         self.dec.free, self.dec.kept, self.dec.streams, self.dec.filling = [first, second], [], {}, []
+        self.dec.kv_pair = first.kv_pair
         self.dec.fills, self.dec.held = {}, {}
         self.dec.graphs, self.dec.failed_slots = None, []
         self.dec.next_id, self.dec.keep = 0, 8
