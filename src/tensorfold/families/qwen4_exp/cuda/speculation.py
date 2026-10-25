@@ -33,10 +33,12 @@ class MethodGeometry:
 
     def __post_init__(self) -> None:
         _count(self.maximum_proposals, "maximum proposals")
-        if self.method not in ("none", "mtp", "dspark"):
-            raise ValueError("Flash Next execution supports none, stock MTP or DSpark")
+        if self.method not in ("none", "mtp", "dspark", "dflash2"):
+            raise ValueError("Flash Next execution supports none, stock MTP, DSpark or DFlash2")
         if self.method == "none" and self.maximum_proposals:
             raise ValueError("the none method cannot allocate proposals")
+        if self.method == "dflash2" and self.maximum_proposals > 3:
+            raise ValueError("the initial four-row DFlash2 block permits at most three proposals")
 
     @property
     def target_tail_rows(self) -> int:
@@ -73,21 +75,26 @@ class MethodGeometry:
         return min(limits)
 
     def receipt(self) -> dict:
-        return {"method": self.method, "maximum_proposals": self.maximum_proposals,
+        receipt = {"method": self.method, "maximum_proposals": self.maximum_proposals,
                 "maximum_target_rows": self.target_rows(self.maximum_proposals),
                 "target_tail_rows": self.target_tail_rows, "draft_tail_rows": self.draft_tail_rows,
                 "stock_mtp_cache_layers": self.stock_mtp_cache_layers,
                 "zero_proposal_maintains_conditioning": self.method != "none",
                 "sampling": "position-keyed target sample matching",
                 "commit": "accepted conditional prefix including pending anchor"}
+        if self.method == "dflash2":
+            receipt.update(draft_compute_block_rows=4,
+                           sampling="standard rejection with actual conditional selector q",
+                           draft_cache="bounded-fp16-swa-separate-from-target-kv")
+        return receipt
 
 
 def checkpoint_method(directory: str | Path) -> str:
     """Identify a supplied architecture before target weights or CUDA allocation.
 
-    A related-model DFlash artifact is not a stock MTP head. Flash Next has no
-    qualified DFlash pairing or SM70 draft-mask implementation yet; preserving
-    that distinction prevents accidental fallback into an incompatible loader.
+    DFlash architecture selection does not establish pairing eligibility. Its
+    complete content/feature/token-ID manifest is validated separately before
+    device allocation; it must never fall back to a stock MTP loader.
     """
 
     from tensorfold.cuda.tensor_file import read_metadata_json
@@ -96,6 +103,11 @@ def checkpoint_method(directory: str | Path) -> str:
     if not path.is_file():
         return "mtp"  # the stock loader owns its existing missing-file error
     config = read_metadata_json(path)
+    from .dflash2_manifest import select_method
+
+    dflash = select_method(config)
+    if dflash is not None:
+        return dflash
     architectures = config.get("architectures")
     if architectures is None:
         architectures = []  # optional in existing stock-MTP configuration files
@@ -103,7 +115,7 @@ def checkpoint_method(directory: str | Path) -> str:
         raise ValueError("drafter architectures must be a list of names")
     if architectures == ["DSparkDraftModel"]:
         return "dspark"  # DSpark's own schema also names its options dflash_config.
-    if any("dflash" in name.lower() for name in architectures) or "dflash_config" in config:
+    if "dflash_config" in config:
         raise ValueError("Flash Next DFlash needs an exact compatible target/draft manifest and an SM70 "
                          "draft-attention provider; a DFlash checkpoint cannot be loaded as stock MTP or DSpark")
     return "mtp"

@@ -88,7 +88,7 @@ class MultiDecoder:
         self.rotor_decoder_policy = RotorDecoderPolicy()
         self.points = points                         # a prompt's message starts to keep states at, or None
         self.vision = vision
-        self.copy = os.environ.get("TENSORFOLD_MTP_COPY", "0") == "1"
+        self.copy = os.environ.get("TENSORFOLD_MTP_COPY", "0") == "1" and getattr(w, "dflash2", None) is None
         self.eos = tuple(w.cfg.eos) if stop_eos else ()
         rows = slots * (depth + 1) if execution_rows is None else execution_rows
         if type(rows) is not int or not depth + 1 <= rows <= slots * (depth + 1):
@@ -113,7 +113,8 @@ class MultiDecoder:
         self.buf = Buffers(w, rows, capacity, moe_prefill=True)
         self.mbuf = Buffers(w, rows, capacity, owner_role="mtp") if w.mtp is not None else None
         self.speculation = MethodGeometry("mtp" if self.mbuf is not None else
-                                          "dspark" if getattr(w, "dspark", None) is not None else "none",
+                                          "dspark" if getattr(w, "dspark", None) is not None else
+                                          "dflash2" if getattr(w, "dflash2", None) is not None else "none",
                                           depth)
         self.pbuf = Buffers(w, prefill_rows + (rows if self.converged else 0), capacity, prefill=True)
         self._sample_plan = self._draft_plan = None
@@ -147,6 +148,8 @@ class MultiDecoder:
             reason = f"{multi_graphs.ENV}=0"
         elif graphs and getattr(w, "dspark", None) is not None and not getattr(w.dspark, "target_capturable", False):
             reason = "DSpark target feature capture runs eagerly"
+        elif graphs and getattr(w, "dflash2", None) is not None:
+            reason = "DFlash2 target feature capture runs eagerly"
         elif graphs:
             reason = multi_graphs.capturable(w)
         self.graph_request = budget
@@ -182,6 +185,17 @@ class MultiDecoder:
         # the mapped n-gram tables are not held back (they barely fit on a Spark); lookups page from disk instead
         live = free
         reserve = max(2 * GIB, workspace_bytes)
+        self.dflash_resources = None
+        if getattr(w, "dflash2", None) is not None:
+            self.dflash_resources = w.dflash2.plan.serving_resources(
+                slots=slots, context=w.dflash2.context, prefill_rows=self.pbuf.rows, execution_rows=rows,
+                keep=keep, points=POINTS, target_vocab=w.cfg.vocab)
+            resource = self.dflash_resources
+            # Physical free already excludes loaded weights, per-slot rings
+            # and both feature frames. Protect future snapshots/temporary
+            # work, including full target p extraction, exactly once here.
+            reserve += (resource["snapshot_bytes"] + resource["execution_workspace_bytes"]
+                        - resource["feature_frame_bytes"] + resource["target_probability_device_bytes"])
         room = live() if live is not None else 1 << 62
         already_held = 0
         if full_windows is not None:
@@ -663,6 +677,8 @@ class MultiDecoder:
         if room < 1:
             raise ValueError(f"a prompt of {len(s.prompt)} tokens leaves no room in the {self.capacity}-token context")
         s.count = max(1, min(s.count, room))
+        if getattr(self.w, "dflash2", None) is not None and len(s.owed) > s.count:
+            raise ValueError("committed replay exceeds the current context/reply allowance")
         if any(x.waiting for x in self.streams.values()):
             raise NoRoom("streams already wait for memory; a new request waits until one finishes")
         t0 = time.perf_counter()
@@ -693,6 +709,8 @@ class MultiDecoder:
         mtp = s.draft and self.depth > 0 and self.mbuf is not None
         try:
             begin = prefill_begin(e, s.prompt, mtp=mtp, resume=resume, new_sequence=False)
+            if getattr(self.w, "dflash2", None) is not None:
+                self.w.dflash2.set_enabled(st, s.draft)
             image = s.vision is not None
             image_rows.begin(e, s, self.vision)
             if image:
@@ -841,6 +859,8 @@ class MultiDecoder:
         for state, record in zip(self.states, records):
             record["request_active"] = id(state) in active
             record["derived_prefix_cache"] = id(state) in cached
+            if getattr(getattr(self, "w", None), "dflash2", None) is not None:
+                record["dflash2"] = self.w.dflash2.record(state)
         return {"slots": records, "active_request_slots": len(active),
                 "intentional_retained_sessions": 0, "derived_prefix_slots": len(cached),
                 "derived_prefix_entries": len(self.kept),
@@ -1066,8 +1086,12 @@ class MultiDecoder:
         for s, mtp_len, _, snap in points:
             if snap is not None and getattr(s.st, "indexer_history_owner", None) is not None:
                 snap.update(s.st.indexer_snapshot_metadata(snap["pos"], mtp_len))
+        dflash = getattr(self.w, "dflash2", None)
         for (s, a, n), (st, a0, _) in zip(pieces, segs):
-            commit(self.w, st, self.pbuf, n, n, at=a0)
+            commit(self.w, st, self.pbuf, n, n, at=a0,
+                   **({"commit_dflash": False} if dflash is not None else {}))
+        if dflash is not None:
+            self._commit_dflash([(state, end - begin) for state, begin, end in segs], prefill=True)
         for s, mtp_len, tail, snap in points:            # a point that ends its piece: the state as committed
             state = snap if snap is not None else {**s.st.snapshot(), "mtp_len": mtp_len}
             if snap is None and getattr(s.st, "indexer_history_owner", None) is not None:
@@ -1109,16 +1133,18 @@ class MultiDecoder:
             head += 1
             image_rows.finish(st)
             try:                                             # this request's own policy, grammar and capture
-                if s.constraint is not None:                 # a reply's grammar: the first token too
+                replay = getattr(self.w, "dflash2", None) is not None and bool(s.owed)
+                if s.constraint is not None and not replay:  # replay advances the canonical grammar without a draw
                     logits = s.constraint.mask(logits, None, self.w.meta.get("vocab_offset", 0))
-                first = e.sample(logits, [len(s.prompt)], s.sampling)[0]
-                limit, terminal = self._prefix_limits([s], [[first]])[0]
+                first = (s.owed[0] if replay else e.sample(logits, [len(s.prompt)], s.sampling,
+                         **({"gathered": False} if getattr(self.w, "dflash2", None) is not None else {}))[0])
+                limit, terminal = (1, False) if replay else self._prefix_limits([s], [[first]])[0]
                 if not limit:
                     s.done = True
                     s.started = s.finished = time.perf_counter()
                     joined.append(s)
                     continue
-                if s.probabilities is not None:
+                if s.probabilities is not None and not replay:
                     capture(logits, [first], [len(s.prompt)], s.probabilities)
                 if s.constraint is not None:
                     s.constraint.advance([first])
@@ -1226,19 +1252,35 @@ class MultiDecoder:
             self.apply_execution_family()
         self._migrate_boundary(None if plan is None else plan["migration"])
         pdl.ON = self.pdl                                # this decoder's launch policy (one process global)
-        ended = self._make_room()                      # every stream's caches hold this round, or the newest wait
+        cancelled = []
+        if getattr(self.w, "dflash2", None) is not None:
+            for s in self.streams.values():
+                if not s.done and s.cancel is not None and s.cancel.is_set():
+                    # Checked reconstruction emits no fresh token callback.
+                    # Observe cancellation at the same quiescent boundary so
+                    # a long owed prefix cannot defer request retirement.
+                    s.done, s.finished = True, time.perf_counter()
+                    cancelled.append(s)
+        ended = cancelled + self._make_room()          # all issued work from the previous round has resolved
         live = [s for s in self.streams.values() if not s.done and not s.waiting]
         if self.filling and (not live or not self.converged):
             ended += self._fill()                      # passes alone; a prompt that ends here joins this round
             live = [s for s in self.streams.values() if not s.done and not s.waiting]
         if not live:
             return ended
-        if self.controller is not None:
+        dflash = getattr(self.w, "dflash2", None)
+        packets = None
+        draft_started = time.perf_counter() if dflash is not None else None
+        if dflash is not None:
+            # A ChainPacket owns draws from this operation's frozen settings.
+            # Nothing from a prior round may be shortened after those draws.
+            live, packets = self._dflash_proposals(live, plan)
+        elif self.controller is not None:
             for s in live:
                 del s.drafts[plan["proposal_limit"]:]
         grammars, failed = {}, []
         for s in live:                                   # a grammar cuts the drafts no accepted path can hold
-            if s.constraint is not None:
+            if s.constraint is not None and not (dflash is not None and s.owed):
                 tokens = [s.out[-1]] + list(s.drafts)
                 try:
                     grammars[s.sid] = s.constraint.window(tokens, list(range(-1, len(tokens) - 1)))
@@ -1251,9 +1293,8 @@ class MultiDecoder:
         live = [s for s in live if not s.done]
         if not live:
             return failed + ended
-        if self.controller is not None:
+        if self.controller is not None and dflash is None:
             selected = self.controller.select([(s.sid, 1 + len(s.drafts)) for s in live], plan)
-            active_count = len(plan["order"])
             by_id = {s.sid: s for s in live}
             # Older BF16 backends defer recurrent commits in shared scratch.
             # Retire every unselected borrower before another round reuses it.
@@ -1263,9 +1304,10 @@ class MultiDecoder:
             live = [by_id[sid] for sid in selected]
             if not live:
                 return failed + ended
+        active_count = len(plan["order"]) if plan is not None else len(live)
         self.buf.rotor_lookup = self._rotor_lookup(live[0], len(live))
         self.pbuf.rotor_lookup = False  # any overlapping prompt invalidates the exclusive-request Region
-        t0 = time.perf_counter()
+        t0 = time.perf_counter() if draft_started is None else draft_started
         windows = [(s.st, [s.out[-1]] + list(s.drafts)) for s in live]
         # the n-gram rows are read once the forward reaches their layer, behind the layers before it
         segs = stage(self.w, self.buf, windows, late=True)
@@ -1298,7 +1340,8 @@ class MultiDecoder:
                 if logits is None:
                     logits = compute(self.w, segs, self.buf, check=False)     # the frame's status: checked below
             if self.controller is not None:
-                self.controller.work_observations.target(segs)
+                self.controller.work_observations.target(segs, replay_rows=sum(
+                    end - begin for s, (_state, begin, end) in zip(live, segs) if dflash is not None and s.owed))
                 if pieces:
                     self.controller.work_observations.target(
                         psegs, prefill=True,
@@ -1324,11 +1367,35 @@ class MultiDecoder:
             for s, (_, a0, a1) in zip(live, segs):
                 if s.sid in grammars:
                     s.constraint.mask(logits[a0:a1], grammars[s.sid], self.w.meta.get("vocab_offset", 0))
-            launched = launch_streams(logits, starts, positions, samplings) if self.w.comm is None else None
+            launched = (launch_streams(logits, starts, positions, samplings)
+                        if self.w.comm is None and dflash is None else None)
         except BaseException:
             words.settle()
             raise
-        if self.w.comm is None:
+        if dflash is not None:
+            from .dflash2_verify import verify_batch
+            from tensorfold.cuda.sampling import sample_rows
+
+            words.settle()
+            paths, sampled = [], []
+            for s, (state, begin, end), positions0 in zip(live, segs, positions):
+                if s.owed:
+                    # These outputs already belong to the canonical transcript.
+                    # Consume the pending canonical input, force its known next
+                    # token, and let Stream.take check it without re-emission.
+                    path, terminal = [0], s.owed[0]
+                    rows = [terminal]
+                elif not s.draft:
+                    rows = (sample_rows(logits[begin:end], positions0, s.sampling) if self.w.comm is None else
+                            tp_sample_rows(self.w, logits[begin:end], positions0, s.sampling, plan=self._sample_plan))
+                    path, terminal = [0], rows[0]
+                else:
+                    row = verify_batch(self.w, logits[begin:end], [(state, 0, end - begin)], [packets[s.sid]],
+                        [s.sampling], [s.count - len(s.out)], [self._ends(s)], plan=self._sample_plan)[0]
+                    path, terminal, rows = list(row.path), row.terminal, list(row.outputs)
+                paths.append((path, terminal))
+                sampled.append(rows)
+        elif self.w.comm is None:
             sampled = collect_streams(launched, words)
         else:
             words.settle()
@@ -1341,18 +1408,25 @@ class MultiDecoder:
             else:
                 sampled = [tp_sample_rows(self.w, logits[a0:a1], pos, sampling, plan=self._sample_plan)
                            for a0, a1, pos, sampling in zip(starts, starts[1:], positions, samplings)]
-        paths = [accept(tokens, list(range(-1, len(tokens) - 1)), rows, s.count - len(s.out), self._ends(s))
-                 for s, (_, tokens), rows in zip(live, windows, sampled)]
+        if dflash is None:
+            paths = [accept(tokens, list(range(-1, len(tokens) - 1)), rows, s.count - len(s.out), self._ends(s))
+                     for s, (_, tokens), rows in zip(live, windows, sampled)]
         if self.controller is not None:
-            for (_, tokens), (path, _end) in zip(windows, paths):
-                self.controller.work_observations.verification(len(tokens) - 1, max(0, len(path) - 1))
+            for s, (_, tokens), (path, _end) in zip(live, windows, paths):
+                if dflash is None or not s.owed:
+                    self.controller.work_observations.verification(len(tokens) - 1, max(0, len(path) - 1))
         proposed = [[tokens[r] for r in path[1:]] + [end]
                     for (_, tokens), (path, end) in zip(windows, paths)]
-        boundaries = self._prefix_limits(live, proposed)
+        if dflash is None:
+            boundaries = self._prefix_limits(live, proposed)
+        else:
+            fresh = [(s, new) for s, new in zip(live, proposed) if not s.owed]
+            decisions = iter(self._prefix_limits([s for s, _ in fresh], [new for _, new in fresh]))
+            boundaries = [(1, False) if s.owed else next(decisions) for s in live]
         paths = [(path[:count], new[count - 1] if count else end)
                  for (path, end), new, (count, _stop) in zip(paths, proposed, boundaries)]
         for s, (_, tokens), (_, a0, _), (path, end), pos in zip(live, windows, segs, paths, positions):
-            if s.probabilities is not None and path:
+            if s.probabilities is not None and path and not (dflash is not None and s.owed):
                 capture(logits, [tokens[r] for r in path[1:]] + [end], [pos[r] for r in path],
                         s.probabilities, rows=[a0 + r for r in path])
         if not half:
@@ -1362,7 +1436,8 @@ class MultiDecoder:
         for s, (_, tokens), (st, a0, a1), rows, (path, end), (count, terminal), new in zip(
                 live, windows, segs, sampled, paths, boundaries, proposed):
             if path:
-                commit(self.w, st, self.buf, a1 - a0, len(path), at=a0, states=False)
+                commit(self.w, st, self.buf, a1 - a0, len(path), at=a0, states=False,
+                       **({"commit_dflash": False} if dflash is not None else {}))
             else:
                 st.discard_target_tentative()
             s.committed.extend(tokens[:len(path)])
@@ -1375,9 +1450,18 @@ class MultiDecoder:
                     s.error = exc
             last = terminal or s.error is not None or len(s.out) + len(new) >= s.count or end in self._ends(s)
             kept.append((s, a0, rows[:len(path)], new, last))
-        self._draft_all([(s, a0, keep) for s, a0, keep, _, last in kept if keep and s.draft and not last],
-                        {s.sid: fresh for s, _, _, fresh, last in kept
-                         if getattr(s, "copies", None) is not None and not last})
+        if dflash is not None:
+            # Resolve every accepted target/feature prefix before publishing
+            # any output, including a warm zero-proposal operation.
+            self._commit_dflash([(s.st, len(path)) for s, (path, _end) in zip(live, paths) if path],
+                zero_proposal_rows=sum(len(path) for s, (path, _end) in zip(live, paths)
+                                       if s.draft and not s.owed and not packets[s.sid].chain.tokens))
+            for s in live:
+                s.drafts = []
+        else:
+            self._draft_all([(s, a0, keep) for s, a0, keep, _, last in kept if keep and s.draft and not last],
+                            {s.sid: fresh for s, _, _, fresh, last in kept
+                             if getattr(s, "copies", None) is not None and not last})
         for (s, _, _, new, _), (_count, terminal) in zip(kept, boundaries):
             if s.error is not None:
                 s.done = True
@@ -1400,6 +1484,76 @@ class MultiDecoder:
         for s in done:                                   # a finished stream's state is never read again
             self.held.pop(s.sid, None)
         return failed + done + ended
+
+    def _dflash_proposals(self, live, plan):
+        """Choose useful rows before any selector/RNG work in this operation.
+
+        The fair order comes from the accepted frozen controller plan. A small
+        remainder can shorten the last sequence's count before drawing, and
+        zero proposals still owns one target row and maintains conditioning.
+        """
+        from .dflash2_verify import bind_packet
+
+        by_id = {s.sid: s for s in live}
+        order = list(by_id) if plan is None else plan["order"]
+        available = self.buf.rows if plan is None else min(self.buf.rows, plan["row_budget"])
+        limit = self.depth if plan is None else plan["proposal_limit"]
+        logical = getattr(self, "logical_context", self.capacity - self.depth - 1)
+        selected, counts = [], []
+        for sid in order:
+            if sid not in by_id:
+                continue
+            if available < 1:
+                break
+            s = by_id[sid]
+            count = self.speculation.cap_proposals(limit if s.draft and not s.owed else 0,
+                reply_tokens=max(0, s.count - len(s.out)),
+                context_tokens=max(0, logical - s.st.pos - 1), target_rows=available)
+            selected.append(s)
+            counts.append(count)
+            available -= count + 1
+        if self.controller is not None:
+            chosen = self.controller.select([(s.sid, count + 1) for s, count in zip(selected, counts)], plan)
+            if chosen != [s.sid for s in selected]:
+                raise RuntimeError("DFlash2 proposal rows differ from the frozen controller selection")
+        selected_ids = {item.sid for item in selected}
+        for s in live:
+            if s.sid not in selected_ids:
+                self._flush(s)
+        fresh = [(s, count) for s, count in zip(selected, counts) if s.draft and not s.owed]
+        for s in selected:
+            s.drafts = []
+        try:
+            chains = (self.w.dflash2.propose_many([s.st for s, _ in fresh], [s.out[-1] for s, _ in fresh],
+                [count for _, count in fresh], [s.sampling for s, _ in fresh], [s.st.pos + 1 for s, _ in fresh])
+                if fresh else [])
+        except BaseException as primary:
+            if self.controller is not None:
+                self.controller.work_observations.incomplete(primary)
+            raise
+        packets = {}
+        for (s, _count), chain in zip(fresh, chains):
+            packets[s.sid] = bind_packet(s.st, chain)
+            s.drafts = list(chain.tokens)
+        if len(chains) != len(fresh):
+            raise RuntimeError("DFlash2 returned a different frozen proposal batch")
+        if self.controller is not None:
+            self.controller.work_observations.dflash_proposals([len(chain.tokens) for chain in chains])
+        return selected, packets
+
+    def _commit_dflash(self, accepted, *, prefill=False, zero_proposal_rows=0):
+        accepted = [(state, rows) for state, rows in accepted if state.dflash2.enabled]
+        if not accepted:
+            return
+        try:
+            self.w.dflash2.commit_many(accepted)
+        except BaseException as primary:
+            if self.controller is not None:
+                self.controller.work_observations.incomplete(primary)
+            raise
+        if self.controller is not None:
+            self.controller.work_observations.dflash_conditioning(sum(rows for _state, rows in accepted),
+                prefill=prefill, zero_proposal_rows=zero_proposal_rows)
 
     def _draft_all(self, streams: list, new: dict | None = None) -> None:
         """Every drafting stream absorbs its kept rows and chains drafts, all streams in one step a depth.

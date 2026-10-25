@@ -233,6 +233,7 @@ class Weights:
     x3: Any = None            # an EXL3 checkpoint's shared scratch (``exl3.Scratch``); None for the MLX checkpoint
 
     dspark: Any = None       # explicit separate draft owner; never an MTPW
+    dflash2: Any = None      # bounded-window DFlash2 owner; target storage is borrowed
 
     @property
     def device(self) -> torch.device:
@@ -267,7 +268,7 @@ class Weights:
                 for tensor in x.device_tensors():
                     add(tensor)
 
-        for part in (self.embed, self.layers, self.mixer, self.head, self.mtp, self.draft_head, self.draft_ids, self.dspark):
+        for part in (self.embed, self.layers, self.mixer, self.head, self.mtp, self.draft_head, self.draft_ids, self.dspark, self.dflash2):
             add(part)
         return sum(seen.values()) + (self.x3.nbytes() if self.x3 is not None else 0)
 

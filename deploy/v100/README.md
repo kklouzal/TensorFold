@@ -132,9 +132,42 @@ shards and accounts for replicated KV heads. Increase `--context` and
 `--parallel` only with the resulting capacity and workload evidence. The explicit optimized profile and its graph qualification are described below.
 A graph microtest alone does not establish full-model graph readiness.
 
-For the matching separate stock BF16 MTP head, replace `--no-drafts` with
-`--drafter /models/mtp-stock --mtp-drafts 2`. The loader uses bounded source
-reads, explicit FP16 execution arrays and the target's shared embedding/head.
+For a matching separate stock MTP head, replace `--no-drafts` with
+`--drafter /models/mtp-stock --mtp-drafts 2`. The loader accepts the existing
+floating checkpoint directory or a shared-target GGUF companion entrypoint.
+The revised design pins `MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf` at
+`unsloth/Qwen3.8-Flash-Next-GGUF` revision
+`766911a6b7369840a91dbcd95f9f997acaab6cd6`; verify the size and SHA256 in the
+[specification](../../docs/v100-adaptive-inference-design.md#stock-mtp).
+Reads and decode staging are bounded. Routed GGUF banks retain their packed
+bytes, small projections execute in FP16, and the target embedding/head remain
+shared. This importer explicitly selects QSA compression four and token budget
+2,048; it records the companion's zero final compression entry without treating
+it as a dense-attention instruction. Ordered target/draft token IDs must match.
+`/stats.capacity_plan.mtp_import` identifies the import policy. CPU import
+controls are separate from pending SM70 execution, target-conditioned refresh,
+BF16-control comparison, quality, and performance qualification.
+
+Prepare the official BF16 MTP control from only its indexed tensor ranges:
+
+```bash
+PYTHONPATH=src python tools/v100_mtp_prepare.py \
+  --repository Qwen/Qwen3.8-Flash-Next \
+  --revision de4b8e4d43b917e7706784d8bb445c9af86a3540 \
+  --out /models/mtp-stock-bf16
+```
+
+Run this from the checkout in the verification environment, with exclusive
+ownership of the destination. `--source-dir /models/original` instead reads an
+immutable local checkpoint. The tool copies original `mtp.*` bytes with an
+8 MiB transfer bound, emits tensor/file checksums and source-header identities,
+and resumes verified complete tensors from its `.partial` directory. It reads
+source metadata and MTP ranges; complete target shards are unnecessary. Its
+preparation envelope allows up to 16 GiB of selected payload and temporarily
+holds both tensor fragments and the assembled control. The initial official
+control contains 31 tensors and 5,214,301,696 payload bytes. Import preparation
+does not establish QSA execution parity or transfer quality qualification from
+the BF16 control to the quantized companion.
 `--kv-dtype int8`, or mixed `--kv-key-dtype`/`--kv-value-dtype` FP16/INT8 pairs,
 select the existing INT8 H32 codec and its scales; they do not mean FP8 or
 RotorQuant. The `rotorquant-signed128-4` and `rotorquant-signed64-norm4` SM70 paths use

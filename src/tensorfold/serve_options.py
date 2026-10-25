@@ -75,8 +75,8 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
     serve."""
 
     method = getattr(args, "draft_method", "auto")
-    if method not in ("auto", "none", "mtp", "dspark"):
-        raise ValueError("--draft-method must be auto, none, mtp or dspark")
+    if method not in ("auto", "none", "mtp", "dspark", "dflash2"):
+        raise ValueError("--draft-method must be auto, none, mtp, dspark or dflash2")
     if method != "auto" and (backend != "cuda" or method not in getattr(family.package, "CUDA_DRAFT_METHODS", ())):
         raise ValueError("--draft-method requires a CUDA model with the selected proposal method")
     draft_rows = getattr(args, "draft_rows", None)

@@ -24,7 +24,7 @@ from ..host_table import PREFETCH_READ, _MappedTable, _prefetch, _random_access
 from ..ple_lifetime import PLETables, _retain_failure
 from ..read_ahead import ReadAhead, row_ids
 from ..table_file import TableFile
-from .weight_types import AttnW, Config, GDNW, HC, LayerW, MoEW, PLEW, Weights, draft_token_ids
+from .weight_types import AttnW, Config, GDNW, HC, LayerW, MoEW, MTPW, PLEW, Weights, draft_token_ids
 
 STAGING_BYTES = 32 << 20
 DECODE_BYTES = 32 << 20
@@ -672,6 +672,10 @@ def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft
     prototype.meta.update(full=full, rank=rank, world=world, vocab_offset=rank * (full.vocab // world),
                           execution_provider="sm70", execution_dtype="float16", gguf_entrypoint=str(entry),
                           draft_host_id_bytes=0 if selected is None else selected.nbytes + prototype.draft_ids.nbytes)
+    if checkpoint.metadata.get("tokenizer.ggml.tokens"):
+        from ..gguf import token_id_identity
+
+        prototype.meta["gguf_token_id_identity"] = token_id_identity(checkpoint.metadata)
     return prototype, planner
 
 
@@ -812,6 +816,58 @@ def _array(plan, reader, device):
     return torch.from_numpy(np.ascontiguousarray(converted)).to(device)
 
 
+def materializer(reader, device, *, dense_loader=None, prepare_experts=None, load_table=None):
+    """One planned owner maps to one runtime owner within a single load.
+
+    The caller owns Reader/table retirement. Router ArrayPlan parts are the
+    exception to caching: their joined Tensor owns the result, so retaining
+    those temporary inputs would exceed the per-tensor staging contract.
+    Dense import, expert preparation and tables are concrete caller policies;
+    the default target invokes its existing loaders directly, without a
+    per-matrix adapter. CPU MTP import controls keep their independent decoder.
+    """
+    dense_loader = _dense if dense_loader is None else dense_loader
+    cache = {}
+
+    def materialize(value):
+        if isinstance(value, (MatrixPlan, ArrayPlan, ConcatPlan, ExpertPlan, TablePlan)):
+            key = id(value)
+            if key not in cache:
+                cache[key] = materialize_owned(value)
+            return cache[key]
+        return materialize_owned(value)
+
+    def materialize_owned(value):
+        if isinstance(value, MatrixPlan):
+            return _packed(value, reader, device) if value.packed else dense_loader(value, reader, device)
+        if isinstance(value, ArrayPlan):
+            return _array(value, reader, device)
+        if isinstance(value, ConcatPlan):
+            if all(isinstance(part, ArrayPlan) for part in value.parts):
+                parts = tuple(_array(part, reader, device) for part in value.parts)
+                return torch.cat([part if part.ndim == 2 else part[None] for part in parts])
+            parts = tuple(materialize(part) for part in value.parts)
+            if isinstance(parts[0], torch.Tensor):
+                return torch.cat([part if part.ndim == 2 else part[None] for part in parts])
+            return GGUFConcat(parts)
+        if isinstance(value, ExpertPlan):
+            bank = GGUFExperts(materialize(value.gate), materialize(value.up), materialize(value.down),
+                               tuple(materialize(part) for part in value.shared), count=value.count,
+                               width=value.width, dims=value.dims)
+            if prepare_experts is not None:
+                prepare_experts(bank)
+            return bank
+        if isinstance(value, TablePlan):
+            if load_table is None:
+                raise ValueError("GGUF graph contains a table without its owning loader")
+            return load_table(value)
+        if isinstance(value, (HC, GDNW, AttnW, MoEW, PLEW, LayerW, MTPW)):
+            return type(value)(**{field.name: materialize(getattr(value, field.name)) for field in fields(value)})
+        return value
+
+    return materialize
+
+
 def load_gguf(path, device="cuda", *, tp=None, mtp=False, rope=None, eos_token_ids=None,
               table_reads=None, ple_on_ssd=False, mtp_model_dir=None, draft_vocab=None, _draft_ids=None,
               _prefill_plan=None, **kwargs):
@@ -834,49 +890,21 @@ def load_gguf(path, device="cuda", *, tp=None, mtp=False, rope=None, eos_token_i
     # Same-host TP ranks reuse the kernel's shared read cache. Reader still owns
     # each bounded span; giant quantized banks are never materialized in full RAM.
     reader.direct = False
-    cache = {}
 
-    def materialize(value):
-        if isinstance(value, (MatrixPlan, ArrayPlan, ConcatPlan, ExpertPlan, TablePlan)):
-            key = id(value)
-            if key not in cache:
-                cache[key] = materialize_owned(value)
-            return cache[key]
-        return materialize_owned(value)
+    def load_table(value):
+        table = tables.acquire(ReadAhead(GGUFPLETable(value.source)))
+        if table_reads is not None and not ple_on_ssd:
+            from tensorfold.cuda.direct_read import in_background
+            in_background(table.prefetch, tables.reads)
+            table_reads.append(tables.reads[-1])
+        return table
 
-    def materialize_owned(value):
-        if isinstance(value, MatrixPlan):
-            return _packed(value, reader, device) if value.packed else _dense(value, reader, device)
-        if isinstance(value, ArrayPlan):
-            return _array(value, reader, device)
-        if isinstance(value, ConcatPlan):
-            if all(isinstance(part, ArrayPlan) for part in value.parts):
-                # Router parts belong only to this assembled Tensor. Keeping
-                # them in the general cache duplicates every layer until load
-                # returns, outside the bounded per-tensor staging allowance.
-                parts = tuple(_array(part, reader, device) for part in value.parts)
-                return torch.cat([p if p.ndim == 2 else p[None] for p in parts])
-            parts = tuple(materialize(part) for part in value.parts)
-            if isinstance(parts[0], torch.Tensor):
-                return torch.cat([p if p.ndim == 2 else p[None] for p in parts])
-            return GGUFConcat(parts)
-        if isinstance(value, ExpertPlan):
-            bank = GGUFExperts(materialize(value.gate), materialize(value.up), materialize(value.down),
-                               tuple(materialize(part) for part in value.shared), count=value.count,
-                               width=value.width, dims=value.dims)
-            if _prefill_plan is not None:
-                bank.prepare_prefill(_prefill_plan)
-            return bank
-        if isinstance(value, TablePlan):
-            table = tables.acquire(ReadAhead(GGUFPLETable(value.source)))
-            if table_reads is not None and not ple_on_ssd:
-                from tensorfold.cuda.direct_read import in_background
-                in_background(table.prefetch, tables.reads)
-                table_reads.append(tables.reads[-1])
-            return table
-        if isinstance(value, (HC, GDNW, AttnW, MoEW, PLEW, LayerW)):
-            return type(value)(**{f.name: materialize(getattr(value, f.name)) for f in fields(value)})
-        return value
+    prepare_experts = None
+    if _prefill_plan is not None:
+        def prepare_experts(bank):
+            bank.prepare_prefill(_prefill_plan)
+
+    materialize = materializer(reader, device, prepare_experts=prepare_experts, load_table=load_table)
 
     try:
         embedding = GGUFEmbedding(materialize(prototype.embed[0]))

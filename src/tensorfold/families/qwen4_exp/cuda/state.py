@@ -150,6 +150,10 @@ class Buffers:
         self.mtp_in = torch.empty((rows, wide), dtype=bf, device=dev)          # the MTP's input streams
         draft = getattr(w, "dspark", None)
         self.dspark_taps = draft.new_taps(rows, dev) if draft is not None else None
+        dflash2 = getattr(w, "dflash2", None)
+        self.dflash2_features = None
+        if dflash2 is not None:
+            dflash2.prepare_buffers(self)
         self.history_owner = None
         if placement is not None:
             from .history_owner import OwnerBuffers
@@ -250,6 +254,11 @@ class State:
         self.kv_key_dtype, self.kv_value_dtype = self.kv_pair.key_dtype, self.kv_pair.value_dtype
         self.kv_working_policy = working_policy
         self.kv_identity = (self.kv_pair.identity, self.kv_working_policy)
+        dflash2 = getattr(w, "dflash2", None)
+        if dflash2 is not None:
+            if dflash2.identity is None:
+                raise ValueError("DFlash2 weights must finish loading before target state allocation")
+            self.kv_identity += (("dflash2", dflash2.identity),)
         if self.history_placement is not None:
             plan = self.history_placement
             self.kv_identity += (("unique-history-v1", plan.world, plan.global_kv_heads,
@@ -354,6 +363,10 @@ class State:
         self.dspark = None
         if self.dspark_runtime is not None:
             self.dspark_runtime.init_state(self)
+        self.dflash2_runtime = getattr(w, "dflash2", None)
+        self.dflash2 = None
+        if self.dflash2_runtime is not None:
+            self.dflash2_runtime.init_state(self)
 
     @property
     def kv_dtype(self) -> str:
@@ -370,6 +383,8 @@ class State:
                  (self._kv_error if self._kv_error is not None else self._resize_error))
         if error is not None:
             raise error
+        if getattr(self, "dflash2", None) is not None and self.dflash2.poisoned:
+            raise ValueError("DFlash2 conditioning is poisoned; this sequence requires explicit reset")
         if self.kv_status is None:
             return
         self._kv_pending = True
@@ -387,6 +402,8 @@ class State:
                  (self._kv_error if self._kv_error is not None else self._resize_error))
         if error is not None:
             raise error
+        if getattr(self, "dflash2", None) is not None and self.dflash2.poisoned:
+            raise ValueError("DFlash2 conditioning is poisoned; this sequence requires explicit reset")
         if getattr(self, "indexer_history_owner", None) is not None:
             self.indexer_history_owner.check()
         status = self.kv_status
@@ -449,6 +466,11 @@ class State:
         if any(type(snap.get(name)) is not int or not 0 <= snap[name] <= self.capacity
                for name in ("pos", "mtp_len")):
             raise ValueError("KV snapshot positions must be integer rows within its sequence cache")
+        runtime = getattr(self, "dflash2_runtime", None)
+        if runtime is not None:
+            runtime.validate_snapshot(self, snap.get("dflash2"), snap["pos"])
+        elif "dflash2" in snap:
+            raise ValueError("DFlash2 snapshot cannot be restored into another speculative profile")
 
     def set_pos(self, pos: int) -> None:
         self.kv_check()
@@ -460,8 +482,19 @@ class State:
 
     def discard_target_tentative(self) -> None:
         """Resolve rejected/uncommitted rows without advancing any target state."""
-        self.kv_check()
+        primary = None
+        try:
+            self.kv_check()
+        except BaseException as error:
+            primary = error
+        if getattr(self, "dflash2_runtime", None) is not None:
+            try:
+                self.dflash2_runtime.discard(self)
+            except BaseException as cleanup:
+                raise_failures(primary, [cleanup])
         self.target_tentative_length = self.pos
+        if primary is not None:
+            raise primary
 
     def _indexer_commit(self, pos: int, mtp_len: int) -> None:
         lengths = [pos] * len(self.kc) + ([mtp_len] if hasattr(self, "mtp_kc") else [])
@@ -514,6 +547,8 @@ class State:
                                          ratio=self.ratio, include_mtp=hasattr(self, "mtp_kc"))
         if getattr(self, "dspark_runtime", None) is not None:
             total += (self.capacity if rows is None else int(rows)) * self.dspark_runtime.plan.cache_row_bytes
+        if getattr(self, "dflash2", None) is not None:
+            total += self.dflash2.nbytes  # fixed physical window; target growth never reallocates it
         return total
 
     def owned_cache_bytes(self) -> int:
@@ -529,6 +564,8 @@ class State:
                 total += self.mtp_ikc.nbytes
         if getattr(self, "dspark", None) is not None:
             total += self.dspark.nbytes
+        if getattr(self, "dflash2", None) is not None:
+            total += self.dflash2.nbytes
         return total
 
     def layer_bytes(self, rows: int | None = None) -> int:
@@ -695,6 +732,10 @@ class State:
             generations = self.history_generations
             if generations is not None and generations.is_cuda:
                 torch.cuda.current_stream(generations.device).synchronize()
+            runtime = getattr(self, "dflash2_runtime", None)
+            if runtime is not None:
+                runtime.discard(self)
+                self.dflash2.generation = generation + 1
             if generations is not None:
                 generations[0].fill_(generation + 1)
             self.slot_generation = generation + 1
@@ -715,38 +756,48 @@ class State:
     def reset(self, w: Weights, *, new_sequence: bool = True) -> None:
         """An empty sequence in the same buffers (captured graphs keep pointing at them)."""
 
-        if self._resize_error is not None:
-            raise self._kv_error if self._kv_error is not None else self._resize_error
-        if getattr(self, "_history_error", None) is not None:
-            raise self._history_error
         if type(new_sequence) is not bool:
             raise ValueError("reset admission generation policy must be explicit boolean")
-        if new_sequence:
-            self.begin_sequence_generation()
-        if getattr(self, "indexer_history_owner", None) is not None:
-            self.indexer_history_owner.reset()
-        if self.kv_status is not None:
-            self.kv_status.zero_()
-            self.kv_status[1].fill_(-2)
-            self._kv_pending = False
-            self._kv_error = None
-        self.conv.zero_()
-        self.rec.zero_()
-        self.cur = [0] * len(self.cur)
-        self.ple_tail.zero_()
-        self.ple_history = w.cfg.ngram(0).initial_history() if w.cfg.ple_layers else None
-        self.ple_last = None
-        if getattr(self, "indexer_history_owner", None) is not None:
-            self._publish_indexer_positions(0, 0)
-        else:
-            self.set_pos(0)
-        self.set_rope_delta(0)
-        self.image_positions, self.image_rows, self.image_features = None, (), None
-        self.mtp_drafted = 0
-        if getattr(self, "indexer_history_owner", None) is None:
-            self.set_mtp_len(0)
-        if getattr(self, "dspark_runtime", None) is not None:
-            self.dspark_runtime.reset(self)
+        try:
+            if new_sequence:
+                self.begin_sequence_generation()
+            else:
+                if self._resize_error is not None:
+                    raise self._kv_error if self._kv_error is not None else self._resize_error
+                if self._history_error is not None:
+                    raise self._history_error
+            if getattr(self, "dflash2_runtime", None) is not None:
+                self.dflash2_runtime.reset(self)
+                self._kv_error = None
+                self._kv_pending = False
+            if getattr(self, "indexer_history_owner", None) is not None:
+                self.indexer_history_owner.reset()
+            if self.kv_status is not None:
+                self.kv_status.zero_()
+                self.kv_status[1].fill_(-2)
+                self._kv_pending = False
+                self._kv_error = None
+            self.conv.zero_()
+            self.rec.zero_()
+            self.cur = [0] * len(self.cur)
+            self.ple_tail.zero_()
+            self.ple_history = w.cfg.ngram(0).initial_history() if w.cfg.ple_layers else None
+            self.ple_last = None
+            if getattr(self, "indexer_history_owner", None) is not None:
+                self._publish_indexer_positions(0, 0)
+            else:
+                self.set_pos(0)
+            self.set_rope_delta(0)
+            self.image_positions, self.image_rows, self.image_features = None, (), None
+            self.mtp_drafted = 0
+            if getattr(self, "indexer_history_owner", None) is None:
+                self.set_mtp_len(0)
+            if getattr(self, "dspark_runtime", None) is not None:
+                self.dspark_runtime.reset(self)
+        except BaseException:
+            if getattr(self, "dflash2", None) is not None:
+                self.dflash2.poisoned = True
+            raise
 
     def history_record(self) -> dict:
         """Published CPU scalars only; safe for observability without a GPU fence."""
@@ -763,6 +814,11 @@ class State:
                   "context_rows": self.capacity,
                   "history_poisoned": getattr(self, "_history_error", None) is not None,
                   "allocated_history_bytes": self.owned_cache_bytes()}
+        if getattr(self, "dflash2_runtime", None) is not None:
+            result["dflash2"] = self.dflash2_runtime.record(self)
+            result["draft_valid_length"] = self.dflash2.end if self.dflash2.enabled else None
+            result["draft_tentative_length"] = (self.dflash2.end + (
+                0 if self.dflash2.pending is None else len(self.dflash2.pending.values))) if self.dflash2.enabled else None
         if placement is not None:
             result.update(attention_degree=placement.degree,
                           mtp_attention_degree=4 if hasattr(self, "mtp_kc") else None,
@@ -825,9 +881,13 @@ class State:
         """An independent copy (tests and A/B checks)."""
 
         self.kv_check()
+        if getattr(self, "dflash2", None) is not None:
+            self.dflash2.check()  # a whole-model clone needs a resolved target frame
         import copy
 
         other = copy.copy(self)
+        # Auxiliary state is an owned window, never a shallow-copy alias.
+        other.dflash2 = None
         for name, value in vars(self).items():
             if isinstance(value, torch.Tensor):
                 setattr(other, name, value.clone())
@@ -853,6 +913,8 @@ class State:
                 setattr(sc_new, name, value.clone())
         if getattr(self, "dspark_runtime", None) is not None:
             self.dspark_runtime.clone_state(self, other)
+        if getattr(self, "dflash2_runtime", None) is not None:
+            self.dflash2_runtime.clone_state(self, other)
         return other
 
     def set_mtp_len(self, n: int) -> None:
@@ -869,6 +931,8 @@ class State:
         self.kv_check()
         if getattr(self, "dspark_runtime", None) is not None:
             self.dspark_runtime.validate_copy(self, source, pos)
+        if getattr(self, "dflash2_runtime", None) is not None:
+            self.dflash2_runtime.validate_copy(self, source, pos)
         if self is source or self.kv_identity != source.kv_identity or self.ratio != source.ratio:
             raise ValueError("a prefix copy needs distinct slots with matching cache formats")
         if (type(pos) is not int or type(mtp_len) is not int
@@ -928,29 +992,37 @@ class State:
                 "ple_tail": self.ple_tail.clone(),
                 "ple_history": None if self.ple_history is None else self.ple_history.copy(),
                 "mtp_len": self.mtp_len - self.mtp_drafted, **metadata, **history,
-                **(self.dspark_runtime.snapshot(self) if getattr(self, "dspark_runtime", None) is not None else {})}
+                **(self.dspark_runtime.snapshot(self) if getattr(self, "dspark_runtime", None) is not None else {}),
+                **({"dflash2": self.dflash2_runtime.snapshot(self)} if getattr(self, "dflash2_runtime", None) is not None else {})}
 
     def restore(self, snap: dict) -> None:
         self.kv_validate_snapshot(snap)
         lengths = [snap["pos"]] * len(self.kc) + ([snap["mtp_len"]] if hasattr(self, "mtp_kc") else [])
         if getattr(self, "dspark_runtime", None) is not None:
             self.dspark_runtime.validate_snapshot(self, snap)
-        if getattr(self, "indexer_history_owner", None) is not None:
-            self.indexer_history_owner.restore(snap.get("indexer_history"), lengths)
-        self.rec[0].copy_(snap["rec"])
-        self.cur = [0] * len(self.cur)
-        self.conv.copy_(snap["conv"])
-        self.ple_tail.copy_(snap["ple_tail"])
-        self.ple_history = None if snap["ple_history"] is None else snap["ple_history"].copy()
-        self.ple_last = None
-        if getattr(self, "indexer_history_owner", None) is not None:
-            self._publish_indexer_positions(snap["pos"], snap["mtp_len"])
-        else:
-            self.set_pos(snap["pos"])
-        self.set_rope_delta(0)                       # kept prompts are text only
-        self.image_positions, self.image_rows, self.image_features = None, (), None
-        self.mtp_drafted = 0
-        if getattr(self, "indexer_history_owner", None) is None:
-            self.set_mtp_len(snap["mtp_len"])
-        if getattr(self, "dspark_runtime", None) is not None:
-            self.dspark_runtime.restore(self, snap)
+        try:
+            if getattr(self, "indexer_history_owner", None) is not None:
+                self.indexer_history_owner.restore(snap.get("indexer_history"), lengths)
+            self.rec[0].copy_(snap["rec"])
+            self.cur = [0] * len(self.cur)
+            self.conv.copy_(snap["conv"])
+            self.ple_tail.copy_(snap["ple_tail"])
+            self.ple_history = None if snap["ple_history"] is None else snap["ple_history"].copy()
+            self.ple_last = None
+            if getattr(self, "indexer_history_owner", None) is not None:
+                self._publish_indexer_positions(snap["pos"], snap["mtp_len"])
+            else:
+                self.set_pos(snap["pos"])
+            self.set_rope_delta(0)                       # kept prompts are text only
+            self.image_positions, self.image_rows, self.image_features = None, (), None
+            self.mtp_drafted = 0
+            if getattr(self, "indexer_history_owner", None) is None:
+                self.set_mtp_len(snap["mtp_len"])
+            if getattr(self, "dspark_runtime", None) is not None:
+                self.dspark_runtime.restore(self, snap)
+            if getattr(self, "dflash2_runtime", None) is not None:
+                self.dflash2_runtime.restore(self, snap["dflash2"])
+        except BaseException:
+            if getattr(self, "dflash2", None) is not None:
+                self.dflash2.poisoned = True
+            raise

@@ -507,14 +507,15 @@ def _exl3_moe(m, w: Weights, b: Buffers, R: int) -> tuple:
     return 2, buf.y[:R], buf.wts[:R]
 
 
-def _writeback(h: torch.Tensor, b: Buffers, R: int, c, pending) -> None:
+def _writeback(h: torch.Tensor, b: Buffers, R: int, c, pending, *, pss=None) -> None:
     """Apply a pending branch to the streams (in place), no read-out."""
 
     mode, a, wts, inj = pending
+    pss = b.pss[:R] if pss is None else pss
     if mode == 2:
-        glue.hc_writeback(h[:R], h[:R], b.pss[:R], c.streams, 2, inject=inj[:R], y=a, wts=wts)
+        glue.hc_writeback(h[:R], h[:R], pss, c.streams, 2, inject=inj[:R], y=a, wts=wts)
     else:
-        glue.hc_writeback(h[:R], h[:R], b.pss[:R], c.streams, mode, branch=a, inject=inj[:R])
+        glue.hc_writeback(h[:R], h[:R], pss, c.streams, mode, branch=a, inject=inj[:R])
 
 
 def _pre_moe(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int, pending, *, mtp: bool = False,
@@ -579,7 +580,7 @@ def finish(w: Weights, mixer: HC, b: Buffers, R: int, pending, logits: bool = Tr
     if not logits:
         return None
     out = _mm(b.mixed[:R], w.head, b.xs_mixed[:R], b.logits[:R], b)
-    if w.comm is not None:
+    if w.comm is not None and getattr(w, "dflash2", None) is None:
         candidates(w, b, out, R, offset=int(w.meta["vocab_offset"]))
     return out
 
@@ -686,9 +687,13 @@ def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True,
 
     R = segs[-1][2]
     runtime = getattr(w, "dspark", None)
+    dflash2 = getattr(w, "dflash2", None)
+    if runtime is not None and dflash2 is not None:
+        raise ValueError("one homogeneous speculative method may own target conditioning")
     archive = getattr(w, "meta", {}).get("indexer_history") == "ram"
     graph_taps = runtime is not None and getattr(b, "dspark_graph", False)
     capture = (runtime.begin_graph(b, R) if graph_taps else runtime.begin(segs, b)) if runtime is not None else None
+    dflash_capture = dflash2.begin(segs, b) if dflash2 is not None else None
     try:
         if archive:
             history_runtime.begin(segs, prefill=b.prefill)
@@ -705,6 +710,8 @@ def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True,
             if capture is not None:
                 capture.before_layer(layer.index, b.h[:R], pending)
             pending = layer_forward(layer, w, segs, b, R, pending, context=context, cuts=cuts)
+            if dflash_capture is not None:
+                dflash_capture.completed_layer(layer.index, w, pending)
         result = finish(w, w.mixer, b, R, pending, logits=logits, ends=ends)
         if archive:
             history_runtime.enqueue(segs, prefill=b.prefill)
@@ -716,11 +723,19 @@ def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True,
                 runtime.finish_graph_capture(capture, segs, b)
             else:
                 runtime.finish(capture, segs)
+        if dflash_capture is not None:
+            dflash2.finish(dflash_capture, segs)
         return result
     except BaseException as primary:
         if runtime is not None:
             try:
                 runtime.abort(capture, segs)
+            except BaseException as cleanup:
+                from tensorfold.cleanup import raise_failures
+                raise_failures(primary, [cleanup])
+        if dflash2 is not None:
+            try:
+                dflash2.abort(dflash_capture, segs)
             except BaseException as cleanup:
                 from tensorfold.cleanup import raise_failures
                 raise_failures(primary, [cleanup])
@@ -835,34 +850,60 @@ def compute_mixed(w: Weights, dsegs: Sequence[Seg], db: Buffers, psegs: Sequence
                   ends: Sequence[int] = (), cuts: Sequence[Cut] = ()) -> tuple:
     """A decode window and a prompt pass in one forward, each on its own kernels and bits, experts read once."""
 
-    archive = getattr(w, "meta", {}).get("indexer_history") == "ram"
-    if archive:
-        history_runtime.begin(dsegs, prefill=False)
-        history_runtime.begin(psegs, prefill=True)
-    _kv_begin(dsegs)
-    _kv_begin(psegs)
-    c = w.cfg
-    Rd, Rp = dsegs[-1][2], psegs[-1][2]
-    if Rp + Rd > pb.rows:
-        raise ValueError(f"a pass of {Rp} rows and a window of {Rd} exceed the prompt buffers' {pb.rows}")
-    _embed(w, db.ids[:Rd], c.streams, db.h[:Rd])
-    _embed(w, pb.ids[:Rp], c.streams, pb.h[:Rp])
-    image_rows.embed(psegs, pb, c.streams)
-    dp = pp = None
-    for layer in w.layers:
-        _pre_moe(layer, w, dsegs, db, Rd, dp)
-        _pre_moe(layer, w, psegs, pb, Rp, pp, cuts=cuts)
-        pb.mixed[Rp:Rp + Rd].copy_(db.mixed[:Rd])
-        mode, y, wts = moe_block(layer, w, pb, Rp + Rd)
-        dp, pp = (mode, y[Rp:], wts[Rp:], db.inj_m), (mode, y[:Rp], wts[:Rp], pb.inj_m)
-    result = finish(w, w.mixer, db, Rd, dp), finish(w, w.mixer, pb, Rp, pp, logits=bool(ends), ends=ends)
-    if archive:
-        history_runtime.enqueue(dsegs, prefill=False)
-        history_runtime.enqueue(psegs, prefill=True)
-        history_runtime.submitted(dsegs, prefill=False)
-        history_runtime.submitted(psegs, prefill=True)
-    _kv_check([*dsegs, *psegs], comm=w.comm)
-    return result
+    dflash2 = getattr(w, "dflash2", None)
+    d_capture = p_capture = None
+    try:
+        if dflash2 is not None:
+            d_capture = dflash2.begin(dsegs, db)
+            p_capture = dflash2.begin(psegs, pb)
+
+        archive = getattr(w, "meta", {}).get("indexer_history") == "ram"
+        if archive:
+            history_runtime.begin(dsegs, prefill=False)
+            history_runtime.begin(psegs, prefill=True)
+        _kv_begin(dsegs)
+        _kv_begin(psegs)
+        c = w.cfg
+        Rd, Rp = dsegs[-1][2], psegs[-1][2]
+        if Rp + Rd > pb.rows:
+            raise ValueError(f"a pass of {Rp} rows and a window of {Rd} exceed the prompt buffers' {pb.rows}")
+        _embed(w, db.ids[:Rd], c.streams, db.h[:Rd])
+        _embed(w, pb.ids[:Rp], c.streams, pb.h[:Rp])
+        image_rows.embed(psegs, pb, c.streams)
+        dp = pp = None
+        for layer in w.layers:
+            _pre_moe(layer, w, dsegs, db, Rd, dp)
+            _pre_moe(layer, w, psegs, pb, Rp, pp, cuts=cuts)
+            pb.mixed[Rp:Rp + Rd].copy_(db.mixed[:Rd])
+            mode, y, wts = moe_block(layer, w, pb, Rp + Rd)
+            dp, pp = (mode, y[Rp:], wts[Rp:], db.inj_m), (mode, y[:Rp], wts[:Rp], pb.inj_m)
+            if d_capture is not None:
+                d_capture.completed_layer(layer.index, w, dp)
+            if p_capture is not None:
+                p_capture.completed_layer(layer.index, w, pp)
+        result = finish(w, w.mixer, db, Rd, dp), finish(w, w.mixer, pb, Rp, pp, logits=bool(ends), ends=ends)
+        if archive:
+            history_runtime.enqueue(dsegs, prefill=False)
+            history_runtime.enqueue(psegs, prefill=True)
+            history_runtime.submitted(dsegs, prefill=False)
+            history_runtime.submitted(psegs, prefill=True)
+        _kv_check([*dsegs, *psegs], comm=w.comm)
+        if dflash2 is not None:
+            dflash2.finish(d_capture, dsegs)
+            dflash2.finish(p_capture, psegs)
+        return result
+    except BaseException as primary:
+        if dflash2 is not None:
+            failures = []
+            for capture, segs in ((d_capture, dsegs), (p_capture, psegs)):
+                try:
+                    dflash2.abort(capture, segs)
+                except BaseException as error:
+                    failures.append(error)
+            if failures:
+                from tensorfold.cleanup import raise_failures
+                raise_failures(primary, failures)
+        raise
 
 
 @torch.no_grad()
@@ -913,32 +954,46 @@ def shift_windows(old: torch.Tensor, new: torch.Tensor, keep: int, channels: int
 
 
 @torch.no_grad()
-def commit(w: Weights, st: State, b: Buffers, R: int, keep: int, at: int = 0, states: bool = True) -> None:
-    """Keep the first ``keep`` of R rows ``st`` ran from row ``at``; ``states=False``: gdn_multi committed them."""
+def commit(w: Weights, st: State, b: Buffers, R: int, keep: int, at: int = 0, states: bool = True,
+           *, commit_dflash: bool = True) -> None:
+    """Keep the accepted prefix; states=False means gdn_multi committed recurrence.
 
-    st.kv_check()
-    if b.h.dtype == torch.float16:
-        states = True  # FP16 recurrence owns per-segment state, rather than pending pointer-table folds.
-    c = w.cfg
-    if not 1 <= keep <= R or (b.prefill and keep != R):
-        raise ValueError("keep must be in 1..R, and all of a prompt chunk")
-    n = 0 if b.prefill else len(st.cur)          # a prompt chunk's DeltaNet layers committed during the forward
-    if n:
-        for li in range(n if states else 0):
-            cur = st.cur[li]
-            if keep < R:
-                gdn_mod.replay(st.rec[cur, li], st.scratch[li], keep, st.rec[1 - cur, li])
-            st.cur[li] = 1 - cur
-        shift_windows(st.conv, b.proj[:, at:at + R], keep, c.conv_dim)
-    if st.ple_last is not None:
-        history, tokens = st.ple_last
-        st.ple_history = np.concatenate([history, tokens[:keep]])[-(c.ngram_size - 1):]
-        st.ple_last = None
-        tail = st.ple_tail
-        shift_windows(tail[None], b.ple_nrow[None, at:at + R], keep, tail.shape[1])
-    st.set_pos(st.pos + keep)
-    if getattr(w, "dspark", None) is not None:
-        w.dspark.commit(st, keep)
+    commit_dflash=False leaves the bounded feature lease for the coordinator's
+    commit_many; it must resolve that lease before reusing buffers or proposing.
+    """
+
+    try:
+        st.kv_check()
+        if b.h.dtype == torch.float16:
+            states = True  # FP16 recurrence owns per-segment state, rather than pending pointer-table folds.
+        c = w.cfg
+        if not 1 <= keep <= R or (b.prefill and keep != R):
+            raise ValueError("keep must be in 1..R, and all of a prompt chunk")
+        if getattr(w, "dflash2", None) is not None:
+            w.dflash2.validate_commit(st, keep)  # before recurrence, tails or target positions mutate
+        n = 0 if b.prefill else len(st.cur)          # a prompt chunk's DeltaNet layers committed during the forward
+        if n:
+            for li in range(n if states else 0):
+                cur = st.cur[li]
+                if keep < R:
+                    gdn_mod.replay(st.rec[cur, li], st.scratch[li], keep, st.rec[1 - cur, li])
+                st.cur[li] = 1 - cur
+            shift_windows(st.conv, b.proj[:, at:at + R], keep, c.conv_dim)
+        if st.ple_last is not None:
+            history, tokens = st.ple_last
+            st.ple_history = np.concatenate([history, tokens[:keep]])[-(c.ngram_size - 1):]
+            st.ple_last = None
+            tail = st.ple_tail
+            shift_windows(tail[None], b.ple_nrow[None, at:at + R], keep, tail.shape[1])
+        st.set_pos(st.pos + keep)
+        if getattr(w, "dspark", None) is not None:
+            w.dspark.commit(st, keep)
+        if commit_dflash and getattr(w, "dflash2", None) is not None:
+            w.dflash2.commit(st, keep)
+    except BaseException:
+        if getattr(st, "dflash2", None) is not None:
+            st.dflash2.poisoned = True
+        raise
 
 
 def cut_snapshot(w: Weights, st: State, b: Buffers, cut: Cut, mtp_len: int) -> dict:
@@ -953,4 +1008,5 @@ def cut_snapshot(w: Weights, st: State, b: Buffers, cut: Cut, mtp_len: int) -> d
     return {"pos": st.pos + cut.row, "rec": cut.rec, "conv": cut.conv, "ple_tail": tail,
             "ple_history": None if history is None else history.copy(), "mtp_len": mtp_len,
             **st.kv_snapshot_metadata(),
-            **(w.dspark.snapshot(st, st.pos + cut.row) if getattr(w, "dspark", None) is not None else {})}
+            **(w.dspark.snapshot(st, st.pos + cut.row) if getattr(w, "dspark", None) is not None else {}),
+            **({"dflash2": w.dflash2.snapshot(st, st.pos + cut.row)} if getattr(w, "dflash2", None) is not None else {})}

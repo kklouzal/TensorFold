@@ -159,10 +159,11 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     speed.add_argument("--drafter", default="auto",
                        help="a draft model (repo id or directory); auto: the family's draft model when it has been "
                             "pulled; none: no draft model")
-    speed.add_argument("--draft-method", choices=("auto", "none", "mtp", "dspark"), default="auto",
+    speed.add_argument("--draft-method", choices=("auto", "none", "mtp", "dspark", "dflash2"), default="auto",
                        help="proposal method; none selects serial execution without loading a draft model; "
-                            "auto detects the drafter architecture. Explicit MTP/DSpark "
-                            "selection is supported by Flash Next CUDA (DSpark currently GGUF); --drafter selects the checkpoint")
+                            "auto detects the drafter architecture. Flash Next CUDA supports MTP, DSpark and "
+                            "DFlash2; DFlash2 requires TP8 GGUF and an exact execution-profile pairing manifest. "
+                            "--drafter selects the checkpoint")
     speed.add_argument("--drafter-bits", type=int, default=None,
                        help="draft precision, proposals only (0: bf16). MLX: affine bits, default 4. "
                             "CUDA Qwen MoE DFlash: 0 or 16 (default), 8 (FP8), 4 (NVFP4); requantized drafts "

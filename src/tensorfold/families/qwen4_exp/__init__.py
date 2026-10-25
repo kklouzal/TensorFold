@@ -7,7 +7,7 @@ from typing import Any
 
 from .kv_formats import DTYPES
 
-CUDA_DRAFT_METHODS = ("auto", "none", "mtp", "dspark")
+CUDA_DRAFT_METHODS = ("auto", "none", "mtp", "dspark", "dflash2")
 CUDA_ADAPTIVE_SESSIONS = True  # GGUF provider resolves auto; modern CUDA retains its existing one-stream default.
 CUDA_KV_DTYPES = DTYPES          # the KV cache dtypes the CUDA engine can allocate (``--kv-dtype``)
 
@@ -225,9 +225,10 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         raise ValueError("execution_profile_manifest requires resident Flash Next GGUF GPU histories on SM70")
     method = options.get("draft_method", "auto")
     if method not in CUDA_DRAFT_METHODS:
-        raise ValueError("Flash Next draft_method must be auto, none, mtp or dspark")
-    if method == "dspark" and not gguf:
-        raise ValueError("DSpark currently requires the Flash Next GGUF SM70 provider")
+        raise ValueError("Flash Next draft_method must be auto, none, mtp, dspark or dflash2")
+    if method in ("dspark", "dflash2") and not gguf:
+        label = "DSpark" if method == "dspark" else "DFlash2"
+        raise ValueError(f"{label} currently requires the Flash Next GGUF SM70 provider")
     if method == "none":
         no_drafts, drafter = True, ""
     if drafter and not gguf:
@@ -243,8 +244,8 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
     if method == "mtp" and depth == 0:
         raise ValueError("explicit MTP requires a positive maximum depth; use runtime proposal_limit 0 to retain "
                          "warm MTP capability, or select --draft-method none to disable it")
-    if method == "dspark" and depth > 0 and not drafter:
-        raise ValueError("DSpark requires its checkpoint directory through --drafter")
+    if method in ("dspark", "dflash2") and not drafter:
+        raise ValueError("DSpark/DFlash2 require their checkpoint directory through --drafter")
     if depth and not drafter and not has_mtp(Path(model_dir)):
         raise ValueError(f"this checkpoint has no MTP head, which {TITLE}'s CUDA engine drafts with ({MODELS[0]} "
                          "has one): without it every round would decode one token. Serve a checkpoint with the "
@@ -295,10 +296,15 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         kind = checkpoint_method(drafter)
         if method != "auto" and method != kind:
             raise ValueError(f"--draft-method {method} does not match the selected {kind} drafter checkpoint")
-        key = "dspark_model_dir" if kind == "dspark" else "mtp_model_dir"
+        key = {"dspark": "dspark_model_dir", "dflash2": "dflash2_model_dir", "mtp": "mtp_model_dir"}[kind]
         engine_options[key] = Path(drafter)
-    elif method == "dspark" and depth > 0:
-        raise ValueError("DSpark requires its checkpoint directory through --drafter")
+        if kind == "dflash2":
+            if (tp != 8 or history != "gpu" or execution_manifest is None
+                    or bool(options.get("vision", False)) or expert_ranks != 1 or depth > 3):
+                raise ValueError("DFlash2 requires fixed TP8 text-only resident GGUF GPU histories, "
+                                 "an execution-profile manifest with exact draft_pairing, and at most three proposals")
+    elif method in ("dspark", "dflash2"):
+        raise ValueError("DSpark/DFlash2 require their checkpoint directory through --drafter")
     if "draft_vocab" in options:
         engine_options["draft_vocab"] = options["draft_vocab"]
     full_windows = options.get("kv_full_windows")

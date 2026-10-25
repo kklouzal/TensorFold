@@ -7,6 +7,7 @@ GGUF/ggml format: https://github.com/ggml-org/ggml (MIT).
 """
 
 from dataclasses import dataclass
+import hashlib
 import math
 import os
 from pathlib import Path
@@ -25,6 +26,19 @@ FORMATS = MappingProxyType({
 _SCALARS = {0: "B", 1: "b", 2: "H", 3: "h", 4: "I", 5: "i", 6: "f", 7: "?", 10: "Q", 11: "q", 12: "d"}
 _SPLIT = re.compile(r"(.+)-(\d{5})-of-(\d{5})\.gguf")
 _HEADER_LIMIT = 64 << 20
+
+
+def token_id_identity(metadata):
+    """Ordered token-ID vocabulary, independent of the selected chat template."""
+    tokens = metadata.get("tokenizer.ggml.tokens")
+    if not isinstance(tokens, tuple) or not tokens or any(type(token) is not str for token in tokens):
+        raise ValueError("GGUF token-ID identity requires its complete ordered token strings")
+    digest = hashlib.sha256(b"tensorfold.gguf-token-ids-v1\0")
+    for token in tokens:
+        encoded = token.encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, "little"))
+        digest.update(encoded)
+    return digest.hexdigest()
 
 
 class _Header:

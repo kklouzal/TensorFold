@@ -10,7 +10,7 @@ def capacity_options(model_dir, rank, world, mtp=False, mtp_model_dir=None, draf
                             **({"prefill_plan": prefill_plan} if prefill_plan is not None else {}))
     if mtp:
         if mtp_model_dir is None:
-            raise ValueError("GGUF native MTP requires the matching stock draft checkpoint")
+            raise ValueError("GGUF native MTP requires a matching stock floating or shared-GGUF companion")
         from .sm70_mtp_weights import byte_plan
 
         prototype, _ = model_plan(model_dir, (rank, world))

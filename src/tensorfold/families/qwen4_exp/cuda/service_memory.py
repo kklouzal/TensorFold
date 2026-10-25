@@ -48,6 +48,8 @@ def future_service(w, states, *, streams, retained, growth_bytes,
     snapshot = state.rec[0].numel() * state.rec.element_size() + state.conv.numel() * state.conv.element_size()
     snapshot += state.ple_tail.numel() * state.ple_tail.element_size()
     snapshot += wide * 2 if w.mtp is not None else 0
+    draft_window = getattr(state, "dflash2", None)
+    snapshot += draft_window.nbytes if draft_window is not None else 0
     snapshots = retained * snapshot
     transient = streams * (w.head.n * 4 + wide * 2) + vision_workspace_bytes
     workspace = max(transient, minimum_workspace_bytes)

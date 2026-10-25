@@ -20,6 +20,8 @@ _COUNTERS = (
     "target_prefill_rows_submitted", "target_decode_rows_submitted", "target_replay_rows_submitted",
     "mtp_prefill_rows_submitted", "mtp_refresh_rows_submitted", "mtp_proposal_rows_submitted",
     "mtp_zero_proposal_refresh_rows", "indexer_query_rows_submitted",
+    "dflash_prefill_conditioning_rows_submitted", "dflash_decode_conditioning_rows_submitted",
+    "dflash_fixed_block_rows_submitted", "dflash_proposals_drawn", "dflash_zero_proposal_conditioning_rows",
     "indexer_visible_pooled_groups", "indexer_visible_sparse_group_scores",
     "attention_selected_key_rows", "incomplete_forward_submissions", "indexer_unknown_rows",
     "verification_windows", "verified_candidates", "accepted_candidates_before_text_limits",
@@ -156,6 +158,15 @@ class ExecutionObservations:
             self._add("incomplete_forward_submissions", 1)
         except BaseException as observation:
             raise_failures(primary, [observation])
+
+    def dflash_proposals(self, counts):
+        self._add("dflash_fixed_block_rows_submitted", 4 * sum(count > 0 for count in counts))
+        self._add("dflash_proposals_drawn", sum(counts))
+
+    def dflash_conditioning(self, rows, *, prefill, zero_proposal_rows=0):
+        self._add("dflash_prefill_conditioning_rows_submitted" if prefill else
+                  "dflash_decode_conditioning_rows_submitted", rows)
+        self._add("dflash_zero_proposal_conditioning_rows", zero_proposal_rows)
 
     def verification(self, offered, accepted):
         if (type(offered) is not int or type(accepted) is not int
