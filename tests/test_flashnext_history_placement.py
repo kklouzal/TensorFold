@@ -259,6 +259,8 @@ def test_real_owner_layer_routes_both_tp_head_groups_with_batched_collectives(de
                       history_layout="unique", attention_degree=degree)
         capacity = max(9, start + 6)
         state = State(w, capacity, 3, format_name)
+        # This independent complete-history oracle uses the unbound native positional policy.
+        assert w.positions is None and state.coordinate_profile_identity is None
         idw = budget + 4
         scratch = NS(idw=idw, budget=budget, ratio=4, qsa=True,
                      ids=torch.zeros((3, idw), dtype=torch.int32), nk=torch.zeros(3, dtype=torch.int32),
@@ -268,7 +270,8 @@ def test_real_owner_layer_routes_both_tp_head_groups_with_batched_collectives(de
         projection[:, 3 * 256:4 * 256] = (torch.arange(start + 3).half() * 0.25 + (1 if rank < 4 else 2))[:, None]
         buffers = NS(pa=projection[start:].contiguous(), q=torch.empty((3, 1, 256), dtype=torch.float16),
                      iq=torch.empty((3, 2, 128), dtype=torch.float16),
-                     attn_o=torch.empty((3, 1, 256), dtype=torch.float16), attn=scratch, prefill=False)
+                     attn_o=torch.empty((3, 1, 256), dtype=torch.float16), attn=scratch, prefill=False,
+                     input_preparation_context=None)
         buffers.owner_kernel_family, buffers.owner_graph_family, buffers.owner_graphs = "torch-reference", "uncaptured", None
         from tensorfold.families.qwen4_exp.cuda.compact_indexer import Staging
 
