@@ -18,7 +18,57 @@ the numerical contract before comparing speed. Quantization options have their
 own explicit quality tradeoffs; changing an optimization must not silently
 change the user's selected precision or sampling policy.
 
+## Adaptive V100 software evidence, 2026-10-26
+
+The final composed CPU checkpoint is frozen source tree `ff1883131180963a1de18bb00c74d6777466dcb9`
+and local image ID `sha256:fb0ac861483f0bc14bef1f73535d07d358c196c7e9358f76da3390f1434813a8`: **5582 installed tests and
+144 subtests**, with 9 documented skips across 183 modules.
+All 707 installed code files matched the frozen 2,012-input source capture
+without a source overlay or within-run drift. The final resource producer
+separately passed 236 CPU checks. These software checks establish no
+optimization or physical-capacity gain.
+The [CPU software receipt](verification-v100-adaptive-cpu-20261026.json)
+binds application commit `7d3ddbb9d066fe7451769ad9a36739619ce2d618` to this installed result.
+
+Current source implements DFlash2 through the shared Engine, standard
+Responses/Conversations, FIFO/catalog/prefix/RAM lifecycle and live requeue,
+the canonical key/value wake relay, owned synchronous Store provenance for all
+new unique profiles with no explicit retention or with GPU/RAM retention, and
+explicit State/FD/host lifetimes and payload obligations. The source envelope
+binds selected CPython 3.12.3, Torch5ab, GCC 13 build/ABI and recorded GCC 14
+runtime content. A conservative generic
+96-MiB RPC graph bound can refuse an otherwise practical host workload; no
+physical insufficiency or tested capacity maximum follows from that refusal.
+
+The intermediate tree
+`045446b572d9be7a8aa08ef9f1fde125e77b38f8`/image
+`sha256:c903e72e3edb5e50bf26bac22acdd697fa444844b90dd639a56ddf48a69a5fe3`
+retains its 16 failed/5,564 passed result. The independent native bytes-contract
+proof justified a shared test-fixture producer correction; shipping ACK
+validation was preserved. The successful successor has separate evidence.
+
+The prior 5,214/9/144 candidate remains tree
+`413e132bf977625f485fffedf2011cc4bfc02f07`, image
+`sha256:05eca41e61a9410660d2a38c2c4d9ced06124efec64d635cb21580bcbb399323`.
+The published 4,365/4/124 media baseline and historical 3,277/4/105 text/core
+evidence retain their own identities. Scoped
+checks for copy applicability (50), caller paths (138) plus three focused cases
+and later resource/lifetime suites overlap and are not added to the
+installed count. [The validation record](v100-adaptive-validation.md#current-v6-source-and-cpu-evidence)
+preserves the exact boundaries and final receipt.
+
+The known selected native SDK endpoint-formatter P1 failure/race concern on
+`getnameinfo` failure and compiler issue 6111901 remain release blockers.
+Application CPU success does not resolve them. V100/TP8/NCCL/full-model
+numerics, quality, physical capacity, allocator/RSS/NUMA, native wall deadlines
+and representative end-to-end performance remain unqualified. Historical
+measurements/failures below retain their original source/workload identities.
+
 ## Flash Next V100 live measurements, 2026-10-24
+
+This section preserves the historical campaign chronology. Intermediate
+pending/failure labels describe their named checkpoints; later closeouts in
+this document retain their own evidence scope.
 
 The unchanged installed SM70 candidate 3 passed a repeated live-request matrix
 on eight V100s: three uncached trials at each of 128/1,024/2,048 prompt tokens,

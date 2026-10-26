@@ -722,17 +722,95 @@ output item `response.output_item.added`, `response.content_part.added`, its del
 `.done` events, `response.content_part.done` and `response.output_item.done`; and last `response.completed`,
 `response.incomplete` or `response.failed`.
 
-With `store` true, a finished response is kept in memory (the newest 1,024, up to 256 MiB) before its last event or
-body is sent. `GET /v1/responses/{id}` returns it (`stream=true` is ignored), `DELETE /v1/responses/{id}` removes it
-and answers `{"id", "object": "response.deleted", "deleted": true}`, and
-`previous_response_id` continues its conversation: the server rebuilds the messages a chat client would send, so the
-prompt cache resumes the shared prefix as it does for chat. `store: false` keeps nothing, and a restart forgets every
-response.
+Without a configured durable store, `store: true` keeps finished responses in memory (the newest 1,024, up to 256 MiB).
+With `--api-record-store PATH --api-record-limits FILE`, Responses and Conversations use a private local SQLite
+database instead. Both options are required together; there is no default database path or invented quota profile.
+The service must own its canonical parent directory, other users must not be able to write it, and the database
+must have mode 0600. One process owns that database. SQLite transactions use rollback journaling and synchronous
+FULL publication. A restart can retrieve committed logical records; RAM or GPU inference state has its own contract.
+
+`GET /v1/responses/{id}` retrieves a stored response; `DELETE` removes it. `previous_response_id` reconstructs its
+complete retained input and output items before ordinary generation. Durable child responses retain their own
+item relations, so deleting or expiring a parent does not invalidate an independently stored descendant.
+`GET /v1/responses/{id}/input_items` lists its canonical inputs when using durable storage. Top-level
+`instructions` are never inherited; explicit system/developer input items remain history. New turns rerender
+their actual input. `store: false` suppresses response-object storage; a named conversation still retains its
+new input/output items. No logical API record automatically reserves a GPU slot or computed checkpoint.
+
+In durable mode, an opened stream's terminal failed response retains its input and partial output before the
+failure event is emitted. A positively observed response-socket failure retains a cancelled record without
+writing more events to that socket. Failed/cancelled turns do not append conversation items or announce a ready
+computed checkpoint. Their private target generation is spent so delayed work cannot attach to a later retry.
+If the failed record itself cannot fit its declared storage allowance or its retirement fails, the failure
+message reports that additional outcome; retrieval can be unavailable. Refusals before a Response stream is
+created return ordinary HTTP error envelopes. The legacy in-memory mode retains its existing successful and
+incomplete-response behavior.
+
+### Durable Conversations and quotas
+
+The durable store supports standard create/retrieve/update/delete on `/v1/conversations` and `/{conversation_id}`,
+and create/list/retrieve/delete on `/{conversation_id}/items[/{item_id}]`. Updates replace metadata.
+Creation/appending accepts at most 20 items per API operation. Lists accept `after`, `limit` 1–100 (default 20) and
+`order` asc/desc (default desc). Deleting an item returns its conversation. Deleting a conversation removes the
+conversation object **and preserves its independently retained items and encoded media snapshots**, following the
+[standard deletion contract](https://developers.openai.com/api/reference/resources/conversations/methods/delete); public routes
+requiring that deleted object return 404. Stored `item_reference` inputs remain principal-authorized.
+Responses accepts a conversation ID or `{"id": "conv_..."}` in `conversation`; it is mutually exclusive with
+`previous_response_id`. A conversation admits one mutating generation at a time; conflicting operations return
+an ordinary 409 error envelope. No client revision or session header is used.
+An item ID occurs once in a collection; repeating an ID already in that conversation/resolved input is an invalid
+request. References can share immutable items across distinct collections. Deleted-conversation item relations
+continue consuming item/byte quotas; no automatic item expiry or destructive purge is inferred.
+
+Every lookup uses the authenticated key's digest-derived trust domain; a shared key shares records.
+Relabeling a key preserves its domain; replacing it creates a different domain. Body `user`, `metadata` and cache
+hints grant no authority. Authentication-disabled listeners have one local trust domain.
+
+The limits JSON has `schema: "tensorfold.api-record-limits"`, exact integer `version: 1`, and every field below:
+
+- Global counts: `max_responses`, `max_conversations`, `max_items`, `max_active_operations`.
+- Principal counts: `max_principal_responses`, `max_principal_conversations`, `max_principal_items`,
+  `max_principal_operations`.
+- Bytes: `max_total_bytes`, `max_principal_bytes`, `max_record_bytes`, `max_history_bytes`,
+  `max_operation_bytes`, `max_materialized_bytes`, `max_database_bytes`.
+- Item counts: `max_input_items`, `max_output_items`, `max_history_items`.
+- `response_retention_seconds`: positive finite seconds or explicit null for no automatic response expiry.
+
+All counts/bytes are explicit positive signed-int64 values. The global/principal byte allowances must admit one
+complete `max_operation_bytes` reservation. Accepted generation reserves its declared output/item storage before
+running. Capacity exhaustion returns 429; transient inference/media capacity retains its existing 503 behavior.
+The operation allowance covers complete canonical object/item/snapshot JSON, including generated fields and
+ASCII escaping; a small UTF-8 wire request can exceed that storage allowance and be refused before publication.
+No live conversation or item is silently evicted to make room. Unreferenced items can retire when their final
+response/item relation retires; deleting a conversation preserves its item relations.
+
+Byte accounting includes original item JSON and separately stored immutable execution snapshots. The database
+page cap includes SQLite structures and fragmentation; a rollback journal may additionally approach one database
+file during a transaction. `max_materialized_bytes` guards accepted Python record views including container
+overhead; serialized parser inputs/transient copies remain separately bounded. This is not an allocator/RSS cap
+or a device/resource qualification. The configured record and operation bounds also apply to generated output.
+HTTP parsing and slow-client response buffers have a separate transport lifetime; configure the existing
+`--max-http-connections` bound in the serving envelope rather than treating a record-operation quota as a socket cap.
+
+| Standard content | Local mapping and capability |
+| --- | --- |
+| `input_text`, assistant output/refusal, function-call/output and plaintext reasoning items | Shared existing chat template/engine; tool-call IDs and assistant phases are retained. |
+| `input_image` data URL | Existing image decoder/processor; the input bytes are self-contained. |
+| `input_image` HTTPS URL | Existing URL security/limits, only with URL fetching enabled. Durable storage preserves the original public URL and separately captures encoded bytes before generation; subsequent turns use that immutable snapshot. SM70 capture reuses its supervised replay worker. |
+| `input_file` with `filename` and base64 `file_data: "data:video/..."` | Local Responses transport only with the admitted SM70 temporal media runtime and durable API store. Internally maps to the existing VideoSource, supervised decoder and pinned temporal processor; no private video field is exposed. |
+| Uploaded `file_id`, external `file_url`, PDF/document extraction and hosted tools | Explicitly unsupported. |
+
+The `input_file` field names follow the official schema; OpenAI's [hosted file-input guide](https://developers.openai.com/api/docs/guides/file-inputs) lists document
+formats, so this local video capability is **not a claim that hosted OpenAI models accept video files**.
+Actual V100 video/model quality, resource and performance qualification remains a release gate. The image-only
+workflow is not evidence of pinned video sampling parity. API source checks use CPU/fake-engine execution;
+unmodified SDK checks pin OpenAI Python 3.37.0 separately from production dependencies.
 
 HTTP 400 refuses what this server does not run: built-in tools (web search, file search, computer use and the
-others), `background`, `include` (encrypted reasoning among them), `conversation`, `prompt` templates,
-`truncation: "auto"`, `top_logprobs`, `input_file` parts and file IDs, `item_reference` items, encrypted reasoning
+others), `background`, `include` (encrypted reasoning among them), `prompt` templates,
+`truncation: "auto"`, `top_logprobs`, unsupported `input_file` variants and file IDs, encrypted reasoning
 items, and a `previous_response_id` that is not stored.
+`conversation` and `item_reference` require the durable store; a missing/foreign durable reference returns 404.
 
 ## Anthropic Messages
 

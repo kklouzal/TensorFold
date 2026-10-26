@@ -12,10 +12,15 @@ import uuid
 import weakref
 
 import torch
-
 from .dflash2_features import FeatureFrame
 from .dflash2_provider import DFlash2Provider, bind_target
 from .dflash2_weights import load_shard
+
+
+def inactive_snapshot_payload(state, position):
+    """Metadata only; caller has validated the live window and target cut."""
+    return {"schema": "dflash2-inactive-v1", "config": state.config.identity,
+            "profile": state.profile_identity, "generation": state.generation, "target_end": position}
 
 
 class DraftWindow:
@@ -353,8 +358,7 @@ class DFlash2Runtime:
         if type(position) is not int or not 0 <= position <= self.context:
             raise ValueError("DFlash2 snapshot position exceeds its context commitment")
         if not state.enabled:
-            return {"schema": "dflash2-inactive-v1", "config": self.config.identity,
-                    "profile": state.profile_identity, "generation": state.generation, "target_end": position}
+            return inactive_snapshot_payload(state, position)
         if position <= state.end:
             return state.snapshot(position)
         rows = position - state.end

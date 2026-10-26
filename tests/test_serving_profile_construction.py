@@ -21,7 +21,7 @@ class Store:
 
     def set(self, key, value):
         with self.condition:
-            self.data[key] = value
+            self.data[key] = value.encode("utf-8") if isinstance(value, str) else value
             self.maximum = max(self.maximum, len(self.data))
             self.condition.notify_all()
 
@@ -41,6 +41,18 @@ class Store:
         assert duration == timedelta(hours=1)
         with self.condition:
             assert self.condition.wait_for(lambda: all(key in self.data for key in keys), 5), keys
+
+
+@pytest.mark.parametrize("value,expected", [("native-\u00e9-contract", b"native-\xc3\xa9-contract"),
+                                           (b"\x00\xff\x00", b"\x00\xff\x00")])
+def test_store_producer_matches_native_utf8_bytes_contract(value, expected):
+    store = Store()
+    store.set("value", value)
+    assert type(store.data["value"]) is bytes and store.data["value"] == expected
+    assert type(store.get("value")) is bytes and store.get("value") == expected
+    assert store.check(["value"]) and store.maximum == 1
+    store.delete_key("value")
+    assert not store.check(["value"]) and store.data == {}
 
 
 class Comm:

@@ -32,6 +32,7 @@ class _Listener:
     def retire_before_handoff(self):
         """Close only a descriptor still proved exclusively Python-owned, once."""
         if self.socket is None:
+            self.phase = "retired"
             return
         try:
             if self.socket.fileno() != -1:
@@ -80,27 +81,43 @@ def open_store(master: str, port: int, world: int, rank: int, *, timeout_s: floa
         raise ValueError("same-host expert rendezvous requires a numeric loopback address or localhost") from None
     if not address.is_loopback:
         raise ValueError("same-host expert rendezvous requires a loopback address")
+    return open_bound_store(host, port, world, rank, timeout_s=timeout_s,
+                            family=socket.AF_INET6 if address.version == 6 else socket.AF_INET, bind_host=host)
+
+
+def open_bound_store(master: str, port: int, world: int, rank: int, *, timeout_s: float,
+                     family: int, bind_host: str, register=None, before_handoff=None):
+    """Shared single-listener FD adoption; callers validate their target envelope.
+
+    The configured client destination may differ from the explicit bind
+    address. Such callers must establish endpoint identity before publishing
+    the Store. An entered native handoff has the same containment contract as
+    the loopback expert wrapper above.
+    """
     factory = _store_type()
     options = dict(timeout=timedelta(seconds=timeout_s), wait_for_workers=False, use_libuv=False)
     if rank:
-        return factory(host, port, world, False, **options)
+        return factory(master, port, world, False, **options)
     owner = _Listener()
     try:
-        owner.socket = socket.socket(socket.AF_INET6 if address.version == 6 else socket.AF_INET,
-                                     socket.SOCK_STREAM)
+        if register is not None:
+            register(owner)
+        owner.socket = socket.socket(family, socket.SOCK_STREAM)
         # POSIX permits retired TIME_WAIT sessions to rebind, without enabling
         # SO_REUSEPORT. Windows gives SO_REUSEADDR different sharing semantics.
         if os.name == "posix":
             owner.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        owner.socket.bind((host, port))
+        owner.socket.bind((bind_host, port))
         owner.socket.listen()
         actual_port = owner.socket.getsockname()[1]
+        if before_handoff is not None:
+            before_handoff(actual_port)
         # Publish before detach, so an interrupt after detach still leaves an
         # exclusively owned descriptor until native handoff is entered.
         owner.descriptor = owner.socket.fileno()
         owner.socket.detach()
         owner.phase = "native_handoff"
-        owner.store = factory(host, actual_port, world, True,
+        owner.store = factory(master, actual_port, world, True,
                               master_listen_fd=owner.descriptor, **options)
         owner.descriptor = None  # the returned native Store now proves adoption
         owner.phase = "native"

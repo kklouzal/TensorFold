@@ -1,0 +1,132 @@
+{
+  "schema": "tensorfold.v100-adaptive-installed-cpu-checkpoint",
+  "version": 1,
+  "status": "Verified installed CPU application checkpoint; release and target qualification remain pending",
+  "application_commit": "7d3ddbb9d066fe7451769ad9a36739619ce2d618",
+  "application_input_tree": "ff1883131180963a1de18bb00c74d6777466dcb9",
+  "specification_sha256": "7c9f724346866cfb89382ee2e30d60d9d827222c347610783b37683ba04e5a8c",
+  "image_identity": {
+    "local_docker_image_id": "sha256:fb0ac861483f0bc14bef1f73535d07d358c196c7e9358f76da3390f1434813a8",
+    "inspect_repo_digests_observed": [
+      "tensorfold-v100@sha256:fb0ac861483f0bc14bef1f73535d07d358c196c7e9358f76da3390f1434813a8"
+    ],
+    "registry_publication_verified": false,
+    "published_registry_reference": null
+  },
+  "base_consumer_image": "tensorfold-api-native:20261027@sha256:724d11db657eef72bd3a2620ede778b7b926daeb2f240eea5ceb706257cb3326",
+  "source_capture": {
+    "archive_sha256": "dde5eaf0a104bd7c8a9725421b7119e43360bb475ffa771d63e37d4d81886b96",
+    "manifest_sha256": "eef07e4ac32f7e45abacf397a6cd9fa84b3817b067b11f1a1526e2ed79660d8d",
+    "inputs": 2012,
+    "code_files": 707,
+    "test_modules": 183,
+    "code_inventory_sha256": "bdacf8bd7290b40c0f73f35025732b1f6006b4a5756d20bf4ea73fbc706224d1",
+    "frontend_identity_sha256": "7c01455c98738d9575e41df6468150e007fe1dff87db64e9ddbd25689777ab80",
+    "native_fd_embedded_source_sha256": "f85d2c923adfaa14e819250e8def3c3166b8c8624295a37572916e62ad20c1f2"
+  },
+  "installed_gate": {
+    "status": "GREEN",
+    "passed": 5582,
+    "failed": 0,
+    "subtests": 144,
+    "skipped": 9,
+    "exit_status": 0,
+    "pytest_elapsed_s": 551.56,
+    "driver_elapsed_s": 558.2830509548075,
+    "log_sha256": "283fe60a7639ed703dc319da0ca0e62e75bee8e2950bc591f61440b4612a7de2",
+    "result_sha256": "218de8df4d4ceee43dbfbbca72e759c559be9a2d890d5ed1b34328a31b124e66",
+    "postrun_drift_receipt_sha256": "6b9961f05e3c6d1449bae3f21c75357e9507de413af8ce0da688c228c05cac14",
+    "no_source_overlay": true,
+    "normal_site_packages_code_matches_source": true,
+    "all_2012_inputs_equal_before_and_after": true,
+    "evidence_files": {
+      "installed_log": {
+        "name": "successor-held-ff18831311-installed.log",
+        "sha256": "283fe60a7639ed703dc319da0ca0e62e75bee8e2950bc591f61440b4612a7de2"
+      },
+      "installed_result": {
+        "name": "successor-held-ff18831311-installed-result.json",
+        "sha256": "218de8df4d4ceee43dbfbbca72e759c559be9a2d890d5ed1b34328a31b124e66"
+      },
+      "drift": {
+        "name": "successor-held-ff18831311-drift.json",
+        "sha256": "6b9961f05e3c6d1449bae3f21c75357e9507de413af8ce0da688c228c05cac14"
+      },
+      "conditions": {
+        "name": "successor-held-ff18831311-conditions.json",
+        "sha256": "3badeeccb5e05341efb2b34d403cf5caef3c4d4e38c42208eac42dc2e7f9ca16"
+      },
+      "docker_limits": {
+        "name": "successor-held-ff18831311-docker-limits.json",
+        "sha256": "941683c67c0f7e10a2a4da14148df8975246ddac6b25945b14c3ce6fd4225246"
+      },
+      "image_identity": {
+        "name": "successor-held-ff18831311-image-identity.json",
+        "sha256": "f827b800c8b7e88a9a293f1b91017b36053bf03fae8c1f3f5e56133ecd57e1ea"
+      },
+      "build_result": {
+        "name": "successor-held-ff18831311-build-result.json",
+        "sha256": "7a4bd6842ec2b07c876b42e37e1062eae65d3e5bd89f4ced2ef6faafb3eed3fa"
+      }
+    },
+    "evidence_availability": "Raw evidence retained with the task; hash identities are recorded here. Private evidence paths are not required by maintained tests."
+  },
+  "skip_disposition": [
+    "SKIPPED [1] ../src/tests/test_grammar_lanes.py:8: could not import 'mlx.core': No module named 'mlx'",
+    "SKIPPED [1] ../src/tests/test_prefix_snapshots.py:8: could not import 'mlx.core': No module named 'mlx'",
+    "SKIPPED [1] ../src/tests/test_cuda_server_stream.py:22: needs the Qwen3.8-27B tokenizer (tensorfold pull TensorFold/Qwen3.8-27B-MLX-4bit)",
+    "SKIPPED [1] ../src/tests/test_flashnext_dflash2.py:583: optional exact large artifact was not supplied",
+    "SKIPPED [1] ../src/tests/test_flashnext_gguf_mtp.py:463: optional pinned companion and actual target metadata not supplied",
+    "SKIPPED [2] ../src/tests/test_v100_compose.py:58: requires host Docker Compose >=2.30",
+    "SKIPPED [1] ../src/tests/test_v100_compose.py:67: requires host Docker Compose >=2.30",
+    "SKIPPED [1] ../src/tests/test_v100_compose.py:74: requires host Docker Compose >=2.30"
+  ],
+  "preserved_failed_attempt": {
+    "tree": "045446b572d9be7a8aa08ef9f1fde125e77b38f8",
+    "image": "sha256:c903e72e3edb5e50bf26bac22acdd697fa444844b90dd639a56ddf48a69a5fe3",
+    "failed": 16,
+    "passed": 5564,
+    "skipped": 9,
+    "subtests": 144,
+    "log_sha256": "f6c1d52db9a41f7b45dee8799167e678695e111cd11abfbbf2b9c9ce59248214",
+    "cause": "Shared profile test Store returned str where the independently tested native contract returns UTF-8 bytes. Only the fixture producer and two contract cases changed; all 707 production code files remained identical."
+  },
+  "source_resource_controls": {
+    "passed": 236,
+    "skipped": 0,
+    "receipt_sha256": "bcea7f4ef35d3c11bdf661613dcdcabbbeb1eea439575f3d612964097bff5dfb",
+    "scope": "Source payload/runtime integration only, not physical memory/RSS/P3 qualification"
+  },
+  "selected_source_runtime": {
+    "python": "CPython 3.12.3",
+    "torch_effective_commit": "5ab14acbced0c33e6b6e8fdbc5b541b57487f7e1",
+    "gcc_build_major": 13,
+    "cxx11_abi": 1,
+    "libstdcxx_runtime": "recorded GCC 14 content",
+    "image_platform": "Linux amd64"
+  },
+  "documentation_relationship": {
+    "this_receipt_and_following_docs_were_not_inputs_to_tested_image": true,
+    "all_707_application_code_files_equal_tested_source": true,
+    "preexisting_user_remote_documentation_tip": "3c451c5c8f825d429ec33be7dbaea05ecb405d0f",
+    "historical_media_receipt_sha256": "098fa09548d5c8f2f2ef1c803a96249ef2a8589c8bdb855f64fc7deed3b676a2"
+  },
+  "release_qualified": false,
+  "release_blockers": [
+    {
+      "kind": "native SDK P1 getnameinfo fallback invalid-object access/shared-flag concern",
+      "risk_record_sha256": "a8f3aac0d322901546d3bbeb268a1b6a6f844b6c01f4de56342ad086de6eb796"
+    },
+    {
+      "kind": "NVIDIA compiler issue 6111901; actual SM70 disposition pending"
+    }
+  ],
+  "hardware_gates": "Actual V100/TP8/NCCL/model/numerics/quality/physical capacity/allocatorRSS/NUMA/native wall deadlines/P3 unqualified",
+  "conservatism": "Generic G(R96) may refuse declared host configurations; no physical insufficiency/capacity or optimization claim",
+  "review_receipts": {
+    "D13_resource": "8f81b44408fbcf59942bb26f92f597757090786d35b2a2b53a15a39c12abe45e",
+    "D14_resource": "516fe89d",
+    "D13_fixture": "ff3aac7079a2bb7b546373c8be596ffee7b6548b408c0e89a1b1382ad00aa887",
+    "D14_fixture": "c262595b"
+  }
+}

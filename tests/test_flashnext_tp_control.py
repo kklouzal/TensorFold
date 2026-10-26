@@ -154,6 +154,7 @@ def _half_status_state():
     st.kv_status = torch.tensor([0, -2], dtype=torch.int32)
     st._kv_peer_status = torch.empty((8, 2), dtype=torch.int32)
     st._kv_pending, st._kv_error, st._resize_error = True, None, None
+    st.compact_indexer = None  # This independent status-only fixture owns no compact history.
     st.pos, st.mtp_len = 9, 0
     return st
 
@@ -190,6 +191,7 @@ def test_tp_concurrent_mtp_reports_peer_numeric_failure_before_publishing_logits
     decoder.live = lambda: 0
     decoder.mbuf = SimpleNamespace(h=torch.empty(1, dtype=torch.float16))
     decoder.graphs = None
+    decoder.controller = None
     logits = torch.zeros((1, 64))
     monkeypatch.setattr(multi, 'mtp_compute', lambda *args, **kwargs: logits)
     with pytest.raises(KVNumericError, match='rank 7'):

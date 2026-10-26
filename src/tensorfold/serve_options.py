@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import inspect
 import math
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -25,11 +26,15 @@ def check_numbers(args: argparse.Namespace) -> None:
     if eos is not None and (not eos or any(type(token) is not int or token < 0 for token in eos)):
         raise ValueError("--eos-token-id must be a nonnegative integer (repeat for multiple IDs)")
 
-    for name in ("max_http_connections", "max_pending_requests", "max_pending_requests_per_principal", "max_engine_calls"):
+    for name in ("max_http_connections", "max_pending_requests", "max_pending_requests_per_principal", "max_engine_calls",
+                 "max_waiting_input_bytes", "max_waiting_input_bytes_per_principal", "output_queue_tokens"):
         optional_limit(getattr(args, name, None), "--" + name.replace("_", "-"))
     if (getattr(args, "max_pending_requests_per_principal", None) is not None
             and getattr(args, "max_pending_requests", None) is None):
         raise ValueError("--max-pending-requests-per-principal requires --max-pending-requests")
+    timeout = getattr(args, "queue_timeout_s", None)
+    if timeout is not None and (type(timeout) not in (int, float) or not 0 < timeout <= threading.TIMEOUT_MAX):
+        raise ValueError("--queue-timeout-s must be positive, finite and within the runtime wait range")
     budgets = ("prompt_cache_gib", "spill_gib", "pass_cache_gib", "mlx_cache_gib", "ssd_experts")
     for name in (*budgets, "temperature", "top_p", "min_p", *PENALTY_FIELDS, "decode_share", "mtp_confidence",
                  "yarn_factor"):
@@ -48,6 +53,47 @@ def check_numbers(args: argparse.Namespace) -> None:
             raise ValueError(f"{flag} must be between -2 and 2")
         if name == "repetition_penalty" and value <= 0:
             raise ValueError(f"{flag} must be greater than 0")
+
+
+def prepare_service_options(args: argparse.Namespace) -> None:
+    """Freeze explicit cross-field policies before authentication/model owners."""
+    from tensorfold.families.qwen4_exp.cuda.retention_policy import parse_retention_policy
+
+    args.retention_policy = parse_retention_policy(**{name: getattr(args, name, None) for name in (
+        "retention_tier", "retained_sessions", "retention_lifetime_s", "retention_ram_bytes",
+        "retention_chunk_bytes", "retention_progress_bytes", "retention_overlap_bytes")})
+    record_store, record_limits = getattr(args, "api_record_store", None), getattr(args, "api_record_limits", None)
+    if (record_store is None) != (record_limits is None):
+        raise ValueError("--api-record-store and --api-record-limits must be configured together")
+    args._api_record_limits = None
+    if record_limits is not None:
+        from tensorfold.server.request_limits import optional_limit
+        from tensorfold.cuda.tensor_file import read_metadata_json
+        from tensorfold.server.api_records import ApiRecordLimits
+
+        if optional_limit(getattr(args, "max_http_connections", None), "--max-http-connections") is None:
+            raise ValueError("durable API records require explicit positive --max-http-connections")
+        args._api_record_limits = ApiRecordLimits.from_record(read_metadata_json(record_limits))
+
+
+def drafter_metadata_source(value: str) -> Path:
+    """Resolve a companion without preparing a second target text frontend."""
+    from tensorfold import hub
+
+    path = Path(value).expanduser()
+    if path.suffix.lower() == ".gguf" or (path.is_dir() and not (path / "config.json").exists()
+                                           and any(path.glob("*.gguf"))):
+        from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+
+        selected = resolve_gguf(path)
+        if selected is None:
+            raise FileNotFoundError(f"{value} is not an existing GGUF companion")
+        return selected
+    if path.is_dir():
+        return path
+    if not hub.is_repo_id(value):
+        raise FileNotFoundError(f"{value} is neither a drafter directory nor a Hugging Face repo id")
+    return hub.metadata(value)
 
 
 def _served_name(args: argparse.Namespace) -> str:
@@ -343,6 +389,38 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         if not 0.0 <= confidence <= 1.0:
             raise ValueError(f"--mtp-confidence is a probability from 0 to 1, not {confidence}")
     _adaptive_service_limits(args, family, backend, config_dir)
+    _fifo_options(args, family, backend, config_dir)
+
+
+def _fifo_options(args, family, backend, config_dir):
+    """Resolve the actual unique-history admission capability before downloads."""
+    bounds = (getattr(args, "max_waiting_input_bytes", None),
+              getattr(args, "max_waiting_input_bytes_per_principal", None), getattr(args, "queue_timeout_s", None),
+              getattr(args, "output_queue_tokens", None))
+    policy = getattr(args, "retention_policy", None)
+    if backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next"):
+        if any(value is not None for value in bounds) or policy is not None:
+            raise ValueError("FIFO input/deadline and retention options require actual adaptive Flash Next unique TP8 GPU histories")
+        return
+    from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+    from tensorfold.families.qwen4_exp.cuda.serving_profiles import validate_service_options
+
+    source = config_dir if config_dir is not None else getattr(args, "model", None)
+    sm70 = source is not None and (resolve_gguf(source) is not None or getattr(args, "family_manifest", None) is not None)
+    from tensorfold.families.qwen4_exp.cuda import DEPTH
+    from tensorfold.families.qwen4_exp.cuda.speculation import checkpoint_method
+
+    method = getattr(args, "draft_method", "auto")
+    enabled = not (getattr(args, "no_drafts", False) or method == "none")
+    depth = 0 if not enabled else DEPTH if getattr(args, "mtp_drafts", None) is None else int(args.mtp_drafts)
+    choice = getattr(args, "drafter", "auto")
+    if sm70 and getattr(args, "tp", 1) == 8 and method == "auto" and depth > 0 and choice not in ("", "none", "auto"):
+        method = checkpoint_method(drafter_metadata_source(choice))
+    validate_service_options(source, {"tp": getattr(args, "tp", 1), "adaptive_sessions": sm70,
+        "depth": depth, "draft_method": method,
+        **{name: getattr(args, name, None) for name in ("max_waiting_input_bytes", "queue_timeout_s", "retention_policy", "output_queue_tokens",
+                                                     "max_waiting_input_bytes_per_principal", "family_manifest", "vram_experts")},
+        "indexer_history": getattr(args, "indexer_history", "gpu")})
 
 
 def _adaptive_service_limits(args, family, backend, config_dir):
@@ -419,4 +497,4 @@ def vision_options(args: argparse.Namespace) -> dict[str, Any]:
             "vision_offload": bool(getattr(args, "vision_offload", False))}
 
 
-__all__ = ["check", "check_numbers", "name_priority", "vision_options"]
+__all__ = ["check", "check_numbers", "prepare_service_options", "drafter_metadata_source", "name_priority", "vision_options"]

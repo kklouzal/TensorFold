@@ -7,8 +7,14 @@ model loading, CUDA recovery, output quality, capacity or performance on V100.
 The current design requires the SC117 IQ3_S source, image/video-to-text with
 pinned visual/processor/decoder inputs, and compact indexer transactions. The
 earlier text/fake-loader checks cover only their unchanged lifetime scope.
-Those new source, media-envelope, position/replay, capacity and quality gates
-remain open; this document does not establish their implementation or eligibility.
+Source/CPU implementation evidence is separate from the open device,
+media-envelope, position/replay, capacity and quality gates. There is no final
+immutable v6 application image yet; an earlier installed baseline or a source
+dependency image does not qualify the new FIFO/retention/API combination.
+Use a final frozen source build and its actual immutable image/source receipts
+for device qualification. The governing maintained design matches the home v6
+text after trailing-whitespace normalization; its home SHA256 is
+`7c9f724346866cfb89382ee2e30d60d9d827222c347610783b37683ba04e5a8c`.
 
 The existing `/v1/runtime` integer controls keep their meanings. A separate
 standalone request selects model/context/KV/method resources:
@@ -32,6 +38,79 @@ Depth0 disables speculative ownership; a positive maximum keeps that method's
 allocated capability available for runtime proposal_limit0. Processes, TP ranks,
 communication settings, expert deployment and indexer-history mode stay fixed.
 The selected model must use the maintained resident GGUF SM70 path.
+
+## Fixed endpoint, FIFO and retention policy
+
+For the new adaptive TP8 unique-history layout, an implemented position profile
+selects FIFO admission. Stock MTP, target-only diagnostic execution and the
+separately selected DFlash path use that capability. Enabled DSpark remains a
+legacy profile without the new positional/context authority and rejects these
+FIFO-only options. Source/layout/method checks run before device allocation.
+
+Startup must provide explicit positive `--max-pending-requests`,
+`--max-http-connections` and `--max-waiting-input-bytes` values in the new region.
+Waiting input credits include queued and reserved live/readmission input through
+the logical caller and backend lifetime. An optional
+`--max-waiting-input-bytes-per-principal` limits those credits by actual
+authenticated principal; it has no default and need not be at most the global
+byte cap. `--max-pending-requests-per-principal` separately bounds unfinished
+requests and requires the global request limit. Both principal limits require
+actual configured API keys before model loading; metric labels are not principals.
+
+`--output-queue-tokens` optionally bounds pending per-request output, including
+callbacks in flight. Omitted/`None` preserves the existing full-reply mailbox
+bound. Positive values do not permit dropping output, redrawing protected
+proposals or rejecting smaller legal production windows. An optional positive
+finite `--queue-timeout-s` supplies a queue deadline, with no inferred wait SLO.
+The actual producer, fair progress, slow-client and cancellation contracts need
+their own device/workload evidence.
+
+The waiting-byte caps, output credits, queue timeout and typed retention policy
+are fixed process settings. Pass the same explicit settings to profile
+preparation and startup. They participate in identity; omitted and explicit
+`None` are equivalent only for unset optional service fields. Configured values
+are retained exactly. They cannot appear as mutable `options` in a profile file
+or be supplied through arbitrary runtime constructor kwargs.
+
+All retention inputs unset means request scope. GPU retention requires explicit
+`--retention-tier gpu`, `--retained-sessions` and `--retention-lifetime-s`.
+RAM retention requires the seven explicit flags below; none is inferred:
+
+| Flag | Meaning |
+| --- | --- |
+| `--retention-tier ram` | Complete inference-state backing in RAM. |
+| `--retained-sessions` | Maximum retained logical sessions, separate from GPU activity. |
+| `--retention-lifetime-s` | Absolute lifetime, not a warm-idle grace period. |
+| `--retention-ram-bytes` | Global host backing budget. |
+| `--retention-chunk-bytes` | Bounded transfer chunk. |
+| `--retention-progress-bytes` | Global host progress reserve; at least two chunks per actual rank. |
+| `--retention-overlap-bytes` | Additional GPU overlap per rank; explicit zero permits serialized copies. |
+
+The parser creates a typed `RetentionPolicy`; the identity binds its versioned
+record. These limits do not promise more simultaneously executing GPU sequences
+or process-crash durability. Resource finalization binds the loaded vocabulary
+and effective decoder to supported size bounds; an unbounded decoder override
+cannot supply that promise. Native structured constraints have no qualified CPU envelope:
+RAM-retention generation and GPU-tier computed-retained operations are refused
+before native constraint compilation. Ordinary nonretained/count-only paths
+keep their separate behavior. Native/RSS, device and full-state qualification
+remain open.
+
+Durable logical API records are separately enabled by paired
+`--api-record-store` and `--api-record-limits`, with the existing explicit HTTP
+connection cap. The complete `tensorfold.api-record-limits` file provides all
+logical quotas, materialization/history/operation limits and response lifetime;
+no database path or numeric quota is invented. Responses/Conversations JSON and
+canonical items do not themselves reserve computed state. An explicit typed
+retention policy supplies that distinct contract. See the
+[API reference](api.md) and [V100 recipe](../deploy/v100/README.md#current-v6-source-candidate).
+
+Structural changes must drain incompatible retained state and its obligations;
+neither an API record nor a prepared file authorizes deleting a checkpoint to
+force a transition. Source-level handoff/restore checks are not a V100 capacity,
+quality or performance result.
+
+## Position, API and artifact bindings
 
 `position_profile_manifest` optionally selects the position authority's bounded
 JSON manifest, with its path relative to the serving manifest. The real family
@@ -87,20 +166,33 @@ intermediates. Its preparation receipt and byte counts are recorded; the
 consumer then releases those CPU operands. Engine loading independently prepares
 and adopts its own version-checked operands before model/device retention.
 
-Prepare these files outside request execution, using the maintained helper:
+## Prepare a profile
+
+Prepare these files outside request execution using the maintained helper.
+Run from the repository root in the selected pinned verification environment.
+The helper does not provision Torch or download missing model inputs.
 
 ```bash
+: "${TF_PROFILE_MODEL:?Set the existing local target input}"
+: "${TF_PROFILE_ID:?Set the profile identity}"
+: "${TF_PROFILE_OPTIONS:?Set the bounded options JSON file}"
+: "${TF_PROFILE_OUT:?Set the new profile manifest path}"
+: "${TF_MAX_WAITING_INPUT_BYTES:?Set the same FIFO input budget as startup}"
 python tools/prepare_serving_profile.py \
   --tp 8 --adaptive-sessions \
-  --model /models/flashnext-prepared \
-  --id flashnext-B \
-  --options B-options.json \
-  --api B-api.json \
-  --out /profiles/flashnext/B.json
+  --model "$TF_PROFILE_MODEL" \
+  --id "$TF_PROFILE_ID" \
+  --options "$TF_PROFILE_OPTIONS" \
+  --max-waiting-input-bytes "$TF_MAX_WAITING_INPUT_BYTES" \
+  --out "$TF_PROFILE_OUT"
 ```
 
-For example, an options object can contain
-`{"max_len":8192,"kv_dtype":"int8","depth":0,"graphs":false}`.
+The options file must contain the explicit positive integer `max_len` and the
+selected method/codec/artifact choices from the qualification profile. Supply
+`--api` only when an explicit API-defaults JSON file is intended. If startup
+configures principal input credits, output credits, queue timeout or retention,
+pass the same corresponding flags to this helper as well; the maintained helper
+uses the same argument declarations and typed retention parser as serving.
 `--tp` and `--adaptive-sessions` describe the actual intended deployment for
 preflight only. They are never stored as process overrides in profile `options`.
 The tool keeps its existing single-rank, nonadaptive default for legacy source
@@ -115,6 +207,8 @@ hashes, real metadata preflight and atomic file publication. Model input paths
 must already exist locally. Startup must use the CLI's required finite endpoint
 limits for adaptive V100 serving.
 
+## Lifetime and structural transitions
+
 Selection first validates every rank while the current model remains available.
 Then new model-bound admissions stop. Already prepared and queued requests stay
 bound to their original model epoch and finish or cancel before retirement.
@@ -123,8 +217,10 @@ garbage collection. Standalone preparations reserve the existing finite
 `max_pending_requests` budget before tokenization; `run` adopts that same owner
 without double counting. A callback creating another preparation needs an
 independent slot. Profile-enabled Apps require that finite pending bound.
-This API uses request-scoped GPU state; stored Responses JSON
-keeps canonical transcript data without keeping GPU model/session allocations.
+With no explicit retention policy, this API uses request-scoped GPU state.
+Stored Responses JSON keeps canonical transcript data; it does not alone imply
+retained GPU/model/session allocations. An explicit retention policy is a
+separate complete-state obligation with its own future backing/resource claim.
 Interrupted close remains retryable until required release/notification succeeds.
 Pruning/coalesced notification gets one bounded retry for allocation or
 cancellation failure, preserving the original error. Repeated failure closes

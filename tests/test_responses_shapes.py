@@ -40,6 +40,12 @@ class ResponseShapeTests(unittest.TestCase):
             with self.subTest(tools=tools):
                 self.refused({"tool_choice": {"type": "allowed_tools", "tools": tools}})
 
+    def test_false_zero_and_array_metadata_or_reasoning_are_not_empty_objects(self):
+        for field in ("metadata", "reasoning"):
+            for value in (False, 0, [], ""):
+                with self.subTest(field=field, value=value):
+                    self.refused({field: value})
+
     def test_text_format_and_named_allowed_tools_preserve_translated_content(self):
         app = App()
         body = {"input": "Keep my input.", "text": {"format": {"type": "text"}},

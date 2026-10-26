@@ -51,8 +51,14 @@ def profile(tmp_path):
     return profile_files(tmp_path)
 
 
-def load(root, name="A.json", *, rank=0, **kwargs):
-    return prepare(root, name, initializer=FlashNextEngine._initialize, fixed_options={"tp": 8, "rank": rank, "adaptive_sessions": True, "indexer_history": "gpu"}, **kwargs)
+def load(root, name="A.json", *, rank=0, waiting_input_bytes=4096, **kwargs):
+    from tensorfold.families.qwen4_exp.gguf import GGUFCheckpoint
+
+    actual = GGUFCheckpoint.open(root / "target/model.gguf").metadata
+    fixed = {"tp": 8, "rank": rank, "adaptive_sessions": True, "indexer_history": "gpu"}
+    if actual["qwen4exp.attention.head_count_kv"] == 2 and waiting_input_bytes is not None:
+        fixed["max_waiting_input_bytes"] = waiting_input_bytes
+    return prepare(root, name, initializer=FlashNextEngine._initialize, fixed_options=fixed, **kwargs)
 
 
 def test_exact_manifest_identity_is_shared_by_all_rank_coordinates(profile):

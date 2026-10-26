@@ -18,6 +18,8 @@ from tensorfold.server.memory_budget import MEMORY_FRACTION
 from tensorfold.serve_options import (
     check as _check_serve_options,
     check_numbers as _check_serve_numbers,
+    prepare_service_options as _prepare_service_options,
+    drafter_metadata_source as _drafter_metadata_source,
     name_priority as _name_priority,
     vision_options as _vision_options,
 )
@@ -282,6 +284,11 @@ def _drafter(family: Any, choice: str, backend: str = "mlx", *, mtp_drafts: int 
             and choice == "auto" and mtp_drafts is not None):
         return ""  # explicit included-MTP selection must not resolve the implicit separate drafter
     if choice != "auto":
+        if backend == "cuda" and getattr(family, "model_type", "") in ("qwen4_exp", "qwen3_8_flash_next"):
+            path = Path(choice).expanduser()
+            if path.suffix.lower() == ".gguf" or (path.is_dir() and not (path / "config.json").exists()
+                                                   and any(path.glob("*.gguf"))):
+                return str(_drafter_metadata_source(choice))
         return str(hub.resolve(choice))
     # a family that drafts otherwise on CUDA (Qwen3.6 MoE: its MTP layer) declares CUDA_DRAFTER = ""
     repo = getattr(
@@ -374,6 +381,9 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
         options["media_profile_manifest"] = args.media_profile_manifest
     if getattr(args, "no_graphs", False):
         options["graphs"] = False
+    for name in ("max_waiting_input_bytes", "max_waiting_input_bytes_per_principal", "output_queue_tokens", "queue_timeout_s", "retention_policy"):
+        if getattr(args, name, None) is not None:
+            options[name] = getattr(args, name)
     if getattr(args, "indexer_history", "gpu") != "gpu":
         options["indexer_history"] = args.indexer_history
     if getattr(args, "vram_experts_pin", "off") != "off":
@@ -447,8 +457,10 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
             engine.follow()
             return 0
         from tensorfold.cuda.server import App, Server, make_handler, serve
+        from tensorfold.server.request_body import LIMIT as HTTP_BODY_LIMIT
 
         app_class = getattr(family.package, "CUDA_APP", None) or App
+        record_limits = getattr(args, "_api_record_limits", None)
         app = app_class(
             engine,
             model_dir,
@@ -465,10 +477,17 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
             aliases=list(args.alias),
             background_ids=frozenset(_name_priority(args)),
             max_pending_requests=getattr(args, "max_pending_requests", None),
+            max_http_connections=getattr(args, "max_http_connections", None),
+            max_http_body_bytes=(None if record_limits is None else
+                                 max(HTTP_BODY_LIMIT, record_limits.max_operation_bytes)),
+            logical_api_limits=record_limits,
+            startup_owner=lambda partial: owners.update(app=partial),
             **({"max_pending_requests_per_principal": args.max_pending_requests_per_principal}
                if getattr(args, "max_pending_requests_per_principal", None) is not None else {}),
             **{name: value for name, value in _model_overrides(args).items() if name != "eos_token_ids"},
         )
+        owners["app"] = app
+        _configure_api_records(args, app, owners)
         shown = (
             "greedy"
             if float(sampling.get("temperature", 1.0)) <= 0
@@ -521,11 +540,13 @@ def _parallel(value: Any) -> int:
 
 def cmd_serve(args: argparse.Namespace) -> int:
     _check_serve_numbers(args)
+    _prepare_service_options(args)
     from tensorfold.server.authentication import configure
 
     args.auth = configure(args)
-    if getattr(args, "max_pending_requests_per_principal", None) is not None and not args.auth.enabled:
-        raise ValueError("--max-pending-requests-per-principal requires configured API keys before model loading")
+    for name in ("max_pending_requests_per_principal", "max_waiting_input_bytes_per_principal"):
+        if getattr(args, name, None) is not None and not args.auth.enabled:
+            raise ValueError("--" + name.replace("_", "-") + " requires configured API keys before model loading")
     from tensorfold import families, hub
     if not args.no_update_check:
         from tensorfold import update
@@ -602,7 +623,7 @@ def cmd_serve(args: argparse.Namespace) -> int:
         if enabled:
             method = "mtp" if depth else "none"
             choice = getattr(args, "drafter", "auto")
-            source = (_config_dir(choice) if choice not in ("", "none", "auto") else
+            source = (_drafter_metadata_source(choice) if choice not in ("", "none", "auto") else
                       _drafter(family, choice, "cuda", model_dir=config_dir))
             if source:
                 selected = checkpoint_method(source)
@@ -688,6 +709,27 @@ def cmd_serve(args: argparse.Namespace) -> int:
     return _serve_mlx(args, family, model_dir, context, required_files, memory_limit, fraction)
 
 
+def _configure_api_records(args: argparse.Namespace, app: Any, owners: dict[str, Any]) -> None:
+    """Own the explicitly configured logical store before publishing HTTP handlers."""
+    path = getattr(args, "api_record_store", None)
+    if path is None:
+        return
+    from tensorfold.cleanup import rollback
+    from tensorfold.server.api_records import ApiRecordLimits, ApiRecordStore
+
+    limits = getattr(args, "_api_record_limits", None)
+    if type(limits) is not ApiRecordLimits:
+        raise ValueError("API record limits must be resolved before model startup")
+    store = ApiRecordStore(path, limits=limits)
+    try:
+        owners["api_records"] = store
+    except BaseException as primary:
+        rollback(store, primary, store.close)
+    if getattr(args, "retention_policy", None) is not None:
+        owners["engine"].bind_api_record_store(store)
+    app.api_record_store = store
+
+
 def _close_serving(owners: dict[str, Any], primary: BaseException | None, unwire: Any = None) -> None:
     """Drain returned/partial serving owners; failed drains retain wiring and owners.
 
@@ -698,11 +740,12 @@ def _close_serving(owners: dict[str, Any], primary: BaseException | None, unwire
 
     failures = []
     drained = True
-    for name, method in (("line", "stop"), ("server", "server_close"), ("app", "close"), ("engine", "close")):
+    for name, method in (("line", "stop"), ("server", "server_close"), ("app", "close"), ("engine", "close"),
+                         ("api_records", "close")):
         resource = owners.get(name)
         if resource is None:
             continue
-        if name in ("app", "engine") and not drained:
+        if name in ("app", "engine", "api_records") and not drained:
             continue  # a handler may still use its model
         try:
             close = getattr(resource, method, None)
@@ -710,7 +753,7 @@ def _close_serving(owners: dict[str, Any], primary: BaseException | None, unwire
                 close()
         except BaseException as failure:
             failures.append(failure)
-            if name in ("app", "engine") or (name == "server" and not getattr(resource, "handlers_drained", False)):
+            if name in ("app", "engine", "api_records") or (name == "server" and not getattr(resource, "handlers_drained", False)):
                 drained = False
     if unwire is not None and drained:
         try:
@@ -1020,6 +1063,7 @@ def _serve_mlx_start(
         max_engine_calls=getattr(args, "max_engine_calls", None),
     )
     owners["app"] = app
+    _configure_api_records(args, app, owners)
     if app.context_fitted:
         print(
             f"[tensorfold] context window {app.context_window:,} tokens: the most one request can use in the "

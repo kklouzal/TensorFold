@@ -20,7 +20,7 @@ Quoted from the family pages, not measured per card.
 | Engine | Floor |
 | --- | --- |
 | CUDA, other families | Compute capability 8.9 or newer: Ada RTX 40, Hopper, and Blackwell cards (RTX 50, RTX PRO 6000, DGX Spark GB10). RTX 30 (8.6) is not supported yet. |
-| Flash Next, CUDA | sm_120 and sm_121 only: DGX Spark GB10, RTX 50, RTX PRO 6000. A card below sm_120 refuses Flash Next at startup. |
+| Flash Next, CUDA | The maintained modern path targets sm_120 and sm_121: DGX Spark GB10, RTX 50, RTX PRO 6000. The separate [V100 SM70 GGUF source candidate](../../deploy/v100/README.md#current-v6-source-candidate) uses the selected source-built CUDA 12.9 envelope; actual v6 V100 model, quality and performance qualification remains pending. This does not provide general Volta support for other quantized/native NVFP4 routes. |
 | MLX, Apple Silicon | GLM-5.3-Flash is written for a 256 GB Mac, about 151 GiB resident. DeepSeek-V4-Flash is the same, about 151 GiB resident. Flash Next's default command sizes to a 128 GiB M4 Max. Qwen3.8-27B on a 32 GB Mac needs more than the default 22.4 GiB. Machine classes, not measured minimums. |
 
 Contributor guides cover [adding an MLX family](adding-a-family.md),

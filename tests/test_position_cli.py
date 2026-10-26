@@ -39,6 +39,7 @@ def gguf_source(directory):
 def command(directory, manifest):
     return ["serve", str(directory), "--backend", "cuda", "--no-drafts", "--no-update-check", "--tp", "8",
             "--master", "127.0.0.1", "--max-pending-requests", "1", "--max-http-connections", "1",
+            "--max-waiting-input-bytes", "4096",
             "--position-profile-manifest", str(manifest)]
 
 

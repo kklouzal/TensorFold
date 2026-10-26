@@ -27,6 +27,9 @@ from tensorfold.cleanup import finish, raise_failures, rollback
 
 SCHEMA = "tensorfold.execution-profile-manifest"
 VERSION = 1
+PHASE_VALUE_BYTES = 16 << 20
+PHASE_ERROR_TYPE_CHARS = 80
+PHASE_ERROR_TEXT_CHARS = 1024
 _METADATA = ("config.json", "tokenizer.json", "tokenizer_config.json", "generation_config.json",
              "special_tokens_map.json", "added_tokens.json", "chat_template.jinja")
 _SOURCE_SUFFIXES = {".py", ".c", ".cpp", ".cu", ".cuh", ".h", ".so"}
@@ -678,6 +681,23 @@ def _unretired(error):
     return False
 
 
+def phase_failure_value_bytes():
+    """Worst encoded owned refusal under the shipping diagnostic schema."""
+    value = {"ok": False, "error": "\0" * PHASE_ERROR_TYPE_CHARS + ": " + "\0" * PHASE_ERROR_TEXT_CHARS,
+             "invalidates_binding": False}
+    # The owned NUL prototype escapes entirely to ASCII; no UTF8 copy is needed.
+    return len(canonical_runtime_json(value, max_bytes=PHASE_VALUE_BYTES))
+
+
+def _phase_value(store, key, fields):
+    # Keep the raw native result scoped to one decode, rather than retaining
+    # the previous packet while the next GET allocates its replacement.
+    value = store.get(key)
+    if fields is not None:
+        fields.received(value)
+    return json.loads(value)
+
+
 def _phase(engine, channel, stage, operation, *, may_refuse=True):
     """Publish a rank-owned outcome before any dependent rank wait.
 
@@ -685,6 +705,20 @@ def _phase(engine, channel, stage, operation, *, may_refuse=True):
     interrupted execution and commit failures may have partially published work:
     notify the parent supervisor and never enter a retirement rendezvous.
     """
+    # Retained cohorts optionally supply an immutable field capability. Old
+    # callers omit it and retain the existing protocol/serialization contract.
+    fields = getattr(engine, "store_fields", None)
+    if fields is not None and engine.comm is not None:
+        try:
+            own = f"{channel}/phase/{stage}/{engine.rank}"
+            prepared_keys = [f"{channel}/phase/{stage}/{rank}" for rank in range(engine.tp)]
+            for key in prepared_keys:
+                fields.key(key)
+            if own not in prepared_keys:
+                fields.key(own)
+        except BaseException as error:
+            _fatal(engine, error)
+            raise
     local_error = None
     try:
         value = operation()
@@ -694,7 +728,7 @@ def _phase(engine, channel, stage, operation, *, may_refuse=True):
             unsafe = not may_refuse or _unretired(error)
             if not unsafe:
                 name = type.__dict__["__name__"].__get__(type(error), type)
-                diagnostic = name[:80] + ": " + str(error)[:1024]
+                diagnostic = name[:PHASE_ERROR_TYPE_CHARS] + ": " + str(error)[:PHASE_ERROR_TEXT_CHARS]
         except BaseException as inspection:
             try:
                 _fatal(engine, error)
@@ -716,10 +750,17 @@ def _phase(engine, channel, stage, operation, *, may_refuse=True):
     else:
         try:
             store = engine.comm.store
-            store.set(f"{channel}/phase/{stage}/{engine.rank}", canonical_runtime_json(outcome, max_bytes=16 << 20))
-            keys = [f"{channel}/phase/{stage}/{rank}" for rank in range(engine.tp)]
+            encoded = canonical_runtime_json(outcome, max_bytes=PHASE_VALUE_BYTES)
+            try:
+                if fields is not None:
+                    fields.value(encoded)
+                store.set(f"{channel}/phase/{stage}/{engine.rank}", encoded)
+            finally:
+                encoded = None  # Old inline argument did not survive into peer GETs.
+            keys = (prepared_keys if fields is not None else
+                    [f"{channel}/phase/{stage}/{rank}" for rank in range(engine.tp)])
             store.wait(keys, timedelta(seconds=3600))
-            outcomes = [json.loads(store.get(key)) for key in keys]
+            outcomes = [_phase_value(store, key, fields) for key in keys]
             if any(not isinstance(row, dict) or type(row.get("ok")) is not bool or
                    set(row) != ({"ok", "value"} if row["ok"] else {"ok", "error", "invalidates_binding"})
                    or not row["ok"] and type(row["invalidates_binding"]) is not bool for row in outcomes):
@@ -737,24 +778,31 @@ def _phase(engine, channel, stage, operation, *, may_refuse=True):
     return [row["value"] for row in outcomes]
 
 
-def _rendezvous(engine, channel, stage):
-    store = engine.comm.store
-    store.set(f"{channel}/ready/{stage}/{engine.rank}", "1")
-    store.wait([f"{channel}/ready/{stage}/{rank}" for rank in range(engine.tp)],
-               timedelta(seconds=3600))  # Same startup/cohort wait contract as NCCL.ready.
-
-
 def _retire_store(engine, channel, *, stages=None):
     """All consumers acknowledge before the coordinator removes owned keys."""
     store = engine.comm.store
-    _rendezvous(engine, channel, "retirement")
+    fields = getattr(engine, "store_fields", None)
+    ready = [f"{channel}/ready/retirement/{rank}" for rank in range(engine.tp)]
+    retired = [f"{channel}/retired/{rank}" for rank in range(engine.tp)]
+    if fields is not None:
+        try:
+            stages = tuple(_PHASES if stages is None else stages)
+            prepared_keys = [f"{channel}/phase/{stage}/{rank}" for stage in stages for rank in range(engine.tp)]
+            prepared_keys += ready + retired
+            for key in prepared_keys:
+                fields.key(key)
+            fields.value("1")
+        except BaseException as error:
+            _fatal(engine, error)
+            raise
+    store.set(f"{channel}/ready/retirement/{engine.rank}", "1")
+    store.wait(ready, timedelta(seconds=3600))  # Existing startup/cohort wait.
     store.set(f"{channel}/retired/{engine.rank}", "1")
     if engine.rank == 0:
-        store.wait([f"{channel}/retired/{rank}" for rank in range(engine.tp)], timedelta(seconds=60))
-        keys = [f"{channel}/phase/{stage}/{rank}" for stage in (_PHASES if stages is None else stages)
-                for rank in range(engine.tp)]
-        keys += [f"{channel}/ready/retirement/{rank}" for rank in range(engine.tp)]
-        keys += [f"{channel}/retired/{rank}" for rank in range(engine.tp)]
+        store.wait(retired, timedelta(seconds=60))
+        keys = (prepared_keys if fields is not None else
+                [f"{channel}/phase/{stage}/{rank}" for stage in (_PHASES if stages is None else stages)
+                 for rank in range(engine.tp)] + ready + retired)
         finish((lambda key=key: store.delete_key(key) for key in keys))
 
 

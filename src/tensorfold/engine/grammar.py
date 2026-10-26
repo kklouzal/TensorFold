@@ -399,6 +399,25 @@ class Constraint:
         again.spec = self.spec
         return again
 
+    def retire_device_staging(self) -> None:
+        """Retire disposable mask/DMA storage on its serialized model coordinator.
+
+        The native CPU matcher and its accepted-token state remain owned by
+        this exact constraint. A retained request must call at a quiescent
+        boundary before its CPU continuation can outlive the GPU slot.
+        """
+        import torch
+
+        if self._landed is not None:
+            self._landed.synchronize()
+        for device in self._shifts:
+            if torch.device(device).type == "cuda":
+                completed = torch.cuda.Event()
+                completed.record(torch.cuda.current_stream(device))
+                completed.synchronize()
+        self._shifts.clear()
+        self._pinned = self._landed = None
+
     @property
     def finished(self) -> bool:
         """The grammar has taken its stop token: the reply is complete."""

@@ -42,6 +42,8 @@ class _Request:
     workers: set[Any] = field(default_factory=set)
     inherit_jobs: bool = True
     principal: str | None = None
+    input_claim: Any = None  # One actual admission-queue owner across sequential backend jobs.
+    retirement_failure: BaseException | None = None
 
 
 @dataclass(frozen=True)
@@ -136,6 +138,25 @@ class RequestLimit:
             raise ValueError("per-principal admission requires an authenticated request principal")
         return identity
 
+    def current_principal(self):
+        """Trusted logical-owner identity for internal queue/cache adapters, never a body hint."""
+        with self._lock:
+            stack = self._callers.get(threading.get_ident())
+            owner = stack[-1] if stack and stack[-1].scope.locked() else None
+            return self._identity(owner=owner) if owner is not None else self._identity()
+
+    def delivery_active(self, worker):
+        """Existing logical caller and engine borrow jointly own this live delivery path."""
+        with self._lock:
+            owner = self._workers.get(worker)
+            return owner is not None and owner.scope.locked()
+
+    def worker_active(self, worker):
+        """Positive engine-job retirement check, independent of caller cancellation."""
+        with self._lock:
+            owner = self._workers.get(worker)
+            return owner is not None and worker in owner.workers
+
     @contextmanager
     def principal(self, identity):
         """Bind trusted authentication identity, never a request-body/cache hint.
@@ -172,8 +193,32 @@ class RequestLimit:
             self._closed.set()
 
     def _retire(self, owner: _Request) -> None:
-        if not owner.scope.locked() and not owner.workers:
+        if not owner.scope.locked() and not owner.workers and owner.retirement_failure is None:
+            if owner.input_claim is not None:
+                try:
+                    owner.input_claim.close()
+                except BaseException:
+                    self._closed.set()  # Do not reuse possibly released byte credit after uncertain cleanup.
+                    raise
+                owner.input_claim = None
             self._owners.discard(owner)
+
+    def publish_inputs(self, worker, authority, publish):
+        """Reuse the logical caller's queue credit; lock order is owner then queue.
+
+        publish performs bounded CPU queue publication only. It journals a new
+        claim before publishing its entry, so interruption cannot strand credit.
+        """
+        with self._lock:
+            owner = self._workers.get(worker)
+            if owner is None:
+                raise RuntimeError("input credit requires its actual registered backend worker")
+            claim = owner.input_claim
+            if claim is not None and claim.authority is not authority:
+                raise RuntimeError("one logical request cannot change its admitted input authority")
+            def register(value):
+                owner.input_claim = value
+            return publish(claim, register)
 
     @contextmanager
     def request(self, prepared: PreparedAdmission | None = None, *, inherit_jobs: bool = True,
@@ -335,7 +380,15 @@ class RequestLimit:
         with self._lock:
             owner = self._workers.get(worker)
             if owner is not None:
-                owner.workers.discard(worker)
+                active = worker in owner.workers
+                owner.workers.discard(worker)  # Native owner proof precedes fallible journal removal.
+                try:
+                    if active and owner.input_claim is not None:
+                        owner.input_claim.backend_retired(worker)
+                except BaseException as failure:
+                    owner.retirement_failure = failure
+                    self._closed.set()
+                    raise
                 self._retire(owner)
                 self._workers.pop(worker, None)
 

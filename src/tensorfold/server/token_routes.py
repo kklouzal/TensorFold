@@ -73,7 +73,8 @@ def count_chat(app: Any, chat: dict[str, Any]) -> int:
             if close is not None:
                 close()
 
-        prepared = app.prepare(chat, True)
+        prepare = getattr(app, "prepare_for_count", app.prepare)
+        prepared = prepare(chat, True)
         try:
             count = len(prepared.prompt)
         except BaseException as primary:

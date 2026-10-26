@@ -68,6 +68,19 @@ def test_missing_identity_is_refused_before_acceptance_and_scope_is_restored():
         limit.prepare()
 
 
+def test_queue_adapter_reads_the_trusted_current_logical_owner_principal():
+    limit = RequestLimit(2, per_principal=1)
+    with limit.principal("trusted-a"):
+        assert limit.current_principal() == "trusted-a"
+        prepared = limit.prepare()
+    with limit.request(prepared):
+        assert limit.current_principal() == "trusted-a"  # Prepared handoff owns identity after HTTP scope ends.
+        with limit.principal("trusted-b"), pytest.raises(ValueError, match="another authenticated principal"):
+            limit.current_principal()
+    with pytest.raises(ValueError, match="authenticated request principal"):
+        limit.current_principal()
+
+
 @pytest.mark.parametrize("value", [True, 0, -1, 1.5])
 def test_principal_limit_is_explicit_positive_integer(value):
     with pytest.raises(ValueError, match="max_pending_requests_per_principal"):

@@ -6,13 +6,24 @@ full-context capacity planning, unique GPU histories, bounded execution and live
 controls. [Implementation and qualification boundaries](docs/v100-adaptive-validation.md)
 separate source checks from the pending eight-V100 model, quality and performance
 gates. Historical results below keep their original source and layout.
-The installed media/frontend/MTP integration at `64b24dd5` passed **4,365 CPU
-checks and 124 subtests**, with four documented optional/environment skips. All
-694 installed code files matched the tested source snapshot. The
-[checkpoint receipt](docs/verification-sm70-media-integration-20261026.json)
-records its exact scope. Newer FIFO, retained-state, standard API and resource
-integration remains in progress; V100 execution, quality, capacity and
-performance remain unqualified.
+The current adaptive CPU checkpoint passed **5,582 installed checks and 144
+subtests across 183 modules**, with nine documented optional/platform skips.
+All 707 installed code files matched frozen source tree `ff188313`, without a
+source overlay or input drift. The [checkpoint receipt](docs/verification-v100-adaptive-cpu-20261026.json)
+records the exact image, source, fixtures and evidence boundaries. This covers
+FIFO, retained-state, standard API and conditional native/Python resource
+composition; actual physical feasibility remains unqualified.
+The selected native SDK has a known failure-path P1 defect and requires an owned
+fix, immutable rebuild and requalification before release. Actual V100 execution,
+model quality, capacity and performance remain unqualified for this checkpoint.
+The earlier media/frontend/MTP checkpoint at `64b24dd5` passed 4,365 installed
+checks and 124 subtests; tree `413e132b` passed 5,214 checks and 144 subtests.
+Those historical results retain their original source and workload scope.
+The adaptive unique-history modes share an owned synchronous Store selected at
+startup for request-scoped, GPU-retained and RAM-retained operation. CPU checks
+cover listener ownership, rank agreement, cleanup and conditional resource
+composition. Existing legacy and other hardware paths retain their transport
+selection.
 The revised design's shared-GGUF MTP importer preserves the selected target
 embedding/head, validates the ordered token-ID mapping, and declares QSA ratio
 four with a 2,048-token complete-group budget. Import controls do not qualify
@@ -35,8 +46,9 @@ CPU software controls remain distinct from pending media service, SC117/mmproj,
 V100 resource/quality/performance and compiler qualification.
 A [bounded mmproj vision component](docs/sm70-vision.md) maps the selected GGUF
 weights into the pinned Qwen4Exp FP16 encoder and requires the combined software
-authority. Pinned-HF CPU import/output controls pass; the complete media frontend,
-TP8 serving integration and actual V100 execution remain pending.
+authority. Pinned-HF CPU import/output controls pass, and installed CPU checks
+cover the composed media frontend and TP8 serving source path. Actual V100/TP8
+media execution, model quality, capacity and performance remain unqualified.
 Measured execution profiles use a separate
 [content-verified identity and evidence manifest](docs/execution-profile-manifest.md).
 A manifest-selected [software NVFP4 SM70 candidate](docs/sm70-nvfp4.md) now
@@ -830,6 +842,7 @@ Use `http://127.0.0.1:8080/v1` as an OpenAI-compatible client base URL and an ID
 | `POST /v1/chat/completions` | Chat, tools, reasoning, optional image input and SSE. |
 | `POST /v1/completions` | Legacy text completions, including streaming. |
 | `/v1/responses` | OpenAI Responses-style input/output and typed streaming; documented storage operations; `POST /v1/responses/input_tokens` counts a request's input without generating. |
+| `/v1/conversations`, `/v1/conversations/{id}/items` | Standard conversation and item lifecycle when an explicit durable API record store and quotas are configured; logical retention is independent of GPU/checkpoint retention. |
 | `POST /v1/tokenize` | CUDA Harness extension: native chat prompt counting without generation, including supported image expansion. Successful replies also carry Harness model-discovery metadata: canonical reasoning efforts, the active chat template's fingerprint and loaded-code provenance. |
 
 Structured output uses xgrammar: supported `response_format` JSON/schema fields, `guided_json`, `guided_regex`, `guided_choice`, `guided_grammar`, and `structured_outputs` aliases. It works with supported draft verification. Malformed/uncompilable constraints, a missing dependency, or incompatible required-tool/grammar combinations are refused before generation. OpenAI function tools with `"strict": true` use the same mechanism for compatible Qwen XML templates: every call holds to its tool's schema, thinking stays free, and unsupported constraints return HTTP 400. Optional properties and finite string-enum uniqueness are supported extensions; string-length constraints remain unsupported. Requested strict response schemas are also checked before compilation. See [strict function tools](docs/api.md#strict-function-tools) for the enforced subset, resource limits and source-specific verification. A minimal constrained request is:
@@ -846,13 +859,15 @@ Flash Next CUDA probability output is supported on one GPU for **non-streamed te
 
 Chat/completion streaming uses SSE `data` events, optional usage and `[DONE]`; Responses uses typed events. Under an explicit CUDA `--parallel N`, an open stream also gets an SSE comment line (`: keepalive`) every 15 s while its request waits or its prompt prefills; SSE clients skip comment lines. A failure after a stream opens is an error event rather than a new HTTP status. CUDA validates its context before opening SSE; default MLX context refusal can occur after opening, while configured admission defers headers to return capacity errors as JSON first.
 
-Adaptive CUDA sequences are request-scoped. Completion or cancellation retires the
-request claim; bounded prompt-prefix caching can preserve reusable bytes without
-creating a persistent GPU session. Runtime receipts report active requests,
-allocated slots and derived prefix-cache slots separately, with intentional
-retained sessions at zero. Temporarily selecting zero proposals keeps the
-enabled drafter warm within the active request; `draft: false` keeps that call
-serial. A new request starts a new slot generation even when it reuses a prefix. Runtime
+Without an explicit retention policy, adaptive CUDA sequences are request-scoped.
+Completion or cancellation retires the request claim; bounded prefix caching can
+preserve reusable bytes without promising a persistent session. The explicit v6
+GPU/RAM retention candidate has separate logical-session, backing and GPU-slot
+limits; its resource/native-memory and V100 qualification gates remain open.
+Stored API items are durable logical history and do not alone promise a retained
+compute checkpoint. Runtime receipts distinguish these lifetimes. Temporarily
+selecting zero proposals keeps the enabled drafter warm within the active
+request; `draft: false` keeps that call serial. A new request starts a new slot generation even when it reuses a prefix. Runtime
 work receipts separate logical prompt/cache/replay counts, submitted target and
 MTP rows, and verifier acceptance histograms from useful committed output.
 Indexer fields describe causal logical work; expert group size and device stage

@@ -14,7 +14,86 @@ performance are separate gates. No new session maximum or throughput result is
 claimed. The specification's 20-Q8/32-Q4 figures are geometry reference points,
 not admission promises or capacity ceilings.
 
-## Consolidated installed CPU integration
+## Current v6 source and CPU evidence
+
+Current source implements the standard Responses and durable Conversations
+lifecycle, bounded FIFO admission and live input/output credits, the common
+prefix/retained-state catalog, RAM save/restore, and blocked-request requeue.
+Logical API records, reusable computation and guaranteed retained checkpoints
+have separate ownership and resource claims. See the [API contract](api.md#durable-conversations-and-quotas)
+and [fixed serving policy](serving-profiles.md#fixed-endpoint-fifo-and-retention-policy).
+These implemented paths have CPU software controls; they are not a qualified
+V100 serving configuration.
+
+The final composed installed CPU checkpoint uses frozen source tree
+`ff1883131180963a1de18bb00c74d6777466dcb9` and local image ID `sha256:fb0ac861483f0bc14bef1f73535d07d358c196c7e9358f76da3390f1434813a8`. It passed
+**5582 tests and 144 subtests across 183 modules**, with
+9 explicitly documented skips. All **707 installed code files** matched
+the frozen source; the 2,012 captured inputs and external frontend identities
+were verified without a source overlay or within-run drift. The final receipt
+records the exact result, skip disposition and immutable image identity:
+[CPU software receipt](verification-v100-adaptive-cpu-20261026.json),
+application commit `7d3ddbb9d066fe7451769ad9a36739619ce2d618`. The installed pytest run took
+551.56 seconds.
+
+The composed source includes the canonical key/value wake relay, actual owned
+synchronous Store provenance for every new unique profile (no explicit
+retention, GPU tier or RAM tier), and process-fixed resource highwaters.
+The selected payload contract binds CPython 3.12.3, owned Torch
+`5ab14acbced0c33e6b6e8fdbc5b541b57487f7e1`, GCC 13 build/ABI and the recorded
+GCC 14 runtime content. State and hard file-descriptor lifetime reservations,
+native/Python transfer and control owners, source field guards and host
+prepayment are implemented and covered by the source/CPU evidence. Generic
+legacy provider defaults retain their separate contracts.
+
+The final resource producer passed **236 CPU checks**, with zero skips and
+Ruff clean. Earlier scoped evidence includes 50 copy-applicability checks,
+138 caller checks plus three reclamation controls, and Python/RPC last-use
+and resource controls. These suites
+overlap the composed gate and are not summed into its installed total.
+
+The generic per-byte graph projection at the fixed 96-MiB RPC cap is
+conservative and can refuse a host configuration. That is a refusal of the
+declared projected envelope, not a measured physical capacity limit or proof
+that a practical workload requires that much RAM. Tighter schema-specific
+bounds remain a separately assessed candidate; no fitted margin was selected.
+
+**Release remains blocked by the selected native SDK failure-path finding.**
+On a supported `getnameinfo` failure, Torch's endpoint formatter casts the
+address of its pointer variable instead of the pointed-to socket address;
+the IPv6 path accesses beyond that pointer object. The same failure path has
+an unsynchronized shared flag. Native CPU fault injection reproduced corrupted
+endpoint diagnostics while the isolated data round trip succeeded; no crash or
+instrumented race was claimed. Owned-FD/nonce authority does not use those
+formatted strings. An owned fix, immutable SDK rebuild and affected failure-path
+requalification are required before release; passing the application CPU gate
+does not repair the native P1 violation.
+
+NVIDIA compiler issue **6111901** remains a separate release gate; see the
+[source-foundation contract](../deploy/v100/source-foundation.md#compiler-issue-6111901-remains-a-release-gate).
+Actual V100/TP8 CUDA/NCCL execution, model output/numerics/quality, physical
+capacity, allocator/RSS/NUMA and whole-workload performance remain unqualified
+for this source. Native IO wall deadlines are not inferred from Store wait
+timeouts. No new session maximum, throughput result or V100 release is claimed.
+
+The previous consolidated candidate was tree
+`413e132bf977625f485fffedf2011cc4bfc02f07`, image
+`sha256:05eca41e61a9410660d2a38c2c4d9ced06124efec64d635cb21580bcbb399323`:
+5,214 tests, 144 subtests, nine documented skips, 156 modules and 706 matched
+installed code files. Its skips covered two MLX modules, an optional Qwen
+tokenizer, optional exact DFlash/MTP artifacts and four Docker Compose controls.
+It remains distinct from the published media/frontend milestone below.
+
+An intermediate installed attempt used tree
+`045446b572d9be7a8aa08ef9f1fde125e77b38f8`, image
+`sha256:c903e72e3edb5e50bf26bac22acdd697fa444844b90dd639a56ddf48a69a5fe3`.
+It retained 16 failures, 5,564 passes, nine skips and 144 subtests: a shared test
+Store returned strings where the actual native contract returns UTF8 bytes.
+Only that fixture producer and its regression changed; shipping strict ACK
+validation and all original lifecycle/error assertions were preserved. The
+negative attempt remains separate from the successful successor receipt.
+
+## Historical text/core installed CPU checkpoint
 
 The installed application built from `0f656e9ab9642af6fa19210d721de13d375ea51d`
 passed 3,277 tests and 105 subtests across the 78 affected test files, with four
@@ -36,8 +115,9 @@ and policy source reviews are closed for this checkpoint.
 
 This is a software/CPU result, not GPU kernel, collective, model-output,
 quantization-quality, physical-residency or performance qualification. Native
-SM70 compilation retains its separately recorded exact-source scope. The full
-media request pipeline and final hardware qualification remain pending.
+SM70 compilation retains its separately recorded exact-source scope. That
+snapshot preceded the installed media/frontend milestone below; it does not
+replace the current source and qualification boundary above.
 
 ## Installed media and exact frontend integration
 
@@ -119,21 +199,28 @@ Startup `--mtp-drafts 0` under `auto` is the legacy structural-disable choice;
 explicit stock MTP requires a positive allocated maximum. Use the runtime zero
 proposal setting for warm capability.
 
-DSpark is a separate existing method. A DFlash checkpoint is not inferred from
-a model name or classified as stock MTP. The exact compatible Flash Next
-DFlash pairing remains an integration input. Its masks, feature conditioning,
-draft histories, and resource envelope need independent implementation and
-qualification before it is advertised as a serving choice.
+DSpark and DFlash2 are separately implemented methods. A DFlash checkpoint is
+not inferred from a model name or classified as stock MTP. The current
+`--draft-method dflash2`/`--drafter` path uses the same Engine and prepared
+serving-profile lifecycle, with exact `draft_pairing` content authority before
+CUDA allocation. Its [provider/runtime](../src/tensorfold/families/qwen4_exp/cuda/dflash2_runtime.py)
+implements completed-HC feature conditioning, target embedding/head aliases,
+bounded FP16 draft windows, accepted-prefix recovery and warm maintenance.
+The implemented block is four rows, with one to three proposals selected
+before the draw; a source block-eight declaration does not enable block-eight
+serving. Source/CPU checks do not qualify this pairing's V100 execution,
+acceptance, quality, physical envelope or performance.
 
 Reference research identified a concrete candidate,
 [`incoai/Qwen3.8-Flash-Next-DFlash2`](https://huggingface.co/incoai/Qwen3.8-Flash-Next-DFlash2/tree/a22a1744e85c17364dcc54a6a420af7135d4c7f6),
-pinned at `a22a1744e85c17364dcc54a6a420af7135d4c7f6`. Only public metadata and
-the tensor header were inspected. Its five-layer, 2,048-token sliding draft
-stack, block-8 convention, and completed-target-layer HC averaging require a
-separate provider/resource implementation. The author's GB300/TP1 evidence
-does not qualify this fork's V100/TP8/Huihui target. Artifact discovery is not
-the blocker; exact local target identity and implementation/qualification
-remain outstanding.
+pinned at `a22a1744e85c17364dcc54a6a420af7135d4c7f6`. The initial research used
+public metadata and the tensor header; the later source implementation now
+handles its five-layer, 2,048-token sliding draft stack and completed-target-HC
+averaging under the manifest-bound contract. The optional exact large DFlash
+artifact control was skipped in the 5,214-test checkpoint. The author's
+GB300/TP1 evidence does not qualify this fork's V100/TP8/SC117 target; exact
+pairing and complete target execution/quality/resource qualification remain
+required.
 
 ## Runtime control
 
@@ -214,22 +301,27 @@ Managed TP launches signal their supervisor on a fatal cohort operation so a
 peer blocked in a collective cannot strand process retirement. Unmanaged
 launches retain their external containment responsibility.
 
-The CUDA generation and Responses APIs create request-scoped sequences. They
-have no GPU retained-session close/expiry contract; storing or deleting a
-Response affects message/response JSON rather than GPU ownership. Completion
-or cancellation retires the request claim after its readers, transfers and
-callbacks finish. Full-window allocations can remain reusable, and the legacy
-bounded prompt-prefix cache can retain evictable derived bytes. Neither is an
-intentional retained session: `sessions.retained` reports zero, while `active`,
-`allocated_slots`, `derived_prefix_slots` and `derived_prefix_entries` report
-those separate quantities. New admissions increment the destination slot's
-logical generation before prefix copy/restore, including qualified prefix hits;
-rollback within the same request preserves its generation.
+Without an explicit computed-retention policy, CUDA generation remains
+request-scoped: completion or cancellation retires the claim after its readers,
+transfers and callbacks finish. Reusable full-window allocations and bounded
+derived prefixes do not create an intentional retained-session promise.
+Stored Responses/Conversations retain logical records independently of GPU
+ownership.
 
-A zero proposal setting keeps enabled MTP conditioning current only while its
-request is active. A per-request `draft: false` switch disables speculative
-work for that call. Request completion does not maintain an idle endpoint in
-anticipation of an unspecified future resumption.
+An explicit typed GPU/RAM retention policy uses the implemented common catalog
+for owner/generation claims, protected idle checkpoints, prefix leases,
+suspension/restoration, close/expiry and incompatible-profile drains. FIFO
+waiting, input credits and pending/in-flight output credits retain their logical
+owner through blocked-request requeue. New-turn generation bookkeeping remains
+separate from same-request continuation. These source contracts and CPU checks
+are subject to the pending native resource/backend and complete target gates
+above. New admissions increment the destination slot's generation before
+copy/restore; rollback within the same request preserves that generation.
+
+A zero proposal setting keeps enabled method conditioning current during active
+execution. A per-request `draft: false` switch disables speculative work for
+that call. Without computed retention, request completion does not maintain an
+idle endpoint in anticipation of an unspecified future resumption.
 
 Execution profile registration uses either startup-bound proof references or a
 standalone `{"profile_manifest": "new/manifest.json"}` request. Verification is

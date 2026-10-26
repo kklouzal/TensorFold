@@ -140,7 +140,27 @@ class App:
                  vision_image_tokens: int | None = None,
                  background_ids: tuple[str, ...] | frozenset[str] = (),
                  max_pending_requests: int | None = None, max_pending_requests_per_principal: int | None = None,
+                 max_http_connections: int | None = None, max_http_body_bytes: int | None = None,
+                 logical_api_limits=None, startup_owner=None,
                  chat_template_file=None, chat_template_name=None):
+        self.engine = engine
+        self.max_http_connections = optional_limit(max_http_connections, "max_http_connections")
+        from tensorfold.cuda.http import GENERATION_BODY_LIMIT
+
+        body_limit = optional_limit(max_http_body_bytes, "max_http_body_bytes")
+        self.max_http_body_bytes = (GENERATION_BODY_LIMIT if body_limit is None
+                                    else max(GENERATION_BODY_LIMIT, body_limit))
+        if logical_api_limits is not None:
+            from tensorfold.server.api_records import ApiRecordLimits
+
+            if type(logical_api_limits) is not ApiRecordLimits:
+                raise TypeError("logical_api_limits must be the actual parsed ApiRecordLimits")
+            self.max_http_body_bytes = max(self.max_http_body_bytes, logical_api_limits.max_operation_bytes)
+        self.logical_api_limits = logical_api_limits
+        if startup_owner is not None:
+            if not callable(startup_owner):
+                raise TypeError("startup_owner must register the partial App")
+            startup_owner(self)
         self.max_pending_requests = optional_limit(max_pending_requests, "max_pending_requests")
         self.max_pending_requests_per_principal = optional_limit(
             max_pending_requests_per_principal, "max_pending_requests_per_principal")
@@ -148,16 +168,8 @@ class App:
             raise ValueError("max_pending_requests_per_principal requires max_pending_requests")
         self._request_limit = (RequestLimit(max_pending_requests, per_principal=max_pending_requests_per_principal)
                                if max_pending_requests is not None else None)
-        if self._request_limit is not None:
-            scheduler = getattr(engine, "scheduler", None)
-            if scheduler is not None:
-                scheduler.configure_requests(self._request_limit)
-            if getattr(engine, "serving_profiles", None) is None:
-                self.run = self._request_limit.wrap(self.run)
-            self.decisions = self._request_limit.wrap(self.decisions)
         from tensorfold.token_metadata import load_tokenizer
 
-        self.engine = engine
         self.vision = getattr(engine, "vision", None)
         self.vision_image_tokens = vision_image_tokens
         self.image_limits = DEFAULT_LIMITS if vision_max_images is None and vision_image_tokens is None else \
@@ -197,11 +209,46 @@ class App:
         if self.context_window < 0:
             raise ValueError("context_window must be 0 or a positive token count")
         self.turns = Turns()                # one request at a time where the engine decodes one
+        self._finalize_retention_resources()
         profiles = getattr(engine, "serving_profiles", None)
+        # The endpoint's actual tokenizer, context and host commitments must
+        # exist before the scheduler can accept this logical request owner.
+        if self._request_limit is not None:
+            scheduler = getattr(engine, "scheduler", None)
+            if scheduler is not None:
+                scheduler.configure_requests(self._request_limit)
+            if profiles is None:
+                self.run = self._request_limit.wrap(self.run)
+            self.decisions = self._request_limit.wrap(self.decisions)
         if profiles is not None:
             from tensorfold.cuda.profile_app import AppProfiles
 
             self._profiles = AppProfiles(self, profiles)
+
+    def _finalize_retention_resources(self):
+        catalog = getattr(self.engine, "retention_catalog", None)
+        if catalog is None:
+            return None
+        from tensorfold.families.qwen4_exp.cuda.retention_resources import finalize_retention_resources
+
+        scheduler = getattr(self.engine, "scheduler", None)
+        return finalize_retention_resources(catalog, tokenizer=self.tok,
+            max_pending_requests=None if self._request_limit is None else self._request_limit.maximum,
+            max_waiting_input_bytes=getattr(scheduler, "max_waiting_input_bytes", None),
+            output_queue_tokens=getattr(scheduler, "output_queue_tokens", None),
+            max_http_connections=self.max_http_connections, max_http_body_bytes=self.max_http_body_bytes,
+            logical_api_limits=self.logical_api_limits)
+
+    def _retained_constraint_refusal(self):
+        catalog = getattr(self.engine, "retention_catalog", None)
+        if catalog is None:
+            return None
+        from tensorfold.families.qwen4_exp.cuda.retention_resources import retained_constraint_reason
+        from tensorfold.server.api_records import current_operation
+
+        operation = current_operation()
+        return retained_constraint_reason(catalog,
+            logical_retained=operation is not None and operation.logical_retained)
 
     @property
     def thinking_markers(self):
@@ -358,7 +405,7 @@ class App:
                     raise RequestError(f"{name} must be an integer token count") from exc
         return max(1, int(body.get("max_tokens") or body.get("max_completion_tokens") or self.max_tokens))
 
-    def _prepare(self, body: dict[str, Any], chat: bool) -> PreparedRequest:
+    def _prepare(self, body: dict[str, Any], chat: bool, *, for_generation=True) -> PreparedRequest:
         from jinja2.exceptions import TemplateError
 
         validate_modalities(body)
@@ -394,6 +441,10 @@ class App:
         penalties = self.penalties_for(body)
         budget = int(budget or getattr(self, "thinking_budget", 0)) if chat and thinking else 0     # 0: the default
         spec = grammar.request_spec(body)
+        if for_generation and (spec is not None or tools and strict_tools.wanted(tools)):
+            reason = self._retained_constraint_refusal()
+            if reason is not None:
+                raise RequestError(reason)
         calls = self._strict_calls(body, tools, spec, policy)
         spec = calls.spec if calls is not None else spec
         grammar.check_stopping(body, spec)
@@ -567,7 +618,7 @@ class App:
             def release_prepared_media():
                 prepared.release_media()
 
-            prepared = self._prepare(fields, True)
+            prepared = self._prepare(fields, True, for_generation=False)
             try:
                 ids = prepared.prompt
             except BaseException as primary:
@@ -621,11 +672,20 @@ class App:
                     f"{self._restart(len(prepared.prompt) + prepared.max_tokens)}")
         return None
 
-    def prepare(self, body: dict[str, Any], chat: bool) -> PreparedRequest:
+    def prepare_for_count(self, body: dict[str, Any], chat: bool) -> PreparedRequest:
+        """Existing prompt/constraint validation without a generation-tier promise."""
+        return self.prepare(body, chat, _for_generation=False)
+
+    def prepare(self, body: dict[str, Any], chat: bool, *, _for_generation=True) -> PreparedRequest:
+        from tensorfold.cleanup import rollback
+
+        def release_prepared_media():
+            prepared.release_media()
+
         problem = self._check_fields(body)
         if problem:
             raise refusal(problem)
-        prepared = self._prepare(body, chat)
+        prepared = self._prepare(body, chat, for_generation=_for_generation)
         try:
             problem = self.check(body, prepared=prepared)
             if problem:
@@ -635,9 +695,7 @@ class App:
                 prepared.max_tokens = min(prepared.max_tokens, limit - len(prepared.prompt))
             return prepared
         except BaseException as primary:
-            from tensorfold.cleanup import rollback
-
-            rollback(prepared, primary, prepared.release_media)
+            rollback(prepared, primary, release_prepared_media)
 
     def sampling_for(self, body: dict[str, Any], prompt: list[int]):
         """Keyed sampling (the seed, else one drawn from the prompt), or None for greedy; RequestError if malformed."""
@@ -694,6 +752,10 @@ class App:
             prepare_s, admitted_s = entered - arrived, 0.0
         _media_primary = None
         try:
+            if prepared.grammar is not None or prepared.calls is not None:
+                reason = self._retained_constraint_refusal()
+                if reason is not None:
+                    raise RequestError(reason)
             prompt, max_tokens = prepared.prompt, prepared.max_tokens
             tools, thinking = prepared.tools, prepared.thinking
             markers = self.thinking_markers
