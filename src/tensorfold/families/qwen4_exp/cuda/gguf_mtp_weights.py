@@ -44,6 +44,16 @@ def model_plan(target, directory, *, tp=(0, 1)):
     if c.index_ratio != 4 or c.index_budget != 2048:
         raise ValueError("this MTP numerical profile declares QSA ratio four and budget 2048")
     metadata = checkpoint.metadata
+    position_profile = target.meta.get("position_profile")
+    mtp_rope = None if position_profile is None else position_profile.mtp.rope
+    if mtp_rope is not None:
+        sections = metadata.get("qwen4exp.rope.dimension_sections", (11, 11, 10))
+        if (metadata.get("qwen4exp.context_length") != mtp_rope.native_context
+                or type(metadata.get("qwen4exp.context_length")) is not int
+                or type(sections) is not tuple or len(sections) < 3
+                or any(type(n) is not int for n in sections)
+                or sections[:3] != mtp_rope.mrope_section):
+            raise ValueError("MTP companion positional reference/layout differs from its own resolved role")
     if (metadata.get("qwen4exp.nextn_shared_target_tensors") is not True
             or type(metadata.get("qwen4exp.nextn_predict_layers")) is not int
             or metadata.get("qwen4exp.nextn_predict_layers") != 1
@@ -58,8 +68,9 @@ def model_plan(target, directory, *, tp=(0, 1)):
                 "hyper_connection.count": c.streams, "hyper_connection.low_rank": c.low,
                 "attention.indexer.head_count": c.index_heads,
                 "attention.indexer.key_length": c.index_dim,
-                "attention.indexer.top_k": c.index_budget, "rope.dimension_count": c.rotary_dim,
-                "rope.freq_base": c.rope_theta}
+                "attention.indexer.top_k": c.index_budget,
+                "rope.dimension_count": c.rotary_dim if mtp_rope is None else mtp_rope.rotary_dim,
+                "rope.freq_base": c.rope_theta if mtp_rope is None else mtp_rope.theta}
     for name, value in expected.items():
         actual = metadata.get("qwen4exp." + name)
         if isinstance(actual, bool) or (type(value) is int and type(actual) is not int) or actual != value:

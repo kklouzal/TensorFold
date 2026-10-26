@@ -178,6 +178,7 @@ def test_multi_absorb_captures_cuts_before_scratch_reuse_and_metadata_after_vali
     with runtime() as w:
         decoder = object.__new__(multi.MultiDecoder)
         decoder.w = w
+        decoder.controller = None
         states = [State(w, 64, 4, 'fp16', limit=512) for _ in range(2)]
         streams = [Stream(list(range(length)), 4, sid=index, st=state)
                    for index, (state, length) in enumerate(zip(states, (12, 10)))]

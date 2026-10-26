@@ -178,11 +178,22 @@ def test_every_admitted_sm70_state_uses_the_same_progressive_indexer_contract(fo
     weights = model(8)
     weights.meta.update(full=NS(kv_heads=2), rank=0, execution_provider="sm70", history_layout="unique")
     state = State(weights, 35, 4, format_name)
-    raw, pooled = state.ikc[0], state.pooled[0]
+    from tensorfold.families.qwen4_exp.cuda.compact_indexer import Staging
+
+    raw, pooled = torch.zeros((35, 128), dtype=torch.float16), state.pooled[0]
     raw[:16].copy_(torch.arange(16 * 128).remainder(23).sub(11).half().reshape(16, 128))
+    coordinates = torch.arange(35, dtype=torch.int64)[:, None].expand(-1, 3)
+    staging = Staging(13, state.layers, "cpu", mtp=False)
+    staging.begin(mtp=False)
+    state.compact_indexer.append(0, 0, raw[:3], coordinates[:3], staging, 0, 3, mtp=False, expected=(0, 0))
+    state.set_pos(3)
     pooled.fill_(17)
     expected = pooled.clone()
     options = (torch.tensor([3]), torch.linspace(0.75, 1.25, 128), torch.tensor([0.03, 0.001]), 1e-6)
     _legacy_pool(raw, expected, *options, 4, 13)
-    ops.qsa_pool(raw, pooled, *options, NS(ratio=4), 13)
+    staging.begin(mtp=False)
+    entry = state.compact_indexer.append(0, 3, raw[3:16], coordinates[3:16], staging, 0, 13,
+                                          mtp=False, expected=(0, 0))
+    entry.pool(pooled, options[1], options[2], options[3], (11, 11, 10), 1.0)
+    assert state.ikc[0].shape == (4, 128)
     assert torch.equal(pooled.view(torch.uint8), expected.view(torch.uint8))

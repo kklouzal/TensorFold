@@ -587,6 +587,15 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
                     multi_static_bytes(t, streams, each, mtp))
     fixed += static_bytes + graph_bytes     # slot metadata still covers every resident slot
     count = attention + int(mtp)
+    if history_placement is not None:
+        from tensorfold.families.qwen4_exp.cuda.history_placement import compact_stage_bytes as stage_bytes
+
+        fixed += stage_bytes(rows, count, mtp=False) + stage_bytes(prefill_rows, count, mtp=bool(mtp))
+        if mtp:
+            fixed += stage_bytes(rows, count, mtp=True, mtp_only=True)
+        extra_snapshots = (keep + streams * points) * ((count + world - 1) // world) * 4 * (index_dim * 2 + 3 * 8)
+        recovery_bytes += extra_snapshots
+        fixed += extra_snapshots
     row, dummies = _kv_pair_bytes(hd, kv_bits, kv_group, kv_scale_bytes, kv_pair)
     def caches(rows: int) -> int:
         raw = rows * index_dim * 2 if indexer_raw_device_bytes is None else indexer_raw_device_bytes
@@ -598,7 +607,7 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
             cache = windows * caches(capacity) + (streams - windows) * caches(min(first, capacity))
         else:
             cache = sum(history_placement.rank_bytes(slot, capacity if slot < windows else min(first, capacity),
-                        rank, row, dummies, index_dim=index_dim, ratio=ratio, include_mtp=mtp)
+                        rank, row, dummies, index_dim=index_dim, ratio=ratio, include_mtp=mtp, proposal_rows=each)
                         for slot in range(streams))
         replacement = 0
         if full_windows is not None:

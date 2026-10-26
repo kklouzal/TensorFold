@@ -309,6 +309,48 @@ def test_standalone_prefill_metrics_include_first_outputs_once(decoder_round, mo
     assert record["last_step"]["elapsed_s"] > 0
 
 
+@pytest.mark.parametrize("failure_at", ["preparation", "postforward", "mixed-preparation"])
+def test_bound_input_failures_cannot_be_localized_as_independent_request_errors(decoder_round, monkeypatch, failure_at):
+    from tensorfold.cuda import cohort
+    from tensorfold.families.qwen4_exp.cuda.input_preparation import install_input_preparation
+
+    decoder, _executed = decoder_round
+    stream = decoder.streams[0]
+    stream.prompt, stream.out, stream.owed = [11, 12], [], []
+    decoder.w.positions = object()  # only the preparation/error boundary is entered
+    decoder.w.meta["coordinate_profile_identity"] = "a" * 64
+    context = decoder.pbuf.input_preparation_context = install_input_preparation(decoder.w)
+    primary, notified = ValueError("prepared input ownership failed"), []
+    monkeypatch.setattr(cohort, "notify_failure", lambda: notified.append(True))
+    decoder._pieces = lambda rows=None: [(stream, 0, 2)]
+    decoder._note_passed = lambda *_a: None
+    decoder._end_rows, decoder._cuts = lambda *_a: [1], lambda *_a: []
+    decoder._failed = lambda *_a: pytest.fail("bound cohort fault became a local request error")
+
+    def failed_read(_pieces):
+        assert context._active is not None  # entire builder, before stage(), belongs to the shared phase
+        raise primary
+
+    def failed_absorb(*_a):
+        assert context._active is None  # a post-forward snapshot/copy failure is still fatal
+        raise primary
+
+    decoder._read_ahead = (lambda *_a: None) if failure_at == "postforward" else failed_read
+    decoder._absorb = failed_absorb
+    decoder.filling = [stream]
+    if failure_at == "mixed-preparation":
+        # Preserve another already-active stream so _round takes the mixed branch.
+        decoder.streams.pop(stream.sid)
+        decoder.converged = True
+        decoder._pass_rows = lambda: 2
+        decoder.fills[stream.sid] = [None, False, 0, []]
+    else:
+        decoder.streams = {}
+    with pytest.raises(ValueError) as caught:
+        decoder._round() if failure_at == "mixed-preparation" else decoder._pass()
+    assert caught.value is primary and notified == [True] and context.cohort._execution_manifest_uncertain
+
+
 def test_graph_padding_that_exceeds_the_execution_arena_declines_before_staging():
     from tensorfold.families.qwen4_exp.cuda.bound_graphs import BoundStateGraphs
 
@@ -785,6 +827,7 @@ def test_request_lifecycle_keeps_enabled_zero_proposal_mtp_warm_only_until_retir
 
     class State:
         history_slot = slot_generation = 0
+        compact_indexer = None
         from tensorfold.families.qwen4_exp.kv_formats import get_pair
         kv_pair = get_pair("fp16")
         image_positions = None

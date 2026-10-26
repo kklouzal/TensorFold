@@ -119,7 +119,7 @@ class HistoryPlacement:
 
     def layer_rank_bytes(self, slot: int, layer: int, rows: int, rank: int, kv_row_bytes: int,
                          kv_dummy_bytes: int = 0, *, index_dim: int = 128,
-                         ratio: int = 4, include_mtp: bool = True) -> int:
+                         ratio: int = 4, include_mtp: bool = True, proposal_rows: int = 0) -> int:
         """Exact tensor bytes, including full tail pages, dummies and partial pools.
 
         ``kv_row_bytes`` describes one global KV head's combined K/V row,
@@ -136,14 +136,17 @@ class HistoryPlacement:
         total = self.local_rows(slot, layer, rows, rank) * kv_row_bytes + kv_dummy_bytes
         total += ((rows + self.page_tokens - 1) // self.page_tokens) * 8  # stable int64 page offsets
         if rank == self.indexer_owner(slot, layer, include_mtp=include_mtp):
-            total += (rows + (rows + ratio - 1) // ratio) * index_dim * 2
+            total += (rows + ratio - 1) // ratio * index_dim * 2
+            total += compact_cache_bytes(index_dim, mtp=layer == self.target_layers,
+                                         proposal_rows=proposal_rows if layer == self.target_layers else 0)
         return total
 
     def rank_bytes(self, slot: int, rows: int, rank: int, kv_row_bytes: int,
                    kv_dummy_bytes: int = 0, *, index_dim: int = 128,
-                   ratio: int = 4, include_mtp: bool = True) -> int:
+                   ratio: int = 4, include_mtp: bool = True, proposal_rows: int = 0) -> int:
         return sum(self.layer_rank_bytes(slot, layer, rows, rank, kv_row_bytes, kv_dummy_bytes,
-                                        index_dim=index_dim, ratio=ratio, include_mtp=include_mtp)
+                                        index_dim=index_dim, ratio=ratio, include_mtp=include_mtp,
+                                        proposal_rows=proposal_rows)
                    for layer in range(self.target_layers + int(include_mtp)))
 
 

@@ -12,7 +12,7 @@ from unittest.mock import patch
 from tensorfold.cuda import capacity
 from tensorfold.cleanup import raise_failures
 from tensorfold.cuda.memory_gate import MemoryGate, NoRoom, torch_live
-from tensorfold.cuda.streams import Stream
+from tensorfold.cuda.streams import Stream, mark_error_state_retired
 from tensorfold.families.qwen4_exp.cuda import prefixes
 from tensorfold.families.qwen4_exp.cuda.service_memory import cache_resize_overlap
 from tensorfold.families.qwen4_exp.kv_formats import get_pair
@@ -102,6 +102,7 @@ def state(owner):
     st._resize_error = st._kv_error = st._history_error = None
     st.slot_generation, st.history_generations = 0, None
     st.history_native_readers = weakref.WeakSet()
+    st.compact_indexer = None
     st.kc = [KV(owner, st.capacity) for _ in range(st.layers)]
     st.ikc = [Array(owner, st.capacity, st.index_dim) for _ in range(st.layers)]
     st.pooled = [Array(owner, st.capacity // st.ratio, st.index_dim) for _ in range(st.layers)]
@@ -134,6 +135,7 @@ class AbsoluteGrowthTests(unittest.TestCase):
         ns = {"torch": self.torch, "STEP": 8192, "FIRST": 256, "GIB": GIB,
               "MemoryGate": MemoryGate, "cache_resize_overlap": cache_resize_overlap, "NoRoom": NoRoom, "prefixes": prefixes,
               "raise_failures": raise_failures,
+              "mark_error_state_retired": mark_error_state_retired,
               "cuda_limit_bytes": capacity.cuda_limit_bytes, "LIMIT_ENV": capacity.LIMIT_ENV,
               "time": SimpleNamespace(perf_counter=lambda: 1.0), "MIN_GAP": 32,
               "_slot": lambda *args, **kw: SimpleNamespace(), "prefill_begin": lambda *args, **kw: 0,
