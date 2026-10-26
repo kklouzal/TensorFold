@@ -180,8 +180,8 @@ def test_actual_serial_generate_keeps_drafts_and_shares_the_qualified_resume_cou
     engine.tp, engine.served = 8, 0
     engine._begin_request = lambda _: None
     engine._limit = lambda _, count: count
-    retired, resume_calls, shared, decoded = [], [], [], []
-    engine._retire_request = lambda request, primary: retired.append(primary)
+    retired_calls, resume_calls, shared, decoded = [], [], [], []
+    engine._retire_request = lambda request, primary, *, retired=False: retired_calls.append((primary, retired))
     hit = ([11] * 127, object())
 
     def resume(prompt):
@@ -202,4 +202,4 @@ def test_actual_serial_generate_keeps_drafts_and_shares_the_qualified_resume_cou
     assert shared == [(True, 127 if borrow else 0, False)]
     assert decoded[0][0][4] is (hit if borrow else None)
     assert result == {"cached": 127 if borrow else 0}
-    assert retired == [None] and engine.served == 1
+    assert retired_calls == [(None, False)] and engine.served == 1

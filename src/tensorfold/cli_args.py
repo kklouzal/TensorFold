@@ -71,6 +71,9 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                           help="optional positive cap on unfinished generation requests, including waiting, "
                                "running and canceled engine work; excess requests receive HTTP 503 "
                                "(required for adaptive V100 serving; otherwise default: uncapped)")
+    endpoint.add_argument("--max-pending-requests-per-principal", type=int, default=None,
+                          help="CUDA only: optional positive unfinished-request cap per authenticated principal; "
+                               "requires --max-pending-requests (default: no separate principal cap)")
     endpoint.add_argument("--max-engine-calls", type=int, default=None,
                           help="MLX only: optional positive cap on queued and running engine RPC callbacks, "
                                "including timed-out callers (default: uncapped; unsupported on CUDA)")
@@ -86,7 +89,13 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     endpoint.add_argument("--metrics-open", action="store_true", help="allow /metrics and /stats without an API key")
     endpoint.add_argument("--vision", action="store_true",
                           help="enable image input for supported GLM and Qwen vision checkpoints; "
-                               "Flash Next CUDA requires one GPU and --parallel 2 or more")
+                               "Flash Next legacy vision requires one GPU and --parallel 2 or more; "
+                               "the explicit SM70 media profile uses TP8")
+    endpoint.add_argument("--media-profile-manifest", type=Path, default=None,
+                          help="with --vision, select explicit bounded SM70 TP8 media resources, processor and mmproj; "
+                               "requires --no-graphs; V100 qualification remains separate")
+    endpoint.add_argument("--no-graphs", action="store_true",
+                          help="Flash Next CUDA: execute whole forwards eagerly; required by the initial SM70 media profile")
     endpoint.add_argument("--vision-urls", action="store_true",
                           help="with --vision, accept public HTTP(S) image URLs (default: data URLs only)")
     endpoint.add_argument("--vision-offload", action="store_true",

@@ -2,6 +2,7 @@
 
 from dataclasses import fields, is_dataclass, replace
 from pathlib import Path
+import hashlib
 import json
 import struct
 from types import SimpleNamespace
@@ -14,7 +15,9 @@ pytestmark = pytest.mark.torch
 
 from tensorfold.families.qwen4_exp.cuda import gguf_mtp_weights as mtp  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda.sm70_mtp_weights import attach, byte_plan  # noqa: E402
-from tensorfold.families.qwen4_exp.gguf import GGUFCheckpoint, _shard, decode_rows, token_id_identity  # noqa: E402
+from tensorfold.families.qwen4_exp.gguf import (  # noqa: E402
+    GGUFCheckpoint, _shard, decode_rows, metadata_config, token_id_identity,
+)
 
 
 def _string(value):
@@ -36,7 +39,7 @@ def _value(value):
     return 4, struct.pack("<I", value)
 
 
-def fixture(tmp_path, *, world=8, rank=3, mutate=None):
+def fixture(tmp_path, *, world=8, rank=3, mutate=None, vocabulary_copies=False):
     full = SimpleNamespace(hidden=64, layers=4, heads=8, kv_heads=2, head_dim=8,
                            experts=3, top_k=2, moe_width=64, shared_width=64, streams=4, low=8,
                            index_heads=2, index_dim=8, index_budget=2048, index_ratio=4,
@@ -66,7 +69,7 @@ def fixture(tmp_path, *, world=8, rank=3, mutate=None):
     rng = np.random.default_rng(12)
     entries, values = {}, {}
 
-    def add(name, shape, kind=0):
+    def add(name, shape, kind=0, *, prefix="blk.4."):
         if kind == 8:
             blocks = np.empty((int(np.prod(shape)) // 32, 34), dtype=np.uint8)
             blocks[:, :2] = np.array([0.0625], dtype="<f2").view(np.uint8)
@@ -77,7 +80,7 @@ def fixture(tmp_path, *, world=8, rank=3, mutate=None):
         else:
             value = (rng.normal(size=shape) * 0.1).astype(np.float32)
             raw = value.astype("<f4").tobytes()
-        entries["blk.4." + name] = (shape, kind, raw)
+        entries[prefix + name] = (shape, kind, raw)
         values[name] = value
 
     for name, shape in {"attn_q.weight": (128, 64), "attn_k.weight": (16, 64),
@@ -100,6 +103,11 @@ def fixture(tmp_path, *, world=8, rank=3, mutate=None):
     add("ffn_gate_inp_shexp.weight", (64,))
     add("nextn.enorm.weight", (64,))
     add("nextn.hnorm.weight", (256,))
+    if vocabulary_copies:
+        del metadata["qwen4exp.nextn_shared_target_tensors"]
+        metadata["qwen4exp.attention.compress_ratios"] = (0, 0, 0, 4, 4)
+        add("token_embd.weight", (64, 64), 8, prefix="")
+        add("output.weight", (64, 64), 8, prefix="")
     if mutate:
         mutate(metadata, entries)
     header = b"GGUF" + struct.pack("<IQQ", 3, len(entries), len(metadata))
@@ -181,6 +189,155 @@ def test_unknown_tensor_is_not_ignored(tmp_path):
         "unrecognized.weight": ((1,), 0, bytes(4))}))
     with pytest.raises(ValueError, match="unmapped"):
         byte_plan(target, file, tp=(3, 8))
+
+
+def test_full_companion_never_reads_or_materializes_vocabulary_copies(tmp_path, monkeypatch):
+    from tensorfold.cuda.direct_read import Reader
+
+    target, file, _ = fixture(tmp_path, vocabulary_copies=True)
+    checkpoint = GGUFCheckpoint.open(file)
+    skipped = [checkpoint.tensors[name] for name in ("token_embd.weight", "output.weight")]
+    read_spans = []
+
+    class CoreReader(Reader):
+        def read(self, path, offset, length, *args, **kwargs):
+            assert all(offset + length <= t.offset or offset >= t.offset + t.nbytes for t in skipped)
+            read_spans.append((offset, length))
+            return super().read(path, offset, length, *args, **kwargs)
+
+    monkeypatch.setattr(mtp, "Reader", CoreReader)
+    target.frontend = object()
+    embedding, head, frontend = target.embed, target.head, target.frontend
+    plan = byte_plan(target, file, tp=(3, 8))
+    attach(target, file, tp=(3, 8))
+    assert read_spans
+    assert target.embed is embedding and target.head is head and target.frontend is frontend
+    assert _owned(target.mtp) == plan["resident_bytes"]
+    receipt = plan["import"]
+    assert receipt["source_tensor_count"] == 34 and receipt["imported_tensor_count"] == 32
+    assert receipt["source_final_compression_ratio"] == 4
+    assert receipt["source_payload_bytes"] - receipt["imported_source_payload_bytes"] == sum(t.nbytes for t in skipped)
+    assert set(receipt["skipped_source_tensors"]) == {t.name for t in skipped}
+    assert target.draft_head is None and target.draft_ids is None
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    control, control_file, _ = fixture(shared)
+    assert byte_plan(control, control_file, tp=(3, 8))["resident_bytes"] == plan["resident_bytes"]
+
+
+@pytest.mark.parametrize("change", ["missing-head", "wrong-shape", "shared-flag", "numeric-flag", "dense-ratio"])
+def test_invalid_full_companion_is_rejected_before_payload_io(tmp_path, monkeypatch, change):
+    def mutate(metadata, entries):
+        if change == "missing-head":
+            del entries["output.weight"]
+        elif change == "wrong-shape":
+            entries["output.weight"] = ((32, 64), 8, bytes(32 * 68))
+        elif change in ("shared-flag", "numeric-flag"):
+            metadata["qwen4exp.nextn_shared_target_tensors"] = True if change == "shared-flag" else 0
+        else:
+            metadata["qwen4exp.attention.compress_ratios"] = (0, 0, 0, 4, 0)
+
+    target, file, _ = fixture(tmp_path, vocabulary_copies=True, mutate=mutate)
+    monkeypatch.setattr(mtp, "Reader", lambda: pytest.fail("invalid full companion reached payload IO"))
+    with pytest.raises(ValueError, match="vocabulary copies|QSA compression"):
+        attach(target, file, tp=(3, 8))
+    assert target.mtp is None
+
+
+@pytest.mark.parametrize("field,original,changed", [
+    ("token_type", (1, 3), (3, 1)), ("merges", ("a b", "b a"), ("b a", "a b")),
+    ("bos_token_id", 0, 1), ("eos_token_id", 1, 0), ("padding_token_id", 0, 1),
+])
+def test_shared_token_identity_includes_ordered_semantics(field, original, changed):
+    metadata = {"tokenizer.ggml.tokens": ("a", "b"), "tokenizer.ggml." + field: original}
+    before = token_id_identity(metadata)
+    assert token_id_identity({**metadata, "tokenizer.ggml." + field: changed}) != before
+    assert token_id_identity({**metadata, "tokenizer.chat_template": "another target template",
+                              "tokenizer.ggml.normalizer.nfc": True,
+                              "tokenizer.ggml.add_eos_token": False}) == before
+
+
+@pytest.mark.parametrize("field,value", [("token_type", (1,)), ("token_type", (True, 1)),
+                                          ("merges", ("a b", 2)), ("eos_token_id", 2),
+                                          ("bos_token_id", True)])
+def test_shared_token_identity_rejects_invalid_role_metadata(field, value):
+    with pytest.raises(ValueError, match="token"):
+        token_id_identity({"tokenizer.ggml.tokens": ("a", "b"), "tokenizer.ggml." + field: value})
+
+
+@pytest.mark.parametrize("directory", [False, True])
+def test_mtp_only_source_preparation_uses_its_own_role_without_trunk_or_ple(tmp_path, monkeypatch, directory):
+    from tensorfold.families.qwen4_exp.position_profile import (
+        _source, prepare_position_vectors, resolve_position_profile,
+    )
+
+    def positions(metadata, _entries):
+        metadata["qwen4exp.context_length"] = 262144
+        metadata["qwen4exp.rope.dimension_sections"] = (2, 1, 1, 0)
+
+    target, file, _ = fixture(tmp_path, vocabulary_copies=True, mutate=positions)
+    raw = metadata_config(file, role="mtp")
+    text = raw["text_config"]
+    assert text["num_hidden_layers"] == 1 and text["gguf_source_block_count"] == 5
+    assert text["layer_types"] == ["full_attention"]
+    assert not any("ple" in key for key in text)
+    assert np.float32(text["rms_norm_eps"]) == np.float32(1e-6)
+    source = tmp_path if directory else file
+    resolved, inputs, digest = _source(source, mtp=True)
+    assert resolved == raw and inputs == (file.resolve(),)
+    encoded = json.dumps(raw, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False).encode()
+    assert digest == hashlib.sha256(encoded).hexdigest()
+    target_directory = tmp_path / "target"
+    target_directory.mkdir()
+    target_config = {"model_type": "qwen4_exp", "text_config": {
+        "hidden_size": 64, "head_dim": 8, "num_attention_heads": 8, "max_position_embeddings": 262144,
+        "rope_parameters": {"rope_type": "default", "rope_theta": 10000000.,
+                            "partial_rotary_factor": 1., "mrope_section": [2, 1, 1],
+                            "mrope_interleaved": True}}}
+    (target_directory / "config.json").write_text(json.dumps(target_config))
+    profile = resolve_position_profile(target_directory, requested_context=262144,
+                                       companion_configs={"mtp": source})
+    assert profile.mtp.source_config_sha256 == digest
+    assert profile.mtp.rope.mrope_section == (2, 1, 1)
+    assert profile.mtp.rope.theta == 10000000. and profile.mtp.rope.rotary_dim == 8
+    prepared = prepare_position_vectors(profile, mtp_active=True)
+    expected = (10000000. ** (-torch.arange(0, 8, 2, dtype=torch.float64) / 8)).float()
+    torch.testing.assert_close(prepared.mtp_cpu, expected, atol=0, rtol=0)
+    target.meta["position_profile"] = profile
+    monkeypatch.setattr(mtp, "Reader", lambda: pytest.fail("role preparation entered payload IO"))
+    assert byte_plan(target, file, tp=(3, 8))["import"]["imported_tensor_count"] == 32
+
+
+@pytest.mark.parametrize("change", ["extra-trunk", "missing-core", "bad-sections", "bad-epsilon"])
+def test_mtp_role_metadata_rejects_incompatible_physical_source(tmp_path, change):
+    def mutate(metadata, entries):
+        metadata["qwen4exp.context_length"] = 262144
+        metadata["qwen4exp.rope.dimension_sections"] = (2, 1, 1, 0)
+        if change == "extra-trunk":
+            entries["blk.0.nextn.enorm.weight"] = ((64,), 0, bytes(256))
+        elif change == "missing-core":
+            del entries["blk.4.nextn.hnorm.weight"]
+        elif change == "bad-sections":
+            del metadata["qwen4exp.rope.dimension_sections"]
+        else:
+            metadata["qwen4exp.attention.layer_norm_rms_epsilon"] = float("nan")
+
+    _target, file, _ = fixture(tmp_path, vocabulary_copies=True, mutate=mutate)
+    with pytest.raises(ValueError, match="prediction core|mRoPE|normalization"):
+        metadata_config(file, role="mtp")
+
+
+def test_configured_floating_mtp_source_keeps_its_config_with_unrelated_gguf(tmp_path):
+    from tensorfold.families.qwen4_exp.position_profile import _source
+
+    raw = {"model_type": "qwen4_exp", "text_config": {"head_dim": 8, "hidden_size": 64,
+           "max_position_embeddings": 262144, "rope_parameters": {"rope_theta": 10000000.,
+           "partial_rotary_factor": 1., "mrope_section": [2, 1, 1]}}}
+    config = tmp_path / "config.json"
+    config.write_text(json.dumps(raw))
+    (tmp_path / "unrelated.gguf").write_bytes(b"not a checkpoint")
+    resolved, inputs, _digest = _source(tmp_path, mtp=True)
+    assert resolved == raw and inputs == (config.resolve(),)
 
 
 @pytest.mark.parametrize("change", [None, "theta", "reference", "sections"])
@@ -311,13 +468,14 @@ def test_actual_artifact_plan_when_explicitly_supplied():
     local = SimpleNamespace(**vars(full))
     local.heads, local.kv_heads, local.moe_width, local.shared_width = 3, 1, 80, 80
     target = SimpleNamespace(cfg=local, meta={"full": full}, device=torch.device("cpu"))
-    metadata, tensors = _shard(Path(target_metadata))
-    assert not tensors  # The selected first target shard supplies metadata only.
+    metadata, _tensors = _shard(Path(target_metadata))
     target.meta["gguf_token_id_identity"] = token_id_identity(metadata)
     plan = byte_plan(target, Path(selected), tp=(0, 8))
-    assert plan["import"]["source_tensor_count"] == 32
-    assert plan["import"]["source_payload_bytes"] == 2775621632
-    assert plan["import"]["source_final_compression_ratio"] == 0
+    assert plan["import"]["source_tensor_count"] == 34
+    assert plan["import"]["source_payload_bytes"] == 4126482432
+    assert plan["import"]["imported_tensor_count"] == 32
+    assert plan["import"]["imported_source_payload_bytes"] == 2775621632
+    assert plan["import"]["source_final_compression_ratio"] == 4
     target.embed, target.head = object(), object()
     embedding, head = target.embed, target.head
     attach(target, Path(selected), tp=(0, 8))

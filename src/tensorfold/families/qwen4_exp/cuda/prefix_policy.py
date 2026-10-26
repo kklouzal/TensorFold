@@ -1,6 +1,8 @@
 """Reuse only qualified prompt state for SM70 request paths."""
 
-IDENTITY = "sm70-stochastic-or-unqualified-rotor-prefix-cold-v2"
+from ..qsa_selection import POLICY as QSA_SELECTION
+
+IDENTITY = "sm70-stochastic-or-unqualified-rotor-prefix-cold-v2:" + QSA_SELECTION
 
 
 def identity(profile):

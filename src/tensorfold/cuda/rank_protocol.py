@@ -14,11 +14,11 @@ MAX_MESSAGE_BYTES = 96 << 20
 MAX_GRAMMAR_ITEMS = MAX_MESSAGE_BYTES + 2
 
 
-def bounded_json(body):
+def bounded_json(body, *, separators=None):
     """Encode validated flat request fields without a larger transient string."""
     size = 0
     with io.StringIO() as output:
-        for chunk in json.JSONEncoder().iterencode(body):
+        for chunk in json.JSONEncoder(separators=separators).iterencode(body):
             size += len(chunk)  # the default encoder emits ASCII
             if size > MAX_MESSAGE_BYTES:
                 raise ValueError("rank request exceeds the 96 MiB transport envelope")

@@ -81,7 +81,7 @@ def test_host_staging_includes_each_overlapping_ple_prefetch(monkeypatch, tables
     from tensorfold.families.qwen4_exp.cuda import gguf_weights
 
     prototype = SimpleNamespace(cfg=SimpleNamespace(streams=4, hidden=256, rotary_dim=64),
-                                head=SimpleNamespace(n=32), draft_head=None, draft_ids=None,
+                                head=SimpleNamespace(n=32), draft_head=None, draft_ids=None, draft_filter=None,
                                 meta={"draft_host_id_bytes": 0})
     planner = SimpleNamespace(matrices=[], arrays=[],
                               tables=[SimpleNamespace(source=SimpleNamespace(nbytes=4096)) for _ in range(tables)])

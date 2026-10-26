@@ -28,7 +28,7 @@ from tensorfold.engine.exact_sampling import MARGIN, choose_rows
 from tensorfold.engine.grammar import GrammarError
 
 from ..cuda import CONFIDENCE, DEPTH
-from . import attn_multi, gdn_multi, image_rows, multi_graphs, prefixes
+from . import attn_multi, gdn_multi, image_rows, media_requests, multi_graphs, prefixes
 from .decode import (
     PREFILL_ROWS, WARM_TAIL, Engine, SamplingShard, _gathered_fits, choose_gathered,
     draft, entry_end, prefill_begin, tp_sample_rows,
@@ -88,6 +88,12 @@ class MultiDecoder:
         self.rotor_decoder_policy = RotorDecoderPolicy()
         self.points = points                         # a prompt's message starts to keep states at, or None
         self.vision = vision
+        self.media_runtime = media_requests.runtime(vision)
+        if self.media_runtime is not None and (
+                type(vision_workspace_bytes) is not int or vision_workspace_bytes < 0
+                or vision_workspace_bytes != self.media_runtime.resources["media_transient_bytes"]):
+            raise ValueError("media live-memory reserve differs from its admitted full transient resource plan")
+        self._media_limits = None
         self.copy = os.environ.get("TENSORFOLD_MTP_COPY", "0") == "1" and getattr(w, "dflash2", None) is None
         self.eos = tuple(w.cfg.eos) if stop_eos else ()
         rows = slots * (depth + 1) if execution_rows is None else execution_rows
@@ -188,6 +194,11 @@ class MultiDecoder:
         # the mapped n-gram tables are not held back (they barely fit on a Spark); lookups page from disk instead
         live = free
         reserve = max(2 * GIB, workspace_bytes)
+        if self.media_runtime is not None:
+            # The resident producer/weights are already excluded from live
+            # free bytes. Protect all remaining media transient work once,
+            # additively with language work absent a serialized-max proof.
+            reserve += vision_workspace_bytes
         self.dflash_resources = None
         if getattr(w, "dflash2", None) is not None:
             self.dflash_resources = w.dflash2.plan.serving_resources(
@@ -214,7 +225,7 @@ class MultiDecoder:
         if w.comm is not None:
             from .tp_scheduler import SharedMemoryGate
 
-            self.memory_gate = SharedMemoryGate(self.memory_gate, w.comm)
+            self.memory_gate = SharedMemoryGate(self.memory_gate, w.comm, rank_local=self.media_runtime is not None)
         self._memory_error: BaseException | None = None
         # All slots share this validated immutable descriptor. Prefix reuse is
         # qualified by numerical format as well as the request's sampler.
@@ -675,6 +686,53 @@ class MultiDecoder:
             self._memory_error = error
             raise
 
+    def media_runnable(self):
+        """Readiness only: expected input failures are handled at the next round boundary."""
+        if getattr(self, "media_runtime", None) is None:
+            return True
+        if any(not stream.done and not stream.waiting for stream in self.streams.values()):
+            return True
+        limits, failures = self.prepare_media_round()
+        self._media_limits = limits
+        return bool(failures or self._pieces())
+
+    def prepare_media_round(self):
+        """Leader-only CPU errors become per-request outcomes before GPU publication."""
+        from tensorfold.vision.images_http import ImageInputError
+
+        owner = getattr(self, "media_runtime", None)
+        if owner is None:
+            return {}, []
+        limits, failures = {}, []
+        for stream in self.filling:
+            request = getattr(stream, "_media_request", None)
+            if request is None:
+                continue
+            start = self.fills[stream.sid][2]
+            try:
+                request.prime(start)
+                count = request.limit(start, min(self.prefill_rows, owner.profile.execution.input_rows,
+                                                  len(stream.prompt) - start))
+            except ImageInputError as error:
+                try:
+                    from .execution_identity import _unretired
+
+                    uncertain = _unretired(error)
+                    if not uncertain:
+                        owner.check_media_health()
+                except BaseException as inspection:
+                    try:
+                        self.poison_control(error)
+                    except BaseException as containment:
+                        raise_failures(error, (inspection, containment))
+                    raise_failures(error, (inspection,))
+                if uncertain:
+                    raise
+                failures.append((stream, error))
+                count = 0
+            limits[stream.sid] = (start, count)
+        return limits, failures
+
     @torch.no_grad()
     def admit(self, s: Stream) -> None:
         """Queue a request in a free slot (a kept prompt end it extends, if any); rounds prefill its prompt."""
@@ -726,7 +784,7 @@ class MultiDecoder:
                 self.w.dflash2.set_enabled(st, s.draft)
             image = s.vision is not None
             image_rows.begin(e, s, self.vision)
-            if image:
+            if image and self.media_runtime is None:
                 torch.cuda.empty_cache()                 # the tower's scratch back before the prompt's passes
         except Exception as primary:
             try:
@@ -738,7 +796,8 @@ class MultiDecoder:
             mark_error_state_retired(primary)
             raise
         e.stops = sorted({p for p in self.points(s.prompt) if begin + MIN_GAP <= p < entry_end(s.prompt)}) \
-            if s.draft and st.image_positions is None and self.points is not None else []
+            if s.draft and st.image_positions is None and getattr(st, "media_profile_identity", None) is None \
+            and self.points is not None else []
         s.sid, s.st = self.next_id, st
         if self.controller is not None:
             observation = self.controller.work_observations
@@ -772,6 +831,8 @@ class MultiDecoder:
 
         ended: list[Stream] = []
         while self.filling:
+            if getattr(self, "media_runtime", None) is not None and not self._pieces():
+                break  # CPU readiness wakes the scheduler; never spin on an unfinished decoder.
             ended += self._pass()
             if self.controller is not None:
                 break  # Every bounded adaptive pass returns to the globally frozen control boundary.
@@ -959,6 +1020,8 @@ class MultiDecoder:
         """The next pass: rows from the filling prompts in ``_order``, up to ``rows`` and ENDS ending prompts."""
 
         pieces, room = [], self._pass_rows() if rows is None else rows
+        owner = getattr(self, "media_runtime", None)
+        media_room = None if owner is None else owner.profile.execution.input_rows
         # Independent prompts retain their standalone bulk GEMM/reduction shape.
         # Decode windows still batch together in the existing round/graph path.
         meta = self.w.meta
@@ -966,6 +1029,19 @@ class MultiDecoder:
         for s in self._order():
             start = self.fills[s.sid][2]
             n = min(len(s.prompt) - start, room)
+            request = getattr(s, "_media_request", None)
+            if request is not None:
+                limits = getattr(self, "_media_limits", None)
+                n = min(n, media_room)
+                if limits is None:
+                    n = request.limit(start, n)
+                else:
+                    expected, count = limits.get(s.sid, (start, 0))
+                    if expected != start:
+                        raise ValueError("frozen media rows belong to another prompt boundary")
+                    n = min(n, count)
+                if not n:
+                    continue
             inside = [p for p in self._points(s, start, n) if p < start + n]
             if len(inside) > CUTS:                       # a piece holds CUTS kept states at most: the next one ends it
                 n = inside[CUTS] - start
@@ -974,6 +1050,8 @@ class MultiDecoder:
                 break
             pieces.append((s, start, n))
             room -= n
+            if request is not None:
+                media_room -= n
             if separate:
                 break
         return pieces
@@ -982,6 +1060,8 @@ class MultiDecoder:
         """One prompt pass alone; prompts that end sample their first token, draft and join the rounds."""
 
         pieces = self._pieces()
+        if not pieces:
+            return []
         self._note_passed(pieces)
         self.pbuf.rotor_lookup = bool(pieces) and self._rotor_lookup(pieces[0][0], len(pieces))
         t0 = time.perf_counter()
@@ -991,6 +1071,7 @@ class MultiDecoder:
         primary = None
         try:
             try:
+                media_requests.publish(getattr(self, "media_runtime", None), pieces)
                 context = getattr(self.pbuf, "input_preparation_context", None)
 
                 def operation():
@@ -1003,9 +1084,9 @@ class MultiDecoder:
                     with target_inputs(self.w, self.pbuf, windows, segs) as merged:
                         logits = compute(self.w, segs, self.pbuf, logits=bool(ends), ends=ends, cuts=cuts,
                                          **({"input_embeddings": merged} if merged is not None else {}))
-                except BaseException as primary:
+                except BaseException as failure:
                     if self.controller is not None:
-                        self.controller.work_observations.incomplete(primary)
+                        self.controller.work_observations.incomplete(failure)
                     raise
                 if self.controller is not None:
                     self.controller.work_observations.target(
@@ -1014,6 +1095,7 @@ class MultiDecoder:
                 lasts = self._absorb(pieces, segs, cuts)
                 completed = True
             except Exception as exc:                         # noqa: BLE001  (these requests fail, the others go on)
+                primary = exc
                 if getattr(self.pbuf, "input_preparation_context", None) is not None:
                     from .input_preparation import reject_prepared
 
@@ -1024,6 +1106,10 @@ class MultiDecoder:
             primary = error
             raise
         finally:
+            try:
+                media_requests.retire_batch(getattr(self, "media_runtime", None), pieces, cancelled=not completed)
+            except BaseException as cleanup:
+                raise_failures(primary, [cleanup])
             if self.controller is not None:
                 try:
                     self.controller.work_observations.publish()
@@ -1073,12 +1159,13 @@ class MultiDecoder:
     def _keep_at(s: Stream) -> int | None:
         """Where a drafting stream's prompt state is kept: one token before its end, which a next turn extends."""
 
-        return entry_end(s.prompt) if s.draft and s.st.image_positions is None else None
+        return entry_end(s.prompt) if s.draft and s.st.image_positions is None \
+            and getattr(s.st, "media_profile_identity", None) is None else None
 
     def _points(self, s: Stream, start: int, n: int) -> list[int]:
         """The message-start and prompt-end snapshots in rows ``start`` + 1 .. ``start`` + ``n``, ascending."""
 
-        if not s.draft or s.st.image_positions is not None:
+        if not s.draft or s.st.image_positions is not None or getattr(s.st, "media_profile_identity", None) is not None:
             return []
         return [p for p in (*self.fills[s.sid][0].stops, self._keep_at(s)) if start < p <= start + n]
 

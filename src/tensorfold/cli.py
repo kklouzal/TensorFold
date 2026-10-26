@@ -370,6 +370,10 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
         options["_prepared_family_plan"] = getattr(args, "_prepared_family_plan", None)
     if getattr(args, "position_profile_manifest", None) is not None:
         options["position_profile_manifest"] = args.position_profile_manifest
+    if getattr(args, "media_profile_manifest", None) is not None:
+        options["media_profile_manifest"] = args.media_profile_manifest
+    if getattr(args, "no_graphs", False):
+        options["graphs"] = False
     if getattr(args, "indexer_history", "gpu") != "gpu":
         options["indexer_history"] = args.indexer_history
     if getattr(args, "vram_experts_pin", "off") != "off":
@@ -461,6 +465,8 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
             aliases=list(args.alias),
             background_ids=frozenset(_name_priority(args)),
             max_pending_requests=getattr(args, "max_pending_requests", None),
+            **({"max_pending_requests_per_principal": args.max_pending_requests_per_principal}
+               if getattr(args, "max_pending_requests_per_principal", None) is not None else {}),
             **{name: value for name, value in _model_overrides(args).items() if name != "eos_token_ids"},
         )
         shown = (
@@ -518,6 +524,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
     from tensorfold.server.authentication import configure
 
     args.auth = configure(args)
+    if getattr(args, "max_pending_requests_per_principal", None) is not None and not args.auth.enabled:
+        raise ValueError("--max-pending-requests-per-principal requires configured API keys before model loading")
     from tensorfold import families, hub
     if not args.no_update_check:
         from tensorfold import update

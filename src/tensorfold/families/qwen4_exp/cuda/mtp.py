@@ -201,6 +201,11 @@ def mtp_compute(w: Weights, segs: Sequence, b: Buffers, *, last_only: bool = Tru
         rows = b.mixed.index_select(0, b.last[:k])
         xs = b.xs_mixed.index_select(0, b.last[:k])
     out = _mm(rows, head, xs, b.logits.view(-1)[:k * head.n].view(k, head.n), b)     # contiguous at any k
+    if w.draft_filter is not None:
+        # Shared-target MTP always executes the original full target head.
+        # Filtering changes only this explicitly selected proposal support;
+        # target logits and all-row history initialization keep their full law.
+        out.masked_fill_(w.draft_filter, -float("inf"))
     if w.comm is not None:
         candidates(w, b, out, k, id_map=w.draft_ids, offset=int(w.meta["vocab_offset"]))
     if check:

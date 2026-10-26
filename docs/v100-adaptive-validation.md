@@ -11,8 +11,8 @@ payloads and mmproj have been downloaded and verified; source/header/import
 controls do not establish device execution. Source controls, pinned-stack compilation, installed
 CPU checks, physical allocation, model correctness, quality, and measured
 performance are separate gates. No new session maximum or throughput result is
-claimed. The specification's 16 Q8 and 24 Q4 full-context MTP cases remain first
-measurement candidates.
+claimed. The specification's 20-Q8/32-Q4 figures are geometry reference points,
+not admission promises or capacity ceilings.
 
 ## Consolidated installed CPU integration
 

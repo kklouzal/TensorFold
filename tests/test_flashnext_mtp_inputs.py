@@ -38,6 +38,37 @@ def buffers(weights):
     return result
 
 
+def test_mtp_proposal_filter_keeps_actual_head_target_outputs_and_all_row_history(family, monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda.forward import forward
+
+    c = family.cfg
+    tokens = [4, 17, 31]
+    streams = torch.linspace(-.25, .5, len(tokens) * c.streams * c.hidden).reshape(len(tokens), -1).half()
+    baseline = mtp.mtp_forward(family, State(family, 32, 4, "fp16"), buffers(family),
+                                tokens, streams, last_only=False).clone()
+    target_before = forward(family, State(family, 32, 4, "fp16"), buffers(family), tokens).clone()
+    head, pointer, weight = family.head, family.head.weight.data_ptr(), family.head.weight.clone()
+    kept = torch.tensor([1, 19, 255, 511])
+    family.draft_filter = torch.ones(c.vocab, dtype=torch.bool)
+    family.draft_filter[kept] = False
+    calls, actual = [], head.matmul
+
+    def project(*args, **kwargs):
+        calls.append(head.weight.data_ptr())
+        return actual(*args, **kwargs)
+
+    monkeypatch.setattr(head, "matmul", project)
+    proposal = mtp.mtp_forward(family, State(family, 32, 4, "fp16"), buffers(family), tokens, streams)
+    expected = baseline[-1:].clone().masked_fill_(family.draft_filter, -float("inf"))
+    assert torch.equal(proposal, expected) and calls == [pointer]
+    history = mtp.mtp_forward(family, State(family, 32, 4, "fp16"), buffers(family),
+                               tokens, streams, last_only=False)
+    assert torch.equal(history, baseline)
+    target_after = forward(family, State(family, 32, 4, "fp16"), buffers(family), tokens)
+    assert torch.equal(target_after, target_before)
+    assert family.head is head and family.head.weight.data_ptr() == pointer and torch.equal(head.weight, weight)
+
+
 @pytest.mark.parametrize("cache", ["fp16", "int8"])
 def test_complete_text_next_inputs_preserve_legacy_output_and_owned_cache(family, cache):
     c = family.cfg
@@ -154,6 +185,7 @@ def test_partial_alias_snapshot_failure_preserves_inputs_and_original_error(fami
                zip(before, (buf.mtp_in, buf.ids, buf.ids_host, buf.last, buf.last_host)))
     if retirement_fails:
         assert primary.__cause__ is secondary and primary._tensorfold_retained_owners
+
 
 
 def test_ready_media_cannot_infer_hidden_coordinates_from_next_token_ids(family):

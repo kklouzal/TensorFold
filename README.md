@@ -6,15 +6,11 @@ full-context capacity planning, unique GPU histories, bounded execution and live
 controls. [Implementation and qualification boundaries](docs/v100-adaptive-validation.md)
 separate source checks from the pending eight-V100 model, quality and performance
 gates. Historical results below keep their original source and layout.
-The consolidated text/core/position implementation passed **3,277 checks and
-105 subtests** in its ordinary installed source-built CPU container, with four
-documented optional/environment skips. This validates software contracts;
-eight-V100 execution, model quality, capacity and performance remain pending.
-The complete media request path is a separate integration in progress.
-The current specification revision also requires the canonical SC117 32-core
-MTP import, exact target frontend roles, FIFO admission and retained-session
-checkpoint/API work. These newer duties remain open; the installed CPU milestone
-above retains its original implementation scope.
+The published text/core/position checkpoint passed **3,277 installed CPU checks
+and 105 subtests**, with four documented optional/environment skips. Its scope
+precedes the current specification's FIFO, retained-state and standard API work.
+The media service integration and those newer requirements remain under
+verification; no new V100 capacity, quality or performance result is claimed.
 The revised design's shared-GGUF MTP importer preserves the selected target
 embedding/head, validates the ordered token-ID mapping, and declares QSA ratio
 four with a 2,048-token complete-group budget. Import controls do not qualify
@@ -29,6 +25,10 @@ Its combined source/media authority also checks the protected CPU processor and
 decoder closure; a source-only record cannot satisfy the combined verifier.
 The additive [CPU media source image](deploy/v100/media-foundation.md) supplies
 the pinned TorchVision/Transformers processors and PyAV/FFmpeg decoder stack.
+The internal [bounded CPU media frontend](docs/sm70-media-frontend.md) adds
+explicit encoded replay ownership, fresh supervised CPU workers, actual-PTS
+metadata and lazy whole-image/temporal-pair FP32 pixel leases. It requires an
+admitted envelope and canonical token planner; it adds no default service activation.
 CPU software controls remain distinct from pending media service, SC117/mmproj,
 V100 resource/quality/performance and compiler qualification.
 A [bounded mmproj vision component](docs/sm70-vision.md) maps the selected GGUF
@@ -84,6 +84,16 @@ The GGUF recurrent importer preserves stored FP32 `A_neg=-exp(A_log)` and its
 coupled value-head permutation; the FP16 chain consumes that representation
 directly. HF-backed providers retain their `A_log` representation. Source
 import/recurrence controls are separate from pending V100 numerical qualification.
+
+The explicit `--media-profile-manifest` candidate combines the bounded CPU
+frontend, one fixed encoder, shared TP input rows and target/MTP ownership. It
+requires `--vision --no-graphs` and an explicit complete resource envelope; see
+the [media integration contract](docs/sm70-media-frontend.md#serving-integration).
+Source-composition checks are separate from actual V100 qualification.
+
+CUDA serving also accepts `--max-pending-requests-per-principal` with a finite
+`--max-pending-requests` cap. The principal comes from authentication, and its
+logical request claim spans preparation, generation subruns and retirement.
 
 Adaptive V100 serving requires explicit positive `--max-pending-requests` and
 `--max-http-connections` limits before model loading. The V100 Compose profile

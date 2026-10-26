@@ -150,7 +150,8 @@ def test_bounded_verification_rows_do_not_release_resident_state_or_histories():
 
 
 @pytest.mark.torch
-def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(monkeypatch, tmp_path):
+@pytest.mark.parametrize("reserve_gib", [0, 3, 4, 5])
+def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(monkeypatch, tmp_path, reserve_gib):
     """Real source headers and CPU geometry only; stop before weight retention."""
     import json
     import numpy as np
@@ -199,6 +200,8 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
     monkeypatch.setattr(torch.cuda, "set_device", lambda *a: None)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (7, 0))
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda: (24 * 2**30, 32 * 2**30))
+    monkeypatch.setenv("TENSORFOLD_CUDA_MEMORY_RESERVE_GIB", str(reserve_gib))
     monkeypatch.setattr(family_ops, "_NATIVE_FAMILY", False)
     monkeypatch.setattr(family_ops, "_NATIVE_ATTENTION", False)
     monkeypatch.setattr(padded_linears, "_ENABLED", False)
@@ -236,7 +239,8 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
     owner._startup_store = owner._owner_preparation = owner._dflash_pairing = None
     owner._profile_build = None  # __init__ normally establishes this lifecycle before _initialize.
     owner._startup_reads = []
-    with pytest.raises(Inspected):
+    expected = pytest.raises(Inspected) if reserve_gib >= 4 else pytest.raises(ValueError, match="at least 4 GiB")
+    with expected:
         owner._initialize(tmp_path, depth=depth, tp=8, rank=0, master="test", graphs=False,
                           kv_dtype="int8", adaptive_sessions=True, session_ceiling=40,
                           execution_rows=execution_rows)

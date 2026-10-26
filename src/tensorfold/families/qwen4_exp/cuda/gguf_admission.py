@@ -8,6 +8,7 @@ def capacity_options(model_dir, rank, world, mtp=False, mtp_model_dir=None, draf
     from .gguf_weights import model_plan, weight_byte_plan
 
     plan = weight_byte_plan(model_dir, tp=(rank, world), mtp=mtp, draft_ids=draft_ids,
+                            mtp_model_dir=mtp_model_dir,
                             **({"prefill_plan": prefill_plan} if prefill_plan is not None else {}),
                             **({"position_profile": position_profile} if position_profile is not None else {}))
     if mtp:

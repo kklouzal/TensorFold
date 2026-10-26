@@ -72,6 +72,19 @@ def test_named_tokenizer_eos_is_reply_stop_but_does_not_change_training_ple_eos(
     assert overridden.eos == (7, 0) and overridden.ple_eos == ENDOFTEXT
 
 
+def test_gguf_segment_role_is_independent_from_reply_eos(tmp_path):
+    d = checkpoint(tmp_path, {"model_type": "qwen4_exp", "eos_token_id": IM_END,
+                             "gguf_entrypoint": "metadata-only-role-fixture.gguf",
+                             "generation_eos_token_ids": [IM_END, ENDOFTEXT],
+                             "text_config": {**TEXT, "eos_token_id": IM_END,
+                                             "gguf_ple_eos_token_id": ENDOFTEXT}},
+                   {"eos_token_id": [IM_END, ENDOFTEXT, 248063, 248064, 248065]})
+    assert Config.read(d).eos == (IM_END, ENDOFTEXT)
+    assert Config.read(d).ple_eos == ENDOFTEXT
+    overridden = Config.read(d, eos_token_ids=[248063])
+    assert overridden.eos == (248063,) and overridden.ple_eos == ENDOFTEXT
+
+
 # transformers' Qwen4ExpConfig: an unset output_gate_type is hidden_act, whose own default is "silu"
 @pytest.mark.parametrize("gate", [{"hidden_act": "silu", "output_gate_type": "sigmoid"},
                                   {"output_gate_type": "sigmoid"}, {"hidden_act": "sigmoid"}],

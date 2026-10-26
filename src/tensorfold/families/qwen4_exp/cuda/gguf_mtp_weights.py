@@ -2,8 +2,9 @@
 
 The converter fuses [fc_embedding | fc_hidden] and stores already-centred RMS
 gammas. The runtime splits that projection without changing any target weights.
-The source's final zero compression entry is recorded; it does not select dense
-attention for this explicitly declared QSA profile.
+The canonical companion's two vocabulary copies are descriptive only: the
+existing target owns embedding and output execution. Explicit older shared-core
+controls retain their recorded zero compression entry under this QSA profile.
 """
 
 from __future__ import annotations
@@ -54,8 +55,16 @@ def model_plan(target, directory, *, tp=(0, 1)):
                 or any(type(n) is not int for n in sections)
                 or sections[:3] != mtp_rope.mrope_section):
             raise ValueError("MTP companion positional reference/layout differs from its own resolved role")
-    if (metadata.get("qwen4exp.nextn_shared_target_tensors") is not True
-            or type(metadata.get("qwen4exp.nextn_predict_layers")) is not int
+    shared = metadata.get("qwen4exp.nextn_shared_target_tensors")
+    vocabulary_copies = {name: checkpoint.tensors[name] for name in ("token_embd.weight", "output.weight")
+                         if name in checkpoint.tensors}
+    if vocabulary_copies:
+        if (len(vocabulary_copies) != 2 or (shared is not None and shared is not False)
+                or any(t.shape != (c.vocab, c.hidden) for t in vocabulary_copies.values())):
+            raise ValueError("MTP companion vocabulary copies must describe both complete target matrices")
+    elif shared is not True:
+        raise ValueError("MTP companion without vocabulary copies must declare shared target tensors")
+    if (type(metadata.get("qwen4exp.nextn_predict_layers")) is not int
             or metadata.get("qwen4exp.nextn_predict_layers") != 1
             or type(metadata.get("qwen4exp.block_count")) is not int
             or metadata.get("qwen4exp.block_count") != c.layers + 1):
@@ -84,6 +93,8 @@ def model_plan(target, directory, *, tp=(0, 1)):
     if (not isinstance(ratios, tuple) or len(ratios) != c.layers + 1
             or any(type(n) is not int or n not in (0, 4) for n in ratios)):
         raise ValueError("MTP source compression metadata is not the declared QSA family")
+    if vocabulary_copies and ratios[-1] != c.index_ratio:
+        raise ValueError("full MTP companion must explicitly declare its QSA compression ratio")
     # GGUF serializes epsilon as FP32. Match the target under that representation.
     source_eps = metadata.get("qwen4exp.attention.layer_norm_rms_epsilon")
     if type(source_eps) is not float or np.float32(source_eps) != np.float32(c.eps):
@@ -152,7 +163,9 @@ def model_plan(target, directory, *, tp=(0, 1)):
                   matrix("nextn.eh_proj.weight", fusion_shape, columns=((0, d),)),
                   matrix("nextn.eh_proj.weight", fusion_shape, columns=((d, d),)),
                   layer, hc("nextn.hc_head_", False))
-    unused = set(checkpoint.tensors) - planner.used
+    # Descriptor validation above does not create a plan for either copy. In
+    # particular no materializer or payload reader can reach those source bytes.
+    unused = set(checkpoint.tensors) - planner.used - vocabulary_copies.keys()
     if unused:
         raise ValueError("unmapped shared MTP tensors: " + ", ".join(sorted(unused)))
     return result, planner, {"policy": POLICY, "attention": "qsa", "compression_ratio": 4,
@@ -162,6 +175,13 @@ def model_plan(target, directory, *, tp=(0, 1)):
                              "token_id_identity": vocabulary,
                              "source_tensor_count": len(checkpoint.tensors),
                              "source_payload_bytes": sum(t.nbytes for t in checkpoint.tensors.values()),
+                             "imported_tensor_count": len(planner.used),
+                             "imported_source_payload_bytes": sum(checkpoint.tensors[n].nbytes for n in planner.used),
+                             "shared_target_tensors": {"embedding": "target.embed", "output": "target.head"},
+                             "skipped_source_tensors": {
+                                 name: {"shape": list(t.shape), "encoding": t.encoding, "bytes": t.nbytes,
+                                        "runtime": "shared-target-alias"}
+                                 for name, t in vocabulary_copies.items()},
                              "execution_dtype": "float16", "ple": False,
                              "rms_weights": "already-centred-gguf-gamma",
                              "fusion": "split-fp16-linears-and-per-hc-stream-add",

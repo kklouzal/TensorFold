@@ -653,6 +653,12 @@ __global__ void qsa_rows_kernel(const __half* query, const __half* pooled, const
         }
         if (!lane) {
             const bool valid = block < blocks && block < complete;
+            // Under the finite-score contract, +0 initialization and the
+            // ordered additions of nonnegative ReLU terms produce +0 for a
+            // zero score (default round-to-nearest, no fast math). Its bits
+            // therefore preserve numeric FP32 order; the inverse logical
+            // pooled-group ID breaks ties, never a physical owner/page index.
+            // Nonfinite/range qualification is a separate numerical gate.
             storage.keys[block] = valid ? ((static_cast<unsigned long long>(__float_as_uint(score)) + 1ULL) << 32)
                                           | (0xffffffffu - static_cast<unsigned int>(block)) : 0ULL;
             if (block < blocks) scores[int64_t(row) * score_stride + block] = valid ? score : -CUDART_INF_F;

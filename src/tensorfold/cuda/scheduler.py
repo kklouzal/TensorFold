@@ -36,6 +36,17 @@ class Waiting(queue.PriorityQueue):
     def get(self, block: bool = True, timeout: float | None = None):
         return super().get(block, timeout)[2]
 
+    def get_control(self):
+        """A full media cohort waits for completion without consuming queued requests."""
+        with self.not_empty:
+            while not self._wake_pending and not (self._stop_queued and not self.queue):
+                self.not_empty.wait()
+            if self._wake_pending:
+                self._wake_pending = False
+                return self._wake_marker
+            self._stop_queued = False
+            return None
+
     def _qsize(self):
         # Controls have fixed owner cells rather than heap/task entries. A
         # notification interruption cannot grow the request heap on retry.
@@ -118,7 +129,10 @@ class Scheduler:
         self._error_retirements = {}
         self._submitted = False
         self.waiting = Waiting()
+        self._media_wake = self.waiting.wake
         self.held: tuple | None = None               # a request waiting for memory, admitted before any other
+        self._media_held_wait = False
+        self._retiring: list[Stream] = []            # completed device work whose CPU consumers still retire
         self.boxes: dict[int, OutputMailbox] = {}
         self._state_lock = threading.Lock()
         self._closing = True                     # admission opens only after explicit startup commits
@@ -375,28 +389,32 @@ class Scheduler:
                     kind, value = box.get(timeout=TICK_S)
                 except queue.Empty:
                     if not cancel.is_set() and emit([]):
-                        cancel.set()                # the client left: the worker drops the request at its next step
+                        self._request_cancel(cancel)  # the client left: retire at the next owned boundary
                     continue
                 if kind == "tokens":
                     if not cancel.is_set() and emit(value):
-                        cancel.set()                # the client left: the stream ends after its next round
+                        self._request_cancel(cancel)
                 elif kind == "filled":
                     if not cancel.is_set() and progress(len(stream.prompt), stream.cached, value,
                                                          (time.perf_counter() - stream.admitted) * 1000.0):
-                        cancel.set()
+                        self._request_cancel(cancel)
                 elif kind == "error":
                     raise value
                 else:
                     if isinstance(value, dict):
                         value = {**value, "output_ownership": box.record()}
                     return value
-        except BaseException:
-            cancel.set()                            # interrupted callers also stop at the next owned round
-            raise
+        except BaseException as primary:
+            rollback(cancel, primary, lambda: self._request_cancel(cancel))
+
+    def _request_cancel(self, cancel):
+        cancel.set()
+        if getattr(self.decoder, "prepare_request", None) is not None:
+            self.waiting.wake()  # CPU readiness can leave the coordinator asleep on its existing queue.
 
     def _admit(self, first=None) -> list[Stream]:
         done = []
-        while self.decoder.live() < self._stream_limit():
+        while self._occupied() < self._stream_limit():
             if first is not None:
                 item, first = first, None
             elif self.held is not None:
@@ -413,14 +431,26 @@ class Scheduler:
                 continue
             stream, box = item
             self.boxes[id(stream)] = box
-            if stream.cancel is not None and stream.cancel.is_set():
-                self._reply(stream, "done", stream.stats())     # its client left while it waited: nothing to fill
+            retire = getattr(self.decoder, "retire_request", None)
+            if stream.error is not None or stream.cancel is not None and stream.cancel.is_set():
+                if retire is not None and not retire(stream):
+                    self.held, self._media_held_wait = (stream, box), True
+                    self.boxes.pop(id(stream), None)
+                    break
+                self._media_held_wait = False
+                self._reply(stream, *(('error', stream.error) if stream.error is not None else ('done', stream.stats())))
                 continue
             try:
                 # Profile replacement and admission share this serialized GPU
                 # worker. Do not reacquire the producer publication lock: a
                 # published request can be admitted before its producer returns.
                 self._check_profile(stream.profile_epoch)
+                prepare = getattr(self.decoder, "prepare_request", None)
+                if prepare is not None and not prepare(stream, wake=self._media_wake):
+                    self.held, self._media_held_wait = (stream, box), True
+                    self.boxes.pop(id(stream), None)
+                    break
+                self._media_held_wait = False
                 self.decoder.admit(stream)
                 stream.admitted = time.perf_counter()             # one clock read an admission, not a round
                 stream.queue_s += stream.admitted - stream.queued
@@ -433,12 +463,22 @@ class Scheduler:
                     self.held = (stream, box)
                     self.boxes.pop(id(stream), None)
                     break
+                if retire is not None and not retire(stream):
+                    stream.error = exc
+                    self.held, self._media_held_wait = (stream, box), True
+                    self.boxes.pop(id(stream), None)
+                    break
                 self._terminal(box, "error", exc, retired=self.serving_profiles is not None)
                 self.boxes.pop(id(stream), None)
                 continue
             except Exception as exc:                 # noqa: BLE001  (this request fails, the others go on)
                 if self.serving_profiles is not None:
                     self._retire_admission_error(exc)
+                if retire is not None and not retire(stream):
+                    stream.error = exc
+                    self.held, self._media_held_wait = (stream, box), True
+                    self.boxes.pop(id(stream), None)
+                    break
                 box = self.boxes[id(stream)]
                 self._terminal(box, "error", exc, retired=self.serving_profiles is not None)
                 self.boxes.pop(id(stream), None)
@@ -446,6 +486,34 @@ class Scheduler:
             if stream.done:
                 done.append(stream)
         return done
+
+    def _occupied(self):
+        # A cancelled filling request leaves decoder.live before its State can
+        # be reused. Decoding requests stay in streams until finish, so count
+        # only detached retirement owners in addition to the decoder's live set.
+        return self.decoder.live() + sum(stream.st is not None and stream.sid not in
+            getattr(self.decoder, "streams", {}) for stream in self._retiring)
+
+    def _finish_ready(self, done):
+        """Retain each request and mailbox until both CPU and rank consumers finish."""
+        retire = getattr(self.decoder, "retire_request", None)
+        ready, pending = [], []
+        for stream in [*self._retiring, *done]:
+            if retire is None or retire(stream):
+                ready.append(stream)
+            else:
+                pending.append(stream)
+        self._retiring = pending
+        self.decoder.finish(ready)
+        if self.serving_profiles is not None:
+            for stream in ready:
+                if stream.error is not None and not getattr(stream, "_media_outcome_retired", False):
+                    self.serving_profiles.error_outcome(stream.error, state_retired=True,
+                        states=() if stream.st is None else (stream.st,))
+                stream.st = stream.snap = stream.copies = stream.vision = None
+        for stream in ready:
+            self._reply(stream, *(("error", stream.error) if stream.error is not None else ("done", stream.stats())),
+                        retired=self.serving_profiles is not None and stream.error is not None)
 
     def _retire_admission_error(self, error):
         coordinated = getattr(self.decoder, "retire_admission_error", None)
@@ -670,6 +738,8 @@ class Scheduler:
 
     def _run(self) -> None:
         while True:
+            if self._retiring:
+                self._finish_ready([])
             self._execution_boundary()
             if not self._serving_profile_available:
                 # Keep the same worker/transport alive while a refused profile
@@ -685,13 +755,21 @@ class Scheduler:
                 continue
             self._yield()
             idle = not self.decoder.live() and self.held is None
-            if idle and self._stopping:
+            if idle and self._stopping and not self._retiring:
                 return
             maintenance = getattr(self.decoder, "maintenance_pending", None)
             ready = maintenance is not None and maintenance()
-            first = self.waiting.get() if idle and not ready else None
-            if idle and not ready and first is None:
+            runnable = getattr(self.decoder, "media_runnable", None)
+            media_wait = runnable is not None and not runnable() and (
+                self.decoder.live() or self._media_held_wait or self._retiring)
+            if media_wait and self._occupied() >= self._stream_limit() and not ready:
+                first = self.waiting.get_control()
+            else:
+                first = self.waiting.get() if (idle or media_wait) and not ready else None
+            if idle and not self._retiring and not ready and first is None:
                 return                                                                # close()
+            if media_wait and not ready and first is None:
+                self._stopping = True
             if idle:
                 self._execution_boundary()  # a control may arrive while the worker waits on the queue
                 if not self._serving_profile_available:
@@ -708,15 +786,12 @@ class Scheduler:
                     self.serving_profiles.error_outcome(exc, state_retired=True,
                         states=tuple(s.st for s in dropped if s.st is not None))
                 for s in dropped:
+                    if getattr(s, "_media_request", None) is not None:
+                        s.error, s.done = exc, True
+                        s._media_outcome_retired = self.serving_profiles is not None
+                        done.append(s)
+                        continue
                     if self.serving_profiles is not None:
                         s.st = s.snap = s.copies = s.vision = None
                     self._reply(s, "error", exc, retired=self.serving_profiles is not None)
-            self.decoder.finish(done)
-            if self.serving_profiles is not None:
-                for s in done:
-                    if s.error is not None:
-                        self.serving_profiles.error_outcome(s.error, state_retired=True, states=() if s.st is None else (s.st,))
-                    s.st = s.snap = s.copies = s.vision = None
-            for s in done:
-                self._reply(s, *(("error", s.error) if s.error is not None else ("done", s.stats())),
-                            retired=self.serving_profiles is not None and s.error is not None)
+            self._finish_ready(done)

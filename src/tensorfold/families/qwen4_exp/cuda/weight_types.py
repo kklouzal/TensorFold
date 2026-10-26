@@ -83,9 +83,14 @@ class Config:
             raise ValueError(f"output_gate_type {gate!r}: the CUDA backend's DeltaNet kernels support 'sigmoid' only")
         head_dim = int(t.get("head_dim") or t["hidden_size"] // t["num_attention_heads"])
         teos = t.get("eos_token_id")
+        ple_eos = t.get("gguf_ple_eos_token_id", teos)
         metadata_root = Path(model_dir).parent if Path(model_dir).suffix.lower() == ".gguf" else model_dir
+        # The resolved GGUF target profile names its generation role separately
+        # from its scalar EOS identity and PLE segmentation. It needs no text
+        # frontend construction in geometry/weight-only planning.
+        resolved_eos = raw.get("generation_eos_token_ids") if raw.get("gguf_entrypoint") else None
         eos = resolve_eos(metadata_root, raw.get("eos_token_id", teos), vocab_size=int(t["vocab_size"]),
-                          override=eos_token_ids)
+                          override=eos_token_ids if eos_token_ids is not None else resolved_eos)
         quant = raw.get("quantization") or raw.get("quantization_config") or {}
         method = str(quant.get("quant_method") or "mlx").lower()
         groups = quant.get("config_groups") or {}
@@ -111,7 +116,7 @@ class Config:
             ngram_base=int(t.get("ngram_vocab_size_base", 20_000_000)),
             ngram_divisor=int(t.get("make_ngram_vocab_size_divisible_by", 128)),
             ngram_shards=int(t.get("split_ngram_parts", 128)), seed=int(t.get("seed", 1234)),
-            ple_eos=int(teos[0] if isinstance(teos, list) else teos) if teos is not None else 0,
+            ple_eos=int(ple_eos[0] if isinstance(ple_eos, list) else ple_eos) if ple_eos is not None else 0,
             eos=eos, group_size=int(quant.get("group_size", 32)), bits=int(quant.get("bits", 4)),
             quant=method, nvfp4_group=group,
             mrope_section=policy.mrope_section,
@@ -240,6 +245,7 @@ class Weights:
     dspark: Any = None       # explicit separate draft owner; never an MTPW
     dflash2: Any = None      # bounded-window DFlash2 owner; target storage is borrowed
     positions: Any = None    # explicit immutable positional binding; None preserves the existing platform policy
+    draft_filter: torch.Tensor | None = None  # bool exclusions over the actual target head's local vocabulary shard
 
     @property
     def device(self) -> torch.device:
@@ -274,7 +280,8 @@ class Weights:
                 for tensor in x.device_tensors():
                     add(tensor)
 
-        for part in (self.embed, self.layers, self.mixer, self.head, self.mtp, self.draft_head, self.draft_ids, self.dspark, self.dflash2):
+        for part in (self.embed, self.layers, self.mixer, self.head, self.mtp, self.draft_head, self.draft_ids,
+                     self.draft_filter, self.dspark, self.dflash2):
             add(part)
         return sum(seen.values()) + (self.x3.nbytes() if self.x3 is not None else 0)
 

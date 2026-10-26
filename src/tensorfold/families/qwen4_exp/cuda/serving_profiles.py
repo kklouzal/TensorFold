@@ -26,10 +26,10 @@ HEX = re.compile(r"[0-9a-f]{64}\Z")
 FIXED = frozenset({"tp", "rank", "master", "port", "expert_session", "vram_experts", "vram_experts_pin",
                    "vision", "vision_urls", "indexer_history", "adaptive_sessions"})
 PATH_OPTIONS = frozenset({"mtp_model_dir", "dspark_model_dir", "dflash2_model_dir", "family_manifest", "chat_template_file",
-                          "execution_profile_manifest", "position_profile_manifest"})
+                          "execution_profile_manifest", "position_profile_manifest", "media_profile_manifest"})
 API_FIELDS = frozenset({"served", "aliases", "default_thinking", "sampling", "max_tokens", "reasoning_effort",
                         "thinking_budget"})
-_UNRESOLVED_POSITION = object()  # Omitted resolution is distinct from an explicitly unbound legacy result.
+_UNRESOLVED_POSITION = object()  # Omitted resolution differs from an explicitly unbound legacy result.
 
 
 def profile_root(value):
@@ -248,6 +248,18 @@ def _required_files(model_dir, options, *, positions=_UNRESOLVED_POSITION):
             positions, _, _ = resolve_profile_positions(model_dir, options)
     if positions is not None:
         required.extend(positions.required_input_files())
+    if options.get("media_profile_manifest") is not None:
+        from .media_profile import read_media_profile
+        from ..gguf import metadata_config
+
+        if (entrypoint is None or positions is None or options.get("vision") is not True
+                or options.get("graphs") is not False or options.get("dspark_model_dir") is not None):
+            raise ValueError("media serving profiles require admitted eager unique GGUF vision and position inputs")
+        source = metadata_config(entrypoint)["text_config"]
+        media = read_media_profile(options["media_profile_manifest"], model_dir=Path(entrypoint).parent,
+            target_hidden=source["hidden_size"], world=options.get("tp", 1),
+            context_rows=positions.target.max_rows)
+        required.extend(media.required_input_files())
     return {str(Path(path).resolve(strict=True)) for path in required}
 
 

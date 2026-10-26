@@ -98,14 +98,29 @@ class SM70VisionEncoder:
 
     def encode_unit(self, pixels, grid):
         """Encode whole independent segments; never spatially truncate attention edges."""
+        return self._encode_unit(pixels, grid, transferred=False)
+
+    def encode_device_unit(self, pixels, grid):
+        """Borrow admitted FP16 patches delivered by the TP input transport.
+
+        The transport owns unchanged processor rows and their one FP16 cast,
+        has joined the receive onto this stream, and retains the buffer through
+        the returned event. Grid metadata remains authoritative CPU int64.
+        """
+        return self._encode_unit(pixels, grid, transferred=True)
+
+    def _encode_unit(self, pixels, grid, *, transferred):
         if self.closed or self.failed or self.model is None:
             raise ValueError("vision encoder is closed, failed or not initialized")
         grids, count = _grids(grid, self.plan.layout, self.max_unit_patches)
         layout = self.plan.layout
         width = layout.channels * layout.temporal * layout.patch ** 2
-        if (not isinstance(pixels, torch.Tensor) or pixels.device.type != "cpu" or pixels.dtype != torch.float32
+        expected_device = self.device if transferred else torch.device("cpu")
+        expected_dtype = torch.float16 if transferred else torch.float32
+        if (not isinstance(pixels, torch.Tensor) or pixels.device != expected_device or pixels.dtype != expected_dtype
+                or transferred and expected_device.type != "cuda"
                 or pixels.shape != (count, width) or not pixels.is_contiguous()):
-            raise ValueError("vision unit pixels must be the admitted CPU FP32 normalized patch rows")
+            raise ValueError("vision unit pixels differ from their admitted CPU FP32 or transferred CUDA FP16 contract")
         self._retire_inputs()  # One bounded encoder working set at a time.
         from torch.nn.attention import SDPBackend, sdpa_kernel
         from transformers.vision_utils import (

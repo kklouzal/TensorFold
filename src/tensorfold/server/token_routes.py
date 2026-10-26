@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from tensorfold.cleanup import rollback
 from tensorfold.server.errors import CONTEXT_LIMIT, ContextLengthError, RequestError
 from tensorfold.server.messages import normalize_messages
 from tensorfold.server.prompts import has_images, prepare_prompt
@@ -37,7 +38,9 @@ def _vocab(tokenizer: Any) -> int | None:
         if hasattr(type(tokenizer), "__len__"):
             return len(tokenizer)
         if hasattr(type(tokenizer), "get_vocab_size"):              # a tokenizers.Tokenizer
-            return int(tokenizer.get_vocab_size(with_added_tokens=True))
+            from tensorfold.token_metadata import tokenizer_vocab_size
+
+            return tokenizer_vocab_size(tokenizer)
         attributes = getattr(tokenizer, "__dict__", {})
         tokenizer = next((attributes[k] for k in ("_inner", "inner", "_tokenizer") if k in attributes), None)
         if tokenizer is None:
@@ -65,7 +68,18 @@ def count_chat(app: Any, chat: dict[str, Any]) -> int:
     generation refuses it."""
 
     if hasattr(app, "prepare"):                   # CUDA's preparation includes vision token expansion
-        return len(app.prepare(chat, True).prompt)
+        def retire():
+            close = getattr(prepared, "close", None)
+            if close is not None:
+                close()
+
+        prepared = app.prepare(chat, True)
+        try:
+            count = len(prepared.prompt)
+        except BaseException as primary:
+            rollback(prepared, primary, retire)
+        retire()
+        return count
     from tensorfold.server.request_options import heard_effort
 
     fields = thinking_fields(chat, app.effort_levels)

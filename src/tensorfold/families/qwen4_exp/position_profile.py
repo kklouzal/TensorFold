@@ -51,26 +51,34 @@ def _digest(value):
     return hashlib.sha256(_json(value).encode()).hexdigest()
 
 
-def _source(source):
+def _source(source, *, mtp=False):
     """Actual configuration plus loader inputs, without rehashing whole weights."""
     source = Path(source)
+    from .gguf import GGUFCheckpoint, metadata_config, resolve_gguf
+
+    role = "mtp" if mtp else "target"
     if source.is_file() and source.suffix.lower() == ".json":
         raw, files = read_metadata_json(source), {source.resolve()}
         root = source.parent
     else:
-        raw, files = read_config(source), set()
+        # A configured floating checkpoint keeps its authoritative config even
+        # when an unrelated GGUF happens to share the directory.
+        gguf_source = source.suffix.lower() == ".gguf" or (
+            source.is_dir() and not (source / "config.json").exists())
+        entry = resolve_gguf(source) if mtp and gguf_source else None
+        raw = metadata_config(entry, role=role) if entry is not None else read_config(source)
+        files = set()
         root = source if source.is_dir() else source.parent
         if (root / "config.json").exists():
             files.add(checkpoint_path(root, "config.json"))
     # A GGUF source's sidecar cannot silently replace its positional geometry.
-    from .gguf import GGUFCheckpoint, metadata_config, resolve_gguf
     from tensorfold.families import quant_method
 
     if source.suffix.lower() == ".gguf" or quant_method(raw) == "gguf":
         entry = resolve_gguf(root if source.suffix.lower() == ".json" else source)
         checkpoint = GGUFCheckpoint.open(entry)
         files.update(path.resolve() for path in checkpoint.paths)
-        declared = RopeParameters.from_config(metadata_config(entry))
+        declared = RopeParameters.from_config(metadata_config(entry, role=role))
         selected = RopeParameters.from_config(raw)
         if (declared.theta, declared.rotary_dim, declared.native_context, declared.mrope_section) != (
                 selected.theta, selected.rotary_dim, selected.native_context, selected.mrope_section):
@@ -382,7 +390,7 @@ def resolve_position_profile(model_dir, *, requested_context, yarn_factor=None, 
         raise ValueError("requested rows exceed the resolved target positional implementation limit")
     mtp_raw, mtp_digest, mtp_origin = raw, source_digest, "explicit-family-native-mtp-defaults"
     if "mtp" in companions:
-        mtp_raw, mtp_files, mtp_digest = _source(companions["mtp"])
+        mtp_raw, mtp_files, mtp_digest = _source(companions["mtp"], mtp=True)
         inputs.update(mtp_files)
         mtp_raw = _mtp_source_defaults(mtp_raw, _native_mtp(raw))
         mtp_origin = "actual-companion-with-explicit-source-native-defaults"

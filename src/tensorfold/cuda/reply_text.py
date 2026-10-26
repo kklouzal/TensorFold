@@ -22,7 +22,9 @@ class StreamDecoder:
     """Decode a shared token window to preserve leading spaces and byte boundaries, deferring incomplete characters."""
 
     def __init__(self, tok, skip: tuple[int, ...] = ()):
-        self.tok, self.skip = tok, frozenset(skip)
+        self.tok = tok
+        self.skip = (frozenset(skip) | getattr(tok, "control_token_ids", frozenset())
+                     | getattr(tok, "unused_token_ids", frozenset()))
         self.ids: list[int] = []
         self.text = ""
         self.prefix = 0             # window start
@@ -51,16 +53,34 @@ class StopStrings:
     """A request's ``stop`` strings, decided token by token, so a reply cuts at the same token however its tokens arrive."""
 
     def __init__(self, strings: tuple[str, ...], tok, skip: tuple[int, ...] = ()):
-        self.strings, self.tok, self.skip = strings, tok, frozenset(skip)
+        self.strings, self.tok = strings, tok
+        self.skip = (frozenset(skip) | getattr(tok, "control_token_ids", frozenset())
+                     | getattr(tok, "unused_token_ids", frozenset()))
         # a new match lies in the last (its UTF-8 length) tokens, plus eight as the Mac's ``StopPolicy`` keeps
         self.tail = max((len(s.encode()) for s in strings), default=0) + 8
 
     def hit(self, tokens: list[int]) -> bool:
         """Whether the text through the newest token holds a stop string (earlier tokens were checked already)."""
 
-        ids = [t for t in tokens[-self.tail:] if t not in self.skip]
-        text = self.tok.decode(ids, skip_special_tokens=False)
+        if not self.strings:
+            return False
+        text = self.tok.decode(self.tail_ids(tokens), skip_special_tokens=False)
         return any(stop in text for stop in self.strings)
+
+    def tail_ids(self, tokens, *, start=0, limit=None) -> list[int]:
+        """Bound visible context in tokens[start:] without copying a retained history."""
+        limit = self.tail if limit is None else limit
+        if limit == 0:
+            return []
+        tail = []
+        for index in range(len(tokens) - 1, start - 1, -1):
+            token = tokens[index]
+            if token not in self.skip:
+                tail.append(token)
+                if len(tail) == limit:
+                    break
+        tail.reverse()
+        return tail
 
     def visible(self, text: str, *, partial: bool = False) -> str:
         """The text before the first match; ``partial`` also holds back an end that may begin one (the Mac's rule)."""
@@ -76,8 +96,14 @@ def stop_prefix_limit(stops: StopStrings, baseline, prefix: list[int], new: list
     rather than copying an arbitrarily long generated history on each token.
     The tokenizer and stop strings are shared immutable request inputs.
     """
-    tail = [*baseline[-stops.tail:], *prefix[-stops.tail:]][-stops.tail:]
+    if not stops.strings or not any(token not in stops.skip for token in new):
+        return len(new), False
+    tail = stops.tail_ids(prefix)
+    if len(tail) < stops.tail:
+        tail = [*stops.tail_ids(baseline, limit=stops.tail - len(tail)), *tail]
     for count, token in enumerate(new, 1):
+        if token in stops.skip:
+            continue
         tail.append(token)
         if stops.hit(tail):
             return count, True

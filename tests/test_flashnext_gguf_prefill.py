@@ -96,7 +96,7 @@ def test_exact_workspace_delta_is_admitted_without_changing_resident_or_host_byt
 
     prototype = SimpleNamespace(cfg=SimpleNamespace(streams=4, hidden=2560, rotary_dim=64,
                                                     moe_width=80, top_k=10),
-                                head=SimpleNamespace(n=31040), draft_head=None, draft_ids=None,
+                                head=SimpleNamespace(n=31040), draft_head=None, draft_ids=None, draft_filter=None,
                                 meta={"draft_host_id_bytes": 0})
     planner = SimpleNamespace(matrices=[], arrays=[], tables=[])
     monkeypatch.setattr(gguf_weights, "model_plan", lambda *args, **kwargs: (prototype, planner))
@@ -117,8 +117,10 @@ def test_exact_workspace_delta_is_admitted_without_changing_resident_or_host_byt
 @pytest.mark.torch
 def test_loader_checks_the_plan_before_constructing_an_io_reader(monkeypatch):
     from tensorfold.families.qwen4_exp.cuda import gguf_weights
+    from tensorfold.families.qwen4_exp.rope import RopeParameters
 
-    prototype = SimpleNamespace(cfg=SimpleNamespace(moe_width=80, hidden=256, top_k=1))
+    prototype = SimpleNamespace(cfg=SimpleNamespace(moe_width=80, hidden=256, top_k=1,
+                                rope=RopeParameters("default", 10000., 8, 256, 256, mrope_section=(1, 1, 2))))
     monkeypatch.setattr(gguf_weights, "model_plan", lambda *args, **kwargs: (prototype, None))
 
     def reached_reader():

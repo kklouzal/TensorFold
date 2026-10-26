@@ -1,6 +1,6 @@
 """Bounded catalogue/ownership controls; CUDA numerical qualification is separate."""
 
-from contextlib import nullcontext
+from contextlib import contextmanager, nullcontext
 from types import SimpleNamespace
 
 import pytest
@@ -96,6 +96,57 @@ def test_fixed_catalogue_replays_without_python_recapture_and_eager_uses_same_bo
     catalogue.close()
     assert all(graph.resets == 1 for graph in graphs)
     assert not status.notifications
+
+
+def test_transport_and_native_warmup_join_the_side_stream_before_capture(prepared_owner, monkeypatch):
+    owner, comm, status, _calls, _graphs = prepared_owner
+    events = []
+
+    class Stream:
+        def __init__(self, name):
+            self.name = name
+
+        def wait_stream(self, other):
+            events.append(("dependency", self.name, other.name))
+
+    main, side = Stream("main"), Stream("side")
+    current = [main]
+
+    @contextmanager
+    def on_stream(stream):
+        previous, current[0] = current[0], stream
+        try:
+            yield
+        finally:
+            current[0] = previous
+
+    cuda = owner_graphs.torch.cuda
+    monkeypatch.setattr(cuda, "Stream", lambda **_kwargs: side)
+    monkeypatch.setattr(cuda, "current_stream", lambda _device: current[0])
+    monkeypatch.setattr(cuda, "stream", on_stream)
+    monkeypatch.setattr(cuda, "synchronize", lambda _device: events.append(("fence", current[0].name)))
+
+    def observe(name, operation):
+        def run(*args):
+            events.append((name, current[0].name, status.active))
+            return operation(*args)
+        return run
+
+    for name in ("clear_native_inputs", "warm_native_transport", "wait_native_inputs", "native_run"):
+        monkeypatch.setattr(owner, name, observe(name, getattr(owner, name)))
+    catalogue = owner_graphs.OwnerAttentionGraphs(owner, rows=6, budget_bytes=256, comm=comm)
+    catalogue.prepare(quiescent=lambda: True)
+    native = [index for index, event in enumerate(events) if event[0] == "native_run"]
+    for eager, capture in zip(native[::2], native[1::2], strict=True):
+        assert events[eager] == ("native_run", "side", False)
+        assert events[capture] == ("native_run", "side", True)
+        assert ("fence", "main") in events[eager + 1:capture]
+    assert len(native) == 2 * len(catalogue.buckets)
+    assert all(event[1:] == ("side", False) for event in events
+               if event[0] in ("clear_native_inputs", "warm_native_transport", "wait_native_inputs"))
+    assert events.count(("dependency", "side", "main")) == len(catalogue.buckets)
+    assert current[0] is main and not status.active
+    catalogue.close()
 
 
 def test_quiescence_is_required_before_capture_and_failure_keeps_owners(prepared_owner):

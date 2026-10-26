@@ -41,15 +41,20 @@ class TokenBytes:
         self.decode = dict(zip(map(chr, chars + list(range(256, 256 + len(missing)))), present + missing))
         self.tokenizer = tokenizer
         self.added = tokenizer.get_added_tokens_decoder()
+        self.control = getattr(tokenizer, "control_token_ids", ())
+        self.unused = getattr(tokenizer, "unused_token_ids", ())
         self.cache = {}
 
     def token(self, token_id):
         if token_id not in self.cache:
-            added = self.added.get(token_id)
-            piece = self.tokenizer.id_to_token(token_id)
-            if piece is None:
+            if token_id in self.control:
+                value = {"token": "", "bytes": None}
+            elif token_id in self.unused:
+                value = {"token": "", "bytes": []}
+            elif (piece := self.tokenizer.id_to_token(token_id)) is None:
                 value = {"token": "", "bytes": None}
             else:
+                added = self.added.get(token_id)
                 raw = b"".join(bytes([self.decode[c]]) if c in self.decode else c.encode("utf-8") for c in piece)
                 value = {"token": raw.decode("utf-8", errors="replace"),
                          "bytes": None if added is not None and added.special else list(raw)}

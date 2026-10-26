@@ -78,6 +78,8 @@ def write(path, tensors, metadata):
         if isinstance(item, float):
             return struct.pack("<If", 6, item)
         if isinstance(item, (tuple, list)):
+            if item and all(type(v) is str for v in item):
+                return struct.pack("<IIQ", 9, 8, len(item)) + b"".join(string(v) for v in item)
             if item and all(type(v) is bool for v in item):
                 return struct.pack("<IIQ", 9, 7, len(item)) + struct.pack("<" + "?" * len(item), *item)
             if item and all(type(v) is float for v in item):

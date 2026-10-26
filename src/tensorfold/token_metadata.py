@@ -6,6 +6,7 @@ token stop; other special tokens have no implied end-of-reply meaning.
 from __future__ import annotations
 
 import hashlib
+import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -104,7 +105,65 @@ def load_tokenizer(model_dir):
     tokenizer = Tokenizer.from_str(tokenizer_json(model_dir))
     tokenizer.no_padding()
     tokenizer.no_truncation()
+    config = read_json(model_dir, "tokenizer_config.json") or {}
+    if "tensorfold_token_roles" in config:
+        bind_token_roles(tokenizer, config["tensorfold_token_roles"])
     return tokenizer
+
+
+def bind_token_roles(tokenizer, roles):
+    """Attach prepared GGUF matrix/presentation roles to one native tokenizer.
+
+    UNUSED matrix rows have no lexical entry. CONTROL entries retain their
+    literal full decoding, but presentation suppresses them. Neither role
+    changes generation termination, sampling or token/state accounting.
+    """
+    keys = {"version", "vocab_size", "control", "unused"}
+    if (type(roles) is not dict or roles.keys() != keys or type(roles["version"]) is not int
+            or roles["version"] != 1):
+        raise ValueError("unknown or malformed prepared token-role schema")
+    size = roles["vocab_size"]
+    token_ids((), vocab_size=size)
+    groups = []
+    for field in ("control", "unused"):
+        values = roles[field]
+        if type(values) is not list:
+            raise ValueError(f"prepared {field} token IDs must be a list")
+        ids = token_ids(values, field=f"prepared {field} token IDs", vocab_size=size)
+        if list(ids) != values:
+            raise ValueError(f"prepared {field} token IDs must be unique")
+        groups.append(frozenset(ids))
+    control, unused = groups
+    lexical = frozenset(tokenizer.get_vocab().values())
+    specials = frozenset(key for key, value in tokenizer.get_added_tokens_decoder().items() if value.special)
+    if (control & unused or control != specials or unused & lexical or len(lexical) + len(unused) != size
+            or any(type(index) is not int or not 0 <= index < size for index in lexical)):
+        raise ValueError("prepared token roles conflict with the native tokenizer vocabulary")
+    tokenizer.model_vocab_size = size
+    tokenizer.control_token_ids = control
+    tokenizer.unused_token_ids = unused
+    return tokenizer
+
+
+def tokenizer_vocab_size(tokenizer):
+    """The matrix token-ID domain, including nonlexical UNUSED rows."""
+    size = getattr(tokenizer, "model_vocab_size", None)
+    return tokenizer.get_vocab_size(with_added_tokens=True) if size is None else size
+
+
+def decode_presentation(tokenizer, ids):
+    """Present text while retaining USER_DEFINED protocol/reasoning literals."""
+    control = getattr(tokenizer, "control_token_ids", ())
+    return tokenizer.decode([token for token in ids if token not in control], skip_special_tokens=False)
+
+
+def tokenizer_identity(tokenizer):
+    """Bind native text handling and the complete prepared matrix/presentation roles."""
+    roles = {"vocab_size": tokenizer_vocab_size(tokenizer),
+             "control": sorted(getattr(tokenizer, "control_token_ids", ())),
+             "unused": sorted(getattr(tokenizer, "unused_token_ids", ()))}
+    return hashlib.sha256(tokenizer.to_str().encode() + b"\0" +
+                          json.dumps(roles, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def token_ids(value, *, field="eos_token_id", vocab_size=None, required=False):

@@ -600,7 +600,7 @@ def test_eight_rank_commit_defers_http_migration_between_final_vote_and_publicat
 
 
 @pytest.mark.torch
-@pytest.mark.parametrize("fact", ["fp16-policy", "configured-power"])
+@pytest.mark.parametrize("fact", ["fp16-policy", "configured-power", "qsa-policy"])
 @pytest.mark.parametrize("uuid_form", ["torch", "nvidia"])
 def test_registration_observes_uncached_backend_policy_and_fresh_configured_gpu_operation(
         packet, monkeypatch, fact, uuid_form):
@@ -660,6 +660,10 @@ def test_registration_observes_uncached_backend_policy_and_fresh_configured_gpu_
             monkeypatch.setattr(torch.backends.cuda.matmul, "allow_fp16_reduced_precision_reduction", True)
             assert authority(engine.w.device)["fp16_reduced_precision"] is False
             assert authority.__wrapped__(engine.w.device)["fp16_reduced_precision"] is True
+        elif fact == "qsa-policy":
+            from tensorfold.families.qwen4_exp import qsa_selection
+
+            monkeypatch.setattr(qsa_selection, "POLICY", qsa_selection.POLICY + "-changed")
         else:
             power[0] = "140"
         body["profiles"] = {"schema": "tensorfold.execution-profiles", "version": 1,
@@ -671,7 +675,7 @@ def test_registration_observes_uncached_backend_policy_and_fresh_configured_gpu_
         body.pop("profiles")
         path.write_text(json.dumps(body))
         result = identity.bind_execution_manifest(engine, path, rebind=True)
-        field = "numerics" if fact == "fp16-policy" else "topology"
+        field = "numerics" if fact in ("fp16-policy", "qsa-policy") else "topology"
         assert result["identity"][field] != old[field]
         assert result["bytes_read_this_binding"] == 0
         operating_queries = [argv for argv in queries if any("power.limit" in part for part in argv)]
