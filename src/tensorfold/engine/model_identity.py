@@ -200,16 +200,19 @@ class ModelIdentity:
     hashes_reused: int
     elapsed_seconds: float
     _issued: object = field(repr=False, compare=False)
+    _pid: int = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
         if self._issued is not _ISSUED:
             raise ValueError("model identity must be issued by capture")
+        object.__setattr__(self, '_pid', os.getpid())
         # A copied/replaced dataclass cannot inherit the original receipt's
         # authority. No process-global mutable receipt registry is needed.
         object.__setattr__(self, '_issued', weakref.ref(self))
 
     def _check_issued(self):
-        if type(self._issued) is not weakref.ReferenceType or self._issued() is not self:
+        if (self._pid != os.getpid() or type(self._issued) is not weakref.ReferenceType
+                or self._issued() is not self):
             raise ValueError("model identity receipt was not issued in this process")
 
     def verify_unchanged(self):
@@ -275,12 +278,13 @@ def capture_model_identity(files: dict[str, Path], *, runtime_identity, authoriz
             raise ValueError("model input requires a logical name and filesystem path")
         if len(name.encode('utf-8')) > max_name_bytes:
             raise ValueError("model input logical name exceeds byte bound")
-    runtime = canonical_runtime_json(runtime_identity)
-    previous = {}
     if reuse is not None:
         if type(reuse) is not ModelIdentity or not reuse_is_immutable:
             raise ValueError("hash reuse needs current-process immutable input authority")
         reuse._check_issued()
+    runtime = canonical_runtime_json(runtime_identity)
+    previous = {}
+    if reuse is not None:
         if reuse.runtime_json == runtime and {f.logical_name for f in reuse.files} == set(files):
             previous = {f.logical_name: f for f in reuse.files}
     contents = []
@@ -339,17 +343,22 @@ def capture_shared_model_identity(files: dict[str, Path], *, runtime_identity, a
             or any(type(n) is not int or n <= 0 for n in (max_files, max_name_bytes))
             or len(files) > max_files or type(reuse_is_immutable) is not bool):
         raise ValueError("bounded same-host model content cohort required")
-    runtime = canonical_runtime_json(runtime_identity)
+    runtime = None
     previous = {}
-    scope, opened = FileStreams(max_files=max_files), {}
+    scope, opened = None, {}
     primary = None
     try:
         def inventory():
-            nonlocal previous
+            nonlocal previous, runtime, scope
             if reuse is not None:
                 if type(reuse) is not ModelIdentity or not reuse_is_immutable:
                     raise ValueError("shared hash reuse needs current-process immutable authority")
                 reuse._check_issued()
+            # A foreign-process receipt refuses within the matched phase,
+            # before runtime serialization or opening any execution input.
+            runtime = canonical_runtime_json(runtime_identity)
+            scope = FileStreams(max_files=max_files)
+            if reuse is not None:
                 if reuse.runtime_json == runtime and {f.logical_name for f in reuse.files} == set(files):
                     previous = {f.logical_name: f for f in reuse.files}
             total = 0
@@ -445,4 +454,5 @@ def capture_shared_model_identity(files: dict[str, Path], *, runtime_identity, a
         primary = error
         raise
     finally:
-        _close(scope, primary)
+        if scope is not None:
+            _close(scope, primary)
