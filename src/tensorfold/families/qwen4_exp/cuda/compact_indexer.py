@@ -275,13 +275,12 @@ def validate_target_indexer_frame(buffers, segments):
 
 
 def _validate_or_fail(buffers, segments, *, mtp):
+    from .input_preparation import reject_prepared
+
     try:
         return _validate_frame(buffers, segments, mtp=mtp)
     except BaseException as error:
-        context = buffers.input_preparation_context
-        if context is not None:
-            context.fail(error)
-        raise
+        reject_prepared(buffers, error)
 
 
 class Staging:

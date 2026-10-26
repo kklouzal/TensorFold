@@ -150,6 +150,30 @@ def test_invalid_frame_is_rejected_before_target_or_mixed_persistent_work(monkey
         forward.compute_mixed(weights, segments, buffers, segments, buffers)
 
 
+@pytest.mark.parametrize("mtp", [False, True])
+@pytest.mark.parametrize("changed", ["mutated", "stale"])
+def test_actual_frame_error_stays_primary_when_cohort_notification_fails(mtp, changed):
+    buffers, _position, states, windows, segments = prepared(mtp=mtp)
+    stage = stage_mtp_indexer_frame if mtp else stage_target_indexer_frame
+    validate = validate_mtp_indexer_frame if mtp else validate_target_indexer_frame
+    stage(buffers, segments, windows)
+    if changed == "mutated":
+        values = buffers.mtp_indexer_coordinates if mtp else buffers.target_indexer_coordinates
+        values[0].fill_(99)
+    else:
+        states[0].slot_generation += 1
+    secondary, observed = RuntimeError("cohort notification failed"), []
+    def fail(error):
+        observed.append(error)
+        raise secondary
+    buffers.input_preparation_context = NS(fail=fail)
+    with pytest.raises(ValueError) as caught:
+        validate(buffers, segments)
+    assert observed == [caught.value] and caught.value is observed[0]
+    assert ("mutated" if changed == "mutated" else "generation") in str(caught.value)
+    assert caught.value.__cause__ is secondary
+
+
 def test_native_writer_increments_the_actual_shared_frame_counter_before_submission(monkeypatch):
     from tensorfold.cuda.sm70 import compact_indexer as native
 
