@@ -7,6 +7,26 @@ import pytest
 from tensorfold.families.qwen4_exp.cuda.history_placement import HistoryPlacement, owner_workspace_bytes
 
 
+def _seed_zero_indexer_prefix(state, length):
+    """Valid zero-key reference prefix without allocating discarded raw history."""
+    import torch
+
+    snapshot = state.snapshot()
+    snapshot["pos"] = length
+    lengths = state.compact_indexer.lengths(length, snapshot["mtp_len"])
+    tails = []
+    for entry, end in zip(state.compact_indexer.entries, lengths):
+        if entry is None:
+            tails.append(None)
+            continue
+        raw, coords = torch.zeros_like(entry.raw), torch.zeros_like(entry.coordinates)
+        for position in range(end - end % 4, end):
+            coords[position % 4].fill_(position)
+        tails.append({"origin": 0, "length": end, "pooled_valid": end // 4, "raw": raw, "coordinates": coords})
+    snapshot["compact_indexer"] = {"schema": "tensorfold.compact-indexer-v1", "lengths": lengths, "tails": tuple(tails)}
+    state.restore(snapshot)
+
+
 @pytest.mark.parametrize("degree", [1, 2, 4])
 @pytest.mark.parametrize("rows", [1, 127, 128, 129, 262148])
 def test_every_logical_head_row_has_one_owner_and_target_quartets_balance(degree, rows):
@@ -125,7 +145,7 @@ def test_state_owns_only_canonical_histories_and_reports_no_gpu_observability_wo
         placement = state.history_placement
         for layer, (raw, pooled) in enumerate(zip(state.ikc, state.pooled)):
             expected = rank == placement.indexer_owner(slot, layer)
-            assert raw.shape[0] == (rows if expected else 0)
+            assert raw.shape[0] == (4 if expected else 0)
             assert pooled.shape[0] == ((rows + 3) // 4 if expected else 0)
         with pytest.raises(ValueError, match="fixed full-window"):
             state.resize(901)
@@ -250,6 +270,13 @@ def test_real_owner_layer_routes_both_tp_head_groups_with_batched_collectives(de
                      iq=torch.empty((3, 2, 128), dtype=torch.float16),
                      attn_o=torch.empty((3, 1, 256), dtype=torch.float16), attn=scratch, prefill=False)
         buffers.owner_kernel_family, buffers.owner_graph_family, buffers.owner_graphs = "torch-reference", "uncaptured", None
+        from tensorfold.families.qwen4_exp.cuda.compact_indexer import Staging
+
+        buffers.compact_indexer_stage = Staging(3, state.layers, "cpu", mtp=False)
+        buffers.target_indexer_coordinates = buffers.target_indexer_frame = None
+        buffers.target_indexer_position = None
+        buffers.target_indexer_frame_id = 0
+        buffers.target_indexer_coordinate_storage = buffers.compact_indexer_stage.coordinates
         buffers.history_owner = OwnerBuffers(w, 3, scratch)
         layer = NS(index=1, attn=NS(q_scale=torch.ones(256), k_scale=torch.ones(256),
                                   iq_scale=torch.ones(128), ik_scale=torch.ones(128)))
@@ -265,7 +292,7 @@ def test_real_owner_layer_routes_both_tp_head_groups_with_batched_collectives(de
                              q_heads=1, kv_heads=1, head_dim=256, index_heads=2, index_dim=128,
                              ks=cache.ks, vs=cache.vs, independent_rows=True, **options)
         state.kc[0].append(0, cache.k[:start], cache.v[:start], cache.ks[:start], cache.vs[:start])
-        state.set_pos(start)
+        _seed_zero_indexer_prefix(state, start)
         buffers.reference = NS(cache=cache, q=q[start:], iq=iq[start:], options=options)
         workers.append((layer, w, [(state, 0, 3)], buffers))
     def execute(item):
@@ -338,7 +365,7 @@ def test_live_quartet_migration_preserves_packed_pages_across_partial_coalesced_
             scales = torch.full((rows, 1, 256 // cache.key_format.group), layer + 0.25,
                                  dtype=cache.ks.dtype)
             cache.append(0, k, k, scales, scales)
-        state.set_pos(rows)
+        _seed_zero_indexer_prefix(state, rows)
         states.append(state)
     before = [state.cache_bytes() for state in states]
     identity = states[0].kv_identity
@@ -387,7 +414,27 @@ def test_live_quartet_migration_preserves_packed_pages_across_partial_coalesced_
         # Prefix reuse routes actual source maps into a different slot/degree.
         # Incomplete raw pooling groups survive the move without copying an
         # invalid future pool row or relying on replication.
-        list(executor.map(lambda rank: destinations[rank].copy_prefix(states[rank], 129, 0), range(8)))
+        snapshots = []
+        for state in states:
+            snapshot = {**state.snapshot(), "pos": 129, "mtp_len": 0}
+            lengths = state.compact_indexer.lengths(129, 0)
+            tails = []
+            for ordinal, (entry, length) in enumerate(zip(state.compact_indexer.entries, lengths)):
+                if entry is None:
+                    tails.append(None)
+                    continue
+                raw, coordinates = torch.zeros_like(entry.raw), torch.zeros_like(entry.coordinates)
+                for position in range(length - length % 4, length):
+                    raw[position % 4].fill_(ordinal + 1)
+                    coordinates[position % 4].fill_(position)
+                tails.append({"origin": 0, "length": length, "pooled_valid": length // 4,
+                              "raw": raw, "coordinates": coordinates})
+            snapshot["compact_indexer"] = {"schema": "tensorfold.compact-indexer-v1", "lengths": lengths, "tails": tuple(tails)}
+            snapshots.append(snapshot)
+        def copy_cut(rank):
+            tail = destinations[rank].copy_prefix(states[rank], 129, 0, indexer_snapshot=snapshots[rank]["compact_indexer"])
+            destinations[rank].restore({**snapshots[rank], "compact_indexer": tail})
+        list(executor.map(copy_cut, range(8)))
         for rank, destination in enumerate(destinations):
             for layer, cache in enumerate(destination.kc):
                 positions = torch.arange(129)
@@ -396,7 +443,8 @@ def test_live_quartet_migration_preserves_packed_pages_across_partial_coalesced_
                     expected = (positions[owned, None, None] + layer * 17 + rank // 4 * 31).to(cache.k.dtype)
                     assert torch.equal(cache.k[offsets[owned]], expected.expand(-1, 1, cache.k.shape[-1]))
                 if destination.ikc[layer].shape[0]:
-                    assert torch.all(destination.ikc[layer][:129] == layer + 1)
+                    assert torch.all(destination.ikc[layer][0] == layer + 1)
+                    assert torch.count_nonzero(destination.ikc[layer][1:]) == 0
                     assert torch.all(destination.pooled[layer][:32] == layer + 0.5)
                     assert torch.all(destination.pooled[layer][32:] == 0)
     assert all(state.history_placement.degree == 2 for state in states)

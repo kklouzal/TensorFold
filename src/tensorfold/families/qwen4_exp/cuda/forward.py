@@ -265,6 +265,12 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
     scale = c.head_dim ** -0.5
     rope_scale = c.rope_attention_factor
     sections = getattr(c, "mrope_section", (11, 11, 10))
+    inv_freq = w.inv_freq
+    if getattr(w, "positions", None) is not None:
+        from ..position_profile import position_for
+
+        position = position_for(w, mtp=mtp)
+        inv_freq, rope_scale, sections = position.inv_freq, position.amplitude, position.sections
     if getattr(b, "history_owner", None) is not None:
         from .history_owner import attention_layer
 
@@ -288,7 +294,7 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
         rope = st.image_positions
         length = 0 if rope is None else rope.shape[0]
         delta = st.rope_delta_dev if rope is not None or st.rope_delta else None
-        glue.attn_prep(b.pa[a0:a1], pos, a.q_scale, a.k_scale, a.iq_scale, w.inv_freq, b.q[a0:], cache.k, cache.v,
+        glue.attn_prep(b.pa[a0:a1], pos, a.q_scale, a.k_scale, a.iq_scale, inv_freq, b.q[a0:], cache.k, cache.v,
                        b.iq[a0:], ikc, c.eps, q_heads=c.heads, kv_heads=c.kv_heads, head_dim=c.head_dim,
                        index_heads=c.index_heads, index_dim=c.index_dim, ks=cache.ks, vs=cache.vs,
                        k_bits=st.kv_key_bits, k_codec=st.kv_key_codec,
@@ -301,7 +307,7 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
                          "valid_rows": getattr(st, "graph_rows", None)} if history else {})
         if b.prefill:
             if b.attn.qsa:
-                attn_mod.qsa_pool(ikc, pooled, pos, a.ik_scale, w.inv_freq, c.eps, b.attn, a1 - a0, rope=rope,
+                attn_mod.qsa_pool(ikc, pooled, pos, a.ik_scale, inv_freq, c.eps, b.attn, a1 - a0, rope=rope,
                                   delta=delta, length=length, sections=sections, rope_scale=rope_scale,
                                   **pool_history)
             for r0 in range(a0, a1, ATT_ROWS):
@@ -317,7 +323,7 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
                                    prompt=True)
             continue
         if b.attn.qsa:
-            attn_mod.qsa_select(b.iq[a0:a1], ikc, pooled, pos, a.ik_scale, w.inv_freq, c.eps, b.attn, a1 - a0,
+            attn_mod.qsa_select(b.iq[a0:a1], ikc, pooled, pos, a.ik_scale, inv_freq, c.eps, b.attn, a1 - a0,
                                 context=keys, rope=rope, delta=delta, length=length, sections=sections,
                                 rope_scale=rope_scale, **pool_history)
         # Unqualified decode windows use the original Torch operator at each
@@ -611,6 +617,13 @@ def candidates(w: Weights, b: Buffers, logits: torch.Tensor, R: int, *, id_map: 
 
 
 def stage(w: Weights, b: Buffers, windows: Sequence[tuple[State, Sequence[int]]], *, late: bool = False) -> list[Seg]:
+    context = b.input_preparation_context
+    if context is None:
+        return _stage(w, b, windows, late=late)
+    return context.prepare("target-stage", lambda: _stage(w, b, windows, late=late))
+
+
+def _stage(w: Weights, b: Buffers, windows: Sequence[tuple[State, Sequence[int]]], *, late: bool = False) -> list[Seg]:
     """Host work before a forward (token ids, n-gram rows into static buffers); returns each stream's segment.
 
     ``late`` (a concurrent round's window): the rows' n-gram ids are found now, but their table reads (an SSD read with
@@ -626,6 +639,9 @@ def stage(w: Weights, b: Buffers, windows: Sequence[tuple[State, Sequence[int]]]
     R = segs[-1][2]
     if R > b.rows:
         raise ValueError(f"window of {R} rows, buffers hold {b.rows}")
+    from .compact_indexer import stage_text_indexer_frame
+
+    stage_text_indexer_frame(b, segs)
     b.staged.synchronize()               # the previous step's copies out of the pinned buffers are done
     b.ids_host[:R].numpy()[:] = np.asarray([t for _, tokens in windows for t in tokens], dtype=np.int32)
     b.ids[:R].copy_(b.ids_host[:R], non_blocking=True)
@@ -691,7 +707,12 @@ def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True,
             not isinstance(input_embeddings, torch.Tensor) or input_embeddings.shape != (R, w.cfg.hidden)
             or input_embeddings.dtype != b.h.dtype or input_embeddings.device != b.h.device
             or input_embeddings.requires_grad):
-        raise ValueError("merged target inputs must cover the admitted window on its exact dtype/device")
+        from .input_preparation import reject_prepared
+
+        reject_prepared(b, ValueError("merged target inputs must cover the admitted window on its exact dtype/device"))
+    from .compact_indexer import validate_target_indexer_frame
+
+    validate_target_indexer_frame(b, segs)
     runtime = getattr(w, "dspark", None)
     dflash2 = getattr(w, "dflash2", None)
     if runtime is not None and dflash2 is not None:
@@ -860,12 +881,18 @@ def compute_mixed(w: Weights, dsegs: Sequence[Seg], db: Buffers, psegs: Sequence
                   prefill_embeddings: torch.Tensor | None = None) -> tuple:
     """A decode window and a prompt pass in one forward, each on its own kernels and bits, experts read once."""
 
+    from .compact_indexer import validate_target_indexer_frame
+
+    validate_target_indexer_frame(db, dsegs)
+    validate_target_indexer_frame(pb, psegs)
     dflash2 = getattr(w, "dflash2", None)
     if prefill_embeddings is not None and (
             not isinstance(prefill_embeddings, torch.Tensor) or prefill_embeddings.shape != (psegs[-1][2], w.cfg.hidden)
             or prefill_embeddings.dtype != pb.h.dtype or prefill_embeddings.device != pb.h.device
             or prefill_embeddings.requires_grad):
-        raise ValueError("merged mixed-prefill inputs differ from the admitted window")
+        from .input_preparation import reject_prepared
+
+        reject_prepared(pb, ValueError("merged mixed-prefill inputs differ from the admitted window"))
     d_capture = p_capture = None
     try:
         if dflash2 is not None:

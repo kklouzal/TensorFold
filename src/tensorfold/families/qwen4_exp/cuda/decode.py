@@ -278,7 +278,7 @@ class Engine:
 
     def mtp_forward(self, next_tokens: Sequence[int], streams: torch.Tensor, *,
                     next_inputs: torch.Tensor | None = None,
-                    indexer_coordinates: torch.Tensor | None = None) -> torch.Tensor:
+                    indexer_coordinates: tuple | None = None) -> torch.Tensor:
         if (self.graphs is not None and next_inputs is None and indexer_coordinates is None
                 and getattr(self.st, "media_profile_identity", None) is None):
             return self.graphs.mtp_forward(next_tokens, streams)
@@ -332,6 +332,7 @@ def draft(e: Engine, streams: torch.Tensor, next_tokens: Sequence[int], position
             break
         if j + 1 < count:
             prev = e.mbuf.streams[len(next_tokens) - 1:len(next_tokens)] if j == 0 else e.mbuf.streams[:1]
+            st.begin_mtp_proposals()
             logits = e.mtp_forward([d], prev)
             st.set_mtp_len(st.mtp_len + 1)
             st.mtp_drafted += 1

@@ -183,6 +183,34 @@ def test_unknown_tensor_is_not_ignored(tmp_path):
         byte_plan(target, file, tp=(3, 8))
 
 
+@pytest.mark.parametrize("change", [None, "theta", "reference", "sections"])
+def test_bound_mtp_validates_own_source_role_before_payload(tmp_path, monkeypatch, change):
+    from tensorfold.families.qwen4_exp.rope import RopeParameters
+
+    def declared(metadata, _entries):
+        metadata["qwen4exp.context_length"] = 262144
+        metadata["qwen4exp.rope.dimension_sections"] = (2, 1, 1, 0)
+
+    target, file, _source = fixture(tmp_path, mutate=declared)
+    own = RopeParameters("default", 10000000., 8, 262144, 262144, mrope_section=(2, 1, 1))
+    # The target's selected transform may differ. The companion remains bound
+    # to the independently resolved native MTP source, including its reference.
+    target.cfg.rope_theta = 123456.
+    if change == "theta":
+        own = replace(own, theta=123456.)
+    elif change == "reference":
+        own = replace(own, native_context=524288)
+    elif change == "sections":
+        own = replace(own, mrope_section=(1, 2, 1))
+    target.meta["position_profile"] = SimpleNamespace(mtp=SimpleNamespace(rope=own))
+    monkeypatch.setattr(mtp, "Reader", lambda: pytest.fail("position validation entered payload IO"))
+    if change is None:
+        assert byte_plan(target, file, tp=(3, 8))["resident_bytes"] > 0
+    else:
+        with pytest.raises(ValueError, match="positional|freq_base"):
+            byte_plan(target, file, tp=(3, 8))
+
+
 def test_same_vocabulary_size_does_not_admit_different_token_ids(tmp_path):
     def change(metadata, _entries):
         ids = metadata["tokenizer.ggml.tokens"]

@@ -13,7 +13,18 @@ from .weights import Weights
 
 
 def mtp_stage(b: Buffers, windows: Sequence[tuple[State, Sequence[int], torch.Tensor | tuple[torch.Tensor, ...]]], *,
-              indexer_coordinates: torch.Tensor | None = None) -> list:
+              indexer_coordinates: tuple | None = None) -> list:
+    """Own all MTP input/window preparation before any dependent collective."""
+    context = getattr(b, "input_preparation_context", None)
+    if context is not None:
+        return context.prepare("mtp-stage", lambda: _mtp_stage(b, windows, indexer_coordinates=indexer_coordinates))
+    if getattr(b, "mtp_indexer_position", None) is not None:
+        raise RuntimeError("bound MTP staging requires its installed cohort preparation owner")
+    return _mtp_stage(b, windows, indexer_coordinates=indexer_coordinates)
+
+
+def _mtp_stage(b: Buffers, windows: Sequence[tuple[State, Sequence[int], torch.Tensor | tuple[torch.Tensor, ...]]], *,
+              indexer_coordinates: tuple | None = None) -> list:
     """Stage original next IDs and complete HC inputs under one buffer event.
 
     A deferred window may provide two HC spans (the previous boundary and the
@@ -40,6 +51,9 @@ def mtp_stage(b: Buffers, windows: Sequence[tuple[State, Sequence[int], torch.Te
             raise ValueError("MTP staging requires one complete HC window in at most two owned spans")
         pieces.append(parts)
     n = segs[-1][2]
+    if indexer_coordinates is None and any(getattr(st, "media_input_span", None) is not None
+                                           for st, _begin, _end in segs):
+        raise ValueError("ready media MTP hidden rows require their actual issued coordinate windows")
     b.staged.synchronize()
     b.ids_host[:n].numpy()[:] = [int(t) for _, next_tokens, _ in windows for t in next_tokens]
     b.ids[:n].copy_(b.ids_host[:n], non_blocking=True)
@@ -51,22 +65,23 @@ def mtp_stage(b: Buffers, windows: Sequence[tuple[State, Sequence[int], torch.Te
             if rows and part.data_ptr() != b.mtp_in[a0:a0 + rows].data_ptr():
                 b.mtp_in[a0:a0 + rows].copy_(part, non_blocking=True)
             a0 += rows
-    if indexer_coordinates is None and any(getattr(st, "media_profile_identity", None) is not None
-                                           for st, _begin, _end in segs):
-        from .compact_indexer import resolve_indexer_coordinates
+    if indexer_coordinates is None and getattr(b, "mtp_indexer_position", None) is not None:
+        from .compact_indexer import CoordinateWindow, issue_text_indexer_coordinates
 
-        storage = getattr(b, "mtp_indexer_coordinate_storage", None)
-        if not isinstance(storage, torch.Tensor) or storage.shape[0] < n:
-            raise ValueError("media MTP needs its admitted explicit coordinate storage")
-        b.compact_indexer_stage.wait(mtp=True)
+        coordinate_windows = []
         for st, begin, end in segs:
-            storage[begin:end].copy_(resolve_indexer_coordinates(st, st.mtp_len, end - begin))
+            at = begin
             boundary = getattr(st, "mtp_boundary", None)
             if boundary is not None:
                 if boundary.row != st.mtp_len or boundary.generation != st.slot_generation:
                     raise ValueError("deferred MTP boundary lost its cache-row/generation binding")
-                storage[begin:begin + 1].copy_(boundary.coordinates)
-        indexer_coordinates = storage[:n]
+                coordinate_windows.append(CoordinateWindow(at, at + 1, boundary.coordinate_record, boundary.position))
+                at += 1
+            if at < end:
+                coordinates = issue_text_indexer_coordinates(st, b.mtp_indexer_position,
+                    st.mtp_len + at - begin, end - at, max_rows=b.rows)
+                coordinate_windows.append(CoordinateWindow(at, end, coordinates, b.mtp_indexer_position))
+        indexer_coordinates = tuple(coordinate_windows)
     if indexer_coordinates is not None or hasattr(b, "mtp_indexer_coordinate_storage"):
         from .compact_indexer import stage_mtp_indexer_frame
 
@@ -96,9 +111,17 @@ def mtp_compute(w: Weights, segs: Sequence, b: Buffers, *, last_only: bool = Tru
             not isinstance(next_inputs, torch.Tensor) or next_inputs.shape != (n, c.hidden)
             or next_inputs.dtype != b.mtp_e.dtype or next_inputs.device != b.mtp_e.device
             or next_inputs.requires_grad):
-        raise ValueError("MTP next inputs must cover the complete window on its admitted dtype/device without gradients")
+        from .input_preparation import reject_prepared
+
+        reject_prepared(b, ValueError("MTP next inputs must cover the complete window on its admitted dtype/device without gradients"))
     if next_inputs is None and any(getattr(st, "media_input_span", None) is not None for st, _a, _z in segs):
-        raise ValueError("ready media MTP input cannot fall back to placeholder-token lookup")
+        from .input_preparation import reject_prepared
+
+        reject_prepared(b, ValueError("ready media MTP input cannot fall back to placeholder-token lookup"))
+    if getattr(b, "compact_indexer_stage", None) is not None:
+        from .compact_indexer import validate_mtp_indexer_frame
+
+        validate_mtp_indexer_frame(b, segs)
 
     archive = getattr(w, "meta", {}).get("indexer_history") == "ram"
     if archive:
@@ -157,10 +180,14 @@ def mtp_compute(w: Weights, segs: Sequence, b: Buffers, *, last_only: bool = Tru
 def mtp_forward(w: Weights, st: State, b: Buffers, next_tokens: Sequence[int], streams: torch.Tensor,
                 *, last_only: bool = True, logits: bool = True,
                 next_inputs: torch.Tensor | None = None,
-                indexer_coordinates: torch.Tensor | None = None) -> torch.Tensor | None:
+                indexer_coordinates: tuple | None = None) -> torch.Tensor | None:
     """Process bf16 main-model streams and next tokens into last-row or all-row logits plus b.streams[:n], appending n cache entries while the caller advances ``st.mtp_len``. ``logits=False`` skips the unused draft-vocabulary projection."""
 
-    segs = mtp_stage(b, [(st, next_tokens, streams)],
-                     **({"indexer_coordinates": indexer_coordinates} if indexer_coordinates is not None else {}))
+    def staging():
+        return mtp_stage(b, [(st, next_tokens, streams)],
+                         **({"indexer_coordinates": indexer_coordinates} if indexer_coordinates is not None else {}))
+
+    context = getattr(b, "input_preparation_context", None)
+    segs = staging() if context is None else context.prepare("mtp-forward-window", staging)
     return mtp_compute(w, segs, b, last_only=last_only, logits=logits,
                        **({"next_inputs": next_inputs} if next_inputs is not None else {}))

@@ -73,6 +73,54 @@ def test_mixed_visual_next_inputs_skip_all_placeholder_lookups_and_keep_hc(famil
     assert not torch.equal(actual[1], actual[2]) and tokens[1] == tokens[2]
 
 
+def test_ready_media_cannot_infer_hidden_coordinates_from_next_token_ids(family):
+    state, buf = State(family, 32, 4, "fp16"), buffers(family)
+    state.media_input_span = object()  # an active producer claim requires the explicit coordinate handoff
+    buf.staged = SimpleNamespace(synchronize=lambda: pytest.fail("unbound visual window began staging"))
+    streams = torch.zeros((1, family.cfg.streams * family.cfg.hidden)).half()
+    with pytest.raises(ValueError, match="actual issued coordinate windows"):
+        mtp.mtp_stage(buf, [(state, [31], streams)])
+
+
+def test_ready_media_cannot_use_placeholder_lookup_without_actual_next_embeddings(family, monkeypatch):
+    state, buf = State(family, 32, 4, "fp16"), buffers(family)
+    state.media_input_span = object()
+    monkeypatch.setattr(mtp, "_kv_begin", lambda *_a: pytest.fail("missing media inputs began cache writes"))
+    monkeypatch.setattr(mtp, "_embed", lambda *_a: pytest.fail("missing media inputs looked up placeholder"))
+    with pytest.raises(ValueError, match="placeholder-token lookup"):
+        mtp.mtp_compute(family, [(state, 0, 1)], buf)
+
+
+@pytest.mark.parametrize("role", ["target", "mixed", "mtp", "missing-media"])
+def test_postpreparation_input_guard_contains_the_cohort_before_cache_writes(family, monkeypatch, role):
+    from tensorfold.cuda import cohort
+    from tensorfold.families.qwen4_exp.cuda import forward
+    from tensorfold.families.qwen4_exp.cuda.input_preparation import install_input_preparation
+
+    state, buf = State(family, 32, 4, "fp16"), buffers(family)
+    # The numerical body is never entered. Bind the actual preparation owner
+    # after standalone CPU allocations to isolate this caller/error boundary.
+    family.positions = object()
+    family.meta["coordinate_profile_identity"] = "a" * 64
+    context = buf.input_preparation_context = install_input_preparation(family)
+    notifications = []
+    monkeypatch.setattr(cohort, "notify_failure", lambda: notifications.append(True))
+    monkeypatch.setattr(forward, "_kv_begin", lambda *_a: pytest.fail("invalid target input wrote cache"))
+    monkeypatch.setattr(mtp, "_kv_begin", lambda *_a: pytest.fail("invalid MTP input wrote cache"))
+    bad = torch.zeros((2, family.cfg.hidden)).half()
+    with pytest.raises(ValueError):
+        if role == "target":
+            forward.compute(family, [(state, 0, 1)], buf, input_embeddings=bad)
+        elif role == "mixed":
+            forward.compute_mixed(family, [(state, 0, 1)], buf, [(state, 0, 1)], buf, prefill_embeddings=bad)
+        elif role == "mtp":
+            mtp.mtp_compute(family, [(state, 0, 1)], buf, next_inputs=bad)
+        else:
+            state.media_input_span = object()
+            mtp.mtp_compute(family, [(state, 0, 1)], buf)
+    assert notifications == [True] and context.cohort._execution_manifest_uncertain and context.cohort._abort_comm
+
+
 @pytest.mark.parametrize("change", ["short", "long", "width", "dtype", "grad", "not-tensor"])
 def test_bad_complete_window_refuses_before_target_cache_mutation(family, monkeypatch, change):
     c = family.cfg
