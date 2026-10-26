@@ -59,7 +59,11 @@ native build identities. These additions have no new V100 performance claim.
 Opt-in [serving profiles](docs/serving-profiles.md) implement model/context/KV/method
 transitions on the existing worker and communicator, including unavailable-state
 load retry. Host protocol/lifetime checks are separate from pending actual
-eight-V100 loading, quality and performance qualification.
+eight-V100 loading, quality and performance qualification. Prepared profiles
+bind the resolved target/companion position receipt and complete source closure
+for the adaptive TP8 unique-history layout. Other maintained layouts retain
+legacy source/CLI behavior. Explicit native/YaRN candidates remain unqualified
+until their runtime, method, media, capacity and quality gates pass.
 The initial compact Q4 candidate is the distinct `rotorquant-iso4-sm70-v1`
 format; `rotorquant-planar4-sm70-v1` remains its later equal-memory comparison.
 Wire/source checks and reference-stack compilation do not qualify either

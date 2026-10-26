@@ -33,6 +33,28 @@ allocated capability available for runtime proposal_limit0. Processes, TP ranks,
 communication settings, expert deployment and indexer-history mode stay fixed.
 The selected model must use the maintained resident GGUF SM70 path.
 
+`position_profile_manifest` optionally selects the position authority's bounded
+JSON manifest, with its path relative to the serving manifest. The real family
+resolver checks requested rows against the declared native/default or static
+YaRN implementation and independent target/MTP/DFlash coordinate domains. New
+bound positional execution currently requires the actual adaptive TP8 unique
+GPU-history layout with two global KV heads and an eligible SM70 source provider.
+Other maintained layouts retain their existing unbound source/CLI behavior;
+an explicit new position manifest is refused there.
+`max_position_embeddings` is the native reference, not a permanent ceiling on
+prepared extended candidates. For example, `max_len:524288` with `yarn_factor:2`
+requests a target candidate against a 262144 native reference; this is not a
+released context or quality guarantee. Non-power-of-two allowances are subject
+to the same resolved bounds.
+
+A target YaRN override does not change MTP settings. An extended MTP recipe must
+bind the actual companion source and an explicit compatible MTP policy. DFlash2
+keeps its own scalar-position numerical algorithm and native absolute limit;
+its bounded ring never extends those positions. Unsupported combinations are
+refused before structural loading, without substituting another method.
+The existing native DSpark path keeps its source-policy context limit; this
+position authority does not implement an explicit DSpark positional manifest.
+
 `api` optionally changes `served`, `aliases`, `default_thinking`, `sampling`,
 `max_tokens`, `reasoning_effort` and `thinking_budget`. Sampling defaults accept
 `temperature`, `top_k`, `top_p` and `min_p`; seeds remain request-scoped. Omitted API defaults come
@@ -53,12 +75,23 @@ Hash work is bounded by the opened file size plus one EOF probe; growing,
 truncated or changed inputs are refused. Draft inventory follows the actual
 loader's source closure, including the DFlash2 pairing document and selected
 tokenizer override. Explicit family manifests supply their actual source
-closure through the provider helper.
+closure through the provider helper. The complete resolved position receipt,
+algorithm hashes, epoch and method/KV/lookahead binding participate in the
+serving identity and `position_profile` record. All resolver-required source and
+manifest files are inventoried; the receipt is resolved again before loading
+and publication. These checks grant input/implementation identity only, and
+report `unqualified-candidate` separately from artifact preparation status.
+Before issuing a bound positional profile, the shared numerical authority constructs
+and checks the actual small CPU frequency vectors, including combined FP32
+intermediates. Its preparation receipt and byte counts are recorded; the
+consumer then releases those CPU operands. Engine loading independently prepares
+and adopts its own version-checked operands before model/device retention.
 
 Prepare these files outside request execution, using the maintained helper:
 
 ```bash
 python tools/prepare_serving_profile.py \
+  --tp 8 --adaptive-sessions \
   --model /models/flashnext-prepared \
   --id flashnext-B \
   --options B-options.json \
@@ -68,6 +101,14 @@ python tools/prepare_serving_profile.py \
 
 For example, an options object can contain
 `{"max_len":8192,"kv_dtype":"int8","depth":0,"graphs":false}`.
+`--tp` and `--adaptive-sessions` describe the actual intended deployment for
+preflight only. They are never stored as process overrides in profile `options`.
+The tool keeps its existing single-rank, nonadaptive default for legacy source
+profiles; explicit new position manifests need the real compatible deployment
+flags, source provider and layout. Programmatic preparation passes the same
+startup settings through `create(..., fixed_options=...)`. The running service
+independently checks its own actual settings before selecting that profile.
+
 Choose method/artifact/quality settings from the applicable qualification; this
 example supplies no V100 recommendation. The helper performs bounded streaming
 hashes, real metadata preflight and atomic file publication. Model input paths

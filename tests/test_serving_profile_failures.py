@@ -2,6 +2,7 @@
 
 import inspect
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -198,7 +199,7 @@ def test_merged_dflash2_signature_normalization_and_complete_pairing_inventory(t
     assert "dflash2_model_dir" in signature.parameters and "dflash_model_dir" not in signature.parameters
     draft = root / "draft"
     draft.mkdir()
-    (draft / "config.json").write_text("{}")
+    (draft / "config.json").write_bytes((Path(__file__).parent / "fixtures/dflash2/config.json").read_bytes())
     (draft / "model.safetensors").write_bytes(b"inventory-only fixture; provider payload validation is separate")
     pairing = root / "pairing.json"
     pairing.write_text('{"draft_pairing":{"draft_config":"draft/config.json","draft_weights":"draft/model.safetensors"}}')
