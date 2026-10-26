@@ -65,8 +65,14 @@ passed native formatter/failure-path and actual-wheel IPv4 Store/endpoint
 controls, plus its immutable-image ABI/content witness. Actual IPv6 Store
 execution is unrun on the development host. The [foundation record](../deploy/v100/source-foundation.md)
 identifies that component evidence; it does not transfer the old application's
-5,582 installed passes to the corrected source/media stack. Its fresh complete
-application CPU gate and compiler issue 6111901 remain open. V100/TP8/NCCL/full-model
+5,582 installed passes to the corrected source/media stack. A fresh corrected
+ordinary application image `e99c7284`, frozen tree `21a12df3`, independently
+passed 5,582 installed checks, nine documented skips and 144 subtests across
+183 modules in 559.91 seconds. All 707 code files and 2,024 captured inputs
+matched without an overlay; the [corrected CPU receipt](verification-v100-sdk-rebind-cpu-20261026.json)
+records its actual evidence. Target source auditing exposed runtime-dependent
+CPU/configuration display metadata; its separate owned policy successor and
+compiler issue 6111901 remain open. V100/TP8/NCCL/full-model
 numerics, quality, physical capacity, allocator/RSS/NUMA, native wall deadlines
 and representative end-to-end performance remain unqualified. Historical
 measurements/failures below retain their original source/workload identities.

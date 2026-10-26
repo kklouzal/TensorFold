@@ -16,9 +16,15 @@ composition; actual physical feasibility remains unqualified.
 The corrected owned native SDK now selects Torch `04cf2557`, replacing that
 checkpoint's defective `5ab14ac` socket formatter. Its immutable rebuild and
 native CPU failure-path/ABI controls pass; the application now requires that
-exact revision. The complete application CPU gate on the corrected source/media
-stack is pending. Actual V100 execution, compiler disposition, model quality,
-capacity and performance remain unqualified.
+exact revision. A fresh run on the corrected source/media/client stack passed
+**5,582 installed checks and 144 subtests across 183 modules**, with nine
+documented skips and all 707 code files equal to frozen tree `21a12df3`.
+The [corrected-stack receipt](docs/verification-v100-sdk-rebind-cpu-20261026.json)
+identifies image `e99c7284` and the complete input/audit evidence.
+The actual V100 host source audit exposed runtime-dependent CPU metadata;
+a separate owned audit-policy successor remains under qualification. Actual
+V100 execution, compiler disposition, model quality, capacity and performance
+remain unqualified by these CPU checks.
 The earlier media/frontend/MTP checkpoint at `64b24dd5` passed 4,365 installed
 checks and 124 subtests; tree `413e132b` passed 5,214 checks and 144 subtests.
 Those historical results retain their original source and workload scope.

@@ -178,6 +178,13 @@ socket creation returns `EAFNOSUPPORT`. The immutable SDK's actual CPython
 2,592,224-byte GCC14 runtime content match the retained guard. These CPU controls
 do not transfer the earlier application's installed CPU result or clear any
 V100/compiler/model/resource/quality/performance gate.
+The fresh [corrected application CPU receipt](../../docs/verification-v100-sdk-rebind-cpu-20261026.json)
+records its independent 5,582/9/144 installed result on this stack. Actual target
+source auditing still rejects runtime-dependent CPU/configuration display
+metadata (AVX2 development host versus AVX512 target); a separately owned
+immutable build/runtime-identity policy successor remains under qualification.
+The local CPU result does not resolve that target gate or authorize an audit
+bypass, AVX2 forcing or mutation of a previously sealed manifest.
 
 Acquire the exact `build-debs` and `python-wheels` inputs before building. Source
 fork preparation also needs `lint-wheels` and its managed-Python/UV cache; first

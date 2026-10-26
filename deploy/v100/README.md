@@ -62,10 +62,16 @@ component inputs for that checkpoint with their original scope.
 
 This is a CPU/software qualification candidate, not a released V100 serving
 configuration. Current source selects the corrected owned Torch04cf2557 SDK;
-its native CPU failure-path and actual ABI/content controls pass. The fresh
-complete application CPU gate on the corrected source/media stack and compiler
-issue 6111901 remain open, as recorded below. Hardware/model, quality, physical
-allocation and performance gates remain open.
+its native CPU failure-path and actual ABI/content controls pass. A fresh
+corrected-stack ordinary application image
+`sha256:e99c7284234376f43634c7103fcd6fe313fee4b61c073ad79965a100b2b1baef`
+from frozen tree `21a12df376313d5e95bbae5e269b32ae31ad2d14` passed 5,582 installed
+checks, nine documented skips and 144 subtests across 183 modules. All 707 code
+files and 2,024 captured inputs matched before/after without a source overlay.
+The [corrected CPU receipt](../../docs/verification-v100-sdk-rebind-cpu-20261026.json)
+binds commit `2c0b4c4a51fbf2f8370fcccd2980c3e3a77ede2b` and actual client/media/source
+identities. Target audit-policy portability, compiler issue 6111901 and the
+hardware/model, quality, physical allocation and performance gates remain open.
 
 After `docker load --input /path/to/reviewed-image-archive.tar`,
 `TF_V6_IMAGE` may be the verified local image ID (`sha256:...`). An actual
@@ -250,8 +256,11 @@ controls and immutable-image ABI/content checks. Actual IPv6 Store execution is
 unrun on the IPv6-disabled development host. The current application guard
 rejects old5ab; all native size equations and remaining exact guards are retained.
 See the [source foundation record](source-foundation.md) for exact artifacts.
-The complete application CPU gate on the corrected source/media stack remains
-pending. Compiler issue 6111901 remains separate as stated below.
+The complete application CPU gate on the corrected source/media/client stack
+passed at the exact scope recorded above. The actual V100 host source audit
+still rejects runtime-dependent CPU/configuration display metadata; a separate
+owned immutable policy successor remains under qualification. Local CPU GREEN
+does not close that target gate. Compiler issue 6111901 remains separate below.
 
 Record final source/image, actual complete asset hashes, GPU UUID/rank mapping,
 driver/runtime/native binaries, host/cgroup/NUMA/locked-memory limits and the

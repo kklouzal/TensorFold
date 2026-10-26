@@ -78,9 +78,27 @@ Actual IPv6 Store execution is unrun on the IPv6-disabled development host.
 The only source changes since 5ab are the internal socket correction and native
 test wiring; public headers, Store layouts, allocation equations and transport
 defaults are unchanged. This structural reuse preserves the exact CPython,
-compiler/ABI, loaded-runtime and finite hard-FD guards. A fresh complete
-installed-application gate on the corrected source/media stack remains pending;
-the earlier 5,582 checks do not test that replacement stack.
+compiler/ABI, loaded-runtime and finite hard-FD guards.
+
+The fresh corrected-stack application is commit
+`2c0b4c4a51fbf2f8370fcccd2980c3e3a77ede2b`, frozen tree
+`21a12df376313d5e95bbae5e269b32ae31ad2d14`, local image ID
+`sha256:e99c7284234376f43634c7103fcd6fe313fee4b61c073ad79965a100b2b1baef`.
+It independently passed **5,582 installed tests and 144 subtests across 183
+modules**, with nine documented skips in 559.91 seconds. All 707 normal
+site-packages code files and all 2,024 archive inputs (2,013 base scoped inputs)
+matched before/after, with no source overlay. Its client consumer supplies
+OpenAI SDK 3.37 and xgrammar 0.2.8 on the actual corrected source/media stack.
+The [corrected CPU receipt](verification-v100-sdk-rebind-cpu-20261026.json)
+records full identities, raw-result hashes and skip disposition. The earlier
+5,582 result remains separate historical evidence; it was not transferred.
+
+Actual target source auditing remains blocked by a separate project identity
+policy issue: the framework's configuration display includes runtime CPU
+dispatch (development AVX2 versus target AVX512) and conditional CUDA sections.
+An owned immutable audit-policy successor separates stable build identity from
+fresh host observations; it remains under qualification. The local CPU result
+does not close this target gate or permit an old-manifest rewrite/audit bypass.
 
 NVIDIA compiler issue **6111901** remains a separate release gate; see the
 [source-foundation contract](../deploy/v100/source-foundation.md#compiler-issue-6111901-remains-a-release-gate).
