@@ -734,6 +734,8 @@ Default EXL3 n-gram prefetch reads the mapped table. Page locking is optional an
 
 ## Context, RoPE and YaRN
 
+Flash Next SM70 unique TP8 histories now have an explicit [positional profile preparation contract](docs/position-profiles.md), including exact CPU range checks and separate target/MTP/draft bounds. `--position-profile-manifest` binds an immutable candidate; native/extended artifact, media and V100 execution qualification remain pending. Legacy replicated and DSpark paths retain their existing selection.
+
 Context means **prompt plus reply**, not reply length alone. An explicit reply limit is reserved before prefill; an omitted reply limit is capped by remaining context. Startup reports native/extended limits and affordable engine capacity. A positive configuration that cannot fit is refused rather than silently making all slots usable at that length.
 
 Flash Next CUDA supports static YaRN text RoPE extension. For a checkpoint with native 262,144-token metadata:

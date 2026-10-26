@@ -59,7 +59,7 @@ def _expert_authority(cache) -> tuple[str, dict | None]:
 class FlashNextEngine:
     """``eos``, ``generate`` (rank 0 or one GPU) and ``follow`` (peer ranks), as the CUDA server expects."""
 
-    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None, mtp_model_dir: Path | None=None, dspark_model_dir: Path | None=None, dflash2_model_dir: Path | None=None, indexer_history: str="gpu", adaptive_sessions: bool=False, session_ceiling: int | None=None, execution_rows: int | None=None, execution_profile_manifest: Path | None=None, family_manifest: Path | None=None, _prepared_family_plan=None, serving_profile_root: Path | None=None) -> None:
+    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None, mtp_model_dir: Path | None=None, dspark_model_dir: Path | None=None, dflash2_model_dir: Path | None=None, indexer_history: str="gpu", adaptive_sessions: bool=False, session_ceiling: int | None=None, execution_rows: int | None=None, execution_profile_manifest: Path | None=None, position_profile_manifest: Path | None=None, family_manifest: Path | None=None, _prepared_family_plan=None, serving_profile_root: Path | None=None) -> None:
         if serving_profile_root is not None:
             from .serving_profiles import profile_root
 
@@ -85,10 +85,13 @@ class FlashNextEngine:
         self.expert_session = expert_session
         self._indexer_history_session = None
         self._owner_preparation = None
+        self.position_profile = self.position_method_binding = self._position_prepared = None
+        self.coordinate_profile_binding = None
+        self._media_inputs_enabled = False  # Only the admitted media-profile parser may enable this.
         self._startup_reads: list = []
         self._prepared_family_plan = _prepared_family_plan
         try:
-            self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, expert_session=expert_session, kv_full_windows=kv_full_windows, vram_experts_pin=vram_experts_pin, eos_token_ids=eos_token_ids, chat_template_file=chat_template_file, chat_template_name=chat_template_name, mtp_model_dir=mtp_model_dir, dspark_model_dir=dspark_model_dir, dflash2_model_dir=dflash2_model_dir, indexer_history=indexer_history, adaptive_sessions=adaptive_sessions, session_ceiling=session_ceiling, execution_rows=execution_rows, execution_profile_manifest=execution_profile_manifest, family_manifest=family_manifest)
+            self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, expert_session=expert_session, kv_full_windows=kv_full_windows, vram_experts_pin=vram_experts_pin, eos_token_ids=eos_token_ids, chat_template_file=chat_template_file, chat_template_name=chat_template_name, mtp_model_dir=mtp_model_dir, dspark_model_dir=dspark_model_dir, dflash2_model_dir=dflash2_model_dir, indexer_history=indexer_history, adaptive_sessions=adaptive_sessions, session_ceiling=session_ceiling, execution_rows=execution_rows, execution_profile_manifest=execution_profile_manifest, family_manifest=family_manifest, position_profile_manifest=position_profile_manifest)
             if serving_profile_root is not None:
                 from .serving_runtime import ServingProfiles
 
@@ -110,11 +113,14 @@ class FlashNextEngine:
                  dflash2_model_dir: Path | None = None,
                  indexer_history: str = "gpu", adaptive_sessions: bool = False,
                  session_ceiling: int | None = None, execution_rows: int | None = None,
-                 execution_profile_manifest: Path | None = None, family_manifest: Path | None = None) -> None:
+                 execution_profile_manifest: Path | None = None, family_manifest: Path | None = None, position_profile_manifest: Path | None = None) -> None:
         from tensorfold.cuda.chat_template import prepare_chat_template
 
         from ..ram_experts import check_kv_full_windows
 
+        self.position_profile = self.position_method_binding = self._position_prepared = None
+        self.coordinate_profile_binding = None
+        self._media_inputs_enabled = False  # Only the admitted media-profile parser may enable this.
         if indexer_history not in ("gpu", "ram"):
             raise ValueError("indexer history must be gpu or ram")
         self.indexer_history = indexer_history
@@ -159,6 +165,8 @@ class FlashNextEngine:
             if os.environ.get(PROFILE_ENV, "reference") != "reference":
                 raise ValueError("SM70 NVFP4 has no qualified optimized execution profile; select reference")
             graphs = False  # Whole-forward graph qualification is separate for this numerical profile.
+        if position_profile_manifest is not None and not sm70:
+            raise ValueError("position profile manifests require an explicit Flash Next SM70 provider")
         compact_kv = any(side.compact is not None for side in (self.kv_pair.key, self.kv_pair.value))
         if compact_kv and not sm70:
             raise ValueError("compact Planar4/Iso4 KV requires the GGUF SM70 execution provider")
@@ -248,6 +256,43 @@ class FlashNextEngine:
                                               indexed_stream_geometry, indexed_weights, multi_graph_request)
         chunk = None if is_exl3(model_dir) else indexed_prefill_rows()
         text = config(model_dir)
+        from .history_placement import HistoryPlacement
+
+        layout_kv_heads = int(text["num_key_value_heads"])
+        if source_is_gguf:
+            from ..gguf import metadata_config
+
+            actual_kv_heads = metadata_config(model_dir)["text_config"]["num_key_value_heads"]
+            if layout_kv_heads != actual_kv_heads:
+                raise ValueError("declared KV geometry differs from authoritative GGUF layout")
+            layout_kv_heads = actual_kv_heads
+        unique_positions = (sm70 and adaptive_sessions and indexer_history == "gpu"
+                            and HistoryPlacement.supports(tp, layout_kv_heads))
+        position_method = ("dflash2" if self.dflash2_model_dir is not None else
+                           "dspark" if self.dspark_model_dir is not None and int(depth) > 0 else
+                           "mtp" if int(depth) > 0 else "none")
+        if position_profile_manifest is not None and (not unique_positions or position_method == "dspark"):
+            raise ValueError("position profile manifests require supported unique TP8 GPU histories and an implemented method role")
+        if unique_positions and position_method != "dspark":
+            from ..position_profile import prepare_position_vectors, resolve_position_profile
+
+            companions = {}
+            if position_method == "mtp" and self.mtp_model_dir is not None:
+                companions["mtp"] = self.mtp_model_dir
+            if self.dflash2_model_dir is not None:
+                companions["dflash2"] = self.dflash2_model_dir
+            self.position_profile = resolve_position_profile(model_dir,
+                requested_context=max_len if max_len not in (None, 0) else None, yarn_factor=yarn_factor,
+                manifest_path=position_profile_manifest, companion_configs=companions)
+            self.rope = self.position_profile.target.rope
+            if position_profile_manifest is not None:
+                # A selected manifest commits its declared rows; default/0 uses
+                # those rows, never a fitted or silently shortened allowance.
+                max_len, context_explicit = self.position_profile.target.max_rows, True
+            lookahead = 3 if position_method == "dflash2" else int(depth)
+            self.position_method_binding = self.position_profile.validate_method(
+                position_method, self.kv_pair.identity, lookahead)
+            self._position_prepared = prepare_position_vectors(self.position_profile, mtp_active=position_method == "mtp")
         if nvfp4_source:
             from dataclasses import replace
             from .sm70_nvfp4_weights import Planner, model_plan
@@ -268,6 +313,8 @@ class FlashNextEngine:
                                    quant="sm70_nvfp4", execution_dtype="float16")
                 if prepared[0].meta["full"] != expected:
                     raise ValueError("cached SM70 family plan differs from selected RoPE/EOS/configuration")
+            if self.position_profile is not None:
+                prepared[0].meta["position_profile"] = self.position_profile
             self._sm70_import_plan = prepared
             self._sm70_weight_manifest_identity = prepared[1].manifest.identity
             if int(depth) > 0:
@@ -276,7 +323,7 @@ class FlashNextEngine:
                 check_mtp_positions(prepared[0], self.mtp_model_dir,
                     context=max_len if type(max_len) is int and max_len > 0 else self.rope.context_limit)
         history_placement = None
-        if adaptive_sessions and tp == 8 and int(text["num_key_value_heads"]) == 2:
+        if adaptive_sessions and HistoryPlacement.supports(tp, layout_kv_heads):
             from tensorfold.cuda.geometry import layer_counts
             from .history_placement import HistoryPlacement
 
@@ -339,6 +386,8 @@ class FlashNextEngine:
                                               "dspark" if dspark_plan is not None else "mtp" if stock_mtp else "none",
                                               int(depth))
         each, mtp = self.method_geometry.target_tail_rows, stock_mtp
+        if self.position_profile is not None and self.position_method_binding["method"] != self.method_geometry.method:
+            raise RuntimeError("prepared positional role and actual speculative method disagree")
         owner_specification = None
         owner_preparation = None
         nvfp4_preallocated = 0
@@ -377,6 +426,8 @@ class FlashNextEngine:
                                                 plan=dflash_plan, context=selected_context)
             self._dflash2_plan = dflash_plan
         torch.cuda.set_device(0)
+        if position_profile_manifest is not None and torch.cuda.get_device_capability() != (7, 0):
+            raise ValueError("position profile manifests require an actual SM70 compute-capability 7.0 device")
         if (execution_profile_manifest is not None or nvfp4_source) and torch.cuda.get_device_capability() != (7, 0):
             raise ValueError("execution profile manifests require the actual SM70 V100 provider")
         if compact_kv and torch.cuda.get_device_capability() != (7, 0):
@@ -736,6 +787,8 @@ class FlashNextEngine:
                 prefill_plan = prefill_expert_plan(text, rows=rows0, world=tp)
                 self._gguf_prefill_receipt = prefill_plan.receipt() if prefill_plan is not None else None
                 options = capacity_options(model_dir, rank=rank, world=tp, mtp=mtp,
+                                           **({"position_profile": self.position_profile}
+                                              if self.position_profile is not None else {}),
                                            **({"prefill_plan": prefill_plan} if prefill_plan is not None else {}),
                                            **({"draft_ids": ids} if ids is not None else {}),
                                            **({"mtp_model_dir": self.mtp_model_dir} if self.mtp_model_dir is not None else {}))
@@ -755,6 +808,13 @@ class FlashNextEngine:
                 if key in options:
                     host_capacity[key] = options.pop(key)
             numeric_capacity.update(options)
+        position_vector_ledger = None
+        if self.position_profile is not None:
+            from ..position_profile import position_vector_bytes
+
+            position_vector_ledger = position_vector_bytes(self.position_profile, mtp_active=stock_mtp)
+            numeric_capacity["device_workspace_bytes"] = numeric_capacity.get("device_workspace_bytes", 0) + (
+                position_vector_ledger["mtp_extra_vector_bytes"])
         if dspark_plan is not None:
             from tensorfold.cuda.capacity import Geometry
 
@@ -837,10 +897,18 @@ class FlashNextEngine:
 
             def session_geometry(text, count):
                 base = sm70_geometry(text, count)
+                media_extra = 0
+                if self._media_inputs_enabled and mtp and self.position_profile is not None:
+                    from .media_mtp import boundary_resources
+
+                    media_extra = boundary_resources(hidden_width=int(text.get("hc_count", 4)) * int(text["hidden_size"]),
+                        slots=count, keep=KEEP, points=POINTS).additional_device_bytes
                 status_bytes = status_workspace(count, tp)[0] if tp > 1 else 0
 
                 def additions(total):
                     costs = {"kv_cohort_workspace": status_bytes}
+                    if media_extra:
+                        costs["media_mtp_boundary"] = media_extra
                     if history_placement is not None:
                         from .history_placement import MIGRATION_OVERLAP_BYTES
 
@@ -869,6 +937,10 @@ class FlashNextEngine:
 
                 total = tp * multi_static_domains(text, count, each, mtp)[1]
                 total += tp * status_workspace(count, tp)[1] if tp > 1 else 0
+                if self.position_profile is not None:
+                    from .history_placement import coordinate_source_host_bytes
+
+                    total += tp * coordinate_source_host_bytes(max(row_envelope(count), rows0))
                 if dspark_plan is not None and graphs and proposal_graphs_enabled:
                     total += tp * graph_host_bytes(count, min(int(depth), dspark_plan.config.block), tp, int(max_len))
                 if dflash_plan is not None:
@@ -977,6 +1049,19 @@ class FlashNextEngine:
         if expert_session is not None:
             self.capacity_plan["expert_math"] = expert_session.math_policy
         self.capacity_plan["rope"] = self.rope.metadata()
+        if self.position_profile is not None:
+            self.capacity_plan["position_profile"] = {
+                "resolved": self.position_profile.receipt(), "identity": self.position_profile.identity,
+                "epoch": self.position_profile.epoch, "method_binding": self.position_method_binding,
+                "preparation": self._position_prepared.receipt(),
+                "effective_context_window": self.capacity_plan["context_window"],
+                "vectors": dict(position_vector_ledger)}
+            from .history_placement import coordinate_source_host_bytes
+
+            coordinate_rows = max(row_envelope(streams), rows0)
+            self.capacity_plan["position_profile"]["coordinate_sources"] = {
+                "rows": coordinate_rows, "host_payload_bytes_per_rank": coordinate_source_host_bytes(coordinate_rows),
+                "project_pinned_bytes": 0, "gpu_payload": "covered-by-existing-owner-prepare-envelope"}
         if self.rope.rope_type != "default":
             print(f"[tensorfold] static YaRN factor {self.rope.factor:g}, rotary amplitude "
                   f"{self.rope.attention_factor:.8g}, original context {self.rope.native_context}; "
@@ -1011,6 +1096,8 @@ class FlashNextEngine:
                      "_sm70_weight_plan": self._sm70_weight_plan} if nvfp4_source else {}),
                  draft_vocab=draft_vocab if stock_mtp else None, ple_on_ssd=ple_on_ssd,
                  table_reads=reads if prefetch and not ple_on_ssd else None, rope=self.rope,
+                 **({"position_profile": self.position_profile, "_position_prepared": self._position_prepared}
+                    if self.position_profile is not None else {}),
                  **({"_prefill_plan": prefill_plan} if prefill_plan is not None else {}),
                  **({"_draft_ids": ids} if sm70 and ids is not None else {}),
                  **({"mtp_model_dir": self.mtp_model_dir} if self.mtp_model_dir is not None else {}),
@@ -1020,6 +1107,14 @@ class FlashNextEngine:
                  **({"vram_experts_pin": vram_experts_pin, "_pin_future_bytes": self._pin_future_bytes}
                     if vram_experts_pin != "off" else {}))
         self.w = w
+        if self.position_profile is not None:
+            from ..position_profile import bind_position_profile
+
+            bind_position_profile(w, self.position_profile, mtp_active=stock_mtp, prepared=self._position_prepared)
+            w.meta.update(position_profile=self.position_profile, position_profile_identity=self.position_profile.identity,
+                          position_profile_epoch=self.position_profile.epoch,
+                          position_profile_receipt=self.capacity_plan["position_profile"])
+            self._position_prepared = None  # device operands now own the required small vectors
         if not managed:
             self.scheduler = None
         if "mtp_import" in w.meta:
@@ -1114,6 +1209,12 @@ class FlashNextEngine:
             print(f"[tensorfold] vision: image{' and video' if self.vision.videos else ''} input, a "
                   f"{self.vision.weight_bytes / 2**30:.2f} GiB tower with {vision_workspace() / 2**30:.2f} GiB of "
                   f"workspace reserved{'; https URLs allowed' if vision_urls else ''}", flush=True)
+        w.meta["media_inputs_enabled"] = self._media_inputs_enabled
+        if self.position_profile is not None:
+            self._bind_coordinate_profile(w)
+            from .input_preparation import install_input_preparation
+
+            install_input_preparation(w)
         # ``streams`` > 1: up to that many requests decoded together, every stream's chain in one forward
         self.concurrent = concurrent
         self.multi = None
@@ -1552,6 +1653,100 @@ class FlashNextEngine:
             raise ValueError("mixed KV engine has no single dtype; use kv_pair")
         return self.kv_pair.key_dtype
 
+    def _bind_coordinate_profile(self, weights) -> None:
+        """Issue one resident-model namespace, before bound State construction.
+
+        The owning engine binds actual loaded weights and effective numerics.
+        An activation nonce conservatively forbids reuse after A-to-B-to-A;
+        this namespace is neither a content nor a qualification certificate.
+        Existing startup CPU phases own publication, failure and key retirement.
+        """
+        import hashlib
+        import secrets
+        from dataclasses import asdict
+        import torch
+        from .execution_identity import _ManifestRefusal, _fatal, _phase, _retire_store, digest
+
+        local = {}
+
+        def issue():
+            if (weights is not self.w or weights.positions is None or self.position_profile is None
+                    or weights.positions.profile.identity != self.position_profile.identity):
+                raise ValueError("coordinate activation requires adopted numerical position operands")
+            managed = getattr(self, "_profile_build", None)
+            candidate = None if managed is None else managed.candidate
+            authority = ({"kind": "prepared-serving-profile", "identity": candidate.identity,
+                          "activation_epoch": managed.sequence} if candidate is not None else None)
+            pairing = getattr(self, "_dflash_pairing", None)
+            if authority is None and pairing is not None:
+                authority = {"kind": "model-content-authority", "identity": pairing.authority.model_prefix,
+                             "pairing_identity": pairing.identity}
+            # Config's immutable tuples have their specified JSON-array encoding;
+            # no string/default coercion is permitted for unknown runtime objects.
+            config_record = json.loads(json.dumps(asdict(weights.cfg), allow_nan=False))
+            contract = {"rank": self.rank, "model_config": config_record,
+                        "provider": self.execution_provider, "around_one": weights.around_one,
+                        "position_profile": self.capacity_plan["position_profile"],
+                        "kv_identity": self.kv_pair.identity, "method": self.method_geometry.receipt(),
+                        "context_window": self.context_window, "sm70_policy": self.sm70_profile,
+                        "family_manifest": getattr(self, "_sm70_weight_manifest_identity", None),
+                        "torch": str(torch.__version__), "torch_git": torch.version.git_version,
+                        "cuda": torch.version.cuda, "authority": authority,
+                        "prompt_fp8": prompt_precision.fp8(), "local_vision_owner": getattr(self, "vision", None) is not None,
+                        "media_inputs_enabled": self._media_inputs_enabled}
+            local.update(contract_identity=digest(contract), authority=authority)
+            return {"rank": self.rank, "contract": local["contract_identity"],
+                    "nonce": secrets.token_hex(32) if self.rank == 0 else None}
+
+        channel = "tensorfold/flashnext/coordinate-profile"
+        stages = ("issue", "agreement")
+
+        def retire():
+            if self.comm is not None:
+                try:
+                    _retire_store(self, channel, stages=stages)
+                except BaseException as error:
+                    _fatal(self, error)
+                    raise
+
+        def operation():
+            try:
+                issued = _phase(self, channel, "issue", issue)
+
+                def agree():
+                    if (len(issued) != self.tp or any(value["rank"] != rank for rank, value in enumerate(issued))
+                            or any(value["nonce"] is not None for value in issued[1:])
+                            or not isinstance(issued[0]["nonce"], str) or len(issued[0]["nonce"]) != 64
+                            or any(c not in "0123456789abcdef" for c in issued[0]["nonce"])):
+                        raise ValueError("coordinate activation issuance is malformed")
+                    identity = hashlib.sha256(json.dumps({"version": 1, "activation": issued[0]["nonce"],
+                        "rank_contracts": [value["contract"] for value in issued]},
+                        sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                    # Publication is part of the voted phase: even a Python
+                    # allocation/store failure must contain every participant.
+                    binding = {"identity": identity, "scope": "resident-activation",
+                        "content_certificate": False, "qualification_certificate": False,
+                        "local_contract_identity": local["contract_identity"], "trusted_authority": local["authority"]}
+                    self.coordinate_profile_binding = binding
+                    weights.meta["coordinate_profile_identity"] = identity
+                    weights.meta["coordinate_profile_binding"] = binding
+                    return identity
+                identities = _phase(self, channel, "agreement", agree)
+                if any(value != identities[0] for value in identities):
+                    error = RuntimeError("coordinate activation identities disagree")
+                    _fatal(self, error)
+                    raise error
+            except _ManifestRefusal as error:
+                rollback(self, error, retire)
+            retire()
+            return identities[0]
+
+        construction = None if self.comm is None else getattr(self.comm, "_profile_construction", None)
+        if construction is not None and construction.active:
+            construction.protocol("coordinate-profile", operation, refusal=_ManifestRefusal)
+        else:
+            operation()
+
     def _same_settings(self, torch, ids) -> None:
         """Every rank agrees on execution, sampling and cache identities before payload loading."""
 
@@ -1593,6 +1788,9 @@ class FlashNextEngine:
                   getattr(getattr(self, "_dflash_pairing", None), "identity", None),
                   expert_policy, proposal_policy, context_policy, attention_policy,
                   getattr(self, "sm70_profile", None), prefix_policy, getattr(self, "kv_full_windows", None)]
+        if getattr(self, "position_profile", None) is not None:
+            policy.append(["position-profile", self.position_profile.identity, self.position_profile.epoch,
+                           self.position_method_binding])
         if getattr(self, "_sm70_kv_policy", None) == "stored-rotor-basis-fp16-fp32acc-v1":
             policy.append(["sm70-kv-working-policy", self._sm70_kv_policy])
         if getattr(self, "indexer_history", "gpu") == "ram":
@@ -1929,6 +2127,7 @@ class FlashNextEngine:
 
     def _close_resources(self, *, preserve_transport: bool = False) -> None:
         """After request drain, keep owners intact until their device fence."""
+        self._position_prepared = None
         seen_graphs = set()
         for decoder in (getattr(self, "multi", None), getattr(self, "e", None), getattr(self, "serial", None)):
             for name in ("graphs", "_failed_graphs"):

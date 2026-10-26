@@ -546,7 +546,8 @@ class Planner:
         return result
 
 
-def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft_vocab=None, draft_ids=None):
+def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft_vocab=None, draft_ids=None,
+               position_profile=None):
     """One immutable source of allocation and layout decisions for admission and load."""
     entry = resolve_gguf(path)
     if entry is None:
@@ -555,6 +556,11 @@ def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft
     raw = metadata_config(entry)
     # Config.read uses the same metadata dispatch for raw GGUF and staged bundles.
     full = Config.read(path, rope=rope, eos_token_ids=eos_token_ids)
+    if position_profile is not None:
+        from ..position_profile import ResolvedPositionProfile
+
+        if not isinstance(position_profile, ResolvedPositionProfile) or position_profile.target.rope != full.rope:
+            raise ValueError("GGUF positional profile differs from the planned target transform")
     full = replace(full, quant="gguf", execution_dtype="float16",
                    ple_eos=int(raw["text_config"]["gguf_ple_eos_token_id"]))
     rank, world = (0, 1) if tp is None else tp
@@ -675,6 +681,8 @@ def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft
                           gdn_decay_representation="ggml-stored-negative-exp-fp32",
                           gdn_head_order="restored-key-major-before-tp",
                           draft_host_id_bytes=0 if selected is None else selected.nbytes + prototype.draft_ids.nbytes)
+    if position_profile is not None:
+        prototype.meta["position_profile"] = position_profile
     if checkpoint.metadata.get("tokenizer.ggml.tokens"):
         from ..gguf import token_id_identity
 
@@ -682,9 +690,12 @@ def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft
     return prototype, planner
 
 
-def weight_byte_plan(path, tp=None, *, mtp=False, draft_vocab=None, draft_ids=None, prefill_plan=None):
+def weight_byte_plan(path, tp=None, *, mtp=False, draft_vocab=None, draft_ids=None, prefill_plan=None,
+                     position_profile=None):
     # Separate stock-MTP admission is added by the common engine admission path.
-    prototype, planner = model_plan(path, tp, mtp=mtp, draft_vocab=draft_vocab, draft_ids=draft_ids)
+    prototype, planner = model_plan(path, tp, mtp=mtp, draft_vocab=draft_vocab, draft_ids=draft_ids,
+        **({"position_profile": position_profile, "rope": position_profile.target.rope}
+           if position_profile is not None else {}))
     resident = sum(m.resident_bytes for m in planner.matrices) + sum(a.resident_bytes for a in planner.arrays)
     draft_id_bytes = 0 if prototype.draft_ids is None else prototype.draft_ids.nbytes
     resident += draft_id_bytes
@@ -872,15 +883,34 @@ def materializer(reader, device, *, dense_loader=None, prepare_experts=None, loa
 
 def load_gguf(path, device="cuda", *, tp=None, mtp=False, rope=None, eos_token_ids=None,
               table_reads=None, ple_on_ssd=False, mtp_model_dir=None, draft_vocab=None, _draft_ids=None,
-              _prefill_plan=None, **kwargs):
+              _prefill_plan=None, position_profile=None, _position_prepared=None, **kwargs):
     """Load original checkpoint bytes into the maintained Flash Next weight graph."""
     if mtp and mtp_model_dir is None:
         raise ValueError("this target GGUF contains no MTP head; select --no-drafts until a matching draft is loaded")
     if kwargs.get("vram_experts") is not None or kwargs.get("expert_loader") is not None:
         raise ValueError("GGUF routed banks use their own admitted resident shards; external expert pools are unsupported")
+    if position_profile is not None:
+        from ..position_profile import PreparedPositionVectors
+
+        if not isinstance(_position_prepared, PreparedPositionVectors):
+            raise ValueError("GGUF positions require exact CPU preparation before model/device retention")
+        _position_prepared.verify(position_profile, mtp_active=mtp)
+    elif _position_prepared is not None:
+        raise ValueError("prepared GGUF positional vectors lack their resolved profile")
     started = time.monotonic()
     prototype, planner = model_plan(path, tp, rope=rope, eos_token_ids=eos_token_ids,
-                                    mtp=mtp, draft_vocab=draft_vocab, draft_ids=_draft_ids)
+                                    mtp=mtp, draft_vocab=draft_vocab, draft_ids=_draft_ids,
+                                    position_profile=position_profile)
+    # Even the direct legacy loader computes its exact small CPU vector before
+    # Reader/device weight retention, rather than discovering range failure at
+    # the end of a model import. Selected profiles adopt their prepared bytes.
+    if _position_prepared is not None:
+        target_inv = _position_prepared.target_cpu
+    else:
+        with torch.inference_mode(False), torch.device("cpu"):
+            target_inv = prototype.cfg.rope.inverse_frequencies(torch)
+            if not bool(torch.isfinite(target_inv).all()) or not bool((target_inv > 0).all()):
+                raise ValueError("GGUF positions produce nonfinite or zero float32 inverse frequencies")
     if _prefill_plan is not None:
         from .gguf_prefill import PrefillPlan
 
@@ -912,7 +942,7 @@ def load_gguf(path, device="cuda", *, tp=None, mtp=False, rope=None, eos_token_i
         embedding = GGUFEmbedding(materialize(prototype.embed[0]))
         layers = [materialize(layer) for layer in prototype.layers]
         result = Weights(prototype.cfg, (embedding,), layers, materialize(prototype.mixer),
-                         materialize(prototype.head), prototype.cfg.rope.inverse_frequencies(torch).to(device),
+                         materialize(prototype.head), target_inv.to(device),
                          around_one=True)
         result.meta.update(prototype.meta, ple_tables=tables, rope=prototype.cfg.rope.metadata(),
                            load_seconds=time.monotonic() - started)

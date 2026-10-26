@@ -109,6 +109,10 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                                  "524288 tokens, 4: 1048576 for a 262144-token checkpoint); overrides the checkpoint "
                                  "factor, requires >=1. Short-context quality may change; --context still controls "
                                  "admission")
+    generation.add_argument("--position-profile-manifest", type=Path, default=None, metavar="PATH",
+                            help="Flash Next SM70 unique TP8 GPU histories: immutable target/MTP/draft positions; positive "
+                                 "--context must match, default/0 uses its declared rows. Source candidates need "
+                                 "independent device/model qualification")
     generation.add_argument("--max-tokens", type=int, default=None,
                             help="reply tokens when a request does not say (default: generation_config.json "
                                  "max_new_tokens, else 4096)")
