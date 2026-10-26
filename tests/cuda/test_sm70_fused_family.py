@@ -331,13 +331,21 @@ def test_full_family_native_logits_and_recurrent_state_against_golden_torch():
 
 
 @pytest.mark.parametrize("blocks", [1024, 2048, 4096])
-def test_native_sparse_selector_stable_ids_and_scores_against_torch(blocks):
+@pytest.mark.parametrize("pattern", ["random", "zero", "cutoff"])
+def test_native_sparse_selector_stable_ids_and_scores_against_torch(blocks, pattern):
     from tensorfold.families.qwen4_exp.cuda.attention import AttnScratch
 
     torch.manual_seed(151)
     rows, ratio, budget, dim = 3, 4, 2048, 128
     queries = torch.randn((rows, 4, dim), device="cuda", dtype=torch.float16)
     pooled = torch.randn((blocks, dim), device="cuda", dtype=torch.float16)
+    if pattern != "random":
+        queries.zero_()
+        pooled.zero_()
+        pooled[::2, 0] = -0.0
+        queries[:, :, 0] = 1
+        if pattern == "cutoff":
+            pooled[:, 0] = (torch.arange(blocks, device="cuda") % 5 - 2).half()
     position = torch.tensor([blocks * ratio - 9], device="cuda", dtype=torch.int32)
     reference, native = [AttnScratch(rows, 3, 256, blocks * ratio, "cuda", budget=budget,
                                     ratio=ratio, dtype=torch.float16) for _ in range(2)]

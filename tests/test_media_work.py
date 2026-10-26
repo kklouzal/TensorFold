@@ -252,6 +252,166 @@ def test_failed_decode_is_reported_and_its_consumed_traceback_is_not_retained(pr
         work.close(timeout=3)
 
 
+def test_check_ready_retires_failed_cpu_unit_before_gpu_admission_and_cancel_is_inert(prepared, monkeypatch):
+    primary = ImageInputError("bad CPU media before GPU publication")
+
+    def failed(*_a, **_kw):
+        raise primary
+
+    monkeypatch.setattr(prepared.executor, "pixel_unit", failed)
+    work = MediaWork(prepared.executor)
+    try:
+        work.request(prepared, 0, **CONTEXT)
+        assert work._jobs[prepared].work.retired.wait(3)
+        assert work.ready(prepared, 0, **CONTEXT)  # Existing completed-outcome contract is preserved.
+        with pytest.raises(ImageInputError) as caught:
+            work.check_ready(prepared, 0, **CONTEXT)
+        assert caught.value is primary and not work._jobs and prepared.replay._borrows == 0
+        assert not vars(primary).get("_tensorfold_retained_owners")
+        assert work.cancel(prepared)  # Finish/cleanup cannot throw the already-consumed input error again.
+        assert not work.check_ready(prepared, 0, **CONTEXT)
+        work.check_health()
+    finally:
+        work.close(timeout=3)
+
+
+def test_check_ready_keeps_successful_pixels_owned_until_actual_take(prepared, monkeypatch):
+    monkeypatch.setattr(prepared.executor, "pixel_unit", lambda probe, index, **_kw: pixel(prepared.executor, probe, index))
+    work, result = MediaWork(prepared.executor), None
+    try:
+        work.request(prepared, 0, **CONTEXT)
+        assert work._jobs[prepared].work.retired.wait(3)
+        lease = work._jobs[prepared].pixels
+        assert work.check_ready(prepared, 0, **CONTEXT)
+        assert work.check_ready(prepared, 0, **CONTEXT)
+        assert work._jobs[prepared].pixels is lease and prepared.replay._borrows == 2
+        result = work.take_ready(prepared, 0, **CONTEXT)
+        assert result is lease and prepared.replay._borrows == 1
+    finally:
+        work.close(timeout=3)
+        if result is not None:
+            result.close()
+
+
+def test_check_ready_failed_retirement_preserves_primary_and_all_owners(prepared, monkeypatch):
+    primary, cleanup = ImageInputError("bad CPU media"), OSError("encoded borrow retirement failed")
+
+    def failed(*_a, **_kw):
+        raise primary
+
+    monkeypatch.setattr(prepared.executor, "pixel_unit", failed)
+    work = MediaWork(prepared.executor)
+    work.request(prepared, 0, **CONTEXT)
+    job = work._jobs[prepared]
+    assert job.work.retired.wait(3)
+    original = job.encoded.close
+
+    def fail_close():
+        raise cleanup
+
+    monkeypatch.setattr(job.encoded, "close", fail_close)
+    with pytest.raises(ImageInputError) as caught:
+        work.check_ready(prepared, 0, **CONTEXT)
+    assert caught.value is primary and primary.__cause__ is cleanup
+    from tensorfold.families.qwen4_exp.cuda.execution_identity import _unretired
+
+    assert vars(primary)["_tensorfold_retained_owners"][0] is job and _unretired(primary)
+    assert work._jobs[prepared] is job and job.encoded is not None and prepared.replay._borrows == 1
+    with pytest.raises(RuntimeError, match="closed or poisoned"):
+        work.check_health()
+    monkeypatch.setattr(job.encoded, "close", original)
+    with pytest.raises(ImageInputError):
+        work.close(timeout=3)
+    assert work.closed and prepared.replay._borrows == 0
+
+
+def test_http_health_inspection_is_read_only_while_coordinator_operation_is_held(prepared):
+    work, observed, returned = MediaWork(prepared.executor), [], threading.Event()
+
+    def inspect():
+        try:
+            work.check_health()
+        except BaseException as error:
+            observed.append(error)
+        else:
+            observed.append(None)
+        returned.set()
+
+    probe = ThreadWork(inspect)
+    thread = threading.Thread(target=probe.run, name="http-media-health")
+    try:
+        with work._operation():
+            probe.launch(thread)
+            assert returned.wait(1), "HTTP health waited behind the held coordinator operation"
+            assert observed == [None] and work._failure is None
+        probe.drain(thread, timeout=3, cancel_unentered=False)
+    finally:
+        work.close(timeout=3)
+
+
+def test_concurrent_http_health_keeps_authoritative_work_poison(prepared):
+    work, observed, returned = MediaWork(prepared.executor), [], threading.Event()
+    primary = OSError("coordinator retained unretired ownership")
+
+    def inspect():
+        try:
+            work.check_health()
+        except RuntimeError as error:
+            observed.append(error.__cause__)
+        returned.set()
+
+    probe = ThreadWork(inspect)
+    thread = threading.Thread(target=probe.run, name="http-media-health")
+    with work._operation():
+        work._set_failure(primary)
+        prepared.executor.check_health()  # Executor-only inspection cannot see this owning coordinator failure.
+        probe.launch(thread)
+        assert returned.wait(1) and observed == [primary]
+    probe.drain(thread, timeout=3, cancel_unentered=False)
+    with pytest.raises(OSError) as caught:
+        work.close(timeout=3)
+    assert caught.value is primary and work.closed
+
+
+def test_http_health_observes_closing_without_waiting_for_decoder_drain(prepared, monkeypatch):
+    entered, release, inspected = threading.Event(), threading.Event(), threading.Event()
+    observed = []
+
+    def decode(probe, index, **_kw):
+        entered.set()
+        assert release.wait(3)
+        return pixel(prepared.executor, probe, index)
+
+    monkeypatch.setattr(prepared.executor, "pixel_unit", decode)
+    work = MediaWork(prepared.executor)
+    work.request(prepared, 0, **CONTEXT)
+    assert entered.wait(3)
+    closing = ThreadWork(lambda: work.close(timeout=3))
+    close_thread = threading.Thread(target=closing.run, name="media-close")
+    closing.launch(close_thread)
+
+    def inspect():
+        try:
+            work.check_health()
+        except RuntimeError as error:
+            observed.append(str(error))
+        inspected.set()
+
+    probe = ThreadWork(inspect)
+    probe_thread = threading.Thread(target=probe.run, name="http-media-health")
+    try:
+        with work._condition:
+            assert work._condition.wait_for(lambda: work._closing, timeout=1)
+        probe.launch(probe_thread)
+        assert inspected.wait(1) and observed == ["CPU media work is closed or poisoned; retain its owners"]
+        assert not release.is_set() and not closing.retired.is_set()
+    finally:
+        release.set()
+        probe.drain(probe_thread, timeout=3)
+        closing.drain(close_thread, timeout=3, cancel_unentered=False)
+    assert work.closed
+
+
 @pytest.mark.parametrize("poll", ["request", "ready", "take"])
 def test_typed_temporary_pressure_requeues_only_on_poll_with_same_encoded_owner(prepared, monkeypatch, poll):
     calls = []

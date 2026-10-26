@@ -456,3 +456,47 @@ def test_actual_tool_cli_uses_explicit_deployment_flags_without_serializing_them
     assert result["position_profile"]["resolved"]["qualification"] == "unqualified-candidate"
     assert result["position_profile"]["binding"]["kv_identity"] == get_pair("int8").identity
     assert not {"tp", "rank", "adaptive_sessions", "indexer_history"} & json.loads(output.read_text())["options"].keys()
+
+
+
+def test_explicit_legacy_resolution_is_not_repeated_but_later_source_checks_remain(tmp_path, monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda import serving_profiles
+
+    root, path, _ = profile_files(tmp_path)
+    original = serving_profiles.resolve_profile_positions
+    calls = []
+
+    def resolve(*args):
+        calls.append(1)
+        return original(*args)
+
+    monkeypatch.setattr(serving_profiles, "resolve_profile_positions", resolve)
+    prepared = prepare(root, path.name, initializer=FlashNextEngine._initialize, fixed_options={"tp": 1})
+    assert prepared.record()["position_profile"]["resolved"] is None
+    assert len(calls) == 2  # Initial binding and required final source check, each once.
+    calls.clear()
+    prepared.check_sources()
+    assert len(calls) == 1
+    calls.clear()
+    serving_profiles._required_files(prepared.model_dir, prepared.options)
+    assert len(calls) == 1  # Omitted argument still requests resolution.
+    calls.clear()
+    serving_profiles._required_files(prepared.model_dir, prepared.options, positions=None)
+    assert not calls  # An explicitly resolved legacy result already established this invariant.
+
+
+@pytest.mark.parametrize("depth", [0, 1, 2, 3])
+def test_legacy_dflash_receipt_uses_actual_fixed_compute_footprint(tmp_path, depth):
+    from tensorfold.families.qwen4_exp.cuda.speculation import MethodGeometry
+
+    root, path, raw = profile_files(tmp_path, kv_heads=1)
+    draft = root / "draft"
+    draft.mkdir()
+    (draft / "config.json").write_bytes((Path(__file__).parent / "fixtures/dflash2/config.json").read_bytes())
+    (draft / "model.safetensors").write_bytes(b"payload import is a separate provider contract")
+    raw["options"].update(depth=depth, dflash2_model_dir="draft")
+    save(root, path, raw, add=(draft / "config.json", draft / "model.safetensors"))
+    receipt = load(root).record()["position_profile"]
+    expected = MethodGeometry("dflash2", depth).receipt()["draft_compute_block_rows"] - 1
+    assert receipt["resolved"] is None and receipt["binding"]["support"] == "legacy-source-policy"
+    assert receipt["binding"]["lookahead_rows"] == expected == 3

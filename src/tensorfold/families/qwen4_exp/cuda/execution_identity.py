@@ -121,7 +121,7 @@ def artifact_files(engine):
             result["metadata/" + name] = checkpoint_path(metadata_root, name)
     if not {"metadata/config.json", "metadata/tokenizer.json", "metadata/tokenizer_config.json"} <= result.keys():
         raise ValueError("execution profiles require the actual target config and tokenizer assets")
-    if engine.method_geometry.method == "dflash2":
+    if engine.method_geometry.method == "dflash2" or getattr(engine, "media_profile", None) is not None:
         from tensorfold.token_metadata import tokenizer_override
 
         override = tokenizer_override()
@@ -132,6 +132,9 @@ def artifact_files(engine):
              engine.dflash2_model_dir if engine.method_geometry.method == "dflash2" else None)
     if draft is not None:
         result.update({"draft/" + name: path for name, path in draft_artifact_files(draft, engine.method_geometry.method).items()})
+    media = getattr(engine, "media_profile", None)
+    if media is not None:
+        result.update({"media/profile": media.manifest_path, "media/vision": media.vision_path})
     return result, checkpoint
 
 
@@ -330,7 +333,10 @@ def _runtime(engine, *, previous_topology=None):
     # TorchVersion is a str subclass. The strict identity serializer accepts
     # native JSON values; preserve the observed text at this runtime boundary.
     policy = {key: str(value) if isinstance(value, str) else value for key, value in policy.items()}
+    from ..qsa_selection import POLICY as QSA_SELECTION
+
     numerics = {"execution_dtype": engine.w.cfg.execution_dtype,
+                "qsa_selection": QSA_SELECTION,
                 "torch_deterministic": torch.are_deterministic_algorithms_enabled(),
                 "float32_matmul_precision": torch.get_float32_matmul_precision(),
                 "allow_tf32": torch.backends.cuda.matmul.allow_tf32,

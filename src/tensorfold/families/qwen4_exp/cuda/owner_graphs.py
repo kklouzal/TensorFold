@@ -179,14 +179,18 @@ class OwnerAttentionGraphs:
             for rows in self.buckets:
                 # Inactive frames never dereference session pointers. Transport
                 # inputs are initialized too; no uninitialized padding is sent.
-                self.workspace.clear_native_inputs(rows)
-                self.workspace.warm_native_transport(rows)
-                self.workspace.wait_native_inputs()
                 run = partial(self.workspace.native_run, rows)
-                run()  # Kernel/module/NCCL lazy initialization precedes capture.
+                self.side.wait_stream(torch.cuda.current_stream(self.device))
+                # PyTorch requires eager warmup on a side stream as well as
+                # nondefault-stream capture. The existing device fence joins
+                # this warmup before measuring or entering capture.
+                with torch.cuda.stream(self.side):
+                    self.workspace.clear_native_inputs(rows)
+                    self.workspace.warm_native_transport(rows)
+                    self.workspace.wait_native_inputs()
+                    run()  # Kernel/module/NCCL lazy initialization precedes capture.
                 torch.cuda.synchronize(self.device)
                 before = self._free()
-                self.side.wait_stream(torch.cuda.current_stream(self.device))
                 graph = torch.cuda.CUDAGraph()
                 self.pending.append(graph)  # Allocate/journal before the construction protocol GO.
                 with torch.cuda.stream(self.side):

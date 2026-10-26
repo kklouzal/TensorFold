@@ -14,7 +14,7 @@ import os
 import threading
 import time
 
-from tensorfold.cleanup import raise_failures
+from tensorfold.cleanup import raise_failures, rollback
 from tensorfold.thread_work import ThreadWork
 
 from .media_frontend import MediaExecutor, PreparedReplayMedia
@@ -83,6 +83,7 @@ class MediaWork:
         self._workers = []
         self._closing = self._closed = False
         self._failure = None
+        self._initialized = False
         self._wake = None
         self._wake_due = False
         self._capacity_callback = self._capacity_changed
@@ -98,20 +99,24 @@ class MediaWork:
         limit = executor.envelope.max_worker_wall_seconds + executor.envelope.retirement_grace_seconds
         if not math.isfinite(limit) or limit > threading.TIMEOUT_MAX:
             raise ValueError("CPU media retirement wait budget must be representable within threading.TIMEOUT_MAX")
-        self.executor = executor
-        self.envelope = executor.envelope
-        self._drain_timeout = limit
-        self.pending_limit = self.worker_limit = min(self.envelope.max_workers, self.envelope.max_replay_leases,
-                                                     self.envelope.max_replay_borrows // 2)
+        with self._condition:
+            self.executor = executor
+            self.envelope = executor.envelope
+            self._drain_timeout = limit
+            self.pending_limit = self.worker_limit = min(self.envelope.max_workers, self.envelope.max_replay_leases,
+                                                         self.envelope.max_replay_borrows // 2)
         try:
             self.executor.set_capacity_wake(self._capacity_callback)
             for index in range(self.worker_limit):
                 work = ThreadWork(self._serve)
                 thread = threading.Thread(target=work.run, name=f"media-unit-{index}", daemon=True)
-                self._workers.append((work, thread))  # Retain before the fallible native launch.
+                with self._condition:
+                    self._workers.append((work, thread))  # Retain before the fallible native launch.
                 work.launch(thread)
+            with self._condition:
+                self._initialized = True
         except BaseException as primary:
-            self._failure = primary
+            self._set_failure(primary)
             try:
                 self.close()
             except BaseException as cleanup:
@@ -123,9 +128,31 @@ class MediaWork:
         return self._closed
 
     def check_health(self):
-        """Refuse local poison and the executor's retained containment outcomes."""
-        with self._operation():
-            self._available()
+        """Thread-safe read-only health, never waiting behind coordinator work.
+
+        HTTP preparation may inspect this concurrently with the GPU actor.
+        Only short lifecycle metadata is copied under the condition mutex;
+        neither decoder work nor worker draining holds that mutex.
+        """
+        if self._pid != os.getpid():
+            raise RuntimeError("CPU media work belongs to another process")
+        with self._condition:
+            closing, closed, failure, initialized = self._closing, self._closed, self._failure, self._initialized
+            executor, workers = self.executor, tuple(self._workers)
+        if closing or closed or failure is not None:
+            raise RuntimeError("CPU media work is closed or poisoned; retain its owners") from failure
+        if not initialized or executor is None:
+            raise RuntimeError("CPU media work construction has not completed")
+        executor.check_health()
+        for work, _thread in workers:
+            if work.retired.is_set():
+                error = work.failure if work.failure is not None else RuntimeError("CPU media worker stopped before shutdown")
+                raise RuntimeError("CPU media worker stopped; retain pending owners") from error
+
+    def _set_failure(self, error):
+        with self._condition:
+            if self._failure is None:
+                self._failure = error
 
     def record(self):
         """Bounded runtime receipt; counts describe this coordinator's claims."""
@@ -143,7 +170,7 @@ class MediaWork:
         if not callable(callback):
             raise TypeError("CPU media scheduler wake must be callable")
         with self._operation():
-            self._available()
+            self.check_health()
             with self._condition:
                 if self._wake is callback:
                     return  # Stable admission rebind is not a capacity/completion event.
@@ -175,17 +202,6 @@ class MediaWork:
                 self._active = False
         finally:
             self._control.release()
-
-    def _available(self):
-        if self._closing or self._closed or self._failure is not None:
-            raise RuntimeError("CPU media work is closed or poisoned; retain its owners") from self._failure
-        if self.executor is None:
-            raise RuntimeError("CPU media work construction has not completed")
-        self.executor.check_health()
-        for work, _thread in self._workers:
-            if work.retired.is_set():
-                self._failure = work.failure if work.failure is not None else RuntimeError("CPU media worker stopped before shutdown")
-                raise RuntimeError("CPU media worker stopped; retain pending owners") from self._failure
 
     def _context(self, prepared, unit_index, generation, profile_identity, media_identity):
         if type(prepared) is not PreparedReplayMedia or prepared.executor is not self.executor:
@@ -224,7 +240,7 @@ class MediaWork:
                     self._capacity_changed()  # Completion, including error/cancel, is a control boundary.
         except BaseException as primary:
             if self._failure is None:
-                self._failure = primary
+                self._set_failure(primary)
             from tensorfold.cuda.cohort import notify_failure
 
             try:
@@ -256,7 +272,6 @@ class MediaWork:
             return False
         # Only the executor can prove failed work released all process/FD and
         # staging claims. Polling schedules one new attempt, never a busy loop.
-        self.executor.check_health()
         if not self.executor.unit_available(job.probe, replay_borrows=1):
             return False
         previous = job.work
@@ -265,7 +280,7 @@ class MediaWork:
         except BaseException as error:
             job.cancelled.set()
             job.work.cancel()
-            self._failure = error
+            self._set_failure(error)
             raise
         previous.failure = None
         return True
@@ -273,7 +288,7 @@ class MediaWork:
     def request(self, prepared, unit_index, *, generation, profile_identity, media_identity):
         """Schedule one unit, or return False without waiting when capacity is busy."""
         with self._operation():
-            self._available()
+            self.check_health()
             context = self._context(prepared, unit_index, generation, profile_identity, media_identity)
             old = self._jobs.get(prepared)
             if old is not None:
@@ -308,10 +323,10 @@ class MediaWork:
                     try:
                         self._retire(job, transfer=False)
                     except BaseException as cleanup:
-                        self._failure = primary
+                        self._set_failure(primary)
                         raise_failures(primary, (cleanup,))
                 else:
-                    self._failure = primary  # An accepted callback still owns the encoded source.
+                    self._set_failure(primary)  # An accepted callback still owns the encoded source.
                 if busy_unentered:
                     return False
                 raise
@@ -327,12 +342,48 @@ class MediaWork:
     def ready(self, prepared, unit_index, *, generation, profile_identity, media_identity):
         """Nonblocking readiness includes completed errors, which take_ready surfaces."""
         with self._operation():
-            self._available()
-            job = self._find(prepared, unit_index, generation, profile_identity, media_identity)
-            if job is not None and self._parked_busy(job):
-                self._retry_busy(job)
+            return self._completed_job(prepared, unit_index, generation, profile_identity, media_identity) is not None
+
+    def _completed_job(self, prepared, unit_index, generation, profile_identity, media_identity):
+        self.check_health()
+        job = self._find(prepared, unit_index, generation, profile_identity, media_identity)
+        if job is None or not job.work.retired.is_set():
+            return None
+        if self._parked_busy(job):
+            self._retry_busy(job)
+            return None
+        return job
+
+    def check_ready(self, prepared, unit_index, *, generation, profile_identity, media_identity):
+        """Pre-GPU admission gate: retire a completed error before raising it.
+
+        A successful unit remains Work-owned until take_ready transfers it;
+        pending/busy work returns False without waiting or changing ownership.
+        """
+        with self._operation():
+            job = self._completed_job(prepared, unit_index, generation, profile_identity, media_identity)
+            if job is None:
                 return False
-            return job is not None and job.work.retired.is_set()
+            error = self._completion_error(job)
+            if error is not None:
+                self._raise_completed_error(job, error)
+            return True
+
+    def _completion_error(self, job):
+        error = job.work.failure
+        if job.cancelled.is_set() and (error is None or type(error) is MediaBusy and self._clean_outcome(error)):
+            return MediaCancelled("CPU media unit was cancelled before publication")
+        return error
+
+    def _raise_completed_error(self, job, error):
+        def retire():
+            try:
+                self._retire(job, transfer=False)
+            except BaseException:
+                self._set_failure(error)
+                raise
+
+        rollback(job, error, retire)  # Existing unretired-owner transport, without a second retirement attempt.
 
     def _retire(self, job, *, transfer):
         # A returned CPU callback is insufficient if its process/FD owner is
@@ -365,24 +416,17 @@ class MediaWork:
     def take_ready(self, prepared, unit_index, *, generation, profile_identity, media_identity):
         """Transfer only a completed pixel lease; return None while work is pending."""
         with self._operation():
-            self._available()
-            job = self._find(prepared, unit_index, generation, profile_identity, media_identity)
-            if job is None or not job.work.retired.is_set():
+            job = self._completed_job(prepared, unit_index, generation, profile_identity, media_identity)
+            if job is None:
                 return None
-            if self._parked_busy(job):
-                self._retry_busy(job)
-                return None
-            error = job.work.failure
-            if job.cancelled.is_set() and (error is None or type(error) is MediaBusy and self._clean_outcome(error)):
-                error = MediaCancelled("CPU media unit was cancelled before publication")
-            try:
-                pixels = self._retire(job, transfer=error is None)
-            except BaseException as cleanup:
-                self._failure = cleanup if error is None else error
-                raise_failures(error, (cleanup,))
+            error = self._completion_error(job)
             if error is not None:
-                raise error
-            return pixels
+                self._raise_completed_error(job, error)
+            try:
+                return self._retire(job, transfer=True)
+            except BaseException as cleanup:
+                self._set_failure(cleanup)
+                raise
 
     @staticmethod
     def _ordinary_cancel(error):
@@ -403,7 +447,7 @@ class MediaWork:
             try:
                 self._retire(job, transfer=False)
             except BaseException as cleanup:
-                self._failure = cleanup if error is None else error
+                self._set_failure(cleanup if error is None else error)
                 raise_failures(error, (cleanup,))
             if error is not None and not self._ordinary_cancel(error):
                 raise error
@@ -424,7 +468,8 @@ class MediaWork:
                     or limit < 0 or limit > threading.TIMEOUT_MAX):
                 raise ValueError("CPU media close timeout must be finite, nonnegative and within threading.TIMEOUT_MAX")
             deadline = time.monotonic() + limit
-            self._closing = True
+            with self._condition:
+                self._closing = True
             for job in self._jobs.values():
                 job.cancelled.set()
                 if job.work is not None:
@@ -439,7 +484,7 @@ class MediaWork:
                     errors.append(error)
             if errors:
                 if self._failure is None:
-                    self._failure = errors[0]
+                    self._set_failure(errors[0])
                 if any(not work.retired.is_set() for work, _thread in self._workers):
                     raise_failures(self._failure, errors)
             for job in tuple(self._jobs.values()):
@@ -453,12 +498,13 @@ class MediaWork:
                         errors.append(error)
             if self._jobs:
                 if self._failure is None:
-                    self._failure = errors[0]
+                    self._set_failure(errors[0])
                 raise_failures(self._failure, errors)
             if self.executor is not None:
                 self.executor.clear_capacity_wake(self._capacity_callback)
             self._wake = self._capacity_callback = None
-            self._closed = True
+            with self._condition:
+                self._closed = True
             if self._failure is not None:
                 raise_failures(self._failure, errors)
             raise_failures(None, errors)

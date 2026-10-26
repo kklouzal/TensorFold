@@ -6,6 +6,11 @@ full-context capacity planning, unique GPU histories, bounded execution and live
 controls. [Implementation and qualification boundaries](docs/v100-adaptive-validation.md)
 separate source checks from the pending eight-V100 model, quality and performance
 gates. Historical results below keep their original source and layout.
+The published text/core/position checkpoint passed **3,277 installed CPU checks
+and 105 subtests**, with four documented optional/environment skips. Its scope
+precedes the current specification's FIFO, retained-state and standard API work.
+The media service integration and those newer requirements remain under
+verification; no new V100 capacity, quality or performance result is claimed.
 The revised design's shared-GGUF MTP importer preserves the selected target
 embedding/head, validates the ordered token-ID mapping, and declares QSA ratio
 four with a 2,048-token complete-group budget. Import controls do not qualify
@@ -79,6 +84,16 @@ The GGUF recurrent importer preserves stored FP32 `A_neg=-exp(A_log)` and its
 coupled value-head permutation; the FP16 chain consumes that representation
 directly. HF-backed providers retain their `A_log` representation. Source
 import/recurrence controls are separate from pending V100 numerical qualification.
+
+The explicit `--media-profile-manifest` candidate combines the bounded CPU
+frontend, one fixed encoder, shared TP input rows and target/MTP ownership. It
+requires `--vision --no-graphs` and an explicit complete resource envelope; see
+the [media integration contract](docs/sm70-media-frontend.md#serving-integration).
+Source-composition checks are separate from actual V100 qualification.
+
+CUDA serving also accepts `--max-pending-requests-per-principal` with a finite
+`--max-pending-requests` cap. The principal comes from authentication, and its
+logical request claim spans preparation, generation subruns and retirement.
 
 Adaptive V100 serving requires explicit positive `--max-pending-requests` and
 `--max-http-connections` limits before model loading. The V100 Compose profile

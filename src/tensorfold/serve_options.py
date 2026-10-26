@@ -25,8 +25,11 @@ def check_numbers(args: argparse.Namespace) -> None:
     if eos is not None and (not eos or any(type(token) is not int or token < 0 for token in eos)):
         raise ValueError("--eos-token-id must be a nonnegative integer (repeat for multiple IDs)")
 
-    for name in ("max_http_connections", "max_pending_requests", "max_engine_calls"):
+    for name in ("max_http_connections", "max_pending_requests", "max_pending_requests_per_principal", "max_engine_calls"):
         optional_limit(getattr(args, name, None), "--" + name.replace("_", "-"))
+    if (getattr(args, "max_pending_requests_per_principal", None) is not None
+            and getattr(args, "max_pending_requests", None) is None):
+        raise ValueError("--max-pending-requests-per-principal requires --max-pending-requests")
     budgets = ("prompt_cache_gib", "spill_gib", "pass_cache_gib", "mlx_cache_gib", "ssd_experts")
     for name in (*budgets, "temperature", "top_p", "min_p", *PENALTY_FIELDS, "decode_share", "mtp_confidence",
                  "yarn_factor"):
@@ -74,6 +77,8 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
     """Refuse KV cache, draft rule, image, tokenizer, share, slot and precision options the backend or family can't
     serve."""
 
+    if getattr(args, "max_pending_requests_per_principal", None) is not None and backend != "cuda":
+        raise ValueError("--max-pending-requests-per-principal currently requires the CUDA server")
     family_manifest = getattr(args, "family_manifest", None)
     if family_manifest is not None:
         from tensorfold.cuda.tensor_file import read_metadata_json
@@ -137,6 +142,21 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
                                       max_http_connections=getattr(args, "max_http_connections", None))
         profile_root(serving_root)
     manifest = getattr(args, "execution_profile_manifest", None)
+    media_manifest = getattr(args, "media_profile_manifest", None)
+    if getattr(args, "no_graphs", False) and (backend != "cuda" or getattr(family, "model_type", "") != "qwen4_exp"):
+        raise ValueError("--no-graphs is supported by Flash Next on CUDA")
+    if media_manifest is not None:
+        from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+
+        source = config_dir if config_dir is not None else getattr(args, "model", None)
+        if (backend != "cuda" or getattr(family, "model_type", "") != "qwen4_exp"
+                or source is None or resolve_gguf(source) is None
+                or getattr(args, "tp", 1) != 8 or getattr(args, "indexer_history", "gpu") != "gpu"
+                or not getattr(args, "vision", False) or not getattr(args, "no_graphs", False)
+                or getattr(args, "draft_method", "auto") == "dspark"):
+            raise ValueError("--media-profile-manifest requires --vision, --no-graphs and resident Flash Next GGUF TP8 GPU histories without DSpark")
+        if any(getattr(args, name, None) is not None for name in ("vision_max_images", "vision_image_tokens")) or getattr(args, "vision_offload", False):
+            raise ValueError("media profile owns all media limits and fixed encoder placement; legacy vision overrides do not apply")
     positions = getattr(args, "position_profile_manifest", None)
     if positions is not None:
         from tensorfold.families.qwen4_exp.gguf import resolve_gguf
@@ -253,7 +273,7 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         if int(getattr(args, "tp", 1) or 1) > 1 or int(getattr(args, "expert_ranks", 1) or 1) > 1:
             raise ValueError("--tokenizer is admitted in one process: several ranks would each compile grammars from "
                              "their own tokenizer, unchecked against rank 0's, so it serves one rank only")
-    if getattr(args, "vision", False):             # only --vision reads the config here
+    if getattr(args, "vision", False) and media_manifest is None:  # Legacy checkpoints keep their own tower admission.
         if family.model_type == "glm5_next" and backend != "mlx":
             raise ValueError("GLM-5.3-Flash image input is currently MLX-only")
         from tensorfold.families import read_config
@@ -374,7 +394,7 @@ def _cuda_topology(args: argparse.Namespace, family: Any) -> None:
         if tp > 1 and streams > 1 and not gguf:
             raise ValueError("--parallel decodes several Flash Next requests together on one GPU; with --tp 2 it "
                              "serves one request at a time for now, so drop --parallel")
-        if getattr(args, "vision", False) and (streams < 2 or tp != 1):
+        if getattr(args, "vision", False) and getattr(args, "media_profile_manifest", None) is None and (streams < 2 or tp != 1):
             raise ValueError("image input on Flash Next runs on one GPU with --parallel 2 or more")
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from functools import wraps
 import inspect
@@ -40,6 +41,7 @@ class _Request:
     scope: Any = field(default_factory=threading.Lock)
     workers: set[Any] = field(default_factory=set)
     inherit_jobs: bool = True
+    principal: str | None = None
 
 
 @dataclass(frozen=True)
@@ -50,7 +52,7 @@ class _PreparedKey:
 class PreparedAdmission:
     """One finite logical request reserved across prepare-to-run/close/GC."""
 
-    def __init__(self, limit):
+    def __init__(self, limit, *, principal=None):
         self.limit = limit
         self._scope = threading.Lock()
         self._scope.acquire()
@@ -60,7 +62,7 @@ class PreparedAdmission:
         # the holder and retire its reservation instead of pinning capacity.
         self._finalizer = weakref.finalize(self, limit.release, self.token)
         try:
-            limit.borrow(self.token, inherit=False)
+            limit.borrow(self.token, inherit=False, principal=principal)
         except BaseException as primary:
             rollback(self, primary, self.close)
 
@@ -85,10 +87,12 @@ class RequestLimit:
     required. The scheduler retires a borrow only after engine work ends.
     """
 
-    def __init__(self, maximum: int) -> None:
+    def __init__(self, maximum: int, *, per_principal: int | None = None) -> None:
         self.maximum = optional_limit(maximum, "max_pending_requests")
         if self.maximum is None:
             raise ValueError("max_pending_requests must be a positive integer")
+        self.per_principal = optional_limit(per_principal, "max_pending_requests_per_principal")
+        self._principal = ContextVar("tensorfold-request-principal", default=None)
         self._lock = threading.RLock()
         self._owners: set[_Request] = set()
         self._callers: dict[int, list[_Request]] = {}
@@ -120,7 +124,34 @@ class RequestLimit:
             else:
                 del self._callers[identity]
 
-    def _check(self) -> None:
+    def _identity(self, principal=None, *, owner=None):
+        identity = self._principal.get() if principal is None else principal
+        if identity is not None and (type(identity) is not str or not identity):
+            raise ValueError("authenticated request principal must be a nonempty opaque string")
+        if owner is not None:
+            if identity is not None and identity != owner.principal:
+                raise ValueError("request admission belongs to another authenticated principal")
+            return owner.principal
+        if self.per_principal is not None and identity is None:
+            raise ValueError("per-principal admission requires an authenticated request principal")
+        return identity
+
+    @contextmanager
+    def principal(self, identity):
+        """Bind trusted authentication identity, never a request-body/cache hint.
+
+        The limit owns this context-local state. It spans preparation, sequential
+        App jobs and delivery and is restored on every exit, including failure.
+        """
+        if type(identity) is not str or not identity:
+            raise ValueError("authenticated request principal must be a nonempty opaque string")
+        token = self._principal.set(identity)
+        try:
+            yield
+        finally:
+            self._principal.reset(token)
+
+    def _check(self, principal=None) -> None:
         if self._closed.is_set():
             raise RuntimeError("request admission is closed")
         if len(self._workers) >= self.maximum:
@@ -129,6 +160,11 @@ class RequestLimit:
             self._prune()
             if len(self._owners) >= self.maximum:
                 raise CapacityError(f"request capacity reached ({self.maximum} unfinished requests); retry later")
+        if self.per_principal is not None:
+            if sum(owner.principal == principal for owner in self._owners) >= self.per_principal:
+                self._prune()
+                if sum(owner.principal == principal for owner in self._owners) >= self.per_principal:
+                    raise CapacityError(f"principal request capacity reached ({self.per_principal} unfinished requests); retry later")
 
     def close(self) -> None:
         """Reject future callers while preserving every outstanding owner."""
@@ -140,13 +176,15 @@ class RequestLimit:
             self._owners.discard(owner)
 
     @contextmanager
-    def request(self, prepared: PreparedAdmission | None = None, *, inherit_jobs: bool = True) -> Iterator[None]:
+    def request(self, prepared: PreparedAdmission | None = None, *, inherit_jobs: bool = True,
+                principal: str | None = None) -> Iterator[None]:
         identity = threading.get_ident()
         if prepared is None:
-            owner = _Request(inherit_jobs=inherit_jobs)
+            owner = _Request(inherit_jobs=inherit_jobs, principal=self._identity(principal))
         else:
             with self._lock:
                 owner = self._prepared_owner(prepared)
+                self._identity(principal, owner=owner)
                 if owner.inherit_jobs != inherit_jobs:
                     raise ValueError("prepared admission has a different engine-job inheritance policy")
         primary = None
@@ -155,7 +193,7 @@ class RequestLimit:
             with owner.scope:
                 with self._lock:
                     if prepared is None:
-                        self._check()
+                        self._check(owner.principal)
                     else:
                         if self._prepared_owner(prepared) is not owner:
                             raise RuntimeError("prepared admission changed before adoption")
@@ -206,15 +244,17 @@ class RequestLimit:
             self._prune()
             stack = self._callers.get(threading.get_ident())
             inherited = bool(stack and stack[-1].scope.locked() and stack[-1].inherit_jobs)
+            if inherited:
+                self._identity(owner=stack[-1])
         if inherited:
             yield
         else:
             with self.request(inherit_jobs=False):
                 yield
 
-    def prepare(self) -> PreparedAdmission:
+    def prepare(self, *, principal: str | None = None) -> PreparedAdmission:
         """Reserve an independent request before standalone preparation work."""
-        return PreparedAdmission(self)
+        return PreparedAdmission(self, principal=principal)
 
     def _prepared_owner(self, prepared):
         if not isinstance(prepared, PreparedAdmission) or prepared.limit is not self:
@@ -244,7 +284,7 @@ class RequestLimit:
         limited.__signature__ = signature
         return limited
 
-    def borrow(self, worker: Any, *, inherit: bool = True) -> None:
+    def borrow(self, worker: Any, *, inherit: bool = True, principal: str | None = None) -> None:
         """Journal a queued engine job before publication; caller cancellation does not release it."""
         owner = None
         try:
@@ -257,11 +297,13 @@ class RequestLimit:
                 if stack and not stack[-1].scope.locked():
                     self._prune()
                     stack = self._callers.get(threading.get_ident())
-                selected = stack[-1] if stack else _Request()
+                selected = stack[-1] if stack else _Request(principal=self._identity(principal))
+                if stack:
+                    self._identity(principal, owner=selected)
                 if selected.workers:
                     raise RuntimeError("one logical request cannot publish concurrent engine jobs")
                 if not stack:
-                    self._check()
+                    self._check(selected.principal)
                 owner = selected
                 owner.workers.add(worker)
                 self._workers[worker] = owner

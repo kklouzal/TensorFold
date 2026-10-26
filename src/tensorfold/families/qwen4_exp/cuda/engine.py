@@ -59,7 +59,7 @@ def _expert_authority(cache) -> tuple[str, dict | None]:
 class FlashNextEngine:
     """``eos``, ``generate`` (rank 0 or one GPU) and ``follow`` (peer ranks), as the CUDA server expects."""
 
-    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None, mtp_model_dir: Path | None=None, dspark_model_dir: Path | None=None, dflash2_model_dir: Path | None=None, indexer_history: str="gpu", adaptive_sessions: bool=False, session_ceiling: int | None=None, execution_rows: int | None=None, execution_profile_manifest: Path | None=None, position_profile_manifest: Path | None=None, family_manifest: Path | None=None, _prepared_family_plan=None, serving_profile_root: Path | None=None) -> None:
+    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None, mtp_model_dir: Path | None=None, dspark_model_dir: Path | None=None, dflash2_model_dir: Path | None=None, indexer_history: str="gpu", adaptive_sessions: bool=False, session_ceiling: int | None=None, execution_rows: int | None=None, execution_profile_manifest: Path | None=None, position_profile_manifest: Path | None=None, media_profile_manifest: Path | None=None, family_manifest: Path | None=None, _prepared_family_plan=None, serving_profile_root: Path | None=None) -> None:
         if serving_profile_root is not None:
             from .serving_profiles import profile_root
 
@@ -88,10 +88,11 @@ class FlashNextEngine:
         self.position_profile = self.position_method_binding = self._position_prepared = None
         self.coordinate_profile_binding = None
         self._media_inputs_enabled = False  # Only the admitted media-profile parser may enable this.
+        self.media_profile = self._media_authority = self._media_software_binding = self._media_numeric_scope = None
         self._startup_reads: list = []
         self._prepared_family_plan = _prepared_family_plan
         try:
-            self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, expert_session=expert_session, kv_full_windows=kv_full_windows, vram_experts_pin=vram_experts_pin, eos_token_ids=eos_token_ids, chat_template_file=chat_template_file, chat_template_name=chat_template_name, mtp_model_dir=mtp_model_dir, dspark_model_dir=dspark_model_dir, dflash2_model_dir=dflash2_model_dir, indexer_history=indexer_history, adaptive_sessions=adaptive_sessions, session_ceiling=session_ceiling, execution_rows=execution_rows, execution_profile_manifest=execution_profile_manifest, family_manifest=family_manifest, position_profile_manifest=position_profile_manifest)
+            self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, expert_session=expert_session, kv_full_windows=kv_full_windows, vram_experts_pin=vram_experts_pin, eos_token_ids=eos_token_ids, chat_template_file=chat_template_file, chat_template_name=chat_template_name, mtp_model_dir=mtp_model_dir, dspark_model_dir=dspark_model_dir, dflash2_model_dir=dflash2_model_dir, indexer_history=indexer_history, adaptive_sessions=adaptive_sessions, session_ceiling=session_ceiling, execution_rows=execution_rows, execution_profile_manifest=execution_profile_manifest, family_manifest=family_manifest, position_profile_manifest=position_profile_manifest, media_profile_manifest=media_profile_manifest)
             if serving_profile_root is not None:
                 from .serving_runtime import ServingProfiles
 
@@ -113,7 +114,7 @@ class FlashNextEngine:
                  dflash2_model_dir: Path | None = None,
                  indexer_history: str = "gpu", adaptive_sessions: bool = False,
                  session_ceiling: int | None = None, execution_rows: int | None = None,
-                 execution_profile_manifest: Path | None = None, family_manifest: Path | None = None, position_profile_manifest: Path | None = None) -> None:
+                 execution_profile_manifest: Path | None = None, family_manifest: Path | None = None, position_profile_manifest: Path | None = None, media_profile_manifest: Path | None = None) -> None:
         from tensorfold.cuda.chat_template import prepare_chat_template
 
         from ..ram_experts import check_kv_full_windows
@@ -133,6 +134,12 @@ class FlashNextEngine:
         self.kv_pair = get_pair(kv_dtype, kv_key_dtype, kv_value_dtype)
         from ..gguf import resolve_gguf
         source_is_gguf = resolve_gguf(model_dir) is not None
+        self.model_dir = Path(model_dir)
+        media_requested = media_profile_manifest is not None
+        if media_requested and (not vision or graphs or not source_is_gguf or tp != 8
+                or not adaptive_sessions or indexer_history != "gpu" or dspark_model_dir is not None
+                or vram_experts is not None or expert_session is not None):
+            raise ValueError("media profile requires --vision, --no-graphs, resident TP8 adaptive GGUF GPU histories and no DSpark")
         nvfp4_source = family_manifest is not None
         self.family_manifest = Path(family_manifest) if nvfp4_source else None
         self._sm70_import_plan = self._sm70_weight_plan = None
@@ -199,7 +206,7 @@ class FlashNextEngine:
         self._dflash2_plan = None
         if dflash2_model_dir is not None and (mtp_model_dir is not None or dspark_model_dir is not None
                 or not source_is_gguf or tp != 8 or not adaptive_sessions or indexer_history != "gpu"
-                or vision or execution_profile_manifest is None or int(depth) > 3):
+                or vision and not media_requested or execution_profile_manifest is None or int(depth) > 3):
             raise ValueError("DFlash2 requires one exact pairing manifest, TP8 text-only adaptive GGUF GPU "
                              "histories, no other draft owner, and at most three proposals")
         if dflash2_model_dir is not None and draft_vocab not in (None, "default"):
@@ -224,7 +231,7 @@ class FlashNextEngine:
             raise ValueError(f"MTP drafts a round: 0 to {MAX_DEPTH}, not {depth}")
         if not 0.0 <= float(confidence) <= 1.0:
             raise ValueError(f"MTP draft confidence: a probability from 0 to 1, not {confidence}")
-        if vision and (streams < 2 or tp != 1):
+        if vision and not media_requested and (streams < 2 or tp != 1):
             raise ValueError("image input on Flash Next runs on one GPU with --parallel 2 or more")
         if vram_experts_pin not in ("off", "auto", "on") or vram_experts_pin != "off" and vram_experts is None:
             raise ValueError("expert pinning requires a RAM expert budget and off, auto or on")
@@ -293,6 +300,17 @@ class FlashNextEngine:
             self.position_method_binding = self.position_profile.validate_method(
                 position_method, self.kv_pair.identity, lookahead)
             self._position_prepared = prepare_position_vectors(self.position_profile, mtp_active=position_method == "mtp")
+        media_resources = None
+        if media_requested:
+            from .media_profile import read_media_profile
+            from .media_runtime import media_resources as profile_resources
+
+            if not unique_positions or self.position_profile is None:
+                raise ValueError("media profile requires the actual unique-history multimodal position provider")
+            self.media_profile = read_media_profile(media_profile_manifest, model_dir=Path(resolve_gguf(model_dir)).parent,
+                target_hidden=int(text["hidden_size"]), world=tp,
+                context_rows=self.position_profile.target.max_rows if max_len in (None, 0) else max_len)
+            media_resources = profile_resources(self.media_profile, hidden=int(text["hidden_size"]), world=tp)
         if nvfp4_source:
             from dataclasses import replace
             from .sm70_nvfp4_weights import Planner, model_plan
@@ -374,7 +392,8 @@ class FlashNextEngine:
                                  or type(draft_vocab) is str and draft_vocab == "default"):
             raise ValueError("SM70 NVFP4 companion MTP uses its declared shared full-vocabulary head")
         ids = draft_token_ids(draft_vocab, int(text["vocab_size"])) if stock_mtp and not nvfp4_source else None
-        if ids is not None and ids.size < tp:
+        if ids is not None and ids.size < tp and not (
+                source_is_gguf and self.mtp_model_dir is not None and resolve_gguf(self.mtp_model_dir) is not None):
             raise ValueError("the draft vocabulary must contain at least one ID per tensor-parallel rank")
         if sm70 and ids is not None:
             # Share this exact selection across admission, the settings digest
@@ -404,11 +423,11 @@ class FlashNextEngine:
                 from tensorfold.cuda.sm70.paged_attention import _format
 
                 dim = text.get("head_dim") or int(text["hidden_size"]) // int(text["num_attention_heads"])
-                if (history_placement is None or tp != 8 or indexer_history != "gpu" or vision
+                if (history_placement is None or tp != 8 or indexer_history != "gpu" or vision and not media_requested
                         or int(text["num_attention_heads"]) // tp != 3 or dim != 256 or not self.kv_pair.symmetric):
                     raise ValueError("native owner preparation requires the homogeneous TP8 H3/D256 GPU-history profile")
                 _format(self.kv_pair.key.bits, self.kv_pair.key.codec)
-        if dflash_plan is not None:
+        if dflash_plan is not None or media_requested:
             from torch.distributed import TCPStore
             from .execution_identity import prepare_dflash_pairing
 
@@ -421,11 +440,28 @@ class FlashNextEngine:
                 self._startup_store = self.comm.store  # managed replacement borrows the current cohort
             if self._startup_store is None:
                 self._startup_store = TCPStore(master, port, tp, rank == 0, timeout=timedelta(seconds=3600))
-            selected_context = self.rope.context_limit if max_len is None else max_len
-            dflash_plan = prepare_dflash_pairing(self, manifest, target_config=read_config(model_dir),
-                                                plan=dflash_plan, context=selected_context)
-            self._dflash2_plan = dflash_plan
+            selected_context = self.rope.context_limit if max_len in (None, 0) else max_len
+            if dflash_plan is not None:
+                dflash_plan = prepare_dflash_pairing(self, manifest, target_config=read_config(model_dir),
+                                                    plan=dflash_plan, context=selected_context)
+                self._dflash2_plan = dflash_plan
+            if media_requested:
+                from .media_runtime import prepare_media_source
+
+                self._media_authority, self._media_software_binding = prepare_media_source(self, self.media_profile)
         torch.cuda.set_device(0)
+        if sm70 and adaptive_sessions:
+            from tensorfold.cuda.capacity import cuda_reserve_bytes
+
+            if cuda_reserve_bytes(int(torch.cuda.mem_get_info()[1])) < 4 * 2**30:
+                raise ValueError("SM70 adaptive serving requires at least 4 GiB device headroom; a lower reserve override is unsupported")
+        if media_requested:
+            from .media_numerics import MediaNumericScope
+
+            if torch.cuda.get_device_capability() != (7, 0):
+                raise ValueError("media profile requires an actual SM70 compute-capability 7.0 device")
+            self._media_numeric_scope = MediaNumericScope.create(
+                register=lambda owner: setattr(self, "_media_numeric_scope", owner))
         if position_profile_manifest is not None and torch.cuda.get_device_capability() != (7, 0):
             raise ValueError("position profile manifests require an actual SM70 compute-capability 7.0 device")
         if (execution_profile_manifest is not None or nvfp4_source) and torch.cuda.get_device_capability() != (7, 0):
@@ -605,6 +641,23 @@ class FlashNextEngine:
             return gdn_geometry(text, tp, each, indexed=True, mtp=mtp, kv_pair=kv_geometry,
                                 kept=KEEP_SERIAL + 1, prefill_rows=rows0, kv_status=kv_status, **history_geometry)
 
+        if media_resources is not None:
+            original_target_geometry = target_geometry
+
+            def target_geometry(text, count=streams):
+                from tensorfold.cuda.capacity import Geometry
+
+                base = original_target_geometry(text, count)
+                static = media_resources["static_with_vision_bytes_by_rank"][rank]
+                transient = media_resources["transient_with_vision_bytes_by_rank"][rank]
+
+                def breakdown(capacity):
+                    values = dict(base.breakdown_at(capacity))
+                    values.update(media_static=static, media_transient=transient)
+                    return values
+                return Geometry(lambda capacity: base.bytes_at(capacity) + static + transient,
+                    base.reserve, base.minimum_slots, breakdown if base.breakdown_at is not None else None)
+
         geometry = target_geometry
         if sm70:
             def sm70_geometry(text, count=streams):
@@ -666,10 +719,11 @@ class FlashNextEngine:
         if exl3:
             geometry = admission(geometry)
         from tensorfold.vision.qwen_cuda import capacity_geometry, weight_transform as vision_weights
-        workspace = vision_workspace() if vision else 0
+        workspace = (media_resources["transient_with_vision_bytes_by_rank"][rank] if media_resources is not None
+                     else vision_workspace() if vision else 0)
         rope_capacity = ({"context_limit": self.rope.context_limit, "original_context": self.rope.native_context}
                          if self.rope.rope_type != "default" else {})
-        weight_rule = vision_weights(indexed_weights(tp, mtp, mapped_tables=not ple_on_ssd), vision, rank)
+        weight_rule = vision_weights(indexed_weights(tp, mtp, mapped_tables=not ple_on_ssd), vision and not media_requested, rank)
         host_capacity = ({"host_extra_staging": resident_loading_host_bytes(text)}
                          if a4_banks and vram_experts is None else {})
         automatic_experts = vram_experts == "auto"
@@ -898,11 +952,11 @@ class FlashNextEngine:
             def session_geometry(text, count):
                 base = sm70_geometry(text, count)
                 media_extra = 0
-                if self._media_inputs_enabled and mtp and self.position_profile is not None:
+                if media_requested and mtp and self.position_profile is not None:
                     from .media_mtp import boundary_resources
 
                     media_extra = boundary_resources(hidden_width=int(text.get("hc_count", 4)) * int(text["hidden_size"]),
-                        slots=count, keep=KEEP, points=POINTS).additional_device_bytes
+                        slots=count, keep=KEEP, points=POINTS)["additional_device_bytes"]
                 status_bytes = status_workspace(count, tp)[0] if tp > 1 else 0
 
                 def additions(total):
@@ -951,8 +1005,15 @@ class FlashNextEngine:
                 host_capacity["host_workspace_bytes"] -= dspark_graph_host
             adaptive_capacity = {"session_geometry": session_geometry, "session_ceiling": session_ceiling,
                                  "session_host_workspace": session_host_workspace}
+        if media_resources is not None:
+            # Shared host obligation is charged once on every rank's same-host
+            # admission. Child virtual address ceilings are not physical RSS.
+            host_capacity["host_workspace_bytes"] = host_capacity.get("host_workspace_bytes", 0) + (
+                media_resources["shared_host_payload_bound"])
+            host_capacity["host_extra_staging"] = host_capacity.get("host_extra_staging", 0) + (
+                media_resources["vision_loading_host_payload_bound"])
         self.capacity_plan = admit(model_dir, max_len, context_explicit, torch,
-                                   capacity_geometry(geometry, model_dir, vision, rank, workspace),
+                                   capacity_geometry(geometry, model_dir, vision and not media_requested, rank, workspace),
                                    weight_rule,
                                    rank=rank, world=tp,
                                    gather=gather, extra_files=extra_files(model_dir) if exl3 else (),
@@ -962,6 +1023,10 @@ class FlashNextEngine:
                                    **({"preallocated_device_bytes": nvfp4_preallocated
                                        + (owner_preparation.committed_bytes() or 0 if owner_preparation is not None else 0)}
                                       if owner_preparation is not None or nvfp4_source else {}))
+        if media_resources is not None:
+            self.capacity_plan["media_profile"] = {"identity": self.media_profile.identity,
+                "resources": media_resources, "encoder_rank": self.media_profile.execution.encoder_rank,
+                "numerics": self._media_numeric_scope.record(), "qualification": "pending actual V100 model/media gates"}
         if owner_preparation is not None:
             self.capacity_plan["owner_preparation"] = owner_preparation.record()
         if nvfp4_source:
@@ -1200,7 +1265,15 @@ class FlashNextEngine:
         # a prompt's message starts to keep states at, or None; the concurrent decoder's passes hold several kept
         # points at no extra pass, so it also keeps the last turn's start (the serial prefill would add a chunk)
         self.points = resume_points(model_dir, turn=concurrent, template=self.chat_template)
-        if vision:
+        if media_requested:
+            from .media_runtime import MediaRuntime
+
+            self.vision = MediaRuntime.create(self, self.media_profile, authority=self._media_authority,
+                software_binding=self._media_software_binding, allow_urls=vision_urls,
+                register=lambda owner: setattr(self, "vision", owner))
+            self._media_software_binding = None  # The warmed runtime owns the complete original software anchor.
+            self._media_inputs_enabled = True
+        elif vision:
             from tensorfold.vision.qwen_cuda import QwenCudaVision
 
             self.vision = QwenCudaVision(model_dir, torch.device("cuda", 0),
@@ -1215,6 +1288,8 @@ class FlashNextEngine:
             from .input_preparation import install_input_preparation
 
             install_input_preparation(w)
+        if media_requested:
+            self.vision.bind(w)
         # ``streams`` > 1: up to that many requests decoded together, every stream's chain in one forward
         self.concurrent = concurrent
         self.multi = None
@@ -1693,7 +1768,12 @@ class FlashNextEngine:
                         "torch": str(torch.__version__), "torch_git": torch.version.git_version,
                         "cuda": torch.version.cuda, "authority": authority,
                         "prompt_fp8": prompt_precision.fp8(), "local_vision_owner": getattr(self, "vision", None) is not None,
-                        "media_inputs_enabled": self._media_inputs_enabled}
+                        "media_inputs_enabled": self._media_inputs_enabled,
+                        "media_profile": None if getattr(self, "media_profile", None) is None else self.media_profile.identity,
+                        "media_source": None if getattr(self, "_media_authority", None) is None else self._media_authority.model_prefix,
+                        "media_numerics": None if getattr(self, "_media_numeric_scope", None) is None else self._media_numeric_scope.record(),
+                        "media_software": (self.vision.software_binding.record()
+                            if getattr(getattr(self, "vision", None), "is_media_runtime", False) else None)}
             local.update(contract_identity=digest(contract), authority=authority)
             return {"rank": self.rank, "contract": local["contract_identity"],
                     "nonce": secrets.token_hex(32) if self.rank == 0 else None}
@@ -2163,6 +2243,20 @@ class FlashNextEngine:
         if weights is not None:
             import torch
             torch.cuda.synchronize(weights.device)
+        vision = getattr(self, "vision", None)
+        if getattr(vision, "is_media_runtime", False):
+            vision.close()
+            self.vision = None
+        numeric = getattr(self, "_media_numeric_scope", None)
+        if numeric is not None:
+            # The request/scheduler drain and this device fence precede all
+            # process-global restoration, including partial startup failures.
+            def retire_media_math():
+                import torch
+
+                torch.cuda.synchronize(None if weights is None else weights.device)
+            numeric.close(retire=retire_media_math)
+            self._media_numeric_scope = None
         multi = getattr(self, "multi", None)
         if multi is not None:
             multi.recover_failed_slots()

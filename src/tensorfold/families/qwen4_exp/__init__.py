@@ -227,6 +227,10 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
     serving_root = options.get("serving_profile_root")
     execution_manifest = options.get("execution_profile_manifest")
     position_manifest = options.get("position_profile_manifest")
+    media_manifest = options.get("media_profile_manifest")
+    if media_manifest is not None and (not gguf or history != "gpu" or tp != 8
+            or not options.get("vision", False) or options.get("graphs", True)):
+        raise ValueError("media_profile_manifest requires --vision, --no-graphs and resident Flash Next GGUF TP8 GPU histories")
     if position_manifest is not None and not sm70:
         raise ValueError("position_profile_manifest requires an explicit Flash Next SM70 provider")
     if (execution_manifest is not None or serving_root is not None) and not (gguf and history == "gpu" and vram_experts is None):
@@ -292,6 +296,10 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
             engine_options["_prepared_family_plan"] = options["_prepared_family_plan"]
     if position_manifest is not None:
         engine_options["position_profile_manifest"] = Path(position_manifest)
+    if media_manifest is not None:
+        engine_options["media_profile_manifest"] = Path(media_manifest)
+    if "graphs" in options:
+        engine_options["graphs"] = options["graphs"]
     if sm70 and history == "gpu":
         # Preserve auto intent through the CLI's ordinary CUDA one-stream
         # default. Integer settings constrain the solved full-context capacity.
@@ -316,7 +324,7 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         engine_options[key] = Path(drafter)
         if kind == "dflash2":
             if (tp != 8 or history != "gpu" or execution_manifest is None
-                    or bool(options.get("vision", False)) or expert_ranks != 1 or depth > 3):
+                    or bool(options.get("vision", False)) and media_manifest is None or expert_ranks != 1 or depth > 3):
                 raise ValueError("DFlash2 requires fixed TP8 text-only resident GGUF GPU histories, "
                                  "an execution-profile manifest with exact draft_pairing, and at most three proposals")
     elif method in ("dspark", "dflash2"):

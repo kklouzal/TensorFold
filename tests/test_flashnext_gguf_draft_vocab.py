@@ -169,7 +169,10 @@ def test_admission_charges_pruned_head_ids_and_stock_mtp_before_loading(checkpoi
     monkeypatch.setattr(sm70_mtp_weights, "byte_plan", lambda *args, **kwargs: {
         "resident_bytes": 1234, "staging_bytes": 1024, "host_staging_bytes": 2048, "workspace_bytes": 4096,
     })
-    options = gguf_admission.capacity_options(checkpoint, 3, 8, mtp=True, mtp_model_dir=tmp_path, draft_ids=ids)
+    # This oracle covers the independent floating companion's legacy sliced
+    # head. The target's own directory is not an MTP GGUF companion.
+    options = gguf_admission.capacity_options(checkpoint, 3, 8, mtp=True,
+                                              mtp_model_dir=tmp_path / "stock-mtp", draft_ids=ids)
     weights, host_staging = options["weight_estimator"](checkpoint)
     assert weights.resident == plan["resident_bytes"] + 1234
     assert weights.staging == plan["staging_bytes"]

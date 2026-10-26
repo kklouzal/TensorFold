@@ -1219,7 +1219,8 @@ class State:
         except BaseException as error:
             if getattr(self, "dflash2", None) is not None:
                 self.dflash2.poisoned = True
-            if getattr(self, "media_profile_identity", None) is not None:
+            if (getattr(self, "media_profile_identity", None) is not None
+                    or getattr(self, "input_preparation_context", None) is not None):
                 from .media_mtp import _failed_state
 
                 _failed_state(self, error)

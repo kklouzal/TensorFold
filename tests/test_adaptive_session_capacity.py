@@ -150,29 +150,58 @@ def test_bounded_verification_rows_do_not_release_resident_state_or_histories():
 
 
 @pytest.mark.torch
-def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(monkeypatch, tmp_path):
+@pytest.mark.parametrize("reserve_gib", [0, 3, 4, 5])
+def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(monkeypatch, tmp_path, reserve_gib):
+    """Real source headers and CPU geometry only; stop before weight retention."""
+    import json
+    import numpy as np
     import torch
-    import tensorfold.families as families
-    import tensorfold.families.qwen4_exp as family
+    from gguf_fixture import tiny_model, write
     from tensorfold.cuda import chat_template
+    from tensorfold.cuda.geometry import PREFILL_ROWS, indexed_prefill_rows
     from tensorfold.cuda.sm70 import attention_qualification, execution_policy, family_ops
     from tensorfold.families.qwen4_exp import gguf
     from tensorfold.families.qwen4_exp.cuda import engine, exl3_pack, gguf_admission, padded_linears
-    from tensorfold.families.qwen4_exp.cuda.history_placement import MIGRATION_OVERLAP_BYTES
+    from tensorfold.families.qwen4_exp.cuda.history_placement import MIGRATION_OVERLAP_BYTES, coordinate_source_host_bytes
+    from tensorfold.families.qwen4_exp.rope import RopeParameters
 
-    text = {**TEXT, "num_key_value_heads": 2, "shared_expert_intermediate_size": 640,
-            "max_position_embeddings": 262144}
-    monkeypatch.setattr(gguf, "resolve_gguf", lambda p: tmp_path / "target.gguf")
+    # A valid sparse GGUF extent supplies actual vocabulary/position/layout
+    # metadata. No model payload is read by this pre-admission observer.
+    fields = dict(gguf.GGUFCheckpoint.open(tiny_model(tmp_path / "metadata-basis.gguf")).metadata)
+    fields.update({"qwen4exp.block_count": 48, "qwen4exp.context_length": 262144,
+        "qwen4exp.embedding_length": 2560, "qwen4exp.attention.head_count": 24,
+        "qwen4exp.attention.head_count_kv": 2, "qwen4exp.attention.key_length": 256,
+        "qwen4exp.rope.dimension_count": 64, "qwen4exp.rope.dimension_sections": (11, 11, 10, 0),
+        "qwen4exp.rope.freq_base": 10000000.0, "qwen4exp.expert_count": 512,
+        "qwen4exp.expert_used_count": 10, "qwen4exp.ssm.group_count": 16,
+        "qwen4exp.ssm.time_step_rank": 48, "qwen4exp.ssm.state_size": 128,
+        "qwen4exp.ssm.inner_size": 48 * 128, "qwen4exp.full_attention_interval": 4,
+        "qwen4exp.attention.indexer.head_count": 4, "qwen4exp.attention.indexer.key_length": 128,
+        "qwen4exp.attention.indexer.top_k": 2048, "qwen4exp.attention.compress_ratios": (0, 0, 0, 4) * 12})
+    target = write(tmp_path / "target.gguf", [("token_embd.weight", (248320, 2560), 1,
+                                               np.empty(0, dtype=np.uint8))], fields)
+    with target.open("r+b") as stream:
+        stream.truncate(target.stat().st_size + 248320 * 2560 * 2)
+    raw = gguf.metadata_config(target)
+    # Select the complete target explicitly; the small basis file is only a
+    # fixture metadata source, not an alternative checkpoint entrypoint.
+    (tmp_path / "config.json").write_text(json.dumps(raw))
+    text, rope = raw["text_config"], RopeParameters.from_config(raw)
+    assert text["num_hidden_layers"] == 48 and text["vocab_size"] == 248320
+    assert text["layer_types"].count("linear_attention") == 36
+    assert text["layer_types"].count("full_attention") == 12
+    assert (rope.native_context, rope.rotary_dim, rope.theta) == (262144, 64, 10000000)
+    execution_rows, depth = 32, 0
+    prefill_rows = indexed_prefill_rows() or PREFILL_ROWS
     monkeypatch.setattr(chat_template, "prepare_chat_template", lambda *a, **kw: None)
-    monkeypatch.setattr(family, "rope_parameters", lambda *a: SimpleNamespace(rope_type="default", context_limit=262144))
-    monkeypatch.setattr(families, "read_config", lambda p: {"quantization_config": {"quant_method": "gguf"}})
     monkeypatch.setattr(exl3_pack, "is_exl3", lambda p: False)
-    monkeypatch.setattr(capacity, "config", lambda p: text)
     monkeypatch.setattr(execution_policy, "configure", lambda *a, **kw: "reference")
     monkeypatch.setattr(attention_qualification, "runtime_identity", lambda d: {})
     monkeypatch.setattr(torch.cuda, "set_device", lambda *a: None)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (7, 0))
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda: (24 * 2**30, 32 * 2**30))
+    monkeypatch.setenv("TENSORFOLD_CUDA_MEMORY_RESERVE_GIB", str(reserve_gib))
     monkeypatch.setattr(family_ops, "_NATIVE_FAMILY", False)
     monkeypatch.setattr(family_ops, "_NATIVE_ATTENTION", False)
     monkeypatch.setattr(padded_linears, "_ENABLED", False)
@@ -186,6 +215,7 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
 
     def inspect(*args, **kwargs):
         assert kwargs["session_ceiling"] == 40
+        assert owner.rope == rope
         make = kwargs["session_geometry"]
         first, forty = make(text, 1), make(text, 40)
         a, b = first.breakdown_at(262145), forty.breakdown_at(262145)
@@ -196,7 +226,10 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
         assert sum(b.values()) == forty.bytes_at(262145)
         from tensorfold.cuda.geometry import multi_static_domains
 
-        assert kwargs["session_host_workspace"](40) == 8 * (multi_static_domains(text, 40, 1, False)[1] + 8 * 40 * 8)
+        coordinate_rows = max(prefill_rows, min(40 * (depth + 1), execution_rows))
+        expected_host = 8 * (multi_static_domains(text, 40, depth + 1, False)[1] + 8 * 40 * 8
+                             + coordinate_source_host_bytes(coordinate_rows))
+        assert kwargs["session_host_workspace"](40) == expected_host
         raise Inspected
 
     monkeypatch.setattr(capacity, "admit", inspect)
@@ -206,9 +239,11 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
     owner._startup_store = owner._owner_preparation = owner._dflash_pairing = None
     owner._profile_build = None  # __init__ normally establishes this lifecycle before _initialize.
     owner._startup_reads = []
-    with pytest.raises(Inspected):
-        owner._initialize(tmp_path, depth=0, tp=8, rank=0, master="test", graphs=False,
-                          kv_dtype="int8", adaptive_sessions=True, session_ceiling=40)
+    expected = pytest.raises(Inspected) if reserve_gib >= 4 else pytest.raises(ValueError, match="at least 4 GiB")
+    with expected:
+        owner._initialize(tmp_path, depth=depth, tp=8, rank=0, master="test", graphs=False,
+                          kv_dtype="int8", adaptive_sessions=True, session_ceiling=40,
+                          execution_rows=execution_rows)
 
 
 @pytest.mark.torch

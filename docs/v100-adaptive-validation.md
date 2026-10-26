@@ -6,12 +6,38 @@ the eight-V100 TP8 path. Historical results in
 original sources and layouts. They do not qualify the adaptive implementation,
 unique histories, a different codec, or a new execution envelope.
 
-This work is developed without the eight-V100 server or its checkpoint and
-source-accounting files. Source controls, pinned-stack compilation, installed
+This work is developed without the eight-V100 server. The selected SC117 GGUF
+payloads and mmproj have been downloaded and verified; source/header/import
+controls do not establish device execution. Source controls, pinned-stack compilation, installed
 CPU checks, physical allocation, model correctness, quality, and measured
 performance are separate gates. No new session maximum or throughput result is
-claimed. The specification's 16 Q8 and 24 Q4 full-context MTP cases remain first
-measurement candidates.
+claimed. The specification's 20-Q8/32-Q4 figures are geometry reference points,
+not admission promises or capacity ceilings.
+
+## Consolidated installed CPU integration
+
+The installed application built from `0f656e9ab9642af6fa19210d721de13d375ea51d`
+passed 3,277 tests and 105 subtests across the 78 affected test files, with four
+documented optional/environment skips. The only later fixture change at
+`b56298202ebe14b7fb1533ccb9f3871009f94d4c` declares the owner-layer reference's
+existing unbound context explicitly; numerical assertions remain unchanged.
+The image is
+`sha256:9dc7ada61e4c1fdf272d218936ec8a08f3e372f40bec1dab53cae9237970bbc9`.
+The source-built dependency environment was unchanged; this was an application
+wheel rebuild and ordinary installed-package test, with no source-code overlay.
+
+Coverage includes compact raw/pool transactions, issued coordinate/frame
+identity, MTP conditioning/recovery, source authority, native/YaRN preparation,
+Engine/CLI and serving-profile lifecycle, bounded admission/output, cancellation,
+and the retained legacy CPU references. Corrections preserve primary failures,
+guard complete model/profile identity, snapshot overlapping MTP inputs before
+writes and poison a bound State after failed restore mutations. Separate cleanup
+and policy source reviews are closed for this checkpoint.
+
+This is a software/CPU result, not GPU kernel, collective, model-output,
+quantization-quality, physical-residency or performance qualification. Native
+SM70 compilation retains its separately recorded exact-source scope. The full
+media request pipeline and final hardware qualification remain pending.
 
 ## Configuration and capacity
 

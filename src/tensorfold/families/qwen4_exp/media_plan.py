@@ -12,6 +12,8 @@ import math
 import re
 from types import MethodType, SimpleNamespace
 
+from tensorfold.token_metadata import tokenizer_vocab_size
+
 from .media_positions import MediaPositionPlan, PositionRun, plan_media_positions
 from .position_profile import MAX_POSITION
 
@@ -153,7 +155,7 @@ class QwenMediaPlanner:
                 for value, name in zip(roles, names, strict=True)) or len(set(roles)) != 4
                 or type(expected_image_id) is not int or roles[0] != expected_image_id):
             raise ValueError("selected media token IDs disagree with the model's declared image/PLE role")
-        self.contract = MediaPlanContract(identities, processor_id, roles, tokenizer.get_vocab_size(with_added_tokens=True),
+        self.contract = MediaPlanContract(identities, processor_id, roles, tokenizer_vocab_size(tokenizer),
                                           max_rows, max_segments, max_visual_rows, max_total_visual_rows)
         self.tokenizer, self.names = tokenizer, names
         self.max_rendered_bytes, self.max_expanded_bytes = max_rendered_bytes, max_expanded_bytes

@@ -6,6 +6,8 @@ from typing import Sequence
 
 import torch
 
+from tensorfold.cleanup import rollback
+
 from . import glue, history_runtime
 from .forward import _embed, _mm, _kv_begin, _kv_check, candidates, finish, layer_forward
 from .state import Buffers, State
@@ -30,6 +32,9 @@ def _mtp_stage(b: Buffers, windows: Sequence[tuple[State, Sequence[int], torch.T
     A deferred window may provide two HC spans (the previous boundary and the
     current target chunk), avoiding a concatenated embedding/feature archive.
     Explicit coordinates describe those hidden/cache rows, never next IDs.
+    Strided HC reads are supported. Sources aliasing any staged destination
+    are snapshotted before writes unless their semantic layout exactly matches
+    their own HC destination; snapshots total at most this frame's HC bytes.
     """
 
     if not windows:
@@ -55,37 +60,64 @@ def _mtp_stage(b: Buffers, windows: Sequence[tuple[State, Sequence[int], torch.T
                                            for st, _begin, _end in segs):
         raise ValueError("ready media MTP hidden rows require their actual issued coordinate windows")
     b.staged.synchronize()
-    b.ids_host[:n].numpy()[:] = [int(t) for _, next_tokens, _ in windows for t in next_tokens]
-    b.ids[:n].copy_(b.ids_host[:n], non_blocking=True)
-    b.last_host[:len(segs)].numpy()[:] = [a1 - 1 for _, _, a1 in segs]
-    b.last[:len(segs)].copy_(b.last_host[:len(segs)], non_blocking=True)
+    def span(tensor):
+        if not tensor.numel():
+            return None
+        offsets = [(size - 1) * stride for size, stride in zip(tensor.shape, tensor.stride())]
+        first = tensor.data_ptr() + sum(min(0, offset) for offset in offsets) * tensor.element_size()
+        last = tensor.data_ptr() + (sum(max(0, offset) for offset in offsets) + 1) * tensor.element_size()
+        return tensor.device, first, last
+
+    writes = [span(tensor) for tensor in (b.mtp_in[:n], b.ids_host[:n], b.ids[:n],
+                                          b.last_host[:len(segs)], b.last[:len(segs)])]
+    copies = []
     for parts, (_, a0, _a1) in zip(pieces, segs):
         for part in parts:
             rows = part.shape[0]
-            if rows and part.data_ptr() != b.mtp_in[a0:a0 + rows].data_ptr():
-                b.mtp_in[a0:a0 + rows].copy_(part, non_blocking=True)
+            destination = b.mtp_in[a0:a0 + rows]
+            exact = (part.data_ptr() == destination.data_ptr() and part.shape == destination.shape
+                     and part.stride() == destination.stride() and part.is_neg() == destination.is_neg()
+                     and part.is_conj() == destination.is_conj())
+            if rows and not exact:
+                device, first, last = span(part)
+                overlap = any(region is not None and region[0] == device and first < region[2] and region[1] < last
+                              for region in writes)
+                copies.append([destination, part, overlap])
             a0 += rows
-    if indexer_coordinates is None and getattr(b, "mtp_indexer_position", None) is not None:
-        from .compact_indexer import CoordinateWindow, issue_text_indexer_coordinates
+    owner = (b, copies)
+    try:
+        for copy in copies:
+            if copy[2]:
+                copy[1] = copy[1].clone()
+        b.ids_host[:n].numpy()[:] = [int(t) for _, next_tokens, _ in windows for t in next_tokens]
+        b.ids[:n].copy_(b.ids_host[:n], non_blocking=True)
+        b.last_host[:len(segs)].numpy()[:] = [a1 - 1 for _, _, a1 in segs]
+        b.last[:len(segs)].copy_(b.last_host[:len(segs)], non_blocking=True)
+        for destination, source, _overlap in copies:
+            destination.copy_(source, non_blocking=True)
+        if indexer_coordinates is None and getattr(b, "mtp_indexer_position", None) is not None:
+            from .compact_indexer import CoordinateWindow, issue_text_indexer_coordinates
 
-        coordinate_windows = []
-        for st, begin, end in segs:
-            at = begin
-            boundary = getattr(st, "mtp_boundary", None)
-            if boundary is not None:
-                if boundary.row != st.mtp_len or boundary.generation != st.slot_generation:
-                    raise ValueError("deferred MTP boundary lost its cache-row/generation binding")
-                coordinate_windows.append(CoordinateWindow(at, at + 1, boundary.coordinate_record, boundary.position))
-                at += 1
-            if at < end:
-                coordinates = issue_text_indexer_coordinates(st, b.mtp_indexer_position,
-                    st.mtp_len + at - begin, end - at, max_rows=b.rows)
-                coordinate_windows.append(CoordinateWindow(at, end, coordinates, b.mtp_indexer_position))
-        indexer_coordinates = tuple(coordinate_windows)
-    if indexer_coordinates is not None or hasattr(b, "mtp_indexer_coordinate_storage"):
-        from .compact_indexer import stage_mtp_indexer_frame
+            coordinate_windows = []
+            for st, begin, end in segs:
+                at = begin
+                boundary = getattr(st, "mtp_boundary", None)
+                if boundary is not None:
+                    if boundary.row != st.mtp_len or boundary.generation != st.slot_generation:
+                        raise ValueError("deferred MTP boundary lost its cache-row/generation binding")
+                    coordinate_windows.append(CoordinateWindow(at, at + 1, boundary.coordinate_record, boundary.position))
+                    at += 1
+                if at < end:
+                    coordinates = issue_text_indexer_coordinates(st, b.mtp_indexer_position,
+                        st.mtp_len + at - begin, end - at, max_rows=b.rows)
+                    coordinate_windows.append(CoordinateWindow(at, end, coordinates, b.mtp_indexer_position))
+            indexer_coordinates = tuple(coordinate_windows)
+        if indexer_coordinates is not None or hasattr(b, "mtp_indexer_coordinate_storage"):
+            from .compact_indexer import stage_mtp_indexer_frame
 
-        stage_mtp_indexer_frame(b, segs, indexer_coordinates)
+            stage_mtp_indexer_frame(b, segs, indexer_coordinates)
+    except BaseException as error:
+        rollback(owner, error, b.staged.record)  # Fence issued snapshots/copies even after a later failure.
     b.staged.record()
     return segs
 
@@ -169,6 +201,11 @@ def mtp_compute(w: Weights, segs: Sequence, b: Buffers, *, last_only: bool = Tru
         rows = b.mixed.index_select(0, b.last[:k])
         xs = b.xs_mixed.index_select(0, b.last[:k])
     out = _mm(rows, head, xs, b.logits.view(-1)[:k * head.n].view(k, head.n), b)     # contiguous at any k
+    if w.draft_filter is not None:
+        # Shared-target MTP always executes the original full target head.
+        # Filtering changes only this explicitly selected proposal support;
+        # target logits and all-row history initialization keep their full law.
+        out.masked_fill_(w.draft_filter, -float("inf"))
     if w.comm is not None:
         candidates(w, b, out, k, id_map=w.draft_ids, offset=int(w.meta["vocab_offset"]))
     if check:

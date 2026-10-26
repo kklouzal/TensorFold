@@ -3,6 +3,7 @@
 import json
 
 from tensorfold.server import metrics
+from tensorfold.server.authentication import principal_scope
 
 
 def gated(path, metrics_open=False):
@@ -12,7 +13,7 @@ def gated(path, metrics_open=False):
     return (path == "/v1" or path.startswith("/v1/") or
             path in {"/metrics", "/stats", "/tokenize", "/detokenize", "/models", "/messages",
                      "/messages/count_tokens", "/chat/completions", "/completions", "/decisions"} or
-            path == "/responses" or path.startswith(("/responses/", "/models/")) or
+            path in {"/responses", "/conversations"} or path.startswith(("/responses/", "/conversations/", "/models/")) or
             path.endswith(("/chat/completions", "/completions", "/decisions", "/models")))
 
 
@@ -23,7 +24,7 @@ class Authenticated:
         store = self.auth
         if self.command == "OPTIONS" or store is None or not store.enabled:
             return True
-        self.key_label = store.match(self.headers)
+        self.key_label, self.principal_id = store.match_identity(self.headers)
         if not gated(self.path, store.metrics_open) or self.key_label is not None:
             return True
         path = self.path.split("?", 1)[0].rstrip("/")
@@ -46,11 +47,31 @@ class Authenticated:
 
     def parse_request(self):
         self.key_label = None
+        self.principal_id = None
         self._auth_counted = [False]
         return super().parse_request() and self._authenticate()
 
     def handle_expect_100(self):
         return self._authenticate() and super().handle_expect_100()
+
+    def _principal_dispatch(self, operation):
+        """One trusted scope spans normal handlers and nested Responses chat."""
+        identity = self.principal_id
+        with principal_scope(identity):
+            limit = getattr(self.auth_app, "_request_limit", None)
+            if identity is not None and limit is not None:
+                with limit.principal(identity):
+                    return operation()
+            return operation()
+
+    def do_GET(self):
+        return self._principal_dispatch(super().do_GET)
+
+    def do_POST(self):
+        return self._principal_dispatch(super().do_POST)
+
+    def do_DELETE(self):
+        return self._principal_dispatch(super().do_DELETE)
 
     def send_response(self, code, message=None):
         counted = getattr(self, "_auth_counted", [False])
@@ -75,6 +96,9 @@ def handler(base, app):
     """
     store = getattr(app, "auth", None)
     if store is None or not store.enabled:
+        limit = getattr(app, "_request_limit", None)
+        if limit is not None and getattr(limit, "per_principal", None) is not None:
+            raise ValueError("per-principal admission requires configured API-key authentication")
         return base
 
     class Handler(Authenticated, base):

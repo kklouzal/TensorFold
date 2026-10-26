@@ -86,6 +86,13 @@ class IndexerFrame:
     active: bool = False
 
 
+def _profile_context(buffers, segments):
+    context = buffers.input_preparation_context
+    if context is not None and any(
+            state.coordinate_profile_identity != context.identity for state, _, _ in segments):
+        raise ValueError("indexer State and preparation buffers use different full coordinate profiles")
+
+
 def _position_span(state, first, last, position, *, mtp, explicit):
     if position is None:
         if explicit:
@@ -116,6 +123,7 @@ def _revoke_frame(buffers, prefix):
 def _stage_frame(buffers, segments, coordinates, *, mtp):
     from .position_coordinates import CoordinateTransfer, IssuedCoordinates, _signature, copy_coordinate_batch
 
+    _profile_context(buffers, segments)
     prefix = "mtp" if mtp else "target"
     if coordinates is None:
         _revoke_frame(buffers, prefix)
@@ -212,6 +220,7 @@ def _stage_frame(buffers, segments, coordinates, *, mtp):
 def _validate_frame(buffers, segments, *, mtp):
     from .position_coordinates import _signature
 
+    _profile_context(buffers, segments)
     prefix = "mtp" if mtp else "target"
     frame = getattr(buffers, prefix + "_indexer_frame")
     values = getattr(buffers, prefix + "_indexer_coordinates")
@@ -259,6 +268,7 @@ def stage_target_indexer_frame(buffers, segments, coordinates):
 
 def stage_text_indexer_frame(buffers, segments, *, mtp=False):
     """Stage known text rows; a ready media span needs its actual issued rows."""
+    _profile_context(buffers, segments)
     position = buffers.mtp_indexer_position if mtp else buffers.target_indexer_position
     if position is None or any(state.media_input_span is not None for state, _, _ in segments):
         _stage_frame(buffers, segments, None, mtp=mtp)
@@ -275,13 +285,12 @@ def validate_target_indexer_frame(buffers, segments):
 
 
 def _validate_or_fail(buffers, segments, *, mtp):
+    from .input_preparation import reject_prepared
+
     try:
         return _validate_frame(buffers, segments, mtp=mtp)
     except BaseException as error:
-        context = buffers.input_preparation_context
-        if context is not None:
-            context.fail(error)
-        raise
+        reject_prepared(buffers, error)
 
 
 class Staging:

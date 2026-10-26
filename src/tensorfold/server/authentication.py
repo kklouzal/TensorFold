@@ -1,6 +1,7 @@
 """Digest-only API keys and atomic reloads of a restricted file."""
 
 from contextlib import contextmanager
+from contextvars import ContextVar
 
 from tensorfold.cleanup import raise_failures
 from tensorfold.file_io import FileStreams
@@ -16,6 +17,28 @@ import time
 
 
 _LABEL = re.compile(r"[A-Za-z0-9_.-]{1,64}\Z")
+_PRINCIPAL = ContextVar("tensorfold-authenticated-principal", default=None)
+
+
+def current_principal():
+    """Verified request identity, or None for the single unauthenticated domain.
+
+    Only the HTTP authentication dispatcher binds this context. Request bodies,
+    cache hints and metric labels never establish an authenticated identity.
+    """
+    return _PRINCIPAL.get()
+
+
+@contextmanager
+def principal_scope(identity):
+    """Restore the previous identity on every normal, nested and failed dispatch."""
+    if identity is not None and (type(identity) is not str or not identity):
+        raise ValueError("authenticated principal must be a nonempty opaque string")
+    token = _PRINCIPAL.set(identity)
+    try:
+        yield
+    finally:
+        _PRINCIPAL.reset(token)
 
 
 def _digest(key):
@@ -150,7 +173,13 @@ class KeyStore:
         with self._lock:
             yield self._labels
 
-    def match(self, headers):
+    def match_identity(self, headers):
+        """Resolve metric label and stable key-domain identity in one key snapshot.
+
+        Key rotation can reuse a label; it cannot inherit the previous key's
+        record/quota domain. The same key under multiple labels remains one
+        principal. Digests and identities are internal and never response fields.
+        """
         self.refresh()
         with self._lock:
             keys = self._static + self._file
@@ -166,14 +195,19 @@ class KeyStore:
                 raw.append(_digest(value))
             except ValueError:
                 raw.append(hashlib.sha256(b"").digest())
-        label = None
+        label = principal = None
         for digest, candidate_label in keys:
             matched = False
             for candidate in raw:
                 matched |= hmac.compare_digest(digest, candidate)
             if matched and label is None:
                 label = candidate_label
-        return label if valid else None
+                principal = "key-sha256:" + digest.hex()
+        return (label, principal) if valid else (None, None)
+
+    def match(self, headers):
+        """Compatibility metric-label lookup; authorization uses match_identity."""
+        return self.match_identity(headers)[0]
 
     @contextmanager
     def signals(self):

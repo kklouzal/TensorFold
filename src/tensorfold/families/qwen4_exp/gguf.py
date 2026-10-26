@@ -32,15 +32,37 @@ _HEADER_LIMIT = 64 << 20
 
 
 def token_id_identity(metadata):
-    """Ordered token-ID vocabulary, independent of the selected chat template."""
+    """Ordered shared token space and roles, independent of frontend rendering.
+
+    Companion normalization/insertion defaults and templates never choose the
+    target frontend. Token types, merges and mapped BOS/EOS/padding identities
+    still have to agree when supplied by the paired GGUF inventories.
+    """
     tokens = metadata.get("tokenizer.ggml.tokens")
-    if not isinstance(tokens, tuple) or not tokens or any(type(token) is not str for token in tokens):
+    if not isinstance(tokens, tuple) or not tokens:
         raise ValueError("GGUF token-ID identity requires its complete ordered token strings")
-    digest = hashlib.sha256(b"tensorfold.gguf-token-ids-v1\0")
-    for token in tokens:
-        encoded = token.encode("utf-8")
-        digest.update(len(encoded).to_bytes(8, "little"))
-        digest.update(encoded)
+    digest = hashlib.sha256(b"tensorfold.gguf-token-ids-v2\0")
+    for field in ("tokens", "token_type", "merges", "bos_token_id", "eos_token_id", "padding_token_id"):
+        value = metadata.get("tokenizer.ggml." + field)
+        digest.update(field.encode() + b"\0")
+        if value is None:
+            digest.update(b"absent\0")
+            continue
+        if field.endswith("_id"):
+            if type(value) is not int or not 0 <= value < len(tokens):
+                raise ValueError("GGUF mapped token role must identify an existing vocabulary row")
+            digest.update(value.to_bytes(8, "little"))
+            continue
+        if (not isinstance(value, tuple)
+                or (field == "token_type" and (len(value) != len(tokens)
+                    or any(type(item) is not int or not 0 <= item <= 6 for item in value)))
+                or (field != "token_type" and any(type(item) is not str for item in value))):
+            raise ValueError("GGUF shared token arrays have invalid types or row counts")
+        digest.update(len(value).to_bytes(8, "little"))
+        for item in value:
+            encoded = item.to_bytes(8, "little") if field == "token_type" else item.encode("utf-8")
+            digest.update(len(encoded).to_bytes(8, "little"))
+            digest.update(encoded)
     return digest.hexdigest()
 
 
@@ -247,8 +269,14 @@ def resolve_gguf(path):
     return entries[0].resolve() if entries else None
 
 
-def metadata_config(path):
-    """Build the existing HF-style family configuration from authoritative GGUF fields."""
+def metadata_config(path, *, role="target"):
+    """Build role-specific family configuration from authoritative GGUF fields.
+
+    MTP-only companions retain a logical source block number without providing
+    trunk/PLE weights. Their explicit role is never a second target model.
+    """
+    if role not in ("target", "mtp"):
+        raise ValueError("GGUF metadata role must be target or mtp")
     entry = resolve_gguf(path)
     if entry is None:
         raise ValueError("no GGUF checkpoint was selected")
@@ -263,6 +291,45 @@ def metadata_config(path):
 
     hidden = positive("embedding_length")
     layers = positive("block_count")
+    if role == "mtp":
+        prefix = f"blk.{layers - 1}."
+        if (type(fields.get("qwen4exp.nextn_predict_layers")) is not int
+                or fields["qwen4exp.nextn_predict_layers"] != 1
+                or any(name not in ("token_embd.weight", "output.weight") and not name.startswith(prefix)
+                       for name in checkpoint.tensors)
+                or not all(prefix + name in checkpoint.tensors for name in (
+                    "nextn.enorm.weight", "nextn.hnorm.weight", "nextn.eh_proj.weight"))):
+            raise ValueError("GGUF MTP role requires one physical prediction core without target trunk tensors")
+        head_dim, rotary = positive("attention.key_length"), positive("rope.dimension_count")
+        ratio = fields.get("qwen4exp.attention.compress_ratios")
+        if (not isinstance(ratio, tuple) or len(ratio) != layers
+                or any(type(n) is not int or n not in (0, 4) for n in ratio)):
+            raise ValueError("GGUF MTP compression metadata differs from its declared QSA family")
+        epsilon = fields.get("qwen4exp.attention.layer_norm_rms_epsilon")
+        theta = fields.get("qwen4exp.rope.freq_base")
+        if (type(epsilon) is not float or not math.isfinite(epsilon) or epsilon <= 0
+                or type(theta) is not float or not math.isfinite(theta) or theta <= 0):
+            raise ValueError("GGUF MTP normalization and RoPE parameters must be positive finite floats")
+        sections = fields.get("qwen4exp.rope.dimension_sections")
+        if (not isinstance(sections, tuple) or len(sections) < 3
+                or any(type(n) is not int for n in sections)):
+            raise ValueError("GGUF MTP requires its actual mRoPE section metadata")
+        text = {
+            "model_type": "qwen4_exp_text", "hidden_size": hidden,
+            "num_hidden_layers": 1, "layer_types": ["full_attention"],
+            "num_attention_heads": positive("attention.head_count"),
+            "num_key_value_heads": positive("attention.head_count_kv"), "head_dim": head_dim,
+            "rms_norm_eps": epsilon, "max_position_embeddings": positive("context_length"),
+            "rope_parameters": {"rope_type": "default", "rope_theta": theta,
+                                "partial_rotary_factor": rotary / head_dim,
+                                "mrope_section": list(sections[:3]), "mrope_interleaved": True},
+            "mtp": {"num_hidden_layers": 1, "layer_types": ["full_attention"]},
+            "indexer_compress_ratio": 4, "indexer_budget": positive("attention.indexer.top_k"),
+            "gguf_role": "mtp", "gguf_source_block_count": layers,
+            "gguf_source_final_compression_ratio": ratio[-1], "gguf_entrypoint": str(entry),
+        }
+        return {"model_type": "qwen4_exp", "text_config": text,
+                "quantization_config": {"quant_method": "gguf"}, "gguf_entrypoint": str(entry)}
     interval = positive("full_attention_interval")
     head_dim = positive("attention.key_length")
     rotary = positive("rope.dimension_count")
@@ -273,7 +340,11 @@ def metadata_config(path):
     vocab = len(fields.get("tokenizer.ggml.tokens", ()))
     if vocab <= 0:
         vocab = checkpoint.tensors["token_embd.weight"].shape[0]
-    eos = fields.get("tokenizer.ggml.eos_token_id", fields.get("qwen4exp.ple.eos_token_id"))
+    eos = fields.get("tokenizer.ggml.eos_token_id")
+    ple_eos = fields.get("qwen4exp.ple.eos_token_id")
+    if ((ple_eos is None and fields.get("qwen4exp.ple.layers"))
+            or (ple_eos is not None and (type(ple_eos) is not int or not 0 <= ple_eos < vocab))):
+        raise ValueError("GGUF PLE layers require an explicit segmentation ID within the vocabulary")
     sections = tuple(fields.get("qwen4exp.rope.dimension_sections", (11, 11, 10)))[:3]
     ratios = [v for v in fields.get("qwen4exp.attention.compress_ratios", ()) if v]
     ratio = ratios[0] if ratios else 4
@@ -311,13 +382,18 @@ def metadata_config(path):
         "eos_token_id": eos, "output_gate_type": "sigmoid", "hidden_act": "silu",
         "dtype": "float16", "mamba_ssm_dtype": "float32", "tie_word_embeddings": False,
         "gguf_architecture": "qwen4exp", "gguf_entrypoint": str(entry),
-        "gguf_ple_eos_token_id": fields.get("qwen4exp.ple.eos_token_id", eos),
+        "gguf_ple_eos_token_id": ple_eos,
         "gguf_ple_constants": {"layer_multipliers": list(fields.get("qwen4exp.ple.layer_multipliers", ())),
                                "ngram_heads_offsets": list(fields.get("qwen4exp.ple.head_offsets", ())),
                                "ngram_heads_vocab_sizes": list(fields.get("qwen4exp.ple.head_vocab_sizes", ()))},
     }
+    from .frontend_metadata import generation_defaults
+
+    generation = generation_defaults(fields)
     return {"model_type": "qwen4_exp", "architectures": ["Qwen4ExpForConditionalGeneration"],
             "text_config": text, "eos_token_id": eos, "bos_token_id": text["bos_token_id"],
+            **({"generation_eos_token_ids": generation["eos_token_id"],
+                "generation_eos_token_source": generation["tensorfold_source"]} if generation else {}),
             "quantization_config": {"quant_method": "gguf"}, "gguf_entrypoint": str(entry)}
 
 

@@ -16,14 +16,19 @@ from tensorfold.cuda.memory_gate import MemoryGate, NoRoom
 from tensorfold.cuda.streams import Stream
 from tensorfold.cleanup import raise_failures
 from .owner_execution import FAMILY_FIELDS
+from . import media_requests
 
 
 class SharedMemoryGate(MemoryGate):
     """All ranks take the same growth decision; ordinary usage reads stay local."""
 
-    def __init__(self, original, comm):
+    def __init__(self, original, comm, *, rank_local=False):
         self.comm = comm
-        room = self._minimum(original.room)
+        # A placed media encoder has a distinct held payload and reserve.
+        # Preserve that rank's admitted ledger; fits still votes every local
+        # predicate before any rank allocates. Legacy equal-reserve layouts
+        # retain their existing minimum-room initialization collective.
+        room = original.room if rank_local else self._minimum(original.room)
         super().__init__(room, original.reserve, original.live, allow_lone_growth=False)
         self.held = original.held
 
@@ -116,16 +121,48 @@ class TensorParallelDecoder:
             self.failure = error
         self.engine._abort_comm = True
         if first:
-            from tensorfold.cuda.cohort import notify_failure
-
             try:
+                from tensorfold.cuda.cohort import notify_failure
+
                 notify_failure()
             except BaseException as notification:
                 raise_failures(error, [notification])
 
+    def _media_cpu(self, operation):
+        """Expected, retired input failures stay local; uncertain owners contain the cohort."""
+        if self.failure is not None:
+            raise RuntimeError("tensor-parallel scheduler is poisoned; retire the rank cohort") from self.failure
+        try:
+            return operation()
+        except BaseException as error:
+            try:
+                from tensorfold.vision.images_http import ImageInputError
+
+                ordinary = isinstance(error, ImageInputError)
+                if ordinary:
+                    from .execution_identity import _unretired
+
+                    ordinary = not _unretired(error)
+                    if ordinary:
+                        owner = media_requests.runtime(getattr(self.decoder, "vision", None))
+                        owner.check_media_health()
+            except BaseException as inspection:
+                try:
+                    self._poison_control(error)
+                except BaseException as containment:
+                    raise_failures(error, (inspection, containment))
+                raise_failures(error, (inspection,))
+            if not ordinary:
+                try:
+                    self._poison_control(error)
+                except BaseException as containment:
+                    raise_failures(error, (containment,))
+            raise
+
     def _remember(self, wire, stream):
         self.requests[wire] = stream
         self.wires[id(stream)] = wire
+        stream._media_rank_owned = getattr(stream, "_media_request", None) is not None
         cancel = FrozenCancellation(stream.cancel)
         cancel.active = True
         stream.cancel = cancel
@@ -144,20 +181,31 @@ class TensorParallelDecoder:
         if stream is not None:
             self.wires.pop(id(stream), None)
 
-    @staticmethod
-    def _pack(stream):
+    def _pack(self, stream):
         from tensorfold.engine.grammar import pack
 
         sampling = stream.sampling
-        if stream.vision is not None or stream.probabilities is not None or stream.penalties is not None:
+        owner = media_requests.runtime(getattr(self.decoder, "vision", None))
+        if ((stream.vision is not None and owner is None)
+                or stream.probabilities is not None or stream.penalties is not None):
             raise ValueError("tensor-parallel Flash Next requests do not support vision, logprobs or penalties")
-        return {"prompt": stream.prompt, "count": stream.count, "draft": stream.draft,
+        result = {"prompt": stream.prompt, "count": stream.count, "draft": stream.draft,
                 "stop_eos": stream.stop_eos, "background": stream.background,
                 "sampling": None if sampling is None else [sampling.seed, sampling.temperature, sampling.top_k,
                                                            sampling.top_p, sampling.min_p],
                 "grammar": pack(stream.constraint), "owed": stream.owed, "carry": stream.carry,
                 "token_limit": stream.token_limit is not None, "profile_epoch": stream.profile_epoch,
                 "committed_output_tokens": stream.committed_output_tokens}
+        if stream.vision is not None:
+            from tensorfold.cuda.rank_protocol import MAX_MESSAGE_BYTES
+            from .media_wire import pack_media
+
+            request = getattr(stream, "_media_request", None)
+            if request is None:
+                raise ValueError("media CPU request must prepare before TP admission")
+            result["media"] = pack_media(request.prepared, epoch=request.epoch, max_bytes=MAX_MESSAGE_BYTES,
+                                         envelope=owner.profile.cpu)
+        return result
 
     def _unpack(self, body):
         from tensorfold.engine.exact_sampling import Sampling
@@ -174,6 +222,16 @@ class TensorParallelDecoder:
                       owed=list(body["owed"]), carry=body["carry"], profile_epoch=body["profile_epoch"],
                       committed_output_tokens=body["committed_output_tokens"])
         stream._tp_token_limit = bool(body.get("token_limit", False))
+        if "media" in body:
+            from tensorfold.cuda.rank_protocol import MAX_MESSAGE_BYTES
+            from .media_wire import unpack_media
+
+            owner = media_requests.runtime(getattr(self.decoder, "vision", None))
+            if owner is None:
+                raise ValueError("TP media metadata requires the admitted runtime")
+            stream.vision = unpack_media(body["media"], token_ids=stream.prompt, contract=owner.contract,
+                                         max_bytes=MAX_MESSAGE_BYTES, envelope=owner.profile.cpu)
+            media_requests.bind(stream, owner, stream.vision.epoch)
         return stream
 
     def _prefix_decisions(self, decisions, error=None):
@@ -218,7 +276,8 @@ class TensorParallelDecoder:
 
     def _controls(self, execution=None):
         forgotten = [wire for wire, stream in self.requests.items()
-                     if stream.st is None and stream.cancel.snapshot()]
+                     if stream.st is None and stream.cancel.snapshot()
+                     and (getattr(stream, "_media_request", None) is None or stream._media_request.retired)]
         result = {"forget": forgotten,
                   "cancel": [[wire, stream.cancel.snapshot()] for wire, stream in self.requests.items()
                              if wire not in forgotten],
@@ -292,9 +351,32 @@ class TensorParallelDecoder:
                 raise
         if kind == "admit":
             wire = body["wire"]
+            def prepare_stream():
+                stream = self.requests.get(wire)
+                if stream is None:
+                    stream = source if source is not None else self._unpack(body["stream"])
+                request = getattr(stream, "_media_request", None)
+                if request is not None and (request.epoch != wire
+                        or request.plan.media_identity != body["stream"]["media"]["media_identity"]):
+                    raise ValueError("TP media metadata differs from its stable request wire/identity")
+                return stream
+
+            if "media" in body["stream"]:
+                context = getattr(self.decoder, "input_preparation_context", None)
+                if context is None:
+                    failure = RuntimeError("TP media admission requires its installed cohort preparation owner")
+                    self._poison_control(failure)
+                    raise failure
+                # All followers validate metadata before any admitted slot can
+                # enter a GPU allocation/growth collective. No model collective
+                # is permitted inside this pure, existing host protocol phase.
+                contract = hashlib.sha256(f"media-request:{wire}".encode()).hexdigest()
+                stream = context.prepare("media-request-admission", prepare_stream, may_refuse=True,
+                                         contract=contract)
+            else:
+                stream = prepare_stream()
             if wire not in self.requests:
-                self._remember(wire, source if source is not None else self._unpack(body["stream"]))
-            stream = self.requests[wire]
+                self._remember(wire, stream)
             original = self.decoder.points
             self.decoder.points = lambda prompt: body["points"]
             try:
@@ -306,9 +388,25 @@ class TensorParallelDecoder:
             finally:
                 self.decoder.points = original
         if kind == "round":
+            if "media_limits" in body:
+                self.decoder._media_limits = {self.requests[wire].sid: tuple(limit)
+                                              for wire, limit in body["media_limits"]}
             if "execution" in body:
                 self.decoder.accept_execution(body["execution"])
             return self.decoder.round()
+        if kind == "media_failure":
+            from tensorfold.vision.images_http import ImageInputError
+            from tensorfold.vision.replay import MediaBusy, MediaCancelled
+
+            stream = self.requests[body["wire"]]
+            error_type = {"input": ImageInputError, "busy": MediaBusy, "cancelled": MediaCancelled}[body["error_type"]]
+            if source is not None and type(source) is not error_type:
+                raise RuntimeError("media failure publication lost its original leader input outcome")
+            stream.error = source if source is not None else error_type(body["message"])
+            return self.decoder.cancel([stream])
+        if kind == "media_forget":
+            self._forget(body["wire"])
+            return None
         if kind == "profile_manifest":
             return self.decoder.install_execution_manifest(body["name"])
         if kind in ("cancel", "finish"):
@@ -364,9 +462,11 @@ class TensorParallelDecoder:
             raise RuntimeError("only rank zero submits tensor-parallel scheduler operations")
         body["control"] = self._controls(body.get("execution"))
         sequence = self.sequence
-        self.sequence += 1
         body["sequence"] = sequence
-        text = json.dumps(body, separators=(",", ":"))
+        from tensorfold.cuda.rank_protocol import bounded_json
+
+        text = bounded_json(body, separators=(",", ":"))
+        self.sequence += 1
         try:
             messages = [self._key(sequence, peer) for peer in range(1, self.comm.world)]
             set_many = getattr(self.comm.store, "multi_set", None)
@@ -407,17 +507,55 @@ class TensorParallelDecoder:
     def admit(self, stream):
         wire = self.wires.get(id(stream))
         if wire is None:
-            wire, self.next_wire = self.next_wire, self.next_wire + 1
+            wire = getattr(stream, "_media_wire", None)
+            if wire is None:
+                wire, self.next_wire = self.next_wire, self.next_wire + 1
         body = {"kind": "admit", "wire": wire, "stream": self._pack(stream),
                 "points": [] if self._points is None else list(self._points(stream.prompt))}
         return self._invoke(body, source=stream)
 
     def round(self):
         body = {"kind": "round"}
+        ended = []
+        prepare = getattr(self.decoder, "prepare_media_round", None)
+        if prepare is not None:
+            limits, failures = self._media_cpu(prepare)
+            for stream, error in failures:
+                from tensorfold.vision.replay import MediaBusy, MediaCancelled
+
+                error_type = "busy" if type(error) is MediaBusy else "cancelled" if type(error) is MediaCancelled else "input"
+                ended += self._invoke({"kind": "media_failure", "wire": self.wires[id(stream)],
+                                       "message": str(error)[:1024], "error_type": error_type}, source=error)
+            if media_requests.runtime(getattr(self.decoder, "vision", None)) is not None:
+                body["media_limits"] = [[self.wires[id(stream)], limits[stream.sid]]
+                                         for stream in self.decoder.filling if stream.sid in limits]
         freeze = getattr(self.decoder, "freeze_execution", None)
         if freeze is not None:
             body["execution"] = freeze()
-        return self._invoke(body)
+        return ended + self._invoke(body)
+
+    def prepare_request(self, stream, *, wake):
+        owner = media_requests.runtime(getattr(self.decoder, "vision", None))
+        if owner is None or stream.vision is None:
+            return True
+        if not hasattr(stream, "_media_wire"):
+            stream._media_wire, self.next_wire = self.next_wire, self.next_wire + 1
+        return self._media_cpu(lambda: media_requests.prepare(stream, owner, stream._media_wire, wake))
+
+    def media_runnable(self):
+        ready = getattr(self.decoder, "media_runnable", None)
+        return True if ready is None else self._media_cpu(ready)
+
+    def retire_request(self, stream):
+        if not self._media_cpu(lambda: media_requests.retire(stream)):
+            return False
+        if stream.st is None and getattr(stream, "_media_rank_owned", False):
+            wire = self.wires.get(id(stream))
+            if wire is not None:
+                self._invoke({"kind": "media_forget", "wire": wire})
+            stream._media_rank_owned = False
+            self._media_cpu(lambda: media_requests.release(stream))
+        return True
 
     def prepare_serving_profile(self, profile, request_epoch):
         return self._invoke({"kind": "serving_prepare", "profile": profile, "request_epoch": request_epoch})
@@ -447,7 +585,19 @@ class TensorParallelDecoder:
         return self._invoke({"kind": "cancel", "wires": [self.wires[id(stream)] for stream in streams]})
 
     def finish(self, streams):
-        return self._invoke({"kind": "finish", "wires": [self.wires[id(stream)] for stream in streams]})
+        owned = []
+        for stream in streams:
+            wire = self.wires.get(id(stream))
+            if wire is None and getattr(stream, "_media_request", None) is None:
+                raise KeyError(id(stream))
+            if wire is not None:
+                owned.append(wire)
+        # A successful drop already retired/acknowledged every rank's State and
+        # wire. Its CPU owner can finish later without replaying a missing wire.
+        result = self._invoke({"kind": "finish", "wires": owned}) if owned or not streams else None
+        for stream in streams:
+            self._media_cpu(lambda: media_requests.release(stream))  # All ACKs precede the leader's replay close.
+        return result
 
     def drop(self):
         return self._invoke({"kind": "drop"})

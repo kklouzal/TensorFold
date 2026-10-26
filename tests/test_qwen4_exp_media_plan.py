@@ -30,6 +30,22 @@ def planner(tokenizer, **changes):
     return QwenMediaPlanner(tokenizer, **{**settings, **changes})
 
 
+def test_media_contract_preserves_nonlexical_model_rows(tokenizer):
+    from tensorfold.token_metadata import bind_token_roles
+
+    lexical = tokenizer.get_vocab_size(with_added_tokens=True)
+    bind_token_roles(tokenizer, {"version": 1, "vocab_size": lexical + 3,
+        "control": list(range(2, 6)), "unused": list(range(lexical, lexical + 3))})
+    selected = planner(tokenizer)
+    assert selected.contract.vocab_size == lexical + 3
+    assert tokenizer.get_vocab_size(with_added_tokens=True) == lexical
+    source = probe("image", 0)
+    ids = (lexical + 2, 4, *([2] * source.visual_rows), 5, lexical)
+    planned = selected.contract.from_expanded(ids, (source,))
+    assert planned.token_ids == ids
+    assert tokenizer.decode([lexical, lexical + 2], skip_special_tokens=False) == ""
+
+
 def probe(kind, ordinal, *, sha="a" * 64, grid=None, pts=None):
     ref = ReplayRef(f"/immutable/encoded/{ordinal}", sha, 128, ordinal, kind, "auto")
     if kind == "image":

@@ -630,6 +630,9 @@ def qsa_rows(iq, pooled, pos0, scratch, rows, *, context=None):
     blocks = torch.arange(count, device=iq.device)
     scores.masked_fill_(blocks[None] >= complete[:, None], -torch.inf)
     scratch.scores[:rows, :count].copy_(scores)
+    # Columns are ascending logical pooled-group IDs. Stable descending FP32
+    # sort preserves that order at equal scores, including signed zeros; the
+    # emitted logical order preserves attention's established reduction order.
     chosen = torch.argsort(scores, dim=-1, descending=True, stable=True)[:, :top]
     chosen = torch.sort(chosen, dim=-1).values
     offsets = torch.arange(ratio, device=iq.device)

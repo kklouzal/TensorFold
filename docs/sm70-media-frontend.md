@@ -135,3 +135,29 @@ assumptions, malformed/changed inputs, quotas, cancellation, hard resource
 failure and lifetime/poisoning. They use small independent lossless RGB fixtures.
 They are software controls, not a measured maximum media envelope, service
 activation, SC117/mmproj or V100 qualification.
+
+## Serving integration
+
+`--media-profile-manifest PATH --vision --no-graphs` selects the source-stage
+GGUF SM70 TP8 adaptive unique-history integration. The manifest parser requires
+the complete versioned `tensorfold.sm70-media-profile` envelope, pinned processor
+and vision source identity, encoder placement, input/cache rows and workspace.
+There are no inferred CPU or media resource limits. The existing text-only
+providers keep their selection.
+
+The leader uses the prepared native target tokenizer and its complete model
+token-ID range, including nonlexical UNUSED rows. The same effective token
+roles and media/position identity reach every rank. One bounded `MediaWork`
+lookahead prepares CPU pixels before slot eligibility; the coordinator consumes
+ready units without waiting for a decoder. Only the fixed encoder receives
+pixels, and it broadcasts the completed input rows over the existing cohort.
+Target and MTP borrow those same rows until their staging readers retire.
+
+The logical App request owns replay across every generation/thinking subrun.
+Backend completion retires its claim; final App closure releases replay only
+after CPU work and all rank consumers retire. Counting and preparation failures
+also release their acquired owners. These software controls do not qualify
+V100/NCCL execution, model output, capacity, numerical quality or performance.
+
+The current v6 FIFO, complete retained-state backing, standard API lifecycle
+and capture/accounting requirements have separate implementation gates.

@@ -9,6 +9,7 @@ load time without requantization. No vLLM runtime or operator ABI is imported.
 from __future__ import annotations
 
 from dataclasses import dataclass, fields, replace
+import hashlib
 import math
 import time
 
@@ -547,7 +548,7 @@ class Planner:
 
 
 def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft_vocab=None, draft_ids=None,
-               position_profile=None):
+               position_profile=None, mtp_model_dir=None):
     """One immutable source of allocation and layout decisions for admission and load."""
     entry = resolve_gguf(path)
     if entry is None:
@@ -564,6 +565,7 @@ def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft
     full = replace(full, quant="gguf", execution_dtype="float16",
                    ple_eos=int(raw["text_config"]["gguf_ple_eos_token_id"]))
     rank, world = (0, 1) if tp is None else tp
+    shared_mtp = mtp and mtp_model_dir is not None and resolve_gguf(mtp_model_dir) is not None
     if (type(world) is not int or world not in (1, 2, 4, 8) or type(rank) is not int or rank not in range(world)
             or any(v % world for v in (full.heads, full.nk, full.nv, full.moe_width, full.shared_width, full.vocab))):
         raise ValueError("GGUF Flash Next TP must legally divide heads, expert widths and vocabulary")
@@ -576,7 +578,7 @@ def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft
                     or selected[0] < 0 or selected[-1] >= full.vocab
                     or np.any(selected[1:] <= selected[:-1])):
                 raise ValueError("GGUF draft IDs must be sorted unique global int64 token IDs within the vocabulary")
-            if selected.size < world:
+            if selected.size < world and not shared_mtp:
                 raise ValueError("the draft vocabulary must contain at least one ID per tensor-parallel rank")
     if full.kv_heads >= world:
         if full.kv_heads % world:
@@ -670,9 +672,25 @@ def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft
                         planner.matrix("output.weight", rows=range(rank * (full.vocab // world),
                                                                   (rank + 1) * (full.vocab // world))), None,
                         around_one=True)
+    filter_host = 0
     if selected is not None:
-        prototype.draft_ids = np.array_split(selected, world)[rank]
-        prototype.draft_head = planner.matrix("output.weight", rows=prototype.draft_ids)
+        if shared_mtp:
+            # Preserve the target's physical vocabulary shards. A shard may
+            # have no selected IDs; its proposal scores then carry -inf mass.
+            # The existing full-width sampler retains normal global offsets.
+            if selected.size != full.vocab:
+                offset, count = rank * prototype.head.n, prototype.head.n
+                first, last = map(int, np.searchsorted(selected, (offset, offset + count)))
+                excluded = np.ones(count, dtype=np.bool_)
+                excluded[selected[first:last] - offset] = False
+                excluded.setflags(write=False)
+                prototype.draft_filter = excluded
+                # The plan, CPU tensor copy and local index temporary may
+                # overlap the immutable global selection during publication.
+                filter_host = 2 * excluded.nbytes + (last - first) * 8
+        else:
+            prototype.draft_ids = np.array_split(selected, world)[rank]
+            prototype.draft_head = planner.matrix("output.weight", rows=prototype.draft_ids)
     unused = set(checkpoint.tensors) - planner.used
     if unused:
         raise ValueError("unmapped GGUF Flash Next tensors: " + ", ".join(sorted(unused)))
@@ -680,25 +698,41 @@ def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft
                           execution_provider="sm70", execution_dtype="float16", gguf_entrypoint=str(entry),
                           gdn_decay_representation="ggml-stored-negative-exp-fp32",
                           gdn_head_order="restored-key-major-before-tp",
-                          draft_host_id_bytes=0 if selected is None else selected.nbytes + prototype.draft_ids.nbytes)
+                          draft_host_id_bytes=0 if selected is None else selected.nbytes + (
+                              filter_host if shared_mtp else prototype.draft_ids.nbytes))
     if position_profile is not None:
         prototype.meta["position_profile"] = position_profile
     if checkpoint.metadata.get("tokenizer.ggml.tokens"):
         from ..gguf import token_id_identity
 
         prototype.meta["gguf_token_id_identity"] = token_id_identity(checkpoint.metadata)
+    if shared_mtp:
+        from .gguf_mtp_weights import model_plan as mtp_plan
+
+        # This validates the actual companion's complete core/alias inventory
+        # before any target payload reader or device allocation is created.
+        _, _, prototype.meta["mtp_import"] = mtp_plan(prototype, mtp_model_dir, tp=(rank, world))
+        prototype.meta["mtp_vocabulary_selection"] = {
+            "projection": "actual-target-head", "support": "full" if selected is None else "declared-subset",
+            "token_count": full.vocab if selected is None else int(selected.size),
+            "token_ids_sha256": None if selected is None else hashlib.sha256(selected.astype("<i8", copy=False)).hexdigest(),
+            "logits": "actual-full-target-shard",
+            "filter": "none" if prototype.draft_filter is None else "negative-infinity-on-unselected-ids",
+        }
     return prototype, planner
 
 
 def weight_byte_plan(path, tp=None, *, mtp=False, draft_vocab=None, draft_ids=None, prefill_plan=None,
-                     position_profile=None):
+                     position_profile=None, mtp_model_dir=None):
     # Separate stock-MTP admission is added by the common engine admission path.
     prototype, planner = model_plan(path, tp, mtp=mtp, draft_vocab=draft_vocab, draft_ids=draft_ids,
+        mtp_model_dir=mtp_model_dir,
         **({"position_profile": position_profile, "rope": position_profile.target.rope}
            if position_profile is not None else {}))
     resident = sum(m.resident_bytes for m in planner.matrices) + sum(a.resident_bytes for a in planner.arrays)
     draft_id_bytes = 0 if prototype.draft_ids is None else prototype.draft_ids.nbytes
-    resident += draft_id_bytes
+    draft_filter_bytes = 0 if prototype.draft_filter is None else prototype.draft_filter.nbytes
+    resident += draft_id_bytes + draft_filter_bytes
     workspace = DECODE_BYTES + MATMUL_ROWS * max(prototype.cfg.streams * prototype.cfg.hidden,
                                                prototype.head.n) * 4
     if prefill_plan is not None:
@@ -724,6 +758,7 @@ def weight_byte_plan(path, tp=None, *, mtp=False, draft_vocab=None, draft_ids=No
             "router_resident_bytes": sum(a.resident_bytes for a in router_parts),
             "router_host_staging_bytes": router_host,
             "draft_head_bytes": 0 if prototype.draft_head is None else prototype.draft_head.resident_bytes,
+            "draft_filter_bytes": draft_filter_bytes,
             "draft_id_bytes": draft_id_bytes, "draft_host_id_bytes": prototype.meta["draft_host_id_bytes"],
             "prefill_experts_workspace_bytes": 0 if prefill_plan is None else prefill_plan.workspace_bytes,
             "execution_dtype": "float16"}
@@ -881,6 +916,18 @@ def materializer(reader, device, *, dense_loader=None, prepare_experts=None, loa
     return materialize
 
 
+def _bind_mtp_vocabulary(target, prototype, reader, device):
+    """Publish an admitted proposal selector without replacing its target head."""
+    selection = prototype.meta.get("mtp_vocabulary_selection")
+    if selection is not None:
+        if prototype.draft_filter is not None:
+            target.draft_filter = torch.from_numpy(prototype.draft_filter.copy()).to(device)
+        target.meta["mtp_import"]["vocabulary_selection"] = dict(selection)
+    elif prototype.draft_head is not None:
+        target.draft_head = _draft_dense(prototype.draft_head, reader, device)
+        target.draft_ids = torch.from_numpy(prototype.draft_ids.copy()).to(device)
+
+
 def load_gguf(path, device="cuda", *, tp=None, mtp=False, rope=None, eos_token_ids=None,
               table_reads=None, ple_on_ssd=False, mtp_model_dir=None, draft_vocab=None, _draft_ids=None,
               _prefill_plan=None, position_profile=None, _position_prepared=None, **kwargs):
@@ -900,7 +947,7 @@ def load_gguf(path, device="cuda", *, tp=None, mtp=False, rope=None, eos_token_i
     started = time.monotonic()
     prototype, planner = model_plan(path, tp, rope=rope, eos_token_ids=eos_token_ids,
                                     mtp=mtp, draft_vocab=draft_vocab, draft_ids=_draft_ids,
-                                    position_profile=position_profile)
+                                    position_profile=position_profile, mtp_model_dir=mtp_model_dir)
     # Even the direct legacy loader computes its exact small CPU vector before
     # Reader/device weight retention, rather than discovering range failure at
     # the end of a model import. Selected profiles adopt their prepared bytes.
@@ -951,9 +998,7 @@ def load_gguf(path, device="cuda", *, tp=None, mtp=False, rope=None, eos_token_i
         if mtp:
             from .sm70_mtp_weights import attach
             attach(result, mtp_model_dir, tp=(result.meta["rank"], result.meta["world"]))
-            if prototype.draft_head is not None:
-                result.draft_head = _draft_dense(prototype.draft_head, reader, device)
-                result.draft_ids = torch.from_numpy(prototype.draft_ids.copy()).to(device)
+            _bind_mtp_vocabulary(result, prototype, reader, device)
         reader.close()
         return result
     except BaseException as primary:
