@@ -29,6 +29,7 @@ PATH_OPTIONS = frozenset({"mtp_model_dir", "dspark_model_dir", "dflash2_model_di
                           "execution_profile_manifest", "position_profile_manifest"})
 API_FIELDS = frozenset({"served", "aliases", "default_thinking", "sampling", "max_tokens", "reasoning_effort",
                         "thinking_budget"})
+_UNRESOLVED_POSITION = object()  # Omitted resolution is distinct from an explicitly unbound legacy result.
 
 
 def profile_root(value):
@@ -139,6 +140,8 @@ def resolve_profile_positions(model_dir, options):
     from .speculation import MethodGeometry
 
     geometry = MethodGeometry(method, depth)
+    lookahead = (geometry.receipt()["draft_compute_block_rows"] - 1 if method == "dflash2"
+                 else geometry.maximum_proposals)
     pair = get_pair(options.get("kv_dtype", "bf16"), options.get("kv_key_dtype"), options.get("kv_value_dtype"))
     from tensorfold.cuda.capacity import config
     from ..gguf import metadata_config, resolve_gguf
@@ -164,7 +167,7 @@ def resolve_profile_positions(model_dir, options):
         policy = rope_parameters(model_dir, options.get("yarn_factor"))
         if options["max_len"] > policy.context_limit:
             raise ValueError("legacy serving context exceeds its existing source/CLI position contract")
-        return None, {"method": method, "kv_identity": pair.identity, "lookahead_rows": depth,
+        return None, {"method": method, "kv_identity": pair.identity, "lookahead_rows": lookahead,
                       "requested_context": options["max_len"], "source_context_limit": policy.context_limit,
                       "yarn_factor": options.get("yarn_factor"), "support": "legacy-source-policy",
                       "qualification": "unqualified-candidate"}, None
@@ -178,7 +181,6 @@ def resolve_profile_positions(model_dir, options):
     positions = resolve_position_profile(model_dir, requested_context=options["max_len"],
         yarn_factor=options.get("yarn_factor"), manifest_path=options.get("position_profile_manifest"),
         companion_configs=companions)
-    lookahead = 3 if method == "dflash2" else geometry.maximum_proposals
     binding = positions.validate_method(method, pair.identity, lookahead)
     numerical = prepare_position_vectors(positions, mtp_active=method == "mtp").receipt()
     return positions, binding, numerical
@@ -192,7 +194,7 @@ def _position_document(positions, binding, numerical):
                       sort_keys=True, separators=(",", ":"), allow_nan=False)
 
 
-def _required_files(model_dir, options, *, positions=None):
+def _required_files(model_dir, options, *, positions=_UNRESOLVED_POSITION):
     from ..gguf import GGUFCheckpoint, resolve_gguf
 
     from tensorfold.checkpoint_metadata import _path as metadata_path
@@ -240,8 +242,10 @@ def _required_files(model_dir, options, *, positions=None):
         if value is None or name.endswith("_model_dir"):
             continue
         required.append(Path(value))
-    if positions is None and options.get("max_len") is not None:
-        positions, _, _ = resolve_profile_positions(model_dir, options)
+    if positions is _UNRESOLVED_POSITION:
+        positions = None
+        if options.get("max_len") is not None:
+            positions, _, _ = resolve_profile_positions(model_dir, options)
     if positions is not None:
         required.extend(positions.required_input_files())
     return {str(Path(path).resolve(strict=True)) for path in required}
