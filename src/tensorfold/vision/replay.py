@@ -252,7 +252,7 @@ class ReplayBorrow:
                 raise RuntimeError("replay borrow is retired")
             return lease.refs
 
-    def close(self):
+    def close(self, *, _notify=True):
         lease = self._lease
         if lease is not None:
             with lease._store._lock:
@@ -261,6 +261,8 @@ class ReplayBorrow:
                 lease._store._check_owner()
                 lease._borrowers.discard(self)
                 self._lease = None
+            if _notify:
+                lease._store._notify_capacity()
 
     def __enter__(self):
         return self
@@ -354,6 +356,36 @@ class ReplayStore:
         self._active_workers = [None] * envelope.max_workers
         self._retained_workers = [None] * envelope.max_workers
         self._failure = None
+        self._capacity_wake = None
+
+    def set_capacity_wake(self, callback):
+        """One process-owned capacity observer, shared by all executor instances."""
+        if not callable(callback):
+            raise TypeError("media capacity wake must be callable")
+        with self._lock:
+            self._check_owner()
+            if self._capacity_wake is not None and self._capacity_wake is not callback:
+                raise RuntimeError("media capacity already belongs to another coordinator")
+            self._capacity_wake = callback
+
+    def clear_capacity_wake(self, callback):
+        if self._pid != os.getpid():
+            raise RuntimeError("replay store belongs to another process")
+        with self._lock:
+            if self._capacity_wake is callback:
+                self._capacity_wake = None
+
+    def _notify_capacity(self):
+        with self._lock:
+            callback = self._capacity_wake
+        if callback is not None:
+            try:
+                callback()  # No store/executor lock is held across observer code.
+            except BaseException as error:
+                with self._lock:
+                    if self._failure is None:
+                        self._failure = error
+                raise
 
     @property
     def _bytes(self):
@@ -380,9 +412,12 @@ class ReplayStore:
                 raise MediaBusy("media staging byte capacity is busy")
             self._staging_reservations[reservation] = size
 
-    def _release_staging(self, reservation):
+    def _release_staging(self, reservation, *, notify=True):
         with self._lock:
-            self._staging_reservations.pop(reservation, None)
+            released = self._staging_reservations.pop(reservation, None) is not None
+        if released and notify:
+            self._notify_capacity()
+        return released
 
     def _check_owner(self):
         if self._pid != os.getpid():

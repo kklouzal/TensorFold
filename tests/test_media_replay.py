@@ -449,9 +449,9 @@ def test_pixel_partial_close_rejects_new_borrows_and_release_is_idempotent(tmp_p
                 raise OSError("handle consumed close")
     pixels = PixelUnitLease(executor, Handle(), size, (4, 1536), replay.borrow(), reservation)
     release, failed = executor._release_staging, False
-    def interrupted(token):
+    def interrupted(token, **kwargs):
         nonlocal failed
-        release(token)
+        release(token, **kwargs)
         if failure == "reservation" and not failed:
             failed = True
             raise RuntimeError("release interrupted after removal")
@@ -632,14 +632,14 @@ def test_preentry_unpublished_cleanup_failure_contains_the_store(tmp_path, monke
     primary = ValueError("pixel preparation failed")
     first_fatal = RuntimeError("earlier concurrent worker fatal")
     release = store._release_staging
-    def interrupted(token):
+    def interrupted(token, **kwargs):
         if target == "pixels" or store._staging_reservations.get(token) == 2 * store.envelope.max_upload_bytes:
             if target == "stage_existing_fatal":
                 with store._lock:
                     store._failure = first_fatal
                     store._retained_workers[0] = first_fatal
             raise cleanup
-        release(token)
+        release(token, **kwargs)
     monkeypatch.setattr(store, "_release_staging", interrupted)
     if target.startswith("stage"):
         with pytest.raises(MemoryError) as raised:

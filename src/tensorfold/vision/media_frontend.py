@@ -144,10 +144,11 @@ class PixelUnitLease:
                     self._handle.close()
                 self._handle = None
             if self._replay is not None:
-                self._replay.close()
+                self._replay.close(_notify=False)
                 self._replay = None
-            self._executor._release_staging(self._reservation)
+            self._executor._release_staging(self._reservation, notify=False)
             self._closed = True
+        self._executor.store._notify_capacity()
 
     def __enter__(self):
         return self
@@ -179,16 +180,60 @@ class MediaExecutor:
         """
         self._check_owner()
 
+    def set_capacity_wake(self, callback):
+        self._check_owner()
+        self.store.set_capacity_wake(callback)
+
+    def clear_capacity_wake(self, callback):
+        if self._pid != os.getpid():
+            raise RuntimeError("CPU media executor belongs to another process")
+        self.store.clear_capacity_wake(callback)
+
+    def _metadata_bytes(self):
+        return self.envelope.max_manifest_bytes + 2 * self.envelope.max_result_bytes
+
+    def _unit_layout(self, probed):
+        if type(probed) is not MediaProbe or probed.envelope_id != self.envelope.identity:
+            raise ImageInputError("pixel unit does not match the admitted media probe")
+        rows = probed.grid_thw[1] * probed.grid_thw[2]
+        size = rows * 1536 * 4
+        if size + self._metadata_bytes() > self.envelope.max_staging_bytes:
+            raise ImageInputError("media unit pixel and metadata peak exceeds the entire staging byte capacity")
+        return rows, size
+
+    def unit_available(self, probed, *, replay_borrows=1):
+        """Current opportunity only; the actual operation still owns admission.
+
+        Two borrows cover a new request plus its pixel lease; one covers the
+        pixel lease when the coordinator already retains its request borrow.
+        """
+        self._check_owner()
+        if type(replay_borrows) is not int or not 1 <= replay_borrows <= self.envelope.max_replay_borrows:
+            raise ImageInputError("media unit replay-borrow requirement exceeds its admitted capacity")
+        _rows, size = self._unit_layout(probed)
+        with self.store._lock:
+            self._check_owner()
+            lease = self.store._live.get(probed.ref.path)
+            if lease is None or probed.ref not in lease.refs or lease._closed or lease._retiring:
+                raise ImageInputError("media unit replay is not owned by this live store")
+            return (any(slot is None for slot in self.store._active_workers)
+                    and self.store._staging + size + self._metadata_bytes() <= self.envelope.max_staging_bytes
+                    and lease._borrows + replay_borrows <= self.envelope.max_replay_borrows)
+
     def _reserve_staging(self, reservation, size):
         self.store._reserve_staging(reservation, size)
 
-    def _release_staging(self, reservation):
-        self.store._release_staging(reservation)
+    def _release_staging(self, reservation, *, notify=True):
+        return self.store._release_staging(reservation, notify=notify)
 
     def _retire_worker(self, index, token):
+        retired = False
         with self.store._lock:
             if index is not None and self.store._active_workers[index] is token:
                 self.store._active_workers[index] = None
+                retired = True
+        if retired:
+            self.store._notify_capacity()
 
     def _run(self, record, pixels, cancelled, *, deadline=None):
         self._check_owner()
@@ -198,7 +243,7 @@ class MediaExecutor:
         encoded = json.dumps(record, separators=(",", ":")).encode()
         if len(encoded) > e.max_manifest_bytes:
             raise ImageInputError("media worker manifest exceeds its explicit bound")
-        metadata_size = e.max_manifest_bytes + 2 * e.max_result_bytes
+        metadata_size = self._metadata_bytes()
         metadata_reservation, worker_token = object(), object()
         worker_index, primary = None, None
         try:
@@ -301,9 +346,9 @@ class MediaExecutor:
 
     def pixel_unit(self, probed: MediaProbe, index: int, *, cancelled):
         self._check_owner()
-        if probed.envelope_id != self.envelope.identity or type(index) is not int or not 0 <= index < probed.unit_count:
+        rows, size = self._unit_layout(probed)
+        if type(index) is not int or not 0 <= index < probed.unit_count:
             raise ImageInputError("pixel unit does not match the admitted media probe")
-        size = probed.grid_thw[1] * probed.grid_thw[2] * 1536 * 4
         reservation = object()
         replay, handle = None, None
         try:
@@ -311,7 +356,7 @@ class MediaExecutor:
             replay = self.store.borrow_ref(probed.ref)
             handle = tempfile.TemporaryFile(dir=self.store.root)
             output = self._run({"operation": "pixel_unit", "probe": probed.record(), "index": index}, handle, cancelled)
-            if (output != {"shape": [probed.grid_thw[1] * probed.grid_thw[2], 1536], "dtype": "float32", "bytes": size}
+            if (output != {"shape": [rows, 1536], "dtype": "float32", "bytes": size}
                     or os.fstat(handle.fileno()).st_size != size):
                 raise ImageInputError("media worker pixel layout differs from its admitted grid")
             return PixelUnitLease(self, handle, size, output["shape"], replay, reservation)
