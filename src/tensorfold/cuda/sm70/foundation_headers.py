@@ -140,11 +140,12 @@ class SelectedHeaders:
             raise ValueError("selected foundation manifest changed while reading")
         value = json.loads(raw)
         if (not isinstance(value, dict) or value.get("schema") != "tensorfold.v100-source-foundation-install"
-                or type(value.get("version")) is not int or value["version"] != 1
+                or type(value.get("version")) is not int or value["version"] != 2
+                or value.get("runtime_policy") != "torch2141-build-host-v1"
                 or not isinstance(value.get("include_roots"), dict)
                 or set(value["include_roots"]) != {"cccl", "cutlass"}
                 or not isinstance(value.get("artifacts"), list) or len(value["artifacts"]) > _MAX_HEADERS):
-            raise ValueError("selected foundation needs the protected v1 installation/include receipt")
+            raise ValueError("selected foundation needs the protected v2 installation/include policy")
         if any(not isinstance(root, str) or not root for root in value["include_roots"].values()):
             raise ValueError("selected foundation include roots must be nonempty paths")
         self.roots = tuple(Path(value["include_roots"][role]) for role in ("cccl", "cutlass"))

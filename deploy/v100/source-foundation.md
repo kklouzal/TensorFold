@@ -287,3 +287,68 @@ Primary references: [CUDA 12.9.2 components](https://docs.nvidia.com/cuda/archiv
 [compiler defect statement](https://docs.nvidia.com/cuda/archive/13.2.2/cuda-toolkit-release-notes/index.html),
 [R580.196.07 support](https://docs.nvidia.com/datacenter/tesla/tesla-release-notes-580-196-07/index.html),
 [exact driver kernel-module support](https://download.nvidia.com/XFree86/Linux-x86_64/580.196.07/README/kernel_open.html).
+
+## Portable build and host audit policy
+
+Torch 2.14.1's `__config__.show()` contains the current CPU dispatch and includes
+CUDA/cuDNN display sections only when a device is available. It is not solely a
+build descriptor. The original image audit sealed its complete hash, so the
+same unchanged image refused an AVX512 host after construction on AVX2.
+The failure and original images remain retained.
+
+The `torch2141-build-host-v1` policy uses install-manifest version 2. Its immutable
+projection preserves all non-host configuration lines, compiler and complete
+build settings, and independently binds the installed `CUDAConfig.h` and its
+NVCC architecture flags. A visible NVCC display must match that sealed header.
+The complete current CPU/CUDA configuration remains a fresh host observation
+in every audit and its runtime digest. Artifact, wheel, source, provider and
+loaded-library checks remain mandatory; current-process audit API version 1
+is unchanged. No CPU dispatch override or CUDA visibility restriction is added.
+
+The explicit [policy input](audit-policy-build-host-v1.json) authenticates the
+original complete configuration against its old sealed hash and identifies
+the exact original source/media manifests, build receipt, producer and header.
+The generated `Dockerfile.audit-policy` archives the original producer and
+manifest, verifies every original artifact and stable runtime field, then
+publishes a new immutable version-2 policy image. Runtime audits refuse old
+version-1 manifests; the conversion exists only at this image-construction
+boundary. Existing images and native/media build receipts are not rewritten.
+
+```bash
+# Build one owned application wheel with the updated v2 header/media readers.
+# Supply its wheel and application-wheel.sha256 as application_artifacts.
+docker build --network=none \
+  --build-context application_artifacts=/path/to/verified-application-wheel \
+  --build-arg AUDIT_BASE_IMAGE=tensorfold-v100:source-socket-04cf2557@sha256:eb09ff449dba6acc89d7207547a10b767adde592f47fef839f33dc98f269df28 \
+  -f deploy/v100/Dockerfile.audit-policy -t tensorfold-v100:source-portable-policy-v1 .
+docker build --network=none \
+  --build-context application_artifacts=/path/to/verified-application-wheel \
+  --build-arg AUDIT_BASE_IMAGE=tensorfold-v100:media-socket-04cf2557@sha256:f1c72b97ae8949a0aab0b1407edd4fc320671fb129e104e39095eb602ce2e94f \
+  -f deploy/v100/Dockerfile.audit-policy -t tensorfold-v100:media-portable-policy-v1 .
+# The deployment successor can update the approved complete application once:
+docker build --network=none \
+  --build-context application_artifacts=/path/to/verified-application-wheel \
+  --build-arg AUDIT_BASE_IMAGE=tensorfold-v100:app-socket-21a12df376@sha256:e99c7284234376f43634c7103fcd6fe313fee4b61c073ad79965a100b2b1baef \
+  -f deploy/v100/Dockerfile.audit-policy -t tensorfold-v100:app-portable-policy-v1 .
+```
+
+These are explicit policy rebindings of the existing corrected Torch/media
+binary candidates, with no framework or decoder recompilation. The same one
+verified application wheel updates the strict v2 include reader and authenticated
+original/current media-producer role checks. It can also be applied directly to
+the already-qualified application image by choosing that exact immutable
+`AUDIT_BASE_IMAGE`; this avoids rebuilding the framework or media layers. The media
+variant retains its existing media installation authority and original media
+build producer. Each image records its exact immutable identity; the two
+variants share their original binary layers but have separate protected
+audit histories. Use `audit-process` for a current target process, where
+host-injected driver code and additional process code are separately bound.
+The `audit` command retains strict image-construction mapping equality.
+Actual V100, compiler, model, quality, resource and performance gates remain
+required after software identity passes.
+
+Apply this portable policy after the original media byte-construction stage.
+The explicit rebind authenticates the retained original media/source build
+producer separately from current audit code. Reusing an existing media build
+receipt follows this rebind procedure; a fresh source/media build keeps its
+own actual producer identities.

@@ -1494,3 +1494,10 @@ Thank you to everyone who has sent TensorFold a pull request, a measurement or a
 [@xjqx2z](https://github.com/xjqx2z),
 [@Yuepixel](https://github.com/Yuepixel),
 [@YvesLaRose](https://github.com/YvesLaRose).
+
+The V100 audit policy separates the pinned Torch build from current CPU dispatch
+and conditional CUDA metadata. The versioned immutable policy rebind retains
+the original framework/media bytes and build receipts; see the
+[portable audit procedure](deploy/v100/source-foundation.md#portable-build-and-host-audit-policy).
+Software identity, actual V100 execution and compiler/model qualification remain
+separate gates.

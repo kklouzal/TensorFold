@@ -75,7 +75,8 @@ def test_audit_policy_revision_preserves_and_checks_original_build_bytes(tmp_pat
     (prior / "audit-process.json").write_text('{"historical":"actual prior audit retained"}')
     pins = {"immutable": "source"}
     identity = {"torch_path": str(library), "mapped_libraries": [str(library)]}
-    manifest = {"schema": "tensorfold.v100-source-foundation-install", "version": 1,
+    manifest = {"schema": "tensorfold.v100-source-foundation-install", "version": 2,
+                "runtime_policy": SOURCE.RUNTIME_POLICY,
                 "pins_sha256": hashlib.sha256(SOURCE.canonical(pins)).hexdigest(),
                 "evidence_class": "source-built-software-identity", "release_qualified": False,
                 "include_roots": dict(SOURCE.INCLUDE_ROOTS), "runtime": identity,
@@ -158,7 +159,8 @@ def test_audit_binds_actual_native_bytes_and_never_claims_release_qualification(
     identity = {"torch_path": str(payload), "mapped_libraries": [str(payload)], "actual": "source-built"}
     monkeypatch.setattr(SOURCE, "runtime_identity", lambda: copy.deepcopy(identity))
     monkeypatch.setattr(SOURCE, "validate_runtime", lambda value: None)
-    manifest = {"schema": "tensorfold.v100-source-foundation-install", "version": 1,
+    manifest = {"schema": "tensorfold.v100-source-foundation-install", "version": 2,
+                "runtime_policy": SOURCE.RUNTIME_POLICY,
                 "pins_sha256": hashlib.sha256(SOURCE.canonical(pins)).hexdigest(),
                 "evidence_class": "source-built-software-identity", "release_qualified": False,
                 "include_roots": dict(SOURCE.INCLUDE_ROOTS),
@@ -182,7 +184,8 @@ def process_fixture(tmp_path, monkeypatch):
     library.write_bytes(b"sealed source library")
     identity = {"torch_path": str(library), "mapped_libraries": [str(library)], "actual": "source-built"}
     pins = {"immutable": "source"}
-    manifest = {"schema": "tensorfold.v100-source-foundation-install", "version": 1,
+    manifest = {"schema": "tensorfold.v100-source-foundation-install", "version": 2,
+                "runtime_policy": SOURCE.RUNTIME_POLICY,
                 "pins_sha256": hashlib.sha256(SOURCE.canonical(pins)).hexdigest(),
                 "evidence_class": "source-built-software-identity", "release_qualified": False,
                 "include_roots": dict(SOURCE.INCLUDE_ROOTS), "runtime": copy.deepcopy(identity),
@@ -234,13 +237,22 @@ def test_process_audit_keeps_all_baseline_mappings_and_sealed_bytes_mandatory(tm
 def test_generated_image_recipes_use_only_hash_verified_offline_source_artifacts():
     pins = SOURCE.read_json(ROOT / "deploy/v100/source-pins.json")[0]
     generated = SOURCE.dockerfiles(pins)
-    for name, content in generated.items():
+    for name in ("Dockerfile.source-builder", "Dockerfile"):
+        content = generated[name]
         assert content == (ROOT / "deploy/v100" / name).read_text()
         assert "apt-get update" not in content
         assert "sha256sum --strict --check" in content
         assert "--network=none" in content and "source_artifacts" in content
     assert "requirements-foundation-amd64.lock" not in generated["Dockerfile"]
     assert "capture-install" in generated["Dockerfile"] and "source_foundation.py audit" in generated["Dockerfile"]
+    policy = generated["Dockerfile.audit-policy"]
+    assert policy == (ROOT / "deploy/v100/Dockerfile.audit-policy").read_text()
+    assert "ARG AUDIT_BASE_IMAGE" in policy and "FROM ${AUDIT_BASE_IMAGE}" in policy
+    assert "audit-history/build-host-v1" in policy and "revise-runtime-policy" in policy
+    assert "audit-policy-build-host-v1.json" in policy and "source_foundation.py audit-process" in policy
+    assert "--network=none" in policy and "apt-get" not in policy
+    assert "application_artifacts" in policy and "sha256sum --strict --check application-wheel.sha256" in policy
+    assert "--no-deps /portable-app-wheels/tensorfold-*.whl" in policy and "/torch-*.whl" not in policy
 
 
 def test_offline_locks_preserve_exact_resolved_artifact_hashes():

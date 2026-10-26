@@ -24,7 +24,8 @@ def packet(tmp_path, monkeypatch):
     manifest = tmp_path / "foundation.json"
 
     def publish():
-        value = {"schema": "tensorfold.v100-source-foundation-install", "version": 1,
+        value = {"schema": "tensorfold.v100-source-foundation-install", "version": 2,
+                 "runtime_policy": "torch2141-build-host-v1",
                  "include_roots": roots, "artifacts": [
                      {"path": str(path), "bytes": path.stat().st_size,
                       "sha256": hashlib.sha256(path.read_bytes()).hexdigest()} for path in files]}
@@ -249,3 +250,12 @@ def test_actual_nvcc_prepend_shadow_is_refused_by_cached_and_prepared_authority(
         headers.selected_identity()
     with pytest.raises(ValueError, match="unbound compiler input: NVCC_PREPEND_FLAGS"):
         prepared.adopt(NS(meta={"owner_workspaces": prepared.workspaces}), NS())
+
+
+@pytest.mark.parametrize("version,policy", [(1, "torch2141-build-host-v1"), (2, "unknown"), (2, None)])
+def test_selected_headers_refuse_legacy_or_unrecognized_runtime_policy(packet, version, policy):
+    value = json.loads(packet.manifest.read_text())
+    value.update(version=version, runtime_policy=policy)
+    packet.manifest.write_text(json.dumps(value))
+    with pytest.raises(ValueError, match="protected v2"):
+        headers.SelectedHeaders(packet.manifest)

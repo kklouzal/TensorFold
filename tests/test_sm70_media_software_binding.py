@@ -275,3 +275,60 @@ def test_foreign_pid_refuses_before_directories_or_audits(protected, monkeypatch
     for operation in (media.verify_media_binding, media.reissue_media_binding):
         with pytest.raises(source.SoftwareBindingError, match="another process"):
             operation(authority)
+
+
+def install_policy_rebind(protected):
+    install(protected)
+    base, _files = protected
+    original = base[2].read_bytes()
+    history = base[0].parent / "audit-history/build-host-v1/source_foundation.py"
+    history.parent.mkdir(parents=True)
+    history.write_bytes(original)
+    base[2].write_bytes(original + b"\n# reviewed runtime-policy audit revision\n")
+    manifest = json.loads(base[0].read_bytes())
+    manifest.update(version=2, runtime_policy="torch2141-build-host-v1", audit_policy_revision={
+        "original_build_producer": identity(history), "original_build_producer_path": str(history),
+        "current_audit_producer": identity(base[2])})
+    for row in manifest["artifacts"]:
+        if row["path"] == str(base[2]):
+            row.update(identity(base[2]))
+    manifest["artifacts"].append({"path": str(history), **identity(history)})
+    base[0].write_bytes(source._canonical(manifest))
+    return history
+
+
+def test_policy_rebind_preserves_original_media_build_producer_role(protected):
+    history = install_policy_rebind(protected)
+    original_build = protected[1][2].read_bytes()
+    authority = media.issue_media_binding()
+    assert history in authority._source._states
+    assert media.verify_media_binding(authority)["status"] == "verified-source-and-media-software"
+    assert protected[1][2].read_bytes() == original_build
+    history.write_bytes(b"changed original source build producer")
+    with pytest.raises(source.SoftwareBindingError, match="inputs changed"):
+        media.verify_media_binding(authority)
+
+
+@pytest.mark.parametrize("fault", ["version", "policy", "current", "original", "outside-history", "unsealed", "malformed-revision"])
+def test_policy_rebind_requires_exact_current_and_original_source_roles(protected, fault):
+    history = install_policy_rebind(protected)
+    path = protected[0][0]
+    value = json.loads(path.read_bytes())
+    revision = value["audit_policy_revision"]
+    if fault == "malformed-revision":
+        value["audit_policy_revision"] = None
+    elif fault == "version":
+        value["version"] = 1
+    elif fault == "policy":
+        value["runtime_policy"] = "unknown"
+    elif fault == "current":
+        revision["current_audit_producer"]["sha256"] = "a" * 64
+    elif fault == "original":
+        revision["original_build_producer"]["sha256"] = "b" * 64
+    elif fault == "outside-history":
+        revision["original_build_producer_path"] = str(protected[0][2])
+    else:
+        value["artifacts"] = [row for row in value["artifacts"] if row["path"] != str(history)]
+    path.write_bytes(source._canonical(value))
+    with pytest.raises(source.SoftwareBindingError):
+        media.issue_media_binding()

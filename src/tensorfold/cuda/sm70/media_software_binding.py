@@ -112,8 +112,21 @@ def _prepare_media(base):
     base_identity = base.protected[source._PROTECTED[2].name]
     expected_base = {key: base_identity[key] for key in ("bytes", "sha256")}
     producers = build.get("producer_inputs")
+    source_producer_matches = isinstance(producers, dict) and producers.get("source_foundation.py") == expected_base
+    if not source_producer_matches and isinstance(producers, dict):
+        # A reviewed policy rebind retains the original media build producer
+        # under the source authority, separately from its current audit code.
+        revision = base.manifest.get("audit_policy_revision")
+        original_path = revision.get("original_build_producer_path") if isinstance(revision, dict) else None
+        if (isinstance(revision, dict) and base.manifest.get("version") == 2
+                and base.manifest.get("runtime_policy") == "torch2141-build-host-v1"
+                and revision.get("current_audit_producer") == expected_base
+                and revision.get("original_build_producer") == producers.get("source_foundation.py")
+                and isinstance(original_path, str)
+                and Path(original_path).is_relative_to(source._ROOT / "audit-history")):
+            source_producer_matches = _entry(base.manifest, Path(original_path)) == producers["source_foundation.py"]
     if (not isinstance(producers, dict) or producers.get("media_foundation.py") != producer_identity
-            or producers.get("source_foundation.py") != expected_base
+            or not source_producer_matches
             or build.get("pins_sha256") != hashlib.sha256(source._canonical(pins)).hexdigest()):
         raise source.SoftwareBindingError("media build does not bind the actual source and media audit producers")
     states = _snapshot(paths)
