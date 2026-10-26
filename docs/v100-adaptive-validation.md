@@ -39,6 +39,29 @@ quantization-quality, physical-residency or performance qualification. Native
 SM70 compilation retains its separately recorded exact-source scope. The full
 media request pipeline and final hardware qualification remain pending.
 
+## Installed media and exact frontend integration
+
+The application at `caf1eeda`, merged to `python-0.6` as `64b24dd5`, passed
+4,365 installed CPU tests and 124 subtests across 111 affected test modules.
+Four documented optional/environment cases were skipped. The ordinary wheel
+image is `sha256:30e7036aa0d23ed4bb203f68a2d6e5f34cda617d06bf5cc2a8297d60080ef2bc`;
+all 694 installed code files matched immutable source tree
+`72aa4e585f2747ae02da083bb7a0d5958358212a`, with no source overlay.
+[The maintained receipt](verification-sm70-media-integration-20261026.json)
+records provenance and limitations.
+
+Coverage includes the actual bounded CPU media work/TP input/App ownership path,
+request-local decoder failure retirement, target/MTP shared input spans, complete
+model token-ID domains, CONTROL presentation, nonlexical UNUSED rows, canonical
+32-core MTP import/shared target vocabulary weights, frame/recovery containment,
+principal request ownership and side-stream graph warmup ordering. CPU cohorts
+and import controls do not qualify CUDA collectives or model outputs.
+
+Current v6 FIFO admission, complete RAM retention/prefix reuse, standard durable
+API lifecycle, host/device resource admission and automatic blocked-request
+requeue are later integration work. This checkpoint is neither V100 release
+qualification nor a capacity or throughput claim.
+
 ## Configuration and capacity
 
 For Flash Next GGUF with GPU indexer history, `--parallel auto` computes a

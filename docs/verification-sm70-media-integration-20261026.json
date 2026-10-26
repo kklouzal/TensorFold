@@ -1,0 +1,35 @@
+{
+  "schema": "tensorfold.sm70-media-installed-cpu-checkpoint",
+  "version": 1,
+  "application_commit": "caf1eeda",
+  "canonical_merge": "64b24dd520f0dc619ee0fc6c627611d6c76a3ae0",
+  "source_tree": "72aa4e585f2747ae02da083bb7a0d5958358212a",
+  "image": "sha256:30e7036aa0d23ed4bb203f68a2d6e5f34cda617d06bf5cc2a8297d60080ef2bc",
+  "base_image": "tensorfold-v100:media-frontend-source-closed@sha256:dc85d796182b5e5390c706bc425e1c9c9ea9278ac93c10e90685a7ee95a77dc7",
+  "archive_sha256": "2d63cc7b38649884828d773e1b55abce04216f9caec5bb14e3d56afb7730097d",
+  "specification_sha256": "7c9f724346866cfb89382ee2e30d60d9d827222c347610783b37683ba04e5a8c",
+  "checks": {
+    "passed": 4365,
+    "subtests_passed": 124,
+    "skipped": 4,
+    "test_modules": 111,
+    "installed_code_files_compared": 694,
+    "exit_status": 0,
+    "log_sha256": "75da18b89ce2f65e4e3059391a7e3924dea98dd4328952b9f814b1879af15894"
+  },
+  "skip_reasons": [
+    "Optional Apple MLX prefix test unavailable in AMD64 CPU image",
+    "Optional cached Qwen3.8-27B tokenizer unavailable",
+    "Optional exact large DFlash artifact not supplied to this gate",
+    "Optional companion/target artifact not supplied to this gate; separate actual SC117 import controls retained"
+  ],
+  "source_review": "Separate D13 and D14 exact source closures, final40leaf manifest8d21dab20809883084719b30dcb1849030e92e8c6376bad823e35e32222dda30",
+  "environment": "Ordinary installed wheel in pinned source-built CPU media container; immutable test inputs, no editable application/source overlay",
+  "pending": [
+    "Current v6 FIFO/retained-state/API/resource/requeue integration beyond this source snapshot",
+    "Actual V100/TP8/NCCL execution, model output and numerical/quality checks",
+    "Physical capacity, compiler6111901 and representative performance qualification"
+  ],
+  "performance_claim": false,
+  "v100_qualified": false
+}

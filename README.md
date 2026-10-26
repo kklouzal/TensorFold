@@ -6,11 +6,13 @@ full-context capacity planning, unique GPU histories, bounded execution and live
 controls. [Implementation and qualification boundaries](docs/v100-adaptive-validation.md)
 separate source checks from the pending eight-V100 model, quality and performance
 gates. Historical results below keep their original source and layout.
-The published text/core/position checkpoint passed **3,277 installed CPU checks
-and 105 subtests**, with four documented optional/environment skips. Its scope
-precedes the current specification's FIFO, retained-state and standard API work.
-The media service integration and those newer requirements remain under
-verification; no new V100 capacity, quality or performance result is claimed.
+The installed media/frontend/MTP integration at `64b24dd5` passed **4,365 CPU
+checks and 124 subtests**, with four documented optional/environment skips. All
+694 installed code files matched the tested source snapshot. The
+[checkpoint receipt](docs/verification-sm70-media-integration-20261026.json)
+records its exact scope. Newer FIFO, retained-state, standard API and resource
+integration remains in progress; V100 execution, quality, capacity and
+performance remain unqualified.
 The revised design's shared-GGUF MTP importer preserves the selected target
 embedding/head, validates the ordered token-ID mapping, and declares QSA ratio
 four with a 2,048-token complete-group budget. Import controls do not qualify
