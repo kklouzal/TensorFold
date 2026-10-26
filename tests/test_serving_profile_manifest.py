@@ -8,21 +8,38 @@ import pytest
 from cuda_http_fixtures import model_directory
 from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
 from tensorfold.families.qwen4_exp.cuda.serving_profiles import prepare, read_manifest, relative_file
-from test_flashnext_gguf import fixture
+from gguf_fixture import write
+from tensorfold.families.qwen4_exp.gguf import metadata_config
 
 
-def profile_files(tmp_path):
+def profile_files(tmp_path, *, context=1024, theta=10000000.0, kv_heads=2):
     model = tmp_path / "target"
     model.mkdir()
     model_directory(model)
-    fixture(model / "model.gguf", [("output.weight", (1,), 0, b"\0" * 4)])
-    (model / "config.json").write_text(json.dumps({"model_type": "qwen4_exp", "head_dim": 256,
-        "hidden_size": 768, "num_attention_heads": 3, "max_position_embeddings": 1024,
-        "gguf_file": "model.gguf", "quantization_config": {"quant_method": "gguf"}}))
+    # Real positional preparation reads authoritative GGUF geometry as well as
+    # the sidecar. This small inventory exercises those readers without claiming
+    # a complete runnable target payload or qualification.
+    metadata = {"general.architecture": "qwen4exp", **{"qwen4exp." + key: value for key, value in {
+        "embedding_length": 6144, "block_count": 2, "full_attention_interval": 2,
+        "attention.key_length": 256, "rope.dimension_count": 64, "rope.freq_base": theta,
+        "rope.dimension_sections": (11, 11, 10, 0), "context_length": context,
+        "attention.head_count": 24, "attention.head_count_kv": kv_heads, "attention.layer_norm_rms_epsilon": 1e-6,
+        "ssm.group_count": 8, "ssm.time_step_rank": 8, "ssm.state_size": 128, "ssm.inner_size": 1024,
+        "ssm.conv_kernel": 4, "expert_count": 2, "expert_used_count": 1,
+        "expert_feed_forward_length": 256, "expert_shared_feed_forward_length": 256,
+        "hyper_connection.count": 4, "hyper_connection.low_rank": 32,
+        "attention.indexer.head_count": 8, "attention.indexer.key_length": 128, "attention.indexer.top_k": 8,
+        "ple.heads_per_ngram": 1, "ple.ngram_size": 3, "embedding_length_per_layer_input": 32,
+        "ple.conv_kernel": 4,
+    }.items()}}
+    source = write(model / "model.gguf", [("token_embd.weight", (1,), 0, [0, 0, 0, 0])], metadata)
+    config = metadata_config(source)
+    config["gguf_file"] = source.name
+    (model / "config.json").write_text(json.dumps(config))
     entries = [{"path": str(path.relative_to(tmp_path)), "size": path.stat().st_size,
                 "sha256": hashlib.sha256(path.read_bytes()).hexdigest()} for path in sorted(model.iterdir())]
     raw = {"schema": "tensorfold.serving-profile", "version": 1, "id": "A", "model_dir": "target",
-           "options": {"max_len": 1024, "kv_dtype": "int8", "depth": 0},
+           "options": {"max_len": context, "kv_dtype": "int8", "depth": 0},
            "api": {"served": "model-A", "aliases": ["alias-A"]}, "artifacts": entries}
     path = tmp_path / "A.json"
     path.write_text(json.dumps(raw))
@@ -35,7 +52,7 @@ def profile(tmp_path):
 
 
 def load(root, name="A.json", *, rank=0, **kwargs):
-    return prepare(root, name, initializer=FlashNextEngine._initialize, fixed_options={"tp": 8, "rank": rank}, **kwargs)
+    return prepare(root, name, initializer=FlashNextEngine._initialize, fixed_options={"tp": 8, "rank": rank, "adaptive_sessions": True, "indexer_history": "gpu"}, **kwargs)
 
 
 def test_exact_manifest_identity_is_shared_by_all_rank_coordinates(profile):

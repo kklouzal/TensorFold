@@ -368,6 +368,8 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
     if getattr(args, "family_manifest", None) is not None:
         options["family_manifest"] = args.family_manifest
         options["_prepared_family_plan"] = getattr(args, "_prepared_family_plan", None)
+    if getattr(args, "position_profile_manifest", None) is not None:
+        options["position_profile_manifest"] = args.position_profile_manifest
     if getattr(args, "indexer_history", "gpu") != "gpu":
         options["indexer_history"] = args.indexer_history
     if getattr(args, "vram_experts_pin", "off") != "off":
@@ -391,7 +393,7 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
     if getattr(args, "yarn_factor", None) is not None:
         options["yarn_factor"] = args.yarn_factor
     options["context"] = context if context is not None else args.context
-    options["context_explicit"] = args.context is not None
+    options["context_explicit"] = args.context is not None or getattr(args, "position_profile_manifest", None) is not None
     streams = 1 if str(args.parallel).strip().lower() == "auto" else _parallel(args.parallel)
     if str(args.parallel).strip().lower() == "auto" and getattr(family.package, "CUDA_ADAPTIVE_SESSIONS", False):
         options["parallel_auto"] = True
@@ -555,34 +557,72 @@ def cmd_serve(args: argparse.Namespace) -> int:
     _note_untested(family, args.model)
     required_files = getattr(family.package, "REQUIRED_FILES", {}).get(args.model, ())
     check = getattr(family.package, "check", None)
+    positions = None
     if getattr(args, "family_manifest", None) is not None:
         from tensorfold.families.qwen4_exp.cuda.sm70_nvfp4_weights import model_plan
 
         def check(directory):
             # This explicit recipe owns the complete per-tensor contract;
             # the unchanged legacy checker only admits expert-only NVFP4.
+            selected_rope = (positions.target.rope if positions is not None else
+                             family.package.rope_parameters(directory, getattr(args, "yarn_factor", None)))
             previous = getattr(args, "_prepared_family_plan", None)
             if previous is not None and previous[1].directory == Path(directory).resolve():
                 previous[1].manifest.check_cached(args.family_manifest, directory)
-                return
-            selected_rope = family.package.rope_parameters(directory, getattr(args, "yarn_factor", None))
+                if previous[0].cfg.rope == selected_rope:
+                    return
             args._prepared_family_plan = model_plan(directory, args.family_manifest,
                 (int(args.rank), int(args.tp)), rope=selected_rope, eos_token_ids=getattr(args, "eos_token_ids", None))
-    if check is not None:
-        check(config_dir)  # refuse an unsupported checkpoint before downloading its weights
+    if check is not None and getattr(args, "family_manifest", None) is None:
+        check(config_dir)  # preserve the existing legacy format preflight order
     native_context = _model_context(config_dir)
     context_limit = native_context
     rope_hook = getattr(family.package, "rope_parameters", None)
-    if rope_hook is not None and backend in getattr(family.package, "ROPE_BACKENDS", (backend,)):
+    if getattr(args, "position_profile_manifest", None) is not None:
+        from tensorfold.families.qwen4_exp.position_profile import prepare_position_vectors, resolve_position_profile
+        from tensorfold.families.qwen4_exp.cuda import DEPTH
+        from tensorfold.families.qwen4_exp.cuda.speculation import checkpoint_method
+        from tensorfold.families.qwen4_exp.kv_formats import get_pair
+
+        # Resolve selected companion metadata, not its weight download. The
+        # engine independently revalidates these exact roles before allocation.
+        companions = {}
+        method = "none"
+        enabled = not (args.no_drafts or getattr(args, "draft_method", "auto") == "none")
+        depth = 0 if not enabled else (
+            DEPTH if args.mtp_drafts is None else int(args.mtp_drafts))
+        if enabled:
+            method = "mtp" if depth else "none"
+            choice = getattr(args, "drafter", "auto")
+            source = (_config_dir(choice) if choice not in ("", "none", "auto") else
+                      _drafter(family, choice, "cuda", model_dir=config_dir))
+            if source:
+                selected = checkpoint_method(source)
+                method = selected if selected == "dflash2" or depth else "none"
+                if method in ("mtp", "dflash2"):
+                    companions[method] = Path(source)
+        positions = resolve_position_profile(config_dir,
+            requested_context=args.context if args.context not in (None, 0) else None,
+            yarn_factor=getattr(args, "yarn_factor", None), manifest_path=args.position_profile_manifest,
+            companion_configs=companions)
+        pair = get_pair(getattr(args, "kv_dtype", "bf16"), getattr(args, "kv_key_dtype", None),
+                        getattr(args, "kv_value_dtype", None))
+        positions.validate_method(method, pair.identity, 3 if method == "dflash2" else depth)
+        prepare_position_vectors(positions, mtp_active=method == "mtp")
+        context_limit = positions.target.max_rows
+    elif rope_hook is not None and backend in getattr(family.package, "ROPE_BACKENDS", (backend,)):
         rope = rope_hook(config_dir, getattr(args, "yarn_factor", None))
         if rope.rope_type != "default" and backend != "cuda":
             raise ValueError("Flash Next YaRN text RoPE is supported on CUDA only")
         context_limit = rope.context_limit
-    context = context_limit if args.context is None else int(args.context)
+    context = (context_limit if args.context is None or
+               getattr(args, "position_profile_manifest", None) is not None and args.context == 0 else int(args.context))
     if context < 0:
         raise ValueError("--context must be 0 or a positive token count")
     if context_limit and context > context_limit:
         raise ValueError(f"--context {context} exceeds this model's {context_limit}-token window")
+    if check is not None and getattr(args, "family_manifest", None) is not None:
+        check(config_dir)  # cache only the already resolved/CPU-checked target transform
     needs_full_snapshot = hub.is_repo_id(args.model) and not hub._cached_weights_complete(
         config_dir, required_files=required_files
     )

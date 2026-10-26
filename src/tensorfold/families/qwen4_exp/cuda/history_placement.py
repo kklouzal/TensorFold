@@ -18,6 +18,36 @@ def _int(value: int, name: str, minimum: int = 0) -> int:
     return value
 
 
+def compact_cache_bytes(dim: int, *, proposal_rows: int = 0, mtp: bool = False) -> int:
+    """Fixed raw ring/protected carry and the selected method's bounded span."""
+    _int(dim, "indexer width", 1)
+    _int(proposal_rows, "proposal span rows")
+    row = dim * 2 + 3 * 8
+    return 8 * row + int(mtp) * (4 + proposal_rows) * row
+
+
+def compact_stage_bytes(rows: int, caches: int, *, mtp: bool = False, mtp_only: bool = False) -> int:
+    _int(rows, "execution rows", 1)
+    _int(caches, "indexed caches", 1)
+    channels = 0 if mtp_only else (caches + 7) // 8
+    return rows * (channels * 128 * 2 + int(not mtp_only) * 3 * 8 + int(mtp) * (128 * 2 + 3 * 8))
+
+
+def coordinate_source_host_bytes(rows: int) -> int:
+    """Additional pageable array payload for selected TP8 text issuance.
+
+    One sequential issuer owns the int64 row vector, THW matrix, validated
+    matrix copy and int32 transfer array: 8+24+24+12 bytes per row. The
+    three-axis reduction briefly adds 24 bytes before the int32 cast. Python
+    metadata and library/driver-private storage retain their runtime reserves.
+    Call with the largest target/MTP/prefill row envelope, not their sum.
+    Existing compact stages and owner preparation already cover GPU payloads;
+    this function grants no device or allocator credit and pins no host data.
+    """
+    _int(rows, "coordinate source rows", 1)
+    return max(68 * rows, 56 * rows + 24)
+
+
 @dataclass(frozen=True)
 class HistoryPlacement:
     world: int
@@ -26,8 +56,13 @@ class HistoryPlacement:
     degree: int = 1
     page_tokens: int = 128
 
+    @staticmethod
+    def supports(world: int, global_kv_heads: int) -> bool:
+        """Pure layout eligibility; deployment/history policy remains caller-owned."""
+        return type(world) is int and type(global_kv_heads) is int and (world, global_kv_heads) == (8, 2)
+
     def __post_init__(self) -> None:
-        if (self.world, self.global_kv_heads) != (8, 2):
+        if not self.supports(self.world, self.global_kv_heads):
             raise ValueError("unique SM70 history currently requires TP8 and two global KV heads")
         _int(self.target_layers, "target attention layers", 1)
         if self.degree not in (1, 2, 4) or type(self.degree) is not int:
@@ -84,7 +119,7 @@ class HistoryPlacement:
 
     def layer_rank_bytes(self, slot: int, layer: int, rows: int, rank: int, kv_row_bytes: int,
                          kv_dummy_bytes: int = 0, *, index_dim: int = 128,
-                         ratio: int = 4, include_mtp: bool = True) -> int:
+                         ratio: int = 4, include_mtp: bool = True, proposal_rows: int = 0) -> int:
         """Exact tensor bytes, including full tail pages, dummies and partial pools.
 
         ``kv_row_bytes`` describes one global KV head's combined K/V row,
@@ -101,14 +136,17 @@ class HistoryPlacement:
         total = self.local_rows(slot, layer, rows, rank) * kv_row_bytes + kv_dummy_bytes
         total += ((rows + self.page_tokens - 1) // self.page_tokens) * 8  # stable int64 page offsets
         if rank == self.indexer_owner(slot, layer, include_mtp=include_mtp):
-            total += (rows + (rows + ratio - 1) // ratio) * index_dim * 2
+            total += (rows + ratio - 1) // ratio * index_dim * 2
+            total += compact_cache_bytes(index_dim, mtp=layer == self.target_layers,
+                                         proposal_rows=proposal_rows if layer == self.target_layers else 0)
         return total
 
     def rank_bytes(self, slot: int, rows: int, rank: int, kv_row_bytes: int,
                    kv_dummy_bytes: int = 0, *, index_dim: int = 128,
-                   ratio: int = 4, include_mtp: bool = True) -> int:
+                   ratio: int = 4, include_mtp: bool = True, proposal_rows: int = 0) -> int:
         return sum(self.layer_rank_bytes(slot, layer, rows, rank, kv_row_bytes, kv_dummy_bytes,
-                                        index_dim=index_dim, ratio=ratio, include_mtp=include_mtp)
+                                        index_dim=index_dim, ratio=ratio, include_mtp=include_mtp,
+                                        proposal_rows=proposal_rows)
                    for layer in range(self.target_layers + int(include_mtp)))
 
 

@@ -15,9 +15,9 @@ import numpy as np
 import torch
 
 from ..position_profile import MAX_POSITION, PositionOperands, PositionRole
+from tensorfold.cuda.sm70.tensor_mutation import require_mutation_budget
 
 _ISSUER = object()  # Immutable process-local provenance, not serialized authority.
-_MAX_MUTATION_VERSION = (1 << 32) - 1  # Pinned Torch c10::VariableVersion uses uint32_t.
 
 
 def _digest(value):
@@ -211,8 +211,7 @@ def _prepare_copy(source, *, source_position, position, row_start, row_count, dt
         if (destination.shape != (row_count, 3) or destination.dtype != dtype
                 or destination.device != source.tensor.device or not destination.is_contiguous()):
             raise ValueError("coordinate destination must match the final row/device/integer layout")
-        if _signature(destination)[-1] >= _MAX_MUTATION_VERSION:
-            raise ValueError("coordinate mutation version exhausted; retire and replace its storage")
+        require_mutation_budget(destination, 1)
         if row_count:
             source_storage, destination_storage = source.tensor.untyped_storage(), destination.untyped_storage()
             left, right = source_storage.data_ptr(), destination_storage.data_ptr()
@@ -267,8 +266,8 @@ def copy_coordinate_batch(transfers, *, owner, max_rows):
         raise ValueError("packed coordinate rows exceed their admitted frame")
     # Distinct destinations may share one version counter. Allow enough counter
     # space for every write before starting; never permit uint32 version ABA.
-    if any(_signature(plan.destination)[-1] > _MAX_MUTATION_VERSION - len(plans) for plan in plans):
-        raise ValueError("coordinate mutation version exhausted; retire and replace its storage")
+    for plan in plans:
+        require_mutation_budget(plan.destination, len(plans))
 
     def interval(tensor):
         start = tensor.data_ptr()

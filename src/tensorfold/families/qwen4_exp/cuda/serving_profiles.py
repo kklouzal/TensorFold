@@ -26,7 +26,7 @@ HEX = re.compile(r"[0-9a-f]{64}\Z")
 FIXED = frozenset({"tp", "rank", "master", "port", "expert_session", "vram_experts", "vram_experts_pin",
                    "vision", "vision_urls", "indexer_history", "adaptive_sessions"})
 PATH_OPTIONS = frozenset({"mtp_model_dir", "dspark_model_dir", "dflash2_model_dir", "family_manifest", "chat_template_file",
-                          "execution_profile_manifest"})
+                          "execution_profile_manifest", "position_profile_manifest"})
 API_FIELDS = frozenset({"served", "aliases", "default_thinking", "sampling", "max_tokens", "reasoning_effort",
                         "thinking_budget"})
 
@@ -118,7 +118,81 @@ def _artifact(entry, base, *, verify_content):
                              expected_sha256=entry["sha256"], verify_content=verify_content)
 
 
-def _required_files(model_dir, options):
+def resolve_profile_positions(model_dir, options):
+    """Resolve the structural recipe without model/device allocation or quality claims.
+
+    MTP lookahead excludes the already pending anchor; DFlash's fixed four-row
+    compute block requires three additional rows even at a zero proposal limit.
+    Physical cache guards do not enlarge either positional domain. Only the
+    supported unique-history deployment binds new roles. Replicated layouts and
+    DSpark retain their existing source/CLI policy without a new positional claim.
+    """
+    from . import DEPTH
+
+    depth = options.get("depth", DEPTH)
+    if type(depth) is not int or depth < 0:
+        raise ValueError("serving profile depth requires a nonnegative integer")
+    method = ("dflash2" if options.get("dflash2_model_dir") is not None else
+              "dspark" if options.get("dspark_model_dir") is not None and depth > 0 else
+              "mtp" if depth > 0 else "none")
+    from ..kv_formats import get_pair
+    from .speculation import MethodGeometry
+
+    geometry = MethodGeometry(method, depth)
+    pair = get_pair(options.get("kv_dtype", "bf16"), options.get("kv_key_dtype"), options.get("kv_value_dtype"))
+    from tensorfold.cuda.capacity import config
+    from ..gguf import metadata_config, resolve_gguf
+    from .history_placement import HistoryPlacement
+
+    text = config(model_dir)
+    entrypoint = resolve_gguf(model_dir)
+    source = text
+    if entrypoint is not None:
+        source = metadata_config(entrypoint)["text_config"]
+        declared = text.get("num_key_value_heads")
+        if type(declared) is not int or declared != source["num_key_value_heads"]:
+            raise ValueError("GGUF/external KV head geometry conflicts with the actual source")
+    unique = (options.get("adaptive_sessions") is True and options.get("indexer_history", "gpu") == "gpu"
+              and HistoryPlacement.supports(options.get("tp", 1), source.get("num_key_value_heads"))
+              and (entrypoint is not None or options.get("family_manifest") is not None))
+    if method == "dspark" or not unique:
+        if options.get("position_profile_manifest") is not None:
+            raise ValueError("new position manifests require the supported adaptive TP8 unique GPU-history "
+                             "source/layout and an implemented companion role; DSpark remains unbound")
+        from .. import rope_parameters
+
+        policy = rope_parameters(model_dir, options.get("yarn_factor"))
+        if options["max_len"] > policy.context_limit:
+            raise ValueError("legacy serving context exceeds its existing source/CLI position contract")
+        return None, {"method": method, "kv_identity": pair.identity, "lookahead_rows": depth,
+                      "requested_context": options["max_len"], "source_context_limit": policy.context_limit,
+                      "yarn_factor": options.get("yarn_factor"), "support": "legacy-source-policy",
+                      "qualification": "unqualified-candidate"}, None
+    from ..position_profile import prepare_position_vectors, resolve_position_profile
+
+    companions = {}
+    if method == "mtp" and options.get("mtp_model_dir") is not None:
+        companions["mtp"] = options["mtp_model_dir"]
+    if method == "dflash2":
+        companions["dflash2"] = options["dflash2_model_dir"]
+    positions = resolve_position_profile(model_dir, requested_context=options["max_len"],
+        yarn_factor=options.get("yarn_factor"), manifest_path=options.get("position_profile_manifest"),
+        companion_configs=companions)
+    lookahead = 3 if method == "dflash2" else geometry.maximum_proposals
+    binding = positions.validate_method(method, pair.identity, lookahead)
+    numerical = prepare_position_vectors(positions, mtp_active=method == "mtp").receipt()
+    return positions, binding, numerical
+
+
+def _position_document(positions, binding, numerical):
+    # Keep one immutable serialized receipt in ServingProfile, rather than a
+    # caller-mutable nested dictionary that could change after identity issuance.
+    return json.dumps({"resolved": None if positions is None else positions.receipt(), "binding": binding,
+                       "numerical_preparation": numerical},
+                      sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def _required_files(model_dir, options, *, positions=None):
     from ..gguf import GGUFCheckpoint, resolve_gguf
 
     from tensorfold.checkpoint_metadata import _path as metadata_path
@@ -166,6 +240,10 @@ def _required_files(model_dir, options):
         if value is None or name.endswith("_model_dir"):
             continue
         required.append(Path(value))
+    if positions is None and options.get("max_len") is not None:
+        positions, _, _ = resolve_profile_positions(model_dir, options)
+    if positions is not None:
+        required.extend(positions.required_input_files())
     return {str(Path(path).resolve(strict=True)) for path in required}
 
 
@@ -179,9 +257,13 @@ class ServingProfile:
     options: object
     api: object
     artifacts: tuple
+    position_json: str | None = None
 
     def check_sources(self):
-        if _required_files(self.model_dir, self.options) - {item["path"] for item in self.artifacts}:
+        positions, binding, numerical = resolve_profile_positions(self.model_dir, self.options)
+        if self.position_json is not None and _position_document(positions, binding, numerical) != self.position_json:
+            raise ValueError("prepared positional inputs or implementation changed before loading/publication")
+        if _required_files(self.model_dir, self.options, positions=positions) - {item["path"] for item in self.artifacts}:
             raise ValueError("a new selected model input is absent from the prepared serving inventory")
         for artifact in self.artifacts:
             if list(stamp(artifact["path"])) != artifact["stat"]:
@@ -196,7 +278,8 @@ class ServingProfile:
                 "identity": self.identity, "model_dir": str(self.model_dir),
                 "context_tokens": self.options.get("max_len"), "kv_dtype": self.options.get("kv_dtype"),
                 "maximum_proposals": self.options.get("depth"),
-                "artifact_count": len(self.artifacts), "qualification": "prepared-identity-checked"}
+                "artifact_count": len(self.artifacts), "qualification": "prepared-identity-checked",
+                "position_profile": None if self.position_json is None else json.loads(self.position_json)}
 
 
 def prepare(root, name, *, initializer, fixed_options, verify_content=True, expected=None):
@@ -265,24 +348,23 @@ def prepare(root, name, *, initializer, fixed_options, verify_content=True, expe
     text = config(model_dir)
     if text.get("model_type") not in ("qwen4_exp_text", "qwen4_exp", "qwen3_8_flash_next"):
         raise ValueError("serving profile must bind a Flash Next target")
-    maximum = text.get("max_position_embeddings")
-    if type(maximum) is not int or options["max_len"] > maximum:
-        raise ValueError("serving context exceeds the selected target position contract")
     pair = get_pair(options.get("kv_dtype", "bf16"), options.get("kv_key_dtype"), options.get("kv_value_dtype"))
     from .sm70_kv import check_pair
     check_pair(pair, head_dim=int(text.get("head_dim") or text["hidden_size"] // text["num_attention_heads"]))
     options.update(fixed_options)
     options["context_explicit"] = True
-    required = _required_files(model_dir, options)
+    positions, binding, numerical = resolve_profile_positions(model_dir, options)
+    position_json = _position_document(positions, binding, numerical)
+    required = _required_files(model_dir, options, positions=positions)
     artifacts = tuple(_artifact(item, path.parent, verify_content=verify_content) for item in raw["artifacts"])
     if len({item["path"] for item in artifacts}) != len(artifacts) or required - {item["path"] for item in artifacts}:
         raise ValueError("serving artifacts must cover every target/draft/tokenizer/template load input exactly once")
     identity_options = {key: str(value) if isinstance(value, Path) else value for key, value in options.items() if key != "rank"}
     identity = hashlib.sha256(json.dumps({"model_dir": str(model_dir), "options": identity_options,
-        "api": raw["api"], "artifacts": [{key: value for key, value in item.items() if key != "stat"}
+        "api": raw["api"], "position_profile": json.loads(position_json), "artifacts": [{key: value for key, value in item.items() if key != "stat"}
                                           for item in artifacts]}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     result = ServingProfile(name, raw["id"], digest, identity, model_dir, MappingProxyType(options),
-                            MappingProxyType(dict(raw["api"])), artifacts)
+                            MappingProxyType(dict(raw["api"])), artifacts, position_json)
     if expected is not None and (digest != expected["manifest_sha256"] or identity != expected["identity"]
                                  or list(artifacts) != expected["artifacts"]):
         raise ValueError("rank serving profile/artifacts differ from the coordinator's prepared binding")

@@ -240,12 +240,20 @@ def prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
             return ops.rms(value, weight, c.eps)
         return torch.cat([ops.rms(value[row:row + 1], weight, c.eps) for row in range(rows)], 0)
 
-    rope = state.image_positions
-    options = dict(rope=rope, delta=state.rope_delta_dev if rope is not None or state.rope_delta else None,
-                   length=0 if rope is None else rope.shape[0], sections=c.mrope_section,
-                   scale=c.rope_attention_factor)
-    query = ops.rotary(normalize(query, a.q_scale), weights.inv_freq, positions, **options)
-    key = ops.rotary(normalize(key, a.k_scale), weights.inv_freq, positions, **options)
+    from .compact_indexer import coordinate_rows
+
+    if state.compact_indexer is None:
+        raise RuntimeError("unique history requires its compact raw/pool transaction owner")
+    explicit = buffers.mtp_indexer_coordinates if mtp else buffers.target_indexer_coordinates
+    coordinates = explicit[start:stop] if explicit is not None else coordinate_rows(state, positions)
+    position = buffers.mtp_indexer_position if mtp else buffers.target_indexer_position
+    frequencies = weights.inv_freq if position is None else position.inv_freq
+    sections = c.mrope_section if position is None else position.sections
+    amplitude = c.rope_attention_factor if position is None else position.amplitude
+    options = dict(rope=coordinates, length=rows, sections=sections, scale=amplitude)
+    rotary_positions = torch.arange(rows, device=p.device, dtype=torch.int64)
+    query = ops.rotary(normalize(query, a.q_scale), frequencies, rotary_positions, **options)
+    key = ops.rotary(normalize(key, a.k_scale), frequencies, rotary_positions, **options)
     query = ops._guard(query, state.kv_status, 1, layer.index)
     key = ops._guard(key, state.kv_status, 2, layer.index)
     if cache.key_format.codec:
@@ -254,14 +262,20 @@ def prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
     else:
         buffers.q[start:stop].copy_(ops.h32(query).half() if cache.key_format.quantized else query)
     buffers.iq[start:stop].copy_(ops._guard(
-        ops.rotary(normalize(iq, a.iq_scale), weights.inv_freq, positions, **options), state.kv_status, 16, layer.index))
+        ops.rotary(normalize(iq, a.iq_scale), frequencies, rotary_positions, **options), state.kv_status, 16, layer.index))
     key_codes, key_scales = _encode(key, cache.key_format, state.kv_status, layer.index, error=2)
     value_codes, value_scales = _encode(value, cache.value_format, state.kv_status, layer.index, error=4)
     cache.append(pos, key_codes, value_codes, key_scales, value_scales)
     if state.history_rank == state.history_placement.indexer_owner(state.history_slot, ai,
                                                                   include_mtp=hasattr(state, "mtp_kc")):
-        raw = state.mtp_ikc if mtp else state.ikc[ai]
-        raw[pos:pos + rows].copy_(ik.half())
+        entry = state.compact_indexer.append(ai, pos, ik.half(), coordinates,
+            buffers.compact_indexer_stage, start, stop, mtp=mtp,
+            expected=(state.slot_generation, state.history_generation))
+        entry.pool(state.mtp_pooled if mtp else state.pooled[ai], a.ik_scale, frequencies,
+                   c.eps, sections, amplitude)
+        if mtp:
+            expected = (state.slot_generation, state.history_generation)
+            entry.publish_commit(entry.prepare_commit(pos + rows, expected), pos + rows, expected)
     if not mtp:
         state.target_tentative_length = pos + rows
 
@@ -813,6 +827,15 @@ class OwnerBuffers:
 
 
 def attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False):
+    """Retire all-rank coordinate reads, including ranks without this indexer."""
+    explicit = buffers.mtp_indexer_coordinates if mtp else buffers.target_indexer_coordinates
+    if explicit is None:
+        return _attention_layer(layer, weights, segments, buffers, total_rows, mtp=mtp)
+    with buffers.compact_indexer_stage.reading(mtp=mtp):
+        return _attention_layer(layer, weights, segments, buffers, total_rows, mtp=mtp)
+
+
+def _attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False):
     """Execute owner history with four ordered batched collectives per chunk.
 
     Per-row causal selection stays canonical. The two KV-head groups produce
@@ -836,6 +859,12 @@ def attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False)
             raise ValueError("unsupported owner attention kernel family")
         if owner.native_states is None or any(id(state) not in owner.native_states for state, _, _ in segments):
             raise RuntimeError("native owner kernel and its canonical State catalogue were not prepared before serving")
+    from .compact_indexer import validate_mtp_indexer_frame, validate_target_indexer_frame
+
+    if mtp:
+        validate_mtp_indexer_frame(buffers, segments)
+    else:
+        validate_target_indexer_frame(buffers, segments)
     owner.wait_native_reuse()  # Prior raw-pointer readers retire before any new persistent cache write.
     if any(getattr(state, "graph_rows", None) is not None for state, _, _ in segments):
         raise ValueError("unique owner attention needs exact live rows; padded graph envelopes are not qualified")
@@ -848,18 +877,10 @@ def attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False)
         cursor = last
     if cursor != total_rows:
         raise ValueError("unique history segments do not cover the execution rows")
+    if mtp or segments[0][0].att_index[layer.index] == 0:
+        buffers.compact_indexer_stage.begin(mtp=mtp)
     for state, first, last in segments:
         prepare(buffers.pa, state, layer, weights, buffers, first, last, mtp=mtp)
-        ai = state.history_placement.target_layers if mtp else state.att_index[layer.index]
-        if rank == state.history_placement.indexer_owner(state.history_slot, ai,
-                                                         include_mtp=hasattr(state, "mtp_kc")):
-            raw, pooled = ((state.mtp_ikc, state.mtp_pooled) if mtp else (state.ikc[ai], state.pooled[ai]))
-            pos = state.mtp_pos if mtp else state.pos_dev
-            ops.qsa_pool(raw, pooled, pos, layer.attn.ik_scale, weights.inv_freq, c.eps,
-                         buffers.attn, last - first, rope=state.image_positions,
-                         delta=state.rope_delta_dev if state.image_positions is not None or state.rope_delta else None,
-                         length=0 if state.image_positions is None else state.image_positions.shape[0],
-                         sections=c.mrope_section, rope_scale=c.rope_attention_factor)
     for base in range(0, total_rows, owner.rows):
         count = min(owner.rows, total_rows - base)
         graph_manager = buffers.owner_graphs if native_selected else None
@@ -965,61 +986,180 @@ def attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False)
     return buffers.attn_o[:total_rows]
 
 
-def copy_prefix(destination, source, target_rows, mtp_rows):
-    """Relocate a reusable prefix through one bounded page, preserving codes.
+def prefix_retirement_failure(destination, source):
+    for state in (source, destination):
+        if state.compact_indexer is not None:
+            failure = state.compact_indexer.retirement_failure
+            if failure is not None:
+                return failure
+    return None
 
-    All TP ranks call this operation in the same order. It is outside graph
-    capture and the coordinator publishes the destination only after its normal
-    stream completion/state restore. No whole-history conversion is performed.
+
+def prefix_failure(destination, error, poison_control):
+    from tensorfold.cleanup import raise_failures
+
+    destination._history_error = error
+    try:
+        if poison_control is not None:
+            poison_control(error)
+        else:
+            from tensorfold.cuda.cohort import notify_failure
+
+            notify_failure()
+    except BaseException as notification:
+        raise_failures(error, (notification,))
+
+
+def check_prefix_retirement(destination, source, poison_control):
+    failure = prefix_retirement_failure(destination, source)
+    if failure is not None:
+        prefix_failure(destination, failure, poison_control)
+        raise failure
+
+
+def copy_prefix(destination, source, target_rows, mtp_rows, *, indexer_snapshot=None, poison_control=None):
+    """Move pooled prefixes and the exact captured pending tails, never old raw history.
+
+    All scratch and restore-tail payloads are acquired/voted before the first
+    transfer. An uncertain transfer poisons the cohort before ordinary ACKs.
     """
+    from tensorfold.cleanup import raise_failures
+    from tensorfold.cuda.memory_gate import NoRoom
+    from .compact_indexer import SCHEMA
+
     placement, comm = destination.history_placement, destination.history_comm
-    if comm is None or not hasattr(comm, "broadcast"):
-        raise ValueError("unique prefix copies require the TP8 broadcast communicator")
-    layers = [(layer, destination.kc[layer], source.kc[layer], target_rows,
-               destination.ikc[layer], source.ikc[layer], destination.pooled[layer], source.pooled[layer])
-              for layer in range(len(destination.kc))]
-    if mtp_rows:
-        layers.append((placement.target_layers, destination.mtp_kc, source.mtp_kc, mtp_rows,
-                       destination.mtp_ikc, source.mtp_ikc, destination.mtp_pooled, source.mtp_pooled))
-    for layer, dst, src, rows, draw, sraw, dpool, spool in layers:
-        frame = KVCache(placement.page_tokens, 1, dst.head_dim, dst.k.device, pair=dst.pair)
-        for page in range((rows + placement.page_tokens - 1) // placement.page_tokens):
-            count = min(placement.page_tokens, rows - page * placement.page_tokens)
-            for head in range(placement.global_kv_heads):
-                root = src.owners[page] % placement.group_size + head * placement.group_size
-                if destination.history_rank == root:
-                    offset = src.offsets[page]
-                    frame.k[:count].copy_(src.k[offset:offset + count])
-                    frame.v[:count].copy_(src.v[offset:offset + count])
-                    if dst.key_format.quantized:
-                        frame.ks[:count].copy_(src.ks[offset:offset + count])
-                    if dst.value_format.quantized:
-                        frame.vs[:count].copy_(src.vs[offset:offset + count])
-                for tensor in (frame.k[:count], frame.v[:count]):
-                    comm.broadcast(tensor, root)
-                if dst.key_format.quantized:
-                    comm.broadcast(frame.ks[:count], root)
-                if dst.value_format.quantized:
-                    comm.broadcast(frame.vs[:count], root)
-                if destination.history_rank // placement.group_size == head:
-                    dst.append(page * placement.page_tokens, frame.k[:count], frame.v[:count],
-                               frame.ks[:count], frame.vs[:count])
-        source_owner = placement.indexer_owner(source.history_slot, layer,
-                                               include_mtp=hasattr(source, "mtp_kc"))
-        target_owner = placement.indexer_owner(destination.history_slot, layer,
-                                               include_mtp=hasattr(destination, "mtp_kc"))
-        # Raw incomplete groups must be retained; pooled rows only cover fully
-        # formed groups. Their positional/rotation basis is unchanged.
-        frame_index = torch.empty((placement.page_tokens, destination.index_dim), dtype=draw.dtype, device=draw.device)
-        for original, copied, length in ((sraw, draw, rows), (spool, dpool, rows // destination.ratio)):
-            for start in range(0, length, placement.page_tokens):
-                count = min(placement.page_tokens, length - start)
-                view = frame_index[:count]
+    if comm is None or any(not hasattr(comm, name) for name in ("broadcast", "all_gather")):
+        raise ValueError("unique prefix copies require the TP8 data/status communicator")
+    def fatal(error):
+        prefix_failure(destination, error, poison_control)
+
+    def unretired():
+        return prefix_retirement_failure(destination, source)
+
+    failure = unretired()
+    if failure is not None:
+        fatal(failure)
+        raise failure
+    try:
+        for state in (source, destination):
+            for reader in tuple(state.history_native_readers):
+                reader.wait_native_reuse()
+    except BaseException as error:
+        fatal(error)  # A failed prior-reader fence is never fresh staging exhaustion.
+        raise
+    local_error, local_kind = None, 0
+    try:
+        if source.compact_indexer is None or destination.compact_indexer is None:
+            raise ValueError("unique prefix copies require matching compact indexer owners")
+        snapshot = (source.compact_indexer.snapshot(target_rows, mtp_rows)
+                    if indexer_snapshot is None else indexer_snapshot)
+        source.compact_indexer.validate_snapshot(snapshot, target_rows, mtp_rows)
+        lengths = destination.compact_indexer.lengths(target_rows, mtp_rows)
+        tails = tuple(None if entry is None else {
+            "origin": entry.origin, "length": length, "pooled_valid": length // destination.ratio,
+            "raw": torch.empty_like(entry.raw), "coordinates": torch.empty_like(entry.coordinates)}
+            for entry, length in zip(destination.compact_indexer.entries, lengths))
+        relocated = {"schema": SCHEMA, "lengths": lengths, "tails": tails}
+        model = destination.kc[0]
+        frame = KVCache(placement.page_tokens, 1, model.head_dim, model.k.device, pair=model.pair)
+        frame_index = torch.empty((placement.page_tokens, destination.index_dim), dtype=torch.float16, device=model.k.device)
+        frame_coordinates = torch.empty((4, 3), dtype=torch.int64, device=model.k.device)
+        layers = [(ordinal, destination.kc[ordinal], source.kc[ordinal], target_rows,
+                   destination.pooled[ordinal], source.pooled[ordinal]) for ordinal in range(len(destination.kc))]
+        if hasattr(destination, "mtp_kc"):
+            layers.append((placement.target_layers, destination.mtp_kc, source.mtp_kc, mtp_rows,
+                           destination.mtp_pooled, source.mtp_pooled))
+        transfer_tensors = [frame.k, frame.v, frame_index, frame_coordinates]
+        if frame.key_format.quantized:
+            transfer_tensors.append(frame.ks)
+        if frame.value_format.quantized:
+            transfer_tensors.append(frame.vs)
+        for _, dst, src, _, dpool, spool in layers:
+            transfer_tensors.extend((dst.k, dst.v, src.k, src.v, dpool, spool))
+            if dst.key_format.quantized:
+                transfer_tensors.extend((dst.ks, src.ks))
+            if dst.value_format.quantized:
+                transfer_tensors.extend((dst.vs, src.vs))
+        for collection in (snapshot["tails"], tails):
+            for tail in collection:
+                if tail is not None:
+                    transfer_tensors.extend((tail["raw"], tail["coordinates"]))
+        transfer_tensors = tuple(transfer_tensors)
+    except (MemoryError, torch.cuda.OutOfMemoryError) as error:
+        failure = unretired()
+        if failure is not None:
+            fatal(failure)
+            raise_failures(failure, (error,))
+        local_error, local_kind = error, 1
+    except ValueError as error:
+        failure = unretired()
+        if failure is not None:
+            fatal(failure)
+            raise_failures(failure, (error,))
+        local_error, local_kind = error, 2
+    except BaseException as error:
+        fatal(error)
+        raise
+    try:
+        destination.kv_status[0].fill_(local_kind)
+        destination.kv_status[1].fill_(-2)
+        comm.all_gather(destination.kv_status, destination._kv_peer_status)
+        kinds = [int(row[0]) for row in destination._kv_peer_status.cpu().tolist()]
+        destination.kv_status[0].zero_()
+    except BaseException as error:
+        fatal(error)
+        raise
+    if any(kinds):
+        ranks = [rank for rank, kind in enumerate(kinds) if kind]
+        if any(kind == 2 for kind in kinds):
+            raise ValueError(f"compact prefix snapshot refused on ranks {ranks}") from local_error
+        raise NoRoom(f"compact prefix staging unavailable on ranks {ranks}") from local_error
+    try:
+        with source.compact_indexer.transferring(destination.compact_indexer, transfer_tensors):
+            for layer, dst, src, rows, dpool, spool in layers:
+                for page in range((rows + placement.page_tokens - 1) // placement.page_tokens):
+                    count = min(placement.page_tokens, rows - page * placement.page_tokens)
+                    for head in range(placement.global_kv_heads):
+                        root = src.owners[page] % placement.group_size + head * placement.group_size
+                        if destination.history_rank == root:
+                            offset = src.offsets[page]
+                            frame.k[:count].copy_(src.k[offset:offset + count])
+                            frame.v[:count].copy_(src.v[offset:offset + count])
+                            if dst.key_format.quantized:
+                                frame.ks[:count].copy_(src.ks[offset:offset + count])
+                            if dst.value_format.quantized:
+                                frame.vs[:count].copy_(src.vs[offset:offset + count])
+                        for tensor in (frame.k[:count], frame.v[:count]):
+                            comm.broadcast(tensor, root)
+                        if dst.key_format.quantized:
+                            comm.broadcast(frame.ks[:count], root)
+                        if dst.value_format.quantized:
+                            comm.broadcast(frame.vs[:count], root)
+                        if destination.history_rank // placement.group_size == head:
+                            dst.append(page * placement.page_tokens, frame.k[:count], frame.v[:count],
+                                       frame.ks[:count], frame.vs[:count])
+                source_owner = placement.indexer_owner(source.history_slot, layer, include_mtp=hasattr(source, "mtp_kc"))
+                target_owner = placement.indexer_owner(destination.history_slot, layer, include_mtp=hasattr(destination, "mtp_kc"))
+                for first in range(0, rows // destination.ratio, placement.page_tokens):
+                    count = min(placement.page_tokens, rows // destination.ratio - first)
+                    view = frame_index[:count]
+                    if destination.history_rank == source_owner:
+                        view.copy_(spool[first:first + count])
+                    comm.broadcast(view, source_owner)
+                    if destination.history_rank == target_owner:
+                        dpool[first:first + count].copy_(view)
                 if destination.history_rank == source_owner:
-                    view.copy_(original[start:start + count])
-                comm.broadcast(view, source_owner)
+                    frame_index[:4].copy_(snapshot["tails"][layer]["raw"])
+                    frame_coordinates.copy_(snapshot["tails"][layer]["coordinates"])
+                comm.broadcast(frame_index[:4], source_owner)
+                comm.broadcast(frame_coordinates, source_owner)
                 if destination.history_rank == target_owner:
-                    copied[start:start + count].copy_(view)
+                    tails[layer]["raw"].copy_(frame_index[:4])
+                    tails[layer]["coordinates"].copy_(frame_coordinates)
+            return relocated
+    except BaseException as error:
+        fatal(error)
+        raise
 
 
 def begin_migration(state, degree, *, overlap_bytes=None):
@@ -1074,6 +1214,8 @@ def migrate_next_bundle(state):
     state.kv_check()
     if state.mtp_drafted or getattr(state, "target_tentative_length", state.pos) != state.pos:
         raise ValueError("resolve speculative rows before migrating a history bundle")
+    if state.compact_indexer is not None and state.compact_indexer.has_pending_target():
+        raise ValueError("resolve compact indexer appends before migrating history")
     comm, rank, placement = state.history_comm, state.history_rank, state.history_placement
     if comm is None or any(not hasattr(comm, name) for name in ("broadcast", "barrier", "all_gather")):
         raise ValueError("migration requires the active TP8 broadcast/barrier/status communicator")

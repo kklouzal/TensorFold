@@ -39,6 +39,14 @@ actual device and model gates remain open.
 Its optional native preparation section builds bounded partial attention graphs
 before admission; explicit qualification trials remain unqualified until the
 source-built V100 stack and actual device/model gates pass.
+The unique GPU-history source path keeps completed pooled indexer keys and a
+bounded four-row raw tail with coordinates, protected append/proposal state and
+cut snapshots. [Compact indexer contracts](docs/compact-indexer.md) describe
+rollback, prefix reuse and the pending device qualification.
+Its new positional profiles initially require unique history and use issued,
+generation-bound coordinate frames before computation. Replicated execution
+keeps its existing native/YaRN policy; new explicit profiles are refused there.
+These source contracts do not qualify extended context or media execution.
 The optional attention preparation policy can use fixed four rank KV-head
 groups; full TP8 weights and canonical indexer selection remain unchanged.
 Selected source foundation CCCL/CUTLASS headers are verified and included in
@@ -47,7 +55,11 @@ native build identities. These additions have no new V100 performance claim.
 Opt-in [serving profiles](docs/serving-profiles.md) implement model/context/KV/method
 transitions on the existing worker and communicator, including unavailable-state
 load retry. Host protocol/lifetime checks are separate from pending actual
-eight-V100 loading, quality and performance qualification.
+eight-V100 loading, quality and performance qualification. Prepared profiles
+bind the resolved target/companion position receipt and complete source closure
+for the adaptive TP8 unique-history layout. Other maintained layouts retain
+legacy source/CLI behavior. Explicit native/YaRN candidates remain unqualified
+until their runtime, method, media, capacity and quality gates pass.
 The initial compact Q4 candidate is the distinct `rotorquant-iso4-sm70-v1`
 format; `rotorquant-planar4-sm70-v1` remains its later equal-memory comparison.
 Wire/source checks and reference-stack compilation do not qualify either
@@ -725,6 +737,8 @@ The Flash Next single-GPU path supports affine4/group-32, EXL3 and ModelOpt NVFP
 Default EXL3 n-gram prefetch reads the mapped table. Page locking is optional and admitted against host/cgroup/device capacity; refusal leaves mappings pageable and evictable while preserving normal prefetch. There is no public `--no-prefetch` flag. The tested checkpoint has **30,948,556,800 bytes** of CPU expert authority and a **26,240,125,952-byte** native mapped n-gram file. Cached file pages consume system RAM even though the OS can reclaim them. See [RAM-backed experts](docs/recipes/ram-experts.md) for accounting, metrics and limitations.
 
 ## Context, RoPE and YaRN
+
+Flash Next SM70 unique TP8 histories now have an explicit [positional profile preparation contract](docs/position-profiles.md), including exact CPU range checks and separate target/MTP/draft bounds. `--position-profile-manifest` binds an immutable candidate; native/extended artifact, media and V100 execution qualification remain pending. Legacy replicated and DSpark paths retain their existing selection.
 
 Context means **prompt plus reply**, not reply length alone. An explicit reply limit is reserved before prefill; an omitted reply limit is capped by remaining context. Startup reports native/extended limits and affordable engine capacity. A positive configuration that cannot fit is refused rather than silently making all slots usable at that length.
 

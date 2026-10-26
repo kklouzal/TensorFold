@@ -648,7 +648,8 @@ def _close_reader(reader):
 
 
 def load(directory, manifest_path, device="cuda", *, tp=None, rope=None, eos_token_ids=None,
-         mtp=False, mtp_model_dir=None, _plan=None, _workspace=None, _weight_plan=None, **options):
+         mtp=False, mtp_model_dir=None, _plan=None, _workspace=None, _weight_plan=None,
+         position_profile=None, _position_prepared=None, **options):
     """Materialize one declared shared-family plan; never import through BF16 banks."""
     from tensorfold.cuda import precision
     from .sm70_mtp_weights import attach
@@ -662,6 +663,22 @@ def load(directory, manifest_path, device="cuda", *, tp=None, rope=None, eos_tok
     prototype, planner = model_plan(directory, manifest_path, tp, rope=rope, eos_token_ids=eos_token_ids) if _plan is None else _plan
     if not isinstance(planner, Planner) or planner.directory != Path(directory).resolve():
         raise ValueError("SM70 import plan belongs to another source directory")
+    if position_profile is not None:
+        from ..position_profile import PreparedPositionVectors
+
+        if (not isinstance(_position_prepared, PreparedPositionVectors)
+                or prototype.cfg.rope != position_profile.target.rope):
+            raise ValueError("SM70 positional import requires its exact prepared CPU policy")
+        _position_prepared.verify(position_profile, mtp_active=mtp)
+        prototype.meta["position_profile"] = position_profile
+        target_inv = _position_prepared.target_cpu
+    else:
+        if _position_prepared is not None:
+            raise ValueError("prepared SM70 positions lack their resolved profile")
+        with torch.inference_mode(False), torch.device("cpu"):
+            target_inv = prototype.cfg.rope.inverse_frequencies(torch)
+            if not bool(torch.isfinite(target_inv).all()) or not bool((target_inv > 0).all()):
+                raise ValueError("SM70 positions produce nonfinite or zero float32 inverse frequencies")
     planner.manifest.check_versions(directory)
     weight_plan = byte_plan(prototype, planner) if _weight_plan is None else _weight_plan
     width = max(prototype.cfg.moe_width, prototype.cfg.shared_width)
@@ -733,7 +750,7 @@ def load(directory, manifest_path, device="cuda", *, tp=None, rope=None, eos_tok
         embed = runtime.FloatEmbedding(materialize(prototype.embed[0]).weight)
         result = Weights(prototype.cfg, (embed,), [materialize(layer) for layer in prototype.layers],
                          materialize(prototype.mixer), materialize(prototype.head),
-                         prototype.cfg.rope.inverse_frequencies(torch).to(device), around_one=True)
+                         target_inv.to(device), around_one=True)
         result.meta.update(prototype.meta, ple_tables=tables, sm70_weight_workspace=workspace,
                            weight_plan=weight_plan,
                            family_source=planner.manifest.document["source"],

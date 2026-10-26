@@ -16,6 +16,74 @@ from test_dspark_taps_forward import cpu_weights
 from test_flashnext_dflash2 import make_weights, small_config
 
 
+@pytest.mark.parametrize("change", ["theta", "rotary", "native", "window", "selected", "coordinate", "missing"])
+def test_bound_dflash_role_refuses_incompatible_source_or_selected_envelope_before_weights(tmp_path, monkeypatch, change):
+    from tensorfold.families.qwen4_exp.cuda import dflash2_runtime
+    from tensorfold.families.qwen4_exp.position_profile import DFlashPositionRole
+    from test_flashnext_dflash2 import target
+
+    config, _ = make_weights(tmp_path)
+    plan = DFlash2Plan.read(tmp_path, tp=(0, 1))
+    weights = target(config)
+    role = DFlashPositionRole(config.theta, config.head_dim, config.context, 64, 64, config.window, "d" * 64)
+    fields = {"theta": {"theta": config.theta * 2}, "rotary": {"rotary_dim": config.head_dim * 2},
+              "native": {"native_context": config.context * 2}, "window": {"window_rows": config.window * 2},
+              "selected": {"max_rows": 63}, "coordinate": {"coordinate_limit": 63}}
+    weights.meta["position_profile"] = SimpleNamespace(dflash2=None if change == "missing" else replace(role, **fields[change]))
+    monkeypatch.setattr(dflash2_runtime, "load_shard", lambda *_a, **_kw: pytest.fail("invalid DF role loaded tensors"))
+    with pytest.raises(ValueError, match="positional source|selected window|absolute positions"):
+        DFlash2Runtime(weights, plan, context=64)
+    assert getattr(weights, "dflash2", None) is None
+
+
+def test_dflash_full_block_obeys_selected_scalar_envelope_without_target_yarn(tmp_path, monkeypatch):
+    from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.families.qwen4_exp.position_profile import DFlashPositionRole
+    from test_flashnext_dflash2 import target
+
+    config, _ = make_weights(tmp_path)
+    weights = target(config)
+    role = DFlashPositionRole(config.theta, config.head_dim, config.context, 6, 6, config.window, "d" * 64)
+    weights.meta["position_profile"] = SimpleNamespace(dflash2=role)
+    runtime = DFlash2Runtime(weights, DFlash2Plan.read(tmp_path, tp=(0, 1)), context=6)
+    sequence = SimpleNamespace(pos=0, slot_generation=0, dflash2=None)
+    runtime.init_state(sequence)
+    window = sequence.dflash2
+    window.append(torch.zeros((2, config.layers, 3, config.kv_heads, config.head_dim)).half(), 0)
+    sequence.pos = 3
+    monkeypatch.setattr(runtime.provider, "backbone", lambda *_a: pytest.fail("full draft block crossed selected limit"))
+    assert runtime.propose(sequence, 1, 1, Sampling(11), 4).tokens == ()
+    with pytest.raises(ValueError, match="absolute positions"):
+        runtime.provider.propose(window, 1, 1, Sampling(11), 4)
+    assert runtime.position_role is role and runtime.config.theta == config.theta
+    runtime.close_state(sequence)
+    runtime.close()
+
+
+def test_accepted_features_past_selected_envelope_refuse_before_projection_and_keep_owner(tmp_path, monkeypatch):
+    from test_flashnext_dflash2 import target
+
+    config, _ = make_weights(tmp_path)
+    runtime = DFlash2Runtime(target(config), DFlash2Plan.read(tmp_path, tp=(0, 1)), context=6)
+    sequence = SimpleNamespace(pos=5, slot_generation=0, dflash2=None)
+    runtime.init_state(sequence)
+    window = sequence.dflash2
+    window.append(torch.zeros((2, config.layers, 5, config.kv_heads, config.head_dim)).half(), 0)
+    buffers = SimpleNamespace(rows=2)
+    runtime.prepare_buffers(buffers)
+    capture = runtime.begin([(sequence, 0, 2)], buffers)
+    capture.owner.features[:2].zero_()
+    capture.seen = list(config.taps)
+    runtime.finish(capture, [(sequence, 0, 2)])
+    monkeypatch.setattr(runtime.provider, "materialize", lambda *_a: pytest.fail("out-of-domain projection executed"))
+    with pytest.raises(ValueError, match="selected absolute"):
+        runtime.commit(sequence, 2)
+    assert window.end == 5 and window.pending is not None and capture.owner.readers == 1
+    runtime.discard(sequence)
+    runtime.close_state(sequence)
+    runtime.close()
+
+
 @pytest.fixture
 def family(monkeypatch, tmp_path):
     weights = cpu_weights(monkeypatch)

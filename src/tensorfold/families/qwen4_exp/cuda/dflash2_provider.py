@@ -202,7 +202,7 @@ class DFlash2Provider:
             state.check()
             if type(count) is not int or not 1 <= count < c.block:
                 raise ValueError("DFlash2 chooses one/two/three proposals before a complete block-four draw")
-            if (state.end + c.block > c.context or type(anchor) is not int or not 0 <= anchor < c.vocab
+            if (state.end + c.block > min(c.context, state.context) or type(anchor) is not int or not 0 <= anchor < c.vocab
                     or position != state.end + 1):
                 raise ValueError("DFlash2 anchor/frontier/fixed block exceeds its supported absolute positions")
         hidden = self.backbone(states, anchors)[:, 1:].reshape(-1, c.hidden)

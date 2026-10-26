@@ -248,20 +248,14 @@ def test_packed_batch_refuses_writing_into_another_segments_immutable_source():
     validate(second)
 
 
-def test_packed_batch_reserves_mutation_versions_before_writing(monkeypatch):
-    import tensorfold.families.qwen4_exp.cuda.position_coordinates as implementation
+def test_packed_batch_reserves_mutation_versions_before_writing():
+    from tensorfold.cuda.sm70.tensor_mutation import MAX_MUTATION_VERSION
 
     class Frame:
         pass
     packed = torch.zeros(8, 3, dtype=torch.int64)
-    signature = implementation._signature
-
-    def exhausted(tensor, **options):
-        result = signature(tensor, **options)
-        return (*result[:-1], 2**32 - 2) if tensor.untyped_storage().data_ptr() == packed.data_ptr() else result
-
-    monkeypatch.setattr(implementation, "_signature", exhausted)
+    torch._C._autograd._unsafe_set_version_counter([packed], [MAX_MUTATION_VERSION - 1])
     with pytest.raises(ValueError, match="version exhausted"):
         copy_coordinate_batch((transfer(issue(), packed[:4]), transfer(issue(), packed[4:])),
                               owner=Frame(), max_rows=8)
-    assert torch.count_nonzero(packed) == 0 and packed._version == 0
+    assert torch.count_nonzero(packed) == 0 and packed._version == MAX_MUTATION_VERSION - 1

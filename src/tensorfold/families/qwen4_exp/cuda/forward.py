@@ -265,6 +265,12 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
     scale = c.head_dim ** -0.5
     rope_scale = c.rope_attention_factor
     sections = getattr(c, "mrope_section", (11, 11, 10))
+    inv_freq = w.inv_freq
+    if getattr(w, "positions", None) is not None:
+        from ..position_profile import position_for
+
+        position = position_for(w, mtp=mtp)
+        inv_freq, rope_scale, sections = position.inv_freq, position.amplitude, position.sections
     if getattr(b, "history_owner", None) is not None:
         from .history_owner import attention_layer
 
@@ -288,7 +294,7 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
         rope = st.image_positions
         length = 0 if rope is None else rope.shape[0]
         delta = st.rope_delta_dev if rope is not None or st.rope_delta else None
-        glue.attn_prep(b.pa[a0:a1], pos, a.q_scale, a.k_scale, a.iq_scale, w.inv_freq, b.q[a0:], cache.k, cache.v,
+        glue.attn_prep(b.pa[a0:a1], pos, a.q_scale, a.k_scale, a.iq_scale, inv_freq, b.q[a0:], cache.k, cache.v,
                        b.iq[a0:], ikc, c.eps, q_heads=c.heads, kv_heads=c.kv_heads, head_dim=c.head_dim,
                        index_heads=c.index_heads, index_dim=c.index_dim, ks=cache.ks, vs=cache.vs,
                        k_bits=st.kv_key_bits, k_codec=st.kv_key_codec,
@@ -301,7 +307,7 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
                          "valid_rows": getattr(st, "graph_rows", None)} if history else {})
         if b.prefill:
             if b.attn.qsa:
-                attn_mod.qsa_pool(ikc, pooled, pos, a.ik_scale, w.inv_freq, c.eps, b.attn, a1 - a0, rope=rope,
+                attn_mod.qsa_pool(ikc, pooled, pos, a.ik_scale, inv_freq, c.eps, b.attn, a1 - a0, rope=rope,
                                   delta=delta, length=length, sections=sections, rope_scale=rope_scale,
                                   **pool_history)
             for r0 in range(a0, a1, ATT_ROWS):
@@ -317,7 +323,7 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
                                    prompt=True)
             continue
         if b.attn.qsa:
-            attn_mod.qsa_select(b.iq[a0:a1], ikc, pooled, pos, a.ik_scale, w.inv_freq, c.eps, b.attn, a1 - a0,
+            attn_mod.qsa_select(b.iq[a0:a1], ikc, pooled, pos, a.ik_scale, inv_freq, c.eps, b.attn, a1 - a0,
                                 context=keys, rope=rope, delta=delta, length=length, sections=sections,
                                 rope_scale=rope_scale, **pool_history)
         # Unqualified decode windows use the original Torch operator at each
@@ -611,6 +617,13 @@ def candidates(w: Weights, b: Buffers, logits: torch.Tensor, R: int, *, id_map: 
 
 
 def stage(w: Weights, b: Buffers, windows: Sequence[tuple[State, Sequence[int]]], *, late: bool = False) -> list[Seg]:
+    context = b.input_preparation_context
+    if context is None:
+        return _stage(w, b, windows, late=late)
+    return context.prepare("target-stage", lambda: _stage(w, b, windows, late=late))
+
+
+def _stage(w: Weights, b: Buffers, windows: Sequence[tuple[State, Sequence[int]]], *, late: bool = False) -> list[Seg]:
     """Host work before a forward (token ids, n-gram rows into static buffers); returns each stream's segment.
 
     ``late`` (a concurrent round's window): the rows' n-gram ids are found now, but their table reads (an SSD read with
@@ -626,6 +639,9 @@ def stage(w: Weights, b: Buffers, windows: Sequence[tuple[State, Sequence[int]]]
     R = segs[-1][2]
     if R > b.rows:
         raise ValueError(f"window of {R} rows, buffers hold {b.rows}")
+    from .compact_indexer import stage_text_indexer_frame
+
+    stage_text_indexer_frame(b, segs)
     b.staged.synchronize()               # the previous step's copies out of the pinned buffers are done
     b.ids_host[:R].numpy()[:] = np.asarray([t for _, tokens in windows for t in tokens], dtype=np.int32)
     b.ids[:R].copy_(b.ids_host[:R], non_blocking=True)
@@ -680,12 +696,23 @@ def read_ahead(w: Weights, history: np.ndarray, tokens: Sequence[int]) -> None:
 
 
 def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True, context: int | None = None,
-            ends: Sequence[int] = (), cuts: Sequence[Cut] = (), features=None, check: bool = True):
+            ends: Sequence[int] = (), cuts: Sequence[Cut] = (), features=None, check: bool = True,
+            input_embeddings: torch.Tensor | None = None):
     """The forward's GPU work on staged rows (capturable); ``context`` bounds attention, ``ends`` get the head, ``cuts`` keep states.
     ``check=False``: the codec status stays pending for the caller's check (``_kv_check`` or ``KVWords``) before any
     of the frame's rows are used."""
 
     R = segs[-1][2]
+    if input_embeddings is not None and (
+            not isinstance(input_embeddings, torch.Tensor) or input_embeddings.shape != (R, w.cfg.hidden)
+            or input_embeddings.dtype != b.h.dtype or input_embeddings.device != b.h.device
+            or input_embeddings.requires_grad):
+        from .input_preparation import reject_prepared
+
+        reject_prepared(b, ValueError("merged target inputs must cover the admitted window on its exact dtype/device"))
+    from .compact_indexer import validate_target_indexer_frame
+
+    validate_target_indexer_frame(b, segs)
     runtime = getattr(w, "dspark", None)
     dflash2 = getattr(w, "dflash2", None)
     if runtime is not None and dflash2 is not None:
@@ -699,9 +726,12 @@ def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True,
             history_runtime.begin(segs, prefill=b.prefill)
         _kv_begin(segs)
         c = w.cfg
-        _embed(w, b.ids[:R], c.streams, b.h[:R])
-        if b.prefill:
-            image_rows.embed(segs, b, c.streams)
+        if input_embeddings is None:
+            _embed(w, b.ids[:R], c.streams, b.h[:R])
+            if b.prefill:
+                image_rows.embed(segs, b, c.streams)
+        else:
+            b.h[:R].view(R, c.streams, c.hidden).copy_(input_embeddings[:, None, :])
         if features is not None:
             target, source = features
             b.h.index_copy_(0, target, source.to(b.h.dtype).repeat(1, c.streams))
@@ -847,10 +877,22 @@ def converges(w: Weights) -> bool:
 
 
 def compute_mixed(w: Weights, dsegs: Sequence[Seg], db: Buffers, psegs: Sequence[Seg], pb: Buffers, *,
-                  ends: Sequence[int] = (), cuts: Sequence[Cut] = ()) -> tuple:
+                  ends: Sequence[int] = (), cuts: Sequence[Cut] = (),
+                  prefill_embeddings: torch.Tensor | None = None) -> tuple:
     """A decode window and a prompt pass in one forward, each on its own kernels and bits, experts read once."""
 
+    from .compact_indexer import validate_target_indexer_frame
+
+    validate_target_indexer_frame(db, dsegs)
+    validate_target_indexer_frame(pb, psegs)
     dflash2 = getattr(w, "dflash2", None)
+    if prefill_embeddings is not None and (
+            not isinstance(prefill_embeddings, torch.Tensor) or prefill_embeddings.shape != (psegs[-1][2], w.cfg.hidden)
+            or prefill_embeddings.dtype != pb.h.dtype or prefill_embeddings.device != pb.h.device
+            or prefill_embeddings.requires_grad):
+        from .input_preparation import reject_prepared
+
+        reject_prepared(pb, ValueError("merged mixed-prefill inputs differ from the admitted window"))
     d_capture = p_capture = None
     try:
         if dflash2 is not None:
@@ -868,8 +910,11 @@ def compute_mixed(w: Weights, dsegs: Sequence[Seg], db: Buffers, psegs: Sequence
         if Rp + Rd > pb.rows:
             raise ValueError(f"a pass of {Rp} rows and a window of {Rd} exceed the prompt buffers' {pb.rows}")
         _embed(w, db.ids[:Rd], c.streams, db.h[:Rd])
-        _embed(w, pb.ids[:Rp], c.streams, pb.h[:Rp])
-        image_rows.embed(psegs, pb, c.streams)
+        if prefill_embeddings is None:
+            _embed(w, pb.ids[:Rp], c.streams, pb.h[:Rp])
+            image_rows.embed(psegs, pb, c.streams)
+        else:
+            pb.h[:Rp].view(Rp, c.streams, c.hidden).copy_(prefill_embeddings[:, None, :])
         dp = pp = None
         for layer in w.layers:
             _pre_moe(layer, w, dsegs, db, Rd, dp)
@@ -913,8 +958,15 @@ def forward(w: Weights, st: State, b: Buffers, tokens: Sequence[int], *, logits:
 
     if cut is not None and not (b.prefill and cut.at == 0 and 0 < cut.row < len(tokens)):
         raise ValueError(f"a prompt chunk of {len(tokens)} rows has no kept point at row {cut.row}")
-    return compute(w, stage(w, b, [(st, tokens)]), b, logits=logits,
-                   cuts=() if cut is None else (cut,), features=features)
+    windows = [(st, tokens)]
+    segs = stage(w, b, windows)
+    if b.prefill:
+        from .media_mtp import target_inputs
+
+        with target_inputs(w, b, windows, segs) as merged:
+            return compute(w, segs, b, logits=logits, cuts=() if cut is None else (cut,), features=features,
+                           **({"input_embeddings": merged} if merged is not None else {}))
+    return compute(w, segs, b, logits=logits, cuts=() if cut is None else (cut,), features=features)
 
 
 @triton.jit
@@ -996,7 +1048,8 @@ def commit(w: Weights, st: State, b: Buffers, R: int, keep: int, at: int = 0, st
         raise
 
 
-def cut_snapshot(w: Weights, st: State, b: Buffers, cut: Cut, mtp_len: int) -> dict:
+def cut_snapshot(w: Weights, st: State, b: Buffers, cut: Cut, mtp_len: int, *, mtp_boundary=...,
+                 defer_media: bool = False) -> dict:
     """``State.snapshot`` at a kept point inside a prompt piece, before ``commit``: the n-gram windows after its rows."""
 
     c = w.cfg
@@ -1005,8 +1058,13 @@ def cut_snapshot(w: Weights, st: State, b: Buffers, cut: Cut, mtp_len: int) -> d
         before, tokens = st.ple_last
         history = np.concatenate([before, tokens[:cut.row]])[-(c.ngram_size - 1):]
         shift_windows(tail[None], b.ple_nrow[None, cut.at:cut.at + cut.row], cut.row, tail.shape[1])
+    media = {}
+    if getattr(st, "media_profile_identity", None) is not None and not defer_media:
+        from .media_mtp import snapshot_state
+
+        media = snapshot_state(st, position=st.pos + cut.row, mtp_len=mtp_len, boundary=mtp_boundary)
     return {"pos": st.pos + cut.row, "rec": cut.rec, "conv": cut.conv, "ple_tail": tail,
             "ple_history": None if history is None else history.copy(), "mtp_len": mtp_len,
-            **st.kv_snapshot_metadata(),
+            **st.kv_snapshot_metadata(), **media,
             **(w.dspark.snapshot(st, st.pos + cut.row) if getattr(w, "dspark", None) is not None else {}),
             **({"dflash2": w.dflash2.snapshot(st, st.pos + cut.row)} if getattr(w, "dflash2", None) is not None else {})}

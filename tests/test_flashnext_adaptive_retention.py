@@ -9,6 +9,7 @@ from tensorfold.families.qwen4_exp.cuda import prefixes
 
 class Slot:
     def __init__(self, number):
+        self.compact_indexer = None
         self.history_slot, self.slot_generation = number, 0
         self.pos = self.mtp_len = self.reset_calls = 0
         self.data, self.recurrence = bytearray(64), bytearray(16)

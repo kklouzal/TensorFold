@@ -137,6 +137,31 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
                                       max_http_connections=getattr(args, "max_http_connections", None))
         profile_root(serving_root)
     manifest = getattr(args, "execution_profile_manifest", None)
+    positions = getattr(args, "position_profile_manifest", None)
+    if positions is not None:
+        from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+
+        source = config_dir if config_dir is not None else getattr(args, "model", None)
+        if (backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next")
+                or source is None or resolve_gguf(source) is None and family_manifest is None):
+            raise ValueError("--position-profile-manifest requires an explicit Flash Next CUDA/SM70 provider")
+        if getattr(args, "draft_method", "auto") == "dspark":
+            raise ValueError("DSpark position profile manifests require a separately implemented positional role")
+        from tensorfold.cuda.capacity import config
+        from tensorfold.families.qwen4_exp.cuda.history_placement import HistoryPlacement
+
+        declared = config(source)
+        kv_heads = int(declared["num_key_value_heads"])
+        entry = resolve_gguf(source)
+        if entry is not None:
+            from tensorfold.families.qwen4_exp.gguf import metadata_config
+
+            actual = metadata_config(entry)["text_config"]["num_key_value_heads"]
+            if kv_heads != actual:
+                raise ValueError("declared KV geometry differs from authoritative GGUF layout")
+            kv_heads = actual
+        if history != "gpu" or not HistoryPlacement.supports(getattr(args, "tp", 1), kv_heads):
+            raise ValueError("--position-profile-manifest requires supported unique TP8 GPU histories")
     if manifest is not None or serving_root is not None:
         from tensorfold.families.qwen4_exp.gguf import resolve_gguf
 

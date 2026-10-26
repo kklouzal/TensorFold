@@ -96,6 +96,9 @@ class MultiDecoder:
         self.controller = None
         self.execution_manifest_installer = None
         self.poison_control = None
+        self.input_preparation_context = w.meta.get("input_preparation_context")
+        if self.input_preparation_context is not None:
+            self.input_preparation_context.bind_decoder(self)
         self._execution_plan = None
         self._round_migration_s = 0.0
         if w.meta.get("execution_provider") == "sm70":
@@ -442,6 +445,10 @@ class MultiDecoder:
         best = prefixes._best(self.kept, prompt) if reuse else None
         if best is not None:
             source, snap = best[1:3]
+            if source.compact_indexer is not None:
+                from .history_owner import check_prefix_retirement
+
+                check_prefix_retirement(source, source, self.poison_control)
             try:
                 source.kv_validate_snapshot(snap)
             except KVNumericError:
@@ -455,6 +462,8 @@ class MultiDecoder:
 
     def _remember(self, ids: list[int], st: State, snap: dict, tail) -> None:
         st.kv_validate_snapshot(snap)
+        if "media_state" in snap:
+            return  # cross-request media borrowing remains unqualified; recovery snapshots stay valid
         prefixes.remember(self, ids, st, snap, tail)
 
     def live(self) -> int:
@@ -712,6 +721,7 @@ class MultiDecoder:
         mtp = s.draft and self.depth > 0 and self.mbuf is not None
         try:
             begin = prefill_begin(e, s.prompt, mtp=mtp, resume=resume, new_sequence=False)
+            st.media_mtp_enabled = mtp
             if getattr(self.w, "dflash2", None) is not None:
                 self.w.dflash2.set_enabled(st, s.draft)
             image = s.vision is not None
@@ -981,11 +991,18 @@ class MultiDecoder:
         primary = None
         try:
             try:
-                self._read_ahead(pieces)
-                segs = stage(self.w, self.pbuf, [(s.st, s.prompt[a:a + n]) for s, a, n in pieces])
-                ends, cuts = self._end_rows(pieces, segs), self._cuts(pieces, segs)
+                context = getattr(self.pbuf, "input_preparation_context", None)
+
+                def operation():
+                    return self._prepare_pass(pieces)
+
+                windows, segs, ends, cuts = operation() if context is None else context.prepare("prefill-window", operation)
                 try:
-                    logits = compute(self.w, segs, self.pbuf, logits=bool(ends), ends=ends, cuts=cuts)
+                    from .media_mtp import target_inputs
+
+                    with target_inputs(self.w, self.pbuf, windows, segs) as merged:
+                        logits = compute(self.w, segs, self.pbuf, logits=bool(ends), ends=ends, cuts=cuts,
+                                         **({"input_embeddings": merged} if merged is not None else {}))
                 except BaseException as primary:
                     if self.controller is not None:
                         self.controller.work_observations.incomplete(primary)
@@ -997,6 +1014,10 @@ class MultiDecoder:
                 lasts = self._absorb(pieces, segs, cuts)
                 completed = True
             except Exception as exc:                         # noqa: BLE001  (these requests fail, the others go on)
+                if getattr(self.pbuf, "input_preparation_context", None) is not None:
+                    from .input_preparation import reject_prepared
+
+                    reject_prepared(self.pbuf, exc)
                 return self._failed(pieces, exc)
             return self._joined(pieces, heads, lasts, (time.perf_counter() - t0) / len(pieces))
         except BaseException as error:
@@ -1014,6 +1035,13 @@ class MultiDecoder:
                         elapsed_s=time.perf_counter() - t0)
                 except BaseException as observation:
                     raise_failures(primary, [observation])
+
+    def _prepare_pass(self, pieces):
+        """Build a complete local prompt frame inside its one cohort phase."""
+        self._read_ahead(pieces)
+        windows = [(s.st, s.prompt[a:a + n]) for s, a, n in pieces]
+        segs = stage(self.w, self.pbuf, windows)
+        return windows, segs, self._end_rows(pieces, segs), self._cuts(pieces, segs)
 
     def _read_ahead(self, pieces) -> None:
         """Overlap the next piece's n-gram reads with this pass."""
@@ -1064,6 +1092,8 @@ class MultiDecoder:
         """After a pass's forward: each prompt's last row and kept point, the MTP head's absorb, the commits."""
 
         _kv_check(segs, comm=self.w.comm)
+        if any(getattr(s.st, "media_input_span", None) is not None for s, _a, _n in pieces):
+            return self._absorb_ready(pieces, segs, cuts)
         lasts = [self.pbuf.streams[a1 - 1:a1].clone() for _, _, a1 in segs]
         at, points = {(cut.at, cut.row): cut for cut in cuts}, []
         for (s, a, n), (st, a0, _) in zip(pieces, segs):      # before the MTP head writes the pass's streams
@@ -1091,7 +1121,7 @@ class MultiDecoder:
             for st, nxt, _ in absorb:
                 st.set_mtp_len(st.mtp_len + len(nxt))
         for s, mtp_len, _, snap in points:
-            if snap is not None and getattr(s.st, "indexer_history_owner", None) is not None:
+            if snap is not None and (s.st.compact_indexer is not None or getattr(s.st, "indexer_history_owner", None) is not None):
                 snap.update(s.st.indexer_snapshot_metadata(snap["pos"], mtp_len))
         dflash = getattr(self.w, "dflash2", None)
         for (s, a, n), (st, a0, _) in zip(pieces, segs):
@@ -1101,9 +1131,76 @@ class MultiDecoder:
             self._commit_dflash([(state, end - begin) for state, begin, end in segs], prefill=True)
         for s, mtp_len, tail, snap in points:            # a point that ends its piece: the state as committed
             state = snap if snap is not None else {**s.st.snapshot(), "mtp_len": mtp_len}
-            if snap is None and getattr(s.st, "indexer_history_owner", None) is not None:
+            if snap is None and (s.st.compact_indexer is not None or getattr(s.st, "indexer_history_owner", None) is not None):
                 state.update(s.st.indexer_snapshot_metadata(s.st.pos, mtp_len))
             self.fills[s.sid][3].append((state, tail))
+        return lasts
+
+    def _absorb_ready(self, pieces, segs, cuts):
+        """Commit actual merged input, then rebuild each method's own frontier.
+
+        The target's pending HC views are copied by one bounded MTP staging
+        operation before that MTP pass reuses pbuf.streams. Saved/cut boundaries
+        own one complete HC row and its coordinates, never a full-prefix array.
+        """
+        from .media_mtp import CommittedMTPChunk, condition_chunks, snapshot_state
+
+        at = {(cut.at, cut.row): cut for cut in cuts}
+        lasts, points, chunks, chunk_streams = [], [], [], []
+        starts = {}
+        for (s, start, count), (st, begin, end) in zip(pieces, segs):
+            mtp = self.fills[s.sid][1]
+            media = st.media_input_span is not None
+            checkpoints = tuple(self._points(s, start, count))
+            lasts.append(self.pbuf.streams[end - 1:end].clone() if mtp and not media else None)
+            for cut_at in checkpoints:
+                row = cut_at - start
+                valid = max(0, cut_at - 1) if media and mtp else st.mtp_len + row - 1 if mtp else st.mtp_len
+                tail = self.pbuf.streams[begin + row - 1:begin + row].clone() if mtp and not media else None
+                cut = at.get((begin, row))
+                snap = (None if cut is None else cut_snapshot(self.w, st, self.pbuf, cut, valid,
+                                                               **({"defer_media": True} if media else {})))
+                points.append((s, cut_at, valid, tail, snap, media))
+            if mtp:
+                starts[s.sid] = st.mtp_len
+                chunks.append(CommittedMTPChunk(st, s.prompt, start, start + count,
+                                                self.pbuf.streams[begin:end], tuple(k for k in checkpoints if k < start + count)))
+                chunk_streams.append(s)
+        dflash = getattr(self.w, "dflash2", None)
+        for (_s, _a, count), (st, begin, _end) in zip(pieces, segs):
+            commit(self.w, st, self.pbuf, count, count, at=begin,
+                   **({"commit_dflash": False} if dflash is not None else {}))
+        if dflash is not None:
+            self._commit_dflash([(st, end - begin) for st, begin, end in segs], prefill=True)
+        prepared = {}
+        if chunks:
+            try:
+                results = condition_chunks(self.w, self.pbuf, chunks)
+            except BaseException as primary:
+                if self.controller is not None:
+                    self.controller.work_observations.incomplete(primary)
+                raise
+            for s, result in zip(chunk_streams, results):
+                prepared[s.sid] = result
+                if self.controller is not None and s.st.mtp_len > starts[s.sid]:
+                    self.controller.work_observations.mtp([(s.st, 0, s.st.mtp_len - starts[s.sid])],
+                                                         role="prefill", position=starts[s.sid])
+            for index, (s, _a, _n) in enumerate(pieces):
+                if s.sid in prepared and prepared[s.sid][0] is not None:
+                    lasts[index] = prepared[s.sid][0].hidden  # explicit alias to the State-owned boundary
+        for s, cut_at, valid, tail, snap, media in points:
+            if snap is None:
+                snap = {**s.st.snapshot(), "mtp_len": valid}
+            elif media:
+                boundary = prepared[s.sid][1][cut_at] if self.fills[s.sid][1] else None
+                snap.update(snapshot_state(s.st, position=cut_at, mtp_len=valid, boundary=boundary, take_boundary=True))
+            snap.update(s.st.indexer_snapshot_metadata(snap["pos"], valid))
+            if media and self.fills[s.sid][1]:
+                tail = snap["media_state"]["mtp_boundary"]["hidden"]  # one protected copy, two logical references
+            self.fills[s.sid][3].append((snap, tail))
+        for s, _a, _n in pieces:
+            if s.st.media_input_span is not None:
+                s.st.retire_media_input_span(cancelled=False)
         return lasts
 
     def _failed(self, pieces, exc: Exception) -> list[Stream]:
@@ -1207,7 +1304,7 @@ class MultiDecoder:
                 mtp_len = s.st.mtp_len - 1 if mtp else s.st.mtp_len        # as a point ending a piece keeps it
                 try:
                     state = {**s.st.snapshot(), "mtp_len": mtp_len}
-                    if getattr(s.st, "indexer_history_owner", None) is not None:
+                    if s.st.compact_indexer is not None or getattr(s.st, "indexer_history_owner", None) is not None:
                         state.update(s.st.indexer_snapshot_metadata(s.st.pos, mtp_len))
                     self._remember(list(s.prompt[:at]), s.st, state, tail)
                 except Exception as exc:                 # noqa: BLE001  its reply is the error; its slot holds nothing
@@ -1315,20 +1412,31 @@ class MultiDecoder:
         self.buf.rotor_lookup = self._rotor_lookup(live[0], len(live))
         self.pbuf.rotor_lookup = False  # any overlapping prompt invalidates the exclusive-request Region
         t0 = time.perf_counter() if draft_started is None else draft_started
-        windows = [(s.st, [s.out[-1]] + list(s.drafts)) for s in live]
-        # the n-gram rows are read once the forward reaches their layer, behind the layers before it
-        segs = stage(self.w, self.buf, windows, late=True)
+        def prepare_decode():
+            windows = [(s.st, [s.out[-1]] + list(s.drafts)) for s in live]
+            # N-gram rows are read behind the target layers before their layer.
+            return windows, stage(self.w, self.buf, windows, late=True)
+
+        context = getattr(self.buf, "input_preparation_context", None)
+        windows, segs = prepare_decode() if context is None else context.prepare("decode-window", prepare_decode)
         # a pass shares the round's forward only where their experts share a launch; else _fill ran it between rounds
         pieces, psegs = (self._pieces(self._pass_rows()) if self.filling and self.converged else []), None
         marks = self._output_marks([*live, *(s for s, _, _ in pieces)]) if self.controller is not None else None
-        cuts = []
+        cuts, pwindows, pends = [], None, None
         if pieces:
             self._note_passed(pieces)
             try:
-                self._read_ahead(pieces)
-                psegs = stage(self.w, self.pbuf, [(s.st, s.prompt[a:a + n]) for s, a, n in pieces])
-                cuts = self._cuts(pieces, psegs)
+                context = getattr(self.pbuf, "input_preparation_context", None)
+
+                def operation():
+                    return self._prepare_pass(pieces)
+
+                pwindows, psegs, pends, cuts = operation() if context is None else context.prepare("mixed-prefill-window", operation)
             except Exception as exc:                     # noqa: BLE001  (the pass's requests fail, the round goes on)
+                if getattr(self.pbuf, "input_preparation_context", None) is not None:
+                    from .input_preparation import reject_prepared
+
+                    reject_prepared(self.pbuf, exc)
                 ended += self._failed(pieces, exc)
                 pieces = []
         held = [self.held.pop(s.sid, []) for s in live]
@@ -1339,8 +1447,11 @@ class MultiDecoder:
             self.w, segs, mtp=False, tables=self.step_tables, rotor_lookup=self.buf.rotor_lookup))
         try:
             if pieces:                                 # the window and the pass: each layer's experts once for both
-                pends = self._end_rows(pieces, psegs)
-                logits, heads = compute_mixed(self.w, segs, self.buf, psegs, self.pbuf, ends=pends, cuts=cuts)
+                from .media_mtp import target_inputs
+
+                with target_inputs(self.w, self.pbuf, pwindows, psegs) as merged:
+                    logits, heads = compute_mixed(self.w, segs, self.buf, psegs, self.pbuf, ends=pends, cuts=cuts,
+                                                  **({"prefill_embeddings": merged} if merged is not None else {}))
                 heads = heads[:len(pends)].clone() if pends else None
             else:                                      # a captured forward when one serves this round, else eager
                 logits = self.graphs.verify_forward(segs) if self.graphs is not None else None
@@ -1602,13 +1713,17 @@ class MultiDecoder:
         todo = [(s, a0, keep) for s, a0, keep in streams if self.mbuf is not None]
         if not todo:
             return
-        for s, _, _ in todo:
-            st = s.st
-            if st.mtp_drafted:
-                st.set_mtp_len(st.mtp_len - st.mtp_drafted)
-                st.mtp_drafted = 0
-        windows = [(s.st, keep, self.buf.streams[a0:a0 + len(keep)]) for s, a0, keep in todo]
-        segs = mtp_stage(self.mbuf, windows)
+        def prepare_refresh():
+            for s, _, _ in todo:
+                st = s.st
+                if st.mtp_drafted:
+                    st.set_mtp_len(st.mtp_len - st.mtp_drafted)
+                    st.mtp_drafted = 0
+            windows = [(s.st, keep, self.buf.streams[a0:a0 + len(keep)]) for s, a0, keep in todo]
+            return mtp_stage(self.mbuf, windows)
+
+        context = getattr(self.mbuf, "input_preparation_context", None)
+        segs = prepare_refresh() if context is None else context.prepare("mtp-refresh-window", prepare_refresh)
         proposing = any(room[s.sid] > 0 for s, _, _ in todo)
         logits = self._mtp(segs) if proposing else self._mtp(segs, logits=False)
         if self.controller is not None:
@@ -1661,8 +1776,13 @@ class MultiDecoder:
                     nxt.append((s, row, d))
             if not nxt:
                 return
-            windows = [(s.st, [d], self.mbuf.streams[row:row + 1]) for s, row, d in nxt]
-            segs = mtp_stage(self.mbuf, windows)
+            for stream, _, _ in nxt:
+                stream.st.begin_mtp_proposals()
+            def prepare_proposal():
+                windows = [(s.st, [d], self.mbuf.streams[row:row + 1]) for s, row, d in nxt]
+                return mtp_stage(self.mbuf, windows)
+
+            segs = prepare_proposal() if context is None else context.prepare("mtp-proposal-window", prepare_proposal)
             logits = self._mtp(segs)
             if self.controller is not None:
                 self.controller.work_observations.mtp(segs, role="proposal")
@@ -1675,7 +1795,7 @@ class MultiDecoder:
             words = KVWords(segs, self.kv_host, chained)  # the next pick's readback checks them (a step has one)
             active = [(s, a0) for (s, _, _), (_, a0, _) in zip(nxt, segs)]
 
-    def _mtp(self, segs: list, *, logits: bool = True) -> torch.Tensor | None:
+    def _mtp(self, segs: list, *, logits: bool = True, next_inputs: torch.Tensor | None = None) -> torch.Tensor | None:
         """An MTP step over every drafting stream, its attention one launch a kernel for all of them."""
 
         self.mbuf.rotor_lookup = False
@@ -1685,9 +1805,12 @@ class MultiDecoder:
         self.mbuf.attn_step = (None if self.mbuf.h.dtype == torch.float16 else attn_multi.Step(
             self.w, segs, mtp=True, tables=self.mtp_tables, rotor_lookup=self.mbuf.rotor_lookup))
         try:                                             # the caller checks the step's status
-            out = self.graphs.mtp_step(segs) if logits and self.graphs is not None else None
+            out = (self.graphs.mtp_step(segs)
+                   if logits and self.graphs is not None and next_inputs is None
+                   and not any(getattr(st, "media_profile_identity", None) is not None for st, _a, _z in segs) else None)
             if out is None:
-                out = mtp_compute(self.w, segs, self.mbuf, check=False, logits=logits)
+                out = mtp_compute(self.w, segs, self.mbuf, check=False, logits=logits,
+                                  **({"next_inputs": next_inputs} if next_inputs is not None else {}))
             if self.w.comm is not None:
                 _kv_check(segs, comm=self.w.comm, workspace=getattr(self, "kv_cohort", None))
             return out
