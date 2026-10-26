@@ -7,6 +7,9 @@ import ctypes.util
 import glob
 import importlib.util
 import os
+import re
+import secrets
+import socket
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -19,6 +22,180 @@ from tensorfold.cleanup import raise_failures, rollback
 _DTYPES = {torch.float32: 7, torch.bfloat16: 9, torch.int32: 2, torch.int64: 4,
            torch.uint8: 1, torch.int8: 0, torch.float16: 6}
 BACKEND_ENV = "TF_COMM_BACKEND"
+
+
+def validate_store_backend(store, expected: bool) -> None:
+    """Check the client's configured flag; this does not attest its daemon."""
+    try:
+        actual = getattr(store, "libuvBackend", None)
+        if type(actual) is not bool or actual is not expected:
+            raise ValueError(f"the prepared TCPStore backend requires use_libuv={expected}; actual={actual!r}")
+    finally:
+        store = None
+
+
+def _agent_store_reuse(port: int) -> bool:
+    """Only exclude the native predicate that can suppress a server bind error.
+
+    Pinned c10d getCvarBool lowercases without stripping; getCvarInt uses
+    std::stoi's signed decimal prefix. Invalid values cannot enable fallback:
+    native parsing throws on bind failure, but is unused on successful bind.
+    """
+    if os.environ.get("TORCHELASTIC_USE_AGENT_STORE", "").lower() not in {"y", "yes", "1", "t", "true"}:
+        return False
+    value = os.environ.get("MASTER_PORT")
+    if value is None:
+        parsed = 0
+    else:
+        match = re.match(r"[ \t\n\r\v\f]*([+-]?)([0-9]+)", value)
+        if match is None:
+            return False
+        digits = match[2].lstrip("0")
+        if len(digits) > 10:
+            return False  # Native signed-int conversion cannot succeed.
+        parsed = int(digits or "0") * (-1 if match[1] == "-" else 1)
+        if not -(2**31) <= parsed < 2**31:
+            return False
+    return parsed == port
+
+
+def _guard_owned_server(port):
+    if _agent_store_reuse(port):
+        raise ValueError("adaptive unique profile cannot establish daemon ownership with active native agent-store reuse")
+
+
+class _TCPStoreOrigin:
+    """Process-local factory provenance, retained with its exact native Store.
+
+    Only guarded rank0 creation issues daemon ownership; client flags alone do
+    not. The existing NCCL cohort verifies that issuer before adaptive unique-profile use.
+    """
+
+    def validate(self, store, rank, world, *, verified=False):
+        try:
+            if (self.retired or self.pid != os.getpid() or self.store is not store or self.rank != rank or self.world != world
+                    or self.server_owned is not (rank == 0) or verified and not self.verified):
+                raise ValueError("adaptive unique profile requires this process's owned TCPStore/cohort origin")
+            validate_store_backend(store, False)
+        finally:
+            store = None
+
+    def adopt(self, token):
+        if self.retired or self.adopted_by is not None:
+            raise ValueError("owned TCPStore origin has already transferred or retired")
+        self.adopted_by = token
+
+    def retire(self, token=None):
+        if self.retired:
+            return
+        if self.adopted_by is not token:
+            raise RuntimeError("only the owning communicator may retire this Store origin")
+        listener = self.listener
+        if listener is not None:
+            if listener.phase in ("native_handoff", "unresolved"):
+                from .local_store import UnresolvedStoreOwner
+
+                raise UnresolvedStoreOwner(listener)
+            listener.store = None
+        self.store = None
+        self.verified = False
+        self.retired = True  # Publish last: an interrupted retirement remains safely retryable.
+
+    def record(self):
+        return {"use_libuv": False, "rank0_owned_server": self.server_owned,
+                "cohort_verified": self.verified, "retired": self.retired,
+                "source": "guarded-process-factory"}
+
+
+def create_owned_tcp_store(rank: int, world: int, master: str, port: int, *, timeout_s: float):
+    """Create the selected legacy Store; never enable native listener reuse."""
+    from .local_store import open_bound_store
+
+    if (type(world) is not int or not 1 <= world <= 2**31 - 1 or type(rank) is not int or not 0 <= rank < world
+            or type(port) is not int or not 0 <= port <= 65535):
+        raise ValueError("owned TCPStore requires valid integer rank/world/port")
+    if rank == 0:
+        _guard_owned_server(port)
+    owner = _TCPStoreOrigin()
+    owner.pid, owner.rank, owner.world = os.getpid(), rank, world
+    owner.server_owned, owner.verified, owner.retired = False, False, False
+    owner.adopted_by = owner.store = None
+    owner.listener = None
+    try:
+        # The FD API inherits the shared no-constructor-barrier contract. The
+        # existing CPU policy and NCCL cohort agreements admit all workers.
+        if rank:
+            owner.store = open_bound_store(master, port, world, rank, timeout_s=timeout_s,
+                                            family=socket.AF_INET, bind_host="")
+        else:
+            families = list(dict.fromkeys(row[0] for row in socket.getaddrinfo(master or "localhost", port,
+                type=socket.SOCK_STREAM) if row[0] in (socket.AF_INET, socket.AF_INET6)))
+            for family in families:
+                try:
+                    owner.store = open_bound_store(master, port, world, rank, timeout_s=timeout_s,
+                        family=family, bind_host="::" if family == socket.AF_INET6 else "0.0.0.0",
+                        register=lambda listener: setattr(owner, "listener", listener),
+                        before_handoff=lambda actual: _guard_owned_server(actual) if actual != port else None)
+                    break
+                except OSError:
+                    if owner.listener is None or owner.listener.phase != "retired":
+                        raise
+                    if family == families[-1]:
+                        raise
+            if owner.store is None:
+                raise ValueError("adaptive unique profile master has no supported TCP address family")
+            _verify_owned_store_endpoint(owner, timeout_s=timeout_s)
+            owner.server_owned = True
+        validate_store_backend(owner.store, False)
+        return owner
+    except BaseException as primary:
+        rollback(owner, primary, owner.retire)
+
+
+def _verify_owned_store_endpoint(origin, *, timeout_s):
+    """A fresh independent nonce ties the configured client to the exact FD.
+
+    The family comes from the socket we bound and handed to native code; no
+    dual-stack or hostname-locality assumption is made. This is endpoint
+    identity within the existing trusted Store cohort, not authentication.
+    """
+    from datetime import timedelta
+    from torch.distributed import TCPStore
+
+    key, value = "tf_owned_store/v1/" + secrets.token_hex(16), secrets.token_bytes(32)
+    client, attempted, primary = None, False, None
+    try:
+        host = "::1" if origin.listener.socket.family == socket.AF_INET6 else "127.0.0.1"
+        client = TCPStore(host, origin.store.port, None, False, timeout=timedelta(seconds=timeout_s),
+                           use_libuv=False, wait_for_workers=False)
+        attempted = True
+        client.set(key, value)
+        if client.get(key) != value:  # Same-connection reply fences the reply-free SET.
+            raise ValueError("owned TCPStore endpoint nonce was corrupted")
+        if not origin.store.check([key]) or origin.store.get(key) != value:
+            raise ValueError("configured master does not reach the owned TCPStore listener")
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        try:
+            if client is not None and attempted:
+                client.delete_key(key)
+        except BaseException as cleanup:
+            if primary is not None:
+                raise_failures(primary, [cleanup])
+            raise
+        finally:
+            client = None
+
+
+def validate_store_origin(origin, store, rank, world, *, verified=False):
+    try:
+        if type(origin) is not _TCPStoreOrigin:
+            raise ValueError("adaptive unique profile refuses a borrowed Store without owned daemon/cohort provenance")
+        origin.validate(store, rank, world, verified=verified)
+    finally:
+        store = None
 
 
 class Comm(Protocol):
@@ -112,14 +289,43 @@ class NCCL:
         """An empty valid owner; journal it before calling one-shot ``open``."""
         self._close_lock = threading.Lock()
         self.store = self.lib = self.device = None
+        self.store_origin = None
+        self._store_origin_token = object()
         self.comm = ctypes.c_void_p()
         self.closed = self.retired = False
         self._native_release_started = self._native_retired = False
         self._release_error = None
         self._opened = False
+        self.native_state_slots_highwater = 0
+        self.native_nofile_hard_limit = None
+
+    def bind_native_nofile(self, limit: int) -> None:
+        """Native socket/vector capacity survives model drains and lower limits."""
+        if type(limit) is not int or not 0 < limit < 1 << 63:
+            raise ValueError("native metadata requires a finite positive hard descriptor limit")
+        with self._close_lock:
+            if self.closed or not self._opened:
+                raise RuntimeError("native metadata binding requires an open communicator")
+            if self.native_nofile_hard_limit is not None and self.native_nofile_hard_limit != limit:
+                raise ValueError("the native hard descriptor limit is fixed for this communicator lifetime")
+            self.native_nofile_hard_limit = limit
+
+    def note_native_state_slots(self, count: int) -> None:
+        """Keep the paid Store metadata bound across in-process model drains.
+
+        Capacity probes only read this field. The selected count is reserved
+        before warmup can grow native buckets; failed warmup does not lower it.
+        Transport wrappers delegate this method to the same persistent owner.
+        """
+        if type(count) is not int or not 0 < count < 1 << 63:
+            raise ValueError("native State reservation requires a positive signed-63 count")
+        with self._close_lock:
+            if self.closed or not self._opened:
+                raise RuntimeError("native State reservation requires an open communicator")
+            self.native_state_slots_highwater = max(self.native_state_slots_highwater, count)
 
     def open(self, rank: int, world: int, master: str, port: int, *, timeout_s: float = 600,
-             key: str = "tf_nccl_uid", store=None) -> None:
+             key: str = "tf_nccl_uid", store=None, use_libuv: bool | None = None, store_origin=None) -> None:
         """Acquire into a published slot; failure closes or retains that slot.
 
         Native init writes directly into ``comm`` before Python regains control.
@@ -132,56 +338,100 @@ class NCCL:
                 if self.closed or self._opened:
                     raise RuntimeError("communicator open is one-shot")
                 acquiring = True
-                self._initialize(rank, world, master, port, timeout_s=timeout_s, key=key, store=store)
+                self._initialize(rank, world, master, port, timeout_s=timeout_s, key=key, store=store,
+                                 use_libuv=use_libuv, store_origin=store_origin)
                 self._opened = True
         except BaseException as error:
             if not acquiring:
                 raise
             rollback(self, error, lambda: self.close(abort=True))
+        finally:
+            store = store_origin = None  # Failure tracebacks cannot keep a retired owned listener alive.
 
     def _initialize(self, rank: int, world: int, master: str, port: int, *, timeout_s: float = 600,
-                    key: str = "tf_nccl_uid", store=None) -> None:
-        from datetime import timedelta
-        from math import isfinite
+                    key: str = "tf_nccl_uid", store=None, use_libuv: bool | None = None, store_origin=None) -> None:
+        try:
+            from datetime import timedelta
+            from math import isfinite
 
-        if (type(world) is not int or not 1 <= world <= 2**31 - 1
-                or type(rank) is not int or not 0 <= rank < world
-                or type(port) is not int or not 0 <= port <= 65535 or not isinstance(master, str)):
-            raise ValueError("NCCL requires integer world/rank/port ranges and a master hostname")
-        if (isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float))
-                or not isfinite(timeout_s) or timeout_s <= 0
-                or not isinstance(key, str) or not key):
-            raise ValueError("NCCL requires a positive finite timeout and nonempty rendezvous key")
-        from torch.distributed import TCPStore
+            if (type(world) is not int or not 1 <= world <= 2**31 - 1
+                    or type(rank) is not int or not 0 <= rank < world
+                    or type(port) is not int or not 0 <= port <= 65535 or not isinstance(master, str)):
+                raise ValueError("NCCL requires integer world/rank/port ranges and a master hostname")
+            if (isinstance(timeout_s, bool) or not isinstance(timeout_s, (int, float))
+                    or not isfinite(timeout_s) or timeout_s <= 0
+                    or not isinstance(key, str) or not key):
+                raise ValueError("NCCL requires a positive finite timeout and nonempty rendezvous key")
+            if use_libuv is not None and type(use_libuv) is not bool:
+                raise ValueError("use_libuv must be an explicit boolean or None for the existing default")
+            if store is not None and use_libuv is False:
+                validate_store_origin(store_origin, store, rank, world)  # Before NCCL or any Store mutation.
+            from torch.distributed import TCPStore
 
-        self.rank, self.world = rank, world
-        self.lib = _library()
-        lib = self.lib
-        lib.ncclGetErrorString.restype = ctypes.c_char_p
-        lib.ncclGetErrorString.argtypes = [ctypes.c_int]
-        lib.ncclGetUniqueId.argtypes = [ctypes.POINTER(_UniqueId)]
-        lib.ncclCommInitRank.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_int, _UniqueId, ctypes.c_int]
-        lib.ncclAllGather.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_void_p,
-                                      ctypes.c_void_p]
-        for function in (lib.ncclCommDestroy, lib.ncclCommAbort):
-            function.argtypes = [ctypes.c_void_p]
-            function.restype = ctypes.c_int
-        self.store = store if store is not None else TCPStore(master, port, world, rank == 0,
-                                                             timeout=timedelta(seconds=timeout_s))
-        uid = _UniqueId()
-        if rank == 0:
-            self._check(self.lib.ncclGetUniqueId(ctypes.byref(uid)))
-            self.store.set(key, bytes(uid.internal))
-        else:
-            raw = self.store.get(key)
-            if not isinstance(raw, bytes) or len(raw) != ctypes.sizeof(_UniqueId):
-                raise ValueError("NCCL rendezvous unique ID must contain exactly 128 bytes")
-            ctypes.memmove(ctypes.addressof(uid), raw, 128)
-        self.comm = ctypes.c_void_p()
-        self.device = torch.device("cuda", torch.cuda.current_device())
-        self._check(self.lib.ncclCommInitRank(ctypes.byref(self.comm), world, uid, rank))
-        if not self.comm.value:
-            raise RuntimeError("NCCL initialization returned no communicator")
+            self.rank, self.world = rank, world
+            self.store, self.store_origin = store, store_origin if use_libuv is False else None
+            store = store_origin = None
+            if self.store_origin is not None:
+                self.store_origin.adopt(self._store_origin_token)  # Both journals precede fallible transfer.
+            if self.store is None and use_libuv is False:
+                self.store_origin = create_owned_tcp_store(rank, world, master, port, timeout_s=timeout_s)
+                self.store_origin.adopt(self._store_origin_token)
+                self.store = self.store_origin.store
+            self.lib = _library()
+            lib = self.lib
+            lib.ncclGetErrorString.restype = ctypes.c_char_p
+            lib.ncclGetErrorString.argtypes = [ctypes.c_int]
+            lib.ncclGetUniqueId.argtypes = [ctypes.POINTER(_UniqueId)]
+            lib.ncclCommInitRank.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_int, _UniqueId, ctypes.c_int]
+            lib.ncclAllGather.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int, ctypes.c_void_p,
+                                          ctypes.c_void_p]
+            for function in (lib.ncclCommDestroy, lib.ncclCommAbort):
+                function.argtypes = [ctypes.c_void_p]
+                function.restype = ctypes.c_int
+            if self.store is None:
+                self.store = TCPStore(master, port, world, rank == 0,
+                    timeout=timedelta(seconds=timeout_s), **({} if use_libuv is None else {"use_libuv": use_libuv}))
+            uid = _UniqueId()
+            if rank == 0:
+                self._check(self.lib.ncclGetUniqueId(ctypes.byref(uid)))
+                self.store.set(key, bytes(uid.internal))
+            else:
+                raw = self.store.get(key)
+                if not isinstance(raw, bytes) or len(raw) != ctypes.sizeof(_UniqueId):
+                    raise ValueError("NCCL rendezvous unique ID must contain exactly 128 bytes")
+                ctypes.memmove(ctypes.addressof(uid), raw, 128)
+            self.comm = ctypes.c_void_p()
+            self.device = torch.device("cuda", torch.cuda.current_device())
+            self._check(self.lib.ncclCommInitRank(ctypes.byref(self.comm), world, uid, rank))
+            if not self.comm.value:
+                raise RuntimeError("NCCL initialization returned no communicator")
+        finally:
+            store = store_origin = None
+
+    def verify_store_cohort(self):
+        """Use the existing communicator to agree guarded rank0 issuance."""
+        origin = self.store_origin
+        validate_store_origin(origin, self.store, self.rank, self.world)
+        mine = torch.tensor([int(origin.server_owned), self.rank, self.world], dtype=torch.int64, device=self.device)
+        received = torch.empty((self.world * 3,), dtype=torch.int64, device=self.device)
+        self.all_gather(mine, received)
+        rows = received.view(self.world, 3).cpu().tolist()
+        if rows != [[int(rank == 0), rank, self.world] for rank in range(self.world)]:
+            raise ValueError("adaptive unique profile ranks did not agree an owned rank0 TCPStore daemon")
+        origin.verified = True
+
+    def _retire_store(self):
+        origin = self.store_origin
+        if origin is not None:
+            if origin.adopted_by is self._store_origin_token:
+                origin.retire(self._store_origin_token)
+            elif origin.adopted_by is None:
+                origin.retire()  # A failed transfer can still leave its journal unadopted.
+            elif self.comm.value:
+                raise RuntimeError("native communicator lost its Store-origin ownership")
+            else:
+                self.store_origin = None  # A rejected second transfer never owned the existing transport.
+        self.store = None
 
     def _check(self, code: int) -> None:
         if code != 0:
@@ -248,7 +498,7 @@ class NCCL:
                 else:
                     # Rank zero's listener departure wakes its idle peer, which
                     # then enters the same failed-operation teardown policy.
-                    self.store = None
+                    self._retire_store()
                 release = self.lib.ncclCommAbort if abort else self.lib.ncclCommDestroy
                 self._native_release_started = True
                 try:
@@ -260,7 +510,7 @@ class NCCL:
                 self.comm = ctypes.c_void_p()
             if self.device is not None and not fenced:
                 torch.cuda.synchronize(self.device)
-            self.store = None
+            self._retire_store()
             self.retired = True
 
     def ready(self, label: str, *, every: float = 60.0, timeout: float = 3600.0) -> None:
@@ -509,21 +759,41 @@ def register_backend(name: str, wrap: Callable[[Comm], Comm]) -> None:
     BACKENDS[name] = wrap
 
 
-def open_comm(rank: int, world: int, master: str, port: int, *, backend: str | None = None, **nccl) -> Comm:
+def open_comm(rank: int, world: int, master: str, port: int, *, backend: str | None = None,
+              use_libuv: bool | None = None, register: Callable[[Comm], None] | None = None, **nccl) -> Comm:
     """NCCL, wrapped by ``backend`` (default TF_COMM_BACKEND, else none); the ranks check they named the same one."""
 
     name = (backend if backend is not None else os.environ.get(BACKEND_ENV, "")).strip().lower() or "nccl"
     if name != "nccl" and name not in BACKENDS:
         raise ValueError(f"{BACKEND_ENV}={name!r}: expected nccl{''.join(', ' + b for b in sorted(BACKENDS))}")
+    if use_libuv is False and name != "nccl":
+        raise ValueError("the adaptive unique-profile native resource bound requires the plain NCCL transport")
+    if use_libuv is not None:
+        nccl["use_libuv"] = use_libuv
     base = NCCL()
-    base.open(rank, world, master, port, **nccl)     # open owns rollback of partial native acquisition
     try:
+        if register is not None:
+            register(base)  # The selected Engine owns this slot before any native acquisition.
+        base.open(rank, world, master, port, **nccl)  # Native open and this result journal share idempotent close.
         store = getattr(base, "store", None)
         if store is not None and world > 1:          # every rank selects the same transport before its first exchange
-            store.set(f"tf_comm_backend/{rank}", name)
+            # Configuration agreement is not daemon attestation. Every rank
+            # takes this existing CPU phase before any optional GPU collective.
+            advertised = name + ("\0owned-unique-store-v1" if use_libuv is False else "")
+            store.set(f"tf_comm_backend/{rank}", advertised)
             names = [store.get(f"tf_comm_backend/{r}").decode() for r in range(world)]
             if len(set(names)) > 1:
+                if any("\0owned-unique-store-v1" in item for item in names):
+                    raise RuntimeError("the ranks selected different communication or adaptive unique profile Store policies")
                 raise RuntimeError(f"the ranks were started with different {BACKEND_ENV}: {', '.join(names)} (rank order)")
-        return base if name == "nccl" else BACKENDS[name](base)
+        if use_libuv is False:
+            base.verify_store_cohort()
+        result = base if name == "nccl" else BACKENDS[name](base)
+        if register is not None and result is not base:
+            register(result)
+        return result
     except BaseException as error:
         rollback(base, error, lambda: base.close(abort=True))
+    finally:
+        nccl.clear()  # Each owned Store survives only through its explicit live owner after return/failure.
+        store = None

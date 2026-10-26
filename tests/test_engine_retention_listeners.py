@@ -86,7 +86,7 @@ def commit(store, identifier):
         operation.commit(response(identifier))
 
 
-def construct_from_canonical_branch(engine, bind):
+def construct_from_canonical_branch(engine, bind, *, native=None, native_host_bytes=0):
     """Execute the real post-warm catalog branch, without a fake model load."""
     from tensorfold.families.qwen4_exp.cuda import engine as source
     from tensorfold.families.qwen4_exp.cuda.retention_resources import retention_header_resources
@@ -105,11 +105,13 @@ def construct_from_canonical_branch(engine, bind):
     engine.multi = SimpleNamespace(keep=0, states=(), bind_retention_catalog=bind,
                                    recover_failed_slots=lambda: None)
     engine._retention_header_resources = retention_header_resources(engine.retention_policy, 1)
+    engine._native_protocol_resources = native
     header = engine._retention_header_resources.global_host_bytes
     engine.capacity_plan = {"host_steady_workspace_bytes_estimate": header,
                             "host_steady_commitment_bytes": header + 123}
     exec(compile(ast.Module(body=[branch], type_ignores=[]), str(source.__file__), "exec"),
-         {"self": engine, "w": None, "__name__": source.__name__, "__package__": source.__package__})
+         {"self": engine, "w": None, "native_host_bytes": native_host_bytes,
+          "__name__": source.__name__, "__package__": source.__package__})
 
 
 def test_one_real_store_binding_routes_a_b_unavailable_a_without_rebinding(engine, store):
@@ -216,6 +218,30 @@ def test_canonical_factory_publishes_only_after_decoder_binding(engine, monkeypa
     monkeypatch.setattr(retained_catalog, "make_retention_catalog", factory)
     construct_from_canonical_branch(engine, bind)
     assert events == ["constructed", "bound"] and engine._published_retention_catalog is candidate
+
+
+def test_canonical_factory_preserves_paid_native_protocol_bounds(engine, monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda import retained_catalog
+
+    candidate = Catalog()
+
+    def factory(*_args, register, **_kwargs):
+        register(candidate)
+        return candidate
+
+    native = {"fixed": {"global_native_fixed_payload_bytes": 17,
+                        "maximum_state_slots": 40, "nofile_hard_limit": 1024},
+              "prefix": {"global_native_prefix_payload_bytes": 7}}
+    monkeypatch.setattr(retained_catalog, "make_retention_catalog", factory)
+
+    def bind(owner):
+        assert engine._published_retention_catalog is None
+        assert owner.host_limits == {"baseline_host_bytes": 123, "materialized_host_bytes": 0,
+            "prepaid_native_fixed_payload_bytes": 17, "prepaid_native_prefix_payload_bytes": 7,
+            "native_state_slots": 40, "native_fd_limit": 1024, "native_host_bytes": 9}
+
+    construct_from_canonical_branch(engine, bind, native=native, native_host_bytes=9)
+    assert engine._published_retention_catalog is candidate
 
 
 def test_protected_claims_prevent_withdrawal_and_keep_current_callbacks(engine, store):

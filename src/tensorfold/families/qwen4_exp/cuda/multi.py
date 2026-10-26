@@ -287,7 +287,7 @@ class MultiDecoder:
             busy.update(id(state) for state in catalog.protected_states())
         return busy
 
-    def enqueue_retained(self, stream, *, parent=None):
+    def enqueue_retained(self, stream, *, parent=None, prefix_serial=None):
         """Actor-only ownership before expiry controls or a GPU admission claim."""
         from .retained_host import RetainedHost
 
@@ -308,14 +308,26 @@ class MultiDecoder:
             for alias in intent.aliases:
                 if alias not in handle.owners:
                     catalog.associate(handle, alias)
-        if parent is not None:
-            source = catalog.lookup(parent)
+        if parent is not None or prefix_serial is not None:
+            if prefix_serial is not None:
+                from .retained_catalog import RetentionExpired
+
+                try:
+                    source = catalog.by_serial(prefix_serial)
+                except RetentionExpired:
+                    return  # Required target reservation may reclaim an unleased optional cache candidate.
+                if source.role != "prefix":
+                    raise RuntimeError("optional prefix binding changed its issued catalog role")
+            else:
+                source = catalog.lookup(parent)
             if source is None:
                 raise RuntimeError("selected retained prefix vanished before its replicated consumer claim")
             def register(request):
                 stream.retention_request = request
             if stream.retention_handle is None:
-                catalog.borrow_prefix(source, principal=parent.principal, register=register)
+                from .retained_catalog import LOCAL_PRINCIPAL
+
+                catalog.borrow_prefix(source, principal=stream.principal or LOCAL_PRINCIPAL, register=register)
             else:
                 catalog.borrow(source, continuation="new-turn", target_handle=stream.retention_handle, register=register)
 

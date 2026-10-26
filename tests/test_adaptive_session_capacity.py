@@ -216,7 +216,18 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
     monkeypatch.setattr(padded_linears, "_ENABLED", False)
     monkeypatch.setattr(gguf_admission, "capacity_options", lambda *a, **kw: {})
     import tensorfold.cuda.comm as comm
-    monkeypatch.setattr(comm, "open_comm", lambda *a: SimpleNamespace(barrier=lambda: None, all_gather=None))
+
+    def open_cpu_comm(*args, **kwargs):
+        # Match partial-owner registration without acquiring a native/GPU Comm.
+        result = SimpleNamespace(barrier=lambda: None, all_gather=None,
+                                 store=SimpleNamespace(host=args[2]), native_state_slots_highwater=0)
+        result.bind_native_nofile = lambda value: setattr(result, "native_nofile_hard_limit", value)
+        if "register" in kwargs:
+            assert kwargs["use_libuv"] is False
+            kwargs["register"](result)
+        return result
+
+    monkeypatch.setattr(comm, "open_comm", open_cpu_comm)
     monkeypatch.setattr(capacity, "gather_ints", lambda t, g, v, world=2: [list(v) for _ in range(world)])
 
     class Inspected(Exception):
@@ -233,7 +244,16 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
         assert b["history"] > a["history"]
         assert a["sm70_native_workspace"] > 0  # Owner buffers remain charged with native kernels disabled.
         assert sum(b.values()) == forty.bytes_at(262145)
-        assert kwargs.get("host_workspace_bytes", 0) == (256 * 2**20 + 16384 if retention_tier == "ram" else 0)
+        # Independent selected-ABI source bound at W=8,c=1024: native data
+        # payload 33c plus eight 11,080-byte header/reallocation/NUL allowances.
+        # Pinned+ordinary staging stays the explicitly supplied 16,384 bytes.
+        from tensorfold.families.qwen4_exp.cuda.retention_resources import (
+            native_sync_fixed_payload, native_sync_prefix_payload, retention_header_resources,
+        )
+        header = retention_header_resources(policy, 8)
+        assert header.global_host_native_data_bytes == (122432 if retention_tier == "ram" else 0)
+        assert header.global_host_native_rpc_bytes > 0
+        assert kwargs.get("host_workspace_bytes", 0) == header.global_host_bytes
         if policy is not None:
             assert a["retained_idle_recovery"] == 0
             assert b["retained_idle_recovery"] > 0
@@ -246,7 +266,12 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
         coordinate_rows = max(prefill_rows, min(40 * (depth + 1), execution_rows))
         expected_host = 8 * (multi_static_domains(text, 40, depth + 1, False)[1] + 8 * 40 * 8
                              + coordinate_source_host_bytes(coordinate_rows))
+        fixed = native_sync_fixed_payload(world=8, ram=retention_tier == "ram", slots=40,
+            fd_limit=owner._retention_native_runtime["hard_nofile"], host_bytes=len("test"))
+        prefix = native_sync_prefix_payload(world=8, slots=40)
+        expected_host += fixed["global_native_fixed_payload_bytes"] + prefix["global_native_prefix_payload_bytes"]
         assert kwargs["session_host_workspace"](40) == expected_host
+        assert owner.comm.native_state_slots_highwater == 0  # Probes reserve no persistent metadata.
         raise Inspected
 
     monkeypatch.setattr(capacity, "admit", inspect)
@@ -254,6 +279,7 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
     monkeypatch.setattr(compact_indexer, "prepare", lambda device: None)
     owner = engine.FlashNextEngine.__new__(engine.FlashNextEngine)
     owner._startup_store = owner._owner_preparation = owner._dflash_pairing = None
+    owner._startup_store_origin = owner._store_use_libuv = None
     owner._profile_build = None  # __init__ normally establishes this lifecycle before _initialize.
     owner._startup_reads = []
     expected = pytest.raises(Inspected) if reserve_gib >= 4 else pytest.raises(ValueError, match="at least 4 GiB")

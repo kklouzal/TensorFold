@@ -39,9 +39,12 @@ def test_descriptor_table_larger_than_one_packet_uses_bounded_retired_fragments(
     owners = []
     for rank in range(2):
         connection = TCPStore("127.0.0.1", server.port, None, False, timedelta(seconds=10)).clone()
-        owners.append(SimpleNamespace(rank=rank, _store=connection,
-            _cohort=SimpleNamespace(rank=rank, tp=2, multi=None, comm=SimpleNamespace(store=connection)),
-            _manifest_bounds=(manifest_bound(count),) * 2, policy=SimpleNamespace(chunk_bytes=128 << 10)))
+        owner = object.__new__(RetainedCatalog)  # Codec-only actual methods; no workers/model allocation.
+        owner.rank, owner._store = rank, connection
+        owner._cohort = SimpleNamespace(rank=rank, tp=2, multi=None, comm=SimpleNamespace(store=connection))
+        owner._manifest_bounds = (manifest_bound(count),) * 2
+        owner.transfer_chunk_bytes, owner._native_value_limit = 128 << 10, 8 << 20
+        owners.append(owner)
 
     def run(owner):
         result = RetainedCatalog._manifest(owner, "wire-test", body)

@@ -1,4 +1,4 @@
-"""Real CPU TCPStore progress/coalescing/retirement, without GPU qualification."""
+"""Independent historical queue oracle; the canonical production relay uses KV."""
 
 from contextlib import contextmanager
 from datetime import timedelta
@@ -12,7 +12,7 @@ pytest.importorskip("torch")  # Guard the optional provider before backend impor
 from torch.distributed import DistStoreError, TCPStore
 
 from tensorfold.cleanup import raise_failures
-from tensorfold.families.qwen4_exp.cuda.retention_wake import (
+from retention_wake_queue_reference import (
     MAX_WORD, TRANSPORT_LEASE, TRANSPORT_QUEUE, RetentionWakeRelay,
 )
 

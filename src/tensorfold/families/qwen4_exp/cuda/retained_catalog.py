@@ -22,6 +22,7 @@ from types import SimpleNamespace
 import torch
 
 from tensorfold.cleanup import raise_failures, rollback
+from tensorfold.cuda.store_fields import validate_store_key
 from tensorfold.thread_work import ThreadWork
 from tensorfold.engine.model_identity import canonical_runtime_json
 from tensorfold.server.errors import CapacityError
@@ -36,6 +37,8 @@ from .state_retention import (canonical_tokens, commit_state_restore, new_turn_g
                               state_restore_resources)
 
 LOCAL_PRINCIPAL = "local-unauthenticated"
+_LIBUV_VALUE_BYTES = 8 * 1024**2
+_LIBUV_KEY_BYTES = 8 * 1024
 
 
 def _json(value):
@@ -65,6 +68,14 @@ class RetentionCapacity(RetentionError, CapacityError):
 
 class RetentionMismatch(RetentionError):
     """Pure incompatible derived-prefix candidate; same-request may not replay."""
+
+
+def _next_generation(current, kind):
+    # Both actor-owned counters start at zero and only advance here. Refuse
+    # exhaustion before installing a transfer or issuing a settlement phase.
+    if current >= (1 << 63) - 1:
+        raise RetentionCapacity(f"retained {kind} generation exhausted")
+    return current + 1
 
 
 @dataclass(frozen=True)
@@ -212,9 +223,18 @@ class RetainedCatalog:
         self._reserved = 0
         self._cohort = SimpleNamespace(comm=self.comm, rank=self.rank, tp=self.world, multi=None)
         self._actor_cohort = SimpleNamespace(comm=self.comm, rank=self.rank, tp=self.world, multi=None)
+        from .retention_resources import INITIAL_COHORT_VALUE_BYTES, StoreFieldGuard
+
+        # Preflight publishes only the bounded scalar constructor schema. The
+        # observed backend capability replaces this guard BETWEEN phases.
+        self._cohort.store_fields = self._actor_cohort.store_fields = StoreFieldGuard(INITIAL_COHORT_VALUE_BYTES)
         self._settlement_generation = 0
         self._manifest_bytes = 0
         self._manifest_bounds = ()
+        self._native_value_limit = self._native_key_limit = None
+        self.transfer_chunk_bytes = None
+        self.transport_origin = None
+        self.native_payload_runtime = None
         self._object_bound = 0
         self.minimum_future_bytes = 0
         self.identity = None
@@ -248,6 +268,31 @@ class RetainedCatalog:
                 if policy is not None and state.capacity != state.limit:
                     raise ValueError("retention requires actual admitted full-window States before startup publication")
             first = self.states[0]
+            if self.comm is not None:
+                origin = getattr(self.comm, "store_origin", None)
+                if origin is not None:
+                    from tensorfold.cuda.comm import validate_store_origin
+
+                    validate_store_origin(origin, self.comm.store, self.rank, self.world, verified=True)
+                    self.transport_origin = origin.record()
+                    if first.pos_dev.is_cuda:
+                        from .retention_resources import require_native_payload_runtime
+
+                        self.native_payload_runtime = require_native_payload_runtime()
+                elif first.pos_dev.is_cuda:
+                    raise ValueError("unique FIFO progress requires the verified owned synchronous daemon cohort")
+                # CPU reference stores exercise primitive/value boundaries;
+                # they never issue a CUDA native-memory qualification claim.
+                backend = getattr(self.comm.store, "libuvBackend", None)
+                if type(backend) is not bool and first.pos_dev.is_cuda:
+                    raise ValueError("retained native transfers require the actual TCPStore backend capability")
+                if backend is True:
+                    # Pinned Torch5ab libuv parser: independent vector/key
+                    # field limits, not a whole-wire-frame size restriction.
+                    self._native_value_limit = _LIBUV_VALUE_BYTES
+                    self._native_key_limit = _LIBUV_KEY_BYTES
+            if policy is not None and policy.tier == "ram":
+                self.transfer_chunk_bytes = min(policy.chunk_bytes, self._native_value_limit or policy.chunk_bytes)
             identity = _digest({"coordinate": weights.meta.get("coordinate_profile_identity"),
                 "kv": first.kv_identity, "context": first.limit,
                 "position": first.position_profile_identity, "epoch": first.position_epoch})
@@ -259,15 +304,19 @@ class RetainedCatalog:
                     "identity": identity, "host": host, "context": first.limit,
                     "objects": max(self._component_bound(state) for state in self.states),
                     "prefix_limit": prefix_limit, "recovery_versions": self.recovery_versions,
-                    "activation": uuid.uuid4().hex if self.rank == 0 else None}
+                    "activation": uuid.uuid4().hex if self.rank == 0 else None,
+                    "native_value_limit": self._native_value_limit, "native_key_limit": self._native_key_limit,
+                    "native_payload_runtime": self.native_payload_runtime}
 
         acquired = False
         try:
             rows = _phase(self._cohort, channel, "preflight", preflight)
+            self._cohort.store_fields = self._actor_cohort.store_fields = StoreFieldGuard(self._native_value_limit)
 
             def agreement():
                 if any(any(row[key] != rows[0][key] for key in (
-                        "policy", "identity", "host", "context", "prefix_limit", "recovery_versions")) for row in rows):
+                        "policy", "identity", "host", "context", "prefix_limit", "recovery_versions",
+                        "native_value_limit", "native_key_limit", "native_payload_runtime")) for row in rows):
                     raise ValueError("retention requires one actual same-host policy/profile rank cohort")
                 control = self.world * sum(manifest_bound(row["objects"]) for row in rows)
                 minimum = 2 * sum(row["payload"] for row in rows) + control + rows[0]["context"] * 4
@@ -294,7 +343,7 @@ class RetainedCatalog:
                     # One transfer worker; dedup and restore each borrow only
                     # one object at a time, including checksum/retirement.
                     self._ram = RamObjects(policy.ram_bytes, max_objects=objects, max_readers=1)
-                    self._buffer = torch.empty(policy.chunk_bytes, dtype=torch.uint8, device="cpu",
+                    self._buffer = torch.empty(self.transfer_chunk_bytes, dtype=torch.uint8, device="cpu",
                                                pin_memory=self.states[0].pos_dev.is_cuda)
                     if self.comm is not None:
                         # Documented independent connection for this worker.
@@ -377,7 +426,10 @@ class RetainedCatalog:
             with self._ram._lock:
                 self._ram.max_objects = 2 * self._object_bound * (self.policy.max_sessions + maximum + self.prefix_limit)
 
-    def configure_host_resources(self, *, baseline_host_bytes, materialized_host_bytes=0):
+    def configure_host_resources(self, *, baseline_host_bytes, materialized_host_bytes=0,
+                                 prepaid_native_fixed_payload_bytes=0, native_state_slots=None,
+                                 native_fd_limit=None, prepaid_native_prefix_payload_bytes=0,
+                                 native_host_bytes=0):
         """Ordinary GLOBAL steady obligation, excluding this policy's fixed RAM.
 
         Loading scratch is not a concurrent serving promise. Materialized
@@ -386,7 +438,9 @@ class RetainedCatalog:
         """
         from .retention_resources import HostBaseline
 
-        record = HostBaseline(baseline_host_bytes, materialized_host_bytes)
+        record = HostBaseline(baseline_host_bytes, materialized_host_bytes, prepaid_native_fixed_payload_bytes,
+                              native_state_slots, native_fd_limit, prepaid_native_prefix_payload_bytes,
+                              native_host_bytes)
         with self._condition:
             if self._handles or self._registration_owner is not None:
                 raise ValueError("ordinary host resources must bind before requests")
@@ -1254,6 +1308,7 @@ class RetainedCatalog:
         if (handle.transient or self.policy.tier != "ram" or handle.phase != "gpu"
                 or any(request.claimed for request in handle.consumers)):
             raise ValueError("only exclusively idle RAM-backed generations can suspend")
+        generation = _next_generation(handle.transfer_generation, "transfer")
         # Completed physical migration may have changed page offsets since the
         # idle capture. Rebind actual source views before acquiring DMA leases.
         if handle.inventory is not None:
@@ -1272,14 +1327,14 @@ class RetainedCatalog:
                     or (state.pos, state.mtp_len, state.mtp_drafted) !=
                        (metadata["pos"], metadata["mtp_len"], metadata["mtp_drafted"])):
                 raise RuntimeError("retained GPU window changed without its quiescent capture")
-            handle.transfer_generation += 1
+            handle.transfer_generation = generation
             transfer = _Transfer(handle, "save", generation=handle.transfer_generation)
             with self._condition:
                 handle.transfer, handle.phase = transfer, "saving"
             transfer.retired.set()
             self._notify()
             return transfer
-        handle.transfer_generation += 1
+        handle.transfer_generation = generation
         transfer = _Transfer(handle, "save", generation=handle.transfer_generation,
             byte_sources=tuple(part.tensor.detach().view(torch.uint8).reshape(-1) for part in handle.inventory.parts),
             specs=handle.inventory.specs)
@@ -1357,6 +1412,8 @@ class RetainedCatalog:
             # Reuse the established all-rank GPU prefix relocation contract.
             # The protected source remains byte-authoritative for its owners.
             source = handle.state
+            target = request.target_handle
+            generation = _next_generation(target.transfer_generation, "transfer")
             resources = None
             if self._device_resources is not None:
                 boundary = source.mtp_boundary if stream.draft else None
@@ -1366,8 +1423,7 @@ class RetainedCatalog:
                 self._check_device_resources(state, resources)
             elif state.pos_dev.is_cuda:
                 raise RetentionCapacity("retained GPU prefix has no bound per-rank header resources")
-            target = request.target_handle
-            target.transfer_generation += 1
+            target.transfer_generation = generation
             transfer = _Transfer(target, "fork", generation=target.transfer_generation, source_handle=handle,
                                  request=request, resources=resources)
             self._install_transfer(transfer, state=state, source=handle, request=request, worker=False)
@@ -1398,6 +1454,8 @@ class RetainedCatalog:
             return self.restored(request)
         if handle.phase != "ram":
             return None
+        target = handle if continuation == "same-request" else request.target_handle
+        generation = _next_generation(target.transfer_generation, "transfer")
         records = tuple((row["metadata"], tuple(PartSpec(**dict(spec, shape=tuple(spec["shape"]),
             semantic=tuple(spec["semantic"]))) for spec in row["specs"])) for row in handle.manifest)
         extra = method_restore_resources(state, method_source["method"])
@@ -1410,8 +1468,7 @@ class RetainedCatalog:
                                   recovery_versions=self.recovery_versions)
         if ticket is not None and getattr(stream, "admission_ticket", ticket) != ticket:
             raise ValueError("retained resume must preserve its new admission ticket")
-        target = handle if continuation == "same-request" else request.target_handle
-        target.transfer_generation += 1
+        target.transfer_generation = generation
         transfer = _Transfer(target, "restore", generation=target.transfer_generation, plan=plan,
                              source_handle=handle, request=request, resources=resources)
         self._install_transfer(transfer, state=state, source=handle, request=request)
@@ -1591,7 +1648,7 @@ class RetainedCatalog:
         if self.world == 1:
             self.progress()
             return
-        self._settlement_generation += 1
+        self._settlement_generation = _next_generation(self._settlement_generation, "settlement")
         channel = f"tf_retention/{self.identity}/settle/{self._settlement_generation}"
         stages = ("ready", "validate", "published")
         rows = _phase(self._actor_cohort, channel, "ready", lambda: {
@@ -1797,6 +1854,11 @@ class RetainedCatalog:
                     "transient_requests": sum(handle.transient for handle in handles),
                     "temporary_checkpoints": sum(handle.role == "temporary" for handle in handles),
                     "ram_prefix_generations": sum(handle.role == "prefix" for handle in handles),
+                    "effective_transfer_chunk_bytes": self.transfer_chunk_bytes,
+                    "native_store_value_limit_bytes": self._native_value_limit,
+                    "native_store_key_limit_bytes": self._native_key_limit,
+                    "transport_origin": self.transport_origin,
+                    "native_payload_runtime": self.native_payload_runtime,
                     "transfers": sum(handle.transfer is not None for handle in handles),
                     "cpu_receiver_workers": (0 if self._wake_relay is None else
                                              self._wake_relay.record()["cpu_receiver_workers"]),
@@ -1854,9 +1916,25 @@ class RetainedCatalog:
     def _channel(self, transfer):
         return f"tf_retention/{self.identity}/{transfer.handle.serial}/{transfer.direction}/{transfer.generation}"
 
+    def _store_payload(self, key, value=None):
+        """Validate actual independent native fields BEFORE publication/get.
+
+        Keys share one project bound even on a daemon without a native cap.
+        The independently captured native value cap does not imply a whole
+        wire-frame limit. TCPStore adds one '/' byte to the key.
+        """
+        try:
+            validate_store_key(key)
+        except ValueError as error:
+            raise RetentionError(str(error)) from error
+        if value is not None:
+            size = len(value.encode("utf-8")) if type(value) is str else len(value)
+            if self._native_value_limit is not None and size > self._native_value_limit:
+                raise RetentionError("retained transport value exceeds the selected native value field limit")
+
     def _copy_source(self, raw, builder, buffer):
-        for offset in range(0, raw.numel(), self.policy.chunk_bytes):
-            count = min(self.policy.chunk_bytes, raw.numel() - offset)
+        for offset in range(0, raw.numel(), self.transfer_chunk_bytes):
+            count = min(self.transfer_chunk_bytes, raw.numel() - offset)
             self._actor(lambda: buffer[:count].copy_(raw[offset:offset + count], non_blocking=raw.is_cuda), raw.device)
             builder.write(memoryview(buffer[:count].numpy()))
 
@@ -1870,8 +1948,7 @@ class RetainedCatalog:
             raise ValueError("retained manifest exceeds its complete admitted schema/geometry bound")
         # Inner JSON is ASCII. Any character needs at most two bytes when
         # quoted in an outer fragment record; reserve the actual envelope.
-        envelope = len(canonical_runtime_json({"ok": True, "value": {"fragment": ""}}))
-        width = min(self.policy.chunk_bytes, ((16 << 20) - envelope) // 2)
+        width = self._manifest_width()
         header = {"bytes": len(document), "pieces": (len(document) + width - 1) // width,
                   "sha256": hashlib.sha256(document.encode("ascii")).hexdigest()}
         headers = _phase(self._cohort, channel, "manifest-header", lambda: header, may_refuse=False)
@@ -1896,6 +1973,9 @@ class RetainedCatalog:
                 checksums[rank].update(value.encode("ascii"))
             if self._store is not None:
                 _retire_store(self._cohort, subchannel, stages=("fragment",))
+            # pieces owns the received strings. The source slice and temporary
+            # outcome dictionaries must not overlap the next slice/GET wave.
+            fragment = rows = None
         result = []
         for rank, values in enumerate(pieces):
             if checksums[rank].hexdigest() != headers[rank]["sha256"]:
@@ -1903,6 +1983,11 @@ class RetainedCatalog:
             result.append(json.loads("".join(values)))
             pieces[rank] = None  # Do not retain both fragment and parsed archives.
         return result
+
+    def _manifest_width(self):
+        envelope = len(canonical_runtime_json({"ok": True, "value": {"fragment": ""}}))
+        value_limit = min(16 << 20, self._native_value_limit or (16 << 20))
+        return min(self.transfer_chunk_bytes, (value_limit - envelope) // 2)
 
     def _save(self, transfer):
         from dataclasses import asdict
@@ -1993,14 +2078,16 @@ class RetainedCatalog:
                 checksum = hashlib.sha256()
                 raw = plan.byte_targets.get((rank, number))
                 try:
-                    for offset in range(0, spec.nbytes, self.policy.chunk_bytes):
-                        count = min(self.policy.chunk_bytes, spec.nbytes - offset)
+                    for offset in range(0, spec.nbytes, self.transfer_chunk_bytes):
+                        count = min(self.transfer_chunk_bytes, spec.nbytes - offset)
                         name = f"{channel}/chunk/{rank}/{number}/{offset}"
                         if reader is not None:
                             payload = reader.read(offset, count)
+                            self._store_payload(name, payload)
                             if self._store is not None:
                                 self._store.set(name, payload)
                         elif self._store is not None:
+                            self._store_payload(name)
                             payload = self._store.get(name)
                         else:
                             raise RuntimeError("RAM restore lacks the actual source rank")

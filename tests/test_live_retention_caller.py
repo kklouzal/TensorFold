@@ -24,6 +24,7 @@ def test_actual_live_snapshot_restores_same_cpu_frontier_and_different_slot(mate
     catalog, _future, _wake = owner(materialized)
     catalog.configure_admission(max_waiting_input_bytes=4096, max_pending_requests=2)
     decoder = decoder_for(catalog, monkeypatch)
+    decoder.passed, decoder.failed_slots = {}, []
     source = materialized
     raw, limit, box = threading.Event(), RequestLimit(2), OutputMailbox(4, pending_tokens=1)
     cancelled = FrozenCancellation(raw)
@@ -102,4 +103,82 @@ def test_actual_live_snapshot_restores_same_cpu_frontier_and_different_slot(mate
             if stream.retention_request is not None:
                 stream.retention_request.close()
             catalog.release_temporary(handle)
+        catalog.close(timeout=5)
+
+
+@pytest.mark.parametrize("role", ["temporary", "logical"])
+@pytest.mark.parametrize("ending", ["cancel", "drop"])
+def test_aborted_live_backend_retires_reset_target_once_and_preserves_readonly_parent(materialized, monkeypatch, role, ending):
+    from tensorfold.families.qwen4_exp.cuda.retained_catalog import LOCAL_PRINCIPAL, LogicalReference
+    from tensorfold.families.qwen4_exp.cuda.retained_host import RetentionIntent
+
+    catalog, future, _wake = owner(materialized)
+    catalog.configure_admission(max_waiting_input_bytes=4096, max_pending_requests=2)
+    decoder = decoder_for(catalog, monkeypatch)
+    decoder.passed, decoder.failed_slots = {}, []
+    parent_state = catalog.states[1]
+    parent_ref = LogicalReference(LOCAL_PRINCIPAL, "response:protected", 1)
+    parent = catalog.reserve(parent_ref, future_bytes=future)
+    catalog.capture_idle(Stream([3, 7, 11, 9], 2, draft=False, st=parent_state), handle=parent)
+    catalog.logical_reference_committed(parent_ref.principal, parent_ref.sequence, generation=1)
+    catalog.progress()
+    parent_bytes = parent_state.rec.clone()
+    decoder.free.clear()  # Both actual State claims are owned: active request and protected parent.
+    raw, limit, box = threading.Event(), RequestLimit(2), OutputMailbox(2)
+    cancelled = FrozenCancellation(raw)
+    cancelled.active = True
+    stream = Stream([3, 7, 11, 9, 5], 2, draft=False, st=materialized, sid=5, cancel=cancelled)
+    stream.principal, stream.admission_ticket, stream.blocked_input = None, 19, "client_input"
+    target_ref = LogicalReference(LOCAL_PRINCIPAL, "response:unfinished", 1)
+    stream.retention_intent = RetentionIntent(target_ref, None, (), "unfinished") if role == "logical" else None
+    engine = _slot(decoder.w, materialized, decoder.buf, decoder.mbuf, decoder.pbuf, 8, 4)
+    engine.stops = []
+    decoder.fills[stream.sid] = [engine, False, 3, [], None]
+    decoder.filling.append(stream)
+    target = None
+    original = ValueError("controlled retired backend refusal")
+    try:
+        with limit.request():
+            limit.borrow(box)
+            stream.delivery_owner = DeliveryOwner(limit, box, raw, lambda _values: None, None)
+            if role == "logical":
+                decoder.enqueue_retained(stream)
+            assert decoder.suspend_request(stream)
+            target = stream.retention_handle
+            assert target.transfer.retired.wait(5)
+            catalog.progress()
+            decoder._release_retained_states()
+            assert decoder.admit(stream) is False and stream.retention_request.restore_handle.transfer.retired.wait(5)
+            catalog.progress()
+            decoder.admit(stream)
+            state, generation = stream.st, stream.st.slot_generation
+            stream.error = original
+            if ending == "cancel":
+                decoder.cancel([stream])
+                assert decoder.retire_retained_request(stream)
+            else:
+                assert decoder.drop(original) == [stream]
+            assert state.pos == state.mtp_len == state.target_tentative_length == 0
+            assert state.slot_generation == generation + 1  # Exactly one reset/release, not a duplicate free.
+            assert sum(item is state for item in decoder.free) == 1
+            assert catalog.lookup(parent_ref) is parent and parent.state is parent_state
+            assert torch.equal(parent_state.rec, parent_bytes)
+            if role == "logical":
+                assert target.phase == "failed" and target.state is None and target.failure is original
+                assert catalog.record()["future_backing_bytes"] == 2 * future
+                catalog.logical_reference_unavailable(target_ref.principal, target_ref.sequence, generation=1, reason="aborted")
+                catalog.progress()
+            else:
+                assert not target.internal_owner
+            limit.release(box)
+            stream.retirement_host.retire_backend()
+        assert catalog.record()["future_backing_bytes"] == future
+    finally:
+        limit.release(box)
+        if target is not None and target.internal_owner:
+            catalog.release_temporary(target)
+        if role == "logical" and target is not None and target_ref in target.owners:
+            catalog.logical_reference_unavailable(target_ref.principal, target_ref.sequence, generation=1, reason="aborted")
+            catalog.progress()
+        catalog.release_owner(parent)
         catalog.close(timeout=5)

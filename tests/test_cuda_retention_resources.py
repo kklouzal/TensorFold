@@ -53,7 +53,8 @@ def selected_tokenizer():
 def catalog(policy):
     return NS(policy=policy, world=1, states=[NS(limit=128)], _manifest_bytes=1024,
               _buffer=None, _ram=None, has_retained=False, prefix_limit=2, minimum_future_bytes=1 << 20,
-              host_resources=HostBaseline(0, 0), check_health=lambda: None, evidence="source-candidate")
+              host_resources=HostBaseline(0, 0), _cohort=NS(multi=NS(copy=False)),
+              check_health=lambda: None, evidence="source-candidate")
 
 
 def configured_app(tmp_path, monkeypatch, policy, *, max_http_body_bytes=None, logical_api_limits=None,

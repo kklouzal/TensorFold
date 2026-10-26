@@ -14,9 +14,20 @@ import json
 
 from tensorfold.cuda.memory_gate import MemoryGate, NoRoom
 from tensorfold.cuda.streams import Stream
+from tensorfold.cuda.store_fields import validate_store_key
 from tensorfold.cleanup import raise_failures
 from .owner_execution import FAMILY_FIELDS
 from . import media_requests
+
+MAX_PROTOCOL_SEQUENCE = (1 << 63) - 1
+
+
+def _check_protocol_advance(value, label):
+    """NEXT-id counters issue 0..MAX-1; MAX is the terminal exhausted value."""
+    if type(value) is not int or value < 0:
+        raise ValueError(f"tensor-parallel {label} requires a nonnegative integer")
+    if value >= MAX_PROTOCOL_SEQUENCE:
+        raise OverflowError(f"tensor-parallel {label} sequence exhausted")
 
 
 class SharedMemoryGate(MemoryGate):
@@ -207,9 +218,12 @@ class TensorParallelDecoder:
             max_waiting_input_bytes, max_pending_requests), pure=True)
 
     def _stage_request(self, stream, catalog, wake, max_waiting_input_bytes, max_pending_requests):
+        allocate_wire = not hasattr(stream, "_media_wire")
+        if allocate_wire:
+            _check_protocol_advance(self.next_wire, "wire")
         catalog.set_wake(wake)
         intent = stream.retention_intent
-        if not hasattr(stream, "_media_wire"):
+        if allocate_wire:
             stream._media_wire, self.next_wire = self.next_wire, self.next_wire + 1
         owner = media_requests.runtime(getattr(self.decoder, "vision", None))
         if owner is not None and stream.vision is not None:
@@ -217,7 +231,7 @@ class TensorParallelDecoder:
         from .retained_catalog import LOCAL_PRINCIPAL
 
         principal = stream.principal or LOCAL_PRINCIPAL
-        parent = None
+        parent, prefix_serial = None, None
         from .prefix_policy import reuse_allowed
 
         reuse = reuse_allowed(self.decoder.w, stream.sampling, draft=stream.draft, vision=stream.vision,
@@ -227,10 +241,14 @@ class TensorParallelDecoder:
             if candidate is None or not catalog.prefix_matches(candidate, stream.prompt, principal=principal):
                 candidate = catalog.best_prefix(stream.prompt, principal=principal)
             if candidate is not None:
-                parent = next(reference for reference, ready in candidate.owners.items()
-                              if ready and reference.principal == principal)
+                if candidate.role == "prefix":
+                    prefix_serial = candidate.serial
+                else:
+                    parent = next(reference for reference, ready in candidate.owners.items()
+                                  if ready and reference.principal == principal)
         body = {"kind": "enqueue", "wire": stream._media_wire, "stream": self._pack(stream),
                 "parent": None if parent is None else [parent.principal, parent.sequence, parent.generation],
+                "prefix_serial": prefix_serial,
                 "queue_bytes": max_waiting_input_bytes, "queue_count": max_pending_requests}
         self._invoke(body, source=stream)
         return None
@@ -305,10 +323,14 @@ class TensorParallelDecoder:
         return getattr(self.decoder, name)
 
     def _key(self, sequence, peer):
-        return f"tensorfold/flashnext/round/{sequence}/rank/{peer}"
+        key = f"tensorfold/flashnext/round/{sequence}/rank/{peer}"
+        validate_store_key(key)
+        return key
 
     def _ack_key(self, sequence, peer):
-        return f"tensorfold/flashnext/round/{sequence}/ack/{peer}"
+        key = f"tensorfold/flashnext/round/{sequence}/ack/{peer}"
+        validate_store_key(key)
+        return key
 
     def _poison_control(self, error):
         first = self.failure is None
@@ -473,10 +495,13 @@ class TensorParallelDecoder:
         """
         if self.prefix_operation is None:
             raise RuntimeError("stop decisions require an ordered TP scheduler operation")
+        _check_protocol_advance(self.prefix_sequence, "prefix")
         step = self.prefix_sequence
         self.prefix_sequence += 1
         def key(peer):
-            return f"tensorfold/flashnext/prefix/{self.prefix_operation}/{step}/rank/{peer}"
+            value = f"tensorfold/flashnext/prefix/{self.prefix_operation}/{step}/rank/{peer}"
+            validate_store_key(value)
+            return value
         if self.comm.rank == 0:
             payload = json.dumps({"decisions": decisions, "failed": error is not None}, separators=(",", ":"))
             keys = [key(peer) for peer in range(1, self.comm.world)]
@@ -585,7 +610,10 @@ class TensorParallelDecoder:
         if self.admission_policy == "fifo":
             record.append([self.admission_policy, [(wire, stream.admission_ticket, stream.principal)
                                                   for wire, stream in self.requests.items()]])
-        return hashlib.sha256(json.dumps(record, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        digest = hashlib.sha256()
+        for chunk in json.JSONEncoder(sort_keys=True, separators=(",", ":")).iterencode(record):
+            digest.update(chunk.encode("utf-8"))
+        return digest.hexdigest()
 
     def _dispatch(self, body, source=None):
         self.prefix_operation = body["sequence"]
@@ -639,6 +667,7 @@ class TensorParallelDecoder:
 
                         record = body["stream"] if kind == "admit" else {
                             "stream": body["stream"], "parent": body["parent"],
+                            "prefix_serial": body["prefix_serial"],
                             "queue_bytes": body["queue_bytes"], "queue_count": body["queue_count"]}
                         contract = hashlib.sha256(bounded_json(record, separators=(",", ":")).encode("ascii")).hexdigest()
                         label = "fifo-request-admission"
@@ -662,7 +691,8 @@ class TensorParallelDecoder:
                                             max_pending_requests=body["queue_count"])
                 parent = None if body["parent"] is None else LogicalReference(*body["parent"])
                 stream._retention_staged = True
-                self._retention_cpu(lambda: self.decoder.enqueue_retained(stream, parent=parent))
+                self._retention_cpu(lambda: self.decoder.enqueue_retained(stream, parent=parent,
+                                                                          prefix_serial=body["prefix_serial"]))
                 return None
             original = self.decoder.points
             self.decoder.points = lambda prompt: body["points"]
@@ -812,10 +842,11 @@ class TensorParallelDecoder:
             raise RuntimeError("tensor-parallel scheduler is poisoned; retire the rank cohort") from self.failure
         if self.comm.rank != 0:
             raise RuntimeError("only rank zero submits tensor-parallel scheduler operations")
+        _check_protocol_advance(self.sequence, "operation")
         body["control"] = self._controls(body.get("execution"))
         sequence = self.sequence
         body["sequence"] = sequence
-        from tensorfold.cuda.rank_protocol import bounded_json
+        from tensorfold.cuda.rank_protocol import MAX_MESSAGE_BYTES, bounded_json
 
         text = bounded_json(body, separators=(",", ":"))
         self.sequence += 1
@@ -827,6 +858,7 @@ class TensorParallelDecoder:
             else:
                 for key in messages:
                     self.comm.store.set(key, text)
+            text = None
             result, error, status = self._execute(body, source)
             if self.failure is not None:
                 raise RuntimeError("tensor-parallel control publication failed; retire all rank owners") from self.failure
@@ -837,6 +869,8 @@ class TensorParallelDecoder:
             if len(payloads) != len(keys):
                 raise RuntimeError("tensor-parallel scheduler received an incomplete acknowledgment batch")
             for peer, (key, payload) in enumerate(zip(keys, payloads), 1):
+                if type(payload) is not bytes or len(payload) > MAX_MESSAGE_BYTES:
+                    raise ValueError("tensor-parallel acknowledgment requires at most 96 MiB of bytes")
                 remote = json.loads(payload)
                 self.comm.store.delete_key(key)
                 if remote != status:
@@ -876,6 +910,7 @@ class TensorParallelDecoder:
         if wire is None:
             wire = getattr(stream, "_media_wire", None)
             if wire is None:
+                _check_protocol_advance(self.next_wire, "wire")
                 wire, self.next_wire = self.next_wire, self.next_wire + 1
         body = {"kind": "admit", "wire": wire, "stream": self._pack(stream),
                 "points": [] if self._points is None else list(self._points(stream.prompt))}
@@ -922,6 +957,7 @@ class TensorParallelDecoder:
         if owner is None or stream.vision is None:
             return True
         if not hasattr(stream, "_media_wire"):
+            _check_protocol_advance(self.next_wire, "wire")
             stream._media_wire, self.next_wire = self.next_wire, self.next_wire + 1
         host = getattr(stream, "retained_host", None)
         if host is not None:
@@ -1005,6 +1041,7 @@ class TensorParallelDecoder:
     def shutdown(self):
         if self.comm.rank != 0:
             raise RuntimeError("only rank zero sends scheduler shutdown")
+        _check_protocol_advance(self.sequence, "stop")
         for peer in range(1, self.comm.world):
             self.comm.store.set(self._key(self.sequence, peer), json.dumps(
                 {"kind": "stop", "abort": self.failure is not None or self.engine._abort_comm}))
@@ -1014,6 +1051,7 @@ class TensorParallelDecoder:
         from torch.distributed import DistNetworkError
         from tensorfold.cuda.store_wait import timed_out
 
+        _check_protocol_advance(self.sequence, "receive")
         key = self._key(self.sequence, self.comm.rank)
         while True:
             try:
@@ -1039,9 +1077,12 @@ class TensorParallelDecoder:
         return body
 
     def apply(self, body):
+        from tensorfold.cuda.rank_protocol import bounded_json
+
         try:
             _result, error, status = self._execute(body)
-            self.comm.store.set(self._ack_key(body["sequence"], self.comm.rank), json.dumps(status))
+            self.comm.store.set(self._ack_key(body["sequence"], self.comm.rank),
+                                bounded_json(status, separators=(",", ":")))
         except BaseException as failure:
             self._poison_control(failure)
             raise

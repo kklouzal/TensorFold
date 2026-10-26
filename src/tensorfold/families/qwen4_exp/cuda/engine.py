@@ -85,6 +85,8 @@ class FlashNextEngine:
         self._published_retention_catalog = None
         self._catalog_callback_leases = {}
         self._startup_store = None
+        self._startup_store_origin = None
+        self._store_use_libuv = None  # Prepared once for the lifetime of an adaptive unique-profile transport.
         self._dflash_pairing = None
         self.expert_session = expert_session
         self._indexer_history_session = None
@@ -104,6 +106,17 @@ class FlashNextEngine:
         except BaseException as primary:
             self._abort_comm = True
             rollback(self, primary, self._rollback_startup)
+
+    def _prepare_store_backend(self, implemented_admission: bool, *, rank: int, world: int) -> None:
+        """Bind the live transport policy before model/device acquisition."""
+        selected = False if implemented_admission else None
+        if self._store_use_libuv is not None and self._store_use_libuv is not selected:
+            raise ValueError("the prepared TCPStore backend is process-fixed across serving profiles")
+        self._store_use_libuv = selected
+        if self._profile_build is not None and selected is False:
+            from tensorfold.cuda.comm import validate_store_origin
+
+            validate_store_origin(self.comm.store_origin, self.comm.store, rank, world, verified=True)
 
     def _initialize(self, model_dir: Path, *, depth: int = DEPTH, confidence: float = CONFIDENCE,
                  draft_vocab: str | int | None = "default", max_len: int | None = None,
@@ -378,16 +391,23 @@ class FlashNextEngine:
                 raise ValueError("FIFO input/deadline and retention options require actual adaptive unique TP8 GPU histories")
         elif max_waiting_input_bytes is None:
             raise ValueError("adaptive unique-history FIFO admission requires explicit max_waiting_input_bytes")
+        self._prepare_store_backend(implemented_admission, rank=rank, world=tp)
         self._admission_options = {"admission_policy": "fifo" if implemented_admission else "legacy",
                                    "max_waiting_input_bytes": max_waiting_input_bytes,
                                    "max_waiting_input_bytes_per_principal": max_waiting_input_bytes_per_principal,
                                    "output_queue_tokens": output_queue_tokens,
                                    "queue_timeout_s": queue_timeout_s}
         retention_header = None
+        self._retention_native_runtime = None
+        self._native_protocol_resources = None
         if implemented_admission:
             from .retention_resources import retention_header_resources
 
             retention_header = retention_header_resources(retention_policy, tp)
+            if tp > 1:
+                from .retention_resources import require_native_payload_runtime
+
+                self._retention_native_runtime = require_native_payload_runtime()
         self._retention_header_resources = retention_header
         if sm70:
             for field in ("num_attention_heads", "linear_num_key_heads", "linear_num_value_heads",
@@ -468,17 +488,26 @@ class FlashNextEngine:
                 _format(self.kv_pair.key.bits, self.kv_pair.key.codec)
         if dflash_plan is not None or media_requested:
             from torch.distributed import TCPStore
+            from tensorfold.cuda.comm import create_owned_tcp_store, validate_store_origin
             from .execution_identity import prepare_dflash_pairing
 
             # CPU metadata/content authority must precede native preparation,
             # target loading and every CUDA allocation. NCCL borrows this same
             # listener only after the matched content phases have retired.
             self.tp, self.rank = tp, rank
-            self._startup_store = getattr(self, "_preload_store", None)
-            if self._startup_store is None and getattr(self, "_profile_build", None) is not None:
+            self._startup_store = self._startup_store_origin = None
+            if self._profile_build is not None:
                 self._startup_store = self.comm.store  # managed replacement borrows the current cohort
+                if self._store_use_libuv is False:
+                    self._startup_store_origin = self.comm.store_origin
             if self._startup_store is None:
-                self._startup_store = TCPStore(master, port, tp, rank == 0, timeout=timedelta(seconds=3600))
+                if self._store_use_libuv is False:
+                    self._startup_store_origin = create_owned_tcp_store(rank, tp, master, port, timeout_s=3600)
+                    self._startup_store = self._startup_store_origin.store
+                else:
+                    self._startup_store = TCPStore(master, port, tp, rank == 0, timeout=timedelta(seconds=3600))
+            elif self._store_use_libuv is False:
+                validate_store_origin(self._startup_store_origin, self._startup_store, rank, tp, verified=True)
             selected_context = self.rope.context_limit if max_len in (None, 0) else max_len
             if dflash_plan is not None:
                 dflash_plan = prepare_dflash_pairing(self, manifest, target_config=read_config(model_dir),
@@ -488,6 +517,8 @@ class FlashNextEngine:
                 from .media_runtime import prepare_media_source
 
                 self._media_authority, self._media_software_binding = prepare_media_source(self, self.media_profile)
+            if self._profile_build is not None:
+                self._startup_store = self._startup_store_origin = None  # Existing comm retains the managed transport.
         torch.cuda.set_device(0)
         if sm70 and adaptive_sessions:
             from tensorfold.cuda.capacity import cuda_reserve_bytes
@@ -529,9 +560,17 @@ class FlashNextEngine:
             from tensorfold.cuda.comm import open_comm
 
             self.comm = open_comm(rank, tp, master, port,
-                                  **({"store": self._startup_store} if self._startup_store is not None else {}))
+                **({"store": self._startup_store} if self._startup_store is not None else {}),
+                **({} if self._store_use_libuv is None else {"use_libuv": self._store_use_libuv}),
+                **({"store_origin": self._startup_store_origin} if self._startup_store_origin is not None else {}),
+                **({"register": lambda owner: setattr(self, "comm", owner)} if self._store_use_libuv is False else {}))
             self._startup_store = None  # native communicator now owns its store reference
+            self._startup_store_origin = None
             self.comm.barrier()
+        if self._retention_native_runtime is not None:
+            self.comm.bind_native_nofile(self._retention_native_runtime["hard_nofile"])
+        native_host_bytes = (len(self.comm.store.host.encode("utf-8"))
+                             if self._retention_native_runtime is not None else 0)
         gather = ((lambda values: gather_ints(torch, self.comm.all_gather, values)) if tp == 2 else
                   (lambda values: gather_ints(torch, self.comm.all_gather, values, world=tp))) if tp > 1 else None
         if sm70 and gather is not None:
@@ -1044,6 +1083,18 @@ class FlashNextEngine:
                 return Geometry(lambda total: base.bytes_at(total) + sum(additions(total).values()),
                                 base.reserve, base.minimum_slots, breakdown)
 
+            def native_protocol_payload(count):
+                if self._retention_native_runtime is None:
+                    return None
+                from .retention_resources import native_sync_fixed_payload, native_sync_prefix_payload
+
+                bound = max(self.comm.native_state_slots_highwater, count)
+                return {"fixed": native_sync_fixed_payload(world=tp,
+                            ram=retention_policy is not None and retention_policy.tier == "ram",
+                            slots=bound, fd_limit=self._retention_native_runtime["hard_nofile"],
+                            host_bytes=native_host_bytes),
+                        "prefix": native_sync_prefix_payload(world=tp, slots=bound)}
+
             def session_host_workspace(count):
                 from tensorfold.cuda.geometry import multi_static_domains
 
@@ -1057,6 +1108,10 @@ class FlashNextEngine:
                     total += tp * graph_host_bytes(count, min(int(depth), dspark_plan.config.block), tp, int(max_len))
                 if dflash_plan is not None:
                     total += tp * dflash_resources(count, selected_context)["host_serving_bytes"]
+                native = native_protocol_payload(count)
+                if native is not None:
+                    total += native["fixed"]["global_native_fixed_payload_bytes"]
+                    total += native["prefix"]["global_native_prefix_payload_bytes"]
                 return total
 
             if dspark_plan is not None and dspark_graph_host:
@@ -1087,6 +1142,10 @@ class FlashNextEngine:
                                       if owner_preparation is not None or nvfp4_source else {}))
         if retention_header is not None:
             self.capacity_plan["retention_header"] = retention_header.record()
+            self.capacity_plan["retention_store"] = {"use_libuv": self._store_use_libuv,
+                "process_fixed": True, "selection": "adaptive-unique-profile",
+                "evidence": "source-selected; native/resource qualification pending",
+                "origin": self.comm.store_origin.record()}
         if media_resources is not None:
             self.capacity_plan["media_profile"] = {"identity": self.media_profile.identity,
                 "resources": media_resources, "encoder_rank": self.media_profile.execution.encoder_rank,
@@ -1101,6 +1160,13 @@ class FlashNextEngine:
             streams = self.capacity_plan["session_capacity"]["resident_capacity"]
             resident_windows = streams
             self.streams = self.kv_full_windows = streams
+            if self._retention_native_runtime is not None:
+                # Probe counts must not inflate the persistent reservation.
+                # Reserve the selected count before warmup can create keys.
+                self.comm.note_native_state_slots(streams)
+                self._native_protocol_resources = native_protocol_payload(streams)
+                self.capacity_plan["native_protocol"] = {
+                    **self._native_protocol_resources, "abi": self._retention_native_runtime}
             status_device, status_host = status_workspace(streams, tp) if tp > 1 else (0, 0)
             if dspark_plan is not None:
                 dspark_cache_copies = streams
@@ -1442,7 +1508,13 @@ class FlashNextEngine:
                     raise RuntimeError("retention host reservation is absent from the chosen steady header")
                 catalog.configure_host_resources(
                     baseline_host_bytes=self.capacity_plan["host_steady_commitment_bytes"] - retained_host,
-                    materialized_host_bytes=0)
+                    materialized_host_bytes=0,
+                    **({"prepaid_native_fixed_payload_bytes": self._native_protocol_resources["fixed"]["global_native_fixed_payload_bytes"],
+                        "prepaid_native_prefix_payload_bytes": self._native_protocol_resources["prefix"]["global_native_prefix_payload_bytes"],
+                        "native_state_slots": self._native_protocol_resources["fixed"]["maximum_state_slots"],
+                        "native_fd_limit": self._native_protocol_resources["fixed"]["nofile_hard_limit"],
+                        "native_host_bytes": native_host_bytes}
+                       if self._native_protocol_resources is not None else {}))
                 catalog.configure_device_resources(**self._retention_device_resources["limits"])
                 self.multi.bind_retention_catalog(catalog)
                 self.capacity_plan["retention"] = {
@@ -1969,7 +2041,8 @@ class FlashNextEngine:
         retention = getattr(self, "retention_policy", None)
         if admission is not None and admission["admission_policy"] == "fifo":
             policy.append(["fifo-retention-service-policy", admission,
-                           None if retention is None else retention.record()])
+                           None if retention is None else retention.record(),
+                           {"store_use_libuv": self._store_use_libuv}])
         if getattr(self, "_sm70_kv_policy", None) == "stored-rotor-basis-fp16-fp32acc-v1":
             policy.append(["sm70-kv-working-policy", self._sm70_kv_policy])
         if getattr(self, "indexer_history", "gpu") == "ram":
@@ -2408,11 +2481,14 @@ class FlashNextEngine:
             if weights is not None:
                 weights.meta.pop("owner_workspaces", None)
             self._owner_preparation = None
+        startup_origin = getattr(self, "_startup_store_origin", None)
+        if startup_origin is not None and startup_origin.adopted_by is None:
+            startup_origin.retire()  # An untransferred metadata-stage listener has no native communicator borrower.
+        self._startup_store = self._startup_store_origin = None
         comm = getattr(self, 'comm', None)
         if comm is not None and not preserve_transport:
             comm.close(abort=getattr(self, '_abort_comm', False))
             self.comm = None
-        self._startup_store = None  # native CPU Store owns its listener via RAII
         session = getattr(self, "expert_session", None)
         if session is not None:
             session.close(abort=getattr(self, "_abort_comm", False))
@@ -2667,3 +2743,4 @@ class FlashNextEngine:
                     raise
                 finally:
                     self._retire_request(operation, primary)
+            body = None

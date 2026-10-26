@@ -8,7 +8,9 @@ import pytest
 from tensorfold.families.qwen4_exp.cuda.retention_policy import RetentionPolicy
 from tensorfold.families.qwen4_exp.cuda.retention_resources import (
     continuation_payload_bytes, finalize_retention_resources, retained_constraint_reason,
-    HostBaseline, retained_recovery_extra, retention_device_resources, retention_header_resources, tokenizer_presentation_bound,
+    HostBaseline, native_sync_control_payload, native_sync_data_payload, require_native_payload_runtime,
+    retained_recovery_extra, retention_device_resources,
+    retention_header_resources, tokenizer_presentation_bound,
 )
 
 
@@ -25,11 +27,108 @@ def tokenizer():
 def test_global_policy_reservation_is_not_multiplied_by_tp():
     policy = RetentionPolicy("ram", 5, 60, 1 << 30, 4096, 65536, 1 << 20)
     value = retention_header_resources(policy, 8)
-    assert value.global_host_bytes == (1 << 30) + 65536
+    native = native_sync_data_payload(world=8, chunk_bytes=4096)
+    control = native_sync_control_payload(world=8, chunk_bytes=4096, ram=True)
+    assert value.global_host_bytes == ((1 << 30) + 65536 + native["global_native_data_payload_bytes"]
+        + control["global_native_control_value_bytes"] + control["global_native_rpc_value_bytes"])
+    assert native["pinned_ordinary_bytes_already_in_progress"] == 65536
     assert value.per_rank_gpu_overlap_bytes == 1 << 20
     assert value.record()["world"] == 8
-    assert retention_header_resources(None, 8).global_host_bytes == 0
+    ordinary = retention_header_resources(None, 8)
+    assert ordinary.global_host_native_data_bytes == 0
+    assert ordinary.global_host_bytes == (ordinary.global_host_native_control_bytes + ordinary.global_host_native_rpc_bytes)
+    assert ordinary.global_host_native_rpc_bytes > 0
     assert retention_header_resources(RetentionPolicy("gpu", 5, 60), 8).per_rank_gpu_overlap_bytes == 0
+
+
+def test_native_control_and_rpc_are_global_and_do_not_re_add_manifest_backing():
+    without = native_sync_control_payload(world=8, chunk_bytes=0, ram=False, slots=2)
+    ram = native_sync_control_payload(world=8, chunk_bytes=4096, ram=True, slots=2)
+    assert without["worker_frame_bytes"] == without["daemon_worker_value_bytes"] == 0
+    assert ram["worker_frame_bytes"] > 0 and ram["daemon_worker_value_bytes"] > 0
+    assert ram["global_native_rpc_value_bytes"] == without["global_native_rpc_value_bytes"]
+    peers = 7
+    frame = without["rpc_command_bytes"]
+    assert without["global_native_rpc_value_bytes"] == (max((2 * peers + 1) * frame, peers * frame)
+        + peers * 3 * frame + peers * 2 * frame)
+    assert ram["global_native_control_value_bytes"] >= ram["shared_daemon_handler_delta_bytes"]
+    assert "already reserved manifest backing" in ram["excluded"]
+
+
+def test_native_data_extra_bounds_selected_vector_growth_without_repaying_python_or_pinned():
+    from tensorfold.cuda.store_fields import MAX_KEY_BYTES
+
+    def allocated_peak(payload):
+        # Independent selected-STL recurrence from the pinned source evidence:
+        # old and new allocations coexist during a growing range insertion.
+        size, capacity, peak = 1, 32, 32
+        for count in (8, MAX_KEY_BYTES, 8, payload):
+            if size + count > capacity:
+                grown = size + max(size, count)
+                peak = max(peak, capacity + grown)
+                capacity = grown
+            size += count
+            peak = max(peak, capacity)
+            if size >= 1440:
+                size = 0
+        return peak
+    for world in (1, 2, 8):
+        for chunk in (1, 37, 1439, 1440, 8191, 8192, 8193, 1 << 20, 8 << 20):
+            bound = native_sync_data_payload(world=world, chunk_bytes=chunk)
+            for open_waves in range(world + 1):
+                for publishers in range(open_waves + 1):
+                    ordinary_native = (world + publishers + open_waves + 1) * chunk
+                    assert ordinary_native + publishers * allocated_peak(chunk) <= bound["global_native_data_payload_bytes"]
+            assert bound["pinned_ordinary_bytes_already_in_progress"] == 2 * world * chunk
+            assert bound["native_chunk_payload_bytes"] == (4 * world + 1) * chunk
+
+
+def test_native_payload_bound_verifies_actual_selected_abi_and_rejects_other_torch(monkeypatch):
+    torch = pytest.importorskip("torch")
+    result = require_native_payload_runtime()
+    assert result["torch_git"] == "5ab14acbced0c33e6b6e8fdbc5b541b57487f7e1"
+    assert result["libstdcxx_sha256"] == "1fd75fe70354a416d75aef22bcae68c47bd25d20e2d0568c30b1a9838cf62f11"
+    assert result["python_implementation"] == "cpython" and result["python_version"] == [3, 12, 3]
+    monkeypatch.setattr(torch.version, "git_version", "other-native-build")
+    with pytest.raises(ValueError, match="selected Torch"):
+        require_native_payload_runtime()
+
+
+def test_native_payload_bound_rejects_different_actual_runtime_content(monkeypatch, tmp_path):
+    pytest.importorskip("torch")
+    from tensorfold.families.qwen4_exp.cuda import execution_identity
+
+    wrong = tmp_path / "libstdc++.so.6.fake"
+    wrong.write_bytes(b"not the selected ELF")
+    monkeypatch.setattr(execution_identity, "_small", lambda *_args: f"0-1 r--p 0 00:01 1 {wrong}\n".encode())
+    with pytest.raises(ValueError, match=r"C\+\+ runtime content"):
+        require_native_payload_runtime()
+
+
+def test_native_payload_bound_requires_finite_existing_hard_fd_limit(monkeypatch):
+    pytest.importorskip("torch")
+    import resource
+
+    monkeypatch.setattr(resource, "getrlimit", lambda _kind: (1024, resource.RLIM_INFINITY))
+    with pytest.raises(ValueError, match="finite existing hard descriptor"):
+        require_native_payload_runtime()
+
+
+@pytest.mark.parametrize("variant", ["implementation", "version"])
+def test_new_unique_native_payload_rejects_unproved_python_layout_before_native_reads(monkeypatch, variant):
+    from tensorfold.families.qwen4_exp.cuda import execution_identity
+
+    def forbidden(*_args):
+        pytest.fail("unsupported Python must refuse before process/native identity reads")
+    monkeypatch.setattr(execution_identity, "_small", forbidden)
+    if variant == "version":
+        monkeypatch.setattr(sys, "version_info", (3, 12, 4))
+    else:
+        values = vars(sys.implementation).copy()
+        values["name"] = "pypy"
+        monkeypatch.setattr(sys, "implementation", SimpleNamespace(**values))
+    with pytest.raises(ValueError, match="selected CPython3.12.3"):
+        require_native_payload_runtime()
 
 
 def test_recovery_allowance_reuses_existing_authority_without_baseline_double_charge():
@@ -128,8 +227,10 @@ def test_builtin_decoder_affine_bound_covers_multibyte_empty_and_cross_token_cas
 
 
 def test_whole_context_continuation_includes_real_python_int_lists_copy_index_and_output():
-    small = continuation_payload_bytes(context=64, vocab_size=248064, presentation=768, max_body_bytes=32 << 20)
-    large = continuation_payload_bytes(context=128, vocab_size=248064, presentation=768, max_body_bytes=32 << 20)
+    small = continuation_payload_bytes(context=64, vocab_size=248064, presentation=768,
+                                       max_body_bytes=32 << 20, copy_enabled=True)
+    large = continuation_payload_bytes(context=128, vocab_size=248064, presentation=768,
+                                       max_body_bytes=32 << 20, copy_enabled=True)
     assert small["continuation_lists"] > 7 * 64 * (sys.getsizeof(248063) + 8)
     assert small["mailbox"] > 64 * 4
     assert small["copy_index"] > 64 * 16
@@ -161,7 +262,7 @@ def test_finalizer_checks_global_remaining_room_and_freezes_actual_frontend(monk
         world=8, states=[SimpleNamespace(limit=128)], _manifest_bytes=1024,
         _buffer=SimpleNamespace(nbytes=4096, is_pinned=lambda: True), _ram=None, check_health=lambda: None,
         evidence="source-candidate", has_retained=False, prefix_limit=2, minimum_future_bytes=1 << 20,
-        host_resources=HostBaseline(1000, 500))
+        host_resources=HostBaseline(1000, 500), _cohort=SimpleNamespace(multi=SimpleNamespace(copy=False)))
     record = finalize_retention_resources(catalog, tokenizer=tokenizer(), max_pending_requests=3,
         max_waiting_input_bytes=100000, max_http_connections=4)
     assert calls == [(record["global_host_commitment_bytes"], 500 + 8 * 4096)]

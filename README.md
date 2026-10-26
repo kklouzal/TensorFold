@@ -6,11 +6,18 @@ full-context capacity planning, unique GPU histories, bounded execution and live
 controls. [Implementation and qualification boundaries](docs/v100-adaptive-validation.md)
 separate source checks from the pending eight-V100 model, quality and performance
 gates. Historical results below keep their original source and layout.
-The published text/core/position checkpoint passed **3,277 installed CPU checks
-and 105 subtests**, with four documented optional/environment skips. Its scope
-precedes the current specification's FIFO, retained-state and standard API work.
-The media service integration and those newer requirements remain under
-verification; no new V100 capacity, quality or performance result is claimed.
+The published media/frontend/MTP checkpoint at `64b24dd5` passed **4,365 installed
+CPU checks and 124 subtests**. The later v6 candidate source tree `413e132b`
+passed **5,214 installed CPU checks and 144 subtests**, with nine documented
+optional/platform skips and exact installed/source byte matching. This validates
+the captured software contracts; native resource-accounting corrections remain
+under review, and actual V100 execution, quality, capacity and performance remain
+unqualified. Historical results keep their original source and workload scope.
+The new adaptive unique-history modes share a fixed synchronous Store selected
+at startup for request-scoped, GPU-retained and RAM-retained operation. CPU
+checks cover listener ownership, rank agreement and cleanup; complete resource
+composition and V100 qualification remain pending. Existing legacy and other
+hardware paths retain their transport selection.
 The revised design's shared-GGUF MTP importer preserves the selected target
 embedding/head, validates the ordered token-ID mapping, and declares QSA ratio
 four with a 2,048-token complete-group budget. Import controls do not qualify
@@ -845,13 +852,15 @@ Flash Next CUDA probability output is supported on one GPU for **non-streamed te
 
 Chat/completion streaming uses SSE `data` events, optional usage and `[DONE]`; Responses uses typed events. Under an explicit CUDA `--parallel N`, an open stream also gets an SSE comment line (`: keepalive`) every 15 s while its request waits or its prompt prefills; SSE clients skip comment lines. A failure after a stream opens is an error event rather than a new HTTP status. CUDA validates its context before opening SSE; default MLX context refusal can occur after opening, while configured admission defers headers to return capacity errors as JSON first.
 
-Adaptive CUDA sequences are request-scoped. Completion or cancellation retires the
-request claim; bounded prompt-prefix caching can preserve reusable bytes without
-creating a persistent GPU session. Runtime receipts report active requests,
-allocated slots and derived prefix-cache slots separately, with intentional
-retained sessions at zero. Temporarily selecting zero proposals keeps the
-enabled drafter warm within the active request; `draft: false` keeps that call
-serial. A new request starts a new slot generation even when it reuses a prefix. Runtime
+Without an explicit retention policy, adaptive CUDA sequences are request-scoped.
+Completion or cancellation retires the request claim; bounded prefix caching can
+preserve reusable bytes without promising a persistent session. The explicit v6
+GPU/RAM retention candidate has separate logical-session, backing and GPU-slot
+limits; its resource/native-memory and V100 qualification gates remain open.
+Stored API items are durable logical history and do not alone promise a retained
+compute checkpoint. Runtime receipts distinguish these lifetimes. Temporarily
+selecting zero proposals keeps the enabled drafter warm within the active
+request; `draft: false` keeps that call serial. A new request starts a new slot generation even when it reuses a prefix. Runtime
 work receipts separate logical prompt/cache/replay counts, submitted target and
 MTP rows, and verifier acceptance histograms from useful committed output.
 Indexer fields describe causal logical work; expert group size and device stage

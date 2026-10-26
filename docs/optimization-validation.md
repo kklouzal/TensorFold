@@ -18,7 +18,38 @@ the numerical contract before comparing speed. Quantization options have their
 own explicit quality tradeoffs; changing an optimization must not silently
 change the user's selected precision or sampling policy.
 
+## Adaptive V100 software evidence, 2026-10-26
+
+The revised adaptive implementation has a separate software evidence line from
+the historical V100 performance campaign below. The current consolidated CPU
+candidate, input tree `413e132bf977625f485fffedf2011cc4bfc02f07` and image
+`sha256:05eca41e61a9410660d2a38c2c4d9ced06124efec64d635cb21580bcbb399323`,
+passed **5,214 installed tests and 144 subtests**, with nine documented skips.
+Its 706 installed code files matched the frozen source without an overlay.
+The published media/frontend baseline remains the distinct 4,365-test,
+124-subtest checkpoint; the earlier 3,277/105 result is historical text/core
+evidence. [Exact checkpoint boundaries](v100-adaptive-validation.md#current-v6-source-and-cpu-evidence)
+preserve the source/image identities and skip scope.
+
+Current source implements DFlash2 through the shared Engine, standard
+Responses/Conversations lifecycle, FIFO admission, common retained-state/prefix
+ownership and blocked-request requeue. Later source controls passed 50
+copy-applicability checks, 138 prefix/cache/media caller checks and three
+focused reclamation/protection cases. These overlapping source checks are not
+an installed aggregate or a measured optimization gain.
+
+Native transfer/backend and allocated host-progress proof, combined resource
+admission, the final composed installed image and publication remain pending.
+V100/TP8/NCCL/model output, quality, physical capacity and end-to-end performance
+remain unrun for the revised source. The subsequent measurements and failures
+below retain their original candidate identities; they do not qualify this
+new configuration.
+
 ## Flash Next V100 live measurements, 2026-10-24
+
+This section preserves the historical campaign chronology. Intermediate
+pending/failure labels describe their named checkpoints; later closeouts in
+this document retain their own evidence scope.
 
 The unchanged installed SM70 candidate 3 passed a repeated live-request matrix
 on eight V100s: three uncached trials at each of 128/1,024/2,048 prompt tokens,
