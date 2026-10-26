@@ -23,7 +23,7 @@ _OPEN_NONBLOCK = os.O_NONBLOCK if os.name == "posix" else 0
 
 
 @contextmanager
-def _regular_stream(path):
+def _regular_stream(path, *, no_follow=False):
     """Own a checkpoint file; a FIFO cannot block before type validation.
 
     Linux/macOS nonblocking open leaves ordinary file reads unchanged and
@@ -38,7 +38,8 @@ def _regular_stream(path):
         scope = FileStreams(max_files=1)
         primary = None
         try:
-            record, _ = scope.open(path, os.O_RDONLY | _OPEN_NONBLOCK, "rb")
+            flags = os.O_RDONLY | _OPEN_NONBLOCK | (os.O_NOFOLLOW if no_follow else 0)
+            record, _ = scope.open(path, flags, "rb")
             yield record.stream
         except BaseException as error:
             primary = error

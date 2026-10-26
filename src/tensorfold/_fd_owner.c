@@ -18,6 +18,9 @@
 #include <limits.h>
 #include <string.h>
 #include <unistd.h>
+#ifdef __linux__
+#include <sys/mman.h>
+#endif
 #ifndef O_CLOEXEC
 #error "tensorfold._fd_owner requires atomic non-inheritable open"
 #endif
@@ -185,6 +188,37 @@ failed:
 }
 
 static PyObject *
+owned_memfd(PyObject *object, PyObject *unused)
+{
+    OwnedFD *self = (OwnedFD *)object;
+    (void)unused;
+#ifdef __linux__
+    int descriptor, saved_errno;
+    if (self->state != OWNER_FRESH) {
+        PyErr_SetString(PyExc_RuntimeError, "memfd requires a fresh closed descriptor owner");
+        return NULL;
+    }
+    self->state = OWNER_ACQUIRING;
+    Py_BEGIN_ALLOW_THREADS
+    descriptor = memfd_create("tensorfold-media-diagnostics", MFD_CLOEXEC | MFD_ALLOW_SEALING);
+    saved_errno = errno;
+    Py_END_ALLOW_THREADS
+    if (descriptor < 0) {
+        self->state = OWNER_FRESH;
+        errno = saved_errno;
+        return PyErr_SetFromErrno(PyExc_OSError);
+    }
+    self->fd = descriptor;
+    self->state = OWNER_USED;
+    Py_RETURN_NONE;
+#else
+    (void)self;
+    PyErr_SetString(PyExc_NotImplementedError, "owned memfd requires Linux");
+    return NULL;
+#endif
+}
+
+static PyObject *
 owned_close(PyObject *object, PyObject *unused)
 {
     (void)unused;
@@ -224,6 +258,7 @@ static PyMethodDef owned_methods[] = {
     {"open", (PyCFunction)(void (*)(void))owned_open, METH_VARARGS | METH_KEYWORDS,
      "Acquire once into this already journaled closed slot; report acquisition failures explicitly."},
     {"close", owned_close, METH_NOARGS, "Consume ownership once; report close errors without retrying a numeric FD."},
+    {"memfd", owned_memfd, METH_NOARGS, "Acquire a sealable Linux memfd into a journaled fresh owner."},
     {"fileno", owned_fileno, METH_NOARGS, "Borrow the open FD; caller must finish all uses before owner.close()."},
     {NULL, NULL, 0, NULL}
 };

@@ -20,6 +20,10 @@ Its combined source/media authority also checks the protected CPU processor and
 decoder closure; a source-only record cannot satisfy the combined verifier.
 The additive [CPU media source image](deploy/v100/media-foundation.md) supplies
 the pinned TorchVision/Transformers processors and PyAV/FFmpeg decoder stack.
+The internal [bounded CPU media frontend](docs/sm70-media-frontend.md) adds
+explicit encoded replay ownership, fresh supervised CPU workers, actual-PTS
+metadata and lazy whole-image/temporal-pair FP32 pixel leases. It requires an
+admitted envelope and canonical token planner; it adds no default service activation.
 CPU software controls remain distinct from pending media service, SC117/mmproj,
 V100 resource/quality/performance and compiler qualification.
 Measured execution profiles use a separate
