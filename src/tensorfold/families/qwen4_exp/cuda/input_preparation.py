@@ -49,7 +49,12 @@ class InputPreparationContext:
         finally:
             self.cohort.multi = None
 
-    def prepare(self, label, operation, *, may_refuse=False):
+    def prepare(self, label, operation, *, may_refuse=False, contract=None):
+        """Agree local preparation and an optional top-level publication digest.
+
+        The same phase/channel compares every contract before any caller may
+        submit the next collective. Mismatch is fatal, without key retirement.
+        """
         if not self._lock.acquire(blocking=False):
             error = RuntimeError("input preparation must stay on its serialized coordinator")
             _fatal(self.cohort, error)
@@ -63,8 +68,16 @@ class InputPreparationContext:
                 error = ValueError("input preparation requires a bounded role label and explicit operation policy")
                 _fatal(self.cohort, error)
                 raise error
+            if contract is not None and not _digest(contract):
+                error = ValueError("input preparation contract must be None or a lowercase SHA256 digest")
+                _fatal(self.cohort, error)
+                raise error
             thread = threading.get_ident()
             if self._active is not None:
+                if contract is not None:
+                    error = RuntimeError("rank publication contracts require top-level input preparation")
+                    _fatal(self.cohort, error)
+                    raise error
                 if self._active != thread or self._pure and not may_refuse:
                     error = RuntimeError("a pure input preflight cannot contain device preparation")
                     _fatal(self.cohort, error)
@@ -89,10 +102,14 @@ class InputPreparationContext:
                 result = []
                 def build():
                     result.append(operation())
-                    return None
+                    return contract
                 primary = None
                 try:
-                    _phase(self.cohort, channel, "prepare", build, may_refuse=may_refuse)
+                    contracts = _phase(self.cohort, channel, "prepare", build, may_refuse=may_refuse)
+                    if any(value != contract for value in contracts):
+                        error = RuntimeError("input preparation ranks disagree on the publication contract")
+                        _fatal(self.cohort, error)
+                        raise error
                 except _ManifestRefusal as error:
                     primary = error
                 if not self.cohort._execution_manifest_uncertain:
@@ -112,6 +129,17 @@ class InputPreparationContext:
                 self._active, self._pure = None, False
         finally:
             self._lock.release()
+
+
+def reject_prepared(buffers, error):
+    """Contain a post-preparation invariant failure before peer forward work."""
+    context = getattr(buffers, "input_preparation_context", None)
+    if context is not None:
+        try:
+            context.fail(error)
+        except BaseException as notification:
+            raise_failures(error, (notification,))
+    raise error
 
 
 def install_input_preparation(weights):

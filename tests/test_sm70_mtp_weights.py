@@ -1,6 +1,6 @@
 """Stock MTP weight mapping, bounded expert execution and precision contracts."""
 
-from dataclasses import fields, is_dataclass
+from dataclasses import fields, is_dataclass, replace
 import json
 from types import SimpleNamespace
 
@@ -90,6 +90,44 @@ def test_stock_mtp_rejects_incompatible_target_before_loading(tmp_path):
     target.cfg.hidden = 16
     with pytest.raises(ValueError, match="hidden_size"):
         attach(target, tmp_path, tp=(3, 4))
+
+
+@pytest.mark.parametrize("change", [None, "theta", "reference", "layout"])
+def test_prepared_stock_mtp_validates_its_own_position_source(tmp_path, monkeypatch, change):
+    from tensorfold.families.qwen4_exp.rope import RopeParameters
+
+    target, _ = stock(tmp_path)
+    path = tmp_path / "config.json"
+    cfg = json.loads(path.read_text())
+    cfg["text_config"].update(max_position_embeddings=262144, rope_parameters={
+        "rope_theta": 10000000., "partial_rotary_factor": .5, "mrope_section": [1, 0, 0]})
+    path.write_text(json.dumps(cfg))
+    source = own = RopeParameters.from_config(cfg)
+    target.cfg.rope_theta = 123456.  # selected target policy cannot override this source check
+    if change == "theta":
+        own = replace(own, theta=123456.)
+    elif change == "reference":
+        own = replace(own, native_context=524288)
+    elif change == "layout":
+        own = replace(own, mrope_section=(0, 1, 0))
+    target.meta["position_profile"] = SimpleNamespace(target=SimpleNamespace(rope=source), mtp=SimpleNamespace(rope=own))
+    monkeypatch.setattr(torch, "empty", lambda *_a, **_kw: pytest.fail("position check allocated payload"))
+    if change is None:
+        assert byte_plan(target, tmp_path, tp=(3, 4))["resident_bytes"] > 0
+    else:
+        with pytest.raises(ValueError, match="positional source"):
+            byte_plan(target, tmp_path, tp=(3, 4))
+
+
+def test_prepared_legacy_mtp_omitted_fields_use_source_native_reference_only(tmp_path):
+    from tensorfold.families.qwen4_exp.rope import RopeParameters
+
+    target, _ = stock(tmp_path)  # actual legacy companion omits context and positional parameters
+    native = RopeParameters("default", 1000000., 2, 262144, 262144, mrope_section=(1, 0, 0))
+    extended = replace(native, rope_type="yarn", factor=4., attention_factor=1.25, context_limit=1048576)
+    target.meta["position_profile"] = SimpleNamespace(target=SimpleNamespace(rope=extended),
+        mtp=SimpleNamespace(rope=native))
+    assert byte_plan(target, tmp_path, tp=(3, 4))["resident_bytes"] > 0
 
 
 def test_dense_storage_and_row_grouping_preserve_same_values():

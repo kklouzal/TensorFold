@@ -501,6 +501,10 @@ class FlashNextEngine:
                 "profile": sm70_nvfp4.NUMERICAL_PROFILE, "qualification": "unqualified"}
             self._sm70_weight_preparation["linear_kernel_family"] = linear_kernel_family
             self._sm70_weight_preparation["expert_kernel_family"] = expert_kernel_family
+        if history_placement is not None:
+            from tensorfold.cuda.sm70.compact_indexer import prepare as prepare_compact_indexer
+
+            prepare_compact_indexer(torch.device("cuda", torch.cuda.current_device()))
         native_a4, checkpoint_math, a4_banks, a4_workspace = False, False, (), 0
         a4_scalar_host = 0
         if modelopt:

@@ -550,7 +550,10 @@ def test_completed_hc_capture_applies_eight_rank_pending_partials_without_mutati
     def run(ids, enabled):
         rows = len(ids)
         buffers = SimpleNamespace(ids=torch.tensor(ids, dtype=torch.int32), h=torch.empty(rows, 1024, dtype=torch.float16),
-                                  pss=torch.empty(rows, 1, 4), prefill=False)
+                                  pss=torch.empty(rows, 1, 4), prefill=False,
+                                  target_indexer_frame=None, target_indexer_coordinates=None,
+                                  target_indexer_coordinate_storage=None, target_indexer_position=None,
+                                  input_preparation_context=None)
         w.dflash2 = Runtime(rows) if enabled else None
         result = forward.compute(w, [(SimpleNamespace(kv_status=None), 0, rows)], buffers)
         return result, None if w.dflash2 is None else w.dflash2.features

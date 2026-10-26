@@ -123,6 +123,83 @@ def test_single_rank_nested_calls_share_one_context_without_a_listener():
     assert context.ordinal == 1 and context.cohort.comm is None
 
 
+@pytest.mark.parametrize("mode", ["legacy", "matching", "mismatch", "missing"])
+def test_eight_rank_publication_contract_agreement_precedes_every_collective(monkeypatch, mode):
+    from tensorfold.cuda import cohort
+
+    store, contexts, notifications, collectives = Store(), [], [], []
+    def notify():
+        notifications.append(True)
+        store.abort()
+    monkeypatch.setattr(cohort, "notify_failure", notify)
+    for rank in range(8):
+        contexts.append(install_input_preparation(NS(positions=object(),
+            comm=NS(world=8, rank=rank, store=store),
+            meta={"world": 8, "rank": rank, "coordinate_profile_identity": "a" * 64})))
+    def worker(rank):
+        options = {} if mode == "legacy" else {"contract": "b" * 64}
+        if rank == 3 and mode in ("mismatch", "missing"):
+            options["contract"] = "c" * 64 if mode == "mismatch" else None
+        try:
+            result = contexts[rank].prepare("span-publication", lambda: rank, **options)
+            collectives.append(rank)
+            return result
+        except BaseException as error:
+            return error
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        outcomes = list(pool.map(worker, range(8)))
+    assert all(context.ordinal == 1 and context._active is None for context in contexts)
+    if mode in ("legacy", "matching"):
+        assert outcomes == list(range(8)) and sorted(collectives) == list(range(8))
+        assert not notifications and not store.values
+    else:
+        assert all(isinstance(value, BaseException) for value in outcomes)
+        assert any("publication contract" in str(value) for value in outcomes)
+        assert notifications and not collectives
+        assert all(context.cohort._execution_manifest_uncertain for context in contexts)
+        assert not any("/ready/retirement/" in key for key in store.values)
+
+
+@pytest.mark.parametrize("contract", [False, 0, "", "A" * 64, "b" * 63, object()])
+def test_invalid_publication_contract_is_refused_before_local_work(monkeypatch, contract):
+    from tensorfold.cuda import cohort
+
+    notifications = []
+    monkeypatch.setattr(cohort, "notify_failure", lambda: notifications.append(True))
+    context = install_input_preparation(NS(positions=object(), comm=None,
+        meta={"coordinate_profile_identity": "a" * 64}))
+    with pytest.raises(ValueError, match="SHA256"):
+        context.prepare("span", lambda: pytest.fail("work before contract validation"), contract=contract)
+    assert context.ordinal == 0 and notifications == [True]
+
+
+def test_nested_publication_contract_cannot_bypass_rank_agreement(monkeypatch):
+    from tensorfold.cuda import cohort
+
+    notifications = []
+    monkeypatch.setattr(cohort, "notify_failure", lambda: notifications.append(True))
+    context = install_input_preparation(NS(positions=object(), comm=None,
+        meta={"coordinate_profile_identity": "a" * 64}))
+    with pytest.raises(RuntimeError, match="top-level"):
+        context.prepare("outer", lambda: context.prepare("nested", lambda: pytest.fail("nested contract work"),
+                                                        contract="b" * 64))
+    assert context.ordinal == 1 and notifications == [True]
+
+
+def test_prepared_rejection_preserves_primary_if_cohort_notification_fails():
+    from tensorfold.families.qwen4_exp.cuda.input_preparation import reject_prepared
+
+    primary, secondary = ValueError("invalid prepared input"), RuntimeError("notification failed")
+
+    def failed(error):
+        assert error is primary
+        raise secondary
+
+    with pytest.raises(ValueError) as caught:
+        reject_prepared(NS(input_preparation_context=NS(fail=failed)), primary)
+    assert caught.value is primary and primary.__cause__ is secondary
+
+
 def test_pure_outer_scope_cannot_hide_device_staging(monkeypatch):
     from tensorfold.cuda import cohort
 

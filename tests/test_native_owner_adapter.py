@@ -220,7 +220,8 @@ def test_new_admission_retires_registered_native_readers_before_word_publication
     state.reset(weights, new_sequence=False)
     assert state.slot_generation == 1
     workspace.retire_native()
-    assert not state.history_native_readers
+    assert workspace not in state.history_native_readers
+    assert set(state.history_native_readers) == {state.compact_indexer}
 
 
 def test_ambiguous_generation_publication_cannot_be_erased_by_reset(monkeypatch):

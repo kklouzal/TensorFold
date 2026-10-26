@@ -10,7 +10,7 @@ import torch
 
 from tensorfold.families.qwen4_exp.position_profile import (
     DFLASH_ALGORITHM, MAX_EPOCH, NATIVE_ALGORITHM, YARN_ALGORITHM, resolve_position_profile,
-    bind_position_profile, position_for, position_vector_bytes, prepare_position_vectors,
+    bind_position_profile, position_for, position_vector_bytes, prepare_position_vectors, mtp_source_parameters,
 )
 
 
@@ -408,3 +408,31 @@ def test_legacy_mtp_undeclared_positions_use_explicit_target_source_native_defau
     assert p.mtp.rope.theta == 20000000 and p.mtp.rope.native_context == 262144
     assert p.mtp.rope.attention_factor == 1
     assert companion.resolve() in p.required_input_files()
+
+
+def test_public_mtp_source_defaults_never_inherit_target_runtime_scaling():
+    from tensorfold.families.qwen4_exp.rope import RopeParameters
+
+    reference = RopeParameters.from_config(config(), 2)
+    actual = mtp_source_parameters({"head_dim": 256, "hidden_size": 2560, "num_attention_heads": 24}, reference)
+    assert actual.rope_type == "default" and actual.factor == actual.attention_factor == 1
+    assert (actual.theta, actual.rotary_dim, actual.native_context, actual.mrope_section) == (
+        10000000, 64, 262144, (11, 11, 10))
+    declared = config()
+    declared["text_config"]["rope_parameters"].update(rope_type="yarn", factor=4,
+        original_max_position_embeddings=262144, attention_factor=1.25)
+    actual = mtp_source_parameters(declared, reference)
+    assert actual.factor == 4 and actual.attention_factor == 1.25 and actual.context_limit == 1048576
+
+
+@pytest.mark.parametrize("world,heads", [(8, 2), (1, 2), (8, 1), (4, 2), (8.0, 2), (8, 2.0)])
+def test_shared_layout_predicate_matches_actual_history_constructor(world, heads):
+    from tensorfold.families.qwen4_exp.cuda.history_placement import HistoryPlacement
+
+    supported = HistoryPlacement.supports(world, heads)
+    if supported:
+        placement = HistoryPlacement(world, heads, 2)
+        assert placement.world == 8 and placement.global_kv_heads == 2
+    else:
+        with pytest.raises(ValueError, match="requires TP8"):
+            HistoryPlacement(world, heads, 2)
