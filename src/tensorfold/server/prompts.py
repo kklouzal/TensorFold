@@ -51,6 +51,28 @@ def prepare_images(frontend, messages, render, *, context_limit=None, limits: Im
         raise RequestError('image input requires a supported vision checkpoint served with --vision')
     allow_urls = bool(getattr(frontend, 'allow_urls', False))
     videos = bool(getattr(frontend, 'videos', False))       # a frontend that encodes video frames too
+    # The SM70 admitted source frontend must branch before the existing eager
+    # decode path. No envelope or resource defaults are inferred from flags.
+    envelope = getattr(frontend, 'media_envelope', None)
+    if envelope is not None:
+        from tensorfold.vision.replay import MediaEnvelope
+        if type(envelope) is not MediaEnvelope or not callable(getattr(frontend, 'prepare_sources', None)):
+            raise RequestError('bounded media requires an explicit admitted envelope and source frontend')
+        try:
+            from types import SimpleNamespace
+            source_limits = SimpleNamespace(max_images=envelope.max_images, max_videos=envelope.max_videos,
+                                            max_encoded_bytes=envelope.max_upload_bytes, max_url_chars=envelope.max_url_chars)
+            template, sources = split_images(messages, limits=source_limits, allow_urls=allow_urls, allow_videos=videos,
+                                             video_limits=source_limits)
+            prepared = frontend.prepare_sources(render(template), sources, allow_urls=allow_urls,
+                                                max_prompt_tokens=context_limit, max_visual_tokens=max_visual_tokens)
+        except (ImageInputError, ValueError, ImportError) as exc:
+            raise refusal(str(exc)) from exc
+        try:
+            return RenderedPrompt(list(prepared.token_ids), vision=prepared)
+        except BaseException as primary:
+            from tensorfold.cleanup import rollback
+            rollback(prepared, primary, prepared.close)
     # Preserve frontend byte/pixel limits while applying configured request counts and token budgets.
     own = getattr(frontend, 'image_limits', None)
     if own is not None:
