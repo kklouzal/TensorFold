@@ -19,12 +19,17 @@ import threading
 import time
 from typing import Callable
 
+from tensorfold.cleanup import raise_failures, rollback
 from .images import ImageSource, _check_source
 from .images_http import ImageInputError
 
 
 class MediaCancelled(ImageInputError):
     """Cancellation observed before publication; owned workers are retired."""
+
+
+class MediaBusy(ImageInputError):
+    """A legal work unit can fit after another bounded media owner retires."""
 
 
 def check_cancelled(cancelled: Callable[[], bool]) -> None:
@@ -260,7 +265,9 @@ class ReplayBorrow:
     def __enter__(self):
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, kind, error, traceback):
+        if error is not None:
+            rollback(self, error, self.close)
         self.close()
 
 
@@ -269,6 +276,8 @@ class ReplayLease:
         self._store, self._directory, self._refs = store, directory, tuple(refs)
         self._borrowers, self._closed, self._retiring = set(), False, False
         self._reservation = reservation
+        self._directory_attempted = self._directory_removed = False
+        self._directory_failure = None
 
     @property
     def _borrows(self):
@@ -284,7 +293,7 @@ class ReplayLease:
             if self._closed or self._retiring:
                 raise RuntimeError("replay lease is retired")
             if self._borrows >= self._store.envelope.max_replay_borrows:
-                raise ImageInputError("media replay borrower capacity is busy")
+                raise MediaBusy("media replay borrower capacity is busy")
             borrowed = ReplayBorrow(self)
             self._borrowers.add(borrowed)
             return borrowed
@@ -296,22 +305,34 @@ class ReplayLease:
                 return
             if self._borrows:
                 raise RuntimeError("replay lease still has outstanding borrowers")
-            # Failed removal retains capacity and owner for explicit retry.
+            if self._directory_attempted and not self._directory_removed:
+                raise RuntimeError("replay directory retirement uncertain; retain lease until process containment") from self._directory_failure
+            # Uncertain removal retains capacity and owner for containment.
             self._retiring = True
-            try:
-                shutil.rmtree(self._directory)
-            except FileNotFoundError:
-                if self._directory.exists():
+            if not self._directory_removed:
+                try:
+                    # Spend pathname authority before the operation: an error
+                    # may occur after removal and a later lease may reuse it.
+                    self._directory_attempted = True
+                    shutil.rmtree(self._directory)
+                    self._directory_removed = True
+                except BaseException as error:
+                    self._directory_failure = error
+                    if self._store._failure is None:
+                        self._store._failure = error
                     raise
             for ref in self.refs:
-                self._store._live.pop(ref.path, None)
+                if self._store._live.get(ref.path) is self:
+                    self._store._live.pop(ref.path, None)
             self._store._replay_reservations.pop(self._reservation, None)
             self._closed = True
 
     def __enter__(self):
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, kind, error, traceback):
+        if error is not None:
+            rollback(self, error, self.close)
         self.close()
 
 
@@ -353,8 +374,10 @@ class ReplayStore:
     def _reserve_staging(self, reservation, size):
         with self._lock:
             self._check_owner()
+            if size > self.envelope.max_staging_bytes:
+                raise ImageInputError("media work unit exceeds the entire staging byte capacity")
             if self._staging + size > self.envelope.max_staging_bytes:
-                raise ImageInputError("media staging byte capacity is busy")
+                raise MediaBusy("media staging byte capacity is busy")
             self._staging_reservations[reservation] = size
 
     def _release_staging(self, reservation):
@@ -364,8 +387,17 @@ class ReplayStore:
     def _check_owner(self):
         if self._pid != os.getpid():
             raise RuntimeError("replay store belongs to another process")
-        if self._failure is not None:
-            raise RuntimeError("media worker retirement unresolved; retain store until process containment") from self._failure
+        with self._lock:
+            failure = self._failure
+            if failure is None:
+                # Direct operation-owned fatal outcomes survive even a failed
+                # fatal-latch operation; no exception graph is inspected.
+                for retained in self._retained_workers:
+                    if retained is not None:
+                        failure = retained
+                        break
+        if failure is not None:
+            raise RuntimeError("media worker retirement unresolved; retain store until process containment") from failure
 
     def stage(self, sources, *, allow_urls: bool, cancelled: Callable[[], bool]) -> ReplayLease:
         from .videos import VideoSource, video_source
@@ -406,10 +438,10 @@ class ReplayStore:
                 # bytes concurrently; reserve both, independent of replay quota.
                 staging = 2 * remaining
                 staged_reservation = object()
+                item_primary = None
                 try:
                     with self._lock:
-                        if (remaining <= 0 or self._bytes + remaining > e.max_replay_bytes
-                                or self._staging + staging > e.max_staging_bytes):
+                        if remaining <= 0 or self._bytes + remaining > e.max_replay_bytes:
                             raise ImageInputError("encoded media staging/replay byte capacity is busy")
                         prior = self._replay_reservations[reservation][0]
                         self._replay_reservations[reservation] = (prior + remaining, len(sources))
@@ -434,13 +466,21 @@ class ReplayStore:
                     reserved += size
                     with self._lock:
                         self._replay_reservations[reservation] = (reserved, len(sources))
-                except BaseException as primary:
-                    if self._failure is None:
-                        from tensorfold.cleanup import rollback
-                        rollback(staged_reservation, primary, lambda: self._release_staging(staged_reservation))
+                except BaseException as error:
+                    item_primary = error
                     raise
-                else:
-                    self._release_staging(staged_reservation)
+                finally:
+                    if self._failure is None:
+                        try:
+                            self._check_owner()
+                            self._release_staging(staged_reservation)
+                        except BaseException as cleanup:
+                            with self._lock:
+                                if staged_reservation in self._staging_reservations and self._failure is None:
+                                    self._failure = item_primary if item_primary is not None else cleanup
+                            if item_primary is not None:
+                                raise_failures(item_primary, [cleanup])
+                            raise
             check_cancelled(cancelled)
             if time.monotonic() >= deadline:
                 raise ImageInputError("encoded media staging exceeded its wall limit")
@@ -460,7 +500,6 @@ class ReplayStore:
                     for ref in refs:
                         self._live.pop(ref.path, None)
                     self._replay_reservations.pop(reservation, None)
-            from tensorfold.cleanup import rollback
             rollback((self, directory, refs), primary, abandon)
 
     def borrow_ref(self, ref):

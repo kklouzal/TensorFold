@@ -55,9 +55,10 @@ def prepare_images(frontend, messages, render, *, context_limit=None, limits: Im
     # decode path. No envelope or resource defaults are inferred from flags.
     envelope = getattr(frontend, 'media_envelope', None)
     if envelope is not None:
-        from tensorfold.vision.replay import MediaEnvelope
-        if type(envelope) is not MediaEnvelope or not callable(getattr(frontend, 'prepare_sources', None)):
-            raise RequestError('bounded media requires an explicit admitted envelope and source frontend')
+        from tensorfold.vision.replay import MediaBusy, MediaEnvelope
+        if (type(envelope) is not MediaEnvelope or not callable(getattr(frontend, 'prepare_sources', None))
+                or not callable(getattr(frontend, 'check_media_health', None))):
+            raise RequestError('bounded media requires an explicit admitted envelope, source frontend and health check')
         try:
             from types import SimpleNamespace
             source_limits = SimpleNamespace(max_images=envelope.max_images, max_videos=envelope.max_videos,
@@ -66,8 +67,15 @@ def prepare_images(frontend, messages, render, *, context_limit=None, limits: Im
                                              video_limits=source_limits)
             prepared = frontend.prepare_sources(render(template), sources, allow_urls=allow_urls,
                                                 max_prompt_tokens=context_limit, max_visual_tokens=max_visual_tokens)
+        except MediaBusy as exc:
+            frontend.check_media_health()
+            raise CapacityError(str(exc)) from exc
         except (ImageInputError, ValueError, ImportError) as exc:
+            frontend.check_media_health()
             raise refusal(str(exc)) from exc
+        except Exception:
+            frontend.check_media_health()
+            raise
         try:
             return RenderedPrompt(list(prepared.token_ids), vision=prepared)
         except BaseException as primary:

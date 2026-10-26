@@ -12,7 +12,7 @@ import pytest
 from tensorfold.vision.images import ImageSource
 from tensorfold.vision.images_http import ImageInputError
 from tensorfold.vision.media_frontend import MediaExecutor, ReplayMediaFrontend
-from tensorfold.vision.replay import MediaCancelled, MediaEnvelope, MediaProbe, ReplayRef, ReplayStore, open_replay
+from tensorfold.vision.replay import MediaBusy, MediaCancelled, MediaEnvelope, MediaProbe, ReplayRef, ReplayStore, open_replay
 from tensorfold.vision.videos import VideoSource
 
 
@@ -158,7 +158,8 @@ def test_bounded_source_hook_precedes_eager_decode_and_preserves_interleaving(tm
     executor = MediaExecutor(store)
     monkeypatch.setattr(images, "load_images", lambda *a, **kw: pytest.fail("eager decode called"))
     calls = []
-    frontend = SimpleNamespace(media_envelope=store.envelope, videos=True, allow_urls=False)
+    frontend = SimpleNamespace(media_envelope=store.envelope, videos=True, allow_urls=False,
+                               check_media_health=lambda: None)
     def prepare(rendered, sources, **kwargs):
         calls.append((rendered, sources, kwargs))
         return SimpleNamespace(token_ids=(1, 2, 3))
@@ -267,36 +268,53 @@ def test_diagnostic_seal_failure_closes_exact_raw_descriptor(tmp_path, monkeypat
         os.fstat(descriptors[0])
 
 
-def test_exception_inspection_failure_poison_retains_primary_and_capacity(tmp_path, monkeypatch):
+def test_supervisor_constructor_oom_fallback_retains_owner_and_capacity(tmp_path, monkeypatch):
     import tempfile
-    from tensorfold.cuda.expert_launch import UnresolvedRankSessions
-    from tensorfold.vision import media_frontend
+    from tensorfold.cuda import expert_launch
     store = ReplayStore(tmp_path, envelope())
     executor = MediaExecutor(store)
-    primary = RuntimeError("supervisor primary")
-    primary.__cause__ = UnresolvedRankSessions((object(),), RuntimeError("pending owner"))
-    inspection = MemoryError("exception inspection failed")
-    def failed(*args, **kwargs):
+    primary = RuntimeError("retirement proof failed")
+    allocation = MemoryError("retained-session diagnostic allocation failed")
+    child = SimpleNamespace(pid=246801, returncode=None)
+    def failed_retirement(*args):
         raise primary
-    monkeypatch.setattr(media_frontend, "supervise", failed)
-    monkeypatch.setattr(media_frontend, "_unresolved", lambda e: (_ for _ in ()).throw(inspection))
+    def failed_diagnostic(*args):
+        raise allocation
+    monkeypatch.setattr(expert_launch.subprocess, "Popen", lambda *a, **k: child)
+    monkeypatch.setattr(expert_launch, "_exited", lambda owner: 0)
+    monkeypatch.setattr(expert_launch.os, "killpg", lambda *args: None)
+    monkeypatch.setattr(expert_launch, "_retire", failed_retirement)
+    monkeypatch.setattr(expert_launch, "UnresolvedRankSessions", failed_diagnostic)
     with tempfile.TemporaryFile() as pixels, pytest.raises(RuntimeError) as raised:
         executor._run({"operation": "probe", "ref": {}}, pixels, lambda: False)
     assert raised.value is primary and store._failure is primary
     assert store._retained_workers == [primary] and store._active_workers[0] is not None and store._staging > 0
-    assert inspection in primary.__cause__.exceptions
+    assert BaseException.__cause__.__get__(primary) is allocation
+    traceback = BaseException.__traceback__.__get__(primary)
+    frames = []
+    while traceback is not None:
+        if traceback.tb_frame.f_code is expert_launch.supervise.__code__:
+            frames.append(traceback.tb_frame)
+        traceback = traceback.tb_next
+    assert frames and any(owner is child for owner in frames[0].f_locals["children"])
 
 
-def test_supervisor_owner_inspection_uses_native_exception_descriptors():
-    from tensorfold.cuda.expert_launch import UnresolvedRankSessions
-    from tensorfold.vision.media_frontend import _unresolved
+def test_supervisor_hostile_exception_needs_no_attribute_inspection(tmp_path, monkeypatch):
+    import tempfile
+    from tensorfold.vision import media_frontend
+    store = ReplayStore(tmp_path, envelope())
+    executor = MediaExecutor(store)
     class OverriddenError(RuntimeError):
         @property
         def __cause__(self):
             pytest.fail("overrideable exception property read")
     error = OverriddenError("original")
-    BaseException.__cause__.__set__(error, UnresolvedRankSessions((object(),), RuntimeError("owner")))
-    assert _unresolved(error)
+    def failed(*args, **kwargs):
+        raise error
+    monkeypatch.setattr(media_frontend, "supervise", failed)
+    with tempfile.TemporaryFile() as pixels, pytest.raises(OverriddenError) as raised:
+        executor._run({"operation": "probe", "ref": {}}, pixels, lambda: False)
+    assert raised.value is error and store._failure is error and store._staging > 0
 
 
 def test_borrow_handle_concurrent_close_retires_once(tmp_path):
@@ -318,7 +336,7 @@ def test_server_source_publication_failure_retires_acquired_replay(tmp_path, mon
     lease = store.stage([source], allow_urls=False, cancelled=lambda: False)
     acquired = PreparedReplayMedia(SimpleNamespace(token_ids=(1, 2)), (), lease, None)
     frontend = SimpleNamespace(media_envelope=store.envelope, videos=True, allow_urls=False,
-                               prepare_sources=lambda *a, **k: acquired)
+                               prepare_sources=lambda *a, **k: acquired, check_media_health=lambda: None)
     primary = MemoryError("result publication failed")
     def failed(*args, **kwargs):
         raise primary
@@ -336,7 +354,7 @@ def test_foreign_size_and_probe_option_ranges_reject_before_conversion(changes):
         envelope(**changes)
 
 
-def test_replay_partial_close_refuses_borrows_then_retries_once(tmp_path, monkeypatch):
+def test_replay_partial_close_refuses_borrows_and_requires_containment(tmp_path, monkeypatch):
     from tensorfold.vision import replay
     store = ReplayStore(tmp_path, envelope())
     lease = store.stage([image_source(), image_source()], allow_urls=False, cancelled=lambda: False)
@@ -352,12 +370,12 @@ def test_replay_partial_close_refuses_borrows_then_retries_once(tmp_path, monkey
     before = store._bytes
     with pytest.raises(OSError, match="partial retirement"):
         lease.close()
-    with pytest.raises(RuntimeError, match="retired"):
+    with pytest.raises(RuntimeError, match="containment"):
         lease.borrow()
     assert store._bytes == before
-    lease.close()
-    lease.close()
-    assert store._bytes == store._leases == store._items == 0
+    with pytest.raises(RuntimeError, match="containment"):
+        lease.close()
+    assert store._bytes == before and store._leases == 1 and count == 1
 
 
 @pytest.mark.parametrize("failure", ["preentry", "consumed", "unretired"])
@@ -576,6 +594,74 @@ def test_post_release_interruption_does_not_orphan_worker_capacity(tmp_path, mon
         assert store._staging == 0 and store._active_workers == [None]
 
 
+@pytest.mark.parametrize("target", ["metadata", "worker", "preparation"])
+def test_preentry_cleanup_failure_retains_claims_and_requires_containment(tmp_path, monkeypatch, target):
+    import os
+    import tempfile
+    from tensorfold.vision import media_frontend
+    store = ReplayStore(tmp_path, envelope())
+    executor = MediaExecutor(store)
+    primary = MemoryError("before resource retirement")
+    def failed(*args):
+        raise primary
+    def completed(commands, environments, **kwargs):
+        os.write(kwargs["pass_fds"][1], b"{}")
+        return 0
+    if target == "preparation":
+        monkeypatch.setattr(media_frontend, "finish", failed)
+    else:
+        monkeypatch.setattr(executor, "_release_staging" if target == "metadata" else "_retire_worker", failed)
+    monkeypatch.setattr(media_frontend, "supervise", completed)
+    with tempfile.TemporaryFile() as output, pytest.raises(MemoryError) as raised:
+        executor._run({"operation": "probe", "ref": {}}, output, lambda: False)
+    assert raised.value is primary and store._failure is primary and store._retained_workers == [primary]
+    assert store._staging > 0 or store._active_workers[0] is not None
+    with pytest.raises(RuntimeError, match="containment"):
+        executor._check_owner()
+
+
+@pytest.mark.parametrize("target", ["stage", "stage_existing_fatal", "pixels"])
+def test_preentry_unpublished_cleanup_failure_contains_the_store(tmp_path, monkeypatch, target):
+    from tensorfold.vision.media_worker import PROCESSOR_ID
+    store = ReplayStore(tmp_path, envelope())
+    executor = MediaExecutor(store)
+    replay = None
+    if target == "pixels":
+        replay = store.stage([image_source()], allow_urls=False, cancelled=lambda: False)
+    cleanup = MemoryError("before unpublished reservation retirement")
+    primary = ValueError("pixel preparation failed")
+    first_fatal = RuntimeError("earlier concurrent worker fatal")
+    release = store._release_staging
+    def interrupted(token):
+        if target == "pixels" or store._staging_reservations.get(token) == 2 * store.envelope.max_upload_bytes:
+            if target == "stage_existing_fatal":
+                with store._lock:
+                    store._failure = first_fatal
+                    store._retained_workers[0] = first_fatal
+            raise cleanup
+        release(token)
+    monkeypatch.setattr(store, "_release_staging", interrupted)
+    if target.startswith("stage"):
+        with pytest.raises(MemoryError) as raised:
+            store.stage([image_source()], allow_urls=False, cancelled=lambda: False)
+        assert raised.value is cleanup
+        assert store._failure is (first_fatal if target == "stage_existing_fatal" else cleanup)
+        if target == "stage_existing_fatal":
+            assert store._retained_workers[0] is first_fatal
+    else:
+        def failed(*args, **kwargs):
+            raise primary
+        monkeypatch.setattr(executor, "_run", failed)
+        probed = MediaProbe(replay.refs[0], store.envelope.identity, PROCESSOR_ID, 64, 48, 1, (), (), None,
+                            "encoded-orientation-pil-rgb-v1", (224, 320), (1, 14, 20), 64 * 48, 64 * 48 * 4)
+        with pytest.raises(ValueError) as raised:
+            executor.pixel_unit(probed, 0, cancelled=lambda: False)
+        assert raised.value is primary and store._failure is primary
+    assert store._staging > 0
+    with pytest.raises(RuntimeError, match="containment"):
+        executor._check_owner()
+
+
 def test_directory_wrapper_failure_removes_the_already_created_directory(tmp_path, monkeypatch):
     from tensorfold.vision import replay
     store = ReplayStore(tmp_path, envelope())
@@ -585,3 +671,151 @@ def test_directory_wrapper_failure_removes_the_already_created_directory(tmp_pat
     with pytest.raises(MemoryError, match="path wrapper"):
         store.stage([image_source()], allow_urls=False, cancelled=lambda: False)
     assert not list(tmp_path.iterdir()) and store._bytes == store._items == store._leases == 0
+
+
+def test_uncertain_removed_directory_retry_preserves_reused_path_and_new_claims(tmp_path, monkeypatch):
+    from tensorfold.vision import replay
+    store = ReplayStore(tmp_path, envelope())
+    old = store.stage([image_source()], allow_urls=False, cancelled=lambda: False)
+    directory = Path(old.refs[0].path).parent
+    original = replay.shutil.rmtree
+    def removed_then_failed(path):
+        original(path)
+        raise OSError("removed before acknowledgement")
+    with monkeypatch.context() as failure:
+        failure.setattr(replay.shutil, "rmtree", removed_then_failed)
+        with pytest.raises(OSError, match="before acknowledgement"):
+            old.close()
+    def reused(**kwargs):
+        directory.mkdir()
+        return str(directory)
+    replacement = ReplayStore(tmp_path, envelope())
+    with monkeypatch.context() as creation:
+        creation.setattr(replay.tempfile, "mkdtemp", reused)
+        new = replacement.stage([image_source(color=(91, 17, 13))], allow_urls=False, cancelled=lambda: False)
+    new_bytes = Path(new.refs[0].path).read_bytes()
+    with pytest.raises(RuntimeError, match="containment"):
+        old.close()
+    assert Path(new.refs[0].path).read_bytes() == new_bytes
+    assert replacement._live[new.refs[0].path] is new and replacement._leases == 1
+    assert store._live[old.refs[0].path] is old and store._leases == 1
+    with replacement.borrow_ref(new.refs[0]):
+        pass
+    new.close()
+    assert store._leases == 1  # uncertain old reservation remains contained
+
+
+def test_staging_pressure_is_busy_but_an_oversize_unit_is_permanent(tmp_path):
+    store = ReplayStore(tmp_path, envelope())
+    first, second = object(), object()
+    store._reserve_staging(first, store.envelope.max_staging_bytes)
+    with pytest.raises(MediaBusy):
+        store._reserve_staging(second, 1)
+    store._release_staging(first)
+    store._reserve_staging(second, 1)
+    store._release_staging(second)
+    with pytest.raises(ImageInputError) as raised:
+        store._reserve_staging(second, store.envelope.max_staging_bytes + 1)
+    assert type(raised.value) is ImageInputError and store._staging == 0
+
+
+def test_worker_slot_pressure_is_busy_without_adding_or_releasing_claims(tmp_path):
+    import tempfile
+    store = ReplayStore(tmp_path, envelope())
+    executor = MediaExecutor(store)
+    token = object()
+    store._active_workers[0] = token
+    with tempfile.TemporaryFile() as pixels, pytest.raises(MediaBusy):
+        executor._run({"operation": "probe", "ref": {}}, pixels, lambda: False)
+    assert store._active_workers == [token] and store._staging == 0
+
+
+def test_replay_borrow_pressure_is_busy_and_recovers_after_retirement(tmp_path):
+    store = ReplayStore(tmp_path, envelope(max_replay_borrows=1))
+    lease = store.stage([image_source()], allow_urls=False, cancelled=lambda: False)
+    borrowed = lease.borrow()
+    with pytest.raises(MediaBusy):
+        lease.borrow()
+    borrowed.close()
+    with lease.borrow():
+        pass
+    lease.close()
+
+
+@pytest.mark.parametrize("busy,status", [(True, 503), (False, 400)])
+def test_source_preparation_preserves_typed_busy_and_bad_input(tmp_path, busy, status):
+    from tensorfold.server.errors import RequestError, status_of
+    from tensorfold.server.prompts import prepare_images
+    error = MediaBusy("temporarily occupied") if busy else ImageInputError("invalid media")
+    def failed(*args, **kwargs):
+        raise error
+    frontend = SimpleNamespace(media_envelope=envelope(), videos=True, allow_urls=False, prepare_sources=failed,
+                               check_media_health=lambda: None)
+    source = image_source()
+    with pytest.raises(RequestError) as raised:
+        prepare_images(frontend, [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": source.url}}]}], str)
+    assert status_of(raised.value) == status
+
+
+def test_fatal_probe_context_preserves_primary_and_retained_borrow(tmp_path, monkeypatch):
+    from tensorfold.vision import media_frontend
+    store = ReplayStore(tmp_path, envelope())
+    executor = MediaExecutor(store)
+    lease = store.stage([image_source()], allow_urls=False, cancelled=lambda: False)
+    primary = ValueError("supervisor operation failure")
+    def failed(*args, **kwargs):
+        raise primary
+    monkeypatch.setattr(media_frontend, "supervise", failed)
+    with pytest.raises(ValueError) as raised:
+        executor.probe_replay(lease.refs[0], cancelled=lambda: False)
+    assert raised.value is primary and store._failure is primary
+    assert lease._borrows == 1 and store._staging > 0 and store._bytes > 0
+    retained = BaseException.__dict__["__dict__"].__get__(primary)["_tensorfold_retained_owners"]
+    assert any(owner in lease._borrowers for owner in retained)
+
+
+def test_server_fatal_value_error_is_containment_not_input_refusal(tmp_path, monkeypatch):
+    from tensorfold.server.prompts import prepare_images
+    from tensorfold.server.errors import RequestError
+    from tensorfold.vision import media_frontend
+    store = ReplayStore(tmp_path, envelope())
+    executor = MediaExecutor(store)
+    frontend = ReplayMediaFrontend(store, executor, lambda *a, **k: None, cancelled=lambda: False, allow_urls=False)
+    primary = ValueError("supervisor failure is not bad media")
+    def failed(*args, **kwargs):
+        raise primary
+    monkeypatch.setattr(media_frontend, "supervise", failed)
+    source = image_source()
+    with pytest.raises(RuntimeError, match="containment") as raised:
+        prepare_images(frontend, [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": source.url}}]}], str)
+    assert not isinstance(raised.value, RequestError)
+    assert BaseException.__cause__.__get__(raised.value) is primary and store._failure is primary
+
+
+def test_server_planner_error_with_terminal_directory_cleanup_is_containment(tmp_path, monkeypatch):
+    from tensorfold.server.prompts import prepare_images
+    from tensorfold.vision import replay
+    from tensorfold.vision.media_worker import PROCESSOR_ID
+    store = ReplayStore(tmp_path, envelope())
+    executor = MediaExecutor(store)
+    primary, cleanup = ValueError("invalid expanded input"), OSError("terminal directory cleanup")
+    def planner(*args, **kwargs):
+        raise primary
+    frontend = ReplayMediaFrontend(store, executor, planner, cancelled=lambda: False, allow_urls=False)
+    def probed(ref, **kwargs):
+        return MediaProbe(ref, store.envelope.identity, PROCESSOR_ID, 64, 48, 1, (), (), None,
+                          "encoded-orientation-pil-rgb-v1", (224, 320), (1, 14, 20), 64 * 48, 64 * 48 * 4)
+    def failed(*args):
+        raise cleanup
+    monkeypatch.setattr(executor, "probe_replay", probed)
+    monkeypatch.setattr(replay.shutil, "rmtree", failed)
+    source = image_source()
+    with pytest.raises(RuntimeError, match="containment"):
+        prepare_images(frontend, [{"role": "user", "content": [
+            {"type": "image_url", "image_url": {"url": source.url}}]}], str)
+    assert store._failure is cleanup and store._leases == 1
+    assert BaseException.__cause__.__get__(primary) is cleanup
+    retained = BaseException.__dict__["__dict__"].__get__(primary)["_tensorfold_retained_owners"]
+    assert retained and retained[0]._directory_failure is cleanup
