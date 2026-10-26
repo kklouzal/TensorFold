@@ -4,7 +4,9 @@ CPU controls do not qualify actual TP8 feature capture or V100 kernels/quality.
 The optional full-file loader check uses explicitly supplied pinned artifact data.
 """
 from dataclasses import replace
+from contextlib import contextmanager
 import json
+import hashlib
 import math
 import os
 from pathlib import Path
@@ -160,6 +162,120 @@ def test_bounded_f16_loader_keeps_all_shard_arrays_f16_and_shares_target_objects
     assert resources["target_shared_weight_bytes"] == 0
     assert resources["snapshot_versions"] == 168
     assert resources["snapshot_bytes"] == 168 * c.state_bytes(tp=1, context=4096)
+
+
+def test_source_hash_fallback_bounds_a_continuously_growing_input_before_tensor_allocation(tmp_path, monkeypatch):
+    from tensorfold.engine import model_identity
+
+    make_weights(tmp_path)
+    plan = DFlash2Plan.read(tmp_path, tp=(0, 1))
+    original, requests = model_identity.os.read, []
+    extent = plan.path.stat().st_size
+
+    def growing(fd, size):
+        value = original(fd, size)
+        requests.append(size)
+        with plan.path.open("ab") as stream:
+            stream.write(b"growing source" * 32)
+        return value
+
+    monkeypatch.setattr(model_identity.os, "read", growing)
+    monkeypatch.setattr(torch, "empty", lambda *_a, **_k: pytest.fail("growing input reached tensor allocation"))
+    with pytest.raises(ValueError, match="grew|changed"):
+        load_shard(plan, device="cpu", chunk_bytes=4096)
+    assert sum(requests) <= extent + 1
+    assert requests[-1] == 1 and len(requests) <= (extent + model_identity._READ_BYTES - 1) // model_identity._READ_BYTES + 1
+
+
+def test_config_capture_bounds_growth_and_never_uses_an_unbounded_second_read(tmp_path, monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda import dflash2_weights as loader
+
+    make_weights(tmp_path)
+    path = tmp_path / "config.json"
+    extent, reads = path.stat().st_size, []
+    original = loader._regular_stream
+
+    class Growing:
+        def __init__(self, stream):
+            self.stream = stream
+
+        def fileno(self):
+            return self.stream.fileno()
+
+        def read(self, size):
+            reads.append(size)
+            value = self.stream.read(size)
+            with path.open("ab") as stream:
+                stream.write(b" " * 1024)
+            return value
+
+    @contextmanager
+    def opened(selected):
+        with original(selected) as stream:
+            yield Growing(stream)
+
+    monkeypatch.setattr(loader, "_regular_stream", opened)
+    monkeypatch.setattr(loader, "read_header", lambda *_a, **_k: pytest.fail("changed config reached tensor header"))
+    with pytest.raises(ValueError, match="config changed"):
+        DFlash2Plan.read(tmp_path, tp=(0, 1))
+    assert reads == [extent + 1]
+
+
+def test_config_hash_parse_and_header_admission_reject_separate_versions(tmp_path, monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda import dflash2_weights as loader
+
+    make_weights(tmp_path)
+    original = loader._metadata_object
+
+    def changed(raw, path):
+        result = original(raw, path)
+        Path(path).write_bytes(raw + b" ")
+        return result
+
+    with monkeypatch.context() as scope:
+        scope.setattr(loader, "_metadata_object", changed)
+        with pytest.raises(ValueError, match="parse/hash"):
+            DFlash2Plan.read(tmp_path, tp=(0, 1))
+    plan = DFlash2Plan.read(tmp_path, tp=(0, 1))
+    assert plan.config_sha256 == hashlib.sha256((tmp_path / "config.json").read_bytes()).hexdigest()
+    with (tmp_path / "config.json").open("ab") as stream:
+        stream.write(b" ")
+    monkeypatch.setattr(torch, "empty", lambda *_a, **_k: pytest.fail("changed config reached tensor allocation"))
+    with pytest.raises(ValueError, match="config changed after"):
+        load_shard(plan, device="cpu", chunk_bytes=4096)
+
+
+def test_config_version_is_held_through_tensor_header_planning(tmp_path, monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda import dflash2_weights as loader
+
+    make_weights(tmp_path)
+    original = loader.read_header
+
+    def changed(*args, **kwargs):
+        result = original(*args, **kwargs)
+        with (tmp_path / "config.json").open("ab") as stream:
+            stream.write(b" ")
+        return result
+
+    monkeypatch.setattr(loader, "read_header", changed)
+    with pytest.raises(ValueError, match="config changed across"):
+        DFlash2Plan.read(tmp_path, tp=(0, 1))
+
+
+@pytest.mark.parametrize("kind", ["duplicate-key", "oversize"])
+def test_same_open_config_capture_preserves_existing_strict_json_boundary(tmp_path, monkeypatch, kind):
+    from tensorfold.families.qwen4_exp.cuda import dflash2_weights as loader
+
+    make_weights(tmp_path)
+    path = tmp_path / "config.json"
+    if kind == "duplicate-key":
+        path.write_bytes(b'{"hidden_size":32,"hidden_size":64}')
+        message = "duplicate"
+    else:
+        monkeypatch.setattr(loader, "MAX_HEADER_BYTES", path.stat().st_size - 1)
+        message = "byte bound"
+    with pytest.raises(ValueError, match=message):
+        DFlash2Plan.read(tmp_path, tp=(0, 1))
 
 
 @pytest.mark.parametrize("bad", [float("nan"), float("inf"), 65536.])
@@ -434,7 +550,10 @@ def test_completed_hc_capture_applies_eight_rank_pending_partials_without_mutati
     def run(ids, enabled):
         rows = len(ids)
         buffers = SimpleNamespace(ids=torch.tensor(ids, dtype=torch.int32), h=torch.empty(rows, 1024, dtype=torch.float16),
-                                  pss=torch.empty(rows, 1, 4), prefill=False)
+                                  pss=torch.empty(rows, 1, 4), prefill=False,
+                                  target_indexer_frame=None, target_indexer_coordinates=None,
+                                  target_indexer_coordinate_storage=None, target_indexer_position=None,
+                                  input_preparation_context=None)
         w.dflash2 = Runtime(rows) if enabled else None
         result = forward.compute(w, [(SimpleNamespace(kv_status=None), 0, rows)], buffers)
         return result, None if w.dflash2 is None else w.dflash2.features

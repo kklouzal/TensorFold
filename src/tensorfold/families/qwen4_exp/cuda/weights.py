@@ -38,7 +38,7 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
          rope: RopeParameters | None = None, vram_experts: float | str | None = None, expert_loader=None,
          vram_experts_pin: str = "off", _pin_future_bytes: int = 0, eos_token_ids=None,
          mtp_model_dir=None, _draft_ids=None, _prefill_plan=None, family_manifest=None,
-         _sm70_plan=None, _sm70_workspace=None, _sm70_weight_plan=None) -> Weights:
+         _sm70_plan=None, _sm70_workspace=None, _sm70_weight_plan=None, position_profile=None, _position_prepared=None) -> Weights:
     """Load rank ``tp``'s shares; ``draft_vocab`` selects default/file ids or ids below N, None scores all ids."""
 
     import time
@@ -54,6 +54,7 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
                          eos_token_ids=eos_token_ids, mtp_model_dir=mtp_model_dir, _plan=_sm70_plan,
                          _workspace=_sm70_workspace, _weight_plan=_sm70_weight_plan,
                          ple_on_ssd=ple_on_ssd, table_reads=table_reads,
+                         position_profile=position_profile, _position_prepared=_position_prepared,
                          vram_experts=vram_experts, expert_loader=expert_loader)
     from ..gguf import resolve_gguf
     if resolve_gguf(model_dir) is not None:
@@ -61,7 +62,11 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
         return load_gguf(model_dir, device, mtp=mtp, tp=tp, rope=rope, eos_token_ids=eos_token_ids,
                          table_reads=table_reads, ple_on_ssd=ple_on_ssd, vram_experts=vram_experts,
                          expert_loader=expert_loader, mtp_model_dir=mtp_model_dir, draft_vocab=draft_vocab,
-                         _draft_ids=_draft_ids, _prefill_plan=_prefill_plan)
+                         _draft_ids=_draft_ids, _prefill_plan=_prefill_plan,
+                         **({"position_profile": position_profile, "_position_prepared": _position_prepared}
+                            if position_profile is not None or _position_prepared is not None else {}))
+    if position_profile is not None or _position_prepared is not None:
+        raise ValueError("explicit positional operands require the Flash Next GGUF SM70 loader")
     quant_block = read_config(model_dir).get("quantization_config") or {}
     native_a4 = (quant_block.get("quant_method") == "modelopt" and torch.device(device).type == "cuda"
                  and precision.mode() == precision.CHECKPOINT

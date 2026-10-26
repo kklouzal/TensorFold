@@ -118,6 +118,15 @@ def _validate(target, directory):
     cfg = read_config(directory)
     text = cfg.get("text_config") or cfg
     main = target.cfg if hasattr(target, "cfg") else target
+    position_profile = getattr(target, "meta", {}).get("position_profile")
+    if position_profile is not None:
+        from ..position_profile import mtp_source_parameters
+
+        source = mtp_source_parameters(cfg, position_profile.target.rope)
+        expected = position_profile.mtp.rope
+        if (source.theta, source.rotary_dim, source.native_context, source.mrope_section) != (
+                expected.theta, expected.rotary_dim, expected.native_context, expected.mrope_section):
+            raise ValueError("stock MTP positional source differs from its own resolved role")
     pairs = (("hidden_size", "hidden"), ("head_dim", "head_dim"), ("num_experts", "experts"),
              ("hc_count", "streams"), ("hc_lowrank", "low"))
     for field, attr in pairs:

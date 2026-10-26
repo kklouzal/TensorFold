@@ -136,7 +136,7 @@ class DFlash2Runtime:
     capturable = False
 
     def __init__(self, target=None, plan=None, *, context=None, embedding=None, head=None, profile_identity=None, pairing=None):
-        self.target = self.plan = self.context = self.weights = self.provider = None
+        self.target = self.plan = self.context = self.weights = self.provider = self.position_role = None
         self._loading_tensors = {}
         self.closed = False
         self._states, self._frames = [], []
@@ -151,6 +151,14 @@ class DFlash2Runtime:
             raise ValueError("DFlash2 runtime loading is one-shot with one target owner")
         if type(context) is not int or not 1 <= context <= plan.config.context:
             raise ValueError("DFlash2 selected context exceeds the draft's supported absolute positions")
+        positions = getattr(target, "meta", {}).get("position_profile")
+        role = None if positions is None else positions.dflash2
+        if positions is not None:
+            c = plan.config
+            if role is None or (role.theta, role.rotary_dim, role.native_context, role.window_rows) != (
+                    c.theta, c.head_dim, c.context, c.window):
+                raise ValueError("DFlash2 positional source differs from its separately resolved scalar role")
+            role.validate_span(0, context, absolute_start=0)
         if getattr(target, "dspark", None) is not None or getattr(target, "mtp", None) is not None:
             raise ValueError("DFlash2 requires retirement of the previous speculative method")
         if torch.device(target.device).type == "cuda" and pairing is None:
@@ -163,6 +171,7 @@ class DFlash2Runtime:
             profile_identity = pairing.identity if profile_identity is None else profile_identity
         binding = bind_target(plan.config, target, plan.tp)
         self.target, self.plan, self.context = target, plan, context
+        self.position_role = role
         if profile_identity is not None:
             if not isinstance(profile_identity, str) or not 1 <= len(profile_identity) <= 256:
                 raise ValueError("DFlash2 numerical profile identity must be a bounded nonempty string")
@@ -254,6 +263,8 @@ class DFlash2Runtime:
         if (pending.generation != pending.frame.generation or pending.slot_generation != state.generation
                 or state.generation != getattr(target, "slot_generation", 0) or pending.start != state.end):
             raise ValueError("DFlash2 accepted-prefix feature transaction is stale")
+        if state.end + rows > state.context:
+            raise ValueError("DFlash2 accepted features exceed the selected absolute position envelope")
         return state, pending
 
     def validate_commit(self, target, rows):
@@ -429,7 +440,7 @@ class DFlash2Runtime:
                 raise ValueError("DFlash2 proposal RNG/output position differs from the pending anchor")
             if type(requested) is not int or not 0 <= requested < self.config.block:
                 raise ValueError("DFlash2 requested proposals must be zero through three")
-            if requested and state.end + self.config.block <= self.config.context:
+            if requested and state.end + self.config.block <= state.context:
                 live.append(index)
         if live:
             packets = self.provider.propose_many([targets[i].dflash2 for i in live], [anchors[i] for i in live],

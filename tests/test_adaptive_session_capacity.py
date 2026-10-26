@@ -126,7 +126,11 @@ def test_unique_history_byte_sum_matches_single_owned_payload_and_metadata(mtp, 
     caches = 12 + int(mtp)
     physical_rows = (rows + 127) // 128 * 128
     payload = sessions * caches * physical_rows * 2 * 544
-    indexer = sessions * caches * (rows + (rows + 3) // 4) * 128 * 2
+    pooled = sessions * caches * ((rows + 3) // 4) * 128 * 2
+    # Four raw rows+THW coordinates, protected append version, plus the MTP
+    # base/four-row proposal envelope. No completed raw-history allocation.
+    bounded = sessions * (caches * 8 + int(mtp) * 8) * (128 * 2 + 3 * 8)
+    indexer = pooled + bounded
     metadata = sessions * caches * 8 * ((rows + 127) // 128) * 8
     assert sum(ledger["history"] for ledger in ledgers) == payload + indexer + metadata
     assert all(sum(ledger.values()) == g.bytes_at(rows) for ledger, g in zip(ledgers, geometries))
@@ -196,7 +200,12 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
         raise Inspected
 
     monkeypatch.setattr(capacity, "admit", inspect)
+    from tensorfold.cuda.sm70 import compact_indexer
+    monkeypatch.setattr(compact_indexer, "prepare", lambda device: None)
     owner = engine.FlashNextEngine.__new__(engine.FlashNextEngine)
+    owner._startup_store = owner._owner_preparation = owner._dflash_pairing = None
+    owner._profile_build = None  # __init__ normally establishes this lifecycle before _initialize.
+    owner._startup_reads = []
     with pytest.raises(Inspected):
         owner._initialize(tmp_path, depth=0, tp=8, rank=0, master="test", graphs=False,
                           kv_dtype="int8", adaptive_sessions=True, session_ceiling=40)
