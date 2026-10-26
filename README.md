@@ -11,6 +11,10 @@ The consolidated text/core/position implementation passed **3,277 checks and
 documented optional/environment skips. This validates software contracts;
 eight-V100 execution, model quality, capacity and performance remain pending.
 The complete media request path is a separate integration in progress.
+The current specification revision also requires the canonical SC117 32-core
+MTP import, exact target frontend roles, FIFO admission and retained-session
+checkpoint/API work. These newer duties remain open; the installed CPU milestone
+above retains its original implementation scope.
 The revised design's shared-GGUF MTP importer preserves the selected target
 embedding/head, validates the ordered token-ID mapping, and declares QSA ratio
 four with a 2,048-token complete-group budget. Import controls do not qualify
