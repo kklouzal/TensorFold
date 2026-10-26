@@ -178,12 +178,15 @@ def probe(ref, e, processors):
             rate = stream.average_rate
             pts, pixels, decoded_bytes = [], 0, 0
             reliable = True
+            last_frame_end = None
             for index, frame, pixels, decoded_bytes in _frames(container, stream, e):
                 if (frame.width, frame.height) != (width, height):
                     raise ImageInputError("video resolution changes require an explicit processor policy")
                 timestamp = Fraction(frame.pts) * frame.time_base if frame.pts is not None and frame.time_base else None
                 reliable &= timestamp is not None and (not pts or pts[-1] is None or timestamp > pts[-1])
                 pts.append(timestamp)
+                last_frame_end = (timestamp + frame.duration * frame.time_base
+                                  if timestamp is not None and frame.time_base and frame.duration and frame.duration > 0 else None)
             total = len(pts)
             if total < 2:
                 raise ImageInputError("one-frame video requires explicit still-image conversion")
@@ -195,9 +198,19 @@ def probe(ref, e, processors):
                 pts = [Fraction(i, 1) / rate for i in range(total)]
                 policy = "explicit-assumed-fps-v1"
             rate = Fraction(rate)
-            seconds = max(Fraction(total, 1) / rate, pts[-1] - pts[0])
-            if stream.duration is not None and stream.time_base:
-                seconds = max(seconds, stream.duration * stream.time_base)
+            seconds = Fraction(total, 1) / rate
+            stream_duration = (stream.duration * stream.time_base
+                               if stream.duration is not None and stream.duration > 0 and stream.time_base else None)
+            if policy == "actual-pts-v1":
+                start = stream.start_time * stream.time_base if stream.start_time is not None and stream.time_base else pts[0]
+                endpoints = [] if last_frame_end is None else [last_frame_end]
+                if stream_duration is not None:
+                    endpoints.append(start + stream_duration)
+                if not endpoints:
+                    raise ImageInputError("video presentation endpoint is missing; complete duration cannot be established")
+                seconds = max(seconds, max(endpoints) - min(start, pts[0]))
+            elif stream_duration is not None:
+                seconds = max(seconds, stream_duration)
             if seconds > e.max_video_seconds:
                 raise ImageInputError("video duration exceeds the media envelope")
             from transformers.video_utils import VideoMetadata

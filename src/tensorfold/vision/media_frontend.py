@@ -17,25 +17,10 @@ import tempfile
 import threading
 import time
 
-from tensorfold.cuda.expert_launch import UnresolvedRankSessions, supervise
+from tensorfold.cuda.expert_launch import supervise
+from tensorfold.cleanup import finish, raise_failures, rollback
 from .images_http import ImageInputError
-from .replay import MediaEnvelope, MediaProbe, ReplayStore, check_cancelled
-
-
-def _unresolved(error):
-    """Find the existing supervisor's retained session failure without reaping."""
-    pending, seen = [error], set()
-    while pending:
-        current = pending.pop()
-        if current is None or id(current) in seen:
-            continue
-        seen.add(id(current))
-        if issubclass(type(current), UnresolvedRankSessions):
-            return True
-        pending.extend((BaseException.__cause__.__get__(current), BaseException.__context__.__get__(current)))
-        if issubclass(type(current), BaseExceptionGroup):
-            pending.extend(BaseExceptionGroup.exceptions.__get__(current))
-    return False
+from .replay import MediaBusy, MediaEnvelope, MediaProbe, ReplayStore, check_cancelled
 
 
 @contextmanager
@@ -53,14 +38,16 @@ def _diagnostic_fd(limit, store, worker_index):
         except BaseException as primary:
             try:
                 if not owner.closed:
-                    from tensorfold.cleanup import rollback
                     rollback(owner, primary, owner.close)
                 raise
             finally:
                 if not owner.closed:
-                    store._retained_workers[worker_index] = primary
-                    if store._failure is None:
-                        store._failure = primary
+                    # Retain before the first potentially fallible lock entry.
+                    if store._retained_workers[worker_index] is None:
+                        store._retained_workers[worker_index] = primary
+                    with store._lock:
+                        if store._failure is None:
+                            store._failure = primary
         if not owner.closed:
             raise RuntimeError("media diagnostic descriptor did not retire")
     try:
@@ -69,7 +56,6 @@ def _diagnostic_fd(limit, store, worker_index):
         fcntl.fcntl(owner.fileno(), fcntl.F_ADD_SEALS, fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK | fcntl.F_SEAL_SEAL)
         yield owner.fileno()
     except BaseException as primary:
-        from tensorfold.cleanup import rollback
         rollback(owner, primary, close)
     else:
         close()
@@ -110,14 +96,16 @@ class PixelUnitBorrow:
     def __enter__(self):
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, kind, error, traceback):
+        if error is not None:
+            rollback(self, error, self.close)
         self.close()
 
 
 class PixelUnitLease:
     """Immutable read-only mapping; encoder readers explicitly delay retirement."""
     def __init__(self, executor, handle, size, shape, replay, reservation):
-        self._executor, self._handle, self._size, self.shape = executor, handle, size, tuple(shape)
+        self._executor, self._handle, self.shape = executor, handle, tuple(shape)
         self._replay = replay
         self._borrowers, self._closed, self._retiring = set(), False, False
         self._reservation = reservation
@@ -164,7 +152,9 @@ class PixelUnitLease:
     def __enter__(self):
         return self
 
-    def __exit__(self, *exc):
+    def __exit__(self, kind, error, traceback):
+        if error is not None:
+            rollback(self, error, self.close)
         self.close()
 
 
@@ -180,6 +170,14 @@ class MediaExecutor:
         self.store._check_owner()
         if self._pid != os.getpid():
             raise RuntimeError("CPU media executor belongs to another process")
+
+    def check_health(self):
+        """Refuse foreign ownership or any retained containment outcome.
+
+        A completed operation plus this check permits ordinary error recovery;
+        success alone does not retire other independently active operations.
+        """
+        self._check_owner()
 
     def _reserve_staging(self, reservation, size):
         self.store._reserve_staging(reservation, size)
@@ -209,7 +207,7 @@ class MediaExecutor:
                 try:
                     worker_index = self.store._active_workers.index(None)
                 except ValueError:
-                    raise ImageInputError("media CPU worker capacity is busy") from None
+                    raise MediaBusy("media CPU worker capacity is busy") from None
                 self.store._active_workers[worker_index] = worker_token
                 self._reserve_staging(metadata_reservation, metadata_size)
             with tempfile.TemporaryFile(dir=self.store.root) as request, \
@@ -245,21 +243,13 @@ class MediaExecutor:
                     status = supervise([command], [environment], grace=e.retirement_grace_seconds,
                                        failure_probe=stop, pass_fds=descriptors)
                 except BaseException as error:
-                    # This preallocated slot owns the original outcome before
-                    # exception-graph inspection can allocate or fail.
+                    # A normal return is the supervisor's retirement proof.
+                    # Exceptions can own raw failed sessions when diagnostic
+                    # construction itself failed; their type is not evidence.
                     self.store._retained_workers[worker_index] = error
-                    try:
-                        unresolved = _unresolved(error)
-                    except BaseException as inspection:
+                    with self.store._lock:
                         if self.store._failure is None:
                             self.store._failure = error
-                        from tensorfold.cleanup import raise_failures
-                        raise_failures(error, [inspection])
-                    if unresolved:
-                        if self.store._failure is None:
-                            self.store._failure = error
-                    else:
-                        self.store._retained_workers[worker_index] = None
                     raise
                 self._check_owner()
                 if cancelled_seen:
@@ -282,12 +272,21 @@ class MediaExecutor:
             primary = error
             raise
         finally:
-            if self.store._failure is None:
-                from tensorfold.cleanup import finish, raise_failures
+            if self.store._failure is None and (
+                    worker_index is None or self.store._retained_workers[worker_index] is None):
                 try:
                     finish((lambda: self._release_staging(metadata_reservation),
                             lambda: self._retire_worker(worker_index, worker_token)))
                 except BaseException as cleanup:
+                    with self.store._lock:
+                        held = metadata_reservation in self.store._staging_reservations or (
+                            worker_index is not None and self.store._active_workers[worker_index] is worker_token)
+                        if held:
+                            retained = primary if primary is not None else cleanup
+                            if self.store._failure is None:
+                                self.store._failure = retained
+                            if worker_index is not None and self.store._retained_workers[worker_index] is None:
+                                self.store._retained_workers[worker_index] = retained
                     if primary is not None:
                         raise_failures(primary, [cleanup])
                     raise
@@ -317,14 +316,20 @@ class MediaExecutor:
                 raise ImageInputError("media worker pixel layout differs from its admitted grid")
             return PixelUnitLease(self, handle, size, output["shape"], replay, reservation)
         except BaseException as primary:
-            from tensorfold.cleanup import rollback
+            preparation_failure = primary
             def abandon():
                 self._check_owner()
-                if handle is not None:
-                    handle.close()
-                if replay is not None:
-                    replay.close()
-                self._release_staging(reservation)
+                try:
+                    if handle is not None:
+                        handle.close()
+                    if replay is not None:
+                        replay.close()
+                    self._release_staging(reservation)
+                except BaseException:
+                    with self.store._lock:
+                        if reservation in self.store._staging_reservations and self.store._failure is None:
+                            self.store._failure = preparation_failure
+                    raise
             rollback((self, handle, replay), primary, abandon)
 
 
@@ -359,6 +364,9 @@ class ReplayMediaFrontend:
         self.media_envelope, self.cancelled, self.allow_urls = store.envelope, cancelled, allow_urls
         self.videos = bool(store.envelope.max_videos)
 
+    def check_media_health(self):
+        self.executor.check_health()
+
     def prepare_sources(self, rendered, sources, *, allow_urls, max_prompt_tokens, max_visual_tokens):
         if allow_urls != self.allow_urls:
             raise ImageInputError("media URL admission changed during preparation")
@@ -374,5 +382,4 @@ class ReplayMediaFrontend:
             check_cancelled(self.cancelled)
             return PreparedReplayMedia(plan, probes, lease, self.executor)
         except BaseException as primary:
-            from tensorfold.cleanup import rollback
             rollback(lease, primary, lease.close)

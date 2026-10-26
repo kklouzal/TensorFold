@@ -131,6 +131,25 @@ def test_actual_vfr_pts_are_preserved_instead_of_frame_index_over_fps(tmp_path):
     lease.close()
 
 
+@pytest.mark.parametrize("seconds,accepted", [(3.1, False), (3.5, True)])
+def test_video_duration_includes_the_final_frame_presentation(tmp_path, seconds, accepted):
+    import base64
+    from tensorfold.vision.videos import VideoSource
+    raw = (Path(__file__).parent / "fixtures/media_front/colors-vfr.mkv").read_bytes()
+    source = VideoSource("data:video/x-matroska;base64," + base64.b64encode(raw).decode())
+    store = ReplayStore(tmp_path, envelope(max_video_seconds=seconds))
+    executor = MediaExecutor(store)
+    lease = store.stage([source], allow_urls=False, cancelled=lambda: False)
+    if accepted:
+        probed = executor.probe_replay(lease.refs[0], cancelled=lambda: False)
+        assert probed.fps == (2, 1) and probed.selected_indices == (0, 1, 2, 3, 4)
+        assert probed.selected_pts[-1] == (3, 1)
+    else:
+        with pytest.raises(ImageInputError, match="duration exceeds"):
+            executor.probe_replay(lease.refs[0], cancelled=lambda: False)
+    lease.close()
+
+
 def test_missing_pts_requires_explicit_assumption_and_changes_identity(tmp_path, monkeypatch):
     from tensorfold.vision import media_worker
     from transformers import AutoVideoProcessor
@@ -150,6 +169,30 @@ def test_missing_pts_requires_explicit_assumption_and_changes_identity(tmp_path,
     assumed = media_worker.probe(lease.refs[0], envelope(assumed_fps=(2, 1)), (None, processor))
     assert assumed.selected_pts == actual.selected_pts
     assert assumed.timestamp_policy == "explicit-assumed-fps-v1" and assumed.identity != actual.identity
+    lease.close()
+
+
+def test_known_pts_without_a_video_endpoint_are_refused(tmp_path, monkeypatch):
+    import base64
+    from types import SimpleNamespace
+    from tensorfold.vision import media_worker
+    from tensorfold.vision.videos import VideoSource
+    from transformers import AutoVideoProcessor
+    raw = (Path(__file__).parent / "fixtures/media_front/colors-vfr.mkv").read_bytes()
+    source = VideoSource("data:video/x-matroska;base64," + base64.b64encode(raw).decode())
+    processor = AutoVideoProcessor.from_pretrained("/opt/tensorfold-media-pins", local_files_only=True,
+                                                   cap_pixels_per_frame=False)
+    original = media_worker._frames
+    def without_duration(*args):
+        for index, frame, pixels, size in original(*args):
+            metadata = SimpleNamespace(width=frame.width, height=frame.height, pts=frame.pts,
+                                       time_base=frame.time_base, duration=0)
+            yield index, metadata, pixels, size
+    store = ReplayStore(tmp_path, envelope())
+    lease = store.stage([source], allow_urls=False, cancelled=lambda: False)
+    monkeypatch.setattr(media_worker, "_frames", without_duration)
+    with pytest.raises(ImageInputError, match="presentation endpoint is missing"):
+        media_worker.probe(lease.refs[0], store.envelope, (None, processor))
     lease.close()
 
 

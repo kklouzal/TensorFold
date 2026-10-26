@@ -39,6 +39,9 @@ a cooperating shared-filesystem ownership contract, not a new persistent cache.
 Retirement enters a phase that rejects new borrowers before destructive work;
 failed closes retain their owners for retry/containment. Quotas derive from
 bounded owner reservation entries, so retrying removal cannot subtract twice.
+Directory removal is one-shot: an uncertain removal retains the failed lease
+and quota and marks the owning store for process containment. Retrying it cannot delete a subsequently
+reused pathname or another lease's live claims.
 
 `MediaExecutor(store).probe_replay(ref, cancelled=...)` returns an immutable
 `MediaProbe`: selected source indices and rational actual timestamps, source
@@ -47,6 +50,9 @@ Probe scans all frames under cumulative work/byte bounds, without retaining
 decoded history. Unknown/invalid FPS or PTS requires an explicit assumed-FPS
 policy; there is no 24-FPS fallback. One-frame clips, changing resolutions and
 multiple video streams require an explicit different policy and are rejected.
+Duration admission includes the final frame's presentation endpoint or an
+authoritative video-stream endpoint; missing actual endpoints are refused.
+An unrelated audio/container duration does not substitute for video metadata.
 Accepted container families remain MP4/QuickTime and Matroska/WebM.
 
 `executor.pixel_unit(probe, index, cancelled=...)` creates a `PixelUnitLease`
@@ -68,6 +74,10 @@ allowance and positions before GPU execution. The resulting
 `PreparedReplayMedia` owns plan/probes/replay, exposes `token_ids`,
 `borrow_replay()` and `close()`. The Engine/profile owner is responsible for
 request failure/cancellation, retained State and cross-rank lifetime wiring.
+The bounded hook also requires `check_media_health()`. It checks containment
+before projecting errors into HTTP input/capacity refusals; a poisoned internal
+failure cannot become an ordinary 400/503. CPU readiness owners can call
+`executor.check_health()` after a completed operation before retrying `MediaBusy`.
 
 ## Process and processor contracts
 
@@ -76,10 +86,16 @@ Workers use fresh exec, never a warm Python fork. The existing
 Hard CPU/address-space/file-size limits precede JSON parsing and native imports.
 CUDA devices are hidden and transforms explicitly use CPU. Worker concurrency
 and staging are shared by all executors for a store, with fail-fast admission.
+Temporary worker-slot or staging pressure raises `MediaBusy`; the bounded HTTP
+hook maps it to the existing 503 capacity response. A unit larger than the
+entire configured staging capacity remains a permanent input refusal.
 Diagnostic output has a separately sealed-size memory file. Cancellation waits
 for session retirement before releasing resources. Unresolved retirement poisons
 the store, preserves reservations/borrowers, and requires process containment;
 it never becomes a successful cancellation or capacity release.
+A normal supervisor return proves session retirement, including returned
+cancellation/resource statuses. Every supervisor exception is conservatively
+contained; diagnostic exception types do not prove retirement.
 The existing native `OwnedFD` gains only a Linux sealable-memfd acquisition;
 its existing file acquisition/close contracts remain unchanged. Replay reads
 reuse the existing native regular-stream owner and hash at most the admitted
