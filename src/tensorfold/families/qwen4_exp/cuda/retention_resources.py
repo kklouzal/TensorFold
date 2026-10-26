@@ -159,7 +159,7 @@ def native_sync_data_payload(*, world, chunk_bytes):
             "pinned_ordinary_bytes_already_in_progress": 2 * world * chunk_bytes,
             "native_chunk_payload_bytes": data, "sendbuffer_header_capacity_bytes": slack,
             "global_native_data_payload_bytes": _total((data, slack)),
-            "source": "Torch5ab14ac/libstdc++13; owned synchronous daemon provenance required",
+            "source": "Torch04cf2557/libstdc++13; owned synchronous daemon provenance required",
             "remaining_terms": "key/control/metadata/allocator/kernel budgets are distinct"}
 
 
@@ -240,7 +240,7 @@ def native_sync_control_payload(*, world, chunk_bytes, ram, slots=None):
             "persistent_rendezvous_value_bytes": rendezvous_values,
             "global_native_control_value_bytes": control, "global_native_rpc_value_bytes": _total((rpc,)),
             "excluded": "already reserved manifest backing; fixed key/container and Python RPC ownership are separate",
-            "source": "Torch5ab synchronous backend; native-table-assist source ownership proof"}
+            "source": "Torch04cf2557 synchronous backend; native-table-assist source ownership proof"}
 
 
 def native_sync_prefix_payload(*, world, slots):
@@ -274,7 +274,7 @@ def native_sync_prefix_payload(*, world, slots):
 def native_sync_fixed_payload(*, world, ram, slots, fd_limit=None, host_bytes=0):
     """Known GLOBAL key/container payload for the sealed synchronous ABI.
 
-    Torch5ab/GCC13/runtime14 uses 32-byte strings, 24-byte vectors, cached
+    Torch04cf2557/GCC13/runtime14 uses 32-byte strings, 24-byte vectors, cached
     72-byte string-key nodes, and eight-byte bucket pointers. These are
     allocation requests/object layouts, not allocator usable sizes or RSS.
     ``slots`` is the communicator's maximum admitted State count: retained
@@ -399,7 +399,7 @@ def native_sync_fixed_payload(*, world, ram, slots, fd_limit=None, host_bytes=0)
             "wait_map_key_highwater_bound": wait_highwater,
             "waiting_socket_vector_capacity": socket_capacity,
             "terms": terms, "global_native_fixed_payload_bytes": _total(terms.values()),
-            "source": "Torch5ab/GCC13/runtime14; sealed SDK layout and native-table-assist",
+            "source": "Torch04cf2557/GCC13/runtime14; sealed SDK layout and native-table-assist",
             "preconditions": "shared8192-byte bound for every protocol key; immutable W/maximum-slots/hard-NOFILE/actual-host Store region",
             "remaining_native_constraints": (
                 "allocator arenas/usable sizes and kernel socket buffers are not source payload",),
@@ -411,7 +411,9 @@ def require_native_payload_runtime():
 
     Uses the existing bounded descriptor capture, not deserialized attestations
     or a new certification system. The exact runtime14 library proof and the
-    Torch5ab/GCC13 template source are versioned qualification inputs.
+    Torch04cf2557/GCC13 template source are versioned qualification inputs.
+    The owned socket correction preserves the prior headers, Store layouts
+    and allocation equations; the rejected older fork is not an ABI fallback.
     """
     if sys.implementation.name != "cpython" or sys.version_info[:3] != (3, 12, 3):
         raise ValueError("native unique-profile payload bounds require the selected CPython3.12.3 layout")
@@ -422,14 +424,14 @@ def require_native_payload_runtime():
     from tensorfold.engine.model_identity import capture_model_identity
     from .execution_identity import _small
 
-    revision = "5ab14acbced0c33e6b6e8fdbc5b541b57487f7e1"
+    revision = "04cf2557f315a350e7eea7ab064288def65db75a"
     library_hash = "1fd75fe70354a416d75aef22bcae68c47bd25d20e2d0568c30b1a9838cf62f11"
     library_size = 2592224
     build = torch.__config__.show()
     if (sys.platform != "linux" or platform.machine() != "x86_64" or struct.calcsize("P") != 8
             or torch.version.git_version != revision or not torch.compiled_with_cxx11_abi()
             or "GCC 13.3" not in build):
-        raise ValueError("native retained payload bound requires the selected Torch5ab/GCC13 Linux64 ABI")
+        raise ValueError("native retained payload bound requires the selected Torch04cf2557/GCC13 Linux64 ABI")
     _soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
     if hard == resource.RLIM_INFINITY or type(hard) is not int or not 0 < hard <= sys.maxsize:
         raise ValueError("native retained FD metadata requires a finite existing hard descriptor limit")

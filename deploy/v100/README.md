@@ -50,20 +50,22 @@ request limit returns HTTP503 with the existing retry header.
 
 The current specification is the normalized maintained copy of the home v6
 design (home SHA256 `7c9f724346866cfb89382ee2e30d60d9d827222c347610783b37683ba04e5a8c`).
-The final composed CPU application is frozen source tree
+The published composed CPU application is frozen source tree
 `ff1883131180963a1de18bb00c74d6777466dcb9`, local image ID `sha256:fb0ac861483f0bc14bef1f73535d07d358c196c7e9358f76da3390f1434813a8`. Its ordinary installed-wheel
 gate passed 5582 tests and 144 subtests (9 documented skips)
 across 183 modules, with 707 installed code files equal to the frozen source.
 See the [validation record](../../docs/v100-adaptive-validation.md#current-v6-source-and-cpu-evidence).
 The [CPU software receipt](../../docs/verification-v100-adaptive-cpu-20261026.json)
 binds application commit `7d3ddbb9d066fe7451769ad9a36739619ce2d618` to the tested source and image.
-The source SDK `413c39b1` and media environment `dc85d796` remain component
-inputs with their original scope.
+The historical source SDK `413c39b1` and media environment `dc85d796` remain
+component inputs for that checkpoint with their original scope.
 
 This is a CPU/software qualification candidate, not a released V100 serving
-configuration. The selected SDK's known endpoint-formatter P1 failure path
-and compiler issue 6111901 remain release blockers, as recorded below. Hardware/model,
-quality, physical allocation and performance gates remain open.
+configuration. Current source selects the corrected owned Torch04cf2557 SDK;
+its native CPU failure-path and actual ABI/content controls pass. The fresh
+complete application CPU gate on the corrected source/media stack and compiler
+issue 6111901 remain open, as recorded below. Hardware/model, quality, physical
+allocation and performance gates remain open.
 
 After `docker load --input /path/to/reviewed-image-archive.tar`,
 `TF_V6_IMAGE` may be the verified local image ID (`sha256:...`). An actual
@@ -230,20 +232,26 @@ limits, route-body bounds and HTTP count before accepting work. See the
 All new unique profiles (no explicit retention, GPU tier and RAM tier) select
 the plain owned synchronous Store and canonical key/value wake path with the
 same process-fixed transport identity. Generic legacy defaults remain separate.
-Source runtime binding is exact CPython 3.12.3/Torch5ab/GCC 13 build/ABI and
+Source runtime binding is exact CPython 3.12.3/Torch04cf2557/GCC 13 build/ABI and
 recorded GCC 14 runtime content; these checks do not qualify allocator/RSS/NUMA
 or native wall deadlines. The conservative generic graph projection at 96 MiB
 can reject a declared host envelope without proving practical physical RAM
 insufficiency or a qualified session maximum.
 
-The selected native SDK still has a release-blocking `getnameinfo` failure
-fallback: an incorrect pointer/address cast can access an invalid object and
+The previous native SDK has a retained `getnameinfo` failure finding:
+an incorrect pointer/address cast can access an invalid object and
 corrupt endpoint diagnostics, with a shared-flag race concern. Fault-injected
 native CPU diagnostics reproduced the corruption; data round trips passed,
 without a crash/race/performance claim. Owned-FD nonce provenance remains
-independent of those diagnostic strings. Resolve the supported failure contract
-in an owned immutable SDK and requalify its ABI/content before release; do not
-patch the installed library. Compiler issue 6111901 remains separate as stated below.
+independent of those diagnostic strings. The corrected owned 04cf SDK fixes
+that formatter/flag in canonical source and passes direct native IPv4/IPv6
+formatter/concurrency controls, actual-wheel IPv4 Store/endpoint failure-path
+controls and immutable-image ABI/content checks. Actual IPv6 Store execution is
+unrun on the IPv6-disabled development host. The current application guard
+rejects old5ab; all native size equations and remaining exact guards are retained.
+See the [source foundation record](source-foundation.md) for exact artifacts.
+The complete application CPU gate on the corrected source/media stack remains
+pending. Compiler issue 6111901 remains separate as stated below.
 
 Record final source/image, actual complete asset hashes, GPU UUID/rank mapping,
 driver/runtime/native binaries, host/cgroup/NUMA/locked-memory limits and the

@@ -25,7 +25,7 @@ and [fixed serving policy](serving-profiles.md#fixed-endpoint-fifo-and-retention
 These implemented paths have CPU software controls; they are not a qualified
 V100 serving configuration.
 
-The final composed installed CPU checkpoint uses frozen source tree
+The published composed installed CPU checkpoint uses frozen source tree
 `ff1883131180963a1de18bb00c74d6777466dcb9` and local image ID `sha256:fb0ac861483f0bc14bef1f73535d07d358c196c7e9358f76da3390f1434813a8`. It passed
 **5582 tests and 144 subtests across 183 modules**, with
 9 explicitly documented skips. All **707 installed code files** matched
@@ -39,7 +39,7 @@ application commit `7d3ddbb9d066fe7451769ad9a36739619ce2d618`. The installed pyt
 The composed source includes the canonical key/value wake relay, actual owned
 synchronous Store provenance for every new unique profile (no explicit
 retention, GPU tier or RAM tier), and process-fixed resource highwaters.
-The selected payload contract binds CPython 3.12.3, owned Torch
+That checkpoint's payload contract binds CPython 3.12.3, owned Torch
 `5ab14acbced0c33e6b6e8fdbc5b541b57487f7e1`, GCC 13 build/ABI and the recorded
 GCC 14 runtime content. State and hard file-descriptor lifetime reservations,
 native/Python transfer and control owners, source field guards and host
@@ -58,16 +58,29 @@ declared projected envelope, not a measured physical capacity limit or proof
 that a practical workload requires that much RAM. Tighter schema-specific
 bounds remain a separately assessed candidate; no fitted margin was selected.
 
-**Release remains blocked by the selected native SDK failure-path finding.**
-On a supported `getnameinfo` failure, Torch's endpoint formatter casts the
+The previous native SDK has a retained failure-path P1 finding.
+On a supported `getnameinfo` failure, its endpoint formatter casts the
 address of its pointer variable instead of the pointed-to socket address;
 the IPv6 path accesses beyond that pointer object. The same failure path has
 an unsynchronized shared flag. Native CPU fault injection reproduced corrupted
 endpoint diagnostics while the isolated data round trip succeeded; no crash or
 instrumented race was claimed. Owned-FD/nonce authority does not use those
-formatted strings. An owned fix, immutable SDK rebuild and affected failure-path
-requalification are required before release; passing the application CPU gate
-does not repair the native P1 violation.
+formatted strings. Passing that application's CPU gate did not repair the
+native P1 violation.
+
+Current source selects corrected owned Torch
+`04cf2557f315a350e7eea7ab064288def65db75a` and refuses the older 5ab revision
+for adaptive native-payload promises. The [source foundation record](../deploy/v100/source-foundation.md)
+identifies its immutable SDK/wheel and native CPU controls. Direct IPv4/IPv6
+formatter/concurrency controls, actual-wheel IPv4 normal/forced endpoint and
+Store controls, and the immutable SDK's actual ABI/runtime-content checks pass.
+Actual IPv6 Store execution is unrun on the IPv6-disabled development host.
+The only source changes since 5ab are the internal socket correction and native
+test wiring; public headers, Store layouts, allocation equations and transport
+defaults are unchanged. This structural reuse preserves the exact CPython,
+compiler/ABI, loaded-runtime and finite hard-FD guards. A fresh complete
+installed-application gate on the corrected source/media stack remains pending;
+the earlier 5,582 checks do not test that replacement stack.
 
 NVIDIA compiler issue **6111901** remains a separate release gate; see the
 [source-foundation contract](../deploy/v100/source-foundation.md#compiler-issue-6111901-remains-a-release-gate).

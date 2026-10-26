@@ -1,5 +1,5 @@
 # Consumer-only build against the exact reviewed CPU media/source environment.
-ARG MEDIA_IMAGE=tensorfold-v100:media-dav1d-candidate@sha256:7c547c67e4783f3767b0cb2f88587331b61cef6b4adb595548f7a19deab8ef91
+ARG MEDIA_IMAGE=tensorfold-v100:media-socket-04cf2557@sha256:f1c72b97ae8949a0aab0b1407edd4fc320671fb129e104e39095eb602ce2e94f
 FROM ${MEDIA_IMAGE}
 COPY . /src
 RUN --network=none python -m pip wheel --no-build-isolation --no-deps /src --wheel-dir /media-binding-wheels \

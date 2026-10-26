@@ -29,7 +29,7 @@ docker run -d --name tensorfold-v100-media-build --cpus 4 --memory 24g \
   --entrypoint sleep \
   --mount type=bind,src="$TF_MEDIA_STATE",dst=/media \
   --mount type=bind,src="$PWD",dst=/src,readonly \
-  tensorfold-v100:software-binding-final@sha256:413c39b178688fba6890afb61264da11f2fc175054b6689241a1d5d5aee5de69 infinity
+  tensorfold-v100:source-socket-04cf2557@sha256:eb09ff449dba6acc89d7207547a10b767adde592f47fef839f33dc98f269df28 infinity
 docker exec tensorfold-v100-media-build ln -s /media/native /opt/tensorfold-media
 docker exec tensorfold-v100-media-build bash /src/deploy/v100/media_build.sh acquire
 docker exec tensorfold-v100-media-build bash /src/deploy/v100/media_build.sh prepare
@@ -78,7 +78,7 @@ inventory and actual runtime identity. It returns software-only evidence with
 `release_qualified=false`; serialized records grant no process authority or
 execution-profile eligibility.
 
-The original source audit rejected every TorchVision mapping, including these
+The historical original source audit rejected every TorchVision mapping, including these
 CPU consumer extensions. The additive image retains that failure and the old
 producer, installation manifest and actual cold-audit output under protected
 `/opt/tensorfold-pins/audit-history`. Its explicit `revise-audit-policy` step
@@ -88,6 +88,28 @@ current-audit producer identities. The new policy accepts ordinary consumer
 extensions under the existing process audit while still refusing bundled
 accelerator-provider roots and substituted known library families. Exact CPU
 TorchVision bytes and `CUDA=-1` remain the media audit's responsibility.
+The corrected 04cf source SDK records the current source producer directly; its
+build does not inherit the earlier strict-policy producer identity. Rebinding
+the media image to that corrected SDK reuses the exact pinned media wheel and
+native-prefix bytes with their original build receipts, followed by fresh
+consumer/source audits and controls. This does not claim a clean media source
+recompile against the corrected framework or transfer earlier application tests.
+The original recorded media build used
+`tensorfold-v100:software-binding-final@sha256:413c39b178688fba6890afb61264da11f2fc175054b6689241a1d5d5aee5de69`;
+that predecessor and its strict-policy failure remain historical evidence.
+
+The corrected rebind is local image ID
+`sha256:f1c72b97ae8949a0aab0b1407edd4fc320671fb129e104e39095eb602ce2e94f`
+(`tensorfold-v100:media-socket-04cf2557`), 23,316,923,844 uncompressed bytes.
+It preserves all 34 corrected SDK layers and adds 312,481,365 bytes. The
+maintained offline recipe completed the exact-wheel installation, retained
+baseline/source policy rebind, media audit, official processor probe and source
+process audit. Fresh separate audits and scoped installed controls remain
+pending; these build-stage checks do not qualify the complete application.
+The selected consumer recipe is `Dockerfile.media-binding-verification`; its
+default names this actual locally resolved OCI index. The former default
+`tensorfold-v100:media-dav1d-candidate@sha256:7c547c67e4783f3767b0cb2f88587331b61cef6b4adb595548f7a19deab8ef91`
+remains a historical component identity, with no registry publication claim.
 Framework metadata queries materialize their own lazy cuDNN component before
 collecting mapped-library identity. This changes audit observation order, not
 framework/provider binaries. A fresh-process regression compares consecutive

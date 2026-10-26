@@ -86,12 +86,13 @@ def test_native_data_extra_bounds_selected_vector_growth_without_repaying_python
 def test_native_payload_bound_verifies_actual_selected_abi_and_rejects_other_torch(monkeypatch):
     torch = pytest.importorskip("torch")
     result = require_native_payload_runtime()
-    assert result["torch_git"] == "5ab14acbced0c33e6b6e8fdbc5b541b57487f7e1"
+    assert result["torch_git"] == "04cf2557f315a350e7eea7ab064288def65db75a"
     assert result["libstdcxx_sha256"] == "1fd75fe70354a416d75aef22bcae68c47bd25d20e2d0568c30b1a9838cf62f11"
     assert result["python_implementation"] == "cpython" and result["python_version"] == [3, 12, 3]
-    monkeypatch.setattr(torch.version, "git_version", "other-native-build")
-    with pytest.raises(ValueError, match="selected Torch"):
-        require_native_payload_runtime()
+    for revision in ("5ab14acbced0c33e6b6e8fdbc5b541b57487f7e1", "other-native-build"):
+        monkeypatch.setattr(torch.version, "git_version", revision)
+        with pytest.raises(ValueError, match="selected Torch"):
+            require_native_payload_runtime()
 
 
 def test_native_payload_bound_rejects_different_actual_runtime_content(monkeypatch, tmp_path):

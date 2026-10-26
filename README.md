@@ -6,16 +6,19 @@ full-context capacity planning, unique GPU histories, bounded execution and live
 controls. [Implementation and qualification boundaries](docs/v100-adaptive-validation.md)
 separate source checks from the pending eight-V100 model, quality and performance
 gates. Historical results below keep their original source and layout.
-The current adaptive CPU checkpoint passed **5,582 installed checks and 144
+The published adaptive CPU checkpoint passed **5,582 installed checks and 144
 subtests across 183 modules**, with nine documented optional/platform skips.
 All 707 installed code files matched frozen source tree `ff188313`, without a
 source overlay or input drift. The [checkpoint receipt](docs/verification-v100-adaptive-cpu-20261026.json)
 records the exact image, source, fixtures and evidence boundaries. This covers
 FIFO, retained-state, standard API and conditional native/Python resource
 composition; actual physical feasibility remains unqualified.
-The selected native SDK has a known failure-path P1 defect and requires an owned
-fix, immutable rebuild and requalification before release. Actual V100 execution,
-model quality, capacity and performance remain unqualified for this checkpoint.
+The corrected owned native SDK now selects Torch `04cf2557`, replacing that
+checkpoint's defective `5ab14ac` socket formatter. Its immutable rebuild and
+native CPU failure-path/ABI controls pass; the application now requires that
+exact revision. The complete application CPU gate on the corrected source/media
+stack is pending. Actual V100 execution, compiler disposition, model quality,
+capacity and performance remain unqualified.
 The earlier media/frontend/MTP checkpoint at `64b24dd5` passed 4,365 installed
 checks and 124 subtests; tree `413e132b` passed 5,214 checks and 144 subtests.
 Those historical results retain their original source and workload scope.

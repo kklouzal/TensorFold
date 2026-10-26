@@ -1,6 +1,6 @@
 # Add the exact CPU processor/decoder closure without replacing Torch/CUDA/NCCL.
 # media_artifacts is the completed offline source-build state, not a resolver.
-ARG SOURCE_IMAGE=tensorfold-v100:software-binding-final@sha256:413c39b178688fba6890afb61264da11f2fc175054b6689241a1d5d5aee5de69
+ARG SOURCE_IMAGE=tensorfold-v100:source-socket-04cf2557@sha256:eb09ff449dba6acc89d7207547a10b767adde592f47fef839f33dc98f269df28
 FROM ${SOURCE_IMAGE}
 RUN --network=none mkdir -p /opt/tensorfold-pins/audit-history \
     && python /opt/tensorfold-pins/source_foundation.py audit-process > /opt/tensorfold-pins/audit-history/audit-process.json \

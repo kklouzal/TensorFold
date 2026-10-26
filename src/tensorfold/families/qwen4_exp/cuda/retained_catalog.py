@@ -287,7 +287,7 @@ class RetainedCatalog:
                 if type(backend) is not bool and first.pos_dev.is_cuda:
                     raise ValueError("retained native transfers require the actual TCPStore backend capability")
                 if backend is True:
-                    # Pinned Torch5ab libuv parser: independent vector/key
+                    # Pinned Torch04cf2557 libuv parser: independent vector/key
                     # field limits, not a whole-wire-frame size restriction.
                     self._native_value_limit = _LIBUV_VALUE_BYTES
                     self._native_key_limit = _LIBUV_KEY_BYTES

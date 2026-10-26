@@ -22,15 +22,15 @@
       "repository": "https://github.com/pytorch/pytorch.git",
       "tag": "v2.14.1",
       "commit": "5c4886908584029761b579af026dcfb627c84070",
-      "source_inventory_sha256": "03e3bdf835a50426e509791058a280e712109773312cfe5c588814d433ed57ba",
-      "effective_commit": "5ab14acbced0c33e6b6e8fdbc5b541b57487f7e1",
-      "fork_date": "1790732851 +0000",
-      "fork_message": "Make installed ATen CMake include paths relocatable\n\nATenConfig substituted the wheel's temporary installation prefix, leaving\nnative consumers with a nonexistent include directory and embedding a new\nstaging path on repeated builds. Compute the include path relative to the\ninstalled CMake package and preserve that variable until the consumer reads\nit. Keep the correction in owned source rather than modifying wheel output.\n\nTest Plan:\n```bash\nexport PATH=/work/venv/bin:$PATH\n/work/venv/bin/python -m pytest -p no:cacheprovider -q /src/tests/test_v100_framework_patch.py\nexport PATH=/work/lint-venv/bin:$PATH UV_CACHE_DIR=/work/lint-cache/uv UV_PYTHON_INSTALL_DIR=/work/lint-python UV_OFFLINE=1\ncd /work/sources/pytorch\nspin quicklint -- -a aten/src/ATen/CMakeLists.txt aten/src/ATen/ATenConfig.cmake.in\n```\n\nPrepared with an AI assistant. No upstream publication.\n",
+      "source_inventory_sha256": "7a44b2fe45b25ea967f869bd94abc7c18d218f4575b6c031d008dee4fb6d4112",
+      "effective_commit": "04cf2557f315a350e7eea7ab064288def65db75a",
+      "fork_date": "1793049855 +0000",
+      "fork_message": "Fix c10d socket diagnostics after hostname lookup failure\n\nThe numeric fallback cast the address of its local sockaddr pointer instead\nof the pointed-to socket address and emitted network-order port integers.\nUse the actual const socket address and convert ports to host order. Replace\nthe process-wide unsynchronized DNS-disable bool with a relaxed atomic flag;\nthis flag publishes no other data. Use each successful call's local lookup\nresult directly so another thread's failure cannot select its fallback.\n\nRetain the preceding relocatable ATen CMake package correction. The isolated\nowned replacement fork starts at upstream v2.14.1 and preserves the original\n5ab14ac candidate separately. Normal DNS behavior and all transport defaults\nare unchanged.\n\nTest Plan:\n```bash\nexport PATH=/work/lint-venv/bin:$PATH UV_CACHE_DIR=/work/lint-cache/uv UV_PYTHON_INSTALL_DIR=/work/lint-python UV_OFFLINE=1\ncd /work/sources/pytorch\nspin quicklint -- -a torch/csrc/distributed/c10d/socket.cpp test/cpp/c10d/SocketTest.cpp test/cpp/c10d/CMakeLists.txt\n/work/venv/bin/python /work/sources/pytorch/agent_space/run_socket_test.py\n```\n\nPrepared with an AI assistant. No upstream publication.\n",
       "owned_patches": [
         {
-          "artifact": "0001-relocatable-aten-config.patch",
-          "bytes": 1315,
-          "sha256": "526cd86602bf48fc60d8a162069de700d3e01b796de34296b9265e4d3ce074dc"
+          "artifact": "0001-owned-aten-and-socket-corrections.patch",
+          "bytes": 8491,
+          "sha256": "c0df744ff743241e57bb6d1163e4e50ce19f8a8b183b8f8204cbf5a4d01fc1e2"
         }
       ]
     },

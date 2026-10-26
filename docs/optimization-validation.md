@@ -20,7 +20,7 @@ change the user's selected precision or sampling policy.
 
 ## Adaptive V100 software evidence, 2026-10-26
 
-The final composed CPU checkpoint is frozen source tree `ff1883131180963a1de18bb00c74d6777466dcb9`
+The published composed CPU checkpoint is frozen source tree `ff1883131180963a1de18bb00c74d6777466dcb9`
 and local image ID `sha256:fb0ac861483f0bc14bef1f73535d07d358c196c7e9358f76da3390f1434813a8`: **5582 installed tests and
 144 subtests**, with 9 documented skips across 183 modules.
 All 707 installed code files matched the frozen 2,012-input source capture
@@ -34,9 +34,11 @@ Current source implements DFlash2 through the shared Engine, standard
 Responses/Conversations, FIFO/catalog/prefix/RAM lifecycle and live requeue,
 the canonical key/value wake relay, owned synchronous Store provenance for all
 new unique profiles with no explicit retention or with GPU/RAM retention, and
-explicit State/FD/host lifetimes and payload obligations. The source envelope
-binds selected CPython 3.12.3, Torch5ab, GCC 13 build/ABI and recorded GCC 14
-runtime content. A conservative generic
+explicit State/FD/host lifetimes and payload obligations. That checkpoint's
+source envelope binds CPython 3.12.3, Torch5ab, GCC 13 build/ABI and recorded
+GCC 14 runtime content. Current source instead requires corrected owned
+Torch04cf2557 with the same proved headers/layouts and actual ABI/runtime
+content; it rejects the defective predecessor. A conservative generic
 96-MiB RPC graph bound can refuse an otherwise practical host workload; no
 physical insufficiency or tested capacity maximum follows from that refusal.
 
@@ -57,9 +59,14 @@ and later resource/lifetime suites overlap and are not added to the
 installed count. [The validation record](v100-adaptive-validation.md#current-v6-source-and-cpu-evidence)
 preserves the exact boundaries and final receipt.
 
-The known selected native SDK endpoint-formatter P1 failure/race concern on
-`getnameinfo` failure and compiler issue 6111901 remain release blockers.
-Application CPU success does not resolve them. V100/TP8/NCCL/full-model
+The previous native SDK endpoint-formatter P1 failure/race concern on
+`getnameinfo` failure remains retained evidence. The corrected owned SDK has
+passed native formatter/failure-path and actual-wheel IPv4 Store/endpoint
+controls, plus its immutable-image ABI/content witness. Actual IPv6 Store
+execution is unrun on the development host. The [foundation record](../deploy/v100/source-foundation.md)
+identifies that component evidence; it does not transfer the old application's
+5,582 installed passes to the corrected source/media stack. Its fresh complete
+application CPU gate and compiler issue 6111901 remain open. V100/TP8/NCCL/full-model
 numerics, quality, physical capacity, allocator/RSS/NUMA, native wall deadlines
 and representative end-to-end performance remain unqualified. Historical
 measurements/failures below retain their original source/workload identities.

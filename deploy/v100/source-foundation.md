@@ -1,7 +1,10 @@
 # Native V100 source foundation
 
-This work follows the updated adaptive-inference specification, SHA256
+The original foundation research and producer pins recorded specification SHA256
 `479727e5e112995c3f4edff88747365efc33da2fe676d4e58dd7faf32b31991a`.
+The corrected rebind follows the [current adaptive-inference specification](../../docs/v100-adaptive-inference-design.md):
+home SHA256 `7c9f724346866cfb89382ee2e30d60d9d827222c347610783b37683ba04e5a8c`,
+maintained normalized SHA256 `5ccbbb27cdd1ccbf2d04fb63b1036937aa304b1bc9af93cf6bb01c80f2f0519a`.
 The stack is a source-build candidate. Compilation, metadata import, native
 SM70 object coverage and device/model qualification are separate evidence.
 No old cu126 wheel result qualifies this combination.
@@ -24,13 +27,19 @@ and source revisions are recorded in [source-pins.json](source-pins.json).
 | Host driver candidate | R580.196.07, proprietary kernel module for Volta; no host installation performed |
 
 The owned downstream Torch source commit is
-`5ab14acbced0c33e6b6e8fdbc5b541b57487f7e1`, on top of the listed upstream
-release. Its single [recorded patch](framework-patches/0001-relocatable-aten-config.patch)
-fixes the ATen CMake package's include path: upstream embedded the random wheel
-staging directory, producing a nonexistent consumer path and a different wheel
-hash on repeated builds. The source template now derives the installed include
-directory relative to the CMake package. Its compiler/kernel source is unchanged.
-This packaging correction does not address compiler issue 6111901.
+`04cf2557f315a350e7eea7ab064288def65db75a`, on top of the listed upstream
+release. Its single [recorded aggregate patch](framework-patches/0001-owned-aten-and-socket-corrections.patch)
+retains the ATen CMake relocation correction and fixes c10d socket diagnostics
+after `getnameinfo` failure. The formatter now uses the actual socket address,
+converts numeric ports to host order and uses a one-way relaxed atomic DNS
+policy flag; each successful lookup consumes its own local result. The preceding
+`5ab14acbced0c33e6b6e8fdbc5b541b57487f7e1` candidate and its failure evidence
+remain historical; the adaptive native-payload guard rejects that old revision.
+Only `socket.cpp` and its native test/CMake wiring differ from that predecessor.
+Public headers, tensor/Store layouts, allocation equations, transport defaults
+and CUDA/NCCL/kernel sources are unchanged. This is structural ABI reuse, not
+device or rebuilt-application qualification. Neither correction addresses
+compiler issue 6111901.
 The producer pins the original/effective commits, exact patch bytes, deterministic
 fork metadata and complete effective source inventory. A sparse fixture replay
 reproduced the original candidate commit. The selected replacement records actual
@@ -144,6 +153,31 @@ policy for source-built CPU consumer extensions. It preserves the previous
 producer/installation evidence and verifies it before publishing the new audit
 manifest. This does not claim that the existing framework was rebuilt under the
 new audit producer or transfer any compiler/device/model qualification.
+
+The corrected 04cf framework build records the current producer directly; it
+does not inherit that historical strict-policy build identity. Its complete
+source inventory SHA256 is
+`7a44b2fe45b25ea967f869bd94abc7c18d218f4575b6c031d008dee4fb6d4112`.
+The 222,923,385-byte whole wheel has SHA256
+`7bb0c6cf42736ef4abcaa58c962423c65315f91c124353b5b46ddc76d82faac6`;
+the completed-build receipt SHA256 is
+`779ce85651c6236be2874a9b478d04ac1c8560a712b8632bd300792e83cd4c24`.
+The corrected source SDK is local image ID
+`sha256:eb09ff449dba6acc89d7207547a10b767adde592f47fef839f33dc98f269df28`
+(`tensorfold-v100:source-socket-04cf2557`), 23,004,442,479 uncompressed bytes.
+This is its observed local OCI index identity, with no registry publication claim.
+The selected `Dockerfile.binding-verification` consumer now names that same
+corrected SDK. Its former `source-sealed-binding-950289ab-r2` default remains
+historical; it cannot satisfy the current adaptive native-payload guard.
+Upstream Spin/lintrunner, direct native normal/failed IPv4/IPv6 formatter and
+concurrent controls passed. Actual new-wheel IPv4 Store SET/GET/delete and
+normal/forced numeric endpoint checks matched independent kernel endpoints.
+Actual IPv6 Store execution remains unrun on the development host, whose IPv6
+socket creation returns `EAFNOSUPPORT`. The immutable SDK's actual CPython
+3.12.3, GCC13.3, CXX11 ABI1, Linux x86_64/64-bit pointers and exact loaded
+2,592,224-byte GCC14 runtime content match the retained guard. These CPU controls
+do not transfer the earlier application's installed CPU result or clear any
+V100/compiler/model/resource/quality/performance gate.
 
 Acquire the exact `build-debs` and `python-wheels` inputs before building. Source
 fork preparation also needs `lint-wheels` and its managed-Python/UV cache; first
