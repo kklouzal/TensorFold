@@ -86,6 +86,24 @@ class NativeFDControls(unittest.TestCase):
         finally:
             parent.close()
 
+    @unittest.skipUnless(sys.platform == "linux", "owned memfd is a Linux capability")
+    def test_sealable_memfd_acquires_once_in_a_journaled_owner(self):
+        import fcntl
+        owner = self.slot()
+        self.assertIsNone(owner.memfd())
+        descriptor = owner.fileno()
+        self.assertFalse(os.get_inheritable(descriptor))
+        os.ftruncate(descriptor, 32)
+        fcntl.fcntl(descriptor, fcntl.F_ADD_SEALS, fcntl.F_SEAL_GROW | fcntl.F_SEAL_SHRINK)
+        self.assertEqual(os.write(descriptor, b"owned"), 5)
+        with self.assertRaises(OSError):
+            os.ftruncate(descriptor, 33)
+        with self.assertRaises(RuntimeError):
+            owner.memfd()
+        owner.close()
+        self.assertTrue(owner.closed)
+        owner.close()
+
     def test_invalid_paths_modes_and_argument_callbacks_fail_before_acquisition(self):
         target = self.directory / "not-created"
         primary = RuntimeError("path callback failure")
@@ -175,6 +193,16 @@ class NativeFDControls(unittest.TestCase):
                     break
             else:
                 self.fail("bounded process descriptor admission did not exhaust")
+            if sys.platform == "linux":
+                # The failed open leaves the same journaled slot fresh. A
+                # failed memfd acquisition must also remain observable/retryable.
+                with self.assertRaises(OSError) as caught:
+                    owner.memfd()
+                self.assertEqual(caught.exception.errno, errno.EMFILE)
+                self.assertTrue(owner.closed)
+                owners[0].close()
+                owner.memfd()
+                self.assertFalse(owner.closed)
         finally:
             for owner in owners:
                 owner.close()
