@@ -334,6 +334,67 @@ def test_real_state_media_boundary_clone_restore_and_prewrite_identity_guard(req
     assert snap["media_state"]["mtp_boundary"]["coordinates"].proof.generation == 0
 
 
+@pytest.mark.parametrize("notification_failure", [False, True])
+def test_ordinary_bound_text_restore_write_failure_poison_preserves_primary(request, monkeypatch, notification_failure):
+    """Real State recovery with the independent CPU cache/math fixture.
+
+    The shared context is actual; this covers write-phase containment, not
+    unique TP8 layout/model execution, which has separate target gates.
+    """
+    from tensorfold.families.qwen4_exp.cuda.state import State
+
+    weights = request.getfixturevalue("actual_mtp_family")
+    st = State(weights, 32, 4, "fp16", limit=32)
+    context = bind_reference_inputs(weights, st)
+    assert st.media_profile_identity is None and not st.media_inputs_enabled
+    snap = st.snapshot()
+    st.rec.zero_()
+    snap["rec"].fill_(.75)
+    original = torch.Tensor.copy_
+    primary = RuntimeError("ordinary text restore failed after recurrent mutation")
+    secondary = RuntimeError("restore cohort notification failed")
+
+    def copy(destination, source, *args, **kwargs):
+        result = original(destination, source, *args, **kwargs)
+        if destination is st.conv:
+            raise primary
+        return result
+
+    if notification_failure:
+        fail = context.fail
+
+        def notify(error):
+            fail(error)
+            raise secondary
+
+        monkeypatch.setattr(context, "fail", notify)
+    monkeypatch.setattr(torch.Tensor, "copy_", copy)
+    with pytest.raises(RuntimeError) as caught:
+        st.restore(snap)
+    assert caught.value is primary
+    assert torch.equal(st.rec[0], snap["rec"])
+    assert st._history_error is primary and st._kv_error is primary
+    assert context.cohort._execution_manifest_uncertain
+    assert not notification_failure or primary.__cause__ is secondary
+
+
+def test_ordinary_bound_text_restore_prevalidation_refusal_keeps_owner_healthy(request, monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda.state import State
+
+    weights = request.getfixturevalue("actual_mtp_family")
+    st = State(weights, 32, 4, "fp16", limit=32)
+    context = bind_reference_inputs(weights, st)
+    snap = st.snapshot()
+    bad = {**snap, "pos": st.limit + 1}
+    with monkeypatch.context() as guard:
+        guard.setattr(torch.Tensor, "copy_", lambda *_a, **_kw: pytest.fail("invalid snapshot reached restore writes"))
+        with pytest.raises(ValueError):
+            st.restore(bad)
+    assert st._history_error is None and st._kv_error is None
+    assert not context.cohort._execution_manifest_uncertain
+    st.restore(snap)
+
+
 def test_real_state_reset_retires_actual_span_and_clears_request_context(request):
     from tensorfold.families.qwen4_exp.cuda.state import State
 
