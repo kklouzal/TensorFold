@@ -22,6 +22,18 @@ services:
       TENSORFOLD_NO_UPDATE_CHECK: "1"
       TENSORFOLD_SM70_PROFILE: "${TF_SM70_PROFILE:-reference}"
       TF_GGUF_ASSETS_DIR: /cache/gguf_assets
+      # Required explicitly for the new FIFO profile; leave unset for legacy DSpark.
+      TF_MAX_WAITING_INPUT_BYTES: "${TF_MAX_WAITING_INPUT_BYTES:-}"
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        args=("$$@")
+        if [[ -n "$${TF_MAX_WAITING_INPUT_BYTES:-}" ]]; then
+          args+=(--max-waiting-input-bytes "$$TF_MAX_WAITING_INPUT_BYTES")
+        fi
+        exec /opt/venv/bin/python "$${args[@]}"
+      - tensorfold-v100
     command:
       - /src/tools/launch_cuda_tp.py
       - --gpus

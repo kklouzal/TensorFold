@@ -151,7 +151,9 @@ def test_bounded_verification_rows_do_not_release_resident_state_or_histories():
 
 @pytest.mark.torch
 @pytest.mark.parametrize("reserve_gib", [0, 3, 4, 5])
-def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(monkeypatch, tmp_path, reserve_gib):
+@pytest.mark.parametrize("retention_tier", [None, "gpu", "ram"])
+def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(monkeypatch, tmp_path, reserve_gib,
+                                                                           retention_tier):
     """Real source headers and CPU geometry only; stop before weight retention."""
     import json
     import numpy as np
@@ -164,6 +166,13 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
     from tensorfold.families.qwen4_exp.cuda import engine, exl3_pack, gguf_admission, padded_linears
     from tensorfold.families.qwen4_exp.cuda.history_placement import MIGRATION_OVERLAP_BYTES, coordinate_source_host_bytes
     from tensorfold.families.qwen4_exp.rope import RopeParameters
+    from tensorfold.families.qwen4_exp.cuda.retention_policy import RetentionPolicy
+
+    # Explicit test-only grants, not deployment defaults. Admission is observed
+    # before model payload or retained-state allocation.
+    policy = (None if retention_tier is None else RetentionPolicy("gpu", 1, 60)
+              if retention_tier == "gpu" else RetentionPolicy("ram", 1, 60,
+                  ram_bytes=256 * 2**20, chunk_bytes=1024, progress_bytes=16384, overlap_bytes=32768))
 
     # A valid sparse GGUF extent supplies actual vocabulary/position/layout
     # metadata. No model payload is read by this pre-admission observer.
@@ -224,6 +233,14 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
         assert b["history"] > a["history"]
         assert a["sm70_native_workspace"] > 0  # Owner buffers remain charged with native kernels disabled.
         assert sum(b.values()) == forty.bytes_at(262145)
+        assert kwargs.get("host_workspace_bytes", 0) == (256 * 2**20 + 16384 if retention_tier == "ram" else 0)
+        if policy is not None:
+            assert a["retained_idle_recovery"] == 0
+            assert b["retained_idle_recovery"] > 0
+            assert a["retained_restore_overlap"] == b["retained_restore_overlap"] == (
+                32768 if retention_tier == "ram" else 0)
+        else:
+            assert "retained_idle_recovery" not in b and "retained_restore_overlap" not in b
         from tensorfold.cuda.geometry import multi_static_domains
 
         coordinate_rows = max(prefill_rows, min(40 * (depth + 1), execution_rows))
@@ -243,7 +260,7 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
     with expected:
         owner._initialize(tmp_path, depth=depth, tp=8, rank=0, master="test", graphs=False,
                           kv_dtype="int8", adaptive_sessions=True, session_ceiling=40,
-                          execution_rows=execution_rows)
+                          execution_rows=execution_rows, max_waiting_input_bytes=4096, retention_policy=policy)
 
 
 @pytest.mark.torch

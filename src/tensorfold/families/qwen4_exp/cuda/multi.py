@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 import os
+import sys
 import time
 
 import numpy as np
 import torch
 
-from tensorfold.cleanup import raise_failures
+from tensorfold.cleanup import raise_failures, rollback
 from tensorfold.cuda import pdl
 from tensorfold.cuda.capacity import LIMIT_ENV, available_bytes, cuda_limit_bytes, gather_ints
 from tensorfold.cuda.kernels import gdn
@@ -89,6 +90,8 @@ class MultiDecoder:
         self.points = points                         # a prompt's message starts to keep states at, or None
         self.vision = vision
         self.media_runtime = media_requests.runtime(vision)
+        self.admission_policy = "legacy"
+        self.retention_catalog = None
         if self.media_runtime is not None and (
                 type(vision_workspace_bytes) is not int or vision_workspace_bytes < 0
                 or vision_workspace_bytes != self.media_runtime.resources["media_transient_bytes"]):
@@ -240,7 +243,7 @@ class MultiDecoder:
         self._draft_map = TokenMap(w.draft_ids, int(w.draft_ids.numel()), device=w.draft_ids.device) \
             if w.draft_ids is not None else None
         self.draft_host = self._draft_map.ids(int(w.draft_ids.numel())) if self._draft_map is not None else None
-        self.kept: list[tuple[list[int], State, dict, torch.Tensor | None]] = []   # (ids, slot, snapshot, tail)
+        self._kept: list[tuple[list[int], State, dict, torch.Tensor | None]] = []  # legacy until catalog authority binds
         self.keep = keep
         self.used: dict[int, int] = {}                   # retention (prefixes.py): id(slot) -> clock at its last use
         self.clock = 0
@@ -249,8 +252,337 @@ class MultiDecoder:
         return self.rotor_decoder_policy.request(request, owned_requests=self.live(),
                                                  participants=participants, copy=self.copy)
 
+    @property
+    def kept(self):
+        catalog = getattr(self, "retention_catalog", None)
+        return self._kept if catalog is None else catalog.prefix_entries
+
+    @kept.setter
+    def kept(self, values):
+        catalog = getattr(self, "retention_catalog", None)
+        if catalog is None:
+            self._kept = values
+        else:
+            catalog.prefix_entries = values
+
+    def bind_retention_catalog(self, catalog):
+        """Bind the one actual catalog before request/prefix publication."""
+        from .retained_catalog import RetainedCatalog
+
+        if type(catalog) is not RetainedCatalog or self.retention_catalog is not None:
+            raise ValueError("retention requires one actual catalog issued for this decoder")
+        if catalog.prefix_limit != self.keep or catalog.recovery_versions != max(self.keep, POINTS):
+            raise ValueError("retention catalog differs from the decoder's actual prefix/recovery geometry")
+        if self.streams or self.filling or self.kept or catalog.prefix_entries:
+            raise RuntimeError("retention authority binds only to the empty warmed request/prefix state")
+        catalog.bind_decoder(self)
+        catalog.prefix_entries = self._kept
+        self.retention_catalog = catalog
+        self._kept = None  # The bound catalog is the sole prefix authority.
+
     def _busy(self) -> set[int]:
-        return {id(s.st) for s in [*self.streams.values(), *self.filling]}
+        busy = {id(s.st) for s in [*self.streams.values(), *self.filling]}
+        catalog = getattr(self, "retention_catalog", None)
+        if catalog is not None:
+            busy.update(id(state) for state in catalog.protected_states())
+        return busy
+
+    def enqueue_retained(self, stream, *, parent=None):
+        """Actor-only ownership before expiry controls or a GPU admission claim."""
+        from .retained_host import RetainedHost
+
+        catalog = self.retention_catalog
+        if catalog is None or catalog.policy is None:
+            return
+        intent = stream.retention_intent
+        stream.retention_request = None
+        stream.retention_handle = None
+        stream.retention_window = None
+        if intent is not None and intent.target is not None:
+            handle = catalog.reserve_pending(intent.target, future_bytes=catalog.future_claim())
+            stream.retention_handle = handle  # Journal before aliases/old CPU retirement.
+            if handle.phase != "reserved" or handle.host is not None:
+                stream.retention_window = catalog.replace_pending(handle, retire_host=RetainedHost.retire_backend)
+            else:
+                stream.retention_window = handle.state
+            for alias in intent.aliases:
+                if alias not in handle.owners:
+                    catalog.associate(handle, alias)
+        if parent is not None:
+            source = catalog.lookup(parent)
+            if source is None:
+                raise RuntimeError("selected retained prefix vanished before its replicated consumer claim")
+            def register(request):
+                stream.retention_request = request
+            if stream.retention_handle is None:
+                catalog.borrow_prefix(source, principal=parent.principal, register=register)
+            else:
+                catalog.borrow(source, continuation="new-turn", target_handle=stream.retention_handle, register=register)
+
+    def retention_eligibility(self, stream):
+        request = getattr(stream, "retention_request", None)
+        return None if request is None else request.eligibility()
+
+    def _capacity_refusal(self, error):
+        """Only clean cache/backing exhaustion may leave an accepted generation warm."""
+        try:
+            from .execution_identity import _unretired
+
+            uncertain = _unretired(error)
+            self.retention_catalog.check_health()
+        except BaseException as inspection:
+            try:
+                self.poison_control(error)
+            except BaseException as containment:
+                raise_failures(error, (inspection, containment))
+            raise_failures(error, (inspection,))
+        if uncertain:
+            try:
+                self.poison_control(error)
+            except BaseException as containment:
+                raise_failures(error, (containment,))
+            raise error
+
+    def suspend_request(self, stream):
+        """Quiescent live request only; preserve its actual host and drawn method state."""
+        from .retained_catalog import LOCAL_PRINCIPAL, RetentionCapacity
+        from .retained_host import FillContinuation, RetainedHost
+
+        catalog = self.retention_catalog
+        if (catalog is None or catalog.policy is None or catalog.policy.tier != "ram"
+                or stream.done or stream.cancel is not None and stream.cancel.is_set()
+                or getattr(stream, "blocked_input", None) is None):
+            return False
+        handle = getattr(stream, "retention_handle", None)
+        if handle is None or handle.transient:
+            try:
+                handle = catalog.reserve_temporary(stream.principal or LOCAL_PRINCIPAL,
+                    register=lambda owner: setattr(stream, "retention_handle", owner))
+            except RetentionCapacity as error:
+                self._capacity_refusal(error)
+                return False  # GPU remains authoritative; no recomputation or lost accepted generation.
+        fill = self.fills.get(stream.sid)
+        continuation, hidden = None, None
+        if fill is not None:
+            engine, enabled, cursor, unpromoted, hidden = fill
+            if unpromoted:
+                raise RuntimeError("live retention must follow publication of the bounded prompt cuts")
+            continuation = FillContinuation(enabled, cursor, tuple(engine.stops))
+        self._flush(stream)
+        state, previous = stream.st, handle.host
+        if not state.mtp_hidden_width or state.mtp_len - state.mtp_drafted != state.pos - 1:
+            hidden = None
+        if state.mtp_boundary is not None:
+            hidden = state.mtp_boundary.hidden
+        host = RetainedHost.capture(stream, leader=self.w.comm is None or self.w.comm.rank == 0,
+                                    fill=continuation, frozen=True)
+        recoveries = tuple((snapshot, tail) for _ids, owner, snapshot, tail in self.kept if owner is state)
+        catalog.capture_idle(stream, pending_hc=hidden, recoveries=recoveries, host=host, handle=handle)
+        request = getattr(stream, "retention_request", None)
+        if request is not None:
+            request.close()  # Positive previous restore/copy completion precedes active execution.
+        if previous is not None and previous is not host:
+            previous.close()  # This snapshot view retires; the original CPU caller still owns the same Stream.
+        if fill is not None:
+            self.filling.remove(stream)
+            self.fills.pop(stream.sid)
+        else:
+            self.streams.pop(stream.sid)
+        host.detach(state)
+        stream.retained_host = host
+        stream.retention_request = None
+        catalog.suspend(handle)
+        catalog.borrow(handle, continuation="same-request",
+                       register=lambda request: setattr(stream, "retention_request", request))
+        return True
+
+    def _resume_live(self, stream):
+        request, host = stream.retention_request, stream.retained_host
+        if stream.cancel is not None and stream.cancel.is_set():
+            return False  # The owning queue retires cancellation, without issuing a new restore/model step.
+        state = getattr(stream, "retention_window", None)
+        if state is None:
+            if not self.free and prefixes._idle(self, self._busy()) is None:
+                raise mark_error_state_retired(NoRoom("live continuation waits for a complete recyclable GPU window"))
+            state, _resume, _cached = self._slot_for(list(stream.prompt), False, principal=stream.principal)
+            stream.retention_window = state
+            if not self._grow(state, state.limit, alone=not self.streams and not self.filling):
+                raise NoRoom("live continuation waits for its complete future GPU claim")
+            # Restore preflight checks the current admitted media/numerical binding.
+            if stream.vision is not None:
+                from .media_mtp import bind_context
+
+                bind_context(state, self.media_runtime.identity, stream._media_request.plan.media_identity)
+            state.cache_principal = stream.principal
+            state.media_mtp_enabled = stream.draft and self.w.mtp is not None and self.mbuf is not None
+            if getattr(self.w, "dflash2", None) is not None:
+                self.w.dflash2.set_enabled(state, stream.draft)
+        handoff = request.claim(state, stream=stream, ticket=stream.admission_ticket)
+        if handoff is None:
+            return False
+        _original, fill = host.attach(state, handoff=handoff, frozen=True)
+        if fill is not None:
+            engine = _slot(self.w, state, self.buf, self.mbuf, self.pbuf, self.capacity, self.prefill_rows,
+                           logical_context=getattr(self, "logical_context", None))
+            engine._draft_map, engine.stops = self._draft_map, list(fill.stops)
+            engine.last_streams = handoff["pending_hc"]
+            self.fills[stream.sid] = [engine, fill.mtp, fill.cursor, [], handoff["pending_hc"]]
+            self.filling.append(stream)
+        else:
+            self.streams[stream.sid] = stream
+        stream.retention_window = None
+        stream.retained_host = None
+        return None
+
+    def _release_retained_states(self, *, already_reset=()):
+        catalog = self.retention_catalog
+        if catalog is None:
+            return
+        active = {id(stream.st) for stream in [*self.streams.values(), *self.filling]}
+        for state in catalog.take_released_states():
+            if id(state) in active or any(state is protected for protected in catalog.protected_states()):
+                raise RuntimeError("catalog released a State still owned by a request or transfer")
+            self._drop_kept(state)
+            if all(state is not reset for reset in already_reset):
+                self._shrink(state)
+            if all(state is not free for free in self.free):
+                self.free.append(state)
+
+    def _capture_retained(self, stream, pending_hc=None, *, frame=None, row=None):
+        """Before the shared target frame is reused; the catalog clones the bounded HC row."""
+        handle = getattr(stream, "retention_handle", None)
+        if (stream.error is not None or getattr(stream, "retention_captured", False)
+                or stream.cancel is not None and stream.cancel.is_set()):
+            return
+        if handle is None:
+            catalog = getattr(self, "retention_catalog", None)
+            if catalog is None or catalog.policy is None or catalog.policy.tier != "ram":
+                return
+            from .prefix_policy import reuse_allowed
+            from .retained_catalog import LOCAL_PRINCIPAL, RetentionCapacity
+
+            if not reuse_allowed(
+                    self.w, stream.sampling, draft=stream.draft, vision=stream.vision,
+                    position=stream.st.pos, kv_pair=self.kv_pair):
+                return
+        from .retained_host import RetainedHost
+
+        self._flush(stream)
+        state = stream.st
+        if (pending_hc is None and frame is not None and row is not None and state.mtp_boundary is None
+                and state.mtp_hidden_width and state.mtp_len - state.mtp_drafted == state.pos - 1):
+            pending_hc = frame.streams[row:row + 1]
+        if not state.mtp_hidden_width or state.mtp_len - state.mtp_drafted != state.pos - 1:
+            pending_hc = None
+        if state.mtp_boundary is not None:
+            pending_hc = state.mtp_boundary.hidden
+        recoveries = tuple((snapshot, tail) for _ids, owner, snapshot, tail in self.kept if owner is state)
+        if handle is None:
+            try:
+                handle = catalog.capture_prefix(stream, principal=stream.principal or LOCAL_PRINCIPAL,
+                    pending_hc=pending_hc, recoveries=recoveries,
+                    register=lambda owner: setattr(stream, "retention_handle", owner))
+            except RetentionCapacity as error:
+                self._capacity_refusal(error)
+                return  # Optional cache acquisition never fails an accepted generation.
+            stream.retention_captured = True
+            return
+        host = RetainedHost.capture(stream, leader=self.w.comm is None or self.w.comm.rank == 0, completed=True)
+        stream.retirement_host = host  # Existing logical input journal retires it after the actual worker proof.
+        self.retention_catalog.capture_idle(stream, pending_hc=pending_hc, recoveries=recoveries, host=host, handle=handle)
+        stream.retention_captured = True
+        # The actor still needs stream.st for finish/ACK. Detachment occurs in finish.
+
+    def retire_retained_request(self, stream):
+        """Consumer-only retirement; logical owners and issued DMA remain catalog-owned."""
+        primary = stream.error
+        try:
+            from .retained_catalog import RetentionError
+            from .execution_identity import _unretired
+
+            outcome = stream.error if isinstance(stream.error, RetentionError) else None
+            request = getattr(stream, "retention_request", None)
+            owner = None if request is None else request.restore_handle
+            if owner is not None and owner.failure is not None:
+                outcome = owner.failure
+                primary = owner.failure
+            if primary is not None:
+                if _unretired(primary):
+                    raise primary
+                self.retention_catalog.check_health()
+            return self._retire_retained_request(stream, outcome)
+        except BaseException as failure:
+            if primary is None or failure is primary:
+                raise
+            try:
+                # Latch the actual TP owner before fallible diagnostic owner
+                # retention. Even marker-allocation failure stays terminal.
+                self.poison_control(primary)
+            except BaseException as containment:
+                def uncertain_retirement(failure=failure, containment=containment):
+                    raise_failures(failure, (containment,))
+                rollback(stream, primary, uncertain_retirement)
+            def uncertain_retirement(failure=failure):
+                raise failure
+            rollback(stream, primary, uncertain_retirement)
+
+    def _retire_retained_request(self, stream, outcome):
+        if stream.sid in self.streams or any(stream is item for item in self.filling):
+            return True  # Actual rank finish releases GPU readers after removing the active owner.
+        request = getattr(stream, "retention_request", None)
+        if request is not None:
+            owner = request.restore_handle
+            if owner is not None and owner.transfer is not None:
+                return False
+            if owner is not None and owner.failed_transfer is not None:
+                outcome = owner.failure
+                # A corrupt source is a completed pre-write refusal. Fence the
+                # actor's actual destination before releasing its plan/frames.
+                if owner.state is not None and owner.state.pos_dev.device.type == "cuda":
+                    torch.cuda.current_stream(owner.state.pos_dev.device).synchronize()
+                self.retention_catalog.retire_failed_destination(request, fenced=True)
+            request.close()
+            stream.retention_request = None
+        host = getattr(stream, "retained_host", None)
+        if host is not None:
+            stream.retirement_host = host
+            stream.retained_host = None
+        handle = getattr(stream, "retention_handle", None)
+        reset = ()
+        if stream.error is not None and handle is not None and handle.state is stream.st and stream.st is not None:
+            state = stream.st
+            self._flush(stream)
+            if state.pos_dev.device.type == "cuda":
+                torch.cuda.current_stream(state.pos_dev.device).synchronize()
+            self._drop_kept(state)
+            self._shrink(state)
+            self.retention_catalog.retire_backend(handle, state=state, fenced=True, error=stream.error,
+                detach_host=lambda owner: setattr(stream, "retirement_host", owner))
+            reset = (state,)
+        if handle is not None and handle.role == "temporary" and not getattr(stream, "retention_captured", False):
+            if handle.host is not None:
+                stream.retirement_host = handle.host
+            self.retention_catalog.release_temporary(handle)
+            stream.retention_handle = None
+        self._release_retained_states(already_reset=reset)
+        if all(stream is not item for item in self.filling) and stream.sid not in self.streams:
+            window = getattr(stream, "retention_window", None)
+            if window is not None:
+                stream.retention_window = None
+                if (all(window is not state for state in self.retention_catalog.protected_states())
+                        and all(window is not state for state in self.free)):
+                    self._drop_kept(window)
+                    self._shrink(window)
+                    self.free.append(window)
+                stream.st = None
+        if outcome is not None:
+            # Reuse the existing native-descriptor transport after the actual
+            # catalog destination/readers retired. Never clear unknown owners.
+            from tensorfold.server.scheduler import Scheduler as HostScheduler
+
+            HostScheduler._clear_failure_frames(outcome)
+            mark_error_state_retired(outcome)
+        return True
 
     def _drop_kept(self, st: State) -> None:
         self.kept = [k for k in self.kept if k[1] is not st]
@@ -450,10 +782,12 @@ class MultiDecoder:
         self.memory_gate.waits += any(s.waiting for s in live)
         return ended
 
-    def _slot_for(self, prompt: list[int], reuse: bool):
+    def _slot_for(self, prompt: list[int], reuse: bool, *, principal=None):
         """Reuse the longest kept point, copying a fork into a free slot when the memory gate permits it."""
 
-        best = prefixes._best(self.kept, prompt) if reuse else None
+        fifo = getattr(self, "admission_policy", "legacy") == "fifo"
+        best = (prefixes._best(self.kept, prompt, principal=principal) if fifo else
+                prefixes._best(self.kept, prompt)) if reuse else None
         if best is not None:
             source, snap = best[1:3]
             if source.compact_indexer is not None:
@@ -469,13 +803,17 @@ class MultiDecoder:
                     if all(st is not source for st in self.free):
                         self.free.append(source)
                 raise
-        return prefixes.slot_for(self, prompt, reuse)
+        return prefixes.slot_for(self, prompt, reuse, principal=principal) if fifo else prefixes.slot_for(self, prompt, reuse)
 
     def _remember(self, ids: list[int], st: State, snap: dict, tail) -> None:
         st.kv_validate_snapshot(snap)
         if "media_state" in snap:
             return  # cross-request media borrowing remains unqualified; recovery snapshots stay valid
-        prefixes.remember(self, ids, st, snap, tail)
+        if getattr(self, "admission_policy", "legacy") == "fifo":
+            snap = {**snap, "prefix_principal": st.cache_principal}
+            prefixes.remember(self, ids, st, snap, tail, principal=st.cache_principal)
+        else:
+            prefixes.remember(self, ids, st, snap, tail)
 
     def live(self) -> int:
         return len(self.streams) + len(self.filling)
@@ -494,17 +832,23 @@ class MultiDecoder:
         gate = self.memory_gate
         budget = gate.room - gate.reserve
         busy = [s.st for s in [*self.streams.values(), *self.filling] if s.st is not None]
+        catalog = getattr(self, "retention_catalog", None)
+        protected = () if catalog is None else catalog.protected_states()
         first = min(self.capacity, FIRST)
-        active = sum(max(0, st.cache_bytes() - st.cache_bytes(first)) for st in {id(st): st for st in busy}.values())
+        active_states = {id(st): st for st in busy}
+        active = sum(max(0, st.cache_bytes() - st.cache_bytes(first)) for st in active_states.values())
+        retained = sum(max(0, st.cache_bytes() - st.cache_bytes(first)) for st in protected if id(st) not in active_states)
         per_token = -(-self.window_bytes // self.capacity) if self.capacity else 0
         kept = self.kept
         ends: dict[int, int] = {}
         for ids, slot, _snap, _tail in kept:
             ends[id(slot)] = max(ends.get(id(slot), 0), len(ids))
-        return {"kv": {"budget_bytes": budget, "held_bytes": gate.held, "active_bytes": active,
-                       "usage_ratio": round(active / budget, 6) if budget > 0 else None,
-                       "bytes_per_token": per_token,
-                       "free_tokens_estimate": max(0, budget - active) // per_token if per_token else None},
+        kv = {"budget_bytes": budget, "held_bytes": gate.held, "active_bytes": active,
+              "usage_ratio": round(active / budget, 6) if budget > 0 else None, "bytes_per_token": per_token,
+              "free_tokens_estimate": max(0, budget - active - retained) // per_token if per_token else None}
+        if catalog is not None:
+            kv["protected_idle_bytes"] = retained
+        return {"kv": kv,
                 "prefix_cache": {"entries": len(kept), "capacity": self.keep, "slots": len(ends),
                                  "tokens": sum(ends.values())},
                 "memory_waits": gate.waits, "memory_stops": gate.ends}
@@ -688,6 +1032,10 @@ class MultiDecoder:
 
     def media_runnable(self):
         """Readiness only: expected input failures are handled at the next round boundary."""
+        if getattr(self, "admission_policy", "legacy") == "fifo":
+            if any(self._runnable(stream) for stream in self.streams.values()):
+                return True
+            return bool(self._pieces())
         if getattr(self, "media_runtime", None) is None:
             return True
         if any(not stream.done and not stream.waiting for stream in self.streams.values()):
@@ -695,6 +1043,33 @@ class MultiDecoder:
         limits, failures = self.prepare_media_round()
         self._media_limits = limits
         return bool(failures or self._pieces())
+
+    def validate_request(self, stream):
+        """Pure selected-profile feasibility check, before a FIFO ticket or device claim."""
+        if not stream.prompt:
+            raise mark_error_state_retired(ValueError("prefill requires at least one token"))
+        room = self.capacity - len(stream.prompt) - self.depth - 1
+        if room < 1:
+            raise mark_error_state_retired(ValueError(
+                f"a prompt of {len(stream.prompt)} tokens leaves no room in the {self.capacity}-token context"))
+        if any(type(token) is not int or not 0 <= token < self.w.cfg.vocab for token in stream.prompt):
+            raise mark_error_state_retired(ValueError("prompt token IDs differ from the selected model vocabulary"))
+        return room
+
+    def input_reservation_bytes(self, stream):
+        """Actual complete prompt growth for one logical App operation.
+
+        Thinking/gating may issue larger backend prompts under that same owner.
+        Native token IDs and the list allocation are charged, not serialized
+        int32 extents. Fixed replay sources remain the same physical lease.
+        """
+        rows = self.capacity - self.depth - 2
+        header = sys.getsizeof([])
+        pointer = sys.getsizeof([None]) - header
+        integer = sys.getsizeof(min(self.w.cfg.vocab - 1, (1 << 31) - 1))
+        replay = getattr(stream.vision, "replay", None)
+        sources = 0 if replay is None else sum(reference.byte_length for reference in replay.refs)
+        return header + (rows + 1) * pointer + rows * integer + sources
 
     def prepare_media_round(self):
         """Leader-only CPU errors become per-request outcomes before GPU publication."""
@@ -740,10 +1115,19 @@ class MultiDecoder:
         error = getattr(self, "_memory_error", None)
         if error is not None:
             raise error
-        room = self.capacity - len(s.prompt) - self.depth - 1
-        if room < 1:
-            raise mark_error_state_retired(ValueError(
-                f"a prompt of {len(s.prompt)} tokens leaves no room in the {self.capacity}-token context"))
+        if getattr(s, "retained_host", None) is not None:
+            return self._resume_live(s)
+        if getattr(self, "admission_policy", "legacy") == "fifo":
+            principal = s.principal
+            room = self.validate_request(s)
+            ticket = getattr(s, "admission_ticket", None)
+            if type(ticket) is not int or not 0 <= ticket < 1 << 63:
+                raise mark_error_state_retired(ValueError("FIFO admission requires its validated enqueue ticket"))
+        else:
+            room = self.capacity - len(s.prompt) - self.depth - 1
+            if room < 1:
+                raise mark_error_state_retired(ValueError(
+                    f"a prompt of {len(s.prompt)} tokens leaves no room in the {self.capacity}-token context"))
         s.count = max(1, min(s.count, room))
         if getattr(self.w, "dflash2", None) is not None and len(s.owed) > s.count:
             raise ValueError("committed replay exceeds the current context/reply allowance")
@@ -754,9 +1138,24 @@ class MultiDecoder:
 
         reuse = reuse_allowed(self.w, s.sampling, draft=s.draft, vision=s.vision,
                               position=len(s.prompt), kv_pair=self.kv_pair)
-        st, resume, s.cached = self._slot_for(list(s.prompt), reuse)
+        retained = getattr(s, "retention_request", None)
+        window = getattr(s, "retention_window", None)
+        if (window is None and getattr(self, "admission_policy", "legacy") == "fifo"
+                and not self.free and prefixes._idle(self, self._busy()) is None):
+            raise mark_error_state_retired(NoRoom("all stream slots remain owned by active or retained generations"))
+        if window is not None:
+            st, resume, s.cached = window, None, 0
+        elif retained is not None:
+            st, resume, s.cached = self._slot_for(list(s.prompt), False,
+                                                principal=principal)
+        elif getattr(self, "admission_policy", "legacy") == "fifo":
+            st, resume, s.cached = self._slot_for(list(s.prompt), reuse,
+                                                principal=principal)
+        else:
+            st, resume, s.cached = self._slot_for(list(s.prompt), reuse)
         try:
-            if not self._grow(st, len(s.prompt) + self.depth + 2, alone=not self.streams and not self.filling):
+            if not self._grow(st, st.limit if retained is not None else len(s.prompt) + self.depth + 2,
+                              alone=not self.streams and not self.filling):
                 raise NoRoom(f"a {len(s.prompt)}-token prompt waits for memory until a live stream finishes")
         except NoRoom as error:
             if resume is None:
@@ -777,8 +1176,38 @@ class MultiDecoder:
                   logical_context=getattr(self, "logical_context", None))
         e._draft_map = self._draft_map
         mtp = s.draft and self.depth > 0 and self.mbuf is not None
+        handoff = None
         try:
+            if retained is not None:
+                from .retained_catalog import RetentionMismatch
+
+                s.retention_window, s.st = st, st  # Owned even while asynchronous restore parks this ticket.
+                if retained.restore_handle is None and retained.handoff is None:
+                    prefill_begin(e, s.prompt, mtp=mtp, new_sequence=False)
+                    image_rows.begin(e, s, self.vision)
+                try:
+                    handoff = retained.claim(st, stream=s, ticket=s.admission_ticket)
+                except RetentionMismatch:
+                    # A verified pre-copy cache miss permits ordinary prefill
+                    # for a new turn; its protected source stays authoritative.
+                    retained.close()
+                    s.retention_request = None
+                    retained = None
+                    handoff = None
+                if retained is not None:
+                    if handoff is None:
+                        return False
+                    tail = handoff["pending_hc"] if st.mtp_len == st.pos - 1 else None
+                    resume = {"state": st.snapshot(), "tail": tail}
+                    s.cached = st.pos
+            elif window is not None:
+                st.begin_sequence_generation()
             begin = prefill_begin(e, s.prompt, mtp=mtp, resume=resume, new_sequence=False)
+            if getattr(self, "admission_policy", "legacy") == "fifo":
+                st.cache_principal = principal
+            if handoff is not None:
+                for snapshot, tail in handoff["recoveries"]:
+                    self._remember(list(s.prompt[:snapshot["pos"]]), st, snapshot, tail)
             st.media_mtp_enabled = mtp
             if getattr(self.w, "dflash2", None) is not None:
                 self.w.dflash2.set_enabled(st, s.draft)
@@ -787,6 +1216,10 @@ class MultiDecoder:
             if image and self.media_runtime is None:
                 torch.cuda.empty_cache()                 # the tower's scratch back before the prompt's passes
         except Exception as primary:
+            if getattr(s, "retention_window", None) is not None:
+                # The queued actor/catalog retirement path owns this window,
+                # including completed pre-write refusals and issued DMA.
+                raise
             try:
                 self._drop_kept(st)
                 self._shrink(st)
@@ -824,6 +1257,8 @@ class MultiDecoder:
         # the resumed point stays kept (slot_for keeps it in place, or a fork's source holds it): no fill re-keeps it
         self.fills[s.sid] = [e, mtp, begin, [], None]
         self.filling.append(s)
+        if getattr(s, "retention_window", None) is not None:
+            s.retention_window = None
 
     def _fill(self) -> list[Stream]:
         """Fill ordered prompt pieces until a stream decodes, a waiting request needs admission or a filling prompt's
@@ -894,9 +1329,39 @@ class MultiDecoder:
 
     def _proposal_count(self, stream, remaining):
         logical = getattr(self, "logical_context", self.capacity - self.depth - 1)
+        limit = self._proposal_limit()
+        capacity = getattr(stream, "output_capacity", None)
+        if capacity is not None:
+            limit = min(limit, capacity - 1)
         return self.speculation.cap_proposals(
-            self._proposal_limit(), reply_tokens=max(0, remaining),
-            context_tokens=max(0, logical - stream.st.pos - 1), target_rows=self.buf.rows)
+            limit, reply_tokens=max(0, remaining),
+            context_tokens=max(0, logical - (stream.st.pos if stream.st is not None else stream.retained_host.position) - 1),
+            target_rows=self.buf.rows)
+
+    def output_need(self, stream):
+        """The whole legal next emission window; already drawn proposals stay intact."""
+        host = getattr(stream, "retained_host", None)
+        if stream.sid in self.fills or host is not None and host.fill is not None:
+            return 1
+        remaining = stream.count - len(stream.out)
+        if getattr(self.w, "dflash2", None) is not None and stream.draft and not stream.owed:
+            return min(remaining, self._proposal_count(stream, remaining) + 1)
+        return min(remaining, 1 + len(stream.drafts))
+
+    def _runnable(self, stream):
+        budget = getattr(stream, "production_budget", None)
+        return (not stream.done and not stream.waiting and getattr(stream, "blocked_input", None) is None
+                and (budget is None or budget >= self.output_need(stream)))
+
+    def _take(self, stream, new):
+        before = stream.committed_output_tokens
+        stream.take(new, self._ends(stream))
+        budget = getattr(stream, "production_budget", None)
+        if budget is not None:
+            used = stream.committed_output_tokens - before
+            if used > budget:
+                raise RuntimeError("committed output exceeded its frozen production window")
+            stream.production_budget = budget - used
 
     @staticmethod
     def _output_marks(streams):
@@ -932,18 +1397,27 @@ class MultiDecoder:
 
     def history_record(self):
         records = [state.history_record() for state in self.states]
-        active = self._busy()
+        active = {id(stream.st) for stream in [*self.streams.values(), *self.filling] if stream.st is not None}
+        catalog = getattr(self, "retention_catalog", None)
+        protected = set() if catalog is None else {id(state) for state in catalog.protected_states()}
+        retention = None if catalog is None else catalog.record()
         cached = {id(point[1]) for point in self.kept}
         for state, record in zip(self.states, records):
             record["request_active"] = id(state) in active
             record["derived_prefix_cache"] = id(state) in cached
+            if catalog is not None:
+                record["retained_gpu"] = id(state) in protected
             if getattr(getattr(self, "w", None), "dflash2", None) is not None:
                 record["dflash2"] = self.w.dflash2.record(state)
-        return {"slots": records, "active_request_slots": len(active),
-                "intentional_retained_sessions": 0, "derived_prefix_slots": len(cached),
+        result = {"slots": records, "active_request_slots": len(active),
+                "intentional_retained_sessions": 0 if retention is None else retention["sessions"],
+                "derived_prefix_slots": len(cached),
                 "derived_prefix_entries": len(self.kept),
                 "migration": None if self.controller is None else
                 self.controller.record()["migration"]}
+        if catalog is not None:
+            result.update(retained_gpu_slots=len(protected), retention=retention)
+        return result
 
     def install_execution_manifest(self, relative_name):
         if self.execution_manifest_installer is None:
@@ -973,12 +1447,17 @@ class MultiDecoder:
         if self.controller is None or migration is None or not migration["pending"]:
             return
         target, generation = migration["requested_degree"], migration["request_epoch"]
+        catalog = getattr(self, "retention_catalog", None)
+        retained_blocked = False
         for offset in range(len(self.states)):
             index = (self._migration_cursor + offset) % len(self.states)
             state = self.states[index]
             pending = getattr(state, "_history_migration", None)
             if state.history_placement.degree == target and pending is None:
                 continue
+            if catalog is not None and catalog.migration_blocked(state):
+                retained_blocked = True
+                continue  # Issued MTP rows/transfer readers cannot be trimmed or mutated.
             for stream in self.streams.values():
                 if stream.st is state:
                     self._flush(stream)
@@ -995,7 +1474,8 @@ class MultiDecoder:
                        if not moved and pending else None)
             self.controller.migration_status(request_epoch=generation, pending=True, blocked=blocked)
             return
-        self.controller.migration_status(request_epoch=generation, pending=False)
+        self.controller.migration_status(request_epoch=generation, pending=retained_blocked,
+            **({"blocked": "retained transfer or issued MTP rows protect the pending state"} if retained_blocked else {}))
 
     def _timed(self, seconds: float, rows: int) -> None:
         """A round's wall time: a round alone updates its estimate, a round with a pass the seconds a row adds."""
@@ -1008,6 +1488,14 @@ class MultiDecoder:
 
     def _order(self) -> list[Stream]:
         """Order overdue prompts first, then foreground, fewest rows left and stable arrival order."""
+
+        if getattr(self, "admission_policy", "legacy") == "fifo":
+            def fifo(s: Stream):
+                passed = self.passed.get(s.sid, 0)
+                due = passed >= FILL_GUARD
+                return (not due, -passed if due else 0, s.admission_ticket)
+
+            return sorted((stream for stream in self.filling if self._runnable(stream)), key=fifo)
 
         def key(s: Stream):
             passed = self.passed.get(s.sid, 0)
@@ -1333,6 +1821,7 @@ class MultiDecoder:
                 if not limit:
                     s.done = True
                     s.started = s.finished = time.perf_counter()
+                    self._capture_retained(s, last)
                     joined.append(s)
                     continue
                 if s.probabilities is not None and not replay:
@@ -1347,7 +1836,7 @@ class MultiDecoder:
             s.drafts = []
             s.started = time.perf_counter()
             self.streams[s.sid] = s
-            s.take([first], self._ends(s))                   # the first token goes out before the next draft
+            self._take(s, [first])                          # the first token goes out before the next draft
             if terminal:
                 s.done, s.finished = True, time.perf_counter()
             e.buf.rotor_lookup = self._rotor_lookup(s)
@@ -1371,6 +1860,7 @@ class MultiDecoder:
                     if st.mtp_drafted:
                         observation.mtp([(st, 0, st.mtp_drafted)], role="proposal", position=mtp_position + 1)
             if s.done:
+                self._capture_retained(s, last)
                 joined.append(s)
         return joined
 
@@ -1381,6 +1871,10 @@ class MultiDecoder:
         slot keeps nothing, so ``finish`` frees it; the others still stop."""
 
         for s in streams:
+            if getattr(self, "admission_policy", "legacy") == "fifo" and s.sid in self.streams:
+                self._flush(s)
+                s.done, s.finished = True, time.perf_counter()
+                continue
             self.filling.remove(s)
             self.passed.pop(s.sid, None)
             _, mtp, at, _, tail = self.fills.pop(s.sid)
@@ -1453,10 +1947,10 @@ class MultiDecoder:
                     s.done, s.finished = True, time.perf_counter()
                     cancelled.append(s)
         ended = cancelled + self._make_room()          # all issued work from the previous round has resolved
-        live = [s for s in self.streams.values() if not s.done and not s.waiting]
+        live = [s for s in self.streams.values() if self._runnable(s)]
         if self.filling and (not live or not self.converged):
             ended += self._fill()                      # passes alone; a prompt that ends here joins this round
-            live = [s for s in self.streams.values() if not s.done and not s.waiting]
+            live = [s for s in self.streams.values() if self._runnable(s)]
         if not live:
             return ended
         dflash = getattr(self.w, "dflash2", None)
@@ -1672,10 +2166,13 @@ class MultiDecoder:
                 s.done = True
                 continue
             if new:
-                s.take(new, self._ends(s))
+                self._take(s, new)
             if terminal:
                 s.done, s.finished = True, time.perf_counter()
         spent = time.perf_counter() - t0
+        for s, a0, keep, _new, _last in kept:
+            if s.done:
+                self._capture_retained(s, frame=self.buf, row=a0 + len(keep) - 1 if keep else None)
         self._timed(spent, sum(n for _, _, n in pieces))
         if pieces:                                     # prompts that ended in this round's pass join the next
             ended += self._joined(pieces, heads, lasts, spent / len(pieces))
@@ -1714,6 +2211,9 @@ class MultiDecoder:
             count = self.speculation.cap_proposals(limit if s.draft and not s.owed else 0,
                 reply_tokens=max(0, s.count - len(s.out)),
                 context_tokens=max(0, logical - s.st.pos - 1), target_rows=available)
+            capacity = getattr(s, "output_capacity", None)
+            if capacity is not None:
+                count = min(count, capacity - 1)
             selected.append(s)
             counts.append(count)
             available -= count + 1
@@ -2017,9 +2517,50 @@ class MultiDecoder:
         for s in done:
             self.streams.pop(s.sid, None)
             try:
+                if getattr(s, "retention_request", None) is not None:
+                    self.retire_retained_request(s)
                 if s.error is not None:
                     self._drop_kept(s.st)  # A failed request does not retain deferred conditioning through prefix aliases.
-                if not any(k[1] is s.st for k in self.kept) and all(f is not s.st for f in self.free):
+                handle = getattr(s, "retention_handle", None)
+                if getattr(s, "retention_captured", False):
+                    if handle.role == "temporary":
+                        from .prefix_policy import reuse_allowed
+                        from .retained_catalog import LOCAL_PRINCIPAL, RetentionCapacity
+
+                        def detach_host(host):
+                            s.retirement_host = host
+                            host.detach(s.st)
+                        reusable = reuse_allowed(self.w, s.sampling, draft=s.draft, vision=s.vision,
+                                                 position=s.st.pos, kv_pair=self.kv_pair)
+                        if reusable:
+                            try:
+                                hidden = None if s.st.mtp_boundary is not None else handle.ready_handoff["pending_hc"]
+                                recoveries = tuple((snapshot, tail) for _ids, owner, snapshot, tail in self.kept if owner is s.st)
+                                self.retention_catalog.capture_prefix(s, principal=s.principal or LOCAL_PRINCIPAL,
+                                    pending_hc=hidden, recoveries=recoveries, from_handle=handle, detach_host=detach_host)
+                            except RetentionCapacity as error:
+                                self._capacity_refusal(error)
+                                reusable = False
+                        if not reusable:
+                            if handle.host is not None:
+                                detach_host(handle.host)
+                            self.retention_catalog.release_temporary(handle)
+                            s.retention_handle = None
+                            self._release_retained_states()
+                    elif handle.host is not None:
+                        handle.host.detach(s.st)
+                    else:
+                        s.st = None
+                    host = getattr(s, "retirement_host", None)
+                    if host is not None and host.delivery is None:
+                        host.retire_backend()  # Followers have no caller/worker; this exact rank finish is their proof.
+                        s.retirement_host = None
+                    # RetainedHost owns the original Stream without a strong
+                    # GPU link; the catalog alone keeps the completed window.
+                if (not getattr(s, "retention_captured", False)
+                        and not any(k[1] is s.st for k in self.kept) and all(f is not s.st for f in self.free)
+                        and (getattr(self, "retention_catalog", None) is None or all(
+                            state is not s.st for state in self.retention_catalog.protected_states()))):
                     self._shrink(s.st)
                     self.free.append(s.st)
             except BaseException as cleanup:
@@ -2029,7 +2570,7 @@ class MultiDecoder:
             if s.error is not None:
                 mark_error_state_retired(s.error)
 
-    def drop(self) -> list[Stream]:
+    def drop(self, error=None) -> list[Stream]:
         prior, errors = tuple(self.failed_slots), []
         live = [s for s in self.streams.values() if not s.done] + self.filling
         self.filling, self.fills = [], {}
@@ -2038,6 +2579,14 @@ class MultiDecoder:
             self.held.pop(s.sid, None)
             self._drop_kept(s.st)
             try:
+                if (getattr(s, "retention_handle", None) is not None
+                        or getattr(s, "retention_request", None) is not None):
+                    if error is None:
+                        raise RuntimeError("retained backend cleanup requires its explicit owning failure outcome")
+                    s.error, s.done = error, True
+                    self.retire_retained_request(s)
+                    if s.st is None or any(s.st is state for state in self.free):
+                        continue
                 self._shrink(s.st)
                 self.free.append(s.st)
             except BaseException as error:  # noqa: BLE001 - retire owned storage even on cancellation

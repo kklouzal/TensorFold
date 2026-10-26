@@ -407,7 +407,20 @@ class ServingProfiles:
         if (self.gate.borrowers or scheduler.boxes or scheduler.held is not None
                 or scheduler.waiting.qsize() or self.engine.multi is not None and self.engine.multi.live()):
             return
+        catalog = getattr(self.engine, "retention_catalog", None)
+        if catalog is not None:
+            if adapter is not None:
+                adapter.drop_optional_retention()
+            else:
+                catalog.drop_optional_prefixes()
+                self.engine.multi._release_retained_states()
+        if catalog is not None and catalog.has_retained:
+            blocking = catalog.record()
+            with self.lock:
+                self.status["blocking_retention"] = blocking
+            return
         with self.lock:
+            self.status.pop("blocking_retention", None)
             self.status["stage"] = "loading"
         result = adapter.replace_serving_profile() if adapter is not None else self.replace()
         with self.lock:

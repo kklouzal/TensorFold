@@ -8,7 +8,8 @@ from test_position_cli import gguf_source
 def command(source, manifest):
     return ["serve", str(source), "--backend", "cuda", "--no-drafts", "--no-update-check",
             "--tp", "8", "--master", "127.0.0.1", "--max-pending-requests", "1",
-            "--max-http-connections", "1", "--vision", "--no-graphs", "--media-profile-manifest", str(manifest)]
+            "--max-http-connections", "1", "--max-waiting-input-bytes", "4096",
+            "--vision", "--no-graphs", "--media-profile-manifest", str(manifest)]
 
 
 def test_cli_accepts_explicit_profile_without_entering_legacy_vision_configuration(tmp_path, monkeypatch):
@@ -47,13 +48,15 @@ def test_family_preserves_new_options_and_automatic_full_window_capacity(tmp_pat
     seen = []
     monkeypatch.setattr(engine, "FlashNextEngine", lambda directory, **options: seen.append((directory, options)))
     qwen4_exp.cuda_engine(source, no_drafts=True, tp=8, master="127.0.0.1", kv_dtype="int8",
-                         vision=True, graphs=False, media_profile_manifest=tmp_path / "media.json")
+                         vision=True, graphs=False, media_profile_manifest=tmp_path / "media.json",
+                         max_waiting_input_bytes=4096)
     assert len(seen) == 1
     directory, options = seen[0]
     assert directory == source
     assert options["media_profile_manifest"] == tmp_path / "media.json"
     assert options["graphs"] is False and options["vision"] is True
     assert options["adaptive_sessions"] is True and options["session_ceiling"] is None
+    assert options["max_waiting_input_bytes"] == 4096
 
 
 @pytest.mark.parametrize("value", ["0", "-1"])

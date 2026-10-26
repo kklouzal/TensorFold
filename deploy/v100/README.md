@@ -46,6 +46,208 @@ missing `--max-pending-requests` or `--max-http-connections` before loading the
 model; other providers keep their existing optional limits. A full generation
 request limit returns HTTP503 with the existing retry header.
 
+## Current v6 source candidate
+
+The current specification is the normalized maintained copy of the home v6
+design (home SHA256 `7c9f724346866cfb89382ee2e30d60d9d827222c347610783b37683ba04e5a8c`).
+There is **no final immutable v6 application image yet**. Build the final frozen
+application source against the selected [source foundation](source-foundation.md)
+and [CPU media foundation](media-foundation.md), then record the actual image
+digest and installed source identities. A dependency image or an earlier
+application image does not acquire the new FIFO, retention or API behavior.
+The source SDK with digest prefix `413c39b1` and media environment `dc85d796` are
+component inputs, not a released v6 application image. Commands in this section
+require an operator-supplied verified application `IMAGE@sha256:...`.
+
+The initial artifacts come from
+[`SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF`](https://huggingface.co/SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF/tree/90a3350cd800ec1fe0d1660a38414ad9e985782f),
+revision `90a3350cd800ec1fe0d1660a38414ad9e985782f`:
+
+| Local artifact at that revision | File bytes | Expected complete-file SHA256 |
+| --- | ---: | --- |
+| `IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00001-of-00002.gguf` | 55,063,448,064 | `40f369eca301ec6ea318dbb671b3132c26a2f0b89aa5458a7051b33215ee296c` |
+| `IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00002-of-00002.gguf` | 28,800,138,432 | `316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113` |
+| `mtp-Qwen3.8-Flash-Next-Q8_0.gguf` | 4,137,429,312 | `713b16d7e97246858ebd9a6dec403b1cfc3407d8a539f65401948e20b38b0f91` |
+| `mmproj-Qwen3.8-Flash-Next-BF16.gguf` | 907,542,944 | `2e788f8c511d8093c7b43cb87b2fd7e14228340318057f8fb20c86df2efe2355` |
+
+Verify complete payloads and directories at installation. Both target shards
+are required. The canonical MTP directory has 34 tensors; import only its
+32 core tensors, containing 2,775,621,632 payload bytes. Its two vocabulary
+copies are descriptive source data. Execution uses the actual retained target
+embedding and output tensors, without additional persistent vocabulary weights.
+MTP uses the declared QSA compression four and complete-group budget 2,048.
+Ordered token-ID compatibility remains required; the unused companion template
+does not replace the selected target template. Older Unsloth shared-Q8 and
+BF16 artifacts remain comparison controls, with separate evidence.
+
+### Explicit endpoint and queue policy
+
+New FIFO admission applies to actual adaptive TP8 unique GPU histories with an
+implemented position profile: target-only, stock MTP or the independently
+selected DFlash path. Enabled DSpark retains legacy admission and rejects
+FIFO-only options. Actual provider/layout/method checks precede device allocation.
+
+| Option | Current contract |
+| --- | --- |
+| `--max-pending-requests` / `--max-http-connections` | Explicit positive request/socket limits for the adaptive endpoint. |
+| `--max-waiting-input-bytes` | Required positive input credit for the new FIFO profile; includes queued and reserved live/readmission input through caller/backend retirement. |
+| `--max-pending-requests-per-principal` | Optional positive unfinished-request cap; requires the global request limit and actual configured API keys. |
+| `--max-waiting-input-bytes-per-principal` | Optional positive authenticated-principal input credit; no inferred value or restriction that it be at most the global byte cap. |
+| `--output-queue-tokens` | Optional positive per-request output credit, including delivery callbacks in flight. Omitted/`None` preserves the existing full-reply mailbox bound. |
+| `--queue-timeout-s` | Optional positive finite queue deadline within the runtime wait range. FIFO alone supplies no hard wait SLO. |
+
+These process settings also participate in prepared-profile identity. They
+cannot be changed by putting constructor overrides in a runtime HTTP request
+or profile JSON. See [serving profiles](../../docs/serving-profiles.md).
+Output credits must preserve already-drawn proposals and allow legal progress
+even below the maximum speculative width; configuring a cap is not evidence
+that producer, cancellation and slow-client gates passed on V100.
+
+### Candidate launch
+
+Supply every resource, context, codec and method choice from the intended
+qualification profile. This Bash recipe introduces no serving-budget values:
+
+```bash
+: "${TF_V6_IMAGE:?Set the verified final candidate IMAGE@sha256 reference}"
+: "${MODEL_ROOT:?Set the host directory containing the verified local artifacts}"
+: "${GGUF_FILE:?Set the first target shard path under /models}"
+: "${MTP_FILE:?Set the canonical SC117 MTP path under /models}"
+: "${TF_CACHE_DIR:?Set a dedicated host cache directory}"
+: "${TF_RANK_GPUS:?Set eight physical GPU IDs or UUIDs in rank order}"
+: "${TF_CONTEXT:?Set the declared prompt-plus-reply context}"
+: "${TF_PARALLEL:?Set auto or an explicitly qualified session ceiling}"
+: "${TF_KV_FULL_WINDOWS:?Set auto or an explicitly qualified full-window ceiling}"
+: "${TF_KV_DTYPE:?Set the selected supported KV codec}"
+: "${TF_DRAFTS:?Set the enabled stock MTP proposal depth}"
+: "${TF_DRAFT_CONFIDENCE:?Set the declared MTP confidence policy}"
+: "${TF_MAX_PENDING_REQUESTS:?Set the finite unfinished-request limit}"
+: "${TF_MAX_HTTP_CONNECTIONS:?Set the finite HTTP connection limit}"
+: "${TF_MAX_WAITING_INPUT_BYTES:?Set the positive FIFO input credit}"
+: "${TF_PORT:?Set the candidate HTTP port}"
+: "${TF_MODEL_NAME:?Set the served model identity}"
+
+serve_args=("$GGUF_FILE" --backend cuda --host 0.0.0.0 --port "$TF_PORT"
+  --name "$TF_MODEL_NAME" --context "$TF_CONTEXT" --parallel "$TF_PARALLEL"
+  --kv-full-windows "$TF_KV_FULL_WINDOWS" --kv-dtype "$TF_KV_DTYPE"
+  --draft-method mtp --drafter "$MTP_FILE" --mtp-drafts "$TF_DRAFTS"
+  --mtp-confidence "$TF_DRAFT_CONFIDENCE" --no-update-check
+  --max-pending-requests "$TF_MAX_PENDING_REQUESTS"
+  --max-http-connections "$TF_MAX_HTTP_CONNECTIONS"
+  --max-waiting-input-bytes "$TF_MAX_WAITING_INPUT_BYTES")
+if [[ -n ${TF_OUTPUT_QUEUE_TOKENS:-} ]]; then
+  serve_args+=(--output-queue-tokens "$TF_OUTPUT_QUEUE_TOKENS")
+fi
+if [[ -n ${TF_QUEUE_TIMEOUT_S:-} ]]; then
+  serve_args+=(--queue-timeout-s "$TF_QUEUE_TIMEOUT_S")
+fi
+
+docker run --rm --gpus all --ipc host \
+  -p "127.0.0.1:$TF_PORT:$TF_PORT" \
+  -e PYTHONUNBUFFERED=1 -e TENSORFOLD_NO_UPDATE_CHECK=1 \
+  -e TF_GGUF_ASSETS_DIR=/cache/gguf_assets \
+  -v "$MODEL_ROOT:/models:ro" -v "$TF_CACHE_DIR:/cache" \
+  "$TF_V6_IMAGE" /src/tools/launch_cuda_tp.py --gpus "$TF_RANK_GPUS" -- "${serve_args[@]}"
+```
+
+Use the endpoint's existing key-file authentication before enabling either
+principal cap or exposing a non-loopback endpoint. Append the principal options
+with explicit values and mount the restricted key file read-only; do not put
+key contents in recorded command lines. Image/video input additionally requires
+the explicit `--vision --no-graphs --media-profile-manifest` source-bound media
+recipe and its complete processor/decoder/placement/replay resource envelope.
+The text command above does not qualify those media gates.
+
+The maintained Compose profile accepts `TF_MAX_WAITING_INPUT_BYTES` and appends
+that one flag as quoted data. Set it explicitly for a new FIFO profile. Leave it
+unset for legacy DSpark, which must omit FIFO-only flags. A missing value in a
+new FIFO configuration is still refused by ordinary CLI preflight, without an
+inferred fallback. Detailed retention/API launches use explicit argument arrays
+as described below and in the serving-profile guide.
+
+### Retention and logical API storage
+
+All retention inputs unset means request-scoped execution. A GPU tier requires
+`--retention-tier gpu`, `--retained-sessions` and `--retention-lifetime-s`.
+A RAM tier requires all seven declared inputs. Insert this snippet before the
+launch command when testing that explicit tier:
+
+```bash
+serve_args+=(--retention-tier ram
+  --retained-sessions "${TF_RETAINED_SESSIONS:?Set the retained-session limit}"
+  --retention-lifetime-s "${TF_RETENTION_LIFETIME_S:?Set the absolute lifetime}"
+  --retention-ram-bytes "${TF_RETENTION_RAM_BYTES:?Set the global host backing budget}"
+  --retention-chunk-bytes "${TF_RETENTION_CHUNK_BYTES:?Set the transfer chunk bound}"
+  --retention-progress-bytes "${TF_RETENTION_PROGRESS_BYTES:?Set the global host progress budget}"
+  --retention-overlap-bytes "${TF_RETENTION_OVERLAP_BYTES:?Set the per-rank additional GPU overlap budget}")
+```
+
+No field is inferred. Progress must cover two chunks per actual rank; overlap
+may explicitly be zero for serialized copies. Session count, RAM backing, GPU
+slots and queued requests are distinct limits. These are complete-state source
+candidates, not increased GPU compute capacity or process-crash durability.
+Resource finalization binds the actual loaded vocabulary and effective decoder
+to its supported size bounds; an unbounded decoder override cannot supply that promise.
+Native structured-output work has no qualified CPU envelope: RAM-retention
+generation is refused before native constraint compilation, while GPU-tier
+computed-retained operations are refused there. Ordinary nonretained/count-only
+behavior remains separate.
+
+Durable logical API records use paired `--api-record-store` and
+`--api-record-limits` paths, plus the existing explicit HTTP connection cap.
+The limits file must supply the complete versioned
+`tensorfold.api-record-limits` schema; there is no quota/path/retention default.
+Mount its private service-owned database directory read-write and the quota
+file read-only. The store retains JSON and canonical items for standard
+Responses/Conversations references. It does not itself reserve computed model
+state; the separately configured typed retention policy supplies that contract.
+The App binds actual tokenizer, resolved-history/materialization/operation
+limits, route-body bounds and HTTP count before accepting work. See the
+[API reference](../../docs/api.md); no private handle/header protocol is added.
+
+### Testing handoff and open gates
+
+Record final source/image, actual complete asset hashes, GPU UUID/rank mapping,
+driver/runtime/native binaries, host/cgroup/NUMA/locked-memory limits and the
+full command/configuration before device work. Use a fresh evidence directory
+and preserve raw failures. Source/CPU checks and old measured layouts do not
+qualify the revised source, media, retention or output-credit profile.
+
+With the final image selected, ordinary installed-wheel checks can use the
+source-relative fixtures shipped in that image:
+
+```bash
+docker run --rm --network none -e PYTHONPATH=/src "$TF_V6_IMAGE" \
+  -m pytest -c /verification/pytest.ini -q \
+  /src/tests/test_cli_retention_options.py /src/tests/test_flashnext_gguf_mtp.py \
+  /src/tests/test_retention_wake.py
+docker run --rm --gpus all --ipc host "$TF_V6_IMAGE" \
+  -m pytest -c /verification/pytest.ini -q \
+  /verification/tests/cuda/test_flashnext_sm70_family.py \
+  /verification/tests/cuda/test_flashnext_sm70_mtp.py \
+  /verification/tests/cuda/test_flashnext_sm70_collectives.py
+```
+
+The CUDA tests use small component/model fixtures. They are not full SC117
+answers, full-window capacity, required media/retained-state parity, a quality
+comparison or an end-to-end performance result. Inventory and matrix helpers
+under `tools/v100_adaptive_qualification.py` produce observations/test plans;
+`v100_adaptive_exercise.py` is text-only and its retained-slot exercises do not
+certify complete RAM checkpoints. The existing benchmark clients do not supply
+authentication, so they cannot exercise an authenticated-principal region.
+Use authenticated ordinary clients and frozen explicit request data for those
+separate gates.
+
+Actual eight-V100 native/extended Q8 and RotorQuant profiles, SC117 MTP aliases
+and text/visual conditioning, separately selected DFlash, complete retention
+save/restore/failure, principal fairness, slow clients/output credits,
+A-to-B-to-A transitions, native/RSS/NUMA peaks, quality and integrated
+latency/throughput remain required. NVIDIA compiler issue 6111901 also remains
+open for the selected CUDA 12.9 SM70 paths until an applicable supported fix,
+non-applicability proof or validated mitigation is established. Successful
+compilation, a cubin inventory or component smoke tests do not close it.
+See the governing specification's Sections 21–25.
+
 ## Selected source foundation and historical reference
 
 The governing specification now selects the coherent
@@ -84,6 +286,10 @@ The wheel-based image described below remains the historical reference build;
 its source/CPU or compile checks do not qualify the new source-built stack.
 
 ## Historical cu126 reference
+
+The remaining original build/serve commands and measured host configurations
+retain their named historical images and layouts. Their numeric settings are
+not defaults or capacity recommendations for the current v6 candidate.
 
 The native AMD64 CPython 3.12 profile pins the official CUDA **12.9.2** development
 image by child and index digest, with official **Torch 2.14.1+cu126**,
@@ -190,15 +396,16 @@ A graph microtest alone does not establish full-model graph readiness.
 For a matching separate stock MTP head, replace `--no-drafts` with
 `--drafter /models/mtp-stock --mtp-drafts 2`. The loader accepts the existing
 floating checkpoint directory or a shared-target GGUF companion entrypoint.
-The revised design pins `MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf` at
-`unsloth/Qwen3.8-Flash-Next-GGUF` revision
-`766911a6b7369840a91dbcd95f9f997acaab6cd6`; verify the size and SHA256 in the
+The current design instead selects `mtp-Qwen3.8-Flash-Next-Q8_0.gguf` from the
+SC117 revision and complete-file identity in the current source recipe above.
+The older Unsloth shared-Q8 artifact remains a comparison control; it does not
+transfer qualification to the canonical SC117 source. Verify size and SHA256 in the
 [specification](../../docs/v100-adaptive-inference-design.md#stock-mtp).
 Reads and decode staging are bounded. Routed GGUF banks retain their packed
 bytes, small projections execute in FP16, and the target embedding/head remain
 shared. This importer explicitly selects QSA compression four and token budget
-2,048; it records the companion's zero final compression entry without treating
-it as a dense-attention instruction. Ordered target/draft token IDs must match.
+2,048, matching the canonical companion's final compression entry. Ordered
+target/draft token IDs must match.
 `/stats.capacity_plan.mtp_import` identifies the import policy. CPU import
 controls are separate from pending SM70 execution, target-conditioned refresh,
 BF16-control comparison, quality, and performance qualification.

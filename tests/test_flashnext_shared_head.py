@@ -144,7 +144,7 @@ def test_real_engine_preload_accepts_sparse_shared_support_and_preserves_legacy_
     with pytest.raises(expected, match=message):
         engine.FlashNextEngine(target, depth=2, tp=8, rank=0, master="fixture", graphs=False,
                                 kv_dtype="int8", adaptive_sessions=True, mtp_model_dir=companion,
-                                draft_vocab=count)
+                                draft_vocab=count, max_waiting_input_bytes=4096)
     assert len(reached) == int(shared or count >= 8) and retired == [True]
 
 

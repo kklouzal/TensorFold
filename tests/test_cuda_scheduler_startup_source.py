@@ -197,6 +197,7 @@ def test_actual_flashnext_startup_statements_keep_the_actor_unstarted_during_war
             return []
 
     owner = SimpleNamespace(concurrent=True, multi=Decoder(), scheduler=None, comm=None,
+                            _admission_options={"admission_policy": "legacy"},
                             vision=SimpleNamespace(warm=lambda: stages.append("vision")))
     owner.close = lambda: owner.scheduler.close()
     owner._rollback_startup = owner.close
@@ -211,7 +212,7 @@ def test_actual_flashnext_startup_statements_keep_the_actor_unstarted_during_war
     worker = threading.Thread(target=construct)
     worker.start()
     try:
-        assert entered.wait(5)
+        assert entered.wait(5), outcomes
         assert owner.scheduler is not None
         assert not owner.scheduler._start_attempted
         assert not owner.scheduler._worker_entered.is_set()

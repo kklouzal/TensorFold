@@ -15,7 +15,8 @@ from tensorfold.families.qwen4_exp.position_profile import resolve_position_prof
 from test_serving_profile_manifest import load, profile_files
 from tools.prepare_serving_profile import create
 
-UNIQUE_DEPLOYMENT = MappingProxyType({"tp": 8, "rank": 0, "adaptive_sessions": True, "indexer_history": "gpu"})
+UNIQUE_DEPLOYMENT = MappingProxyType({"tp": 8, "rank": 0, "adaptive_sessions": True, "indexer_history": "gpu",
+                                     "max_waiting_input_bytes": 4096})
 
 
 def save(root, path, raw, *, add=()):
@@ -212,14 +213,14 @@ def test_native_dspark_profile_preserves_existing_source_policy_without_new_role
     (draft / "model.safetensors").write_bytes(b"payload import is a separate provider contract")
     raw["options"].update(depth=2, dspark_model_dir="dspark")
     save(root, path, raw, add=(draft / "config.json", draft / "model.safetensors"))
-    position = load(root).record()["position_profile"]
+    position = load(root, waiting_input_bytes=None).record()["position_profile"]
     assert position["resolved"] is None
     assert position["binding"]["method"] == "dspark"
     assert position["binding"]["support"] == "legacy-source-policy"
     raw["options"]["max_len"] = 1025
     save(root, path, raw)
     with pytest.raises(ValueError, match="legacy.*position contract"):
-        load(root)
+        load(root, waiting_input_bytes=None)
 
 
 def test_failed_extended_companion_preflight_keeps_previous_published_manifest(tmp_path):
@@ -331,7 +332,8 @@ def test_real_prepared_position_receipts_reach_pending_and_effective_worker_prof
             # its actual already configured admission/history flags as startup
             # FlashNextEngine.__init__ does for the production owner.
             kwargs["fixed_options"] = {**kwargs["fixed_options"],
-                "adaptive_sessions": engines[0].adaptive_sessions, "indexer_history": engines[0].indexer_history}
+                "adaptive_sessions": engines[0].adaptive_sessions, "indexer_history": engines[0].indexer_history,
+                "max_waiting_input_bytes": 4096}
             return original_prepare(root, name, **kwargs)
 
         monkeypatch.setattr(serving_runtime, "prepare", actual_prepare)
@@ -450,7 +452,8 @@ def test_actual_tool_cli_uses_explicit_deployment_flags_without_serializing_them
     options.write_text(json.dumps(raw["options"]))
     output = root / "cli.json"
     monkeypatch.setattr("sys.argv", ["prepare_serving_profile.py", "--model", str(root / "target"),
-        "--id", "cli", "--options", str(options), "--out", str(output), "--tp", "8", "--adaptive-sessions"])
+        "--id", "cli", "--options", str(options), "--out", str(output), "--tp", "8", "--adaptive-sessions",
+        "--max-waiting-input-bytes", "4096"])
     prepare_serving_profile.main()
     result = json.loads(capsys.readouterr().out)
     assert result["position_profile"]["resolved"]["qualification"] == "unqualified-candidate"

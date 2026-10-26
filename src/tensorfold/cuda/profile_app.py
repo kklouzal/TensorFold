@@ -149,7 +149,11 @@ class AppProfiles:
         view.sampling = {**self.defaults["sampling"], **profile.api.get("sampling", {})}
         view.vision = app.engine.vision
         view.model_dir = Path(profile.model_dir)
-        view.tok = load_tokenizer(view.model_dir)
+        if getattr(view.vision, "is_media_runtime", False):
+            view.vision.check_media_health()
+            view.tok = view.vision.tokenizer
+        else:
+            view.tok = load_tokenizer(view.model_dir)
         view.template = app.engine.chat_template
         view.segments = _segment_encoder(view.tok, view.template)
         view.native_context_window = _native_context(view.model_dir)
@@ -157,6 +161,9 @@ class AppProfiles:
         fixed = view._fixed_thinking(False)
         if fixed is not None:
             view.default_thinking = fixed
+        catalog = getattr(app.engine, "retention_catalog", None)
+        if catalog is not None:
+            view._finalize_retention_resources()
         return {name: getattr(view, name) for name in BINDING}
 
     def publish(self, binding):

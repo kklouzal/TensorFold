@@ -10,10 +10,12 @@ from pathlib import Path
 import tempfile
 
 from tensorfold import hub
+from tensorfold.cli_args import add_fifo_arguments, add_retention_arguments
 from tensorfold.cleanup import raise_failures
 from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
 from tensorfold.families.qwen4_exp.cuda.serving_profiles import (
     FIXED, PATH_OPTIONS, SCHEMA, _path, _required_files, artifact_identity, prepare, read_manifest, stamp,
+    validate_service_options,
 )
 
 
@@ -54,6 +56,7 @@ def create(destination, *, identifier, model, options, api, fixed_options=None):
         if normalized[name] is not None:
             normalized[name] = _path(root, normalized[name])
     normalized.update(fixed_options)
+    validate_service_options(model_dir, normalized)
     artifacts = []
     hashed_stats = {}
     for filename in sorted(_required_files(model_dir, normalized)):
@@ -111,10 +114,21 @@ def main():
                         help="actual deployment TP size for preflight only; never a profile override")
     parser.add_argument("--adaptive-sessions", action="store_true",
                         help="preflight the actual adaptive GPU-history deployment; required with TP8 for new position manifests")
+    add_fifo_arguments(parser)
+    add_retention_arguments(parser)
     args = parser.parse_args()
     options, _ = read_manifest(args.options)
     api = {} if args.api is None else read_manifest(args.api)[0]
     fixed = {"tp": args.tp, "rank": 0, "adaptive_sessions": args.adaptive_sessions, "indexer_history": "gpu"}
+    from tensorfold.families.qwen4_exp.cuda.retention_policy import parse_retention_policy
+
+    fixed.update(max_waiting_input_bytes=args.max_waiting_input_bytes,
+                 max_waiting_input_bytes_per_principal=args.max_waiting_input_bytes_per_principal,
+                 output_queue_tokens=args.output_queue_tokens,
+                 queue_timeout_s=args.queue_timeout_s,
+                 retention_policy=parse_retention_policy(**{name: getattr(args, name) for name in (
+                     "retention_tier", "retained_sessions", "retention_lifetime_s", "retention_ram_bytes",
+                     "retention_chunk_bytes", "retention_progress_bytes", "retention_overlap_bytes")}))
     print(json.dumps(create(args.out, identifier=args.id, model=args.model, options=options, api=api,
                             fixed_options=fixed), sort_keys=True))
 

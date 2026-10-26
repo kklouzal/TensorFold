@@ -6,6 +6,7 @@ import math
 import os
 import re
 import struct
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -349,6 +350,49 @@ def host_stream_bytes() -> int | None:
     return max(0, memory["MemAvailable"] - reserve)
 
 
+def admit_host_commitment(total_commitment_bytes: int, *, materialized_owned_bytes: int = 0) -> dict:
+    """Check one GLOBAL host commitment against remaining physical authority.
+
+    The caller supplies the complete phase-correct host total and excludes
+    concurrent mutation of its credited owners. Credit is only actual,
+    nonreusable ownership already absent from the sampled availability, never
+    allocator reservations, evictable mappings or an old catalog. This helper
+    neither multiplies rank-local estimates nor reserves OS memory. Existing
+    generic host admission and its query cost remain unchanged.
+    """
+    if (type(total_commitment_bytes) is not int or type(materialized_owned_bytes) is not int
+            or not 0 <= materialized_owned_bytes <= total_commitment_bytes):
+        raise ValueError("host commitment and materialized credit require nonnegative integer bytes within the total")
+    remaining = total_commitment_bytes - materialized_owned_bytes
+    start, observed_at = time.monotonic_ns(), time.time_ns()
+    memory = _meminfo()  # Exactly this physical observation governs the check and receipt.
+    if memory is None:
+        raise ValueError("host commitment requires actual physical memory availability")
+    total, available = memory["MemTotal"], memory["MemAvailable"]
+    if not 0 <= available <= total or total <= 0 or materialized_owned_bytes > total:
+        raise ValueError("host physical memory or materialized ownership observation is inconsistent")
+    reserve = host_stream_reserve_bytes(total)
+    physical_remaining = max(0, available - reserve)
+    cgroup_remaining = host_cgroup_bytes(strict_membership=True)
+    usable = physical_remaining if cgroup_remaining is None else min(physical_remaining, cgroup_remaining)
+    end = time.monotonic_ns()
+    if not 0 <= start <= end <= 2**63 - 1 or not 0 <= observed_at <= 2**63 - 1:
+        raise RuntimeError("host baseline timestamps exceed the receipt's signed64 clock domain")
+    if remaining > usable:
+        raise ValueError(f"remaining host commitment needs {remaining} bytes, but only {usable} bytes are available "
+                         "after the existing OS reserve and cgroup allowance")
+    return {"schema": "tensorfold.host-commitment-admission", "version": 1,
+            "scope": "global-host-phase-correct-commitment", "observed_at_unix_ns": observed_at,
+            "interval_monotonic_ns": [start, end], "physical_total_bytes": total,
+            "physical_available_bytes": available, "effective_os_reserve_bytes": reserve,
+            "physical_remaining_bytes": physical_remaining, "cgroup_remaining_bytes": cgroup_remaining,
+            "usable_remaining_bytes": usable, "total_commitment_bytes": total_commitment_bytes,
+            "materialized_owned_bytes": materialized_owned_bytes, "remaining_commitment_bytes": remaining,
+            "accounting": "physical-availability-excludes-materialized; credit-only-against-total-commitment",
+            "snapshot_is_reservation": False, "release_qualified": False,
+            "qualification": "host-observation-and-declared-commitment-only"}
+
+
 def host_memory_snapshot() -> dict:
     """Advisory startup observation, never an allocation grant or reservation.
 
@@ -366,19 +410,25 @@ def host_memory_snapshot() -> dict:
             "snapshot_is_reservation": False}
 
 
-def host_cgroup_bytes() -> int | None:
+def host_cgroup_bytes(*, strict_membership: bool = False) -> int | None:
     """Smallest remaining cgroup-v2 hard allowance along this process's visible ancestry.
 
     A private container cgroup namespace reports ``/``; ordinary host processes
     can belong to a nested systemd/job cgroup. Ancestors account for all their
     descendants, so another child can consume the limiting ancestor's room.
     No exposed memory controller returns None; an exposed limit must be readable.
+    New physical commitments require strict membership IO; legacy callers keep
+    their existing behavior when the membership interface cannot be read.
     """
 
     root = Path("/sys/fs/cgroup")
     try:
         memberships = Path("/proc/self/cgroup").read_text().splitlines()
-    except OSError:
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        if strict_membership:
+            raise ValueError("cannot read cgroup-v2 process membership for host admission") from exc
         return None
     paths = [row[3:] for row in memberships if row.startswith("0::")]
     if not paths:
@@ -451,6 +501,62 @@ def available_bytes(torch, *, reserve: int | None = None) -> int:
         granted = free - cuda_reserve_bytes(total, default=reserve)        # a discrete card (or no /proc/meminfo): the floor comes off the card
     limit = cuda_limit_bytes()
     return max(0, min(granted, limit)) if limit is not None else max(0, granted)
+
+
+def device_allocation_baseline(torch, *, reserve=None, preallocated_device_bytes=0):
+    """One startup-only discrete-device sample and its incremental budget.
+
+    The caller has quiesced its GPU work before model admission. This separate
+    startup contract leaves the legacy live available_bytes API and query cost
+    unchanged. Physical free already excludes materialized owners; only the
+    absolute project grant deducts their proven commitment again.
+    """
+    if type(preallocated_device_bytes) is not int or preallocated_device_bytes < 0:
+        raise ValueError("preallocated device commitments must be nonnegative integer bytes")
+    if unified(torch):
+        raise ValueError("the SM70 allocation baseline requires a discrete CUDA device")
+    start, observed_at = time.monotonic_ns(), time.time_ns()
+    observations, status = {}, {}
+    for name in ("memory_allocated", "memory_reserved"):
+        function = getattr(torch.cuda, name, None)
+        if function is None:
+            observations[name], status[name] = None, "unavailable"
+            continue
+        try:
+            value = function()
+        except (RuntimeError, NotImplementedError) as error:
+            observations[name], status[name] = None, "unavailable:" + type(error).__name__
+        else:
+            if type(value) is not int or value < 0:
+                raise RuntimeError("CUDA allocator observation must report nonnegative integer bytes")
+            observations[name], status[name] = value, "observed"
+    free, total = map(int, torch.cuda.mem_get_info())  # Exactly this sample governs the returned budget.
+    if not 0 <= free <= total:
+        raise RuntimeError("CUDA physical free/total observation is inconsistent")
+    floor = cuda_reserve_bytes(total, default=reserve)
+    if floor < 4 * GIB:
+        raise ValueError("SM70 allocation baseline requires at least 4 GiB device headroom")
+    cap = cuda_limit_bytes()
+    if cap is not None and preallocated_device_bytes > cap:
+        raise ValueError("preallocated device commitments exceed the absolute CUDA budget")
+    remaining = None if cap is None else cap - preallocated_device_bytes
+    physical = max(0, free - floor)
+    budget = physical if remaining is None else min(physical, remaining)
+    end = time.monotonic_ns()
+    if not 0 <= start <= end <= 2**63 - 1 or not 0 <= observed_at <= 2**63 - 1:
+        raise RuntimeError("startup baseline timestamps exceed the rank receipt's signed64 clock domain")
+    return {"schema": "tensorfold.cuda-allocation-baseline", "version": 1,
+            "phase": "quiescent-startup-before-target-allocation",
+            "observed_at_unix_ns": observed_at, "interval_monotonic_ns": [start, end],
+            "physical_free_bytes": free, "device_total_bytes": total,
+            "effective_device_floor_bytes": floor, "absolute_grant_cap_bytes": cap,
+            "preallocated_project_bytes": preallocated_device_bytes,
+            "remaining_absolute_grant_bytes": remaining, "usable_serving_budget_bytes": budget,
+            "allocator_allocated_bytes": observations["memory_allocated"],
+            "allocator_reserved_bytes": observations["memory_reserved"],
+            "allocator_observation_status": status,
+            "accounting": "physical-free-excludes-materialized; allocated-is-not-added-to-reserved",
+            "qualification": "startup-observations-and-header-plan-only"}
 
 
 def total_bytes(torch) -> int:
@@ -557,6 +663,7 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
           session_ceiling: int | None = None,
           session_host_workspace: Callable[[int], int] | None = None,
           preallocated_device_bytes: int = 0,
+          capture_device_baseline: bool = False,
           execution_capability: tuple[int, int] | None = None) -> dict:
     """One refusal or capacity on both ranks before allocating.
 
@@ -586,10 +693,13 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
     build.refuse_old_gpu(floor(model_dir) if execution_capability is None else execution_capability)
     error = None
     plan = None
+    baseline = None
     session_fitting, session_factory, session_context = 0, None, 0
     try:
         if type(preallocated_device_bytes) is not int or preallocated_device_bytes < 0:
             raise ValueError("preallocated device commitments must be nonnegative integer bytes")
+        if type(capture_device_baseline) is not bool:
+            raise ValueError("device baseline capture must be an explicit boolean")
         preallocation_limit = cuda_limit_bytes() if preallocated_device_bytes else None
         if preallocation_limit is not None and preallocated_device_bytes > preallocation_limit:
             raise ValueError("preallocated device commitments exceed the absolute CUDA budget")
@@ -670,8 +780,14 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
                     or original_context <= 0 or original_context > context_limit:
                 raise ValueError("original context must be positive and no greater than the effective RoPE limit")
         effective_native = native if context_limit is None else context_limit
-        budget = available_bytes(torch) if memory_reserve is None else available_bytes(torch, reserve=memory_reserve)
-        if preallocation_limit is not None:
+        if capture_device_baseline:
+            baseline = device_allocation_baseline(torch, reserve=memory_reserve,
+                                                  preallocated_device_bytes=preallocated_device_bytes)
+            budget = baseline["usable_serving_budget_bytes"]
+            preallocation_limit = baseline["absolute_grant_cap_bytes"]
+        else:
+            budget = available_bytes(torch) if memory_reserve is None else available_bytes(torch, reserve=memory_reserve)
+        if preallocation_limit is not None and baseline is None:
             # Physical free already excludes these owners. Only the absolute
             # cap needs their remaining obligation removed, exactly once.
             budget = min(budget, preallocation_limit - preallocated_device_bytes)
@@ -701,6 +817,11 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
     if session_geometry is not None:
         ceiling_status = (-1 if session_ceiling is None else session_ceiling
                           if type(session_ceiling) is int and session_ceiling > 0 else -2)
+        if capture_device_baseline and error is None:
+            # Reuse the existing signed status word before any variable-width
+            # ledger gather: legacy None/positive ceilings stay unchanged;
+            # captured None/positive ceilings use 0/-(ceiling+1).
+            ceiling_status = 0 if session_ceiling is None else -session_ceiling - 1
         status += [session_fitting, ceiling_status]
     both = gather(status) if world > 1 else [status]
     if any(row[0] for row in both):
@@ -708,7 +829,7 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
                          (error or "another rank could not read its checkpoint; check both folders/configs"))
     if session_geometry is not None:
         if any(len(row) != 8 or row[7] != status[7] for row in both):
-            raise ValueError("CUDA ranks selected different automatic session ceilings")
+            raise ValueError("CUDA ranks selected different automatic session ceilings or baseline modes")
         sessions = min(row[6] for row in both)
         if sessions < 1:
             raise ValueError(f"CUDA memory budget cannot retain one complete {session_context}-token session "
@@ -723,6 +844,8 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
     window = choose(plan, [row[1:] for row in both],
                     window_kind="native" if context_limit is None else "RoPE")
     receipt = {**plan.receipt(window), "largest_window": min(row[5] for row in both)}
+    if baseline is not None:
+        receipt["allocation_baseline"] = baseline
     if preallocated_device_bytes:
         receipt["device_preallocation"] = {
             "already_committed_bytes": preallocated_device_bytes,
@@ -739,6 +862,30 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
         local = [rank, plan.budget, weights.resident, weights.staging,
                  geometry.needed(session_context), session_factory(sessions + 1).needed(session_context),
                  int(host_fits(sessions + 1)), *(ledger[name] for name in ledger_names)]
+        baseline_names = ("observed_at_unix_ns", "physical_free_bytes", "device_total_bytes",
+                          "effective_device_floor_bytes", "preallocated_project_bytes",
+                          "usable_serving_budget_bytes", "allocator_allocated_bytes", "allocator_reserved_bytes")
+        if baseline is not None:
+            local += [baseline[name] if baseline[name] is not None else -1 for name in baseline_names]
+            # The existing cap accepts any finite binary64 GiB value, including
+            # nonbinding caps beyond int64 bytes. Preserve it losslessly through
+            # the rank transport: floor(gib*2**30)/2**30 is representable exactly
+            # in binary64. This word is an encoding, never a float byte count.
+            cap = baseline["absolute_grant_cap_bytes"]
+            local.append(-1 if cap is None else struct.unpack("<q", struct.pack("<d", cap / GIB))[0])
+
+        def rank_baseline(row):
+            values = {name: None if value == -1 else value for name, value in
+                      zip(baseline_names, row[7 + len(ledger_names):])}
+            encoded = row[-1]
+            if encoded == -1:
+                cap = None
+            else:
+                numerator, denominator = struct.unpack("<d", struct.pack("<q", encoded))[0].as_integer_ratio()
+                cap = numerator * GIB // denominator
+            values["absolute_grant_cap_bytes"] = cap
+            values["remaining_absolute_grant_bytes"] = None if cap is None else cap - values["preallocated_project_bytes"]
+            return values
         ranks = gather(local) if world > 1 else [local]
         if any(len(row) != len(local) or row[0] != peer for peer, row in enumerate(ranks)):
             raise RuntimeError("rank resource ledgers do not match the admitted session profile")
@@ -754,13 +901,27 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
             "ranks": [{"rank": row[0], "budget_bytes": row[1], "resident_weight_bytes": row[2],
                        "loading_overlap_bytes": row[3], "session_execution_bytes": row[4],
                        "next_session_execution_bytes": row[5],
-                       "resource_ledger_bytes": dict(zip(ledger_names, row[7:]))} for row in ranks],
+                       "resource_ledger_bytes": dict(zip(ledger_names, row[7:7 + len(ledger_names)])),
+                       **({"allocation_baseline": rank_baseline(row)} if baseline is not None else {})} for row in ranks],
         }
         if session_host_workspace is not None:
             host_workspace_bytes += session_host_workspace(sessions)
     if device_workspace_bytes or host_workspace_bytes:
         receipt.update(device_workspace_bytes_estimate=device_workspace_bytes,
                        host_workspace_bytes_estimate=host_workspace_bytes)
+    # These are the existing host inputs/selected-session math, not another
+    # physical grant. Callers own their shared/global scope; do not multiply
+    # them by world again. Initial GGUF PLE is already in host_resident.
+    mapped_host = weights.mapped if plan.keeps_tables is True else 0
+    receipt.update(host_resident_bytes_estimate=host_resident,
+                   host_extra_staging_bytes_estimate=host_extra_staging,
+                   host_loading_staging_bytes_estimate=host_staging,
+                   host_steady_workspace_bytes_estimate=host_workspace_bytes,
+                   host_shared_mapped_commitment_bytes=mapped_host,
+                   host_loading_commitment_bytes=host_resident + host_extra_staging + host_staging,
+                   host_steady_commitment_bytes=host_resident + host_extra_staging + host_workspace_bytes + mapped_host,
+                   host_commitment_scope="as-supplied-host-inputs; no-implicit-rank-multiplier",
+                   host_commitment_accounting="loading-and-steady-are-separate; extra-staging-conservatively-in-both")
     if context_limit is not None:
         receipt.update(native_window=original_context, rope_context_limit=context_limit)
     native_note = str(receipt["native_window"])

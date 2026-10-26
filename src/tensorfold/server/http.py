@@ -18,7 +18,7 @@ from urllib.parse import unquote
 
 from tensorfold.cleanup import raise_failures
 from tensorfold.engine import grammar
-from tensorfold.server import anthropic, live, request_body, responses, token_routes
+from tensorfold.server import anthropic, conversations, live, request_body, responses, token_routes
 from tensorfold.server.tools import (active_tool_specs, parse_tool_calls_from_content, stream_tool_call_deltas,
                                      tool_choice_requires_call)
 from tensorfold.server.decisions import DecisionError
@@ -461,6 +461,8 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
         def do_GET(self) -> None:
             if not self._discard_body():
                 return
+            if conversations.dispatch(self, app, "GET"):
+                return
             route = self._route()
             if responses.route(route):
                 return responses.get(self, app, responses.route(route))
@@ -533,6 +535,8 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
         def do_DELETE(self) -> None:
             if not self._discard_body():
                 return
+            if conversations.dispatch(self, app, "DELETE"):
+                return
             rid = responses.route(self._route())
             if rid is None:
                 self._send_json({"error": unknown_route("DELETE", self.path)}, status=404)
@@ -540,6 +544,8 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
             responses.delete(self, app, rid)
 
         def do_POST(self) -> None:
+            if conversations.dispatch(self, app, "POST"):
+                return
             route = self._route()
             if route.endswith("/decisions"):
                 return self._post_decisions(app)

@@ -44,6 +44,37 @@ def _full_windows(value: str) -> int | str:
         raise argparse.ArgumentTypeError("--kv-full-windows: use auto or a positive whole number") from None
 
 
+def add_fifo_arguments(parser) -> None:
+    """Shared explicit deployment inputs for serving and profile preparation."""
+    parser.add_argument("--max-waiting-input-bytes", type=int, default=None,
+                          help="explicit positive byte budget for queued and reserved live input/readmission credit in adaptive unique-history Flash Next FIFO admission")
+    parser.add_argument("--max-waiting-input-bytes-per-principal", type=int, default=None,
+                          help="optional positive FIFO queued/reserved live input byte cap per authenticated principal; requires configured API keys")
+    parser.add_argument("--output-queue-tokens", type=int, default=None,
+                          help="optional positive FIFO output credit per request, including callback delivery in flight; omitted preserves the full-reply mailbox bound")
+    parser.add_argument("--queue-timeout-s", type=float, default=None,
+                          help="optional positive FIFO queue deadline in seconds; no timeout is imposed when omitted")
+
+
+def add_retention_arguments(parser: argparse.ArgumentParser) -> None:
+    """Keep the seven explicit retention inputs identical in both admin CLIs."""
+    retention = parser.add_argument_group("explicit retained inference state")
+    retention.add_argument("--retention-tier", choices=("gpu", "ram"), default=None,
+                           help="retain complete inference state in the selected tier; omitted with all bounds means request-scoped execution")
+    retention.add_argument("--retained-sessions", type=int, default=None,
+                           help="explicit maximum retained logical sessions; independent of concurrent GPU slots")
+    retention.add_argument("--retention-lifetime-s", type=float, default=None,
+                           help="explicit absolute retention lifetime in seconds; not an inactivity grace period")
+    retention.add_argument("--retention-ram-bytes", type=int, default=None,
+                           help="RAM tier: explicit global host backing budget")
+    retention.add_argument("--retention-chunk-bytes", type=int, default=None,
+                           help="RAM tier: explicit bounded transfer chunk bytes")
+    retention.add_argument("--retention-progress-bytes", type=int, default=None,
+                           help="RAM tier: explicit global host progress budget for pinned and ordinary chunks on every rank")
+    retention.add_argument("--retention-overlap-bytes", type=int, default=None,
+                           help="RAM tier: explicit additional GPU overlap budget per rank; zero selects serialized direct copies")
+
+
 def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> argparse.ArgumentParser:
     """The ``tensorfold`` parser, each subcommand bound to ``handlers[name]``."""
 
@@ -74,6 +105,12 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     endpoint.add_argument("--max-pending-requests-per-principal", type=int, default=None,
                           help="CUDA only: optional positive unfinished-request cap per authenticated principal; "
                                "requires --max-pending-requests (default: no separate principal cap)")
+    add_fifo_arguments(endpoint)
+    endpoint.add_argument("--api-record-store", type=Path, default=None,
+                          help="explicit private local database for durable Responses/Conversations logical records; requires --api-record-limits and finite --max-http-connections")
+    endpoint.add_argument("--api-record-limits", type=Path, default=None,
+                          help="explicit API record quota/retention JSON; requires --api-record-store; does not reserve inference state")
+    add_retention_arguments(serve)
     endpoint.add_argument("--max-engine-calls", type=int, default=None,
                           help="MLX only: optional positive cap on queued and running engine RPC callbacks, "
                                "including timed-out callers (default: uncapped; unsupported on CUDA)")

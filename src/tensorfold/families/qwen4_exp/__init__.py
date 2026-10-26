@@ -224,6 +224,8 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         raise ValueError("indexer_history must be gpu or ram")
     if history == "ram" and not sm70:
         raise ValueError("indexer_history ram requires the GGUF SM70 provider")
+    from .cuda.serving_profiles import validate_service_options
+
     serving_root = options.get("serving_profile_root")
     execution_manifest = options.get("execution_profile_manifest")
     position_manifest = options.get("position_profile_manifest")
@@ -300,6 +302,9 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         engine_options["media_profile_manifest"] = Path(media_manifest)
     if "graphs" in options:
         engine_options["graphs"] = options["graphs"]
+    for name in ("max_waiting_input_bytes", "max_waiting_input_bytes_per_principal", "output_queue_tokens", "queue_timeout_s", "retention_policy"):
+        if options.get(name) is not None:
+            engine_options[name] = options[name]
     if sm70 and history == "gpu":
         # Preserve auto intent through the CLI's ordinary CUDA one-stream
         # default. Integer settings constrain the solved full-context capacity.
@@ -329,6 +334,7 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
                                  "an execution-profile manifest with exact draft_pairing, and at most three proposals")
     elif method in ("dspark", "dflash2"):
         raise ValueError("DSpark/DFlash2 require their checkpoint directory through --drafter")
+    validate_service_options(model_dir, engine_options)
     if "draft_vocab" in options:
         engine_options["draft_vocab"] = options["draft_vocab"]
     full_windows = options.get("kv_full_windows")

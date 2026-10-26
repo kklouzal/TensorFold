@@ -295,7 +295,13 @@ class MediaWork:
                 self._current(old, prepared, context)
                 if old.unit_index == unit_index:
                     self._retry_busy(old)
-                return old.unit_index == unit_index and not old.cancelled.is_set()
+                    return not old.cancelled.is_set()
+                # RAM resume can need the current unit after its GPU features
+                # were evicted, while the one CPU lookahead owns a later unit.
+                # Stop that obsolete lookahead without waiting for decoding.
+                # Only positive callback/lease retirement permits replacement.
+                if not self._cancel_job(old):
+                    return False
             if len(self._jobs) >= self.pending_limit:
                 return False
             unit = prepared.plan.units[unit_index]
@@ -438,20 +444,24 @@ class MediaWork:
             job = self._jobs.get(prepared)
             if job is None:
                 return True
-            job.cancelled.set()
-            if job.work is not None:
-                job.work.cancel()
-            if job.work is not None and not job.work.retired.is_set():
-                return False
-            error = None if job.work is None else job.work.failure
-            try:
-                self._retire(job, transfer=False)
-            except BaseException as cleanup:
-                self._set_failure(cleanup if error is None else error)
-                raise_failures(error, (cleanup,))
-            if error is not None and not self._ordinary_cancel(error):
-                raise error
-            return True
+            return self._cancel_job(job)
+
+    def _cancel_job(self, job):
+        """Serialized owner; no callback wait or prepared-request retirement."""
+        job.cancelled.set()
+        if job.work is not None:
+            job.work.cancel()
+        if job.work is not None and not job.work.retired.is_set():
+            return False
+        error = None if job.work is None else job.work.failure
+        try:
+            self._retire(job, transfer=False)
+        except BaseException as cleanup:
+            self._set_failure(cleanup if error is None else error)
+            raise_failures(error, (cleanup,))
+        if error is not None and not self._ordinary_cancel(error):
+            raise error
+        return True
 
     def close(self, *, timeout=None):
         """Stop admission and prove callbacks retired before releasing their claims.

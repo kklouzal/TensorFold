@@ -130,6 +130,21 @@ def test_items_become_the_messages_a_chat_client_sends():
         {"role": "tool", "tool_call_id": "c2", "content": "none"}]
 
 
+def test_supported_reasoning_stays_in_order_across_incomplete_and_consecutive_items():
+    def thought(text):
+        return {"type": "reasoning", "summary": [], "content": [{"type": "reasoning_text", "text": text}]}
+    assert responses.messages([thought("first"), thought("second"), {"role": "assistant", "content": "answer"}]) == [
+        {"role": "assistant", "content": "answer", "reasoning_content": "firstsecond"}]
+    placeholder = {"role": "assistant", "content": "", "reasoning_content": "partial"}
+    assert responses.messages([thought("partial")]) == [placeholder]
+    assert responses.messages([thought("partial"), {"role": "user", "content": "continue"}]) == [
+        placeholder, {"role": "user", "content": "continue"}]
+    projected = responses.messages([{"role": "assistant", "content": "earlier"}, thought("later"),
+                                    {"type": "function_call", "call_id": "c", "name": "tool", "arguments": "{}"}])
+    assert projected[0] == {"role": "assistant", "content": "earlier"}
+    assert projected[1]["reasoning_content"] == "later" and projected[1]["content"] == ""
+
+
 def test_a_function_call_output_s_image_is_a_tool_message_image_part():
     shot = "data:image/png;base64,AA"
     items = [{"type": "function_call", "call_id": "c1", "name": "screenshot", "arguments": "{}"},
@@ -417,7 +432,7 @@ def test_the_store_keeps_the_newest_and_a_chain_needs_every_link():
 def test_routes():
     assert responses.route("/v1/responses") == responses.route("/responses/") == ""
     assert responses.route("/v1/responses/resp_1?x=1") == "resp_1"
-    assert responses.route("/v1/responses/resp_1/input_items") is None
+    assert responses.route("/v1/responses/resp_1/input_items") == "resp_1/input_items"
     assert responses.route("/v1/chat/completions") is None
 
 

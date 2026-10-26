@@ -64,7 +64,8 @@ def test_real_unique_engine_prepares_exact_cpu_vectors_before_device_boundary(tm
     monkeypatch.setattr(position_profile, "prepare_position_vectors", prepare)
     with pytest.raises(DeviceBoundary):
         FlashNextEngine(path, depth=0, kv_dtype="fp16", max_len=64,
-                        tp=8, rank=0, master="127.0.0.1", adaptive_sessions=True)
+                        tp=8, rank=0, master="127.0.0.1", adaptive_sessions=True,
+                        max_waiting_input_bytes=4096)
     assert events == ["device"] and len(prepared) == 1
     assert prepared[0].target_cpu.device.type == "cpu" and prepared[0].mtp_cpu is None
     assert prepared[0].profile.target.max_rows == 64

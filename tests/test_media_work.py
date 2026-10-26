@@ -182,6 +182,67 @@ def test_cancelled_unentered_callback_is_removed_before_encoded_release(prepared
         work.close(timeout=3)
 
 
+def test_current_unit_replaces_owned_ahead_unit_after_callback_retirement_without_wait(prepared, monkeypatch):
+    prepared.plan.units = prepared.plan.units * 2
+    entered, release, completed, wake = (threading.Event() for _ in range(4))
+    calls = []
+    def decode(probe, index, *, cancelled):
+        calls.append(index)
+        if len(calls) == 1:
+            entered.set()
+            assert release.wait(3)
+            assert cancelled()
+            result = pixel(prepared.executor, probe, index, 3.)
+            completed.set()
+            return result  # Even late successful pixels must retire first.
+        return pixel(prepared.executor, probe, index, 7.)
+    monkeypatch.setattr(prepared.executor, "pixel_unit", decode)
+    work = MediaWork(prepared.executor)
+    pixels = None
+    try:
+        work.set_wake(wake.set)
+        assert work.request(prepared, 1, **CONTEXT)
+        assert entered.wait(3)
+        assert not work.request(prepared, 0, **CONTEXT)
+        assert not release.is_set() and prepared.replay._borrows == 1
+        assert work._jobs[prepared].cancelled.is_set()
+        release.set()
+        assert completed.wait(3)
+        wait_ready(work, prepared, 1)
+        assert work.request(prepared, 0, **CONTEXT)
+        wait_ready(work, prepared, 0)
+        pixels = work.take_ready(prepared, 0, **CONTEXT)
+        with pixels.borrow() as borrowed:
+            assert (borrowed.values == 7.).all()
+        assert len(calls) == 2 and prepared.replay._borrows == 1
+        assert not prepared.replay._closed
+    finally:
+        release.set()
+        work.close(timeout=3)
+        if pixels is not None:
+            pixels.close()
+
+
+def test_superseded_ahead_decode_error_retires_before_original_error_is_raised(prepared, monkeypatch):
+    prepared.plan.units = prepared.plan.units * 2
+    primary = ImageInputError("actual ahead decode refused")
+    def decode(*_args, **_kwargs):
+        raise primary
+    monkeypatch.setattr(prepared.executor, "pixel_unit", decode)
+    work = MediaWork(prepared.executor)
+    try:
+        assert work.request(prepared, 1, **CONTEXT)
+        wait_ready(work, prepared, 1)
+        with pytest.raises(ImageInputError) as raised:
+            work.request(prepared, 0, **CONTEXT)
+        assert raised.value is primary
+        assert not work._jobs and prepared.replay._borrows == 0
+        work.check_health()
+        assert work.cancel(prepared)
+    finally:
+        work.close(timeout=3)
+
+
 def test_cancellation_keeps_encoded_borrow_until_entered_callback_retires(prepared, monkeypatch):
     entered, release = threading.Event(), threading.Event()
 

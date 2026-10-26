@@ -83,10 +83,204 @@ class TensorParallelDecoder:
         self.prefix_operation = None
         self.prefix_sequence = 0
         self._operation_error = None
+        self.admission_policy = "legacy"
         decoder.arrived = lambda: self._arrival
         decoder._pass_rows = lambda: self._rows
         decoder.prefix_decisions = self._prefix_decisions
         decoder.poison_control = self._poison_control
+
+    def configure_admission_policy(self, policy):
+        if policy not in ("legacy", "fifo"):
+            raise ValueError("admission policy must be legacy or fifo")
+        if self.requests or self.wires:
+            if policy != self.admission_policy:
+                raise RuntimeError("admission policy cannot change with live request owners")
+        if policy == "fifo" and self.decoder is not None:
+            from .input_preparation import InputPreparationContext
+
+            if type(getattr(self.decoder, "input_preparation_context", None)) is not InputPreparationContext:
+                raise ValueError("FIFO TP admission requires its actual installed coordinate/profile preparation owner")
+        self.admission_policy = policy
+        if self.decoder is not None:
+            self.decoder.admission_policy = policy
+
+    def validate_request(self, stream):
+        validate = getattr(self.decoder, "validate_request", None)
+        if validate is not None:
+            validate(stream)
+        owner = media_requests.runtime(getattr(self.decoder, "vision", None))
+        if ((stream.vision is not None and owner is None)
+                or stream.probabilities is not None or stream.penalties is not None):
+            raise ValueError("tensor-parallel Flash Next requests do not support vision, logprobs or penalties")
+        if stream.vision is not None and (tuple(stream.prompt) != stream.vision.token_ids
+                or stream.vision.plan.profile_identity != owner.identity):
+            raise ValueError("media input differs from its canonical prompt/profile")
+        self._retained_scope(stream)
+
+    @staticmethod
+    def _retained_scope(stream):
+        intent = getattr(stream, "retention_intent", None)
+        if intent is not None:
+            from .retained_catalog import LOCAL_PRINCIPAL
+
+            principal = stream.principal or LOCAL_PRINCIPAL
+            refs = tuple(ref for ref in (intent.target, intent.parent, *intent.aliases) if ref is not None)
+            if any(ref.principal != principal for ref in refs):
+                raise ValueError("retained logical input differs from its authenticated request principal")
+
+    def prepare_enqueue(self, stream):
+        """Copy application identities on the caller, without retaining its DB/operation."""
+        self.validate_request(stream)
+        stream.retention_intent = None
+        catalog = getattr(self.decoder, "retention_catalog", None)
+        if catalog is not None and catalog.policy is not None:
+            from .retained_host import RetentionIntent
+
+            stream.retention_intent = RetentionIntent.current()
+            self._retained_scope(stream)
+
+    def _retention_cpu(self, operation, *, pure=False):
+        """Only proved, completed session refusals can cross the healthy actor boundary."""
+        if self.failure is not None:
+            raise RuntimeError("tensor-parallel scheduler is poisoned; retire the rank cohort") from self.failure
+        try:
+            self.decoder.retention_catalog.check_health()
+            result = operation()
+            self.decoder.retention_catalog.check_health()
+            return result
+        except BaseException as error:
+            try:
+                from .retained_catalog import RetentionError
+                from .execution_identity import _unretired
+
+                ordinary = (self.failure is None and (isinstance(error, (RetentionError, NoRoom))
+                            or pure and isinstance(error, ValueError)) and not _unretired(error))
+                if ordinary:
+                    self.decoder.retention_catalog.check_health()
+            except BaseException as inspection:
+                try:
+                    self._poison_control(error)
+                except BaseException as containment:
+                    raise_failures(error, (inspection, containment))
+                raise_failures(error, (inspection,))
+            if not ordinary:
+                try:
+                    self._poison_control(error)
+                except BaseException as containment:
+                    raise_failures(error, (containment,))
+            raise
+
+    @staticmethod
+    def _request_error_types():
+        from tensorfold.server.errors import RequestError, CapacityError, ContextLengthError
+        from tensorfold.server.cancellation import RequestCancelled
+        from tensorfold.vision.images_http import ImageInputError
+        from tensorfold.vision.replay import MediaBusy, MediaCancelled
+        from .retained_catalog import RetentionError, RetentionCapacity, RetentionCorrupt, RetentionExpired, RetentionMismatch
+
+        return {value.__name__: value for value in (ValueError, NoRoom, RequestError, CapacityError,
+            ContextLengthError, RequestCancelled, ImageInputError, MediaBusy, MediaCancelled,
+            RetentionError, RetentionCapacity, RetentionCorrupt, RetentionExpired, RetentionMismatch)}
+
+    def _request_error_record(self, error):
+        if error is None:
+            return None
+        try:
+            kinds = self._request_error_types()
+            name = type(error).__name__
+            if kinds.get(name) is not type(error):
+                raise RuntimeError("unregistered request failure cannot cross the healthy TP retirement boundary")
+            return {"type": name, "message": BaseException.__str__(error)[:1024]}
+        except BaseException as inspection:
+            try:
+                self._poison_control(error)
+            except BaseException as containment:
+                raise_failures(error, (inspection, containment))
+            raise_failures(error, (inspection,))
+
+    def stage_request(self, stream, *, wake, max_waiting_input_bytes, max_pending_requests):
+        """Existing actor replicates queued readers before it applies logical expiry."""
+        catalog = getattr(self.decoder, "retention_catalog", None)
+        if catalog is None or catalog.policy is None or getattr(stream, "_retention_staged", False):
+            return None
+        return self._retention_cpu(lambda: self._stage_request(stream, catalog, wake,
+            max_waiting_input_bytes, max_pending_requests), pure=True)
+
+    def _stage_request(self, stream, catalog, wake, max_waiting_input_bytes, max_pending_requests):
+        catalog.set_wake(wake)
+        intent = stream.retention_intent
+        if not hasattr(stream, "_media_wire"):
+            stream._media_wire, self.next_wire = self.next_wire, self.next_wire + 1
+        owner = media_requests.runtime(getattr(self.decoder, "vision", None))
+        if owner is not None and stream.vision is not None:
+            self._media_cpu(lambda: media_requests.bind(stream, owner, stream._media_wire))
+        from .retained_catalog import LOCAL_PRINCIPAL
+
+        principal = stream.principal or LOCAL_PRINCIPAL
+        parent = None
+        from .prefix_policy import reuse_allowed
+
+        reuse = reuse_allowed(self.decoder.w, stream.sampling, draft=stream.draft, vision=stream.vision,
+                              position=len(stream.prompt), kv_pair=self.decoder.kv_pair)
+        if reuse:
+            candidate = None if intent is None or intent.parent is None else catalog.lookup(intent.parent)
+            if candidate is None or not catalog.prefix_matches(candidate, stream.prompt, principal=principal):
+                candidate = catalog.best_prefix(stream.prompt, principal=principal)
+            if candidate is not None:
+                parent = next(reference for reference, ready in candidate.owners.items()
+                              if ready and reference.principal == principal)
+        body = {"kind": "enqueue", "wire": stream._media_wire, "stream": self._pack(stream),
+                "parent": None if parent is None else [parent.principal, parent.sequence, parent.generation],
+                "queue_bytes": max_waiting_input_bytes, "queue_count": max_pending_requests}
+        self._invoke(body, source=stream)
+        return None
+
+    def request_blocked_reason(self, stream):
+        if getattr(self.decoder, "retention_catalog", None) is None:
+            return None
+        return self._retention_cpu(lambda: self.decoder.retention_eligibility(stream))
+
+    def owns_admission(self, stream):
+        return getattr(stream, "retention_window", None) is not None
+
+    def admission_claims(self):
+        return sum(self.owns_admission(stream) or (getattr(stream, "retained_host", None) is not None
+            and stream.retention_handle.state is not None) for stream in self.requests.values())
+
+    def suspend_requests(self, streams):
+        catalog = getattr(self.decoder, "retention_catalog", None)
+        if catalog is None or catalog.policy is None or catalog.policy.tier != "ram":
+            return []
+        suspended = []
+        for stream in streams:
+            if self._invoke({"kind": "retention_suspend", "wire": self.wires[id(stream)]}):
+                suspended.append(stream)
+        return suspended
+
+    def retention_boundary(self, *, idle, needs_slot=False, shutdown=False, drop_optional=False):
+        catalog = getattr(self.decoder, "retention_catalog", None)
+        if catalog is None or catalog.policy is None:
+            return {"drained": True, "changed": False}
+        return self._retention_cpu(lambda: self._retention_boundary(catalog, idle, needs_slot, shutdown, drop_optional))
+
+    def _retention_boundary(self, catalog, idle, needs_slot, shutdown, drop_optional):
+        suspend = None
+        if needs_slot and not self.decoder.free and catalog.policy.tier == "ram" and not shutdown:
+            active = tuple(stream.st for stream in [*self.decoder.streams.values(), *self.decoder.filling])
+            candidates = catalog.suspendable_handles(active_states=active)
+            if candidates:
+                suspend = candidates[0].serial
+        return self._invoke({"kind": "retention_boundary", "idle": idle, "shutdown": shutdown,
+                             "events": catalog.logical_events(), "expired": list(catalog.expired_handles()),
+                             "suspend": suspend, "drop_optional": drop_optional})
+
+    def drop_optional_retention(self):
+        """Existing actor only, after the managed profile's request/gate drain."""
+        return self.retention_boundary(idle=True, drop_optional=True)
+
+    def retention_deadline(self):
+        catalog = getattr(self.decoder, "retention_catalog", None)
+        return None if catalog is None or catalog.policy is None else self._retention_cpu(catalog.next_expiry)
 
     def suspend_profile(self):
         if self.requests or self.wires or self._operation_error is not None:
@@ -105,6 +299,7 @@ class TensorParallelDecoder:
         decoder._pass_rows = lambda: self._rows
         decoder.prefix_decisions = self._prefix_decisions
         decoder.poison_control = self._poison_control
+        self.configure_admission_policy(self.admission_policy)
 
     def __getattr__(self, name):
         return getattr(self.decoder, name)
@@ -196,6 +391,22 @@ class TensorParallelDecoder:
                 "grammar": pack(stream.constraint), "owed": stream.owed, "carry": stream.carry,
                 "token_limit": stream.token_limit is not None, "profile_epoch": stream.profile_epoch,
                 "committed_output_tokens": stream.committed_output_tokens}
+        if self.admission_policy == "fifo":
+            ticket = getattr(stream, "admission_ticket", None)
+            if type(ticket) is not int or not 0 <= ticket < 1 << 63:
+                raise ValueError("FIFO request lost its immutable validated enqueue ticket")
+            if stream.admission_status.ticket != ticket:
+                raise ValueError("FIFO request ticket changed after validated enqueue")
+            principal = stream.principal
+            if principal is not None and (type(principal) is not str or not principal):
+                raise ValueError("FIFO request lost its trusted principal scope")
+            if stream.admission_status.principal != principal:
+                raise ValueError("FIFO request principal changed after validated enqueue")
+            result["admission_ticket"] = ticket
+            result["principal"] = principal
+            intent = stream.retention_intent
+            result["retention"] = None if intent is None else intent.record()
+            result["output_capacity"] = getattr(stream, "output_capacity", max(1, stream.count))
         if stream.vision is not None:
             from tensorfold.cuda.rank_protocol import MAX_MESSAGE_BYTES
             from .media_wire import pack_media
@@ -222,6 +433,25 @@ class TensorParallelDecoder:
                       owed=list(body["owed"]), carry=body["carry"], profile_epoch=body["profile_epoch"],
                       committed_output_tokens=body["committed_output_tokens"])
         stream._tp_token_limit = bool(body.get("token_limit", False))
+        if self.admission_policy == "fifo":
+            ticket = body["admission_ticket"]
+            if type(ticket) is not int or not 0 <= ticket < 1 << 63:
+                raise ValueError("received FIFO request has an invalid enqueue ticket")
+            stream.admission_ticket = ticket
+            principal = body["principal"]
+            if principal is not None and (type(principal) is not str or not principal):
+                raise ValueError("received FIFO request has an invalid principal scope")
+            stream.principal = principal
+            capacity = body["output_capacity"]
+            if type(capacity) is not int or not 1 <= capacity <= max(1, stream.count):
+                raise ValueError("received FIFO output capacity differs from its validated reply allowance")
+            stream.output_capacity = capacity
+            if body["retention"] is None:
+                stream.retention_intent = None
+            else:
+                from .retained_host import RetentionIntent
+
+                stream.retention_intent = RetentionIntent.from_record(body["retention"])
         if "media" in body:
             from tensorfold.cuda.rank_protocol import MAX_MESSAGE_BYTES
             from .media_wire import unpack_media
@@ -277,11 +507,17 @@ class TensorParallelDecoder:
     def _controls(self, execution=None):
         forgotten = [wire for wire, stream in self.requests.items()
                      if stream.st is None and stream.cancel.snapshot()
+                     and not getattr(stream, "_retention_staged", False)
                      and (getattr(stream, "_media_request", None) is None or stream._media_request.retired)]
         result = {"forget": forgotten,
                   "cancel": [[wire, stream.cancel.snapshot()] for wire, stream in self.requests.items()
                              if wire not in forgotten],
                   "arrived": bool(self.arrived())}
+        result["admission_policy"] = self.admission_policy
+        if self.admission_policy == "fifo":
+            result["flow"] = [[wire, getattr(stream, "blocked_input", None),
+                               getattr(stream, "production_budget", None)] for wire, stream in self.requests.items()
+                              if stream.st is not None]
         controller = getattr(self.decoder, "controller", None)
         quota = None
         if controller is not None:
@@ -297,6 +533,23 @@ class TensorParallelDecoder:
         return result
 
     def _apply_controls(self, body):
+        if body.get("admission_policy", "legacy") != self.admission_policy:
+            try:
+                self.configure_admission_policy(body.get("admission_policy", "legacy"))
+            except BaseException as failure:
+                self._poison_control(failure)
+                raise
+        if self.admission_policy == "fifo":
+            try:
+                for wire, blocked, budget in body["flow"]:
+                    if (wire not in self.requests or blocked not in (None, "media", "client_input", "output", "tier_unavailable", "restoring", "sequence_busy")
+                            or budget is not None and (type(budget) is not int or budget < 0)):
+                        raise ValueError("FIFO flow control differs from its owned requests and legal production credit")
+                    self.requests[wire].blocked_input = blocked
+                    self.requests[wire].production_budget = budget
+            except BaseException as failure:
+                self._poison_control(failure)
+                raise
         controller = getattr(self.decoder, "controller", None)
         boundary = body.get("execution_boundary")
         if controller is not None:
@@ -328,7 +581,11 @@ class TensorParallelDecoder:
                                                      controller.last_served, controller.effective_family]
         profiles = getattr(self.engine, "serving_profiles", None)
         serving = None if profiles is None else [profiles.gate.epoch, profiles.gate.available]
-        return hashlib.sha256(json.dumps([state, execution, serving], sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+        record = [state, execution, serving]
+        if self.admission_policy == "fifo":
+            record.append([self.admission_policy, [(wire, stream.admission_ticket, stream.principal)
+                                                  for wire, stream in self.requests.items()]])
+        return hashlib.sha256(json.dumps(record, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
     def _dispatch(self, body, source=None):
         self.prefix_operation = body["sequence"]
@@ -349,7 +606,7 @@ class TensorParallelDecoder:
             except BaseException as failure:
                 self._poison_control(failure)
                 raise
-        if kind == "admit":
+        if kind in ("enqueue", "admit"):
             wire = body["wire"]
             def prepare_stream():
                 stream = self.requests.get(wire)
@@ -359,9 +616,15 @@ class TensorParallelDecoder:
                 if request is not None and (request.epoch != wire
                         or request.plan.media_identity != body["stream"]["media"]["media_identity"]):
                     raise ValueError("TP media metadata differs from its stable request wire/identity")
+                if self.admission_policy == "fifo":
+                    if stream.admission_ticket != body["stream"]["admission_ticket"]:
+                        raise ValueError("FIFO request ticket changed between leader and peers")
+                    if stream.principal != body["stream"]["principal"]:
+                        raise ValueError("FIFO request principal changed between leader and peers")
+                    self.validate_request(stream)
                 return stream
 
-            if "media" in body["stream"]:
+            if "media" in body["stream"] or self.admission_policy == "fifo":
                 context = getattr(self.decoder, "input_preparation_context", None)
                 if context is None:
                     failure = RuntimeError("TP media admission requires its installed cohort preparation owner")
@@ -370,23 +633,106 @@ class TensorParallelDecoder:
                 # All followers validate metadata before any admitted slot can
                 # enter a GPU allocation/growth collective. No model collective
                 # is permitted inside this pure, existing host protocol phase.
-                contract = hashlib.sha256(f"media-request:{wire}".encode()).hexdigest()
-                stream = context.prepare("media-request-admission", prepare_stream, may_refuse=True,
+                try:
+                    if self.admission_policy == "fifo":
+                        from tensorfold.cuda.rank_protocol import bounded_json
+
+                        record = body["stream"] if kind == "admit" else {
+                            "stream": body["stream"], "parent": body["parent"],
+                            "queue_bytes": body["queue_bytes"], "queue_count": body["queue_count"]}
+                        contract = hashlib.sha256(bounded_json(record, separators=(",", ":")).encode("ascii")).hexdigest()
+                        label = "fifo-request-admission"
+                    else:
+                        contract = hashlib.sha256(f"media-request:{wire}".encode()).hexdigest()
+                        label = "media-request-admission"
+                except BaseException as failure:
+                    self._poison_control(failure)
+                    raise
+                stream = context.prepare(label, prepare_stream, may_refuse=True,
                                          contract=contract)
             else:
                 stream = prepare_stream()
             if wire not in self.requests:
                 self._remember(wire, stream)
+            if kind == "enqueue":
+                from .retained_catalog import LogicalReference
+
+                catalog = getattr(self.decoder, "retention_catalog", None)
+                catalog.configure_admission(max_waiting_input_bytes=body["queue_bytes"],
+                                            max_pending_requests=body["queue_count"])
+                parent = None if body["parent"] is None else LogicalReference(*body["parent"])
+                stream._retention_staged = True
+                self._retention_cpu(lambda: self.decoder.enqueue_retained(stream, parent=parent))
+                return None
             original = self.decoder.points
             self.decoder.points = lambda prompt: body["points"]
             try:
+                if getattr(stream, "retention_request", None) is not None:
+                    return self._retention_cpu(lambda: self.decoder.admit(stream))
                 return self.decoder.admit(stream)
             except BaseException as error:
-                if not isinstance(error, NoRoom) or not self.decoder.live():
+                if (not getattr(stream, "_retention_staged", False)
+                        and (not isinstance(error, NoRoom) or not self.decoder.live())):
                     self._forget(wire)
                 raise
             finally:
                 self.decoder.points = original
+        if kind == "retention_retire":
+            stream = self.requests[body["wire"]]
+            record = body["error"]
+            if record is not None:
+                error_type = self._request_error_types()[record["type"]]
+                if source is not None and type(source) is not error_type:
+                    raise RuntimeError("request retirement lost the original leader error identity")
+                stream.error = source if source is not None else error_type(record["message"])
+            if stream.st is None:
+                stream.done = True
+            result = self._retention_cpu(lambda: self.decoder.retire_retained_request(stream))
+            if result and stream.st is None:
+                host = getattr(stream, "retirement_host", None)
+                if host is not None and host.delivery is None:
+                    host.retire_backend()
+                    stream.retirement_host = None
+                self._forget(body["wire"])
+            return result
+        if kind == "retention_suspend":
+            return self._retention_cpu(lambda: self.decoder.suspend_request(self.requests[body["wire"]]))
+        if kind == "retention_boundary":
+            from .retained_catalog import RetentionError, RetentionExpired
+
+            catalog = getattr(self.decoder, "retention_catalog", None)
+            def progress():
+                record = catalog.record()
+                before = (record["phases"], record["transfers"], record["blocking"])
+                catalog.apply_logical_events(body["events"])
+                catalog.expire(body["expired"])
+                if body.get("drop_optional", False):
+                    catalog.drop_optional_prefixes()
+                if body["shutdown"]:
+                    catalog.begin_shutdown()
+                if body["suspend"] is not None:
+                    try:
+                        victim = catalog.by_serial(body["suspend"])
+                    except RetentionExpired:
+                        if not body["events"] and not body["expired"]:
+                            raise
+                        # The same ordered lifetime command may have released
+                        # this formerly idle victim and its slot already.
+                    else:
+                        catalog.suspend(victim)
+                try:
+                    catalog.progress(idle=body["idle"])
+                    catalog.settle_ready()
+                except RetentionError:
+                    # Common settlement records the completed refusal on its
+                    # consumer; readiness projects it to that request only.
+                    catalog.check_health()
+                self.decoder._release_retained_states()
+                drained = catalog.shutdown_progress(idle=body["idle"]) if body["shutdown"] else False
+                record = catalog.record()
+                after = (record["phases"], record["transfers"], record["blocking"])
+                return {"drained": drained, "changed": before != after}
+            return self._retention_cpu(progress)
         if kind == "round":
             if "media_limits" in body:
                 self.decoder._media_limits = {self.requests[wire].sid: tuple(limit)
@@ -423,7 +769,11 @@ class TensorParallelDecoder:
                     self._forget(wire)
             return result
         if kind == "drop":
-            result = self.decoder.drop()
+            record = body.get("error")
+            owning = self._operation_error
+            if record is not None and owning is None:
+                owning = source if source is not None else self._request_error_types()[record["type"]](record["message"])
+            result = self.decoder.drop(owning) if record is not None else self.decoder.drop()
             profiles = getattr(self.engine, "serving_profiles", None)
             if profiles is not None and self._operation_error is not None:
                 profiles.error_outcome(self._operation_error, state_retired=True,
@@ -453,6 +803,8 @@ class TensorParallelDecoder:
             for stream in self.requests.values():
                 stream.cancel.active = False
         status = {"error": None if error is None else type(error).__name__, "state": self._state_digest()}
+        if body["kind"] in ("retention_retire", "retention_boundary", "retention_suspend"):
+            status["complete"] = result
         return result, error, status
 
     def _invoke(self, body, source=None):
@@ -488,11 +840,26 @@ class TensorParallelDecoder:
                 remote = json.loads(payload)
                 self.comm.store.delete_key(key)
                 if remote != status:
-                    self._poison_control(RuntimeError(
-                        f"tensor-parallel scheduler diverged on rank {peer}: {remote} != {status}"))
+                    failure = RuntimeError(f"tensor-parallel scheduler diverged on rank {peer}: {remote} != {status}")
+                    if isinstance(source, BaseException):
+                        self._poison_control(source)
+                        raise_failures(source, (failure,))
+                    self._poison_control(failure)
+            if self.admission_policy == "fifo" and self.failure is None:
+                # The publisher owns FIFO payload reclamation after every
+                # consumer's ACK. Reclaim on this same sending connection;
+                # peers never delete a live batch publication concurrently.
+                for key in messages:
+                    self.comm.store.delete_key(key)
         except BaseException as failure:
             # A set/get may have succeeded before interruption. Never publish
             # a later operation after uncertain peer execution or retirement.
+            if isinstance(source, BaseException) and failure is not source:
+                try:
+                    self._poison_control(source)
+                except BaseException as containment:
+                    raise_failures(source, (failure, containment))
+                raise_failures(source, (failure,))
             self._poison_control(failure)
             raise
         if error is not None and not self._recoverable_operation(error, body["kind"]):
@@ -534,12 +901,40 @@ class TensorParallelDecoder:
             body["execution"] = freeze()
         return ended + self._invoke(body)
 
+    def input_readiness(self):
+        """Project completed media errors before a production reservation or GPU step."""
+        prepare = getattr(self.decoder, "prepare_media_round", None)
+        if prepare is None:
+            return [], {}
+        limits, failures = self._media_cpu(prepare)
+        ended = []
+        for stream, error in failures:
+            from tensorfold.vision.replay import MediaBusy, MediaCancelled
+
+            error_type = "busy" if type(error) is MediaBusy else "cancelled" if type(error) is MediaCancelled else "input"
+            ended += self._invoke({"kind": "media_failure", "wire": self.wires[id(stream)],
+                "message": str(error)[:1024], "error_type": error_type}, source=error)
+        return ended, {stream.sid: "media" for stream in self.decoder.filling
+                       if stream.sid in limits and limits[stream.sid][1] == 0}
+
     def prepare_request(self, stream, *, wake):
         owner = media_requests.runtime(getattr(self.decoder, "vision", None))
         if owner is None or stream.vision is None:
             return True
         if not hasattr(stream, "_media_wire"):
             stream._media_wire, self.next_wire = self.next_wire, self.next_wire + 1
+        host = getattr(stream, "retained_host", None)
+        if host is not None:
+            if host.fill is None:
+                return True  # Decoding consumes text anchors; completed prompt media needs no replay decode.
+            def ready():
+                owner.check_media_health()
+                owner.work.set_wake(wake)
+                request = stream._media_request
+                start = host.fill.cursor
+                request.prime(start)
+                return request.limit(start, min(owner.profile.execution.input_rows, len(stream.prompt) - start)) > 0
+            return self._media_cpu(ready)
         return self._media_cpu(lambda: media_requests.prepare(stream, owner, stream._media_wire, wake))
 
     def media_runnable(self):
@@ -549,6 +944,11 @@ class TensorParallelDecoder:
     def retire_request(self, stream):
         if not self._media_cpu(lambda: media_requests.retire(stream)):
             return False
+        wire = self.wires.get(id(stream))
+        if getattr(stream, "_retention_staged", False) and wire is not None:
+            if not self._invoke({"kind": "retention_retire", "wire": wire,
+                                 "error": self._request_error_record(stream.error)}, source=stream.error):
+                return False
         if stream.st is None and getattr(stream, "_media_rank_owned", False):
             wire = self.wires.get(id(stream))
             if wire is not None:
@@ -599,8 +999,8 @@ class TensorParallelDecoder:
             self._media_cpu(lambda: media_requests.release(stream))  # All ACKs precede the leader's replay close.
         return result
 
-    def drop(self):
-        return self._invoke({"kind": "drop"})
+    def drop(self, error=None):
+        return self._invoke({"kind": "drop", "error": self._request_error_record(error)}, source=error)
 
     def shutdown(self):
         if self.comm.rank != 0:
@@ -629,7 +1029,8 @@ class TensorParallelDecoder:
                     if self.engine._closing:
                         return None
         body = json.loads(self.comm.store.get(key))
-        self.comm.store.delete_key(key)
+        if body["kind"] == "stop" or body.get("control", {}).get("admission_policy", "legacy") != "fifo":
+            self.comm.store.delete_key(key)
         body["sequence"] = self.sequence
         self.sequence += 1
         if body["kind"] == "stop":

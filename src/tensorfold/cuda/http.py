@@ -8,7 +8,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from tensorfold.cuda import health
-from tensorfold.server import anthropic, metrics, request_body, responses, runtime, stats, token_routes
+from tensorfold.server import anthropic, conversations, metrics, request_body, responses, runtime, stats, token_routes
 from tensorfold.server.cancellation import RequestCancelled, socket_cancellation
 from tensorfold.server.decisions import DecisionError
 from tensorfold.server.errors import (RequestError, error_body, invalid_request, retry_headers, server_error, status_of,
@@ -21,6 +21,9 @@ from tensorfold.server.token_routes import flag
 
 if TYPE_CHECKING:
     from tensorfold.cuda.server import App
+
+GENERATION_BODY_LIMIT = 96 << 20
+TOKENIZER_BODY_LIMIT = 32 << 20
 
 
 def usage_of(result: dict[str, Any]) -> dict[str, Any]:
@@ -92,6 +95,8 @@ def make_handler(app: App):
         def do_GET(self):
             if not self._discard_body():
                 return
+            if conversations.dispatch(self, app, "GET"):
+                return
             route = self.path.split("?", 1)[0].rstrip("/")
             if route in ("/metrics", "/v1/metrics"):
                 return metrics.send(self, app)
@@ -121,12 +126,16 @@ def make_handler(app: App):
         def do_DELETE(self):
             if not self._discard_body():
                 return
+            if conversations.dispatch(self, app, "DELETE"):
+                return
             rid = responses.route(self.path)
             if rid is None:
                 return self._json(404, {"error": unknown_route("DELETE", self.path)})
             responses.delete(self, app, rid)
 
         def do_POST(self):
+            if conversations.dispatch(self, app, "POST"):
+                return
             path = self.path.split("?", 1)[0].rstrip("/")
             if path == runtime.ROUTE:
                 try:
@@ -155,7 +164,7 @@ def make_handler(app: App):
                     return
                 return self._json(404, {"error": unknown_route("POST", self.path)})
             try:
-                body = json.loads(read_body(self, limit=(32 if tokenizer else 96) << 20) or b"{}")
+                body = json.loads(read_body(self, limit=TOKENIZER_BODY_LIMIT if tokenizer else GENERATION_BODY_LIMIT) or b"{}")
                 model = requested_model(app, body)          # an id this endpoint does not serve: 404
                 # llama.cpp's opt-in prefill progress frames, on a stream
                 progress = isinstance(body, dict) and flag(body, "return_progress", False) and bool(body.get("stream"))

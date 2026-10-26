@@ -16,6 +16,7 @@ import math
 import os
 from pathlib import Path, PurePosixPath
 import re
+import threading
 from types import MappingProxyType
 
 from tensorfold.cuda.tensor_file import _metadata_object, _regular_stream, checkpoint_path
@@ -23,13 +24,62 @@ from tensorfold.cuda.tensor_file import _metadata_object, _regular_stream, check
 SCHEMA = "tensorfold.serving-profile"
 MAX_MANIFEST_BYTES = 1 << 20
 HEX = re.compile(r"[0-9a-f]{64}\Z")
+SERVICE_OPTIONS = frozenset({"max_waiting_input_bytes", "max_waiting_input_bytes_per_principal",
+                              "output_queue_tokens", "queue_timeout_s", "retention_policy"})
 FIXED = frozenset({"tp", "rank", "master", "port", "expert_session", "vram_experts", "vram_experts_pin",
-                   "vision", "vision_urls", "indexer_history", "adaptive_sessions"})
+                   "vision", "vision_urls", "indexer_history", "adaptive_sessions"}) | SERVICE_OPTIONS
 PATH_OPTIONS = frozenset({"mtp_model_dir", "dspark_model_dir", "dflash2_model_dir", "family_manifest", "chat_template_file",
                           "execution_profile_manifest", "position_profile_manifest", "media_profile_manifest"})
 API_FIELDS = frozenset({"served", "aliases", "default_thinking", "sampling", "max_tokens", "reasoning_effort",
                         "thinking_budget"})
 _UNRESOLVED_POSITION = object()  # Omitted resolution differs from an explicitly unbound legacy result.
+
+
+def validate_service_options(model_dir, options):
+    """Resolve FIFO/retention against actual source layout before acquisition."""
+    from tensorfold.server.request_limits import optional_limit
+    from tensorfold.families import read_config
+    from ..gguf import metadata_config, resolve_gguf
+    from .history_placement import HistoryPlacement
+    from .retention_policy import RetentionPolicy
+    from . import DEPTH
+
+    waiting = optional_limit(options.get("max_waiting_input_bytes"), "max_waiting_input_bytes")
+    principal_bytes = optional_limit(options.get("max_waiting_input_bytes_per_principal"),
+                                     "max_waiting_input_bytes_per_principal")
+    output_tokens = optional_limit(options.get("output_queue_tokens"), "output_queue_tokens")
+    timeout = options.get("queue_timeout_s")
+    if timeout is not None and (type(timeout) not in (int, float) or not 0 < timeout <= threading.TIMEOUT_MAX):
+        raise ValueError("queue_timeout_s must be positive, finite and within the runtime wait range")
+    world, policy = options.get("tp", 1), options.get("retention_policy")
+    depth = options.get("depth", DEPTH)
+    if type(depth) is not int or depth < 0:
+        raise ValueError("serving depth requires a nonnegative integer")
+    legacy_dspark = depth > 0 and (options.get("dspark_model_dir") is not None
+                                   or options.get("draft_method") == "dspark")
+    if policy is not None:
+        if type(policy) is not RetentionPolicy:
+            raise ValueError("retention_policy must be an explicitly parsed RetentionPolicy")
+        policy.validate_world(world)
+    unique = False
+    if (world == 8 and not legacy_dspark and options.get("adaptive_sessions") is True
+            and options.get("indexer_history", "gpu") == "gpu"
+            and options.get("vram_experts") is None and options.get("expert_session") is None):
+        entry = resolve_gguf(model_dir)
+        if entry is not None or options.get("family_manifest") is not None:
+            raw = metadata_config(entry) if entry is not None else read_config(model_dir)
+            text = raw.get("text_config") or raw
+            unique = HistoryPlacement.supports(world, text.get("num_key_value_heads"))
+    if not unique and (waiting is not None or principal_bytes is not None or output_tokens is not None
+                       or timeout is not None or policy is not None):
+        if legacy_dspark:
+            raise ValueError("FIFO input/deadline and retention options do not apply to legacy DSpark without implemented positions")
+        raise ValueError("FIFO input/deadline and retention options require actual adaptive Flash Next unique TP8 GPU histories")
+    if unique and waiting is None:
+        raise ValueError("adaptive unique-history FIFO admission requires explicit positive --max-waiting-input-bytes")
+    return {"admission_policy": "fifo" if unique else "legacy",
+            "max_waiting_input_bytes": waiting, "max_waiting_input_bytes_per_principal": principal_bytes,
+            "output_queue_tokens": output_tokens, "queue_timeout_s": timeout}
 
 
 def profile_root(value):
@@ -369,13 +419,22 @@ def prepare(root, name, *, initializer, fixed_options, verify_content=True, expe
     check_pair(pair, head_dim=int(text.get("head_dim") or text["hidden_size"] // text["num_attention_heads"]))
     options.update(fixed_options)
     options["context_explicit"] = True
+    validate_service_options(model_dir, options)
     positions, binding, numerical = resolve_profile_positions(model_dir, options)
     position_json = _position_document(positions, binding, numerical)
     required = _required_files(model_dir, options, positions=positions)
     artifacts = tuple(_artifact(item, path.parent, verify_content=verify_content) for item in raw["artifacts"])
     if len({item["path"] for item in artifacts}) != len(artifacts) or required - {item["path"] for item in artifacts}:
         raise ValueError("serving artifacts must cover every target/draft/tokenizer/template load input exactly once")
-    identity_options = {key: str(value) if isinstance(value, Path) else value for key, value in options.items() if key != "rank"}
+    from .retention_policy import RetentionPolicy
+
+    # These optional process policies define None as unset. A preparation CLI
+    # spelling that default explicitly cannot create a different identity from
+    # the same deployment omitting it. Runtime options retain their exact values.
+    identity_options = {key: value.record() if type(value) is RetentionPolicy else
+                        str(value) if isinstance(value, Path) else value
+                        for key, value in options.items() if key != "rank"
+                        and not (key in SERVICE_OPTIONS and value is None)}
     identity = hashlib.sha256(json.dumps({"model_dir": str(model_dir), "options": identity_options,
         "api": raw["api"], "position_profile": json.loads(position_json), "artifacts": [{key: value for key, value in item.items() if key != "stat"}
                                           for item in artifacts]}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()

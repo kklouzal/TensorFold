@@ -1093,7 +1093,7 @@ class State:
             self.mtp_boundary = None
 
     def copy_prefix(self, source: "State", pos: int, mtp_len: int, *, indexer_snapshot=None,
-                    poison_control=None):
+                    poison_control=None, copy_dflash=True):
         """Copy only valid cache rows and complete pools; the caller restores the kept point's recurrent snapshot."""
 
         if self.compact_indexer is not None or source.compact_indexer is not None:
@@ -1104,8 +1104,18 @@ class State:
         self.kv_check()
         if getattr(self, "dspark_runtime", None) is not None:
             self.dspark_runtime.validate_copy(self, source, pos)
+        if type(copy_dflash) is not bool:
+            raise ValueError("draft prefix participation must be explicit boolean")
         if getattr(self, "dflash2_runtime", None) is not None:
-            self.dflash2_runtime.validate_copy(self, source, pos)
+            if copy_dflash:
+                self.dflash2_runtime.validate_copy(self, source, pos)
+            else:
+                # A serial new request copies target history only. Preserve
+                # health/profile ownership without claiming draft conditioning.
+                self.dflash2.check()
+                source.dflash2.check()
+                if self.dflash2.enabled or self.dflash2.profile_identity != source.dflash2.profile_identity:
+                    raise ValueError("target-only prefix copy requires its inactive matching draft allocation")
         if self is source or self.kv_identity != source.kv_identity or self.ratio != source.ratio:
             raise ValueError("a prefix copy needs distinct slots with matching cache formats")
         if (type(pos) is not int or type(mtp_len) is not int

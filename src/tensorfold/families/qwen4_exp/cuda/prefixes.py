@@ -12,9 +12,12 @@ Past ``keep``, a chain's spare points go before any value: a chain keeps one poi
 from tensorfold.cleanup import raise_failures
 
 LADDER = 4096          # tokens: the nearest band of a chain's ladder, each farther band twice as wide
+_UNSCOPED = object()   # Legacy policy only; None is the explicit local/no-auth domain in selected FIFO profiles.
 
 
-def _best(kept, prompt, busy=()):
+def _best(kept, prompt, busy=(), *, principal=_UNSCOPED):
+    if principal is not _UNSCOPED:
+        kept = (entry for entry in kept if "prefix_principal" in entry[2] and entry[2]["prefix_principal"] == principal)
     return max((k for k in kept if id(k[1]) not in busy and len(k[0]) < len(prompt)
                 and prompt[:len(k[0])] == k[0]), key=lambda k: len(k[0]), default=None)
 
@@ -73,11 +76,11 @@ def _spare(kept) -> list:
     return spare
 
 
-def slot_for(owner, prompt: list[int], reuse: bool):
+def slot_for(owner, prompt: list[int], reuse: bool, *, principal=_UNSCOPED):
     """Copy a fork into spare capacity; else resume a chain in place when that keeps more than it discards."""
 
     busy = owner._busy()
-    best = _best(owner.kept, prompt) if reuse else None
+    best = _best(owner.kept, prompt, principal=principal) if reuse else None
     if best is not None and owner.free and (id(best[1]) in busy or _longer(owner.kept, best)):
         spare = owner.free.pop()
     else:
@@ -100,7 +103,7 @@ def slot_for(owner, prompt: list[int], reuse: bool):
                 raise_failures(primary, [cleanup])
             raise
         owner.free.append(spare)        # no room for the copy: a cold prefill would need as much, so resume in place
-    best = _best(owner.kept, prompt, busy) if reuse else None
+    best = _best(owner.kept, prompt, busy, principal=principal) if reuse else None
     if best is not None:
         # resume in place unless that discards more kept tokens than going cold costs: the reused tokens prefilled
         # again, and with no free slot the whole chain a cold prefill evicts (best's own, if it is worth least)
@@ -155,12 +158,20 @@ def _worth(owner, entry) -> int:
     return owner.used.get(id(entry[1]), 0) + saved
 
 
-def remember(owner, ids, st, snap, tail) -> None:
+def remember(owner, ids, st, snap, tail, *, principal=_UNSCOPED) -> None:
     """Keep a point of ``st``'s chain; past ``keep`` entries, spare ladder points go first, then the one worth least
     (near-end ladder points before deep history), displaced idle slots back to the free list."""
 
-    gone = [k[1] for k in owner.kept if k[0] == ids]
-    owner.kept = [k for k in owner.kept if k[0] != ids] + [(ids, st, snap, tail)]
+    if principal is _UNSCOPED:
+        gone = [k[1] for k in owner.kept if k[0] == ids]
+        owner.kept = [k for k in owner.kept if k[0] != ids] + [(ids, st, snap, tail)]
+    else:
+        if "prefix_principal" not in snap or snap["prefix_principal"] != principal:
+            raise ValueError("prefix publication differs from its actual request principal")
+        def same(entry):
+            return entry[0] == ids and "prefix_principal" in entry[2] and entry[2]["prefix_principal"] == principal
+        gone = [entry[1] for entry in owner.kept if same(entry)]
+        owner.kept = [entry for entry in owner.kept if not same(entry)] + [(ids, st, snap, tail)]
     _use(owner, st)
     while len(owner.kept) > owner.keep:
         spare = _spare(owner.kept)
