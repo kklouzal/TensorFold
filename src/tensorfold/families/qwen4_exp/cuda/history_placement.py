@@ -33,6 +33,21 @@ def compact_stage_bytes(rows: int, caches: int, *, mtp: bool = False, mtp_only: 
     return rows * (channels * 128 * 2 + int(not mtp_only) * 3 * 8 + int(mtp) * (128 * 2 + 3 * 8))
 
 
+def coordinate_source_host_bytes(rows: int) -> int:
+    """Additional pageable array payload for selected TP8 text issuance.
+
+    One sequential issuer owns the int64 row vector, THW matrix, validated
+    matrix copy and int32 transfer array: 8+24+24+12 bytes per row. The
+    three-axis reduction briefly adds 24 bytes before the int32 cast. Python
+    metadata and library/driver-private storage retain their runtime reserves.
+    Call with the largest target/MTP/prefill row envelope, not their sum.
+    Existing compact stages and owner preparation already cover GPU payloads;
+    this function grants no device or allocator credit and pins no host data.
+    """
+    _int(rows, "coordinate source rows", 1)
+    return max(68 * rows, 56 * rows + 24)
+
+
 @dataclass(frozen=True)
 class HistoryPlacement:
     world: int

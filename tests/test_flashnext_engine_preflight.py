@@ -157,6 +157,7 @@ def test_compact_codec_rejects_modern_provider_before_target_metadata_or_weights
 
 
 def test_compact_gguf_refuses_blackwell_before_provider_setup_or_weight_loading(monkeypatch, tmp_path):
+    from gguf_fixture import tiny_model
     from tensorfold.cuda import chat_template, capacity
     from tensorfold.cuda.sm70 import execution_policy
     from tensorfold.families import qwen4_exp
@@ -169,6 +170,9 @@ def test_compact_gguf_refuses_blackwell_before_provider_setup_or_weight_loading(
     text['head_dim'] = 256
     text['shared_expert_intermediate_size'] = 1024
     (tmp_path / 'config.json').write_text(json.dumps(text))
+    # Layout eligibility now reads authoritative source headers before CUDA;
+    # keep this hardware-ordering fixture backed by a real GGUF inventory.
+    tiny_model(tmp_path / 'target.gguf')
     monkeypatch.setattr(gguf, 'resolve_gguf', lambda path: tmp_path / 'target.gguf')
     monkeypatch.setattr(chat_template, 'prepare_chat_template', lambda *a, **kw: None)
     monkeypatch.setattr(qwen4_exp, 'rope_parameters', lambda *a: RopeParameters.from_config(text))

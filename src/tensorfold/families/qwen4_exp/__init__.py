@@ -226,6 +226,9 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         raise ValueError("indexer_history ram requires the GGUF SM70 provider")
     serving_root = options.get("serving_profile_root")
     execution_manifest = options.get("execution_profile_manifest")
+    position_manifest = options.get("position_profile_manifest")
+    if position_manifest is not None and not sm70:
+        raise ValueError("position_profile_manifest requires an explicit Flash Next SM70 provider")
     if (execution_manifest is not None or serving_root is not None) and not (gguf and history == "gpu" and vram_experts is None):
         raise ValueError("execution_profile_manifest requires resident Flash Next GGUF GPU histories on SM70")
     method = options.get("draft_method", "auto")
@@ -287,6 +290,8 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         engine_options["family_manifest"] = Path(family_manifest)
         if options.get("_prepared_family_plan") is not None:
             engine_options["_prepared_family_plan"] = options["_prepared_family_plan"]
+    if position_manifest is not None:
+        engine_options["position_profile_manifest"] = Path(position_manifest)
     if sm70 and history == "gpu":
         # Preserve auto intent through the CLI's ordinary CUDA one-stream
         # default. Integer settings constrain the solved full-context capacity.
