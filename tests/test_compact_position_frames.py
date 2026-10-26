@@ -13,10 +13,11 @@ from tensorfold.families.qwen4_exp.cuda.compact_indexer import (
     validate_target_indexer_frame, validate_mtp_indexer_frame,
 )
 from tensorfold.families.qwen4_exp.cuda.position_coordinates import issue_coordinates
+from tensorfold.families.qwen4_exp.cuda.input_preparation import InputPreparationContext
 from test_qwen4_exp_position_coordinates import policy
 
 
-def prepared(*, mtp=False, profile_identity="1" * 64):
+def prepared(*, mtp=False, profile_identity="1" * 64, context_identity=None):
     position = policy("mtp" if mtp else "target")
     stage = Staging(4, 13, "cpu", mtp=True)
     prefix = "mtp" if mtp else "target"
@@ -25,6 +26,9 @@ def prepared(*, mtp=False, profile_identity="1" * 64):
         prefix + "_indexer_position": position, prefix + "_indexer_coordinate_storage": storage,
         prefix + "_indexer_frame_id": 0, prefix + "_indexer_coordinates": None,
         prefix + "_indexer_frame": None})
+    if context_identity is not None:
+        buffers.input_preparation_context = InputPreparationContext(NS(
+            positions=object(), comm=None, meta={"coordinate_profile_identity": context_identity}))
     states, windows = [], []
     for first, start, generation, media in ((0, 7, 3, "a"), (2, 12, 9, "b")):
         state = NS(pos=start, mtp_len=start, slot_generation=generation, history_generation=1,
@@ -38,6 +42,73 @@ def prepared(*, mtp=False, profile_identity="1" * 64):
         states.append(state)
         windows.append(CoordinateWindow(first, first + 2, issued, position))
     return buffers, position, states, tuple(windows), [(st, i * 2, i * 2 + 2) for i, st in enumerate(states)]
+
+
+@pytest.mark.parametrize("mtp", [False, True])
+@pytest.mark.parametrize("route", ["issued", "text", "clear"])
+def test_foreign_full_profile_is_refused_before_frame_or_text_writes(monkeypatch, mtp, route):
+    from tensorfold.families.qwen4_exp.cuda import position_coordinates as issuer
+
+    buffers, position, states, windows, segments = prepared(mtp=mtp, context_identity="1" * 64)
+    stage = stage_mtp_indexer_frame if mtp else stage_target_indexer_frame
+    validate = validate_mtp_indexer_frame if mtp else validate_target_indexer_frame
+    prefix = "mtp" if mtp else "target"
+    stage(buffers, segments, windows)
+    old = getattr(buffers, prefix + "_indexer_frame")
+    expected = validate(buffers, segments).clone()
+    version = old.storage._version
+    buffers.input_preparation_context = InputPreparationContext(NS(
+        positions=object(), comm=None, meta={"coordinate_profile_identity": "2" * 64}))
+    assert all(st.position_profile_identity == position.identity for st in states)
+    assert all(window.source.proof.profile_identity == "1" * 64 for window in windows)
+    monkeypatch.setattr(buffers.compact_indexer_stage, "begin",
+                        lambda **kw: pytest.fail("staging began before full profile validation"))
+    monkeypatch.setattr(issuer, "issue_coordinates",
+                        lambda *a, **kw: pytest.fail("coordinate writes before full profile validation"))
+    with pytest.raises(ValueError, match="different full coordinate profiles"):
+        if route == "text":
+            stage_text_indexer_frame(buffers, segments, mtp=mtp)
+        else:
+            stage(buffers, segments, windows if route == "issued" else None)
+    assert old.active and getattr(buffers, prefix + "_indexer_frame") is old
+    assert getattr(buffers, prefix + "_indexer_frame_id") == old.frame_id
+    assert old.storage._version == version
+    assert torch.equal(getattr(buffers, prefix + "_indexer_coordinates"), expected)
+
+
+@pytest.mark.parametrize("route", ["target", "mtp", "compute", "mixed", "mtp_compute"])
+def test_foreign_full_profile_is_rejected_before_proofs_or_persistent_compute(monkeypatch, route):
+    from tensorfold.cuda import cohort
+    from tensorfold.families.qwen4_exp.cuda import forward, mtp as method, position_coordinates as issuer
+
+    is_mtp = route in ("mtp", "mtp_compute")
+    buffers, _position, _states, windows, segments = prepared(mtp=is_mtp, context_identity="1" * 64)
+    stage = stage_mtp_indexer_frame if is_mtp else stage_target_indexer_frame
+    validate = validate_mtp_indexer_frame if is_mtp else validate_target_indexer_frame
+    stage(buffers, segments, windows)
+    assert validate(buffers, segments).tolist() == [[7, 21, 31], [8, 22, 32], [12, 21, 31], [13, 22, 32]]
+    context = InputPreparationContext(NS(positions=object(), comm=None,
+        meta={"coordinate_profile_identity": "2" * 64}))
+    buffers.input_preparation_context = context
+    notifications = []
+    monkeypatch.setattr(cohort, "notify_failure", lambda: notifications.append(True))
+    monkeypatch.setattr(issuer.CoordinateProof, "validate",
+                        lambda *a, **kw: pytest.fail("proof validation before full profile validation"))
+    def persistent(*args):
+        pytest.fail("persistent work before full profile validation")
+    monkeypatch.setattr(forward, "_kv_begin", persistent)
+    monkeypatch.setattr(method, "_kv_begin", persistent)
+    weights = NS(cfg=NS(), dflash2=NS(begin=persistent))
+    with pytest.raises(ValueError, match="different full coordinate profiles"):
+        if route == "compute":
+            forward.compute(weights, segments, buffers)
+        elif route == "mixed":
+            forward.compute_mixed(weights, segments, buffers, segments, buffers)
+        elif route == "mtp_compute":
+            method.mtp_compute(weights, segments, buffers)
+        else:
+            validate(buffers, segments)
+    assert notifications == [True] and context.cohort._execution_manifest_uncertain
 
 
 @pytest.mark.parametrize("mtp", [False, True])
@@ -166,7 +237,7 @@ def test_actual_frame_error_stays_primary_when_cohort_notification_fails(mtp, ch
     def fail(error):
         observed.append(error)
         raise secondary
-    buffers.input_preparation_context = NS(fail=fail)
+    buffers.input_preparation_context = NS(identity="1" * 64, fail=fail)
     with pytest.raises(ValueError) as caught:
         validate(buffers, segments)
     assert observed == [caught.value] and caught.value is observed[0]
