@@ -875,11 +875,20 @@ class MultiDecoder:
     def warm(self) -> None:
         """A synthetic greedy request through prefill (a full chunk, then a partial one cut at the kept point), its drafts and one round, then forgotten, so no request compiles or loads a kernel."""
 
-        s = Stream([0] * min(self.prefill_rows + WARM_TAIL + 1, self.capacity - self.depth - 2), 2)
+        s = Stream([0] * min(self.prefill_rows + WARM_TAIL + 1, self.capacity - self.depth - 2), 2,
+                   stop_eos=False)
         self.admit(s)
-        if not s.done:
-            self.round()                                 # the whole prompt (nothing else decodes), then a round
+        # Adaptive rounds intentionally return after a bounded prefill pass.
+        # Finish the full synthetic prompt and decode before public admission
+        # policy can expose these private, unticketed warmup owners.
+        while not s.done:
+            self.round()
+        if s.error is not None:
+            raise s.error
+        if s.sid in self.fills or any(stream is s for stream in self.filling):
+            raise RuntimeError("synthetic warmup completed before its prompt owner retired")
         self.streams.pop(s.sid, None)
+        self.passed.pop(s.sid, None)
         self._drop_kept(s.st)
         self._shrink(s.st)
         if all(f is not s.st for f in self.free):
