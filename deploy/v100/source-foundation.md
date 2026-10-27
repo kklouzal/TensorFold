@@ -413,3 +413,15 @@ fixture evidence and the justified fixture-only correction. No new full
 past the former State-domain refusal but later startup remained unready and
 under investigation; model/compiler/resource/quality/performance gates remain
 separately owned.
+
+The later startup-order application update uses wheel `86a04dee` and image
+`30fda46a` on the exact protected a192 base. It keeps early TP ownership while
+deferring public Scheduler/FIFO configuration until private synthetic warmup
+finishes; real public admission validation is not bypassed. The
+[affected CPU receipt](../../docs/verification-v100-startup-order-cpu-20261027.json)
+separates 68 direct controls, a 15-test/two-subtest lifetime rerun and 23 unchanged
+additional cases. The fixture repair retains logical 2,048, physical 2,053/depth
+four and all original lifecycle assertions; original failures remain archived.
+All package/protected/Config bytes and FD4a06 identities are bound separately.
+The live target crossed the former rank-0 failure boundary with all ranks, but
+model health/output/serving qualification remains separately owned.

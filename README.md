@@ -44,6 +44,13 @@ from physical speculative guard storage. Image `a19233f2`, whole wheel
 of 158, 1,177 and 231 tests. The target passed the former State-domain refusal
 point but later startup still failed before readiness and remains under
 investigation; these software checks establish no model or performance result.
+The subsequent startup-order fix publishes public Scheduler/FIFO admission
+after synthetic warmup, retaining early TP ownership and real public validation.
+Whole wheel `86a04dee`/image `30fda46a` has a [scoped CPU receipt](docs/verification-v100-startup-order-cpu-20261027.json):
+68 direct controls, a corrected lifetime leaf of 15 tests plus two subtests,
+and 23 separately reused additional cases. A live target diagnostic passed the
+former rank-0 failure boundary with all eight ranks; model loading/readiness and
+complete-output acceptance remain separately owned and unqualified here.
 The earlier media/frontend/MTP checkpoint at `64b24dd5` passed 4,365 installed
 checks and 124 subtests; tree `413e132b` passed 5,214 checks and 144 subtests.
 Those historical results retain their original source and workload scope.

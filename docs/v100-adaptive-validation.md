@@ -145,6 +145,22 @@ The target passed the original State row-domain failure point but later
 startup still failed before readiness. That failure remains under primary
 investigation; this CPU checkpoint supplies no OOM or model-readiness diagnosis.
 
+The subsequent startup-order source `a1523f66` defers public Scheduler/FIFO
+configuration until constructor synthetic warmup completes. Early TP/control
+ownership, managed/follower transitions, rollback and real public principal/
+ticket/admission validation remain unchanged; no synthetic credentials are added.
+Whole wheel `86a04dee` and image `30fda46a` passed 68 direct startup/FIFO/TP
+controls. A lifetime AST fixture required the actual `context_window` property
+and logical 2,048 plan while retaining physical 2,053/depth four and all original
+assertions. Its 15-test/two-subtest leaf reran successfully; 23 nonoverlapping
+additional cases retain their separate earlier pass. The original five fixture
+failures remain preserved. The [startup-order receipt](verification-v100-startup-order-cpu-20261027.json)
+binds all 715 package records and protected/configuration checks without a new
+full 187-module claim. A live whole-wheel diagnostic passed the previous rank-0
+failure boundary, with all eight ranks joining target input preparation; the
+reported model state remained loading, with no health or complete-output
+acceptance claimed.
+
 NVIDIA compiler issue **6111901** remains a separate release gate; see the
 [source-foundation contract](../deploy/v100/source-foundation.md#compiler-issue-6111901-remains-a-release-gate).
 Actual V100/TP8 CUDA/NCCL execution, model output/numerics/quality, physical

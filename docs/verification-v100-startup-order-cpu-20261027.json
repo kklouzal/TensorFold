@@ -1,0 +1,217 @@
+{
+  "schema": "tensorfold.v100-startup-order-affected-software-checkpoint",
+  "version": 1,
+  "created_utc": "2026-10-27T02:33:49.522882+00:00",
+  "status": "Verified startup/FIFO constructor-order CPU integration; target progressed through the previous rank-0 failure boundary, with model readiness/output acceptance still separate",
+  "source": {
+    "application_source_commit": "a1523f6628c7d429a97b19f96e779a23b8c90b9d",
+    "application_source_tree": "585bd7ff0b6be7d23b89719dc51a5f89c6ae2658",
+    "application_code_hold_sha256": "ddd585b9332569ca436621172e71621774d3fdac4d301d2bf0ec0a6c7425aaa4",
+    "fixture_integration_commit": "4ad7015a07fbec8b80d73afa9a2203386741eb49",
+    "fixture_integration_tree": "6770d3c39d553abc0ef2bece9c332523c5d0acc6",
+    "fixture_integration_hold_sha256": "d79e01a34ab44f005a0405e302e7688a2e0ee2af39a0bd4887ddd61549b6b45b",
+    "tracked_archive_sha256": "dace8c6028412ecf2f2e6e045c7c212a5ae379fbfd5b0a9cb519cf71596c087d",
+    "canonical_integration_commit": "3d8b6559eefbfe47d318c0a4d2e314116410b0bc",
+    "published_logical_context_parent": "8cde07e164c2095528f0bd638d7eddd3010444db",
+    "changed_APP_files_vs_a192": [
+      "families/qwen4_exp/cuda/engine.py"
+    ]
+  },
+  "contract": {
+    "ordering": "Distributedadapter exists for warmup; syntheticwarmup remains legacy. PublicScheduler/FIFO configuration follows warmup, then publishedactor starts. Singledevice/TPleader/TPfollower and managedpaths retain requiredordering/ownership.",
+    "public_validation": "Real public principal/ticket/admission checks remain unchanged. Synthetic warmup uses the existing private legacy path, with no fabricated public credentials or admission bypass.",
+    "ownership": "Early TensorParallelDecoder/control/poison/prefix ownership remains available during warmup; managed, follower and rollback paths retain their existing semantics."
+  },
+  "whole_application_wheel": {
+    "artifact": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3087011,
+    "sha256": "86a04dee498a2d6d3c1f470f6691143dfaaa6ec37f7eb56ffbc157ea0374a70f"
+  },
+  "image": {
+    "image_id": "sha256:30fda46a4c40422e055e0615a8186fc1c39678be9c8c9761885fc0cb77c28993",
+    "tag": "tensorfold-v100:app-fifo-startup-v1",
+    "base_image": "sha256:a19233f2b66ce42527bc2c6d81eab11d671195aefeccfcf7cc002036055f6d31",
+    "uncompressed_bytes": 23669853855,
+    "config_differences": {},
+    "whole_wheel": "86a04dee498a2d6d3c1f470f6691143dfaaa6ec37f7eb56ffbc157ea0374a70f"
+  },
+  "packaging_method": "Complete owned application wheel/checksum/no-deps/pip-check update and Config-preserving immutable commit, retaining the existing SDK/media/policy base; distinct from the maintained Dockerfile reproduction recipe execution.",
+  "actual_CPU_scopes": {
+    "direct_current_source_controls": {
+      "passed": 68,
+      "seconds": 4.84,
+      "modules": [
+        "test_cuda_scheduler_startup_source.py",
+        "test_cuda_fifo_admission.py",
+        "test_flashnext_tp_scheduler.py"
+      ],
+      "log_sha256": "1b4df31b03262a3753537f57a656e53ee00e653cff76253f92f2615d45e9b8e5"
+    },
+    "current_lifetime_rerun": {
+      "passed": 15,
+      "subtests": 2,
+      "seconds": 0.37
+    },
+    "nonoverlapping_other_additional_cases_reused": 23,
+    "scope_note": "The 15-case lifetime leaf alone reran after its fixture-only correction. Other23 and original68 are retained within unchanged-input scope, not relabelled as a fresh combined run."
+  },
+  "fixture_remediation": {
+    "changed_fixture_files": [
+      "tests/test_flashnext_engine_lifetime.py"
+    ],
+    "negative_attempt": {
+      "failed": 5,
+      "passed": 33,
+      "subtests": 2,
+      "log_sha256": "0ba3aa044355eb6c4d55a33db123b7b9228c41082d8dc04e2e0ff6176fbdf8fe",
+      "cause": "AST-extracted Engine fixture omitted actual context_window dependency; only lifetime fixture corrected, all assertions retained."
+    },
+    "rationale": "The AST fixture now includes the actual context_window property and authoritative logical2048 plan. Physical2053/depth4, all15 test bodies/assertions/timeouts/ownership/failure oracles remain. No production fallback or lowered contract.",
+    "APP_source_wheel_image_unchanged_for_fixture_delta": true
+  },
+  "identity_and_drift": {
+    "package_files": 715,
+    "code_files": 707,
+    "unchanged_code_files": 706,
+    "all715_package_and707code_before_after_match": true,
+    "all_source_and_fixture_bytes_unchanged": true,
+    "all46_protected_files_equal_base_and_unchanged": true,
+    "full_base_Config_exactly_equal": true,
+    "base_RootFS_layer_prefix_retained": true,
+    "FD_binary_exactly_reused": {
+      "bytes": 37952,
+      "sha256": "4a0625bdf0a494437058e0ddbc62f04d7092c8cc64178e24fc17d669d2abd984"
+    },
+    "no_repeated_FD_or_SDK_or_full187_controls": true
+  },
+  "evidence": {
+    "source-hold.json": {
+      "name": "source-hold.json",
+      "bytes": 465,
+      "sha256": "ddd585b9332569ca436621172e71621774d3fdac4d301d2bf0ec0a6c7425aaa4"
+    },
+    "source-hold-integration.json": {
+      "name": "source-hold-integration.json",
+      "bytes": 784,
+      "sha256": "d79e01a34ab44f005a0405e302e7688a2e0ee2af39a0bd4887ddd61549b6b45b"
+    },
+    "tracked-source.json": {
+      "name": "tracked-source.json",
+      "bytes": 473,
+      "sha256": "f87031ebe6d167fbe74063f74d6fc67b836599a4dae2ad06a731175806e25538"
+    },
+    "tracked-source-integration.json": {
+      "name": "tracked-source-integration.json",
+      "bytes": 468,
+      "sha256": "31b6f435e98bc815a12daa703a81ecc8cb3ec994ffb9dd440a72cd0d40cd56b0"
+    },
+    "wheel-provenance.json": {
+      "name": "wheel-provenance.json",
+      "bytes": 125127,
+      "sha256": "55288bfb6d1fce140e0b09bd2c6dd6a90a90499b647377340e7fa1865a0dbbb4"
+    },
+    "execution.json": {
+      "name": "execution.json",
+      "bytes": 5440,
+      "sha256": "2d7713de71915d1175ed9b1a5ab89ec35bdd7e61c11e426ea08e620b5b5a8598"
+    },
+    "integration-execution.json": {
+      "name": "integration-execution.json",
+      "bytes": 1885,
+      "sha256": "c432bef4f7285abf0b6c966df71604df4abe81c5d0be6725063d8680a63a5317"
+    },
+    "packaging-result.json": {
+      "name": "packaging-result.json",
+      "bytes": 927,
+      "sha256": "f39ac22b0b52231a902aba477a47ba449819abec48e69ea04ee9349f743f4264"
+    },
+    "d13-source-final.json": {
+      "name": "d13-source-final.json",
+      "bytes": 4814,
+      "sha256": "bbc5b4fdd7bb55ceb5f5242d7e50f3bb8db87bc8b69177e9c583fe886195f830"
+    },
+    "d14-source-final.json": {
+      "name": "d14-source-final.json",
+      "bytes": 4743,
+      "sha256": "e9af2b5eb0dd161ef2a20dfdef65fdd6df38d9fc53ae096a2b222123ead57c88"
+    },
+    "d13-integration-final.json": {
+      "name": "d13-integration-final.json",
+      "bytes": 4027,
+      "sha256": "dbc30bfcba12ed2ce194cc471ae9f1089bdc14c2a968bf2675d517ea905292d3"
+    },
+    "d14-integration-final.json": {
+      "name": "d14-integration-final.json",
+      "bytes": 2282,
+      "sha256": "eb27f7a823943ead5b1fd86559b58c0ff506a1c0cfd3cb3f1557a4139e596eee"
+    }
+  },
+  "independent_green": {
+    "name": "green.json",
+    "bytes": 4832,
+    "sha256": "792bc7aeaee00bc89bf6710edfc4790f5213db4af174d89ac05440508d9e375b"
+  },
+  "raw_gate_evidence": {
+    "manifest.json": {
+      "name": "manifest.json",
+      "sha256": "46544dfc14083090f6c684fef10a4f691c75edd6d1cec602e1e6c397a28b70d4"
+    },
+    "manifest-integration.json": {
+      "name": "manifest-integration.json",
+      "sha256": "fa7ca3ec5c7edd9cefb383845bedb76975482cfe54f03b6094ba3e1a3ef76d5b"
+    },
+    "result.json": {
+      "name": "result.json",
+      "sha256": "e43d22bd53339fd0060b3de0128029138635f7266c1b53699efe6f13568c1ac8"
+    },
+    "lifetime-result.json": {
+      "name": "lifetime-result.json",
+      "sha256": "c9e97cac821903f43e9ceca339d2a97069fd956b9a40d4f1389c894538ebe9ee"
+    },
+    "installed.log": {
+      "name": "installed.log",
+      "sha256": "0ba3aa044355eb6c4d55a33db123b7b9228c41082d8dc04e2e0ff6176fbdf8fe"
+    },
+    "lifetime.log": {
+      "name": "lifetime.log",
+      "sha256": "d6e93cb3a936863b6edcb23a1230ff138d46ee231820aea132d64c181e277348"
+    },
+    "evidence/proof.json": {
+      "name": "evidence/proof.json",
+      "sha256": "58db38d1237b26becb1519d586128e868bdec847a06f12f0e5efc82ab7a429c4"
+    },
+    "lifetime-evidence/proof.json": {
+      "name": "lifetime-evidence/proof.json",
+      "sha256": "ecb89ebc23d3fe3ed8a0dff6f7a14f4f180933556b31ac87e9fe3990da8fbd13"
+    }
+  },
+  "history_and_reuse": {
+    "prior_logical_receipt": "verification-v100-logical-context-cpu-20261027.json",
+    "prior_full187_receipt": "verification-v100-portable-policy-cpu-20261027.json",
+    "no_new_full187_or_nativeFD_or_SDK_run": true,
+    "FD4a06_and_protected_runtime_reused_at_exact_identity": true,
+    "negative_fixture_attempt_preserved": true
+  },
+  "reported_target_boundary": {
+    "reported_by": "Root/native owner live whole-wheel diagnostic",
+    "observation": "Rank0 joined all seven followers in input-preparation target-merged-inputs sequence2, passing the previous rank-0 startup failure boundary.",
+    "model_state_at_report": "still loading",
+    "health_or_complete_output_acceptance_claimed": false,
+    "qualification": "This boundary observation is independent of the CPU publication milestone; model/serving acceptance remains Root-owned."
+  },
+  "documentation_relationship": {
+    "this_receipt_and_following_status_docs_not_test_image_inputs": true,
+    "canonical_714_package_sources_equal_held_APP_and86a": true,
+    "published8cde_and_native_user_history_preserved": true
+  },
+  "release_qualified": false,
+  "pending_gates": [
+    "Complete model warmup/startup and actual health/output acceptance",
+    "Actual V100/kernel/collective/graph/compiler6111901 gates as applicable",
+    "SC117/MTP/DFlash/media numerical and quality gates",
+    "Physical capacity/allocator/RSS/NUMA/native wall deadlines",
+    "Representative P3/P4 and final service/port8000 qualification"
+  ],
+  "scope": "Current one-APP-file startup-order correction and indispensable lifetime fixture only; no full187/model/performance qualification claim.",
+  "evidence_availability": "Raw evidence retained with the task; public hashes identify it. Private evidence paths are not required by maintained tests."
+}
