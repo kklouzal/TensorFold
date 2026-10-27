@@ -16,6 +16,16 @@ import pytest
 torch = pytest.importorskip("torch")
 
 
+
+def _batch_fixture_requests():
+    from tensorfold.cuda.streams import Stream
+
+    # At most28 single-piece prompt passes at8 rows, with at most3 committed
+    # decode outputs per pass.96 keeps the first request alive until the eighth
+    # can join without bypassing normal admission, prefill or State ownership.
+    return [Stream(([4, 17, 3, 99, 33, 2, 7, 5, 6] * 5)[:9 + 4 * index],
+                   96, stop_eos=False) for index in range(8)]
+
 def _worker(rank, port, target_greedy=False, profile_directory=None):
     import faulthandler
     import traceback
@@ -232,8 +242,7 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
                 assert actual.cached > 0
             phase(f"request/completed/repetition={repetition}")
         if target_greedy == "batch-prelude":
-            references = [Stream(([4, 17, 3, 99, 33, 2, 7, 5, 6] * 5)[:9 + 4 * index],
-                                 12, stop_eos=False) for index in range(8)]
+            references = _batch_fixture_requests()
             actuals = [Stream(list(stream.prompt), stream.count, stop_eos=False) for stream in references]
             for expected, actual in zip(references, actuals):
                 eager.admit(expected)
@@ -251,7 +260,7 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
                     break
             else:
                 raise AssertionError("finite eight-session batched owner prelude did not complete")
-            assert all(len(stream.out) == 12 for stream in actuals)
+            assert all(len(stream.out) == 96 for stream in actuals)
             assert combined_weights.meta["sm70_owner_prelude_submitted_batches"] > 0
             assert combined_weights.meta["sm70_owner_prelude_max_batch_segments"] == 8
             phase("eight-session-native-batch-completed")

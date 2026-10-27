@@ -64,3 +64,15 @@ def test_nontext_segment_declines_before_descriptor_or_scratch_mutation(monkeypa
     buffers.gated.fill_(7)
     assert owner.submit(weights, buffers, layer, [(state, 0, 1)], 1, mtp=False) is False
     assert owner.error is None and bool((owner.host == 9).all()) and bool((buffers.gated == 7).all())
+
+def test_actual_eight_request_fixture_budget_keeps_all_normal_prefills_overlapped():
+    from tests.cuda.test_sm70_owner_piece_graphs_tp8 import _batch_fixture_requests
+
+    streams = _batch_fixture_requests()
+    assert len(streams) == 8
+    assert [len(stream.prompt) for stream in streams] == [9, 13, 17, 21, 25, 29, 33, 37]
+    maximum_prompt_passes = sum((len(stream.prompt) + 7) // 8 for stream in streams)
+    assert maximum_prompt_passes == 28
+    assert all(stream.count == 96 and stream.count > 3 * maximum_prompt_passes + 1
+               and len(stream.prompt) + stream.count <= 257 for stream in streams)
+    assert all(stream.stop_eos is False and stream.sampling is None for stream in streams)
