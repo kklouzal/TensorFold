@@ -8,7 +8,8 @@ metadata working space globally. Callers must keep Python/pthread thread-default
 configuration fixed during construction. The worker is joined before manifest
 publication; current-process content authority is reused only after unchanged
 file checks, and newly loaded native/source/library files are still hashed.
-Rollback requests cancellation between bounded reads and joins the worker; a
+Uncertain thread creation/retirement stays attached to constructor failure for
+process teardown. Rollback requests cancellation between bounded reads and joins the worker; a
 filesystem read already blocked in the OS retains its ordinary I/O completion
 contract. Unset retains serial hashing. No persistent/stat-only content cache or
 startup performance qualification is granted; actual V100 timing remains pending.

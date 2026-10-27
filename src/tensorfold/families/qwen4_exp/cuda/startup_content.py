@@ -58,22 +58,20 @@ class StartupContentCapture:
     def __init__(self, plan, operation):
         self.plan, self.operation = plan, operation
         self.cancel = threading.Event()
+        self.operation_retired = threading.Event()
+        self.join_returned = False
         self.authority = self.error = None
         self.cancel_observed = self.error_observed = False
         self.started_ns = time.monotonic_ns()
         self.finished_ns = None
-        self.start_attempted = self.start_failed = self.closed = False
+        self.start_attempted = self.closed = False
         self.thread = threading.Thread(target=self._run, name="tf-startup-content", daemon=False)
 
     def start(self):
         if self.closed or self.start_attempted:
             raise RuntimeError("startup content worker is one-shot and cannot start after retirement")
         self.start_attempted = True
-        try:
-            self.thread.start()
-        except RuntimeError:
-            self.start_failed = True
-            raise
+        self.thread.start()
 
     def _run(self):
         try:
@@ -88,11 +86,17 @@ class StartupContentCapture:
         finally:
             self.operation = None
             self.finished_ns = time.monotonic_ns()
+            # Thread.join/is_alive can lie after signal interruption on the
+            # pinned CPython runtime. Only this operation-owned final latch
+            # proves file consumers and their cleanup have retired.
+            self.operation_retired.set()
 
     def result(self):
         if self.closed:
             raise RuntimeError("startup content capture already retired")
         self.thread.join()
+        self.join_returned = True
+        self.operation_retired.wait()
         if self.error is not None:
             self.error_observed = True
             raise self.error
@@ -104,8 +108,13 @@ class StartupContentCapture:
         if self.closed:
             return
         self.cancel.set()
-        if self.start_attempted and not self.start_failed:
+        if self.start_attempted:
+            # A raised Thread.start does not prove native work was never
+            # accepted. Join is the authority; an unjoinable interrupted
+            # acquisition remains retained by engine rollback for teardown.
             self.thread.join()
+            self.join_returned = True
+            self.operation_retired.wait()
         self.closed = True
         if self.error is not None and not self.error_observed and not self.cancel_observed:
             self.error_observed = True
@@ -114,7 +123,9 @@ class StartupContentCapture:
     def record(self):
         return {"started_monotonic_ns": self.started_ns, "finished_monotonic_ns": self.finished_ns,
                 "bytes_hashed": None if self.authority is None else self.authority.bytes_read,
-                "joined": not self.thread.is_alive(),
+                "worker_operation_retired": self.operation_retired.is_set(),
+                "thread_join_returned": self.join_returned,
+                "native_stack_reclamation": "not inferred from Python join; fixed host commitment retained through engine",
                 "scope": "current-process content authority; no disk/stat-only hash cache"}
 
 
