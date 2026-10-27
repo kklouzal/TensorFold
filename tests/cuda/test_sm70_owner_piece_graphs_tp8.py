@@ -235,7 +235,7 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
 
 
 
-def _retire_fixture_context(context, directory, primary=None):
+def _retire_fixture_context_outcomes(context, directory, primary=None):
     """Retain shared source if a killed child has not positively retired."""
     import shutil
     from tensorfold.cleanup import raise_failures
@@ -268,6 +268,19 @@ def _retire_fixture_context(context, directory, primary=None):
         else:
             errors.append(RuntimeError(f"child retirement is uncertain; source retained at {directory}"))
     raise_failures(primary, errors)
+
+
+def _retire_fixture_context(context, directory, primary=None):
+    """Cold outcome preparation cannot replace the worker's named primary."""
+    try:
+        _retire_fixture_context_outcomes(context, directory, primary)
+    except BaseException as secondary:
+        if primary is None or secondary is primary:
+            raise
+        # No new outcome container/message is allocated on this last-resort
+        # failure cut. The traceback retains context and source ownership.
+        BaseException.__context__.__set__(primary, secondary)
+        raise primary
 
 @pytest.mark.parametrize("target_greedy", [False, True, "guard", "prelude", "bound-prelude"])
 def test_v100_tp8_native_owner_exact_pieces_match_native_eager_frames_and_commits(target_greedy):

@@ -122,3 +122,18 @@ def test_fixture_retirement_retains_shared_source_until_child_terminal(tmp_path,
             _retire_fixture_context(context, directory, primary)
         assert caught.value is primary and directory.exists()
         assert "kill" in calls and ("join", 10) in calls
+
+def test_fixture_outcome_allocation_failure_cannot_replace_worker_primary(tmp_path, monkeypatch):
+    from tests.cuda import test_sm70_owner_piece_graphs_tp8 as fixture
+
+    directory = tmp_path / "shared-source"
+    directory.mkdir()
+    (directory / "config.json").write_text("{}")
+    primary, secondary = ValueError("original worker failed"), MemoryError("outcome preparation failed")
+    def fail(*_args):
+        raise secondary
+    monkeypatch.setattr(fixture, "_retire_fixture_context_outcomes", fail)
+    with pytest.raises(ValueError) as caught:
+        fixture._retire_fixture_context(NS(processes=[]), directory, primary)
+    assert caught.value is primary and primary.__context__ is secondary
+    assert directory.exists()
