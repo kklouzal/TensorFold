@@ -9,7 +9,8 @@ import time
 from types import SimpleNamespace as NS
 
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
 
 
 def _worker(rank, port, format_name):
@@ -38,11 +39,12 @@ def _worker(rank, port, format_name):
         state = State(w, 257, 3, format_name)
         state.kv_begin()
         pair = get_pair(format_name)
-        key = torch.zeros((132, 1, 256), dtype=torch.float16, device=device)
+        key = torch.zeros((135, 1, 256), dtype=torch.float16, device=device)
         value = torch.full_like(key, 1 if rank < 4 else 2)
         codes, scales = _encode(key, pair.key, state.kv_status, 0, error=2)
         values, value_scales = _encode(value, pair.value, state.kv_status, 0, error=4)
         for cache in state.kc:
+            assert cache._empty_physical == (cache.reserved_rows == 0)
             cache.append(0, codes[:129], values[:129], scales[:129], value_scales[:129])
         state.set_pos(129)
         scratch = AttnScratch(3, 1, 256, 257, device, budget=8, ratio=4, dtype=torch.float16)
@@ -62,7 +64,7 @@ def _worker(rank, port, format_name):
         # owner/migration implementation. Query/indexer inputs are exactly zero.
         full = KVCache(257, 1, 256, device, pair=pair)
         for original, frame in ((full.k, codes), (full.v, values), (full.ks, scales), (full.vs, value_scales)):
-            original[:132].copy_(frame)
+            original[:132].copy_(frame[:132])
         pos = torch.tensor([129], dtype=torch.int32, device=device)
         ops.qsa_rows(torch.zeros((3, 2, 128), dtype=torch.float16, device=device),
                      torch.zeros((65, 128), dtype=torch.float16, device=device), pos, scratch, 3, context=132)
@@ -81,6 +83,8 @@ def _worker(rank, port, format_name):
         assert state.history_placement.degree == 4 and state.history_migration_bytes == 0
         logical = torch.arange(257, device=device)
         for cache in state.kc:
+            if cache.reserved_rows == 0 and any(offset >= 0 for offset in cache.offsets):
+                assert not cache._empty_physical
             offsets, owned = cache.local_indices(logical)
             for stored, reference in ((cache.k, full.k), (cache.v, full.v),
                                       (cache.ks, full.ks), (cache.vs, full.vs)):
@@ -91,6 +95,28 @@ def _worker(rank, port, format_name):
                     expected_bytes[129:132].zero_()
                 assert torch.equal(stored[offsets[owned]].view(torch.uint8),
                                    expected_bytes[owned].view(torch.uint8))
+        # Execute again after real degree1->4 publication. Layer0 now has
+        # physical rows on formerly empty ranks; a stale initial empty proof
+        # would remove their visible mass/value contributions. Use the same
+        # independent full-history attention oracle and unchanged byte check.
+        # Distinct new values ensure losing a newly owned visible tail cannot
+        # be hidden by renormalizing an otherwise uniform-value history.
+        value[132:].fill_(3 if rank < 4 else 4)
+        values, value_scales = _encode(value, pair.value, state.kv_status, 0, error=4)
+        projection[:, 3 * 256:4 * 256].fill_(3 if rank < 4 else 4)
+        state.kv_begin()
+        actual = attention_layer(layer, w, [(state, 0, 3)], buffers, 3).clone()
+        for original, frame in ((full.k, codes), (full.v, values), (full.ks, scales), (full.vs, value_scales)):
+            original[:135].copy_(frame)
+        pos.fill_(132)
+        ops.qsa_rows(torch.zeros((3, 2, 128), dtype=torch.float16, device=device),
+                     torch.zeros((65, 128), dtype=torch.float16, device=device), pos, scratch, 3, context=135)
+        expected = ops.attention(torch.zeros_like(actual), full.k, full.v, pos, scratch, 3, 256 ** -0.5,
+                                 context=135, ks=full.ks, vs=full.vs,
+                                 k_bits=pair.key.bits, k_codec=pair.key.codec,
+                                 v_bits=pair.value.bits, v_codec=pair.value.codec)
+        assert torch.equal(actual, expected)
+        state.set_pos(135)
         state.kv_check()
         owner.ready("unique-history-component-complete", every=1, timeout=60)
     except BaseException:

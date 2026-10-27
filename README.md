@@ -1,5 +1,13 @@
 # TensorFold fork
 
+An exact unique-history candidate skips tiled decode and QK/PV work for a
+shared target cache proved to own no physical pages. It preserves FP32 neutral
+statistics/values and every rank's existing collectives. Any migration table
+publication expires that initial proof before a formerly empty layer can serve
+new pages; the independently striped MTP cache keeps its existing path. CPU
+and eight-V100 migration/output checks are required for this changed source;
+full-model performance and output qualification remain pending.
+
 An isolated CPU preflight candidate uses public Store batched reads and atomic
 counters during rank input preparation. Bounded reusable outcome slots retain
 validation and refusal semantics; every rank consumes a retirement latch before

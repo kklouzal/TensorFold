@@ -63,7 +63,7 @@ class OwnedKVCache(KVCache):
     """Packed local pages; logical positions remain independent of rank offsets."""
 
     __slots__ = ("placement", "slot", "layer", "rank", "logical_capacity", "offsets", "page_offsets",
-                 "arena", "reserved_rows", "owners", "page_class")
+                 "arena", "reserved_rows", "owners", "page_class", "_empty_physical")
 
     def __init__(self, rows, kv_heads, head_dim, device, *, pair, placement, slot, layer, rank,
                  arena=None, arena_offset=0, owners=None):
@@ -89,6 +89,11 @@ class OwnedKVCache(KVCache):
         self.offsets = tuple(offsets)
         self.page_offsets = torch.tensor(offsets, dtype=torch.int64, device=device)
         self.arena, self.reserved_rows = arena, owned
+        # Shared target arenas can contain other layers despite this cache
+        # owning no page. This proof lasts only until a page-table publication;
+        # reserved_rows alone is not current ownership after migration. MTP's
+        # independent, non-arena stripes retain their existing capacity path.
+        self._empty_physical = arena is not None and layer < placement.target_layers and owned == 0
         if arena is None:
             super().__init__(owned, kv_heads, head_dim, device, pair=pair)
         else:
@@ -319,7 +324,7 @@ def partial_statistics(query, cache, selected, visible, scale):
     heads = query.shape[0]
     maximum = torch.full((heads,), -torch.inf, dtype=torch.float32, device=query.device)
     denominator = torch.zeros_like(maximum)
-    if not cache.capacity:
+    if not cache.capacity or isinstance(cache, OwnedKVCache) and cache._empty_physical:
         return maximum, denominator
     for score, mask, _ in _attention_tiles(query, cache, selected, visible, scale):
         tile_max = score.amax(-1)
@@ -362,7 +367,7 @@ def normalized_partial(query, cache, selected, visible, scale, maximum, denomina
     rounding boundary without retaining a full FP16 history mirror.
     """
     result = torch.zeros(query.shape, dtype=torch.float32, device=query.device)
-    if not cache.capacity:
+    if not cache.capacity or isinstance(cache, OwnedKVCache) and cache._empty_physical:
         return result
     for score, mask, value in _attention_tiles(query, cache, selected, visible, scale, values=True):
         probability = torch.where(mask[None], torch.exp(score - maximum[:, None]) / denominator[:, None], 0).half()
@@ -1314,6 +1319,10 @@ def migrate_next_bundle(state):
                 cache = state.kc[layer]
                 offsets = list(cache.offsets)
                 offsets[page] = source_offset if layer == target_layer else -1
+                # Serving and migration are serialized between rounds. Expire
+                # the initial empty proof before publishing either table; a
+                # formerly empty layer may now acquire this arena page.
+                cache._empty_physical = False
                 cache.page_offsets[page].fill_(offsets[page])
                 cache.offsets = tuple(offsets)
                 cache.owners[page] = rank // 4 * 4 + new

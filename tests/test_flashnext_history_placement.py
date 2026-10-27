@@ -372,12 +372,17 @@ def test_live_quartet_migration_preserves_packed_pages_across_partial_coalesced_
         states.append(state)
     before = [state.cache_bytes() for state in states]
     identity = states[0].kv_identity
+    acquired_from_empty = set()
 
     def verify_payload():
         for state in states:
             for layer, cache in enumerate(state.kc):
                 positions = torch.arange(rows)
                 offsets, owned = cache.local_indices(positions)
+                assert not cache._empty_physical or not owned.any()
+                if cache.reserved_rows == 0 and owned.any():
+                    acquired_from_empty.add((state.history_rank, layer))
+                    assert not cache._empty_physical
                 if owned.any():
                     expected = (positions[owned, None, None] + layer * 17 + state.history_rank // 4 * 31).to(cache.k.dtype)
                     assert torch.equal(cache.k[offsets[owned]], expected.expand(-1, 1, cache.k.shape[-1]))
@@ -404,6 +409,7 @@ def test_live_quartet_migration_preserves_packed_pages_across_partial_coalesced_
                 break
         else:
             pytest.fail("bounded migration did not finish its finite page inventory")
+        assert acquired_from_empty  # Real publication changed an initially empty layer into an owner.
         destinations = []
         for rank in range(8):
             w = model(8)
@@ -522,6 +528,54 @@ def test_compact_unowned_operands_are_zeroed_before_metadata_validation():
     assert torch.isneginf(maximum).all() and torch.equal(denominator, torch.zeros(1))
     numerator = normalized_partial(query, cache, ids, ids < 128, 1, torch.zeros(1), torch.ones(1))
     assert torch.equal(numerator, torch.zeros((1, 256)))
+
+
+@pytest.mark.torch
+@pytest.mark.parametrize("format_name", ["int8", "rotorquant-planar4-sm70-v1"])
+@pytest.mark.parametrize("domain", ["empty", "masked", "visible", "outside"])
+def test_empty_shared_target_returns_exact_neutrals_without_loading_tiles(format_name, domain, monkeypatch):
+    import torch
+    from tensorfold.families.qwen4_exp.cuda import history_owner
+    from tensorfold.families.qwen4_exp.kv_formats import get_pair
+
+    placement = HistoryPlacement(8, 2, 12)
+    cache = history_owner.allocate_target_caches(257, 256, "cpu", pair=get_pair(format_name),
+                                                placement=placement, slot=1, rank=0)[0]
+    assert cache.capacity > 0 and cache.reserved_rows == 0 and cache._empty_physical
+    query = torch.zeros((4, 256), dtype=torch.float16)
+    ids = torch.arange(0 if domain == "empty" else 257)
+    if domain == "outside":
+        ids = ids + 257
+    visible = torch.full_like(ids, domain != "masked", dtype=torch.bool)
+    maximum, denominator = torch.zeros(4), torch.ones(4)
+    # Retain the pre-existing all-unowned tiled path as the byte oracle. The
+    # forced generic evaluation is test-only; serving never clears this proof.
+    cache._empty_physical = False
+    expected_stats = history_owner.partial_statistics(query, cache, ids, visible, 256 ** -0.5)
+    expected_value = history_owner.normalized_partial(query, cache, ids, visible, 256 ** -0.5,
+                                                      maximum, denominator)
+    cache._empty_physical = True
+
+    def forbidden_tiles(*args, **kwargs):
+        pytest.fail("proved empty physical owner decoded or multiplied a history tile")
+
+    monkeypatch.setattr(history_owner, "_attention_tiles", forbidden_tiles)
+    actual_stats = history_owner.partial_statistics(query, cache, ids, visible, 256 ** -0.5)
+    actual_value = history_owner.normalized_partial(query, cache, ids, visible, 256 ** -0.5,
+                                                    maximum, denominator)
+    for actual, expected in zip((*actual_stats, actual_value), (*expected_stats, expected_value)):
+        assert actual.dtype == torch.float32 and actual.device == query.device
+        assert torch.equal(actual.view(torch.uint8), expected.view(torch.uint8))
+    assert torch.isneginf(actual_stats[0]).all() and torch.count_nonzero(actual_stats[1]) == 0
+    assert torch.count_nonzero(actual_value) == 0
+    with pytest.raises(ValueError, match="no finite visible softmax mass"):
+        history_owner.merge_statistics(actual_stats[0][None], actual_stats[1][None])
+    status = torch.tensor([0, -2], dtype=torch.int32)
+    history_owner.merge_statistics(actual_stats[0][None], actual_stats[1][None], status=status, layer=7)
+    assert status.tolist() == [16, 7]
+    mtp = history_owner.OwnedKVCache(257, 1, 256, "cpu", pair=get_pair(format_name),
+                                    placement=placement, slot=1, layer=12, rank=0)
+    assert mtp.arena is None and not mtp._empty_physical
 
 
 @pytest.mark.torch
