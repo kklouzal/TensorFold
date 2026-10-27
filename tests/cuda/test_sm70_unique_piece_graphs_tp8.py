@@ -156,14 +156,21 @@ def _worker(rank, port):
             phase(f"admit/graph/end/repetition={repetition}")
             for round_index in range(128):
                 phase(f"round/eager/repetition={repetition}/round={round_index}")
-                reference.round()
+                expected_done = reference.round()
                 phase(f"round/graph/repetition={repetition}/round={round_index}")
-                decoder.round()
+                actual_done = decoder.round()
                 phase(f"round/compare/repetition={repetition}/round={round_index}")
                 assert expected.error is actual.error is None
                 assert (actual.out, actual.drafts, actual.done) == (expected.out, expected.drafts, expected.done)
                 _committed(actual.st, expected.st)
+                # The ordinary coordinator consumes round's completed owners
+                # only after their output/state consumers finish.
+                reference.finish(expected_done)
+                decoder.finish(actual_done)
                 if actual.done:
+                    assert len(expected_done) == len(actual_done) == 1
+                    assert expected_done[0] is expected and actual_done[0] is actual
+                    assert expected.sid not in reference.streams and actual.sid not in decoder.streams
                     break
             else:
                 raise AssertionError("finite unique graph request did not complete")
