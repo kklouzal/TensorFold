@@ -1601,3 +1601,7 @@ remain eager. It retains the original State, recurrent, cache and graph-pool
 owners and ordinary sampling protocol; padded unique-history capture stays
 unsupported. Actual TP8 replay bits, model quality and the 85-token/s target
 remain unverified, and default execution does not enable this contract.
+Its private graph buffers hold at most three rows and one participant. The
+ordinary engine buffers and all admitted full-window State arenas retain their
+original extents; native owner-attention trial captures remain a separate
+qualification path.
