@@ -97,3 +97,26 @@ def test_stop_only_error_uses_actual_profiler_failure_without_none_primary_trans
     with pytest.raises(RuntimeError) as caught:
         smoke.profiled_call(lambda: 123, lambda: None, stop)
     assert caught.value is error
+
+def test_actual_gv100_exported_raw_report_wide_csv_and_units():
+    path = Path(__file__).parent / "fixtures/ncu_smoke_gv100_2025_2.csv"
+    assert smoke.sha(path) == "2ee619a7d93f69a260bfdc57a05332e1f34e6dcf94b2e55a664dfd7b050a206f"
+    counters, units = smoke.parse_counter_table(path.read_text())
+    assert counters == {"gpu__time_duration.sum": 2.88, "sm__cycles_elapsed.avg": 3723.825,
+                        "dram__bytes_read.sum": 640.}
+    assert units == {"gpu__time_duration.sum": "us", "sm__cycles_elapsed.avg": "cycle",
+                     "dram__bytes_read.sum": "byte"}
+    assert smoke.parse_counters(path.read_text()) == counters
+
+
+def test_saved_report_import_is_cpu_read_only_and_explicit_raw_csv():
+    argv = smoke.import_command(Path("/evidence/smoke.ncu-rep"), Path("/evidence/counters.csv"))
+    assert argv == [smoke.NCU, "--config-file", "off", "--import", "/evidence/smoke.ncu-rep",
+                    "--csv", "--page", "raw", "--log-file", "/evidence/counters.csv"]
+    assert "--run-smoke" not in argv and "--launch-count" not in argv
+
+
+def test_more_than_one_wide_kernel_is_not_accepted_as_one_launch_smoke():
+    text = '"ID","gpu__time_duration.sum","sm__cycles_elapsed.avg","dram__bytes_read.sum"\n' +            '"","us","cycle","byte"\n"0","2.88","3723.825","640"\n"1","1","2","3"\n'
+    with pytest.raises(ValueError, match="exactly one"):
+        smoke.parse_counter_table(text)

@@ -2,8 +2,10 @@
 
 A private finite NCU2025.2.1 counter smoke profiles one stateless stock-Torch
 vector-add launch and checks exact replay outputs. It preserves clocks/cache
-policy and host protections. Counter permission and GPU execution are unrun
-for this tool; it grants no model or throughput qualification.
+policy and host protections. The host demonstrated actual GV100 hardware counters with an ephemeral
+SYS_ADMIN-only container; exported reports are imported in CPU mode for raw
+CSV parsing and exact replay-output checks. This grants no model or throughput
+qualification.
 
 Canonical MTP text refresh/proposal frames now use the existing actual text
 coordinate producer when no explicit coordinates or deferred boundary are

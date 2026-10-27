@@ -97,22 +97,53 @@ def run_smoke(out):
 
 
 
-def parse_counters(text):
-    header, values = None, {}
+def parse_counter_table(text):
+    header, mode, values, units, kernel_ids = None, None, {}, {}, set()
     for row in csv.reader(io.StringIO(text)):
         if "Metric Name" in row and "Metric Value" in row:
-            header = row
+            header, mode = row, "long"
+            continue
+        if "ID" in row and all(metric in row for metric in METRICS):
+            header, mode = row, "wide"
             continue
         if header is None or len(row) != len(header):
             continue
-        name = row[header.index("Metric Name")]
-        if name not in METRICS:
-            continue
-        value = float(row[header.index("Metric Value")].replace(",", ""))
-        if not math.isfinite(value) or value < 0:
-            raise ValueError("invalid NCU hardware counter")
-        values[name] = value
-    return values
+        if mode == "wide":
+            identity = row[header.index("ID")].strip()
+            if not identity:
+                units.update({metric: row[header.index(metric)] for metric in METRICS})
+                continue  # Raw CSV's unit row has no kernel ID and is not data.
+            if not identity.isdecimal():
+                raise ValueError("invalid NCU kernel identity")
+            kernel_ids.add(identity)
+            entries = [(metric, row[header.index(metric)]) for metric in METRICS]
+        else:
+            name = row[header.index("Metric Name")]
+            if name not in METRICS:
+                continue
+            entries = [(name, row[header.index("Metric Value")])]
+            if "Metric Unit" in header:
+                units[name] = row[header.index("Metric Unit")]
+            if "ID" in header and row[header.index("ID")]:
+                kernel_ids.add(row[header.index("ID")])
+        for name, raw in entries:
+            value = float(raw.replace(",", ""))
+            if not math.isfinite(value) or value < 0:
+                raise ValueError("invalid NCU hardware counter")
+            values[name] = value
+    if len(kernel_ids) > 1:
+        raise ValueError("finite smoke requires exactly one profiled kernel")
+    return values, units
+
+
+def parse_counters(text):
+    return parse_counter_table(text)[0]
+
+
+def import_command(report, csv_path):
+    return [NCU, "--config-file", "off", "--import", str(report),
+            "--csv", "--page", "raw", "--log-file", str(csv_path)]
+
 
 def launch(out):
     if out.exists():
@@ -128,17 +159,33 @@ def launch(out):
         "script_sha256": sha(__file__), "mode": "stateless kernel replay", "host_tuning": "none"}, indent=2) + "\n")
     with (out / "stdout.txt").open("wb") as stdout, (out / "stderr.txt").open("wb") as stderr:
         result = subprocess.run(argv, stdout=stdout, stderr=stderr)
-    text = (out / "ncu.csv").read_text(errors="replace") if (out / "ncu.csv").exists() else ""
-    counters = parse_counters(text)
+    # --export may suppress console metrics. Import the saved report in CPU
+    # mode; this neither launches nor replays another GPU kernel.
+    report = out / "smoke.ncu-rep"
+    imported = None
+    if result.returncode == 0 and report.is_file():
+        import_argv = import_command(report, out / "counters.csv")
+        (out / "import-command.json").write_text(json.dumps({"argv": import_argv,
+            "mode": "read-only CPU report import; no GPU work"}, indent=2) + "\n")
+        with (out / "import-stdout.txt").open("wb") as stdout, (out / "import-stderr.txt").open("wb") as stderr:
+            imported = subprocess.run(import_argv, stdout=stdout, stderr=stderr)
+    csv_path = out / "counters.csv"
+    if csv_path.exists() and csv_path.stat().st_size > 8 << 20:
+        raise ValueError("finite smoke counter CSV exceeds its 8MiB bound")
+    text = csv_path.read_text(errors="replace") if csv_path.exists() else ""
+    counters, units = parse_counter_table(text)
     available = [metric for metric in METRICS if metric in counters]
-    passed = (result.returncode == 0 and len(available) == len(METRICS)
+    passed = (result.returncode == 0 and imported is not None and imported.returncode == 0
+              and len(available) == len(METRICS)
               and counters.get("sm__cycles_elapsed.avg", 0) > 0
               and counters.get("gpu__time_duration.sum", 0) > 0
               and (out / "smoke.ncu-rep").is_file() and (out / "application.json").is_file()
               and "ERR_NVGPUCTRPERM" not in text and "==ERROR==" not in text)
     record = {"status": "PASS" if passed else "FAILED or counter permission unsupported",
               "exit_code": result.returncode, "requested_metrics": METRICS,
-              "metrics_present": available, "counters": counters, "ncu_elf_sha256": NCU_SHA,
+              "import_exit_code": None if imported is None else imported.returncode,
+              "metrics_present": available, "counters": counters, "counter_units": units,
+              "ncu_elf_sha256": NCU_SHA,
               "scope": "actual permission/replay smoke only; inspect raw values; no model/P3 claim"}
     (out / "result.json").write_text(json.dumps(record, indent=2) + "\n")
     if not passed:
