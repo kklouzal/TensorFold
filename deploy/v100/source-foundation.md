@@ -362,3 +362,23 @@ All other retired mappings, including source inputs, provider DSOs and
 executable mappings, retain the fatal audit guard. Raw runtime identity and CLI
 audits expose these data observations; callable source proofs retain only
 their software identity fields.
+
+
+## Private startup content overlap
+
+On the pinned Linux/glibc CPython3.12 image, the private
+`source-owner-pieces-trial` and `source-owner-target-greedy-trial` MTP profiles
+may opt into `TENSORFOLD_STARTUP_CONTENT_OVERLAP=1` with an explicit execution
+manifest. Python/pthread thread defaults must remain owned and fixed during
+engine construction. One rank0 worker begins only after the complete admission
+includes its64MiB stack ceiling, observed native guard and8MiB hash/metadata
+working allowance. Native pthread queries verify the planned and actual stack;
+unsupported or unfundable enabled configurations refuse before publication.
+
+This reads all artifact content anew in the current process while loading;
+existing file-stat, declared-SHA and all-rank inventory guards remain required.
+Native/source/library identities are captured after loading. Rollback cancels
+between bounded reads and joins the worker before releasing engine owners.
+A blocked filesystem read retains its existing I/O completion contract.
+The unset default retains serial content hashing. CPU controls and an actual
+V100 startup/quality/performance comparison are separate gates.
