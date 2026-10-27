@@ -34,7 +34,7 @@ def test_only_canonical_activation_storage_is_borrowed_with_exact_private_rows(k
     monkeypatch.setattr(bound_graphs, "Buffers", Buffers)
     monkeypatch.setattr(torch, "empty", lambda shape, *, dtype, **kwargs: empty(shape, dtype=dtype))
     monkeypatch.setattr(torch.cuda, "memory_allocated", lambda device: 0)
-    monkeypatch.setattr(torch.cuda, "Event", lambda: object())
+    monkeypatch.setattr(torch.cuda, "Event", lambda: NS(record=lambda: None))
     monkeypatch.setattr(family_ops, "_NATIVE_FAMILY", False)
     monkeypatch.setattr(family_ops, "_NATIVE_ATTENTION", False)
     private = graph._buffer(kind)

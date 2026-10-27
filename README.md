@@ -1,5 +1,17 @@
 # TensorFold fork
 
+Finite diagnostics fund256KiB per follower receipt,512KiB for the leader and
+64KiB for supervision (2424832bytes aggregate), before request admission.
+Grid callers retain their explicit25× aggregate multiplier. Complete receipts
+remain bounded; overflow preserves evidence and fails the diagnostic.
+
+The private unique-history N1 graph candidate prepares immutable identity row
+maps and the single zero segment map once. Replays join their preparation on
+the GPU instead of rewriting pinned mirrors and synchronizing their DMA on the
+CPU. Generic multi-lane graphs retain their dynamic maps. CPU/source controls,
+actual TP8 state/commit checks and matched six-concurrency performance remain
+separate gates; this increment makes no qualified throughput claim.
+
 The private `source-owner-target-greedy-trial` composes prepared native owners and
 N1 piece graphs with exact target-only GPU greedy selection and chain acceptance.
 Target graph heads export original logits; compact target packets gather on the

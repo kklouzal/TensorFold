@@ -215,16 +215,31 @@ class BoundStateGraphs:
                 c = self.dec.w.cfg
                 result.attn.native_workspace = Workspace(result.attn.out.shape[0], c.heads, c.head_dim,
                                                         self.dec.capacity, self.dec.w.device)
-            self.row_maps[kind] = (torch.empty(rows, dtype=torch.int64, pin_memory=True),
-                                   torch.empty(rows, dtype=torch.int64, device=self.dec.w.device))
-            self.segment_maps[kind] = (torch.empty(segments, dtype=torch.int64, pin_memory=True),
-                                       torch.empty(segments, dtype=torch.int64, device=self.dec.w.device))
             self.map_events[kind] = [torch.cuda.Event(), False]
+            if self.unique:
+                # _plan admits one compact lane at its exact width: its row
+                # inverse is the identity and its only segment index is zero.
+                # These maps never change, including across State-slot reuse.
+                self.row_maps[kind] = (None, torch.arange(rows, dtype=torch.int64, device=self.dec.w.device))
+                self.segment_maps[kind] = (None, torch.zeros(segments, dtype=torch.int64, device=self.dec.w.device))
+                self.map_events[kind][0].record()
+                self.map_events[kind][1] = True
+            else:
+                self.row_maps[kind] = (torch.empty(rows, dtype=torch.int64, pin_memory=True),
+                                       torch.empty(rows, dtype=torch.int64, device=self.dec.w.device))
+                self.segment_maps[kind] = (torch.empty(segments, dtype=torch.int64, pin_memory=True),
+                                           torch.empty(segments, dtype=torch.int64, device=self.dec.w.device))
             self._resident(max(0, torch.cuda.memory_allocated(self.dec.w.device) - before))
         return result
 
     def _maps(self, kind, rows, segments):
         event = self.map_events[kind]
+        if self.unique:
+            device, sdevice = self.row_maps[kind][1], self.segment_maps[kind][1]
+            # A different consumer stream still joins the constructor's writes;
+            # no pinned mirror is mutated or borrowed by a repeated upload.
+            torch.cuda.current_stream(device.device).wait_event(event[0])
+            return device[:len(rows)], sdevice[:len(segments)]
         if event[1]:
             event[0].synchronize()             # pinned mirrors remain borrowed until their last upload completes
         host, device = self.row_maps[kind]
