@@ -2069,6 +2069,10 @@ class FlashNextEngine:
                            [getattr(history_plan, field) for field in
                             ("layers", "index_dim", "ratio", "prefill_rows", "decode_rows", "page_size")],
                            RAM_GRAPH_ADMISSION_VERSION])
+        if getattr(self, "sm70_profile", None) == "source-packed-graphs-trial":
+            from .service_memory import GPU_UNIQUE_GRAPH_ADMISSION_VERSION
+
+            policy.append(["unique-gpu-graph-admission", GPU_UNIQUE_GRAPH_ADMISSION_VERSION])
         policy_digest = int.from_bytes(hashlib.sha256(json.dumps(policy).encode()).digest()[:8], "big") & (2**63 - 1)
         confidence_bits = struct.unpack("<q", struct.pack("<d", self.confidence))[0]
         mine = torch.tensor([self.depth, confidence_bits, self.max_len,

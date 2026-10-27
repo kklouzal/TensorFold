@@ -66,7 +66,11 @@ def live_bytes() -> int:
 
     room = int(available_bytes(torch))
     limit = cuda_limit_bytes()
-    return max(0, min(room, limit - int(torch.cuda.memory_allocated()))) if limit is not None else room
+    if limit is None:
+        return room
+    from tensorfold.cuda.kv_arena import mapped_bytes
+
+    return max(0, min(room, limit - int(torch.cuda.memory_allocated()) - mapped_bytes()))
 
 
 def service_live_bytes(pool):

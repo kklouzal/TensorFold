@@ -37,7 +37,7 @@ from .decode import (
 from .forward import Cut, KVWords, _kv_check, commit, compute, compute_mixed, converges, cut_snapshot, read_ahead, stage
 from .mtp import mtp_compute, mtp_stage
 from .prompt_plan import CUTS, POINTS, pass_limit
-from .service_memory import automatic_graph_bytes, cache_resize_overlap, context_reservation, future_service, materialized_graph_room
+from .service_memory import automatic_graph_bytes, cache_resize_overlap, context_reservation, future_service, materialized_graph_room, materialized_gpu_graph_room, GPU_UNIQUE_GRAPH_ADMISSION_VERSION
 from .speculation import MethodGeometry
 from .state import ENDS, Buffers, KVNumericError, State
 
@@ -951,16 +951,21 @@ class MultiDecoder:
                                 copy_overlap_bytes=promise["copy_overlap_bytes"])
         live = multi_graphs.live_bytes
         automatic = self.graph_request is None
+        metadata = self.w.meta
+        unique_gpu = (metadata.get("indexer_history", "gpu") == "gpu"
+                      and metadata.get("history_layout") == "unique" and metadata.get("world") == 8
+                      and metadata.get("unique_capture_contract") == multi_graphs.UNIQUE_CAPTURE_CONTRACT)
         observed = (automatic and getattr(self, "full_resident", False)
-                    and getattr(self.w, "meta", {}).get("execution_provider") == "sm70"
-                    and getattr(self.w, "meta", {}).get("indexer_history") == "ram")
+                    and metadata.get("execution_provider") == "sm70"
+                    and (metadata.get("indexer_history") == "ram" or unique_gpu))
         refinement = None
         if observed:
             initial_live, error = 0, None
             packet = [0, 0, 0, future["future_bytes"]]
             try:
                 initial_live = live()
-                room = materialized_graph_room(self.free, self.capacity, initial_live, promise, future)
+                prove_room = materialized_gpu_graph_room if unique_gpu else materialized_graph_room
+                room = prove_room(self.free, self.capacity, initial_live, promise, future)
                 packet = [1, room, initial_live, future["future_bytes"]]
             except Exception as failure:
                 error = failure
@@ -979,8 +984,10 @@ class MultiDecoder:
             if any(row[1] < 0 or row[3] < 2 * GIB or row[2] < row[3] or row[1] != row[2] - row[3]
                    for row in observations):
                 raise RuntimeError("inconsistent all-rank materialized graph room proof")
+            if unique_gpu and any(row[3] != future["future_bytes"] for row in observations):
+                raise RuntimeError("ranks disagree on the complete unique-GPU service reservation")
             self.graph_budget = min(row[1] for row in observations)
-            refinement = {"policy": "ram-full-resident-observed-v1", "agreed_graph_bytes": self.graph_budget,
+            refinement = {"policy": GPU_UNIQUE_GRAPH_ADMISSION_VERSION if unique_gpu else "ram-full-resident-observed-v1", "agreed_graph_bytes": self.graph_budget,
                 "observations": [{"rank": rank, "graph_room_bytes": row[1], "live_after_floor_bytes": row[2],
                                   "future_service_bytes": row[3]} for rank, row in enumerate(observations)],
                 "full_slots": slots, "capacity": self.capacity, "future_service": dict(future),

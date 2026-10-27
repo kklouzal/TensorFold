@@ -1621,3 +1621,11 @@ qualification remain pending.
 When more than one request is active, this trial uses the ordinary eager
 forward before private graph staging, including one-participant MTP substeps.
 All original engine rows and full-window State reservations remain available.
+
+The explicit packed-graphs trial can refine its static graph allowance after
+all unique GPU history windows are materialized. Each rank reserves the same
+future snapshots/workspace and reports physical spare under the existing
+device floor and absolute cap; capture uses the smallest proven rank allowance.
+The receipt keeps both the original static estimate and the observed serving
+envelope under the original total budget. Session capacity and context remain
+unchanged. Actual model/grid throughput qualification is still pending.
