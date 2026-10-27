@@ -36,7 +36,8 @@ class Buffers:
     """Scratch for windows of up to ``rows`` rows, sliced [:R] for smaller ones; ``prefill`` for prompt chunks."""
 
     def __init__(self, w: Weights, rows: int, capacity: int, *, prefill: bool = False,
-                 moe_prefill: bool | None = None, owner_role: str | None = None) -> None:
+                 moe_prefill: bool | None = None, owner_role: str | None = None,
+                 prepared_text_coordinates: bool = False) -> None:
         c = w.cfg
         dev = w.device
         from .history_placement import for_weights
@@ -70,7 +71,8 @@ class Buffers:
             role = ("prefill" if prefill else "decode") if owner_role is None else owner_role
             enabled = w.mtp is not None and (prefill or role == "mtp")
             self.compact_indexer_stage = Staging(rows, placement.target_layers + int(w.mtp is not None), dev,
-                                                  mtp=enabled, mtp_only=role == "mtp")
+                                                  mtp=enabled, mtp_only=role == "mtp",
+                                                  text_coordinates=prepared_text_coordinates)
             if enabled:
                 self.mtp_indexer_coordinate_storage = self.compact_indexer_stage.mtp_coordinates
             if role != "mtp":

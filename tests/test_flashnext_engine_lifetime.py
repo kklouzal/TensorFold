@@ -119,6 +119,37 @@ class LifetimeControls(unittest.TestCase):
         e.close()
         self.assertEqual(e.events, ["mailbox-close", "plan-close", "cache-close"])
 
+    def test_coordinate_pins_retire_only_after_real_fence_and_once_for_aliases(self):
+        e, calls = engine(), []
+        class Coordinates:
+            def retire_after_fence(self, *, fenced):
+                self_observations = list(self_events)
+                calls.append((fenced, self_observations))
+        self_events = self.events
+        coordinates = Coordinates()
+        e.multi.buf.compact_indexer_stage = SimpleNamespace(text_coordinates=coordinates)
+        e.multi.pbuf = e.multi.buf
+        e.close()
+        self.assertEqual(calls, [(True, [("fence", "owned-device")])])
+
+    def test_failed_model_fence_keeps_coordinate_pins_until_close_retry(self):
+        e, calls = engine(), []
+        coordinates = SimpleNamespace(retire_after_fence=lambda **kw: calls.append(kw))
+        e.multi.buf.compact_indexer_stage = SimpleNamespace(text_coordinates=coordinates)
+        primary = RuntimeError("controlled device fence failure")
+        def fail(_device):
+            raise primary
+        self.runtime.cuda.synchronize = fail
+        with self.assertRaises(RuntimeError) as caught:
+            e.close()
+        self.assertIs(caught.exception, primary)
+        self.assertFalse(calls)
+        self.assertIs(e.multi.buf.compact_indexer_stage.text_coordinates, coordinates)
+        self.assertFalse(e._closed)
+        self.runtime.cuda.synchronize = lambda device: self.events.append(("fence", device))
+        e.close()
+        self.assertEqual(calls, [{"fenced": True}])
+
     def test_failed_slot_retirement_keeps_engine_resources_until_close_retry(self):
         e = engine()
         failure = MemoryError("controlled failed-slot retirement")

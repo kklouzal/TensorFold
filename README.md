@@ -1,5 +1,16 @@
 # TensorFold fork
 
+An isolated prepared-coordinate candidate replaces text staging's blocking
+NumPy-to-CUDA int32 construction and widening copy with owned pinned int64 rows
+copied directly to the existing final coordinate storage. It retains actual-row
+bounds, positional roles, generation/provenance and mutation checks. A recorded
+DMA event guards host reuse; model drain frees pins only after its real device
+fence. Generic/media issuance and non-prepared buffers keep their existing path.
+Persistent pins and known headers are added beside the original transient host
+allowance. Normal installed CPU component controls pass; full-model correctness
+and performance selection remain pending. This candidate grants no 85-token/s
+or release-readiness claim.
+
 An isolated CPU preflight candidate uses public Store batched reads and atomic
 counters during rank input preparation. Bounded reusable outcome slots retain
 validation and refusal semantics; every rank consumes a retirement latch before

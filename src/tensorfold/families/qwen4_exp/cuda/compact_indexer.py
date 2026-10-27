@@ -121,7 +121,7 @@ def _revoke_frame(buffers, prefix):
 
 
 def _stage_frame(buffers, segments, coordinates, *, mtp):
-    from .position_coordinates import CoordinateTransfer, IssuedCoordinates, _signature, copy_coordinate_batch
+    from .position_coordinates import CoordinateTransfer, IssuedCoordinates, copy_coordinate_batch
 
     _profile_context(buffers, segments)
     prefix = "mtp" if mtp else "target"
@@ -173,17 +173,27 @@ def _stage_frame(buffers, segments, coordinates, *, mtp):
     if cursor != count:
         raise ValueError("issued coordinate windows do not cover the complete frame")
     transfers, metadata = tuple(transfers), tuple(metadata)
+    return _publish_frame(buffers, candidate, metadata, owners,
+        tuple(window.source.tensor for window in coordinates),
+        lambda: copy_coordinate_batch(transfers, owner=candidate, max_rows=buffers.rows))
+
+
+def _publish_frame(buffers, candidate, metadata, owners, borrowers, issue):
+    from .position_coordinates import _signature
+
+    prefix, mtp = ("mtp" if candidate.mtp else "target"), candidate.mtp
+    stage, storage, rows = candidate.staging, candidate.storage, candidate.segments
     _revoke_frame(buffers, prefix)  # Old authorization is gone before any fallible staging/copy.
     try:
         stage.begin(mtp=mtp)
         with ExitStack() as readers:
             for owner in owners:
                 readers.enter_context(owner.staging.reading(mtp=owner.mtp))
-            readers.enter_context(stage.reading(mtp=mtp, borrowers=tuple(window.source.tensor for window in coordinates)))
-            issued = copy_coordinate_batch(transfers, owner=candidate, max_rows=buffers.rows)
+            readers.enter_context(stage.reading(mtp=mtp, borrowers=borrowers))
+            issued = issue()
             object.__setattr__(candidate, "issued", tuple((*record, value) for record, value in zip(metadata, issued)))
             object.__setattr__(candidate, "signature", _signature(storage))
-            values = storage[:count]
+            values = storage[:candidate.token_rows]
     except BaseException as error:
         failed = stage._errors[int(mtp)] is not None or any(
             owner.staging._errors[int(owner.mtp)] is not None for owner in owners)
@@ -273,11 +283,62 @@ def stage_text_indexer_frame(buffers, segments, *, mtp=False):
     if position is None or any(state.media_input_span is not None for state, _, _ in segments):
         _stage_frame(buffers, segments, None, mtp=mtp)
         return
+    prepared = buffers.compact_indexer_stage.text_coordinates
+    if prepared is not None and all(state.media_profile_identity is None for state, _, _ in segments):
+        return _stage_prepared_text_frame(buffers, segments, position, prepared, mtp=mtp)
     windows = tuple(CoordinateWindow(first, last,
         issue_text_indexer_coordinates(state, position, state.mtp_len if mtp else state.pos,
                                        last - first, max_rows=buffers.rows), position)
         for state, first, last in segments)
     _stage_frame(buffers, segments, windows, mtp=mtp)
+
+
+def _stage_prepared_text_frame(buffers, segments, position, prepared, *, mtp):
+    import numpy as np
+    from ..position_profile import MAX_POSITION
+    from .position_coordinates import CoordinateIssue, _context, issue_prepared_coordinate_batch
+
+    prefix, count = ("mtp" if mtp else "target"), segments[-1][2] if segments else 0
+    storage = getattr(buffers, prefix + "_indexer_coordinate_storage")
+    stage = buffers.compact_indexer_stage
+    canonical = stage.mtp_coordinates if mtp else stage.coordinates
+    if (storage is None or storage is not canonical or storage.dtype != torch.int64 or storage.shape != (buffers.rows, 3)
+            or not 0 < count <= buffers.rows or prepared.closed or prepared.hosts[int(mtp)] is None):
+        raise ValueError("prepared text coordinates require their admitted live canonical storage")
+    rows, metadata, requests, recipes, cursor = [], [], [], [], 0
+    for state, first, last in segments:
+        if (type(first) is not int or type(last) is not int or first != cursor or not first < last <= count
+                or state.image_positions is not None or type(state.rope_delta) is not int):
+            raise ValueError("text coordinate issuance requires its bounded admitted host row/context recipe")
+        _position_span(state, first, last, position, mtp=mtp, explicit=False)
+        start = state.mtp_len if mtp else state.pos
+        if type(start) is not int or not 0 <= start <= state.capacity or last - first > state.capacity - start:
+            raise ValueError("text coordinate issuance exceeds its physical cache span")
+        _context(state.coordinate_profile_identity, state.slot_generation, state.media_identity)
+        # Prove NumPy's int64 arithmetic before allocating/filling host rows;
+        # the issuer subsequently validates the actual produced THW values.
+        low, high = start + state.rope_delta, start + state.rope_delta + last - first - 1
+        if low < 0 or high >= MAX_POSITION:
+            raise ValueError("coordinates exceed the signed-int31 device position representation")
+        rows.append((state, state.slot_generation, state.history_generation, start, first, last))
+        metadata.append((state, first, last, start))
+        requests.append(CoordinateIssue(first, last, position, state.coordinate_profile_identity,
+                                        state.slot_generation, state.media_identity, start))
+        recipes.append((first, last, start, state.rope_delta))
+        cursor = last
+    if cursor != count:
+        raise ValueError("prepared text coordinate segments leave uncovered execution rows")
+    candidate = IndexerFrame(getattr(buffers, prefix + "_indexer_frame_id") + 1,
+                             count, tuple(rows), mtp, position, stage, storage)
+    requests = tuple(requests)
+    def issue():
+        host = prepared.host(mtp=mtp)[:count]
+        raw = prepared.arrays[int(mtp)][:count]
+        for first, last, start, delta in recipes:
+            raw[first:last] = (np.arange(start, start + last - first, dtype=np.int64) + delta)[:, None]
+        return issue_prepared_coordinate_batch(host, raw, storage[:count], requests, owner=candidate,
+            max_rows=buffers.rows, submitted=lambda: prepared.submitted(mtp=mtp))
+    return _publish_frame(buffers, candidate, tuple(metadata), (), (prepared.hosts[int(mtp)],), issue)
 
 
 def validate_target_indexer_frame(buffers, segments):
@@ -293,9 +354,62 @@ def _validate_or_fail(buffers, segments, *, mtp):
         reject_prepared(buffers, error)
 
 
+class _PreparedTextCoordinates:
+    """Pinned CPU slabs outlive each queued H2D; destination readers use Staging."""
+    __slots__ = ("hosts", "arrays", "events", "pending", "errors", "closed", "device")
+
+    def __init__(self, rows, device, roles, errors):
+        device = torch.device(device)
+        self.device = device
+        self.hosts, self.events, self.pending = [None, None], [None, None], [False, False]
+        self.arrays = [None, None]
+        self.errors, self.closed = errors, False
+        for role, enabled in enumerate(roles):
+            if enabled:
+                self.hosts[role] = torch.empty((rows, 3), dtype=torch.int64, pin_memory=device.type == "cuda")
+                self.arrays[role] = self.hosts[role].numpy()
+                if device.type == "cuda":
+                    self.events[role] = torch.cuda.Event()
+
+    def host(self, *, mtp):
+        role = int(mtp)
+        if self.closed or self.hosts[role] is None:
+            raise ValueError("prepared text coordinate owner is retired or unavailable")
+        if self.errors[role] is not None:
+            raise self.errors[role]
+        if self.pending[role]:
+            try:
+                self.events[role].synchronize()  # Only the prior H2D, before its CPU source can be overwritten.
+            except BaseException as error:
+                self.errors[role] = error
+                raise
+            self.pending[role] = False
+        return self.hosts[role]
+
+    def submitted(self, *, mtp):
+        role = int(mtp)
+        event = self.events[role]
+        if event is not None:
+            self.pending[role] = True
+            try:
+                event.record(torch.cuda.current_stream(self.device))
+            except BaseException as error:
+                self.errors[role] = error  # Keep source/event until the Engine's real device fence.
+                raise
+
+    def retire_after_fence(self, *, fenced):
+        if fenced is not True:
+            raise ValueError("prepared coordinate retirement requires the completed model device fence")
+        self.closed = True
+        self.hosts[0] = self.hosts[1] = None
+        self.arrays[0] = self.arrays[1] = None
+        self.events[0] = self.events[1] = None
+        self.pending[0] = self.pending[1] = False
+
+
 class Staging:
     """At most one owned ordinal per eight-ordinal channel and execution row."""
-    def __init__(self, rows, caches, device, *, mtp, mtp_only=False):
+    def __init__(self, rows, caches, device, *, mtp, mtp_only=False, text_coordinates=False):
         self.rows = rows
         channels = 0 if mtp_only else (caches + 7) // 8
         self.target = torch.empty((channels, rows, 128), dtype=torch.float16, device=device)
@@ -307,6 +421,8 @@ class Staging:
         self._events, self._streams = [None, None], [None, None]
         self._errors = [None, None]
         self._borrowers = [(), ()]
+        self.text_coordinates = (_PreparedTextCoordinates(rows, device, (not mtp_only, mtp), self._errors)
+                                 if text_coordinates else None)
         for role, values in enumerate((self.target, self.mtp)):
             if values.is_cuda and values.numel():
                 self._events[role] = torch.cuda.Event()

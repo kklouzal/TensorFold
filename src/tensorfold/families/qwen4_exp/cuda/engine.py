@@ -1101,9 +1101,11 @@ class FlashNextEngine:
                 total = tp * multi_static_domains(text, count, each, mtp)[1]
                 total += tp * status_workspace(count, tp, candidate_rows=row_envelope(count))[1] if tp > 1 else 0
                 if self.position_profile is not None:
-                    from .history_placement import coordinate_source_host_bytes
+                    from .history_placement import coordinate_source_host_bytes, prepared_coordinate_host_resources
 
                     total += tp * coordinate_source_host_bytes(max(row_envelope(count), rows0))
+                    total += tp * prepared_coordinate_host_resources(row_envelope(count), rows0,
+                                                                     mtp=stock_mtp)["total_host_bytes"]
                 if dspark_plan is not None and graphs and proposal_graphs_enabled:
                     total += tp * graph_host_bytes(count, min(int(depth), dspark_plan.config.block), tp, int(max_len))
                 if dflash_plan is not None:
@@ -1262,12 +1264,15 @@ class FlashNextEngine:
                 "preparation": self._position_prepared.receipt(),
                 "effective_context_window": self.capacity_plan["context_window"],
                 "vectors": dict(position_vector_ledger)}
-            from .history_placement import coordinate_source_host_bytes
+            from .history_placement import coordinate_source_host_bytes, prepared_coordinate_host_resources
 
             coordinate_rows = max(row_envelope(streams), rows0)
+            prepared_coordinates = prepared_coordinate_host_resources(row_envelope(streams), rows0, mtp=stock_mtp)
             self.capacity_plan["position_profile"]["coordinate_sources"] = {
                 "rows": coordinate_rows, "host_payload_bytes_per_rank": coordinate_source_host_bytes(coordinate_rows),
-                "project_pinned_bytes": 0, "gpu_payload": "covered-by-existing-owner-prepare-envelope"}
+                "project_pinned_bytes": tp * prepared_coordinates["pinned_payload_bytes"],
+                "prepared_per_rank": prepared_coordinates,
+                "gpu_payload": "covered-by-existing-owner-prepare-envelope"}
         if self.rope.rope_type != "default":
             print(f"[tensorfold] static YaRN factor {self.rope.factor:g}, rotary amplitude "
                   f"{self.rope.attention_factor:.8g}, original context {self.rope.native_context}; "
@@ -2507,6 +2512,16 @@ class FlashNextEngine:
         if weights is not None:
             import torch
             torch.cuda.synchronize(weights.device)
+            seen_coordinates = set()
+            for decoder in (getattr(self, "multi", None), getattr(self, "e", None), getattr(self, "serial", None)):
+                for name in ("buf", "mbuf", "pbuf"):
+                    stage = getattr(getattr(decoder, name, None), "compact_indexer_stage", None)
+                    prepared = getattr(stage, "text_coordinates", None)
+                    if prepared is not None and id(prepared) not in seen_coordinates:
+                        # The real device fence also resolves a failed upload
+                        # event record; no claimed or timed-out completion frees pins.
+                        prepared.retire_after_fence(fenced=True)
+                        seen_coordinates.add(id(prepared))
         vision = getattr(self, "vision", None)
         if getattr(vision, "is_media_runtime", False):
             vision.close()
