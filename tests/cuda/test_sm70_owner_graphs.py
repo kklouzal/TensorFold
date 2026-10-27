@@ -9,6 +9,7 @@ import torch
 
 
 def _worker(rank, port, head4):
+    from test_sm70_unique_history import _prepare_zero_indexer_rows
     from tensorfold.cuda.comm import NCCL
     from tensorfold.families.qwen4_exp.cuda.attention import AttnScratch
     from tensorfold.families.qwen4_exp.cuda.history_owner import OwnerBuffers, _encode
@@ -32,7 +33,8 @@ def _worker(rank, port, head4):
                  ple_layers=[], eos=(0,), heads=3, index_heads=4, index_budget=8, eps=1e-6,
                  mrope_section=(1, 1, 1), rope_attention_factor=1.0, execution_dtype="float16")
         weights = NS(cfg=cfg, device=device, layers=[NS(index=i, linear=False) for i in range(12)],
-                     mtp=None, comm=comm, meta={"world": 8, "rank": rank, "full": NS(kv_heads=2),
+                     mtp=None, comm=comm, inv_freq=torch.tensor([1.0], device=device),
+                     meta={"world": 8, "rank": rank, "full": NS(kv_heads=2),
                                                "execution_provider": "sm70", "history_layout": "unique",
                                                "attention_degree": 1})
         scratch = AttnScratch(4, 3, 256, 257, device, budget=8, ratio=4, dtype=torch.float16)
@@ -57,6 +59,7 @@ def _worker(rank, port, head4):
         values, value_scales = _encode(value, pair.value, state.kv_status, 0, error=4)
         for cache in state.kc:
             cache.append(0, codes, values, scales, value_scales)
+        _prepare_zero_indexer_rows(state, weights, 0, 129, range(len(state.kc)))
         state.set_pos(129)
         layer = NS(index=0)
 

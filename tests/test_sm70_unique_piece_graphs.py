@@ -175,3 +175,53 @@ def test_unique_warmup_validates_and_retires_every_temporary_raw_span_before_reu
         for kind in ("verify", "mtp"):
             expected.extend([(kind, rows), "checked", "reset"])
     assert events == expected and not state.pending
+
+
+@pytest.mark.parametrize("unique,rows,segments", [(True, 3, 1), (False, 32, 26)])
+@pytest.mark.parametrize("kind", ["verify", "mtp"])
+def test_private_buffer_extent_reuse_and_retirement_preserve_original_full_window_owners(
+        monkeypatch, unique, rows, segments, kind):
+    import gc
+    import weakref
+    from tensorfold.cuda.sm70 import family_ops
+
+    graph = object.__new__(bound_graphs.BoundStateGraphs)
+    graph.unique, graph.closed = unique, False
+    original = NS(rows=32, moe=NS(plan=NS(prefill=True)))
+    weights = NS(device="cpu", dspark=None)
+    graph.dec = NS(w=weights, buf=original, mbuf=original, capacity=262147)
+    graph.states = tuple(NS(capacity=262147, logical_context=262144) for _ in range(26))
+    original_states = graph.states
+    graph.buffers, graph.row_maps, graph.segment_maps, graph.map_events = {}, {}, {}, {}
+    graph.indices, graph.lanes, graph.bindings = {}, {}, {}
+    graph._resident = lambda size: None
+    allocations = []
+
+    class Buffers:
+        def __init__(self, w, actual_rows, capacity, **kwargs):
+            assert w is weights
+            allocations.append((actual_rows, capacity, kwargs))
+            self.rows = actual_rows
+
+    empty = torch.empty
+    monkeypatch.setattr(bound_graphs, "Buffers", Buffers)
+    monkeypatch.setattr(bound_graphs.torch, "empty", lambda shape, *, dtype, **_kw: empty(shape, dtype=dtype))
+    monkeypatch.setattr(bound_graphs.torch.cuda, "memory_allocated", lambda _device: 0)
+    monkeypatch.setattr(bound_graphs.torch.cuda, "Event", lambda: object())
+    monkeypatch.setattr(family_ops, "_NATIVE_FAMILY", False)
+    monkeypatch.setattr(family_ops, "_NATIVE_ATTENTION", False)
+    private = graph._buffer(kind)
+    assert allocations == [(rows, 262147, {"moe_prefill": True, "owner_role": "mtp" if kind == "mtp" else None})]
+    assert private is graph._buffer(kind) and len(allocations) == 1
+    assert all(mapping.numel() == rows for mapping in graph.row_maps[kind])
+    assert all(mapping.numel() == segments for mapping in graph.segment_maps[kind])
+    assert original.rows == 32 and graph.states is original_states and len(graph.states) == 26
+    assert all(state.capacity == 262147 and state.logical_context == 262144 for state in graph.states)
+    retained = weakref.ref(private)
+    del private
+    gc.collect()
+    assert retained() is not None
+    graph.close()
+    gc.collect()
+    assert retained() is None and graph.closed
+    assert graph.states is original_states and original.rows == 32

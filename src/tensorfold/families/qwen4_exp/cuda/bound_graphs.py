@@ -171,7 +171,12 @@ class BoundStateGraphs:
         if result is None:
             before = torch.cuda.memory_allocated(self.dec.w.device)
             source = self.dec.buf if kind == "verify" else self.dec.mbuf
-            result = self.buffers[kind] = Buffers(self.dec.w, source.rows, self.dec.capacity,
+            rows, segments = source.rows, len(self.states)
+            if self.unique:
+                from .multi_graphs import UNIQUE_CAPTURE_MAX_ROWS
+
+                rows, segments = min(rows, UNIQUE_CAPTURE_MAX_ROWS), 1
+            result = self.buffers[kind] = Buffers(self.dec.w, rows, self.dec.capacity,
                                                  moe_prefill=source.moe.plan.prefill,
                                                  owner_role="mtp" if kind == "mtp" else None)
             result.dspark_graph = kind == "verify" and getattr(self.dec.w, "dspark", None) is not None
@@ -192,10 +197,10 @@ class BoundStateGraphs:
                 c = self.dec.w.cfg
                 result.attn.native_workspace = Workspace(result.attn.out.shape[0], c.heads, c.head_dim,
                                                         self.dec.capacity, self.dec.w.device)
-            self.row_maps[kind] = (torch.empty(source.rows, dtype=torch.int64, pin_memory=True),
-                                   torch.empty(source.rows, dtype=torch.int64, device=self.dec.w.device))
-            self.segment_maps[kind] = (torch.empty(len(self.states), dtype=torch.int64, pin_memory=True),
-                                       torch.empty(len(self.states), dtype=torch.int64, device=self.dec.w.device))
+            self.row_maps[kind] = (torch.empty(rows, dtype=torch.int64, pin_memory=True),
+                                   torch.empty(rows, dtype=torch.int64, device=self.dec.w.device))
+            self.segment_maps[kind] = (torch.empty(segments, dtype=torch.int64, pin_memory=True),
+                                       torch.empty(segments, dtype=torch.int64, device=self.dec.w.device))
             self.map_events[kind] = [torch.cuda.Event(), False]
             self._resident(max(0, torch.cuda.memory_allocated(self.dec.w.device) - before))
         return result
