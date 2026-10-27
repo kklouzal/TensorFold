@@ -1,0 +1,251 @@
+{
+  "schema": "tensorfold.v100-attention-runtime-affected-software-checkpoint",
+  "version": 1,
+  "created_utc": "2026-10-27T01:03:38.463269+00:00",
+  "status": "Verified scoped source-built attention metadata and new native FD application checkpoint; model/readiness qualification remains separately owned",
+  "source": {
+    "held_commit": "e3abd47a843ffc8cd7af9ace894e974e2ce4e024",
+    "held_tree": "0914fc592de31eb41eb848fd885c2b7dd2f76d8c",
+    "held_archive_sha256": "8875c9da189d615c1dee0cb55f3672b08ba03fbb4ee9e24455ab93d11fab1bf1",
+    "source_hold_sha256": "4bc0350d0b97edb7d51494ccc0fed51388a8f3c167d5900bade9e5098652e16a",
+    "canonical_integration_commit": "0d6989d15bf18ac2faf43af8b9ee961d089dac19",
+    "published_policy_parent": "9418a52df1791d7df1ec236d101dbb5baa80d496",
+    "only_application_source_change": "src/tensorfold/cuda/sm70/attention_qualification.py"
+  },
+  "behavior": "The wheel-only cuBLAS distribution lookup is performed only for the exact historical private cu126 Torch/git/CUDA discriminator. Source04cf avoids the inapplicable lookup and remains ineligible for that private candidate; actual math/backend/workspace/device settings and legacy missing-metadata errors remain unchanged.",
+  "image": {
+    "local_docker_image_id": "sha256:96f6961708d064a9d2f9e73d4df43ce8a5695c1499f16943b670c21fd971e15e",
+    "local_tag": "tensorfold-v100:app-attention-source-v1",
+    "local_uncompressed_bytes": 23592149004,
+    "rootfs_layers": 71,
+    "base_image": "sha256:6daae245155c890edd24ae9fc3ba699a3009d2ae57ede24ee271f85309cf44bf",
+    "all70_base_layers_retained": true,
+    "all_base_Config_fields_unchanged": true,
+    "registry_publication_verified": false,
+    "size_scope": "Docker Size is a local observation; target content identity and any accounting variance are separately recorded by the qualification owner."
+  },
+  "whole_application_wheel": {
+    "artifact": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3086457,
+    "sha256": "6fac343859d26fd04324ecc7a0ba6c32bcde2403fb705eedc186542c014c5bd8"
+  },
+  "new_native_fd": {
+    "sha256": "4a0625bdf0a494437058e0ddbc62f04d7092c8cc64178e24fc17d669d2abd984",
+    "embedded_source_sha256": "f85d2c923adfaa14e819250e8def3c3166b8c8624295a37572916e62ad20c1f2",
+    "distinct_from_previous805_binary": true,
+    "runtime_allocated_sections_identical_except_diagnostic_build_id": true,
+    "changed_ELF_sections": [
+      ".debug_info",
+      ".debug_line",
+      ".debug_line_str",
+      ".note.gnu.build-id"
+    ],
+    "compiler_provenance": {
+      "name": "compiler-defaults.json",
+      "bytes": 514,
+      "sha256": "cd37ccadb89e750874275b8ddf608e1fecb3776c2d9bb3f0da246ba4c495a7ef"
+    },
+    "actual_new_binary_tests": {
+      "passed": 33,
+      "subtests": 5,
+      "seconds": 3.24,
+      "exit_status": 0,
+      "log_sha256": "ce2a070259ffd6481f1ebb5c1e5ffb89374dad3cfb497b4bef52461c75131656",
+      "proof": {
+        "exit_status": 0,
+        "package_files": 715,
+        "code_files": 707,
+        "normal_site_packages": "/opt/venv/lib/python3.12/site-packages/tensorfold",
+        "fixture_unchanged": true,
+        "package_unchanged": true,
+        "protected_unchanged": true,
+        "protected_files": 46,
+        "fd_binary_sha256": "4a0625bdf0a494437058e0ddbc62f04d7092c8cc64178e24fc17d669d2abd984"
+      }
+    }
+  },
+  "affected_installed_groups": {
+    "attention": {
+      "passed": 116,
+      "subtests": 24,
+      "seconds": 11.88,
+      "exit_status": 0,
+      "log_sha256": "a845cc0592a3c7619dedf64fc79cd9b8f2540f7aa7eb6751e9372696ad7d206e",
+      "proof": {
+        "exit_status": 0,
+        "package_files": 715,
+        "code_files": 707,
+        "normal_site_packages": "/opt/venv/lib/python3.12/site-packages/tensorfold",
+        "fixture_unchanged": true,
+        "package_unchanged": true,
+        "protected_unchanged": true,
+        "protected_files": 46,
+        "fd_binary_sha256": "4a0625bdf0a494437058e0ddbc62f04d7092c8cc64178e24fc17d669d2abd984"
+      }
+    },
+    "native-fd": {
+      "passed": 33,
+      "subtests": 5,
+      "seconds": 3.24,
+      "exit_status": 0,
+      "log_sha256": "ce2a070259ffd6481f1ebb5c1e5ffb89374dad3cfb497b4bef52461c75131656",
+      "proof": {
+        "exit_status": 0,
+        "package_files": 715,
+        "code_files": 707,
+        "normal_site_packages": "/opt/venv/lib/python3.12/site-packages/tensorfold",
+        "fixture_unchanged": true,
+        "package_unchanged": true,
+        "protected_unchanged": true,
+        "protected_files": 46,
+        "fd_binary_sha256": "4a0625bdf0a494437058e0ddbc62f04d7092c8cc64178e24fc17d669d2abd984"
+      }
+    }
+  },
+  "identity_and_drift": {
+    "package_file_count": 715,
+    "nonbinary_package_file_count": 714,
+    "code_file_count": 707,
+    "changed_code_files_vs_full187_baseline": [
+      "cuda/sm70/attention_qualification.py"
+    ],
+    "unchanged_code_files_reused_structurally": 706,
+    "all715_installed_records_equal_current_wheel_before_after": true,
+    "all_source_and_fixture_bytes_unchanged": true,
+    "all46_protected_metadata_files_equal_base_and_unchanged": true,
+    "all_base_Config_fields_unchanged": true,
+    "full70_base_RootFS_layers_retained": true,
+    "runtime_source_overlay": false
+  },
+  "packaging_method": "Root-authorized complete owned wheel/checksum/no-deps/pip-check update in a clean container, then Config-preserving immutable image commit; actual execution is recorded separately from the maintained Dockerfile.application-wheel reproduction recipe. No SDK/media/policy/vendor changes.",
+  "evidence": {
+    "source-hold-final.json": {
+      "name": "source-hold-final.json",
+      "bytes": 2061,
+      "sha256": "4bc0350d0b97edb7d51494ccc0fed51388a8f3c167d5900bade9e5098652e16a"
+    },
+    "tracked-source.json": {
+      "name": "tracked-source.json",
+      "bytes": 757,
+      "sha256": "8c23becfacd39846fdaac6ad141dc7537175d50ff6df30e571e580b5eded94d4"
+    },
+    "execution.json": {
+      "name": "execution.json",
+      "bytes": 3021,
+      "sha256": "8e2de7fe91ce3a7a191552c63d50314e39cfc1dabc769dbd463da6c957d1c5c2"
+    },
+    "wheel-provenance.json": {
+      "name": "wheel-provenance.json",
+      "bytes": 125127,
+      "sha256": "ab44207e9fa1d75c515695df7b142b1bdfc061a263cd7f2337109de172b5d280"
+    },
+    "image-identity.json": {
+      "name": "image-identity.json",
+      "bytes": 6612,
+      "sha256": "02aafac486a80f9b48c94a2133911472615b3b0407350de49689f4c4e8855455"
+    },
+    "packaging-result.json": {
+      "name": "packaging-result.json",
+      "bytes": 931,
+      "sha256": "e70180d2e3ce652f2a5656517db247127c81b882ef9edbc1f363c6d94beb58ed"
+    },
+    "d13-source-final.json": {
+      "name": "d13-source-final.json",
+      "bytes": 5151,
+      "sha256": "73fea50792d08ffb665039b3d522e3d498b4a01665cc5f92717c4072e8c8ba78"
+    },
+    "d13-packaging-final.json": {
+      "name": "d13-packaging-final.json",
+      "bytes": 5286,
+      "sha256": "4e09aab1e3cf9201a430c363ea9668114ddd9401aacfc6b3e88a48457af19a57"
+    },
+    "d14-source-final.json": {
+      "name": "d14-source-final.json",
+      "bytes": 4300,
+      "sha256": "33264457af7266e2cfdc7d103150b94f33e8d012e0e78c555b003b9c2207543a"
+    },
+    "fd-elf-comparison.json": {
+      "name": "fd-elf-comparison.json",
+      "bytes": 3383,
+      "sha256": "de6b0aade014714788a7ba915222f8e398bb116ee73cb1c72475bdb6b939d689"
+    }
+  },
+  "actual_installed_green": {
+    "name": "green.json",
+    "bytes": 7234,
+    "sha256": "2aa3c1ff552f08ad1ef62c780575b484443d5a9d29336fa9679f3fd3182b73f7"
+  },
+  "raw_gate_evidence": {
+    "manifest.json": {
+      "name": "manifest.json",
+      "sha256": "4dddb743303a9aae362b0288ea06c7eab85127af5c67cab750ccf72ddaeba6f2"
+    },
+    "result.json": {
+      "name": "result.json",
+      "sha256": "6c2995ce80d1e91267f655afe4b200d8adf7f874a167a23ca19cf949596b38cb"
+    },
+    "target-content-expected.json": {
+      "name": "target-content-expected.json",
+      "sha256": "75133ffe68b86bba2d931727eac49f58ba0ec2061a567ec38c3437cb52bbd706"
+    },
+    "protected-expected.json": {
+      "name": "protected-expected.json",
+      "sha256": "e7fc4485d6ab10456aba66748a9545af5e283915c00fb666b509321d42154689"
+    },
+    "fd-elf-comparison.json": {
+      "name": "fd-elf-comparison.json",
+      "sha256": "0fc0cb9afcef2334e8c65d87a6c91e524f42803199d3e6aaf2c152c0c7926bde"
+    },
+    "base-config-protected.json": {
+      "name": "base-config-protected.json",
+      "sha256": "5bd45869d60aa6f346be1fbed0cb8157e5e0e01ac795c59faa8ebd284e21a5d9"
+    },
+    "attention.log": {
+      "name": "attention.log",
+      "sha256": "a845cc0592a3c7619dedf64fc79cd9b8f2540f7aa7eb6751e9372696ad7d206e"
+    },
+    "native-fd.log": {
+      "name": "native-fd.log",
+      "sha256": "ce2a070259ffd6481f1ebb5c1e5ffb89374dad3cfb497b4bef52461c75131656"
+    },
+    "attention-command.json": {
+      "name": "attention-command.json",
+      "sha256": "8d595490af6be6a988759093b8cada6c5071d758cabf8e4e577d12bbd84a4c82"
+    },
+    "native-fd-command.json": {
+      "name": "native-fd-command.json",
+      "sha256": "880a2b94eb0854ce3a4e53cf2e3fd6d47f6ee2f09dd5c9f4ba05757984abf455"
+    },
+    "attention-evidence/proof.json": {
+      "name": "attention-evidence/proof.json",
+      "sha256": "ecb89ebc23d3fe3ed8a0dff6f7a14f4f180933556b31ac87e9fe3990da8fbd13"
+    },
+    "native-fd-evidence/proof.json": {
+      "name": "native-fd-evidence/proof.json",
+      "sha256": "ecb89ebc23d3fe3ed8a0dff6f7a14f4f180933556b31ac87e9fe3990da8fbd13"
+    }
+  },
+  "history_and_reuse": {
+    "prior_full187_receipt": "verification-v100-portable-policy-cpu-20261027.json",
+    "prior_full187_image": "sha256:f8f66a9dd0a0ff04b8b7451126066cd911a18f0fab4b77461017cb65d07f80d5",
+    "no_full187_run_on_new96f_image": true,
+    "only706_byte_identical_code_files_reused_structurally": true,
+    "old_whole_wheel805_and_new6fac_are_distinct": true,
+    "rebuilt_FD_is_not_assumed_old_hash": true
+  },
+  "documentation_relationship": {
+    "this_receipt_and_following_docs_not_test_image_inputs": true,
+    "canonical_merged714_package_source_files_equal_held_e3_and_new6fac": true,
+    "published9418_history_preserved": true
+  },
+  "target_scope": "Qualification owner separately verified target content/descriptor observations and controls model retry; this CPU receipt grants no target/model release qualification.",
+  "release_qualified": false,
+  "pending_gates": [
+    "Actual model loading and complete outputs after this adapter fix",
+    "V100/compiler6111901/kernel/collective/graph qualification as applicable",
+    "SC117/MTP/DFlash/media numerical and quality gates",
+    "Physical capacity/allocator/RSS/NUMA/native wall deadlines",
+    "Representative end-to-end P3/P4 and final service/port8000 qualification"
+  ],
+  "evidence_availability": "Raw evidence retained with the task; public hashes identify it. Private evidence paths are not required by maintained tests."
+}

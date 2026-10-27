@@ -32,6 +32,12 @@ wheel and passed 66 affected controls plus an actual shared-memory/software
 authority check. The [policy receipt](docs/verification-v100-portable-policy-cpu-20261027.json)
 separates those scopes; it does not label the full 187-module run as a new-image
 run. Actual successor target acceptance after GPU work remains pending.
+The later source-built attention metadata fix uses whole application wheel
+`6fac3438` and image `96f69617`. Its [affected software receipt](docs/verification-v100-attention-runtime-cpu-20261027.json)
+records 116 runtime checks plus 24 subtests and 33 new-native-FD checks plus five
+subtests. The private cu126 candidate stays ineligible. This is scoped new-image
+verification; it does not transfer the full 187-module result or establish model
+readiness.
 The earlier media/frontend/MTP checkpoint at `64b24dd5` passed 4,365 installed
 checks and 124 subtests; tree `413e132b` passed 5,214 checks and 144 subtests.
 Those historical results retain their original source and workload scope.

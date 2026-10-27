@@ -114,6 +114,21 @@ preserves both result scopes; the full 187-module gate was run on f8, not 6da.
 Actual successor target acceptance after GPU work and all broader model/resource/
 quality/performance gates remain separate and pending.
 
+The attention descriptor successor is held commit `e3abd47a`, integrated while
+preserving the published policy documentation. Its new whole application wheel
+`6fac3438` and immutable image `96f69617` change one of 707 code files; 706 are
+byte-identical to the full-187 baseline. Normal-installed checks passed 116
+attention/capacity/policy/execution-identity cases and 24 subtests in 11.88 s,
+plus 33 actual new-FD ABI/I/O/snapshot/listener cases and five subtests in 3.24 s.
+All 715 package records and 46 protected metadata files matched before/after.
+The new FD binary has its own identity and actual tests; it is not labelled the
+old binary. The [affected-image receipt](verification-v100-attention-runtime-cpu-20261027.json)
+records these scoped results separately from the older full 187-module run.
+The fix avoids legacy wheel metadata only when that private attention candidate
+is inapplicable; it preserves source04cf ineligibility and real math/workspace/
+device settings. Actual model/output/numerical/quality/resource/performance
+qualification remains separately owned.
+
 NVIDIA compiler issue **6111901** remains a separate release gate; see the
 [source-foundation contract](../deploy/v100/source-foundation.md#compiler-issue-6111901-remains-a-release-gate).
 Actual V100/TP8 CUDA/NCCL execution, model output/numerics/quality, physical

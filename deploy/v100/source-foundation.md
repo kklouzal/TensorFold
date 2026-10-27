@@ -375,3 +375,29 @@ authorities, selected headers and native ABI. This is a scoped policy-image
 verification, not a full 187-module run on that successor. Actual target
 post-GPU/new-policy acceptance and model/compiler/resource/quality/performance
 qualification remain pending and separately owned.
+
+## Whole application wheel updates
+
+`Dockerfile.application-wheel` updates only the owned application on an exact
+source/media/policy image. Supply one complete wheel and its
+`application-wheel.sha256`; the recipe verifies the checksum, installs with
+`--no-deps` and networking disabled, then runs `pip check`:
+
+```bash
+docker build --network=none \
+  --build-context application_artifacts=/path/to/verified-complete-app-wheel \
+  -f deploy/v100/Dockerfile.application-wheel -t tensorfold-v100:app-owned-update .
+```
+
+The recorded attention-metadata candidate used the same complete-wheel/checksum/
+no-deps/check operations through an explicitly authorized clean-container update
+and Config-preserving immutable image commit; it is not labelled an executed
+Dockerfile build. Whole wheel `6fac3438` produces image `96f69617`, retaining the
+full 70-layer base and protected SDK/media/policy bytes. The
+[affected software receipt](../../docs/verification-v100-attention-runtime-cpu-20261027.json)
+records 116 runtime checks plus 24 subtests and 33 actual new-native-FD checks
+plus five subtests. The old private cu126 attention candidate remains ineligible;
+the descriptor retains actual source-build math/workspace/device settings.
+The new whole wheel and rebuilt native extension are separately identified.
+These are scoped software checks, with no full 187-module run or model/readiness
+claim for the successor.
