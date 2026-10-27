@@ -1,6 +1,7 @@
 """Real TP8 unique-history frame/commit oracles for exact N1 graph pieces."""
 
 import socket
+import sys
 import time
 from types import SimpleNamespace as NS
 
@@ -40,6 +41,7 @@ def _committed(actual, expected):
 
 
 def _worker(rank, port):
+    import faulthandler
     from test_flashnext_sm70_mtp import _weights_with_stock_mtp_protocol
     from tensorfold.cuda.comm import NCCL
     from tensorfold.cuda.sm70 import family_ops
@@ -54,8 +56,15 @@ def _worker(rank, port):
     torch.cuda.set_device(rank)
     family_ops._NATIVE_FAMILY, family_ops._NATIVE_ATTENTION = True, False
     comm, failed, graphs = NCCL(), False, None
+    faulthandler.dump_traceback_later(60)
+
+    def phase(label):
+        print(f"[unique-piece rank={rank} t={time.monotonic():.3f}] {label}", file=sys.stderr, flush=True)
+
     try:
+        phase("communicator/open")
         comm.open(rank, 8, "127.0.0.1", port, timeout_s=90, key="tf_unique_n1_piece_graphs")
+        phase("communicator/ready")
         weights = _weights_with_stock_mtp_protocol(head_dim=256)
         width = weights.cfg.vocab // 8
         weights.head.weight = weights.head.weight[rank * width:(rank + 1) * width].contiguous()
@@ -67,8 +76,35 @@ def _worker(rank, port):
             confidence=0.7, prefill_rows=8, kv_dtype="int8", graphs=False, keep=1, full_windows=1)
             for _ in range(2)]
         reference, decoder = decoders
+        phase("decoders/ready")
         graphs = RoundGraphs(decoder, 1 << 30)
+        original_capture, original_pieces = graphs.bound._capture, graphs._pieces
+
+        def capture(kind, key, lanes, buffers, segments, run):
+            label, calls = f"{kind}/rows={key[1]}", [0]
+            phase("capture/begin/" + label)
+
+            def body():
+                calls[0] += 1
+                phase(f"body/begin/{label}/call={calls[0]}")
+                result = run()
+                phase(f"body/end/{label}/call={calls[0]}")
+                return result
+
+            result = original_capture(kind, key, lanes, buffers, segments, body)
+            phase("capture/end/" + label)
+            return result
+
+        def pieces(run, buffers, **kwargs):
+            phase("pieces/begin")
+            result = original_pieces(run, buffers, **kwargs)
+            phase("pieces/end")
+            return result
+
+        graphs.bound._capture, graphs._pieces = capture, pieces
+        phase("catalogue/begin")
         graphs.capture()
+        phase("catalogue/ready")
         decoder.graphs = graphs
         assert {key[1] for key in graphs.verify} == {1, 2, 3}
         assert {key[1] for key in graphs.mtp} == {1, 2, 3}
@@ -77,6 +113,7 @@ def _worker(rank, port):
         prefill(_slot(weights, state, decoder.buf, decoder.mbuf, decoder.pbuf, 260, 8), prompt, None)
         oracle = Buffers(weights, decoder.buf.rows, 260, moe_prefill=True)
         for rows, kept in ((1, 1), (2, 1), (3, 2)):
+            phase(f"manual/begin/rows={rows}/kept={kept}")
             before = state.clone()
             tokens = [31 + row for row in range(rows)]
             expected = compute(weights, stage(weights, oracle, [(before, tokens)]), oracle).clone()
@@ -88,17 +125,22 @@ def _worker(rank, port):
             commit(weights, state, decoder.buf, rows, kept)
             commit(weights, before, oracle, rows, kept)
             _committed(state, before)
+            phase(f"manual/end/rows={rows}")
         # Generation reset keeps storage addresses while retiring the old raw
         # spans. Existing graph keys must then serve real fresh/prefix requests.
         state.reset(weights)
         for repetition in range(2):
+            phase(f"request/begin/repetition={repetition}")
             expected = Stream([4, 17, 3, 99, 33, 2, 7, 5, 6], 12, stop_eos=False)
             actual = Stream(list(expected.prompt), 12, stop_eos=False)
             reference.admit(expected)
             decoder.admit(actual)
-            for _ in range(128):
+            for round_index in range(128):
+                phase(f"round/eager/repetition={repetition}/round={round_index}")
                 reference.round()
+                phase(f"round/graph/repetition={repetition}/round={round_index}")
                 decoder.round()
+                phase(f"round/compare/repetition={repetition}/round={round_index}")
                 assert expected.error is actual.error is None
                 assert (actual.out, actual.drafts, actual.done) == (expected.out, expected.drafts, expected.done)
                 _committed(actual.st, expected.st)
@@ -110,14 +152,17 @@ def _worker(rank, port):
             assert actual.cached == expected.cached
             if repetition:
                 assert actual.cached > 0
+            phase(f"request/end/repetition={repetition}")
         assert graphs.bound.hits > 0
         comm.ready("unique-n1-piece-oracles-complete", every=1, timeout=60)
         graphs.close()
+        phase("graphs/closed")
         decoder.graphs = None
     except BaseException:
         failed = True
         raise
     finally:
+        faulthandler.cancel_dump_traceback_later()
         comm.close(abort=failed)
 
 
