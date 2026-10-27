@@ -1,5 +1,7 @@
 """Finite caller/argument/retirement controls; no model, GPU or replaced host gate."""
 from pathlib import Path
+import hashlib
+import json
 import os
 import signal
 import time
@@ -27,6 +29,7 @@ def test_default_arguments_preserve_native_profile_without_override_flags(tmp_pa
     args = probe.arguments(cli(tmp_path))
     assert args.tokens == 128 and args.prompt == probe.DEFAULT_PROMPT and not args.serial_reference
     assert args.repetitions == 1 and args.instrumented_departure_grace_seconds is None
+    assert args.execution_profile_manifest is None and args.execution_manifest_identity is None
     assert args.devices == [str(index) for index in range(8)]
     assert args.requested_sm70_profile is None and "TENSORFOLD_SM70_PROFILE" not in os.environ
     assert not hasattr(args, "context") and not hasattr(args, "precision") and not hasattr(args, "position_profile_manifest")
@@ -49,6 +52,35 @@ def test_invalid_or_contract_changing_arguments_refuse_before_worker_admission(t
     with pytest.raises(SystemExit):
         probe.arguments([*cli(tmp_path), *extra])
     assert not (tmp_path / "results").exists()
+
+
+def test_explicit_execution_manifest_uses_strict_bounded_reader_and_records_exact_bytes(tmp_path):
+    from tensorfold.families.qwen4_exp.cuda.execution_identity import SCHEMA
+
+    path = tmp_path / "manifest.json"
+    raw = json.dumps({"schema": SCHEMA, "version": 1, "artifacts": {}}).encode() + b"\n"
+    path.write_bytes(raw)
+    args = probe.arguments([*cli(tmp_path), "--execution-profile-manifest", str(path)])
+    assert args.execution_profile_manifest == path.resolve()
+    assert args.execution_manifest_identity == {"path": str(path.resolve()), "bytes": len(raw),
+                                                "sha256": hashlib.sha256(raw).hexdigest()}
+    assert not (tmp_path / "results").exists()
+
+
+@pytest.mark.parametrize("raw", [b"", b" " * ((4 << 20) + 1),
+                                     b'{"schema":"tensorfold.execution-profile-manifest","version":1,"version":1}',
+                                     b'{"schema":"unknown","version":1}'])
+def test_invalid_execution_manifest_refuses_before_workers_or_result_creation(tmp_path, raw):
+    path = tmp_path / "manifest.json"
+    path.write_bytes(raw)
+    with pytest.raises(ValueError):
+        probe.arguments([*cli(tmp_path), "--execution-profile-manifest", str(path)])
+    assert not (tmp_path / "results").exists()
+
+
+def test_execution_manifest_directory_refuses_before_workers(tmp_path):
+    with pytest.raises(ValueError, match="regular file"):
+        probe.arguments([*cli(tmp_path), "--execution-profile-manifest", str(tmp_path)])
 
 
 def test_missing_input_refuses_before_result_directory_or_model_acquisition(tmp_path):
@@ -247,7 +279,8 @@ def retained_failure(error, target):
 
 
 @pytest.mark.parametrize("kind", ["message", "traceback"])
-def test_worker_rendering_fault_preserves_primary_and_unconditionally_closes_engine(tmp_path, monkeypatch, kind):
+@pytest.mark.parametrize("manifest", [False, True])
+def test_worker_rendering_fault_preserves_primary_and_unconditionally_closes_engine(tmp_path, monkeypatch, kind, manifest):
     from tensorfold import hub
     from tensorfold.cuda.cohort import FAILURE_FD_ENV
     from tensorfold.families import qwen4_exp
@@ -272,15 +305,23 @@ def test_worker_rendering_fault_preserves_primary_and_unconditionally_closes_eng
     monkeypatch.setattr(probe, "installed_identity", lambda _wheel: {})
     monkeypatch.setattr(hub, "resolve", lambda *_args, **_kw: tmp_path)
     monkeypatch.setattr(serve_options, "drafter_metadata_source", lambda _source: tmp_path)
-    monkeypatch.setattr(qwen4_exp, "cuda_engine", lambda *_args, **_kw: OwnedEngine())
+    options = {}
+    def construct(*_args, **kwargs):
+        options.update(kwargs)
+        return OwnedEngine()
+    monkeypatch.setattr(qwen4_exp, "cuda_engine", construct)
     read_fd, write_fd = os.pipe()
     monkeypatch.setenv(FAILURE_FD_ENV, str(write_fd))
     args = SimpleNamespace(rank=1, wheel=tmp_path, model=tmp_path, mtp=tmp_path,
                            master_port=29607, tokens=128, out=tmp_path, requested_sm70_profile=None, repetitions=1)
+    if manifest:
+        args.execution_profile_manifest = tmp_path / "explicit.json"
     try:
         with pytest.raises(ValueError) as caught:
             probe.worker(args)
         assert caught.value is primary and events == ["follow", "close"]
+        assert options.get("execution_profile_manifest") == (args.execution_profile_manifest if manifest else None)
+        assert ("execution_profile_manifest" in options) == manifest
         assert retained_failure(primary, diagnostic)
     finally:
         os.close(write_fd)
