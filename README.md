@@ -2,7 +2,9 @@
 
 The finite V100 diagnostic accepts an explicit `--execution-profile-manifest`
 and records its bounded, strictly parsed content hash before forwarding it to
-the existing Engine verifier. `tools/prepare_owner_trial_manifest.py` derives
+the existing Engine verifier. Its report also observes each adopted decode,
+MTP and prefill buffer's owner kernel, graph and collective families and binds
+the actual prepared identity by hash. `tools/prepare_owner_trial_manifest.py` derives
 and hashes the real local target/tokenizer/MTP loader closure for an unqualified
 `sm70-paged-owner-q8-compact-v1` eager trial with full-TP8 collectives and zero
 graph allowance. It creates no evidence receipts or production selection.

@@ -251,6 +251,27 @@ def record_execution_profile(engine, report, *, requested):
         "gguf_experts_implementation": gguf_weights.GGUFExperts.implementation,
         "gguf_experts_packed_rows": gguf_weights.GGUFExperts.packed_rows,
     }
+    # Preparation intent does not prove which family the adopted buffers use.
+    # Retain one bounded observation per fixed execution role. The full prepared
+    # identity is already in capacity_plan; bind it without duplicating that
+    # potentially large allocation record in every rank's finite report.
+    from tensorfold.families.qwen4_exp.cuda.execution_identity import digest as identity_digest
+
+    preparation = getattr(engine, "_owner_preparation", None)
+    decoder = getattr(engine, "multi", None)
+    roles = {}
+    for role, name in (("decode", "buf"), ("mtp", "mbuf"), ("prefill", "pbuf")):
+        buffers = None if decoder is None else getattr(decoder, name, None)
+        if buffers is not None and buffers.history_owner is not None:
+            roles[role] = {"kernel_family": buffers.owner_kernel_family,
+                           "graph_family": buffers.owner_graph_family,
+                           "collective_family": buffers.history_owner.native_collective}
+    report["owner_execution"] = {
+        "prepared_identity": None if preparation is None else {
+            "sha256": identity_digest(preparation.identity()),
+            "prepared": preparation.prepared, "closed": preparation.closed,
+            "trial": preparation.specification["trial"]},
+        "roles": roles}
     if requested is not None and requested != engine.sm70_profile:
         raise ValueError("requested SM70 profile differs from the actual constructor selection")
 

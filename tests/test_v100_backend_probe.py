@@ -510,6 +510,7 @@ def test_unset_profile_uses_actual_reference_constructor_policy_and_records_nati
             "padded": False, "gguf_dense_implementation": gguf_weights.GGUFDense.implementation,
             "gguf_concat_implementation": "reference", "gguf_experts_implementation": "reference",
             "gguf_experts_packed_rows": gguf_weights.GGUFExperts.packed_rows},
+        "owner_execution": {"prepared_identity": None, "roles": {}},
     }
     assert execution_policy.PROFILE_ENV not in os.environ
 
@@ -527,6 +528,45 @@ def test_execution_record_reads_exact_flags_and_rejects_requested_actual_mismatc
     assert record["native_flags"]["private_attention"] is True
     assert record["native_flags"]["gguf_dense_implementation"] == "native32"
     assert family_ops._NATIVE_ATTENTION is True and gguf_weights.GGUFDense.implementation == "native32"
+
+
+@pytest.mark.parametrize("prepared", [False, True])
+def test_owner_observation_uses_adopted_buffers_and_binds_actual_prepared_identity(prepared):
+    from tensorfold.engine.model_identity import canonical_runtime_json
+    from tensorfold.cuda.sm70 import family_ops
+
+    private_attention = family_ops._NATIVE_ATTENTION
+    identity = {"specification": {"kernel_family": "intent-only-native",
+                                   "graph_family": "intent-only-graph"},
+                "roles": {"decode": 32, "prefill": 256}}
+    preparation = SimpleNamespace(identity=lambda: identity, prepared=True, closed=False,
+                                  specification={"trial": True}) if prepared else None
+    decode = SimpleNamespace(owner_kernel_family="observed-native", owner_graph_family="uncaptured",
+                             history_owner=SimpleNamespace(native_collective="observed-full8"))
+    prefill = SimpleNamespace(owner_kernel_family="observed-reference", owner_graph_family="uncaptured",
+                              history_owner=SimpleNamespace(native_collective="observed-prefill-full8"))
+    engine = SimpleNamespace(sm70_profile="reference", _owner_preparation=preparation,
+                              multi=SimpleNamespace(buf=decode, mbuf=None, pbuf=prefill))
+    report = {}
+    probe.record_execution_profile(engine, report, requested=None)
+    observed = report["owner_execution"]
+    assert observed["roles"] == {
+        "decode": {"kernel_family": "observed-native", "graph_family": "uncaptured",
+                   "collective_family": "observed-full8"},
+        "prefill": {"kernel_family": "observed-reference", "graph_family": "uncaptured",
+                    "collective_family": "observed-prefill-full8"}}
+    if prepared:
+        assert observed["prepared_identity"] == {
+            "sha256": hashlib.sha256(canonical_runtime_json(identity).encode()).hexdigest(),
+            "prepared": True, "closed": False, "trial": True}
+    else:
+        assert observed["prepared_identity"] is None
+    # The bounded report keeps neither the preparation object nor its potentially
+    # large allocation graph, and changing intent cannot rewrite observations.
+    identity["roles"]["decode"] = 99
+    assert "intent-only" not in json.dumps(observed) and "allocations" not in observed
+    assert report["native_flags"]["private_attention"] is private_attention
+    assert family_ops._NATIVE_ATTENTION is private_attention
 
 
 def test_requested_profile_validation_is_deferred_to_existing_constructor(tmp_path, monkeypatch):
