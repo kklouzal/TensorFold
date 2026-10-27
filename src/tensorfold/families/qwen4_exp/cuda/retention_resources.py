@@ -960,7 +960,7 @@ def continuation_payload_bytes(*, context, vocab_size, presentation, max_body_by
 
 
 def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_requests, max_http_body_bytes,
-                          json_policy=None, ordinary_fifo_children=False):
+                          json_policy=None, ordinary_fifo_children=False, frame_bytes=None):
     """Named Python owners for the serialized TP actor, separate from native IO.
 
     The selected protocol bounds commands and ACKs by MAX_MESSAGE_BYTES and
@@ -994,7 +994,10 @@ def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_req
                 "per_follower_scope": per_follower, "named_rpc_terms": {}, "frame_bytes": MAX_MESSAGE_BYTES,
                 "per_http_rpc_error_tail_bytes": 0}
 
-    peers, pending, frame = world - 1, max_pending_requests, MAX_MESSAGE_BYTES
+    frame = MAX_MESSAGE_BYTES if frame_bytes is None else _size(frame_bytes, "finite RPC frame")
+    if frame > MAX_MESSAGE_BYTES:
+        raise ValueError("finite RPC frame exceeds the ordinary native transport")
+    peers, pending = world - 1, max_pending_requests
     node = max(layout["dict_entry"], layout["unicode"] + 4, layout["integer"])
     if continuation_terms["request_graph"] != _json_tree_payload(max_http_body_bytes, json_policy):
         raise ValueError("RPC projection needs its actual continuation HTTP/body layout")
@@ -1200,7 +1203,8 @@ def _native_host_commitment(catalog, baseline):
 
 
 def _model_host_projection(catalog, *, tokenizer, max_pending_requests, max_waiting_input_bytes,
-                           body_bytes, output_queue_tokens, fifo_child_schema=None, precise_payloads=True):
+                           body_bytes, output_queue_tokens, fifo_child_schema=None, precise_payloads=True,
+                           finite_contract=None):
     """Shared real model/caller projection; endpoint roles are added by adapters."""
     catalog.check_health()
     baseline = catalog.host_resources
@@ -1224,11 +1228,12 @@ def _model_host_projection(catalog, *, tokenizer, max_pending_requests, max_wait
     context = catalog.states[0].logical_context
     if any(state.logical_context != context for state in catalog.states):
         raise ValueError("endpoint host resources require one admitted logical context")
-    terms = continuation_payload_bytes(context=context, vocab_size=bound.vocab_size,
+    cpu_context = context if finite_contract is None else finite_contract.cpu_tokens
+    terms = continuation_payload_bytes(context=cpu_context, vocab_size=bound.vocab_size,
         presentation=bound.decoded_utf8_bytes_per_token, presentation_fixed=bound.decoded_utf8_fixed_bytes,
         max_body_bytes=body_bytes, copy_enabled=copy_enabled, json_policy=json_policy)
     if output_queue_tokens is not None:
-        terms["mailbox"] = terms["mailbox"] * min(context, output_queue_tokens) // context
+        terms["mailbox"] = terms["mailbox"] * min(cpu_context, output_queue_tokens) // cpu_context
         terms["project_payload_bytes"] = _total(value for name, value in terms.items()
                                                 if name not in ("project_payload_bytes", "input_prompt", "token_list_roles", "text_roles", "list_partition"))
     header = retention_header_resources(catalog.policy, catalog.world, slots=len(catalog.states))
@@ -1238,9 +1243,35 @@ def _model_host_projection(catalog, *, tokenizer, max_pending_requests, max_wait
     if fifo_child_schema is not None and (fifo_child_schema != {"schema": "tensorfold.tp-fifo-retained-children",
             "version": 1, "context": context, "vocab": bound.vocab_size}):
         raise ValueError("FIFO child schema differs from the actual model/tokenizer geometry")
-    rpc_python = tp_rpc_python_payload(terms, world=catalog.world, context=context,
+    rpc_python = tp_rpc_python_payload(terms, world=catalog.world, context=cpu_context,
         max_pending_requests=max_pending_requests, max_http_body_bytes=body_bytes, json_policy=json_policy,
-        ordinary_fifo_children=ordinary_children)
+        ordinary_fifo_children=ordinary_children,
+        frame_bytes=None if finite_contract is None else finite_contract.command_bytes)
+    if finite_contract is not None:
+        from tensorfold.cuda.rank_protocol import MAX_MESSAGE_BYTES
+
+        # The new role is activated only AFTER physical admission. Pay its
+        # complete existing generic single-actor bootstrap and failure peak;
+        # no request can overlap that quiescent transaction. Keep every(P+1)
+        # later error journal: oversize finite receives reject BEFORE parsing
+        # but can retain the original96MiB bytes from the native Store.
+        boot_terms = continuation_payload_bytes(context=context, vocab_size=bound.vocab_size,
+            presentation=bound.decoded_utf8_bytes_per_token, presentation_fixed=bound.decoded_utf8_fixed_bytes,
+            max_body_bytes=body_bytes, copy_enabled=copy_enabled, json_policy=json_policy)
+        bootstrap = tp_rpc_python_payload(boot_terms, world=catalog.world, context=context,
+            max_pending_requests=1, max_http_body_bytes=body_bytes, json_policy=json_policy,
+            ordinary_fifo_children=ordinary_children)
+        raw_errors = (max_pending_requests + 1) * catalog.world * (MAX_MESSAGE_BYTES - finite_contract.command_bytes)
+        rpc_python["fully_funded_generic_bootstrap_bytes"] = bootstrap["global_rpc_python_working_bytes"]
+        rpc_python["finite_malformed_raw_error_bytes"] = raw_errors
+        rpc_python["finite_preserved_error_scope_count"] = max_pending_requests + 1
+        # Header already pays one live input-preparation graph. Independent
+        # failed request journals can retain prior phase graphs as well; never
+        # share those references merely because their wire schemas are equal.
+        preparation_errors = max_pending_requests * header.global_host_preparation_bytes
+        rpc_python["finite_retained_preparation_error_bytes"] = preparation_errors
+        rpc_python["global_rpc_python_working_bytes"] = _total((rpc_python["global_rpc_python_working_bytes"],
+            bootstrap["global_rpc_python_working_bytes"], raw_errors, preparation_errors))
     # Replicated Stream state exists on every rank; detok/HTTP are leader-only.
     per_owner = terms["project_payload_bytes"] + (catalog.world - 1) * rpc_python["per_follower_scope_bytes"]
     generation_owners = max_pending_requests
@@ -1280,10 +1311,16 @@ class FiniteBackendCaller:
     max_output_tokens: int
     retained_results: int
     max_receipt_bytes: int
+    max_concurrent_requests: int = 1
+    worker_stack_bytes: int = 0
+    control_payload_bytes: int = 0
 
     def __post_init__(self):
         for name, value in asdict(self).items():
-            _size(value, "finite caller " + name)
+            _size(value, "finite caller " + name,
+                  zero=name in ("worker_stack_bytes", "control_payload_bytes"))
+        if self.max_concurrent_requests > 1 and (not self.worker_stack_bytes or not self.control_payload_bytes):
+            raise ValueError("concurrent finite callers must declare worker stacks and bounded control payload")
 
 
 def _scheduler_child_schema(scheduler):
@@ -1293,7 +1330,7 @@ def _scheduler_child_schema(scheduler):
     return adapter.fifo_retained_child_schema() if type(adapter) is TensorParallelDecoder else None
 
 
-def _admit_host_record(catalog, record, materialized):
+def _admit_host_record(catalog, record, materialized, *, before_publish=None):
     from tensorfold.cuda.capacity import admit_host_commitment
 
     if catalog.has_retained:
@@ -1304,6 +1341,8 @@ def _admit_host_record(catalog, record, materialized):
         raise ValueError("the active retention endpoint resource envelope is immutable")
     authority = admit_host_commitment(record["global_host_commitment_bytes"], materialized_owned_bytes=materialized)
     result = {**record, "identity": identity, "authority": authority}
+    if before_publish is not None:
+        before_publish()  # Generic bootstrap is already physically backed; all peer ACKs precede publication.
     catalog.host_resource_envelope = result
     return result
 
@@ -1321,8 +1360,8 @@ def finalize_backend_resources(catalog, *, tokenizer, scheduler, request_limit, 
 
     if type(caller) is not FiniteBackendCaller or type(request_limit) is not RequestLimit or type(scheduler) is not Scheduler:
         raise ValueError("finite backend admission requires its typed caller, Scheduler and RequestLimit owners")
-    if request_limit.maximum != 1:
-        raise ValueError("finite backend caller requires exactly one logical request owner")
+    if request_limit.maximum != caller.max_concurrent_requests:
+        raise ValueError("finite backend caller and logical request owner counts differ")
     if (scheduler.admission_policy != "fifo" or scheduler._submitted or request_limit.used
             or scheduler._request_limit not in (None, request_limit)):
         raise ValueError("finite backend resources must precede submission under the same real FIFO owner")
@@ -1330,9 +1369,17 @@ def finalize_backend_resources(catalog, *, tokenizer, scheduler, request_limit, 
         raise ValueError("finite backend caller supports ordinary text state without retained/media ownership")
     pending = _size(request_limit.maximum, "finite logical request limit")
     waiting = _size(scheduler.max_waiting_input_bytes, "actual finite FIFO input credit")
+    finite_contract = None
+    if pending > 1:
+        from .tp_scheduler import TensorParallelDecoder
+
+        if type(scheduler.decoder) is not TensorParallelDecoder:
+            raise ValueError("concurrent finite resources require the actual ordered tensor-parallel adapter")
+        finite_contract = scheduler.decoder.finite_caller_contract(caller)
     core = _model_host_projection(catalog, tokenizer=tokenizer, max_pending_requests=pending,
         max_waiting_input_bytes=waiting, body_bytes=caller.max_source_bytes,
-        output_queue_tokens=scheduler.output_queue_tokens, fifo_child_schema=_scheduler_child_schema(scheduler))
+        output_queue_tokens=scheduler.output_queue_tokens, fifo_child_schema=_scheduler_child_schema(scheduler),
+        finite_contract=finite_contract)
     context, bound, policy = core["context"], core["bound"], core["json_policy"]
     if policy is None or caller.max_input_tokens + caller.max_output_tokens > context:
         raise ValueError("finite caller input/output bounds must fit the actual native logical context")
@@ -1340,21 +1387,33 @@ def finalize_backend_resources(catalog, *, tokenizer, scheduler, request_limit, 
     owned = scheduler.decoder.decoder if hasattr(scheduler.decoder, "decoder") else scheduler.decoder
     if owned.states is not decoder.states or owned.w is not decoder.w:
         raise ValueError("finite caller Scheduler differs from the model catalog owner")
+    concurrent = caller.max_concurrent_requests
+    if concurrent > 1 and (concurrent > len(catalog.states) or concurrent > scheduler.max_streams
+            or caller.retained_results < concurrent or core["generation_owners"] < concurrent):
+        raise ValueError("finite concurrency exceeds actual state/stream/input/result ownership capacity")
     native_fixed, native_prefix, unpaid_fixed, unpaid_prefix = _native_host_commitment(catalog, core["baseline"])
     native_decode = bytelevel_decode_payload(bound, context=caller.max_output_tokens)
     layout = _python_layout()
     integer = max(layout["integer"], sys.getsizeof(bound.vocab_size - 1))
     caller_terms = {
-        "prepared_source_strings_and_buffers": 2 * (80 + 5 * caller.max_source_bytes),
-        "original_input_ids": _append_list_payload(caller.max_input_tokens) + caller.max_input_tokens * integer,
+        "prepared_source_strings_and_buffers": concurrent * 2 * (80 + 5 * caller.max_source_bytes),
+        "original_input_ids": concurrent * (_append_list_payload(caller.max_input_tokens) + caller.max_input_tokens * integer),
         "retained_result_ids": caller.retained_results * (
             _append_list_payload(caller.max_output_tokens) + caller.max_output_tokens * integer),
         "retained_decoded_text": caller.retained_results * (80 + 5 * native_decode["decoded_utf8_bytes"]),
         "one_native_decode_and_conversion": max(native_decode["native_heap_requested_bytes"],
                                                   native_decode["result_to_python_payload_bytes"]),
         "bounded_report_graph": caller.max_receipt_bytes * layout["dict_entry"],
-        "bounded_report_encoding_and_wire": 5 * caller.max_receipt_bytes + policy.frame_work,
+        "bounded_report_encoding_and_wire": 5 * caller.max_receipt_bytes + concurrent * policy.frame_work,
     }
+    # Preserve the original one-owner numerical formula. Concurrent conversion
+    # is real overlapping native/Python work, never credited as serial reuse.
+    if concurrent > 1:
+        caller_terms["additional_native_decode_and_conversion"] = (concurrent - 1) * caller_terms["one_native_decode_and_conversion"]
+    if caller.worker_stack_bytes:
+        caller_terms["worker_stacks"] = concurrent * caller.worker_stack_bytes
+    if caller.control_payload_bytes:
+        caller_terms["bounded_caller_control_payload"] = caller.control_payload_bytes
     baseline, header, rpc = core["baseline"], core["header"], core["rpc_python"]
     total = _total((baseline.baseline_host_bytes, header.global_host_bytes, waiting,
         core["model_cpu"], rpc["global_rpc_python_working_bytes"],
@@ -1378,7 +1437,15 @@ def finalize_backend_resources(catalog, *, tokenizer, scheduler, request_limit, 
         "native_decode": native_decode, "global_host_commitment_bytes": total,
         "materialized_owned_bytes": materialized,
         "evidence": "source payload commitment; allocator/C-stack/driver/device/P3 qualification separate"}
-    return _admit_host_record(catalog, record, materialized)
+    if finite_contract is not None:
+        record["finite_protocol"] = {"role": finite_contract.record(),
+            "command_frame_bytes": finite_contract.command_bytes, "ack_frame_bytes": finite_contract.ack_bytes,
+            "cpu_token_span": finite_contract.cpu_tokens,
+            "native_logical_context_unchanged": context,
+            "activation": "physically-backed-generic-bootstrap/all-peer-ACK/before-envelope-and-logical-publication",
+            "cpu_projection": "finite span; conservative existing frontend roles retained as extra allowance"}
+    return _admit_host_record(catalog, record, materialized,
+        before_publish=None if finite_contract is None else lambda: scheduler.decoder.configure_finite_caller(finite_contract))
 
 
 def finalize_retention_resources(catalog, *, tokenizer, max_pending_requests,

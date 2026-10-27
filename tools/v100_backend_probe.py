@@ -39,10 +39,10 @@ MAX_PROMPT_BYTES = 4096
 MAX_RENDERED_BYTES = 65536
 MAX_PROMPT_TOKENS = 4096
 MAX_TOKENS = 512
-MAX_RECEIPT_BYTES = 1 << 20
 LEADER_RECEIPT_BYTES = 512 << 10
-FOLLOWER_RECEIPT_BYTES = 64 << 10
+FOLLOWER_RECEIPT_BYTES = 128 << 10
 SUPERVISOR_RECEIPT_BYTES = 64 << 10
+MAX_RECEIPT_BYTES = LEADER_RECEIPT_BYTES + (WORLD - 1) * FOLLOWER_RECEIPT_BYTES + SUPERVISOR_RECEIPT_BYTES
 FATAL_REPORT_GRACE_SECONDS = 30.0
 DEFAULT_PROMPT = "In one short sentence, explain why the sky appears blue."
 TARGET_TEMPLATE_SHA = "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce"
@@ -69,8 +69,8 @@ def digest(path):
 def write_report(path, value, *, allowance):
     """Bound the aggregate live report; disk checkpoints do not create live trees.
 
-    The leader owns512KiB, seven followers64KiB each, and the supervisor64KiB:
-    together they fit the caller's1MiB global receipt allowance. Overflow is a
+    The leader owns512KiB, seven followers128KiB each, and the supervisor64KiB:
+    their sum is the caller's funded global receipt allowance. Overflow is a
     failed diagnostic; preserve its complete evidence separately for review.
     """
     encoded = json.dumps(value, indent=1, allow_nan=False)
@@ -113,6 +113,8 @@ def arguments(argv=None):
     parser.add_argument("--base-commit", help="optional base commit; never a claim that dirty source equals it")
     parser.add_argument("--out", type=Path, required=True, help="new private result directory")
     parser.add_argument("--gpus", default="0,1,2,3,4,5,6,7")
+    parser.add_argument("--session-ceiling", type=int, choices=(24,),
+                        help="optional explicit24-session qualification region; default retains automatic capacity")
     parser.add_argument("--master-port", type=int, default=29607)
     parser.add_argument("--timeout-seconds", type=float, default=1800)
     parser.add_argument("--instrumented-departure-grace-seconds", type=float,
@@ -123,6 +125,12 @@ def arguments(argv=None):
                         help="1..16 sequential repetitions using one loaded engine/admission; cache state is retained and reported")
     parser.add_argument("--expect-prefix-reuse", action="store_true",
                         help="private cached FAMILY trial: require cold first MTP and maximal legal prefix on later identical prompts")
+    parser.add_argument("--concurrency-grid", action="store_true",
+                        help="finite bursts at1,2,4,8,16,24; sustained replies require>=256 committed tokens each plus positive correlated decode overlap; EOS unchanged")
+    parser.add_argument("--fast-grid", action="store_true",
+                        help="operational screen: one2-tokenNotebookbringup, allsixNs,30sreadiness/target10sdecode each, expectedcancel+drain; requiresgrid and320or512outputcells; notfullqualification")
+    parser.add_argument("--quality-spotchecks", action="store_true",
+                        help="after the unchanged concurrency grid, run six fixed independent answer/format checks with320-token allowances; requires grid and --tokens>=320")
     parser.add_argument("--thinking", action="store_true", help="pass enable_thinking=True to the unchanged target template")
     parser.add_argument("--serial-reference", action="store_true", help="also run a separately labeled draft=False reply with MTP loaded")
     parser.add_argument("--rank", type=int, help=argparse.SUPPRESS)
@@ -136,6 +144,12 @@ def arguments(argv=None):
         parser.error("a nonempty prompt of at most4096 UTF8 bytes and 1..512 reply tokens are required")
     if not 1 <= args.repetitions <= 16:
         parser.error("--repetitions must be 1..16")
+    if args.concurrency_grid and (args.tokens < 256 or args.expect_prefix_reuse):
+        parser.error("--concurrency-grid requires --tokens256..512 and cannot impose sequential prefix-reuse assertions")
+    if args.fast_grid and (not args.concurrency_grid or args.tokens not in (320, 512) or args.serial_reference or args.repetitions != 1):
+        parser.error("--fast-grid requires --concurrency-grid, --tokens320or512, --repetitions1 and MTPonly")
+    if args.quality_spotchecks and (not args.concurrency_grid or args.tokens < 320):
+        parser.error("--quality-spotchecks requires --concurrency-grid and --tokens>=320 for the declared caller funding")
     if args.expect_prefix_reuse and args.repetitions < 2:
         parser.error("--expect-prefix-reuse requires at least2 repetitions")
     if (not 1 <= args.master_port <= 65535 or not math.isfinite(args.timeout_seconds)
@@ -266,7 +280,7 @@ def prepared_prompt(engine, tokenizer, args):
                     "rendered": rendered, "token_ids": tokens}
 
 
-def check_engine(engine):
+def check_engine(engine, *, session_ceiling=None):
     """Refuse a changed execution profile before host finalization/admission."""
     plan = engine.capacity_plan
     solved, full = plan["session_capacity"], plan["kv_full_windows"]
@@ -278,8 +292,8 @@ def check_engine(engine):
             or engine.w.meta.get("execution_dtype") != "float16"
             or (engine.w.meta["full"].hidden, engine.w.meta["full"].layers, engine.w.meta["full"].vocab)
                 != (2560, 48, 248320)
-            or solved["context_tokens"] != CONTEXT or solved["configured_ceiling"] is not None
-            or solved["resident_capacity"] < 1
+            or solved["context_tokens"] != CONTEXT or solved["configured_ceiling"] != session_ceiling
+            or (solved["resident_capacity"] < 1 if session_ceiling is None else solved["resident_capacity"] != session_ceiling)
             or solved["full_context_commitments"] != solved["resident_capacity"]
             or not full["materialized"]):
         raise ValueError("loaded engine differs from native262144/INT8/TP8/auto/Q8-MTP2 profile")
@@ -373,7 +387,12 @@ def run_leader(engine, tokenizer, args, report):
     )
     from tensorfold.server.request_limits import RequestLimit
 
-    check_engine(engine)
+    if getattr(args, "session_ceiling", None) is None:
+        check_engine(engine)
+    else:
+        check_engine(engine, session_ceiling=args.session_ceiling)
+    if getattr(args, "concurrency_grid", False):
+        return run_concurrency_leader(engine, tokenizer, args, report)
     if getattr(args, "expect_prefix_reuse", False):
         from tensorfold.families.qwen4_exp.cuda.prefix_policy import state_epoch
 
@@ -400,10 +419,310 @@ def run_leader(engine, tokenizer, args, report):
         limit.close()
 
 
+
+
+def _owned_attributes(value):
+    """Inspect existing Python fields without invoking descriptors or device work."""
+    try:
+        result = object.__getattribute__(value, "__dict__")
+    except (AttributeError, TypeError):
+        return {}
+    return result if type(result) is dict else {}
+
+def graph_execution_snapshot(engine):
+    """Bounded host counters, not a device-completion or timing instrument."""
+    decoder = _owned_attributes(engine).get("multi")
+    owner = _owned_attributes(decoder).get("graphs")
+    if owner is None:
+        return None
+    fields = _owned_attributes(owner)
+    counters = {}
+    names = ("hits", "misses", "lane_declines", "verify_hits", "mtp_hits",
+             "eager_declines", "verify_misses", "mtp_misses")
+    for role, values in (("owner", fields), ("bound", _owned_attributes(fields.get("bound")))):
+        for name in names:
+            value = values.get(name)
+            if type(value) is int and value >= 0:
+                counters[role + "." + name] = value
+    keys = {name: len(fields[name]) for name in ("verify", "mtp") if type(fields.get(name)) is dict}
+    return {"counters": counters, "captured_keys": keys}
+
+def graph_execution_delta(before, after):
+    """Differences of available counters from the same owner before cleanup.
+
+    The finite caller never replaces its engine/profile. Missing counters are
+    not treated as zero; captured-key availability is reported separately.
+    """
+    if before is None or after is None:
+        return None
+    return {name: value - before["counters"][name] for name, value in after["counters"].items()
+            if name in before["counters"]}
+
+def concurrency_module():
+    if __package__:
+        from . import finite_concurrency
+    else:
+        import finite_concurrency
+    return finite_concurrency
+
+
+def waiting_input_credit(args):
+    return concurrency_module().input_credit(CONTEXT) if getattr(args, "concurrency_grid", False) else INPUT_CREDIT
+
+
+def run_quality_spotchecks(engine, tokenizer, args, report, limit, prepared, quality):
+    """Reuse the admitted owner; keep one raw reply and write every mismatch."""
+    status = report["quality"]
+    for case_id, tokens, prompt in prepared:
+        for draft in ((True, False) if args.serial_reference else (True,)):
+            mode = "mtp-target" if draft else "serial-reference"
+            row = {"case_id": case_id, "prompt": prompt,
+                "prompt_sha256": hashlib.sha256(prompt["rendered"].encode("utf-8")).hexdigest(),
+                "source_prompt_sha256": hashlib.sha256(prompt["messages"][0]["content"].encode("utf-8")).hexdigest(),
+                "model_identity": status["model_identity"], "dataset": quality.VERSION,
+                "dataset_sha256": status["dataset_sha256"],
+                "quality_helper_sha256": status["helper_sha256"],
+                "max_tokens": quality.OUTPUT_TOKENS, "stop_eos": True,
+                "quality": {"passed": False, "assessment_complete": False},
+                "measurement_role": "quality spotcheck; excluded from performance metrics"}
+            primary, diagnostics = None, [None]
+            try:
+                generate_reply(engine, tokenizer, tokens, count=quality.OUTPUT_TOKENS, draft=draft,
+                               limit=limit, result=row)
+                row["quality"] = quality.assess(case_id, row["text"])
+            except BaseException as error:
+                primary = error
+            try:
+                # Raw text/IDs also persist on generation or oracle failure.
+                write_report(args.out / f"quality-{case_id}-{mode}.json", row, allowance=MAX_RECEIPT_BYTES)
+            except BaseException as diagnostic:
+                diagnostics[0] = diagnostic
+            finish_failures(primary, diagnostics)
+            status["completed_requests"] += 1
+            status["failed_requests"] += not row["quality"]["passed"]
+            status["last_result"] = {"case_id": case_id, "draft": draft, "passed": row["quality"]["passed"]}
+            row = None  # No previous result graph survives the next generation.
+            write_report(args.out / "progress.json", report, allowance=LEADER_RECEIPT_BYTES)
+    status["passed"] = status["failed_requests"] == 0
+    write_report(args.out / "quality-summary.json", status, allowance=LEADER_RECEIPT_BYTES)
+    if not status["passed"]:
+        raise ValueError("fixed quality spot checks failed; all raw answers and differences were retained")
+
+
+
+def run_fast_grid(engine, tokenizer, args, report, limit, pool, prepared, finite, vocab):
+    """Screen all six offered Ns; independent answer quality stays separate."""
+    from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.cuda.cohort import notify_failure
+    from tensorfold.token_metadata import decode_presentation
+
+    _label, tokens, prompt = next(row for row in prepared if row[0] == "sustained")
+    report["fast_screen"] = {"protocol": "fast-grid-v1", "readiness_cap_seconds": finite.FAST_READY_SECONDS,
+        "target_decode_seconds": finite.FAST_DECODE_SECONDS, "output_cell_bound": args.tokens,
+        "completed_cohorts": 0, "invalid_measurements": 0,
+        "full_qualification": False, "quality_assessed": False,
+        "prompt_sha256": hashlib.sha256(prompt["rendered"].encode("utf-8")).hexdigest(),
+        "schedule": "one Notebook2-tokenMTP bringup, then1/2/4/8/16/24; no per-cohort warmup/shortbringupsweep; optional quality onlyafterall6"}
+    warmup = {}
+    generate_reply(engine, tokenizer, tokens, count=2, draft=True, limit=limit, result=warmup)
+    warmup["measurement_role"] = "one cheap real NotebookMTP readiness/prefill; not answerquality or timed decode"
+    write_report(args.out / "fast-notebook-bringup.json", warmup, allowance=MAX_RECEIPT_BYTES)
+    report["fast_screen"]["bringup"] = {"stats": warmup["stats"],
+        "first_committed_token_elapsed_ns": warmup["first_committed_token_elapsed_ns"],
+        "prompt_tokens": len(tokens), "committed_tokens": len(warmup["token_ids"])}
+    del warmup
+
+    def invoke(collector, progress):
+        stats = engine.generate(tokens, args.tokens, Sampling(seed=17, temperature=0, top_k=0, top_p=1),
+                                collector, draft=True, stop_eos=True, progress=progress)
+        natural = ("natural_eos" if collector.ids and collector.ids[-1] in getattr(engine, "eos", ()) else
+                   "output_cap" if len(collector.ids) == args.tokens else "backend_return")
+        return {"stats": stats, "text": decode_presentation(tokenizer, collector.ids), "natural_stop": natural}
+
+    def observe():
+        _, entries = engine.scheduler.waiting.requests(include_reserved=True)
+        streams = engine.retention_catalog._cohort.multi.streams
+        for entry in entries:
+            stream = entry[2][0]
+            callback = stream.delivery_owner.emit
+            if type(callback) is not finite.ScreenTokens:
+                raise ValueError("fast native output requires its actual owned ScreenTokens callback")
+            callback.bind_native_stream(stream)
+        record = engine.scheduler.queue_record()
+        return {"states": tuple((entry[1], entry[2][0].admission_status.phase) for entry in entries),
+            "decoding": finite.decoding_tickets(entries, streams),
+            "nonmonotone_decode_states": tuple(entry[1] for entry in entries
+                if (stream := entry[2][0]).started > 0 and stream.committed_output_tokens > 0 and not stream.done
+                and (stream.waiting or streams.get(stream.sid) is not stream)),
+            "outcomes": record["outcomes"], "charged_live_input_bytes": record["charged_live_input_bytes"],
+            "backend_live": engine.retention_catalog._cohort.multi.live(),
+            "backend_retiring": len(engine.scheduler._retiring), "backend_mailboxes": len(engine.scheduler._request_boxes)}
+
+    for count in finite.GRID:
+        graph_before = graph_execution_snapshot(engine)
+        def write_case(result):
+            graph_after = graph_execution_snapshot(engine)
+            result.update(workload="fast-sustained", prompt=prompt, max_tokens=args.tokens, stop_eos=True,
+                profile=engine.sm70_profile, draft=True,
+                graph_execution={"before_requests": graph_before, "after_requests": graph_after,
+                    "delta": graph_execution_delta(graph_before, graph_after),
+                    "scope": "this screen cohort including readiness and measured decode/cancel/drain; excludesconstructor/cheapbringup/otherNs/quality; countersnotdevicetiming"})
+            write_report(args.out / f"fast-mtp-target-n{count:02d}.json", result,
+                         allowance=finite.MAXIMUM * MAX_RECEIPT_BYTES)
+        summary = finite.run_screen_case(pool, count=count, maximum_tokens=args.tokens, vocab=vocab,
+            limit=limit, invoke=invoke, observe=observe, write=write_case, timeout=args.timeout_seconds,
+            failure_notify=notify_failure)
+        report["fast_screen"]["completed_cohorts"] += 1
+        report["fast_screen"]["invalid_measurements"] += not summary["passed"]
+        report["fast_screen"]["last_case"] = summary
+        report["concurrency"]["completed_cases"] += 1
+        write_report(args.out / "progress.json", report, allowance=LEADER_RECEIPT_BYTES)
+    report["fast_screen"]["all_required_N_attempted"] = report["fast_screen"]["completed_cohorts"] == len(finite.GRID)
+    return report["fast_screen"]["invalid_measurements"]
+
+def run_concurrency_leader(engine, tokenizer, args, report):
+    """One physical envelope and real logical cap; no fake HTTP or runtime patch."""
+    from types import SimpleNamespace
+    from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.families.qwen4_exp.cuda.retention_resources import FiniteBackendCaller, finalize_backend_resources
+    from tensorfold.server.request_limits import RequestLimit
+    from tensorfold.token_metadata import decode_presentation, tokenizer_vocab_size
+
+    finite = concurrency_module()
+    prepared = []
+    for label, prompt in (("bringup", args.prompt), ("sustained", finite.SUSTAINED_PROMPT)):
+        tokens, receipt = prepared_prompt(engine, tokenizer, SimpleNamespace(prompt=prompt, thinking=args.thinking))
+        prepared.append((label, tokens, receipt))
+    quality, quality_prepared, quality_control = None, None, 0
+    if getattr(args, "quality_spotchecks", False):
+        if __package__:
+            from . import finite_quality as quality
+        else:
+            import finite_quality as quality
+        quality_prepared = []
+        for case_id, prompt, _expected in quality.CASES:
+            tokens, receipt = prepared_prompt(engine, tokenizer, SimpleNamespace(prompt=prompt, thinking=args.thinking))
+            quality_prepared.append((case_id, tokens, receipt))
+        if len(prepared) + len(quality_prepared) > finite.MAXIMUM:
+            raise ValueError("prepared quality/performance ID owners exceed the funded24-owner envelope")
+        quality_control = (quality.control_payload_bytes() + sys.getsizeof(quality_prepared)
+                           + sum(sys.getsizeof(row) for row in quality_prepared))
+        report["quality"] = {"dataset": quality.VERSION,
+            "dataset_sha256": hashlib.sha256(json.dumps(quality.CASES, ensure_ascii=True, separators=(",", ":")).encode("ascii")).hexdigest(),
+            "helper_sha256": digest(quality.__file__),
+            "prepared_prompts": [receipt for _, _, receipt in quality_prepared],
+            "prepared_input_owners_total": len(prepared) + len(quality_prepared),
+            "additional_control_payload_bytes": quality_control,
+            "completed_requests": 0, "failed_requests": 0, "passed": False,
+            "model_identity": {"model_path": str(args.model), "mtp_path": str(args.mtp),
+                "prepared_model_dir": report.get("prepared_model_dir"), "profile": engine.sm70_profile,
+                "context": CONTEXT, "tp": WORLD, "kv_dtype": "int8", "mtp_drafts": DEPTH,
+                "mtp_confidence": CONFIDENCE, "thinking": args.thinking,
+                "sampling": {"seed": 17, "temperature": 0, "top_k": 0, "top_p": 1},
+                "tokenizer_identity": report["tokenizer_identity"], "native_flags": report["native_flags"],
+                "wheel_sha256": digest(args.wheel), "source_hold_sha256": digest(args.source_hold)},
+            "scope": "six deterministic answer/format spot checks only; no broad quality or performance qualification"}
+    caller = FiniteBackendCaller(max_input_tokens=MAX_PROMPT_TOKENS, max_output_tokens=args.tokens,
+        retained_results=finite.MAXIMUM, max_source_bytes=MAX_PROMPT_BYTES + MAX_RENDERED_BYTES,
+        max_receipt_bytes=(finite.MAXIMUM + 1) * MAX_RECEIPT_BYTES,
+        max_concurrent_requests=finite.MAXIMUM, worker_stack_bytes=finite.STACK_BYTES,
+        control_payload_bytes=finite.control_payload_bytes(args.tokens) + quality_control
+            + (finite.screen_control_payload_bytes() if getattr(args, "fast_grid", False) else 0))
+    limit, pool = RequestLimit(finite.MAXIMUM), None
+    primary, failures = None, [None, None]
+    report["concurrency"] = {"grid": finite.GRID, "caller": caller.__dict__,
+        "prompts": [receipt for _, _, receipt in prepared], "completed_cases": 0,
+        "schedule": "fixed ascending N, bringup then sustained, MTP then optional serial, repeated; simultaneous burst barrier",
+        "stack_size_before_pool": __import__("threading").stack_size(),
+        "helper_sha256": digest(finite.__file__), "eos": "ordinary stop_eos=True",
+        "qualification": "measurement harness; no performance or quality qualification until matched actual runs"}
+    try:
+        report["host_admission"] = finalize_backend_resources(engine.retention_catalog,
+            tokenizer=tokenizer, scheduler=engine.scheduler, request_limit=limit, caller=caller)
+        write_report(args.out / "admitted.json", report, allowance=LEADER_RECEIPT_BYTES)
+        engine.scheduler.configure_requests(limit)
+        pool = finite.owned_pool(min(30, args.timeout_seconds))
+        vocab = tokenizer_vocab_size(tokenizer)
+
+        def observe():
+            _, entries = engine.scheduler.waiting.requests(include_reserved=True)
+            states = tuple((entry[1], entry[2][0].admission_status.phase) for entry in entries)
+            record = engine.scheduler.queue_record()
+            return {"states": states,
+                    "decoding": finite.decoding_tickets(entries, engine.retention_catalog._cohort.multi.streams),
+                    "nonmonotone_decode_states": tuple(entry[1] for entry in entries
+                        if (stream := entry[2][0]).started > 0 and stream.committed_output_tokens > 0
+                        and not stream.done and (stream.waiting
+                            or engine.retention_catalog._cohort.multi.streams.get(stream.sid) is not stream)),
+                    "outcomes": record["outcomes"],
+                    "charged_live_input_bytes": record["charged_live_input_bytes"]}
+
+        invalid_screens = 0
+        if getattr(args, "fast_grid", False):
+            invalid_screens = run_fast_grid(engine, tokenizer, args, report, limit, pool, prepared, finite, vocab)
+        else:
+            for iteration in range(1, args.repetitions + 1):
+                for label, tokens, prompt in prepared:
+                    for draft in ((True, False) if args.serial_reference else (True,)):
+                        mode = "mtp-target" if draft else "serial-reference"
+                        # Real one-token warmup, durably reported then retired. All
+                        # variants use the same prompt/cache schedule; no cache clear.
+                        warmup = {}
+                        generate_reply(engine, tokenizer, tokens, count=1, draft=draft, limit=limit, result=warmup)
+                        write_json(args.out / f"iteration-{iteration:04d}-{label}-{mode}-warmup.json", warmup)
+                        del warmup
+
+                        def invoke(collector, progress):
+                            stats = engine.generate(tokens, args.tokens,
+                                Sampling(seed=17, temperature=0, top_k=0, top_p=1), collector,
+                                draft=draft, stop_eos=True, progress=progress)
+                            return {"stats": stats, "text": decode_presentation(tokenizer, collector.ids)}
+
+                        for count in finite.GRID:
+                            name = f"iteration-{iteration:04d}-{label}-{mode}-n{count:02d}"
+                            graph_before = graph_execution_snapshot(engine) if label == "sustained" else None
+                            def write_case(result):
+                                if label == "sustained":
+                                    graph_after = graph_execution_snapshot(engine)
+                                    result["graph_execution"] = {"before_requests": graph_before,
+                                        "after_requests": graph_after,
+                                        "delta": graph_execution_delta(graph_before, graph_after),
+                                        "scope": "this measured sustained burst only; after constructor, bringup and explicit tool warmup; before optional quality and cleanup; host counters only"}
+                                result.update(iteration=iteration, workload=label, draft=draft,
+                                    prompt=prompt, stop_eos=True, max_tokens=args.tokens,
+                                    profile=engine.sm70_profile)
+                                write_report(args.out / (name + ".json"), result,
+                                             allowance=finite.MAXIMUM * MAX_RECEIPT_BYTES)
+                            summary = finite.run_case(pool, count=count, maximum_tokens=args.tokens, vocab=vocab,
+                                limit=limit, invoke=invoke, observe=observe, write=write_case,
+                                minimum_tokens=1 if label == "bringup" else finite.SUSTAINED_MINIMUM,
+                                timeout=args.timeout_seconds)
+                            report["concurrency"]["completed_cases"] += 1
+                            report["concurrency"]["last_case"] = {"name": name, **summary}
+                            write_report(args.out / "progress.json", report, allowance=LEADER_RECEIPT_BYTES)
+        if quality is not None:
+            run_quality_spotchecks(engine, tokenizer, args, report, limit, quality_prepared, quality)
+        if invalid_screens:
+            raise ValueError("fast screen has zero/no-overlap/readiness failures; allsixNs and independentquality were attempted")
+    except BaseException as error:
+        primary = error
+    finally:
+        if pool is not None:
+            try:
+                pool.shutdown(wait=True, cancel_futures=True)
+            except BaseException as error:
+                failures[0] = error
+        try:
+            limit.close()
+        except BaseException as error:
+            failures[1] = error
+    finish_failures(primary, failures)
+
+
 def worker(args):
     from tensorfold import hub
     from tensorfold.cuda import precision, prompt_precision
-    from tensorfold.cuda.cohort import FAILURE_FD_ENV
+    from tensorfold.cuda.cohort import FAILURE_FD_ENV, notify_failure
     from tensorfold.families.qwen4_exp import cuda_engine
     from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL
     from tensorfold.serve_options import drafter_metadata_source
@@ -418,7 +737,7 @@ def worker(args):
               "process_identity": {"pid": os.getpid(), "parent_pid": os.getppid(),
                                    "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES")},
               "qualification": "finite-backend-diagnostic-only; HTTP/design qualification remains open"}
-    engine, primary, failures = None, None, [None] * 3
+    engine, primary, failures = None, None, [None] * 4
     allowance = FOLLOWER_RECEIPT_BYTES if args.rank else LEADER_RECEIPT_BYTES
     try:
         report["installed"] = installed_identity(args.wheel)
@@ -429,11 +748,15 @@ def worker(args):
         prompt_precision.set_fp8(prompt_precision.FP8_BY_DEFAULT)
         engine = cuda_engine(model, drafter=str(companion), draft_method="mtp", tp=WORLD, rank=args.rank,
             master="127.0.0.1", master_port=args.master_port, mtp_drafts=DEPTH, mtp_confidence=CONFIDENCE,
-            context=CONTEXT, context_explicit=True, parallel="auto", kv_full_windows="auto",
-            kv_dtype="int8", indexer_history="gpu", max_waiting_input_bytes=INPUT_CREDIT,
+            context=CONTEXT, context_explicit=True,
+            parallel=getattr(args, "session_ceiling", None) or "auto", kv_full_windows="auto",
+            kv_dtype="int8", indexer_history="gpu", max_waiting_input_bytes=waiting_input_credit(args),
             output_queue_tokens=args.tokens, graphs=args.requested_sm70_profile == PACKED_GRAPH_TRIAL)
         record_execution_profile(engine, report, requested=args.requested_sm70_profile)
         report["capacity_plan"] = engine.capacity_plan
+        report["graph_execution"] = {"before_requests": graph_execution_snapshot(engine),
+            "after_requests": None, "delta": None,
+            "scope": "existing host counters after constructor warmup and before cleanup; includes every tool request, including bringup, explicit tool warmups and optional quality; measured-case snapshots are separate; no device timing"}
         write_report(args.out / f"rank-{args.rank}-ready.json", report, allowance=allowance)
         if args.rank:
             engine.follow()
@@ -441,8 +764,18 @@ def worker(args):
             tokenizer = load_tokenizer(model)
             report["tokenizer_identity"] = tokenizer_identity(tokenizer)
             run_leader(engine, tokenizer, args, report)
+        execution = report["graph_execution"]
+        execution["after_requests"] = graph_execution_snapshot(engine)
+        execution["delta"] = graph_execution_delta(execution["before_requests"], execution["after_requests"])
     except BaseException as error:
         primary = error
+        try:
+            # Signal the existing supervised cohort before fallible diagnostics
+            # or backend cleanup can block. Its latched grace bounds retirement.
+            if not notify_failure():
+                raise RuntimeError("finite worker lost its supervised failure capability")
+        except BaseException as notification:
+            failures[3] = notification
         try:
             report["failure"] = {"type": type(error).__name__, "message": str(error),
                                  "traceback": traceback.format_exc()}
@@ -456,9 +789,9 @@ def worker(args):
             except BaseException as error:
                 failures[1] = error
     try:
-        if failures[0] is not None or failures[1] is not None:
+        if failures[0] is not None or failures[1] is not None or failures[3] is not None:
             report["cleanup_failures"] = [{"type": type(error).__name__, "message": str(error)}
-                                          for error in failures[:2] if error is not None]
+                                          for error in (failures[0], failures[1], failures[3]) if error is not None]
         report["complete"] = primary is None and not any(error is not None for error in failures)
         write_report(args.out / f"rank-{args.rank}-final.json", report, allowance=allowance)
     except BaseException as diagnostic:
@@ -494,10 +827,19 @@ def launch(args, argv):
         "image_identity": args.image_identity, "base_commit": args.base_commit,
         "source_hold": {"path": str(args.source_hold), "sha256": hashlib.sha256(hold).hexdigest()},
         "wheel": {"path": str(args.wheel), "sha256": digest(args.wheel)},
-        "tool_sha256": digest(__file__), "installed": installed_identity(args.wheel),
+        "tool_sha256": digest(__file__),
+        "concurrency_helper_sha256": digest(concurrency_module().__file__) if args.concurrency_grid else None,
+        "installed": installed_identity(args.wheel),
         "settings": {"context": CONTEXT, "tp": WORLD, "depth": DEPTH, "confidence": CONFIDENCE,
-            "kv_dtype": "int8", "parallel": "auto", "kv_full_windows": "auto", "indexer_history": "gpu",
-            "max_waiting_input_bytes": INPUT_CREDIT, "logical_callers": 1,
+            "kv_dtype": "int8", "parallel": getattr(args, "session_ceiling", None) or "auto",
+            "session_ceiling": getattr(args, "session_ceiling", None), "kv_full_windows": "auto", "indexer_history": "gpu",
+            "max_waiting_input_bytes": waiting_input_credit(args),
+            "logical_callers": 24 if args.concurrency_grid else 1,
+            "max_receipt_bytes": (25 if args.concurrency_grid else 1) * MAX_RECEIPT_BYTES,
+            "concurrency_grid": [1, 2, 4, 8, 16, 24] if args.concurrency_grid else None,
+            "quality_spotchecks": getattr(args, "quality_spotchecks", False),
+            "fast_grid": getattr(args, "fast_grid", False),
+            "measurement_role": "fastoperational-screen-notfullqualification" if getattr(args, "fast_grid", False) else "fullfinitequalification-protocol",
             "requested_sm70_profile": args.requested_sm70_profile,
             "instrumented_departure_grace_seconds": args.instrumented_departure_grace_seconds,
             "repetitions": args.repetitions,

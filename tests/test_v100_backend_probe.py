@@ -809,3 +809,252 @@ def test_instrumented_departure_and_exit_record_map_to_rank_order(tmp_path, monk
     assert record["supervision"]["available"] is True
     assert record["supervision"]["rank_order"] == [1, 2, 3, 4, 5, 6, 7, 0]
     assert record["supervision"]["children"][0]["pid"] == 42
+
+
+def finite_engine_capacity(*, ceiling=None, resident=26, materialized=True, commitments=None):
+    return SimpleNamespace(capacity_plan={"session_capacity": {"context_tokens": probe.CONTEXT,
+        "configured_ceiling": ceiling, "resident_capacity": resident,
+        "full_context_commitments": resident if commitments is None else commitments},
+        "kv_full_windows": {"materialized": materialized}}, tp=8, depth=2, confidence=.7,
+        context_window=262144, indexer_history="gpu", kv_pair=SimpleNamespace(key_dtype="int8", value_dtype="int8"),
+        w=SimpleNamespace(mtp=object(), meta={"execution_provider": "sm70", "execution_dtype": "float16",
+            "full": SimpleNamespace(hidden=2560, layers=48, vocab=248320)}),
+        scheduler=SimpleNamespace(_request_limit=None), retention_catalog=object())
+
+
+def test_all_eight_ready_reports_fit_the_funded_slices_and_overflow_remains_a_failure(tmp_path):
+    import json
+
+    assert probe.FOLLOWER_RECEIPT_BYTES == 128 << 10
+    assert probe.MAX_RECEIPT_BYTES == 1507328
+    total = 0
+    for rank in range(probe.WORLD):
+        # The actual failed reports were 89,341..89,349 bytes. Preserve an
+        # independently bounded payload above that old 64 KiB refusal boundary.
+        value = {"rank": rank, "capacity_plan": {"graph_manifest": "x" * 90000}, "complete": False}
+        path = tmp_path / f"rank-{rank}-ready.json"
+        allowance = probe.LEADER_RECEIPT_BYTES if rank == 0 else probe.FOLLOWER_RECEIPT_BYTES
+        probe.write_report(path, value, allowance=allowance)
+        assert json.loads(path.read_text()) == value
+        total += path.stat().st_size
+    assert total + probe.SUPERVISOR_RECEIPT_BYTES < probe.MAX_RECEIPT_BYTES
+    value = {"too_large": "x" * probe.FOLLOWER_RECEIPT_BYTES}
+    with pytest.raises(ValueError, match="report slice exceeded"):
+        probe.write_report(tmp_path / "rank-overflow.json", value, allowance=probe.FOLLOWER_RECEIPT_BYTES)
+    assert not (tmp_path / "rank-overflow.json").exists()
+    assert json.loads((tmp_path / "rank-overflow.overflow.json").read_text()) == value
+
+
+def test_actual_finite_caller_receives_full_eight_rank_report_commitment(monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda import retention_resources
+
+    engine = finite_engine_capacity(ceiling=24, resident=24)
+    captured = []
+    engine.scheduler.configure_requests = lambda limit: captured.append(("configure", limit.used))
+    args = SimpleNamespace(session_ceiling=24, serial_reference=True, tokens=128)
+    monkeypatch.setattr(probe, "prepared_prompt", lambda *_args: ([0], {"prepared": True}))
+    monkeypatch.setattr(probe, "write_report", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(probe, "repeat_replies", lambda *_args: None)
+
+    def finalize(catalog, *, tokenizer, scheduler, request_limit, caller):
+        assert type(caller) is retention_resources.FiniteBackendCaller
+        assert caller.max_receipt_bytes == (512 + 7 * 128 + 64) << 10
+        assert caller.retained_results == 2 and request_limit.maximum == 1 and request_limit.used == 0
+        captured.append(("admit", caller.max_receipt_bytes))
+        return {"admitted": True}
+
+    monkeypatch.setattr(retention_resources, "finalize_backend_resources", finalize)
+    args.out = Path("unused")
+    report = {}
+    probe.run_leader(engine, None, args, report)
+    assert captured == [("admit", probe.MAX_RECEIPT_BYTES), ("configure", 0)]
+    assert report["host_admission"] == {"admitted": True}
+
+
+def test_ready_publication_failure_reaches_parent_before_blocked_cleanup(tmp_path, monkeypatch):
+    import json
+    import threading
+    from tensorfold import hub, serve_options
+    from tensorfold.cuda import expert_launch
+    from tensorfold.cuda.cohort import FAILURE_FD_ENV
+    from tensorfold.families import qwen4_exp
+
+    args = probe.arguments(cli(tmp_path))
+    now = [100.0]
+    closed, release, retired = threading.Event(), threading.Event(), threading.Event()
+    outcomes = []
+
+    class Engine:
+        capacity_plan = {"oversized_manifest": "x" * probe.FOLLOWER_RECEIPT_BYTES}
+        def follow(self):
+            pytest.fail("failed ready publication must not enter follow")
+        def close(self):
+            closed.set()
+            assert release.wait(3), "test owner failed to release its blocked cleanup"
+
+    monkeypatch.setattr(probe.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(probe, "installed_identity", lambda _wheel: {})
+    monkeypatch.setattr(probe, "record_execution_profile", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(hub, "resolve", lambda *_args, **_kwargs: tmp_path)
+    monkeypatch.setattr(serve_options, "drafter_metadata_source", lambda _source: tmp_path)
+    monkeypatch.setattr(qwen4_exp, "cuda_engine", lambda *_args, **_kwargs: Engine())
+
+    def supervised(_commands, _environments, *, failure_probe, pass_fds, **_kwargs):
+        monkeypatch.setenv(FAILURE_FD_ENV, str(pass_fds[0]))
+        worker_args = SimpleNamespace(**{**vars(args), "rank": 1})
+        def run():
+            try:
+                probe.worker(worker_args)
+            except BaseException as error:
+                outcomes.append(error)
+            finally:
+                retired.set()
+        thread = threading.Thread(target=run)
+        thread.start()
+        try:
+            assert closed.wait(2) and not retired.is_set()
+            assert failure_probe() is False
+            notification = json.loads((args.out / "fatal-notification.json").read_text())
+            assert notification["fatal_notification"]["bytes_observed"] == 1
+            now[0] += probe.FATAL_REPORT_GRACE_SECONDS
+            assert failure_probe() is True and not retired.is_set()
+        finally:
+            release.set()
+            thread.join(2)
+        assert not thread.is_alive() and retired.is_set()
+        return 1
+
+    monkeypatch.setattr(expert_launch, "supervise", supervised)
+    assert probe.launch(args, []) == 1
+    assert len(outcomes) == 1 and isinstance(outcomes[0], ValueError)
+    assert "report slice exceeded" in str(outcomes[0])
+    assert (args.out / "rank-1-ready.overflow.json").exists()
+    assert (args.out / "rank-1-failure.overflow.json").exists()
+    final = json.loads((args.out / "launch-final.json").read_text())
+    assert not final["complete"] and not final["timed_out"]
+
+
+def test_notification_failure_is_secondary_and_does_not_skip_close(tmp_path, monkeypatch):
+    from tensorfold import hub, serve_options
+    from tensorfold.cuda import cohort
+    from tensorfold.families import qwen4_exp
+
+    primary, secondary = ValueError("original follow failure"), OSError("notification write failed")
+    events = []
+    class Engine:
+        capacity_plan = {}
+        def follow(self):
+            raise primary
+        def close(self):
+            events.append("close")
+    def notify():
+        events.append("notify")
+        raise secondary
+    monkeypatch.setattr(cohort, "notify_failure", notify)
+    monkeypatch.setattr(probe, "installed_identity", lambda _wheel: {})
+    monkeypatch.setattr(probe, "record_execution_profile", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(hub, "resolve", lambda *_args, **_kwargs: tmp_path)
+    monkeypatch.setattr(serve_options, "drafter_metadata_source", lambda _source: tmp_path)
+    monkeypatch.setattr(qwen4_exp, "cuda_engine", lambda *_args, **_kwargs: Engine())
+    read_fd, write_fd = os.pipe()
+    monkeypatch.setenv(cohort.FAILURE_FD_ENV, str(write_fd))
+    args = SimpleNamespace(rank=1, wheel=tmp_path, model=tmp_path, mtp=tmp_path, master_port=29607,
+        tokens=128, out=tmp_path, requested_sm70_profile=None, repetitions=1, session_ceiling=24)
+    try:
+        with pytest.raises(ValueError) as caught:
+            probe.worker(args)
+        assert caught.value is primary and retained_failure(primary, secondary)
+        assert events == ["notify", "close"]
+    finally:
+        os.close(write_fd)
+        os.close(read_fd)
+
+
+def test_graph_execution_snapshot_distinguishes_key_availability_from_request_cache_hits():
+    bound = SimpleNamespace(hits=3, misses=2, lane_declines=1, verify_hits=1, mtp_hits=2)
+    owner = SimpleNamespace(bound=bound, verify={1: object(), 2: object()}, mtp={1: object()}, eager_declines=4)
+    engine = SimpleNamespace(multi=SimpleNamespace(graphs=owner))
+    before = probe.graph_execution_snapshot(engine)
+    bound.hits += 17
+    bound.verify_hits += 7
+    bound.mtp_hits += 10
+    bound.misses += 2
+    after = probe.graph_execution_snapshot(engine)
+    assert before["captured_keys"] == after["captured_keys"] == {"verify": 2, "mtp": 1}
+    assert before["counters"]["bound.hits"] == 3 and after["counters"]["bound.hits"] == 20
+    assert probe.graph_execution_delta(before, after) == {
+        "owner.eager_declines": 0, "bound.hits": 17, "bound.misses": 2,
+        "bound.lane_declines": 0, "bound.verify_hits": 7, "bound.mtp_hits": 10}
+    assert probe.graph_execution_snapshot(SimpleNamespace()) is None
+    assert probe.graph_execution_snapshot(SimpleNamespace(multi=SimpleNamespace(graphs=None))) is None
+    assert probe.graph_execution_delta(None, after) is None
+
+
+def test_graph_snapshot_never_calls_device_methods_descriptors_or_unbounded_container_iteration():
+    class Device:
+        def item(self):
+            pytest.fail("device reads are not part of the snapshot")
+    class Owner:
+        @property
+        def hits(self):
+            pytest.fail("descriptor must not execute")
+    owner = Owner()
+    owner.bound = SimpleNamespace(hits=Device(), misses=True, lane_declines=5)
+    owner.verify = {1: Device()}
+    owner.mtp = {1: Device(), 2: Device()}
+    owner.unrelated = {str(n): n for n in range(10000)}
+    snapshot = probe.graph_execution_snapshot(SimpleNamespace(multi=SimpleNamespace(graphs=owner)))
+    assert snapshot == {"counters": {"bound.lane_declines": 5}, "captured_keys": {"verify": 1, "mtp": 2}}
+    # A counter first exposed after the initial snapshot has no invented zero baseline.
+    owner.bound.mtp_hits = 100
+    after = probe.graph_execution_snapshot(SimpleNamespace(multi=SimpleNamespace(graphs=owner)))
+    assert probe.graph_execution_delta(snapshot, after) == {"bound.lane_declines": 0}
+
+
+@pytest.mark.parametrize("rank", [0, 1])
+def test_worker_brackets_all_requests_after_constructor_warmup_and_before_cleanup(tmp_path, monkeypatch, rank):
+    import json
+    from tensorfold import hub, serve_options, token_metadata
+    from tensorfold.cuda.cohort import FAILURE_FD_ENV
+    from tensorfold.families import qwen4_exp
+
+    bound = SimpleNamespace(hits=3, misses=2, lane_declines=1)
+    owner = SimpleNamespace(bound=bound, verify={1: object()}, mtp={1: object()})
+    events = []
+    class Engine:
+        capacity_plan = {}
+        multi = SimpleNamespace(graphs=owner)
+        def __init__(self):
+            # Real engines own multi directly, as their actual constructor does.
+            self.multi = self.__class__.multi
+        def follow(self):
+            events.append("requests")
+            bound.hits += 11
+        def close(self):
+            events.append("close")
+            bound.hits = 0  # Snapshot must precede owner retirement/reset.
+    engine = Engine()
+    monkeypatch.setattr(probe, "installed_identity", lambda _wheel: {})
+    monkeypatch.setattr(probe, "record_execution_profile", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(hub, "resolve", lambda *_args, **_kwargs: tmp_path)
+    monkeypatch.setattr(serve_options, "drafter_metadata_source", lambda _source: tmp_path)
+    monkeypatch.setattr(qwen4_exp, "cuda_engine", lambda *_args, **_kwargs: engine)
+    monkeypatch.setattr(token_metadata, "load_tokenizer", lambda *_args: None)
+    monkeypatch.setattr(token_metadata, "tokenizer_identity", lambda *_args: "test-tokenizer")
+    monkeypatch.setattr(probe, "run_leader", lambda *_args: engine.follow())
+    read_fd, write_fd = os.pipe()
+    monkeypatch.setenv(FAILURE_FD_ENV, str(write_fd))
+    args = SimpleNamespace(rank=rank, wheel=tmp_path, model=tmp_path, mtp=tmp_path, master_port=29607,
+        tokens=128, out=tmp_path, requested_sm70_profile=None, repetitions=1, session_ceiling=24)
+    try:
+        assert probe.worker(args) == 0
+    finally:
+        os.close(write_fd)
+        os.close(read_fd)
+    ready = json.loads((tmp_path / f"rank-{rank}-ready.json").read_text())
+    final = json.loads((tmp_path / f"rank-{rank}-final.json").read_text())
+    assert ready["graph_execution"]["before_requests"]["counters"]["bound.hits"] == 3
+    assert ready["graph_execution"]["after_requests"] is None
+    assert final["graph_execution"]["after_requests"]["counters"]["bound.hits"] == 14
+    assert final["graph_execution"]["delta"] == {"bound.hits": 11, "bound.misses": 0, "bound.lane_declines": 0}
+    assert final["complete"] and events == ["requests", "close"] and bound.hits == 0

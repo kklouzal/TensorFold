@@ -92,6 +92,7 @@ class TensorParallelDecoder:
         self._rows = decoder.prefill_rows
         self._points = decoder.points
         self.failure = None
+        self._finite_contract = None
         self.prefix_operation = None
         self.prefix_sequence = 0
         self._operation_error = None
@@ -636,7 +637,62 @@ class TensorParallelDecoder:
             self.requests[wire].cancel.active = True
         self._arrival, self._rows = bool(body["arrived"]), int(body["pass_rows"])
 
+    def finite_caller_contract(self, caller):
+        """Prepare the exact role while Scheduler/caller owners are quiescent."""
+        from tensorfold.cuda.rank_protocol import FiniteTPContract
+
+        contract = FiniteTPContract(context=self.decoder.logical_context, vocab=self.decoder.w.cfg.vocab,
+            inputs=caller.max_input_tokens, outputs=caller.max_output_tokens,
+            requests=caller.max_concurrent_requests, depth=self.decoder.depth)
+        self._check_finite_geometry(contract)
+        return contract
+
+    def _check_finite_geometry(self, contract):
+        current = vars(self).get("_finite_contract")
+        if (self.admission_policy != "fifo" or self.requests or self.decoder.live()
+                or current is None and self.decoder.kept
+                or self.decoder.copy or not self.decoder.full_resident
+                or getattr(self.decoder, "media_runtime", None) is not None
+                or getattr(self.engine, "serving_profiles", None) is not None
+                or self.decoder.controller is None or contract.context != self.decoder.logical_context
+                or contract.vocab != self.decoder.w.cfg.vocab or contract.depth != self.decoder.depth
+                or contract.requests > len(self.decoder.states)
+                or current is not None and current != contract):
+            raise ValueError("finite TP role requires its unchanged quiescent native text geometry")
+
+    def configure_finite_caller(self, contract):
+        self._check_finite_geometry(contract)
+        if vars(self).get("_finite_contract") == contract:
+            return
+        try:
+            self._invoke({"kind": "finite_configure", "finite_role": contract.record()})
+            if vars(self).get("_finite_contract") != contract:
+                raise RuntimeError("finite TP role was not acknowledged by the complete cohort")
+        except BaseException as primary:
+            self._poison_control(primary)
+            raise
+
+    def _validate_finite_command(self, body, contract):
+        contract.validate_command(body)
+        if body["kind"] == "stop":
+            return
+        controller = self.decoder.controller
+        boundary = body["control"]["execution_boundary"]
+        controller._validate(boundary["settings"])
+        controller._check_family({name: boundary[name] for name in FAMILY_FIELDS}, boundary["settings"]["row_budget"])
+        if boundary["epoch"] != controller.epoch:
+            raise ValueError("finite TP boundary differs from the ordered controller epoch")
+        if body["kind"] == "round":
+            plan = body["execution"]
+            controller._validate({name: plan[name] for name in controller.maximum})
+            controller._check_family({name: plan[name] for name in FAMILY_FIELDS}, plan["row_budget"])
+            if plan["epoch"] != controller.epoch + 1:
+                raise ValueError("finite TP plan differs from the next controller epoch")
+
     def _state_digest(self):
+        from tensorfold.cuda.rank_protocol import finite_error_identity
+
+        finite_role = vars(self).get("_finite_contract")
         state = [(wire, stream.sid, stream.count, stream.cached, len(stream.out), stream.out[-8:],
                   stream.drafts, stream.owed, bool(stream.done), bool(stream.waiting),
                   None if stream.st is None else [stream.st.pos, getattr(stream.st, "mtp_len", None),
@@ -644,7 +700,8 @@ class TensorParallelDecoder:
                                                   getattr(stream.st, "cur", None),
                                                   getattr(stream.st, "slot_generation", None),
                                                   getattr(stream.st, "history_generation", None)],
-                  None if stream.error is None else type(stream.error).__name__)
+                  None if stream.error is None else (finite_error_identity(stream.error) if finite_role is not None
+                                                     else type(stream.error).__name__))
                  for wire, stream in self.requests.items()]
         controller = getattr(self.decoder, "controller", None)
         execution = None if controller is None else [controller.epoch, controller.effective,
@@ -652,6 +709,8 @@ class TensorParallelDecoder:
         profiles = getattr(self.engine, "serving_profiles", None)
         serving = None if profiles is None else [profiles.gate.epoch, profiles.gate.available]
         record = [state, execution, serving]
+        if finite_role is not None:
+            record.append(finite_role.record())
         if self.admission_policy == "fifo":
             record.append([self.admission_policy, [(wire, stream.admission_ticket, stream.principal)
                                                   for wire, stream in self.requests.items()]])
@@ -661,9 +720,30 @@ class TensorParallelDecoder:
         return digest.hexdigest()
 
     def _dispatch(self, body, source=None):
+        finite_role = vars(self).get("_finite_contract")
+        if finite_role is not None:
+            try:
+                self._validate_finite_command(body, finite_role)
+            except BaseException as primary:
+                self._poison_control(primary)
+                raise
+        bootstrap_contract = None
+        if body["kind"] == "finite_configure":
+            from tensorfold.cuda.rank_protocol import FiniteTPContract
+
+            if type(body) is not dict or set(body) != {"kind", "finite_role", "control", "sequence"}:
+                raise ValueError("finite configure operation differs from its bootstrap schema")
+            bootstrap_contract = FiniteTPContract.from_record(body["finite_role"])
         self.prefix_operation = body["sequence"]
         self.prefix_sequence = 0
+        # Only rank zero constructs the FIFO Scheduler after warmup. Peers
+        # mirror that policy and frozen execution controls on this first
+        # ordinary actor command, before validating the resulting geometry.
         self._apply_controls(body["control"])
+        if bootstrap_contract is not None:
+            self._check_finite_geometry(bootstrap_contract)
+            self._finite_contract = bootstrap_contract
+            return None
         kind = body["kind"]
         if kind == "retire_admission_error":
             if self._operation_error is None:
@@ -877,9 +957,22 @@ class TensorParallelDecoder:
         finally:
             for stream in self.requests.values():
                 stream.cancel.active = False
-        status = {"error": None if error is None else type(error).__name__, "state": self._state_digest()}
-        if body["kind"] in ("retention_retire", "retention_boundary", "retention_suspend"):
-            status["complete"] = result
+        from tensorfold.cuda.rank_protocol import finite_error_identity
+
+        finite_role = vars(self).get("_finite_contract")
+        try:
+            status = {"error": None if error is None else (finite_error_identity(error) if finite_role is not None
+                                                         else type(error).__name__), "state": self._state_digest()}
+            if body["kind"] in ("retention_retire", "retention_boundary", "retention_suspend"):
+                status["complete"] = result
+        except BaseException as failure:
+            if error is not None and (finite_role is not None or body["kind"] == "finite_configure"):
+                try:
+                    self._poison_control(error)
+                except BaseException as containment:
+                    raise_failures(error, (failure, containment))
+                raise_failures(error, (failure,))
+            raise
         return result, error, status
 
     def _invoke(self, body, source=None):
@@ -893,8 +986,13 @@ class TensorParallelDecoder:
         body["sequence"] = sequence
         from tensorfold.cuda.rank_protocol import MAX_MESSAGE_BYTES, bounded_json
 
-        text = bounded_json(body, separators=(",", ":"))
+        finite_role = vars(self).get("_finite_contract")
+        if finite_role is not None:
+            self._validate_finite_command(body, finite_role)
+        text = bounded_json(body, separators=(",", ":"),
+                            maximum=MAX_MESSAGE_BYTES if finite_role is None else finite_role.command_bytes)
         self.sequence += 1
+        operation_error = None
         try:
             messages = [self._key(sequence, peer) for peer in range(1, self.comm.world)]
             set_many = getattr(self.comm.store, "multi_set", None)
@@ -905,6 +1003,7 @@ class TensorParallelDecoder:
                     self.comm.store.set(key, text)
             text = None
             result, error, status = self._execute(body, source)
+            operation_error = error
             if self.failure is not None:
                 raise RuntimeError("tensor-parallel control publication failed; retire all rank owners") from self.failure
             keys = [self._ack_key(sequence, peer) for peer in range(1, self.comm.world)]
@@ -916,7 +1015,8 @@ class TensorParallelDecoder:
             for peer, (key, payload) in enumerate(zip(keys, payloads), 1):
                 if type(payload) is not bytes or len(payload) > MAX_MESSAGE_BYTES:
                     raise ValueError("tensor-parallel acknowledgment requires at most 96 MiB of bytes")
-                remote = json.loads(payload)
+                active_role = vars(self).get("_finite_contract")
+                remote = json.loads(payload) if active_role is None else active_role.loads(payload, acknowledgment=True)
                 self.comm.store.delete_key(key)
                 if remote != status:
                     failure = RuntimeError(f"tensor-parallel scheduler diverged on rank {peer}: {remote} != {status}")
@@ -933,12 +1033,14 @@ class TensorParallelDecoder:
         except BaseException as failure:
             # A set/get may have succeeded before interruption. Never publish
             # a later operation after uncertain peer execution or retirement.
-            if isinstance(source, BaseException) and failure is not source:
+            primary = source if isinstance(source, BaseException) else (
+                operation_error if vars(self).get("_finite_contract") is not None else None)
+            if primary is not None and failure is not primary:
                 try:
-                    self._poison_control(source)
+                    self._poison_control(primary)
                 except BaseException as containment:
-                    raise_failures(source, (failure, containment))
-                raise_failures(source, (failure,))
+                    raise_failures(primary, (failure, containment))
+                raise_failures(primary, (failure,))
             self._poison_control(failure)
             raise
         if error is not None and not self._recoverable_operation(error, body["kind"]):
@@ -1048,6 +1150,8 @@ class TensorParallelDecoder:
         return self._invoke({"kind": "retire_admission_error"})
 
     def _recoverable_operation(self, error, kind):
+        if kind == "finite_configure":
+            return False  # Any partial role installation retires the complete cohort.
         if isinstance(error, (NoRoom, ValueError)):
             return True
         if getattr(self.engine, "serving_profiles", None) is None or kind not in ("admit", "round"):
@@ -1097,6 +1201,8 @@ class TensorParallelDecoder:
         from tensorfold.cuda.store_wait import timed_out
 
         _check_protocol_advance(self.sequence, "receive")
+        if vars(self).get("_finite_contract") is not None and self.failure is not None:
+            raise RuntimeError("finite tensor-parallel cohort is poisoned") from self.failure
         key = self._key(self.sequence, self.comm.rank)
         while True:
             try:
@@ -1111,7 +1217,18 @@ class TensorParallelDecoder:
                 with self.engine._lifecycle:
                     if self.engine._closing:
                         return None
-        body = json.loads(self.comm.store.get(key))
+        payload = self.comm.store.get(key)
+        finite_role = vars(self).get("_finite_contract")
+        try:
+            body = json.loads(payload) if finite_role is None else finite_role.loads(payload)
+        except BaseException as primary:
+            if finite_role is not None:
+                self._poison_control(primary)
+            raise
+        if finite_role is not None and body["kind"] != "stop" and body["sequence"] != self.sequence:
+            error = ValueError("finite TP command differs from its ordered Store sequence")
+            self._poison_control(error)
+            raise error
         if body["kind"] == "stop" or body.get("control", {}).get("admission_policy", "legacy") != "fifo":
             self.comm.store.delete_key(key)
         body["sequence"] = self.sequence
@@ -1124,13 +1241,25 @@ class TensorParallelDecoder:
     def apply(self, body):
         from tensorfold.cuda.rank_protocol import bounded_json
 
+        error = None
         try:
             _result, error, status = self._execute(body)
-            self.comm.store.set(self._ack_key(body["sequence"], self.comm.rank),
-                                bounded_json(status, separators=(",", ":")))
+            finite_role = vars(self).get("_finite_contract")
+            if finite_role is None:
+                encoded = bounded_json(status, separators=(",", ":"))
+            else:
+                encoded = bounded_json(status, separators=(",", ":"), maximum=finite_role.ack_bytes)
+            self.comm.store.set(self._ack_key(body["sequence"], self.comm.rank), encoded)
         except BaseException as failure:
+            if error is not None and (vars(self).get("_finite_contract") is not None or body["kind"] == "finite_configure"):
+                try:
+                    self._poison_control(error)
+                except BaseException as containment:
+                    raise_failures(error, (failure, containment))
+                raise_failures(error, (failure,))
             self._poison_control(failure)
             raise
-        if error is not None and not self._recoverable_operation(error, body["kind"]):
+        if error is not None and (finite_role is not None and self.failure is not None
+                                  or not self._recoverable_operation(error, body["kind"])):
             self._poison_control(error)
             raise RuntimeError("tensor-parallel scheduler peer failed; retire all rank owners") from error

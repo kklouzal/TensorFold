@@ -1576,7 +1576,7 @@ byte charge. Cyclic stored parent chains fail within the cache's existing bound.
 History cloning retains the message snapshots it needs while releasing an
 unneeded reference to the final whole response and its echoed request fields.
 
-The V100 finite backend caller admits one logical text request at a time through
+The V100 finite backend caller defaults to one logical text request at a time through
 the same model, native-buffer and tensor-parallel host commitment authority before
 submission. Its bounded token/result consumer adds no HTTP, metadata or Responses
 cache route. The owned ByteLevel payload helper binds the actual tokenizer/native
@@ -1584,6 +1584,75 @@ artifact and selected Python runtime; valid FIFO child metadata has an enforced
 versioned schema. Wheel `f17b5d8c` passed 182 focused normal-installed resource and
 FIFO checks. Actual target admission/output, the complete HTTP envelope, model
 quality, capacity and performance remain separate pending qualification gates.
+
+The private `tools/v100_backend_probe.py --concurrency-grid --tokens 320` mode
+adds a bounded burst measurement at 1, 2, 4, 8, 16 and 24 offered requests. One
+real maximum-24 RequestLimit and the matching caller/input/result/native/control
+and worker-stack envelope must pass actual host admission before worker startup.
+The finite TP role uses the existing closed JSON codec, enforces prepared input,
+reply, sampler and operation schemas on every peer, and bounds parsed frames
+before model state changes. The unchanged generic setup transaction and all
+malformed raw-frame/error owners remain funded. A separate finite CPU token span
+bounds request-local work while native context, windows and automatic capacity
+remain unchanged. Activation requires a quiescent cohort and matching peer ACKs;
+partial activation poisons that cohort. The first bootstrap applies the ordinary
+coordinator controls so followers mirror the leader's FIFO policy before the
+unchanged geometry checks. Actual model capacity must support the envelope. The default finite
+caller and existing single-request tool mode remain unchanged. Optional
+`--session-ceiling 24` uses the supported integer parallelism factory and requires
+an actual24-slot plan for the explicit comparison region. Omitting it keeps
+automatic capacity. Every six-grid case still requires24 physically resident
+full-context sessions. The grid records
+committed-token chunk timestamps, observed backend admission, per-request rates,
+latencies and fairness, and the common decode interval. Sustained cases require
+at least256 naturally committed tokens per request and observed all-request decode
+overlap; early EOS or queued-only load fails the measurement with raw receipts
+retained. EOS, model mathematics, context and runtime scheduling are unchanged.
+Baseline and candidates must use the same funding leaf, prompts, cache schedule
+and instrumentation. Actual GPU, matched performance, quality and the85-token/s
+single-request objective remain unverified by this source increment.
+
+The common finite tool funds a512KiB leader report, seven128KiB follower
+reports and a64KiB supervisor report:1,507,328 bytes in total. The concurrent
+caller additionally funds24 bounded result receipts using that same unit.
+A worker signals the existing fatal pipe before fallible diagnostics or backend
+cleanup, so the supervisor can contain blocked retirement. Existing host graph
+counters distinguish captured-key availability from observed replay use.
+Sustained-case counter snapshots exclude constructor, bringup and explicit tool
+warmups, and precede any optional quality phase; whole-sequence counters label
+all included requests. No device queries or new runtime counters are added.
+
+Optional `--fast-grid --concurrency-grid --tokens 512` selects a separate
+operational screen. One real two-token Notebook MTP bringup precedes all six
+concurrency points; it does not run the short bringup matrix or per-case warmups.
+Each point allows30 seconds for readiness, then targets10 seconds of correlated
+all-request decode. Natural EOS or the512-token output bound can shorten the
+window and is labelled as such. The coordinator freezes the measured interval
+before requesting cancellation. Late committed chunks remain in raw receipts
+but are excluded from window TPS; cancellation and drain latency are separate.
+Every worker, request permit and backend owner must retire before the next point.
+Intentional cancellation is not completed answer generation or quality success.
+Zero-output and no-overlap measurements remain failed screens, and all six
+points are attempted unless a runtime failure makes continuation unsafe. The
+unchanged full mode remains available for sustained qualification. Independent
+quality spotchecks run only after the screen in the same engine. Baseline and
+candidate must use the same fast protocol, prompts, window and output bounds;
+this screen does not qualify the85-token/s or600-aggregate-token/s objectives.
+
+Optional `--quality-spotchecks` requires the concurrency grid and a funded output
+allowance of at least320 tokens. After the unchanged timed grid, it runs six
+fixed math, retrieval, logic, instruction, JSON and code-output checks in the
+same loaded engine and real request owner. Each uses the existing greedy sampler
+and a320-token allowance with ordinary EOS handling; `--serial-reference` also
+checks the serial answer. Expected answers are independent of either model path.
+The prompts specify exact answer formats, including minified JSON, and only outer
+whitespace is ignored. All eight performance/quality prompts are prepared before
+admission within the existing24 input-owner envelope; static oracle/control
+payload is explicitly charged. Unique case receipts retain raw text, token IDs,
+prompt hashes, model/run identities and objective differences, including failed
+answers. Mismatches fail the quality gate after all semantic checks finish;
+quality jobs are excluded from performance metrics. These are initial spot
+checks, not broad model-quality qualification or token-identity requirements.
 
 The finite diagnostic tool `tools/v100_backend_probe.py` records worker process
 IDs. When the installed supervisor exposes exit reporting, its final receipt
