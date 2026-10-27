@@ -8,6 +8,8 @@ the reviewed installed wheel, with all eight V100s exclusively available.
 from __future__ import annotations
 
 import argparse
+import ctypes
+from functools import wraps
 import hashlib
 import importlib.metadata
 import inspect
@@ -45,6 +47,11 @@ SUPERVISOR_RECEIPT_BYTES = 64 << 10
 MAX_RECEIPT_BYTES = LEADER_RECEIPT_BYTES + (WORLD - 1) * FOLLOWER_RECEIPT_BYTES + SUPERVISOR_RECEIPT_BYTES
 FATAL_REPORT_GRACE_SECONDS = 30.0
 DEFAULT_PROMPT = "In one short sentence, explain why the sky appears blue."
+TARGET_TEMPLATE_SHA = "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce"
+PROTECTED_TORCH_GIT = "04cf2557f315a350e7eea7ab064288def65db75a"
+PROTECTED_CUPTI = Path("/usr/local/cuda-12.9/targets/x86_64-linux/lib/libcupti.so.2025.2.1")
+PROTECTED_CUPTI_SHA = "2fdab19dc3fccdd4b2f5eba137aabefc68e685f6497bb38eea649866c5672a2a"
+MAPPING_SNAPSHOT_BYTES = 16 << 20
 TARGET_TEMPLATE_SHA = "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce"
 SOURCE_FILES = (
     "tensorfold/__init__.py", "tensorfold/families/qwen4_exp/__init__.py",
@@ -142,6 +149,8 @@ def arguments(argv=None):
                         help="operational screen: one2-tokenNotebookbringup, allsixNs,30sreadiness/target10sdecode each, expectedcancel+drain; requiresgrid and320or512outputcells; notfullqualification")
     parser.add_argument("--quality-spotchecks", action="store_true",
                         help="after the unchanged concurrency grid, run six fixed independent answer/format checks with320-token allowances; requires grid and --tokens>=320")
+    parser.add_argument("--profile-generation", action="store_true",
+                        help="diagnostic-only: pinned all-thread CPU/CUDA trace for one <=32-token MTP request; no shapes/memory/stacks; not a performance comparison")
     parser.add_argument("--thinking", action="store_true", help="pass enable_thinking=True to the unchanged target template")
     parser.add_argument("--serial-reference", action="store_true", help="also run a separately labeled draft=False reply with MTP loaded")
     parser.add_argument("--rank", type=int, help=argparse.SUPPRESS)
@@ -161,6 +170,8 @@ def arguments(argv=None):
         parser.error("--fast-grid requires --concurrency-grid, --tokens320or512, --repetitions1 and MTPonly")
     if args.quality_spotchecks and (not args.concurrency_grid or args.tokens < 320):
         parser.error("--quality-spotchecks requires --concurrency-grid and --tokens>=320 for the declared caller funding")
+    if args.profile_generation and (args.concurrency_grid or args.serial_reference or args.repetitions != 1 or args.tokens > 32):
+        parser.error("--profile-generation requires one non-grid MTP request with at most32 tokens")
     if args.expect_prefix_reuse and args.repetitions < 2:
         parser.error("--expect-prefix-reuse requires at least2 repetitions")
     if (not 1 <= args.master_port <= 65535 or not math.isfinite(args.timeout_seconds)
@@ -227,6 +238,270 @@ def installed_identity(wheel):
         raise ValueError("one installed wheel RECORD is required")
     return {"package": str(Path(tensorfold.__file__).resolve()), "version": distribution.version,
             "record_sha256": digest(distribution.locate_file(records[0])), "affected_files": rows}
+
+
+def protected_cupti_identity():
+    paths = set()
+    for line in Path("/proc/self/maps").read_text().splitlines():
+        if "libcupti.so" not in line:
+            continue
+        fields = line.split(maxsplit=5)
+        if len(fields) != 6 or fields[5].endswith(" (deleted)"):
+            raise ValueError("profiling requires a live protected CUPTI mapping")
+        paths.add(str(Path(fields[5]).resolve(strict=True)))
+    if paths != {str(PROTECTED_CUPTI)} or digest(PROTECTED_CUPTI) != PROTECTED_CUPTI_SHA:
+        raise ValueError("profiling CUPTI differs from the sole protected SDK artifact")
+    library = ctypes.CDLL(str(PROTECTED_CUPTI), mode=os.RTLD_LOCAL | os.RTLD_NOLOAD)
+    query = library.cuptiGetVersion
+    query.argtypes, query.restype = [ctypes.POINTER(ctypes.c_uint32)], ctypes.c_int
+    version = ctypes.c_uint32()
+    if query(ctypes.byref(version)) != 0 or version.value != 28:
+        raise ValueError("profiling requires protected CUPTI API28")
+    return {"path": str(PROTECTED_CUPTI), "sha256": PROTECTED_CUPTI_SHA, "API": version.value}
+
+
+def observed_call(function, label, record_function):
+    """Transparent tool-owned CPU label; preserve original outcome and unwind."""
+    @wraps(function)
+    def observed(*args, **kwargs):
+        primary, failures = None, [None]
+        owner = record_function(label)
+        owner.__enter__()
+        try:
+            result = function(*args, **kwargs)
+        except BaseException as error:
+            primary = error
+        finally:
+            try:
+                owner.__exit__(None, None, None)
+            except BaseException as error:
+                failures[0] = error
+        finish_failures(primary, failures)
+        return result
+    return observed
+
+
+def project_observers(record_function):
+    from tensorfold.families.qwen4_exp.cuda import decode, execution_identity, forward, mtp
+    from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
+    from tensorfold.families.qwen4_exp.cuda.input_preparation import InputPreparationContext
+    from tensorfold.families.qwen4_exp.cuda.state import State
+
+    functions = [(execution_identity._phase, "tensorfold/cpu/phase"),
+                 (execution_identity._retire_store, "tensorfold/cpu/retire-store"),
+                 (decode.choose_gathered, "tensorfold/cpu/choose-gathered"),
+                 (forward.compute, "tensorfold/body/target"),
+                 (forward.compute_mixed, "tensorfold/body/target-mixed"),
+                 (mtp.mtp_compute, "tensorfold/body/mtp")]
+    plan = []
+    for module in tuple(sys.modules.values()):
+        if module is None or not getattr(module, "__name__", "").startswith("tensorfold."):
+            continue
+        for name, value in tuple(vars(module).items()):
+            for original, label in functions:
+                if value is original:
+                    plan.append((module, name, original, observed_call(original, label, record_function)))
+    for owner, name, label in [(InputPreparationContext, "prepare", "tensorfold/cpu/input-prepare"),
+                              (State, "kv_check", "tensorfold/cpu/kv-status"),
+                              (FlashNextEngine, "_retire_request", "tensorfold/cpu/request-retire"),
+                              (FlashNextEngine, "generate", "tensorfold/host/generate")]:
+        original = getattr(owner, name)
+        plan.append((owner, name, original, observed_call(original, label, record_function)))
+    if len(plan) > 128:
+        raise ValueError("profile observer binding count exceeds the declared fixed bound")
+    return plan
+
+
+def trace_summary(path, rank):
+    # Parse only after model/transport retirement. The raw trace is retained;
+    # fixed one-request workload bounds collection, not the model reply mailbox.
+    data = json.loads(Path(path).read_text())
+    events = data.get("traceEvents")
+    if type(events) is not list:
+        raise ValueError("profiler did not export Chrome trace events")
+    kernels, runtime, labels = 0, 0, {}
+    kernel_us = 0.0
+    cpu_tids = set()
+    for row in events:
+        if row.get("ph") != "X":
+            continue
+        category, name, duration = row.get("cat"), row.get("name", ""), row.get("dur", 0)
+        if category == "kernel":
+            if type(row.get("args", {}).get("device")) is not int or row["args"]["device"] != 0 or duration <= 0:
+                raise ValueError("rank trace contains invalid GPU0 kernel identity/duration")
+            kernels += 1
+            kernel_us += duration
+        elif category == "cuda_runtime":
+            runtime += 1
+        if category == "user_annotation" and name.startswith(("tensorfold/cpu/", "tensorfold/body/", "tensorfold/host/")):
+            value = labels.setdefault(name, {"count": 0, "inclusive_us": 0.0})
+            value["count"] += 1
+            value["inclusive_us"] += duration
+            cpu_tids.add(row.get("tid"))
+    result = {"rank": rank, "kernel_count": kernels, "cuda_runtime_count": runtime,
+        "kernel_duration_us_sum": kernel_us, "cpu_labels": labels, "cpu_label_thread_count": len(cpu_tids),
+        "scope": "post-warm generation plus owned retirement; CPU labels inclusive/nested, no utilization/throughput inference"}
+    if not kernels or not runtime or not labels.get("tensorfold/cpu/input-prepare", {}).get("count"):
+        raise ValueError("rank capture requires real CUDA kernels/runtime and actual CPU preparation labels; no legacy timings fallback")
+    return result
+
+
+def mapping_snapshot(out, rank, phase):
+    """Preserve bounded, observational Linux maps before the independent guard.
+
+    Raw maps stay outside the caller receipt. Deleted names are observations,
+    never library/data approval; the source guard still makes that decision.
+    """
+    if phase not in ("before", "after") or type(rank) is not int or rank not in range(WORLD):
+        raise ValueError("mapping diagnostics require a finite rank and boundary")
+    path = out / f"rank-{rank}-maps-{phase}.txt"
+    source = destination = primary = None
+    failures = [None, None]
+    try:
+        source = Path("/proc/self/maps").open("rb")
+        raw = source.read(MAPPING_SNAPSHOT_BYTES + 1)
+        destination = path.open("xb")
+        destination.write(raw[:MAPPING_SNAPSHOT_BYTES])
+        destination.flush()
+        os.fsync(destination.fileno())
+    except BaseException as error:
+        primary = error
+    finally:
+        if destination is not None:
+            try:
+                destination.close()
+            except BaseException as error:
+                failures[0] = error
+        if source is not None:
+            try:
+                source.close()
+            except BaseException as error:
+                failures[1] = error
+    finish_failures(primary, failures)
+    overflow = len(raw) > MAPPING_SNAPSHOT_BYTES
+    del raw
+    counts, deleted, omitted = {}, [], 0
+    for line in path.read_text(encoding="utf-8", errors="surrogateescape").splitlines():
+        fields = line.split(maxsplit=5)
+        if len(fields) < 5:
+            kind = "unparsed"
+        else:
+            name = fields[5] if len(fields) == 6 else ""
+            retired = name.endswith(" (deleted)")
+            file_backed = name.startswith("/")
+            kind = ("deleted-" if retired else "") + (
+                "executable-file" if file_backed and "x" in fields[1] else
+                "shared-file" if file_backed and fields[1].endswith("s") else
+                "private-file" if file_backed else "anonymous-or-special")
+            if retired:
+                if len(deleted) < 8:
+                    deleted.append({"path_prefix": name[:160], "path_characters": len(name),
+                        "path_truncated": len(name) > 160,
+                        "path_sha256": hashlib.sha256(name.encode("utf-8", errors="surrogateescape")).hexdigest(),
+                        "permissions": fields[1], "offset": fields[2], "device": fields[3],
+                        "inode": fields[4], "extent": fields[0], "classification": kind})
+                else:
+                    omitted += 1
+        counts[kind] = counts.get(kind, 0) + 1
+    raw_record = {"path": str(path), "sha256": digest(path), "bytes": path.stat().st_size,
+                  "complete": not overflow, "limit_bytes": MAPPING_SNAPSHOT_BYTES}
+    summary = {"schema": "tensorfold.observed-linux-mappings-v1", "pid": os.getpid(), "rank": rank,
+        "phase": phase, "raw": raw_record, "classification_counts": counts,
+        "deleted_examples": deleted, "deleted_examples_omitted": omitted,
+        "scope": "observational snapshot; no source guard exception or approval; raw retains complete names unless explicit overflow"}
+    summary_path = out / f"rank-{rank}-maps-{phase}.json"
+    write_report(summary_path, summary, allowance=16 << 10)
+    if overflow:
+        raise ValueError(f"maps exceeded {MAPPING_SNAPSHOT_BYTES} bytes; explicitly incomplete prefix and metadata saved at {path}")
+    return {"raw": raw_record, "summary_path": str(summary_path), "summary_sha256": digest(summary_path),
+            "deleted_count": len(deleted) + omitted}
+
+
+class RankCapture:
+    """One pinned profiler per process; started post-warm, retired after engine."""
+    def __init__(self, args):
+        self.args, self.owner, self.bindings = args, None, []
+        self.failures = [None] * 133  # Five diagnostics/owners plus at most128 independent binding restorations.
+        self.record = {"schema": "tensorfold.finite-rank-profile-v1", "rank": args.rank,
+                       "pid": os.getpid(), "complete": False}
+
+    def start(self):
+        import torch
+        from torch.profiler import ProfilerActivity, _ExperimentalConfig, profile, record_function, supported_activities
+        from tensorfold.cuda.sm70.software_binding import issue_source_binding, verify_source_binding
+
+        if torch.version.git_version != PROTECTED_TORCH_GIT or torch.version.cuda != "12.9":
+            raise ValueError("all-thread capture requires the pinned Torch04cf/CUDA12.9 API")
+        if ProfilerActivity.CUDA not in supported_activities() or not torch.autograd.kineto_available():
+            raise ValueError("rank capture requires actual Kineto CUDA activity support")
+        if any(os.environ.get(name) for name in ("LD_PRELOAD", "CUDA_INJECTION64_PATH", "CUPTI_INJECTION64_PATH",
+                                                 "NVTX_INJECTION64_PATH", "NSYS_CUPTI_LIBRARY_PATH")):
+            raise ValueError("standalone Torch capture refuses external profiler injection/overrides")
+        self.record["maps_before"] = mapping_snapshot(self.args.out, self.args.rank, "before")
+        self.record["cupti_before"] = protected_cupti_identity()
+        self.record["source_before"] = verify_source_binding(issue_source_binding(required=True))
+        properties = torch.cuda.get_device_properties(0)
+        self.record["device"] = {"local_device": 0, "uuid": str(properties.uuid), "name": properties.name,
+                                 "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES")}
+        self.record["configuration"] = {"profile_all_threads": True, "trace_only": True,
+            "record_shapes": False, "profile_memory": False, "with_stack": False,
+            "torch_git": torch.version.git_version,
+            "experimental_API_sha256": hashlib.sha256(_ExperimentalConfig.__init__.__doc__.encode()).hexdigest()}
+        plan = project_observers(record_function)
+        self.record["observer_bindings"] = [owner.__name__ + "." + name for owner, name, _, _ in plan]
+        for owner, name, original, observer in plan:
+            self.bindings.append((owner, name, original))
+            setattr(owner, name, observer)
+        self.owner = profile(activities=[ProfilerActivity.CPU, ProfilerActivity.CUDA],
+            record_shapes=False, profile_memory=False, with_stack=False,
+            experimental_config=_ExperimentalConfig(profile_all_threads=True, trace_only=True))
+        self.owner.start()
+
+    def finish(self, *, retired):
+        from tensorfold.cuda.sm70.software_binding import issue_source_binding, verify_source_binding
+
+        failures = self.failures
+        self.record["engine_transport_retired"] = retired
+        try:
+            if self.owner is not None:
+                try:
+                    self.owner.stop()
+                except BaseException as error:
+                    failures[0] = error
+                try:
+                    path = self.args.out / f"rank-{self.args.rank}-trace.json"
+                    self.owner.export_chrome_trace(str(path))
+                    self.record["trace"] = {"path": str(path), "sha256": digest(path), "bytes": path.stat().st_size}
+                    self.record["summary"] = trace_summary(path, self.args.rank)
+                except BaseException as error:
+                    failures[1] = error
+        finally:
+            index = len(self.bindings) - 1
+            while index >= 0:
+                owner, name, original = self.bindings[index]
+                try:
+                    setattr(owner, name, original)
+                except BaseException as error:
+                    failures[5 + index] = error
+                index -= 1
+            self.bindings.clear()
+        try:
+            self.record["maps_after"] = mapping_snapshot(self.args.out, self.args.rank, "after")
+        except BaseException as error:
+            failures[4] = error
+        try:
+            self.record["cupti_after"] = protected_cupti_identity()
+            self.record["source_after"] = verify_source_binding(issue_source_binding(required=True))
+        except BaseException as error:
+            failures[2] = error
+        self.record["complete"] = retired and self.owner is not None and not any(error is not None for error in failures)
+        try:
+            write_report(self.args.out / f"rank-{self.args.rank}-profile.json", self.record,
+                         allowance=FOLLOWER_RECEIPT_BYTES)
+        except BaseException as error:
+            failures[3] = error
+        finish_failures(None, failures)
+        return self.record
 
 
 class TokenCollector:
@@ -790,7 +1065,8 @@ def worker(args):
                                    "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
                                    "triton_cache_dir": os.environ.get("TRITON_CACHE_DIR")},
               "qualification": "finite-backend-diagnostic-only; HTTP/design qualification remains open"}
-    engine, primary, failures = None, None, [None] * 4
+    engine, capture, primary, failures = None, None, None, [None] * 5
+    retired = False
     allowance = FOLLOWER_RECEIPT_BYTES if args.rank else LEADER_RECEIPT_BYTES
     try:
         report["installed"] = installed_identity(args.wheel)
@@ -814,6 +1090,10 @@ def worker(args):
             "after_requests": None, "delta": None,
             "scope": "existing host counters after constructor warmup and before cleanup; includes every tool request, including bringup, explicit tool warmups and optional quality; measured-case snapshots are separate; no device timing"}
         write_report(args.out / f"rank-{args.rank}-ready.json", report, allowance=allowance)
+        if getattr(args, "profile_generation", False):
+            capture = RankCapture(args)
+            report["profile"] = capture.record
+            capture.start()
         if args.rank:
             engine.follow()
         else:
@@ -842,12 +1122,18 @@ def worker(args):
         if engine is not None:
             try:
                 engine.close()
+                retired = True
             except BaseException as error:
                 failures[1] = error
+        if capture is not None:
+            try:
+                report["profile"] = capture.finish(retired=retired)
+            except BaseException as error:
+                failures[4] = error
     try:
-        if failures[0] is not None or failures[1] is not None or failures[3] is not None:
+        if any(failures[index] is not None for index in (0, 1, 3, 4)):
             report["cleanup_failures"] = [{"type": type(error).__name__, "message": str(error)}
-                                          for error in (failures[0], failures[1], failures[3]) if error is not None]
+                                          for error in (failures[0], failures[1], failures[3], failures[4]) if error is not None]
         report["complete"] = primary is None and not any(error is not None for error in failures)
         write_report(args.out / f"rank-{args.rank}-final.json", report, allowance=allowance)
     except BaseException as diagnostic:
@@ -895,6 +1181,7 @@ def launch(args, argv):
             "max_receipt_bytes": (25 if args.concurrency_grid else 1) * MAX_RECEIPT_BYTES,
             "concurrency_grid": [1, 2, 4, 8, 16, 24] if args.concurrency_grid else None,
             "quality_spotchecks": getattr(args, "quality_spotchecks", False),
+            "profile_generation": getattr(args, "profile_generation", False),
             "fast_grid": getattr(args, "fast_grid", False),
             "measurement_role": "fastoperational-screen-notfullqualification" if getattr(args, "fast_grid", False) else "fullfinitequalification-protocol",
             "requested_sm70_profile": args.requested_sm70_profile,

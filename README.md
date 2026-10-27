@@ -1,5 +1,12 @@
 # TensorFold fork
 
+The finite diagnostic opt-in `--profile-generation` captures one short MTP
+request with the pinned public all-thread Torch profiler, retaining CPU labels,
+CUDA activity, protected CUPTI28 and before/after source checks. It refuses
+concurrency grids, serial pairs, repetitions and output limits above32 tokens.
+Profiling is diagnostic instrumentation; its timings do not qualify throughput.
+
+
 The private `source-owner-pieces-trial` combines the explicitly prepared full-TP8
 native owner attention with exact N1 nonattention graph pieces. Attention stays
 eager on original State owners and canonical issued frames; only projection and
