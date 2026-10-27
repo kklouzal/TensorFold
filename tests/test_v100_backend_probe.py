@@ -909,4 +909,3 @@ def test_unconfigured_rank_cache_preserves_inherited_environment(tmp_path, monke
     monkeypatch.setattr(probe, "installed_identity", lambda _wheel: {})
     monkeypatch.setattr(expert_launch, "supervise", observe)
     assert probe.launch(args, []) == 0
-
