@@ -266,7 +266,11 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
         from tensorfold.cuda.geometry import multi_static_domains
 
         coordinate_rows = max(prefill_rows, min(40 * (depth + 1), execution_rows))
-        expected_host = 8 * (multi_static_domains(text, 40, depth + 1, False)[1] + 8 * 40 * 8
+        candidate_rows = min(40 * (depth + 1), execution_rows)
+        candidate_payload = 8 * candidate_rows * 65 * np.dtype(np.float32).itemsize
+        candidate_header = np.empty((0, 0, 0), dtype=np.float32).__sizeof__()
+        status_and_candidates = 8 * 40 * 8 + 2 * candidate_payload + candidate_header
+        expected_host = 8 * (multi_static_domains(text, 40, depth + 1, False)[1] + status_and_candidates
                              + coordinate_source_host_bytes(coordinate_rows)
                              + prepared_coordinate_host_resources(min(40 * (depth + 1), execution_rows),
                                                                   prefill_rows, mtp=False)["total_host_bytes"])
