@@ -1496,3 +1496,34 @@ def test_capture_mapping_diagnostic_failure_still_runs_retirement_source_guard(t
         capture.finish(retired=True)
     assert caught.value is primary and retained_failure(primary, diagnostic)
     assert not capture.record["complete"] and (tmp_path / "rank-0-profile.json").exists()
+
+
+def test_native_descriptor_labels_preserve_static_call_binding_and_restore(monkeypatch):
+    from contextlib import nullcontext
+    from tensorfold.families.qwen4_exp.cuda import history_owner, compact_indexer
+    from tools import concurrent_observers
+    monkeypatch.setattr(concurrent_observers,"_owner",None)
+    calls=[]
+    original_storage=staticmethod(lambda state:calls.append(("storage",state)) or ("tensors",))
+    original_signature=staticmethod(lambda tensors:calls.append(("signature",tensors)) or ("signature",))
+    monkeypatch.setattr(history_owner.OwnerBuffers,"_state_storage",original_storage)
+    monkeypatch.setattr(history_owner.OwnerBuffers,"_storage_signature",original_signature)
+    labels=[]
+    plan=probe.project_observers(lambda label:labels.append(label) or nullcontext())
+    names={"_state_storage","_storage_signature","stage_native_descriptors"}
+    targeted=[row for row in plan if row[0] is history_owner.OwnerBuffers and row[1] in names]
+    assert len(targeted)==3
+    assert any(owner is compact_indexer and name=="_validate_frame" for owner,name,_original,_wrapper in plan)
+    for owner,name,original,wrapper in targeted:
+        monkeypatch.setattr(owner,name,wrapper)
+    borrowed=object.__new__(history_owner.OwnerBuffers)
+    state=object()
+    assert borrowed._state_storage(state)==("tensors",)
+    assert borrowed._storage_signature(("tensors",))==("signature",)
+    assert calls==[("storage",state),("signature",("tensors",))]
+    for owner,name,original,_wrapper in targeted:
+        setattr(owner,name,original)
+    assert vars(history_owner.OwnerBuffers)["_state_storage"] is original_storage
+    assert vars(history_owner.OwnerBuffers)["_storage_signature"] is original_signature
+    assert "tensorfold/cpu/native-state-storage" in labels
+    assert "tensorfold/cpu/native-storage-signature" in labels

@@ -61,6 +61,11 @@ preparation, experts and collectives; shapes/stacks/memory capture stay disabled
 The diagnostic is separate from the unchanged all-six performance comparison;
 its timings cannot establish throughput gains or quality. Protected CUPTI28
 and before/after source/retirement guards remain required on all eight ranks.
+The diagnostic also labels native descriptor staging, canonical State storage
+inventory/signatures and indexer-frame validation; static method binding and
+restoration retain their original calling contracts. Startup overlap can stay
+explicitly enabled: capture begins only after engine construction has joined
+its content worker and published the verified execution binding.
 
 The private owner/target guard candidate also prepares the unique N1 piece
 graph's immutable identity maps once. Consumer streams join their initialization

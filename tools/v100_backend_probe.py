@@ -302,16 +302,18 @@ def observed_call(function, label, record_function):
 
 
 def project_observers(record_function):
-    from tensorfold.families.qwen4_exp.cuda import decode, execution_identity, mtp
+    from tensorfold.families.qwen4_exp.cuda import decode, execution_identity, mtp, compact_indexer
     from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
     from tensorfold.families.qwen4_exp.cuda.input_preparation import InputPreparationContext
     from tensorfold.families.qwen4_exp.cuda.state import State
     from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFExperts
+    from tensorfold.families.qwen4_exp.cuda.history_owner import OwnerBuffers
     from tensorfold.cuda.comm import NCCL
 
     functions = [(execution_identity._phase, "tensorfold/cpu/phase"),
                  (execution_identity._retire_store, "tensorfold/cpu/retire-store"),
                  (decode.choose_gathered, "tensorfold/cpu/choose-gathered"),
+                 (compact_indexer._validate_frame, "tensorfold/cpu/indexer-frame-validate"),
                  (mtp.mtp_compute, "tensorfold/body/mtp")]
     plan = []
     for module in tuple(sys.modules.values()):
@@ -326,9 +328,19 @@ def project_observers(record_function):
                               (FlashNextEngine, "_retire_request", "tensorfold/cpu/request-retire"),
                               (FlashNextEngine, "generate", "tensorfold/host/generate"),
                               (GGUFExperts, "forward", "tensorfold/body/experts"),
-                              (NCCL, "all_gather", "tensorfold/body/collective-allgather")]:
+                              (NCCL, "all_gather", "tensorfold/body/collective-allgather"),
+                              (OwnerBuffers, "stage_native_descriptors", "tensorfold/cpu/native-descriptor-stage")]:
         original = getattr(owner, name)
         plan.append((owner, name, original, observed_call(original, label, record_function)))
+    # These are staticmethods. Preserve their original descriptors on both
+    # install and restoration; a plain function would bind an extra self.
+    for name, label in (("_state_storage", "tensorfold/cpu/native-state-storage"),
+                        ("_storage_signature", "tensorfold/cpu/native-storage-signature")):
+        original = vars(OwnerBuffers)[name]
+        if type(original) is not staticmethod:
+            raise TypeError("native storage observation requires its original staticmethod descriptor")
+        plan.append((OwnerBuffers, name, original,
+                     staticmethod(observed_call(original.__func__, label, record_function))))
     if __package__:
         from .concurrent_observers import observer_plan
     else:
