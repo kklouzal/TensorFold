@@ -213,8 +213,9 @@ def test_private_buffer_extent_reuse_and_retirement_preserve_original_full_windo
     monkeypatch.setattr(bound_graphs, "Buffers", Buffers)
     monkeypatch.setattr(bound_graphs.torch, "empty", lambda shape, *, dtype, **_kw: empty(shape, dtype=dtype))
     monkeypatch.setattr(bound_graphs.torch.cuda, "memory_allocated", lambda _device: 0)
-    recorded = []
-    monkeypatch.setattr(bound_graphs.torch.cuda, "Event", lambda: NS(record=lambda: recorded.append("record")))
+    recorded, producer = [], object()
+    monkeypatch.setattr(bound_graphs.torch.cuda, "current_stream", lambda device: producer if device == weights.device else pytest.fail("wrong map producer device"))
+    monkeypatch.setattr(bound_graphs.torch.cuda, "Event", lambda: NS(record=lambda stream: recorded.append(stream)))
     monkeypatch.setattr(family_ops, "_NATIVE_FAMILY", False)
     monkeypatch.setattr(family_ops, "_NATIVE_ATTENTION", False)
     private = graph._buffer(kind)
@@ -224,7 +225,7 @@ def test_private_buffer_extent_reuse_and_retirement_preserve_original_full_windo
         assert graph.row_maps[kind][0] is graph.segment_maps[kind][0] is None
         assert torch.equal(graph.row_maps[kind][1], torch.arange(rows))
         assert torch.equal(graph.segment_maps[kind][1], torch.zeros(segments, dtype=torch.int64))
-        assert recorded == ["record"] and graph.map_events[kind][1]
+        assert recorded == [producer] and graph.map_events[kind][1]
     else:
         assert all(mapping.numel() == rows for mapping in graph.row_maps[kind])
         assert all(mapping.numel() == segments for mapping in graph.segment_maps[kind])

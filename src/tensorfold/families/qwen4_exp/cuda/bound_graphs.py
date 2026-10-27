@@ -222,7 +222,7 @@ class BoundStateGraphs:
                 # These maps never change, including across State-slot reuse.
                 self.row_maps[kind] = (None, torch.arange(rows, dtype=torch.int64, device=self.dec.w.device))
                 self.segment_maps[kind] = (None, torch.zeros(segments, dtype=torch.int64, device=self.dec.w.device))
-                self.map_events[kind][0].record()
+                self.map_events[kind][0].record(torch.cuda.current_stream(self.dec.w.device))
                 self.map_events[kind][1] = True
             else:
                 self.row_maps[kind] = (torch.empty(rows, dtype=torch.int64, pin_memory=True),
