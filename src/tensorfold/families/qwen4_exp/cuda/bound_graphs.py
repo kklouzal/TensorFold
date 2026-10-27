@@ -78,11 +78,14 @@ class BoundStateGraphs:
     def __init__(self, owner):
         self.owner, self.dec = owner, owner.dec
         self.unique = self.dec.w.meta.get("history_layout") == "unique"
+        self.native_owner = False
         if self.unique:
-            from .multi_graphs import UNIQUE_CAPTURE_CONTRACT
+            from .multi_graphs import UNIQUE_CAPTURE_CONTRACT, UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT
 
-            if self.dec.w.meta.get("unique_capture_contract") != UNIQUE_CAPTURE_CONTRACT:
+            contract = self.dec.w.meta.get("unique_capture_contract")
+            if contract not in (UNIQUE_CAPTURE_CONTRACT, UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT):
                 raise ValueError("unique graph owners require the exact N1 piecewise capture contract")
+            self.native_owner = contract == UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT
         self.states = tuple(self.dec.free)
         self.indices = {id(state): index for index, state in enumerate(self.states)}
         self.lanes = {}
@@ -179,6 +182,21 @@ class BoundStateGraphs:
             result = self.buffers[kind] = Buffers(self.dec.w, rows, self.dec.capacity,
                                                  moe_prefill=source.moe.plan.prefill,
                                                  owner_role="mtp" if kind == "mtp" else None)
+            if self.native_owner:
+                role = "mtp" if kind == "mtp" else "decode"
+                if (self.dec.w.meta.get("owner_workspaces", {}).get(role) is not source.history_owner
+                        or result.history_owner is not source.history_owner):
+                    raise ValueError("owner-piece graphs require their canonical prepared attention workspace")
+                for name in ("pa", "attn_o"):
+                    canonical, private = getattr(source, name), getattr(result, name)
+                    if (canonical.shape[0] < rows or canonical.shape[1:] != private.shape[1:]
+                            or canonical.dtype != private.dtype or canonical.device != private.device
+                            or not canonical.is_contiguous()):
+                        raise ValueError("owner-piece activation alias differs from its canonical layout")
+                    # Source Buffers allocate these tensors once and serving
+                    # never resizes/rebinds them. Views retain their storage;
+                    # graph teardown precedes canonical owner teardown.
+                    setattr(result, name, canonical[:rows])
             result.dspark_graph = kind == "verify" and getattr(self.dec.w, "dspark", None) is not None
             if result.dspark_graph:
                 self.dec.w.dspark.prepare_graph_context(result, self)
@@ -417,7 +435,9 @@ class BoundStateGraphs:
         if self.closed:
             raise RuntimeError("bound graph owner is closed")
         source = self.dec.buf if kind == "verify" else self.dec.mbuf
-        if self.unique and (source.owner_kernel_family != "torch-reference"
+        if self.native_owner and (len(segs) != 1 or self.dec.live() > 1):
+            return None  # All other cohorts keep their ordinary eager validation/work, without private staging.
+        if self.unique and not self.native_owner and (source.owner_kernel_family != "torch-reference"
                             or source.owner_graph_family != "uncaptured"):
             return None
         if source.rotor_lookup or any(state.image_positions is not None for state, _, _ in segs):
@@ -433,6 +453,21 @@ class BoundStateGraphs:
             raise ValueError("bound graph positions require one nonnegative integer per segment")
         if any(position + width > state.capacity for (state, _, _), position in zip(segs, positions)):
             return None
+        if self.native_owner:
+            from .owner_execution import KERNEL_FAMILY, REFERENCE_KERNEL, UNCAPTURED, FULL_COLLECTIVE
+            from .compact_indexer import validate_target_indexer_frame, validate_mtp_indexer_frame
+
+            attention = source.history_owner
+            if (source.owner_kernel_family not in (REFERENCE_KERNEL, KERNEL_FAMILY)
+                    or source.owner_graph_family != UNCAPTURED or source.owner_graphs is not None
+                    or attention.native_collective != FULL_COLLECTIVE):
+                raise ValueError("owner-piece graphs require canonical eager full8 attention")
+            if (source.owner_kernel_family == KERNEL_FAMILY and
+                    (attention.native_states is None or any(id(state) not in attention.native_states for state, _, _ in segs))):
+                raise RuntimeError("owner-piece attention requires original prepared State owners")
+            validate = validate_mtp_indexer_frame if kind == "mtp" else validate_target_indexer_frame
+            validate(source, segs)  # Before any graph may mutate recurrent/convolution/cache state.
+            attention.wait_native_reuse()  # The shared activation producer cannot overtake prior readers.
         runtime = getattr(self.dec.w, "dspark", None) if kind == "verify" else None
         if runtime is not None:
             runtime.check_graph(segs)
@@ -472,7 +507,10 @@ class BoundStateGraphs:
             history_runtime.begin(bound, prefill=b.prefill, mtp=kind == "mtp", counts=rows)
         _kv_begin(segs)
         if self.unique:
-            self.owner._replay_pieces(pieces, bound, b, mtp=kind == "mtp")
+            if self.native_owner:
+                self.owner._replay_pieces(pieces, bound, b, mtp=kind == "mtp", owner_frame=(segs, source))
+            else:
+                self.owner._replay_pieces(pieces, bound, b, mtp=kind == "mtp")
         else:
             for graph in pieces.graphs:
                 profile_replay(graph, self.dec.w.comm)

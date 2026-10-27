@@ -137,7 +137,8 @@ def engine_graph_stages(source, monkeypatch, profile, *, requested=True, softwar
         "self": NS(method_geometry=NS(method="mtp"), depth=2, kv_pair=get_pair("int8")),
         "torch": family.torch, "graphs": requested, "adaptive_sessions": True, "HistoryPlacement": HistoryPlacement,
         "tp": 8, "layout_kv_heads": 2, "text": source.text, "sm70": True,
-        "indexer_history": "gpu", "concurrent": True, "vision": False, "streams": 26}
+        "indexer_history": "gpu", "concurrent": True, "vision": False, "streams": 26,
+        "owner_specification": None}
 
     def execute(nodes):
         exec(compile(ast.Module(body=nodes, type_ignores=[]), inspect.getfile(FlashNextEngine), "exec"), namespace)

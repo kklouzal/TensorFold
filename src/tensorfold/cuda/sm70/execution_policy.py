@@ -6,7 +6,9 @@ import os
 from pathlib import Path
 import re
 
-from tensorfold.families.qwen4_exp.cuda.prefix_policy import PACKED_GRAPH_PROFILE as PACKED_GRAPH_TRIAL
+from tensorfold.families.qwen4_exp.cuda.prefix_policy import (
+    PACKED_GRAPH_PROFILE as PACKED_GRAPH_TRIAL, OWNER_GRAPH_PROFILE as OWNER_GRAPH_TRIAL,
+)
 
 PROFILE_ENV = "TENSORFOLD_SM70_PROFILE"
 FAMILY_TRIAL = "source-family-trial"
@@ -227,9 +229,10 @@ def configure(text, *, tp, torch, record_graph_inputs=None):
     """Explicit profiles share the existing engine, admission and worker handshake."""
     global _SELECTED, _FAMILY_SOFTWARE
     profile = os.environ.get(PROFILE_ENV, "reference")
-    if profile not in ("reference", "optimized", FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL, PACKED_GRAPH_TRIAL):
+    if profile not in ("reference", "optimized", FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL, PACKED_GRAPH_TRIAL,
+                       OWNER_GRAPH_TRIAL):
         raise ValueError(f"{PROFILE_ENV} must be reference, optimized, {FAMILY_TRIAL}, {FAMILY_PREFIX_TRIAL}, "
-                         f"{PACKED_TRIAL} or {PACKED_GRAPH_TRIAL}")
+                         f"{PACKED_TRIAL}, {PACKED_GRAPH_TRIAL} or {OWNER_GRAPH_TRIAL}")
     if record_graph_inputs is not None and not callable(record_graph_inputs):
         raise ValueError("NCCL graph input journal must be callable")
     graph_policy = graph_inputs() if tp > 1 else None
@@ -251,8 +254,8 @@ def configure(text, *, tp, torch, record_graph_inputs=None):
                       and all(identity.get(key) == value for key, value in REQUIRED_IDENTITY.items()))
         if not compatible:
             raise ValueError("optimized SM70 profile requires the qualified TP8 Flash Next geometry and pinned Volta foundation")
-    family_trial = profile in (FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL, PACKED_GRAPH_TRIAL)
-    packed_trial = profile in (PACKED_TRIAL, PACKED_GRAPH_TRIAL)
+    family_trial = profile in (FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL, PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL)
+    packed_trial = profile in (PACKED_TRIAL, PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL)
     family_software = _prepare_family_trial(text, tp, torch, packed=packed_trial) if family_trial else None
     family_ops._NATIVE_FAMILY = enabled or family_trial
     family_ops._NATIVE_ATTENTION = enabled
@@ -266,9 +269,10 @@ def configure(text, *, tp, torch, record_graph_inputs=None):
     return profile
 
 
-def unique_graph_request(profile, *, method, depth, kv_pair, unique_history, indexer_history, graphs, concurrent, vision):
+def unique_graph_request(profile, *, method, depth, kv_pair, unique_history, indexer_history, graphs, concurrent, vision,
+                         owner_preparation=None):
     """Issue the N1 capture contract only from the real pre-load method request."""
-    if profile != PACKED_GRAPH_TRIAL:
+    if profile not in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL):
         return None
     if (method != "mtp" or type(depth) is not int or depth != 2 or unique_history is not True
             or indexer_history != "gpu" or graphs is not True or concurrent is not True or vision
@@ -276,12 +280,24 @@ def unique_graph_request(profile, *, method, depth, kv_pair, unique_history, ind
         raise ValueError("source-packed-graphs-trial requires concurrent unique GPU histories, INT8 KV, stock MTP depth2 and graphs")
     from tensorfold.families.qwen4_exp.cuda.multi_graphs import UNIQUE_CAPTURE_CONTRACT
 
+    if profile == OWNER_GRAPH_TRIAL:
+        from tensorfold.families.qwen4_exp.cuda.multi_graphs import UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT
+        from tensorfold.families.qwen4_exp.cuda.owner_execution import KERNEL_FAMILY, UNCAPTURED, FULL_COLLECTIVE
+
+        if (not isinstance(owner_preparation, dict)
+                or owner_preparation.get("kernel_family") != KERNEL_FAMILY
+                or owner_preparation.get("graph_family") != UNCAPTURED
+                or owner_preparation.get("collective_family", FULL_COLLECTIVE) != FULL_COLLECTIVE
+                or type(owner_preparation.get("graph_budget_bytes")) is not int
+                or owner_preparation["graph_budget_bytes"] != 0 or owner_preparation.get("trial") is not True):
+            raise ValueError("source-owner-pieces-trial requires explicit prepared native eager full8 attention")
+        return UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT
     return UNIQUE_CAPTURE_CONTRACT
 
 
 def prepare_weights(w, *, graph_contract=None):
     """Mark native owners only after the same profile was admitted on every rank."""
-    if _SELECTED in (FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL, PACKED_GRAPH_TRIAL):
+    if _SELECTED in (FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL, PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL):
         import torch
 
         _family_runtime(torch)
@@ -301,17 +317,24 @@ def prepare_weights(w, *, graph_contract=None):
         w.meta["sm70_family_trial"] = {"qualification": "unqualified-candidate", "software": software,
             "attention": "reference", "graphs": "eager",
             "prefix_reuse": "int8-greedy-text-trial" if _SELECTED in (
-                FAMILY_PREFIX_TRIAL, PACKED_TRIAL, PACKED_GRAPH_TRIAL) else "cold"}
-        if _SELECTED in (PACKED_TRIAL, PACKED_GRAPH_TRIAL):
+                FAMILY_PREFIX_TRIAL, PACKED_TRIAL, PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL) else "cold"}
+        if _SELECTED in (PACKED_TRIAL, PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL):
             w.meta["sm70_family_trial"].update(experts="packed_exact", concat="native32")
-        if _SELECTED == PACKED_GRAPH_TRIAL:
-            from tensorfold.families.qwen4_exp.cuda.multi_graphs import UNIQUE_CAPTURE_CONTRACT
+        if _SELECTED in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL):
+            from tensorfold.families.qwen4_exp.cuda.multi_graphs import (
+                UNIQUE_CAPTURE_CONTRACT, UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT,
+            )
 
-            if (graph_contract != UNIQUE_CAPTURE_CONTRACT or w.meta.get("history_layout") != "unique"
+            expected = UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT if _SELECTED == OWNER_GRAPH_TRIAL else UNIQUE_CAPTURE_CONTRACT
+            if (graph_contract != expected or w.meta.get("history_layout") != "unique"
                     or w.mtp is None or w.mtp.layer.linear):
                 raise ValueError("loaded graph trial requires its issued depth2 contract and unique stock attention MTP")
-            w.meta.update(capture_ready=True, unique_capture_contract=UNIQUE_CAPTURE_CONTRACT)
-            w.meta["sm70_family_trial"]["graphs"] = UNIQUE_CAPTURE_CONTRACT
+            if _SELECTED == OWNER_GRAPH_TRIAL and set(w.meta.get("owner_workspaces", {})) != {"decode", "mtp", "prefill"}:
+                raise ValueError("loaded owner-piece trial requires its canonical prepared role workspaces")
+            w.meta.update(capture_ready=True, unique_capture_contract=expected)
+            w.meta["sm70_family_trial"]["graphs"] = expected
+            if _SELECTED == OWNER_GRAPH_TRIAL:
+                w.meta["sm70_family_trial"]["attention"] = "prepared-native-owner-eager-trial"
     w.meta["sm70_profile"] = _SELECTED
     if _SELECTED == "optimized":
         from .attention_qualification import metadata_prepare

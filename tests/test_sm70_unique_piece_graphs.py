@@ -12,6 +12,7 @@ from tensorfold.families.qwen4_exp.cuda import bound_graphs, multi_graphs  # noq
 def planner():
     graph = object.__new__(bound_graphs.BoundStateGraphs)
     graph.unique = True
+    graph.native_owner = False
     graph.dec = NS(depth=2, w=NS())
     states = [NS(pos=17, mtp_len=13, logical_context=262144, capacity=262147,
                  kv_identity=("int8",), version=0, cur=[0]) for _ in range(2)]
@@ -191,7 +192,7 @@ def test_private_buffer_extent_reuse_and_retirement_preserve_original_full_windo
     from tensorfold.cuda.sm70 import family_ops
 
     graph = object.__new__(bound_graphs.BoundStateGraphs)
-    graph.unique, graph.closed = unique, False
+    graph.unique, graph.closed, graph.native_owner = unique, False, False
     original = NS(rows=32, moe=NS(plan=NS(prefill=True)))
     weights = NS(device="cpu", dspark=None)
     graph.dec = NS(w=weights, buf=original, mbuf=original, capacity=262147)

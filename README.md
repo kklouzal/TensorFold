@@ -1,5 +1,18 @@
 # TensorFold fork
 
+The private `source-owner-pieces-trial` combines the explicitly prepared full-TP8
+native owner attention with exact N1 nonattention graph pieces. Attention stays
+eager on original State owners and canonical issued frames; only projection and
+attention-output activation storage is shared with the captured buffers. The
+profile requires an explicit native-owner eager/full8/zero-attention-graph-budget
+manifest, keeps FP32 recurrent state and ordinary sampling/commit ownership, and
+has a distinct INT8 greedy text prefix epoch. Only a globally single live
+request uses these pieces; other cohorts retain native eager execution. It grants no legacy private
+attention or device-greedy readiness. Integrated CPU, eight-V100 frame/state,
+quality, 24-full-context capacity and six-cohort performance gates remain pending;
+the profile refuses startup below 24 complete INT8 context windows. The existing
+profiles and defaults retain their selection.
+
 An isolated CPU preflight candidate uses public Store batched reads and atomic
 counters during rank input preparation. Bounded reusable outcome slots retain
 validation and refusal semantics; every rank consumes a retirement latch before

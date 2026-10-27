@@ -555,7 +555,8 @@ class FlashNextEngine:
             unique_graph_contract = unique_graph_request(requested_profile,
                 method=self.method_geometry.method, depth=self.depth, kv_pair=self.kv_pair,
                 unique_history=history_placement is not None, indexer_history=indexer_history,
-                graphs=requested_graphs, concurrent=concurrent, vision=vision)
+                graphs=requested_graphs, concurrent=concurrent, vision=vision,
+                owner_preparation=owner_specification)
             self.sm70_profile = configure(text, tp=tp, torch=torch,
                 record_graph_inputs=lambda record: setattr(self, "_nccl_graph_inputs", record))
             if self.sm70_profile != requested_profile:
@@ -1173,6 +1174,10 @@ class FlashNextEngine:
             self.capacity_plan["sm70_weight_plan"] = self._sm70_weight_plan
         if adaptive_sessions:
             streams = self.capacity_plan["session_capacity"]["resident_capacity"]
+            from tensorfold.cuda.sm70.execution_policy import OWNER_GRAPH_TRIAL
+
+            if self.sm70_profile == OWNER_GRAPH_TRIAL and streams < 24:
+                raise ValueError("source-owner-pieces-trial must preserve at least24 complete INT8 context windows")
             resident_windows = streams
             self.streams = self.kv_full_windows = streams
             if self._retention_native_runtime is not None:

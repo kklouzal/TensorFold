@@ -17,7 +17,10 @@ PACKED_STATE = ("sm70-prefix-epoch-v1", hashlib.sha256(PACKED_IDENTITY.encode())
 PACKED_GRAPH_PROFILE = "source-packed-graphs-trial"
 PACKED_GRAPH_IDENTITY = "sm70-packed-exact-native32-n1-piece-graphs-int8-greedy-prefix-trial-v1:" + QSA_SELECTION
 PACKED_GRAPH_STATE = ("sm70-prefix-epoch-v1", hashlib.sha256(PACKED_GRAPH_IDENTITY.encode()).hexdigest())
-EARLY_IDENTITY_STATES = (FAMILY_PREFIX_STATE, PACKED_GRAPH_STATE)
+OWNER_GRAPH_PROFILE = "source-owner-pieces-trial"
+OWNER_GRAPH_IDENTITY = "sm70-native-owner-full8-eager-packed-exact-native32-n1-pieces-int8-greedy-v1:" + QSA_SELECTION
+OWNER_GRAPH_STATE = ("sm70-prefix-epoch-v1", hashlib.sha256(OWNER_GRAPH_IDENTITY.encode()).hexdigest())
+EARLY_IDENTITY_STATES = (FAMILY_PREFIX_STATE, PACKED_GRAPH_STATE, OWNER_GRAPH_STATE)
 
 
 def identity(profile):
@@ -30,6 +33,8 @@ def identity(profile):
         return PACKED_IDENTITY
     if profile == PACKED_GRAPH_PROFILE:
         return PACKED_GRAPH_IDENTITY
+    if profile == OWNER_GRAPH_PROFILE:
+        return OWNER_GRAPH_IDENTITY
     return IDENTITY if profile in ("optimized", "reference") else None
 
 
@@ -39,6 +44,8 @@ def state_epoch(profile):
         return PACKED_STATE
     if profile == PACKED_GRAPH_PROFILE:
         return PACKED_GRAPH_STATE
+    if profile == OWNER_GRAPH_PROFILE:
+        return OWNER_GRAPH_STATE
     return FAMILY_PREFIX_STATE if profile == FAMILY_PREFIX_PROFILE else None
 
 
@@ -68,7 +75,7 @@ def reuse_allowed(w, sampling, *, draft, vision, position, kv_pair=None):
     ordinary = draft and vision is None
     if not ordinary or w.meta.get("execution_provider") != "sm70":
         return ordinary
-    if w.meta.get("sm70_profile") in (FAMILY_PREFIX_PROFILE, PACKED_PROFILE, PACKED_GRAPH_PROFILE):
+    if w.meta.get("sm70_profile") in (FAMILY_PREFIX_PROFILE, PACKED_PROFILE, PACKED_GRAPH_PROFILE, OWNER_GRAPH_PROFILE):
         return _family_prefix_allowed(sampling, position, kv_pair)
     if w.meta.get("sm70_profile") == "source-family-trial":
         return False  # Cold qualification has no same-format cached-suffix receipt yet.
@@ -90,7 +97,7 @@ def reuse_allowed(w, sampling, *, draft, vision, position, kv_pair=None):
 def serial_reuse_allowed(w, sampling, *, draft, position, kv_pair, vision=None):
     """Serial/twin Q4 has the same qualification; legacy serial policy stays intact."""
     if (w.meta.get("execution_provider") == "sm70"
-            and w.meta.get("sm70_profile") in (FAMILY_PREFIX_PROFILE, PACKED_PROFILE, PACKED_GRAPH_PROFILE)):
+            and w.meta.get("sm70_profile") in (FAMILY_PREFIX_PROFILE, PACKED_PROFILE, PACKED_GRAPH_PROFILE, OWNER_GRAPH_PROFILE)):
         return draft and vision is None and _family_prefix_allowed(sampling, position, kv_pair)
     if (w.meta.get("execution_provider") == "sm70"
             and w.meta.get("sm70_profile") == "source-family-trial"):
