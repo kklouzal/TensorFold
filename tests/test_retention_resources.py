@@ -14,6 +14,18 @@ from tensorfold.families.qwen4_exp.cuda.retention_resources import (
 )
 
 
+def resource_decoder(context=128, *, copy=False):
+    """Use the actual enqueue reservation query without device resources."""
+    pytest.importorskip("torch")
+    from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder
+
+    decoder = object.__new__(MultiDecoder)
+    decoder.capacity, decoder.depth = context + 3, 2
+    decoder.copy = copy
+    decoder.w = SimpleNamespace(cfg=SimpleNamespace(vocab=248320))
+    return decoder
+
+
 def tokenizer():
     native = pytest.importorskip("tokenizers")
     if native.__version__ != "0.23.3":
@@ -179,10 +191,27 @@ def test_actual_added_tokens_and_lossy_bytelevel_replacement_are_bounded():
     tok = tokenizer()
     bound = tokenizer_presentation_bound(tok)
     assert bound.piece_utf8_bytes == 20  # actual added token, not an assumed 256.
-    assert bound.decoded_utf8_bytes_per_token == 60
+    assert bound.decoded_utf8_bytes_per_token == 20
     for ids in ([0], [2], [2, 2], [0, 3, 2], [3] * 17):
-        assert len(tok.decode(ids, skip_special_tokens=False).encode()) <= len(ids) * 60
+        assert len(tok.decode(ids, skip_special_tokens=False).encode()) <= len(ids) * 20
     assert tokenizer_presentation_bound(tok) == bound
+
+
+def test_plain_bytelevel_boundary_completion_and_invalid_fragments_are_subadditive():
+    from itertools import product
+
+    native = pytest.importorskip("tokenizers")
+    encoded = native.pre_tokenizers.ByteLevel(add_prefix_space=False, use_regex=False).pre_tokenize_str("€💩")
+    pieces = sorted(set("".join(piece for piece, _offsets in encoded))) + ["Ġ" * 128, "\U0010ffff"]
+    tok = native.Tokenizer(native.models.BPE({piece: n for n, piece in enumerate(pieces)}, []))
+    tok.decoder = native.decoders.ByteLevel()
+    bound = tokenizer_presentation_bound(tok)
+    assert bound.decoded_utf8_bytes_per_token == 128
+    singles = [len(tok.decoder.decode([piece]).encode("utf-8")) for piece in pieces]
+    for count in (1, 2, 3):
+        for ids in product(range(len(pieces)), repeat=count):
+            actual = len(tok.decode(list(ids), skip_special_tokens=False).encode("utf-8"))
+            assert actual <= sum(singles[n] for n in ids) <= count * bound.decoded_utf8_bytes_per_token
 
 
 def test_vocab_compatible_replace_decoder_does_not_inherit_bytelevel_authority():
@@ -260,7 +289,7 @@ def test_finalizer_checks_global_remaining_room_and_freezes_actual_frontend(monk
         return {"remaining": total - materialized_owned_bytes, "release_qualified": False}
     monkeypatch.setattr(capacity, "admit_host_commitment", admit)
     catalog = SimpleNamespace(policy=RetentionPolicy("ram", 2, 10, 1 << 30, 4096, 65536, 0),
-        world=8, states=[SimpleNamespace(limit=128)], _manifest_bytes=1024,
+        world=8, states=[SimpleNamespace(limit=128, logical_context=128)], _manifest_bytes=1024,
         _buffer=SimpleNamespace(nbytes=4096, is_pinned=lambda: True), _ram=None, check_health=lambda: None,
         evidence="source-candidate", has_retained=False, prefix_limit=2, minimum_future_bytes=1 << 20,
         host_resources=HostBaseline(1000, 500), _cohort=SimpleNamespace(multi=SimpleNamespace(copy=False)))

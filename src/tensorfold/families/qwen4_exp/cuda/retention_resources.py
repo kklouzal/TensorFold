@@ -553,8 +553,11 @@ def tokenizer_presentation_bound(tokenizer):
     most one three-byte replacement character. Encode-only normalization and
     postprocessing cannot expand decode. Builtin decoder composition follows
     the exact 0.23.3 decode_chain sources; it does not implement decoding again.
-    Affine bounds include empty input after Fuse and configured literal Replace
-    insertions, rather than extrapolating measured single-token decode maxima.
+    Plain ByteLevel concatenates each piece's byte vector before lossy UTF8.
+    Joining can complete a boundary scalar, replacing at least two separately
+    emitted replacement characters; it cannot increase their UTF8 byte sum.
+    Its enumerated per-piece maximum therefore bounds every concatenation.
+    Other compositions keep affine bounds, including empty Fuse/Replace input.
     """
     import tokenizers
     from tensorfold.token_metadata import tokenizer_identity, tokenizer_vocab_size
@@ -564,11 +567,17 @@ def tokenizer_presentation_bound(tokenizer):
     decoder = tokenizer.decoder
     state = None if decoder is None else json.loads(decoder.__getstate__())
     vocab = _size(tokenizer_vocab_size(tokenizer), "actual tokenizer vocabulary")
-    maximum = 0
+    maximum = decoded_maximum = 0
+    plain_bytelevel = state is not None and state["type"] == "ByteLevel"
     for index in range(vocab):
         piece = tokenizer.id_to_token(index)
         if piece is not None:  # Prepared UNUSED matrix rows have no text.
             maximum = max(maximum, len(piece.encode("utf-8")))
+            if plain_bytelevel:
+                decoded_maximum = max(decoded_maximum, len(decoder.decode([piece]).encode("utf-8")))
+    if plain_bytelevel:
+        return PresentationBound(tokenizer_identity(tokenizer), vocab, maximum, decoded_maximum, 0,
+                                 max(maximum, decoded_maximum), 0, "tokenizers-0.23.3/bytelevel-concat-v2")
     a, b, count_a, count_b = maximum, 0, 1, 0
     peak_a, peak_b = a, b
     pending = [state]
@@ -911,9 +920,11 @@ def finalize_retention_resources(catalog, *, tokenizer, max_pending_requests,
     copy_enabled = decoder.copy
     body_bytes = LIMIT if max_http_body_bytes is None else max(LIMIT, _size(max_http_body_bytes, "HTTP route body bound"))
     bound = tokenizer_presentation_bound(tokenizer)
-    context = catalog.states[0].limit
+    context = catalog.states[0].logical_context
+    if any(state.logical_context != context for state in catalog.states):
+        raise ValueError("endpoint host resources require one admitted logical context")
     terms = continuation_payload_bytes(context=context, vocab_size=bound.vocab_size,
-        presentation=bound.working_utf8_bytes_per_token, presentation_fixed=bound.working_utf8_fixed_bytes,
+        presentation=bound.decoded_utf8_bytes_per_token, presentation_fixed=bound.decoded_utf8_fixed_bytes,
         max_body_bytes=body_bytes, copy_enabled=copy_enabled)
     if output_queue_tokens is not None:
         terms["mailbox"] = terms["mailbox"] * min(context, output_queue_tokens) // context
@@ -925,7 +936,12 @@ def finalize_retention_resources(catalog, *, tokenizer, max_pending_requests,
         max_pending_requests=max_pending_requests, max_http_body_bytes=body_bytes)
     # Replicated Stream state exists on every rank; detok/HTTP are leader-only.
     per_owner = terms["project_payload_bytes"] + (catalog.world - 1) * rpc_python["per_follower_scope_bytes"]
-    model_cpu = (max_pending_requests + sessions) * per_owner
+    generation_owners = max_pending_requests
+    input_floor = None
+    if catalog.policy is None:
+        input_floor = _size(decoder.input_reservation_bytes(), "mandatory logical input claim")
+        generation_owners = min(generation_owners, max_waiting_input_bytes // input_floor)
+    model_cpu = (generation_owners + sessions) * per_owner
     # App.run's logical RequestLimit ends before the HTTP handler serializes
     # and writes its final response. Slow completed sockets and new model jobs
     # may therefore coexist; the real HTTP connection cap owns that tail.
@@ -1005,6 +1021,9 @@ def finalize_retention_resources(catalog, *, tokenizer, max_pending_requests,
         "world": catalog.world, "max_pending_requests": max_pending_requests,
         "max_http_connections": max_http_connections, "output_queue_tokens": output_queue_tokens,
         "max_http_body_bytes": body_bytes, "copy_enabled": copy_enabled,
+        "generation_owner_bound": {"version": 1, "owners": generation_owners,
+            "mandatory_input_claim_bytes": input_floor,
+            "scope": "existing global FIFO input credit through complete logical caller lifetime"},
         "tokenizer": asdict(bound), "header": header.record(), "continuation": terms,
         "global_future_cpu_payload_bytes": cpu, "global_waiting_input_bytes": max_waiting_input_bytes,
         "global_model_cpu_projection_bytes": model_cpu, "global_completed_http_projection_bytes": completed_http,
