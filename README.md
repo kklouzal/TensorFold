@@ -42,7 +42,9 @@ The private Linux/glibc CPython3.12 owner-MTP diagnostic, including the
 `source-owner-target-guard-trial` composition, can explicitly enable
 `TENSORFOLD_STARTUP_CONTENT_OVERLAP=1` to hash immutable artifacts on one
 startup-owned rank0 worker after complete memory admission and before weight
-loading. It funds64MiB of stack, the observed pthread guard and8MiB of hash/
+loading. The finite tool flag `--overlap-content-capture` sets this opt-in only
+in all eight child environments before process startup and requires an explicit
+execution manifest. It funds64MiB of stack, the observed pthread guard and8MiB of hash/
 metadata working space globally. The opt-in inventory must have at most64 files,
 4096-byte logical names and64KiB of printable ASCII names/paths; unprovable
 working bounds refuse enabled overlap. Callers must keep Python/pthread thread-default
