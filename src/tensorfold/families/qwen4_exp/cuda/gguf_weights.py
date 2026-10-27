@@ -368,7 +368,8 @@ class GGUFExperts:
         self._prefill_plan = plan
 
     def forward(self, x, picks, out=None):
-        if self.implementation not in ("reference", "packed", "packed_splitk4", "packed_blocks", "packed_blocks2w", "packed_exact"):
+        if self.implementation not in ("reference", "packed", "packed_splitk4", "packed_blocks", "packed_blocks2w",
+                                       "packed_exact", "packed_wmma80"):
             raise ValueError("unknown GGUF expert execution implementation")
         if self.implementation == "packed" and x.shape[0] <= self.packed_rows:
             return self.forward_packed(x, picks, out)
@@ -380,6 +381,8 @@ class GGUFExperts:
             return self.forward_blocks2w(x, picks, out)
         if self.implementation == "packed_exact" and x.shape[0] <= self.packed_rows:
             return self.forward_exact(x, picks, out)
+        if self.implementation == "packed_wmma80" and x.shape[0] <= self.packed_rows:
+            return self.forward_wmma80(x, picks, out)
         return self.forward_reference(x, picks, out)
 
     def forward_packed(self, x, picks, out=None):
@@ -419,6 +422,15 @@ class GGUFExperts:
                                   * up.matmul(x, f32=True)).half(), f32=True)
             out.copy_(torch.where((picks == self.count - 1)[..., None], shared[:, None], out))
         return out
+
+    def forward_wmma80(self, x, picks, out=None):
+        """Explicit approximate routed candidate; unchanged shared/prompt math."""
+        if self.width != 80 or self.dims != 2560 or x.shape[0] > self.packed_rows:
+            return self.forward_reference(x, picks, out)
+        if out is None:
+            out = torch.empty((*picks.shape, self.dims), dtype=torch.float32, device=x.device)
+        gguf_ops.experts_wmma80(x, picks, self.gate, self.up, self.down, self.shared, out)
+        return self._write_shared(x, picks, out)
 
     def forward_prefill(self, x, picks, out=None):
         """Keep prompt and cached-prefix tails on the same reference arithmetic."""

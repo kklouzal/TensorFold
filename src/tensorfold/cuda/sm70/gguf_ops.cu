@@ -477,6 +477,8 @@ PackedView packed_view(const at::Tensor& raw, int64_t kind, int64_t offset, int 
 
 void run_exact_down(const at::Tensor& activation, const at::Tensor& picks, PackedView view,
                     const at::Tensor& shared, at::Tensor& result, int dims, int experts);
+void run_wmma80(const at::Tensor& x, const at::Tensor& picks, PackedView gate, PackedView up,
+                PackedView down, at::Tensor& output, at::Tensor& activation, int experts);
 
 template <typename Index, int Splits = 1, bool ExactDown = false>
 void run_experts(const at::Tensor& x, const at::Tensor& picks, PackedView gate, PackedView up, PackedView down,
@@ -589,7 +591,7 @@ void gguf_experts_impl(const at::Tensor& x, const at::Tensor& picks,
                   const at::Tensor& down, int64_t down_kind, int64_t down_offset,
                   const at::Tensor& shared_gate, const at::Tensor& shared_up,
                   const at::Tensor& shared_down, at::Tensor output, bool split_k4, bool blockwise = false,
-                  bool split_projections = false, bool exact_down = false) {
+                  bool split_projections = false, bool exact_down = false, bool wmma80 = false) {
     TORCH_CHECK(x.is_cuda() && x.scalar_type() == at::kHalf && x.dim() == 2 && x.is_contiguous()
                 && x.size(1) > 0 && x.size(1) <= std::numeric_limits<int>::max(),
                 "packed experts require contiguous FP16 CUDA [rows,hidden] inputs");
@@ -609,6 +611,8 @@ void gguf_experts_impl(const at::Tensor& x, const at::Tensor& picks,
                 && shared_down.sizes() == at::IntArrayRef({x.size(1), shared_gate.size(0)}),
                 "shared expert dimensions disagree with input or local expert width");
     const int dims = int(x.size(1)), width = int(shared_gate.size(0));
+    TORCH_CHECK(!wmma80 || (dims == 2560 && width == 80 && x.size(0) <= 32 && picks.size(1) <= 33),
+                "WMMA80 candidate requires D2560/K80, at most32 rows and33 slots");
     auto g = packed_view(gate, gate_kind, gate_offset, dims, device);
     auto u = packed_view(up, up_kind, up_offset, dims, device);
     auto d = packed_view(down, down_kind, down_offset, width, device);
@@ -625,6 +629,10 @@ void gguf_experts_impl(const at::Tensor& x, const at::Tensor& picks,
     c10::cuda::CUDAGuard guard(device);
     if (picks.numel() == 0) return;
     auto activation = at::empty({picks.numel(), width}, x.options());
+    if (wmma80) {
+        run_wmma80(x, picks, g, u, d, output, activation, int(gate.size(0) / width));
+        return;
+    }
     if (picks.scalar_type() == at::kInt) {
         if (split_k4)
             run_experts<int32_t, 4>(x, picks, g, u, d, shared_gate, shared_up, shared_down,
@@ -1182,4 +1190,198 @@ void gguf_experts_exact(const at::Tensor& x, const at::Tensor& picks,
     gguf_experts_impl(x, picks, gate, gate_kind, gate_offset, up, up_kind, up_offset,
                       down, down_kind, down_offset, shared_gate, shared_up, shared_down,
                       output, false, true, true, true);
+}
+
+// Distinct approximate candidate. FP16 decoded operands and the FP16 SwiGLU
+// storage boundary are retained; FP32 MMA/split reductions differ from BMM.
+namespace {
+constexpr int WMMA80_PARTS = 8;
+constexpr int WMMA80_WIDTH = 80;
+constexpr int WMMA80_HIDDEN = 2560;
+
+template <typename Index, int Kind = -1>
+__global__ void expert_wmma80_gate_up(const __half* x, const Index* picks, PackedView gate, PackedView up,
+                                     int slots, int experts, float* partials) {
+    namespace wmma = nvcuda::wmma;
+    __shared__ __align__(32) __half ga[256], ua[256], xx[256];
+    __shared__ __align__(32) float gc[256], uc[256];
+    const int first = blockIdx.x * 16, pair = blockIdx.y, part = blockIdx.z;
+    const auto expert = picks[pair];
+    const bool valid = expert >= 0 && expert < experts;
+    if (!valid) {
+        if (threadIdx.x < 16) {
+            const int64_t at = ((int64_t(pair) * WMMA80_WIDTH + first + threadIdx.x) * WMMA80_PARTS + part) * 2;
+            const float value = expert == experts ? 0.0f : __int_as_float(0x7fffffff);
+            partials[at] = partials[at + 1] = value;
+        }
+        return;  // One expert per CTA: all participants take the same branch.
+    }
+    wmma::fragment<wmma::accumulator, 16, 16, 16, float> g, u;
+    wmma::fill_fragment(g, 0.0f);
+    wmma::fill_fragment(u, 0.0f);
+    const auto* input = x + int64_t(pair / slots) * WMMA80_HIDDEN;
+    constexpr int part_columns = WMMA80_HIDDEN / WMMA80_PARTS;
+    #pragma unroll 1
+    for (int base = 0; base < part_columns; base += 16) {
+        for (int i = threadIdx.x; i < 256; i += 32) {
+            const int row = i / 16, column = part * part_columns + base + i % 16;
+            const int64_t source = int64_t(expert) * WMMA80_WIDTH + first + row;
+            ga[i] = __float2half_rn(coefficient<Kind>(gate, source, column));
+            ua[i] = __float2half_rn(coefficient<Kind>(up, source, column));
+            xx[i] = row == 0 ? input[column] : __float2half_rn(0.0f);
+        }
+        __syncwarp();
+        wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> a, b;
+        wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::col_major> q;
+        wmma::load_matrix_sync(a, ga, 16);
+        wmma::load_matrix_sync(b, ua, 16);
+        wmma::load_matrix_sync(q, xx, 16);
+        wmma::mma_sync(g, a, q, g);
+        wmma::mma_sync(u, b, q, u);
+        __syncwarp();
+    }
+    wmma::store_matrix_sync(gc, g, 16, wmma::mem_row_major);
+    wmma::store_matrix_sync(uc, u, 16, wmma::mem_row_major);
+    __syncwarp();
+    if (threadIdx.x < 16) {
+        const int64_t at = ((int64_t(pair) * WMMA80_WIDTH + first + threadIdx.x) * WMMA80_PARTS + part) * 2;
+        partials[at] = gc[threadIdx.x * 16];
+        partials[at + 1] = uc[threadIdx.x * 16];
+    }
+}
+
+__global__ void expert_wmma80_activation(const float* partials, __half* activation, int64_t count) {
+    for (int64_t at = int64_t(blockIdx.x) * blockDim.x + threadIdx.x; at < count;
+         at += int64_t(gridDim.x) * blockDim.x) {
+        const float* values = partials + at * WMMA80_PARTS * 2;
+        float g = values[0], u = values[1];
+        #pragma unroll
+        for (int part = 1; part < WMMA80_PARTS; ++part) {
+            g += values[part * 2];
+            u += values[part * 2 + 1];
+        }
+        activation[at] = __float2half_rn((g / (1.0f + expf(-g))) * u);
+    }
+}
+
+template <typename Index, bool F32, int Kind = -1>
+__global__ void expert_wmma80_down(const __half* activation, const Index* picks, PackedView down,
+                                  int experts, void* output) {
+    namespace wmma = nvcuda::wmma;
+    __shared__ __align__(32) __half aa[256], bb[256];
+    __shared__ __align__(32) float cc[256];
+    const int first = blockIdx.x * 16, pair = blockIdx.y;
+    const auto expert = picks[pair];
+    const bool valid = expert >= 0 && expert < experts;
+    if (!valid) {
+        if (threadIdx.x < 16) {
+            const int64_t at = int64_t(pair) * WMMA80_HIDDEN + first + threadIdx.x;
+            const float value = expert == experts ? 0.0f : __int_as_float(0x7fffffff);
+            if constexpr (F32) static_cast<float*>(output)[at] = value;
+            else static_cast<__half*>(output)[at] = __float2half_rn(value);
+        }
+        return;
+    }
+    wmma::fragment<wmma::accumulator, 16, 16, 16, float> result;
+    wmma::fill_fragment(result, 0.0f);
+    #pragma unroll
+    for (int base = 0; base < WMMA80_WIDTH; base += 16) {
+        for (int i = threadIdx.x; i < 256; i += 32) {
+            const int row = i / 16, column = base + i % 16;
+            aa[i] = __float2half_rn(coefficient<Kind>(down, int64_t(expert) * WMMA80_HIDDEN + first + row, column));
+            bb[i] = row == 0 ? activation[int64_t(pair) * WMMA80_WIDTH + column] : __float2half_rn(0.0f);
+        }
+        __syncwarp();
+        wmma::fragment<wmma::matrix_a, 16, 16, 16, __half, wmma::row_major> a;
+        wmma::fragment<wmma::matrix_b, 16, 16, 16, __half, wmma::col_major> b;
+        wmma::load_matrix_sync(a, aa, 16);
+        wmma::load_matrix_sync(b, bb, 16);
+        wmma::mma_sync(result, a, b, result);
+        __syncwarp();
+    }
+    wmma::store_matrix_sync(cc, result, 16, wmma::mem_row_major);
+    __syncwarp();
+    if (threadIdx.x < 16) {
+        const int64_t at = int64_t(pair) * WMMA80_HIDDEN + first + threadIdx.x;
+        const float value = fmaf(1.0f, cc[threadIdx.x * 16], 0.0f) + 0.0f;
+        if constexpr (F32) static_cast<float*>(output)[at] = value;
+        else static_cast<__half*>(output)[at] = __float2half_rn(value);
+    }
+}
+
+template <typename Index>
+void launch_wmma80_gate(const at::Tensor& x, const at::Tensor& picks, PackedView gate, PackedView up,
+                        int experts, at::Tensor& partials) {
+    dim3 grid(WMMA80_WIDTH / 16, picks.numel(), WMMA80_PARTS);
+    auto stream = at::cuda::getCurrentCUDAStream(x.get_device());
+    #define LAUNCH_GU(KIND) \
+        expert_wmma80_gate_up<Index, KIND><<<grid, 32, 0, stream>>>( \
+            reinterpret_cast<const __half*>(x.data_ptr()), picks.data_ptr<Index>(), gate, up, \
+            int(picks.size(1)), experts, partials.data_ptr<float>())
+    if (gate.kind == up.kind) {
+        switch (gate.kind) {
+            case 8: LAUNCH_GU(8); break;
+            case 12: LAUNCH_GU(12); break;
+            case 13: LAUNCH_GU(13); break;
+            case 18: LAUNCH_GU(18); break;
+            case 21: LAUNCH_GU(21); break;
+            case 22: LAUNCH_GU(22); break;
+            case 23: LAUNCH_GU(23); break;
+            default: LAUNCH_GU(-1); break;
+        }
+    } else { LAUNCH_GU(-1); }
+    #undef LAUNCH_GU
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+template <typename Index, bool F32>
+void launch_wmma80_down(const at::Tensor& picks, PackedView down, int experts,
+                        const at::Tensor& activation, at::Tensor& output) {
+    dim3 grid(WMMA80_HIDDEN / 16, picks.numel());
+    auto stream = at::cuda::getCurrentCUDAStream(activation.get_device());
+    #define LAUNCH_DOWN(KIND) \
+        expert_wmma80_down<Index, F32, KIND><<<grid, 32, 0, stream>>>( \
+            reinterpret_cast<const __half*>(activation.data_ptr()), picks.data_ptr<Index>(), down, experts, output.data_ptr())
+    switch (down.kind) {
+        case 7: LAUNCH_DOWN(7); break;
+        case 8: LAUNCH_DOWN(8); break;
+        case 20: LAUNCH_DOWN(20); break;
+        case 42: LAUNCH_DOWN(42); break;
+        default: LAUNCH_DOWN(-1); break;
+    }
+    #undef LAUNCH_DOWN
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void run_wmma80(const at::Tensor& x, const at::Tensor& picks, PackedView gate, PackedView up,
+                PackedView down, at::Tensor& output, at::Tensor& activation, int experts) {
+    // At most32*33 pairs: partials plus activation are <=5575680 bytes.
+    // Current TP8 top10+shared needs less; no persistent weight/state copy.
+    auto partials = at::empty({picks.numel(), WMMA80_WIDTH, WMMA80_PARTS, 2}, x.options().dtype(at::kFloat));
+    if (picks.scalar_type() == at::kLong) launch_wmma80_gate<int64_t>(x, picks, gate, up, experts, partials);
+    else launch_wmma80_gate<int32_t>(x, picks, gate, up, experts, partials);
+    auto stream = at::cuda::getCurrentCUDAStream(x.get_device());
+    const int64_t count = picks.numel() * WMMA80_WIDTH;
+    expert_wmma80_activation<<<int((count + 255) / 256), 256, 0, stream>>>(
+        partials.data_ptr<float>(), reinterpret_cast<__half*>(activation.data_ptr()), count);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+    if (picks.scalar_type() == at::kLong) {
+        if (output.scalar_type() == at::kFloat) launch_wmma80_down<int64_t, true>(picks, down, experts, activation, output);
+        else launch_wmma80_down<int64_t, false>(picks, down, experts, activation, output);
+    } else {
+        if (output.scalar_type() == at::kFloat) launch_wmma80_down<int32_t, true>(picks, down, experts, activation, output);
+        else launch_wmma80_down<int32_t, false>(picks, down, experts, activation, output);
+    }
+}
+} // namespace
+
+void gguf_experts_wmma80(const at::Tensor& x, const at::Tensor& picks,
+                  const at::Tensor& gate, int64_t gate_kind, int64_t gate_offset,
+                  const at::Tensor& up, int64_t up_kind, int64_t up_offset,
+                  const at::Tensor& down, int64_t down_kind, int64_t down_offset,
+                  const at::Tensor& shared_gate, const at::Tensor& shared_up,
+                  const at::Tensor& shared_down, at::Tensor output) {
+    gguf_experts_impl(x, picks, gate, gate_kind, gate_offset, up, up_kind, up_offset,
+                      down, down_kind, down_offset, shared_gate, shared_up, shared_down,
+                      output, false, false, false, false, true);
 }

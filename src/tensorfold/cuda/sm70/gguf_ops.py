@@ -101,6 +101,18 @@ def experts_exact(x, picks, gate, up, down, shared, out):
     return out
 
 
+def experts_wmma80(x, picks, gate, up, down, shared, out):
+    """Approximate K80 routed math: FP16 operands/activation and FP32 WMMA sums.
+
+    This is a distinct candidate, not the exact BMM reduction contract. Shared
+    slots are initialized zero for the owning family's original Dense overwrite.
+    """
+    extension().experts_wmma80(x, picks, gate.data, gate.ggml_type, gate.column_offset,
+        up.data, up.ggml_type, up.column_offset, down.data, down.ggml_type, down.column_offset,
+        *(part.weight for part in shared), out)
+    return out
+
+
 def concat32(x, weights, out):
     """Share staging while retaining each original fixed-M32 ATen product."""
     extension().concat32(x, tuple(weights), out)
