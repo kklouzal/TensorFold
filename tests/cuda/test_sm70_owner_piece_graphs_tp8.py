@@ -234,6 +234,41 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
         retire()
 
 
+
+def _retire_fixture_context(context, directory, primary=None):
+    """Retain shared source if a killed child has not positively retired."""
+    import shutil
+    from tensorfold.cleanup import raise_failures
+
+    errors = []
+    if context is None:
+        errors.append(RuntimeError(f"worker startup ownership is uncertain; source retained at {directory}"))
+    else:
+        for process in context.processes:
+            try:
+                if process.is_alive():
+                    process.kill()
+            except BaseException as error:
+                errors.append(error)
+        for process in context.processes:
+            try:
+                process.join(timeout=10)
+            except BaseException as error:
+                errors.append(error)
+        try:
+            retired = all(not process.is_alive() and process.exitcode is not None for process in context.processes)
+        except BaseException as error:
+            errors.append(error)
+            retired = False
+        if retired:
+            try:
+                shutil.rmtree(directory)
+            except BaseException as error:
+                errors.append(error)
+        else:
+            errors.append(RuntimeError(f"child retirement is uncertain; source retained at {directory}"))
+    raise_failures(primary, errors)
+
 @pytest.mark.parametrize("target_greedy", [False, True, "guard", "prelude", "bound-prelude"])
 def test_v100_tp8_native_owner_exact_pieces_match_native_eager_frames_and_commits(target_greedy):
     if torch.cuda.device_count() < 8 or any(torch.cuda.get_device_capability(rank) != (7, 0) for rank in range(8)):
@@ -244,7 +279,9 @@ def test_v100_tp8_native_owner_exact_pieces_match_native_eager_frames_and_commit
     import tempfile
     from pathlib import Path
 
-    with tempfile.TemporaryDirectory(prefix="tf-owner-prelude-shared-") as directory:
+    directory = tempfile.mkdtemp(prefix="tf-owner-prelude-shared-")
+    context = None
+    try:
         config = {"model_type": "qwen4_exp", "text_config": {
             "head_dim": 256, "hidden_size": 256, "num_attention_heads": 24,
             "max_position_embeddings": 262144,
@@ -253,13 +290,11 @@ def test_v100_tp8_native_owner_exact_pieces_match_native_eager_frames_and_commit
                 "mrope_section": [11, 11, 10]}}}
         (Path(directory) / "config.json").write_text(json.dumps(config))
         context = torch.multiprocessing.spawn(_worker, args=(port, target_greedy, directory), nprocs=8, join=False)
-        try:
-            deadline = time.monotonic() + 240
-            while not context.join(timeout=1):
-                if time.monotonic() >= deadline:
-                    raise TimeoutError("combined native-owner exact-piece participant did not retire")
-        finally:
-            for process in context.processes:
-                if process.is_alive():
-                    process.kill()
-                process.join(timeout=10)
+        deadline = time.monotonic() + 240
+        while not context.join(timeout=1):
+            if time.monotonic() >= deadline:
+                raise TimeoutError("combined native-owner exact-piece participant did not retire")
+    except BaseException as primary:
+        _retire_fixture_context(context, directory, primary)
+    else:
+        _retire_fixture_context(context, directory)

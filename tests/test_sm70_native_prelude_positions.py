@@ -101,3 +101,24 @@ def test_shared_parent_source_path_keeps_all_eight_context_channels_identical(tm
     assert len(set(values)) == 1
     other = put(tmp_path / "different-native", config())
     assert resolve_position_profile(other.parent, requested_context=257).identity != values[0][0]
+
+@pytest.mark.parametrize("retired", [False, True])
+def test_fixture_retirement_retains_shared_source_until_child_terminal(tmp_path, retired):
+    from tests.cuda.test_sm70_owner_piece_graphs_tp8 import _retire_fixture_context
+
+    directory = tmp_path / "shared-source"
+    directory.mkdir()
+    (directory / "config.json").write_text("{}")
+    calls = []
+    child = NS(exitcode=0 if retired else None, is_alive=lambda: not retired,
+               kill=lambda: calls.append("kill"), join=lambda timeout: calls.append(("join", timeout)))
+    context = NS(processes=[child])
+    if retired:
+        _retire_fixture_context(context, directory)
+        assert not directory.exists()
+    else:
+        primary = ValueError("original worker failed")
+        with pytest.raises(ValueError) as caught:
+            _retire_fixture_context(context, directory, primary)
+        assert caught.value is primary and directory.exists()
+        assert "kill" in calls and ("join", 10) in calls
