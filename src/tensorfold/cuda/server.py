@@ -432,6 +432,8 @@ class App:
             kwargs = {}
         elif not isinstance(kwargs, dict):   # [], "", false and 0 included
             raise RequestError("chat_template_kwargs must be a JSON object or null")
+        if "messages" in kwargs or "tools" in kwargs:
+            raise RequestError("chat_template_kwargs cannot override request messages or tools")
         kwargs = dict(kwargs)
         # reasoning_effort and enable_thinking as the Mac server reads them: the template hears an effort when thinking
         levels = self.template.selected(tools=tools).efforts

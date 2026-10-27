@@ -26,7 +26,10 @@ def normalize_tool_specs(tools: Any) -> list[dict[str, Any]]:
     for index, tool in enumerate(tools):
         if not isinstance(tool, dict):
             raise ValueError(f"tools[{index}] must be an object")
-        if not tool_spec_name(tool):
+        function = tool.get("function")
+        definition = function if isinstance(function, dict) else tool
+        name = definition.get("name")
+        if not isinstance(name, str) or not name.strip():
             raise ValueError(f"tools[{index}] must include a function name")
         normalized.append(tool)
     return normalized

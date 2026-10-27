@@ -12,7 +12,9 @@ from tokenizers import Tokenizer, decoders, models
 from tensorfold.families.qwen4_exp.cuda.retention_resources import (
     _json_payload_policy, tokenizer_presentation_bound,
 )
-from tensorfold.server.frontend_resources import metadata_decode_payload
+from tensorfold.server.frontend_resources import (
+    live_tool_gate_input_bound, metadata_decode_payload, parsed_text_utf8_bound,
+)
 
 
 @pytest.fixture(scope="module")
@@ -53,3 +55,29 @@ def test_metadata_record_keeps_qualification_obligations_separate(frontend):
     assert record["total_bytes"] == max(record["phase_bytes"].values())
     assert any("model/RPC" in text for text in record["separate_obligations"])
     assert any("post-exhaustion" in text for text in record["separate_obligations"])
+
+
+@pytest.mark.parametrize("encoding", ["utf-8", "utf-16", "utf-16-le", "utf-16-be", "utf-32", "utf-32-le", "utf-32-be"])
+def test_accepted_json_encodings_keep_a_real_utf8_expansion_budget(encoding):
+    text = "\u0800" * 1024
+    wire = json.dumps({"name": text}, ensure_ascii=False).encode(encoding)
+    parsed = json.loads(wire)["name"]
+    assert len(parsed.encode("utf-8")) <= parsed_text_utf8_bound(len(wire))
+    if encoding.startswith("utf-16"):
+        assert len(parsed.encode("utf-8")) > len(wire)
+
+
+def test_live_gate_keeps_actual_template_marks_beyond_the_string_wire_budget():
+    wire = json.dumps({"name": "\u0800" * 1024}, ensure_ascii=False).encode("utf-16")
+    name = json.loads(wire)["name"]
+    lead, tail = "\n<function=", ">"
+    bound = live_tool_gate_input_bound(len(wire), lead=lead, tail=tail)
+    for seen in (0, 1, 1023, 1024):
+        assert len((lead + name[seen:] + tail).encode()) <= bound["utf8_bytes"]
+    assert bound["template_mark_bytes"] == 12
+
+
+def test_lone_surrogate_json_acceptance_does_not_claim_successful_native_extraction():
+    parsed = json.loads(b'{"name":"\\ud800"}')["name"]
+    with pytest.raises(UnicodeEncodeError):
+        parsed.encode("utf-8")

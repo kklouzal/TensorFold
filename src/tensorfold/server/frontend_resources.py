@@ -8,6 +8,34 @@ captured tokenizer/runtime immutable. Model and other caller owners stay paid.
 import sys
 
 
+def parsed_text_utf8_bound(body_bytes):
+    """UTF8 extent of a successfully extracted string from accepted JSON bytes.
+
+    json.loads(bytes) also accepts UTF16/32. BMP UTF16 can expand from two
+    source bytes to three UTF8 bytes; UTF8, surrogate pairs and UTF32 have
+    smaller ratios. JSON escapes, syntax and BOMs only consume source budget.
+    Lone-surrogate extraction failures remain a separate error phase.
+    """
+    from tensorfold.families.qwen4_exp.cuda.retention_resources import _size
+
+    size = _size(body_bytes, "JSON text source bytes", zero=True)
+    return _size(3 * size // 2, "extracted JSON text UTF8 bytes", zero=True)
+
+
+def live_tool_gate_input_bound(body_bytes, *, lead, tail):
+    """A validated string definition's suffix plus the captured template marks."""
+    from tensorfold.families.qwen4_exp.cuda.retention_resources import _total
+
+    if type(lead) is not str or type(tail) is not str:
+        raise ValueError("tool gate bounds require the actual captured string marks")
+    marks = _total((len(lead.encode("utf-8")), len(tail.encode("utf-8"))))
+    return {"schema": "tensorfold.live-tool-gate-input-v1",
+            "utf8_bytes": _total((parsed_text_utf8_bound(body_bytes), marks)),
+            "template_mark_bytes": marks,
+            "precondition": "new input definition has a validated string name; historical output is separate",
+            "scope": "source UTF8 extent; normalizer/codec/RPC/caller overlap remain separately required"}
+
+
 def metadata_decode_payload(presentation, policy, *, body_bytes):
     """One /detokenize owner, whose ID budget is its wire rather than context.
 

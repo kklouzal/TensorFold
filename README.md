@@ -1532,6 +1532,12 @@ CUDA decision scoring checks an advertised backend refusal after lightweight
 request validation and before rendering question prompts. Flash Next TP8 keeps
 its existing single-GPU-only refusal; capable and unadvertised providers retain
 their scoring path. Template, label-token and context checks follow capability.
+New input tool definitions require a string function name. Existing string
+extensions retain their length and Unicode support, and historical tool-call
+output and malformed-argument replay keep their parsing behavior.
+CUDA client `chat_template_kwargs` may customize template options and special-token
+variables, while request `messages` and `tools` remain authoritative. Those two
+shadowing keys receive HTTP 400 before prompt rendering.
 
 The V100 finite backend caller admits one logical text request at a time through
 the same model, native-buffer and tensor-parallel host commitment authority before

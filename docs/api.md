@@ -261,6 +261,14 @@ envelope fix in drafted, serial and concurrent decoding. The MLX engine fixes to
 decodes on from the reply. The model writes the arguments; a malformed call returns as content. A request with strict
 tools uses their grammar instead (below), which also holds the arguments.
 
+New input function-tool definitions require a nonempty string name. String
+length and Unicode extensions retain their existing behavior. This input check
+does not change permissive historical tool-call output or argument replay.
+
+On CUDA, `chat_template_kwargs` cannot replace request `messages` or `tools`; these two
+keys receive HTTP 400 before rendering. Other checkpoint options, special-token
+variables and `/tokenize`'s `add_generation_prompt` switch retain their support.
+
 ## Structured output
 
 Supported model/backend configurations enforce `response_format` (`{"type": "json_schema", "json_schema": {"schema": ...}}`
