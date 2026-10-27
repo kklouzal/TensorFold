@@ -42,6 +42,8 @@ def _committed(actual, expected):
 
 def _worker(rank, port):
     import faulthandler
+    import traceback
+    from tensorfold.cleanup import finish, rollback
     from test_flashnext_sm70_mtp import _weights_with_stock_mtp_protocol
     from tensorfold.cuda.comm import NCCL
     from tensorfold.cuda.sm70 import family_ops
@@ -56,7 +58,20 @@ def _worker(rank, port):
     torch.cuda.set_device(rank)
     family_ops._NATIVE_FAMILY, family_ops._NATIVE_ATTENTION = True, False
     comm, failed, graphs = NCCL(), False, None
-    faulthandler.dump_traceback_later(60)
+    faulthandler.dump_traceback_later(60, file=sys.stderr)
+    diagnostic = None
+
+    def diagnostic_failure():
+        if diagnostic is not None:
+            raise diagnostic
+
+    retire_operations = (lambda: comm.close(abort=failed), faulthandler.cancel_dump_traceback_later,
+                         diagnostic_failure)
+
+    def retire():
+        # A blocked native close keeps the watchdog armed. Independent cleanup
+        # failures and diagnostic failures retain their owning primary.
+        finish(retire_operations)
 
     def phase(label):
         print(f"[unique-piece rank={rank} t={time.monotonic():.3f}] {label}", file=sys.stderr, flush=True)
@@ -133,8 +148,12 @@ def _worker(rank, port):
             phase(f"request/begin/repetition={repetition}")
             expected = Stream([4, 17, 3, 99, 33, 2, 7, 5, 6], 12, stop_eos=False)
             actual = Stream(list(expected.prompt), 12, stop_eos=False)
+            phase(f"admit/eager/begin/repetition={repetition}")
             reference.admit(expected)
+            phase(f"admit/eager/end/repetition={repetition}")
+            phase(f"admit/graph/begin/repetition={repetition}")
             decoder.admit(actual)
+            phase(f"admit/graph/end/repetition={repetition}")
             for round_index in range(128):
                 phase(f"round/eager/repetition={repetition}/round={round_index}")
                 reference.round()
@@ -158,12 +177,16 @@ def _worker(rank, port):
         graphs.close()
         phase("graphs/closed")
         decoder.graphs = None
-    except BaseException:
+    except BaseException as primary:
         failed = True
-        raise
-    finally:
-        faulthandler.cancel_dump_traceback_later()
-        comm.close(abort=failed)
+        try:
+            phase("primary/" + type(primary).__name__[:64])
+            traceback.print_exception(primary, limit=32, file=sys.stderr)
+        except BaseException as error:
+            diagnostic = error
+        rollback(comm, primary, retire)
+    else:
+        retire()
 
 
 def test_v100_tp8_unique_n1_exact_pieces_match_eager_frames_mtp_partial_commit_reset_and_prefix():
