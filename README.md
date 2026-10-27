@@ -21,10 +21,17 @@ exact revision. A fresh run on the corrected source/media/client stack passed
 documented skips and all 707 code files equal to frozen tree `21a12df3`.
 The [corrected-stack receipt](docs/verification-v100-sdk-rebind-cpu-20261026.json)
 identifies image `e99c7284` and the complete input/audit evidence.
-The actual V100 host source audit exposed runtime-dependent CPU metadata;
-a separate owned audit-policy successor remains under qualification. Actual
+At that checkpoint, the V100 host source audit exposed runtime-dependent CPU
+metadata; the separate audit-policy successor has its own evidence below. Actual
 V100 execution, compiler disposition, model quality, capacity and performance
 remain unqualified by these CPU checks.
+The portable-policy application independently passed **5,707 installed checks
+and 144 subtests across 187 modules**, with nine documented skips, on image
+`f8f66a9d`. The later mapping-policy image `6daae245` reuses that exact application
+wheel and passed 66 affected controls plus an actual shared-memory/software
+authority check. The [policy receipt](docs/verification-v100-portable-policy-cpu-20261027.json)
+separates those scopes; it does not label the full 187-module run as a new-image
+run. Actual successor target acceptance after GPU work remains pending.
 The earlier media/frontend/MTP checkpoint at `64b24dd5` passed 4,365 installed
 checks and 124 subtests; tree `413e132b` passed 5,214 checks and 144 subtests.
 Those historical results retain their original source and workload scope.

@@ -1,0 +1,271 @@
+{
+  "schema": "tensorfold.v100-portable-audit-policy-software-checkpoint",
+  "version": 1,
+  "created_utc": "2026-10-27T00:24:00.559509+00:00",
+  "status": "Reviewed source/CPU policy milestone; actual target post-GPU acceptance and workload qualification remain pending",
+  "source": {
+    "portable_commit": "fc5e6dd42f0714dd7fe527ad42b2cc5dd1977449",
+    "portable_tree": "7bdd8392ac2546b784fcb81e3f914b10f32acdff",
+    "mapping_policy_commit": "a39646d16767ba6281b1db94600947c6ecc2ce5e",
+    "mapping_policy_tree": "375f9b85d8813cb9c556426d92cc3c58e4f80c66",
+    "prior_published_cpu_checkpoint": "d24aff99eee861d2fed19848e97ec5472171984e"
+  },
+  "policies": {
+    "source_install_manifest_version": 2,
+    "build_host_policy": "torch2141-build-host-v1",
+    "runtime_mapping_policy": "shared-anonymous-data-v1",
+    "process_audit_API_version": 1,
+    "immutable_build_fields": "Stable compiler/configuration/build settings, sealed CUDAConfig.h/NVCC architecture, sources, wheel, provider and artifact bytes remain checked. Original v1/full-config provenance is authenticated only at the explicit immutable construction boundary; runtime v1 has no fallback.",
+    "host_observations": "Current runtime CPU/CUDA display is observed freshly, separately from immutable build identity.",
+    "anonymous_mapping": "Only observed Linux /dev/zero (deleted), rw-s, zero offset, device00:01, positive inode and positive extent is runtime data. Other retired source/provider/executable/unknown mappings remain fatal. Mapping counts/virtual extent remain observable outside software-authority identity."
+  },
+  "reference_full_installed_gate": {
+    "application_image": "sha256:f8f66a9dd0a0ff04b8b7451126066cd911a18f0fab4b77461017cb65d07f80d5",
+    "source_commit": "fc5e6dd42f0714dd7fe527ad42b2cc5dd1977449",
+    "source_tree": "7bdd8392ac2546b784fcb81e3f914b10f32acdff",
+    "passed": 5707,
+    "failed": 0,
+    "skipped": 9,
+    "subtests": 144,
+    "pytest_elapsed_s": 555.98,
+    "test_modules": 187,
+    "code_files": 707,
+    "nonbinary_package_source_data_files": 714,
+    "total_package_files_including_fd_extension": 715,
+    "fixture_input_files": 2028,
+    "runtime_source_overlay": false,
+    "all715_installed_package_files_match_authenticated_wheel_before_after": true,
+    "all2028_fixture_files_match_archive_before_after": true,
+    "all2028_current_owned_source_files_match_before_after": true,
+    "protected_source_policy_media_bytes_unchanged": true
+  },
+  "reference_full_gate_evidence": {
+    "name": "green.json",
+    "bytes": 6862,
+    "sha256": "7bddc05dfcdfb4e4ca5dc3fd2af77ad2cf8bcab1db067f31da1b44a1937c036d"
+  },
+  "reference_skip_disposition": [
+    "SKIPPED [1] tests/test_grammar_lanes.py:8: could not import 'mlx.core': No module named 'mlx'",
+    "SKIPPED [1] tests/test_prefix_snapshots.py:8: could not import 'mlx.core': No module named 'mlx'",
+    "SKIPPED [1] tests/test_cuda_server_stream.py:22: needs the Qwen3.8-27B tokenizer (tensorfold pull TensorFold/Qwen3.8-27B-MLX-4bit)",
+    "SKIPPED [1] tests/test_flashnext_dflash2.py:583: optional exact large artifact was not supplied",
+    "SKIPPED [1] tests/test_flashnext_gguf_mtp.py:463: optional pinned companion and actual target metadata not supplied",
+    "SKIPPED [2] tests/test_v100_compose.py:58: requires host Docker Compose >=2.30",
+    "SKIPPED [1] tests/test_v100_compose.py:67: requires host Docker Compose >=2.30",
+    "SKIPPED [1] tests/test_v100_compose.py:74: requires host Docker Compose >=2.30"
+  ],
+  "application_wheel": {
+    "artifact": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3086068,
+    "sha256": "805246a27273b16948d984ecf0072fe71705ecad605b02a1e952eb8810718e60"
+  },
+  "reuse_boundary": {
+    "all714_package_source_and_data_files_unchanged": true,
+    "compiled_FD_extension_unchanged": [
+      {
+        "path": "tensorfold/_fd_owner.abi3.so",
+        "bytes": 37952,
+        "sha256": "4d88c2d0fab18a0c464c822f4e1a66a613f5977d1b7687d1a37029b946b6caf4"
+      }
+    ],
+    "no_application_src_diff_between_policy_commits": true,
+    "no_Torch_media_kernel_or_resource_equation_change_in_mapping_delta": true,
+    "full187_was_run_on_f8_not_on_mapping_successor": true,
+    "mapping_delta_verified_by_affected_tests_and_actual_new_image": "66 controls plus exact immutable-image before/during/after native shared2MiB mapping, source/header/native04cf/combined-media authority checks; full187 is not rerun or relabelled as a new-image run."
+  },
+  "mapping_successor": {
+    "image_id": "sha256:6daae245155c890edd24ae9fc3ba699a3009d2ae57ede24ee271f85309cf44bf",
+    "local_tag": "tensorfold-v100:app-portable-map-policy-v1",
+    "uncompressed_bytes": 23553308281,
+    "layers": 70,
+    "registry_publication_verified": false,
+    "source_producer": {
+      "bytes": 71678,
+      "sha256": "2c94b1e1606603231f2b32dcda8ef042dd016102dcd8fb2220a2e9b76dd89d9b"
+    },
+    "source_manifest_sha256": "540f5a2a02572dc9d9cd44c58ba5c9aea1d699a4287a537d3c7fe783e006bc19",
+    "application_wheel_sha256": "805246a27273b16948d984ecf0072fe71705ecad605b02a1e952eb8810718e60",
+    "affected_source_controls": {
+      "passed": 66,
+      "seconds": 0.68,
+      "log_sha256": "136525c78982b17924f3349dc8c43dfc0503eba429acc237cb920aa620a23e96"
+    },
+    "ruff_log_sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18",
+    "actual_control": {
+      "exit_status": 0,
+      "rootfs_modified": false,
+      "math_run": false,
+      "before": {
+        "backing": "/dev/zero",
+        "mapped_bytes": 0,
+        "mapping_count": 0,
+        "schema": "tensorfold.host-shared-anonymous-mappings",
+        "version": 1
+      },
+      "during": {
+        "backing": "/dev/zero",
+        "mapped_bytes": 2097152,
+        "mapping_count": 1,
+        "schema": "tensorfold.host-shared-anonymous-mappings",
+        "version": 1
+      },
+      "after": {
+        "backing": "/dev/zero",
+        "mapped_bytes": 0,
+        "mapping_count": 0,
+        "schema": "tensorfold.host-shared-anonymous-mappings",
+        "version": 1
+      },
+      "opaque_code_authorities_stable": true,
+      "source_header_native_and_combined_media": "passed in actual immutable image; serialized records are observations, not transferable authority"
+    }
+  },
+  "evidence": {
+    "tracked-source.json": {
+      "name": "tracked-source.json",
+      "bytes": 684,
+      "sha256": "6703a16688d958fedb5da7c7d6ad2ce35bfeba96c1a26e529d69581490d9e955"
+    },
+    "source-hold.json": {
+      "name": "source-hold.json",
+      "bytes": 2752,
+      "sha256": "edcc5cefa42d73ab25c34a6cf3aee1874f6443bc4cd5d472a8a76f17a1537e62"
+    },
+    "source-execution.json": {
+      "name": "source-execution.json",
+      "bytes": 3484,
+      "sha256": "8db0594a7886f2503e8d42cfbac9d724ca7c664a09824ac3533436e525f6a11d"
+    },
+    "portable-software-checkpoint.json": {
+      "name": "portable-software-checkpoint.json",
+      "bytes": 8340,
+      "sha256": "3c421a528d6af49202aeb11dbb764142c7a3f70b5dbb59dccb6bf3f4be30f927"
+    },
+    "map-tracked-source.json": {
+      "name": "map-tracked-source.json",
+      "bytes": 850,
+      "sha256": "bbe9cba3bae2edff557057edf0c2c127e6a8be8de10f522a116ff1f5bbe00aa3"
+    },
+    "map-policy-source-hold.json": {
+      "name": "map-policy-source-hold.json",
+      "bytes": 1593,
+      "sha256": "e3c574221a0f6fa3338f10b66311921861c99f2f0fb74cc1a80f905e8975c1cf"
+    },
+    "map-policy-source-execution.json": {
+      "name": "map-policy-source-execution.json",
+      "bytes": 2036,
+      "sha256": "a893141a27ce1cdbb8879ee07c15f1f772de6c1c28c30a31f143b520752ca89b"
+    },
+    "map-policy-image-identity.json": {
+      "name": "map-policy-image-identity.json",
+      "bytes": 6188,
+      "sha256": "51d07c7b62406bf49cf71bf37517e6b796eb8631790e7cefe90ec5de7d58fb0c"
+    },
+    "map-policy-build-audit.json": {
+      "name": "map-policy-build-audit.json",
+      "bytes": 3466,
+      "sha256": "e0b85c2932e3917e9711760feca01adad72334a0b3e259df1f21004670a4cdb6"
+    },
+    "map-policy-actual-mmap.json": {
+      "name": "map-policy-actual-mmap.json",
+      "bytes": 9588,
+      "sha256": "052f94b2354f6bf59b91193573413467f11f4d165a154fbf54cf9433082ade2a"
+    },
+    "map-policy-actual-mmap-execution.json": {
+      "name": "map-policy-actual-mmap-execution.json",
+      "bytes": 3108,
+      "sha256": "3a197593c8fd2125480e3ab62de4e066e7cf1b32d2ca10dad0228002c36b8022"
+    },
+    "application-wheel-provenance-final.json": {
+      "name": "application-wheel-provenance-final.json",
+      "bytes": 125218,
+      "sha256": "095a9c518085186d89cd6326399b50ea8656b196535215b454f6ffb2fbdd15f3"
+    },
+    "d13-source-final.json": {
+      "name": "d13-source-final.json",
+      "bytes": 7817,
+      "sha256": "fc3d4146ad0af460d39b2a50beeec4dbfd37325dc2060a601f91fd020df3baf4"
+    },
+    "d14-source-final.json": {
+      "name": "d14-source-final.json",
+      "bytes": 7156,
+      "sha256": "bacaebf41486998e1d48b34742a42f62573ba476b072a376cc50fe4f8cd59643"
+    },
+    "d13-map-policy-final.json": {
+      "name": "d13-map-policy-final.json",
+      "bytes": 6064,
+      "sha256": "2a59b7497f9626eea45085cc28794eb6487162cc58e9b96e09666e889e0e72ca"
+    },
+    "d14-map-policy-final.json": {
+      "name": "d14-map-policy-final.json",
+      "bytes": 4936,
+      "sha256": "d4e5783b3e6ff745c86150b6a476f66c318a417ad2d76f02a110bfa823639ee1"
+    }
+  },
+  "raw_mapping_control_log": {
+    "name": "map-policy-actual-mmap.log",
+    "bytes": 6725,
+    "sha256": "2fc2df9a9cd63d82930b3b4f520fb12f57f94193e15b51f46862c76b91865a7a"
+  },
+  "raw_reference_full_gate_files": {
+    "manifest.json": {
+      "name": "manifest.json",
+      "bytes": 655940,
+      "sha256": "d13ac656b25ef51f438ee2049551cc5d34e48d8cf2dae4e6530d4b548138335f"
+    },
+    "bootstrap.py": {
+      "name": "bootstrap.py",
+      "bytes": 8515,
+      "sha256": "fcfb388b70001236c5188fb97901efcda3ae6b991b8f10c63f51bae61ecdcfc0"
+    },
+    "conditions.json": {
+      "name": "conditions.json",
+      "bytes": 11336,
+      "sha256": "5971749020e6db1cc0c4d1fd7280ca251ca8342379347c3675086c862012406c"
+    },
+    "docker-limits.json": {
+      "name": "docker-limits.json",
+      "bytes": 1566,
+      "sha256": "61bd191e26f169d58b35e5fcf4f946f9715a2c9924f7e1b2344fb2e3ea14e547"
+    },
+    "installed.log": {
+      "name": "installed.log",
+      "bytes": 7527,
+      "sha256": "c6965be3c3c1448530ee8305e432a53c5ae253eecdbb4bac7817e66ba982ce7b"
+    },
+    "result.json": {
+      "name": "result.json",
+      "bytes": 11726,
+      "sha256": "16ffaa6ba4c35419caae1711d594f92e3817f663cdce8742ba0034ef2cae2453"
+    },
+    "evidence/bootstrap.json": {
+      "name": "evidence/bootstrap.json",
+      "bytes": 11722,
+      "sha256": "1804e4964cacb22598a160a37dcfeed0661c167c9a0514b56119f6cb1b329f11"
+    },
+    "evidence/roles.json": {
+      "name": "evidence/roles.json",
+      "bytes": 6991,
+      "sha256": "fbd01551d78bda850337b2e99b6ee271c7f8ab6cd8c347f0629028c6175a4dfd"
+    },
+    "evidence/roles.log": {
+      "name": "evidence/roles.log",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    }
+  },
+  "evidence_availability": "Raw evidence is retained with the task. Public hashes bind the observations; private evidence paths are not inputs required by maintained tests.",
+  "documentation_relationship": {
+    "this_receipt_was_not_input_to_tested_images": true,
+    "documentation_successor_does_not_change_released_a396_source_tests_tools": true
+  },
+  "release_qualified": false,
+  "pending_gates": [
+    "Actual mapping-policy successor target source/media/combined audit after GPU work",
+    "Actual V100 compiler issue6111901 disposition and required kernel/collective/graph checks",
+    "SC117/MTP/DFlash/media model outputs, numerics and quality",
+    "Physical capacity/allocator/RSS/NUMA/native wall deadlines",
+    "Representative end-to-end P3/P4 performance and service/port8000 qualification"
+  ],
+  "scope": "CPU software/source policy only; Root and qualification owner control target/workload readiness. Earlier 5582/9/144 and pre-policy failures retain their original source/image scope."
+}

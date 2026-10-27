@@ -70,8 +70,13 @@ checks, nine documented skips and 144 subtests across 183 modules. All 707 code
 files and 2,024 captured inputs matched before/after without a source overlay.
 The [corrected CPU receipt](../../docs/verification-v100-sdk-rebind-cpu-20261026.json)
 binds commit `2c0b4c4a51fbf2f8370fcccd2980c3e3a77ede2b` and actual client/media/source
-identities. Target audit-policy portability, compiler issue 6111901 and the
-hardware/model, quality, physical allocation and performance gates remain open.
+identities. The later [portable-policy software checkpoint](../../docs/verification-v100-portable-policy-cpu-20261027.json)
+records a separate 5,707/9/144 run across 187 modules on image `f8f66a9d`, followed
+by a mapping-only producer successor at `a39646d1`/image `6daae245`. That successor
+reuses the exact application wheel and passed 66 affected controls plus actual
+shared-map/software-authority checks; it did not rerun the full 187 modules.
+Actual successor target acceptance after GPU work, compiler issue 6111901 and
+the hardware/model, quality, physical allocation and performance gates remain open.
 
 After `docker load --input /path/to/reviewed-image-archive.tar`,
 `TF_V6_IMAGE` may be the verified local image ID (`sha256:...`). An actual
@@ -257,10 +262,12 @@ unrun on the IPv6-disabled development host. The current application guard
 rejects old5ab; all native size equations and remaining exact guards are retained.
 See the [source foundation record](source-foundation.md) for exact artifacts.
 The complete application CPU gate on the corrected source/media/client stack
-passed at the exact scope recorded above. The actual V100 host source audit
-still rejects runtime-dependent CPU/configuration display metadata; a separate
-owned immutable policy successor remains under qualification. Local CPU GREEN
-does not close that target gate. Compiler issue 6111901 remains separate below.
+passed at the exact scope recorded above. The later portable and shared-anonymous
+mapping policies have separate software evidence and retain all immutable
+source/provider checks; use the [explicit rebind procedure](source-foundation.md#portable-build-and-host-audit-policy).
+Actual mapping-successor target acceptance after GPU work remains pending.
+Local CPU GREEN does not close that target gate. Compiler issue 6111901 remains
+separate below.
 
 Record final source/image, actual complete asset hashes, GPU UUID/rank mapping,
 driver/runtime/native binaries, host/cgroup/NUMA/locked-memory limits and the

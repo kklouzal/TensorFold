@@ -179,12 +179,12 @@ socket creation returns `EAFNOSUPPORT`. The immutable SDK's actual CPython
 do not transfer the earlier application's installed CPU result or clear any
 V100/compiler/model/resource/quality/performance gate.
 The fresh [corrected application CPU receipt](../../docs/verification-v100-sdk-rebind-cpu-20261026.json)
-records its independent 5,582/9/144 installed result on this stack. Actual target
-source auditing still rejects runtime-dependent CPU/configuration display
-metadata (AVX2 development host versus AVX512 target); a separately owned
-immutable build/runtime-identity policy successor remains under qualification.
-The local CPU result does not resolve that target gate or authorize an audit
-bypass, AVX2 forcing or mutation of a previously sealed manifest.
+records its independent 5,582/9/144 installed result on this stack. That image's
+target source audit rejected runtime-dependent CPU/configuration display
+metadata (AVX2 development host versus AVX512 target). The separate
+[portable policy](#portable-build-and-host-audit-policy) retains the historical
+failure and all original bytes; its software evidence does not authorize an
+audit bypass, AVX2 forcing or mutation of a previously sealed manifest.
 
 Acquire the exact `build-debs` and `python-wheels` inputs before building. Source
 fork preparation also needs `lint-wheels` and its managed-Python/UV cache; first
@@ -362,3 +362,16 @@ All other retired mappings, including source inputs, provider DSOs and
 executable mappings, retain the fatal audit guard. Raw runtime identity and CLI
 audits expose these data observations; callable source proofs retain only
 their software identity fields.
+
+The [portable-policy CPU receipt](../../docs/verification-v100-portable-policy-cpu-20261027.json)
+binds the independent 187-module installed result (5,707 passed, nine documented
+skips, 144 subtests) to application image `f8f66a9d` and source `fc5e6dd4`.
+The mapping-policy source `a39646d1` reuses the exact same whole application wheel.
+Its immutable image
+`sha256:6daae245155c890edd24ae9fc3ba699a3009d2ae57ede24ee271f85309cf44bf`
+is 23,553,308,281 uncompressed bytes. It passed 66 affected controls and actual
+before/during/after 2-MiB native shared-map checks with stable source/media opaque
+authorities, selected headers and native ABI. This is a scoped policy-image
+verification, not a full 187-module run on that successor. Actual target
+post-GPU/new-policy acceptance and model/compiler/resource/quality/performance
+qualification remain pending and separately owned.

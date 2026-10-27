@@ -109,8 +109,11 @@ artifacts, as did the processor probe and 110 installed controls across nine
 modules, with zero skips or warnings in 325.85 seconds. These component checks
 remain distinct from the fresh complete application CPU gate recorded in the
 [corrected-stack receipt](../../docs/verification-v100-sdk-rebind-cpu-20261026.json).
-Actual target source-audit portability, compiler/device/model/resource/quality
-and performance gates remain open.
+The later [portable-policy software receipt](../../docs/verification-v100-portable-policy-cpu-20261027.json)
+records a separate 187-module application run on f8 and affected mapping-policy
+checks on 6da using the unchanged whole application wheel and media bytes.
+Actual successor target acceptance after GPU work, compiler/device/model/
+resource/quality and performance gates remain open.
 The selected consumer recipe is `Dockerfile.media-binding-verification`; its
 default names this actual locally resolved OCI index. The former default
 `tensorfold-v100:media-dav1d-candidate@sha256:7c547c67e4783f3767b0cb2f88587331b61cef6b4adb595548f7a19deab8ef91`

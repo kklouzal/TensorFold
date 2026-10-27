@@ -71,11 +71,21 @@ passed 5,582 installed checks, nine documented skips and 144 subtests across
 183 modules in 559.91 seconds. All 707 code files and 2,024 captured inputs
 matched without an overlay; the [corrected CPU receipt](verification-v100-sdk-rebind-cpu-20261026.json)
 records its actual evidence. Target source auditing exposed runtime-dependent
-CPU/configuration display metadata; its separate owned policy successor and
-compiler issue 6111901 remain open. V100/TP8/NCCL/full-model
+CPU/configuration display metadata; the separate policy successor has its own
+software evidence below. Compiler issue 6111901 remains open. V100/TP8/NCCL/full-model
 numerics, quality, physical capacity, allocator/RSS/NUMA, native wall deadlines
 and representative end-to-end performance remain unqualified. Historical
 measurements/failures below retain their original source/workload identities.
+
+The portable-policy application at `fc5e6dd4`/image `f8f66a9d` independently passed
+5,707 installed checks, nine documented skips and 144 subtests across 187 modules
+in 555.98 seconds, with 707 code files and 2,028 fixture inputs unchanged. The
+mapping-only producer successor `a39646d1`/image `6daae245` reuses the exact
+application wheel and passed 66 affected controls plus actual 2-MiB shared-map
+and source/header/native/combined-media authority checks. These are software
+correctness results, with no optimization gain or full-new-image 187-run claim.
+The [policy receipt](verification-v100-portable-policy-cpu-20261027.json) keeps
+actual target post-GPU acceptance and broader qualification pending.
 
 ## Flash Next V100 live measurements, 2026-10-24
 

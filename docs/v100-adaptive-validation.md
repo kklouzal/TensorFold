@@ -93,12 +93,26 @@ The [corrected CPU receipt](verification-v100-sdk-rebind-cpu-20261026.json)
 records full identities, raw-result hashes and skip disposition. The earlier
 5,582 result remains separate historical evidence; it was not transferred.
 
-Actual target source auditing remains blocked by a separate project identity
-policy issue: the framework's configuration display includes runtime CPU
+The e99 checkpoint's target source audit exposed a project identity policy
+issue: the framework's configuration display includes runtime CPU
 dispatch (development AVX2 versus target AVX512) and conditional CUDA sections.
-An owned immutable audit-policy successor separates stable build identity from
-fresh host observations; it remains under qualification. The local CPU result
-does not close this target gate or permit an old-manifest rewrite/audit bypass.
+The owned immutable portable-policy successor separates stable build identity
+from fresh host observations without rewriting the original sealed image.
+
+That application's commit `fc5e6dd4`, tree `7bdd8392`, image `f8f66a9d`, independently
+passed **5,707 installed tests and 144 subtests across 187 modules**, with nine
+documented skips in 555.98 seconds. All 707 code files, 714 package source/data
+files plus the compiled FD extension, and 2,028 fixture inputs matched before
+and after, without a runtime source overlay. The mapping-policy successor at
+`a39646d1` changes only the audit producer/policy, tests and documentation. Image
+`6daae245` retains the exact application wheel SHA256
+`805246a27273b16948d984ecf0072fe71705ecad605b02a1e952eb8810718e60`.
+It passed 66 affected controls and actual immutable-image source/header/native/
+combined-media checks around a native 2-MiB shared mapping. The
+[portable-policy receipt](verification-v100-portable-policy-cpu-20261027.json)
+preserves both result scopes; the full 187-module gate was run on f8, not 6da.
+Actual successor target acceptance after GPU work and all broader model/resource/
+quality/performance gates remain separate and pending.
 
 NVIDIA compiler issue **6111901** remains a separate release gate; see the
 [source-foundation contract](../deploy/v100/source-foundation.md#compiler-issue-6111901-remains-a-release-gate).
