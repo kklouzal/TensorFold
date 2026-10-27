@@ -401,3 +401,15 @@ the descriptor retains actual source-build math/workspace/device settings.
 The new whole wheel and rebuilt native extension are separately identified.
 These are scoped software checks, with no full 187-module run or model/readiness
 claim for the successor.
+
+The later logical-context application update uses whole wheel `b9839482` and
+image `a19233f2`, with the exact FD4a06 binary and protected base retained. It
+separates admitted logical context from physical MTP/speculative guard-backed
+storage without changing the window or removing allocations/accounting/position
+guards. The [affected CPU receipt](../../docs/verification-v100-logical-context-cpu-20261027.json)
+records separate suites of 158, 1,177 and 231 tests, including preserved negative
+fixture evidence and the justified fixture-only correction. No new full
+187-module, framework or FD-binary test claim is made. The actual target moved
+past the former State-domain refusal but later startup remained unready and
+under investigation; model/compiler/resource/quality/performance gates remain
+separately owned.

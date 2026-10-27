@@ -38,6 +38,12 @@ records 116 runtime checks plus 24 subtests and 33 new-native-FD checks plus fiv
 subtests. The private cu126 candidate stays ineligible. This is scoped new-image
 verification; it does not transfer the full 187-module result or establish model
 readiness.
+The later logical-context fix keeps the admitted 262,144-row domain separate
+from physical speculative guard storage. Image `a19233f2`, whole wheel
+`b9839482`, passed three [affected CPU suites](docs/verification-v100-logical-context-cpu-20261027.json)
+of 158, 1,177 and 231 tests. The target passed the former State-domain refusal
+point but later startup still failed before readiness and remains under
+investigation; these software checks establish no model or performance result.
 The earlier media/frontend/MTP checkpoint at `64b24dd5` passed 4,365 installed
 checks and 124 subtests; tree `413e132b` passed 5,214 checks and 144 subtests.
 Those historical results retain their original source and workload scope.

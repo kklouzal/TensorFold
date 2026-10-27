@@ -129,6 +129,22 @@ is inapplicable; it preserves source04cf ineligibility and real math/workspace/
 device settings. Actual model/output/numerical/quality/resource/performance
 qualification remains separately owned.
 
+The logical/physical State successor, held commit `64e3ed7f`, keeps the admitted
+logical context separate from physical speculative guard rows. The initial
+target remains logically 262,144 rows with 262,147 physical cache rows; physical
+allocations, resource accounting and position guards are preserved. Whole wheel
+`b9839482` and image `a19233f2` passed three affected normal-installed suites:
+158 constructor/logical/retention/indexer/prefix checks in 10.63 s, 1,177 State/
+storage checks in 32.24 s, and 231 engine/Multi/profile/position/media caller
+checks in 21.85 s. All 715 package records and 46 protected files remained
+unchanged. The [logical-context receipt](verification-v100-logical-context-cpu-20261027.json)
+retains the original 72 fixture failures and their justified three-fixture
+correction; the application wheel/image did not change for that fixture repair.
+This is a new affected-source result, with no full 187-module rerun claim.
+The target passed the original State row-domain failure point but later
+startup still failed before readiness. That failure remains under primary
+investigation; this CPU checkpoint supplies no OOM or model-readiness diagnosis.
+
 NVIDIA compiler issue **6111901** remains a separate release gate; see the
 [source-foundation contract](../deploy/v100/source-foundation.md#compiler-issue-6111901-remains-a-release-gate).
 Actual V100/TP8 CUDA/NCCL execution, model output/numerics/quality, physical
