@@ -1,5 +1,20 @@
 # TensorFold fork
 
+The private native-prelude runtime `710c9b6a` (wheel `32246b49`) passed 53 GPU
+controls, including the two-attention-layer TP8 state/commit/prefix regression.
+Its first matched eight-V100-SXM2-32GB screen on image `96f69617`, pinned SC117
+IQ3_S target and Q8 MTP, greedy depth two/confidence 0.7, warmed Notebook prefix,
+native 262144-token Q8 K/V windows and a 24-request ceiling measured:
+26.6 tokens/s at one request, and 18.7/29.3/39.4/46.9/47.8 aggregate at
+2/4/8/16/24. All six 10-second decode windows were valid; 24 requests reached
+decode in 14.285 seconds. The guard/map reference `49db616b` (wheel `84a8618a`)
+measured 14.0/10.3/11.7/13.3/13.6 for 1/2/4/8/16 and had no valid 24-request
+window. All six completed quality answers matched that reference, including
+its two failures (4/6 passed). Raw packet SHA256:
+`1a769426772ca1e254c020b9327f9536bbec7d78690e227252d5906f3081357f`.
+These are first-screen observations, requiring repetition; broad quality,
+near-full-history capacity, 85/600-token/s targets and release remain open.
+
 The native owner prelude borrows the current issued coordinate-frame slice for
 compact-indexer publication. Reconstructing equal coordinates would rewrite its
 shared mutation-tracked storage and invalidate subsequent attention layers.
