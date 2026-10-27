@@ -63,6 +63,9 @@ def test_worker_hashes_complete_expected_bytes_and_reuses_only_issued_authority(
     capture.start()
     authority=capture.result()
     assert authority.bytes_read == len(raw) and authority.hashes_reused == 0
+    timing=capture.record()
+    assert timing["worker_operation_retired"] and timing["registration_wait_ns"] >= 0
+    assert timing["started_monotonic_ns"] <= timing["finished_monotonic_ns"]
     authorities,contents,read,reused=identity._capture_reusing(files,before,expected,(authority,))
     assert authorities == (authority,) and contents == expected and read == 0 and reused == 1
     capture.close()

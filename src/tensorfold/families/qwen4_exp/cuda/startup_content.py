@@ -81,10 +81,10 @@ class StartupContentCapture:
         self.operation_retired = threading.Event()
         self.join_returned = False
         self.authority = self.error = None
-        self.finish_errors, self.no_errors = [None], []
+        self.finish_errors, self.wait_errors, self.no_errors = [None], [None], []
         self.cancel_observed = self.error_observed = False
         self.started_ns = time.monotonic_ns()
-        self.finished_ns = None
+        self.finished_ns = self.wait_started_ns = self.wait_finished_ns = None
         self.start_attempted = self.closed = False
         self.thread = threading.Thread(target=self._run, name="tf-startup-content", daemon=False)
 
@@ -119,12 +119,21 @@ class StartupContentCapture:
     def result(self):
         if self.closed:
             raise RuntimeError("startup content capture already retired")
+        try:
+            self.wait_started_ns = time.monotonic_ns()
+        except BaseException as error:
+            self.wait_errors[0] = error
         self.thread.join()
         self.join_returned = True
         self.operation_retired.wait()
-        if self.error is not None or self.finish_errors[0] is not None:
+        try:
+            self.wait_finished_ns = time.monotonic_ns()
+        except BaseException as error:
+            if self.wait_errors[0] is None:
+                self.wait_errors[0] = error
+        if self.error is not None or self.finish_errors[0] is not None or self.wait_errors[0] is not None:
             self.error_observed = True
-            raise_failures(self.error, self.finish_errors if self.finish_errors[0] is not None else self.no_errors)
+            raise_failures(self.error, [error for error in (self.finish_errors[0], self.wait_errors[0]) if error is not None])
         if self.authority is None:
             raise RuntimeError("joined content worker produced no issued authority")
         return self.authority
@@ -143,7 +152,7 @@ class StartupContentCapture:
         self.closed = True
         if not self.error_observed:
             primary = self.error if not self.cancel_observed else None
-            errors = self.finish_errors if self.finish_errors[0] is not None else self.no_errors
+            errors = [error for error in (self.finish_errors[0], self.wait_errors[0]) if error is not None]
             if primary is not None or errors:
                 self.error_observed = True
                 raise_failures(primary, errors)
@@ -151,6 +160,10 @@ class StartupContentCapture:
     def record(self):
         return {"started_monotonic_ns": self.started_ns, "finished_monotonic_ns": self.finished_ns,
                 "bytes_hashed": None if self.authority is None else self.authority.bytes_read,
+                "registration_wait_started_monotonic_ns": self.wait_started_ns,
+                "registration_wait_finished_monotonic_ns": self.wait_finished_ns,
+                "registration_wait_ns": (None if self.wait_started_ns is None or self.wait_finished_ns is None
+                                         else self.wait_finished_ns - self.wait_started_ns),
                 "worker_operation_retired": self.operation_retired.is_set(),
                 "thread_join_returned": self.join_returned,
                 "native_stack_reclamation": "not inferred from Python join; fixed host commitment retained through engine",
