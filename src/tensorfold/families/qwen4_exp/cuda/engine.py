@@ -2190,6 +2190,11 @@ class FlashNextEngine:
     def supports_logprobs(self) -> bool:
         return self.tp == 1
 
+    @property
+    def decision_label_refusal(self) -> str | None:
+        """The same active backend capability used before and during scoring."""
+        return None if self.supports_logprobs else "decision labels are scored on one GPU only"
+
     def _serial(self, prompt: list[int], max_tokens: int, sampling, on_tokens, constraint=None,
                 stop_eos: bool = True, probabilities=None, token_limit=None) -> dict[str, Any]:
         """One token a round from a fresh prefill in the serial engine's own state (no drafts, no kept states)."""
@@ -2635,8 +2640,9 @@ class FlashNextEngine:
         from tensorfold.engine.exact_sampling import Sampling
         from tensorfold.engine.probabilities import LabelProbabilities
 
-        if not self.supports_logprobs:
-            raise ValueError("decision labels are scored on one GPU only")
+        reason = self.decision_label_refusal
+        if reason is not None:
+            raise ValueError(reason)
         def token_ids(values, name):
             result = []
             for token in values:

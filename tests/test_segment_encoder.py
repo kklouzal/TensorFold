@@ -2,6 +2,8 @@
 
 import random
 import threading
+import weakref
+from collections import OrderedDict
 
 import pytest
 
@@ -122,3 +124,144 @@ def test_a_qwen_template_gets_a_message_encoder_that_equals_the_whole_encode(tmp
         talk.append({"role": ("user", "assistant")[turn % 2], "content": "".join(rng.choice(PIECES) for _ in range(30))})
         text = template.render(talk, tools=None, enable_thinking=True)
         assert enc.encode(text) == tok.encode(text, add_special_tokens=False).ids, turn
+
+
+def small_encoder(limit=LIMIT):
+    tok = tokenizers.Tokenizer(tokenizers.models.BPE(vocab={"a": 0, "b": 1, OPEN: 2}, merges=[]))
+    tok.add_tokens([tokenizers.AddedToken(OPEN, normalized=False)])
+    return SegmentEncoder(tok, OPEN, limit)
+
+
+@pytest.mark.parametrize("cut", ["size", "counter", "map-before", "map-after"])
+def test_cache_publication_exhaustion_clears_charge_and_preserves_primary(monkeypatch, cut):
+    from tensorfold.server import segments
+
+    enc = small_encoder()
+    enc.encode(OPEN + "a" * 512)
+    new, primary = OPEN + "b" * 512, MemoryError("controlled cache publication failure")
+    with monkeypatch.context() as patch:
+        if cut == "size":
+            def size(text, ids):
+                if text == new:
+                    assert text not in enc.cache
+                    raise primary
+                return _size(text, ids)
+            patch.setattr(segments, "_size", size)
+        elif cut == "counter":
+            class Counter(int):
+                def __add__(self, other):
+                    assert new not in enc.cache
+                    raise primary
+            enc.held = Counter(enc.held)
+        else:
+            class Publishing(OrderedDict):
+                def __setitem__(self, key, value):
+                    if key == new:
+                        if cut == "map-after":
+                            super().__setitem__(key, value)
+                        raise primary
+                    super().__setitem__(key, value)
+            enc.cache = Publishing(enc.cache)
+        with pytest.raises(MemoryError) as caught:
+            enc.encode(new)
+        assert caught.value is primary and not enc.cache and enc.held == 0
+    recovered = OPEN + "ab"
+    assert enc.encode(recovered) == enc.tok.encode(recovered, add_special_tokens=False).ids
+    assert enc.held == sum(_size(text, ids) for text, ids in enc.cache.items()) > 0
+
+
+@pytest.mark.parametrize("cut", ["size", "counter", "map-before", "map-after"])
+def test_cache_eviction_exhaustion_cannot_leave_an_invalid_charge(monkeypatch, cut):
+    from tensorfold.server import segments
+
+    enc = small_encoder(limit=0)
+    old, new = OPEN + "a" * 512, OPEN + "b" * 512
+    enc.encode(old)  # The selected newest-entry policy permits this oversized entry.
+    primary = MemoryError("controlled cache eviction failure")
+    with monkeypatch.context() as patch:
+        if cut in ("size", "counter"):
+            class Size(int):
+                def __rsub__(self, other):
+                    raise primary
+            def size(text, ids):
+                if text == old:
+                    assert text not in enc.cache
+                    if cut == "size":
+                        raise primary
+                    return Size(_size(text, ids))
+                return _size(text, ids)
+            patch.setattr(segments, "_size", size)
+        else:
+            class Evicting(OrderedDict):
+                def popitem(self, last=True):
+                    if cut == "map-after":
+                        super().popitem(last=last)
+                    raise primary
+            enc.cache = Evicting(enc.cache)
+        with pytest.raises(MemoryError) as caught:
+            enc.encode(new)
+        assert caught.value is primary and not enc.cache and enc.held == 0
+    assert enc.encode(new) == enc.tok.encode(new, add_special_tokens=False).ids
+    assert list(enc.cache) == [new] and enc.held == _size(new, enc.cache[new]) > enc.limit
+
+
+def test_batch_deduplication_hit_order_and_newest_oversized_entry_are_preserved():
+    enc = small_encoder()
+    native, batches = enc.tok, []
+    class Batch:
+        def encode_batch(self, missing, **options):
+            batches.append(list(missing))
+            return native.encode_batch(missing, **options)
+    enc.tok = Batch()
+    first, second, newest = OPEN + "a", OPEN + "b", OPEN + "ab" * 512
+    text = first + second + first
+    assert enc.encode(text) == native.encode(text, add_special_tokens=False).ids
+    assert batches == [[first, second]] and list(enc.cache) == [first, second]
+    assert enc.encode(first) == native.encode(first, add_special_tokens=False).ids
+    assert batches[-1] == [] and list(enc.cache) == [second, first]
+    enc.limit = 0
+    assert enc.encode(newest) == native.encode(newest, add_special_tokens=False).ids
+    assert list(enc.cache) == [newest] and enc.held == _size(newest, enc.cache[newest]) > enc.limit
+    assert enc.encode(newest) == native.encode(newest, add_special_tokens=False).ids
+    assert batches[-1] == [] and list(enc.cache) == [newest]
+
+
+def test_containment_does_not_retire_another_callers_borrowed_hit(monkeypatch):
+    from tensorfold.server import segments
+
+    enc = small_encoder()
+    old, new = OPEN + "a" * 512, OPEN + "b" * 512
+    expected = enc.encode(old)
+    owner = weakref.ref(enc.cache[old])
+    native, entered, released, results, errors = enc.tok, threading.Event(), threading.Event(), [], []
+    class Batch:
+        def encode_batch(self, missing, **options):
+            if not missing:
+                entered.set()
+                assert released.wait(3)
+            return native.encode_batch(missing, **options)
+    enc.tok = Batch()
+    def read():
+        try:
+            results.append(enc.encode(old))
+        except BaseException as error:
+            errors.append(error)
+    thread = threading.Thread(target=read)
+    thread.start()
+    primary = MemoryError("controlled competing publication failure")
+    def size(text, ids):
+        if text == new:
+            raise primary
+        return _size(text, ids)
+    try:
+        assert entered.wait(3)
+        monkeypatch.setattr(segments, "_size", size)
+        with pytest.raises(MemoryError) as caught:
+            enc.encode(new)
+        assert caught.value is primary and not enc.cache and enc.held == 0
+        assert owner() is not None  # The outside-lock reader still owns the array it borrowed.
+    finally:
+        released.set()
+        thread.join(3)
+    assert not thread.is_alive() and errors == [] and results == [expected]
+    assert owner() is None

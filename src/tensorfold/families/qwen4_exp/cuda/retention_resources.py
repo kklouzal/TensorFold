@@ -700,6 +700,8 @@ def _json_payload_policy():
                      "d5d41e2c29049515d295d81a6d40b4890fbec8d8482cfb401630f8ef2f77e4d5"),
         "json-decoder": (Path(json.decoder.__file__).resolve(), 12473,
                          "9f02654649816145bc76f8c210a5fe3ba1de142d4d97a1c93105732e747c285b"),
+        "json-encoder": (Path(json.encoder.__file__).resolve(), 16070,
+                         "af7bd40a0d0d0a3e726a9b4b3a2a543019f6ab97a340d0162a9c29ca9da97869"),
     }
     mapped = {"python": set(), "libpython": set(), "json-native": set()}
     for line in _small("/proc/self/maps", 4 << 20).decode().splitlines():
@@ -749,6 +751,19 @@ def _fresh_dict_payload(count, entry_bytes):
     return 64 + table(capacity), table(capacity // 2) if capacity > 8 else 0
 
 
+def _churn_dictionary_table(count, entry_bytes):
+    """CPython3.12.3 combined-table highwater; entry width is in bytes.
+
+    This is calculate_log2_keysize(used*3), including its small-size OR,
+    rather than the separate fresh monotone insertion rule.
+    """
+    log = (((3 * count) | 8) - 1 | 7).bit_length()
+    capacity = 1 << log
+    width = 1 if log < 8 else 2 if log < 16 else 4 if log < 32 else 8
+    return (struct.calcsize("nBBBxInn") + capacity * width
+            + (2 * capacity // 3) * entry_bytes), capacity
+
+
 def _append_list_payload(count):
     capacity = 0 if not count else count + (count >> 3) + 6
     return 56 + 8 * capacity
@@ -792,6 +807,47 @@ def _json_parse_payload(encoded_bytes, policy):
         "number_source": 49 + encoded_bytes, "fixed_headers_error_strings_frames": fixed}
     return {"schema": "tensorfold.selected-json-parse-payload-v1", "terms": terms,
             "total_bytes": _total(terms.values()), "c_depth_bound": depth, "key_count_bound": keys}
+
+
+def _json_one_shot_payload(encoded_bytes, policy):
+    """Default ASCII json.dumps plus UTF8 conversion of owned exact JSON trees.
+
+    The C encoder's recursion/marker limit is independent of Python's encoder
+    generator limit. Source graphs and other handlers' completed results are
+    separate owners; these are requested payloads, not allocator or C-stack RSS.
+    """
+    _size(encoded_bytes, "one-shot JSON output bound")
+    if type(policy) is not _JsonPayloadPolicy or not any(row[0] == "json-encoder" for row in policy.files):
+        raise ValueError("one-shot JSON encoding requires its captured encoder implementation")
+    depth = min(encoded_bytes // 2, 10000)
+    # The int-address marker map can churn while sibling containers retire.
+    # Pay both old/new general-key tables at its maximum live nesting.
+    table = 0
+    if depth:
+        table, _capacity = _churn_dictionary_table(depth, 24)
+    metadata = {
+        "marker_dictionary_and_resize": 64 + 2 * table,
+        "marker_address_integers": 36 * (depth + 1),
+        "json_encoder_instance_attributes": 48 + max(336, _fresh_dict_payload(6, 16)[0]),
+        "native_encoder": 96,
+        "bound_default_method": 64,
+        "float_formatter_function_defaults": 160 + 80 + 24,
+        "make_call_and_result_tuples": 112 + 56 + 48,
+    }
+    functions = (json.dumps, json.JSONEncoder.encode, json.JSONEncoder.iterencode, json.JSONEncoder.default)
+    metadata["python_call_frames_and_tracebacks"] = sum(
+        136 + 72 + 56 + 16 * (fn.__code__.co_nlocals + len(fn.__code__.co_cellvars)
+                              + len(fn.__code__.co_freevars) + fn.__code__.co_stacksize)
+        for fn in functions)
+    ascii_text, raw = 41 + encoded_bytes, 33 + encoded_bytes
+    writer = 41 + encoded_bytes + encoded_bytes // 4 + 1
+    phases = {"c_encoder_writer_and_escaped_chunk": _total((*metadata.values(), 2 * writer, ascii_text)),
+              "returned_ascii_to_utf8": _total((ascii_text, raw,
+                  metadata["python_call_frames_and_tracebacks"]))}
+    return {"schema": "tensorfold.selected-json-one-shot-payload-v1", "encoded_bytes": encoded_bytes,
+            "c_marker_depth_bound": depth, "metadata": metadata, "phase_bytes": phases,
+            "total_bytes": max(phases.values()),
+            "scope": "default unsorted exact JSON/ASCII output; source/results and allocator/C-stack separate"}
 
 
 def _responses_cache_wrappers(limit, connections):
@@ -992,21 +1048,10 @@ def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_req
     def pointers(count):
         return layout["list"] + (count + (count >> 3) + 6) * layout["pointer"]
 
-    # CPython3.12.3's combined dictionary allocation, including deleted-slot
-    # churn and retained highwater. This is calculate_log2_keysize(used*3),
-    # not a live-entry/singleton estimate (the small-size OR matters).
-    keys_header = struct.calcsize("nBBBxInn")
-    def dictionary_table(count, entry_pointers):
-        log = (((3 * count) | 8) - 1 | 7).bit_length()
-        capacity = 1 << log
-        index_width = 1 if log < 8 else 2 if log < 16 else 4 if log < 32 else 8
-        return (keys_header + capacity * index_width
-                + ((2 * capacity) // 3) * entry_pointers * layout["pointer"]), capacity
-
     from tensorfold.cuda.streams import Stream
     from .tp_scheduler import MAX_PROTOCOL_SEQUENCE
 
-    map_table, map_capacity = dictionary_table(pending, 3)  # hash,key,value general entries.
+    map_table, map_capacity = _churn_dictionary_table(pending, 3 * layout["pointer"])
     # Wire is assigned only once before media binding/admission. These are the
     # non-dataclass fields assigned by Scheduler/Waiting/TP preparation; later
     # arbitrary foreign attribute mutation is not a serving input contract.
@@ -1017,7 +1062,7 @@ def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_req
     stream_fields = set(Stream.__dataclass_fields__) | wire_preparation_fields
     if len(Stream.__dataclass_fields__) <= 30:
         raise ValueError("Stream metadata no longer has the selected combined dictionary layout")
-    stream_table, stream_capacity = dictionary_table(len(stream_fields), 2)  # Unicode attribute keys.
+    stream_table, stream_capacity = _churn_dictionary_table(len(stream_fields), 2 * layout["pointer"])
     stream_header = sys.getsizeof(object.__new__(Stream))
     wire_integer = sys.getsizeof(MAX_PROTOCOL_SEQUENCE)
     identity_integer = sys.getsizeof((1 << (8 * layout["pointer"])) - 1)
@@ -1063,7 +1108,7 @@ def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_req
     for name, fields in source_records.items():
         # A merge may reserve for both current and incoming fixed-key maps.
         # The churn table rule and two tables also fund its old/new cut.
-        table, _capacity = dictionary_table(2 * fields, 2)
+        table, _capacity = _churn_dictionary_table(2 * fields, 2 * layout["pointer"])
         source_record_tables[name] = layout["dict"] + 2 * table
     source_fixed = _total(source_record_tables.values())
     source_graph = frame * node if json_policy is None else graph + source_fixed

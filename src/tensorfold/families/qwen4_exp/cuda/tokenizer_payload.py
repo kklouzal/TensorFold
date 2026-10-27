@@ -22,6 +22,16 @@ def _size(value, name):
     return value
 
 
+def _vec_capacity(count, minimum=4):
+    """Pinned RawVec current requested capacity, in elements."""
+    return max(minimum, 2 * count) if count else 0
+
+
+def _vec_reallocation_capacity(count, minimum=4):
+    """Pinned old plus new requested capacities at a grow cut, in elements."""
+    return 3 * count + minimum if count else 0
+
+
 def bytelevel_payload_policy():
     """Bind the actually loaded artifact before selecting its capacity rules.
 
@@ -106,14 +116,11 @@ def bytelevel_decode_payload(bound, *, context=None, encoded_id_bytes=None):
         escaped = min(6 * output, _ratio_ceiling(wire + 1, bound.escaped_id_wire_ratio, "escaped ID-wire ratio"))
         budget = {"encoded_id_bytes": wire, "decimal_id_weight_bytes": wire + 1}
     raw, one = min(lexical, output), min(piece, decoded, lexical, output)
-    def capacity(count, minimum):
-        return max(minimum, 2 * count) if count else 0
-    def realloc(count, minimum):
-        return 3 * count + minimum if count else 0
     phases = {
-        "token_lookup_clone_and_header_growth": 4 * n + 24 * realloc(n, 4) + lexical,
-        "piece_and_flat_bytes": 4 * n + 24 * capacity(n, 4) + lexical + capacity(one, 8) + realloc(raw, 8),
-        "lossy_and_to_string": 4 * n + capacity(raw, 8) + realloc(output, 8) + output + 24,
+        "token_lookup_clone_and_header_growth": 4 * n + 24 * _vec_reallocation_capacity(n, 4) + lexical,
+        "piece_and_flat_bytes": 4 * n + 24 * _vec_capacity(n, 4) + lexical + _vec_capacity(one, 8)
+                                 + _vec_reallocation_capacity(raw, 8),
+        "lossy_and_to_string": 4 * n + _vec_capacity(raw, 8) + _vec_reallocation_capacity(output, 8) + output + 24,
         "decoder_join": 4 * n + 2 * output + 24,
     }
     conversion = output + 160 + 8 * output

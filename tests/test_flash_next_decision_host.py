@@ -45,7 +45,7 @@ def source_class(path, name, methods, injected):
 
 
 Engine = source_class('tensorfold/families/qwen4_exp/cuda/engine.py', 'FlashNextEngine',
-                      {'_limit', 'supports_logprobs', 'score_labels'},
+                      {'_limit', 'context_window', 'supports_logprobs', 'decision_label_refusal', 'score_labels'},
                       {'Sampling': Sampling, 'LabelProbabilities': probabilities.LabelProbabilities, 'threading': threading})
 
 
@@ -123,7 +123,8 @@ class DecisionHostTests(unittest.TestCase):
 
 
     def test_fresh_score_can_reclaim_an_idle_kept_slot(self):
-        idle = object()
+        begun = []
+        idle = types.SimpleNamespace(begin_sequence_generation=lambda: begun.append(True))
         owner = types.SimpleNamespace(kept=[([1], idle, {}, None)], free=[], depth=6, used={}, clock=0,
                                       _busy=lambda: set())
         owner._drop_kept = lambda state: setattr(owner, 'kept', [k for k in owner.kept if k[1] is not state])
@@ -132,6 +133,7 @@ class DecisionHostTests(unittest.TestCase):
         self.assertIsNone(hit)
         self.assertEqual(cached, 0)
         self.assertEqual(owner.kept, [])
+        self.assertEqual(begun, [True])
 
     def test_decision_prompt_respects_the_existing_live_decode_budget(self):
         seen = []

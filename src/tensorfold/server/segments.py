@@ -61,12 +61,20 @@ class SegmentEncoder:
             ids = known.get(segment)
             out.extend(ids if ids is not None else fresh[segment])
         with self.lock:
-            for segment, ids in fresh.items():
-                if segment not in self.cache:
-                    self.cache[segment] = ids
-                    self.held += _size(segment, ids)
-            while self.held > self.limit and len(self.cache) > 1:       # the newest entry stays, however large
-                self.held -= _size(*self.cache.popitem(last=False))
+            try:
+                for segment, ids in fresh.items():
+                    if segment not in self.cache:
+                        held = self.held + _size(segment, ids)
+                        self.cache[segment] = ids
+                        self.held = held
+                while self.held > self.limit and len(self.cache) > 1:   # the newest entry stays, however large
+                    self.held -= _size(*self.cache.popitem(last=False))
+            except MemoryError:
+                # Owned string/array entries have no destructor callbacks.
+                # Restore this optional cache's charge invariant before failure escapes.
+                self.cache.clear()
+                self.held = 0
+                raise
         return out
 
 

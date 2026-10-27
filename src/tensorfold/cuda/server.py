@@ -364,10 +364,21 @@ class App:
 
         from jinja2.exceptions import TemplateError
 
-        from tensorfold.server.decisions import DecisionError, build_response, prompts_for
+        from tensorfold.server.decisions import DecisionError, build_response, prompts_for, validate_request_shape
 
         if not hasattr(self.engine, "score_labels"):
             raise RequestError("this model's CUDA engine does not score decision labels")
+        # AppProfiles wraps this whole operation in its existing binding lease,
+        # so a model transition cannot race this query and later scoring.
+        reason = getattr(self.engine, "decision_label_refusal", None)
+        if reason is not None:
+            if type(reason) is not str or not reason:
+                raise TypeError("decision label capability must be None or a refusal string")
+            try:
+                validate_request_shape(body)
+            except DecisionError as exc:
+                raise RequestError(str(exc)) from exc
+            raise RequestError(f"question {body['questions'][0]['id']!r}: {reason}")
 
         def render(content: str) -> str:
             try:

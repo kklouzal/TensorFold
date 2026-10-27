@@ -1526,6 +1526,12 @@ cache and reports the failure, so an entry cannot remain available without its
 byte charge. Cyclic stored parent chains fail within the cache's existing bound.
 History cloning retains the message snapshots it needs while releasing an
 unneeded reference to the final whole response and its echoed request fields.
+The chat segment cache also prepares byte counts before publication and clears
+its owned entries before propagating a counter or publication allocation failure.
+CUDA decision scoring checks an advertised backend refusal after lightweight
+request validation and before rendering question prompts. Flash Next TP8 keeps
+its existing single-GPU-only refusal; capable and unadvertised providers retain
+their scoring path. Template, label-token and context checks follow capability.
 
 The V100 finite backend caller admits one logical text request at a time through
 the same model, native-buffer and tensor-parallel host commitment authority before
@@ -1539,5 +1545,5 @@ quality, capacity and performance remain separate pending qualification gates.
 Adaptive startup drains the synthetic warmup request through every bounded
 prefill pass and its decode before publishing FIFO admission. Its temporary
 prompt/order owners retire before that policy transition; warmup errors stop
-startup instead of publishing an unwarmed slot. Actual model output and
-performance qualification remain pending.
+startup instead of publishing an unwarmed slot. Broader model quality, capacity
+and performance qualification remain pending.

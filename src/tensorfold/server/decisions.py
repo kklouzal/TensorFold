@@ -157,6 +157,25 @@ def prompts_for(
     return prepared
 
 
+def validate_request_shape(body: dict[str, Any]) -> None:
+    """Validate an unsupported backend request without expanding its input per question.
+
+    Schema/input refusals keep their existing messages. Template, token-label
+    and context checks require a supported scoring backend and follow this
+    inexpensive capability boundary.
+    """
+    _validate_body(body)
+    if not _render_text(body.get("input")).strip():
+        raise DecisionError("input must not be blank")
+    for index, question in enumerate(body["questions"]):
+        try:
+            _wording("", question)
+        except DecisionError as exc:
+            ident = question.get("id") if isinstance(question, dict) else None
+            where = repr(ident) if isinstance(ident, str) and ident else f"at position {index}"
+            raise DecisionError(f"question {where}: {exc}") from exc
+
+
 def _from_text(
     render: Any, encode: Any, text: str, question: dict[str, Any], *, context_len: int | None,
 ) -> PreparedQuestion:
