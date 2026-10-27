@@ -1,6 +1,7 @@
 """Named Python RPC allocations, independent from native Store copies."""
 import json
 import sys
+from types import SimpleNamespace
 import pytest
 
 pytest.importorskip("torch")
@@ -92,6 +93,42 @@ def test_global_working_projection_keeps_current_error_and_publication_owners():
     assert "previous_body" not in result["named_rpc_terms"]
     assert "post_send_text" not in result["named_rpc_terms"]
     assert project(terms(), pending=3)["global_rpc_python_working_bytes"] > result["global_rpc_python_working_bytes"]
+
+
+@pytest.mark.parametrize("kind,completion", [("round", None), ("retention_retire", True),
+    ("retention_suspend", False), ("retention_boundary", {"drained": False, "changed": True})])
+@pytest.mark.parametrize("failed", [False, True])
+def test_actual_ack_source_shape_is_separate_from_malformed_received_graphs(kind, completion, failed):
+    decoder = object.__new__(TensorParallelDecoder)
+    decoder.engine, decoder.requests = SimpleNamespace(serving_profiles=None), {}
+    decoder._state_digest = lambda: "f" * 64
+    failure = type("A" * 2048 + "𐐀", (ValueError,), {})("bounded test error")
+    def execute(_body, _source=None):
+        if failed:
+            raise failure
+        return completion
+    decoder._dispatch = execute
+    _result, error, status = decoder._execute({"kind": kind})
+    fields = {"error", "state"} | ({"complete"} if kind.startswith("retention_") else set())
+    assert set(status) == fields and len(status["state"]) == 64
+    assert error is (failure if failed else None)
+    if "complete" in status:
+        assert status["complete"] == (None if failed else completion)
+    encoded = json.dumps(status).encode("ascii")
+    assert len(encoded) <= MAX_MESSAGE_BYTES
+    pending, seen, payload = [status], set(), 0
+    while pending:
+        value = pending.pop()
+        if id(value) in seen:
+            continue
+        seen.add(id(value))
+        payload += sys.getsizeof(value)
+        if type(value) is dict:
+            pending.extend(value.keys())
+            pending.extend(value.values())
+    bound = project(terms())
+    assert payload <= bound["source_ack_graph_bytes"] < bound["json_graph_bytes"]
+    assert bound["per_http_rpc_error_tail_bytes"] >= bound["json_graph_bytes"]
 
 
 def test_one_rank_has_no_peer_rpc_payload():

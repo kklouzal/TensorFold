@@ -754,6 +754,24 @@ def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_req
     graph = _size(frame * node, "RPC parsed graph")
     text = layout["unicode"] + frame  # Both bounded publishers produce ASCII.
     raw = layout["bytes"] + frame
+    # _execute publishes only an error class name, a 64-hex state digest,
+    # and an optional bool/two-bool completion record. The class name can
+    # fill the wire bound; five times its ASCII-encoded extent covers even
+    # a wide PEP393 string and UTF8 cache. Received malformed ACKs still use
+    # the generic parsed-graph bound below, before their equality check.
+    ack_prototype = {"error": "", "state": "f" * 64,
+                     "complete": {"drained": False, "changed": False}}
+    ack_pending, ack_seen, ack_headers = [ack_prototype], set(), 0
+    while ack_pending:
+        value = ack_pending.pop()
+        if id(value) in ack_seen:
+            continue
+        ack_seen.add(id(value))
+        ack_headers += sys.getsizeof(value)
+        if type(value) is dict:
+            ack_pending.extend(value.keys())
+            ack_pending.extend(value.values())
+    ack_graph = _size(5 * frame + ack_headers, "owned RPC acknowledgment graph")
 
     def pointers(count):
         return layout["list"] + (count + (count >> 3) + 6) * layout["pointer"]
@@ -845,7 +863,7 @@ def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_req
     dispatch = graph + max(encoding + 5 * layout["dict_entry"], digest_working)
     # During ACK publication the current command graph and new status graph
     # remain live. Status encoding and digest construction happen serially.
-    peer_ack = 2 * graph + max(encoding, digest_working)
+    peer_ack = graph + ack_graph + max(encoding, digest_working)
     peer_working = max(receive, dispatch, peer_ack)
     ack_batch = pointers(peers) + peers * raw
     # The last decoded remote status remains across the next json.loads RHS.
@@ -854,7 +872,8 @@ def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_req
         "source_encoding": source_graph + encoding,
         "publication_and_peer_work": source_graph + text + peers * peer_working,
         "dispatch_and_peer_work": source_graph + max(encoding, digest_working) + peers * peer_working,
-        "ack_batch_and_peer_return": source_graph + graph + ack_batch + ack_parse + peers * (2 * graph + text),
+        "ack_batch_and_peer_return": (source_graph + ack_graph + ack_batch + ack_parse
+                                      + peers * (graph + ack_graph + text)),
     }
     # Stream/carry/media/retention children survive their parent body through
     # ordinary references. These new follower RPC metadata subsets are paid
@@ -873,6 +892,7 @@ def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_req
             "per_follower_scope": per_follower, "named_rpc_terms": fixed,
             "phase_working_bytes": stages, "frame_bytes": frame,
             "json_graph_bytes": graph, "ascii_text_bytes": text, "python_bytes_bytes": raw,
+            "source_ack_graph_bytes": ack_graph, "source_ack_schema": "error-state-completion-v1",
             "per_http_rpc_error_tail_bytes": graph + raw + text,
             "encoder_working_bytes": encoding, "digest_working_bytes": digest_working,
             "runtime_recursion_limit": recursion, "encoder_frame_header_bytes": frame_header,
