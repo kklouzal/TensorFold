@@ -4,9 +4,19 @@ The private owner/target guard candidate also prepares the unique N1 piece
 graph's immutable identity maps once. Consumer streams join their initialization
 event; repeated host fills/uploads are removed. Ordinary multi-lane maps keep
 their existing synchronization and upload behavior. This exact representation
-change retains the guard profile epoch. Integrated GPU and matched model
-quality/performance checks remain pending; standalone component evidence does
-not establish combined throughput gains.
+change retains the guard profile epoch. The combined runtime at `49db616b`
+(wheel `84a8618a`) passed 70 GPU controls, including adversarial guard cases and
+the actual TP8 state/commit/prefix oracle. One private 10-second decode screen
+on eight V100-SXM2-32GB GPUs, source image `96f69617`, pinned SC117 IQ3_S target
+and Q8 MTP, reserved native 262144-token windows, Q8 K/V and ceiling 24 measured
+14.0 tokens/s at one request and 10.3/11.7/13.3/13.6 aggregate at 2/4/8/16.
+The earlier owner-piece runtime measured 10.8/8.0/9.3/9.8/11.4 respectively.
+At 24 requests only 22 reached decode within the 30-second readiness cap, so
+no 24-request rate was measured. All six completed quality answers matched the
+baseline, including its two failures (4/6 passed). The complete raw packet has
+SHA256 `740f51532bc34757e3bb8e9d6024e5e6e74ae2cbb2648913abe3e06f012fcc0b`.
+These are first-screen observations; repeatability, broad quality, full-active
+near-full-history capacity and release performance remain unqualified.
 
 The private `source-owner-target-guard-trial` composes existing owner/target piece
 graphs with exact native finite-value guards in unique-history preparation.
@@ -14,8 +24,8 @@ Existing q/iq and disjoint pre-gate scratch slices own sanitized outputs; raw
 projection gate columns remain unchanged. Invalid padded values are sanitized
 without poisoning live rows, and original status bits/first-layer checks remain.
 Kernel residency precedes admission; no device payload or context change is
-introduced. SM70 adversarial/TP8 numerical and model/six-concurrency quality
-and performance gates remain pending for this candidate.
+introduced. The combined numerical controls above passed; model quality and
+six-concurrency performance qualification remain open.
 
 The finite diagnostic funds 256 KiB per follower report, 512 KiB for the leader
 and 64 KiB for supervision (2,424,832 bytes total). This preserves complete
