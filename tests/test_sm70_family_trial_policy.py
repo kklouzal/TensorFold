@@ -4,13 +4,16 @@ from copy import deepcopy
 from types import SimpleNamespace as NS
 
 import pytest
-import torch
 
-from test_sm70_execution_policy import policy  # noqa: F401 - shared guarded-policy fixture
-from tensorfold.cuda.sm70 import execution_policy, family_native, software_binding
-from tensorfold.engine.exact_sampling import Sampling
-from tensorfold.families.qwen4_exp.cuda import prefix_policy
-from tensorfold.families.qwen4_exp.kv_formats import get_pair
+torch = pytest.importorskip("torch")
+
+from . import test_sm70_execution_policy as guarded_policy  # noqa: E402
+from tensorfold.cuda.sm70 import execution_policy, family_native, software_binding  # noqa: E402
+from tensorfold.engine.exact_sampling import Sampling  # noqa: E402
+from tensorfold.families.qwen4_exp.cuda import prefix_policy  # noqa: E402
+from tensorfold.families.qwen4_exp.kv_formats import get_pair  # noqa: E402
+
+policy = guarded_policy.policy
 
 
 @pytest.fixture

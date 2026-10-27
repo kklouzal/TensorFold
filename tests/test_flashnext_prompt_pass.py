@@ -6,7 +6,11 @@ model, CUDA object or decoder buffers. No source rewriting or private fixtures.
 from types import SimpleNamespace
 import unittest
 
-from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder
+import pytest
+
+pytest.importorskip("torch")
+
+from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder  # noqa: E402
 
 
 def make(*, provider="sm70", profile="optimized", lengths=(8, 10, 12), rows=64):

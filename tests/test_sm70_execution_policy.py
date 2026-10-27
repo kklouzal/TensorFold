@@ -1,7 +1,8 @@
 """The launch profile selects admitted existing operators before model ownership."""
 from types import SimpleNamespace as NS
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
 
 
 @pytest.fixture

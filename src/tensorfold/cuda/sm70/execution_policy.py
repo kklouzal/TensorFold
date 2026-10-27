@@ -8,6 +8,9 @@ import re
 
 PROFILE_ENV = "TENSORFOLD_SM70_PROFILE"
 FAMILY_TRIAL = "source-family-trial"
+# The existing engine owns this process-wide policy at quiescent startup or
+# profile preparation. A successful configure replaces it before weight and
+# request publication; serving never mutates these selectors or their record.
 _SELECTED = "reference"
 _FAMILY_SOFTWARE = None
 _FAMILY_RUNTIME = {"torch": "2.14.1+tfcu129sm70",

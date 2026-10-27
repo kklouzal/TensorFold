@@ -43,6 +43,16 @@ The historical cu126 wheel image is reference evidence and does not qualify
 the selected combined dependency stack.
 Its [process-issued software binding](docs/sm70-software-binding.md) verifies
 sealed source-stack inputs without granting compiler/device/model qualification.
+The explicit `TENSORFOLD_SM70_PROFILE=source-family-trial` selects a qualification
+candidate for the exact source-built Torch `04cf2557`/CUDA 12.9.2/NCCL 2.32.3
+SM70 stack and FP16/FP32-state TP8 Flash Next geometry. It prepares fused family
+operations before existing resource admission, retains reference attention,
+routing, expert and concatenation selections, and grants no graph or device-greedy
+readiness. Serial and drafted prefixes stay cold; independent prompts retain
+standalone bulk reduction geometry. The default remains `reference`, and the
+historical `optimized` profile keeps its cu126 qualification gate. Component
+controls motivate this trial; its current-stack SC117 full-checkpoint numerical,
+quality, capacity and matched performance gates remain pending.
 Its combined source/media authority also checks the protected CPU processor and
 decoder closure; a source-only record cannot satisfy the combined verifier.
 The additive [CPU media source image](deploy/v100/media-foundation.md) supplies
