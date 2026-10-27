@@ -13,10 +13,40 @@ import pytest
 torch = pytest.importorskip("torch")
 
 
+def _weights(rank, device, comm):
+    cfg = NS(hidden=512, streams=4, conv_kernel=4, conv_dim=1024, nk=2, nv=4, dk=128, dv=128,
+             kv_heads=1, head_dim=256, index_dim=128, index_ratio=4, ple_kernel=4, ngram_size=3,
+             ple_layers=[], eos=(0,), heads=1, index_heads=2, index_budget=8, eps=1e-6,
+             mrope_section=(1, 1, 1), rope_attention_factor=1.0)
+    return NS(cfg=cfg, device=device, layers=[NS(index=i, linear=False) for i in range(12)], mtp=None,
+              positions=None, comm=comm, inv_freq=torch.tensor([1.0], device=device),
+              meta={"world": 8, "rank": rank, "full": NS(kv_heads=2), "execution_dtype": "float16",
+                    "execution_provider": "sm70", "history_layout": "unique", "attention_degree": 1})
+
+
+
+def _prepare_zero_indexer_rows(state, weights, start, count, ordinals):
+    from tensorfold.families.qwen4_exp.cuda.compact_indexer import Staging, resolve_indexer_coordinates
+
+    stage = Staging(count, state.layers, weights.device, mtp=False)
+    stage.begin(mtp=False)
+    raw = torch.zeros((count, weights.cfg.index_dim), dtype=torch.float16, device=weights.device)
+    coordinates = resolve_indexer_coordinates(state, start, count)
+    scale = torch.ones(weights.cfg.index_dim, device=weights.device)
+    for ordinal in ordinals:
+        if state.compact_indexer.entries[ordinal] is not None:
+            entry = state.compact_indexer.append(ordinal, start, raw, coordinates, stage, 0, count,
+                mtp=False, expected=(state.slot_generation, state.history_generation))
+            entry.pool(state.pooled[ordinal], scale, weights.inv_freq, weights.cfg.eps,
+                       weights.cfg.mrope_section, weights.cfg.rope_attention_factor)
+
+
+
 def _worker(rank, port, format_name):
     from tensorfold.cuda.comm import NCCL
     from tensorfold.cuda.sm70 import family_ops as ops
     from tensorfold.families.qwen4_exp.cuda.attention import AttnScratch
+    from tensorfold.families.qwen4_exp.cuda.compact_indexer import Staging
     from tensorfold.families.qwen4_exp.cuda.history_owner import OwnerBuffers, _encode, attention_layer
     from tensorfold.families.qwen4_exp.cuda.kvcache import KVCache
     from tensorfold.families.qwen4_exp.cuda.state import State
@@ -28,14 +58,7 @@ def _worker(rank, port, format_name):
     try:
         owner.open(rank, 8, "127.0.0.1", port, timeout_s=90, key="tf_unique_history_uid")
         device = torch.device("cuda", rank)
-        cfg = NS(hidden=512, streams=4, conv_kernel=4, conv_dim=1024, nk=2, nv=4, dk=128, dv=128,
-                 kv_heads=1, head_dim=256, index_dim=128, index_ratio=4, ple_kernel=4, ngram_size=3,
-                 ple_layers=[], eos=(0,), heads=1, index_heads=2, index_budget=8, eps=1e-6,
-                 mrope_section=(1, 1, 1), rope_attention_factor=1.0)
-        w = NS(cfg=cfg, device=device, layers=[NS(index=i, linear=False) for i in range(12)], mtp=None,
-               comm=owner, inv_freq=torch.tensor([1.0], device=device),
-               meta={"world": 8, "rank": rank, "full": NS(kv_heads=2), "execution_dtype": "float16",
-                     "execution_provider": "sm70", "history_layout": "unique", "attention_degree": 1})
+        w = _weights(rank, device, owner)
         state = State(w, 257, 3, format_name)
         state.kv_begin()
         pair = get_pair(format_name)
@@ -46,6 +69,7 @@ def _worker(rank, port, format_name):
         for cache in state.kc:
             assert cache._empty_physical == (cache.reserved_rows == 0)
             cache.append(0, codes[:129], values[:129], scales[:129], value_scales[:129])
+        _prepare_zero_indexer_rows(state, w, 0, 129, range(len(state.kc)))
         state.set_pos(129)
         scratch = AttnScratch(3, 1, 256, 257, device, budget=8, ratio=4, dtype=torch.float16)
         projection = torch.zeros((3, 4 * 256 + 3 * 128), dtype=torch.float16, device=device)
@@ -53,7 +77,11 @@ def _worker(rank, port, format_name):
         buffers = NS(pa=projection, q=torch.empty((3, 1, 256), dtype=torch.float16, device=device),
                      iq=torch.empty((3, 2, 128), dtype=torch.float16, device=device),
                      attn_o=torch.empty((3, 1, 256), dtype=torch.float16, device=device),
-                     attn=scratch, prefill=False)
+                     attn=scratch, prefill=False, input_preparation_context=None,
+                     target_indexer_coordinates=None, target_indexer_frame=None,
+                     target_indexer_position=None, target_indexer_frame_id=0)
+        buffers.compact_indexer_stage = Staging(3, state.layers, device, mtp=False)
+        buffers.target_indexer_coordinate_storage = buffers.compact_indexer_stage.coordinates
         buffers.owner_kernel_family, buffers.owner_graph_family, buffers.owner_graphs = "torch-reference", "uncaptured", None
         buffers.history_owner = OwnerBuffers(w, 3, scratch)
         layer = NS(index=0, attn=NS(q_scale=torch.ones(256, device=device), k_scale=torch.ones(256, device=device),
@@ -73,6 +101,7 @@ def _worker(rank, port, format_name):
                                  k_bits=pair.key.bits, k_codec=pair.key.codec,
                                  v_bits=pair.value.bits, v_codec=pair.value.codec)
         assert torch.equal(actual, expected)
+        _prepare_zero_indexer_rows(state, w, 129, 3, range(1, len(state.kc)))
         state.set_pos(132)
         state.begin_history_migration(4)
         for _ in range(12):
@@ -116,6 +145,7 @@ def _worker(rank, port, format_name):
                                  k_bits=pair.key.bits, k_codec=pair.key.codec,
                                  v_bits=pair.value.bits, v_codec=pair.value.codec)
         assert torch.equal(actual, expected)
+        _prepare_zero_indexer_rows(state, w, 132, 3, range(1, len(state.kc)))
         state.set_pos(135)
         state.kv_check()
         owner.ready("unique-history-component-complete", every=1, timeout=60)
@@ -124,6 +154,43 @@ def _worker(rank, port, format_name):
         raise
     finally:
         owner.close(abort=failed)
+
+
+@pytest.mark.parametrize("rank", range(8))
+@pytest.mark.parametrize("format_name", ["int8", "rotorquant-planar4-sm70-v1"])
+def test_zero_indexer_fixture_commits_produced_rows_and_coordinates(rank, format_name):
+    from tensorfold.families.qwen4_exp.cuda.compact_indexer import validate_target_indexer_frame
+    from tensorfold.families.qwen4_exp.cuda.state import State
+
+    weights = _weights(rank, "cpu", None)
+    invalid = State(weights, 257, 3, format_name)
+    with pytest.raises(ValueError, match="produced cache span/generation"):
+        invalid.set_pos(129)
+    state = State(weights, 257, 3, format_name)
+    assert weights.positions is None and state.coordinate_profile_identity is None
+    _prepare_zero_indexer_rows(state, weights, 0, 129, range(len(state.kc)))
+    state.set_pos(129)
+    expected = torch.zeros((4, 3), dtype=torch.int64)
+    expected[0].fill_(128)
+    for entry, pooled in zip(state.compact_indexer.entries, state.pooled):
+        if entry is not None:
+            assert entry.n == 129
+            assert torch.equal(entry.coordinates, expected)
+            assert torch.count_nonzero(entry.raw) == torch.count_nonzero(pooled) == 0
+    # Separate layer0 production from the untouched layers, as the real
+    # attention call does; their spans must all survive until one State commit.
+    _prepare_zero_indexer_rows(state, weights, 129, 3, (0,))
+    _prepare_zero_indexer_rows(state, weights, 129, 3, range(1, len(state.kc)))
+    state.set_pos(132)
+    for entry, pooled in zip(state.compact_indexer.entries, state.pooled):
+        if entry is not None:
+            assert entry.n == 132
+            assert torch.count_nonzero(entry.coordinates) == 0
+            assert torch.count_nonzero(entry.raw) == torch.count_nonzero(pooled) == 0
+    buffers = NS(input_preparation_context=None, target_indexer_frame=None, target_indexer_coordinates=None,
+                 target_indexer_position=None, target_indexer_coordinate_storage=None)
+    assert validate_target_indexer_frame(buffers, [(state, 0, 3)]) is None
+    state.kv_check()
 
 
 @pytest.mark.parametrize("format_name", ["int8", "rotorquant-planar4-sm70-v1"])
