@@ -807,6 +807,44 @@ def _responses_cache_wrappers(limit, connections):
             "total_bytes": _total((ordered, entries * 536, 768))}
 
 
+def _streamed_json_encoding_payload(encoded_bytes, layout):
+    """The owned ASCII iterencode/StringIO publisher's working payload.
+
+    The source graph and returned text/bytes owners are charged by the caller.
+    This is the streaming Python encoder, whose recursion authority differs
+    from the C one-shot encoder used by HTTP json.dumps.
+    """
+    import io
+    import types
+
+    _size(encoded_bytes, "streamed JSON output bound")
+    encoder = json.JSONEncoder().iterencode({"key": [0]})
+    frame_header = 0
+    try:
+        for _chunk in encoder:
+            active = encoder
+            while isinstance(active, types.GeneratorType):
+                frame_header = max(frame_header, sys.getsizeof(active) + sys.getsizeof(active.gi_frame))
+                active = active.gi_yieldfrom
+    finally:
+        encoder.close()
+    recursion = sys.getrecursionlimit()
+    iterator_header = max(sys.getsizeof(iter([])), sys.getsizeof(iter(())), sys.getsizeof(iter({}.items())))
+    marker_header = layout["dict_entry"] + layout["integer"]
+    metadata = recursion * (frame_header + iterator_header + sys.getsizeof({}.items()) + marker_header)
+    # Appending ASCII keeps StringIO's UnicodeWriter accumulating; pay old/new
+    # capacity plus one escaped chunk or the returned/recreated writer cut.
+    capacity = encoded_bytes + encoded_bytes // (2 if sys.platform == "win32" else 4) + 1
+    writer = layout["unicode"] + capacity
+    with io.StringIO() as output:
+        stringio_header = sys.getsizeof(output) + 3 * struct.calcsize("I")
+    text = layout["unicode"] + encoded_bytes
+    return {"metadata_bytes": metadata, "writer_old_and_new_bytes": 2 * writer,
+            "stringio_header_bytes": stringio_header, "escaped_chunk_bytes": text,
+            "total_bytes": metadata + stringio_header + 2 * writer + text,
+            "runtime_recursion_limit": recursion, "encoder_frame_header_bytes": frame_header}
+
+
 def continuation_payload_bytes(*, context, vocab_size, presentation, max_body_bytes, copy_enabled,
                                presentation_fixed=0, json_policy=None):
     """Named future owned Python/NumPy payloads for ONE logical CPU owner.
@@ -900,9 +938,6 @@ def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_req
     backing manifests, HTTP trees and the leader InputClaim are not charged
     here. Runtime allocator/RSS remains a separate qualification obligation.
     """
-    import io
-    import types
-
     from tensorfold.cuda.rank_protocol import MAX_MESSAGE_BYTES
 
     for name, value in (("rank count", world), ("context", context),
@@ -999,35 +1034,11 @@ def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_req
         "one_identity_lookup_temporary": identity_integer,
     }
 
-    # All three stdlib encoder generator functions have input-independent frame
-    # layouts. Observe their actual selected CPython frame headers, not an
-    # invented per-recursion multiplier. Its existing recursion limit bounds
-    # simultaneous generators/marker entries; this process setting is recorded.
-    encoder = json.JSONEncoder().iterencode({"key": [0]})
-    frame_header = 0
-    try:
-        for _chunk in encoder:
-            active = encoder
-            while isinstance(active, types.GeneratorType):
-                frame_header = max(frame_header, sys.getsizeof(active) + sys.getsizeof(active.gi_frame))
-                active = active.gi_yieldfrom
-    finally:
-        encoder.close()
-    recursion = sys.getrecursionlimit()
-    iterator_header = max(sys.getsizeof(iter([])), sys.getsizeof(iter(())), sys.getsizeof(iter({}.items())))
-    marker_header = layout["dict_entry"] + layout["integer"]  # id(container) is a new shared marker key.
-    encoder_metadata = recursion * (frame_header + iterator_header + sys.getsizeof({}.items()) + marker_header)
-    # CPython3.12 UnicodeWriter grows by25% on Unix/50% on Windows. ASCII-only
-    # append never realizes StringIO's UCS4 buffer. Keep old/new writer storage
-    # through reallocation plus the current escaped JSON chunk; getvalue's
-    # returned string/recreated writer fits the same lifetime maximum.
-    capacity = frame + frame // (2 if sys.platform == "win32" else 4) + 1
-    writer = layout["unicode"] + capacity
-    with io.StringIO() as output:
-        # Empty CPython3.12 StringIO also allocates its initial three-UCS4
-        # fallback cells, even though append-only encoding stays accumulating.
-        stringio_header = sys.getsizeof(output) + 3 * struct.calcsize("I")
-    encoding = encoder_metadata + stringio_header + 2 * writer + text
+    encoded = _streamed_json_encoding_payload(frame, layout)
+    encoder_metadata = encoded["metadata_bytes"]
+    encoding = encoded["total_bytes"]
+    recursion = encoded["runtime_recursion_limit"]
+    frame_header = encoded["encoder_frame_header_bytes"]
 
     # _state_digest borrows draft/owed/cur payloads; only these pointer
     # containers and len(out) scalar are new. Incremental hashing retains at
