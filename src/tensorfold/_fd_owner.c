@@ -3,6 +3,9 @@
  * finish all I/O before close. Linux/XNU release an ordinary owned descriptor
  * before reporting close errors; a consumed numeric FD is never retried.
  */
+#ifndef _GNU_SOURCE
+#define _GNU_SOURCE 1
+#endif
 #ifndef Py_LIMITED_API
 #define Py_LIMITED_API 0x030B0000
 #endif
@@ -16,6 +19,12 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <pthread.h>
+#if defined(__linux__) && defined(__GLIBC__)
+#if __GLIBC_PREREQ(2, 12)
+#define TENSORFOLD_LINUX_THREAD_QUERY 1
+#endif
+#endif
 #include <string.h>
 #include <unistd.h>
 #ifdef __linux__
@@ -284,6 +293,83 @@ static PyType_Spec owned_spec = {
     Py_TPFLAGS_DEFAULT | Py_TPFLAGS_IMMUTABLETYPE, owned_slots
 };
 
+/* Query typed pthread attributes; no process-wide stack setting is changed.
+ * The planned layout mirrors CPython's pthread_attr_init + optional Python
+ * stack-size override. Current-thread verification is Linux/glibc only.
+ */
+static PyObject *
+thread_stack_layout(PyObject *module, PyObject *argument)
+{
+    pthread_attr_t attributes;
+    size_t requested, stack = 0, guard = 0;
+    int status, query, cleanup;
+    (void)module;
+    if (!PyLong_Check(argument) || PyBool_Check(argument)) {
+        PyErr_SetString(PyExc_TypeError, "thread stack size requires integer bytes");
+        return NULL;
+    }
+    requested = PyLong_AsSize_t(argument);
+    if (requested == (size_t)-1 && PyErr_Occurred()) {
+        return NULL;
+    }
+    status = pthread_attr_init(&attributes);
+    if (status != 0) {
+        PyErr_Format(PyExc_OSError, "pthread_attr_init failed: %d", status);
+        return NULL;
+    }
+    query = requested ? pthread_attr_setstacksize(&attributes, requested) : 0;
+    if (query == 0) {
+        query = pthread_attr_getstacksize(&attributes, &stack);
+    }
+    if (query == 0) {
+        query = pthread_attr_getguardsize(&attributes, &guard);
+    }
+    cleanup = pthread_attr_destroy(&attributes);
+    if (query != 0 || cleanup != 0) {
+        PyErr_Format(PyExc_OSError, "pthread stack attribute query failed: %d; destroy: %d", query, cleanup);
+        return NULL;
+    }
+    return Py_BuildValue("(KK)", (unsigned long long)stack, (unsigned long long)guard);
+}
+
+static PyObject *
+current_thread_stack_layout(PyObject *module, PyObject *unused)
+{
+    (void)module;
+    (void)unused;
+#ifdef TENSORFOLD_LINUX_THREAD_QUERY
+    pthread_attr_t attributes;
+    size_t stack = 0, guard = 0;
+    int status = pthread_getattr_np(pthread_self(), &attributes);
+    int query, cleanup;
+    if (status != 0) {
+        PyErr_Format(PyExc_OSError, "pthread_getattr_np failed: %d", status);
+        return NULL;
+    }
+    query = pthread_attr_getstacksize(&attributes, &stack);
+    if (query == 0) {
+        query = pthread_attr_getguardsize(&attributes, &guard);
+    }
+    cleanup = pthread_attr_destroy(&attributes);
+    if (query != 0 || cleanup != 0) {
+        PyErr_Format(PyExc_OSError, "current pthread stack query failed: %d; destroy: %d", query, cleanup);
+        return NULL;
+    }
+    return Py_BuildValue("(KK)", (unsigned long long)stack, (unsigned long long)guard);
+#else
+    PyErr_SetString(PyExc_NotImplementedError, "current thread stack query requires Linux/glibc");
+    return NULL;
+#endif
+}
+
+static PyMethodDef module_methods[] = {
+    {"_thread_stack_layout", thread_stack_layout, METH_O,
+     "Read planned pthread stack and guard bytes for an explicit Python stack-size setting."},
+    {"_current_thread_stack_layout", current_thread_stack_layout, METH_NOARGS,
+     "Read this Linux/glibc thread's actual stack and guard bytes."},
+    {NULL, NULL, 0, NULL}
+};
+
 static int
 module_exec(PyObject *module)
 {
@@ -312,7 +398,7 @@ static PyModuleDef_Slot module_slots[] = {
 static struct PyModuleDef module_definition = {
     PyModuleDef_HEAD_INIT, "_fd_owner",
     "Native consumed-state descriptor ownership for declared Linux/macOS CPython runtimes.",
-    0, NULL, module_slots, NULL, NULL, NULL
+    0, module_methods, module_slots, NULL, NULL, NULL
 };
 PyMODINIT_FUNC
 PyInit__fd_owner(void)

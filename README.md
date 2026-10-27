@@ -29,6 +29,18 @@ without poisoning live rows, and original status bits/first-layer checks remain.
 Kernel residency precedes admission; no device payload or context change is
 introduced. The combined numerical controls above passed; model quality and
 six-concurrency performance qualification remain open.
+The private Linux/glibc CPython3.12 owner-MTP diagnostic can explicitly enable
+`TENSORFOLD_STARTUP_CONTENT_OVERLAP=1` to hash immutable artifacts on one
+startup-owned rank0 worker after complete memory admission and before weight
+loading. It funds64MiB of stack, the observed pthread guard and8MiB of hash/
+metadata working space globally. Callers must keep Python/pthread thread-default
+configuration fixed during construction. The worker is joined before manifest
+publication; current-process content authority is reused only after unchanged
+file checks, and newly loaded native/source/library files are still hashed.
+Rollback requests cancellation between bounded reads and joins the worker; a
+filesystem read already blocked in the OS retains its ordinary I/O completion
+contract. Unset retains serial hashing. No persistent/stat-only content cache or
+startup performance qualification is granted; actual V100 timing remains pending.
 
 The finite diagnostic funds 256 KiB per follower report, 512 KiB for the leader
 and 64 KiB for supervision (2,424,832 bytes total). This preserves complete

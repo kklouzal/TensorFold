@@ -19,7 +19,7 @@ def engine_type():
     tree = ast.parse(SOURCE.read_text())
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "FlashNextEngine")
     keep = {"close", "_close_resources", "_begin_request", "_prune_requests", "_end_request", "_retire_request", "generate", "follow",
-            "_limit", "context_window", "_resume", "supports_logprobs", "_send_shutdown"}
+            "_limit", "context_window", "_resume", "supports_logprobs", "_send_shutdown", "_stop_startup_content"}
     body = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in keep]
     unit = ast.Module(body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0),
                            ast.ClassDef(name="Engine", bases=[], keywords=[], body=body, decorator_list=[])],
