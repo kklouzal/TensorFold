@@ -1563,3 +1563,9 @@ artifact and selected Python runtime; valid FIFO child metadata has an enforced
 versioned schema. Wheel `f17b5d8c` passed 182 focused normal-installed resource and
 FIFO checks. Actual target admission/output, the complete HTTP envelope, model
 quality, capacity and performance remain separate pending qualification gates.
+
+Adaptive startup drains the synthetic warmup request through every bounded
+prefill pass and its decode before publishing FIFO admission. Its temporary
+prompt/order owners retire before that policy transition; warmup errors stop
+startup instead of publishing an unwarmed slot. Actual model output and
+performance qualification remain pending.
