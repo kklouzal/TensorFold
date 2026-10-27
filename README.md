@@ -79,6 +79,11 @@ Its distinct State/prefix epoch permits the same guarded INT8 greedy text reuse.
 The operators passed 82 actual-checkpoint V100 component controls, including TP8
 offsets and projection layouts. Full-model integration, capacity, output quality
 and performance remain unqualified; the default stays `reference`.
+The TP readback candidate combines validated KV status and already-gathered
+sampling packets in one bounded host transfer. It retains exact candidate bits
+and owns its CPU result separately from the reusable pinned slab; status-only
+paths and sampler fallbacks remain available. Device and throughput qualification
+of this transport change remain pending.
 Its combined source/media authority also checks the protected CPU processor and
 decoder closure; a source-only record cannot satisfy the combined verifier.
 The additive [CPU media source image](deploy/v100/media-foundation.md) supplies

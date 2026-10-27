@@ -152,7 +152,7 @@ class MultiDecoder:
         if w.comm is not None and w.meta.get("execution_provider") == "sm70":
             from .kv_status import KVStatusCohort
 
-            self.kv_cohort = KVStatusCohort(slots, w.comm, w.device)
+            self.kv_cohort = KVStatusCohort(slots, w.comm, w.device, candidate_rows=rows)
         # every step's tables at fixed addresses and its kernels at a fixed geometry, so captured forwards replay
         self.round_tables = gdn_multi.RoundTables(w, self.gdn, slots, depth + 1)
         self.step_tables = attn_multi.StepTables(w, slots, depth + 1, mtp=False)
@@ -2082,10 +2082,15 @@ class MultiDecoder:
             raise
         finally:
             self.buf.gdn_tables = self.buf.attn_step = None
+        host_packet = None
         if self.w.comm is not None:
             # Delayed KVWords checks are local. Every TP owner must learn a
             # failed peer's status before any rank enters the sampler gather.
-            _kv_check(segs, comm=self.w.comm, workspace=getattr(self, "kv_cohort", None))
+            if not pieces and not grammars and dflash is None:
+                host_packet = self._candidate_readback(
+                    segs, self.buf.cand_all, logits.shape[0], [s.sampling for s in live], self._sample_plan)
+            else:
+                _kv_check(segs, comm=self.w.comm, workspace=getattr(self, "kv_cohort", None))
         lasts = self._absorb(pieces, psegs, cuts) if pieces else None
         starts = [a0 for _, a0, _ in segs] + [segs[-1][2]]
         positions = [[st.pos + 1 + r for r in range(a1 - a0)] for st, a0, a1 in segs]
@@ -2133,11 +2138,12 @@ class MultiDecoder:
                     and all(sampling == samplings[0] for sampling in samplings) and _gathered_fits(samplings[0])):
                 chosen = choose_gathered(self.w, self.buf.cand_all, logits.shape[0],
                                          [position for group in positions for position in group], samplings[0],
-                                         logits=logits, plan=self._sample_plan)
+                                         logits=logits, plan=self._sample_plan, host_packet=host_packet)
                 sampled = [chosen[a0:a1] for a0, a1 in zip(starts, starts[1:])]
             else:
                 sampled = [tp_sample_rows(self.w, logits[a0:a1], pos, sampling, plan=self._sample_plan)
                            for a0, a1, pos, sampling in zip(starts, starts[1:], positions, samplings)]
+        host_packet = None  # Retire the owned target copy before any proposal readback can allocate its copy.
         if dflash is None:
             paths = [accept(tokens, list(range(-1, len(tokens) - 1)), rows, s.count - len(s.out), self._ends(s))
                      for s, (_, tokens), rows in zip(live, windows, sampled)]
@@ -2343,7 +2349,14 @@ class MultiDecoder:
         context = getattr(self.mbuf, "input_preparation_context", None)
         segs = prepare_refresh() if context is None else context.prepare("mtp-refresh-window", prepare_refresh)
         proposing = any(room[s.sid] > 0 for s, _, _ in todo)
-        logits = self._mtp(segs) if proposing else self._mtp(segs, logits=False)
+        host_packet = None
+        combine = (proposing and getattr(self, "kv_cohort", None) is not None
+                   and all(room[s.sid] > 0 for s, _, _ in todo)
+                   and not any(new and s.sid in new and getattr(s, "copies", None) is not None for s, _, _ in todo))
+        if combine:
+            logits, host_packet = self._mtp(segs, candidate_policies=[s.sampling for s, _, _ in todo])
+        else:
+            logits = self._mtp(segs) if proposing else self._mtp(segs, logits=False)
         if self.controller is not None:
             self.controller.work_observations.mtp(
                 segs, role="refresh", zero_proposal_rows=sum(len(keep) for stream, _, keep in todo
@@ -2383,7 +2396,9 @@ class MultiDecoder:
                 words.settle()
                 return
         for j in range(self._proposal_limit()):
-            picks = self._picks(logits, [s.st.pos + 1 + j for s, _ in active], [s.sampling for s, _ in active], words)
+            picks = self._picks(logits, [s.st.pos + 1 + j for s, _ in active], [s.sampling for s, _ in active],
+                                words, host_packet=host_packet)
+            host_packet = None
             nxt = []
             for (s, row), (d, p) in zip(active, picks):
                 low = self.confidence > 0 and p < self.confidence
@@ -2401,7 +2416,10 @@ class MultiDecoder:
                 return mtp_stage(self.mbuf, windows)
 
             segs = prepare_proposal() if context is None else context.prepare("mtp-proposal-window", prepare_proposal)
-            logits = self._mtp(segs)
+            if getattr(self, "kv_cohort", None) is not None:
+                logits, host_packet = self._mtp(segs, candidate_policies=[s.sampling for s, _, _ in nxt])
+            else:
+                logits = self._mtp(segs)
             if self.controller is not None:
                 self.controller.work_observations.mtp(segs, role="proposal")
 
@@ -2413,7 +2431,33 @@ class MultiDecoder:
             words = KVWords(segs, self.kv_host, chained)  # the next pick's readback checks them (a step has one)
             active = [(s, a0) for (s, _, _), (_, a0, _) in zip(nxt, segs)]
 
-    def _mtp(self, segs: list, *, logits: bool = True, next_inputs: torch.Tensor | None = None) -> torch.Tensor | None:
+    def _candidate_readback(self, segs, packet, rows, samplings, plan):
+        """Preserve the immediate TP status boundary; combine only the existing fast sampler domain."""
+        cohort = getattr(self, "kv_cohort", None)
+        try:
+            combined = (cohort is not None and 0 < rows <= cohort.candidate_rows
+                        and self.w.meta.get("execution_provider") == "sm70"
+                        and samplings and all(sampling == samplings[0] for sampling in samplings)
+                        and _gathered_fits(samplings[0]) and (plan is None or plan.graph_ids_safe))
+            if combined:
+                for sampling in samplings:
+                    validate_policy((), sampling)  # Producing positions/errors stay in the sampler.
+        except (AttributeError, TypeError, ValueError, OverflowError):
+            # An optional transport decision must not replace the sampler's
+            # original producing validation or its after-status publication.
+            combined = False
+        except BaseException:
+            _kv_check(segs, comm=self.w.comm, workspace=cohort)
+            raise
+        if combined:
+            states = [st for st, _begin, _end in segs if st.kv_status is not None]
+            if states:
+                return cohort.read_candidates(states, packet, rows, comm=self.w.comm)
+        _kv_check(segs, comm=self.w.comm, workspace=cohort)
+        return None
+
+    def _mtp(self, segs: list, *, logits: bool = True, next_inputs: torch.Tensor | None = None,
+             candidate_policies=None):
         """An MTP step over every drafting stream, its attention one launch a kernel for all of them."""
 
         self.mbuf.rotor_lookup = False
@@ -2429,9 +2473,15 @@ class MultiDecoder:
             if out is None:
                 out = mtp_compute(self.w, segs, self.mbuf, check=False, logits=logits,
                                   **({"next_inputs": next_inputs} if next_inputs is not None else {}))
+            host_packet = None
             if self.w.comm is not None:
-                _kv_check(segs, comm=self.w.comm, workspace=getattr(self, "kv_cohort", None))
-            return out
+                if (candidate_policies is not None and out is not None
+                        and out.data_ptr() == self.mbuf.logits.data_ptr()):
+                    host_packet = self._candidate_readback(
+                        segs, self.mbuf.cand_all, out.shape[0], candidate_policies, self._draft_plan)
+                else:
+                    _kv_check(segs, comm=self.w.comm, workspace=getattr(self, "kv_cohort", None))
+            return (out, host_packet) if candidate_policies is not None else out
         except BaseException as primary:
             if self.controller is not None:
                 self.controller.work_observations.incomplete(primary)
@@ -2440,7 +2490,7 @@ class MultiDecoder:
             self.mbuf.attn_step = None
 
     def _picks(self, logits: torch.Tensor, positions: list[int], samplings: list,
-               words: KVWords) -> list[tuple[int, float]]:
+               words: KVWords, *, host_packet=None) -> list[tuple[int, float]]:
         """Batch drafts and original confidence; greedy keeps the first physical FP32 maximum.
 
         Positive keyed policies use global-ID ties. Borrow full rows only to
@@ -2471,7 +2521,7 @@ class MultiDecoder:
                     and all(sampling == samplings[0] for sampling in samplings) and _gathered_fits(samplings[0])):
                 chosen, probabilities = choose_gathered(
                     self.w, self.mbuf.cand_all, len(positions), positions, samplings[0], with_prob=True,
-                    logits=logits, plan=self._draft_plan)
+                    logits=logits, plan=self._draft_plan, host_packet=host_packet)
                 return list(zip(chosen, probabilities))
             picks = []
             for row, (position, sampling) in enumerate(zip(positions, samplings)):

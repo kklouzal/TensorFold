@@ -232,7 +232,8 @@ def test_indexed_state_actual_kv_and_serial_twin_are_budgeted(monkeypatch, alloc
                           ngram_size=3, ple_layers=[], heads=8 // world, index_heads=4,
                           index_budget=2048, low=320, experts=8, top_k=2, moe_width=512 // world,
                           shared_width=512 // world, heads_per_ngram=8, ple_dim=512)
-    weights = SimpleNamespace(cfg=cfg, device="cpu", layers=[SimpleNamespace(index=i, linear=i % 2 == 0) for i in range(4)],
+    weights = SimpleNamespace(cfg=cfg, device="cpu", positions=None,
+                              layers=[SimpleNamespace(index=i, linear=i % 2 == 0) for i in range(4)],
                               mtp=SimpleNamespace() if mtp else None, meta={"world": world}, head=SimpleNamespace(n=1024 // world))
     slots = 65536
     for child in (mod.attn_mod, mod.moe_mod):
