@@ -420,3 +420,38 @@ def test_v2_observation_refuses_wrong_protocol_cap_before_any_worker():
     with pytest.raises(ValueError,match="bounds"):
         finite.run_screen_case(None,count=1,maximum_tokens=512,vocab=3,limit=None,
             invoke=None,observe=None,write=None,timeout=1,protocol=finite.FAST_V2)
+
+@pytest.mark.parametrize("count", [8,16])
+def test_profile_concurrency_is_one_instrumented_cohort_without_all6_credit(tmp_path, monkeypatch, count):
+    args=probe.arguments(cli(tmp_path)+["--concurrency-grid","--fast-grid","--tokens","512","--profile-concurrency",str(count)])
+    monkeypatch.setattr(probe,"concurrent_observation_snapshot",lambda:{"test_observations":True})
+    events=[]
+    engine=NS(sm70_profile="source-owner-target-guard-trial")
+    def warmup(*_args,count,result,**_kwargs):
+        events.append(("bringup",count))
+        result.update(stats={},first_committed_token_elapsed_ns=1,token_ids=[1])
+    def case(_pool,*,count,write,**_kwargs):
+        events.append(("screen",count))
+        write({})
+        return {"passed":True}
+    monkeypatch.setattr(probe,"generate_reply",warmup)
+    monkeypatch.setattr(finite,"run_screen_case",case)
+    monkeypatch.setattr(probe,"write_report",lambda *_args,**_kwargs:None)
+    report={"concurrency":{"completed_cases":0}}
+    assert probe.run_fast_grid(engine,object(),args,report,RequestLimit(24),object(),
+        [("sustained",[1],{"rendered":"Notebook"})],finite,3)==0
+    assert events==[("bringup",2),("screen",count)]
+    assert not report["fast_screen"]["all_required_N_attempted"]
+    assert report["fast_screen"]["offered_counts"]==[count]
+    assert report["fast_screen"]["measurement_role"]=="instrumentedONEcohortdiagnostic_notall6comparison"
+
+
+@pytest.mark.parametrize("extra", [
+    ["--profile-concurrency","1"],
+    ["--profile-concurrency","8"],
+    ["--concurrency-grid","--fast-grid","--tokens","512","--profile-concurrency","8","--quality-spotchecks"],
+    ["--concurrency-grid","--fast-grid","--tokens","512","--profile-concurrency","16","--serial-reference"],
+])
+def test_profile_concurrency_refuses_unbounded_or_misleading_combinations(tmp_path,extra):
+    with pytest.raises(SystemExit):
+        probe.arguments(cli(tmp_path)+extra)
