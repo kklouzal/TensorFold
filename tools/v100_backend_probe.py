@@ -125,6 +125,8 @@ def arguments(argv=None):
                         help="private cached FAMILY trial: require cold first MTP and maximal legal prefix on later identical prompts")
     parser.add_argument("--thinking", action="store_true", help="pass enable_thinking=True to the unchanged target template")
     parser.add_argument("--serial-reference", action="store_true", help="also run a separately labeled draft=False reply with MTP loaded")
+    parser.add_argument("--session-ceiling", type=int, choices=(24,),
+                        help="explicit 24-full-window capacity region; default keeps the existing auto solver")
     parser.add_argument("--rank", type=int, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", args.image_identity):
@@ -266,10 +268,12 @@ def prepared_prompt(engine, tokenizer, args):
                     "rendered": rendered, "token_ids": tokens}
 
 
-def check_engine(engine):
+def check_engine(engine, *, session_ceiling=None):
     """Refuse a changed execution profile before host finalization/admission."""
     plan = engine.capacity_plan
     solved, full = plan["session_capacity"], plan["kv_full_windows"]
+    if session_ceiling is not None and (type(session_ceiling) is not int or session_ceiling != 24):
+        raise ValueError("finite session ceiling must be auto or 24")
     if (engine.tp != WORLD or engine.depth != DEPTH or engine.confidence != CONFIDENCE
             or engine.context_window != CONTEXT or engine.indexer_history != "gpu"
             or engine.kv_pair.key_dtype != "int8" or engine.kv_pair.value_dtype != "int8"
@@ -278,11 +282,12 @@ def check_engine(engine):
             or engine.w.meta.get("execution_dtype") != "float16"
             or (engine.w.meta["full"].hidden, engine.w.meta["full"].layers, engine.w.meta["full"].vocab)
                 != (2560, 48, 248320)
-            or solved["context_tokens"] != CONTEXT or solved["configured_ceiling"] is not None
+            or solved["context_tokens"] != CONTEXT or solved["configured_ceiling"] != session_ceiling
+            or session_ceiling is not None and solved["resident_capacity"] != session_ceiling
             or solved["resident_capacity"] < 1
             or solved["full_context_commitments"] != solved["resident_capacity"]
             or not full["materialized"]):
-        raise ValueError("loaded engine differs from native262144/INT8/TP8/auto/Q8-MTP2 profile")
+        raise ValueError("loaded engine differs from native262144/INT8/TP8/selected-capacity/Q8-MTP2 profile")
     if engine.scheduler._request_limit is not None:
         raise ValueError("finite backend host admission must precede logical request publication")
 
@@ -373,7 +378,7 @@ def run_leader(engine, tokenizer, args, report):
     )
     from tensorfold.server.request_limits import RequestLimit
 
-    check_engine(engine)
+    check_engine(engine, session_ceiling=args.session_ceiling)
     if getattr(args, "expect_prefix_reuse", False):
         from tensorfold.families.qwen4_exp.cuda.prefix_policy import state_epoch
 
@@ -472,6 +477,7 @@ def worker(args):
     report = {"schema": "tensorfold.v100-finite-backend-probe-v1", "rank": args.rank,
               "argv": sys.argv, "complete": False, "replies": [],
               "repetitions": args.repetitions,
+              "session_ceiling": args.session_ceiling,
               "process_identity": {"pid": os.getpid(), "parent_pid": os.getppid(),
                                    "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES")},
               "qualification": "finite-backend-diagnostic-only; HTTP/design qualification remains open"}
@@ -486,7 +492,8 @@ def worker(args):
         prompt_precision.set_fp8(prompt_precision.FP8_BY_DEFAULT)
         engine = cuda_engine(model, drafter=str(companion), draft_method="mtp", tp=WORLD, rank=args.rank,
             master="127.0.0.1", master_port=args.master_port, mtp_drafts=DEPTH, mtp_confidence=CONFIDENCE,
-            context=CONTEXT, context_explicit=True, parallel="auto", kv_full_windows="auto",
+            context=CONTEXT, context_explicit=True,
+            parallel="auto" if args.session_ceiling is None else args.session_ceiling, kv_full_windows="auto",
             kv_dtype="int8", indexer_history="gpu", max_waiting_input_bytes=INPUT_CREDIT,
             output_queue_tokens=args.tokens, graphs=args.requested_sm70_profile == PACKED_GRAPH_TRIAL)
         record_execution_profile(engine, report, requested=args.requested_sm70_profile)

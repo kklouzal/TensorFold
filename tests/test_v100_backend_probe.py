@@ -27,6 +27,7 @@ def test_default_arguments_preserve_native_profile_without_override_flags(tmp_pa
     args = probe.arguments(cli(tmp_path))
     assert args.tokens == 128 and args.prompt == probe.DEFAULT_PROMPT and not args.serial_reference
     assert args.repetitions == 1 and args.instrumented_departure_grace_seconds is None
+    assert args.session_ceiling is None
     assert args.devices == [str(index) for index in range(8)]
     assert args.requested_sm70_profile is None and "TENSORFOLD_SM70_PROFILE" not in os.environ
     assert not hasattr(args, "context") and not hasattr(args, "precision") and not hasattr(args, "position_profile_manifest")
@@ -35,7 +36,8 @@ def test_default_arguments_preserve_native_profile_without_override_flags(tmp_pa
 
 
 @pytest.mark.parametrize("extra", [
-    ["--tokens", "0"], ["--tokens", "513"], ["--prompt", ""], ["--prompt", "\U0001f308" * 1025],
+    ["--session-ceiling", "23"], ["--session-ceiling", "25"], ["--session-ceiling", "0"],
+    ["--session-ceiling", "24.5"], ["--tokens", "0"], ["--tokens", "513"], ["--prompt", ""], ["--prompt", "\U0001f308" * 1025],
     ["--gpus", "0,1,2,3,4,5,6,6"], ["--gpus", "0,1,2,3,4,5,6"],
     ["--timeout-seconds", "nan"], ["--timeout-seconds", "inf"], ["--timeout-seconds", "0"],
     ["--master-port", "0"], ["--rank", "8"], ["--base-commit", "dirty"],
@@ -276,7 +278,7 @@ def test_worker_rendering_fault_preserves_primary_and_unconditionally_closes_eng
     read_fd, write_fd = os.pipe()
     monkeypatch.setenv(FAILURE_FD_ENV, str(write_fd))
     args = SimpleNamespace(rank=1, wheel=tmp_path, model=tmp_path, mtp=tmp_path,
-                           master_port=29607, tokens=128, out=tmp_path, requested_sm70_profile=None, repetitions=1)
+                           master_port=29607, tokens=128, out=tmp_path, requested_sm70_profile=None, repetitions=1, session_ceiling=None)
     try:
         with pytest.raises(ValueError) as caught:
             probe.worker(args)
@@ -654,7 +656,7 @@ def test_worker_requests_graphs_only_for_explicit_graph_profile(tmp_path, monkey
     read_fd, write_fd = os.pipe()
     monkeypatch.setenv(FAILURE_FD_ENV, str(write_fd))
     args = SimpleNamespace(rank=1, wheel=tmp_path, model=tmp_path, mtp=tmp_path,
-        master_port=29607, tokens=128, out=tmp_path, requested_sm70_profile=profile, repetitions=1)
+        master_port=29607, tokens=128, out=tmp_path, requested_sm70_profile=profile, repetitions=1, session_ceiling=None)
     try:
         with pytest.raises(ValueError) as failure:
             probe.worker(args)
@@ -761,7 +763,7 @@ def test_resource_diagnostic_failure_preserves_the_constructor_primary_and_clean
     read_fd, write_fd = os.pipe()
     monkeypatch.setenv(FAILURE_FD_ENV, str(write_fd))
     args = SimpleNamespace(rank=1, wheel=tmp_path, model=tmp_path, mtp=tmp_path,
-        master_port=29607, tokens=128, out=tmp_path, requested_sm70_profile=None, repetitions=1)
+        master_port=29607, tokens=128, out=tmp_path, requested_sm70_profile=None, repetitions=1, session_ceiling=None)
     try:
         with pytest.raises(ValueError) as error:
             probe.worker(args)
@@ -796,11 +798,11 @@ def test_private_prefix_adapter_preserves_raw_result_before_check_failure(tmp_pa
 
 
 def test_private_prefix_adapter_refuses_foreign_state_before_host_or_request_publication(monkeypatch):
-    monkeypatch.setattr(probe, "check_engine", lambda engine: None)
+    monkeypatch.setattr(probe, "check_engine", lambda engine, **kwargs: None)
     engine = SimpleNamespace(sm70_profile="source-family-prefix-trial",
                              retention_catalog=SimpleNamespace(states=[SimpleNamespace(kv_identity=())]))
     with pytest.raises(ValueError, match="State owners lack"):
-        probe.run_leader(engine, None, SimpleNamespace(expect_prefix_reuse=True), {})
+        probe.run_leader(engine, None, SimpleNamespace(expect_prefix_reuse=True, session_ceiling=None), {})
 
 
 @pytest.mark.parametrize("write_failure", [False, True])
@@ -895,3 +897,79 @@ def test_instrumented_departure_and_exit_record_map_to_rank_order(tmp_path, monk
     assert record["supervision"]["available"] is True
     assert record["supervision"]["rank_order"] == [1, 2, 3, 4, 5, 6, 7, 0]
     assert record["supervision"]["children"][0]["pid"] == 42
+
+
+@pytest.mark.parametrize("ceiling", [None, 24])
+def test_session_ceiling_parser_reaches_supported_factory_without_changing_native_profile(
+        tmp_path, monkeypatch, ceiling):
+    import json
+    from tensorfold import hub, serve_options
+    from tensorfold.cuda.cohort import FAILURE_FD_ENV
+    import tensorfold.cuda.exl3.format as exl3
+    import tensorfold.families.qwen4_exp.gguf as gguf
+    import tensorfold.families.qwen4_exp.cuda.engine as engine_module
+
+    args = probe.arguments(cli(tmp_path) + ([] if ceiling is None else ["--session-ceiling", "24"]))
+    args.rank = 1
+    args.out.mkdir()  # launch creates the worker result directory before spawning.
+    draft = tmp_path / "draft-config"
+    draft.mkdir()
+    (draft / "config.json").write_text(json.dumps({"architectures": ["StockMTP"]}))
+    primary = RuntimeError("stop at the real factory's Engine boundary")
+    observed = []
+
+    def constructor(directory, **options):
+        observed.append(options)
+        raise primary
+
+    monkeypatch.setattr(probe, "installed_identity", lambda _wheel: {})
+    monkeypatch.setattr(hub, "resolve", lambda *_args, **_kwargs: tmp_path)
+    monkeypatch.setattr(serve_options, "drafter_metadata_source", lambda _source: draft)
+    monkeypatch.setattr(exl3, "is_exl3", lambda _: False)
+    monkeypatch.setattr(gguf, "resolve_gguf", lambda _: Path("target.gguf"))
+    monkeypatch.setattr(gguf, "metadata_config", lambda _: {"num_key_value_heads": 2})
+    monkeypatch.setattr(engine_module, "FlashNextEngine", constructor)
+    read_fd, write_fd = os.pipe()
+    monkeypatch.setenv(FAILURE_FD_ENV, str(write_fd))
+    try:
+        with pytest.raises(RuntimeError) as caught:
+            probe.worker(args)
+        assert caught.value is primary
+    finally:
+        os.close(write_fd)
+        os.close(read_fd)
+    assert len(observed) == 1
+    options = observed[0]
+    assert options["adaptive_sessions"] is True and options["session_ceiling"] == ceiling
+    assert options["streams"] == (1 if ceiling is None else 24)
+    assert (options["max_len"], options["kv_dtype"], options["tp"], options["depth"],
+            options["confidence"]) == (262144, "int8", 8, 2, .7)
+    assert options["mtp_model_dir"] == draft
+
+
+def finite_engine_capacity(*, ceiling=None, resident=26, materialized=True, commitments=None):
+    return SimpleNamespace(capacity_plan={"session_capacity": {"context_tokens": probe.CONTEXT,
+        "configured_ceiling": ceiling, "resident_capacity": resident,
+        "full_context_commitments": resident if commitments is None else commitments},
+        "kv_full_windows": {"materialized": materialized}}, tp=8, depth=2, confidence=.7,
+        context_window=262144, indexer_history="gpu", kv_pair=SimpleNamespace(key_dtype="int8", value_dtype="int8"),
+        w=SimpleNamespace(mtp=object(), meta={"execution_provider": "sm70", "execution_dtype": "float16",
+            "full": SimpleNamespace(hidden=2560, layers=48, vocab=248320)}),
+        scheduler=SimpleNamespace(_request_limit=None), retention_catalog=object())
+
+
+@pytest.mark.parametrize("selected,configured,resident,materialized,commitments,valid", [
+    (None, None, 26, True, 26, True), (24, 24, 24, True, 24, True),
+    (24, None, 26, True, 26, False), (None, 24, 24, True, 24, False),
+    (24, 24, 23, True, 23, False), (24, 24, 25, True, 25, False),
+    (24, 24, 24, False, 24, False), (24, 24, 24, True, 23, False),
+])
+def test_selected_capacity_receipt_requires_materialized_full_window_commitments(
+        selected, configured, resident, materialized, commitments, valid):
+    engine = finite_engine_capacity(ceiling=configured, resident=resident,
+        materialized=materialized, commitments=commitments)
+    if valid:
+        probe.check_engine(engine, session_ceiling=selected)
+    else:
+        with pytest.raises(ValueError, match="selected-capacity"):
+            probe.check_engine(engine, session_ceiling=selected)

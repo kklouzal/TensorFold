@@ -1618,3 +1618,9 @@ graph budget, physical admission and full-window reservations. The finite probe
 requests graphs only for this profile and refuses an eager-only result. Default
 profiles are unchanged. Actual full-model graph quality and 85-token/s
 qualification remain pending.
+
+The private finite probe accepts `--session-ceiling 24` to request the existing
+24-session solver region while retaining native context, KV precision and normal
+graph/host admission. Its default remains automatic capacity. Explicit runs
+require 24 resident full windows; this flag does not qualify graph performance
+or the concurrency grid, which require separate actual comparisons.
