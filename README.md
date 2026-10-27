@@ -39,7 +39,8 @@ introduced. SM70 adversarial/TP8 numerical and model/six-concurrency quality
 and performance gates remain pending for this candidate.
 
 The private Linux/glibc CPython3.12 owner-MTP diagnostic, including the
-`source-owner-target-guard-trial` composition, can explicitly enable
+`source-owner-target-guard-trial` and `source-owner-target-prelude-trial`
+compositions, can explicitly enable
 `TENSORFOLD_STARTUP_CONTENT_OVERLAP=1` to hash immutable artifacts on one
 startup-owned rank0 worker after complete memory admission and before weight
 loading. The finite tool flag `--overlap-content-capture` sets this opt-in only
@@ -58,6 +59,10 @@ contract. Unset retains serial hashing. No persistent/stat-only content cache or
 startup performance qualification is granted; actual V100 timing remains pending.
 The combined startup/guard/map wheel has separate CPU/native/TP8/model gates;
 historical guard/map results above do not qualify the new composition.
+The prelude/startup composition preserves the fixed issued coordinate view,
+MTP and all kernel math from its prelude source. Its planned V100 comparison
+uses24 complete262144-token windows with Q8 K/V, TP8 and the same MTP artifacts;
+actual startup speed and all-six decode/quality behavior require measurement.
 
 The finite diagnostic funds 256 KiB per follower report, 512 KiB for the leader
 and 64 KiB for supervision (2,424,832 bytes total). This preserves complete
