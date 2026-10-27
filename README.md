@@ -1548,3 +1548,9 @@ physical cache storage, including method guard rows. Full-window reservation
 continues to allocate and charge every physical row; guards do not extend
 context or positional validity. Clone, recovery and retention preserve both
 limits.
+
+The default Responses cache checks encoded size before cloning a stored result.
+Oversized results retain the existing eviction order, including the position of
+a replaced ID. Allocation failure during cache publication clears the affected
+cache and reports the failure, so an entry cannot remain available without its
+byte charge. Cyclic stored parent chains fail within the cache's existing bound.

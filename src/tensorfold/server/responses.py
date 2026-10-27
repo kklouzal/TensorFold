@@ -72,20 +72,43 @@ class Store:
 
     def put(self, response: dict[str, Any], added: list[dict[str, Any]], *, principal=None) -> None:
         principal = principal or current_principal() or "local-unauthenticated"
-        entry = _Entry(copy.deepcopy(response), response.get("previous_response_id"),
-                       copy.deepcopy(added + messages([item for item in response["output"]])),
-                       principal)
-        entry.size = len(json.dumps(entry.response)) + len(json.dumps(entry.messages))
+        # The response producer owns these JSON trees until put returns. Count
+        # the same default ASCII JSON representation without joining its wire
+        # strings; a prospective entry must fit before cloning its trees.
+        history = added + messages([item for item in response["output"]])
+        encoder = json.JSONEncoder()
+        size = sum(len(part) for value in (response, history) for part in encoder.iterencode(value))
+        entry = (_Entry(copy.deepcopy(response), response.get("previous_response_id"),
+                        copy.deepcopy(history), principal, size) if size <= self.max_bytes else None)
+        rid = response["id"]
         with self.lock:
-            previous = self.entries.get(response["id"])
+            previous = self.entries.get(rid)
             if previous is not None and previous.principal != principal:
                 raise RuntimeError("response identifier already belongs to another principal")
-            if previous is not None:
-                self.bytes -= previous.size
-            self.entries[response["id"]] = entry
-            self.bytes += entry.size
-            while self.entries and (len(self.entries) > self.limit or self.bytes > self.max_bytes):
-                self.bytes -= self.entries.popitem(last=False)[1].size
+            try:
+                if entry is None:
+                    # An oversized insert evicts everything through its own place.
+                    # Replacing an existing id preserves its OrderedDict position,
+                    # so the later suffix can survive without cloning the entry.
+                    while self.entries:
+                        identifier, removed = self.entries.popitem(last=False)
+                        self.bytes -= removed.size
+                        if identifier == rid:
+                            break
+                else:
+                    size = self.bytes - previous.size if previous is not None else self.bytes
+                    size += entry.size
+                    self.entries[rid] = entry
+                    self.bytes = size
+                while self.entries and (len(self.entries) > self.limit or self.bytes > self.max_bytes):
+                    self.bytes -= self.entries.popitem(last=False)[1].size
+            except MemoryError:
+                # Counter arithmetic and OrderedDict growth/eviction can fail.
+                # Owned JSON snapshots have no destructor callbacks; clear the
+                # optional cache without allocation before exposing that failure.
+                self.entries.clear()
+                self.bytes = 0
+                raise
 
     def get(self, rid: str, *, principal=None) -> dict[str, Any] | None:
         principal = principal or current_principal() or "local-unauthenticated"
@@ -122,6 +145,8 @@ class Store:
                 if entry is None or entry.principal != principal:
                     raise RequestError(f"previous response {at!r} is not stored here (store: false, deleted, "
                                        "or evicted): send the conversation's items instead")
+                if len(chain) >= min(self.limit, len(self.entries)):
+                    raise RuntimeError("stored response parent chain is cyclic or exceeds its cache bound")
                 self.entries.move_to_end(at)
                 chain.append(entry.messages)
                 at = entry.parent
