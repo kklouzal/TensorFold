@@ -1631,3 +1631,10 @@ Worker failures notify the existing cohort supervisor before diagnostic
 rendering and backend cleanup, retaining the primary and any notification or
 cleanup failure. The supervisor retains its bounded fatal-report interval.
 This changes diagnostic storage and failure observability, not model execution.
+
+Finite graph diagnostics record available host graph counters after engine
+startup and again after the request sequence, before cleanup. Their difference
+excludes constructor warmup; captured key counts are reported separately from cache-hit
+activity. Missing owners/counters stay absent rather than implying replay.
+These records add no device queries or timing and do not themselves qualify
+throughput or numerical quality.

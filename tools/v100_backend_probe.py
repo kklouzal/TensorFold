@@ -405,16 +405,49 @@ def run_leader(engine, tokenizer, args, report):
         limit.close()
 
 
+def _owned_attributes(value):
+    """Inspect existing Python fields without invoking descriptors or device work."""
+    try:
+        result = object.__getattribute__(value, "__dict__")
+    except (AttributeError, TypeError):
+        return {}
+    return result if type(result) is dict else {}
+
+
+def graph_execution_snapshot(engine):
+    """Bounded host counters, not a device-completion or timing instrument."""
+    decoder = _owned_attributes(engine).get("multi")
+    owner = _owned_attributes(decoder).get("graphs")
+    if owner is None:
+        return None
+    fields = _owned_attributes(owner)
+    counters = {}
+    names = ("hits", "misses", "lane_declines", "verify_hits", "mtp_hits",
+             "eager_declines", "verify_misses", "mtp_misses")
+    for role, values in (("owner", fields), ("bound", _owned_attributes(fields.get("bound")))):
+        for name in names:
+            value = values.get(name)
+            if type(value) is int and value >= 0:
+                counters[role + "." + name] = value
+    keys = {name: len(fields[name]) for name in ("verify", "mtp") if type(fields.get(name)) is dict}
+    return {"counters": counters, "captured_keys": keys}
+
+
+def graph_execution_delta(before, after):
+    """Differences of available counters from the same owner before cleanup.
+
+    The finite caller never replaces its engine/profile. Missing counters are
+    not treated as zero; captured-key availability is reported separately.
+    """
+    if before is None or after is None:
+        return None
+    return {name: value - before["counters"][name] for name, value in after["counters"].items()
+            if name in before["counters"]}
+
+
 def graph_failure_resources(error):
     """Read bounded existing Python-frame scalars, never query CUDA or tensors."""
     records, trace, count = [], BaseException.__traceback__.__get__(error), 0
-
-    def attributes(value):
-        try:
-            result = object.__getattribute__(value, "__dict__")
-        except (AttributeError, TypeError):
-            return {}
-        return result if type(result) is dict else {}
 
     def scalars(values, names):
         return {name: values[name] for name in names if name in values
@@ -424,7 +457,7 @@ def graph_failure_resources(error):
         frame, count = trace.tb_frame, count + 1
         module, name, values = frame.f_globals.get("__name__"), frame.f_code.co_name, frame.f_locals
         if module == "tensorfold.families.qwen4_exp.cuda.bound_graphs" and name == "_capture":
-            owner = attributes(values.get("owner"))
+            owner = _owned_attributes(values.get("owner"))
             row = {"phase": "bound-capture", **scalars(owner, ("budget", "bytes", "room_bytes", "settled_bytes")),
                    **scalars(values, ("before", "took", "allowed"))}
             if type(values.get("kind")) is str and values["kind"] in ("verify", "mtp"):
@@ -436,16 +469,16 @@ def graph_failure_resources(error):
                 value = owner.get(field)
                 if type(value) in (dict, list):
                     row[output] = len(value)
-            bound = attributes(owner.get("bound"))
+            bound = _owned_attributes(owner.get("bound"))
             buffers = bound.get("buffers")
             if type(buffers) is dict:
-                row["private_buffer_rows"] = {kind: attributes(buffers[kind]).get("rows")
+                row["private_buffer_rows"] = {kind: _owned_attributes(buffers[kind]).get("rows")
                     for kind in ("verify", "mtp") if kind in buffers
-                    and type(attributes(buffers[kind]).get("rows")) is int}
+                    and type(_owned_attributes(buffers[kind]).get("rows")) is int}
             records.append(row)
         elif module == "tensorfold.families.qwen4_exp.cuda.multi" and name == "capture_graphs":
             row = {"phase": "graph-admission", **scalars(values, ("initial_live", "slots", "automatic"))}
-            decoder = attributes(values.get("self"))
+            decoder = _owned_attributes(values.get("self"))
             row.update(scalars(decoder, ("graph_budget", "graph_header_room", "full_windows", "full_resident")))
             future = values.get("future")
             if type(future) is dict:
@@ -453,7 +486,7 @@ def graph_failure_resources(error):
                     "snapshot_bytes", "transient_bytes", "workspace_bytes", "future_bytes"))
             records.append(row)
         elif module == "tensorfold.families.qwen4_exp.cuda.engine" and name == "_initialize":
-            plan = attributes(values.get("self")).get("capacity_plan")
+            plan = _owned_attributes(values.get("self")).get("capacity_plan")
             if type(plan) is dict:
                 records.append({"phase": "model-plan", "scalars": scalars(plan, (
                     "budget_bytes", "total_bytes_estimate", "serving_peak_bytes_estimate", "weight_bytes",
@@ -498,6 +531,9 @@ def worker(args):
             output_queue_tokens=args.tokens, graphs=args.requested_sm70_profile == PACKED_GRAPH_TRIAL)
         record_execution_profile(engine, report, requested=args.requested_sm70_profile)
         report["capacity_plan"] = engine.capacity_plan
+        report["graph_execution"] = {"before_requests": graph_execution_snapshot(engine),
+            "after_requests": None, "delta": None,
+            "scope": "existing host counters after startup and before cleanup; delta excludes constructor warmup, includes every request in the sequence; no device timing"}
         write_report(args.out / f"rank-{args.rank}-ready.json", report, allowance=allowance)
         if args.rank:
             engine.follow()
@@ -505,6 +541,9 @@ def worker(args):
             tokenizer = load_tokenizer(model)
             report["tokenizer_identity"] = tokenizer_identity(tokenizer)
             run_leader(engine, tokenizer, args, report)
+        execution = report["graph_execution"]
+        execution["after_requests"] = graph_execution_snapshot(engine)
+        execution["delta"] = graph_execution_delta(execution["before_requests"], execution["after_requests"])
     except BaseException as error:
         primary = error
         try:

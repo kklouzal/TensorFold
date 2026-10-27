@@ -1121,3 +1121,93 @@ def test_notification_failure_is_secondary_and_does_not_skip_close(tmp_path, mon
     finally:
         os.close(write_fd)
         os.close(read_fd)
+
+
+def test_graph_execution_snapshot_distinguishes_key_availability_from_request_cache_hits():
+    bound = SimpleNamespace(hits=3, misses=2, lane_declines=1, verify_hits=1, mtp_hits=2)
+    owner = SimpleNamespace(bound=bound, verify={1: object(), 2: object()}, mtp={1: object()}, eager_declines=4)
+    engine = SimpleNamespace(multi=SimpleNamespace(graphs=owner))
+    before = probe.graph_execution_snapshot(engine)
+    bound.hits += 17
+    bound.verify_hits += 7
+    bound.mtp_hits += 10
+    bound.misses += 2
+    after = probe.graph_execution_snapshot(engine)
+    assert before["captured_keys"] == after["captured_keys"] == {"verify": 2, "mtp": 1}
+    assert before["counters"]["bound.hits"] == 3 and after["counters"]["bound.hits"] == 20
+    assert probe.graph_execution_delta(before, after) == {
+        "owner.eager_declines": 0, "bound.hits": 17, "bound.misses": 2,
+        "bound.lane_declines": 0, "bound.verify_hits": 7, "bound.mtp_hits": 10}
+    assert probe.graph_execution_snapshot(SimpleNamespace()) is None
+    assert probe.graph_execution_snapshot(SimpleNamespace(multi=SimpleNamespace(graphs=None))) is None
+    assert probe.graph_execution_delta(None, after) is None
+
+
+def test_graph_snapshot_never_calls_device_methods_descriptors_or_unbounded_container_iteration():
+    class Device:
+        def item(self):
+            pytest.fail("device reads are not part of the snapshot")
+    class Owner:
+        @property
+        def hits(self):
+            pytest.fail("descriptor must not execute")
+    owner = Owner()
+    owner.bound = SimpleNamespace(hits=Device(), misses=True, lane_declines=5)
+    owner.verify = {1: Device()}
+    owner.mtp = {1: Device(), 2: Device()}
+    owner.unrelated = {str(n): n for n in range(10000)}
+    snapshot = probe.graph_execution_snapshot(SimpleNamespace(multi=SimpleNamespace(graphs=owner)))
+    assert snapshot == {"counters": {"bound.lane_declines": 5}, "captured_keys": {"verify": 1, "mtp": 2}}
+    # A counter first exposed after the initial snapshot has no invented zero baseline.
+    owner.bound.mtp_hits = 100
+    after = probe.graph_execution_snapshot(SimpleNamespace(multi=SimpleNamespace(graphs=owner)))
+    assert probe.graph_execution_delta(snapshot, after) == {"bound.lane_declines": 0}
+
+
+@pytest.mark.parametrize("rank", [0, 1])
+def test_worker_brackets_all_requests_after_constructor_warmup_and_before_cleanup(tmp_path, monkeypatch, rank):
+    import json
+    from tensorfold import hub, serve_options, token_metadata
+    from tensorfold.cuda.cohort import FAILURE_FD_ENV
+    from tensorfold.families import qwen4_exp
+
+    bound = SimpleNamespace(hits=3, misses=2, lane_declines=1)
+    owner = SimpleNamespace(bound=bound, verify={1: object()}, mtp={1: object()})
+    events = []
+    class Engine:
+        capacity_plan = {}
+        multi = SimpleNamespace(graphs=owner)
+        def __init__(self):
+            # Real engines own multi directly, as their actual constructor does.
+            self.multi = self.__class__.multi
+        def follow(self):
+            events.append("requests")
+            bound.hits += 11
+        def close(self):
+            events.append("close")
+            bound.hits = 0  # Snapshot must precede owner retirement/reset.
+    engine = Engine()
+    monkeypatch.setattr(probe, "installed_identity", lambda _wheel: {})
+    monkeypatch.setattr(probe, "record_execution_profile", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(hub, "resolve", lambda *_args, **_kwargs: tmp_path)
+    monkeypatch.setattr(serve_options, "drafter_metadata_source", lambda _source: tmp_path)
+    monkeypatch.setattr(qwen4_exp, "cuda_engine", lambda *_args, **_kwargs: engine)
+    monkeypatch.setattr(token_metadata, "load_tokenizer", lambda *_args: None)
+    monkeypatch.setattr(token_metadata, "tokenizer_identity", lambda *_args: "test-tokenizer")
+    monkeypatch.setattr(probe, "run_leader", lambda *_args: engine.follow())
+    read_fd, write_fd = os.pipe()
+    monkeypatch.setenv(FAILURE_FD_ENV, str(write_fd))
+    args = SimpleNamespace(rank=rank, wheel=tmp_path, model=tmp_path, mtp=tmp_path, master_port=29607,
+        tokens=128, out=tmp_path, requested_sm70_profile=None, repetitions=1, session_ceiling=24)
+    try:
+        assert probe.worker(args) == 0
+    finally:
+        os.close(write_fd)
+        os.close(read_fd)
+    ready = json.loads((tmp_path / f"rank-{rank}-ready.json").read_text())
+    final = json.loads((tmp_path / f"rank-{rank}-final.json").read_text())
+    assert ready["graph_execution"]["before_requests"]["counters"]["bound.hits"] == 3
+    assert ready["graph_execution"]["after_requests"] is None
+    assert final["graph_execution"]["after_requests"]["counters"]["bound.hits"] == 14
+    assert final["graph_execution"]["delta"] == {"bound.hits": 11, "bound.misses": 0, "bound.lane_declines": 0}
+    assert final["complete"] and events == ["requests", "close"] and bound.hits == 0
