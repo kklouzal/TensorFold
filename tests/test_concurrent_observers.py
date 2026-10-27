@@ -103,3 +103,39 @@ def test_observer_cleanup_failure_keeps_original_operation_primary(monkeypatch, 
     with pytest.raises(ValueError) as caught:
         wrapper(NS(streams={0:NS(done=False)}))
     assert caught.value is primary and primary.__cause__ is secondary
+
+
+def test_diagnostic_argument_allocation_preserves_original_operation_failure(monkeypatch):
+    import sys
+    import inspect
+    from tensorfold.families.qwen4_exp.cuda import multi
+    monkeypatch.setattr(diagnostic,"_owner",None)
+    primary=ValueError("original decode failure")
+    cleanup=RuntimeError("label exit failed")
+    allocation=MemoryError("diagnostic tuple allocation")
+    def operation(_decoder):
+        raise primary
+    monkeypatch.setattr(multi.MultiDecoder,"_round",operation)
+    class Label:
+        def __enter__(self):
+            return self
+        def __exit__(self,*_args):
+            raise cleanup
+    plan=diagnostic.observer_plan(lambda _name:Label())
+    wrapper=next(wrapper for owner,name,_original,wrapper in plan if owner is multi.MultiDecoder and name=="_round")
+    source,first=inspect.getsourcelines(diagnostic.observer_plan)
+    target=first+next(index for index,line in enumerate(source) if "errors = (diagnostic,)" in line)
+    fired=[]
+    def trace(frame,event,_arg):
+        if event=="line" and frame.f_code.co_name=="raise_diagnostic" and frame.f_lineno==target:
+            fired.append(True)
+            raise allocation
+        return trace
+    previous=sys.gettrace()
+    try:
+        sys.settrace(trace)
+        with pytest.raises(ValueError) as caught:
+            wrapper(NS(streams={0:NS(done=False)}))
+    finally:
+        sys.settrace(previous)
+    assert fired==[True] and caught.value is primary and primary.__cause__ is allocation

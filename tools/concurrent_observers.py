@@ -67,6 +67,17 @@ def observer_plan(record_function):
     _owner = state
     bindings = []
 
+    def raise_diagnostic(primary, diagnostic):
+        try:
+            errors = (diagnostic,)
+        except BaseException as allocation:
+            if primary is not None:
+                raise primary from allocation
+            raise diagnostic from allocation
+        from tensorfold.cleanup import raise_failures
+
+        raise_failures(primary, errors)
+
     @contextmanager
     def label(name):
         owner = record_function(name)
@@ -81,18 +92,14 @@ def observer_plan(record_function):
             try:
                 owner.__exit__(None, None, None)
             except BaseException as diagnostic:
-                from tensorfold.cleanup import raise_failures
-
-                raise_failures(primary, (diagnostic,))
+                raise_diagnostic(primary, diagnostic)
 
     def finish(phase, before, primary):
         try:
             state.add(state.calls, phase)
             state.add(state.elapsed_ns, phase, time.perf_counter_ns() - before)
         except BaseException as diagnostic:
-            from tensorfold.cleanup import raise_failures
-
-            raise_failures(primary, (diagnostic,))
+            raise_diagnostic(primary, diagnostic)
 
     def wrapped(original, phase, geometry=None):
         @wraps(original)
