@@ -14,7 +14,7 @@ def policy(monkeypatch, tmp_path):
                        (routing_native,"_NATIVE_LOGITS"),(padded_linears,"_ENABLED"),
                        (dspark_context_graphs,"_ENABLED"),(dspark_proposal_graphs,"_ENABLED"),
                        (gguf_prefill,"WORKSPACE_BUDGET_BYTES"),(gguf_weights.GGUFExperts,"implementation"),
-                       (gguf_weights.GGUFConcat,"implementation")]:
+                       (gguf_weights.GGUFConcat,"implementation"),(gguf_weights.GGUFDense,"implementation")]:
         monkeypatch.setattr(owner,name,getattr(owner,name))
     monkeypatch.setattr(qualification,"runtime_identity",lambda device:dict(qualification.REQUIRED_IDENTITY))
     monkeypatch.setattr(torch.cuda,"current_device",lambda:0)

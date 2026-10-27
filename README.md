@@ -79,6 +79,15 @@ Its distinct State/prefix epoch permits the same guarded INT8 greedy text reuse.
 The operators passed 82 actual-checkpoint V100 component controls, including TP8
 offsets and projection layouts. Full-model integration, capacity, output quality
 and performance remain unqualified; the default stays `reference`.
+The separate private `source-native-dense-trial` adds native staging for existing
+FP16 dense weights to that packed/FAMILY operator set. It retains each original
+fixed-M32 ATen product and output dtype, while generic layouts, aliases and
+autograd use the reference route. A distinct State/prefix/cohort identity keeps
+its INT8 greedy text cache separate. It adds no kernel, graph or private attention
+grant; all existing source and physical admission guards remain. Actual model
+quality and the required 1/2/4/8/16/24 throughput comparisons remain pending;
+no component or dispatch change establishes the strict single-request >85-token/s
+objective.
 Its combined source/media authority also checks the protected CPU processor and
 decoder closure; a source-only record cannot satisfy the combined verifier.
 The additive [CPU media source image](deploy/v100/media-foundation.md) supplies

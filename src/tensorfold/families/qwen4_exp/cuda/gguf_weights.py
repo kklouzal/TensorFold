@@ -141,11 +141,44 @@ class GGUFDense:
     def matmul(self, x, *, out=None, f32=False):
         if self.implementation not in ("reference", "native32", "wmma"):
             raise ValueError("unknown GGUF dense execution implementation")
-        if self.implementation == "native32" and x.shape[0] <= 32:
-            return self.matmul_native32(x, out=out, f32=f32)
+        if self.implementation == "native32" and self._native32_eligible(x, out):
+            if out is None:
+                out = torch.empty((x.shape[0], self.n), dtype=torch.float32 if f32 else torch.float16, device=x.device)
+            version = None if out.is_inference() else out._version
+            result = self.matmul_native32(x, out=out, f32=f32)
+            # The helper's direct ATen out path already records mutation. Its
+            # raw copy kernel needs the same metadata update as reference copy_.
+            if version is not None and out._version == version:
+                torch.autograd.graph.increment_version(out)
+            return result
         if self.implementation == "wmma" and x.shape[0] <= 32 and self.k % 16 == 0 and self.n <= 16384:
             return self.matmul_wmma(x, out=out, f32=f32)
         return self.matmul_reference(x, out=out, f32=f32)
+
+    def _native32_eligible(self, x, out):
+        # Native staging is an inference specialization, not a replacement
+        # for the reference wrapper's generic layouts, validation or autograd.
+        weight = self.weight
+        if (type(x) is not torch.Tensor or type(weight) is not torch.Tensor
+                or x.layout != torch.strided or weight.layout != torch.strided
+                or x.ndim != 2 or x.shape[1] != self.k or not 0 < x.shape[0] <= MATMUL_ROWS
+                or x.dtype != torch.float16 or x.device != weight.device or not x.is_cuda
+                or weight.shape != (self.n, self.k) or not weight.is_contiguous()
+                or not 0 < self.k <= (1 << 31) - 1 or not 0 < self.n <= (1 << 31) - 1
+                or x.stride(0) < 0 or x.stride(1) < 0
+                or x.is_neg() or x.is_conj() or weight.is_neg() or weight.is_conj()
+                or torch.is_grad_enabled() and (x.requires_grad or weight.requires_grad)):
+            return False
+        if out is None:
+            return True
+        return (type(out) is torch.Tensor and out.layout == torch.strided
+                and out.shape == (x.shape[0], self.n) and out.device == x.device
+                and out.dtype in (torch.float16, torch.float32)
+                and out.stride(1) == 1 and out.stride(0) >= self.n
+                and not out.is_neg() and not out.is_conj()
+                and not (torch.is_grad_enabled() and out.requires_grad)
+                and not (out.is_inference() and not torch.is_inference_mode_enabled())
+                and not torch._C._overlaps(out, x) and not torch._C._overlaps(out, weight))
 
     def matmul_native32(self, x, *, out=None, f32=False):
         if out is None:

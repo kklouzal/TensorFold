@@ -2011,11 +2011,15 @@ class FlashNextEngine:
         if getattr(self, "execution_provider", "cuda") == "sm70":
             from tensorfold.cuda.sm70 import family_ops, routing_native
             from . import padded_linears
-            from .gguf_weights import GGUFExperts, GGUFConcat
+            from .gguf_weights import GGUFDense, GGUFExperts, GGUFConcat
             from .dspark_proposal_graphs import _ENABLED as proposal_enabled
             from .dspark_context_graphs import _ENABLED as context_enabled
 
             expert_policy = [GGUFExperts.implementation, GGUFExperts.packed_rows, GGUFConcat.implementation]
+            from .prefix_policy import NATIVE_DENSE_PROFILE
+
+            if getattr(self, "sm70_profile", None) == NATIVE_DENSE_PROFILE:
+                expert_policy.append(GGUFDense.implementation)
             proposal_policy = bool(proposal_enabled)
             context_policy = bool(context_enabled)
             attention_policy = getattr(self, "_sm70_attention_identity", None)

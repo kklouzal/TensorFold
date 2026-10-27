@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 import re
 
+from tensorfold.families.qwen4_exp.cuda.prefix_policy import NATIVE_DENSE_PROFILE as NATIVE_DENSE_TRIAL
+
 PROFILE_ENV = "TENSORFOLD_SM70_PROFILE"
 FAMILY_TRIAL = "source-family-trial"
 FAMILY_PREFIX_TRIAL = "source-family-prefix-trial"
@@ -225,8 +227,9 @@ def configure(text, *, tp, torch, record_graph_inputs=None):
     """Explicit profiles share the existing engine, admission and worker handshake."""
     global _SELECTED, _FAMILY_SOFTWARE
     profile = os.environ.get(PROFILE_ENV, "reference")
-    if profile not in ("reference", "optimized", FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL):
-        raise ValueError(f"{PROFILE_ENV} must be reference, optimized, {FAMILY_TRIAL}, {FAMILY_PREFIX_TRIAL} or {PACKED_TRIAL}")
+    if profile not in ("reference", "optimized", FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL, NATIVE_DENSE_TRIAL):
+        raise ValueError(f"{PROFILE_ENV} must be reference, optimized, {FAMILY_TRIAL}, {FAMILY_PREFIX_TRIAL}, "
+                         f"{PACKED_TRIAL} or {NATIVE_DENSE_TRIAL}")
     if record_graph_inputs is not None and not callable(record_graph_inputs):
         raise ValueError("NCCL graph input journal must be callable")
     graph_policy = graph_inputs() if tp > 1 else None
@@ -248,14 +251,15 @@ def configure(text, *, tp, torch, record_graph_inputs=None):
                       and all(identity.get(key) == value for key, value in REQUIRED_IDENTITY.items()))
         if not compatible:
             raise ValueError("optimized SM70 profile requires the qualified TP8 Flash Next geometry and pinned Volta foundation")
-    family_trial = profile in (FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL)
-    packed_trial = profile == PACKED_TRIAL
+    family_trial = profile in (FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL, NATIVE_DENSE_TRIAL)
+    packed_trial = profile in (PACKED_TRIAL, NATIVE_DENSE_TRIAL)
     family_software = _prepare_family_trial(text, tp, torch, packed=packed_trial) if family_trial else None
     family_ops._NATIVE_FAMILY = enabled or family_trial
     family_ops._NATIVE_ATTENTION = enabled
     routing_native._NATIVE_LOGITS = padded_linears._ENABLED = enabled
     gguf_weights.GGUFExperts.implementation = "packed_exact" if enabled or packed_trial else "reference"
     gguf_weights.GGUFConcat.implementation = "native32" if enabled or packed_trial else "reference"
+    gguf_weights.GGUFDense.implementation = "native32" if profile == NATIVE_DENSE_TRIAL else "reference"
     gguf_prefill.WORKSPACE_BUDGET_BYTES = (1 << 30) if enabled else None
     dspark_proposal_graphs._ENABLED = dspark_context_graphs._ENABLED = enabled
     _FAMILY_SOFTWARE = family_software
@@ -265,7 +269,7 @@ def configure(text, *, tp, torch, record_graph_inputs=None):
 
 def prepare_weights(w):
     """Mark native owners only after the same profile was admitted on every rank."""
-    if _SELECTED in (FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL):
+    if _SELECTED in (FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL, NATIVE_DENSE_TRIAL):
         import torch
 
         _family_runtime(torch)
@@ -283,9 +287,12 @@ def prepare_weights(w):
         _same_family_software(_FAMILY_SOFTWARE, software)
         w.meta["sm70_family_trial"] = {"qualification": "unqualified-candidate", "software": software,
             "attention": "reference", "graphs": "eager",
-            "prefix_reuse": "int8-greedy-text-trial" if _SELECTED in (FAMILY_PREFIX_TRIAL, PACKED_TRIAL) else "cold"}
-        if _SELECTED == PACKED_TRIAL:
+            "prefix_reuse": "int8-greedy-text-trial" if _SELECTED in (
+                FAMILY_PREFIX_TRIAL, PACKED_TRIAL, NATIVE_DENSE_TRIAL) else "cold"}
+        if _SELECTED in (PACKED_TRIAL, NATIVE_DENSE_TRIAL):
             w.meta["sm70_family_trial"].update(experts="packed_exact", concat="native32")
+        if _SELECTED == NATIVE_DENSE_TRIAL:
+            w.meta["sm70_family_trial"].update(dense="native32", dense_math="original-fixed-m32-aten-v1")
     w.meta["sm70_profile"] = _SELECTED
     if _SELECTED == "optimized":
         from .attention_qualification import metadata_prepare
