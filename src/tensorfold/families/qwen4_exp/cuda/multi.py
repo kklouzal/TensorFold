@@ -1544,7 +1544,7 @@ class MultiDecoder:
         meta = self.w.meta
         separate = (meta.get("execution_provider") == "sm70"
                     and meta.get("sm70_profile") in ("optimized", "source-family-trial", "source-family-prefix-trial",
-                                                     "source-packed-trial"))
+                                                     "source-packed-trial", "source-packed-graphs-trial"))
         for s in self._order():
             start = self.fills[s.sid][2]
             n = min(len(s.prompt) - start, room)

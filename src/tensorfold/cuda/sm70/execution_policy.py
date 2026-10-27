@@ -266,12 +266,12 @@ def configure(text, *, tp, torch, record_graph_inputs=None):
     return profile
 
 
-def unique_graph_request(profile, *, method, depth, kv_pair, unique_history, indexer_history, graphs, concurrent):
+def unique_graph_request(profile, *, method, depth, kv_pair, unique_history, indexer_history, graphs, concurrent, vision):
     """Issue the N1 capture contract only from the real pre-load method request."""
     if profile != PACKED_GRAPH_TRIAL:
         return None
     if (method != "mtp" or type(depth) is not int or depth != 2 or unique_history is not True
-            or indexer_history != "gpu" or graphs is not True or concurrent is not True
+            or indexer_history != "gpu" or graphs is not True or concurrent is not True or vision
             or kv_pair.key_dtype != "int8" or kv_pair.value_dtype != "int8"):
         raise ValueError("source-packed-graphs-trial requires concurrent unique GPU histories, INT8 KV, stock MTP depth2 and graphs")
     from tensorfold.families.qwen4_exp.cuda.multi_graphs import UNIQUE_CAPTURE_CONTRACT

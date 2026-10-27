@@ -136,6 +136,7 @@ class FlashNextEngine:
                  max_waiting_input_bytes_per_principal: int | None = None,
                  output_queue_tokens: int | None = None, queue_timeout_s: float | None = None,
                  retention_policy: RetentionPolicy | None = None) -> None:
+        requested_graphs = graphs
         from tensorfold.cuda.chat_template import prepare_chat_template
 
         from ..ram_experts import check_kv_full_windows
@@ -554,11 +555,14 @@ class FlashNextEngine:
             unique_graph_contract = unique_graph_request(requested_profile,
                 method=self.method_geometry.method, depth=self.depth, kv_pair=self.kv_pair,
                 unique_history=history_placement is not None, indexer_history=indexer_history,
-                graphs=graphs, concurrent=concurrent)
+                graphs=requested_graphs, concurrent=concurrent, vision=vision)
             self.sm70_profile = configure(text, tp=tp, torch=torch,
                 record_graph_inputs=lambda record: setattr(self, "_nccl_graph_inputs", record))
             if self.sm70_profile != requested_profile:
                 raise ValueError("SM70 profile changed during its method preparation")
+            if unique_graph_contract is not None:
+                graphs = requested_graphs
+                print("[tensorfold] CUDA graphs on: validated exact N1 unique-history profile", flush=True)
             from tensorfold.cuda.sm70.attention_qualification import runtime_identity
 
             self._sm70_attention_identity = runtime_identity(torch.device("cuda", torch.cuda.current_device()))

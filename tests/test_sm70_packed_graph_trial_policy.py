@@ -22,7 +22,7 @@ allocations = geometry_controls.allocations
 
 def request(module, **changes):
     arguments = dict(method="mtp", depth=2, kv_pair=get_pair("int8"), unique_history=True,
-                     indexer_history="gpu", graphs=True, concurrent=True)
+                     indexer_history="gpu", graphs=True, concurrent=True, vision=False)
     arguments.update(changes)
     return module.unique_graph_request(module.PACKED_GRAPH_TRIAL, **arguments)
 
@@ -47,7 +47,7 @@ def test_only_explicit_issued_source_graph_profile_sets_capture_without_other_gr
 
 @pytest.mark.parametrize("change", [{"depth": 3}, {"depth": 1}, {"depth": True}, {"method": "none"},
     {"method": "dspark"}, {"kv_pair": get_pair("fp16")}, {"kv_pair": get_pair("int8", "int8", "fp16")},
-    {"unique_history": False}, {"indexer_history": "ram"}, {"graphs": False}, {"concurrent": False}])
+    {"unique_history": False}, {"indexer_history": "ram"}, {"graphs": False}, {"concurrent": False}, {"vision": True}])
 def test_wrong_real_method_or_layout_cannot_issue_graph_contract(source, change):
     with pytest.raises(ValueError, match="depth2"):
         request(source.module, **change)
@@ -57,7 +57,7 @@ def test_wrong_real_method_or_layout_cannot_issue_graph_contract(source, change)
                                     "source-family-prefix-trial", "source-packed-trial"])
 def test_existing_profiles_do_not_issue_or_validate_graph_request_fields(source, profile):
     assert source.module.unique_graph_request(profile, method=None, depth=None, kv_pair=None,
-        unique_history=None, indexer_history=None, graphs=None, concurrent=None) is None
+        unique_history=None, indexer_history=None, graphs=None, concurrent=None, vision=None) is None
 
 
 @pytest.mark.parametrize("change", ["no-issuer", "wrong-issuer", "replicated", "no-mtp", "linear-mtp"])
@@ -102,3 +102,66 @@ def test_graph_state_cannot_borrow_old_profile_prefix_before_mutation(monkeypatc
         graph.copy_prefix(packed, 0, 0)
     with pytest.raises(ValueError, match="source/profile"):
         packed.copy_prefix(graph, 0, 0)
+
+
+def engine_graph_stages(source, monkeypatch, profile, *, requested=True, software_valid=True):
+    """Run the actual Engine intent/unique-disable/profile blocks in source order.
+
+    Payload/driver acquisition is outside this CPU ordering oracle. Native
+    source admission still runs through the existing policy fixture.
+    """
+    import ast
+    import inspect
+    import textwrap
+    from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
+    from tensorfold.families.qwen4_exp.cuda.history_placement import HistoryPlacement
+
+    method = ast.parse(textwrap.dedent(inspect.getsource(FlashNextEngine._initialize))).body[0]
+    def assignment(name):
+        return next(node for node in method.body if isinstance(node, ast.Assign)
+            and any(isinstance(target, ast.Name) and target.id == name for target in node.targets))
+    unique = next(node for node in method.body if isinstance(node, ast.If)
+        and "HistoryPlacement.supports" in ast.unparse(node.test))
+    configure = next(node for node in method.body if isinstance(node, ast.If)
+        and isinstance(node.test, ast.Name) and node.test.id == "sm70"
+        and "unique_graph_request" in ast.unparse(node))
+    enabled = next(node for node in method.body if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Tuple) and any(isinstance(value, ast.Attribute)
+            and value.attr == "graphs_enabled" for value in target.elts) for target in node.targets))
+    monkeypatch.setenv(source.module.PROFILE_ENV, profile)
+    monkeypatch.setattr(gguf_ops, "extension", lambda: None)
+    if not software_valid:
+        source.record["recorded_components"]["cuda"] = "unqualified"
+    namespace = {"__name__": FlashNextEngine.__module__,
+        "__package__": FlashNextEngine.__module__.rpartition(".")[0],
+        "self": NS(method_geometry=NS(method="mtp"), depth=2, kv_pair=get_pair("int8")),
+        "torch": family.torch, "graphs": requested, "adaptive_sessions": True, "HistoryPlacement": HistoryPlacement,
+        "tp": 8, "layout_kv_heads": 2, "text": source.text, "sm70": True,
+        "indexer_history": "gpu", "concurrent": True, "vision": False, "streams": 26}
+
+    def execute(nodes):
+        exec(compile(ast.Module(body=nodes, type_ignores=[]), inspect.getfile(FlashNextEngine), "exec"), namespace)
+
+    execute([assignment("requested_graphs"), unique])
+    assert namespace["graphs"] is False  # This real override caused the actual preload refusal.
+    return namespace, lambda: execute([assignment("unique_graph_contract"), configure, enabled])
+
+
+@pytest.mark.parametrize("profile", ["reference", "source-family-prefix-trial", "source-packed-trial",
+                                     prefix_policy.PACKED_GRAPH_PROFILE])
+def test_engine_restores_genuine_graph_intent_only_after_new_profile_admission(source, monkeypatch, profile):
+    namespace, finish = engine_graph_stages(source, monkeypatch, profile)
+    finish()
+    expected = profile == prefix_policy.PACKED_GRAPH_PROFILE
+    assert namespace["graphs"] is expected and namespace["self"].graphs_enabled is expected
+    assert namespace["self"].streams == 26
+    assert namespace["unique_graph_contract"] == (UNIQUE_CAPTURE_CONTRACT if expected else None)
+
+
+@pytest.mark.parametrize("requested,software_valid", [(False, True), (True, False)])
+def test_engine_does_not_restore_unrequested_or_source_refused_graphs(source, monkeypatch, requested, software_valid):
+    namespace, finish = engine_graph_stages(source, monkeypatch, prefix_policy.PACKED_GRAPH_PROFILE,
+                                           requested=requested, software_valid=software_valid)
+    with pytest.raises(ValueError):
+        finish()
+    assert namespace["graphs"] is False and "graphs_enabled" not in vars(namespace["self"])
