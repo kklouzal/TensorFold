@@ -178,8 +178,9 @@ def test_capture_never_starts_after_retirement_or_failed_creation(monkeypatch):
     with pytest.raises(RuntimeError) as caught:
         capture.start()
     assert caught.value is error
-    capture.close()
-    assert capture.closed
+    with pytest.raises(RuntimeError,match="before it is started"):
+        capture.close()
+    assert not capture.closed
 
 
 def test_expected_sha_failure_is_not_replaced_by_a_stat_match(tmp_path):
@@ -194,3 +195,64 @@ def test_expected_sha_failure_is_not_replaced_by_a_stat_match(tmp_path):
     with pytest.raises(ValueError,match="declared SHA256"):
         capture.result()
     capture.close()
+
+
+def test_start_exception_after_native_acceptance_still_joins_owned_work(monkeypatch):
+    accepted=threading.Event()
+    def operation(cancelled):
+        accepted.set()
+        while not cancelled():
+            time.sleep(.001)
+        raise CancelledError("owned cancellation")
+    capture=startup.StartupContentCapture(plan(),operation)
+    actual=capture.thread.start
+    error=RuntimeError("interrupted after native acceptance")
+    def interrupted():
+        actual()
+        raise error
+    monkeypatch.setattr(capture.thread,"start",interrupted)
+    with pytest.raises(RuntimeError) as caught:
+        capture.start()
+    assert caught.value is error and accepted.wait(3)
+    capture.close()
+    assert capture.closed and not capture.thread.is_alive()
+
+
+@pytest.mark.skipif(not hasattr(__import__("signal"), "setitimer"), reason="POSIX signal control")
+def test_real_join_interrupt_cannot_publish_closed_before_actual_operation_cleanup():
+    import signal
+    from tensorfold.cleanup import rollback
+    accepted, release = threading.Event(), threading.Event()
+    def operation(_cancelled):
+        accepted.set()
+        release.wait()
+        return NS(bytes_read=1)
+    capture=startup.StartupContentCapture(plan(),operation)
+    capture.start()
+    assert accepted.wait(3)
+    primary=KeyboardInterrupt("actual join interrupted")
+    current=[primary]
+    def interrupted(_signum,_frame):
+        raise current[0]
+    old=signal.signal(signal.SIGALRM,interrupted)
+    try:
+        signal.setitimer(signal.ITIMER_REAL,.03)
+        with pytest.raises(KeyboardInterrupt) as caught:
+            capture.result()
+        assert caught.value is primary
+        assert not capture.operation_retired.is_set() and capture.finished_ns is None
+        # Reproduce an interrupted cleanup as well: actual rollback must
+        # retain the owner and original primary until the hash operation ends.
+        current[0]=KeyboardInterrupt("actual cleanup interrupted")
+        signal.setitimer(signal.ITIMER_REAL,.03)
+        with pytest.raises(KeyboardInterrupt) as caught:
+            rollback(capture,primary,capture.close)
+        assert caught.value is primary
+        assert any(owner is capture for owner in primary._tensorfold_retained_owners)
+        assert not capture.closed and not capture.operation_retired.is_set()
+    finally:
+        signal.setitimer(signal.ITIMER_REAL,0)
+        signal.signal(signal.SIGALRM,old)
+        release.set()
+        capture.close()
+    assert capture.closed and capture.operation_retired.is_set() and capture.finished_ns is not None
