@@ -58,6 +58,13 @@ SOURCE_FILES = (
     "tensorfold/families/qwen4_exp/cuda/prefix_policy.py",
     "tensorfold/families/qwen4_exp/cuda/state.py",
     "tensorfold/families/qwen4_exp/cuda/multi.py",
+    "tensorfold/families/qwen4_exp/cuda/execution_identity.py",
+    "tensorfold/families/qwen4_exp/cuda/owner_preparation.py",
+    "tensorfold/families/qwen4_exp/cuda/owner_execution.py",
+    "tensorfold/families/qwen4_exp/cuda/owner_graphs.py",
+    "tensorfold/families/qwen4_exp/cuda/history_owner.py",
+    "tensorfold/cuda/sm70/paged_attention.py",
+    "tensorfold/engine/model_identity.py",
 )
 
 
@@ -109,6 +116,8 @@ def arguments(argv=None):
     parser.add_argument("--mtp", type=Path, required=True, help="existing pinned SC117 Q8 MTP GGUF")
     parser.add_argument("--wheel", type=Path, required=True, help="exact installed whole TensorFold wheel")
     parser.add_argument("--source-hold", type=Path, required=True, help="frozen source/provenance HOLD, copied and hashed")
+    parser.add_argument("--execution-profile-manifest", type=Path,
+                        help="explicit immutable loader-derived execution manifest; native owner trials remain unqualified")
     parser.add_argument("--image-identity", required=True, help="actual immutable base image sha256 identity")
     parser.add_argument("--base-commit", help="optional base commit; never a claim that dirty source equals it")
     parser.add_argument("--out", type=Path, required=True, help="new private result directory")
@@ -162,6 +171,15 @@ def arguments(argv=None):
         setattr(args, name, regular_file(getattr(args, name)))
     if args.source_hold.stat().st_size > 16 << 20:
         parser.error("source HOLD exceeds the16MiB artifact bound")
+    args.execution_manifest_identity = None
+    if args.execution_profile_manifest is not None:
+        from tensorfold.families.qwen4_exp.cuda.execution_identity import _json, _manifest_schema
+
+        args.execution_profile_manifest = regular_file(args.execution_profile_manifest)
+        document, raw = _json(args.execution_profile_manifest, with_content=True)
+        _manifest_schema(document)
+        args.execution_manifest_identity = {"path": str(args.execution_profile_manifest), "bytes": len(raw),
+                                            "sha256": hashlib.sha256(raw).hexdigest()}
     args.out = args.out.expanduser().absolute()
     return args
 
@@ -407,6 +425,7 @@ def worker(args):
     allowance = FOLLOWER_RECEIPT_BYTES if args.rank else LEADER_RECEIPT_BYTES
     try:
         report["installed"] = installed_identity(args.wheel)
+        report["execution_profile_manifest"] = getattr(args, "execution_manifest_identity", None)
         model = hub.resolve(str(args.model), download=False)
         companion = drafter_metadata_source(str(args.mtp))
         report["prepared_model_dir"] = str(model)
@@ -416,7 +435,9 @@ def worker(args):
             master="127.0.0.1", master_port=args.master_port, mtp_drafts=DEPTH, mtp_confidence=CONFIDENCE,
             context=CONTEXT, context_explicit=True, parallel="auto", kv_full_windows="auto",
             kv_dtype="int8", indexer_history="gpu", max_waiting_input_bytes=INPUT_CREDIT,
-            output_queue_tokens=args.tokens)
+            output_queue_tokens=args.tokens,
+            **({"execution_profile_manifest": args.execution_profile_manifest}
+               if getattr(args, "execution_profile_manifest", None) is not None else {}))
         record_execution_profile(engine, report, requested=args.requested_sm70_profile)
         report["capacity_plan"] = engine.capacity_plan
         write_report(args.out / f"rank-{args.rank}-ready.json", report, allowance=allowance)
@@ -480,6 +501,7 @@ def launch(args, argv):
         "source_hold": {"path": str(args.source_hold), "sha256": hashlib.sha256(hold).hexdigest()},
         "wheel": {"path": str(args.wheel), "sha256": digest(args.wheel)},
         "tool_sha256": digest(__file__), "installed": installed_identity(args.wheel),
+        "execution_profile_manifest": getattr(args, "execution_manifest_identity", None),
         "settings": {"context": CONTEXT, "tp": WORLD, "depth": DEPTH, "confidence": CONFIDENCE,
             "kv_dtype": "int8", "parallel": "auto", "kv_full_windows": "auto", "indexer_history": "gpu",
             "max_waiting_input_bytes": INPUT_CREDIT, "logical_callers": 1,

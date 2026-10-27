@@ -1,5 +1,15 @@
 # TensorFold fork
 
+The finite V100 diagnostic accepts an explicit `--execution-profile-manifest`
+and records its bounded, strictly parsed content hash before forwarding it to
+the existing Engine verifier. `tools/prepare_owner_trial_manifest.py` derives
+and hashes the real local target/tokenizer/MTP loader closure for an unqualified
+`sm70-paged-owner-q8-compact-v1` eager trial with full-TP8 collectives and zero
+graph allowance. It creates no evidence receipts or production selection.
+The ordinary diagnostic default and legacy private-attention gate are unchanged;
+component, full-model quality and the required concurrency-grid performance
+gates remain separate before adoption.
+
 An isolated CPU preflight candidate uses public Store batched reads and atomic
 counters during rank input preparation. Bounded reusable outcome slots retain
 validation and refusal semantics; every rank consumes a retirement latch before
