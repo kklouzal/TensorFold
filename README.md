@@ -8,7 +8,9 @@ change retains the guard profile epoch. The combined runtime at `49db616b`
 (wheel `84a8618a`) passed 70 GPU controls, including adversarial guard cases and
 the actual TP8 state/commit/prefix oracle. One private 10-second decode screen
 on eight V100-SXM2-32GB GPUs, source image `96f69617`, pinned SC117 IQ3_S target
-and Q8 MTP, reserved native 262144-token windows, Q8 K/V and ceiling 24 measured
+and Q8 MTP, a Notebook prompt with a warmed prefix, greedy proposals of at most
+two tokens at confidence 0.7, reserved native 262144-token windows, Q8 K/V and
+ceiling 24 measured
 14.0 tokens/s at one request and 10.3/11.7/13.3/13.6 aggregate at 2/4/8/16.
 The earlier owner-piece runtime measured 10.8/8.0/9.3/9.8/11.4 respectively.
 At 24 requests only 22 reached decode within the 30-second readiness cap, so
