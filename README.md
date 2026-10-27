@@ -79,6 +79,14 @@ Its distinct State/prefix epoch permits the same guarded INT8 greedy text reuse.
 The operators passed 82 actual-checkpoint V100 component controls, including TP8
 offsets and projection layouts. Full-model integration, capacity, output quality
 and performance remain unqualified; the default stays `reference`.
+The private `packed_wmma80` expert implementation is a separate approximate
+candidate for D2560/K80 and at most 32 rows. It uses FP16 decoded operands,
+eight FP32 WMMA projection partitions, the existing FP16 activation boundary and
+FP32 WMMA down accumulation. Original Dense shared-expert arithmetic and FP32
+recurrent state are retained. Its focused tests record error against original
+BMM and independent FP64 calculations without relaxing the exact-path oracles.
+Actual component speed, whole-model quality and integrated performance remain
+pending; this candidate has no default selection or qualified throughput claim.
 Its combined source/media authority also checks the protected CPU processor and
 decoder closure; a source-only record cannot satisfy the combined verifier.
 The additive [CPU media source image](deploy/v100/media-foundation.md) supplies
