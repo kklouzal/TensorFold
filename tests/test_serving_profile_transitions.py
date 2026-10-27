@@ -70,7 +70,7 @@ class LoadDouble(FlashNextEngine):
         self.multi.w = self.w
         self.multi.full_resident = True
         self.streams = 2
-        self.capacity_plan = {"profile": Path(model_dir).name, "kv_dtype": kv_dtype, "context": max_len}
+        self.capacity_plan = {"profile": Path(model_dir).name, "kv_dtype": kv_dtype, "context_window": max_len}
         if self.comm is not None:
             self.comm.all_gather("allocated-warm-ready")
 
@@ -131,7 +131,7 @@ def pipeline(tmp_path, monkeypatch, world=8, pending=8, configure=None, profile_
         engine.multi.controller = None
         engine.old_weights = old_weights
         old_weights.append(weakref.ref(engine.w))
-        engine.capacity_plan = {"profile": "A"}
+        engine.capacity_plan = {"profile": "A", "context_window": 1024}
         engine.loads, engine.retirements, engine.refuse = [], [], False
         engine.tp_decoder = TensorParallelDecoder(engine.multi, engine) if world > 1 else None
         engine.scheduler = Scheduler(engine.tp_decoder if world > 1 else engine.multi, max_streams=2) if rank == 0 else None

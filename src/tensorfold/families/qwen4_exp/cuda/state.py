@@ -237,7 +237,7 @@ class State:
 
     def __init__(self, w: Weights, capacity: int, max_rows: int, kv_dtype: str = "bf16", *,
                  limit: int | None = None, kv_pair=None, kv_key_dtype: str | None = None,
-                 kv_value_dtype: str | None = None, slot: int = 0) -> None:
+                 kv_value_dtype: str | None = None, slot: int = 0, logical_context: int | None = None) -> None:
         c = w.cfg
         dev = w.device
         bf = execution_dtype(w)
@@ -250,6 +250,11 @@ class State:
             raise ValueError("media input capability must be an admitted explicit boolean")
         self.media_profile_identity = self.media_identity = None
         self.media_input_span = self.mtp_boundary = None
+        physical_limit = int(capacity if limit is None else limit)
+        logical_limit = physical_limit if logical_context is None else logical_context
+        if type(logical_limit) is not int or not 0 < logical_limit <= physical_limit:
+            raise ValueError("State logical context must be a positive integer within its physical storage limit")
+        self.logical_context = logical_limit
         binding = getattr(w, "positions", None)
         coordinate_identity = w.meta.get("coordinate_profile_identity") if binding is not None else None
         if binding is not None and (type(coordinate_identity) is not str or len(coordinate_identity) != 64
@@ -262,7 +267,7 @@ class State:
         self.media_target_position = None if binding is None else binding.target
         self.media_mtp_position = None if binding is None else binding.mtp
         if binding is not None:
-            allowance = capacity if limit is None else limit
+            allowance = logical_limit
             if (type(allowance) is not int or allowance <= 0 or allowance > binding.target.domain.max_rows
                     or w.mtp is not None and (binding.mtp is None or allowance > binding.mtp.domain.max_rows)):
                 raise ValueError("State allowance exceeds its admitted target/MTP positional row domain")
@@ -310,6 +315,8 @@ class State:
         self.kv_key_dtype, self.kv_value_dtype = self.kv_pair.key_dtype, self.kv_pair.value_dtype
         self.kv_working_policy = working_policy
         self.kv_identity = (self.kv_pair.identity, self.kv_working_policy)
+        if logical_context is not None:
+            self.kv_identity += (("logical-context-v1", logical_limit),)
         if binding is not None:
             self.kv_identity += (("position-profile-v1", self.position_profile_identity, self.position_epoch),)
             self.kv_identity += (("coordinate-profile-v1", self.coordinate_profile_identity),)
@@ -342,7 +349,7 @@ class State:
         self._kv_error: KVNumericError | KVResizeError | None = None
         self._resize_error: BaseException | None = None
         self._resize_frames_pending = None
-        self.limit = int(capacity if limit is None else limit)     # the rows this sequence may grow to
+        self.limit = physical_limit  # physical cache rows, including admitted speculative guards
         capacity = min(int(capacity), self.limit)
         self.capacity = capacity
         self.version = 0                 # counts reallocations: a graph's pointer table refreshes on a change
@@ -544,7 +551,7 @@ class State:
         if (type(status) is not tuple or len(status) != 2 or any(type(word) is not int for word in status)
                 or status != (0, -2) or snap.get("kv_identity") != self.kv_identity):
             raise ValueError("a KV snapshot needs matching ordered formats, working policy and validated status")
-        if any(type(snap.get(name)) is not int or not 0 <= snap[name] <= self.capacity
+        if any(type(snap.get(name)) is not int or not 0 <= snap[name] <= min(self.capacity, self.logical_context)
                for name in ("pos", "mtp_len")):
             raise ValueError("KV snapshot positions must be integer rows within its sequence cache")
         if getattr(self, "media_input_span", None) is not None:
@@ -561,6 +568,8 @@ class State:
 
     def set_pos(self, pos: int) -> None:
         self.kv_check()
+        if type(pos) is not int or not 0 <= pos <= min(self.capacity, self.logical_context):
+            raise ValueError("target position exceeds the State's logical context")
         if self.compact_indexer is not None:
             self._compact_commit(pos, self.mtp_len)
         if getattr(self, "indexer_history_owner", None) is not None:
@@ -628,6 +637,9 @@ class State:
         Ordinary ``kv_snapshot_metadata`` remains the numeric-status authority.
         Raw bytes need only be available, not published at the main cursor yet.
         """
+        if any(type(value) is not int or not 0 <= value <= min(self.capacity, self.logical_context)
+               for value in (pos, mtp_len)):
+            raise ValueError("history snapshot positions exceed the State's logical context")
         if self.compact_indexer is not None:
             return {"compact_indexer": self.compact_indexer.snapshot(pos, mtp_len)}
         if getattr(self, "indexer_history_owner", None) is None:
@@ -718,6 +730,8 @@ class State:
 
         self.kv_check()
         rows = int(rows)
+        if not 0 < rows <= self.limit:
+            raise ValueError("cache resize must stay within the physical State limit")
         if getattr(self, "history_placement", None) is not None and rows != self.capacity:
             raise ValueError("unique histories retain fixed full-window arenas; context resize needs a separately admitted transition")
         if getattr(self, "history_placement", None) is not None:
@@ -1082,6 +1096,8 @@ class State:
 
     def set_mtp_len(self, n: int) -> None:
         self.kv_check()
+        if type(n) is not int or not 0 <= n <= min(self.capacity, self.logical_context):
+            raise ValueError("MTP position exceeds the State's logical context")
         if self.compact_indexer is not None:
             self._compact_commit(self.pos, n)
         if getattr(self, "indexer_history_owner", None) is not None:
@@ -1119,8 +1135,8 @@ class State:
         if self is source or self.kv_identity != source.kv_identity or self.ratio != source.ratio:
             raise ValueError("a prefix copy needs distinct slots with matching cache formats")
         if (type(pos) is not int or type(mtp_len) is not int
-                or not 0 <= pos <= min(self.capacity, source.pos)
-                or not 0 <= mtp_len <= min(self.capacity, source.mtp_len)):
+                or not 0 <= pos <= min(self.capacity, self.logical_context, source.pos, source.logical_context)
+                or not 0 <= mtp_len <= min(self.capacity, self.logical_context, source.mtp_len, source.logical_context)):
             raise ValueError("a prefix copy must fit the destination and the source's committed rows")
         if len(self.kc) != len(source.kc):
             raise ValueError("a prefix copy needs matching attention layers")
