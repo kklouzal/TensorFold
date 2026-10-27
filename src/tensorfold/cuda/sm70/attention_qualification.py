@@ -38,13 +38,20 @@ def supports(*, rows, heads, kv_heads, head_dim, context, first_end, identity,
 
 @lru_cache(maxsize=None)
 def runtime_identity(device):
-    """Warm outside capture; all repeated decisions use metadata only."""
+    """Record actual settings; query package identity only for its legacy build.
+
+    The cuBLAS wheel field belongs to the exact private cu126 candidate.
+    Other Torch builds remain ineligible without importing its wheel contract.
+    """
     import importlib.metadata
     import os
     import torch
 
-    return {"torch": torch.__version__, "torch_git": torch.version.git_version,
-            "cuda": torch.version.cuda, "cublas": importlib.metadata.version("nvidia-cublas-cu12"),
+    identity = {"torch": torch.__version__, "torch_git": torch.version.git_version,
+                "cuda": torch.version.cuda}
+    if all(identity[key] == REQUIRED_IDENTITY[key] for key in ("torch", "torch_git", "cuda")):
+        identity["cublas"] = importlib.metadata.version("nvidia-cublas-cu12")
+    return {**identity,
             "blas_backend": str(torch.backends.cuda.preferred_blas_library()),
             "fp16_reduced_precision": torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction,
             "fp16_accumulation": torch.backends.cuda.matmul.allow_fp16_accumulation,

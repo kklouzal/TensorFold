@@ -1507,3 +1507,8 @@ The source audit classifies the observed non-executable shared-anonymous
 remains a fatal software-integrity failure; the
 [versioned mapping policy](deploy/v100/source-foundation.md#portable-build-and-host-audit-policy)
 keeps data allocation observations separate from software authority.
+
+Source-built V100 runtimes retain the reference attention path. The private
+cu126 attention candidate queries its wheel-specific cuBLAS metadata only for
+its exact historical Torch/git/CUDA build; other builds keep their actual
+math/workspace/device descriptor and remain ineligible for that candidate.
