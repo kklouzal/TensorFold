@@ -1542,7 +1542,8 @@ class MultiDecoder:
         # Independent prompts retain their standalone bulk GEMM/reduction shape.
         # Decode windows still batch together in the existing round/graph path.
         meta = self.w.meta
-        separate = meta.get("execution_provider") == "sm70" and meta.get("sm70_profile") == "optimized"
+        separate = (meta.get("execution_provider") == "sm70"
+                    and meta.get("sm70_profile") in ("optimized", "source-family-trial"))
         for s in self._order():
             start = self.fills[s.sid][2]
             n = min(len(s.prompt) - start, room)

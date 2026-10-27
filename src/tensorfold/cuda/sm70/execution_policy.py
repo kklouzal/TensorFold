@@ -7,7 +7,27 @@ from pathlib import Path
 import re
 
 PROFILE_ENV = "TENSORFOLD_SM70_PROFILE"
+FAMILY_TRIAL = "source-family-trial"
 _SELECTED = "reference"
+_FAMILY_SOFTWARE = None
+_FAMILY_RUNTIME = {"torch": "2.14.1+tfcu129sm70",
+                   "torch_git": "04cf2557f315a350e7eea7ab064288def65db75a", "cuda": "12.9"}
+_FAMILY_COMPONENTS = {"cuda": "12.9.2", "pytorch": "2.14.1", "cccl": "3.5.0",
+                      "nccl": "2.32.3", "cutlass": "4.8.1", "cublas": "12.9.2.10"}
+_FAMILY_GEOMETRY = {"hidden_size": 2560, "num_hidden_layers": 48, "num_attention_heads": 24,
+                    "num_key_value_heads": 2, "head_dim": 256, "linear_num_key_heads": 16,
+                    "linear_num_value_heads": 48, "linear_key_head_dim": 128,
+                    "linear_value_head_dim": 128, "linear_conv_kernel_dim": 4,
+                    "hc_count": 4, "hc_lowrank": 320, "indexer_n_heads": 4,
+                    "indexer_head_dim": 128, "indexer_budget": 2048, "indexer_compress_ratio": 4,
+                    "ple_embed_dim": 2560, "ple_conv_kernel_size": 4,
+                    "num_experts": 512, "num_experts_per_tok": 10,
+                    "moe_intermediate_size": 640, "shared_expert_intermediate_size": 640}
+_FAMILY_LOCAL = {"hidden": 2560, "layers": 48, "heads": 3, "kv_heads": 1, "head_dim": 256,
+                 "nk": 2, "nv": 6, "dk": 128, "dv": 128, "conv_kernel": 4, "streams": 4,
+                 "low": 320, "index_heads": 4, "index_dim": 128, "index_budget": 2048,
+                 "index_ratio": 4, "ple_dim": 2560, "ple_kernel": 4, "experts": 512,
+                 "top_k": 10, "moe_width": 80, "shared_width": 80}
 _GRAPH_KEYS = ("NCCL_GRAPH_MIXING_SUPPORT", "NCCL_GRAPH_STREAM_ORDERING")
 _GRAPH_ENV = (*_GRAPH_KEYS, "NCCL_ENV_PLUGIN", "NCCL_CONF_FILE", "HOME")
 _SYSTEM_CONF = "/etc/nccl.conf"
@@ -142,12 +162,62 @@ def verify_graph_inputs(record):
             raise ValueError("NCCL graph configuration file changed after validation")
 
 
+def _family_runtime(torch):
+    actual = {"torch": str(torch.__version__), "torch_git": torch.version.git_version,
+              "cuda": torch.version.cuda}
+    if (actual != _FAMILY_RUNTIME or tuple(torch.cuda.get_device_capability()) != (7, 0)
+            or "sm_70" not in torch.cuda.get_arch_list()
+            or str(torch.backends.cuda.preferred_blas_library()) != "_BlasBackend.Cublas"
+            or torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction is not True
+            or torch.backends.cuda.matmul.allow_fp16_accumulation is not False
+            or os.environ.get("CUBLAS_WORKSPACE_CONFIG") is not None):
+        raise ValueError("source-family-trial requires the exact source04cf SM70 FP16 numerical foundation")
+
+
+def _family_software():
+    from .software_binding import issue_source_binding
+
+    authority = issue_source_binding(required=True)
+    record = authority.record()
+    if any(record["recorded_components"].get(key) != value for key, value in _FAMILY_COMPONENTS.items()):
+        raise ValueError("source-family-trial requires the selected CUDA12.9.2/NCCL2.32.3 source software")
+    return record
+
+
+def _prepare_family_trial(text, tp, torch):
+    # This trial changes no weight/KV representation, persistent workspace,
+    # graph allowance or capacity rule. Native module residency precedes the
+    # existing physical-free/admission baseline and weight loading.
+    if (type(tp) is not int or tp != 8
+            or any(type(text.get(key)) is not int or text[key] != value
+                   for key, value in _FAMILY_GEOMETRY.items())
+            or text.get("dtype") != "float16" or text.get("mamba_ssm_dtype") != "float32"
+            or text.get("output_gate_type") != "sigmoid"):
+        raise ValueError("source-family-trial requires the FP16/FP32-state TP8 Flash Next geometry")
+    _family_runtime(torch)
+    before = _family_software()
+    from .family_native import extension
+
+    extension()  # Retains source/header/compiler guards; errors precede selector changes.
+    after = _family_software()  # Explicitly issue after native-library warmup.
+    _same_family_software(before, after)
+    return after
+
+
+def _same_family_software(before, after):
+    # Runtime mappings grow during normal startup; protected source inputs may
+    # not change. A new process audit binds those mappings at each preparation.
+    for key in ("protected", "source_specification_sha256", "recorded_components"):
+        if before[key] != after[key]:
+            raise ValueError("source-family-trial protected software changed during preparation")
+
+
 def configure(text, *, tp, torch, record_graph_inputs=None):
     """Explicit profiles share the existing engine, admission and worker handshake."""
-    global _SELECTED
+    global _SELECTED, _FAMILY_SOFTWARE
     profile = os.environ.get(PROFILE_ENV, "reference")
-    if profile not in ("reference", "optimized"):
-        raise ValueError(f"{PROFILE_ENV} must be reference or optimized")
+    if profile not in ("reference", "optimized", FAMILY_TRIAL):
+        raise ValueError(f"{PROFILE_ENV} must be reference, optimized or {FAMILY_TRIAL}")
     if record_graph_inputs is not None and not callable(record_graph_inputs):
         raise ValueError("NCCL graph input journal must be callable")
     graph_policy = graph_inputs() if tp > 1 else None
@@ -169,18 +239,39 @@ def configure(text, *, tp, torch, record_graph_inputs=None):
                       and all(identity.get(key) == value for key, value in REQUIRED_IDENTITY.items()))
         if not compatible:
             raise ValueError("optimized SM70 profile requires the qualified TP8 Flash Next geometry and pinned Volta foundation")
-    family_ops._NATIVE_FAMILY = family_ops._NATIVE_ATTENTION = enabled
+    family_software = _prepare_family_trial(text, tp, torch) if profile == FAMILY_TRIAL else None
+    family_ops._NATIVE_FAMILY = enabled or profile == FAMILY_TRIAL
+    family_ops._NATIVE_ATTENTION = enabled
     routing_native._NATIVE_LOGITS = padded_linears._ENABLED = enabled
     gguf_weights.GGUFExperts.implementation = "packed_exact" if enabled else "reference"
     gguf_weights.GGUFConcat.implementation = "native32" if enabled else "reference"
     gguf_prefill.WORKSPACE_BUDGET_BYTES = (1 << 30) if enabled else None
     dspark_proposal_graphs._ENABLED = dspark_context_graphs._ENABLED = enabled
+    _FAMILY_SOFTWARE = family_software
     _SELECTED = profile
     return profile
 
 
 def prepare_weights(w):
     """Mark native owners only after the same profile was admitted on every rank."""
+    if _SELECTED == FAMILY_TRIAL:
+        import torch
+
+        _family_runtime(torch)
+        if (w.cfg.execution_dtype != "float16" or w.cfg.quant != "gguf"
+                or any(type(getattr(w.cfg, key, None)) is not int or getattr(w.cfg, key) != value
+                       for key, value in _FAMILY_LOCAL.items())
+                or w.meta.get("execution_provider") != "sm70"
+                or w.meta.get("execution_dtype") != "float16"
+                or w.meta.get("world") != 8):
+            raise ValueError("source-family-trial requires loaded TP8 GGUF SM70 FP16 weights")
+        if any(w.meta.get(key) for key in ("capture_ready", "device_greedy_mtp_ready",
+                                          "device_greedy_native_ready", "attention_qualification")):
+            raise ValueError("source-family-trial cannot inherit graph, greedy or private attention qualification")
+        software = _family_software()  # New audit after canonical weight/native preparation.
+        _same_family_software(_FAMILY_SOFTWARE, software)
+        w.meta["sm70_family_trial"] = {"qualification": "unqualified-candidate", "software": software,
+                                       "attention": "reference", "graphs": "eager", "prefix_reuse": "cold"}
     w.meta["sm70_profile"] = _SELECTED
     if _SELECTED == "optimized":
         from .attention_qualification import metadata_prepare

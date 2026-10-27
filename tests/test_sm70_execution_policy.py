@@ -9,7 +9,7 @@ def policy(monkeypatch, tmp_path):
     from tensorfold.cuda.sm70 import execution_policy as policy, family_ops, routing_native
     from tensorfold.cuda.sm70 import attention_qualification as qualification
     from tensorfold.families.qwen4_exp.cuda import dspark_context_graphs, dspark_proposal_graphs, gguf_prefill, gguf_weights, padded_linears
-    for owner,name in [(policy,"_SELECTED"),(family_ops,"_NATIVE_FAMILY"),(family_ops,"_NATIVE_ATTENTION"),
+    for owner,name in [(policy,"_SELECTED"),(policy,"_FAMILY_SOFTWARE"),(family_ops,"_NATIVE_FAMILY"),(family_ops,"_NATIVE_ATTENTION"),
                        (routing_native,"_NATIVE_LOGITS"),(padded_linears,"_ENABLED"),
                        (dspark_context_graphs,"_ENABLED"),(dspark_proposal_graphs,"_ENABLED"),
                        (gguf_prefill,"WORKSPACE_BUDGET_BYTES"),(gguf_weights.GGUFExperts,"implementation"),

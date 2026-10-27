@@ -3,10 +3,13 @@
 from ..qsa_selection import POLICY as QSA_SELECTION
 
 IDENTITY = "sm70-stochastic-or-unqualified-rotor-prefix-cold-v2:" + QSA_SELECTION
+FAMILY_TRIAL_IDENTITY = "sm70-source-family-trial-all-prefix-cold-v1:" + QSA_SELECTION
 
 
 def identity(profile):
     """Sampler and ordered cache descriptors already share the worker wire."""
+    if profile == "source-family-trial":
+        return FAMILY_TRIAL_IDENTITY
     return IDENTITY if profile in ("optimized", "reference") else None
 
 
@@ -22,6 +25,8 @@ def reuse_allowed(w, sampling, *, draft, vision, position, kv_pair=None):
     ordinary = draft and vision is None
     if not ordinary or w.meta.get("execution_provider") != "sm70":
         return ordinary
+    if w.meta.get("sm70_profile") == "source-family-trial":
+        return False  # Cold qualification has no same-format cached-suffix receipt yet.
     rotor = kv_pair is not None and (kv_pair.key.codec or kv_pair.value.codec)
     if sampling is None:
         return ordinary and not rotor
@@ -39,6 +44,9 @@ def reuse_allowed(w, sampling, *, draft, vision, position, kv_pair=None):
 
 def serial_reuse_allowed(w, sampling, *, draft, position, kv_pair):
     """Serial/twin Q4 has the same qualification; legacy serial policy stays intact."""
+    if (w.meta.get("execution_provider") == "sm70"
+            and w.meta.get("sm70_profile") == "source-family-trial"):
+        return False
     if (not draft or w.meta.get("execution_provider") != "sm70"
             or not (kv_pair.key.codec or kv_pair.value.codec)):
         return draft
