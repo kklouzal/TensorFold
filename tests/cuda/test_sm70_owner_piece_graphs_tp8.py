@@ -126,6 +126,8 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
                 if compact_target in ("prelude", "bound-prelude"):
                     weights.meta["sm70_owner_prelude_zero"] = torch.zeros(1, dtype=torch.int32, device=weights.device)
                     weights.meta["sm70_owner_prelude_submitted_frames"] = 0
+                    weights.meta["sm70_owner_prelude_submitted_mtp_frames"] = 0
+                    weights.meta["sm70_owner_prelude_mtp_counter_overflowed"] = False
                     torch.cuda.current_stream(weights.device).synchronize()
             if weights.positions is not None:
                 from tensorfold.families.qwen4_exp.cuda.input_preparation import install_input_preparation
@@ -228,6 +230,7 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
         assert graphs.bound.hits > 0
         if target_greedy in ("prelude", "bound-prelude"):
             assert combined_weights.meta["sm70_owner_prelude_submitted_frames"] > 0
+            assert combined_weights.meta["sm70_owner_prelude_submitted_mtp_frames"] > 0
             assert combined_weights.meta["sm70_owner_prelude_zero"].tolist() == [0]
         if target_greedy:
             assert combined_weights.meta["target_greedy_owner"].completed > 0

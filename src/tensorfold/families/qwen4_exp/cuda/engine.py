@@ -966,7 +966,7 @@ class FlashNextEngine:
                 # One dedicated initialized immutable int32 control per model;
                 # bound its allocator granule and retained/transient view metadata.
                 options["device_workspace_bytes"] += 512
-                options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + tp * (512 + 32 * 248 + 8192)
+                options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + tp * (512 + 32 * 248 + 8192 + 8192)
             status_device = status_host = 0
             if tp > 1 and concurrent and not adaptive_sessions:
                 from .kv_status import workspace_bytes

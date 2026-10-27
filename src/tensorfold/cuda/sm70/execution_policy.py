@@ -367,6 +367,8 @@ def prepare_weights(w, *, graph_contract=None):
             torch.cuda.current_stream(w.device).synchronize()
             w.meta["sm70_owner_prelude_zero"] = zero  # Immutable; no State reset/media field is borrowed.
             w.meta["sm70_owner_prelude_submitted_frames"] = 0  # Serialized actor diagnostic, not device timing.
+            w.meta["sm70_owner_prelude_submitted_mtp_frames"] = 0
+            w.meta["sm70_owner_prelude_mtp_counter_overflowed"] = False
     w.meta["sm70_profile"] = _SELECTED
     if _SELECTED == "optimized":
         from .attention_qualification import metadata_prepare

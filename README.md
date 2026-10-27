@@ -1,5 +1,14 @@
 # TensorFold fork
 
+Canonical MTP text refresh/proposal frames now use the existing actual text
+coordinate producer when no explicit coordinates or deferred boundary are
+present. It preserves hidden/cache positions at `mtp_len`, independent of next
+input token IDs. Custom coordinates, media and boundary transfers retain their
+existing producer route. A bounded, prepaid MTP-role counter distinguishes
+actual native execution from target-only preparation. Native math, MTP confidence
+and quality settings are unchanged; CPU, TP8 and all-six performance/quality
+gates remain pending for this increment.
+
 The native owner prelude borrows the current issued coordinate-frame slice for
 compact-indexer publication. Reconstructing equal coordinates would rewrite its
 shared mutation-tracked storage and invalidate subsequent attention layers.

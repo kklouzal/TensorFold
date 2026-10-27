@@ -250,6 +250,17 @@ def _native_frame_coordinates(state, buffers, start, stop, *, mtp):
     position = state.mtp_len if mtp else state.pos
     return coordinate_rows(state, torch.arange(stop - start, device=state.pos_dev.device) + position)
 
+
+def _record_native_prelude(weights, *, mtp):
+    """Serialized submitted-frame diagnostics; an exhausted MTP count is unknown."""
+    weights.meta["sm70_owner_prelude_submitted_frames"] += 1
+    if mtp:
+        value = weights.meta["sm70_owner_prelude_submitted_mtp_frames"]
+        if value < (1 << 63) - 1:
+            weights.meta["sm70_owner_prelude_submitted_mtp_frames"] = value + 1
+        else:
+            weights.meta["sm70_owner_prelude_mtp_counter_overflowed"] = True
+
 def _native_frame_prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
     """Reuse the qualified scalar-position prep into a bounded frame, not a history.
 
@@ -325,7 +336,7 @@ def _native_frame_prepare(projection, state, layer, weights, buffers, start, sto
             entry.publish_commit(entry.prepare_commit(pos + rows, expected), pos + rows, expected)
     if not mtp:
         state.target_tentative_length = pos + rows
-    weights.meta["sm70_owner_prelude_submitted_frames"] += 1
+    _record_native_prelude(weights, mtp=mtp)
     return True
 
 def prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):

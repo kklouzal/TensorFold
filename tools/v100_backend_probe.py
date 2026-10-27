@@ -511,6 +511,12 @@ def graph_execution_snapshot(engine):
     prelude = metadata.get("sm70_owner_prelude_submitted_frames") if type(metadata) is dict else None
     if type(prelude) is int and prelude >= 0:
         counters["owner.prelude_submitted_frames"] = prelude
+    mtp_prelude = metadata.get("sm70_owner_prelude_submitted_mtp_frames") if type(metadata) is dict else None
+    mtp_overflowed = metadata.get("sm70_owner_prelude_mtp_counter_overflowed", False) if type(metadata) is dict else False
+    if not mtp_overflowed and type(mtp_prelude) is int and mtp_prelude >= 0:
+        counters["owner.prelude_mtp_submitted_frames"] = mtp_prelude
+        if type(prelude) is int and prelude >= mtp_prelude:
+            counters["owner.prelude_target_submitted_frames"] = prelude - mtp_prelude
     if target is not None:
         from tensorfold.families.qwen4_exp.cuda.target_greedy import TargetGreedy
 
@@ -519,7 +525,10 @@ def graph_execution_snapshot(engine):
             if type(value) is int and value >= 0:
                 counters["target.completed"] = value
     keys = {name: len(fields[name]) for name in ("verify", "mtp") if type(fields.get(name)) is dict}
-    return {"counters": counters, "captured_keys": keys}
+    result = {"counters": counters, "captured_keys": keys}
+    if mtp_overflowed:
+        result["unavailable_counters"] = ["owner.prelude_mtp_submitted_frames", "owner.prelude_target_submitted_frames"]
+    return result
 
 def graph_execution_delta(before, after):
     """Differences of available counters from the same owner before cleanup.

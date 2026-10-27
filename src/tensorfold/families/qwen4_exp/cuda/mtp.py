@@ -95,7 +95,16 @@ def _mtp_stage(b: Buffers, windows: Sequence[tuple[State, Sequence[int], torch.T
         b.last[:len(segs)].copy_(b.last_host[:len(segs)], non_blocking=True)
         for destination, source, _overlap in copies:
             destination.copy_(source, non_blocking=True)
-        if indexer_coordinates is None and getattr(b, "mtp_indexer_position", None) is not None:
+        canonical_text = (indexer_coordinates is None and getattr(b, "mtp_indexer_position", None) is not None
+                          and all(getattr(st, "mtp_boundary", None) is None for st, _a, _z in segs))
+        if canonical_text:
+            from .compact_indexer import stage_text_indexer_frame
+
+            # Cache/hidden coordinates start at mtp_len; the shifted next-token
+            # IDs are inputs, not a new positional recipe. Only this actual
+            # canonical producer grants scalar-text provenance.
+            stage_text_indexer_frame(b, segs, mtp=True)
+        elif indexer_coordinates is None and getattr(b, "mtp_indexer_position", None) is not None:
             from .compact_indexer import CoordinateWindow, issue_text_indexer_coordinates
 
             coordinate_windows = []
@@ -112,7 +121,7 @@ def _mtp_stage(b: Buffers, windows: Sequence[tuple[State, Sequence[int], torch.T
                         st.mtp_len + at - begin, end - at, max_rows=b.rows)
                     coordinate_windows.append(CoordinateWindow(at, end, coordinates, b.mtp_indexer_position))
             indexer_coordinates = tuple(coordinate_windows)
-        if indexer_coordinates is not None or hasattr(b, "mtp_indexer_coordinate_storage"):
+        if not canonical_text and (indexer_coordinates is not None or hasattr(b, "mtp_indexer_coordinate_storage")):
             from .compact_indexer import stage_mtp_indexer_frame
 
             stage_mtp_indexer_frame(b, segs, indexer_coordinates)
