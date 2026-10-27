@@ -39,10 +39,10 @@ MAX_PROMPT_BYTES = 4096
 MAX_RENDERED_BYTES = 65536
 MAX_PROMPT_TOKENS = 4096
 MAX_TOKENS = 512
-MAX_RECEIPT_BYTES = 1 << 20
 LEADER_RECEIPT_BYTES = 512 << 10
-FOLLOWER_RECEIPT_BYTES = 64 << 10
+FOLLOWER_RECEIPT_BYTES = 128 << 10
 SUPERVISOR_RECEIPT_BYTES = 64 << 10
+MAX_RECEIPT_BYTES = LEADER_RECEIPT_BYTES + (WORLD - 1) * FOLLOWER_RECEIPT_BYTES + SUPERVISOR_RECEIPT_BYTES
 FATAL_REPORT_GRACE_SECONDS = 30.0
 DEFAULT_PROMPT = "In one short sentence, explain why the sky appears blue."
 TARGET_TEMPLATE_SHA = "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce"
@@ -69,8 +69,8 @@ def digest(path):
 def write_report(path, value, *, allowance):
     """Bound the aggregate live report; disk checkpoints do not create live trees.
 
-    The leader owns512KiB, seven followers64KiB each, and the supervisor64KiB:
-    together they fit the caller's1MiB global receipt allowance. Overflow is a
+    The leader owns512KiB, seven followers128KiB each, and the supervisor64KiB:
+    their sum is the caller's funded global receipt allowance. Overflow is a
     failed diagnostic; preserve its complete evidence separately for review.
     """
     encoded = json.dumps(value, indent=1, allow_nan=False)
@@ -465,7 +465,7 @@ def graph_failure_resources(error):
 def worker(args):
     from tensorfold import hub
     from tensorfold.cuda import precision, prompt_precision
-    from tensorfold.cuda.cohort import FAILURE_FD_ENV
+    from tensorfold.cuda.cohort import FAILURE_FD_ENV, notify_failure
     from tensorfold.families.qwen4_exp import cuda_engine
     from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL
     from tensorfold.serve_options import drafter_metadata_source
@@ -481,7 +481,7 @@ def worker(args):
               "process_identity": {"pid": os.getpid(), "parent_pid": os.getppid(),
                                    "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES")},
               "qualification": "finite-backend-diagnostic-only; HTTP/design qualification remains open"}
-    engine, primary, failures = None, None, [None] * 3
+    engine, primary, failures = None, None, [None] * 4
     allowance = FOLLOWER_RECEIPT_BYTES if args.rank else LEADER_RECEIPT_BYTES
     try:
         report["installed"] = installed_identity(args.wheel)
@@ -508,6 +508,14 @@ def worker(args):
     except BaseException as error:
         primary = error
         try:
+            # Publish fatal status before fallible diagnostics or potentially
+            # blocking backend retirement. The existing supervisor owns every
+            # rank and bounds report retirement/containment after this signal.
+            if not notify_failure():
+                raise RuntimeError("finite worker lost its supervised failure capability")
+        except BaseException as notification:
+            failures[3] = notification
+        try:
             report["graph_failure_resources"] = graph_failure_resources(error)
             report["failure"] = {"type": type(error).__name__, "message": str(error),
                                  "traceback": traceback.format_exc()}
@@ -521,9 +529,9 @@ def worker(args):
             except BaseException as error:
                 failures[1] = error
     try:
-        if failures[0] is not None or failures[1] is not None:
+        if failures[0] is not None or failures[1] is not None or failures[3] is not None:
             report["cleanup_failures"] = [{"type": type(error).__name__, "message": str(error)}
-                                          for error in failures[:2] if error is not None]
+                                          for error in (failures[0], failures[1], failures[3]) if error is not None]
         report["complete"] = primary is None and not any(error is not None for error in failures)
         write_report(args.out / f"rank-{args.rank}-final.json", report, allowance=allowance)
     except BaseException as diagnostic:
@@ -561,8 +569,9 @@ def launch(args, argv):
         "wheel": {"path": str(args.wheel), "sha256": digest(args.wheel)},
         "tool_sha256": digest(__file__), "installed": installed_identity(args.wheel),
         "settings": {"context": CONTEXT, "tp": WORLD, "depth": DEPTH, "confidence": CONFIDENCE,
-            "kv_dtype": "int8", "parallel": "auto", "kv_full_windows": "auto", "indexer_history": "gpu",
+            "kv_dtype": "int8", "parallel": "auto" if args.session_ceiling is None else args.session_ceiling, "kv_full_windows": "auto", "indexer_history": "gpu",
             "max_waiting_input_bytes": INPUT_CREDIT, "logical_callers": 1,
+            "max_receipt_bytes": MAX_RECEIPT_BYTES,
             "requested_sm70_profile": args.requested_sm70_profile,
             "instrumented_departure_grace_seconds": args.instrumented_departure_grace_seconds,
             "repetitions": args.repetitions,

@@ -1624,3 +1624,10 @@ The private finite probe accepts `--session-ceiling 24` to request the existing
 graph/host admission. Its default remains automatic capacity. Explicit runs
 require 24 resident full windows; this flag does not qualify graph performance
 or the concurrency grid, which require separate actual comparisons.
+
+The finite graph probe funds a bounded 512 KiB leader report, seven 128 KiB
+follower reports and a 64 KiB supervisor report in its actual host admission.
+Worker failures notify the existing cohort supervisor before diagnostic
+rendering and backend cleanup, retaining the primary and any notification or
+cleanup failure. The supervisor retains its bounded fatal-report interval.
+This changes diagnostic storage and failure observability, not model execution.
