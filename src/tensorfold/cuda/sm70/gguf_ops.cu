@@ -174,8 +174,10 @@ struct PackedView {
 
 template <int Kind = -1>
 __device__ __forceinline__ float coefficient(PackedView bank, int64_t row, int column) {
-    constexpr int fixed_block = Kind == 12 || Kind == 13 ? 256 : Kind == 7 ? 32 : 0;
-    constexpr int fixed_bytes = Kind == 12 ? 144 : Kind == 13 ? 176 : Kind == 7 ? 24 : 0;
+    constexpr int fixed_block = Kind == 12 || Kind == 13 || Kind == 18 || Kind == 21 || Kind == 22 || Kind == 23
+        ? 256 : Kind == 7 || Kind == 8 || Kind == 20 ? 32 : Kind == 42 ? 64 : 0;
+    constexpr int fixed_bytes = Kind == 12 ? 144 : Kind == 13 ? 176 : Kind == 18 ? 98 : Kind == 21 ? 110
+        : Kind == 22 ? 82 : Kind == 23 ? 136 : Kind == 7 ? 24 : Kind == 8 ? 34 : Kind == 20 || Kind == 42 ? 18 : 0;
     const int block = fixed_block ? fixed_block : bank.block;
     const int bytes = fixed_bytes ? fixed_bytes : bank.bytes;
     const int col = column + bank.offset;
@@ -185,16 +187,25 @@ __device__ __forceinline__ float coefficient(PackedView bank, int64_t row, int c
     return __half2float(__float2half_rn(value(raw, Kind >= 0 ? Kind : bank.kind, col % block)));
 }
 
-template <typename Index, int GateKind = -1, int UpKind = -1, int Splits = 1>
+template <typename Index, int GateKind = -1, int UpKind = -1, int Splits = 1, bool RoutedOnly = false>
 __global__ void expert_gate_up(const __half* x, const Index* picks, PackedView gate, PackedView up,
                                 const __half* shared_gate, const __half* shared_up,
                                 int dims, int width, int slots, int experts, void* intermediate) {
+    static_assert(!RoutedOnly || Splits == 1, "shared placeholders require the unsplit exact route");
     const int lane = threadIdx.x % 32, warp = threadIdx.x / 32;
     const unsigned output = blockIdx.x * EXPERT_WARPS + warp;
     const int pair = blockIdx.y;
     const auto expert = picks[pair];
     const int split = Splits == 1 ? 0 : blockIdx.z;
     if (output >= width) return;
+    if constexpr (RoutedOnly) {
+        if (expert == experts) {
+            // The owning exact provider replaces this slot with its original
+            // Dense shared expert. Initialize it without duplicate arithmetic.
+            if (lane == 0) static_cast<__half*>(intermediate)[int64_t(pair) * width + output] = __float2half_rn(0.0f);
+            return;
+        }
+    }
     const bool valid = expert >= 0 && expert <= experts;
     float g = 0.0f, u = 0.0f;
     if (valid) {
@@ -269,7 +280,7 @@ __device__ __forceinline__ void accumulate_block_pair(const __half* input, int l
     u = fmaf(xhi, block_coefficient<group + 1>(uh, uhi), u);
 }
 
-template <typename Index, int GateKind, int UpKind>
+template <typename Index, int GateKind, int UpKind, bool RoutedOnly = false>
 __global__ void expert_gate_up_blocks(const __half* x, const Index* picks, PackedView gate, PackedView up,
     const __half* shared_gate, const __half* shared_up,
     int dims, int width, int slots, int experts, __half* activation) {
@@ -278,6 +289,12 @@ __global__ void expert_gate_up_blocks(const __half* x, const Index* picks, Packe
     const int pair = blockIdx.y;
     if (output >= width) return;
     const auto expert = picks[pair];
+    if constexpr (RoutedOnly) {
+        if (expert == experts) {
+            if (lane == 0) activation[int64_t(pair) * width + output] = __float2half_rn(0.0f);
+            return;
+        }
+    }
     const bool valid = expert >= 0 && expert <= experts;
     float g = 0.0f, u = 0.0f;
     if (valid) {
@@ -351,7 +368,7 @@ __device__ __forceinline__ float projection_sum(const __half* input, PackedView 
     return sum;
 }
 
-template <typename Index, int GateKind, int UpKind>
+template <typename Index, int GateKind, int UpKind, bool RoutedOnly = false>
 __global__ void expert_gate_up_blocks2w(const __half* x, const Index* picks, PackedView gate, PackedView up,
     const __half* shared_gate, const __half* shared_up,
     int dims, int width, int slots, int experts, __half* activation) {
@@ -360,6 +377,15 @@ __global__ void expert_gate_up_blocks2w(const __half* x, const Index* picks, Pac
     const unsigned output = blockIdx.x * (EXPERT_WARPS / 2) + warp / 2;
     const int pair = blockIdx.y;
     const auto expert = picks[pair];
+    if constexpr (RoutedOnly) {
+        if (expert == experts) {
+            // The predicate is uniform for the entire pair/CTA, so no warp
+            // can leave another participant waiting at the barrier below.
+            if (output < width && warp % 2 == 0 && lane == 0)
+                activation[int64_t(pair) * width + output] = __float2half_rn(0.0f);
+            return;
+        }
+    }
     const bool live = output < width, valid = live && expert >= 0 && expert <= experts;
     float sum = __int_as_float(0x7fffffff);
     if (valid) {
@@ -452,11 +478,11 @@ PackedView packed_view(const at::Tensor& raw, int64_t kind, int64_t offset, int 
 void run_exact_down(const at::Tensor& activation, const at::Tensor& picks, PackedView view,
                     const at::Tensor& shared, at::Tensor& result, int dims, int experts);
 
-template <typename Index, int Splits = 1>
+template <typename Index, int Splits = 1, bool ExactDown = false>
 void run_experts(const at::Tensor& x, const at::Tensor& picks, PackedView gate, PackedView up, PackedView down,
                    const at::Tensor& shared_gate, const at::Tensor& shared_up, const at::Tensor& shared_down,
                    at::Tensor& output, at::Tensor& activation, int dims, int width, int slots, int experts,
-                   bool blockwise = false, bool split_projections = false, bool exact_down = false) {
+                   bool blockwise = false, bool split_projections = false) {
     const int pairs = int(picks.numel());
     const auto* xx = reinterpret_cast<const __half*>(x.data_ptr<at::Half>());
     const auto* ids = picks.data_ptr<Index>();
@@ -478,41 +504,55 @@ void run_experts(const at::Tensor& x, const at::Tensor& picks, PackedView gate, 
         if (blockwise && kquants && aligned && gate.offset == 0 && up.offset == 0 && dims % 256 == 0) {
             const dim3 projection_grid(1 + (width - 1) / (EXPERT_WARPS / 2), pairs);
             if (split_projections && gate.kind == 12 && up.kind == 12)
-                expert_gate_up_blocks2w<Index, 12, 12><<<projection_grid, EXPERT_WARPS * 32, 0, stream>>>(
+                expert_gate_up_blocks2w<Index, 12, 12, ExactDown><<<projection_grid, EXPERT_WARPS * 32, 0, stream>>>(
                     xx, ids, gate, up, sg, su, dims, width, slots, experts, act);
             else if (split_projections && gate.kind == 13 && up.kind == 13)
-                expert_gate_up_blocks2w<Index, 13, 13><<<projection_grid, EXPERT_WARPS * 32, 0, stream>>>(
+                expert_gate_up_blocks2w<Index, 13, 13, ExactDown><<<projection_grid, EXPERT_WARPS * 32, 0, stream>>>(
                     xx, ids, gate, up, sg, su, dims, width, slots, experts, act);
             else if (split_projections && gate.kind == 12)
-                expert_gate_up_blocks2w<Index, 12, 13><<<projection_grid, EXPERT_WARPS * 32, 0, stream>>>(
+                expert_gate_up_blocks2w<Index, 12, 13, ExactDown><<<projection_grid, EXPERT_WARPS * 32, 0, stream>>>(
                     xx, ids, gate, up, sg, su, dims, width, slots, experts, act);
             else if (split_projections)
-                expert_gate_up_blocks2w<Index, 13, 12><<<projection_grid, EXPERT_WARPS * 32, 0, stream>>>(
+                expert_gate_up_blocks2w<Index, 13, 12, ExactDown><<<projection_grid, EXPERT_WARPS * 32, 0, stream>>>(
                     xx, ids, gate, up, sg, su, dims, width, slots, experts, act);
             else if (gate.kind == 12 && up.kind == 12)
-                expert_gate_up_blocks<Index, 12, 12><<<gu_grid, EXPERT_WARPS * 32, 0, stream>>>(
+                expert_gate_up_blocks<Index, 12, 12, ExactDown><<<gu_grid, EXPERT_WARPS * 32, 0, stream>>>(
                     xx, ids, gate, up, sg, su, dims, width, slots, experts, act);
             else if (gate.kind == 13 && up.kind == 13)
-                expert_gate_up_blocks<Index, 13, 13><<<gu_grid, EXPERT_WARPS * 32, 0, stream>>>(
+                expert_gate_up_blocks<Index, 13, 13, ExactDown><<<gu_grid, EXPERT_WARPS * 32, 0, stream>>>(
                     xx, ids, gate, up, sg, su, dims, width, slots, experts, act);
             else if (gate.kind == 12)
-                expert_gate_up_blocks<Index, 12, 13><<<gu_grid, EXPERT_WARPS * 32, 0, stream>>>(
+                expert_gate_up_blocks<Index, 12, 13, ExactDown><<<gu_grid, EXPERT_WARPS * 32, 0, stream>>>(
                     xx, ids, gate, up, sg, su, dims, width, slots, experts, act);
             else
-                expert_gate_up_blocks<Index, 13, 12><<<gu_grid, EXPERT_WARPS * 32, 0, stream>>>(
+                expert_gate_up_blocks<Index, 13, 12, ExactDown><<<gu_grid, EXPERT_WARPS * 32, 0, stream>>>(
                     xx, ids, gate, up, sg, su, dims, width, slots, experts, act);
             launched = true;
         }
     }
-    if (!launched && gate.kind == 12 && up.kind == 12)
-        expert_gate_up<Index, 12, 12, Splits><<<gu_grid, EXPERT_WARPS * 32, 0, stream>>>(xx, ids, gate, up, sg, su,
-            dims, width, slots, experts, intermediate.data_ptr());
-    else if (!launched && gate.kind == 13 && up.kind == 13)
-        expert_gate_up<Index, 13, 13, Splits><<<gu_grid, EXPERT_WARPS * 32, 0, stream>>>(xx, ids, gate, up, sg, su,
-            dims, width, slots, experts, intermediate.data_ptr());
-    else if (!launched)
-        expert_gate_up<Index, -1, -1, Splits><<<gu_grid, EXPERT_WARPS * 32, 0, stream>>>(xx, ids, gate, up, sg, su,
-            dims, width, slots, experts, intermediate.data_ptr());
+    if (!launched) {
+        // Specialize only actual same-format source pairs. Mixed pairs keep
+        // the complete generic decoder; neither coefficient math nor FMA order
+        // changes when kind/block/byte addressing becomes compile-time data.
+        #define LAUNCH_GATE_UP(KIND) \
+            expert_gate_up<Index, KIND, KIND, Splits, ExactDown><<<gu_grid, EXPERT_WARPS * 32, 0, stream>>>( \
+                xx, ids, gate, up, sg, su, dims, width, slots, experts, intermediate.data_ptr())
+        if (gate.kind == up.kind) {
+            switch (gate.kind) {
+                case 8: LAUNCH_GATE_UP(8); break;
+                case 12: LAUNCH_GATE_UP(12); break;
+                case 13: LAUNCH_GATE_UP(13); break;
+                case 18: LAUNCH_GATE_UP(18); break;
+                case 21: LAUNCH_GATE_UP(21); break;
+                case 22: LAUNCH_GATE_UP(22); break;
+                case 23: LAUNCH_GATE_UP(23); break;
+                default: LAUNCH_GATE_UP(-1); break;
+            }
+        } else {
+            LAUNCH_GATE_UP(-1);
+        }
+        #undef LAUNCH_GATE_UP
+    }
     C10_CUDA_KERNEL_LAUNCH_CHECK();
     if constexpr (Splits == 4) {
         const int64_t count = int64_t(pairs) * width;
@@ -520,7 +560,7 @@ void run_experts(const at::Tensor& x, const at::Tensor& picks, PackedView gate, 
             intermediate.data_ptr<float>(), act, count);
         C10_CUDA_KERNEL_LAUNCH_CHECK();
     }
-    if (exact_down) {
+    if constexpr (ExactDown) {
         run_exact_down(activation, picks, down, shared_down, output, dims, experts);
         return;
     }
@@ -589,18 +629,26 @@ void gguf_experts_impl(const at::Tensor& x, const at::Tensor& picks,
         if (split_k4)
             run_experts<int32_t, 4>(x, picks, g, u, d, shared_gate, shared_up, shared_down,
                 output, activation, dims, width, int(picks.size(1)), int(gate.size(0) / width));
+        else if (exact_down)
+            run_experts<int32_t, 1, true>(x, picks, g, u, d, shared_gate, shared_up, shared_down,
+                output, activation, dims, width, int(picks.size(1)), int(gate.size(0) / width),
+                blockwise, split_projections);
         else
             run_experts<int32_t>(x, picks, g, u, d, shared_gate, shared_up, shared_down,
                 output, activation, dims, width, int(picks.size(1)), int(gate.size(0) / width),
-                blockwise, split_projections, exact_down);
+                blockwise, split_projections);
     } else {
         if (split_k4)
             run_experts<int64_t, 4>(x, picks, g, u, d, shared_gate, shared_up, shared_down,
                 output, activation, dims, width, int(picks.size(1)), int(gate.size(0) / width));
+        else if (exact_down)
+            run_experts<int64_t, 1, true>(x, picks, g, u, d, shared_gate, shared_up, shared_down,
+                output, activation, dims, width, int(picks.size(1)), int(gate.size(0) / width),
+                blockwise, split_projections);
         else
             run_experts<int64_t>(x, picks, g, u, d, shared_gate, shared_up, shared_down,
                 output, activation, dims, width, int(picks.size(1)), int(gate.size(0) / width),
-                blockwise, split_projections, exact_down);
+                blockwise, split_projections);
     }
 }
 
@@ -995,6 +1043,14 @@ __global__ void expert_down80_exact(const __half* activation, const Index* picks
     const auto expert = picks[pair];
     const unsigned mask = __ballot_sync(0xffffffff, output < dims);
     if (output >= dims) return;
+    if (expert == experts) {
+        if (part == 0) {
+            const int64_t at = int64_t(pair) * dims + output;
+            if constexpr (F32) static_cast<float*>(out)[at] = 0.0f;
+            else static_cast<__half*>(out)[at] = __float2half_rn(0.0f);
+        }
+        return;
+    }
     float sum = 0.0f;
     if (expert >= 0 && expert <= experts) {
         const __half* input = activation + int64_t(pair) * 80;
@@ -1030,6 +1086,14 @@ __global__ void expert_down160_exact(const __half* activation, const Index* pick
     __shared__ __align__(32) float cc[256];
     const int first = blockIdx.x*16, pair = blockIdx.y;
     const auto expert = picks[pair];
+    if (expert == experts) {
+        if (threadIdx.x < 16) {
+            const int64_t at = int64_t(pair) * dims + first + threadIdx.x;
+            if constexpr (F32) static_cast<float*>(output)[at] = 0.0f;
+            else static_cast<__half*>(output)[at] = __float2half_rn(0.0f);
+        }
+        return;
+    }
     const bool valid = expert >= 0 && expert <= experts;
     wmma::fragment<wmma::accumulator, 16, 16, 16, float> accum;
     wmma::fill_fragment(accum, 0.0f);
@@ -1063,60 +1127,47 @@ __global__ void expert_down160_exact(const __half* activation, const Index* pick
     }
 }
 
-void run_exact_down(const at::Tensor& activation, const at::Tensor& picks, PackedView view,
-                const at::Tensor& shared, at::Tensor& result, int dims, int experts) {
-    dim3 grid(1 + (dims - 1) / (EXPERT_WARPS * 8), picks.numel());
+template <typename Index, bool F32, int Width>
+void launch_exact_down(const at::Tensor& activation, const at::Tensor& picks, PackedView view,
+                       const at::Tensor& shared, at::Tensor& result, int dims, int experts) {
+    static_assert(Width == 80 || Width == 160, "exact down requires its selected width");
+    dim3 grid(Width == 80 ? 1 + (dims - 1) / (EXPERT_WARPS * 8) : dims / 16, picks.numel());
     auto stream = at::cuda::getCurrentCUDAStream(activation.get_device());
     auto a = reinterpret_cast<const __half*>(activation.data_ptr());
     auto s = reinterpret_cast<const __half*>(shared.data_ptr());
-    if (activation.size(1) == 160) {
-        dim3 tensor_grid(dims/16, picks.numel());
-        #define LAUNCH_DOWN160(INDEX, FLOAT, KIND) \
-            expert_down160_exact<INDEX, FLOAT, KIND><<<tensor_grid, 32, 0, stream>>>( \
-                a, picks.data_ptr<INDEX>(), view, s, dims, experts, result.data_ptr())
-        if (picks.scalar_type() == at::kLong) {
-            if (result.scalar_type() == at::kFloat) {
-                if (view.kind == 7) LAUNCH_DOWN160(int64_t, true, 7);
-                else LAUNCH_DOWN160(int64_t, true, -1);
-            } else {
-                if (view.kind == 7) LAUNCH_DOWN160(int64_t, false, 7);
-                else LAUNCH_DOWN160(int64_t, false, -1);
-            }
-        } else {
-            if (result.scalar_type() == at::kFloat) {
-                if (view.kind == 7) LAUNCH_DOWN160(int32_t, true, 7);
-                else LAUNCH_DOWN160(int32_t, true, -1);
-            } else {
-                if (view.kind == 7) LAUNCH_DOWN160(int32_t, false, 7);
-                else LAUNCH_DOWN160(int32_t, false, -1);
-            }
-        }
-        #undef LAUNCH_DOWN160
-        C10_CUDA_KERNEL_LAUNCH_CHECK();
-        return;
+    #define LAUNCH_DOWN(KIND) \
+        if constexpr (Width == 80) \
+            expert_down80_exact<Index, F32, KIND><<<grid, EXPERT_WARPS * 32, 0, stream>>>( \
+                a, picks.data_ptr<Index>(), view, s, dims, experts, result.data_ptr()); \
+        else \
+            expert_down160_exact<Index, F32, KIND><<<grid, 32, 0, stream>>>( \
+                a, picks.data_ptr<Index>(), view, s, dims, experts, result.data_ptr())
+    switch (view.kind) {
+        case 7: LAUNCH_DOWN(7); break;
+        case 8: LAUNCH_DOWN(8); break;
+        case 20: LAUNCH_DOWN(20); break;
+        case 42: LAUNCH_DOWN(42); break;
+        default: LAUNCH_DOWN(-1); break;
     }
-    #define LAUNCH_DOWN80(INDEX, FLOAT, KIND) \
-        expert_down80_exact<INDEX, FLOAT, KIND><<<grid, EXPERT_WARPS * 32, 0, stream>>>( \
-            a, picks.data_ptr<INDEX>(), view, s, dims, experts, result.data_ptr())
-    if (picks.scalar_type() == at::kLong) {
-        if (result.scalar_type() == at::kFloat) {
-            if (view.kind == 7) LAUNCH_DOWN80(int64_t, true, 7);
-            else LAUNCH_DOWN80(int64_t, true, -1);
-        } else {
-            if (view.kind == 7) LAUNCH_DOWN80(int64_t, false, 7);
-            else LAUNCH_DOWN80(int64_t, false, -1);
-        }
-    } else {
-        if (result.scalar_type() == at::kFloat) {
-            if (view.kind == 7) LAUNCH_DOWN80(int32_t, true, 7);
-            else LAUNCH_DOWN80(int32_t, true, -1);
-        } else {
-            if (view.kind == 7) LAUNCH_DOWN80(int32_t, false, 7);
-            else LAUNCH_DOWN80(int32_t, false, -1);
-        }
-    }
-    #undef LAUNCH_DOWN80
+    #undef LAUNCH_DOWN
     C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+void run_exact_down(const at::Tensor& activation, const at::Tensor& picks, PackedView view,
+                    const at::Tensor& shared, at::Tensor& result, int dims, int experts) {
+    #define DISPATCH_WIDTH(INDEX, FLOAT) \
+        if (activation.size(1) == 160) \
+            launch_exact_down<INDEX, FLOAT, 160>(activation, picks, view, shared, result, dims, experts); \
+        else \
+            launch_exact_down<INDEX, FLOAT, 80>(activation, picks, view, shared, result, dims, experts)
+    if (picks.scalar_type() == at::kLong) {
+        if (result.scalar_type() == at::kFloat) { DISPATCH_WIDTH(int64_t, true); }
+        else { DISPATCH_WIDTH(int64_t, false); }
+    } else {
+        if (result.scalar_type() == at::kFloat) { DISPATCH_WIDTH(int32_t, true); }
+        else { DISPATCH_WIDTH(int32_t, false); }
+    }
+    #undef DISPATCH_WIDTH
 }
 }
 

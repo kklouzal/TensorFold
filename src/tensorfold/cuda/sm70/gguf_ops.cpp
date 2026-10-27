@@ -32,6 +32,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("experts_splitk4", &gguf_experts_splitk4);
     m.def("experts_blocks", &gguf_experts_blocks);
     m.def("experts_blocks2w", &gguf_experts_blocks2w);
+    // Routed-only core: the owning family writes the original Dense shared
+    // expert over initialized zero shared slots after this call.
     m.def("experts_exact", &gguf_experts_exact);
     m.def("dense32", &gguf_dense32);
     m.def("dense_wmma", &gguf_dense_wmma);

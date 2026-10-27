@@ -92,7 +92,8 @@ def experts_exact(x, picks, gate, up, down, shared, out):
     """Original BMM arithmetic for the qualified D2560/K80 or K160 packed target route.
 
     The owning family evaluates its shared expert with the original Dense
-    projections. Old packed operator entrypoints remain independent controls.
+    projections; this routed core initializes shared slots to positive zero.
+    Old packed operator entrypoints remain independent controls.
     """
     extension().experts_exact(x, picks, gate.data, gate.ggml_type, gate.column_offset,
         up.data, up.ggml_type, up.column_offset, down.data, down.ggml_type, down.column_offset,
