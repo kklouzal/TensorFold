@@ -1,5 +1,19 @@
 # TensorFold fork
 
+The first private `a7b1661f` screen (wheel `5635735f`) measured 30.8 committed
+decode tokens/s at one request and 19.8/32.9/51.6/65.1/65.3 aggregate at
+2/4/8/16/24. All six 10-second windows were valid and both target and MTP native
+preparation counters advanced. The `710c9b6a` reference (wheel `32246b49`)
+measured 26.6/18.7/29.3/39.4/46.9/47.8 in the same screen. Both used image
+`96f69617`, eight V100-SXM2-32GB GPUs, the pinned SC117 IQ3_S target/Q8 MTP,
+greedy depth two/confidence 0.7, warmed Notebook prompts, native 262144-token
+Q8 K/V windows and ceiling 24. Startup content hashing overlapped loading in
+the candidate. All six completed quality answers matched the reference,
+including its two failures (4/6 passed). Raw packet SHA256:
+`e02aaac35107637b5d95aef03b283892e9b892b24b4b5ef63dfc82ba429122d3`.
+These first-screen gains require repetition. Broad quality, near-full-history
+capacity, 85/600-token/s targets and release qualification remain open.
+
 Canonical MTP text refresh/proposal frames now use the existing actual text
 coordinate producer when no explicit coordinates or deferred boundary are
 present. It preserves hidden/cache positions at `mtp_len`, independent of next
