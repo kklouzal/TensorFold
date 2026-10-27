@@ -1587,3 +1587,6 @@ Its private graph buffers hold at most three rows and one participant. The
 ordinary engine buffers and all admitted full-window State arenas retain their
 original extents; native owner-attention trial captures remain a separate
 qualification path.
+Unique-history graph capture joins each State's real transfer dependencies on
+the capture stream before recording kernels. The normal State checks remain in
+place, and transfer or capture failures retain their original failed owners.

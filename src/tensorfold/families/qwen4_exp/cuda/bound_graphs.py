@@ -356,15 +356,22 @@ class BoundStateGraphs:
             # operation here would leave an unresolved compact-indexer span
             # before the actual replay. Initialize the omitted output and warm
             # only captured work; the ordinary synthetic request warmed attention.
-            b.attn_o.zero_()
-            b.split = lambda _insert: None
-            try:
-                run()
-            finally:
-                b.split = None
+            # Warm the actual capture stream after joining staged inputs.
+            # Its normal State guards join real transfer events before capture;
+            # the serialized coordinator preserves that frontier through run().
+            _kv_begin(segs)  # Surface an existing poisoned transfer before submitting a new stream dependency.
+            owner.side.wait_stream(torch.cuda.current_stream(self.dec.w.device))
+            with torch.cuda.stream(owner.side):
+                b.attn_o.zero_()
+                b.split = lambda _insert: None
+                try:
+                    run()
+                finally:
+                    b.split = None
+                _kv_check(segs, comm=self.dec.w.comm)
         else:
             run()                                  # load kernels and exact launch geometry before capture
-        _kv_check(segs, comm=self.dec.w.comm)
+            _kv_check(segs, comm=self.dec.w.comm)
         torch.cuda.synchronize(self.dec.w.device)
         from .multi_graphs import free_bytes
 

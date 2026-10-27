@@ -115,10 +115,15 @@ def test_replay_runs_unique_attention_between_the_graphs_with_this_frames_exact_
     assert events == ["before", "live-attention", "after"]
 
 
-def test_failed_kernel_warmup_restores_the_capture_callback_without_running_attention():
+def test_failed_kernel_warmup_restores_the_capture_callback_without_running_attention(monkeypatch):
+    from contextlib import nullcontext
+
     graph = object.__new__(bound_graphs.BoundStateGraphs)
     graph.unique = True
-    graph.owner = NS(room_bytes=0, budget=1, _has_room=lambda: True)
+    graph.owner = NS(room_bytes=0, budget=1, _has_room=lambda: True, side=NS(wait_stream=lambda _stream: None))
+    graph.dec = NS(w=NS(device="cpu"))
+    monkeypatch.setattr(torch.cuda, "current_stream", lambda _device: object())
+    monkeypatch.setattr(torch.cuda, "stream", lambda _stream: nullcontext())
     graph._agree = bool
     buffers = NS(attn_o=torch.ones(2, 3), split=None)
     primary = RuntimeError("kernel preparation failed")
