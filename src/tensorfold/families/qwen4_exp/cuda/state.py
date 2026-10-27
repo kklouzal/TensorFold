@@ -315,6 +315,11 @@ class State:
         self.kv_key_dtype, self.kv_value_dtype = self.kv_pair.key_dtype, self.kv_pair.value_dtype
         self.kv_working_policy = working_policy
         self.kv_identity = (self.kv_pair.identity, self.kv_working_policy)
+        from .prefix_policy import state_epoch
+
+        prefix_epoch = state_epoch(w.meta.get("sm70_profile"))
+        if prefix_epoch is not None:
+            self.kv_identity += (prefix_epoch,)
         if logical_context is not None:
             self.kv_identity += (("logical-context-v1", logical_limit),)
         if binding is not None:
@@ -1112,6 +1117,11 @@ class State:
                     poison_control=None, copy_dflash=True):
         """Copy only valid cache rows and complete pools; the caller restores the kept point's recurrent snapshot."""
 
+        from .prefix_policy import FAMILY_PREFIX_STATE
+
+        if ((FAMILY_PREFIX_STATE in self.kv_identity or FAMILY_PREFIX_STATE in source.kv_identity)
+                and self.kv_identity != source.kv_identity):
+            raise ValueError("a cached FAMILY prefix needs matching source/profile State identities")
         if self.compact_indexer is not None or source.compact_indexer is not None:
             from .history_owner import check_prefix_retirement
 

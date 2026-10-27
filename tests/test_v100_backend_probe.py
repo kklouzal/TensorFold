@@ -440,6 +440,7 @@ def test_final_fatal_byte_cannot_be_reported_as_success(tmp_path, monkeypatch):
 
 def test_unset_profile_uses_actual_reference_constructor_policy_and_records_native_flags(tmp_path, monkeypatch):
     from tensorfold.cuda.sm70 import execution_policy, family_ops, routing_native
+    from tensorfold.families.qwen4_exp.cuda.prefix_policy import identity as prefix_identity
     from tensorfold.families.qwen4_exp.cuda import (
         dspark_context_graphs, dspark_proposal_graphs, gguf_prefill, gguf_weights, padded_linears,
     )
@@ -463,6 +464,7 @@ def test_unset_profile_uses_actual_reference_constructor_policy_and_records_nati
                                    requested=args.requested_sm70_profile)
     assert record == {
         "requested_sm70_profile": None, "sm70_profile": "reference",
+        "prefix_policy": {"identity": prefix_identity("reference"), "state_epoch": None},
         "native_flags": {"family": False, "private_attention": False, "routing": False,
             "padded": False, "gguf_dense_implementation": gguf_weights.GGUFDense.implementation,
             "gguf_concat_implementation": "reference", "gguf_experts_implementation": "reference",
@@ -611,6 +613,49 @@ def test_default_repetition_keeps_existing_reply_filenames(tmp_path, tokenizer, 
     assert (tmp_path / "mtp-target.json").exists() and (tmp_path / "serial-reference.json").exists()
     assert not list(tmp_path.glob("iteration-*.json"))
     assert report["completed_iterations"] == 1
+
+
+def test_prefix_expectation_requires_explicit_profile_and_repeated_case(tmp_path, monkeypatch):
+    monkeypatch.setenv("TENSORFOLD_SM70_PROFILE", "source-family-prefix-trial")
+    with pytest.raises(SystemExit):
+        probe.arguments(cli(tmp_path) + ["--expect-prefix-reuse"])
+    args = probe.arguments(cli(tmp_path) + ["--expect-prefix-reuse", "--repetitions", "10"])
+    assert args.expect_prefix_reuse and args.repetitions == 10
+    monkeypatch.setenv("TENSORFOLD_SM70_PROFILE", "reference")
+    with pytest.raises(SystemExit):
+        probe.arguments(cli(tmp_path) + ["--expect-prefix-reuse", "--repetitions", "10"])
+
+
+@pytest.mark.parametrize("wrong", [False, True])
+def test_private_prefix_adapter_preserves_raw_result_before_check_failure(tmp_path, tokenizer, nvtx_markers, wrong):
+    import json
+
+    args = SimpleNamespace(repetitions=2, serial_reference=True, tokens=3, out=tmp_path, expect_prefix_reuse=True)
+    report, limit = {"replies": []}, RequestLimit(1)
+
+    class Cached:
+        def generate(self, prompt, count, sampling, callback, *, draft, stop_eos):
+            assert prompt == [0, 1] and count == 3 and stop_eos and limit.used == 1
+            callback([1])
+            return {"cached": 0 if report["iteration"] == 1 else (0 if wrong else 1)}
+
+    engine = Cached()
+    if wrong:
+        with pytest.raises(ValueError, match="declared cold/full-prefix"):
+            probe.repeat_replies(engine, tokenizer, [0, 1], args, report, limit)
+    else:
+        probe.repeat_replies(engine, tokenizer, [0, 1], args, report, limit)
+    row = json.loads((tmp_path / "iteration-0002-mtp-target.json").read_text())
+    assert row["token_ids"] == [1] and row["prefix_reuse_check"]["passed"] is not wrong
+    assert row["prefix_reuse_check"]["expected"] == 1 and limit.used == 0
+
+
+def test_private_prefix_adapter_refuses_foreign_state_before_host_or_request_publication(monkeypatch):
+    monkeypatch.setattr(probe, "check_engine", lambda engine: None)
+    engine = SimpleNamespace(sm70_profile="source-family-prefix-trial",
+                             retention_catalog=SimpleNamespace(states=[SimpleNamespace(kv_identity=())]))
+    with pytest.raises(ValueError, match="State owners lack"):
+        probe.run_leader(engine, None, SimpleNamespace(expect_prefix_reuse=True), {})
 
 
 @pytest.mark.parametrize("write_failure", [False, True])

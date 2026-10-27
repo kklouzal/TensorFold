@@ -53,6 +53,14 @@ standalone bulk reduction geometry. The default remains `reference`, and the
 historical `optimized` profile keeps its cu126 qualification gate. Component
 controls motivate this trial; its current-stack SC117 full-checkpoint numerical,
 quality, capacity and matched performance gates remain pending.
+The separate private `source-family-prefix-trial` keeps that FAMILY operator set
+and permits same-profile text prefix borrowing only for symmetric INT8 and valid
+greedy sampling. Its State compatibility epoch differs from both reference and
+the cold FAMILY trial; Q4, mixed codecs, stochastic sampling and media requests
+remain cold. The finite diagnostic's `--expect-prefix-reuse --repetitions 10`
+checks a cold first request followed by the maximal legal same-prompt prefix
+before its pending anchor. Partial-prefix, recovery, slot ownership, full-context
+quality and performance qualification remain pending before production selection.
 Its combined source/media authority also checks the protected CPU processor and
 decoder closure; a source-only record cannot satisfy the combined verifier.
 The additive [CPU media source image](deploy/v100/media-foundation.md) supplies

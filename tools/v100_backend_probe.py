@@ -54,6 +54,10 @@ SOURCE_FILES = (
     "tensorfold/cuda/expert_launch.py",
     "tensorfold/cuda/scheduler.py", "tensorfold/server/request_limits.py",
     "tensorfold/token_metadata.py", "tensorfold/cuda/chat_template.py",
+    "tensorfold/cuda/sm70/execution_policy.py",
+    "tensorfold/families/qwen4_exp/cuda/prefix_policy.py",
+    "tensorfold/families/qwen4_exp/cuda/state.py",
+    "tensorfold/families/qwen4_exp/cuda/multi.py",
 )
 
 
@@ -117,6 +121,8 @@ def arguments(argv=None):
     parser.add_argument("--tokens", type=int, default=128, help="bounded reply allowance, 1..512")
     parser.add_argument("--repetitions", type=int, default=1,
                         help="1..16 sequential repetitions using one loaded engine/admission; cache state is retained and reported")
+    parser.add_argument("--expect-prefix-reuse", action="store_true",
+                        help="private cached FAMILY trial: require cold first MTP and maximal legal prefix on later identical prompts")
     parser.add_argument("--thinking", action="store_true", help="pass enable_thinking=True to the unchanged target template")
     parser.add_argument("--serial-reference", action="store_true", help="also run a separately labeled draft=False reply with MTP loaded")
     parser.add_argument("--rank", type=int, help=argparse.SUPPRESS)
@@ -130,6 +136,8 @@ def arguments(argv=None):
         parser.error("a nonempty prompt of at most4096 UTF8 bytes and 1..512 reply tokens are required")
     if not 1 <= args.repetitions <= 16:
         parser.error("--repetitions must be 1..16")
+    if args.expect_prefix_reuse and args.repetitions < 2:
+        parser.error("--expect-prefix-reuse requires at least2 repetitions")
     if (not 1 <= args.master_port <= 65535 or not math.isfinite(args.timeout_seconds)
             or args.timeout_seconds <= 0 or args.rank is not None and args.rank not in range(WORLD)):
         parser.error("invalid rendezvous port, finite positive timeout, or rank")
@@ -145,6 +153,11 @@ def arguments(argv=None):
     # The existing constructor owns supported values, runtime qualification and
     # its unset default. Recording intent must not select a different profile.
     args.requested_sm70_profile = os.environ.get(PROFILE_ENV)
+    if args.expect_prefix_reuse:
+        from tensorfold.families.qwen4_exp.cuda.prefix_policy import FAMILY_PREFIX_PROFILE
+
+        if args.requested_sm70_profile != FAMILY_PREFIX_PROFILE:
+            parser.error("--expect-prefix-reuse requires the explicit cached FAMILY trial profile")
     for name in ("model", "mtp", "wheel", "source_hold"):
         setattr(args, name, regular_file(getattr(args, name)))
     if args.source_hold.stat().st_size > 16 << 20:
@@ -204,9 +217,12 @@ def record_execution_profile(engine, report, *, requested):
     """Observe the constructor-selected dispatch without changing native flags."""
     from tensorfold.cuda.sm70 import family_ops, routing_native
     from tensorfold.families.qwen4_exp.cuda import gguf_weights, padded_linears
+    from tensorfold.families.qwen4_exp.cuda import prefix_policy
 
     report["requested_sm70_profile"] = requested
     report["sm70_profile"] = engine.sm70_profile
+    report["prefix_policy"] = {"identity": prefix_policy.identity(engine.sm70_profile),
+                               "state_epoch": prefix_policy.state_epoch(engine.sm70_profile)}
     report["native_flags"] = {
         "family": family_ops._NATIVE_FAMILY,
         "private_attention": family_ops._NATIVE_ATTENTION,
@@ -317,6 +333,14 @@ def repeat_replies(engine, tokenizer, tokens, args, report, limit):
                 generate_reply(engine, tokenizer, tokens, count=args.tokens, draft=draft, limit=limit, result=row)
             except BaseException as error:
                 primary = error
+            if getattr(args, "expect_prefix_reuse", False) and draft and primary is None:
+                expected = 0 if iteration == 1 else len(tokens) - 1
+                observed = row["stats"].get("cached")
+                matched = type(observed) is int and observed == expected
+                row["prefix_reuse_check"] = {"expected": expected, "observed": observed, "passed": matched,
+                    "scope": "same rendered prompt; complete reusable prefix before pending anchor"}
+                if not matched:
+                    primary = ValueError("cached FAMILY trial differs from the declared cold/full-prefix case")
             try:
                 write_json(args.out / (name + ".json"), row)
             except BaseException as error:
@@ -337,6 +361,13 @@ def run_leader(engine, tokenizer, args, report):
     from tensorfold.server.request_limits import RequestLimit
 
     check_engine(engine)
+    if getattr(args, "expect_prefix_reuse", False):
+        from tensorfold.families.qwen4_exp.cuda.prefix_policy import FAMILY_PREFIX_PROFILE, FAMILY_PREFIX_STATE
+
+        if engine.sm70_profile != FAMILY_PREFIX_PROFILE:
+            raise ValueError("prefix-reuse expectation requires the explicit cached FAMILY trial profile")
+        if any(FAMILY_PREFIX_STATE not in state.kv_identity for state in engine.retention_catalog.states):
+            raise ValueError("cached FAMILY State owners lack the declared prefix policy epoch")
     tokens, prompt = prepared_prompt(engine, tokenizer, args)
     report["prompt"] = prompt
     caller = FiniteBackendCaller(max_input_tokens=MAX_PROMPT_TOKENS,

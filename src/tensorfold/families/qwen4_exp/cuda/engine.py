@@ -2605,7 +2605,7 @@ class FlashNextEngine:
                     from .prefix_policy import serial_reuse_allowed
 
                     reuse = serial_reuse_allowed(self.w, sampling, draft=draft,
-                                                  position=len(prompt), kv_pair=self.kv_pair)
+                                                  position=len(prompt), kv_pair=self.kv_pair, vision=vision)
                 hit = self._resume(prompt) if reuse else None
                 points = None
                 if self.tp > 1:                      # every peer decodes the leader's exact request
