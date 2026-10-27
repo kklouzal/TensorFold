@@ -149,6 +149,11 @@ def begin_execution_manifest(engine, path):
     stats = _opened_stats(files)
     _expected_files(manifest, files, stats)
     engine._execution_preload = {"manifest": digest(manifest), "artifacts": stats}
+    from .startup_content import ENV as overlap_environment
+    if os.environ.get(overlap_environment) == "1":
+        # Keep the actual already-enumerated loader closure. Reopening GGUF
+        # metadata here later would add another unfunded parse/metadata peak.
+        engine._execution_preload["capture_files"] = files
     return manifest
 
 

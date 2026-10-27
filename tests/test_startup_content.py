@@ -1,5 +1,6 @@
 """Startup capture ownership, current-process authority and boundary controls."""
 from concurrent.futures import CancelledError
+from pathlib import Path
 from types import SimpleNamespace as NS
 import hashlib
 import threading
@@ -13,7 +14,7 @@ from tensorfold.engine import model_identity
 
 
 def plan():
-    return startup.StartupContentPlan()
+    return startup.StartupContentPlan({"target/unit":Path("/tmp/qualification-operand")})
 
 
 def test_native_pthread_stack_queries_use_real_typed_attributes_without_global_changes():
@@ -33,7 +34,7 @@ def test_native_pthread_stack_queries_use_real_typed_attributes_without_global_c
             _thread_stack_layout(bad)
 
 
-def test_default_is_serial_and_enabled_mode_refuses_wrong_scope(monkeypatch):
+def test_default_is_serial_and_enabled_mode_refuses_wrong_scope(tmp_path, monkeypatch):
     monkeypatch.delenv(startup.ENV, raising=False)
     assert startup.prepare(object(), None) is None
     monkeypatch.setenv(startup.ENV, "0")
@@ -43,7 +44,8 @@ def test_default_is_serial_and_enabled_mode_refuses_wrong_scope(monkeypatch):
     with pytest.raises(ValueError, match="explicit private"):
         startup.prepare(NS(_profile_build=None, tp=1), {})
     engine=NS(_profile_build=None,tp=8,method_geometry=NS(method="mtp"),
-        media_profile=None,sm70_profile="source-owner-target-greedy-trial")
+        media_profile=None,sm70_profile="source-owner-target-greedy-trial",
+        _execution_preload={"capture_files":{"target/model":tmp_path/"model"}})
     prepared=startup.prepare(engine,{})
     assert prepared.host_bytes == startup.STACK_LIMIT + prepared.guard_bytes + startup.HASH_WORKING_BYTES
 
@@ -154,9 +156,9 @@ def test_actual_plan_checks_preload_identity_before_starting_its_sole_worker(tmp
     files={"target/model.gguf":path}
     before=identity._opened_stats(files)
     expected={"target/model.gguf":{"size":9,"sha256":hashlib.sha256(b"immutable").hexdigest()}}
-    engine=NS(_execution_preload={"artifacts":before})
-    monkeypatch.setattr(identity,"artifact_files",lambda _engine:(files,None))
-    prepared=plan()
+    engine=NS(_execution_preload={"artifacts":before,"capture_files":files})
+    monkeypatch.setattr(identity,"artifact_files",lambda _engine:pytest.fail("GGUF metadata reparsed after admission"))
+    prepared=startup.StartupContentPlan(files)
     capture=prepared.start(engine,{"artifacts":expected})
     assert capture.thread.ident is None and not capture.start_attempted
     capture.start()
@@ -256,3 +258,42 @@ def test_real_join_interrupt_cannot_publish_closed_before_actual_operation_clean
         release.set()
         capture.close()
     assert capture.closed and capture.operation_retired.is_set() and capture.finished_ns is not None
+
+
+@pytest.mark.parametrize("hash_failure", [False, True])
+def test_failing_final_timing_still_publishes_retirement_and_preserves_hash_primary(monkeypatch, hash_failure):
+    primary=ValueError("hash refusal")
+    diagnostic=MemoryError("final timestamp allocation")
+    def operation(_cancelled):
+        if hash_failure:
+            raise primary
+        return NS(bytes_read=1)
+    capture=startup.StartupContentCapture(plan(),operation)
+    monkeypatch.setattr(startup.time,"monotonic_ns",lambda:(_ for _ in ()).throw(diagnostic))
+    capture.start()
+    with pytest.raises(ValueError if hash_failure else MemoryError) as caught:
+        capture.result()
+    assert caught.value is (primary if hash_failure else diagnostic)
+    assert capture.operation_retired.is_set() and capture.finished_ns is None
+    assert capture.finish_errors == [diagnostic]
+    if hash_failure:
+        assert primary.__cause__ is diagnostic
+    capture.close()
+    assert capture.closed
+
+
+@pytest.mark.parametrize("case", ["unicode", "control", "aggregate", "files"])
+def test_unprovable_inventory_working_bounds_refuse_before_worker_allocation(tmp_path, monkeypatch, case):
+    path=tmp_path/"model.gguf"
+    path.write_bytes(b"data")
+    if case == "unicode":
+        files={"target/mödél":path}
+    elif case == "control":
+        files={"target/control\n":path}
+    elif case == "aggregate":
+        files={("target/"+str(index)+"x"*2000):path for index in range(40)}
+    else:
+        files={str(index):path for index in range(65)}
+    monkeypatch.setattr(startup,"StartupContentCapture",lambda *_args:pytest.fail("worker allocated before inventory refusal"))
+    with pytest.raises(ValueError,match="startup"):
+        startup.StartupContentPlan(files)
