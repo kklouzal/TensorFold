@@ -305,6 +305,123 @@ def test_successful_follower_departure_retires_a_still_live_leader():
     assert supervise(commands, [dict(os.environ)] * 2, grace=.1) == 1
 
 
+def test_departure_expiry_records_running_peer_and_preserves_default_failure():
+    records = []
+    commands = [[sys.executable, "-c", "pass"], [sys.executable, "-c", "import time; time.sleep(60)"]]
+    assert supervise(commands, [dict(os.environ)] * 2, grace=.05, on_exit=records.append) == 1
+    assert len(records) == 1
+    record = records[0]
+    assert record["reason"] == "departure-grace-expired"
+    assert record["departure_grace_s"] == record["retirement_grace_s"] == .05
+    assert record["first_exit_elapsed_s"] >= 0
+    assert [row["decision_status"] for row in record["children"]] == [0, None]
+    assert [row["pre_containment_status"] for row in record["children"]] == [0, None]
+    assert all(row["pre_containment_observed"] and not row["unresolved"] for row in record["children"])
+    assert [row["final_returncode"] for row in record["children"]] == [0, -15]
+
+
+def test_explicit_departure_allowance_permits_simulated_profiler_flush_without_changing_teardown():
+    records = []
+    commands = [[sys.executable, "-c", "pass"], [sys.executable, "-c", "import time; time.sleep(.25)"]]
+    assert supervise(commands, [dict(os.environ)] * 2, grace=.05,
+                     departure_grace=1, on_exit=records.append) == 0
+    record = records[0]
+    assert record["reason"] == "all-children-exited-zero"
+    assert record["departure_grace_s"] == 1 and record["retirement_grace_s"] == .05
+    assert [row["final_returncode"] for row in record["children"]] == [0, 0]
+
+
+def test_late_nonzero_child_is_not_hidden_by_instrumented_departure_allowance():
+    records = []
+    commands = [[sys.executable, "-c", "pass"],
+                [sys.executable, "-c", "import time; time.sleep(.15); raise SystemExit(7)"]]
+    assert supervise(commands, [dict(os.environ)] * 2, grace=.05,
+                     departure_grace=1, on_exit=records.append) == 7
+    assert records[0]["reason"] == "child-nonzero-exit"
+    assert [row["final_returncode"] for row in records[0]["children"]] == [0, 7]
+
+
+@pytest.mark.parametrize("source", ["fatal", "timeout"])
+def test_failure_probe_preempts_larger_departure_allowance_and_retires_all(source):
+    records = []
+    read_fd, write_fd = os.pipe2(os.O_NONBLOCK | os.O_CLOEXEC)
+    started = time.monotonic()
+    command = "import time; time.sleep(60)"
+    if source == "fatal":
+        command = f"import os,time; time.sleep(.1); os.write({write_fd}, b'F'); time.sleep(60)"
+
+    def failed():
+        if source == "timeout":
+            return time.monotonic() - started >= .15
+        try:
+            return bool(os.read(read_fd, 1))
+        except BlockingIOError:
+            return False
+
+    try:
+        assert supervise([[sys.executable, "-c", command]], [dict(os.environ)], grace=.05,
+                         departure_grace=5, failure_probe=failed, pass_fds=(write_fd,), on_exit=records.append) == 1
+        assert records[0]["reason"] == "failure-probe"
+        assert records[0]["children"][0]["final_returncode"] == -15
+        assert records[0]["retirement_grace_s"] == .05
+    finally:
+        os.close(write_fd)
+        os.close(read_fd)
+
+
+def test_exit_reporter_failure_propagates_after_process_retirement():
+    report = []
+    primary = RuntimeError("exit record publication failed")
+
+    def failed(record):
+        report.append(record)
+        raise primary
+
+    with pytest.raises(RuntimeError) as caught:
+        supervise([[sys.executable, "-c", "pass"]], [dict(os.environ)], grace=.05, on_exit=failed)
+    assert caught.value is primary
+    assert report[0]["children"][0]["final_returncode"] == 0
+    with pytest.raises(ProcessLookupError):
+        os.kill(report[0]["children"][0]["pid"], 0)
+
+
+def test_partial_spawn_primary_survives_exit_reporter_failure(monkeypatch):
+    from tensorfold.cuda import expert_launch
+    spawn = subprocess.Popen
+    children, reports = [], []
+    primary, secondary = FileNotFoundError("second child absent"), MemoryError("exit reporter failed")
+
+    def partial(command, **kwargs):
+        if children:
+            raise primary
+        child = spawn(command, **kwargs)
+        children.append(child)
+        return child
+
+    def failed(record):
+        reports.append(record)
+        raise secondary
+
+    monkeypatch.setattr(expert_launch.subprocess, "Popen", partial)
+    with pytest.raises(FileNotFoundError) as caught:
+        supervise([[sys.executable, "-c", "import time; time.sleep(60)"], ["absent"]],
+                  [dict(os.environ)] * 2, grace=.05, on_exit=failed)
+    assert caught.value is primary and caught.value.__cause__ is secondary
+    assert len(reports) == 1 and reports[0]["reason"] == "supervision-error"
+    assert reports[0]["children"][0]["final_returncode"] is not None
+    assert reports[0]["children"][1]["pid"] is None
+
+
+@pytest.mark.parametrize("options", [
+    {"departure_grace": True}, {"departure_grace": -1}, {"departure_grace": float("nan")},
+    {"departure_grace": float("inf")}, {"departure_grace": 10 ** 1000}, {"departure_grace": "1"},
+    {"on_exit": True},
+])
+def test_new_supervisor_options_refuse_before_spawn(options):
+    with pytest.raises(ValueError):
+        supervise([["absent"]], [dict(os.environ)], **options)
+
+
 def test_exited_rank_does_not_leave_a_compiler_in_another_process_group(tmp_path):
     marker = tmp_path / "compiler.pid"
     compiler = ("import os,pathlib,signal,time;os.setpgid(0,0);signal.signal(signal.SIGTERM,signal.SIG_IGN);"
@@ -343,7 +460,7 @@ def test_partial_spawn_preserves_error_and_retires_already_started_rank(tmp_path
 def test_unresolved_session_retains_explicit_owner_and_still_retires_other_ranks(monkeypatch):
     import tensorfold.cuda.expert_launch as launcher
     real_retire = launcher._retire
-    owners = []
+    owners, reports = [], []
     def retire(child, deadline):
         owners.append(child)
         if len(owners) == 1:
@@ -352,11 +469,15 @@ def test_unresolved_session_retains_explicit_owner_and_still_retires_other_ranks
     monkeypatch.setattr(launcher, "_retire", retire)
     try:
         with pytest.raises(launcher.UnresolvedRankSessions) as caught:
-            launcher.supervise([[sys.executable, "-c", "pass"]] * 2, [dict(os.environ)] * 2, grace=.1)
+            launcher.supervise([[sys.executable, "-c", "pass"]] * 2, [dict(os.environ)] * 2,
+                               grace=.1, on_exit=reports.append)
         assert len(owners) == 2
         assert caught.value.sessions == (owners[0],)
         assert isinstance(caught.value.__cause__, OSError)
         assert owners[0].returncode is None and owners[1].returncode is not None
+        assert len(reports) == 1 and reports[0]["children"][0]["unresolved"] is True
+        assert reports[0]["children"][0]["final_returncode"] is None
+        assert reports[0]["children"][1]["unresolved"] is False
     finally:
         if owners and owners[0].returncode is None:
             real_retire(owners[0], time.monotonic())
