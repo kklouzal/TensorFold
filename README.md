@@ -1576,3 +1576,10 @@ prefill pass and its decode before publishing FIFO admission. Its temporary
 prompt/order owners retire before that policy transition; warmup errors stop
 startup instead of publishing an unwarmed slot. Actual model output and
 performance qualification remain pending.
+
+An explicit source-stack N1 graph contract can capture exact live-row forward
+pieces while unique-history attention and its coordinate/indexer preparation
+remain eager. It retains the original State, recurrent, cache and graph-pool
+owners and ordinary sampling protocol; padded unique-history capture stays
+unsupported. Actual TP8 replay bits, model quality and the 85-token/s target
+remain unverified, and default execution does not enable this contract.

@@ -22,8 +22,9 @@ from .state import CAND, Buffers
 
 
 class BoundLane:
-    def __init__(self, state, index, *, provisional_mtp=False):
+    def __init__(self, state, index, *, provisional_mtp=False, exact_rows=False):
         self.state, self.index = state, index
+        self.exact_rows = exact_rows
         self.identity = (state.kv_identity, state.version)
         self.view = copy.copy(state)
         self.recurrent = torch.empty_like(state.rec)
@@ -49,7 +50,11 @@ class BoundLane:
         elif mtp_position is not None and mtp_position != state.mtp_len:
             raise ValueError("provisional MTP positions require a qualified bound lane")
         view.cur = [0] * len(state.cur)
-        view.scratch, view.graph_rows = self.scratch, self.keep_rows
+        view.scratch = self.scratch
+        if self.exact_rows:
+            view.__dict__.pop("graph_rows", None)
+        else:
+            view.graph_rows = self.keep_rows
         if rows is not None:
             self.history_rows = rows
             self.keep_rows.fill_(rows)
@@ -72,6 +77,12 @@ class BoundStateGraphs:
 
     def __init__(self, owner):
         self.owner, self.dec = owner, owner.dec
+        self.unique = self.dec.w.meta.get("history_layout") == "unique"
+        if self.unique:
+            from .multi_graphs import UNIQUE_CAPTURE_CONTRACT
+
+            if self.dec.w.meta.get("unique_capture_contract") != UNIQUE_CAPTURE_CONTRACT:
+                raise ValueError("unique graph owners require the exact N1 piecewise capture contract")
         self.states = tuple(self.dec.free)
         self.indices = {id(state): index for index, state in enumerate(self.states)}
         self.lanes = {}
@@ -145,7 +156,7 @@ class BoundStateGraphs:
             before = torch.cuda.memory_allocated(self.dec.w.device)
             lane = self.lanes[index] = object.__new__(BoundLane)
             lane.__init__(state, index, provisional_mtp=bool(
-                self.dec.w.meta.get("device_greedy_mtp_ready", False)))
+                self.dec.w.meta.get("device_greedy_mtp_ready", False)), exact_rows=self.unique)
             self._resident(max(0, torch.cuda.memory_allocated(self.dec.w.device) - before))
         return lane
 
@@ -161,7 +172,8 @@ class BoundStateGraphs:
             before = torch.cuda.memory_allocated(self.dec.w.device)
             source = self.dec.buf if kind == "verify" else self.dec.mbuf
             result = self.buffers[kind] = Buffers(self.dec.w, source.rows, self.dec.capacity,
-                                                 moe_prefill=source.moe.plan.prefill)
+                                                 moe_prefill=source.moe.plan.prefill,
+                                                 owner_role="mtp" if kind == "mtp" else None)
             result.dspark_graph = kind == "verify" and getattr(self.dec.w, "dspark", None) is not None
             if result.dspark_graph:
                 self.dec.w.dspark.prepare_graph_context(result, self)
@@ -204,12 +216,19 @@ class BoundStateGraphs:
         return device[:len(rows)], sdevice[:len(segments)]
 
     def _width(self, kind, segs):
+        if self.unique and len(segs) == 1:
+            return segs[0][2] - segs[0][1]
         # Chained MTP steps append one row per participant. Keep their physical
         # expert/attention work at that exact width; absorbs and main verifies
         # retain the admitted speculative width in the same bounded pool.
         return 1 if kind == "mtp" and segs and all(a1 - a0 == 1 for _, a0, a1 in segs) else self.dec.depth + 1
 
     def _plan(self, kind, segs, mtp_positions=None, *, device_tokens=None):
+        from .multi_graphs import UNIQUE_CAPTURE_MAX_ROWS
+
+        if self.unique and (len(segs) != 1 or mtp_positions is not None or device_tokens is not None
+                            or not 1 <= segs[0][2] - segs[0][1] <= min(self.dec.depth + 1, UNIQUE_CAPTURE_MAX_ROWS)):
+            return None
         width = self._width(kind, segs)
         expected = 0
         for _state, a0, a1 in segs:
@@ -237,8 +256,10 @@ class BoundStateGraphs:
         from tensorfold.cuda.sm70.attention_qualification import allows
 
         end = max(position + width for position in positions)
-        context = max(256, 1 << (end - 1).bit_length())
-        if not allows(self.dec.w, positions, width, context):
+        context = None if self.unique else max(256, 1 << (end - 1).bit_length())
+        if (self.unique and any(position + width > state.logical_context
+                                for (state, _, _), position in zip(ordered, positions))
+                or not self.unique and not allows(self.dec.w, positions, width, context)):
             # Preserve invalid-owner/state errors before an optional decline;
             # no allocation, collective, pointer binding or staging occurs.
             for state, _, _ in ordered:
@@ -325,13 +346,25 @@ class BoundStateGraphs:
         allowed = owner.room_bytes < owner.budget and owner._has_room()
         if not self._agree(allowed):
             return None
-        run()                                      # load kernels and exact launch geometry before capture
+        if self.unique:
+            # Attention stays eager between graph pieces. Warming its host
+            # operation here would leave an unresolved compact-indexer span
+            # before the actual replay. Initialize the omitted output and warm
+            # only captured work; the ordinary synthetic request warmed attention.
+            b.attn_o.zero_()
+            b.split = lambda _insert: None
+            try:
+                run()
+            finally:
+                b.split = None
+        else:
+            run()                                  # load kernels and exact launch geometry before capture
         _kv_check(segs, comm=self.dec.w.comm)
         torch.cuda.synchronize(self.dec.w.device)
         from .multi_graphs import free_bytes
 
         before = free_bytes()
-        pieces = owner._pieces(run, b, split=False)
+        pieces = owner._pieces(run, b, split=self.unique)
         torch.cuda.synchronize(self.dec.w.device)
         took = max(0, before - free_bytes())
         allowed = owner.room_bytes + took <= owner.budget
@@ -372,6 +405,9 @@ class BoundStateGraphs:
         if self.closed:
             raise RuntimeError("bound graph owner is closed")
         source = self.dec.buf if kind == "verify" else self.dec.mbuf
+        if self.unique and (source.owner_kernel_family != "torch-reference"
+                            or source.owner_graph_family != "uncaptured"):
+            return None
         if source.rotor_lookup or any(state.image_positions is not None for state, _, _ in segs):
             return None
         width = self._width(kind, segs)
@@ -423,8 +459,11 @@ class BoundStateGraphs:
             # their owners are shared with the original States, not duplicated.
             history_runtime.begin(bound, prefill=b.prefill, mtp=kind == "mtp", counts=rows)
         _kv_begin(segs)
-        for graph in pieces.graphs:
-            profile_replay(graph, self.dec.w.comm)
+        if self.unique:
+            self.owner._replay_pieces(pieces, bound, b, mtp=kind == "mtp")
+        else:
+            for graph in pieces.graphs:
+                profile_replay(graph, self.dec.w.comm)
         if archive:
             history_runtime.submitted(bound, prefill=b.prefill, mtp=kind == "mtp")
         # Match RoundGraphs' ordinary contract: status remains pending for the
@@ -460,6 +499,8 @@ class BoundStateGraphs:
 
     def mtp_ready(self, state, rows, position):
         """Pure lookup before a device handoff; a miss must use ordinary staging."""
+        if self.unique:
+            return False  # This contract preserves the ordinary sampling/proposal protocol.
         index = self.indices.get(id(state))
         lane = self.lanes.get(index)
         if (self.closed or lane is None or self.owner.failure is not None
@@ -481,28 +522,44 @@ class BoundStateGraphs:
         """Prepare representative full-width keys; later exact shapes share the bounded pool."""
         # This owner serves every admitted key. Reserve it before optional
         # captures consume the shared allowance or transient warm-up headroom.
-        self._prepare_greedy()
+        if not self.unique:
+            self._prepare_greedy()
         runtime = getattr(self.dec.w, "dspark", None)
         if runtime is not None:
             runtime.prepare_proposal_graphs(self)
         width = self.dec.depth + 1
-        for n in range(1, min(len(states), self.dec.buf.rows // width) + 1):
+        if self.unique:
+            from .multi_graphs import UNIQUE_CAPTURE_MAX_ROWS
+
+            width = min(width, UNIQUE_CAPTURE_MAX_ROWS)
+        maximum = 1 if self.unique else min(len(states), self.dec.buf.rows // width)
+        for n in range(1, maximum + 1):
             active = list(reversed(states))[:n]
-            segs = stage(self.dec.w, self.dec.buf, [(state, [0] * width) for state in active], late=True)
-            self.forward("verify", segs)
-            runtime = getattr(self.dec.w, "dspark", None)
-            if runtime is not None:
-                # Warm-up never commits target positions. Validate its frame,
-                # then discard independently staged draft context before the
-                # next synthetic key borrows these same slots.
-                _kv_check(segs, comm=self.dec.w.comm)
-                runtime.discard_graph(segs)
-            if self.dec.mbuf is not None:
-                windows = [(state, [0] * width, self.dec.buf.streams[a0:a1]) for state, a0, a1 in segs]
-                self.forward("mtp", mtp_stage(self.dec.mbuf, windows))
-                if width > 1:
-                    singles = [(state, [0], self.dec.buf.streams[a0:a0 + 1]) for state, a0, _ in segs]
-                    self.forward("mtp", mtp_stage(self.dec.mbuf, singles))
+            for rows in range(1, width + 1) if self.unique else (width,):
+                segs = stage(self.dec.w, self.dec.buf, [(state, [0] * rows) for state in active], late=True)
+                self.forward("verify", segs)
+                runtime = getattr(self.dec.w, "dspark", None)
+                if runtime is not None:
+                    # Warm-up never commits target positions. Validate its frame,
+                    # then discard independently staged draft context before the
+                    # next synthetic key borrows these same slots.
+                    _kv_check(segs, comm=self.dec.w.comm)
+                    runtime.discard_graph(segs)
+                if self.unique:
+                    _kv_check(segs, comm=self.dec.w.comm)
+                    for state in active:
+                        state.reset(self.dec.w, new_sequence=False)
+                if self.dec.mbuf is not None:
+                    windows = [(state, [0] * rows, self.dec.buf.streams[a0:a1]) for state, a0, a1 in segs]
+                    mseg = mtp_stage(self.dec.mbuf, windows)
+                    self.forward("mtp", mseg)
+                    if self.unique:
+                        _kv_check(mseg, comm=self.dec.w.comm)
+                        for state in active:
+                            state.reset(self.dec.w, new_sequence=False)
+                    elif width > 1:
+                        singles = [(state, [0], self.dec.buf.streams[a0:a0 + 1]) for state, a0, _ in segs]
+                        self.forward("mtp", mtp_stage(self.dec.mbuf, singles))
 
         if runtime is not None:
             runtime.warm_proposals(states)

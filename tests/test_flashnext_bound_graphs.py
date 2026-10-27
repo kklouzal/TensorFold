@@ -13,6 +13,7 @@ from tensorfold.cuda.sm70 import attention_qualification
 
 def planner():
     graph = object.__new__(BoundStateGraphs)
+    graph.unique = False
     # This geometry-only oracle uses the ordinary reference provider and
     # substitutes its allocation work below; it does not claim SM70 admission.
     graph.dec = SimpleNamespace(depth=2, w=SimpleNamespace(

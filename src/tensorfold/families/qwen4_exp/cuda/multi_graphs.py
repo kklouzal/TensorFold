@@ -40,6 +40,8 @@ from .mtp import mtp_compute, mtp_stage
 from .service_memory import failure_frame_values, private_pool_spare
 
 MIB = 1 << 20
+UNIQUE_CAPTURE_CONTRACT = "sm70-unique-n1-exact-pieces-v1"
+UNIQUE_CAPTURE_MAX_ROWS = 3
 
 
 def free_bytes() -> int:
@@ -81,7 +83,8 @@ def service_live_bytes(pool):
 def capturable(w) -> str | None:
     """Why this model's rounds cannot be captured (None: they can): experts that read their plan on the host."""
 
-    if w.meta.get("history_layout") == "unique":
+    if (w.meta.get("history_layout") == "unique"
+            and w.meta.get("unique_capture_contract") != UNIQUE_CAPTURE_CONTRACT):
         return "unique history owner execution has no qualified padded capture contract"
     if w.comm is not None and w.meta.get("execution_provider") != "sm70":
         return "tensor-parallel ranks"
@@ -180,6 +183,13 @@ class RoundGraphs:
         if archive:
             history_runtime.begin(segs, prefill=b.prefill, mtp=mtp)
         _kv_begin(segs)                                  # the frame's codec status: checked by the caller
+        self._replay_pieces(pieces, segs, b, mtp=mtp)
+        if archive:
+            history_runtime.submitted(segs, prefill=b.prefill, mtp=mtp)
+
+    def _replay_pieces(self, pieces: Pieces, segs, b, *, mtp=False) -> None:
+        """Host-shaped work remains outside captures on the current frame's owners."""
+        w = self.dec.w
         for graph, insert in zip(pieces.graphs, pieces.inserts + [None]):
             profile_replay(graph, self.dec.w.comm)
             if insert is None:
@@ -187,12 +197,14 @@ class RoundGraphs:
             kind, layer = insert
             if kind == "select":
                 attn_multi.select(layer, w, b, b.attn_step)
+            elif kind == "owner_attention":
+                from .history_owner import attention_layer
+
+                attention_layer(layer, w, segs, b, segs[-1][2], mtp=mtp)
             elif kind == "ple_conv":
                 ple_conv_streams(layer, w, segs, b)
             elif b.ple_late is not None:                 # "ple_stage": the late n-gram reads (stage(late=True))
                 stage_late(w, b)
-        if archive:
-            history_runtime.submitted(segs, prefill=b.prefill, mtp=mtp)
 
     # -- capture -----------------------------------------------------------------------------------------------
     def _pieces(self, run, b, *, split=True) -> Pieces:
