@@ -37,15 +37,16 @@ class HeaderResources:
     global_host_native_data_bytes: int = 0
     global_host_native_control_bytes: int = 0
     global_host_native_rpc_bytes: int = 0
+    global_host_preparation_bytes: int = 0
 
     @property
     def global_host_bytes(self):
         return _total((self.global_host_backing_bytes, self.global_host_progress_bytes,
                        self.global_host_native_data_bytes, self.global_host_native_control_bytes,
-                       self.global_host_native_rpc_bytes))
+                       self.global_host_native_rpc_bytes, self.global_host_preparation_bytes))
 
     def record(self):
-        return {**asdict(self), "schema": "tensorfold.retention-header-resources-v1",
+        return {**asdict(self), "schema": "tensorfold.retention-header-resources-v2",
                 "phase": "steady-serving; max with separate loading scratch",
                 "evidence": "source-candidate; allocator/device qualification pending"}
 
@@ -127,11 +128,13 @@ def retention_header_resources(policy, world, *, slots=None):
                                           ram=ram, slots=slots)
     if not ram:
         return HeaderResources(0, 0, 0, world, 0, control["global_native_control_value_bytes"],
-                               control["global_native_rpc_value_bytes"])
+                               control["global_native_rpc_value_bytes"],
+                               control["global_python_preparation_payload_bytes"])
     native = native_sync_data_payload(world=world, chunk_bytes=policy.chunk_bytes)
     return HeaderResources(policy.ram_bytes, policy.progress_bytes, policy.overlap_bytes, world,
                            native["global_native_data_payload_bytes"],
-                           control["global_native_control_value_bytes"], control["global_native_rpc_value_bytes"])
+                           control["global_native_control_value_bytes"], control["global_native_rpc_value_bytes"],
+                           control["global_python_preparation_payload_bytes"])
 
 
 def native_sync_data_payload(*, world, chunk_bytes):
@@ -174,7 +177,7 @@ def native_sync_control_payload(*, world, chunk_bytes, ram, slots=None):
     from tensorfold.cuda.rank_protocol import MAX_MESSAGE_BYTES
     from tensorfold.cuda.store_fields import MAX_KEY_BYTES
     from tensorfold.engine.model_identity import canonical_runtime_json
-    from .execution_identity import PHASE_VALUE_BYTES, phase_failure_value_bytes
+    from .execution_identity import PHASE_VALUE_BYTES, phase_failure_value_bytes, input_preparation_value_bytes
 
     _size(world, "control rank count")
     _size(chunk_bytes, "control data chunk", zero=not ram)
@@ -231,13 +234,40 @@ def native_sync_control_payload(*, world, chunk_bytes, ram, slots=None):
     rendezvous_values = 128 + world * (len("nccl\0owned-unique-store-v1") + 1)
     fixed_values = (world * world + 37 * world + 33 if ram else 0) + 4 * world + rendezvous_values
     handler_delta = max(0, max(worker, actor, bootstrap, command, ack) - (chunk_bytes if ram else 0))
-    control = _total((max(serving, startup), slack, fixed_values, handler_delta))
+    # InputPreparation alone opts into multi_get. Its public binding keeps W
+    # result vectors through conversion to W Python bytes (init.cpp1806), then
+    # returns a Python list. The old phase GET kept one raw result. Charge all
+    # payloads and full batch container metadata; do not claim parsed-graph
+    # alias credits. The actual preparation publisher
+    # emits None/SHA256 or the bounded refusal, not arbitrary operation data.
+    preparation_frame = input_preparation_value_bytes()
+    batch_native = (world * ((world + 4) * preparation_frame + 32 * world + 48) + preparation_frame
+                    if world > 1 else 0)  # LP64 vector<uint8_t>24 + py::bytes handle8.
+    batch_python_raw = (world * (world * (sys.getsizeof(b"") + preparation_frame)
+                            + sys.getsizeof([]) + struct.calcsize("P") * world)
+                    if world > 1 else 0)
+    # Fund the whole bounded phase graphs, not only their wrapper delta. The
+    # fixed context/mailbox descriptors are simple scalar/string/tuple maps:
+    # W slot-key descriptors and one local owner/epoch/method descriptor per
+    # rank, each below MAX_KEY_BYTES of encoded source metadata. The generic
+    # source-graph projection conservatively pays all those Python containers;
+    # Store, decoder and operation results are borrowed pre-existing owners.
+    batch_python_graphs = world * world * _json_tree_payload(preparation_frame, None) if world > 1 else 0
+    batch_python_metadata = world * (world + 1) * _json_tree_payload(MAX_KEY_BYTES, None) if world > 1 else 0
+    batch_python = _total((batch_python_raw, batch_python_graphs, batch_python_metadata))
+    control = _total((max(serving, startup), slack, fixed_values, handler_delta, batch_native))
     return {"schema": "tensorfold.sync-store-control-value-v1", "scope": "global-host",
             "worker_frame_bytes": worker, "actor_frame_bytes": actor, "rpc_command_bytes": command,
             "rpc_ack_bytes": ack, "daemon_worker_value_bytes": daemon_worker,
             "daemon_actor_value_bytes": daemon_actor, "active_serving_value_bytes": 3 * world * (worker + actor),
             "constructor_value_bytes": startup, "shared_daemon_handler_delta_bytes": handler_delta,
             "persistent_rendezvous_value_bytes": rendezvous_values,
+            "input_preparation_batch_native_extra_bytes": batch_native,
+            "input_preparation_frame_bytes": preparation_frame,
+            "input_preparation_python_raw_bytes": batch_python_raw,
+            "input_preparation_python_graph_bytes": batch_python_graphs,
+            "input_preparation_python_metadata_bytes": batch_python_metadata,
+            "global_python_preparation_payload_bytes": batch_python,
             "global_native_control_value_bytes": control, "global_native_rpc_value_bytes": _total((rpc,)),
             "excluded": "already reserved manifest backing; fixed key/container and Python RPC ownership are separate",
             "source": "Torch04cf2557 synchronous backend; native-table-assist source ownership proof"}
@@ -317,6 +347,7 @@ def native_sync_fixed_payload(*, world, ram, slots, fd_limit=None, host_bytes=0)
     rpc_keys = 2 * peers  # Command and ACK, both publisher-retired in FIFO.
     bootstrap_keys = 2 * world + 2  # UID, backend W, loading W, endpoint nonce.
     actor_keys = 8 * world  # <=4W outcomes plus two retirement waves of2W.
+    actor_keys += world + 5  # Reusable input slots, four closing epoch keys and one next-epoch counter.
     worker_keys = 8 * world if ram else 0
     data_keys = world * world + world if ram else 0  # ACKs and open chunks.
     wake_keys = 2 * world + 2 if ram else 0
@@ -324,7 +355,7 @@ def native_sync_fixed_payload(*, world, ram, slots, fd_limit=None, host_bytes=0)
                        rpc_keys, prefix_keys, bootstrap_keys))
     # A Store may outlive a RAM profile. Its value/wait bucket highwater is
     # bounded using the same W/maximum-slots RAM region even when RAM is off.
-    map_highwater = world * world + 23 * world + 2 + prefix_keys
+    map_highwater = world * world + 23 * world + 2 + prefix_keys + world + 5
     wait_highwater = 2 * world * world + 1
     # A protocol key is waited on by <=W peers. GCC13 vector<int> doubles;
     # erasure keeps capacity. Only one daemon handler reallocates at a time.

@@ -19,13 +19,13 @@ def engine_type():
     tree = ast.parse(SOURCE.read_text())
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "FlashNextEngine")
     keep = {"close", "_close_resources", "_begin_request", "_prune_requests", "_end_request", "_retire_request", "generate", "follow",
-            "_limit", "context_window", "_resume", "supports_logprobs"}
+            "_limit", "context_window", "_resume", "supports_logprobs", "_send_shutdown"}
     body = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in keep]
     unit = ast.Module(body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0),
                            ast.ClassDef(name="Engine", bases=[], keywords=[], body=body, decorator_list=[])],
                       type_ignores=[])
     ast.fix_missing_locations(unit)
-    namespace = {"threading": threading}
+    namespace = {"threading": threading, "__name__": "tensorfold.families.qwen4_exp.cuda._lifetime_projection"}
     exec(compile(unit, str(SOURCE), "exec"), namespace)
     return namespace["Engine"]
 
@@ -90,6 +90,34 @@ class LifetimeControls(unittest.TestCase):
 
     def tearDown(self):
         self.stub.stop()
+
+    def test_model_drain_retires_mailbox_before_transport_and_weight_consumers(self):
+        e = engine()
+        e.w.meta["input_preparation_context"] = Resource(e.events, "mailbox-close")
+        class Comm:
+            def close(self, *, abort):
+                self.abort = abort
+                e.events.append("comm-close")
+        e.comm = Comm()
+        e.close()
+        self.assertEqual(e.events, ["mailbox-close", "comm-close", "plan-close", "cache-close"])
+
+    def test_failed_mailbox_retirement_retains_model_owner_until_retry(self):
+        e = engine()
+        failure = OSError("mailbox key retirement")
+        class Mailbox:
+            def close(self):
+                raise failure
+        mailbox = e.w.meta["input_preparation_context"] = Mailbox()
+        with self.assertRaises(OSError) as caught:
+            e.close()
+        self.assertIs(caught.exception, failure)
+        self.assertIs(e.w.meta["input_preparation_context"], mailbox)
+        self.assertFalse(e._closed)
+        self.assertEqual(e.events, [])
+        mailbox.close = lambda: e.events.append("mailbox-close")
+        e.close()
+        self.assertEqual(e.events, ["mailbox-close", "plan-close", "cache-close"])
 
     def test_failed_slot_retirement_keeps_engine_resources_until_close_retry(self):
         e = engine()

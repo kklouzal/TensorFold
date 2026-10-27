@@ -2487,6 +2487,13 @@ class FlashNextEngine:
         if startup_origin is not None and startup_origin.adopted_by is None:
             startup_origin.retire()  # An untransferred metadata-stage listener has no native communicator borrower.
         self._startup_store = self._startup_store_origin = None
+        weights = getattr(self, "w", None)
+        if weights is not None:
+            from .input_preparation import KEY
+
+            context = weights.meta.get(KEY)
+            if context is not None:
+                context.close()  # Scheduler/graph drain precedes mailbox-slot retirement and transport reuse.
         comm = getattr(self, 'comm', None)
         if comm is not None and not preserve_transport:
             comm.close(abort=getattr(self, '_abort_comm', False))
