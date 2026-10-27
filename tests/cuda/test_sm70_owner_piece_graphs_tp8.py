@@ -71,6 +71,16 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
         phase("communicator/open")
         comm.open(rank, 8, "127.0.0.1", port, timeout_s=90, key="tf_native_owner_exact_pieces")
         base = _weights_with_stock_mtp_protocol(head_dim=256)
+        if target_greedy == "bound-prelude":
+            from dataclasses import replace
+
+            # A real model has repeated attention layers sharing the issued
+            # coordinate frame. One layer cannot expose a version bump before
+            # the next layer validates that same frame.
+            base.layers.append(replace(base.layers[1], index=base.cfg.layers))
+            base.cfg.layers += 1
+            base.cfg.layer_types = [*base.cfg.layer_types, "attention"]
+            base.mtp = replace(base.mtp, layer=replace(base.mtp.layer, index=base.cfg.layers))
         width = base.cfg.vocab // 8
         base.head.weight = base.head.weight[rank * width:(rank + 1) * width].contiguous()
         base.head.n, base.comm = width, comm

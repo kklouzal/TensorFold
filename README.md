@@ -1,5 +1,11 @@
 # TensorFold fork
 
+The native owner prelude borrows the current issued coordinate-frame slice for
+compact-indexer publication. Reconstructing equal coordinates would rewrite its
+shared mutation-tracked storage and invalidate subsequent attention layers.
+The frame signature guard remains unchanged. CPU/version and multiple-attention
+TP8 regression checks are required before repeating model qualification.
+
 The private owner prelude accepts the engine's actual immutable native position
 binding, including distinct target/MTP inverse-frequency operands. Native role
 algorithm, context bounds, sections and amplitude are checked; media and extended

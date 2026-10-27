@@ -239,6 +239,17 @@ def _native_prelude_binding(binding):
             and _native_prelude_position(binding.target)
             and (binding.mtp is None or _native_prelude_position(binding.mtp)))
 
+
+def _native_frame_coordinates(state, buffers, start, stop, *, mtp):
+    """Borrow issued axes without rewriting the frame's mutation-tracked storage."""
+    explicit = buffers.mtp_indexer_coordinates if mtp else buffers.target_indexer_coordinates
+    if explicit is not None:
+        return explicit[start:stop]
+    from .compact_indexer import coordinate_rows
+
+    position = state.mtp_len if mtp else state.pos
+    return coordinate_rows(state, torch.arange(stop - start, device=state.pos_dev.device) + position)
+
 def _native_frame_prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
     """Reuse the qualified scalar-position prep into a bounded frame, not a history.
 
@@ -300,11 +311,10 @@ def _native_frame_prepare(projection, state, layer, weights, buffers, start, sto
     cache.append(pos, key[:rows], value[:rows], ks[:rows], vs[:rows])
     if state.history_rank == state.history_placement.indexer_owner(state.history_slot, ai,
                                                                   include_mtp=hasattr(state, "mtp_kc")):
-        from .compact_indexer import coordinate_rows
-
-        # The native prelude already handled RoPE; coordinates here retain the
-        # original unrotated indexer transaction and are needed only by its owner.
-        coordinates = coordinate_rows(state, torch.arange(rows, device=projection.device) + pos)
+        # A current issued frame owns these exact axes. Reconstructing equal
+        # coordinates would copy into that shared arena, bump its Tensor version,
+        # and invalidate the next attention layer's original frame proof.
+        coordinates = _native_frame_coordinates(state, buffers, start, stop, mtp=mtp)
         entry = state.compact_indexer.append(ai, pos, ik[:rows], coordinates,
             buffers.compact_indexer_stage, start, stop, mtp=mtp,
             expected=(state.slot_generation, state.history_generation))
