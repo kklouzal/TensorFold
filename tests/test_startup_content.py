@@ -34,7 +34,8 @@ def test_native_pthread_stack_queries_use_real_typed_attributes_without_global_c
             _thread_stack_layout(bad)
 
 
-def test_default_is_serial_and_enabled_mode_refuses_wrong_scope(tmp_path, monkeypatch):
+@pytest.mark.parametrize("profile", ["source-owner-pieces-trial", "source-owner-target-greedy-trial", "source-owner-target-guard-trial"])
+def test_default_is_serial_and_enabled_mode_refuses_wrong_scope(tmp_path, monkeypatch, profile):
     monkeypatch.delenv(startup.ENV, raising=False)
     assert startup.prepare(object(), None) is None
     monkeypatch.setenv(startup.ENV, "0")
@@ -44,7 +45,7 @@ def test_default_is_serial_and_enabled_mode_refuses_wrong_scope(tmp_path, monkey
     with pytest.raises(ValueError, match="explicit private"):
         startup.prepare(NS(_profile_build=None, tp=1), {})
     engine=NS(_profile_build=None,tp=8,method_geometry=NS(method="mtp"),
-        media_profile=None,sm70_profile="source-owner-target-greedy-trial",
+        media_profile=None,sm70_profile=profile,
         _execution_preload={"capture_files":{"target/model":tmp_path/"model"}})
     prepared=startup.prepare(engine,{})
     assert prepared.host_bytes == startup.STACK_LIMIT + prepared.guard_bytes + startup.HASH_WORKING_BYTES

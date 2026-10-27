@@ -367,7 +367,8 @@ their software identity fields.
 ## Private startup content overlap
 
 On the pinned Linux/glibc CPython3.12 image, the private
-`source-owner-pieces-trial` and `source-owner-target-greedy-trial` MTP profiles
+`source-owner-pieces-trial`, `source-owner-target-greedy-trial` and
+`source-owner-target-guard-trial` MTP profiles
 may opt into `TENSORFOLD_STARTUP_CONTENT_OVERLAP=1` with an explicit execution
 manifest. Python/pthread thread defaults must remain owned and fixed during
 engine construction. One rank0 worker begins only after the complete admission
