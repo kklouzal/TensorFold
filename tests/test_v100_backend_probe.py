@@ -626,6 +626,65 @@ def test_prefix_expectation_requires_explicit_profile_and_repeated_case(tmp_path
         probe.arguments(cli(tmp_path) + ["--expect-prefix-reuse", "--repetitions", "10"])
 
 
+@pytest.mark.parametrize("profile", ["source-packed-trial", "source-packed-graphs-trial"])
+def test_prefix_expectation_accepts_each_explicit_distinct_packed_epoch(tmp_path, monkeypatch, profile):
+    monkeypatch.setenv("TENSORFOLD_SM70_PROFILE", profile)
+    args = probe.arguments(cli(tmp_path) + ["--expect-prefix-reuse", "--repetitions", "10"])
+    assert args.expect_prefix_reuse and args.requested_sm70_profile == profile
+
+
+@pytest.mark.parametrize("profile,expected", [(None, False), ("source-family-trial", False),
+    ("source-packed-trial", False), ("source-packed-graphs-trial", True)])
+def test_worker_requests_graphs_only_for_explicit_graph_profile(tmp_path, monkeypatch, profile, expected):
+    from tensorfold import hub, serve_options
+    from tensorfold.cuda.cohort import FAILURE_FD_ENV
+    from tensorfold.families import qwen4_exp
+
+    primary = ValueError("stop at the real constructor boundary")
+    seen = []
+
+    def constructor(*args, **kwargs):
+        seen.append(kwargs["graphs"])
+        raise primary
+
+    monkeypatch.setattr(probe, "installed_identity", lambda _wheel: {})
+    monkeypatch.setattr(hub, "resolve", lambda *_args, **_kwargs: tmp_path)
+    monkeypatch.setattr(serve_options, "drafter_metadata_source", lambda _source: tmp_path)
+    monkeypatch.setattr(qwen4_exp, "cuda_engine", constructor)
+    read_fd, write_fd = os.pipe()
+    monkeypatch.setenv(FAILURE_FD_ENV, str(write_fd))
+    args = SimpleNamespace(rank=1, wheel=tmp_path, model=tmp_path, mtp=tmp_path,
+        master_port=29607, tokens=128, out=tmp_path, requested_sm70_profile=profile, repetitions=1)
+    try:
+        with pytest.raises(ValueError) as failure:
+            probe.worker(args)
+        assert failure.value is primary and seen == [expected]
+    finally:
+        os.close(write_fd)
+        os.close(read_fd)
+
+
+@pytest.mark.parametrize("captured,keys,allowed", [(False, True, False), (True, False, False), (True, True, True)])
+def test_graph_trial_record_requires_actual_admitted_owner_and_reports_its_budget(captured, keys, allowed):
+    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL
+    from tensorfold.families.qwen4_exp.cuda.multi_graphs import UNIQUE_CAPTURE_CONTRACT
+
+    admission = {"planned_bytes": 4096, "room_bytes": 128}
+    graphs = SimpleNamespace(verify={1: object()} if keys else {}, mtp={1: object()} if keys else {})
+    engine = SimpleNamespace(sm70_profile=PACKED_GRAPH_TRIAL, graphs_enabled=True,
+        multi=SimpleNamespace(graphs=graphs, graph_record={"captured": captured}),
+        w=SimpleNamespace(meta={"unique_capture_contract": UNIQUE_CAPTURE_CONTRACT}),
+        capacity_plan={"multi_graphs": admission})
+    report = {}
+    if allowed:
+        probe.record_execution_profile(engine, report, requested=PACKED_GRAPH_TRIAL)
+        assert report["unique_graph_trial"]["admission"] is admission
+        assert report["unique_graph_trial"]["contract"] == UNIQUE_CAPTURE_CONTRACT
+    else:
+        with pytest.raises(ValueError, match="admitted unique-history graph owner"):
+            probe.record_execution_profile(engine, report, requested=PACKED_GRAPH_TRIAL)
+
+
 @pytest.mark.parametrize("wrong", [False, True])
 def test_private_prefix_adapter_preserves_raw_result_before_check_failure(tmp_path, tokenizer, nvtx_markers, wrong):
     import json

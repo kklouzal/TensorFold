@@ -542,12 +542,23 @@ class FlashNextEngine:
             raise ValueError("RAM indexer history is supported by the GGUF SM70 CUDA provider only")
         self.tp, self.rank, self.depth, self.confidence = tp, rank, int(depth), float(confidence)
         self.execution_provider = "sm70" if sm70 else "cuda"
+        unique_graph_contract = None
         if sm70:
-            from tensorfold.cuda.sm70.execution_policy import configure, verify_graph_inputs
+            import os
+            from tensorfold.cuda.sm70.execution_policy import (
+                PROFILE_ENV, configure, unique_graph_request, verify_graph_inputs,
+            )
 
             verify_graph_inputs(getattr(self, "_nccl_graph_inputs", None))
+            requested_profile = os.environ.get(PROFILE_ENV, "reference")
+            unique_graph_contract = unique_graph_request(requested_profile,
+                method=self.method_geometry.method, depth=self.depth, kv_pair=self.kv_pair,
+                unique_history=history_placement is not None, indexer_history=indexer_history,
+                graphs=graphs, concurrent=concurrent)
             self.sm70_profile = configure(text, tp=tp, torch=torch,
                 record_graph_inputs=lambda record: setattr(self, "_nccl_graph_inputs", record))
+            if self.sm70_profile != requested_profile:
+                raise ValueError("SM70 profile changed during its method preparation")
             from tensorfold.cuda.sm70.attention_qualification import runtime_identity
 
             self._sm70_attention_identity = runtime_identity(torch.device("cuda", torch.cuda.current_device()))
@@ -1372,7 +1383,7 @@ class FlashNextEngine:
         if sm70:
             from tensorfold.cuda.sm70.execution_policy import prepare_weights
 
-            prepare_weights(w)
+            prepare_weights(w, graph_contract=unique_graph_contract)
         if self.comm is not None:
             from tensorfold.cuda.comm import agree_eos
 

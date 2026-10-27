@@ -1117,9 +1117,9 @@ class State:
                     poison_control=None, copy_dflash=True):
         """Copy only valid cache rows and complete pools; the caller restores the kept point's recurrent snapshot."""
 
-        from .prefix_policy import FAMILY_PREFIX_STATE
+        from .prefix_policy import PROFILE_STATES
 
-        if ((FAMILY_PREFIX_STATE in self.kv_identity or FAMILY_PREFIX_STATE in source.kv_identity)
+        if (any(epoch in self.kv_identity or epoch in source.kv_identity for epoch in PROFILE_STATES)
                 and self.kv_identity != source.kv_identity):
             raise ValueError("a cached FAMILY prefix needs matching source/profile State identities")
         if self.compact_indexer is not None or source.compact_indexer is not None:

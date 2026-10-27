@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 import re
 
+from tensorfold.families.qwen4_exp.cuda.prefix_policy import PACKED_GRAPH_PROFILE as PACKED_GRAPH_TRIAL
+
 PROFILE_ENV = "TENSORFOLD_SM70_PROFILE"
 FAMILY_TRIAL = "source-family-trial"
 FAMILY_PREFIX_TRIAL = "source-family-prefix-trial"
@@ -225,8 +227,9 @@ def configure(text, *, tp, torch, record_graph_inputs=None):
     """Explicit profiles share the existing engine, admission and worker handshake."""
     global _SELECTED, _FAMILY_SOFTWARE
     profile = os.environ.get(PROFILE_ENV, "reference")
-    if profile not in ("reference", "optimized", FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL):
-        raise ValueError(f"{PROFILE_ENV} must be reference, optimized, {FAMILY_TRIAL}, {FAMILY_PREFIX_TRIAL} or {PACKED_TRIAL}")
+    if profile not in ("reference", "optimized", FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL, PACKED_GRAPH_TRIAL):
+        raise ValueError(f"{PROFILE_ENV} must be reference, optimized, {FAMILY_TRIAL}, {FAMILY_PREFIX_TRIAL}, "
+                         f"{PACKED_TRIAL} or {PACKED_GRAPH_TRIAL}")
     if record_graph_inputs is not None and not callable(record_graph_inputs):
         raise ValueError("NCCL graph input journal must be callable")
     graph_policy = graph_inputs() if tp > 1 else None
@@ -248,8 +251,8 @@ def configure(text, *, tp, torch, record_graph_inputs=None):
                       and all(identity.get(key) == value for key, value in REQUIRED_IDENTITY.items()))
         if not compatible:
             raise ValueError("optimized SM70 profile requires the qualified TP8 Flash Next geometry and pinned Volta foundation")
-    family_trial = profile in (FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL)
-    packed_trial = profile == PACKED_TRIAL
+    family_trial = profile in (FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL, PACKED_GRAPH_TRIAL)
+    packed_trial = profile in (PACKED_TRIAL, PACKED_GRAPH_TRIAL)
     family_software = _prepare_family_trial(text, tp, torch, packed=packed_trial) if family_trial else None
     family_ops._NATIVE_FAMILY = enabled or family_trial
     family_ops._NATIVE_ATTENTION = enabled
@@ -263,9 +266,22 @@ def configure(text, *, tp, torch, record_graph_inputs=None):
     return profile
 
 
-def prepare_weights(w):
+def unique_graph_request(profile, *, method, depth, kv_pair, unique_history, indexer_history, graphs, concurrent):
+    """Issue the N1 capture contract only from the real pre-load method request."""
+    if profile != PACKED_GRAPH_TRIAL:
+        return None
+    if (method != "mtp" or type(depth) is not int or depth != 2 or unique_history is not True
+            or indexer_history != "gpu" or graphs is not True or concurrent is not True
+            or kv_pair.key_dtype != "int8" or kv_pair.value_dtype != "int8"):
+        raise ValueError("source-packed-graphs-trial requires concurrent unique GPU histories, INT8 KV, stock MTP depth2 and graphs")
+    from tensorfold.families.qwen4_exp.cuda.multi_graphs import UNIQUE_CAPTURE_CONTRACT
+
+    return UNIQUE_CAPTURE_CONTRACT
+
+
+def prepare_weights(w, *, graph_contract=None):
     """Mark native owners only after the same profile was admitted on every rank."""
-    if _SELECTED in (FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL):
+    if _SELECTED in (FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL, PACKED_GRAPH_TRIAL):
         import torch
 
         _family_runtime(torch)
@@ -277,15 +293,25 @@ def prepare_weights(w):
                 or w.meta.get("world") != 8):
             raise ValueError("source-family-trial requires loaded TP8 GGUF SM70 FP16 weights")
         if any(w.meta.get(key) for key in ("capture_ready", "device_greedy_mtp_ready",
-                                          "device_greedy_native_ready", "attention_qualification")):
+                                          "device_greedy_native_ready", "attention_qualification",
+                                          "unique_capture_contract")):
             raise ValueError("source-family-trial cannot inherit graph, greedy or private attention qualification")
         software = _family_software()  # New audit after canonical weight/native preparation.
         _same_family_software(_FAMILY_SOFTWARE, software)
         w.meta["sm70_family_trial"] = {"qualification": "unqualified-candidate", "software": software,
             "attention": "reference", "graphs": "eager",
-            "prefix_reuse": "int8-greedy-text-trial" if _SELECTED in (FAMILY_PREFIX_TRIAL, PACKED_TRIAL) else "cold"}
-        if _SELECTED == PACKED_TRIAL:
+            "prefix_reuse": "int8-greedy-text-trial" if _SELECTED in (
+                FAMILY_PREFIX_TRIAL, PACKED_TRIAL, PACKED_GRAPH_TRIAL) else "cold"}
+        if _SELECTED in (PACKED_TRIAL, PACKED_GRAPH_TRIAL):
             w.meta["sm70_family_trial"].update(experts="packed_exact", concat="native32")
+        if _SELECTED == PACKED_GRAPH_TRIAL:
+            from tensorfold.families.qwen4_exp.cuda.multi_graphs import UNIQUE_CAPTURE_CONTRACT
+
+            if (graph_contract != UNIQUE_CAPTURE_CONTRACT or w.meta.get("history_layout") != "unique"
+                    or w.mtp is None or w.mtp.layer.linear):
+                raise ValueError("loaded graph trial requires its issued depth2 contract and unique stock attention MTP")
+            w.meta.update(capture_ready=True, unique_capture_contract=UNIQUE_CAPTURE_CONTRACT)
+            w.meta["sm70_family_trial"]["graphs"] = UNIQUE_CAPTURE_CONTRACT
     w.meta["sm70_profile"] = _SELECTED
     if _SELECTED == "optimized":
         from .attention_qualification import metadata_prepare

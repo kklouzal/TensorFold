@@ -154,10 +154,10 @@ def arguments(argv=None):
     # its unset default. Recording intent must not select a different profile.
     args.requested_sm70_profile = os.environ.get(PROFILE_ENV)
     if args.expect_prefix_reuse:
-        from tensorfold.families.qwen4_exp.cuda.prefix_policy import FAMILY_PREFIX_PROFILE
+        from tensorfold.families.qwen4_exp.cuda.prefix_policy import state_epoch
 
-        if args.requested_sm70_profile != FAMILY_PREFIX_PROFILE:
-            parser.error("--expect-prefix-reuse requires the explicit cached FAMILY trial profile")
+        if state_epoch(args.requested_sm70_profile) is None:
+            parser.error("--expect-prefix-reuse requires an explicit cached SM70 trial profile")
     for name in ("model", "mtp", "wheel", "source_hold"):
         setattr(args, name, regular_file(getattr(args, name)))
     if args.source_hold.stat().st_size > 16 << 20:
@@ -235,6 +235,19 @@ def record_execution_profile(engine, report, *, requested):
     }
     if requested is not None and requested != engine.sm70_profile:
         raise ValueError("requested SM70 profile differs from the actual constructor selection")
+    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL
+
+    if engine.sm70_profile == PACKED_GRAPH_TRIAL:
+        from tensorfold.families.qwen4_exp.cuda.multi_graphs import UNIQUE_CAPTURE_CONTRACT
+
+        decoder = engine.multi
+        if (not engine.graphs_enabled or decoder.graphs is None or not decoder.graph_record.get("captured")
+                or not decoder.graphs.verify or not decoder.graphs.mtp
+                or engine.w.meta.get("unique_capture_contract") != UNIQUE_CAPTURE_CONTRACT):
+            raise ValueError("requested graph trial did not obtain an admitted unique-history graph owner")
+        report["unique_graph_trial"] = {"contract": UNIQUE_CAPTURE_CONTRACT,
+            "verify_keys": len(decoder.graphs.verify), "mtp_keys": len(decoder.graphs.mtp),
+            "admission": engine.capacity_plan["multi_graphs"]}
 
 
 def prepared_prompt(engine, tokenizer, args):
@@ -362,12 +375,13 @@ def run_leader(engine, tokenizer, args, report):
 
     check_engine(engine)
     if getattr(args, "expect_prefix_reuse", False):
-        from tensorfold.families.qwen4_exp.cuda.prefix_policy import FAMILY_PREFIX_PROFILE, FAMILY_PREFIX_STATE
+        from tensorfold.families.qwen4_exp.cuda.prefix_policy import state_epoch
 
-        if engine.sm70_profile != FAMILY_PREFIX_PROFILE:
-            raise ValueError("prefix-reuse expectation requires the explicit cached FAMILY trial profile")
-        if any(FAMILY_PREFIX_STATE not in state.kv_identity for state in engine.retention_catalog.states):
-            raise ValueError("cached FAMILY State owners lack the declared prefix policy epoch")
+        epoch = state_epoch(engine.sm70_profile)
+        if epoch is None:
+            raise ValueError("prefix-reuse expectation requires an explicit cached SM70 trial profile")
+        if any(epoch not in state.kv_identity for state in engine.retention_catalog.states):
+            raise ValueError("cached State owners lack the selected prefix policy epoch")
     tokens, prompt = prepared_prompt(engine, tokenizer, args)
     report["prompt"] = prompt
     caller = FiniteBackendCaller(max_input_tokens=MAX_PROMPT_TOKENS,
@@ -391,6 +405,7 @@ def worker(args):
     from tensorfold.cuda import precision, prompt_precision
     from tensorfold.cuda.cohort import FAILURE_FD_ENV
     from tensorfold.families.qwen4_exp import cuda_engine
+    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL
     from tensorfold.serve_options import drafter_metadata_source
     from tensorfold.token_metadata import load_tokenizer, tokenizer_identity
 
@@ -416,7 +431,7 @@ def worker(args):
             master="127.0.0.1", master_port=args.master_port, mtp_drafts=DEPTH, mtp_confidence=CONFIDENCE,
             context=CONTEXT, context_explicit=True, parallel="auto", kv_full_windows="auto",
             kv_dtype="int8", indexer_history="gpu", max_waiting_input_bytes=INPUT_CREDIT,
-            output_queue_tokens=args.tokens)
+            output_queue_tokens=args.tokens, graphs=args.requested_sm70_profile == PACKED_GRAPH_TRIAL)
         record_execution_profile(engine, report, requested=args.requested_sm70_profile)
         report["capacity_plan"] = engine.capacity_plan
         write_report(args.out / f"rank-{args.rank}-ready.json", report, allowance=allowance)

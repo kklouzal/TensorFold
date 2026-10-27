@@ -1608,3 +1608,13 @@ qualification path.
 Unique-history graph capture joins each State's real transfer dependencies on
 the capture stream before recording kernels. The normal State checks remain in
 place, and transfer or capture failures retain their original failed owners.
+
+`TENSORFOLD_SM70_PROFILE=source-packed-graphs-trial` explicitly requests the
+source-built SM70 packed/FAMILY operators with exact N1 graph pieces. It requires
+unique GPU histories, INT8 KV and stock MTP depth 2; private attention, device
+greedy sampling, routing and padded linears retain their existing settings.
+This trial has a separate prefix/State identity and uses the ordinary measured
+graph budget, physical admission and full-window reservations. The finite probe
+requests graphs only for this profile and refuses an eager-only result. Default
+profiles are unchanged. Actual full-model graph quality and 85-token/s
+qualification remain pending.
