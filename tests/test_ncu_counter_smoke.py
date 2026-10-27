@@ -78,3 +78,22 @@ def test_profiler_outcome_storage_exists_before_start_and_is_not_repacked(monkey
     with pytest.raises(ValueError) as caught:
         smoke.profiled_call(operation, start, stop)
     assert caught.value is primary
+
+def test_successful_profiled_call_returns_actual_result_in_start_operation_stop_order():
+    pytest.importorskip("torch")
+    result, calls = object(), []
+    def operation():
+        calls.append("operation")
+        return result
+    got = smoke.profiled_call(operation, lambda: calls.append("start"), lambda: calls.append("stop"))
+    assert got is result and calls == ["start", "operation", "stop"]
+
+
+def test_stop_only_error_uses_actual_profiler_failure_without_none_primary_transport():
+    pytest.importorskip("torch")
+    error = RuntimeError("profiler stop alone failed")
+    def stop():
+        raise error
+    with pytest.raises(RuntimeError) as caught:
+        smoke.profiled_call(lambda: 123, lambda: None, stop)
+    assert caught.value is error

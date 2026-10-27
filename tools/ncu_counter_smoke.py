@@ -45,7 +45,10 @@ def profiled_call(operation, start, stop):
             stop()
         except BaseException as error:
             secondary[0] = error
-    raise_failures(primary, secondary)
+    if primary is not None:
+        raise_failures(primary, secondary)
+    if secondary[0] is not None:
+        raise secondary[0]
     return result
 
 
