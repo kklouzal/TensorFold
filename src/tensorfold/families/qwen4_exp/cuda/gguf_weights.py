@@ -367,8 +367,8 @@ class GGUFExperts:
             raise ValueError("GGUF prefill workspace is already prepared")
         self._prefill_plan = plan
 
-    def forward(self, x, picks, out=None):
-        if self.implementation not in ("reference", "packed", "packed_splitk4", "packed_blocks", "packed_blocks2w", "packed_exact"):
+    def forward(self, x, picks, out=None, *, workspace=None):
+        if self.implementation not in ("reference", "packed", "packed_splitk4", "packed_blocks", "packed_blocks2w", "packed_exact", "packed_grouped_exact"):
             raise ValueError("unknown GGUF expert execution implementation")
         if self.implementation == "packed" and x.shape[0] <= self.packed_rows:
             return self.forward_packed(x, picks, out)
@@ -378,7 +378,17 @@ class GGUFExperts:
             return self.forward_blocks(x, picks, out)
         if self.implementation == "packed_blocks2w" and x.shape[0] <= self.packed_rows:
             return self.forward_blocks2w(x, picks, out)
-        if self.implementation == "packed_exact" and x.shape[0] <= self.packed_rows:
+        if self.implementation == "packed_grouped_exact" and workspace is not None and (
+                4 <= x.shape[0] <= self.packed_rows and self.width == 80 and self.dims == 2560
+                and self.count == 513 and x.ndim == 2 and x.shape[1] == self.dims
+                and x.dtype == torch.float16 and x.is_cuda and x.is_contiguous()
+                and picks.ndim == 2 and picks.shape[0] == x.shape[0]
+                and picks.dtype == torch.int32 and picks.device == x.device and picks.is_contiguous()
+                and 1 <= picks.shape[1] <= 33
+                and (out is None or (out.shape == (*picks.shape, self.dims)
+                     and out.dtype in (torch.float16, torch.float32) and out.device == x.device and out.is_contiguous()))):
+            return self.forward_grouped(x, picks, workspace, out)
+        if self.implementation in ("packed_exact", "packed_grouped_exact") and x.shape[0] <= self.packed_rows:
             return self.forward_exact(x, picks, out)
         return self.forward_reference(x, picks, out)
 
@@ -410,6 +420,18 @@ class GGUFExperts:
         if out is None:
             out = torch.empty((*picks.shape, self.dims), dtype=torch.float32, device=x.device)
         gguf_ops.experts_exact(x, picks, self.gate, self.up, self.down, self.shared, out)
+        return self._write_shared(x, picks, out)
+
+    def forward_grouped(self, x, picks, workspace, out=None):
+        """Only the prepared decoder call supplies an exclusive plan/act owner.
+
+        That owner is shared across successive layers, never retained by any
+        expert bank. Its stream orders the planner, gate/up, down and next use.
+        Direct/noneligible forward calls keep the required original provider.
+        """
+        if out is None:
+            out = torch.empty((*picks.shape, self.dims), dtype=torch.float32, device=x.device)
+        gguf_ops.experts_grouped(x, picks, self.gate, self.up, self.down, self.shared, out, workspace)
         return self._write_shared(x, picks, out)
 
     def _write_shared(self, x, picks, out):

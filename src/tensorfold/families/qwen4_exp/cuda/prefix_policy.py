@@ -15,6 +15,10 @@ PACKED_PROFILE = "source-packed-trial"
 PACKED_IDENTITY = "sm70-packed-exact-native32-int8-greedy-text-prefix-trial-v1:" + QSA_SELECTION
 PACKED_STATE = ("sm70-prefix-epoch-v1", hashlib.sha256(PACKED_IDENTITY.encode()).hexdigest())
 
+GROUPED_PROFILE = "source-grouped-moe-trial"
+GROUPED_IDENTITY = "sm70-grouped-simt-coeff-t16-int8-greedy-text-prefix-trial-v1:" + QSA_SELECTION
+GROUPED_STATE = ("sm70-prefix-epoch-v1", hashlib.sha256(GROUPED_IDENTITY.encode()).hexdigest())
+
 
 def identity(profile):
     """Sampler and ordered cache descriptors already share the worker wire."""
@@ -24,6 +28,8 @@ def identity(profile):
         return FAMILY_PREFIX_IDENTITY
     if profile == PACKED_PROFILE:
         return PACKED_IDENTITY
+    if profile == GROUPED_PROFILE:
+        return GROUPED_IDENTITY
     return IDENTITY if profile in ("optimized", "reference") else None
 
 
@@ -31,6 +37,8 @@ def state_epoch(profile):
     """Only the explicit cached trial adds an immutable State compatibility epoch."""
     if profile == PACKED_PROFILE:
         return PACKED_STATE
+    if profile == GROUPED_PROFILE:
+        return GROUPED_STATE
     return FAMILY_PREFIX_STATE if profile == FAMILY_PREFIX_PROFILE else None
 
 
@@ -60,7 +68,7 @@ def reuse_allowed(w, sampling, *, draft, vision, position, kv_pair=None):
     ordinary = draft and vision is None
     if not ordinary or w.meta.get("execution_provider") != "sm70":
         return ordinary
-    if w.meta.get("sm70_profile") in (FAMILY_PREFIX_PROFILE, PACKED_PROFILE):
+    if w.meta.get("sm70_profile") in (FAMILY_PREFIX_PROFILE, PACKED_PROFILE, GROUPED_PROFILE):
         return _family_prefix_allowed(sampling, position, kv_pair)
     if w.meta.get("sm70_profile") == "source-family-trial":
         return False  # Cold qualification has no same-format cached-suffix receipt yet.
@@ -82,7 +90,7 @@ def reuse_allowed(w, sampling, *, draft, vision, position, kv_pair=None):
 def serial_reuse_allowed(w, sampling, *, draft, position, kv_pair, vision=None):
     """Serial/twin Q4 has the same qualification; legacy serial policy stays intact."""
     if (w.meta.get("execution_provider") == "sm70"
-            and w.meta.get("sm70_profile") in (FAMILY_PREFIX_PROFILE, PACKED_PROFILE)):
+            and w.meta.get("sm70_profile") in (FAMILY_PREFIX_PROFILE, PACKED_PROFILE, GROUPED_PROFILE)):
         return draft and vision is None and _family_prefix_allowed(sampling, position, kv_pair)
     if (w.meta.get("execution_provider") == "sm70"
             and w.meta.get("sm70_profile") == "source-family-trial"):

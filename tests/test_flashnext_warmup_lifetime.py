@@ -14,8 +14,10 @@ class WarmModel:
     _fill = MultiDecoder._fill
     _order = MultiDecoder._order
     _runnable = MultiDecoder._runnable
+    _warm_grouped_experts = MultiDecoder._warm_grouped_experts
 
     def __init__(self, *, adaptive, rows, eos=False, failure=None, returned_error=False):
+        self.w = SimpleNamespace(meta={"sm70_profile": "reference"})
         self.prefill_rows, self.capacity, self.depth = rows, 262147, 2
         self.admission_policy = "legacy"
         self.streams, self.fills, self.passed, self.held = {}, {}, {}, {}

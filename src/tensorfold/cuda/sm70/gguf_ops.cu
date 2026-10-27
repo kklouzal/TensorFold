@@ -14,6 +14,7 @@
 #include <vector>
 #include "../kernels/tensor_contracts.cuh"
 #include "gguf_decode_tables.cuh"
+#include "../expert_plan.cuh"
 
 namespace {
 struct BlockLayout { int values, bytes; };
@@ -1182,4 +1183,236 @@ void gguf_experts_exact(const at::Tensor& x, const at::Tensor& picks,
     gguf_experts_impl(x, picks, gate, gate_kind, gate_offset, up, up_kind, up_offset,
                       down, down_kind, down_offset, shared_gate, shared_up, shared_down,
                       output, false, true, true, true);
+}
+
+// Bounded grouped reuse: coefficients are decoded once per expert/item, while
+// every row retains its original independent FMA chain and warp reduction.
+namespace {
+constexpr int GROUP_ROWS = 16;
+
+template <int Pair, int Kind>
+__device__ __forceinline__ void grouped_projection_pair(const __half* x, int slots, int dims,
+    const int* members, int first, int count, int lane, const uint8_t* packed,
+    const uint4& header, int high, int block, float (&sum)[GROUP_ROWS]) {
+    constexpr int group = Pair * 2;
+    const int byte = packed[(Kind == 12 ? 16 : 48) + Pair * 32 + lane];
+    const int low = (byte & 15) | (((high >> group) & 1) << 4);
+    const int upper = (byte >> 4) | (((high >> (group + 1)) & 1) << 4);
+    const float lo = block_coefficient<group>(header, low);
+    const float hi = block_coefficient<group + 1>(header, upper);
+    #pragma unroll
+    for (int r = 0; r < GROUP_ROWS; ++r) {
+        if (r < count) {
+            const __half* input = x + int64_t(members[first + r] / slots) * dims + block * 256;
+            sum[r] = fmaf(__half2float(input[lane + group * 32]), lo, sum[r]);
+            sum[r] = fmaf(__half2float(input[lane + (group + 1) * 32]), hi, sum[r]);
+        }
+    }
+}
+
+template <int Kind>
+__device__ __forceinline__ void grouped_projection_sum(const __half* x, PackedView bank,
+    int64_t source, int slots, int dims, int lane, const int* members, int first,
+    int count, bool blocks, float (&sum)[GROUP_ROWS]) {
+    if constexpr (Kind == 12 || Kind == 13) {
+        if (blocks) {
+            for (int block = 0; block < dims / 256; ++block) {
+                const auto* packed = bank.data + source * bank.stride + int64_t(block) * (Kind == 12 ? 144 : 176);
+                const uint4 header = *reinterpret_cast<const uint4*>(packed);
+                const int high = Kind == 13 ? packed[16 + lane] : 0;
+                grouped_projection_pair<0, Kind>(x, slots, dims, members, first, count, lane, packed, header, high, block, sum);
+                grouped_projection_pair<1, Kind>(x, slots, dims, members, first, count, lane, packed, header, high, block, sum);
+                grouped_projection_pair<2, Kind>(x, slots, dims, members, first, count, lane, packed, header, high, block, sum);
+                grouped_projection_pair<3, Kind>(x, slots, dims, members, first, count, lane, packed, header, high, block, sum);
+            }
+            return;
+        }
+    }
+    for (int k = lane; k < dims; k += 32) {
+        const float weight = coefficient<Kind>(bank, source, k);
+        #pragma unroll
+        for (int r = 0; r < GROUP_ROWS; ++r) {
+            if (r < count) {
+                const __half* input = x + int64_t(members[first + r] / slots) * dims;
+                sum[r] = fmaf(__half2float(input[k]), weight, sum[r]);
+            }
+        }
+    }
+}
+
+template <int GateKind, int UpKind>
+__global__ void grouped_gate_up(const __half* x, const int* picks, PackedView gate, PackedView up,
+    int dims, int width, int slots, int experts, const int* members, const int* items,
+    const int* counts, bool blocks, __half* activation) {
+    if (blockIdx.y >= counts[0]) return;
+    __shared__ float projections[EXPERT_WARPS][GROUP_ROWS];
+    const int lane = threadIdx.x % 32, warp = threadIdx.x / 32;
+    const int output = blockIdx.x * (EXPERT_WARPS / 2) + warp / 2;
+    const int expert = items[blockIdx.y * 3], first = items[blockIdx.y * 3 + 1];
+    const int count = items[blockIdx.y * 3 + 2];
+    if (expert == experts) {
+        if (output < width && warp % 2 == 0 && lane == 0) {
+            for (int r = 0; r < count; ++r) {
+                const int pair = members[first + r];
+                activation[int64_t(pair) * width + output] = picks[pair] == experts
+                    ? __float2half_rn(0.0f) : __float2half_rn(__int_as_float(0x7fffffff));
+            }
+        }
+        return;
+    }
+    float sum[GROUP_ROWS] = {};
+    if (output < width) {
+        const int64_t source = int64_t(expert) * width + output;
+        if (warp % 2 == 0)
+            grouped_projection_sum<GateKind>(x, gate, source, slots, dims, lane, members, first, count, blocks, sum);
+        else
+            grouped_projection_sum<UpKind>(x, up, source, slots, dims, lane, members, first, count, blocks, sum);
+    }
+    #pragma unroll
+    for (int r = 0; r < GROUP_ROWS; ++r) {
+        if (r < count) {
+            for (int offset = 16; offset; offset /= 2)
+                sum[r] += __shfl_down_sync(0xffffffff, sum[r], offset);
+            if (lane == 0) projections[warp][r] = sum[r];
+        }
+    }
+    __syncthreads();
+    if (output < width && warp % 2 == 0 && lane == 0) {
+        for (int r = 0; r < count; ++r) {
+            const float g = projections[warp][r], u = projections[warp + 1][r];
+            activation[int64_t(members[first + r]) * width + output] = __float2half_rn((g / (1.0f + expf(-g))) * u);
+        }
+    }
+}
+
+template <bool F32, int Kind>
+__global__ void grouped_down80(const __half* activation, const int* picks, PackedView down,
+    int dims, int experts, const int* members, const int* items, const int* counts, void* out) {
+    if (blockIdx.y >= counts[0]) return;
+    const int lane = threadIdx.x % 32, warp = threadIdx.x / 32, part = lane % 4;
+    const int output = blockIdx.x * EXPERT_WARPS * 8 + warp * 8 + lane / 4;
+    const unsigned mask = __ballot_sync(0xffffffff, output < dims);
+    if (output >= dims) return;
+    const int expert = items[blockIdx.y * 3], first = items[blockIdx.y * 3 + 1];
+    const int count = items[blockIdx.y * 3 + 2];
+    if (expert == experts) {
+        if (part == 0) {
+            for (int r = 0; r < count; ++r) {
+                const int pair = members[first + r];
+                const float value = picks[pair] == experts ? 0.0f : __int_as_float(0x7fffffff);
+                if constexpr (F32) static_cast<float*>(out)[int64_t(pair) * dims + output] = value;
+                else static_cast<__half*>(out)[int64_t(pair) * dims + output] = __float2half_rn(value);
+            }
+        }
+        return;
+    }
+    float sum[GROUP_ROWS] = {};
+    const int64_t row = int64_t(expert) * dims + output;
+    #pragma unroll
+    for (int i = 0; i < 20; ++i) {
+        const int k = part * 20 + i;
+        const float weight = coefficient<Kind>(down, row, k);
+        #pragma unroll
+        for (int r = 0; r < GROUP_ROWS; ++r)
+            if (r < count) sum[r] = fmaf(__half2float(activation[int64_t(members[first + r]) * 80 + k]), weight, sum[r]);
+    }
+    #pragma unroll
+    for (int r = 0; r < GROUP_ROWS; ++r) {
+        if (r < count) {
+            sum[r] += __shfl_down_sync(mask, sum[r], 2, 4);
+            sum[r] += __shfl_down_sync(mask, sum[r], 1, 4);
+            sum[r] = fmaf(1.0f, sum[r], 0.0f) + 0.0f;
+            if (part == 0) {
+                const int64_t at = int64_t(members[first + r]) * dims + output;
+                if constexpr (F32) static_cast<float*>(out)[at] = sum[r];
+                else static_cast<__half*>(out)[at] = __float2half_rn(sum[r]);
+            }
+        }
+    }
+}
+
+template <bool F32>
+void launch_grouped_down(const at::Tensor& activation, const at::Tensor& picks, PackedView down,
+    at::Tensor& out, const at::Tensor& members, const at::Tensor& items, const at::Tensor& counts, int max_items) {
+    const dim3 grid(2560 / (EXPERT_WARPS * 8), max_items);
+    const auto stream = at::cuda::getCurrentCUDAStream();
+    #define GROUP_DOWN(KIND) grouped_down80<F32, KIND><<<grid, EXPERT_WARPS * 32, 0, stream>>>( \
+        reinterpret_cast<const __half*>(activation.data_ptr()), picks.data_ptr<int>(), down, 2560, 512, \
+        members.data_ptr<int>(), items.data_ptr<int>(), counts.data_ptr<int>(), out.data_ptr())
+    switch (down.kind) {
+        case 7: GROUP_DOWN(7); break;
+        case 8: GROUP_DOWN(8); break;
+        case 20: GROUP_DOWN(20); break;
+        case 42: GROUP_DOWN(42); break;
+        default: GROUP_DOWN(-1); break;
+    }
+    #undef GROUP_DOWN
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+} // namespace
+
+void gguf_experts_grouped(const at::Tensor& x, const at::Tensor& picks,
+    const at::Tensor& gate, int64_t gate_kind, int64_t gate_offset,
+    const at::Tensor& up, int64_t up_kind, int64_t up_offset,
+    const at::Tensor& down, int64_t down_kind, int64_t down_offset,
+    const at::Tensor& shared_gate, const at::Tensor& shared_up, const at::Tensor& shared_down,
+    at::Tensor output, at::Tensor activation, at::Tensor members, at::Tensor items,
+    at::Tensor counts, at::Tensor rank, at::Tensor hist) {
+    TORCH_CHECK(x.is_cuda() && x.scalar_type() == at::kHalf && x.dim() == 2 && x.is_contiguous()
+                && x.size(0) >= 4 && x.size(0) <= 32 && x.size(1) == 2560,
+                "grouped experts require4..32 contiguous FP16 CUDA rows of width2560");
+    const auto device = x.device();
+    const auto* prop = at::cuda::getDeviceProperties(x.get_device());
+    TORCH_CHECK(prop->major == 7 && prop->minor == 0, "grouped expert provider requires SM70");
+    operand(picks, at::kInt, device, "grouped expert picks");
+    TORCH_CHECK(picks.dim() == 2 && picks.size(0) == x.size(0) && picks.size(1) >= 1 && picks.size(1) <= 33,
+                "grouped expert slot geometry disagrees with its fixed envelope");
+    for (const auto* shared : {&shared_gate, &shared_up, &shared_down}) operand(*shared, at::kHalf, device, "shared expert weights");
+    TORCH_CHECK(shared_gate.sizes() == at::IntArrayRef({80, 2560}) && shared_up.sizes() == shared_gate.sizes()
+                && shared_down.sizes() == at::IntArrayRef({2560, 80}), "grouped experts require original D2560/K80 shared weights");
+    auto g = packed_view(gate, gate_kind, gate_offset, 2560, device);
+    auto u = packed_view(up, up_kind, up_offset, 2560, device);
+    auto d = packed_view(down, down_kind, down_offset, 80, device);
+    TORCH_CHECK(gate.size(0) == 512 * 80 && up.size(0) == gate.size(0) && down.size(0) == 512 * 2560,
+                "grouped experts require512 original routed banks");
+    TORCH_CHECK(output.scalar_type() == at::kHalf || output.scalar_type() == at::kFloat, "grouped expert output must be FP16 or FP32");
+    operand(output, output.scalar_type(), device, "grouped expert output");
+    TORCH_CHECK(output.sizes() == at::IntArrayRef({x.size(0), picks.size(1), 2560}), "grouped expert output shape disagrees");
+    operand(activation, at::kHalf, device, "grouped activation workspace");
+    const int P = int(picks.numel()), max_items = std::min(P, 513) + P / GROUP_ROWS;
+    TORCH_CHECK(activation.dim() == 3 && activation.size(0) >= x.size(0) && activation.size(1) == picks.size(1)
+                && activation.size(2) == 80, "grouped activation workspace capacity disagrees");
+    for (const auto* buffer : {&members, &items, &counts, &rank, &hist}) operand(*buffer, at::kInt, device, "grouped plan workspace");
+    TORCH_CHECK(members.dim() == 1 && members.numel() >= P && items.dim() == 2 && items.size(1) == 3
+                && items.size(0) >= max_items && counts.dim() == 1 && counts.numel() >= 2
+                && rank.dim() == 1 && hist.dim() == 1, "grouped plan workspace capacity disagrees");
+    if (P > 1024) TORCH_CHECK(rank.numel() >= P && hist.numel() >= ((P + 1023) / 1024) * 513,
+                             "grouped wide plan workspace capacity disagrees");
+    tensorfold::check_disjoint(output, {&x, &picks, &gate, &up, &down, &shared_gate, &shared_up, &shared_down,
+        &activation, &members, &items, &counts, &rank, &hist}, "grouped output must not overlap inputs or workspace");
+    const at::Tensor* scratch[] = {&activation, &members, &items, &counts, &rank, &hist};
+    for (int i = 0; i < 6; ++i) {
+        tensorfold::check_disjoint(*scratch[i], {&x, &picks, &gate, &up, &down, &shared_gate, &shared_up, &shared_down},
+                                   "grouped workspace must not overlap input storage");
+        for (int j = 0; j < i; ++j) tensorfold::check_disjoint(*scratch[i], {scratch[j]}, "grouped workspaces must be disjoint");
+    }
+    c10::cuda::CUDAGuard guard(device);
+    tensorfold::expert_plan::run<true>(picks, P, 513, GROUP_ROWS, members, items, counts, rank, hist, false);
+    const bool blocks = (g.kind == 12 || g.kind == 13) && (u.kind == 12 || u.kind == 13)
+        && (reinterpret_cast<uintptr_t>(g.data) & 15) == 0 && (reinterpret_cast<uintptr_t>(u.data) & 15) == 0
+        && g.stride % 16 == 0 && u.stride % 16 == 0 && g.offset == 0 && u.offset == 0;
+    const dim3 grid(80 / (EXPERT_WARPS / 2), max_items);
+    const auto stream = at::cuda::getCurrentCUDAStream();
+    #define GROUP_GATE(GK, UK) grouped_gate_up<GK, UK><<<grid, EXPERT_WARPS * 32, 0, stream>>>( \
+        reinterpret_cast<const __half*>(x.data_ptr()), picks.data_ptr<int>(), g, u, 2560, 80, int(picks.size(1)), 512, \
+        members.data_ptr<int>(), items.data_ptr<int>(), counts.data_ptr<int>(), blocks, reinterpret_cast<__half*>(activation.data_ptr()))
+    if (g.kind == 12 && u.kind == 12) { GROUP_GATE(12, 12); }
+    else if (g.kind == 12 && u.kind == 13) { GROUP_GATE(12, 13); }
+    else if (g.kind == 13 && u.kind == 12) { GROUP_GATE(13, 12); }
+    else if (g.kind == 13 && u.kind == 13) { GROUP_GATE(13, 13); }
+    else { GROUP_GATE(-1, -1); }
+    #undef GROUP_GATE
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+    if (output.scalar_type() == at::kFloat) launch_grouped_down<true>(activation, picks, d, output, members, items, counts, max_items);
+    else launch_grouped_down<false>(activation, picks, d, output, members, items, counts, max_items);
 }
