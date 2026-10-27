@@ -47,7 +47,8 @@ Kernel residency precedes admission; no device payload or context change is
 introduced. SM70 adversarial/TP8 numerical and model/six-concurrency quality
 and performance gates remain pending for this candidate.
 
-The private Linux/glibc CPython3.12 owner-MTP diagnostic can explicitly enable
+The private Linux/glibc CPython3.12 owner-MTP diagnostic, including the
+`source-owner-target-guard-trial` composition, can explicitly enable
 `TENSORFOLD_STARTUP_CONTENT_OVERLAP=1` to hash immutable artifacts on one
 startup-owned rank0 worker after complete memory admission and before weight
 loading. It funds64MiB of stack, the observed pthread guard and8MiB of hash/
@@ -62,6 +63,8 @@ process teardown. Rollback requests cancellation between bounded reads and joins
 filesystem read already blocked in the OS retains its ordinary I/O completion
 contract. Unset retains serial hashing. No persistent/stat-only content cache or
 startup performance qualification is granted; actual V100 timing remains pending.
+The combined startup/guard/map wheel has separate CPU/native/TP8/model gates;
+historical guard/map results above do not qualify the new composition.
 
 The finite diagnostic funds 256 KiB per follower report, 512 KiB for the leader
 and 64 KiB for supervision (2,424,832 bytes total). This preserves complete
