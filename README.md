@@ -1,5 +1,18 @@
 # TensorFold fork
 
+The private `TENSORFOLD_SM70_PROFILE=source-target-greedy-trial` candidate keeps
+the packed source operator set and original MTP confidence arithmetic, while
+single-stream greedy target verification uses exact integer-key shard maxima
+and chain acceptance on the GPU. It reads only accepted IDs/keep count through
+the existing status-first fused feedback owner. Every produced row contributes
+its NaN/Inf/domain errors, including rejected branches. Non-greedy, constrained,
+owed, media and extra-output consumers retain the original sampler. The trial
+has its own prefix epoch and grants no legacy graph/device-greedy readiness.
+Normal installed CPU controls and explicit SM70 compile/link/import checks pass;
+actual V100 kernel/model correctness, resources and integrated performance
+selection remain required. CPU lexsort is not the dominant measured cost; the
+candidate's GPU packet work elimination has no integrated gain claim yet.
+
 An isolated CPU preflight candidate uses public Store batched reads and atomic
 counters during rank input preparation. Bounded reusable outcome slots retain
 validation and refusal semantics; every rank consumes a retirement latch before

@@ -10,6 +10,7 @@ PROFILE_ENV = "TENSORFOLD_SM70_PROFILE"
 FAMILY_TRIAL = "source-family-trial"
 FAMILY_PREFIX_TRIAL = "source-family-prefix-trial"
 PACKED_TRIAL = "source-packed-trial"
+TARGET_GREEDY_TRIAL = "source-target-greedy-trial"
 # The existing engine owns this process-wide policy at quiescent startup or
 # profile preparation. A successful configure replaces it before weight and
 # request publication; serving never mutates these selectors or their record.
@@ -189,7 +190,7 @@ def _family_software():
     return record
 
 
-def _prepare_family_trial(text, tp, torch, *, packed=False):
+def _prepare_family_trial(text, tp, torch, *, packed=False, target_greedy=False):
     # This trial changes no weight/KV representation, persistent workspace,
     # graph allowance or capacity rule. Native module residency precedes the
     # existing physical-free/admission baseline and weight loading.
@@ -208,6 +209,10 @@ def _prepare_family_trial(text, tp, torch, *, packed=False):
         from .gguf_ops import extension as gguf_extension
 
         gguf_extension()  # Selected packed/concat module precedes the physical baseline too.
+    if target_greedy:
+        from .greedy_native import extension as greedy_extension
+
+        greedy_extension()  # Component compilation is not numerical/model qualification.
     after = _family_software()  # Explicitly issue after native-library warmup.
     _same_family_software(before, after)
     return after
@@ -225,8 +230,9 @@ def configure(text, *, tp, torch, record_graph_inputs=None):
     """Explicit profiles share the existing engine, admission and worker handshake."""
     global _SELECTED, _FAMILY_SOFTWARE
     profile = os.environ.get(PROFILE_ENV, "reference")
-    if profile not in ("reference", "optimized", FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL):
-        raise ValueError(f"{PROFILE_ENV} must be reference, optimized, {FAMILY_TRIAL}, {FAMILY_PREFIX_TRIAL} or {PACKED_TRIAL}")
+    if profile not in ("reference", "optimized", FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL, TARGET_GREEDY_TRIAL):
+        raise ValueError(f"{PROFILE_ENV} must be reference, optimized, {FAMILY_TRIAL}, {FAMILY_PREFIX_TRIAL}, "
+                         f"{PACKED_TRIAL} or {TARGET_GREEDY_TRIAL}")
     if record_graph_inputs is not None and not callable(record_graph_inputs):
         raise ValueError("NCCL graph input journal must be callable")
     graph_policy = graph_inputs() if tp > 1 else None
@@ -248,9 +254,10 @@ def configure(text, *, tp, torch, record_graph_inputs=None):
                       and all(identity.get(key) == value for key, value in REQUIRED_IDENTITY.items()))
         if not compatible:
             raise ValueError("optimized SM70 profile requires the qualified TP8 Flash Next geometry and pinned Volta foundation")
-    family_trial = profile in (FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL)
-    packed_trial = profile == PACKED_TRIAL
-    family_software = _prepare_family_trial(text, tp, torch, packed=packed_trial) if family_trial else None
+    family_trial = profile in (FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL, TARGET_GREEDY_TRIAL)
+    packed_trial = profile in (PACKED_TRIAL, TARGET_GREEDY_TRIAL)
+    family_software = (_prepare_family_trial(text, tp, torch, packed=packed_trial,
+                                           target_greedy=profile == TARGET_GREEDY_TRIAL) if family_trial else None)
     family_ops._NATIVE_FAMILY = enabled or family_trial
     family_ops._NATIVE_ATTENTION = enabled
     routing_native._NATIVE_LOGITS = padded_linears._ENABLED = enabled
@@ -265,7 +272,7 @@ def configure(text, *, tp, torch, record_graph_inputs=None):
 
 def prepare_weights(w):
     """Mark native owners only after the same profile was admitted on every rank."""
-    if _SELECTED in (FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL):
+    if _SELECTED in (FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL, TARGET_GREEDY_TRIAL):
         import torch
 
         _family_runtime(torch)
@@ -283,9 +290,16 @@ def prepare_weights(w):
         _same_family_software(_FAMILY_SOFTWARE, software)
         w.meta["sm70_family_trial"] = {"qualification": "unqualified-candidate", "software": software,
             "attention": "reference", "graphs": "eager",
-            "prefix_reuse": "int8-greedy-text-trial" if _SELECTED in (FAMILY_PREFIX_TRIAL, PACKED_TRIAL) else "cold"}
-        if _SELECTED == PACKED_TRIAL:
+            "prefix_reuse": "int8-greedy-text-trial" if _SELECTED in (
+                FAMILY_PREFIX_TRIAL, PACKED_TRIAL, TARGET_GREEDY_TRIAL) else "cold"}
+        if _SELECTED in (PACKED_TRIAL, TARGET_GREEDY_TRIAL):
             w.meta["sm70_family_trial"].update(experts="packed_exact", concat="native32")
+        if _SELECTED == TARGET_GREEDY_TRIAL:
+            from tensorfold.families.qwen4_exp.cuda.target_greedy import POLICY
+
+            w.meta["sm70_target_greedy_trial"] = {"policy": POLICY, "qualification": "unqualified-candidate",
+                                                 "mtp_confidence": "original-fp32-lse-numpy-fp64"}
+            w.meta["target_greedy_owner"] = None
     w.meta["sm70_profile"] = _SELECTED
     if _SELECTED == "optimized":
         from .attention_qualification import metadata_prepare

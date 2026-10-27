@@ -152,8 +152,9 @@ def test_bounded_verification_rows_do_not_release_resident_state_or_histories():
 @pytest.mark.torch
 @pytest.mark.parametrize("reserve_gib", [0, 3, 4, 5])
 @pytest.mark.parametrize("retention_tier", [None, "gpu", "ram"])
+@pytest.mark.parametrize("sm70_profile", ["reference", "source-target-greedy-trial"])
 def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(monkeypatch, tmp_path, reserve_gib,
-                                                                           retention_tier):
+                                                                           retention_tier, sm70_profile):
     """Real source headers and CPU geometry only; stop before weight retention."""
     import json
     import numpy as np
@@ -204,7 +205,7 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
     prefill_rows = indexed_prefill_rows() or PREFILL_ROWS
     monkeypatch.setattr(chat_template, "prepare_chat_template", lambda *a, **kw: None)
     monkeypatch.setattr(exl3_pack, "is_exl3", lambda p: False)
-    monkeypatch.setattr(execution_policy, "configure", lambda *a, **kw: "reference")
+    monkeypatch.setattr(execution_policy, "configure", lambda *a, **kw: sm70_profile)
     monkeypatch.setattr(attention_qualification, "runtime_identity", lambda d: {})
     monkeypatch.setattr(torch.cuda, "set_device", lambda *a: None)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
@@ -253,7 +254,11 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
         header = retention_header_resources(policy, 8)
         assert header.global_host_native_data_bytes == (122432 if retention_tier == "ram" else 0)
         assert header.global_host_native_rpc_bytes > 0
-        assert kwargs.get("host_workspace_bytes", 0) == header.global_host_bytes
+        from tensorfold.families.qwen4_exp.cuda.target_greedy import workspace_bytes as target_workspace
+
+        target_device, target_host = target_workspace(248320) if sm70_profile == "source-target-greedy-trial" else (0, 0)
+        assert kwargs.get("host_workspace_bytes", 0) == header.global_host_bytes + 8 * target_host
+        assert kwargs.get("device_workspace_bytes", 0) >= target_device
         if policy is not None:
             assert a["retained_idle_recovery"] == 0
             assert b["retained_idle_recovery"] > 0
@@ -264,7 +269,11 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
         from tensorfold.cuda.geometry import multi_static_domains
 
         coordinate_rows = max(prefill_rows, min(40 * (depth + 1), execution_rows))
-        expected_host = 8 * (multi_static_domains(text, 40, depth + 1, False)[1] + 8 * 40 * 8
+        # Status words plus the complete fused packet and one independent
+        # three-dimensional NumPy escape owner per physical rank.
+        candidates = 4 * 8 * min(40 * (depth + 1), execution_rows) * 65
+        fused_host = 8 * 40 * 8 + 2 * candidates + np.empty((0, 0, 0), dtype=np.float32).__sizeof__()
+        expected_host = 8 * (multi_static_domains(text, 40, depth + 1, False)[1] + fused_host
                              + coordinate_source_host_bytes(coordinate_rows))
         fixed = native_sync_fixed_payload(world=8, ram=retention_tier == "ram", slots=40,
             fd_limit=owner._retention_native_runtime["hard_nofile"], host_bytes=len("test"))

@@ -564,7 +564,7 @@ def layer_forward(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R:
 
 
 def finish(w: Weights, mixer: HC, b: Buffers, R: int, pending, logits: bool = True,
-           ends: Sequence[int] = ()) -> torch.Tensor | None:
+           ends: Sequence[int] = (), *, target_greedy=None) -> torch.Tensor | None:
     """The last write-back, mixer and head; a prompt pass heads only its ``ends`` rows."""
 
     c = w.cfg
@@ -587,7 +587,10 @@ def finish(w: Weights, mixer: HC, b: Buffers, R: int, pending, logits: bool = Tr
         return None
     out = _mm(b.mixed[:R], w.head, b.xs_mixed[:R], b.logits[:R], b)
     if w.comm is not None and getattr(w, "dflash2", None) is None:
-        candidates(w, b, out, R, offset=int(w.meta["vocab_offset"]))
+        if target_greedy is None:
+            candidates(w, b, out, R, offset=int(w.meta["vocab_offset"]))
+        else:
+            target_greedy.gather(out, R)
     return out
 
 
@@ -697,7 +700,7 @@ def read_ahead(w: Weights, history: np.ndarray, tokens: Sequence[int]) -> None:
 
 def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True, context: int | None = None,
             ends: Sequence[int] = (), cuts: Sequence[Cut] = (), features=None, check: bool = True,
-            input_embeddings: torch.Tensor | None = None):
+            input_embeddings: torch.Tensor | None = None, target_greedy=None):
     """The forward's GPU work on staged rows (capturable); ``context`` bounds attention, ``ends`` get the head, ``cuts`` keep states.
     ``check=False``: the codec status stays pending for the caller's check (``_kv_check`` or ``KVWords``) before any
     of the frame's rows are used."""
@@ -742,7 +745,7 @@ def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True,
             pending = layer_forward(layer, w, segs, b, R, pending, context=context, cuts=cuts)
             if dflash_capture is not None:
                 dflash_capture.completed_layer(layer.index, w, pending)
-        result = finish(w, w.mixer, b, R, pending, logits=logits, ends=ends)
+        result = finish(w, w.mixer, b, R, pending, logits=logits, ends=ends, target_greedy=target_greedy)
         if archive:
             history_runtime.enqueue(segs, prefill=b.prefill)
             history_runtime.submitted(segs, prefill=b.prefill)

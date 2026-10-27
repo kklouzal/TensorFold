@@ -58,6 +58,11 @@ SOURCE_FILES = (
     "tensorfold/families/qwen4_exp/cuda/prefix_policy.py",
     "tensorfold/families/qwen4_exp/cuda/state.py",
     "tensorfold/families/qwen4_exp/cuda/multi.py",
+    "tensorfold/families/qwen4_exp/cuda/target_greedy.py",
+    "tensorfold/families/qwen4_exp/cuda/kv_status.py",
+    "tensorfold/families/qwen4_exp/cuda/forward.py",
+    "tensorfold/cuda/sm70/greedy_native.py", "tensorfold/cuda/sm70/greedy_bindings.cpp",
+    "tensorfold/cuda/sm70/greedy.cu",
 )
 
 
@@ -154,10 +159,10 @@ def arguments(argv=None):
     # its unset default. Recording intent must not select a different profile.
     args.requested_sm70_profile = os.environ.get(PROFILE_ENV)
     if args.expect_prefix_reuse:
-        from tensorfold.families.qwen4_exp.cuda.prefix_policy import FAMILY_PREFIX_PROFILE
+        from tensorfold.families.qwen4_exp.cuda.prefix_policy import FAMILY_PREFIX_PROFILE, TARGET_GREEDY_PROFILE
 
-        if args.requested_sm70_profile != FAMILY_PREFIX_PROFILE:
-            parser.error("--expect-prefix-reuse requires the explicit cached FAMILY trial profile")
+        if args.requested_sm70_profile not in (FAMILY_PREFIX_PROFILE, TARGET_GREEDY_PROFILE):
+            parser.error("--expect-prefix-reuse requires the explicit cached FAMILY or target-greedy trial profile")
     for name in ("model", "mtp", "wheel", "source_hold"):
         setattr(args, name, regular_file(getattr(args, name)))
     if args.source_hold.stat().st_size > 16 << 20:
@@ -235,6 +240,10 @@ def record_execution_profile(engine, report, *, requested):
     }
     if requested is not None and requested != engine.sm70_profile:
         raise ValueError("requested SM70 profile differs from the actual constructor selection")
+    if engine.sm70_profile == prefix_policy.TARGET_GREEDY_PROFILE:
+        owner = engine.w.meta.get("target_greedy_owner")
+        if owner is not None:
+            report["target_greedy_initial"] = owner.record()
 
 
 def prepared_prompt(engine, tokenizer, args):
@@ -362,11 +371,14 @@ def run_leader(engine, tokenizer, args, report):
 
     check_engine(engine)
     if getattr(args, "expect_prefix_reuse", False):
-        from tensorfold.families.qwen4_exp.cuda.prefix_policy import FAMILY_PREFIX_PROFILE, FAMILY_PREFIX_STATE
+        from tensorfold.families.qwen4_exp.cuda.prefix_policy import (
+            FAMILY_PREFIX_PROFILE, FAMILY_PREFIX_STATE, TARGET_GREEDY_PROFILE, TARGET_GREEDY_STATE,
+        )
 
-        if engine.sm70_profile != FAMILY_PREFIX_PROFILE:
-            raise ValueError("prefix-reuse expectation requires the explicit cached FAMILY trial profile")
-        if any(FAMILY_PREFIX_STATE not in state.kv_identity for state in engine.retention_catalog.states):
+        if engine.sm70_profile not in (FAMILY_PREFIX_PROFILE, TARGET_GREEDY_PROFILE):
+            raise ValueError("prefix-reuse expectation requires the explicit cached source trial profile")
+        expected_epoch = TARGET_GREEDY_STATE if engine.sm70_profile == TARGET_GREEDY_PROFILE else FAMILY_PREFIX_STATE
+        if any(expected_epoch not in state.kv_identity for state in engine.retention_catalog.states):
             raise ValueError("cached FAMILY State owners lack the declared prefix policy epoch")
     tokens, prompt = prepared_prompt(engine, tokenizer, args)
     report["prompt"] = prompt
@@ -382,6 +394,10 @@ def run_leader(engine, tokenizer, args, report):
         write_report(args.out / "admitted.json", report, allowance=LEADER_RECEIPT_BYTES)
         engine.scheduler.configure_requests(limit)
         repeat_replies(engine, tokenizer, tokens, args, report, limit)
+        if report.get("sm70_profile") == "source-target-greedy-trial":
+            owner = engine.w.meta.get("target_greedy_owner")
+            if owner is not None:
+                report["target_greedy_final"] = owner.record()
     finally:
         limit.close()
 

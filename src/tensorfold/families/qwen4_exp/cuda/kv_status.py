@@ -115,6 +115,24 @@ class KVStatusCohort:
         self.check_received(states, self.host[:status].view(self.world, len(states), 2).tolist())
         return self.host[status:status + count].view(torch.float32).view(self.world, rows, width).numpy().copy()
 
+    def read_feedback(self, states, feedback, *, comm):
+        """One status-first fence for compact owned int32 target decisions."""
+        if (not isinstance(feedback, torch.Tensor) or feedback.dtype != torch.int32
+                or feedback.device != self.device or not feedback.is_contiguous() or feedback.ndim != 1
+                or not 0 < feedback.numel() <= self.world * self.candidate_rows * (2 * CAND + 1)):
+            self.check(states, comm=comm)
+            raise ValueError("target feedback differs from its admitted int32 readback envelope")
+        status = self._gather(states, comm)
+        count = feedback.numel()
+        try:
+            self.receive[status:status + count].copy_(feedback)
+        except BaseException as error:
+            self._readback_error = error
+            raise
+        self._readback(status + count)
+        self.check_received(states, self.host[:status].view(self.world, len(states), 2).tolist())
+        return self.host[status:status + count].numpy().copy()
+
     def check_received(self, states, peers) -> None:
         """Validate an owned, completed frame packet without another readback."""
         if len(peers) != self.world or any(len(row) != len(states) for row in peers):
