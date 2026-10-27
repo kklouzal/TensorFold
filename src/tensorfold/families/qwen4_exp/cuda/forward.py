@@ -274,7 +274,11 @@ def attn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: in
     if getattr(b, "history_owner", None) is not None:
         from .history_owner import attention_layer
 
-        o = attention_layer(layer, w, segs, b, R, mtp=mtp)
+        if b.split is not None:
+            b.split(("owner_attention", layer))
+            o = b.attn_o[:R]
+        else:
+            o = attention_layer(layer, w, segs, b, R, mtp=mtp)
         glue.attn_gate(o, b.pa[:R], b.gated[:R], b.xs_gated[:R], q_heads=c.heads, head_dim=c.head_dim)
         return _out_proj(w, b, b.gated[:R], a.o, b.xs_gated[:R], R)
     step = None if b.prefill or b.h.dtype == torch.float16 else getattr(b, "attn_step", None)
