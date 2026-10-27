@@ -5,6 +5,10 @@ request with the pinned public all-thread Torch profiler, retaining CPU labels,
 CUDA activity, protected CUPTI28 and before/after source checks. It refuses
 concurrency grids, serial pairs, repetitions and output limits above32 tokens.
 Profiling is diagnostic instrumentation; its timings do not qualify throughput.
+The finite caller funds256KiB per follower receipt and524288bytes for the leader,
+plus65536bytes for supervision (2424832bytes total), retaining complete
+source/capture evidence after the observed138931-byte follower final report.
+Overflow remains a reported failure with its complete evidence preserved.
 
 
 The private `source-owner-pieces-trial` combines the explicitly prepared full-TP8

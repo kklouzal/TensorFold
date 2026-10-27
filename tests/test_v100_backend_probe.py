@@ -915,8 +915,8 @@ def finite_engine_capacity(*, ceiling=None, resident=26, materialized=True, comm
 def test_all_eight_ready_reports_fit_the_funded_slices_and_overflow_remains_a_failure(tmp_path):
     import json
 
-    assert probe.FOLLOWER_RECEIPT_BYTES == 128 << 10
-    assert probe.MAX_RECEIPT_BYTES == 1507328
+    assert probe.FOLLOWER_RECEIPT_BYTES == 256 << 10
+    assert probe.MAX_RECEIPT_BYTES == 2424832
     total = 0
     for rank in range(probe.WORLD):
         # The actual failed reports were 89,341..89,349 bytes. Preserve an
@@ -948,7 +948,7 @@ def test_actual_finite_caller_receives_full_eight_rank_report_commitment(monkeyp
 
     def finalize(catalog, *, tokenizer, scheduler, request_limit, caller):
         assert type(caller) is retention_resources.FiniteBackendCaller
-        assert caller.max_receipt_bytes == (512 + 7 * 128 + 64) << 10
+        assert caller.max_receipt_bytes == (512 + 7 * 256 + 64) << 10
         assert caller.retained_results == 2 and request_limit.maximum == 1 and request_limit.used == 0
         captured.append(("admit", caller.max_receipt_bytes))
         return {"admitted": True}
@@ -1272,7 +1272,7 @@ def test_owner_piece_tool_intent_and_manifest_reach_real_factory_with_24_native_
         262144, 8, 2, .7, "int8")
     assert options["max_waiting_input_bytes"] == probe.waiting_input_credit(args)
     assert args.fast_grid and args.quality_spotchecks and args.tokens == 512
-    assert probe.MAX_RECEIPT_BYTES == 1507328
+    assert probe.MAX_RECEIPT_BYTES == 2424832
 
 
 def test_trace_summary_requires_actual_cuda_and_cpu_preparation_events(tmp_path):
@@ -1471,3 +1471,12 @@ def test_short_capture_is_optional_and_one32_token_mtp_accepted(tmp_path):
     assert not probe.arguments(cli(tmp_path)).profile_generation
     args = probe.arguments(cli(tmp_path) + ["--profile-generation", "--tokens", "32"])
     assert args.profile_generation and args.repetitions == 1 and not args.serial_reference
+
+
+def test_profile_final_receipt_above_observed138931_bytes_fits_funded_slice(tmp_path):
+    # Independently chosen larger than every preserved138910..138931-byte final.
+    value = {"rank":1,"complete":True,"capture_and_source_evidence":"x"*140000}
+    path=tmp_path/"rank-1-final.json"
+    probe.write_report(path,value,allowance=probe.FOLLOWER_RECEIPT_BYTES)
+    assert json.loads(path.read_text()) == value
+    assert 138931 < path.stat().st_size < probe.FOLLOWER_RECEIPT_BYTES
