@@ -190,7 +190,7 @@ def _family_software():
     return record
 
 
-def _prepare_family_trial(text, tp, torch, *, packed=False):
+def _prepare_family_trial(text, tp, torch, *, packed=False, grouped=False):
     # This trial changes no weight/KV representation, persistent workspace,
     # graph allowance or capacity rule. Native module residency precedes the
     # existing physical-free/admission baseline and weight loading.
@@ -208,7 +208,9 @@ def _prepare_family_trial(text, tp, torch, *, packed=False):
     if packed:
         from .gguf_ops import extension as gguf_extension
 
-        gguf_extension()  # Selected packed/concat module precedes the physical baseline too.
+        module = gguf_extension()
+        if grouped:
+            module.prepare_grouped()  # Load kernel code before the initial model-admission baseline.
     after = _family_software()  # Explicitly issue after native-library warmup.
     _same_family_software(before, after)
     return after
@@ -251,7 +253,7 @@ def configure(text, *, tp, torch, record_graph_inputs=None):
             raise ValueError("optimized SM70 profile requires the qualified TP8 Flash Next geometry and pinned Volta foundation")
     family_trial = profile in (FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL, GROUPED_TRIAL)
     packed_trial = profile in (PACKED_TRIAL, GROUPED_TRIAL)
-    family_software = _prepare_family_trial(text, tp, torch, packed=packed_trial) if family_trial else None
+    family_software = _prepare_family_trial(text, tp, torch, packed=packed_trial, grouped=profile == GROUPED_TRIAL) if family_trial else None
     family_ops._NATIVE_FAMILY = enabled or family_trial
     family_ops._NATIVE_ATTENTION = enabled
     routing_native._NATIVE_LOGITS = padded_linears._ENABLED = enabled

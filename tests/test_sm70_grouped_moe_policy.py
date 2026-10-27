@@ -18,9 +18,10 @@ PROFILE = "source-grouped-moe-trial"
 
 def test_profile_warms_before_publish_and_does_not_grant_other_operators(source, monkeypatch):
     monkeypatch.setenv(source.module.PROFILE_ENV, PROFILE)
-    monkeypatch.setattr(gguf_ops, "extension", lambda: source.calls.append("gguf-warm"))
+    monkeypatch.setattr(gguf_ops, "extension", lambda: source.calls.append("gguf-warm") or
+                        NS(prepare_grouped=lambda: source.calls.append("kernel-residency")))
     assert source.module.configure(source.text, tp=8, torch=torch) == PROFILE
-    assert source.calls == ["audit", "extension", "gguf-warm", "audit"]
+    assert source.calls == ["audit", "extension", "gguf-warm", "kernel-residency", "audit"]
     assert family.selectors(source.policy) == (
         True, False, False, False, False, False, "packed_grouped_exact", "native32", None)
     w = family.weights(source)
@@ -31,7 +32,8 @@ def test_profile_warms_before_publish_and_does_not_grant_other_operators(source,
         "capture_ready", "device_greedy_mtp_ready", "device_greedy_native_ready", "attention_qualification"))
 
 
-def test_preparation_failure_preserves_previous_selection(source, monkeypatch):
+@pytest.mark.parametrize("failure", ["extension", "kernel-residency"])
+def test_preparation_failure_preserves_previous_selection(source, monkeypatch, failure):
     before = family.selectors(source.policy)
     monkeypatch.setenv(source.module.PROFILE_ENV, PROFILE)
     error = RuntimeError("grouped extension unavailable")
@@ -39,7 +41,8 @@ def test_preparation_failure_preserves_previous_selection(source, monkeypatch):
     def fail():
         raise error
 
-    monkeypatch.setattr(gguf_ops, "extension", fail)
+    monkeypatch.setattr(gguf_ops, "extension", fail if failure == "extension" else
+                        lambda: NS(prepare_grouped=fail))
     with pytest.raises(RuntimeError) as caught:
         source.module.configure(source.text, tp=8, torch=torch)
     assert caught.value is error and family.selectors(source.policy) == before

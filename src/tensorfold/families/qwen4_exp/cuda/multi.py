@@ -901,10 +901,11 @@ class MultiDecoder:
 
     @torch.no_grad()
     def _warm_grouped_experts(self):
-        """Load the actual grouped kernel variants before physical admission.
+        """Warm actual bank/scratch paths after loading, before public use.
 
         The ordinary synthetic request intentionally retains its R<=3 route.
-        These private rows use only existing scratch, never State or tickets.
+        Kernel residency was prepared before initial model admission. These
+        private post-load rows use only existing scratch, never State or tickets.
         Later router/staging writes replace them before any public consumer.
         """
         if self.w.meta.get("sm70_profile") != "source-grouped-moe-trial":

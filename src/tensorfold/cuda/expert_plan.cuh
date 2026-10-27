@@ -6,6 +6,7 @@
 #include "kernels/pdl.cuh"
 
 namespace tensorfold::expert_plan {
+namespace { // Each target-qualified DSO retains its own CUDA host stubs.
 constexpr int PLAN_THREADS = 1024;
 constexpr int EMAX = 1024;
 constexpr int PSMALL = 1024;       // pairs the one-block plan takes; wider calls rank in blocks of PLAN_THREADS
@@ -175,4 +176,5 @@ inline void run(const at::Tensor& picks, int64_t pairs, int64_t experts, int64_t
                      members.data_ptr<int>());
 }
 
+} // anonymous namespace
 } // namespace tensorfold::expert_plan

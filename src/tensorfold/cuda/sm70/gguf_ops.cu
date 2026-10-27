@@ -1416,3 +1416,33 @@ void gguf_experts_grouped(const at::Tensor& x, const at::Tensor& picks,
     if (output.scalar_type() == at::kFloat) launch_grouped_down<true>(activation, picks, d, output, members, items, counts, max_items);
     else launch_grouped_down<false>(activation, picks, d, output, members, items, counts, max_items);
 }
+
+int gguf_prepare_grouped() {
+    // CUDA 12.9 lazy loading: touching attributes loads code without launching
+    // kernels or requiring model/workspace data, before model-admission baseline.
+    int device = 0;
+    C10_CUDA_CHECK(cudaGetDevice(&device));
+    const auto* prop = at::cuda::getDeviceProperties(device);
+    TORCH_CHECK(prop->major == 7 && prop->minor == 0, "grouped expert residency preparation requires SM70");
+    cudaFuncAttributes attributes;
+    int loaded = 0;
+    #define LOAD_GROUPED(...) C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, __VA_ARGS__)); ++loaded
+    LOAD_GROUPED(grouped_gate_up<12, 12>);
+    LOAD_GROUPED(grouped_gate_up<12, 13>);
+    LOAD_GROUPED(grouped_gate_up<13, 12>);
+    LOAD_GROUPED(grouped_gate_up<13, 13>);
+    LOAD_GROUPED(grouped_gate_up<-1, -1>);
+    #define LOAD_DOWN(KIND) LOAD_GROUPED(grouped_down80<true, KIND>); LOAD_GROUPED(grouped_down80<false, KIND>)
+    LOAD_DOWN(7);
+    LOAD_DOWN(8);
+    LOAD_DOWN(20);
+    LOAD_DOWN(42);
+    LOAD_DOWN(-1);
+    #undef LOAD_DOWN
+    LOAD_GROUPED(tensorfold::expert_plan::plan_kernel<true>);
+    LOAD_GROUPED(tensorfold::expert_plan::plan_rank<true>);
+    LOAD_GROUPED(tensorfold::expert_plan::plan_offsets);
+    LOAD_GROUPED(tensorfold::expert_plan::plan_scatter<true>);
+    #undef LOAD_GROUPED
+    return loaded;
+}

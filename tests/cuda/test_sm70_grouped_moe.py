@@ -4,15 +4,24 @@ from types import SimpleNamespace as NS
 import weakref
 
 import pytest
-import torch
 
-from gguf_fixture import blocks
-from tensorfold.cuda.moe import MoEBuffers
-from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense, GGUFExperts, GGUFPacked
-from tensorfold.families.qwen4_exp.gguf import FORMATS
+torch = pytest.importorskip("torch")
+
+from gguf_fixture import blocks  # noqa: E402
+from tensorfold.cuda.moe import MoEBuffers  # noqa: E402
+from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense, GGUFExperts, GGUFPacked  # noqa: E402
+from tensorfold.families.qwen4_exp.gguf import FORMATS  # noqa: E402
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_device_capability() != (7, 0),
                                reason="actual SM70 grouped expert qualification")
+
+
+@pytest.fixture(scope="module", autouse=True)
+def prepared_kernel_residency():
+    from tensorfold.cuda.sm70 import gguf_ops
+
+    loaded = gguf_ops.extension().prepare_grouped()
+    assert loaded == 19
 
 
 def bits(actual, expected):

@@ -82,7 +82,9 @@ and performance remain unqualified; the default stays `reference`.
 The private `source-grouped-moe-trial` adds a bounded grouped SIMT candidate for
 4..32 decode rows. It reuses decoded expert coefficients while retaining each
 row's original FP32 gate/up and K80 down reduction order and FP16 activation.
-The decoder's existing Plan/activation arena is reused across layers; no expert
+Kernel code is made resident before initial model admission; actual bank/scratch
+paths warm after loading. The existing decoder Plan/activation arena is reused
+across layers; no expert
 bank retains an extra workspace. R<=3, prompts, shared Dense and generic helper
 routes retain their original execution. A distinct State/prefix/cohort epoch
 separates this candidate. GPU numerical, model-quality and all six matched
