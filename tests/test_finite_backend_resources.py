@@ -263,3 +263,38 @@ def test_concurrent_actual_physical_refusal_precedes_role_installation(monkeypat
         finalize_backend_resources(selected, tokenizer=selected_tokenizer(),
             scheduler=scheduler, request_limit=limit, caller=caller)
     assert caught.value is primary and not hasattr(selected, 'host_resource_envelope')
+
+
+def test_v2_real_admission_funds_2048_outputs_and_preserves_24_native_windows(monkeypatch):
+    from tensorfold.cuda import capacity
+    from tools import finite_concurrency
+    receipts=[]
+    monkeypatch.setattr(capacity,"admit_host_commitment",
+        lambda total,**kwargs:receipts.append((total,kwargs)) or {"real_boundary":True})
+    results=[]
+    for output in (512,2048):
+        selected,scheduler,limit,caller=concurrent_owners(24)
+        decoder=selected._cohort.multi
+        decoder.logical_context,decoder.capacity=262144,262147
+        for state in selected.states:
+            state.logical_context,state.limit=262144,262147
+        scheduler.max_waiting_input_bytes=24*decoder.input_reservation_bytes()
+        scheduler.output_queue_tokens=output
+        caller=replace(caller,max_input_tokens=4096,max_output_tokens=output,
+            max_receipt_bytes=25*2424832,
+            control_payload_bytes=finite_concurrency.control_payload_bytes(output)
+                +finite_concurrency.screen_control_payload_bytes(output))
+        record=finalize_backend_resources(selected,tokenizer=selected_tokenizer(),
+            scheduler=scheduler,request_limit=limit,caller=caller)
+        assert len(selected.states)==24 and all(state.limit==262147 for state in selected.states)
+        assert record["context_tokens"]==record["finite_protocol"]["native_logical_context_unchanged"]==262144
+        assert record["finite_protocol"]["role"]["outputs"]==output
+        assert scheduler._request_limit is None and not limit.used
+        results.append(record)
+    assert len(receipts)==2 and all(total==row["global_host_commitment_bytes"] for (total,_kwargs),row in zip(receipts,results))
+    old,new=results
+    assert new["global_host_commitment_bytes"]>old["global_host_commitment_bytes"]
+    assert new["caller_payload"]["retained_result_ids"]>old["caller_payload"]["retained_result_ids"]
+    assert new["caller_payload"]["retained_decoded_text"]>old["caller_payload"]["retained_decoded_text"]
+    assert new["caller_payload"]["bounded_caller_control_payload"]>old["caller_payload"]["bounded_caller_control_payload"]
+    assert new["finite_protocol"]["cpu_token_span"]==6150

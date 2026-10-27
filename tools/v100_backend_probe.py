@@ -38,7 +38,7 @@ INPUT_CREDIT = 16 << 20
 MAX_PROMPT_BYTES = 4096
 MAX_RENDERED_BYTES = 65536
 MAX_PROMPT_TOKENS = 4096
-MAX_TOKENS = 512
+MAX_TOKENS = 2048
 LEADER_RECEIPT_BYTES = 512 << 10
 FOLLOWER_RECEIPT_BYTES = 256 << 10
 SUPERVISOR_RECEIPT_BYTES = 64 << 10
@@ -140,7 +140,7 @@ def arguments(argv=None):
     parser.add_argument("--instrumented-departure-grace-seconds", type=float,
                         help="explicit profiler trial only: extend the natural child-exit wait, bounded by --timeout-seconds; default30s, failure teardown stays30s")
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
-    parser.add_argument("--tokens", type=int, default=128, help="bounded reply allowance, 1..512")
+    parser.add_argument("--tokens", type=int, default=128, help="bounded reply allowance:1..512 ordinary/v1; exactly2048 requires --fast-grid-protocol fast-grid-v2")
     parser.add_argument("--repetitions", type=int, default=1,
                         help="1..16 sequential repetitions using one loaded engine/admission; cache state is retained and reported")
     parser.add_argument("--expect-prefix-reuse", action="store_true",
@@ -148,7 +148,9 @@ def arguments(argv=None):
     parser.add_argument("--concurrency-grid", action="store_true",
                         help="finite bursts at1,2,4,8,16,24; sustained replies require>=256 committed tokens each plus positive correlated decode overlap; EOS unchanged")
     parser.add_argument("--fast-grid", action="store_true",
-                        help="operational screen: one2-tokenNotebookbringup, allsixNs,30sreadiness/target10sdecode each, expectedcancel+drain; requiresgrid and320or512outputcells; notfullqualification")
+                        help="operational screen: one2-tokenNotebookbringup, allsixNs,30sreadiness/target10sdecode each, expectedcancel+drain; requiresgrid and320or512(v1)/2048(v2)outputcells; notfullqualification")
+    parser.add_argument("--fast-grid-protocol", choices=("fast-grid-v1", "fast-grid-v2"), default="fast-grid-v1",
+                        help="explicit protocol: v1 uses320/512outputcells; v2 funds2048cells for full10s >85tokens/s screens; sameprompts/window/EOS/quality")
     parser.add_argument("--quality-spotchecks", action="store_true",
                         help="after the unchanged concurrency grid, run six fixed independent answer/format checks with320-token allowances; requires grid and --tokens>=320")
     parser.add_argument("--thinking", action="store_true", help="pass enable_thinking=True to the unchanged target template")
@@ -160,14 +162,18 @@ def arguments(argv=None):
     if args.base_commit is not None and not re.fullmatch(r"[0-9a-f]{40}", args.base_commit):
         parser.error("--base-commit must be 40 lowercase hexadecimal characters")
     if (not 1 <= args.tokens <= MAX_TOKENS or not args.prompt
-            or len(args.prompt.encode("utf-8")) > MAX_PROMPT_BYTES):
-        parser.error("a nonempty prompt of at most4096 UTF8 bytes and 1..512 reply tokens are required")
+            or len(args.prompt.encode("utf-8")) > MAX_PROMPT_BYTES
+            or args.tokens > 512 and not (args.fast_grid and args.fast_grid_protocol == "fast-grid-v2" and args.tokens == 2048)):
+        parser.error("a nonempty4096-byte prompt and1..512tokens required; explicitfast-grid-v2allows2048")
     if not 1 <= args.repetitions <= 16:
         parser.error("--repetitions must be 1..16")
     if args.concurrency_grid and (args.tokens < 256 or args.expect_prefix_reuse):
         parser.error("--concurrency-grid requires --tokens256..512 and cannot impose sequential prefix-reuse assertions")
-    if args.fast_grid and (not args.concurrency_grid or args.tokens not in (320, 512) or args.serial_reference or args.repetitions != 1):
-        parser.error("--fast-grid requires --concurrency-grid, --tokens320or512, --repetitions1 and MTPonly")
+    allowed_fast_tokens = (320, 512) if args.fast_grid_protocol == "fast-grid-v1" else (2048,)
+    if args.fast_grid_protocol != "fast-grid-v1" and not args.fast_grid:
+        parser.error("--fast-grid-protocol fast-grid-v2 requires --fast-grid")
+    if args.fast_grid and (not args.concurrency_grid or args.tokens not in allowed_fast_tokens or args.serial_reference or args.repetitions != 1):
+        parser.error("--fast-grid requires --concurrency-grid, protocol-outputcap320or512(v1)/2048(v2), --repetitions1 and MTPonly")
     if args.quality_spotchecks and (not args.concurrency_grid or args.tokens < 320):
         parser.error("--quality-spotchecks requires --concurrency-grid and --tokens>=320 for the declared caller funding")
     if args.expect_prefix_reuse and args.repetitions < 2:
@@ -613,7 +619,7 @@ def run_fast_grid(engine, tokenizer, args, report, limit, pool, prepared, finite
     from tensorfold.token_metadata import decode_presentation
 
     _label, tokens, prompt = next(row for row in prepared if row[0] == "sustained")
-    report["fast_screen"] = {"protocol": "fast-grid-v1", "readiness_cap_seconds": finite.FAST_READY_SECONDS,
+    report["fast_screen"] = {"protocol": getattr(args, "fast_grid_protocol", "fast-grid-v1"), "readiness_cap_seconds": finite.FAST_READY_SECONDS,
         "target_decode_seconds": finite.FAST_DECODE_SECONDS, "output_cell_bound": args.tokens,
         "completed_cohorts": 0, "invalid_measurements": 0,
         "full_qualification": False, "quality_assessed": False,
@@ -667,7 +673,7 @@ def run_fast_grid(engine, tokenizer, args, report, limit, pool, prepared, finite
                          allowance=finite.MAXIMUM * MAX_RECEIPT_BYTES)
         summary = finite.run_screen_case(pool, count=count, maximum_tokens=args.tokens, vocab=vocab,
             limit=limit, invoke=invoke, observe=observe, write=write_case, timeout=args.timeout_seconds,
-            failure_notify=notify_failure)
+            failure_notify=notify_failure, protocol=getattr(args, "fast_grid_protocol", "fast-grid-v1"))
         report["fast_screen"]["completed_cohorts"] += 1
         report["fast_screen"]["invalid_measurements"] += not summary["passed"]
         report["fast_screen"]["last_case"] = summary
@@ -723,7 +729,7 @@ def run_concurrency_leader(engine, tokenizer, args, report):
         max_receipt_bytes=(finite.MAXIMUM + 1) * MAX_RECEIPT_BYTES,
         max_concurrent_requests=finite.MAXIMUM, worker_stack_bytes=finite.STACK_BYTES,
         control_payload_bytes=finite.control_payload_bytes(args.tokens) + quality_control
-            + (finite.screen_control_payload_bytes() if getattr(args, "fast_grid", False) else 0))
+            + (finite.screen_control_payload_bytes(args.tokens) if getattr(args, "fast_grid", False) else 0))
     limit, pool = RequestLimit(finite.MAXIMUM), None
     primary, failures = None, [None, None]
     report["concurrency"] = {"grid": finite.GRID, "caller": caller.__dict__,
@@ -939,6 +945,7 @@ def launch(args, argv):
             "max_receipt_bytes": (25 if args.concurrency_grid else 1) * MAX_RECEIPT_BYTES,
             "concurrency_grid": [1, 2, 4, 8, 16, 24] if args.concurrency_grid else None,
             "quality_spotchecks": getattr(args, "quality_spotchecks", False),
+            "fast_grid_protocol": getattr(args, "fast_grid_protocol", "fast-grid-v1"),
             "fast_grid": getattr(args, "fast_grid", False),
             "measurement_role": "fastoperational-screen-notfullqualification" if getattr(args, "fast_grid", False) else "fullfinitequalification-protocol",
             "requested_sm70_profile": args.requested_sm70_profile,
