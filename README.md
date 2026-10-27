@@ -12,7 +12,8 @@ and Q8 MTP, a Notebook prompt with a warmed prefix, greedy proposals of at most
 two tokens at confidence 0.7, reserved native 262144-token windows, Q8 K/V and
 ceiling 24 measured
 14.0 tokens/s at one request and 10.3/11.7/13.3/13.6 aggregate at 2/4/8/16.
-The earlier owner-piece runtime measured 10.8/8.0/9.3/9.8/11.4 respectively.
+The owner-piece reference at `266ff976` (wheel `6d340a47`) measured
+10.8/8.0/9.3/9.8/11.4 respectively.
 At 24 requests only 22 reached decode within the 30-second readiness cap, so
 no 24-request rate was measured. All six completed quality answers matched the
 baseline, including its two failures (4/6 passed). The complete raw packet has
