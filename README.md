@@ -18,7 +18,12 @@ At 24 requests only 22 reached decode within the 30-second readiness cap, so
 no 24-request rate was measured. All six completed quality answers matched the
 baseline, including its two failures (4/6 passed). The complete raw packet has
 SHA256 `740f51532bc34757e3bb8e9d6024e5e6e74ae2cbb2648913abe3e06f012fcc0b`.
-These are first-screen observations; repeatability, broad quality, full-active
+An independent fresh-container repeat with the exact same runtime, inputs and
+protocol produced the same five rates and six quality answers; the 24-request
+case again reached 22 decoding requests before the readiness cap. Its raw packet
+SHA256 is `3221791a722391455c28c168fd26c9cd2483a7bffe7e6468f943a1ad04887f0f`.
+These two short screens establish a repeatable measured improvement in the five
+valid low-history cases; broad quality, the 24-request rate, full-active
 near-full-history capacity and release performance remain unqualified.
 
 The private `source-owner-target-guard-trial` composes existing owner/target piece
