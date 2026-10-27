@@ -14,6 +14,9 @@ FAMILY_PREFIX_STATE = ("sm70-prefix-epoch-v1", hashlib.sha256(FAMILY_PREFIX_IDEN
 PACKED_PROFILE = "source-packed-trial"
 PACKED_IDENTITY = "sm70-packed-exact-native32-int8-greedy-text-prefix-trial-v1:" + QSA_SELECTION
 PACKED_STATE = ("sm70-prefix-epoch-v1", hashlib.sha256(PACKED_IDENTITY.encode()).hexdigest())
+WMMA80_PROFILE = "source-wmma80-trial"
+WMMA80_IDENTITY = "sm70-wmma80-split8-native32-int8-greedy-text-prefix-trial-v1:" + QSA_SELECTION
+WMMA80_STATE = ("sm70-prefix-epoch-v1", hashlib.sha256(WMMA80_IDENTITY.encode()).hexdigest())
 
 
 def identity(profile):
@@ -24,6 +27,8 @@ def identity(profile):
         return FAMILY_PREFIX_IDENTITY
     if profile == PACKED_PROFILE:
         return PACKED_IDENTITY
+    if profile == WMMA80_PROFILE:
+        return WMMA80_IDENTITY
     return IDENTITY if profile in ("optimized", "reference") else None
 
 
@@ -31,6 +36,8 @@ def state_epoch(profile):
     """Only the explicit cached trial adds an immutable State compatibility epoch."""
     if profile == PACKED_PROFILE:
         return PACKED_STATE
+    if profile == WMMA80_PROFILE:
+        return WMMA80_STATE
     return FAMILY_PREFIX_STATE if profile == FAMILY_PREFIX_PROFILE else None
 
 
@@ -60,7 +67,7 @@ def reuse_allowed(w, sampling, *, draft, vision, position, kv_pair=None):
     ordinary = draft and vision is None
     if not ordinary or w.meta.get("execution_provider") != "sm70":
         return ordinary
-    if w.meta.get("sm70_profile") in (FAMILY_PREFIX_PROFILE, PACKED_PROFILE):
+    if w.meta.get("sm70_profile") in (FAMILY_PREFIX_PROFILE, PACKED_PROFILE, WMMA80_PROFILE):
         return _family_prefix_allowed(sampling, position, kv_pair)
     if w.meta.get("sm70_profile") == "source-family-trial":
         return False  # Cold qualification has no same-format cached-suffix receipt yet.
@@ -82,7 +89,7 @@ def reuse_allowed(w, sampling, *, draft, vision, position, kv_pair=None):
 def serial_reuse_allowed(w, sampling, *, draft, position, kv_pair, vision=None):
     """Serial/twin Q4 has the same qualification; legacy serial policy stays intact."""
     if (w.meta.get("execution_provider") == "sm70"
-            and w.meta.get("sm70_profile") in (FAMILY_PREFIX_PROFILE, PACKED_PROFILE)):
+            and w.meta.get("sm70_profile") in (FAMILY_PREFIX_PROFILE, PACKED_PROFILE, WMMA80_PROFILE)):
         return draft and vision is None and _family_prefix_allowed(sampling, position, kv_pair)
     if (w.meta.get("execution_provider") == "sm70"
             and w.meta.get("sm70_profile") == "source-family-trial"):

@@ -29,6 +29,7 @@ class TestPromptPass(unittest.TestCase):
     def test_scope_and_modern_reference_fallback(self):
         for provider, profile, count in (("sm70", "optimized", 1), ("sm70", "source-family-trial", 1),
                                          ("sm70", "source-family-prefix-trial", 1),
+                                         ("sm70", "source-wmma80-trial", 1),
                                          ("sm70", "reference", 3), ("cuda", "source-family-trial", 3),
                                          ("cuda", "optimized", 3), ("cuda", "reference", 3),
                                          ("sm70", None, 3), (None, "optimized", 3)):

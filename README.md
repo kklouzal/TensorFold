@@ -87,6 +87,12 @@ recurrent state are retained. Its focused tests record error against original
 BMM and independent FP64 calculations without relaxing the exact-path oracles.
 Actual component speed, whole-model quality and integrated performance remain
 pending; this candidate has no default selection or qualified throughput claim.
+The explicit private `TENSORFOLD_SM70_PROFILE=source-wmma80-trial` selects this
+approximate expert implementation with the packed profile's native32 concatenation
+and FAMILY operations. It retains the same source-stack/admission checks,
+reference attention/routing/padding and eager execution. Its separate prefix/State
+epoch permits only the existing INT8 greedy text reuse domain. Default and exact
+profiles remain unchanged; whole-model quality and speed require actual evidence.
 Its combined source/media authority also checks the protected CPU processor and
 decoder closure; a source-only record cannot satisfy the combined verifier.
 The additive [CPU media source image](deploy/v100/media-foundation.md) supplies
