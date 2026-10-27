@@ -359,8 +359,10 @@ def prepare_weights(w, *, graph_contract=None):
         if _SELECTED in (OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL):
             w.meta["sm70_native_guard_trial"] = True
         if _SELECTED == OWNER_TARGET_PRELUDE_TRIAL:
-            if getattr(w, "positions", None) is not None:
-                raise ValueError("native owner prelude requires ordinary native-context text positions")
+            from tensorfold.families.qwen4_exp.cuda.history_owner import _native_prelude_binding
+
+            if not _native_prelude_binding(getattr(w, "positions", None)):
+                raise ValueError("native owner prelude requires authoritative native-context text position roles")
             zero = torch.zeros((1,), dtype=torch.int32, device=w.device)
             torch.cuda.current_stream(w.device).synchronize()
             w.meta["sm70_owner_prelude_zero"] = zero  # Immutable; no State reset/media field is borrowed.

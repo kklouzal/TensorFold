@@ -1,5 +1,12 @@
 # TensorFold fork
 
+The private owner prelude accepts the engine's actual immutable native position
+binding, including distinct target/MTP inverse-frequency operands. Native role
+algorithm, context bounds, sections and amplitude are checked; media and extended
+roles keep the ordinary preparation route. The earlier unbound toy oracle did
+not qualify this real-binding integration. CPU, real-bound TP8 and full-model
+checks remain pending for this successor.
+
 The private `source-owner-target-prelude-trial` prepares plain native-context Q8
 owner frames through the existing fused family preparation kernel. Dedicated
 immutable zero and original State positions separate frame addresses from RoPE

@@ -77,6 +77,31 @@ def _worker(rank, port, target_greedy=False):
             history_layout="unique", indexer_history="gpu", attention_degree=1,
             capture_ready=True, unique_capture_contract=UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT,
             sm70_profile=OWNER_GRAPH_PROFILE)
+        if target_greedy == "bound-prelude":
+            import tempfile
+            from pathlib import Path
+            from tensorfold.families.qwen4_exp.position_profile import (
+                resolve_position_profile, prepare_position_vectors, bind_position_profile,
+            )
+
+            # Match the actual Engine resolve/prepare/load/bind order. This is
+            # a native role binding, not a None-position toy authorization.
+            with tempfile.TemporaryDirectory() as directory:
+                config = {"model_type": "qwen4_exp", "text_config": {
+                    "head_dim": 256, "hidden_size": base.cfg.hidden, "num_attention_heads": 24,
+                    "max_position_embeddings": 262144,
+                    "rope_parameters": {"rope_type": "default", "rope_theta": 10000000,
+                        "partial_rotary_factor": .25, "mrope_interleaved": True,
+                        "mrope_section": [11, 11, 10]}}}
+                (Path(directory) / "config.json").write_text(json.dumps(config))
+                profile = resolve_position_profile(directory, requested_context=257)
+                prepared = prepare_position_vectors(profile, mtp_active=True)
+                base.cfg.rope = profile.target.rope
+                base.inv_freq = prepared.target_cpu.to(base.device)
+                bind_position_profile(base, profile, mtp_active=True, prepared=prepared)
+                base.meta.update(position_profile_identity=profile.identity, position_profile_epoch=profile.epoch)
+            assert base.positions is not None and base.positions.mtp is not None
+
         text = {"hidden_size": base.cfg.hidden, "num_attention_heads": 24, "num_key_value_heads": 2,
                 "head_dim": 256, "indexer_budget": base.cfg.index_budget,
                 "indexer_compress_ratio": base.cfg.index_ratio}
@@ -89,12 +114,12 @@ def _worker(rank, port, target_greedy=False):
             if compact_target:
                 from tensorfold.families.qwen4_exp.cuda.target_greedy import POLICY
 
-                weights.meta.update(sm70_profile=OWNER_TARGET_PRELUDE_PROFILE if compact_target == "prelude" else
+                weights.meta.update(sm70_profile=OWNER_TARGET_PRELUDE_PROFILE if compact_target in ("prelude", "bound-prelude") else
                     OWNER_TARGET_GUARD_PROFILE if compact_target == "guard" else OWNER_TARGET_GREEDY_PROFILE,
                     sm70_target_greedy_trial={"policy": POLICY}, target_greedy_owner=None)
-                if compact_target in ("guard", "prelude"):
+                if compact_target in ("guard", "prelude", "bound-prelude"):
                     weights.meta["sm70_native_guard_trial"] = True
-                if compact_target == "prelude":
+                if compact_target in ("prelude", "bound-prelude"):
                     weights.meta["sm70_owner_prelude_zero"] = torch.zeros(1, dtype=torch.int32, device=weights.device)
                     weights.meta["sm70_owner_prelude_submitted_frames"] = 0
                     torch.cuda.current_stream(weights.device).synchronize()
@@ -185,7 +210,7 @@ def _worker(rank, port, target_greedy=False):
                 assert actual.cached > 0
             phase(f"request/completed/repetition={repetition}")
         assert graphs.bound.hits > 0
-        if target_greedy == "prelude":
+        if target_greedy in ("prelude", "bound-prelude"):
             assert combined_weights.meta["sm70_owner_prelude_submitted_frames"] > 0
             assert combined_weights.meta["sm70_owner_prelude_zero"].tolist() == [0]
         if target_greedy:
@@ -203,7 +228,7 @@ def _worker(rank, port, target_greedy=False):
         retire()
 
 
-@pytest.mark.parametrize("target_greedy", [False, True, "guard", "prelude"])
+@pytest.mark.parametrize("target_greedy", [False, True, "guard", "prelude", "bound-prelude"])
 def test_v100_tp8_native_owner_exact_pieces_match_native_eager_frames_and_commits(target_greedy):
     if torch.cuda.device_count() < 8 or any(torch.cuda.get_device_capability(rank) != (7, 0) for rank in range(8)):
         pytest.skip("requires eight real SM70 GPUs and the supported source foundation")

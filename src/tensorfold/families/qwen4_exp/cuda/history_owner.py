@@ -216,6 +216,29 @@ def _encode(value, format, status, layer, *, error):
 
 
 
+
+def _native_prelude_position(position):
+    """An already bound native role is allowed; extended/foreign roles are not."""
+    from ..position_profile import NATIVE_ALGORITHM, PositionOperands, PositionRole
+
+    if not isinstance(position, PositionOperands) or not isinstance(position.domain, PositionRole):
+        return False
+    role = position.domain
+    return (role.algorithm == NATIVE_ALGORITHM and role.rope.rope_type == "default"
+            and role.max_rows <= role.rope.native_context
+            and role.rope.context_limit <= role.rope.native_context
+            and position.amplitude == role.rope.attention_factor
+            and position.sections == role.rope.mrope_section)
+
+
+def _native_prelude_binding(binding):
+    """Startup capability check over the actual resolver/binder's immutable roles."""
+    from ..position_profile import BoundPositionProfile
+
+    return (binding is None or isinstance(binding, BoundPositionProfile)
+            and _native_prelude_position(binding.target)
+            and (binding.mtp is None or _native_prelude_position(binding.mtp)))
+
 def _native_frame_prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
     """Reuse the qualified scalar-position prep into a bounded frame, not a history.
 
@@ -224,8 +247,9 @@ def _native_frame_prepare(projection, state, layer, weights, buffers, start, sto
     Only plain native-context Q8 text uses this specialization. Existing cache
     and CompactIndexer transactions copy the frame before the actor reuses gated.
     """
-    if (getattr(weights, "positions", None) is not None or state.image_positions is not None
-            or state.rope_delta != 0 or getattr(state, "media_profile_identity", None) is not None):
+    if (state.image_positions is not None or state.rope_delta != 0
+            or getattr(state, "media_profile_identity", None) is not None
+            or getattr(state, "media_input_span", None) is not None):
         return False  # No native writes; preserve the ordinary coordinate/codec route.
     c, a = weights.cfg, layer.attn
     ai = state.history_placement.target_layers if mtp else state.att_index[layer.index]
@@ -238,8 +262,17 @@ def _native_frame_prepare(projection, state, layer, weights, buffers, start, sto
         return False
     if not 0 <= start < stop <= buffers.rows or stop > projection.shape[0]:
         raise ValueError("native owner frame must fit its prepared input/output rows")
-    if buffers.target_indexer_position is not None or buffers.mtp_indexer_position is not None:
-        return False
+    position = buffers.mtp_indexer_position if mtp else buffers.target_indexer_position
+    binding = getattr(weights, "positions", None)
+    if binding is not None:
+        expected = binding.mtp if mtp else binding.target
+        if position is not expected or not _native_prelude_position(position):
+            return False
+        frequency, sections, amplitude = position.inv_freq, position.sections, position.amplitude
+    else:
+        if position is not None:
+            return False
+        frequency, sections, amplitude = weights.inv_freq, c.mrope_section, c.rope_attention_factor
     rows, capacity, dim = stop - start, buffers.rows, c.head_dim
     # The original pre-gate scratch is idle until attention returns. Contiguous
     # frame arrays occupy 800 bytes/row in the admitted 1536-byte/row slab.
@@ -256,10 +289,10 @@ def _native_frame_prepare(projection, state, layer, weights, buffers, start, sto
 
     zero = weights.meta["sm70_owner_prelude_zero"]
     absolute = state.mtp_pos if mtp else state.pos_dev
-    extension().prep(projection[start:stop], zero, a.q_scale, a.k_scale, a.iq_scale, weights.inv_freq,
+    extension().prep(projection[start:stop], zero, a.q_scale, a.k_scale, a.iq_scale, frequency,
         buffers.q[start:stop], key, value, buffers.iq[start:stop], ik, ks, vs, state.kv_status,
         absolute, None, c.heads, 1, dim, c.index_heads, c.index_dim, 8, 8, layer.index,
-        c.eps, c.rope_attention_factor, not buffers.prefill)
+        c.eps, amplitude, not buffers.prefill)
     pos = state.mtp_len if mtp else state.pos
     cache.append(pos, key[:rows], value[:rows], ks[:rows], vs[:rows])
     if state.history_rank == state.history_placement.indexer_owner(state.history_slot, ai,
@@ -272,8 +305,8 @@ def _native_frame_prepare(projection, state, layer, weights, buffers, start, sto
         entry = state.compact_indexer.append(ai, pos, ik[:rows], coordinates,
             buffers.compact_indexer_stage, start, stop, mtp=mtp,
             expected=(state.slot_generation, state.history_generation))
-        entry.pool(state.mtp_pooled if mtp else state.pooled[ai], a.ik_scale, weights.inv_freq,
-                   c.eps, c.mrope_section, c.rope_attention_factor)
+        entry.pool(state.mtp_pooled if mtp else state.pooled[ai], a.ik_scale, frequency,
+                   c.eps, sections, amplitude)
         if mtp:
             expected = (state.slot_generation, state.history_generation)
             entry.publish_commit(entry.prepare_commit(pos + rows, expected), pos + rows, expected)
