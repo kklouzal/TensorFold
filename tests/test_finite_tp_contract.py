@@ -9,6 +9,7 @@ pytest.importorskip('torch')
 
 from tensorfold.cuda import rank_protocol
 from tensorfold.cuda.rank_protocol import FiniteTPContract, finite_error_identity
+from tensorfold.cuda.scheduler import Scheduler
 from tensorfold.cuda.streams import Stream
 from tensorfold.engine.exact_sampling import Sampling
 from tensorfold.families.qwen4_exp.cuda.adaptive_controller import AdaptiveController
@@ -131,8 +132,12 @@ def pair(*, wrong_peer=False):
     store = PreparationStore()
     peers = [TensorParallelDecoder(FiniteDecoder(rank, store), NS(
         _abort_comm=False, _closing=False, _lifecycle=threading.Condition(), serving_profiles=None)) for rank in range(2)]
-    for peer in peers:
-        peer.configure_admission_policy('fifo')
+    # Actual Engine initialization constructs this Scheduler ONLY on rank0.
+    # Followers begin legacy and mirror the coordinator's first control packet.
+    scheduler = Scheduler(peers[0], max_streams=2, admission_policy='fifo', max_waiting_input_bytes=16384)
+    assert scheduler.decoder is peers[0] and peers[1].admission_policy == 'legacy'
+    peers[1]._arrival = True
+    peers[1].decoder.controller.effective['prefill_tokens'] = 1
     if wrong_peer:
         peers[1].decoder.copy = True
     errors = []
@@ -153,6 +158,10 @@ def test_real_ordered_peers_activate_same_role_before_generation_then_finish_and
     try:
         root.configure_finite_caller(role())
         assert peers[0]._finite_contract == peers[1]._finite_contract == role()
+        assert all(peer.admission_policy == peer.decoder.admission_policy == 'fifo' for peer in peers)
+        assert all(peer.prefix_operation == 0 and peer.prefix_sequence == 0 for peer in peers)
+        assert all(peer._arrival is False and peer._rows == 3 for peer in peers)
+        assert peers[0].decoder.controller.effective == peers[1].decoder.controller.effective
         assert not root.requests and root.decoder.live() == 0
         stream = Stream([3, 5], 3, Sampling(17, 0, 0, 1), draft=False, cancel=threading.Event())
         stream.admission_ticket, stream.principal = 1, None
@@ -187,8 +196,12 @@ def test_tp8_all_peers_acknowledge_the_same_finite_role_and_retire():
     peers = [TensorParallelDecoder(FiniteDecoder(rank, store, world=8), NS(
         _abort_comm=False, _closing=False, _lifecycle=threading.Condition(), serving_profiles=None))
         for rank in range(8)]
-    for peer in peers:
-        peer.configure_admission_policy('fifo')
+    scheduler = Scheduler(peers[0], max_streams=2, admission_policy='fifo', max_waiting_input_bytes=16384)
+    assert scheduler.decoder is peers[0]
+    assert all(peer.admission_policy == 'legacy' for peer in peers[1:])
+    for peer in peers[1:]:
+        peer._arrival = True
+        peer.decoder.controller.effective['prefill_tokens'] = 1
     def follow(peer):
         try:
             while (body := peer.receive()) is not None:
@@ -201,6 +214,10 @@ def test_tp8_all_peers_acknowledge_the_same_finite_role_and_retire():
     try:
         peers[0].configure_finite_caller(role())
         assert all(peer._finite_contract == role() for peer in peers)
+        assert all(peer.admission_policy == peer.decoder.admission_policy == 'fifo' for peer in peers)
+        assert all(peer.prefix_operation == 0 and peer.prefix_sequence == 0 for peer in peers)
+        assert all(peer._arrival is False and peer._rows == 3 for peer in peers)
+        assert all(peer.decoder.controller.effective == peers[0].decoder.controller.effective for peer in peers)
         stream = Stream([3, 5], 2, Sampling(17, 0, 0, 1), draft=False, cancel=threading.Event())
         stream.admission_ticket, stream.principal = 1, None
         stream.admission_status, stream.retention_intent, stream.output_capacity = NS(ticket=1, principal=None), None, 2
@@ -324,3 +341,83 @@ def test_finite_status_preparation_cannot_replace_original_operation_error(monke
     with pytest.raises(ValueError) as caught:
         peer._execute({'kind': 'round', 'sequence': 0})
     assert caught.value is primary and primary.__cause__ is secondary and peer.failure is primary
+
+
+def test_actual_factory_and_engine_startup_gate_leave_followers_legacy_until_bootstrap(tmp_path, monkeypatch):
+    """Execute the actual installed factory and constructor's final rank gates.
+
+    Hardware/model loading is a CPU fixture. The two unchanged constructor
+    statements are extracted directly from the installed method, not mirrored
+    as a test-written rank conditional. This establishes startup/control order;
+    it does not qualify device, memory, model or native24-slot execution.
+    """
+    import ast
+    import inspect
+    import textwrap
+    from tensorfold.families import qwen4_exp
+    from tensorfold.families.qwen4_exp.cuda import engine as engine_module
+    from tests.test_position_cli import gguf_source
+
+    method = ast.parse(textwrap.dedent(inspect.getsource(engine_module.FlashNextEngine._initialize))).body[0]
+    tail = method.body[-2:]
+    assert all(isinstance(node, ast.If) for node in tail)
+    assert 'self.rank == 0' in ast.unparse(tail[0].test)
+    assert 'self.scheduler.start()' in ast.unparse(tail[1])
+    arguments = ast.arguments(posonlyargs=[], args=[ast.arg(arg=name) for name in ('self', 'streams', 'managed')],
+                              kwonlyargs=[], kw_defaults=[], defaults=[])
+    controller = ast.Module(body=[ast.FunctionDef(name='installed_startup', args=arguments,
+        body=tail, decorator_list=[])], type_ignores=[])
+    namespace = {'Scheduler': Scheduler}
+    exec(compile(ast.fix_missing_locations(controller), '<installed-engine-startup-controller>', 'exec'), namespace)
+    startup = namespace['installed_startup']
+    store, engines, errors = PreparationStore(), [], []
+    class HardwareFreeEngine:
+        def __init__(self, _directory, **options):
+            self.options = options
+            self.rank, self.concurrent, self.scheduler = options['rank'], True, None
+            self.multi = FiniteDecoder(self.rank, store, world=8)
+            self.multi.states = [NS() for _ in range(options['streams'])]
+            self.multi.controller = AdaptiveController(slots=options['streams'], row_budget=options['streams'] * 3,
+                                                      proposal_limit=2, prefill_tokens=16)
+            self._abort_comm, self._closing, self._lifecycle, self.serving_profiles = False, False, threading.Condition(), None
+            self.tp_decoder = TensorParallelDecoder(self.multi, self)
+            self.comm = self.tp_decoder.comm
+            self._admission_options = {'admission_policy': 'fifo', 'max_waiting_input_bytes': 1 << 20,
+                                       'output_queue_tokens': 12}
+            startup(self, options['streams'], False)
+            engines.append(self)
+    monkeypatch.setattr(engine_module, 'FlashNextEngine', HardwareFreeEngine)
+    directory = gguf_source(tmp_path / 'model')
+    (directory / 'model.safetensors.index.json').write_text(json.dumps({'weight_map': {'mtp.fixture': 'metadata-only'}}))
+    for rank in range(8):
+        qwen4_exp.cuda_engine(directory, tp=8, rank=rank, master='fixture', parallel=24,
+            mtp_drafts=2, mtp_confidence=.7, context=262144, context_explicit=True, kv_dtype='int8',
+            max_waiting_input_bytes=1 << 20, output_queue_tokens=12)
+    root = engines[0]
+    assert root.scheduler is not None and root.scheduler.thread.is_alive()
+    assert root.scheduler.max_streams == 24 and root.tp_decoder.admission_policy == 'fifo'
+    assert all(engine.scheduler is None and engine.tp_decoder.admission_policy == 'legacy' for engine in engines[1:])
+    assert all(engine.options['adaptive_sessions'] and engine.options['session_ceiling'] == 24
+               and engine.options['depth'] == 2 for engine in engines)
+    def follow(engine):
+        try:
+            while (body := engine.tp_decoder.receive()) is not None:
+                engine.tp_decoder.apply(body)
+        except BaseException as error:
+            errors.append(error)
+    threads = [threading.Thread(target=follow, args=(engine,), daemon=True) for engine in engines[1:]]
+    for thread in threads:
+        thread.start()
+    try:
+        contract = FiniteTPContract(128, 64, 8, 12, 24, 2)
+        root.tp_decoder.configure_finite_caller(contract)
+        assert all(engine.tp_decoder._finite_contract == contract for engine in engines)
+        assert all(engine.tp_decoder.admission_policy == engine.multi.admission_policy == 'fifo' for engine in engines)
+        assert all(engine.tp_decoder.prefix_operation == 0 and engine.tp_decoder.prefix_sequence == 0 for engine in engines)
+        assert all(engine.tp_decoder._arrival is False and engine.tp_decoder._rows == 3 for engine in engines)
+    finally:
+        root.scheduler.close()
+        root.tp_decoder.shutdown()
+        for thread in threads:
+            thread.join(6)
+    assert not errors and all(not thread.is_alive() for thread in threads) and not store.data

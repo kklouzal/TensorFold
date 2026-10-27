@@ -1582,7 +1582,9 @@ before model state changes. The unchanged generic setup transaction and all
 malformed raw-frame/error owners remain funded. A separate finite CPU token span
 bounds request-local work while native context, windows and automatic capacity
 remain unchanged. Activation requires a quiescent cohort and matching peer ACKs;
-partial activation poisons that cohort. Actual model capacity must support the envelope. The default finite
+partial activation poisons that cohort. The first bootstrap applies the ordinary
+coordinator controls so followers mirror the leader's FIFO policy before the
+unchanged geometry checks. Actual model capacity must support the envelope. The default finite
 caller and existing single-request tool mode remain unchanged. Optional
 `--session-ceiling 24` uses the supported integer parallelism factory and requires
 an actual24-slot plan for the explicit comparison region. Omitting it keeps

@@ -727,18 +727,23 @@ class TensorParallelDecoder:
             except BaseException as primary:
                 self._poison_control(primary)
                 raise
+        bootstrap_contract = None
         if body["kind"] == "finite_configure":
             from tensorfold.cuda.rank_protocol import FiniteTPContract
 
             if type(body) is not dict or set(body) != {"kind", "finite_role", "control", "sequence"}:
                 raise ValueError("finite configure operation differs from its bootstrap schema")
-            contract = FiniteTPContract.from_record(body["finite_role"])
-            self._check_finite_geometry(contract)
-            self._finite_contract = contract
-            return None
+            bootstrap_contract = FiniteTPContract.from_record(body["finite_role"])
         self.prefix_operation = body["sequence"]
         self.prefix_sequence = 0
+        # Only rank zero constructs the FIFO Scheduler after warmup. Peers
+        # mirror that policy and frozen execution controls on this first
+        # ordinary actor command, before validating the resulting geometry.
         self._apply_controls(body["control"])
+        if bootstrap_contract is not None:
+            self._check_finite_geometry(bootstrap_contract)
+            self._finite_contract = bootstrap_contract
+            return None
         kind = body["kind"]
         if kind == "retire_admission_error":
             if self._operation_error is None:
