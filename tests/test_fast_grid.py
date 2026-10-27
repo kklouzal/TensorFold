@@ -357,9 +357,74 @@ def test_notification_and_report_failure_are_both_retained_with_primary():
     assert not limit.used and backend.retired == 1
 
 
-@pytest.mark.parametrize("count", [8,16])
+def test_v2_is_explicit_2048_cap_with_unchanged_v1_and_quality_arguments(tmp_path):
+    old=probe.arguments(cli(tmp_path)+["--concurrency-grid","--fast-grid","--tokens","512"])
+    assert old.fast_grid_protocol==finite.FAST_V1
+    args=probe.arguments(cli(tmp_path)+["--concurrency-grid","--fast-grid","--fast-grid-protocol",finite.FAST_V2,
+        "--tokens","2048","--quality-spotchecks"])
+    assert args.tokens==2048 and args.quality_spotchecks and args.fast_grid_protocol==finite.FAST_V2
+    from tools import finite_quality
+    assert finite_quality.OUTPUT_TOKENS==320 and len(finite_quality.CASES)==6
+    for extra in (["--tokens","2048"],["--fast-grid-protocol",finite.FAST_V2],
+                  ["--concurrency-grid","--fast-grid","--tokens","2048"],
+                  ["--concurrency-grid","--fast-grid","--fast-grid-protocol",finite.FAST_V2,"--tokens","512"],
+                  ["--concurrency-grid","--fast-grid","--fast-grid-protocol",finite.FAST_V2,"--tokens","2049"]):
+        with pytest.raises(SystemExit):
+            probe.arguments(cli(tmp_path)+extra)
+
+
+@pytest.mark.parametrize("count",finite.GRID)
+def test_v2_full_fixed_window_retains_all_native_ids_and_every_owner_drains(count):
+    backend=ScreenBackend(count,chunks=2048)
+    rows=[]
+    limit=RequestLimit(24)
+    with ThreadPoolExecutor(max_workers=count) as pool:
+        summary=finite.run_screen_case(pool,count=count,maximum_tokens=2048,vocab=3,limit=limit,
+            invoke=backend.invoke,observe=backend.observe,write=rows.append,
+            timeout=3,readiness_seconds=.15,decode_seconds=.04,protocol=finite.FAST_V2)
+    row=rows[0]
+    assert summary["passed"] and row["screen"]["protocol"]==finite.FAST_V2
+    assert row["screen"]["duration_ns"]==40000000 and not row["screen"]["short_window"]
+    assert row["screen"]["all_workers_permits_backend_owners_drained"] and not limit.used
+    begin,end=row["screen"]["begin_monotonic_ns"],row["screen"]["end_monotonic_ns"]
+    expected=[sum(begin<at<=end for at in request["chunk_monotonic_ns"]) for request in row["requests"]]
+    assert expected==[request["measured_window_committed_tokens"] for request in row["requests"]]
+    assert all(request["native_token_ids"]==request["token_ids"] for request in row["requests"])
+    assert backend.retired==count and all(callback.closed for callback in backend.callbacks)
+
+
+def test_v2_exact_collector_boundary_and_full_native_trace_are_not_truncated():
+    stop=threading.Event()
+    with pytest.raises(ValueError):
+        finite.ScreenTokens(2048,4096,stop)  # V1 ceiling is preserved by default.
+    collector=finite.ScreenTokens(2048,4096,stop,maximum_bound=2048)
+    for token in range(2048):
+        assert not collector([token])
+    assert collector.events==2048 and collector.record()["token_ids"]==list(range(2048))
+    with pytest.raises(ValueError,match="output/token"):
+        collector([1])
+    native=NS(out=list(range(2048)),committed_output_tokens=2048)
+    collector.bind_native_stream(native)
+    collector.close()
+    proof=collector.native_record({})
+    assert proof["native_token_ids"]==list(range(2048)) and proof["native_committed_tokens"]==2048
+    assert proof["native_undelivered_tokens"]==0 and collector.native_stream is None
+    assert finite.control_payload_bytes(2048)>finite.control_payload_bytes(512)
+    assert finite.screen_control_payload_bytes(2048)-finite.screen_control_payload_bytes(512)==24*2*1536*8
+
+
+def test_v2_observation_refuses_wrong_protocol_cap_before_any_worker():
+    with pytest.raises(ValueError,match="bounds"):
+        finite.run_screen_case(None,count=1,maximum_tokens=2048,vocab=3,limit=None,
+            invoke=None,observe=None,write=None,timeout=1,protocol=finite.FAST_V1)
+    with pytest.raises(ValueError,match="bounds"):
+        finite.run_screen_case(None,count=1,maximum_tokens=512,vocab=3,limit=None,
+            invoke=None,observe=None,write=None,timeout=1,protocol=finite.FAST_V2)
+
+@pytest.mark.parametrize("count", [1,8,16])
 def test_profile_concurrency_is_one_instrumented_cohort_without_all6_credit(tmp_path, monkeypatch, count):
-    args=probe.arguments(cli(tmp_path)+["--concurrency-grid","--fast-grid","--tokens","512","--profile-concurrency",str(count)])
+    extra=(["--tokens","2048","--fast-grid-protocol",finite.FAST_V2] if count==1 else ["--tokens","512"])
+    args=probe.arguments(cli(tmp_path)+["--concurrency-grid","--fast-grid",*extra,"--profile-concurrency",str(count)])
     monkeypatch.setattr(probe,"concurrent_observation_snapshot",lambda:{"test_observations":True})
     events=[]
     engine=NS(sm70_profile="source-owner-target-guard-trial")
@@ -383,7 +448,7 @@ def test_profile_concurrency_is_one_instrumented_cohort_without_all6_credit(tmp_
 
 
 @pytest.mark.parametrize("extra", [
-    ["--profile-concurrency","1"],
+    ["--profile-concurrency","2"],
     ["--profile-concurrency","8"],
     ["--concurrency-grid","--fast-grid","--tokens","512","--profile-concurrency","8","--quality-spotchecks"],
     ["--concurrency-grid","--fast-grid","--tokens","512","--profile-concurrency","16","--serial-reference"],
@@ -400,7 +465,7 @@ def test_profile_observer_payload_is_funded_globally_before_any_request(tmp_path
     seen=[]
     error=RuntimeError("stop at real host admission, before requests")
     def finalize(_catalog,*,caller,**_kwargs):
-        expected=finite.control_payload_bytes(512)+finite.screen_control_payload_bytes()+8*(128<<10)
+        expected=finite.control_payload_bytes(512)+finite.screen_control_payload_bytes(512)+8*(128<<10)
         assert caller.control_payload_bytes==expected
         assert caller.max_concurrent_requests==24 and caller.max_receipt_bytes==60620800
         seen.append(caller)
@@ -410,3 +475,18 @@ def test_profile_observer_payload_is_funded_globally_before_any_request(tmp_path
     with pytest.raises(RuntimeError) as caught:
         probe.run_concurrency_leader(engine,object(),args,{})
     assert caught.value is error and len(seen)==1
+
+
+def test_single_profile_requires_v2_and_exposes_real_graph_hit_delta(tmp_path):
+    with pytest.raises(SystemExit):
+        probe.arguments(cli(tmp_path)+["--concurrency-grid","--fast-grid","--tokens","512","--profile-concurrency","1"])
+    args=probe.arguments(cli(tmp_path)+["--concurrency-grid","--fast-grid","--tokens","2048",
+        "--fast-grid-protocol",finite.FAST_V2,"--profile-concurrency","1"])
+    assert args.profile_concurrency==1 and args.fast_grid_protocol==finite.FAST_V2
+    bound=NS(hits=7,misses=0,lane_declines=0)
+    engine=NS(multi=NS(graphs=NS(bound=bound,verify={},mtp={})),w=NS(meta={}))
+    before=probe.graph_execution_snapshot(engine)
+    bound.hits+=12
+    after=probe.graph_execution_snapshot(engine)
+    assert probe.graph_execution_delta(before,after)["bound.hits"]==12
+    assert before["counters"]["bound.hits"]==7 and after["counters"]["bound.hits"]==19
