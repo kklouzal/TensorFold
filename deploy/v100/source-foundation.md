@@ -352,3 +352,13 @@ The explicit rebind authenticates the retained original media/source build
 producer separately from current audit code. Reusing an existing media build
 receipt follows this rebind procedure; a fresh source/media build keeps its
 own actual producer identities.
+
+The `shared-anonymous-data-v1` mapping policy identifies the observed Linux
+shared-anonymous backing as `/dev/zero (deleted)`, exactly `rw-s`, offset zero,
+namespace device `00:01` and a positive native inode. It records mapping count
+and mapped bytes as runtime data observations. These values do not identify
+software code or stale an opaque software authority when allocation changes.
+All other retired mappings, including source inputs, provider DSOs and
+executable mappings, retain the fatal audit guard. Raw runtime identity and CLI
+audits expose these data observations; callable source proofs retain only
+their software identity fields.

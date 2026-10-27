@@ -27,5 +27,6 @@
       "image": "MEDIAf1c72",
       "sha256": "056031cb7c6857b0afec54ebb0118072a61719aeb4db8481243bd5406a1fc1ae"
     }
-  ]
+  ],
+  "mapping_policy": "shared-anonymous-data-v1"
 }

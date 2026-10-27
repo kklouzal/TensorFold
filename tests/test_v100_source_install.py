@@ -76,7 +76,7 @@ def test_audit_policy_revision_preserves_and_checks_original_build_bytes(tmp_pat
     pins = {"immutable": "source"}
     identity = {"torch_path": str(library), "mapped_libraries": [str(library)]}
     manifest = {"schema": "tensorfold.v100-source-foundation-install", "version": 2,
-                "runtime_policy": SOURCE.RUNTIME_POLICY,
+                "runtime_policy": SOURCE.RUNTIME_POLICY, "mapping_policy": SOURCE.MAPPING_POLICY,
                 "pins_sha256": hashlib.sha256(SOURCE.canonical(pins)).hexdigest(),
                 "evidence_class": "source-built-software-identity", "release_qualified": False,
                 "include_roots": dict(SOURCE.INCLUDE_ROOTS), "runtime": identity,
@@ -160,7 +160,7 @@ def test_audit_binds_actual_native_bytes_and_never_claims_release_qualification(
     monkeypatch.setattr(SOURCE, "runtime_identity", lambda: copy.deepcopy(identity))
     monkeypatch.setattr(SOURCE, "validate_runtime", lambda value: None)
     manifest = {"schema": "tensorfold.v100-source-foundation-install", "version": 2,
-                "runtime_policy": SOURCE.RUNTIME_POLICY,
+                "runtime_policy": SOURCE.RUNTIME_POLICY, "mapping_policy": SOURCE.MAPPING_POLICY,
                 "pins_sha256": hashlib.sha256(SOURCE.canonical(pins)).hexdigest(),
                 "evidence_class": "source-built-software-identity", "release_qualified": False,
                 "include_roots": dict(SOURCE.INCLUDE_ROOTS),
@@ -185,7 +185,7 @@ def process_fixture(tmp_path, monkeypatch):
     identity = {"torch_path": str(library), "mapped_libraries": [str(library)], "actual": "source-built"}
     pins = {"immutable": "source"}
     manifest = {"schema": "tensorfold.v100-source-foundation-install", "version": 2,
-                "runtime_policy": SOURCE.RUNTIME_POLICY,
+                "runtime_policy": SOURCE.RUNTIME_POLICY, "mapping_policy": SOURCE.MAPPING_POLICY,
                 "pins_sha256": hashlib.sha256(SOURCE.canonical(pins)).hexdigest(),
                 "evidence_class": "source-built-software-identity", "release_qualified": False,
                 "include_roots": dict(SOURCE.INCLUDE_ROOTS), "runtime": copy.deepcopy(identity),

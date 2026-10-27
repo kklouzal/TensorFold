@@ -1501,3 +1501,9 @@ the original framework/media bytes and build receipts; see the
 [portable audit procedure](deploy/v100/source-foundation.md#portable-build-and-host-audit-policy).
 Software identity, actual V100 execution and compiler/model qualification remain
 separate gates.
+
+The source audit classifies the observed non-executable shared-anonymous
+`/dev/zero` backing as runtime data. Code/provider/source artifact retirement
+remains a fatal software-integrity failure; the
+[versioned mapping policy](deploy/v100/source-foundation.md#portable-build-and-host-audit-policy)
+keeps data allocation observations separate from software authority.

@@ -324,6 +324,7 @@ RUN --network=none python /opt/tensorfold-pins/source_foundation.py revise-runti
 
 
 RUNTIME_POLICY = "torch2141-build-host-v1"
+MAPPING_POLICY = "shared-anonymous-data-v1"
 
 
 def torch_configuration_identity(configuration, cuda_header):
@@ -365,6 +366,37 @@ def torch_configuration_identity(configuration, cuda_header):
     return hashlib.sha256(canonical(build)).hexdigest(), host
 
 
+
+def mapped_runtime_artifacts(maps):
+    """Separate software artifacts from Linux shared-anonymous data backing."""
+    mapped, driver = set(), set()
+    shared_count = shared_bytes = 0
+    for line in maps.splitlines():
+        parts = line.split(maxsplit=5)
+        if len(parts) != 6 or not parts[5].startswith("/"):
+            continue
+        name, permissions = parts[5], parts[1]
+        if name.endswith(" (deleted)"):
+            # Linux represents MAP_SHARED|MAP_ANONYMOUS data this way. It has
+            # no source-file lifetime and cannot be a regular sealed artifact.
+            if (name == "/dev/zero (deleted)" and permissions == "rw-s" and parts[2] == "00000000"
+                    and parts[3] == "00:01" and parts[4].isdecimal() and int(parts[4]) > 0):
+                start, end = (int(value, 16) for value in parts[0].split("-", 1))
+                if end <= start:
+                    raise ValueError("invalid shared-anonymous mapping extent")
+                shared_count += 1
+                shared_bytes += end - start
+                continue
+            raise ValueError("foundation audit encountered a retired mapped artifact")
+        path = Path(name).resolve(strict=True)
+        if ".so" in path.name:
+            owner = driver if path.name.startswith(("libcuda.so", "libnvidia-")) else mapped
+            owner.add(str(path))
+    data = {"schema": "tensorfold.host-shared-anonymous-mappings", "version": 1,
+            "backing": "/dev/zero", "mapping_count": shared_count, "mapped_bytes": shared_bytes}
+    return mapped, driver, data
+
+
 def runtime_identity():
     """Inspect this process's installed source framework and actual native providers.
 
@@ -397,24 +429,13 @@ def runtime_identity():
     configuration = torch.__config__.show()
     cuda_header = read_document(Path(torch.__file__).resolve().parent / "include/ATen/cuda/CUDAConfig.h")
     build_configuration, host = torch_configuration_identity(configuration, cuda_header)
-    mapped, driver = set(), set()
-    for line in Path("/proc/self/maps").read_text().splitlines():
-        parts = line.split(maxsplit=5)
-        if len(parts) == 6 and parts[5].startswith("/"):
-            if parts[5].endswith(" (deleted)"):
-                raise ValueError("foundation audit encountered a retired mapped artifact")
-            path = Path(parts[5]).resolve(strict=True)
-            if ".so" in path.name:
-                # NVIDIA Container Toolkit supplies host driver DSOs at launch.
-                # Bind their actual bytes in the audit result; they are not
-                # immutable artifacts produced by this development image.
-                owner = driver if path.name.startswith(("libcuda.so", "libnvidia-")) else mapped
-                owner.add(str(path))
+    mapped, driver, host_data = mapped_runtime_artifacts(Path("/proc/self/maps").read_text())
     return {"torch": str(torch.__version__), "distribution": distribution.version,
             "torch_path": str(Path(torch.__file__).resolve()), "cuda": torch.version.cuda,
             "torch_git": torch.version.git_version,
             "arch_flags": torch._C._cuda_getArchFlags(),
             "torch_build_configuration_sha256": build_configuration, "host_observations": host,
+            "host_data_observations": host_data,
             "cublas": properties, "cublas_lt": handles[1].cublasLtGetVersion(),
             "cudnn": handles[2].cudnnGetVersion(), "nccl": nccl.value,
             "framework_nccl": framework_nccl,
@@ -469,6 +490,7 @@ def capture_install(pins, build_receipt, receipt_root, wheel_path=None):
     if file_identity(producer) != build["producer_inputs"]["deploy/v100/source_foundation.py"]:
         raise ValueError("installed audit producer differs from the completed source-build input")
     identity = runtime_identity()
+    identity.pop("host_data_observations", None)
     validate_runtime(identity)
     if identity["torch_git"] != effective_commit(pins["sources"]["pytorch"]):
         raise ValueError("installed framework source revision differs from its completed build receipt")
@@ -500,7 +522,7 @@ def capture_install(pins, build_receipt, receipt_root, wheel_path=None):
         raise ValueError("installed foundation file inventory exceeded its bound")
     artifacts = [{"path": path, **file_identity(path)} for path in sorted(paths)]
     return {"schema": "tensorfold.v100-source-foundation-install", "version": 2,
-            "runtime_policy": RUNTIME_POLICY, "pins_sha256": hashlib.sha256(canonical(pins)).hexdigest(),
+            "runtime_policy": RUNTIME_POLICY, "mapping_policy": MAPPING_POLICY, "pins_sha256": hashlib.sha256(canonical(pins)).hexdigest(),
             "build_receipt": {"path": str(build_receipt.resolve()), **file_identity(build_receipt)},
             "runtime": identity, "artifacts": artifacts,
             "include_roots": dict(INCLUDE_ROOTS),
@@ -536,10 +558,11 @@ def verify_installed_artifacts(artifacts):
     return paths
 
 
-def audit_install(manifest, pins, *, process_mode=False):
+def audit_install(manifest, pins, *, process_mode=False, host_data_observations=None):
     if (manifest.get("schema") != "tensorfold.v100-source-foundation-install"
             or type(manifest.get("version")) is not int or manifest["version"] != 2
             or manifest.get("runtime_policy") != RUNTIME_POLICY
+            or manifest.get("mapping_policy") != MAPPING_POLICY
             or manifest.get("pins_sha256") != hashlib.sha256(canonical(pins)).hexdigest()
             or manifest.get("evidence_class") != "source-built-software-identity"
             or manifest.get("release_qualified") is not False or manifest.get("include_roots") != dict(INCLUDE_ROOTS)):
@@ -547,8 +570,11 @@ def audit_install(manifest, pins, *, process_mode=False):
     paths = verify_installed_artifacts(manifest.get("artifacts"))
     application = application_nccl_identity() if process_mode else None
     actual = runtime_identity()
+    data = actual.pop("host_data_observations", {})
+    if host_data_observations is not None:
+        host_data_observations.update(data)
     validate_runtime(actual)
-    excluded = {"host_driver_libraries", "host_observations"}
+    excluded = {"host_driver_libraries", "host_observations", "host_data_observations"}
     if process_mode:
         excluded.add("mapped_libraries")
     if ({key: value for key, value in actual.items() if key not in excluded} !=
@@ -576,7 +602,7 @@ def audit_install(manifest, pins, *, process_mode=False):
             "evidence_class": manifest["evidence_class"], "pending_gates": manifest["pending_gates"],
             "runtime_sha256": hashlib.sha256(canonical(runtime)).hexdigest(), "artifact_count": len(paths),
             "host_driver_artifacts": driver, "host_observations": actual.get("host_observations", {}),
-            "runtime_policy": RUNTIME_POLICY}
+            "runtime_policy": RUNTIME_POLICY, "mapping_policy": MAPPING_POLICY}
     if process_mode:
         result.update(scope="current-process", additional_process_libraries=extra, application_nccl=application)
     return result
@@ -621,6 +647,7 @@ def revise_audit_policy(pins, prior_audit):
     # changes in this local verification view, with identical original bytes.
     audit_process({**previous, "artifacts": rebased}, pins)
     current_runtime = runtime_identity()
+    current_runtime.pop("host_data_observations", None)
     previous_paths = {row["path"] for row in previous["artifacts"]}
     if not set(current_runtime["mapped_libraries"]) <= previous_paths:
         raise ValueError("audit revision cannot add code outside the original sealed foundation")
@@ -650,6 +677,7 @@ def revise_runtime_policy(pins, prior_audit, policy_path):
     previous_sha = hashlib.sha256(previous_raw).hexdigest()
     if (policy.get("schema") != "tensorfold.v100-runtime-audit-policy-input" or type(policy.get("version")) is not int or policy["version"] != 1
             or policy.get("runtime_policy") != RUNTIME_POLICY
+            or policy.get("mapping_policy") != MAPPING_POLICY
             or previous_sha not in {row["sha256"] for row in policy["original_manifests"]}
             or previous.get("schema") != "tensorfold.v100-source-foundation-install"
             or type(previous.get("version")) is not int or previous["version"] != 1
@@ -696,7 +724,7 @@ def revise_runtime_policy(pins, prior_audit, policy_path):
             or actual["torch_build_configuration_sha256"] != expected_build):
         raise ValueError("runtime policy changed immutable Torch build/compiler/flag identity")
     old_excluded = {"torch_config_sha256", "host_driver_libraries", "mapped_libraries"}
-    new_excluded = {"torch_build_configuration_sha256", "host_observations",
+    new_excluded = {"torch_build_configuration_sha256", "host_observations", "host_data_observations",
                     "host_driver_libraries", "mapped_libraries"}
     if ({key: value for key, value in previous["runtime"].items() if key not in old_excluded}
             != {key: value for key, value in actual.items() if key not in new_excluded}):
@@ -706,7 +734,8 @@ def revise_runtime_policy(pins, prior_audit, policy_path):
         raise ValueError("runtime policy cannot lose a baseline or add unsealed non-driver code")
     for path in (producer, previous_path, policy_path):
         rebased.append({"path": str(path.resolve(strict=True)), **file_identity(path)})
-    result = {**previous, "version": 2, "runtime_policy": RUNTIME_POLICY,
+    actual.pop("host_data_observations", None)
+    result = {**previous, "version": 2, "runtime_policy": RUNTIME_POLICY, "mapping_policy": MAPPING_POLICY,
               "runtime": actual, "artifacts": sorted(rebased, key=lambda row: row["path"]),
               "audit_policy_revision": {"original_build_producer": original_identity,
                   "original_build_producer_path": str(original_producer.resolve(strict=True)),
@@ -1155,8 +1184,10 @@ def main():
         return
     if args.command in ("audit", "audit-process"):
         manifest, raw = read_json(args.manifest)
-        function = audit_process if args.command == "audit-process" else audit_install
-        result = function(manifest, read_json(args.pins)[0])
+        host_data = {}
+        result = audit_install(manifest, read_json(args.pins)[0], process_mode=args.command == "audit-process",
+                               host_data_observations=host_data)
+        result["host_data_observations"] = host_data
         result["manifest_sha256"] = hashlib.sha256(raw).hexdigest()
         print(canonical(result).decode())
         return

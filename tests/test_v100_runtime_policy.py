@@ -94,7 +94,7 @@ def rebind(tmp_path, monkeypatch):
     previous_path = prior / "v100-source-foundation.json"
     previous_path.write_bytes(SOURCE.canonical(previous))
     policy = {"schema": "tensorfold.v100-runtime-audit-policy-input", "version": 1,
-              "runtime_policy": SOURCE.RUNTIME_POLICY, "torch_git": REVISION,
+              "runtime_policy": SOURCE.RUNTIME_POLICY, "mapping_policy": SOURCE.MAPPING_POLICY, "torch_git": REVISION,
               "original_configuration": configuration(),
               "original_configuration_sha256": old_runtime["torch_config_sha256"],
               "original_producer": SOURCE.file_identity(old_producer),
@@ -162,3 +162,50 @@ def test_runtime_audit_never_silently_accepts_old_manifest(rebind):
     pins, prior, *_ = rebind
     with pytest.raises(ValueError, match="unsupported"):
         SOURCE.audit_install(json.loads((prior / "v100-source-foundation.json").read_text()), pins)
+
+
+def test_native_shared_anonymous_backing_is_data_not_a_software_artifact():
+    import mmap
+    mapping = mmap.mmap(-1, 2 << 20, flags=mmap.MAP_SHARED | mmap.MAP_ANONYMOUS,
+                        prot=mmap.PROT_READ | mmap.PROT_WRITE)
+    try:
+        maps = Path("/proc/self/maps").read_text()
+        mapped, driver, data = SOURCE.mapped_runtime_artifacts(maps)
+        assert data["mapping_count"] >= 1 and data["mapped_bytes"] >= 2 << 20
+        assert data["schema"] == "tensorfold.host-shared-anonymous-mappings"
+        assert not any("/dev/zero" in path for path in mapped | driver)
+    finally:
+        mapping.close()
+
+
+@pytest.mark.parametrize("permissions,offset,device,inode,name", [
+    ("rw-p", "00000000", "00:01", "123", "/dev/zero"),
+    ("rwxs", "00000000", "00:01", "123", "/dev/zero"),
+    ("r-xs", "00000000", "00:01", "123", "/dev/zero"),
+    ("rw-s", "00000001", "00:01", "123", "/dev/zero"),
+    ("rw-s", "00000000", "01:01", "123", "/dev/zero"),
+    ("rw-s", "00000000", "00:01", "0", "/dev/zero"),
+    ("r--p", "00000000", "00:01", "123", "/opt/source/retired-input.json"),
+    ("rw-s", "00000000", "00:01", "123", "/opt/source/libsource.so"),
+    ("r-xp", "00000000", "00:01", "123", "/usr/lib/libcuda.so.580.178.04"),
+    ("r-xp", "00000000", "00:01", "123", "/tmp/retired-executable"),
+])
+def test_retired_source_provider_executable_and_unknown_mappings_remain_refused(
+        permissions, offset, device, inode, name):
+    row = f"1000-2000 {permissions} {offset} {device} {inode} {name} (deleted)\n"
+    with pytest.raises(ValueError, match="retired mapped artifact"):
+        SOURCE.mapped_runtime_artifacts(row)
+
+
+def test_data_only_observations_do_not_stale_software_authority(rebind):
+    pins, prior, policy, actual, *_rest = rebind
+    result = SOURCE.revise_runtime_policy(pins, prior, policy)
+    original = SOURCE.audit_process(result, pins)
+    actual["host_data_observations"] = {"schema": "tensorfold.host-shared-anonymous-mappings", "version": 1,
+                                        "backing": "/dev/zero", "mapping_count": 40, "mapped_bytes": 40 * (2 << 20)}
+    observed = SOURCE.audit_process(result, pins)
+    assert observed == original
+    diagnostic = {}
+    SOURCE.audit_install(result, pins, process_mode=True, host_data_observations=diagnostic)
+    assert diagnostic == actual["host_data_observations"]
+    assert "host_data_observations" not in result["runtime"]
