@@ -239,6 +239,44 @@ def _native_prelude_binding(binding):
             and _native_prelude_position(binding.target)
             and (binding.mtp is None or _native_prelude_position(binding.mtp)))
 
+
+
+def _native_frame_coordinates(state, buffers, start, stop, *, mtp):
+    """Borrow issued axes without rewriting the frame's mutation-tracked storage."""
+    explicit = buffers.mtp_indexer_coordinates if mtp else buffers.target_indexer_coordinates
+    if explicit is not None:
+        return explicit[start:stop]
+    from .compact_indexer import coordinate_rows
+
+    position = state.mtp_len if mtp else state.pos
+    return coordinate_rows(state, torch.arange(stop - start, device=state.pos_dev.device) + position)
+
+
+def _publish_native_frame(state, layer, weights, buffers, start, stop, key, value, ks, vs, ik,
+                          frequency, sections, amplitude, *, mtp, frame_first=0):
+    c = weights.cfg
+    a = layer.attn
+    ai = state.history_placement.target_layers if mtp else state.att_index[layer.index]
+    cache = state.mtp_kc if mtp else state.kc[ai]
+    rows = stop - start
+    last = frame_first + rows
+    pos = state.mtp_len if mtp else state.pos
+    cache.append(pos, key[frame_first:last], value[frame_first:last], ks[frame_first:last], vs[frame_first:last])
+    if state.history_rank == state.history_placement.indexer_owner(state.history_slot, ai,
+                                                                  include_mtp=hasattr(state, "mtp_kc")):
+        coordinates = _native_frame_coordinates(state, buffers, start, stop, mtp=mtp)
+        entry = state.compact_indexer.append(ai, pos, ik[frame_first:last], coordinates,
+            buffers.compact_indexer_stage, start, stop, mtp=mtp,
+            expected=(state.slot_generation, state.history_generation))
+        entry.pool(state.mtp_pooled if mtp else state.pooled[ai], a.ik_scale, frequency,
+                   c.eps, sections, amplitude)
+        if mtp:
+            expected = (state.slot_generation, state.history_generation)
+            entry.publish_commit(entry.prepare_commit(pos + rows, expected), pos + rows, expected)
+    if not mtp:
+        state.target_tentative_length = pos + rows
+    weights.meta["sm70_owner_prelude_submitted_frames"] += 1
+
 def _native_frame_prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
     """Reuse the qualified scalar-position prep into a bounded frame, not a history.
 
@@ -276,7 +314,7 @@ def _native_frame_prepare(projection, state, layer, weights, buffers, start, sto
         if position is not None:
             return False
         frequency, sections, amplitude = weights.inv_freq, c.mrope_section, c.rope_attention_factor
-    rows, capacity, dim = stop - start, buffers.rows, c.head_dim
+    capacity, dim = buffers.rows, c.head_dim
     # The original pre-gate scratch is idle until attention returns. Contiguous
     # frame arrays occupy 800 bytes/row in the admitted 1536-byte/row slab.
     storage = buffers.gated.view(torch.uint8).view(-1)
@@ -296,33 +334,17 @@ def _native_frame_prepare(projection, state, layer, weights, buffers, start, sto
         buffers.q[start:stop], key, value, buffers.iq[start:stop], ik, ks, vs, state.kv_status,
         absolute, None, c.heads, 1, dim, c.index_heads, c.index_dim, 8, 8, layer.index,
         c.eps, amplitude, not buffers.prefill)
-    pos = state.mtp_len if mtp else state.pos
-    cache.append(pos, key[:rows], value[:rows], ks[:rows], vs[:rows])
-    if state.history_rank == state.history_placement.indexer_owner(state.history_slot, ai,
-                                                                  include_mtp=hasattr(state, "mtp_kc")):
-        from .compact_indexer import coordinate_rows
-
-        # The native prelude already handled RoPE; coordinates here retain the
-        # original unrotated indexer transaction and are needed only by its owner.
-        coordinates = coordinate_rows(state, torch.arange(rows, device=projection.device) + pos)
-        entry = state.compact_indexer.append(ai, pos, ik[:rows], coordinates,
-            buffers.compact_indexer_stage, start, stop, mtp=mtp,
-            expected=(state.slot_generation, state.history_generation))
-        entry.pool(state.mtp_pooled if mtp else state.pooled[ai], a.ik_scale, frequency,
-                   c.eps, sections, amplitude)
-        if mtp:
-            expected = (state.slot_generation, state.history_generation)
-            entry.publish_commit(entry.prepare_commit(pos + rows, expected), pos + rows, expected)
-    if not mtp:
-        state.target_tentative_length = pos + rows
-    weights.meta["sm70_owner_prelude_submitted_frames"] += 1
+    _publish_native_frame(state, layer, weights, buffers, start, stop, key, value, ks, vs, ik,
+                          frequency, sections, amplitude, mtp=mtp)
     return True
 
 def prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
     """Prepare one bounded frame; only owners publish persistent rows."""
     from .prefix_policy import OWNER_TARGET_PRELUDE_PROFILE
 
-    if (weights.meta.get("sm70_profile") == OWNER_TARGET_PRELUDE_PROFILE
+    from .prefix_policy import OWNER_BATCH_PRELUDE_PROFILE
+
+    if (weights.meta.get("sm70_profile") in (OWNER_TARGET_PRELUDE_PROFILE, OWNER_BATCH_PRELUDE_PROFILE)
             and _native_frame_prepare(projection, state, layer, weights, buffers, start, stop, mtp=mtp)):
         return
     c, a = weights.cfg, layer.attn
@@ -1008,8 +1030,13 @@ def _attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False
         raise ValueError("unique history segments do not cover the execution rows")
     if mtp or segments[0][0].att_index[layer.index] == 0:
         buffers.compact_indexer_stage.begin(mtp=mtp)
-    for state, first, last in segments:
-        prepare(buffers.pa, state, layer, weights, buffers, first, last, mtp=mtp)
+    batch = getattr(buffers, "owner_batch_prelude", None)
+    # A single State already has the scalar native entry and needs no descriptor upload.
+    prepared = batch is not None and len(segments) > 1 and batch.submit(
+        weights, buffers, layer, segments, total_rows, mtp=mtp)
+    if not prepared:
+        for state, first, last in segments:
+            prepare(buffers.pa, state, layer, weights, buffers, first, last, mtp=mtp)
     for base in range(0, total_rows, owner.rows):
         count = min(owner.rows, total_rows - base)
         graph_manager = buffers.owner_graphs if native_selected else None

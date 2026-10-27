@@ -347,6 +347,7 @@ def test_actual_round_uses_gpu_accepted_path_and_keeps_original_draft_inputs(mon
 
 
 @pytest.mark.parametrize("profile,unique,native,allowed", [
+    ("source-owner-batch-prelude-trial", True, True, True),
     ("source-owner-target-prelude-trial", True, True, True),
     ("source-owner-target-guard-trial", True, True, True),
     ("source-owner-target-greedy-trial", True, True, True),

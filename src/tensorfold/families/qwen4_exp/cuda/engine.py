@@ -948,9 +948,9 @@ class FlashNextEngine:
             sm70_prefill_bytes = _sm70_prefill_gdn_bytes(text, tp, rows0)
             options["device_workspace_bytes"] = options.get("device_workspace_bytes", 0) + sm70_prefill_bytes
             target_greedy_bytes = None
-            from tensorfold.cuda.sm70.execution_policy import TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL
+            from tensorfold.cuda.sm70.execution_policy import TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL
 
-            if self.sm70_profile in (TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL):
+            if self.sm70_profile in (TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL):
                 from .target_greedy import workspace_bytes
 
                 target_greedy_bytes = workspace_bytes(int(text["vocab_size"]))
@@ -962,11 +962,23 @@ class FlashNextEngine:
                     target_greedy_bytes, feedback_status, plain_status))
                 options["device_workspace_bytes"] += target_greedy_bytes[0]
                 options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + tp * target_greedy_bytes[1]
-            if self.sm70_profile == OWNER_TARGET_PRELUDE_TRIAL:
+            if self.sm70_profile in (OWNER_TARGET_PRELUDE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL):
                 # One dedicated initialized immutable int32 control per model;
                 # bound its allocator granule and retained/transient view metadata.
                 options["device_workspace_bytes"] += 512
                 options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + tp * (512 + 32 * 248 + 8192)
+            if self.sm70_profile == OWNER_BATCH_PRELUDE_TRIAL:
+                from .batch_prelude import workspace_bytes as batch_workspace
+
+                batch_rows = execution_rows if execution_rows is not None else 32 if adaptive_sessions else streams * each
+                role_rows = [batch_rows, rows0 + batch_rows] + ([batch_rows] if mtp else [])
+                batch_device, batch_host = 0, 16384  # One-time private native/owner module type metadata.
+                for count in role_rows:
+                    device_bytes, host_bytes = batch_workspace(count)
+                    batch_device += device_bytes
+                    batch_host += host_bytes
+                options["device_workspace_bytes"] += batch_device
+                options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + tp * batch_host
             status_device = status_host = 0
             if tp > 1 and concurrent and not adaptive_sessions:
                 from .kv_status import workspace_bytes
@@ -1194,9 +1206,9 @@ class FlashNextEngine:
             self.capacity_plan["sm70_weight_plan"] = self._sm70_weight_plan
         if adaptive_sessions:
             streams = self.capacity_plan["session_capacity"]["resident_capacity"]
-            from tensorfold.cuda.sm70.execution_policy import OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL
+            from tensorfold.cuda.sm70.execution_policy import OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL
 
-            if self.sm70_profile in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL) and streams < 24:
+            if self.sm70_profile in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL) and streams < 24:
                 raise ValueError("source-owner-pieces-trial must preserve at least24 complete INT8 context windows")
             resident_windows = streams
             self.streams = self.kv_full_windows = streams

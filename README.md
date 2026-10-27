@@ -1,5 +1,14 @@
 # TensorFold fork
 
+The private `source-owner-batch-prelude-trial` prototype uses prepared bounded
+row descriptors to fuse scalar-text preparation across State segments. It keeps
+each segment's original RMS reduction geometry and existing cache/indexer
+publication transactions. Descriptor GPU/pinned-host storage and metadata are
+funded before initial admission; no per-frame CUDA allocation or device count
+readback is introduced. Source, CPU, native numerical and matched model quality
+and performance gates remain pending. This prototype is separate from the
+scalar prelude candidate and makes no throughput claim.
+
 The private owner prelude accepts the engine's actual immutable native position
 binding, including distinct target/MTP inverse-frequency operands. Native role
 algorithm, context bounds, sections and amplitude are checked; media and extended

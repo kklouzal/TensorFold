@@ -38,6 +38,9 @@ void family_ring_publish_cuda(const T&, T&, const T&, int, int, const O&, const 
 void family_value_guard_cuda(const T&, T&, const T&, const O&, int, int);
 int family_prepare_value_guard_cuda();
 int family_prepare_owner_prelude_cuda();
+int family_prepare_owner_batch_cuda();
+void family_owner_prep_batch_cuda(const T&, const T&, const T&, const T&, const T&, const T&,
+    T&, T&, T&, T&, T&, T&, T&, int, float, float, bool);
 void family_qsa_dense_cuda(const T&, T&, T&, int);
 void family_qsa_rows_cuda(const T&, const T&, const T&, T&, T&, T&, T&, int, int, int, int);
 
@@ -497,7 +500,48 @@ int prepare_owner_prelude() {
     return family_prepare_owner_prelude_cuda();
 }
 
+
+void owner_prep_batch(const T& p, const T& descriptor, const T& qw, const T& kw, const T& iw,
+    const T& frequency, T q, T key, T value, T iq, T raw_index, T ks, T vs,
+    int layer, double eps, double rope_scale, bool independent_rows) {
+    check_half(p); epsilon(eps);
+    TORCH_CHECK(p.dim() == 2 && p.size(0) > 0 && p.size(0) <= 4096 && p.size(1) == 2688,
+                "owner batch prelude requires bounded FP16 rows and fixed TP8 projection geometry");
+    check(descriptor, p, at::kLong, "owner batch descriptors");
+    TORCH_CHECK(descriptor.sizes() == at::IntArrayRef({p.size(0), 4}), "owner batch descriptor geometry");
+    for (const auto* weight : {&qw, &kw, &iw, &frequency}) check(*weight, p, at::kFloat, "owner batch norms/frequency");
+    TORCH_CHECK(qw.numel() == 256 && kw.numel() == 256 && iw.numel() == 128
+                && frequency.dim() == 1 && frequency.numel() > 0 && frequency.numel() <= 64,
+                "owner batch norm/frequency geometry");
+    for (const auto* half : {&q, &iq, &raw_index, &ks, &vs}) same_half(*half, p);
+    for (const auto* code : {&key, &value}) check(*code, p, at::kChar, "owner batch Q8 payload");
+    const auto rows = p.size(0);
+    TORCH_CHECK(q.sizes() == at::IntArrayRef({rows, 3, 256}) && iq.sizes() == at::IntArrayRef({rows, 4, 128})
+                && key.sizes() == at::IntArrayRef({rows, 1, 256}) && value.sizes() == key.sizes()
+                && ks.sizes() == at::IntArrayRef({rows, 1, 8}) && vs.sizes() == ks.sizes()
+                && raw_index.sizes() == at::IntArrayRef({rows, 128}), "owner batch output geometry");
+    const float native_scale = positive_float(rope_scale, "owner batch rotary scale");
+    // Prepared outputs are exclusive disjoint fields of the actor's admitted
+    // arena. Reject direct boundary overlap before native mutation.
+    const T* outputs[] = {&q, &key, &value, &iq, &raw_index, &ks, &vs};
+    for (int i = 0; i < 7; ++i) {
+        at::assert_no_overlap(*outputs[i], p);
+        at::assert_no_overlap(*outputs[i], descriptor);
+        for (const auto* read : {&qw, &kw, &iw, &frequency}) at::assert_no_overlap(*outputs[i], *read);
+        for (int j = 0; j < i; ++j) at::assert_no_overlap(*outputs[i], *outputs[j]);
+    }
+    c10::cuda::CUDAGuard guard(p.device());
+    family_owner_prep_batch_cuda(p, descriptor, qw, kw, iw, frequency, q, key, value, iq, raw_index,
+                                 ks, vs, layer, float(eps), native_scale, independent_rows);
+}
+int prepare_owner_batch() {
+    const auto* prop = at::cuda::getDeviceProperties(c10::cuda::current_device());
+    TORCH_CHECK(prop->major == 7 && prop->minor == 0, "owner batch prelude residency requires SM70");
+    return family_prepare_owner_batch_cuda();
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.def("owner_prep_batch", &owner_prep_batch); m.def("prepare_owner_batch", &prepare_owner_batch);
     m.def("prepare_owner_prelude", &prepare_owner_prelude);
     m.def("value_guard", &value_guard); m.def("prepare_value_guard", &prepare_value_guard);
     m.def("writeback", &writeback); m.def("normed", &normed); m.def("act", &act); m.def("mix", &mix);

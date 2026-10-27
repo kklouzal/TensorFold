@@ -32,15 +32,16 @@ def request(module, **changes):
     return module.unique_graph_request(module.OWNER_GRAPH_TRIAL, **args)
 
 
-@pytest.mark.parametrize("target,guard,prelude", [(False, False, False), (True, False, False), (True, True, False), (True, True, True)])
-def test_new_profile_requires_issued_native_owner_and_grants_only_exact_nonattention_pieces(source, monkeypatch, target, guard, prelude):
+@pytest.mark.parametrize("target,guard,prelude,batch", [(False, False, False, False), (True, False, False, False), (True, True, False, False), (True, True, True, False), (True, True, True, True)])
+def test_new_profile_requires_issued_native_owner_and_grants_only_exact_nonattention_pieces(source, monkeypatch, target, guard, prelude, batch):
     module = source.module
-    selected = module.OWNER_TARGET_PRELUDE_TRIAL if prelude else module.OWNER_TARGET_GUARD_TRIAL if guard else module.OWNER_TARGET_GREEDY_TRIAL if target else module.OWNER_GRAPH_TRIAL
+    selected = module.OWNER_BATCH_PRELUDE_TRIAL if batch else module.OWNER_TARGET_PRELUDE_TRIAL if prelude else module.OWNER_TARGET_GUARD_TRIAL if guard else module.OWNER_TARGET_GREEDY_TRIAL if target else module.OWNER_GRAPH_TRIAL
     monkeypatch.setenv(module.PROFILE_ENV, selected)
     if guard:
         monkeypatch.setattr(family_native, "extension", lambda: source.calls.append("extension") or
                             NS(prepare_value_guard=lambda: source.calls.append("guard-code"),
-                               prepare_owner_prelude=lambda: source.calls.append("prelude-code")))
+                               prepare_owner_prelude=lambda: source.calls.append("prelude-code"),
+                               prepare_owner_batch=lambda: source.calls.append("batch-code")))
     monkeypatch.setattr(greedy_native, "extension", lambda: None)
     monkeypatch.setattr(gguf_ops, "extension", lambda: None)
     assert module.configure(source.text, tp=8, torch=family.torch) == selected
@@ -59,6 +60,7 @@ def test_new_profile_requires_issued_native_owner_and_grants_only_exact_nonatten
     module.prepare_weights(weights, graph_contract=contract)
     assert ("sm70_target_greedy_trial" in weights.meta) is target
     assert weights.meta.get("sm70_native_guard_trial", False) is guard
+    assert weights.meta.get("sm70_owner_batch_prelude_trial", False) is batch
     if guard:
         assert source.calls[:3] == ["audit", "extension", "guard-code"]
     assert weights.meta["capture_ready"] is True
@@ -95,6 +97,9 @@ def test_combined_prefix_epoch_cannot_borrow_old_graph_or_eager_state_before_mut
 
 
 @pytest.mark.parametrize("profile,slots,refused", [
+    (prefix_policy.OWNER_BATCH_PRELUDE_PROFILE, 23, True),
+    (prefix_policy.OWNER_BATCH_PRELUDE_PROFILE, 24, False),
+    (prefix_policy.OWNER_BATCH_PRELUDE_PROFILE, 26, False),
     (prefix_policy.OWNER_TARGET_PRELUDE_PROFILE, 23, True),
     (prefix_policy.OWNER_TARGET_PRELUDE_PROFILE, 24, False),
     (prefix_policy.OWNER_TARGET_PRELUDE_PROFILE, 26, False),

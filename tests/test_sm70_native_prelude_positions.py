@@ -137,3 +137,38 @@ def test_fixture_outcome_allocation_failure_cannot_replace_worker_primary(tmp_pa
         fixture._retire_fixture_context(NS(processes=[]), directory, primary)
     assert caught.value is primary and primary.__context__ is secondary
     assert directory.exists()
+
+
+@pytest.mark.parametrize("mtp", [False, True])
+@pytest.mark.parametrize("reconstructed", [False, True])
+def test_two_attention_publications_preserve_issued_coordinate_version_or_refuse_rewrite(mtp, reconstructed):
+    from tests.test_compact_position_frames import prepared
+    from tensorfold.families.qwen4_exp.cuda import compact_indexer as indexer, history_owner
+
+    buffers, _position, states, windows, segments = prepared(mtp=mtp)
+    stage = indexer.stage_mtp_indexer_frame if mtp else indexer.stage_target_indexer_frame
+    validate = indexer.validate_mtp_indexer_frame if mtp else indexer.validate_target_indexer_frame
+    stage(buffers, segments, windows)
+    state, first, last = segments[0]
+    storage = buffers.mtp_indexer_coordinate_storage if mtp else buffers.target_indexer_coordinate_storage
+    original_version = storage._version
+    for layer in range(2):
+        coordinates = history_owner._native_frame_coordinates(state, buffers, first, last, mtp=mtp)
+        if reconstructed:
+            coordinates = coordinates.clone()  # Equal values are not the issued frame's mutation ownership.
+        status = torch.tensor([0, -2], dtype=torch.int32)
+        generations = torch.tensor([state.slot_generation, state.history_generation], dtype=torch.int64)
+        entry = indexer.Cache(128, 128, "cpu", generations, status, layer=layer)
+        entry.n = state.mtp_len if mtp else state.pos
+        raw, axes, epoch = buffers.compact_indexer_stage.span(layer, first, last, mtp=mtp)
+        span = indexer.Span(entry.n, raw, axes, buffers.compact_indexer_stage, epoch, mtp,
+                            (state.slot_generation, state.history_generation))
+        entry.begin(span, torch.zeros_like(raw), coordinates)
+        if reconstructed:
+            assert storage._version > original_version
+            with pytest.raises(ValueError, match="stale, mutated or malformed"):
+                validate(buffers, segments)
+            return
+        assert coordinates.data_ptr() == axes.data_ptr() and coordinates.stride() == axes.stride()
+        assert storage._version == original_version
+        assert validate(buffers, segments).data_ptr() == storage.data_ptr()

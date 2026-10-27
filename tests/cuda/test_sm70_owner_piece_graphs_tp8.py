@@ -29,7 +29,7 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
     from tensorfold.families.qwen4_exp.cuda.multi_graphs import RoundGraphs, UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT
     from tensorfold.families.qwen4_exp.cuda.owner_execution import KERNEL_FAMILY, FULL_COLLECTIVE, UNCAPTURED
     from tensorfold.families.qwen4_exp.cuda.owner_preparation import OwnerPreparation
-    from tensorfold.families.qwen4_exp.cuda.prefix_policy import OWNER_GRAPH_PROFILE, OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE
+    from tensorfold.families.qwen4_exp.cuda.prefix_policy import OWNER_GRAPH_PROFILE, OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_BATCH_PRELUDE_PROFILE
     from tensorfold.families.qwen4_exp.kv_formats import get_pair
     from test_sm70_unique_piece_graphs_tp8 import _equal, _committed
 
@@ -71,6 +71,16 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
         phase("communicator/open")
         comm.open(rank, 8, "127.0.0.1", port, timeout_s=90, key="tf_native_owner_exact_pieces")
         base = _weights_with_stock_mtp_protocol(head_dim=256)
+        if target_greedy in ("bound-prelude", "batch-prelude"):
+            from dataclasses import replace
+
+            # A real model has repeated attention layers sharing the issued
+            # coordinate frame. One layer cannot expose a version bump before
+            # the next layer validates that same frame.
+            base.layers.append(replace(base.layers[1], index=base.cfg.layers))
+            base.cfg.layers += 1
+            base.cfg.layer_types = [*base.cfg.layer_types, "attention"]
+            base.mtp = replace(base.mtp, layer=replace(base.mtp.layer, index=base.cfg.layers))
         width = base.cfg.vocab // 8
         base.head.weight = base.head.weight[rank * width:(rank + 1) * width].contiguous()
         base.head.n, base.comm = width, comm
@@ -78,7 +88,7 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
             history_layout="unique", indexer_history="gpu", attention_degree=1,
             capture_ready=True, unique_capture_contract=UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT,
             sm70_profile=OWNER_GRAPH_PROFILE)
-        if target_greedy == "bound-prelude":
+        if target_greedy in ("bound-prelude", "batch-prelude"):
             from tensorfold.families.qwen4_exp.position_profile import (
                 resolve_position_profile, prepare_position_vectors, bind_position_profile,
             )
@@ -102,20 +112,26 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
         spec = dict(kernel_family=KERNEL_FAMILY, graph_family=UNCAPTURED,
                     collective_family=FULL_COLLECTIVE, graph_budget_bytes=0, trial=True)
 
+        slots = 8 if target_greedy == "batch-prelude" else 1
+
         def decoder(native, *, compact_target=False):
             weights = copy.copy(base)
             weights.meta = dict(base.meta)
             if compact_target:
                 from tensorfold.families.qwen4_exp.cuda.target_greedy import POLICY
 
-                weights.meta.update(sm70_profile=OWNER_TARGET_PRELUDE_PROFILE if compact_target in ("prelude", "bound-prelude") else
+                weights.meta.update(sm70_profile=OWNER_BATCH_PRELUDE_PROFILE if compact_target == "batch-prelude" else
+                    OWNER_TARGET_PRELUDE_PROFILE if compact_target in ("prelude", "bound-prelude", "batch-prelude") else
                     OWNER_TARGET_GUARD_PROFILE if compact_target == "guard" else OWNER_TARGET_GREEDY_PROFILE,
                     sm70_target_greedy_trial={"policy": POLICY}, target_greedy_owner=None)
-                if compact_target in ("guard", "prelude", "bound-prelude"):
+                if compact_target in ("guard", "prelude", "bound-prelude", "batch-prelude"):
                     weights.meta["sm70_native_guard_trial"] = True
-                if compact_target in ("prelude", "bound-prelude"):
+                if compact_target in ("prelude", "bound-prelude", "batch-prelude"):
                     weights.meta["sm70_owner_prelude_zero"] = torch.zeros(1, dtype=torch.int32, device=weights.device)
                     weights.meta["sm70_owner_prelude_submitted_frames"] = 0
+                    if compact_target == "batch-prelude":
+                        weights.meta.update(sm70_owner_batch_prelude_trial=True,
+                            sm70_owner_prelude_submitted_batches=0, sm70_owner_prelude_max_batch_segments=0)
                     torch.cuda.current_stream(weights.device).synchronize()
             if weights.positions is not None:
                 from tensorfold.families.qwen4_exp.cuda.input_preparation import install_input_preparation
@@ -131,14 +147,14 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
                 assert context is weights.meta["input_preparation_context"]
             preparation = None
             if native:
-                preparation = OwnerPreparation(spec, role_rows={"decode": 3, "mtp": 3, "prefill": 8},
+                preparation = OwnerPreparation(spec, role_rows={"decode": slots * 3, "mtp": slots * 3, "prefill": 8},
                     manifest_sha256=hashlib.sha256(json.dumps(text, sort_keys=True).encode()).hexdigest())
                 preparations.append(preparation)
                 engine = NS(comm=comm, rank=rank, tp=8, multi=None, _calls=0)
                 preparation.prepare(engine, text, get_pair("int8"), page_tokens=128, device=base.device)
                 weights.meta["owner_workspaces"] = preparation.workspaces
-            result = MultiDecoder(weights, slots=1, capacity=260, logical_context=257, depth=2,
-                confidence=.7, prefill_rows=8, kv_dtype="int8", graphs=False, keep=1, full_windows=1)
+            result = MultiDecoder(weights, slots=slots, capacity=260, logical_context=257, depth=2,
+                confidence=.7, prefill_rows=8, kv_dtype="int8", graphs=False, keep=1, full_windows=slots)
             if compact_target:
                 target_owners.append(weights.meta["target_greedy_owner"])
             return weights, result, preparation
@@ -215,8 +231,32 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
             if repetition:
                 assert actual.cached > 0
             phase(f"request/completed/repetition={repetition}")
+        if target_greedy == "batch-prelude":
+            references = [Stream(([4, 17, 3, 99, 33, 2, 7, 5, 6] * 5)[:9 + 4 * index],
+                                 12, stop_eos=False) for index in range(8)]
+            actuals = [Stream(list(stream.prompt), stream.count, stop_eos=False) for stream in references]
+            for expected, actual in zip(references, actuals):
+                eager.admit(expected)
+                combined.admit(actual)
+            for iteration in range(128):
+                expected_done, actual_done = eager.round(), combined.round()
+                for expected, actual in zip(references, actuals):
+                    assert expected.error is actual.error is None
+                    assert (actual.out, actual.drafts, actual.done) == (expected.out, expected.drafts, expected.done)
+                    if actual.st is not None and expected.st is not None:
+                        _committed(actual.st, expected.st)
+                eager.finish(expected_done)
+                combined.finish(actual_done)
+                if all(stream.done for stream in actuals):
+                    break
+            else:
+                raise AssertionError("finite eight-session batched owner prelude did not complete")
+            assert all(len(stream.out) == 12 for stream in actuals)
+            assert combined_weights.meta["sm70_owner_prelude_submitted_batches"] > 0
+            assert combined_weights.meta["sm70_owner_prelude_max_batch_segments"] == 8
+            phase("eight-session-native-batch-completed")
         assert graphs.bound.hits > 0
-        if target_greedy in ("prelude", "bound-prelude"):
+        if target_greedy in ("prelude", "bound-prelude", "batch-prelude"):
             assert combined_weights.meta["sm70_owner_prelude_submitted_frames"] > 0
             assert combined_weights.meta["sm70_owner_prelude_zero"].tolist() == [0]
         if target_greedy:
@@ -282,7 +322,7 @@ def _retire_fixture_context(context, directory, primary=None):
         BaseException.__context__.__set__(primary, secondary)
         raise primary
 
-@pytest.mark.parametrize("target_greedy", [False, True, "guard", "prelude", "bound-prelude"])
+@pytest.mark.parametrize("target_greedy", [False, True, "guard", "prelude", "bound-prelude", "batch-prelude"])
 def test_v100_tp8_native_owner_exact_pieces_match_native_eager_frames_and_commits(target_greedy):
     if torch.cuda.device_count() < 8 or any(torch.cuda.get_device_capability(rank) != (7, 0) for rank in range(8)):
         pytest.skip("requires eight real SM70 GPUs and the supported source foundation")
