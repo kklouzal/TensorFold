@@ -1100,6 +1100,10 @@ class FlashNextEngine:
 
                 total = tp * multi_static_domains(text, count, each, mtp)[1]
                 total += tp * status_workspace(count, tp)[1] if tp > 1 else 0
+                if history_placement is not None:
+                    from .history_placement import cache_owner_host_bytes
+
+                    total += cache_owner_host_bytes(count * (history_placement.target_layers + int(stock_mtp)), world=tp)
                 if self.position_profile is not None:
                     from .history_placement import coordinate_source_host_bytes
 
@@ -1506,9 +1510,22 @@ class FlashNextEngine:
                 retained_host = self._retention_header_resources.global_host_bytes
                 if retained_host > self.capacity_plan["host_steady_workspace_bytes_estimate"]:
                     raise RuntimeError("retention host reservation is absent from the chosen steady header")
+                owner_host_materialized = 0
+                if history_placement is not None:
+                    from .history_placement import cache_owner_host_bytes
+
+                    caches = sum(len(state.kc) + int(hasattr(state, "mtp_kc")) for state in self.multi.states)
+                    owner_host_materialized = cache_owner_host_bytes(caches, world=tp)
+                    planned = cache_owner_host_bytes(streams * (history_placement.target_layers + int(stock_mtp)), world=tp)
+                    if owner_host_materialized != planned or (w.mtp is not None) != stock_mtp:
+                        raise RuntimeError("canonical cache owner objects differ from their prepaid host pool")
+                    self.capacity_plan["owned_cache_host_metadata"] = {
+                        "cache_instances_per_rank": caches, "planned_global_bytes": planned,
+                        "materialized_global_bytes": owner_host_materialized,
+                        "future_extra_cache_instances": 0}
                 catalog.configure_host_resources(
                     baseline_host_bytes=self.capacity_plan["host_steady_commitment_bytes"] - retained_host,
-                    materialized_host_bytes=0,
+                    materialized_host_bytes=owner_host_materialized,
                     **({"prepaid_native_fixed_payload_bytes": self._native_protocol_resources["fixed"]["global_native_fixed_payload_bytes"],
                         "prepaid_native_prefix_payload_bytes": self._native_protocol_resources["prefix"]["global_native_prefix_payload_bytes"],
                         "native_state_slots": self._native_protocol_resources["fixed"]["maximum_state_slots"],

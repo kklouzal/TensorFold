@@ -8,6 +8,7 @@ independently; it is outside the target-layer quartet balance proof.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import struct
 
 MIGRATION_OVERLAP_BYTES = 64 << 20  # initial specified candidate, not a measured optimum
 
@@ -46,6 +47,19 @@ def coordinate_source_host_bytes(rows: int) -> int:
     """
     _int(rows, "coordinate source rows", 1)
     return max(68 * rows, 56 * rows + 24)
+
+
+def cache_owner_host_bytes(caches: int, *, world: int) -> int:
+    """Global added pointer slots for the bounded OwnedKVCache object pool.
+
+    Each cache, including MTP, owns one empty-physical proof pointer. This is
+    additional host object payload, independent of tensor/device geometry.
+    Startup charges the complete future pool; subsequent host admission credits
+    only the matching, successfully constructed canonical pool objects.
+    """
+    _int(caches, "owned cache count")
+    _int(world, "owned cache world", 1)
+    return caches * world * struct.calcsize("P")
 
 
 @dataclass(frozen=True)

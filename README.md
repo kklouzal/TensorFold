@@ -7,6 +7,10 @@ publication expires that initial proof before a formerly empty layer can serve
 new pages; the independently striped MTP cache keeps its existing path. CPU
 and eight-V100 migration/output checks are required for this changed source;
 full-model performance and output qualification remain pending.
+The added proof pointer is funded for the complete target and loaded-MTP cache
+object pool before allocation. Later host admission credits only the matching
+successfully constructed canonical pool; prefix/recovery operations reuse those
+cache objects, and unique-history State resizing remains refused.
 
 An isolated CPU preflight candidate uses public Store batched reads and atomic
 counters during rank input preparation. Bounded reusable outcome slots retain
