@@ -1,5 +1,13 @@
 # TensorFold fork
 
+The private owner/target guard candidate also prepares the unique N1 piece
+graph's immutable identity maps once. Consumer streams join their initialization
+event; repeated host fills/uploads are removed. Ordinary multi-lane maps keep
+their existing synchronization and upload behavior. This exact representation
+change retains the guard profile epoch. Integrated GPU and matched model
+quality/performance checks remain pending; standalone component evidence does
+not establish combined throughput gains.
+
 The private `source-owner-target-guard-trial` composes existing owner/target piece
 graphs with exact native finite-value guards in unique-history preparation.
 Existing q/iq and disjoint pre-gate scratch slices own sanitized outputs; raw

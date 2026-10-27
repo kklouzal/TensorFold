@@ -213,14 +213,23 @@ def test_private_buffer_extent_reuse_and_retirement_preserve_original_full_windo
     monkeypatch.setattr(bound_graphs, "Buffers", Buffers)
     monkeypatch.setattr(bound_graphs.torch, "empty", lambda shape, *, dtype, **_kw: empty(shape, dtype=dtype))
     monkeypatch.setattr(bound_graphs.torch.cuda, "memory_allocated", lambda _device: 0)
-    monkeypatch.setattr(bound_graphs.torch.cuda, "Event", lambda: object())
+    recorded, producer = [], object()
+    monkeypatch.setattr(bound_graphs.torch.cuda, "current_stream", lambda device: producer if device == weights.device else pytest.fail("wrong map producer device"))
+    monkeypatch.setattr(bound_graphs.torch.cuda, "Event", lambda: NS(record=lambda stream: recorded.append(stream)))
     monkeypatch.setattr(family_ops, "_NATIVE_FAMILY", False)
     monkeypatch.setattr(family_ops, "_NATIVE_ATTENTION", False)
     private = graph._buffer(kind)
     assert allocations == [(rows, 262147, {"moe_prefill": True, "owner_role": "mtp" if kind == "mtp" else None})]
     assert private is graph._buffer(kind) and len(allocations) == 1
-    assert all(mapping.numel() == rows for mapping in graph.row_maps[kind])
-    assert all(mapping.numel() == segments for mapping in graph.segment_maps[kind])
+    if unique:
+        assert graph.row_maps[kind][0] is graph.segment_maps[kind][0] is None
+        assert torch.equal(graph.row_maps[kind][1], torch.arange(rows))
+        assert torch.equal(graph.segment_maps[kind][1], torch.zeros(segments, dtype=torch.int64))
+        assert recorded == [producer] and graph.map_events[kind][1]
+    else:
+        assert all(mapping.numel() == rows for mapping in graph.row_maps[kind])
+        assert all(mapping.numel() == segments for mapping in graph.segment_maps[kind])
+        assert recorded == [] and not graph.map_events[kind][1]
     assert original.rows == 32 and graph.states is original_states and len(graph.states) == 26
     assert all(state.capacity == 262147 and state.logical_context == 262144 for state in graph.states)
     retained = weakref.ref(private)
@@ -231,3 +240,36 @@ def test_private_buffer_extent_reuse_and_retirement_preserve_original_full_windo
     gc.collect()
     assert retained() is None and graph.closed
     assert graph.states is original_states and original.rows == 32
+
+
+@pytest.mark.parametrize("kind", ["verify", "mtp"])
+def test_unique_static_maps_match_actual_plans_across_widths_and_state_slot_reuse(monkeypatch, kind):
+    graph, states = planner()
+    row_device, segment_device = torch.arange(3), torch.zeros(1, dtype=torch.int64)
+    event = NS(synchronize=lambda: pytest.fail("immutable maps must not block on the CPU"))
+    graph.row_maps = {kind: (None, row_device)}
+    graph.segment_maps = {kind: (None, segment_device)}
+    graph.map_events = {kind: [event, True]}
+    waits = []
+    monkeypatch.setattr(bound_graphs.torch.cuda, "current_stream",
+        lambda device: NS(wait_event=lambda joined: waits.append((device, joined))))
+    row_pointer, segment_pointer = row_device.data_ptr(), segment_device.data_ptr()
+    # A one-lane canonical segment remains segment0 even for a different decoder
+    # slot; exact row widths retain identity, with no old-slot or upload state.
+    for repetition in range(2):
+        for state in states:
+            state.pos, state.mtp_len = 100000 + repetition, 99997 + repetition
+            for rows in (1, 2, 3):
+                plan = graph._plan(kind, [(state, 0, rows)])
+                assert plan is not None and plan[4] == (rows,)
+                inverse = plan[5]
+                order = [graph.indices[id(state)]]
+                segment_indices = [sorted(order).index(index) for index in order]
+                assert inverse == list(range(rows)) and segment_indices == [0]
+                actual_rows, actual_segments = graph._maps(kind, inverse, segment_indices)
+                assert actual_rows.tolist() == list(range(rows))
+                assert actual_segments.tolist() == [0]
+                assert actual_rows.data_ptr() == row_pointer
+                assert actual_segments.data_ptr() == segment_pointer
+    assert len(waits) == 12 and all(device == row_device.device and joined is event for device, joined in waits)
+    assert row_device.tolist() == [0, 1, 2] and segment_device.tolist() == [0]
