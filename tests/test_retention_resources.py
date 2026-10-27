@@ -42,13 +42,15 @@ def test_global_policy_reservation_is_not_multiplied_by_tp():
     native = native_sync_data_payload(world=8, chunk_bytes=4096)
     control = native_sync_control_payload(world=8, chunk_bytes=4096, ram=True)
     assert value.global_host_bytes == ((1 << 30) + 65536 + native["global_native_data_payload_bytes"]
-        + control["global_native_control_value_bytes"] + control["global_native_rpc_value_bytes"])
+        + control["global_native_control_value_bytes"] + control["global_native_rpc_value_bytes"]
+        + control["global_python_preparation_payload_bytes"])
     assert native["pinned_ordinary_bytes_already_in_progress"] == 65536
     assert value.per_rank_gpu_overlap_bytes == 1 << 20
     assert value.record()["world"] == 8
     ordinary = retention_header_resources(None, 8)
     assert ordinary.global_host_native_data_bytes == 0
-    assert ordinary.global_host_bytes == (ordinary.global_host_native_control_bytes + ordinary.global_host_native_rpc_bytes)
+    assert ordinary.global_host_bytes == (ordinary.global_host_native_control_bytes + ordinary.global_host_native_rpc_bytes
+                                         + ordinary.global_host_preparation_bytes)
     assert ordinary.global_host_native_rpc_bytes > 0
     assert retention_header_resources(RetentionPolicy("gpu", 5, 60), 8).per_rank_gpu_overlap_bytes == 0
 

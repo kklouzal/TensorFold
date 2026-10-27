@@ -61,7 +61,8 @@ def test_all_mode_finalizer_names_and_pays_native_and_python_once(monkeypatch):
     assert record["global_host_commitment_bytes"] == sum((
         record["ordinary_host_baseline"]["baseline_host_bytes"],
         sum(record["header"][key] for key in ("global_host_backing_bytes", "global_host_progress_bytes",
-            "global_host_native_data_bytes", "global_host_native_control_bytes", "global_host_native_rpc_bytes")),
+            "global_host_native_data_bytes", "global_host_native_control_bytes", "global_host_native_rpc_bytes",
+            "global_host_preparation_bytes")),
         record["global_waiting_input_bytes"], record["global_future_cpu_payload_bytes"],
         record["global_transport_projection_bytes"], record["global_manifest_projection_bytes"],
         record["global_logical_api_projection_bytes"], record["global_rpc_python_working_bytes"],

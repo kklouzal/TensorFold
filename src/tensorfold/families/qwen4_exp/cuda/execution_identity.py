@@ -689,6 +689,17 @@ def phase_failure_value_bytes():
     return len(canonical_runtime_json(value, max_bytes=PHASE_VALUE_BYTES))
 
 
+def input_preparation_value_bytes():
+    """Preparation publishes only None/SHA256, or the bounded refusal."""
+    success = {"ok": True, "value": "f" * 64}
+    refusal = {"ok": False, "error": "\0" * PHASE_ERROR_TYPE_CHARS + ": " + "\0" * PHASE_ERROR_TEXT_CHARS,
+               "invalidates_binding": False}
+    def wrapped(outcome):
+        return {"version": 1, "ordinal": (1 << 63) - 1, "label": "x" * 64, "outcome": outcome}
+    return max(len(canonical_runtime_json(wrapped(value), max_bytes=PHASE_VALUE_BYTES))
+               for value in (success, refusal))
+
+
 def _phase_value(store, key, fields):
     # Keep the raw native result scoped to one decode, rather than retaining
     # the previous packet while the next GET allocates its replacement.
@@ -696,6 +707,28 @@ def _phase_value(store, key, fields):
     if fields is not None:
         fields.received(value)
     return json.loads(value)
+
+
+def _phase_values(engine, store, keys, fields):
+    read_many = getattr(engine, "_phase_read_many", None)
+    if read_many is None:
+        return [_phase_value(store, key, fields) for key in keys]
+    values = read_many(keys)
+    try:
+        if len(values) != len(keys):
+            raise RuntimeError("input preparation received an incomplete outcome batch")
+        outcomes = []
+        for value in values:
+            if type(value) is not bytes or len(value) > engine._phase_value_bytes:
+                raise ValueError("input preparation outcome exceeds its bounded byte schema")
+            if fields is not None:
+                fields.received(value)
+            outcomes.append(json.loads(value))
+        return outcomes
+    finally:
+        # A malformed record retains its own decode context, without keeping
+        # all other raw phase packets in the propagated traceback.
+        values = None
 
 
 def _phase(engine, channel, stage, operation, *, may_refuse=True):
@@ -708,7 +741,8 @@ def _phase(engine, channel, stage, operation, *, may_refuse=True):
     # Retained cohorts optionally supply an immutable field capability. Old
     # callers omit it and retain the existing protocol/serialization contract.
     fields = getattr(engine, "store_fields", None)
-    if fields is not None and engine.comm is not None:
+    mailbox = getattr(engine, "_phase_mailbox", None)
+    if fields is not None and engine.comm is not None and mailbox is None:
         try:
             own = f"{channel}/phase/{stage}/{engine.rank}"
             prepared_keys = [f"{channel}/phase/{stage}/{rank}" for rank in range(engine.tp)]
@@ -750,17 +784,20 @@ def _phase(engine, channel, stage, operation, *, may_refuse=True):
     else:
         try:
             store = engine.comm.store
-            encoded = canonical_runtime_json(outcome, max_bytes=PHASE_VALUE_BYTES)
-            try:
-                if fields is not None:
-                    fields.value(encoded)
-                store.set(f"{channel}/phase/{stage}/{engine.rank}", encoded)
-            finally:
-                encoded = None  # Old inline argument did not survive into peer GETs.
-            keys = (prepared_keys if fields is not None else
-                    [f"{channel}/phase/{stage}/{rank}" for rank in range(engine.tp)])
-            store.wait(keys, timedelta(seconds=3600))
-            outcomes = [_phase_value(store, key, fields) for key in keys]
+            if mailbox is not None:
+                outcomes = mailbox.exchange(channel, stage, outcome, fields)
+            else:
+                encoded = canonical_runtime_json(outcome, max_bytes=PHASE_VALUE_BYTES)
+                try:
+                    if fields is not None:
+                        fields.value(encoded)
+                    store.set(f"{channel}/phase/{stage}/{engine.rank}", encoded)
+                finally:
+                    encoded = None  # Old inline argument did not survive into peer GETs.
+                keys = (prepared_keys if fields is not None else
+                        [f"{channel}/phase/{stage}/{rank}" for rank in range(engine.tp)])
+                store.wait(keys, timedelta(seconds=3600))
+                outcomes = _phase_values(engine, store, keys, fields)
             if any(not isinstance(row, dict) or type(row.get("ok")) is not bool or
                    set(row) != ({"ok", "value"} if row["ok"] else {"ok", "error", "invalidates_binding"})
                    or not row["ok"] and type(row["invalidates_binding"]) is not bool for row in outcomes):
@@ -780,6 +817,9 @@ def _phase(engine, channel, stage, operation, *, may_refuse=True):
 
 def _retire_store(engine, channel, *, stages=None):
     """All consumers acknowledge before the coordinator removes owned keys."""
+    mailbox = getattr(engine, "_phase_mailbox", None)
+    if mailbox is not None:
+        return mailbox.retire(channel, stages)
     store = engine.comm.store
     fields = getattr(engine, "store_fields", None)
     ready = [f"{channel}/ready/retirement/{rank}" for rank in range(engine.tp)]

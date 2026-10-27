@@ -11,16 +11,18 @@ from tensorfold.families.qwen4_exp.cuda.retention_resources import native_sync_f
 def test_fixed_rows_cover_actual_sdk_layout_and_each_protocol_owner():
     receipt = native_sync_fixed_payload(world=2, ram=True, slots=3, fd_limit=8)
     # Two ranks: base2+worker2+control2+sender1+receiver1. Four prefix
-    # boundaries, two RPC keys, six initial keys, and44 retention keys.
+    # boundaries, two RPC keys, six initial keys, and44 retention keys. Input
+    # preparation adds two persistent slots plus five overlapping epoch keys.
     assert receipt["current_client_owner_bound"] == 8
     assert receipt["active_caller_bound"] == 5
     assert receipt["client_key_slots_per_array"] == 9
     assert receipt["prefix_boundary_key_bound"] == 4
-    assert receipt["stored_key_bound"] == 56
+    assert receipt["stored_key_bound"] == 56 + 2 + 5
+    assert receipt["value_map_key_highwater_bound"] == 56 + 2 + 5
     terms = receipt["terms"]
     # The sealed C++20 SDK measured node72, string32, vector24, Store216,
     # TCPClient8, daemon288 and shared TCPServer control block32.
-    assert terms["stored_key_chars_and_nodes"] == 56 * (8193 + 72)
+    assert terms["stored_key_chars_and_nodes"] == (56 + 2 + 5) * (8193 + 72)
     assert terms["client_and_handler_string_objects"] == 32 * 32
     assert terms["client_and_handler_vector_objects"] == 29 * 24
     assert terms["current_tcpstore_and_client_objects"] == 8 * 224

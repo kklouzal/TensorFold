@@ -6,15 +6,128 @@ This initial correctness policy has unqualified per-operation control cost.
 """
 
 import threading
+from datetime import timedelta
+import json
 from types import SimpleNamespace
 import weakref
 
-from tensorfold.cleanup import raise_failures
+from tensorfold.cleanup import finish, raise_failures
+from tensorfold.cuda.store_fields import validate_store_key
+from tensorfold.engine.model_identity import canonical_runtime_json
 
-from .execution_identity import _ManifestRefusal, _fatal, _phase, _retire_store, _unretired
+from .execution_identity import (
+    _ManifestRefusal, _fatal, _phase, _retire_store, _unretired, input_preparation_value_bytes,
+)
 from .position_coordinates import _digest
 
 KEY = "input_preparation_context"
+
+
+class _PreparationMailbox:
+    """One model/coordinator's bounded same-host outcome slots.
+
+    A native ADD response orders each sender's prior SET. Count W publishes
+    arrival readiness; count2W publishes validated consumer retirement. Count3W
+    acknowledges every consumption-latch reader before the leader deletes it. No
+    outcome may be overwritten until every consumer has completed its read.
+    Only four epoch keys are deleted; W outcome slots live until model drain.
+    """
+
+    def __init__(self, context, store, read_many, add):
+        self.context, self.store, self.read_many, self.add = context, store, read_many, add
+        self.base = f"tensorfold/input-mailbox-v1/{context.identity}"
+        if context.cohort.tp > ((1 << 63) - 1) // 3:
+            raise OverflowError("input mailbox rank count exceeds its signed counter domain")
+        self.slots = tuple(f"{self.base}/rank/{rank}" for rank in range(context.cohort.tp))
+        self.active = None
+        for key in (*self.slots, f"{self.base}/epoch/{(1 << 63) - 1}/count",
+                    f"{self.base}/epoch/{(1 << 63) - 1}/ready", f"{self.base}/epoch/{(1 << 63) - 1}/consumed",
+                    f"{self.base}/epoch/{(1 << 63) - 1}/ack"):
+            validate_store_key(key)
+
+    def begin(self, ordinal, label, channel):
+        if self.active is not None:
+            raise RuntimeError("input preparation mailbox still owns an unresolved epoch")
+        prefix = f"{self.base}/epoch/{ordinal}"
+        self.active = (ordinal, label, channel, prefix + "/count", prefix + "/ready", prefix + "/consumed", prefix + "/ack")
+
+    def _epoch(self, channel):
+        epoch = self.active
+        if epoch is None or epoch[2] != channel:
+            raise RuntimeError("input preparation mailbox differs from its active epoch")
+        return epoch
+
+    def exchange(self, channel, stage, outcome, fields):
+        ordinal, label, _channel, counter, ready, _consumed, _ack = self._epoch(channel)
+        if stage != "prepare":
+            raise RuntimeError("input mailbox is only the preparation phase transport")
+        context, world = self.context, self.context.cohort.tp
+        record = {"version": 1, "ordinal": ordinal, "label": label, "outcome": outcome}
+        encoded = canonical_runtime_json(record, max_bytes=context.cohort._phase_value_bytes)
+        try:
+            if fields is not None:
+                fields.value(encoded)
+            self.store.set(self.slots[context.cohort.rank], encoded)
+        finally:
+            encoded = None
+        arrived = self.add(counter, 1)
+        if type(arrived) is not int or not 1 <= arrived <= world:
+            raise RuntimeError("input preparation arrival counter left its epoch")
+        if arrived == world:
+            self.store.set(ready, "1")
+        self.store.wait([ready], timedelta(seconds=3600))
+        values = self.read_many(self.slots)
+        try:
+            if len(values) != world:
+                raise RuntimeError("input preparation received an incomplete outcome batch")
+            outcomes = []
+            for value in values:
+                if type(value) is not bytes or len(value) > context.cohort._phase_value_bytes:
+                    raise ValueError("input preparation outcome exceeds its bounded byte schema")
+                if fields is not None:
+                    fields.received(value)
+                row = json.loads(value)
+                if (type(row) is not dict or row.keys() != {"version", "ordinal", "label", "outcome"}
+                        or type(row["version"]) is not int or row["version"] != 1
+                        or type(row["ordinal"]) is not int or row["ordinal"] != ordinal or row["label"] != label):
+                    raise RuntimeError("input preparation mailbox contains a stale or different epoch")
+                outcomes.append(row["outcome"])
+            return outcomes
+        finally:
+            values = None
+
+    def retire(self, channel, stages):
+        _ordinal, _label, _channel, counter, ready, consumed, ack = self._epoch(channel)
+        if tuple(stages or ()) != ("prepare",):
+            raise RuntimeError("input mailbox retirement requires its preparation phase")
+        world = self.context.cohort.tp
+        retired = self.add(counter, 1)
+        if type(retired) is not int or not world < retired <= 2 * world:
+            raise RuntimeError("input preparation consumer counter left its epoch")
+        if retired == 2 * world:
+            self.store.set(consumed, "1")
+        self.store.wait([consumed], timedelta(seconds=3600))
+        seen = self.add(counter, 1)
+        if type(seen) is not int or not 2 * world < seen <= 3 * world:
+            raise RuntimeError("input preparation latch acknowledgment left its epoch")
+        if seen == 3 * world:
+            self.store.set(ack, "1")
+        # The final latch has only one reader. Its publication proves every
+        # other latch read is complete, including a delayed WAIT submission.
+        if self.context.cohort.rank == 0:
+            self.store.wait([ack], timedelta(seconds=3600))
+            finish(tuple(lambda key=key: self.store.delete_key(key) for key in (counter, ready, consumed, ack)))
+        self.active = None
+
+    def close(self):
+        if not self.context.cohort._execution_manifest_uncertain:
+            if self.active is not None:
+                raise RuntimeError("healthy input mailbox cannot close an unretired epoch")
+            if self.context.cohort.rank == 0:
+                finish(tuple(lambda key=key: self.store.delete_key(key) for key in self.slots))
+        # A poisoned epoch is retained in the terminal Store, never reused.
+        self.store = self.read_many = self.add = None
+        self.context = None
 
 
 class InputPreparationContext:
@@ -31,10 +144,18 @@ class InputPreparationContext:
         self.identity, self.ordinal = identity, 0
         self.cohort = SimpleNamespace(rank=rank, tp=world, comm=comm, multi=None,
                                       _execution_manifest_uncertain=False, _abort_comm=False)
+        read_many = None if comm is None else getattr(comm.store, "multi_get", None)
+        self.cohort._phase_read_many = read_many if callable(read_many) else None
+        self.cohort._phase_value_bytes = input_preparation_value_bytes()
+        add = None if comm is None else getattr(comm.store, "add", None)
+        self.cohort._phase_mailbox = (_PreparationMailbox(self, comm.store, read_many, add)
+            if world > 1 and callable(read_many) and callable(add) else None)
         self._decoder = None
         self._lock = threading.RLock()
         self._active = None
         self._pure = False
+        self._closed = False
+        self._closing = False
 
     def bind_decoder(self, decoder):
         if decoder.w.meta.get(KEY) is not self:
@@ -60,6 +181,8 @@ class InputPreparationContext:
             _fatal(self.cohort, error)
             raise error
         try:
+            if self._closing:
+                raise RuntimeError("input preparation model owner has retired")
             if self.cohort._execution_manifest_uncertain:
                 raise RuntimeError("input preparation cohort is poisoned")
             if (type(label) is not str or not 0 < len(label) <= 64
@@ -87,10 +210,23 @@ class InputPreparationContext:
                 error = RuntimeError("input preparation ordinal exhausted; retire the resident cohort")
                 _fatal(self.cohort, error)
                 raise error
-            self.ordinal += 1  # Before any window, lease, proof or tensor construction.
-            channel = f"tensorfold/input-preparation/{self.identity}/{self.ordinal}/{label}"
-            self._active, self._pure = thread, may_refuse
-            self.cohort.multi = None if self._decoder is None else self._decoder()
+            try:
+                self.cohort.multi = None if self._decoder is None else self._decoder()
+                self.ordinal += 1  # Before any window, lease, proof or tensor construction.
+                channel = f"tensorfold/input-preparation/{self.identity}/{self.ordinal}/{label}"
+                mailbox = self.cohort._phase_mailbox
+                if mailbox is not None:
+                    mailbox.begin(self.ordinal, label, channel)
+                self._active, self._pure = thread, may_refuse
+            except BaseException as error:
+                try:
+                    _fatal(self.cohort, error)
+                except BaseException as notification:
+                    raise_failures(error, (notification,))
+                finally:
+                    self.cohort.multi = None
+                    self._active, self._pure = None, False
+                raise
             try:
                 if self.cohort.comm is None:
                     try:
@@ -127,6 +263,24 @@ class InputPreparationContext:
             finally:
                 self.cohort.multi = None  # A long-lived model must not retain its decoder through this borrow.
                 self._active, self._pure = None, False
+        finally:
+            self._lock.release()
+
+    def close(self):
+        """Existing model drain owns this call before retained transport reuse."""
+        if not self._lock.acquire(blocking=False):
+            raise RuntimeError("input preparation is still borrowed during model retirement")
+        try:
+            if self._closed:
+                return
+            if self._active is not None:
+                raise RuntimeError("input preparation cannot retire inside its active operation")
+            self._closing = True
+            if self.cohort._phase_mailbox is not None:
+                self.cohort._phase_mailbox.close()
+                self.cohort._phase_mailbox = None
+            self.cohort._phase_read_many = None
+            self._closed = True
         finally:
             self._lock.release()
 

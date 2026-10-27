@@ -1,5 +1,16 @@
 # TensorFold fork
 
+An isolated CPU preflight candidate uses public Store batched reads and atomic
+counters during rank input preparation. Bounded reusable outcome slots retain
+validation and refusal semantics; every rank consumes a retirement latch before
+its keys are reclaimed. Only four temporary keys retire per phase, and model
+drain retires persistent slots. Its header funds simultaneous native/Python
+packets and metadata explicitly. Other phase callers retain the existing
+protocol. The first batched-read increment passed169 installed CPU checks;
+the mailbox successor passed227 checks and two subtests in a separate normal
+installed-wheel gate. Same-region full-model performance selection remains
+pending. This candidate makes no 85-token/s or release-readiness claim.
+
 The V100 path is being refactored against the
 [adaptive inference specification](docs/v100-adaptive-inference-design.md):
 full-context capacity planning, unique GPU histories, bounded execution and live
