@@ -301,3 +301,33 @@ def test_unprovable_inventory_working_bounds_refuse_before_worker_allocation(tmp
     monkeypatch.setattr(startup,"StartupContentCapture",lambda *_args:pytest.fail("worker allocated before inventory refusal"))
     with pytest.raises(ValueError,match="startup"):
         startup.StartupContentPlan(files)
+
+
+@pytest.mark.parametrize("phase", ["result", "close"])
+def test_outcome_argument_preparation_failure_keeps_original_hash_primary(monkeypatch, phase):
+    import sys
+    import inspect
+    primary=ValueError("hash failure before outcome preparation")
+    allocation=MemoryError("outcome list allocation")
+    capture=startup.StartupContentCapture(plan(),lambda _cancelled:(_ for _ in ()).throw(primary))
+    capture.start()
+    capture.operation_retired.wait()
+    code=capture._raise_outcome.__func__.__code__
+    source,first=inspect.getsourcelines(capture._raise_outcome)
+    allocation_line=first+next(index for index,line in enumerate(source) if "errors = [error" in line)
+    fired=[]
+    def trace(frame,event,_arg):
+        if frame.f_code is code and event == "line" and frame.f_lineno == allocation_line:
+            fired.append(True)
+            raise allocation
+        return trace
+    old=sys.gettrace()
+    try:
+        sys.settrace(trace)
+        with pytest.raises(ValueError) as caught:
+            getattr(capture,phase)()
+        assert fired == [True] and caught.value is primary and primary.__cause__ is allocation
+    finally:
+        sys.settrace(old)
+        capture.close()
+    assert capture.closed and capture.operation_retired.is_set()
