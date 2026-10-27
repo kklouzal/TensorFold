@@ -39,10 +39,10 @@ MAX_PROMPT_BYTES = 4096
 MAX_RENDERED_BYTES = 65536
 MAX_PROMPT_TOKENS = 4096
 MAX_TOKENS = 512
-MAX_RECEIPT_BYTES = 1 << 20
 LEADER_RECEIPT_BYTES = 512 << 10
-FOLLOWER_RECEIPT_BYTES = 64 << 10
+FOLLOWER_RECEIPT_BYTES = 128 << 10
 SUPERVISOR_RECEIPT_BYTES = 64 << 10
+MAX_RECEIPT_BYTES = LEADER_RECEIPT_BYTES + (WORLD - 1) * FOLLOWER_RECEIPT_BYTES + SUPERVISOR_RECEIPT_BYTES
 FATAL_REPORT_GRACE_SECONDS = 30.0
 DEFAULT_PROMPT = "In one short sentence, explain why the sky appears blue."
 TARGET_TEMPLATE_SHA = "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce"
@@ -69,8 +69,8 @@ def digest(path):
 def write_report(path, value, *, allowance):
     """Bound the aggregate live report; disk checkpoints do not create live trees.
 
-    The leader owns512KiB, seven followers64KiB each, and the supervisor64KiB:
-    together they fit the caller's1MiB global receipt allowance. Overflow is a
+    The leader owns512KiB, seven followers128KiB each, and the supervisor64KiB:
+    their sum is the caller's funded global receipt allowance. Overflow is a
     failed diagnostic; preserve its complete evidence separately for review.
     """
     encoded = json.dumps(value, indent=1, allow_nan=False)
@@ -126,7 +126,9 @@ def arguments(argv=None):
     parser.add_argument("--expect-prefix-reuse", action="store_true",
                         help="private cached FAMILY trial: require cold first MTP and maximal legal prefix on later identical prompts")
     parser.add_argument("--concurrency-grid", action="store_true",
-                        help="finite burst measurement at1,2,4,8,16,24; short bringup then >=256 committed-token overlap per request; EOS unchanged")
+                        help="finite bursts at1,2,4,8,16,24; sustained replies require>=256 committed tokens each plus positive correlated decode overlap; EOS unchanged")
+    parser.add_argument("--quality-spotchecks", action="store_true",
+                        help="after the unchanged concurrency grid, run six fixed independent answer/format checks with320-token allowances; requires grid and --tokens>=320")
     parser.add_argument("--thinking", action="store_true", help="pass enable_thinking=True to the unchanged target template")
     parser.add_argument("--serial-reference", action="store_true", help="also run a separately labeled draft=False reply with MTP loaded")
     parser.add_argument("--rank", type=int, help=argparse.SUPPRESS)
@@ -142,6 +144,8 @@ def arguments(argv=None):
         parser.error("--repetitions must be 1..16")
     if args.concurrency_grid and (args.tokens < 256 or args.expect_prefix_reuse):
         parser.error("--concurrency-grid requires --tokens256..512 and cannot impose sequential prefix-reuse assertions")
+    if args.quality_spotchecks and (not args.concurrency_grid or args.tokens < 320):
+        parser.error("--quality-spotchecks requires --concurrency-grid and --tokens>=320 for the declared caller funding")
     if args.expect_prefix_reuse and args.repetitions < 2:
         parser.error("--expect-prefix-reuse requires at least2 repetitions")
     if (not 1 <= args.master_port <= 65535 or not math.isfinite(args.timeout_seconds)
@@ -398,6 +402,44 @@ def run_leader(engine, tokenizer, args, report):
 
 
 
+
+def _owned_attributes(value):
+    """Inspect existing Python fields without invoking descriptors or device work."""
+    try:
+        result = object.__getattribute__(value, "__dict__")
+    except (AttributeError, TypeError):
+        return {}
+    return result if type(result) is dict else {}
+
+def graph_execution_snapshot(engine):
+    """Bounded host counters, not a device-completion or timing instrument."""
+    decoder = _owned_attributes(engine).get("multi")
+    owner = _owned_attributes(decoder).get("graphs")
+    if owner is None:
+        return None
+    fields = _owned_attributes(owner)
+    counters = {}
+    names = ("hits", "misses", "lane_declines", "verify_hits", "mtp_hits",
+             "eager_declines", "verify_misses", "mtp_misses")
+    for role, values in (("owner", fields), ("bound", _owned_attributes(fields.get("bound")))):
+        for name in names:
+            value = values.get(name)
+            if type(value) is int and value >= 0:
+                counters[role + "." + name] = value
+    keys = {name: len(fields[name]) for name in ("verify", "mtp") if type(fields.get(name)) is dict}
+    return {"counters": counters, "captured_keys": keys}
+
+def graph_execution_delta(before, after):
+    """Differences of available counters from the same owner before cleanup.
+
+    The finite caller never replaces its engine/profile. Missing counters are
+    not treated as zero; captured-key availability is reported separately.
+    """
+    if before is None or after is None:
+        return None
+    return {name: value - before["counters"][name] for name, value in after["counters"].items()
+            if name in before["counters"]}
+
 def concurrency_module():
     if __package__:
         from . import finite_concurrency
@@ -408,6 +450,45 @@ def concurrency_module():
 
 def waiting_input_credit(args):
     return concurrency_module().input_credit(CONTEXT) if getattr(args, "concurrency_grid", False) else INPUT_CREDIT
+
+
+def run_quality_spotchecks(engine, tokenizer, args, report, limit, prepared, quality):
+    """Reuse the admitted owner; keep one raw reply and write every mismatch."""
+    status = report["quality"]
+    for case_id, tokens, prompt in prepared:
+        for draft in ((True, False) if args.serial_reference else (True,)):
+            mode = "mtp-target" if draft else "serial-reference"
+            row = {"case_id": case_id, "prompt": prompt,
+                "prompt_sha256": hashlib.sha256(prompt["rendered"].encode("utf-8")).hexdigest(),
+                "source_prompt_sha256": hashlib.sha256(prompt["messages"][0]["content"].encode("utf-8")).hexdigest(),
+                "model_identity": status["model_identity"], "dataset": quality.VERSION,
+                "dataset_sha256": status["dataset_sha256"],
+                "quality_helper_sha256": status["helper_sha256"],
+                "max_tokens": quality.OUTPUT_TOKENS, "stop_eos": True,
+                "quality": {"passed": False, "assessment_complete": False},
+                "measurement_role": "quality spotcheck; excluded from performance metrics"}
+            primary, diagnostics = None, [None]
+            try:
+                generate_reply(engine, tokenizer, tokens, count=quality.OUTPUT_TOKENS, draft=draft,
+                               limit=limit, result=row)
+                row["quality"] = quality.assess(case_id, row["text"])
+            except BaseException as error:
+                primary = error
+            try:
+                # Raw text/IDs also persist on generation or oracle failure.
+                write_report(args.out / f"quality-{case_id}-{mode}.json", row, allowance=MAX_RECEIPT_BYTES)
+            except BaseException as diagnostic:
+                diagnostics[0] = diagnostic
+            finish_failures(primary, diagnostics)
+            status["completed_requests"] += 1
+            status["failed_requests"] += not row["quality"]["passed"]
+            status["last_result"] = {"case_id": case_id, "draft": draft, "passed": row["quality"]["passed"]}
+            row = None  # No previous result graph survives the next generation.
+            write_report(args.out / "progress.json", report, allowance=LEADER_RECEIPT_BYTES)
+    status["passed"] = status["failed_requests"] == 0
+    write_report(args.out / "quality-summary.json", status, allowance=LEADER_RECEIPT_BYTES)
+    if not status["passed"]:
+        raise ValueError("fixed quality spot checks failed; all raw answers and differences were retained")
 
 
 def run_concurrency_leader(engine, tokenizer, args, report):
@@ -423,11 +504,40 @@ def run_concurrency_leader(engine, tokenizer, args, report):
     for label, prompt in (("bringup", args.prompt), ("sustained", finite.SUSTAINED_PROMPT)):
         tokens, receipt = prepared_prompt(engine, tokenizer, SimpleNamespace(prompt=prompt, thinking=args.thinking))
         prepared.append((label, tokens, receipt))
+    quality, quality_prepared, quality_control = None, None, 0
+    if getattr(args, "quality_spotchecks", False):
+        if __package__:
+            from . import finite_quality as quality
+        else:
+            import finite_quality as quality
+        quality_prepared = []
+        for case_id, prompt, _expected in quality.CASES:
+            tokens, receipt = prepared_prompt(engine, tokenizer, SimpleNamespace(prompt=prompt, thinking=args.thinking))
+            quality_prepared.append((case_id, tokens, receipt))
+        if len(prepared) + len(quality_prepared) > finite.MAXIMUM:
+            raise ValueError("prepared quality/performance ID owners exceed the funded24-owner envelope")
+        quality_control = (quality.control_payload_bytes() + sys.getsizeof(quality_prepared)
+                           + sum(sys.getsizeof(row) for row in quality_prepared))
+        report["quality"] = {"dataset": quality.VERSION,
+            "dataset_sha256": hashlib.sha256(json.dumps(quality.CASES, ensure_ascii=True, separators=(",", ":")).encode("ascii")).hexdigest(),
+            "helper_sha256": digest(quality.__file__),
+            "prepared_prompts": [receipt for _, _, receipt in quality_prepared],
+            "prepared_input_owners_total": len(prepared) + len(quality_prepared),
+            "additional_control_payload_bytes": quality_control,
+            "completed_requests": 0, "failed_requests": 0, "passed": False,
+            "model_identity": {"model_path": str(args.model), "mtp_path": str(args.mtp),
+                "prepared_model_dir": report.get("prepared_model_dir"), "profile": engine.sm70_profile,
+                "context": CONTEXT, "tp": WORLD, "kv_dtype": "int8", "mtp_drafts": DEPTH,
+                "mtp_confidence": CONFIDENCE, "thinking": args.thinking,
+                "sampling": {"seed": 17, "temperature": 0, "top_k": 0, "top_p": 1},
+                "tokenizer_identity": report["tokenizer_identity"], "native_flags": report["native_flags"],
+                "wheel_sha256": digest(args.wheel), "source_hold_sha256": digest(args.source_hold)},
+            "scope": "six deterministic answer/format spot checks only; no broad quality or performance qualification"}
     caller = FiniteBackendCaller(max_input_tokens=MAX_PROMPT_TOKENS, max_output_tokens=args.tokens,
         retained_results=finite.MAXIMUM, max_source_bytes=MAX_PROMPT_BYTES + MAX_RENDERED_BYTES,
         max_receipt_bytes=(finite.MAXIMUM + 1) * MAX_RECEIPT_BYTES,
         max_concurrent_requests=finite.MAXIMUM, worker_stack_bytes=finite.STACK_BYTES,
-        control_payload_bytes=finite.control_payload_bytes(args.tokens))
+        control_payload_bytes=finite.control_payload_bytes(args.tokens) + quality_control)
     limit, pool = RequestLimit(finite.MAXIMUM), None
     primary, failures = None, [None, None]
     report["concurrency"] = {"grid": finite.GRID, "caller": caller.__dict__,
@@ -476,7 +586,14 @@ def run_concurrency_leader(engine, tokenizer, args, report):
 
                     for count in finite.GRID:
                         name = f"iteration-{iteration:04d}-{label}-{mode}-n{count:02d}"
+                        graph_before = graph_execution_snapshot(engine) if label == "sustained" else None
                         def write_case(result):
+                            if label == "sustained":
+                                graph_after = graph_execution_snapshot(engine)
+                                result["graph_execution"] = {"before_requests": graph_before,
+                                    "after_requests": graph_after,
+                                    "delta": graph_execution_delta(graph_before, graph_after),
+                                    "scope": "this measured sustained burst only; after constructor, bringup and explicit tool warmup; before optional quality and cleanup; host counters only"}
                             result.update(iteration=iteration, workload=label, draft=draft,
                                 prompt=prompt, stop_eos=True, max_tokens=args.tokens,
                                 profile=engine.sm70_profile)
@@ -489,6 +606,8 @@ def run_concurrency_leader(engine, tokenizer, args, report):
                         report["concurrency"]["completed_cases"] += 1
                         report["concurrency"]["last_case"] = {"name": name, **summary}
                         write_report(args.out / "progress.json", report, allowance=LEADER_RECEIPT_BYTES)
+        if quality is not None:
+            run_quality_spotchecks(engine, tokenizer, args, report, limit, quality_prepared, quality)
     except BaseException as error:
         primary = error
     finally:
@@ -507,7 +626,7 @@ def run_concurrency_leader(engine, tokenizer, args, report):
 def worker(args):
     from tensorfold import hub
     from tensorfold.cuda import precision, prompt_precision
-    from tensorfold.cuda.cohort import FAILURE_FD_ENV
+    from tensorfold.cuda.cohort import FAILURE_FD_ENV, notify_failure
     from tensorfold.families.qwen4_exp import cuda_engine
     from tensorfold.serve_options import drafter_metadata_source
     from tensorfold.token_metadata import load_tokenizer, tokenizer_identity
@@ -521,7 +640,7 @@ def worker(args):
               "process_identity": {"pid": os.getpid(), "parent_pid": os.getppid(),
                                    "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES")},
               "qualification": "finite-backend-diagnostic-only; HTTP/design qualification remains open"}
-    engine, primary, failures = None, None, [None] * 3
+    engine, primary, failures = None, None, [None] * 4
     allowance = FOLLOWER_RECEIPT_BYTES if args.rank else LEADER_RECEIPT_BYTES
     try:
         report["installed"] = installed_identity(args.wheel)
@@ -538,6 +657,9 @@ def worker(args):
             output_queue_tokens=args.tokens)
         record_execution_profile(engine, report, requested=args.requested_sm70_profile)
         report["capacity_plan"] = engine.capacity_plan
+        report["graph_execution"] = {"before_requests": graph_execution_snapshot(engine),
+            "after_requests": None, "delta": None,
+            "scope": "existing host counters after constructor warmup and before cleanup; includes every tool request, including bringup, explicit tool warmups and optional quality; measured-case snapshots are separate; no device timing"}
         write_report(args.out / f"rank-{args.rank}-ready.json", report, allowance=allowance)
         if args.rank:
             engine.follow()
@@ -545,8 +667,18 @@ def worker(args):
             tokenizer = load_tokenizer(model)
             report["tokenizer_identity"] = tokenizer_identity(tokenizer)
             run_leader(engine, tokenizer, args, report)
+        execution = report["graph_execution"]
+        execution["after_requests"] = graph_execution_snapshot(engine)
+        execution["delta"] = graph_execution_delta(execution["before_requests"], execution["after_requests"])
     except BaseException as error:
         primary = error
+        try:
+            # Signal the existing supervised cohort before fallible diagnostics
+            # or backend cleanup can block. Its latched grace bounds retirement.
+            if not notify_failure():
+                raise RuntimeError("finite worker lost its supervised failure capability")
+        except BaseException as notification:
+            failures[3] = notification
         try:
             report["failure"] = {"type": type(error).__name__, "message": str(error),
                                  "traceback": traceback.format_exc()}
@@ -560,9 +692,9 @@ def worker(args):
             except BaseException as error:
                 failures[1] = error
     try:
-        if failures[0] is not None or failures[1] is not None:
+        if failures[0] is not None or failures[1] is not None or failures[3] is not None:
             report["cleanup_failures"] = [{"type": type(error).__name__, "message": str(error)}
-                                          for error in failures[:2] if error is not None]
+                                          for error in (failures[0], failures[1], failures[3]) if error is not None]
         report["complete"] = primary is None and not any(error is not None for error in failures)
         write_report(args.out / f"rank-{args.rank}-final.json", report, allowance=allowance)
     except BaseException as diagnostic:
@@ -606,7 +738,9 @@ def launch(args, argv):
             "session_ceiling": getattr(args, "session_ceiling", None), "kv_full_windows": "auto", "indexer_history": "gpu",
             "max_waiting_input_bytes": waiting_input_credit(args),
             "logical_callers": 24 if args.concurrency_grid else 1,
+            "max_receipt_bytes": (25 if args.concurrency_grid else 1) * MAX_RECEIPT_BYTES,
             "concurrency_grid": [1, 2, 4, 8, 16, 24] if args.concurrency_grid else None,
+            "quality_spotchecks": getattr(args, "quality_spotchecks", False),
             "requested_sm70_profile": args.requested_sm70_profile,
             "instrumented_departure_grace_seconds": args.instrumented_departure_grace_seconds,
             "repetitions": args.repetitions,

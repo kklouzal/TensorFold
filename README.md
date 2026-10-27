@@ -1599,6 +1599,31 @@ Baseline and candidates must use the same funding leaf, prompts, cache schedule
 and instrumentation. Actual GPU, matched performance, quality and the85-token/s
 single-request objective remain unverified by this source increment.
 
+The common finite tool funds a512KiB leader report, seven128KiB follower
+reports and a64KiB supervisor report:1,507,328 bytes in total. The concurrent
+caller additionally funds24 bounded result receipts using that same unit.
+A worker signals the existing fatal pipe before fallible diagnostics or backend
+cleanup, so the supervisor can contain blocked retirement. Existing host graph
+counters distinguish captured-key availability from observed replay use.
+Sustained-case counter snapshots exclude constructor, bringup and explicit tool
+warmups, and precede any optional quality phase; whole-sequence counters label
+all included requests. No device queries or new runtime counters are added.
+
+Optional `--quality-spotchecks` requires the concurrency grid and a funded output
+allowance of at least320 tokens. After the unchanged timed grid, it runs six
+fixed math, retrieval, logic, instruction, JSON and code-output checks in the
+same loaded engine and real request owner. Each uses the existing greedy sampler
+and a320-token allowance with ordinary EOS handling; `--serial-reference` also
+checks the serial answer. Expected answers are independent of either model path.
+The prompts specify exact answer formats, including minified JSON, and only outer
+whitespace is ignored. All eight performance/quality prompts are prepared before
+admission within the existing24 input-owner envelope; static oracle/control
+payload is explicitly charged. Unique case receipts retain raw text, token IDs,
+prompt hashes, model/run identities and objective differences, including failed
+answers. Mismatches fail the quality gate after all semantic checks finish;
+quality jobs are excluded from performance metrics. These are initial spot
+checks, not broad model-quality qualification or token-identity requirements.
+
 The finite diagnostic tool `tools/v100_backend_probe.py` records worker process
 IDs. When the installed supervisor exposes exit reporting, its final receipt
 includes the reason, observed child statuses and final return codes; older

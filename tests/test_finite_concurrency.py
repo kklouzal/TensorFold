@@ -415,3 +415,51 @@ def test_explicit24_region_requires_actual24_materialized_slots():
     probe.check_engine(engine)
     with pytest.raises(ValueError):
         probe.check_engine(engine, session_ceiling=24)
+
+
+def test_common_funding_and_per_case_graph_counters_exclude_bringup_and_warmup(tmp_path, monkeypatch):
+    from types import SimpleNamespace as NS
+    from tensorfold.families.qwen4_exp.cuda import retention_resources as resources
+    from tensorfold import token_metadata
+
+    args = probe.arguments([*cli(tmp_path), '--session-ceiling', '24', '--concurrency-grid', '--tokens', '320'])
+    counter = NS(hits=123)
+    engine = NS(scheduler=NS(configure_requests=lambda _: None), retention_catalog=object(),
+                multi=NS(graphs=NS(bound=counter, verify={}, mtp={})), sm70_profile='source-packed-trial')
+    receipts, admission = [], []
+    def finalize(_catalog, *, caller, **_kwargs):
+        assert caller.max_concurrent_requests == caller.retained_results == 24
+        assert probe.MAX_RECEIPT_BYTES == 1507328
+        assert caller.max_receipt_bytes == 25 * 1507328 == 37683200
+        admission.append(caller)
+        return {'test_only': True}
+    class Pool:
+        def shutdown(self, **_kwargs):
+            pass
+    def warmup(*_args, result, **_kwargs):
+        counter.hits += 1000
+        result['test_only'] = True
+    def burst(_pool, *, count, write, **_kwargs):
+        counter.hits += count * 10
+        write({'offered': count, 'passed': True})
+        return {'passed': True}
+    def record(path, value, **_kwargs):
+        if '-n' in path.name:
+            receipts.append((path.name, value))
+    monkeypatch.setattr(resources, 'finalize_backend_resources', finalize)
+    monkeypatch.setattr(probe, 'prepared_prompt', lambda *_: ([0], {'test_only': True}))
+    monkeypatch.setattr(token_metadata, 'tokenizer_vocab_size', lambda _: 3)
+    monkeypatch.setattr(finite, 'owned_pool', lambda _: Pool())
+    monkeypatch.setattr(finite, 'run_case', burst)
+    monkeypatch.setattr(probe, 'generate_reply', warmup)
+    monkeypatch.setattr(probe, 'write_json', lambda *_: None)
+    monkeypatch.setattr(probe, 'write_report', record)
+    report = {}
+    probe.run_concurrency_leader(engine, object(), args, report)
+    assert len(admission) == 1 and len(receipts) == 12
+    bringup, sustained = receipts[:6], receipts[6:]
+    assert all('bringup' in name and 'graph_execution' not in row for name, row in bringup)
+    assert [row['graph_execution']['delta']['bound.hits'] for _, row in sustained] == [10 * n for n in finite.GRID]
+    assert sustained[0][1]['graph_execution']['before_requests']['counters']['bound.hits'] == 123 + 2000 + 550
+    assert all('before optional quality' in row['graph_execution']['scope'] for _, row in sustained)
+    assert report['concurrency']['completed_cases'] == 12
