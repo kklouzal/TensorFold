@@ -1609,6 +1609,23 @@ Sustained-case counter snapshots exclude constructor, bringup and explicit tool
 warmups, and precede any optional quality phase; whole-sequence counters label
 all included requests. No device queries or new runtime counters are added.
 
+Optional `--fast-grid --concurrency-grid --tokens 512` selects a separate
+operational screen. One real two-token Notebook MTP bringup precedes all six
+concurrency points; it does not run the short bringup matrix or per-case warmups.
+Each point allows30 seconds for readiness, then targets10 seconds of correlated
+all-request decode. Natural EOS or the512-token output bound can shorten the
+window and is labelled as such. The coordinator freezes the measured interval
+before requesting cancellation. Late committed chunks remain in raw receipts
+but are excluded from window TPS; cancellation and drain latency are separate.
+Every worker, request permit and backend owner must retire before the next point.
+Intentional cancellation is not completed answer generation or quality success.
+Zero-output and no-overlap measurements remain failed screens, and all six
+points are attempted unless a runtime failure makes continuation unsafe. The
+unchanged full mode remains available for sustained qualification. Independent
+quality spotchecks run only after the screen in the same engine. Baseline and
+candidate must use the same fast protocol, prompts, window and output bounds;
+this screen does not qualify the85-token/s or600-aggregate-token/s objectives.
+
 Optional `--quality-spotchecks` requires the concurrency grid and a funded output
 allowance of at least320 tokens. After the unchanged timed grid, it runs six
 fixed math, retrieval, logic, instruction, JSON and code-output checks in the

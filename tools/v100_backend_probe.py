@@ -127,6 +127,8 @@ def arguments(argv=None):
                         help="private cached FAMILY trial: require cold first MTP and maximal legal prefix on later identical prompts")
     parser.add_argument("--concurrency-grid", action="store_true",
                         help="finite bursts at1,2,4,8,16,24; sustained replies require>=256 committed tokens each plus positive correlated decode overlap; EOS unchanged")
+    parser.add_argument("--fast-grid", action="store_true",
+                        help="operational screen: one2-tokenNotebookbringup, allsixNs,30sreadiness/target10sdecode each, expectedcancel+drain; requiresgrid and320or512outputcells; notfullqualification")
     parser.add_argument("--quality-spotchecks", action="store_true",
                         help="after the unchanged concurrency grid, run six fixed independent answer/format checks with320-token allowances; requires grid and --tokens>=320")
     parser.add_argument("--thinking", action="store_true", help="pass enable_thinking=True to the unchanged target template")
@@ -144,6 +146,8 @@ def arguments(argv=None):
         parser.error("--repetitions must be 1..16")
     if args.concurrency_grid and (args.tokens < 256 or args.expect_prefix_reuse):
         parser.error("--concurrency-grid requires --tokens256..512 and cannot impose sequential prefix-reuse assertions")
+    if args.fast_grid and (not args.concurrency_grid or args.tokens not in (320, 512) or args.serial_reference or args.repetitions != 1):
+        parser.error("--fast-grid requires --concurrency-grid, --tokens320or512, --repetitions1 and MTPonly")
     if args.quality_spotchecks and (not args.concurrency_grid or args.tokens < 320):
         parser.error("--quality-spotchecks requires --concurrency-grid and --tokens>=320 for the declared caller funding")
     if args.expect_prefix_reuse and args.repetitions < 2:
@@ -491,6 +495,77 @@ def run_quality_spotchecks(engine, tokenizer, args, report, limit, prepared, qua
         raise ValueError("fixed quality spot checks failed; all raw answers and differences were retained")
 
 
+
+def run_fast_grid(engine, tokenizer, args, report, limit, pool, prepared, finite, vocab):
+    """Screen all six offered Ns; independent answer quality stays separate."""
+    from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.cuda.cohort import notify_failure
+    from tensorfold.token_metadata import decode_presentation
+
+    _label, tokens, prompt = next(row for row in prepared if row[0] == "sustained")
+    report["fast_screen"] = {"protocol": "fast-grid-v1", "readiness_cap_seconds": finite.FAST_READY_SECONDS,
+        "target_decode_seconds": finite.FAST_DECODE_SECONDS, "output_cell_bound": args.tokens,
+        "completed_cohorts": 0, "invalid_measurements": 0,
+        "full_qualification": False, "quality_assessed": False,
+        "prompt_sha256": hashlib.sha256(prompt["rendered"].encode("utf-8")).hexdigest(),
+        "schedule": "one Notebook2-tokenMTP bringup, then1/2/4/8/16/24; no per-cohort warmup/shortbringupsweep; optional quality onlyafterall6"}
+    warmup = {}
+    generate_reply(engine, tokenizer, tokens, count=2, draft=True, limit=limit, result=warmup)
+    warmup["measurement_role"] = "one cheap real NotebookMTP readiness/prefill; not answerquality or timed decode"
+    write_report(args.out / "fast-notebook-bringup.json", warmup, allowance=MAX_RECEIPT_BYTES)
+    report["fast_screen"]["bringup"] = {"stats": warmup["stats"],
+        "first_committed_token_elapsed_ns": warmup["first_committed_token_elapsed_ns"],
+        "prompt_tokens": len(tokens), "committed_tokens": len(warmup["token_ids"])}
+    del warmup
+
+    def invoke(collector, progress):
+        stats = engine.generate(tokens, args.tokens, Sampling(seed=17, temperature=0, top_k=0, top_p=1),
+                                collector, draft=True, stop_eos=True, progress=progress)
+        natural = ("natural_eos" if collector.ids and collector.ids[-1] in getattr(engine, "eos", ()) else
+                   "output_cap" if len(collector.ids) == args.tokens else "backend_return")
+        return {"stats": stats, "text": decode_presentation(tokenizer, collector.ids), "natural_stop": natural}
+
+    def observe():
+        _, entries = engine.scheduler.waiting.requests(include_reserved=True)
+        streams = engine.retention_catalog._cohort.multi.streams
+        for entry in entries:
+            stream = entry[2][0]
+            callback = stream.delivery_owner.emit
+            if type(callback) is not finite.ScreenTokens:
+                raise ValueError("fast native output requires its actual owned ScreenTokens callback")
+            callback.bind_native_stream(stream)
+        record = engine.scheduler.queue_record()
+        return {"states": tuple((entry[1], entry[2][0].admission_status.phase) for entry in entries),
+            "decoding": finite.decoding_tickets(entries, streams),
+            "nonmonotone_decode_states": tuple(entry[1] for entry in entries
+                if (stream := entry[2][0]).started > 0 and stream.committed_output_tokens > 0 and not stream.done
+                and (stream.waiting or streams.get(stream.sid) is not stream)),
+            "outcomes": record["outcomes"], "charged_live_input_bytes": record["charged_live_input_bytes"],
+            "backend_live": engine.retention_catalog._cohort.multi.live(),
+            "backend_retiring": len(engine.scheduler._retiring), "backend_mailboxes": len(engine.scheduler._request_boxes)}
+
+    for count in finite.GRID:
+        graph_before = graph_execution_snapshot(engine)
+        def write_case(result):
+            graph_after = graph_execution_snapshot(engine)
+            result.update(workload="fast-sustained", prompt=prompt, max_tokens=args.tokens, stop_eos=True,
+                profile=engine.sm70_profile, draft=True,
+                graph_execution={"before_requests": graph_before, "after_requests": graph_after,
+                    "delta": graph_execution_delta(graph_before, graph_after),
+                    "scope": "this screen cohort including readiness and measured decode/cancel/drain; excludesconstructor/cheapbringup/otherNs/quality; countersnotdevicetiming"})
+            write_report(args.out / f"fast-mtp-target-n{count:02d}.json", result,
+                         allowance=finite.MAXIMUM * MAX_RECEIPT_BYTES)
+        summary = finite.run_screen_case(pool, count=count, maximum_tokens=args.tokens, vocab=vocab,
+            limit=limit, invoke=invoke, observe=observe, write=write_case, timeout=args.timeout_seconds,
+            failure_notify=notify_failure)
+        report["fast_screen"]["completed_cohorts"] += 1
+        report["fast_screen"]["invalid_measurements"] += not summary["passed"]
+        report["fast_screen"]["last_case"] = summary
+        report["concurrency"]["completed_cases"] += 1
+        write_report(args.out / "progress.json", report, allowance=LEADER_RECEIPT_BYTES)
+    report["fast_screen"]["all_required_N_attempted"] = report["fast_screen"]["completed_cohorts"] == len(finite.GRID)
+    return report["fast_screen"]["invalid_measurements"]
+
 def run_concurrency_leader(engine, tokenizer, args, report):
     """One physical envelope and real logical cap; no fake HTTP or runtime patch."""
     from types import SimpleNamespace
@@ -537,7 +612,8 @@ def run_concurrency_leader(engine, tokenizer, args, report):
         retained_results=finite.MAXIMUM, max_source_bytes=MAX_PROMPT_BYTES + MAX_RENDERED_BYTES,
         max_receipt_bytes=(finite.MAXIMUM + 1) * MAX_RECEIPT_BYTES,
         max_concurrent_requests=finite.MAXIMUM, worker_stack_bytes=finite.STACK_BYTES,
-        control_payload_bytes=finite.control_payload_bytes(args.tokens) + quality_control)
+        control_payload_bytes=finite.control_payload_bytes(args.tokens) + quality_control
+            + (finite.screen_control_payload_bytes() if getattr(args, "fast_grid", False) else 0))
     limit, pool = RequestLimit(finite.MAXIMUM), None
     primary, failures = None, [None, None]
     report["concurrency"] = {"grid": finite.GRID, "caller": caller.__dict__,
@@ -567,47 +643,53 @@ def run_concurrency_leader(engine, tokenizer, args, report):
                     "outcomes": record["outcomes"],
                     "charged_live_input_bytes": record["charged_live_input_bytes"]}
 
-        for iteration in range(1, args.repetitions + 1):
-            for label, tokens, prompt in prepared:
-                for draft in ((True, False) if args.serial_reference else (True,)):
-                    mode = "mtp-target" if draft else "serial-reference"
-                    # Real one-token warmup, durably reported then retired. All
-                    # variants use the same prompt/cache schedule; no cache clear.
-                    warmup = {}
-                    generate_reply(engine, tokenizer, tokens, count=1, draft=draft, limit=limit, result=warmup)
-                    write_json(args.out / f"iteration-{iteration:04d}-{label}-{mode}-warmup.json", warmup)
-                    del warmup
+        invalid_screens = 0
+        if getattr(args, "fast_grid", False):
+            invalid_screens = run_fast_grid(engine, tokenizer, args, report, limit, pool, prepared, finite, vocab)
+        else:
+            for iteration in range(1, args.repetitions + 1):
+                for label, tokens, prompt in prepared:
+                    for draft in ((True, False) if args.serial_reference else (True,)):
+                        mode = "mtp-target" if draft else "serial-reference"
+                        # Real one-token warmup, durably reported then retired. All
+                        # variants use the same prompt/cache schedule; no cache clear.
+                        warmup = {}
+                        generate_reply(engine, tokenizer, tokens, count=1, draft=draft, limit=limit, result=warmup)
+                        write_json(args.out / f"iteration-{iteration:04d}-{label}-{mode}-warmup.json", warmup)
+                        del warmup
 
-                    def invoke(collector, progress):
-                        stats = engine.generate(tokens, args.tokens,
-                            Sampling(seed=17, temperature=0, top_k=0, top_p=1), collector,
-                            draft=draft, stop_eos=True, progress=progress)
-                        return {"stats": stats, "text": decode_presentation(tokenizer, collector.ids)}
+                        def invoke(collector, progress):
+                            stats = engine.generate(tokens, args.tokens,
+                                Sampling(seed=17, temperature=0, top_k=0, top_p=1), collector,
+                                draft=draft, stop_eos=True, progress=progress)
+                            return {"stats": stats, "text": decode_presentation(tokenizer, collector.ids)}
 
-                    for count in finite.GRID:
-                        name = f"iteration-{iteration:04d}-{label}-{mode}-n{count:02d}"
-                        graph_before = graph_execution_snapshot(engine) if label == "sustained" else None
-                        def write_case(result):
-                            if label == "sustained":
-                                graph_after = graph_execution_snapshot(engine)
-                                result["graph_execution"] = {"before_requests": graph_before,
-                                    "after_requests": graph_after,
-                                    "delta": graph_execution_delta(graph_before, graph_after),
-                                    "scope": "this measured sustained burst only; after constructor, bringup and explicit tool warmup; before optional quality and cleanup; host counters only"}
-                            result.update(iteration=iteration, workload=label, draft=draft,
-                                prompt=prompt, stop_eos=True, max_tokens=args.tokens,
-                                profile=engine.sm70_profile)
-                            write_report(args.out / (name + ".json"), result,
-                                         allowance=finite.MAXIMUM * MAX_RECEIPT_BYTES)
-                        summary = finite.run_case(pool, count=count, maximum_tokens=args.tokens, vocab=vocab,
-                            limit=limit, invoke=invoke, observe=observe, write=write_case,
-                            minimum_tokens=1 if label == "bringup" else finite.SUSTAINED_MINIMUM,
-                            timeout=args.timeout_seconds)
-                        report["concurrency"]["completed_cases"] += 1
-                        report["concurrency"]["last_case"] = {"name": name, **summary}
-                        write_report(args.out / "progress.json", report, allowance=LEADER_RECEIPT_BYTES)
+                        for count in finite.GRID:
+                            name = f"iteration-{iteration:04d}-{label}-{mode}-n{count:02d}"
+                            graph_before = graph_execution_snapshot(engine) if label == "sustained" else None
+                            def write_case(result):
+                                if label == "sustained":
+                                    graph_after = graph_execution_snapshot(engine)
+                                    result["graph_execution"] = {"before_requests": graph_before,
+                                        "after_requests": graph_after,
+                                        "delta": graph_execution_delta(graph_before, graph_after),
+                                        "scope": "this measured sustained burst only; after constructor, bringup and explicit tool warmup; before optional quality and cleanup; host counters only"}
+                                result.update(iteration=iteration, workload=label, draft=draft,
+                                    prompt=prompt, stop_eos=True, max_tokens=args.tokens,
+                                    profile=engine.sm70_profile)
+                                write_report(args.out / (name + ".json"), result,
+                                             allowance=finite.MAXIMUM * MAX_RECEIPT_BYTES)
+                            summary = finite.run_case(pool, count=count, maximum_tokens=args.tokens, vocab=vocab,
+                                limit=limit, invoke=invoke, observe=observe, write=write_case,
+                                minimum_tokens=1 if label == "bringup" else finite.SUSTAINED_MINIMUM,
+                                timeout=args.timeout_seconds)
+                            report["concurrency"]["completed_cases"] += 1
+                            report["concurrency"]["last_case"] = {"name": name, **summary}
+                            write_report(args.out / "progress.json", report, allowance=LEADER_RECEIPT_BYTES)
         if quality is not None:
             run_quality_spotchecks(engine, tokenizer, args, report, limit, quality_prepared, quality)
+        if invalid_screens:
+            raise ValueError("fast screen has zero/no-overlap/readiness failures; allsixNs and independentquality were attempted")
     except BaseException as error:
         primary = error
     finally:
@@ -741,6 +823,8 @@ def launch(args, argv):
             "max_receipt_bytes": (25 if args.concurrency_grid else 1) * MAX_RECEIPT_BYTES,
             "concurrency_grid": [1, 2, 4, 8, 16, 24] if args.concurrency_grid else None,
             "quality_spotchecks": getattr(args, "quality_spotchecks", False),
+            "fast_grid": getattr(args, "fast_grid", False),
+            "measurement_role": "fastoperational-screen-notfullqualification" if getattr(args, "fast_grid", False) else "fullfinitequalification-protocol",
             "requested_sm70_profile": args.requested_sm70_profile,
             "instrumented_departure_grace_seconds": args.instrumented_departure_grace_seconds,
             "repetitions": args.repetitions,
