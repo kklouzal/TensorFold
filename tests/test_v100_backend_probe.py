@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 import signal
 import time
+import weakref
 from types import SimpleNamespace
 
 import pytest
@@ -25,6 +26,7 @@ def test_default_arguments_preserve_native_profile_without_override_flags(tmp_pa
     monkeypatch.delenv("TENSORFOLD_SM70_PROFILE", raising=False)
     args = probe.arguments(cli(tmp_path))
     assert args.tokens == 128 and args.prompt == probe.DEFAULT_PROMPT and not args.serial_reference
+    assert args.repetitions == 1 and args.instrumented_departure_grace_seconds is None
     assert args.devices == [str(index) for index in range(8)]
     assert args.requested_sm70_profile is None and "TENSORFOLD_SM70_PROFILE" not in os.environ
     assert not hasattr(args, "context") and not hasattr(args, "precision") and not hasattr(args, "position_profile_manifest")
@@ -39,6 +41,9 @@ def test_default_arguments_preserve_native_profile_without_override_flags(tmp_pa
     ["--master-port", "0"], ["--rank", "8"], ["--base-commit", "dirty"],
     ["--image-identity", "not-an-image"], ["--context", "4096"], ["--no-drafts"],
     ["--precision", "full"], ["--vram-experts", "1"], ["--position-profile-manifest", "override.json"],
+    ["--repetitions", "0"], ["--repetitions", "17"], ["--repetitions", "1.5"],
+    ["--instrumented-departure-grace-seconds", "nan"], ["--instrumented-departure-grace-seconds", "0"],
+    ["--instrumented-departure-grace-seconds", "1801"],
 ])
 def test_invalid_or_contract_changing_arguments_refuse_before_worker_admission(tmp_path, extra):
     with pytest.raises(SystemExit):
@@ -271,7 +276,7 @@ def test_worker_rendering_fault_preserves_primary_and_unconditionally_closes_eng
     read_fd, write_fd = os.pipe()
     monkeypatch.setenv(FAILURE_FD_ENV, str(write_fd))
     args = SimpleNamespace(rank=1, wheel=tmp_path, model=tmp_path, mtp=tmp_path,
-                           master_port=29607, tokens=128, out=tmp_path, requested_sm70_profile=None)
+                           master_port=29607, tokens=128, out=tmp_path, requested_sm70_profile=None, repetitions=1)
     try:
         with pytest.raises(ValueError) as caught:
             probe.worker(args)
@@ -560,3 +565,143 @@ def test_nvtx_range_includes_final_decode_failure_and_unwinds(tokenizer, nvtx_ma
         probe.generate_reply(engine, tokenizer, [0], count=3, draft=True, limit=limit, result={})
     assert caught.value is primary and engine.callback.closed and limit.used == 0
     assert nvtx_markers.events == [("push", "tensorfold/mtp-target"), ("pop", None)]
+
+
+def test_repetitions_use_one_engine_owner_and_release_previous_reply_pair(tmp_path, tokenizer, nvtx_markers):
+    import json
+
+    args = SimpleNamespace(repetitions=3, serial_reference=True, tokens=3, out=tmp_path)
+    report = {"replies": []}
+    limit = RequestLimit(1)
+    lifetimes = []
+
+    class Stats(dict):
+        pass
+
+    class Repeated(Generation):
+        def generate(self, *arguments, **kwargs):
+            iteration = report["iteration"]
+            assert len(report["replies"]) <= 2
+            assert all(row["iteration"] == iteration for row in report["replies"])
+            if kwargs["draft"]:
+                assert all(reference() is None for reference in lifetimes)
+            stats = Stats(super().generate(*arguments, **kwargs))
+            stats["cached"] = 0 if iteration == 1 else 1
+            lifetimes.append(weakref.ref(stats))
+            return stats
+
+    engine = Repeated(limit)
+    probe.repeat_replies(engine, tokenizer, [0], args, report, limit)
+    assert engine.calls == [True, False] * 3 and limit.used == 0
+    assert report["completed_iterations"] == 3 and len(report["replies"]) == 2
+    assert sum(reference() is not None for reference in lifetimes) == 2
+    files = sorted(tmp_path.glob("iteration-*.json"))
+    assert len(files) == 6 and not (tmp_path / "mtp-target.json").exists()
+    for path in files:
+        row = json.loads(path.read_text())
+        assert row["complete"] and row["token_ids"] == [1]
+        assert row["stats"]["cached"] == (0 if row["iteration"] == 1 else 1)
+
+
+def test_default_repetition_keeps_existing_reply_filenames(tmp_path, tokenizer, nvtx_markers):
+    args = SimpleNamespace(repetitions=1, serial_reference=True, tokens=3, out=tmp_path)
+    report = {"replies": []}
+    limit = RequestLimit(1)
+    probe.repeat_replies(Generation(limit), tokenizer, [0], args, report, limit)
+    assert (tmp_path / "mtp-target.json").exists() and (tmp_path / "serial-reference.json").exists()
+    assert not list(tmp_path.glob("iteration-*.json"))
+    assert report["completed_iterations"] == 1
+
+
+@pytest.mark.parametrize("write_failure", [False, True])
+def test_later_iteration_failure_preserves_prior_outputs_partial_ids_and_original_error(
+        tmp_path, tokenizer, nvtx_markers, monkeypatch, write_failure):
+    import json
+
+    args = SimpleNamespace(repetitions=3, serial_reference=True, tokens=3, out=tmp_path)
+    report = {"replies": []}
+    limit = RequestLimit(1)
+    primary, secondary = ValueError("second iteration generation failed"), OSError("failed row write")
+
+    class Failing(Generation):
+        def generate(self, *arguments, **kwargs):
+            if report["iteration"] == 2:
+                self.failure = primary
+            return super().generate(*arguments, **kwargs)
+
+    if write_failure:
+        actual_write = probe.write_json
+
+        def failed_write(path, value):
+            if Path(path).name == "iteration-0002-mtp-target.json":
+                raise secondary
+            return actual_write(path, value)
+
+        monkeypatch.setattr(probe, "write_json", failed_write)
+    engine = Failing(limit)
+    with pytest.raises(ValueError) as caught:
+        probe.repeat_replies(engine, tokenizer, [0], args, report, limit)
+    assert caught.value is primary and limit.used == 0 and engine.callback.closed
+    assert report["completed_iterations"] == 1 and report["iteration"] == 2
+    assert report["replies"][0]["token_ids"] == [1] and not report["replies"][0]["complete"]
+    assert (tmp_path / "iteration-0001-mtp-target.json").exists()
+    assert (tmp_path / "iteration-0001-serial-reference.json").exists()
+    assert not (tmp_path / "iteration-0002-serial-reference.json").exists()
+    if write_failure:
+        assert retained_failure(primary, secondary)
+    else:
+        row = json.loads((tmp_path / "iteration-0002-mtp-target.json").read_text())
+        assert row["iteration"] == 2 and row["token_ids"] == [1] and not row["complete"]
+
+
+def test_legacy_installed_supervisor_keeps_default_call_without_new_keywords(tmp_path, monkeypatch):
+    import json
+    from tensorfold.cuda import expert_launch
+
+    args = probe.arguments(cli(tmp_path))
+    calls = []
+
+    def legacy(commands, environments, *, grace, failure_probe, pass_fds):
+        calls.append((len(commands), grace))
+        return 0
+
+    monkeypatch.setattr(probe, "installed_identity", lambda _wheel: {})
+    monkeypatch.setattr(expert_launch, "supervise", legacy)
+    assert probe.launch(args, []) == 0 and calls == [(8, 30)]
+    record = json.loads((args.out / "launch-final.json").read_text())
+    assert record["supervision"]["available"] is False
+
+
+def test_requested_departure_override_requires_installed_capability_before_launch(tmp_path, monkeypatch):
+    from tensorfold.cuda import expert_launch
+
+    args = probe.arguments([*cli(tmp_path), "--instrumented-departure-grace-seconds", "120"])
+
+    def legacy(*_args, **_kwargs):
+        pytest.fail("unsupported override reached process launch")
+
+    monkeypatch.setattr(expert_launch, "supervise", legacy)
+    with pytest.raises(ValueError, match="does not support instrumented departure grace"):
+        probe.launch(args, [])
+    assert not args.out.exists()
+
+
+def test_instrumented_departure_and_exit_record_map_to_rank_order(tmp_path, monkeypatch):
+    import json
+    from tensorfold.cuda import expert_launch
+
+    args = probe.arguments([*cli(tmp_path), "--instrumented-departure-grace-seconds", "120"])
+
+    def observed(_commands, _environments, *, grace, failure_probe, pass_fds, departure_grace=None, on_exit=None):
+        assert grace == 30 and departure_grace == 120
+        on_exit({"reason": "all-children-exited-zero", "children": [{"command_index": 0, "pid": 42,
+                  "pre_containment_status": 0, "final_returncode": 0}]})
+        return 0
+
+    monkeypatch.setattr(probe, "installed_identity", lambda _wheel: {})
+    monkeypatch.setattr(expert_launch, "supervise", observed)
+    assert probe.launch(args, []) == 0
+    record = json.loads((args.out / "launch-final.json").read_text())
+    assert record["supervision"]["available"] is True
+    assert record["supervision"]["rank_order"] == [1, 2, 3, 4, 5, 6, 7, 0]
+    assert record["supervision"]["children"][0]["pid"] == 42

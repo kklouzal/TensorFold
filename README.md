@@ -1536,6 +1536,23 @@ versioned schema. Wheel `f17b5d8c` passed 182 focused normal-installed resource 
 FIFO checks. Actual target admission/output, the complete HTTP envelope, model
 quality, capacity and performance remain separate pending qualification gates.
 
+The finite diagnostic tool `tools/v100_backend_probe.py` records worker process
+IDs. When the installed supervisor exposes exit reporting, its final receipt
+includes the reason, observed child statuses and final return codes; older
+reviewed wheels explicitly report that this evidence is unavailable. Its natural
+departure and failure teardown allowances default to 30 seconds. For an explicitly instrumented trial,
+`--instrumented-departure-grace-seconds SECONDS` changes only the natural exit
+wait, up to the configured overall process deadline. Nonzero children, fatal
+notifications, explicit stops and the 30-second failure teardown retain their
+existing behavior. Successful process retirement and complete profiler capture
+remain separate verification gates.
+
+`--repetitions N` accepts 1 through 16 and runs the same prompt and selected
+MTP/serial pair using one loaded engine and admission. The default remains one run with the existing
+filenames. Repeated runs write unique iteration files and retain only the
+current reply pair. Cache state is preserved; each reply's existing cached-token
+statistics distinguish cold and reused prompts for subsequent analysis.
+
 Adaptive startup drains the synthetic warmup request through every bounded
 prefill pass and its decode before publishing FIFO admission. Its temporary
 prompt/order owners retire before that policy transition; warmup errors stop

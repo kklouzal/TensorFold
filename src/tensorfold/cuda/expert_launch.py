@@ -92,14 +92,32 @@ def _retire(process, deadline):
         time.sleep(.01)
 
 
-def supervise(commands, environments, *, grace=10.0, failure_probe=None, pass_fds=(), stop_on_departure=False):
-    """Exclusively own direct-child waits and Linux rank sessions through group retirement."""
+def supervise(commands, environments, *, grace=10.0, failure_probe=None, pass_fds=(), stop_on_departure=False,
+              departure_grace=None, on_exit=None):
+    """Own rank sessions through retirement, then optionally publish one exit record.
+
+    ``departure_grace`` changes only the natural-exit wait after a first child
+    departure. Unset preserves the existing ``grace`` policy; nonzero children,
+    failure probes and containment still use their existing failure behavior.
+    ``on_exit`` runs after every independent retirement attempt. Its exception
+    is propagated, retaining any earlier primary/retirement failure.
+    """
     if len(commands) != len(environments) or not commands:
         raise ValueError("one environment per expert-rank command is required")
     if isinstance(grace, bool) or not isinstance(grace, (int, float)) or not math.isfinite(grace) or grace < 0:
         raise ValueError("expert rank retirement grace must be a finite nonnegative duration")
     if failure_probe is not None and not callable(failure_probe):
         raise ValueError("rank failure probe must be callable")
+    if departure_grace is not None:
+        try:
+            valid_departure = (type(departure_grace) in (int, float)
+                               and math.isfinite(departure_grace) and departure_grace >= 0)
+        except OverflowError:
+            valid_departure = False
+        if not valid_departure:
+            raise ValueError("rank departure grace must be a finite nonnegative duration")
+    if on_exit is not None and not callable(on_exit):
+        raise ValueError("rank exit reporter must be callable")
     if type(stop_on_departure) is not bool:
         raise ValueError("rank departure policy must be a boolean")
     if (not isinstance(pass_fds, tuple) or any(type(fd) is not int or fd < 0 for fd in pass_fds)
@@ -112,14 +130,21 @@ def supervise(commands, environments, *, grace=10.0, failure_probe=None, pass_fd
     # Allocate ownership and diagnostic slots before any child exists. Publishing
     # a returned Popen or a cleanup failure must not need list growth.
     children = [None] * len(commands)
-    cleanup_errors = [None] * (3 * len(commands))
+    cleanup_errors = [None] * (3 * len(commands) + (on_exit is not None))
     unresolved = [False] * len(commands)
     primary, result = None, 1
+    natural_grace = grace if departure_grace is None else departure_grace
+    before_status = [None] * len(commands) if on_exit is not None else None
+    before_observed = [False] * len(commands) if on_exit is not None else None
+    started = time.monotonic() if on_exit is not None else None
+    first_exit_elapsed = decision_statuses = None
+    reason = "supervision-error"
 
     def retain_unresolved(index, child, failure):
         # Publish the authoritative failure first. If diagnostic construction
         # fails, that exception's retained frame owns child/failure/slots; the
         # outer loop still retires every independent rank.
+        unresolved[index] = True
         cleanup_errors[3 * index + 1] = failure
         try:
             cleanup_errors[3 * index + 1] = UnresolvedRankSessions((child,), failure)
@@ -134,20 +159,29 @@ def supervise(commands, environments, *, grace=10.0, failure_probe=None, pass_fd
         while True:
             if failure_probe is not None and failure_probe():
                 result = 1
+                reason = "failure-probe"
                 break
             statuses = [_exited(child) for child in children]
+            if on_exit is not None:
+                decision_statuses = statuses
+                if first_exit_elapsed is None and any(code is not None for code in statuses):
+                    first_exit_elapsed = time.monotonic() - started
             if any(code not in (None, 0) for code in statuses):
                 result = abs(next(code for code in statuses if code not in (None, 0)))
+                reason = "child-nonzero-exit"
                 break
             if all(code == 0 for code in statuses):
                 result = 0
+                reason = "all-children-exited-zero"
                 break
             if stop_on_departure and any(code is not None for code in statuses):
                 result = 0
+                reason = "stop-on-departure"
                 break
             if any(code is not None for code in statuses):
-                departure = departure or time.monotonic() + grace
+                departure = departure or time.monotonic() + natural_grace
                 if time.monotonic() >= departure:
+                    reason = "departure-grace-expired"
                     break  # a successful follower departure cannot leave an idle leader indefinitely
             time.sleep(.05)
     except BaseException as error:  # noqa: BLE001 - cleanup preserves primary cancellation/spawn failure
@@ -157,7 +191,10 @@ def supervise(commands, environments, *, grace=10.0, failure_probe=None, pass_fd
         if child is None:
             continue
         try:
-            _exited(child)  # confirm our unreaped child identity before any numeric group signal
+            observed = _exited(child)  # confirm the unreaped identity before any numeric group signal
+            if before_status is not None:
+                before_status[index] = observed
+                before_observed[index] = True
         except BaseException as error:  # noqa: BLE001 - never signal an identity with unresolved ownership
             unresolved[index] = True
             retain_unresolved(index, child, error)
@@ -175,6 +212,22 @@ def supervise(commands, environments, *, grace=10.0, failure_probe=None, pass_fd
             _retire(child, deadline)
         except BaseException as error:  # noqa: BLE001 - retain child owners and surface all cleanup failures
             retain_unresolved(index, child, error)
+    if on_exit is not None:
+        try:
+            record = {"schema": "tensorfold.rank-supervision-exit-v1", "reason": reason,
+                "result": result, "first_exit_elapsed_s": first_exit_elapsed,
+                "elapsed_s": time.monotonic() - started,
+                "departure_grace_s": natural_grace, "retirement_grace_s": grace,
+                "status_scope": "owned wait observations; per-child pre-containment sample precedes its signal",
+                "children": [{"command_index": index, "pid": None if child is None else child.pid,
+                    "decision_status": None if decision_statuses is None else decision_statuses[index],
+                    "pre_containment_observed": before_observed[index],
+                    "pre_containment_status": before_status[index],
+                    "final_returncode": None if child is None else child.returncode,
+                    "unresolved": unresolved[index]} for index, child in enumerate(children)]}
+            on_exit(record)
+        except BaseException as error:
+            cleanup_errors[-1] = error
     try:
         errors = [error for error in cleanup_errors if error is not None]
     except BaseException as diagnostic:  # noqa: BLE001 - all retirements attempted; retain original statuses in frame

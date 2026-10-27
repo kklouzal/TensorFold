@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import importlib.metadata
+import inspect
 import json
 import math
 import os
@@ -50,6 +51,7 @@ SOURCE_FILES = (
     "tensorfold/families/qwen4_exp/cuda/engine.py",
     "tensorfold/families/qwen4_exp/cuda/retention_resources.py",
     "tensorfold/families/qwen4_exp/cuda/tp_scheduler.py",
+    "tensorfold/cuda/expert_launch.py",
     "tensorfold/cuda/scheduler.py", "tensorfold/server/request_limits.py",
     "tensorfold/token_metadata.py", "tensorfold/cuda/chat_template.py",
 )
@@ -109,8 +111,12 @@ def arguments(argv=None):
     parser.add_argument("--gpus", default="0,1,2,3,4,5,6,7")
     parser.add_argument("--master-port", type=int, default=29607)
     parser.add_argument("--timeout-seconds", type=float, default=1800)
+    parser.add_argument("--instrumented-departure-grace-seconds", type=float,
+                        help="explicit profiler trial only: extend the natural child-exit wait, bounded by --timeout-seconds; default30s, failure teardown stays30s")
     parser.add_argument("--prompt", default=DEFAULT_PROMPT)
     parser.add_argument("--tokens", type=int, default=128, help="bounded reply allowance, 1..512")
+    parser.add_argument("--repetitions", type=int, default=1,
+                        help="1..16 sequential repetitions using one loaded engine/admission; cache state is retained and reported")
     parser.add_argument("--thinking", action="store_true", help="pass enable_thinking=True to the unchanged target template")
     parser.add_argument("--serial-reference", action="store_true", help="also run a separately labeled draft=False reply with MTP loaded")
     parser.add_argument("--rank", type=int, help=argparse.SUPPRESS)
@@ -122,9 +128,14 @@ def arguments(argv=None):
     if (not 1 <= args.tokens <= MAX_TOKENS or not args.prompt
             or len(args.prompt.encode("utf-8")) > MAX_PROMPT_BYTES):
         parser.error("a nonempty prompt of at most4096 UTF8 bytes and 1..512 reply tokens are required")
+    if not 1 <= args.repetitions <= 16:
+        parser.error("--repetitions must be 1..16")
     if (not 1 <= args.master_port <= 65535 or not math.isfinite(args.timeout_seconds)
             or args.timeout_seconds <= 0 or args.rank is not None and args.rank not in range(WORLD)):
         parser.error("invalid rendezvous port, finite positive timeout, or rank")
+    departure = args.instrumented_departure_grace_seconds
+    if departure is not None and (not math.isfinite(departure) or not 0 < departure <= args.timeout_seconds):
+        parser.error("instrumented departure grace must be positive, finite and no larger than --timeout-seconds")
     args.devices = args.gpus.split(",")
     if (len(args.devices) != WORLD or len(set(args.devices)) != WORLD
             or any(not value or value != value.strip() for value in args.devices)):
@@ -288,6 +299,37 @@ def generate_reply(engine, tokenizer, tokens, *, count, draft, limit, result):
         collector.close()
 
 
+def repeat_replies(engine, tokenizer, tokens, args, report, limit):
+    """Run bounded sequential jobs under one already admitted engine/owner cap."""
+    report["completed_iterations"] = 0
+    for iteration in range(1, args.repetitions + 1):
+        # Only the current pair stays live. Every previous reply is already
+        # durable; no summary/list of prior pairs grows with repetitions.
+        report["replies"].clear()
+        report["iteration"] = iteration
+        for draft in ((True, False) if args.serial_reference else (True,)):
+            row = {"iteration": iteration}
+            report["replies"].append(row)
+            label = "mtp-target" if draft else "serial-reference"
+            name = label if args.repetitions == 1 else f"iteration-{iteration:04d}-{label}"
+            primary, diagnostics = None, [None]
+            try:
+                generate_reply(engine, tokenizer, tokens, count=args.tokens, draft=draft, limit=limit, result=row)
+            except BaseException as error:
+                primary = error
+            try:
+                write_json(args.out / (name + ".json"), row)
+            except BaseException as error:
+                diagnostics[0] = error
+            finish_failures(primary, diagnostics)
+            write_report(args.out / "progress.json", report, allowance=LEADER_RECEIPT_BYTES)
+            print(json.dumps({"event": "reply", **row}, ensure_ascii=False, allow_nan=False), flush=True)
+            if not row["text"].strip():
+                raise ValueError("finite diagnostic completed without visible text; raw IDs/stats were preserved")
+            row = None  # Retire the last alias before the next pair clears its list.
+        report["completed_iterations"] = iteration
+
+
 def run_leader(engine, tokenizer, args, report):
     from tensorfold.families.qwen4_exp.cuda.retention_resources import (
         FiniteBackendCaller, finalize_backend_resources,
@@ -308,15 +350,7 @@ def run_leader(engine, tokenizer, args, report):
             tokenizer=tokenizer, scheduler=engine.scheduler, request_limit=limit, caller=caller)
         write_report(args.out / "admitted.json", report, allowance=LEADER_RECEIPT_BYTES)
         engine.scheduler.configure_requests(limit)
-        for draft in ((True, False) if args.serial_reference else (True,)):
-            row = {}
-            report["replies"].append(row)
-            generate_reply(engine, tokenizer, tokens, count=args.tokens, draft=draft, limit=limit, result=row)
-            write_report(args.out / "progress.json", report, allowance=LEADER_RECEIPT_BYTES)
-            write_json(args.out / (row["label"] + ".json"), row)
-            print(json.dumps({"event": "reply", **row}, ensure_ascii=False, allow_nan=False), flush=True)
-            if not row["text"].strip():
-                raise ValueError("finite diagnostic completed without visible text; raw IDs/stats were preserved")
+        repeat_replies(engine, tokenizer, tokens, args, report, limit)
     finally:
         limit.close()
 
@@ -334,6 +368,9 @@ def worker(args):
         raise ValueError("probe workers require their supervised process-lifetime failure pipe")
     report = {"schema": "tensorfold.v100-finite-backend-probe-v1", "rank": args.rank,
               "argv": sys.argv, "complete": False, "replies": [],
+              "repetitions": args.repetitions,
+              "process_identity": {"pid": os.getpid(), "parent_pid": os.getppid(),
+                                   "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES")},
               "qualification": "finite-backend-diagnostic-only; HTTP/design qualification remains open"}
     engine, primary, failures = None, None, [None] * 3
     allowance = FOLLOWER_RECEIPT_BYTES if args.rank else LEADER_RECEIPT_BYTES
@@ -388,6 +425,11 @@ def launch(args, argv):
     from tensorfold.cuda.cohort import FAILURE_FD_ENV
     from tensorfold.cuda.expert_launch import supervise
 
+    parameters = inspect.signature(supervise).parameters
+    reports_exit = "on_exit" in parameters
+    supports_departure = "departure_grace" in parameters
+    if args.instrumented_departure_grace_seconds is not None and not supports_departure:
+        raise ValueError("installed supervisor does not support instrumented departure grace; use its reviewed whole wheel")
     args.out.mkdir(mode=0o700)
     with args.source_hold.open("rb") as source:
         hold = source.read((16 << 20) + 1)
@@ -398,6 +440,7 @@ def launch(args, argv):
     primary, failures, result = None, [None] * 6, 1
     signums = (signal.SIGINT, signal.SIGTERM)
     previous = [None, None]
+    rank_order = [*range(1, WORLD), 0]
     started, stopped, expired = time.monotonic(), False, False
     first_fatal = None
     notification_count = 0
@@ -410,10 +453,22 @@ def launch(args, argv):
             "kv_dtype": "int8", "parallel": "auto", "kv_full_windows": "auto", "indexer_history": "gpu",
             "max_waiting_input_bytes": INPUT_CREDIT, "logical_callers": 1,
             "requested_sm70_profile": args.requested_sm70_profile,
+            "instrumented_departure_grace_seconds": args.instrumented_departure_grace_seconds,
+            "repetitions": args.repetitions,
             "output_queue_tokens": args.tokens, "prefill_rows_env": os.environ.get("TENSORFOLD_PREFILL_ROWS", "2048")},
         "raw_output": "worker stdout/stderr inherit the launcher's streams; capture both in the execution log",
-        "complete": False, "qualification": "supplemental finite backend; complete HTTP/design goal open"}
+        "complete": False, "qualification": "supplemental finite backend; complete HTTP/design goal open",
+        "supervision": {"available": False, "reason": "installed supervisor has no exit reporter"}}
     read_fd = write_fd = None
+
+    def record_exit(record):
+        record["available"] = True
+        record["rank_order"] = rank_order
+        receipt["supervision"] = record
+
+    supervision_options = {"on_exit": record_exit} if reports_exit else {}
+    if args.instrumented_departure_grace_seconds is not None:
+        supervision_options["departure_grace"] = args.instrumented_departure_grace_seconds
 
     def stop(_signum, _frame):
         nonlocal stopped
@@ -450,7 +505,7 @@ def launch(args, argv):
         # Install the lifetime guard before acquiring either descriptor. Even
         # diagnostic construction failure must reach both independent closes.
         read_fd, write_fd = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
-        for rank in [*range(1, WORLD), 0]:
+        for rank in rank_order:
             commands.append([sys.executable, str(Path(__file__).resolve()), *argv, "--rank", str(rank)])
             environments.append(dict(os.environ, CUDA_VISIBLE_DEVICES=args.devices[rank],
                                      **{FAILURE_FD_ENV: str(write_fd)}))
@@ -459,7 +514,8 @@ def launch(args, argv):
         for index, signum in enumerate(signums):
             previous[index] = signal.getsignal(signum)
             signal.signal(signum, stop)
-        result = supervise(commands, environments, grace=30, failure_probe=failed, pass_fds=(write_fd,))
+        result = supervise(commands, environments, grace=30, failure_probe=failed, pass_fds=(write_fd,),
+                           **supervision_options)
         failed()  # Consume a final notification after all owned rank sessions have retired.
         if result == 0 and (first_fatal is not None or stopped or expired):
             result = 1
