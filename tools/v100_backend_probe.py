@@ -113,6 +113,8 @@ def arguments(argv=None):
     parser.add_argument("--base-commit", help="optional base commit; never a claim that dirty source equals it")
     parser.add_argument("--out", type=Path, required=True, help="new private result directory")
     parser.add_argument("--gpus", default="0,1,2,3,4,5,6,7")
+    parser.add_argument("--session-ceiling", type=int, choices=(24,),
+                        help="optional explicit24-session qualification region; default retains automatic capacity")
     parser.add_argument("--master-port", type=int, default=29607)
     parser.add_argument("--timeout-seconds", type=float, default=1800)
     parser.add_argument("--instrumented-departure-grace-seconds", type=float,
@@ -123,6 +125,8 @@ def arguments(argv=None):
                         help="1..16 sequential repetitions using one loaded engine/admission; cache state is retained and reported")
     parser.add_argument("--expect-prefix-reuse", action="store_true",
                         help="private cached FAMILY trial: require cold first MTP and maximal legal prefix on later identical prompts")
+    parser.add_argument("--concurrency-grid", action="store_true",
+                        help="finite burst measurement at1,2,4,8,16,24; short bringup then >=256 committed-token overlap per request; EOS unchanged")
     parser.add_argument("--thinking", action="store_true", help="pass enable_thinking=True to the unchanged target template")
     parser.add_argument("--serial-reference", action="store_true", help="also run a separately labeled draft=False reply with MTP loaded")
     parser.add_argument("--rank", type=int, help=argparse.SUPPRESS)
@@ -136,6 +140,8 @@ def arguments(argv=None):
         parser.error("a nonempty prompt of at most4096 UTF8 bytes and 1..512 reply tokens are required")
     if not 1 <= args.repetitions <= 16:
         parser.error("--repetitions must be 1..16")
+    if args.concurrency_grid and (args.tokens < 256 or args.expect_prefix_reuse):
+        parser.error("--concurrency-grid requires --tokens256..512 and cannot impose sequential prefix-reuse assertions")
     if args.expect_prefix_reuse and args.repetitions < 2:
         parser.error("--expect-prefix-reuse requires at least2 repetitions")
     if (not 1 <= args.master_port <= 65535 or not math.isfinite(args.timeout_seconds)
@@ -253,7 +259,7 @@ def prepared_prompt(engine, tokenizer, args):
                     "rendered": rendered, "token_ids": tokens}
 
 
-def check_engine(engine):
+def check_engine(engine, *, session_ceiling=None):
     """Refuse a changed execution profile before host finalization/admission."""
     plan = engine.capacity_plan
     solved, full = plan["session_capacity"], plan["kv_full_windows"]
@@ -265,8 +271,8 @@ def check_engine(engine):
             or engine.w.meta.get("execution_dtype") != "float16"
             or (engine.w.meta["full"].hidden, engine.w.meta["full"].layers, engine.w.meta["full"].vocab)
                 != (2560, 48, 248320)
-            or solved["context_tokens"] != CONTEXT or solved["configured_ceiling"] is not None
-            or solved["resident_capacity"] < 1
+            or solved["context_tokens"] != CONTEXT or solved["configured_ceiling"] != session_ceiling
+            or (solved["resident_capacity"] < 1 if session_ceiling is None else solved["resident_capacity"] != session_ceiling)
             or solved["full_context_commitments"] != solved["resident_capacity"]
             or not full["materialized"]):
         raise ValueError("loaded engine differs from native262144/INT8/TP8/auto/Q8-MTP2 profile")
@@ -360,7 +366,12 @@ def run_leader(engine, tokenizer, args, report):
     )
     from tensorfold.server.request_limits import RequestLimit
 
-    check_engine(engine)
+    if getattr(args, "session_ceiling", None) is None:
+        check_engine(engine)
+    else:
+        check_engine(engine, session_ceiling=args.session_ceiling)
+    if getattr(args, "concurrency_grid", False):
+        return run_concurrency_leader(engine, tokenizer, args, report)
     if getattr(args, "expect_prefix_reuse", False):
         from tensorfold.families.qwen4_exp.cuda.prefix_policy import FAMILY_PREFIX_PROFILE, FAMILY_PREFIX_STATE
 
@@ -384,6 +395,113 @@ def run_leader(engine, tokenizer, args, report):
         repeat_replies(engine, tokenizer, tokens, args, report, limit)
     finally:
         limit.close()
+
+
+
+def concurrency_module():
+    if __package__:
+        from . import finite_concurrency
+    else:
+        import finite_concurrency
+    return finite_concurrency
+
+
+def waiting_input_credit(args):
+    return concurrency_module().input_credit(CONTEXT) if getattr(args, "concurrency_grid", False) else INPUT_CREDIT
+
+
+def run_concurrency_leader(engine, tokenizer, args, report):
+    """One physical envelope and real logical cap; no fake HTTP or runtime patch."""
+    from types import SimpleNamespace
+    from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.families.qwen4_exp.cuda.retention_resources import FiniteBackendCaller, finalize_backend_resources
+    from tensorfold.server.request_limits import RequestLimit
+    from tensorfold.token_metadata import decode_presentation, tokenizer_vocab_size
+
+    finite = concurrency_module()
+    prepared = []
+    for label, prompt in (("bringup", args.prompt), ("sustained", finite.SUSTAINED_PROMPT)):
+        tokens, receipt = prepared_prompt(engine, tokenizer, SimpleNamespace(prompt=prompt, thinking=args.thinking))
+        prepared.append((label, tokens, receipt))
+    caller = FiniteBackendCaller(max_input_tokens=MAX_PROMPT_TOKENS, max_output_tokens=args.tokens,
+        retained_results=finite.MAXIMUM, max_source_bytes=MAX_PROMPT_BYTES + MAX_RENDERED_BYTES,
+        max_receipt_bytes=(finite.MAXIMUM + 1) * MAX_RECEIPT_BYTES,
+        max_concurrent_requests=finite.MAXIMUM, worker_stack_bytes=finite.STACK_BYTES,
+        control_payload_bytes=finite.control_payload_bytes(args.tokens))
+    limit, pool = RequestLimit(finite.MAXIMUM), None
+    primary, failures = None, [None, None]
+    report["concurrency"] = {"grid": finite.GRID, "caller": caller.__dict__,
+        "prompts": [receipt for _, _, receipt in prepared], "completed_cases": 0,
+        "schedule": "fixed ascending N, bringup then sustained, MTP then optional serial, repeated; simultaneous burst barrier",
+        "stack_size_before_pool": __import__("threading").stack_size(),
+        "helper_sha256": digest(finite.__file__), "eos": "ordinary stop_eos=True",
+        "qualification": "measurement harness; no performance or quality qualification until matched actual runs"}
+    try:
+        report["host_admission"] = finalize_backend_resources(engine.retention_catalog,
+            tokenizer=tokenizer, scheduler=engine.scheduler, request_limit=limit, caller=caller)
+        write_report(args.out / "admitted.json", report, allowance=LEADER_RECEIPT_BYTES)
+        engine.scheduler.configure_requests(limit)
+        pool = finite.owned_pool(min(30, args.timeout_seconds))
+        vocab = tokenizer_vocab_size(tokenizer)
+
+        def observe():
+            _, entries = engine.scheduler.waiting.requests(include_reserved=True)
+            states = tuple((entry[1], entry[2][0].admission_status.phase) for entry in entries)
+            record = engine.scheduler.queue_record()
+            return {"states": states,
+                    "decoding": finite.decoding_tickets(entries, engine.retention_catalog._cohort.multi.streams),
+                    "nonmonotone_decode_states": tuple(entry[1] for entry in entries
+                        if (stream := entry[2][0]).started > 0 and stream.committed_output_tokens > 0
+                        and not stream.done and (stream.waiting
+                            or engine.retention_catalog._cohort.multi.streams.get(stream.sid) is not stream)),
+                    "outcomes": record["outcomes"],
+                    "charged_live_input_bytes": record["charged_live_input_bytes"]}
+
+        for iteration in range(1, args.repetitions + 1):
+            for label, tokens, prompt in prepared:
+                for draft in ((True, False) if args.serial_reference else (True,)):
+                    mode = "mtp-target" if draft else "serial-reference"
+                    # Real one-token warmup, durably reported then retired. All
+                    # variants use the same prompt/cache schedule; no cache clear.
+                    warmup = {}
+                    generate_reply(engine, tokenizer, tokens, count=1, draft=draft, limit=limit, result=warmup)
+                    write_json(args.out / f"iteration-{iteration:04d}-{label}-{mode}-warmup.json", warmup)
+                    del warmup
+
+                    def invoke(collector, progress):
+                        stats = engine.generate(tokens, args.tokens,
+                            Sampling(seed=17, temperature=0, top_k=0, top_p=1), collector,
+                            draft=draft, stop_eos=True, progress=progress)
+                        return {"stats": stats, "text": decode_presentation(tokenizer, collector.ids)}
+
+                    for count in finite.GRID:
+                        name = f"iteration-{iteration:04d}-{label}-{mode}-n{count:02d}"
+                        def write_case(result):
+                            result.update(iteration=iteration, workload=label, draft=draft,
+                                prompt=prompt, stop_eos=True, max_tokens=args.tokens,
+                                profile=engine.sm70_profile)
+                            write_report(args.out / (name + ".json"), result,
+                                         allowance=finite.MAXIMUM * MAX_RECEIPT_BYTES)
+                        summary = finite.run_case(pool, count=count, maximum_tokens=args.tokens, vocab=vocab,
+                            limit=limit, invoke=invoke, observe=observe, write=write_case,
+                            minimum_tokens=1 if label == "bringup" else finite.SUSTAINED_MINIMUM,
+                            timeout=args.timeout_seconds)
+                        report["concurrency"]["completed_cases"] += 1
+                        report["concurrency"]["last_case"] = {"name": name, **summary}
+                        write_report(args.out / "progress.json", report, allowance=LEADER_RECEIPT_BYTES)
+    except BaseException as error:
+        primary = error
+    finally:
+        if pool is not None:
+            try:
+                pool.shutdown(wait=True, cancel_futures=True)
+            except BaseException as error:
+                failures[0] = error
+        try:
+            limit.close()
+        except BaseException as error:
+            failures[1] = error
+    finish_failures(primary, failures)
 
 
 def worker(args):
@@ -414,8 +532,9 @@ def worker(args):
         prompt_precision.set_fp8(prompt_precision.FP8_BY_DEFAULT)
         engine = cuda_engine(model, drafter=str(companion), draft_method="mtp", tp=WORLD, rank=args.rank,
             master="127.0.0.1", master_port=args.master_port, mtp_drafts=DEPTH, mtp_confidence=CONFIDENCE,
-            context=CONTEXT, context_explicit=True, parallel="auto", kv_full_windows="auto",
-            kv_dtype="int8", indexer_history="gpu", max_waiting_input_bytes=INPUT_CREDIT,
+            context=CONTEXT, context_explicit=True,
+            parallel=getattr(args, "session_ceiling", None) or "auto", kv_full_windows="auto",
+            kv_dtype="int8", indexer_history="gpu", max_waiting_input_bytes=waiting_input_credit(args),
             output_queue_tokens=args.tokens)
         record_execution_profile(engine, report, requested=args.requested_sm70_profile)
         report["capacity_plan"] = engine.capacity_plan
@@ -479,10 +598,15 @@ def launch(args, argv):
         "image_identity": args.image_identity, "base_commit": args.base_commit,
         "source_hold": {"path": str(args.source_hold), "sha256": hashlib.sha256(hold).hexdigest()},
         "wheel": {"path": str(args.wheel), "sha256": digest(args.wheel)},
-        "tool_sha256": digest(__file__), "installed": installed_identity(args.wheel),
+        "tool_sha256": digest(__file__),
+        "concurrency_helper_sha256": digest(concurrency_module().__file__) if args.concurrency_grid else None,
+        "installed": installed_identity(args.wheel),
         "settings": {"context": CONTEXT, "tp": WORLD, "depth": DEPTH, "confidence": CONFIDENCE,
-            "kv_dtype": "int8", "parallel": "auto", "kv_full_windows": "auto", "indexer_history": "gpu",
-            "max_waiting_input_bytes": INPUT_CREDIT, "logical_callers": 1,
+            "kv_dtype": "int8", "parallel": getattr(args, "session_ceiling", None) or "auto",
+            "session_ceiling": getattr(args, "session_ceiling", None), "kv_full_windows": "auto", "indexer_history": "gpu",
+            "max_waiting_input_bytes": waiting_input_credit(args),
+            "logical_callers": 24 if args.concurrency_grid else 1,
+            "concurrency_grid": [1, 2, 4, 8, 16, 24] if args.concurrency_grid else None,
             "requested_sm70_profile": args.requested_sm70_profile,
             "instrumented_departure_grace_seconds": args.instrumented_departure_grace_seconds,
             "repetitions": args.repetitions,

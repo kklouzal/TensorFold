@@ -1563,7 +1563,7 @@ byte charge. Cyclic stored parent chains fail within the cache's existing bound.
 History cloning retains the message snapshots it needs while releasing an
 unneeded reference to the final whole response and its echoed request fields.
 
-The V100 finite backend caller admits one logical text request at a time through
+The V100 finite backend caller defaults to one logical text request at a time through
 the same model, native-buffer and tensor-parallel host commitment authority before
 submission. Its bounded token/result consumer adds no HTTP, metadata or Responses
 cache route. The owned ByteLevel payload helper binds the actual tokenizer/native
@@ -1571,6 +1571,31 @@ artifact and selected Python runtime; valid FIFO child metadata has an enforced
 versioned schema. Wheel `f17b5d8c` passed 182 focused normal-installed resource and
 FIFO checks. Actual target admission/output, the complete HTTP envelope, model
 quality, capacity and performance remain separate pending qualification gates.
+
+The private `tools/v100_backend_probe.py --concurrency-grid --tokens 320` mode
+adds a bounded burst measurement at 1, 2, 4, 8, 16 and 24 offered requests. One
+real maximum-24 RequestLimit and the matching caller/input/result/native/control
+and worker-stack envelope must pass actual host admission before worker startup.
+The finite TP role uses the existing closed JSON codec, enforces prepared input,
+reply, sampler and operation schemas on every peer, and bounds parsed frames
+before model state changes. The unchanged generic setup transaction and all
+malformed raw-frame/error owners remain funded. A separate finite CPU token span
+bounds request-local work while native context, windows and automatic capacity
+remain unchanged. Activation requires a quiescent cohort and matching peer ACKs;
+partial activation poisons that cohort. Actual model capacity must support the envelope. The default finite
+caller and existing single-request tool mode remain unchanged. Optional
+`--session-ceiling 24` uses the supported integer parallelism factory and requires
+an actual24-slot plan for the explicit comparison region. Omitting it keeps
+automatic capacity. Every six-grid case still requires24 physically resident
+full-context sessions. The grid records
+committed-token chunk timestamps, observed backend admission, per-request rates,
+latencies and fairness, and the common decode interval. Sustained cases require
+at least256 naturally committed tokens per request and observed all-request decode
+overlap; early EOS or queued-only load fails the measurement with raw receipts
+retained. EOS, model mathematics, context and runtime scheduling are unchanged.
+Baseline and candidates must use the same funding leaf, prompts, cache schedule
+and instrumentation. Actual GPU, matched performance, quality and the85-token/s
+single-request objective remain unverified by this source increment.
 
 The finite diagnostic tool `tools/v100_backend_probe.py` records worker process
 IDs. When the installed supervisor exposes exit reporting, its final receipt
