@@ -400,6 +400,63 @@ def run_leader(engine, tokenizer, args, report):
         limit.close()
 
 
+def graph_failure_resources(error):
+    """Read bounded existing Python-frame scalars, never query CUDA or tensors."""
+    records, trace, count = [], BaseException.__traceback__.__get__(error), 0
+
+    def attributes(value):
+        try:
+            result = object.__getattribute__(value, "__dict__")
+        except (AttributeError, TypeError):
+            return {}
+        return result if type(result) is dict else {}
+
+    def scalars(values, names):
+        return {name: values[name] for name in names if name in values
+                and (type(values[name]) in (int, bool) or values[name] is None)}
+
+    while trace is not None and count < 64:
+        frame, count = trace.tb_frame, count + 1
+        module, name, values = frame.f_globals.get("__name__"), frame.f_code.co_name, frame.f_locals
+        if module == "tensorfold.families.qwen4_exp.cuda.bound_graphs" and name == "_capture":
+            owner = attributes(values.get("owner"))
+            row = {"phase": "bound-capture", **scalars(owner, ("budget", "bytes", "room_bytes", "settled_bytes")),
+                   **scalars(values, ("before", "took", "allowed"))}
+            if type(values.get("kind")) is str and values["kind"] in ("verify", "mtp"):
+                row["kind"] = values["kind"]
+            key = values.get("key")
+            if type(key) is tuple and len(key) >= 2 and type(key[1]) is int:
+                row["rows"] = key[1]
+            for field, output in (("verify", "verify_keys"), ("mtp", "mtp_keys"), ("measured", "accepted_measurements")):
+                value = owner.get(field)
+                if type(value) in (dict, list):
+                    row[output] = len(value)
+            bound = attributes(owner.get("bound"))
+            buffers = bound.get("buffers")
+            if type(buffers) is dict:
+                row["private_buffer_rows"] = {kind: attributes(buffers[kind]).get("rows")
+                    for kind in ("verify", "mtp") if kind in buffers
+                    and type(attributes(buffers[kind]).get("rows")) is int}
+            records.append(row)
+        elif module == "tensorfold.families.qwen4_exp.cuda.multi" and name == "capture_graphs":
+            row = {"phase": "graph-admission", **scalars(values, ("initial_live", "slots", "automatic"))}
+            decoder = attributes(values.get("self"))
+            row.update(scalars(decoder, ("graph_budget", "graph_header_room", "full_windows", "full_resident")))
+            future = values.get("future")
+            if type(future) is dict:
+                row["future_service"] = scalars(future, ("growth_bytes", "copy_overlap_bytes", "snapshot_bytes_each",
+                    "snapshot_bytes", "transient_bytes", "workspace_bytes", "future_bytes"))
+            records.append(row)
+        elif module == "tensorfold.families.qwen4_exp.cuda.engine" and name == "_initialize":
+            plan = attributes(values.get("self")).get("capacity_plan")
+            if type(plan) is dict:
+                records.append({"phase": "model-plan", "scalars": scalars(plan, (
+                    "budget_bytes", "total_bytes_estimate", "serving_peak_bytes_estimate", "weight_bytes",
+                    "weights_bytes", "fixed_bytes", "stream_bytes", "workspace_bytes", "kv_bytes"))})
+        trace = trace.tb_next
+    return {"frames_examined": count, "truncated": trace is not None, "records": records}
+
+
 def worker(args):
     from tensorfold import hub
     from tensorfold.cuda import precision, prompt_precision
@@ -444,6 +501,7 @@ def worker(args):
     except BaseException as error:
         primary = error
         try:
+            report["graph_failure_resources"] = graph_failure_resources(error)
             report["failure"] = {"type": type(error).__name__, "message": str(error),
                                  "traceback": traceback.format_exc()}
             write_report(args.out / f"rank-{args.rank}-failure.json", report, allowance=allowance)

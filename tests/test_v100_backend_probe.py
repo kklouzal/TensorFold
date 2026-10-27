@@ -685,6 +685,92 @@ def test_graph_trial_record_requires_actual_admitted_owner_and_reports_its_budge
             probe.record_execution_profile(engine, report, requested=PACKED_GRAPH_TRIAL)
 
 
+def resource_error(module, name, values):
+    namespace = {"__name__": module, "VALUES": values}
+    lines = [f"def {name}():"] + [f"    {key} = VALUES[{key!r}]" for key in values]
+    lines.append("    raise MemoryError('logical graph budget')")
+    exec("\n".join(lines), namespace)
+    try:
+        namespace[name]()
+    except MemoryError as error:
+        return error
+
+
+def test_graph_resource_snapshot_reads_existing_scalars_without_device_queries_or_properties():
+    class NoProperty:
+        @property
+        def settled_bytes(self):
+            pytest.fail("diagnostic executed a property")
+
+    owner = NoProperty()
+    owner.budget, owner.bytes, owner.room_bytes = 149705368, 123, 169869312
+    owner.verify, owner.mtp, owner.measured = {1: object()}, {}, [{}]
+    owner.bound = SimpleNamespace(buffers={"verify": SimpleNamespace(rows=3), "mtp": SimpleNamespace(rows=3)})
+    error = resource_error("tensorfold.families.qwen4_exp.cuda.bound_graphs", "_capture",
+        {"owner": owner, "kind": "verify", "key": ((), 3, None), "took": 4096, "before": 12345, "allowed": False})
+    record = probe.graph_failure_resources(error)["records"][0]
+    assert record == {"phase": "bound-capture", "budget": 149705368, "bytes": 123, "room_bytes": 169869312,
+        "before": 12345, "took": 4096, "allowed": False, "kind": "verify", "rows": 3,
+        "verify_keys": 1, "mtp_keys": 0, "accepted_measurements": 1,
+        "private_buffer_rows": {"verify": 3, "mtp": 3}}
+
+
+def test_graph_resource_snapshot_preserves_missing_values_and_future_service_counts():
+    error = resource_error("tensorfold.families.qwen4_exp.cuda.multi", "capture_graphs",
+        {"self": SimpleNamespace(graph_header_room=None, graph_budget=42, full_windows=26, full_resident=True),
+         "initial_live": 500, "slots": 26, "automatic": True,
+         "future": {"future_bytes": 400, "workspace_bytes": 200, "unknown": object()}})
+    record = probe.graph_failure_resources(error)["records"][0]
+    assert record["graph_header_room"] is None and record["future_service"] == {
+        "workspace_bytes": 200, "future_bytes": 400}
+    unavailable = resource_error("tensorfold.families.qwen4_exp.cuda.bound_graphs", "_capture", {"owner": object()})
+    assert probe.graph_failure_resources(unavailable)["records"] == [{"phase": "bound-capture"}]
+
+
+def test_graph_resource_snapshot_has_a_fixed_frame_bound_and_does_not_retain_frame_objects():
+    def recurse(depth):
+        if depth:
+            return recurse(depth - 1)
+        raise ValueError("ordinary failure")
+
+    try:
+        recurse(80)
+    except ValueError as error:
+        result = probe.graph_failure_resources(error)
+    assert result == {"frames_examined": 64, "truncated": True, "records": []}
+
+
+def test_resource_diagnostic_failure_preserves_the_constructor_primary_and_cleanup(tmp_path, monkeypatch):
+    from tensorfold import hub, serve_options
+    from tensorfold.cuda.cohort import FAILURE_FD_ENV
+    from tensorfold.families import qwen4_exp
+
+    primary, diagnostic = ValueError("model constructor failed"), MemoryError("resource report allocation failed")
+
+    def constructor(*_args, **_kwargs):
+        raise primary
+
+    def unavailable(_error):
+        raise diagnostic
+
+    monkeypatch.setattr(probe, "installed_identity", lambda _wheel: {})
+    monkeypatch.setattr(hub, "resolve", lambda *_args, **_kwargs: tmp_path)
+    monkeypatch.setattr(serve_options, "drafter_metadata_source", lambda _source: tmp_path)
+    monkeypatch.setattr(qwen4_exp, "cuda_engine", constructor)
+    monkeypatch.setattr(probe, "graph_failure_resources", unavailable)
+    read_fd, write_fd = os.pipe()
+    monkeypatch.setenv(FAILURE_FD_ENV, str(write_fd))
+    args = SimpleNamespace(rank=1, wheel=tmp_path, model=tmp_path, mtp=tmp_path,
+        master_port=29607, tokens=128, out=tmp_path, requested_sm70_profile=None, repetitions=1)
+    try:
+        with pytest.raises(ValueError) as error:
+            probe.worker(args)
+        assert error.value is primary and retained_failure(primary, diagnostic)
+    finally:
+        os.close(write_fd)
+        os.close(read_fd)
+
+
 @pytest.mark.parametrize("wrong", [False, True])
 def test_private_prefix_adapter_preserves_raw_result_before_check_failure(tmp_path, tokenizer, nvtx_markers, wrong):
     import json
