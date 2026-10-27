@@ -152,7 +152,13 @@ class MultiDecoder:
         if w.comm is not None and w.meta.get("execution_provider") == "sm70":
             from .kv_status import KVStatusCohort
 
-            self.kv_cohort = KVStatusCohort(slots, w.comm, w.device)
+            self.kv_cohort = KVStatusCohort(slots, w.comm, w.device, candidate_rows=rows if w.meta.get("sm70_target_greedy_trial") is not None else 0)
+        if w.meta.get("sm70_target_greedy_trial") is not None:
+            from .target_greedy import TargetGreedy
+
+            target = object.__new__(TargetGreedy)
+            w.meta["target_greedy_owner"] = target  # Partial startup remains owned through the model fence.
+            target.__init__(self)
         # every step's tables at fixed addresses and its kernels at a fixed geometry, so captured forwards replay
         self.round_tables = gdn_multi.RoundTables(w, self.gdn, slots, depth + 1)
         self.step_tables = attn_multi.StepTables(w, slots, depth + 1, mtp=False)
@@ -1545,7 +1551,8 @@ class MultiDecoder:
         separate = (meta.get("execution_provider") == "sm70"
                     and meta.get("sm70_profile") in ("optimized", "source-family-trial", "source-family-prefix-trial",
                                                      "source-packed-trial", "source-packed-graphs-trial",
-                                                     "source-owner-pieces-trial"))
+                                                     "source-owner-pieces-trial", "source-target-greedy-trial",
+                                                     "source-owner-target-greedy-trial"))
         for s in self._order():
             start = self.fills[s.sid][2]
             n = min(len(s.prompt) - start, room)
@@ -2058,6 +2065,9 @@ class MultiDecoder:
         self.buf.gdn_tables = tables
         self.buf.attn_step = (None if half else attn_multi.Step(
             self.w, segs, mtp=False, tables=self.step_tables, rotor_lookup=self.buf.rotor_lookup))
+        target = self.w.meta.get("target_greedy_owner")
+        if target is not None and not target.eligible(self, live, pieces=pieces, grammars=grammars, dflash=dflash):
+            target = None
         try:
             if pieces:                                 # the window and the pass: each layer's experts once for both
                 from .media_mtp import target_inputs
@@ -2067,9 +2077,17 @@ class MultiDecoder:
                                                   **({"prefill_embeddings": merged} if merged is not None else {}))
                 heads = heads[:len(pends)].clone() if pends else None
             else:                                      # a captured forward when one serves this round, else eager
-                logits = self.graphs.verify_forward(segs) if self.graphs is not None else None
+                # The compact-target graph head has no old top32 packet. Ineligible
+                # requests use the ordinary eager producer, preserving that packet.
+                allow_graph = self.w.meta.get("target_greedy_owner") is None or target is not None
+                logits = self.graphs.verify_forward(segs) if self.graphs is not None and allow_graph else None
+                if logits is not None and target is not None:
+                    target.gather(logits, segs[-1][2])
                 if logits is None:
-                    logits = compute(self.w, segs, self.buf, check=False)     # the frame's status: checked below
+                    if target is None:
+                        logits = compute(self.w, segs, self.buf, check=False)
+                    else:
+                        logits = compute(self.w, segs, self.buf, check=False, target_greedy=target)
             if self.controller is not None:
                 self.controller.work_observations.target(segs, replay_rows=sum(
                     end - begin for s, (_state, begin, end) in zip(live, segs) if dflash is not None and s.owed))
@@ -2083,10 +2101,12 @@ class MultiDecoder:
             raise
         finally:
             self.buf.gdn_tables = self.buf.attn_step = None
+        target_result = None
         if self.w.comm is not None:
-            # Delayed KVWords checks are local. Every TP owner must learn a
-            # failed peer's status before any rank enters the sampler gather.
-            _kv_check(segs, comm=self.w.comm, workspace=getattr(self, "kv_cohort", None))
+            if target is not None:
+                target_result = target.finish(self, segs, live[0], logits)
+            else:
+                _kv_check(segs, comm=self.w.comm, workspace=getattr(self, "kv_cohort", None))
         lasts = self._absorb(pieces, psegs, cuts) if pieces else None
         starts = [a0 for _, a0, _ in segs] + [segs[-1][2]]
         positions = [[st.pos + 1 + r for r in range(a1 - a0)] for st, a0, a1 in segs]
@@ -2130,7 +2150,10 @@ class MultiDecoder:
             sampled = collect_streams(launched, words)
         else:
             words.settle()
-            if (not grammars and self.w.meta.get("execution_provider") == "sm70"
+            if target_result is not None:
+                paths, chosen = target_result
+                paths, sampled = [paths], [chosen]
+            elif (not grammars and self.w.meta.get("execution_provider") == "sm70"
                     and all(sampling == samplings[0] for sampling in samplings) and _gathered_fits(samplings[0])):
                 chosen = choose_gathered(self.w, self.buf.cand_all, logits.shape[0],
                                          [position for group in positions for position in group], samplings[0],
@@ -2139,7 +2162,7 @@ class MultiDecoder:
             else:
                 sampled = [tp_sample_rows(self.w, logits[a0:a1], pos, sampling, plan=self._sample_plan)
                            for a0, a1, pos, sampling in zip(starts, starts[1:], positions, samplings)]
-        if dflash is None:
+        if dflash is None and target_result is None:
             paths = [accept(tokens, list(range(-1, len(tokens) - 1)), rows, s.count - len(s.out), self._ends(s))
                      for s, (_, tokens), rows in zip(live, windows, sampled)]
         if self.controller is not None:

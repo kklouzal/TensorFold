@@ -333,7 +333,11 @@ class BoundStateGraphs:
             # Their GPU projections and State-owned convolution are captured.
             if b.ple_late is not None:
                 stage_late(self.dec.w, b)
-            run = partial(compute, self.dec.w, bound, b, context=context, check=False)
+            from .prefix_policy import OWNER_TARGET_GREEDY_PROFILE
+
+            compact_target = self.dec.w.meta.get("sm70_profile") == OWNER_TARGET_GREEDY_PROFILE
+            run = partial(compute, self.dec.w, bound, b, context=context, check=False,
+                          **({"gather_candidates": False} if compact_target else {}))
         else:
             padded = b.mtp_in[:len(lanes) * width]
             padded.zero_()
@@ -527,7 +531,10 @@ class BoundStateGraphs:
             torch.index_select(b.proj, 1, index, out=source.proj[:, :n])
             torch.index_select(b.ple_nrow, 0, index, out=source.ple_nrow[:n])
             torch.index_select(b.logits, 0, index, out=source.logits[:n])
-            if self.dec.w.comm is not None:
+            from .prefix_policy import OWNER_TARGET_GREEDY_PROFILE
+
+            if (self.dec.w.comm is not None
+                    and self.dec.w.meta.get("sm70_profile") != OWNER_TARGET_GREEDY_PROFILE):
                 packet = 2 * CAND + 1
                 world, physical = self.dec.w.comm.world, len(lanes) * width
                 gathered = b.cand_all[:world * physical * packet].view(world, physical, packet)

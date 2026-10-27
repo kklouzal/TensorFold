@@ -947,6 +947,21 @@ class FlashNextEngine:
             # the serving cache and the loader's shared GGUF workspaces.
             sm70_prefill_bytes = _sm70_prefill_gdn_bytes(text, tp, rows0)
             options["device_workspace_bytes"] = options.get("device_workspace_bytes", 0) + sm70_prefill_bytes
+            target_greedy_bytes = None
+            from tensorfold.cuda.sm70.execution_policy import TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL
+
+            if self.sm70_profile in (TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL):
+                from .target_greedy import workspace_bytes
+
+                target_greedy_bytes = workspace_bytes(int(text["vocab_size"]))
+                from .kv_status import workspace_bytes as status_workspace
+                target_rows = execution_rows if execution_rows is not None else 32 if adaptive_sessions else streams * each
+                plain_status = status_workspace(1, tp)
+                feedback_status = status_workspace(1, tp, candidate_rows=target_rows)
+                target_greedy_bytes = tuple(a + b - c for a, b, c in zip(
+                    target_greedy_bytes, feedback_status, plain_status))
+                options["device_workspace_bytes"] += target_greedy_bytes[0]
+                options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + tp * target_greedy_bytes[1]
             status_device = status_host = 0
             if tp > 1 and concurrent and not adaptive_sessions:
                 from .kv_status import workspace_bytes
@@ -1174,9 +1189,9 @@ class FlashNextEngine:
             self.capacity_plan["sm70_weight_plan"] = self._sm70_weight_plan
         if adaptive_sessions:
             streams = self.capacity_plan["session_capacity"]["resident_capacity"]
-            from tensorfold.cuda.sm70.execution_policy import OWNER_GRAPH_TRIAL
+            from tensorfold.cuda.sm70.execution_policy import OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL
 
-            if self.sm70_profile == OWNER_GRAPH_TRIAL and streams < 24:
+            if self.sm70_profile in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL) and streams < 24:
                 raise ValueError("source-owner-pieces-trial must preserve at least24 complete INT8 context windows")
             resident_windows = streams
             self.streams = self.kv_full_windows = streams
@@ -1251,6 +1266,13 @@ class FlashNextEngine:
         if sm70:
             self.capacity_plan["sm70_prefill_gdn_bytes"] = sm70_prefill_bytes
             self.capacity_plan["sm70_status_cohort"] = {"device_bytes": status_device, "host_bytes": status_host}
+            if target_greedy_bytes is not None:
+                self.capacity_plan["target_greedy"] = {
+                    "scope": "per-rank-device/global-host", "device_bytes_per_rank": target_greedy_bytes[0],
+                    "global_host_bytes": tp * target_greedy_bytes[1],
+                    "policy": "source-target-greedy-int-key-chain-v1", "qualification": "unqualified-candidate",
+                    "packets": "reuse-existing-candidate-and-fused-feedback-slabs",
+                    "reservation": "EOS upper bound is complete vocabulary; includes transient upload conservatively"}
             if prefill_plan is not None:
                 self.capacity_plan["gguf_prefill_experts"] = self._gguf_prefill_receipt
         if expert_session is not None:
@@ -2509,9 +2531,7 @@ class FlashNextEngine:
         self._startup_store = self._startup_store_origin = None
         weights = getattr(self, "w", None)
         if weights is not None:
-            from .input_preparation import KEY
-
-            context = weights.meta.get(KEY)
+            context = weights.meta.get("input_preparation_context")
             if context is not None:
                 context.close()  # Scheduler/graph drain precedes mailbox-slot retirement and transport reuse.
         comm = getattr(self, 'comm', None)
@@ -2526,6 +2546,10 @@ class FlashNextEngine:
         if weights is not None:
             import torch
             torch.cuda.synchronize(weights.device)
+            target = weights.meta.get("target_greedy_owner")
+            if target is not None:
+                target.retire_after_fence(fenced=True)
+                weights.meta["target_greedy_owner"] = None
         vision = getattr(self, "vision", None)
         if getattr(vision, "is_media_runtime", False):
             vision.close()

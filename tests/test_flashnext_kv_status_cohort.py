@@ -19,6 +19,7 @@ def states_for(words, world):
         st.kv_status = torch.tensor([bits, layer], dtype=torch.int32)
         st._kv_peer_status = torch.empty((world, 2), dtype=torch.int32)
         st._kv_pending, st._kv_error, st._resize_error = True, None, None
+        st.compact_indexer = None  # Actual State initializes this optional owner before status checks.
         st.pos, st.mtp_len = 17, 13
         states.append(st)
     return states

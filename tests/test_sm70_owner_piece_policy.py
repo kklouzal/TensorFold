@@ -8,7 +8,7 @@ pytest.importorskip("torch")
 from . import test_sm70_family_trial_policy as family  # noqa: E402
 from . import test_sm70_rotorquant_state as state_controls  # noqa: E402
 from . import test_cuda_geometry as geometry_controls  # noqa: E402
-from tensorfold.cuda.sm70 import gguf_ops  # noqa: E402
+from tensorfold.cuda.sm70 import gguf_ops, greedy_native  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda import prefix_policy  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda.multi_graphs import UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda.owner_execution import KERNEL_FAMILY, UNCAPTURED, FULL_COLLECTIVE  # noqa: E402
@@ -32,19 +32,25 @@ def request(module, **changes):
     return module.unique_graph_request(module.OWNER_GRAPH_TRIAL, **args)
 
 
-def test_new_profile_requires_issued_native_owner_and_grants_only_exact_nonattention_pieces(source, monkeypatch):
+@pytest.mark.parametrize("target", [False, True])
+def test_new_profile_requires_issued_native_owner_and_grants_only_exact_nonattention_pieces(source, monkeypatch, target):
     module = source.module
-    monkeypatch.setenv(module.PROFILE_ENV, module.OWNER_GRAPH_TRIAL)
+    selected = module.OWNER_TARGET_GREEDY_TRIAL if target else module.OWNER_GRAPH_TRIAL
+    monkeypatch.setenv(module.PROFILE_ENV, selected)
+    monkeypatch.setattr(greedy_native, "extension", lambda: None)
     monkeypatch.setattr(gguf_ops, "extension", lambda: None)
-    assert module.configure(source.text, tp=8, torch=family.torch) == module.OWNER_GRAPH_TRIAL
+    assert module.configure(source.text, tp=8, torch=family.torch) == selected
     assert family.selectors(source.policy) == (True, False, False, False, False, False,
                                               "packed_exact", "native32", None)
     weights = family.weights(source)
     weights.meta.update(history_layout="unique", owner_workspaces={role: object() for role in ("decode", "mtp", "prefill")})
     weights.mtp = NS(layer=NS(linear=False))
-    contract = request(module)
+    contract = module.unique_graph_request(selected, method="mtp", depth=2, kv_pair=get_pair("int8"),
+        unique_history=True, indexer_history="gpu", graphs=True, concurrent=True, vision=False,
+        owner_preparation=specification())
     assert contract == UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT
     module.prepare_weights(weights, graph_contract=contract)
+    assert ("sm70_target_greedy_trial" in weights.meta) is target
     assert weights.meta["capture_ready"] is True
     assert weights.meta["unique_capture_contract"] == contract
     assert weights.meta["sm70_family_trial"]["attention"] == "prepared-native-owner-eager-trial"
@@ -79,6 +85,9 @@ def test_combined_prefix_epoch_cannot_borrow_old_graph_or_eager_state_before_mut
 
 
 @pytest.mark.parametrize("profile,slots,refused", [
+    (prefix_policy.OWNER_TARGET_GREEDY_PROFILE, 23, True),
+    (prefix_policy.OWNER_TARGET_GREEDY_PROFILE, 24, False),
+    (prefix_policy.OWNER_TARGET_GREEDY_PROFILE, 26, False),
     (prefix_policy.OWNER_GRAPH_PROFILE, 23, True),
     (prefix_policy.OWNER_GRAPH_PROFILE, 24, False),
     (prefix_policy.OWNER_GRAPH_PROFILE, 26, False),

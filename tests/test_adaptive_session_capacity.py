@@ -152,8 +152,9 @@ def test_bounded_verification_rows_do_not_release_resident_state_or_histories():
 @pytest.mark.torch
 @pytest.mark.parametrize("reserve_gib", [0, 3, 4, 5])
 @pytest.mark.parametrize("retention_tier", [None, "gpu", "ram"])
+@pytest.mark.parametrize("sm70_profile", ["reference", "source-target-greedy-trial"])
 def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(monkeypatch, tmp_path, reserve_gib,
-                                                                           retention_tier):
+                                                                           retention_tier, sm70_profile):
     """Real source headers and CPU geometry only; stop before weight retention."""
     import json
     import numpy as np
@@ -204,7 +205,8 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
     prefill_rows = indexed_prefill_rows() or PREFILL_ROWS
     monkeypatch.setattr(chat_template, "prepare_chat_template", lambda *a, **kw: None)
     monkeypatch.setattr(exl3_pack, "is_exl3", lambda p: False)
-    monkeypatch.setattr(execution_policy, "configure", lambda *a, **kw: "reference")
+    monkeypatch.setenv(execution_policy.PROFILE_ENV, sm70_profile)
+    monkeypatch.setattr(execution_policy, "configure", lambda *a, **kw: sm70_profile)
     monkeypatch.setattr(attention_qualification, "runtime_identity", lambda d: {})
     monkeypatch.setattr(torch.cuda, "set_device", lambda *a: None)
     monkeypatch.setattr(torch.cuda, "current_device", lambda: 0)
@@ -253,7 +255,18 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
         header = retention_header_resources(policy, 8)
         assert header.global_host_native_data_bytes == (122432 if retention_tier == "ram" else 0)
         assert header.global_host_native_rpc_bytes > 0
-        assert kwargs.get("host_workspace_bytes", 0) == header.global_host_bytes
+        from tensorfold.families.qwen4_exp.cuda.target_greedy import workspace_bytes as target_workspace
+
+        target_device, target_host = target_workspace(248320) if sm70_profile == "source-target-greedy-trial" else (0, 0)
+        if sm70_profile == "source-target-greedy-trial":
+            from tensorfold.families.qwen4_exp.cuda.kv_status import workspace_bytes as status_workspace
+
+            plain = status_workspace(1, 8)
+            feedback = status_workspace(1, 8, candidate_rows=execution_rows)
+            target_device += feedback[0] - plain[0]
+            target_host += feedback[1] - plain[1]
+        assert kwargs.get("host_workspace_bytes", 0) == header.global_host_bytes + 8 * target_host
+        assert kwargs.get("device_workspace_bytes", 0) >= target_device
         if policy is not None:
             assert a["retained_idle_recovery"] == 0
             assert b["retained_idle_recovery"] > 0

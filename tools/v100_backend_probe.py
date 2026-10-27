@@ -65,6 +65,11 @@ SOURCE_FILES = (
     "tensorfold/families/qwen4_exp/cuda/history_owner.py",
     "tensorfold/cuda/sm70/paged_attention.py",
     "tensorfold/engine/model_identity.py",
+    "tensorfold/families/qwen4_exp/cuda/target_greedy.py",
+    "tensorfold/families/qwen4_exp/cuda/kv_status.py",
+    "tensorfold/families/qwen4_exp/cuda/forward.py",
+    "tensorfold/cuda/sm70/greedy_native.py", "tensorfold/cuda/sm70/greedy_bindings.cpp",
+    "tensorfold/cuda/sm70/greedy.cu",
 )
 
 
@@ -296,14 +301,14 @@ def record_execution_profile(engine, report, *, requested):
         "roles": roles}
     if requested is not None and requested != engine.sm70_profile:
         raise ValueError("requested SM70 profile differs from the actual constructor selection")
-    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL
+    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL
 
-    if engine.sm70_profile in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL):
+    if engine.sm70_profile in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL):
         from tensorfold.families.qwen4_exp.cuda.multi_graphs import (
             UNIQUE_CAPTURE_CONTRACT, UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT,
         )
 
-        contract = (UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT if engine.sm70_profile == OWNER_GRAPH_TRIAL
+        contract = (UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT if engine.sm70_profile in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL)
                     else UNIQUE_CAPTURE_CONTRACT)
 
         decoder = engine.multi
@@ -467,6 +472,10 @@ def run_leader(engine, tokenizer, args, report):
         write_report(args.out / "admitted.json", report, allowance=LEADER_RECEIPT_BYTES)
         engine.scheduler.configure_requests(limit)
         repeat_replies(engine, tokenizer, tokens, args, report, limit)
+        if report.get("sm70_profile") == "source-target-greedy-trial":
+            owner = engine.w.meta.get("target_greedy_owner")
+            if owner is not None:
+                report["target_greedy_final"] = owner.record()
     finally:
         limit.close()
 
@@ -496,6 +505,16 @@ def graph_execution_snapshot(engine):
             value = values.get(name)
             if type(value) is int and value >= 0:
                 counters[role + "." + name] = value
+    weights = _owned_attributes(decoder).get("w")
+    metadata = _owned_attributes(weights).get("meta", {})
+    target = metadata.get("target_greedy_owner") if type(metadata) is dict else None
+    if target is not None:
+        from tensorfold.families.qwen4_exp.cuda.target_greedy import TargetGreedy
+
+        if type(target) is TargetGreedy:
+            value = object.__getattribute__(target, "completed")
+            if type(value) is int and value >= 0:
+                counters["target.completed"] = value
     keys = {name: len(fields[name]) for name in ("verify", "mtp") if type(fields.get(name)) is dict}
     return {"counters": counters, "captured_keys": keys}
 
@@ -776,7 +795,7 @@ def worker(args):
     from tensorfold.cuda import precision, prompt_precision
     from tensorfold.cuda.cohort import FAILURE_FD_ENV, notify_failure
     from tensorfold.families.qwen4_exp import cuda_engine
-    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL
+    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL
     from tensorfold.serve_options import drafter_metadata_source
     from tensorfold.token_metadata import load_tokenizer, tokenizer_identity
 
@@ -805,7 +824,7 @@ def worker(args):
             context=CONTEXT, context_explicit=True,
             parallel=getattr(args, "session_ceiling", None) or "auto", kv_full_windows="auto",
             kv_dtype="int8", indexer_history="gpu", max_waiting_input_bytes=waiting_input_credit(args),
-            output_queue_tokens=args.tokens, graphs=args.requested_sm70_profile in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL),
+            output_queue_tokens=args.tokens, graphs=args.requested_sm70_profile in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL),
             **({"execution_profile_manifest": args.execution_profile_manifest}
                if getattr(args, "execution_profile_manifest", None) is not None else {}))
         record_execution_profile(engine, report, requested=args.requested_sm70_profile)

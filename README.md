@@ -1,5 +1,14 @@
 # TensorFold fork
 
+The private `source-owner-target-greedy-trial` composes prepared native owners and
+N1 piece graphs with exact target-only GPU greedy selection and chain acceptance.
+Target graph heads export original logits; compact target packets gather on the
+canonical decoder stream after replay. MTP confidence and proposal heads retain
+their original execution. Separate prefix/State identity and explicitly funded
+feedback/EOS storage preserve the 24-request Q8 admission contract. Installed CPU controls cover this composition; actual TP8 numerical and all six
+matched performance/quality gates remain pending.
+
+
 The private `source-owner-pieces-trial` combines the explicitly prepared full-TP8
 native owner attention with exact N1 nonattention graph pieces. Attention stays
 eager on original State owners and canonical issued frames; only projection and

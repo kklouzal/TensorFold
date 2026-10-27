@@ -16,7 +16,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 
-def _worker(rank, port):
+def _worker(rank, port, target_greedy=False):
     import faulthandler
     import traceback
     from tensorfold.cleanup import finish, rollback
@@ -29,7 +29,7 @@ def _worker(rank, port):
     from tensorfold.families.qwen4_exp.cuda.multi_graphs import RoundGraphs, UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT
     from tensorfold.families.qwen4_exp.cuda.owner_execution import KERNEL_FAMILY, FULL_COLLECTIVE, UNCAPTURED
     from tensorfold.families.qwen4_exp.cuda.owner_preparation import OwnerPreparation
-    from tensorfold.families.qwen4_exp.cuda.prefix_policy import OWNER_GRAPH_PROFILE
+    from tensorfold.families.qwen4_exp.cuda.prefix_policy import OWNER_GRAPH_PROFILE, OWNER_TARGET_GREEDY_PROFILE
     from tensorfold.families.qwen4_exp.kv_formats import get_pair
     from test_sm70_unique_piece_graphs_tp8 import _equal, _committed
 
@@ -39,7 +39,7 @@ def _worker(rank, port):
 
     family_ops._NATIVE_FAMILY, family_ops._NATIVE_ATTENTION = True, False
     comm, failed, graphs, diagnostic = NCCL(), False, None, None
-    preparations = []
+    preparations, target_owners = [], []
     faulthandler.dump_traceback_later(60, file=sys.stderr)
 
     def phase(label):
@@ -60,6 +60,9 @@ def _worker(rank, port):
         # The graph borrower retires before either canonical native workspace.
         # A failed fence preserves owners and keeps the watchdog armed.
         close_graphs()
+        if target_owners:
+            torch.cuda.synchronize()
+            finish(lambda owner=owner: owner.retire_after_fence(fenced=True) for owner in target_owners)
         close_preparations()
         finish((lambda: comm.close(abort=failed), faulthandler.cancel_dump_traceback_later, diagnostic_failure))
 
@@ -80,9 +83,14 @@ def _worker(rank, port):
         spec = dict(kernel_family=KERNEL_FAMILY, graph_family=UNCAPTURED,
                     collective_family=FULL_COLLECTIVE, graph_budget_bytes=0, trial=True)
 
-        def decoder(native):
+        def decoder(native, *, compact_target=False):
             weights = copy.copy(base)
             weights.meta = dict(base.meta)
+            if compact_target:
+                from tensorfold.families.qwen4_exp.cuda.target_greedy import POLICY
+
+                weights.meta.update(sm70_profile=OWNER_TARGET_GREEDY_PROFILE,
+                    sm70_target_greedy_trial={"policy": POLICY}, target_greedy_owner=None)
             preparation = None
             if native:
                 preparation = OwnerPreparation(spec, role_rows={"decode": 3, "mtp": 3, "prefill": 8},
@@ -93,11 +101,13 @@ def _worker(rank, port):
                 weights.meta["owner_workspaces"] = preparation.workspaces
             result = MultiDecoder(weights, slots=1, capacity=260, logical_context=257, depth=2,
                 confidence=.7, prefill_rows=8, kv_dtype="int8", graphs=False, keep=1, full_windows=1)
+            if compact_target:
+                target_owners.append(weights.meta["target_greedy_owner"])
             return weights, result, preparation
 
         torch_weights, torch_decoder, _ = decoder(False)
         eager_weights, eager, eager_preparation = decoder(True)
-        combined_weights, combined, combined_preparation = decoder(True)
+        combined_weights, combined, combined_preparation = decoder(True, compact_target=target_greedy)
         eager_preparation.adopt(eager_weights, eager)
         phase("capture/reference-before-adoption")
         graphs = RoundGraphs(combined, 1 << 30)
@@ -168,6 +178,8 @@ def _worker(rank, port):
                 assert actual.cached > 0
             phase(f"request/completed/repetition={repetition}")
         assert graphs.bound.hits > 0
+        if target_greedy:
+            assert combined_weights.meta["target_greedy_owner"].completed > 0
         comm.ready("owner-piece-oracles-complete", every=1, timeout=60)
     except BaseException as primary:
         failed = True
@@ -181,13 +193,14 @@ def _worker(rank, port):
         retire()
 
 
-def test_v100_tp8_native_owner_exact_pieces_match_native_eager_frames_and_commits():
+@pytest.mark.parametrize("target_greedy", [False, True])
+def test_v100_tp8_native_owner_exact_pieces_match_native_eager_frames_and_commits(target_greedy):
     if torch.cuda.device_count() < 8 or any(torch.cuda.get_device_capability(rank) != (7, 0) for rank in range(8)):
         pytest.skip("requires eight real SM70 GPUs and the supported source foundation")
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
-    context = torch.multiprocessing.spawn(_worker, args=(port,), nprocs=8, join=False)
+    context = torch.multiprocessing.spawn(_worker, args=(port, target_greedy), nprocs=8, join=False)
     try:
         deadline = time.monotonic() + 240
         while not context.join(timeout=1):
