@@ -6,15 +6,34 @@ import sys
 import threading
 import time
 
+from tensorfold.cleanup import raise_failures
+
 ENV = "TENSORFOLD_STARTUP_CONTENT_OVERLAP"
 STACK_LIMIT = 64 << 20
 HASH_WORKING_BYTES = 8 << 20
 MAX_ARTIFACT_FILES = 64
+MAX_INVENTORY_TEXT_BYTES = 64 << 10
+
+
+def _validate_inventory(files):
+    if type(files) is not dict or not 0 < len(files) <= MAX_ARTIFACT_FILES:
+        raise ValueError("startup capture requires its bounded original preload inventory")
+    text = 0
+    for name, path in files.items():
+        values = (name, str(path))
+        if (len(name.encode("utf-8")) > 4096
+                or any(not value.isascii() or any(not 32 <= ord(char) <= 126 for char in value) for value in values)):
+            raise ValueError("startup capture cannot prove its8MiB working bound for this inventory text")
+        text += sum(map(len, values))
+    if text > MAX_INVENTORY_TEXT_BYTES:
+        raise ValueError("startup capture inventory exceeds its64KiB text working bound")
+    return files
 
 
 class StartupContentPlan:
     """One process-owned configuration; callers exclude thread-default changes."""
-    def __init__(self):
+    def __init__(self, files):
+        self.files = _validate_inventory(files)
         from tensorfold._fd_owner import _thread_stack_layout
 
         if (sys.platform != "linux" or sys.implementation.name != "cpython"
@@ -36,7 +55,7 @@ class StartupContentPlan:
                 "scope": "startup through manifest binding; included in loading and steady host commitment"}
 
     def start(self, engine, manifest):
-        from .execution_identity import _capture, _opened_stats, artifact_files
+        from .execution_identity import _capture, _opened_stats
 
         if threading.stack_size() != self.python_stack_setting:
             raise ValueError("Python thread stack configuration changed after startup admission")
@@ -44,10 +63,11 @@ class StartupContentPlan:
         stack, guard = _thread_stack_layout(self.python_stack_setting)
         if not 0 < stack <= STACK_LIMIT or guard > self.guard_bytes:
             raise ValueError("pthread default stack configuration changed after startup admission")
-        files, _ = artifact_files(engine)
+        files = engine._execution_preload.get("capture_files")
+        if files is not self.files:
+            raise ValueError("startup capture inventory owner changed after admission")
         before = engine._execution_preload["artifacts"]
-        if (not 0 < len(files) <= MAX_ARTIFACT_FILES or _opened_stats(files) != before
-                or any(len(name.encode("utf-8")) > 4096 for name in files)):
+        if _opened_stats(files) != before:
             raise ValueError("startup artifact closure exceeds its funded metadata bound or changed")
         return StartupContentCapture(self, lambda cancelled: _capture(
             files, before, manifest["artifacts"], cancelled=cancelled)[0])
@@ -61,6 +81,7 @@ class StartupContentCapture:
         self.operation_retired = threading.Event()
         self.join_returned = False
         self.authority = self.error = None
+        self.finish_errors, self.no_errors = [None], []
         self.cancel_observed = self.error_observed = False
         self.started_ns = time.monotonic_ns()
         self.finished_ns = None
@@ -84,12 +105,16 @@ class StartupContentCapture:
             self.error = error
             self.cancel_observed = isinstance(error, CancelledError) and self.cancel.is_set()
         finally:
-            self.operation = None
-            self.finished_ns = time.monotonic_ns()
-            # Thread.join/is_alive can lie after signal interruption on the
-            # pinned CPython runtime. Only this operation-owned final latch
-            # proves file consumers and their cleanup have retired.
-            self.operation_retired.set()
+            try:
+                self.operation = None
+                self.finished_ns = time.monotonic_ns()
+            except BaseException as error:
+                self.finish_errors[0] = error
+            finally:
+                # Thread.join/is_alive can lie after signal interruption on
+                # the pinned runtime. Publish owned retirement even if timing
+                # diagnostics fail, retaining that secondary in its fixed slot.
+                self.operation_retired.set()
 
     def result(self):
         if self.closed:
@@ -97,9 +122,9 @@ class StartupContentCapture:
         self.thread.join()
         self.join_returned = True
         self.operation_retired.wait()
-        if self.error is not None:
+        if self.error is not None or self.finish_errors[0] is not None:
             self.error_observed = True
-            raise self.error
+            raise_failures(self.error, self.finish_errors if self.finish_errors[0] is not None else self.no_errors)
         if self.authority is None:
             raise RuntimeError("joined content worker produced no issued authority")
         return self.authority
@@ -116,9 +141,12 @@ class StartupContentCapture:
             self.join_returned = True
             self.operation_retired.wait()
         self.closed = True
-        if self.error is not None and not self.error_observed and not self.cancel_observed:
-            self.error_observed = True
-            raise self.error
+        if not self.error_observed:
+            primary = self.error if not self.cancel_observed else None
+            errors = self.finish_errors if self.finish_errors[0] is not None else self.no_errors
+            if primary is not None or errors:
+                self.error_observed = True
+                raise_failures(primary, errors)
 
     def record(self):
         return {"started_monotonic_ns": self.started_ns, "finished_monotonic_ns": self.finished_ns,
@@ -140,4 +168,7 @@ def prepare(engine, manifest):
             or getattr(engine, "media_profile", None) is not None
             or engine.sm70_profile not in ("source-owner-pieces-trial", "source-owner-target-greedy-trial")):
         raise ValueError("startup content overlap requires an explicit private TP8 owner MTP manifest")
-    return StartupContentPlan()
+    files = getattr(engine, "_execution_preload", {}).get("capture_files")
+    if type(files) is not dict:
+        raise ValueError("startup content overlap requires the original manifest preload inventory")
+    return StartupContentPlan(files)

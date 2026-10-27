@@ -374,6 +374,10 @@ engine construction. One rank0 worker begins only after the complete admission
 includes its64MiB stack ceiling, observed native guard and8MiB hash/metadata
 working allowance. Native pthread queries verify the planned and actual stack;
 unsupported or unfundable enabled configurations refuse before publication.
+The selected overlap inventory is limited to64 files,4096-byte logical names
+and64KiB of printable ASCII logical-name/path text; other enabled inputs refuse
+rather than assuming an8MiB working bound. The ordinary serial path retains its
+existing input support.
 
 This reads all artifact content anew in the current process while loading;
 existing file-stat, declared-SHA and all-rank inventory guards remain required.
