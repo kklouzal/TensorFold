@@ -81,7 +81,7 @@ class StartupContentCapture:
         self.operation_retired = threading.Event()
         self.join_returned = False
         self.authority = self.error = None
-        self.finish_errors, self.wait_errors, self.no_errors = [None], [None], []
+        self.finish_errors, self.wait_errors = [None], [None]
         self.cancel_observed = self.error_observed = False
         self.started_ns = time.monotonic_ns()
         self.finished_ns = self.wait_started_ns = self.wait_finished_ns = None
@@ -116,6 +116,20 @@ class StartupContentCapture:
                 # diagnostics fail, retaining that secondary in its fixed slot.
                 self.operation_retired.set()
 
+    def _raise_outcome(self, primary):
+        first, second = self.finish_errors[0], self.wait_errors[0]
+        try:
+            errors = [error for error in (first, second) if error is not None]
+        except BaseException as allocation:
+            if primary is not None:
+                raise primary from allocation
+            if first is not None:
+                raise first from allocation
+            if second is not None:
+                raise second from allocation
+            raise
+        raise_failures(primary, errors)
+
     def result(self):
         if self.closed:
             raise RuntimeError("startup content capture already retired")
@@ -133,7 +147,7 @@ class StartupContentCapture:
                 self.wait_errors[0] = error
         if self.error is not None or self.finish_errors[0] is not None or self.wait_errors[0] is not None:
             self.error_observed = True
-            raise_failures(self.error, [error for error in (self.finish_errors[0], self.wait_errors[0]) if error is not None])
+            self._raise_outcome(self.error)
         if self.authority is None:
             raise RuntimeError("joined content worker produced no issued authority")
         return self.authority
@@ -152,10 +166,9 @@ class StartupContentCapture:
         self.closed = True
         if not self.error_observed:
             primary = self.error if not self.cancel_observed else None
-            errors = [error for error in (self.finish_errors[0], self.wait_errors[0]) if error is not None]
-            if primary is not None or errors:
+            if primary is not None or self.finish_errors[0] is not None or self.wait_errors[0] is not None:
                 self.error_observed = True
-                raise_failures(primary, errors)
+                self._raise_outcome(primary)
 
     def record(self):
         return {"started_monotonic_ns": self.started_ns, "finished_monotonic_ns": self.finished_ns,
