@@ -51,6 +51,10 @@ Whole wheel `86a04dee`/image `30fda46a` has a [scoped CPU receipt](docs/verifica
 and 23 separately reused additional cases. A live target diagnostic passed the
 former rank-0 failure boundary with all eight ranks; model loading/readiness and
 complete-output acceptance remain separately owned and unqualified here.
+The later FIFO shutdown fix lets an idle backend retire while the caller retains
+its between-subrun input credit, and drains controls accepted before close. Its
+48 installed CPU controls on source SDK image `30fda46a` cover that protocol;
+they make no live-target shutdown, resource-admission or performance claim.
 The earlier media/frontend/MTP checkpoint at `64b24dd5` passed 4,365 installed
 checks and 124 subtests; tree `413e132b` passed 5,214 checks and 144 subtests.
 Those historical results retain their original source and workload scope.

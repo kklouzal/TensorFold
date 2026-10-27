@@ -1325,14 +1325,22 @@ class Scheduler:
         while True:
             if self._retiring:
                 self._finish_ready([], finish_empty=False)
-            self._execution_boundary()
             with self._state_lock:
                 self._stopping = self._stopping or self._stop_published
+            # Observe admission closure before the final control boundary: a
+            # control accepted before close must run before worker retirement.
+            self._execution_boundary()
             revision, entries = self.waiting.requests()
             done = self._admit_fifo(entries)
             ran = self._round_requests(done, only_runnable=True) if self._serving_profile_available else False
             _current, waiting = self.waiting.requests()
             _all_revision, claims = self.waiting.requests(include_reserved=True)
+            # A between-subruns claim has positively retired its backend and
+            # retains only the logical caller's input credit. That caller may
+            # itself be closing this scheduler; its credit must outlive the
+            # worker, rather than make the worker wait for caller retirement.
+            backend_claims = self._stopping and any(
+                entry[2][0].admission_status.phase != "between_subruns" for entry in claims)
             live = self.decoder.live() if self._serving_profile_available else 0
             boundary = getattr(self.decoder, "retention_boundary", None)
             drained, changed = True, False
@@ -1340,11 +1348,11 @@ class Scheduler:
                 progress = boundary(idle=not ran,
                     needs_slot=any(stream.admission_status.blocked_reason == "gpu_capacity"
                                    for _priority, _ticket, (stream, _box) in waiting),
-                    shutdown=self._stopping and not waiting and not live and not self._retiring and not claims)
+                    shutdown=self._stopping and not waiting and not live and not self._retiring and not backend_claims)
                 drained, changed = progress["drained"], progress["changed"]
             if ran or changed:
                 continue  # Runnable generation progresses without waiting for queue arrivals.
-            if self._stopping and not waiting and not live and not self._retiring and not claims:
+            if self._stopping and not waiting and not live and not self._retiring and not backend_claims:
                 if drained:
                     return
             deadlines = [stream.admission_status.deadline for _priority, _ticket, (stream, _box) in waiting
