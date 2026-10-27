@@ -1,5 +1,16 @@
 # TensorFold fork
 
+Finite operational screens can explicitly select `--fast-grid-protocol fast-grid-v2
+--tokens 2048` with the existing fast-grid arguments. The2048-cell output budget
+allows a full10-second observation above85tokens/s, while v1 keeps its320/512-cell
+contract and default selection. Prompts,30-second readiness,10-second target
+window, EOS, MTP settings, all six concurrency levels, cancellation/drain and
+the six independent320-token quality checks retain their existing behavior.
+V2 funds larger callback/timing/native-ID/report/decode owners through the same
+physical host admission; it changes no model math, KV format or24-window GPU
+capacity. A cap/EOS-shortened observation remains explicitly short, including
+v1; version and duration remain part of every performance receipt.
+
 Canonical MTP text refresh/proposal frames now use the existing actual text
 coordinate producer when no explicit coordinates or deferred boundary are
 present. It preserves hidden/cache positions at `mtp_len`, independent of next
