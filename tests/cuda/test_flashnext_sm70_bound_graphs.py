@@ -17,6 +17,7 @@ from tensorfold.families.qwen4_exp.cuda.decode import prefill
 from tensorfold.families.qwen4_exp.cuda.forward import commit, compute, stage
 from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder, _slot
 from tensorfold.families.qwen4_exp.cuda.multi_graphs import RoundGraphs
+from tensorfold.families.qwen4_exp.cuda.speculation import MethodGeometry
 from tensorfold.families.qwen4_exp.cuda.state import CAND, Buffers
 
 pytestmark = pytest.mark.skipif(not torch.cuda.is_available(), reason="native CUDA graph state gate")
@@ -50,10 +51,20 @@ def _phase(w, label):
         print(f"[bound-gate rank={w.comm.rank} t={time.monotonic():.3f}] {label}", file=sys.stderr, flush=True)
 
 
+def _six_lane_geometry(w):
+    # A target-only decoder has one anchor row, not two unbacked proposals.
+    # Real stock-MTP fixtures retain the original varied R1/R2/R3 windows.
+    geometry = MethodGeometry("none", 0) if w.mtp is None else MethodGeometry("mtp", 2)
+    counts = (1,) * 6 if geometry.method == "none" else (1, 3, 2, 1, 2, 3)
+    return geometry, counts
+
+
 def _qualify_six_lanes(w, kv_dtype, reference_context=None):
     _phase(w, "verify:decoder")
-    decoder = MultiDecoder(w, slots=6, capacity=64, depth=2, prefill_rows=8, kv_dtype=kv_dtype,
+    geometry, counts = _six_lane_geometry(w)
+    decoder = MultiDecoder(w, slots=6, capacity=64, depth=geometry.maximum_proposals, prefill_rows=8, kv_dtype=kv_dtype,
                            graphs=False, keep=0)
+    assert decoder.speculation == geometry
     graphs = RoundGraphs(decoder, 1024 * 2**20)
     try:
         _phase(w, "verify:capture")
@@ -67,10 +78,9 @@ def _qualify_six_lanes(w, kv_dtype, reference_context=None):
                 state.rec[1 - state.cur[0]].copy_(state.rec[state.cur[0]])
                 state.cur = [1 - value for value in state.cur]
         _phase(w, "verify:prefilled")
-        # Deliberately reverse slot order, vary row counts and truncate accepted
-        # prefixes. These would fail if capture read a fixed parity or lane.
+        # Reverse slot order and parity in both methods; real MTP also varies
+        # row counts and truncates accepted prefixes within its allocated R3.
         states = list(reversed(decoder.free))
-        counts = [1, 3, 2, 1, 2, 3]
         reference = Buffers(w, decoder.buf.rows, 64, moe_prefill=True)
         for iteration in range(2):
             _phase(w, f"verify:iteration={iteration}:reference")

@@ -169,7 +169,6 @@ def test_prepared_bound_six_lane_capture_preserves_valid_rows_state_and_mtp(cach
     monkeypatch.setattr(family_ops, "_NATIVE_ATTENTION", True)
     monkeypatch.setattr(padded_linears, "_ENABLED", True)
     w = dense_fixture(_weights_with_stock_mtp_protocol() if mtp else _small_weights(include_ple=True))
+    _qualify_six_lanes(w, cache)
     if mtp:
         _qualify_mtp(w, cache)
-    else:
-        _qualify_six_lanes(w, cache)
