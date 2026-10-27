@@ -429,6 +429,34 @@ def test_the_store_keeps_the_newest_and_a_chain_needs_every_link():
                                        {"role": "user", "content": "q2"}]
 
 
+def test_history_clone_keeps_messages_without_pinning_evicted_response_entries(monkeypatch):
+    import gc
+    import weakref
+
+    store = responses.Store()
+    for identifier, parent in (("a", None), ("b", "a")):
+        store.put({"id": identifier, "previous_response_id": parent, "output": [],
+                   "tools": [{"arbitrary": {"echo": [identifier]}}]},
+                  [{"role": "user", "content": identifier}])
+    owners = [weakref.ref(entry) for entry in store.entries.values()]
+    original, seen = responses.copy.deepcopy, []
+
+    def clone(value, memo=None):
+        if not seen:
+            seen.append(value)
+            assert not store.lock.locked()
+            assert store.delete("a") and store.delete("b")
+            gc.collect()
+            assert all(owner() is None for owner in owners)
+        return original(value, memo)
+
+    monkeypatch.setattr(responses.copy, "deepcopy", clone)
+    result = store.conversation("b")
+    assert result == [{"role": "user", "content": "a"}, {"role": "user", "content": "b"}]
+    assert result is not seen[0] and all(a is not b for a, b in zip(result, seen[0], strict=True))
+    assert not store.entries and store.bytes == 0
+
+
 def test_store_measures_exact_ascii_quota_before_cloning_owned_snapshots(monkeypatch):
     response = {"id": "a", "output": [{"type": "message", "role": "assistant", "content": [
         {"type": "output_text", "text": "é\n𝄞"}]}], "metadata": {"empty": [], "number": -1.25}}

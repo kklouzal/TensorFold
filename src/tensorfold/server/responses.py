@@ -150,6 +150,9 @@ class Store:
                 self.entries.move_to_end(at)
                 chain.append(entry.messages)
                 at = entry.parent
+        # The chain owns every required message list. Do not pin the last
+        # whole response/echo generation while its history is cloned.
+        del entry
         return copy.deepcopy([m for part in reversed(chain) for m in part])
 
 

@@ -1554,6 +1554,8 @@ Oversized results retain the existing eviction order, including the position of
 a replaced ID. Allocation failure during cache publication clears the affected
 cache and reports the failure, so an entry cannot remain available without its
 byte charge. Cyclic stored parent chains fail within the cache's existing bound.
+History cloning retains the message snapshots it needs while releasing an
+unneeded reference to the final whole response and its echoed request fields.
 
 The V100 finite backend caller admits one logical text request at a time through
 the same model, native-buffer and tensor-parallel host commitment authority before
