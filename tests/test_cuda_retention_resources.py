@@ -95,24 +95,23 @@ def test_actual_adopted_tokenizer_and_host_receipt_precede_scheduler_admission(t
     assert engine.scheduler._request_limit is app._request_limit
 
 
-def test_full_future_input_credit_caps_generation_owners_through_between_subruns(monkeypatch):
+def test_full_future_input_credit_caps_generation_owners_through_between_subruns():
     from tensorfold.cuda.scheduler import AdmissionStatus, Waiting
-    from tensorfold.families.qwen4_exp.cuda.retention_resources import finalize_retention_resources
+    from tensorfold.families.qwen4_exp.cuda.retention_resources import _model_host_projection
     from tensorfold.server.errors import CapacityError
 
     selected = catalog(None)
     selected.states = [NS(limit=262147, logical_context=262144)]
     decoder = selected._cohort.multi = resource_decoder(262144)
     floor = decoder.input_reservation_bytes()
-    monkeypatch.setattr("tensorfold.cuda.capacity.admit_host_commitment",
-                        lambda total, **_kwargs: {"diagnostic_total": total})
-    receipt = finalize_retention_resources(selected, tokenizer=selected_tokenizer(),
-        max_pending_requests=4, max_waiting_input_bytes=16 << 20, max_http_connections=1)
-    assert receipt["context_tokens"] == 262144
+    core = _model_host_projection(selected, tokenizer=selected_tokenizer(),
+        max_pending_requests=4, max_waiting_input_bytes=16 << 20,
+        body_bytes=96 << 20, output_queue_tokens=None)
+    assert core["context"] == 262144
     assert selected.states[0].limit == 262147
-    assert receipt["generation_owner_bound"]["mandatory_input_claim_bytes"] == floor
-    assert receipt["generation_owner_bound"]["owners"] == 1
-    assert receipt["global_model_cpu_projection_bytes"] == receipt["continuation"]["project_payload_bytes"]
+    assert core["input_floor"] == floor
+    assert core["generation_owners"] == 1
+    assert core["model_cpu"] == core["terms"]["project_payload_bytes"]
 
     waiting = Waiting(policy="fifo", max_input_bytes=16 << 20)
     def entry():

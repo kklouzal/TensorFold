@@ -53,8 +53,8 @@ def test_all_mode_finalizer_names_and_pays_native_and_python_once(monkeypatch):
     assert record["global_unpaid_native_prefix_payload_bytes"] == record["native_prefix"]["global_native_prefix_payload_bytes"]
     rpc = record["tp_rpc_python"]
     continuation = record["continuation"]
-    assert record["generation_owner_bound"]["owners"] == 1
-    assert record["global_model_cpu_projection_bytes"] == (
+    assert record["generation_owner_bound"]["owners"] == 2
+    assert record["global_model_cpu_projection_bytes"] == 2 * (
         continuation["project_payload_bytes"] + rpc["per_follower_scope_bytes"])
     assert record["global_rpc_python_working_bytes"] == rpc["global_rpc_python_working_bytes"] > 0
     assert record["global_http_rpc_error_tail_bytes"] == 3 * rpc["per_http_rpc_error_tail_bytes"]

@@ -45,6 +45,7 @@ def decoder_for(catalog, monkeypatch):
     value.states, value.free = catalog.states, [catalog.states[1]]
     value.retention_catalog = catalog
     value.admission_policy, value.capacity, value.depth = "fifo", 8, 0
+    value.logical_context = catalog.states[0].logical_context
     value.kv_pair, value.prefill_rows, value.next_id = catalog.states[0].kv_pair, 4, 0
     value.buf = Buffers(value.w, 4, 8)
     value.pbuf = Buffers(value.w, 4, 8, prefill=True)

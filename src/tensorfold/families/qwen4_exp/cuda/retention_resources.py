@@ -543,9 +543,12 @@ class PresentationBound:
     working_utf8_bytes_per_token: int
     working_utf8_fixed_bytes: int
     decoder: str
+    lexical_id_wire_ratio: tuple | None = None
+    decoded_id_wire_ratio: tuple | None = None
+    escaped_id_wire_ratio: tuple | None = None
 
 
-def tokenizer_presentation_bound(tokenizer):
+def tokenizer_presentation_bound(tokenizer, *, precise_bytelevel=True):
     """Bind the ACTUAL loaded decoder and every lexical/added token.
 
     tokenizers 0.23.3 ByteLevel maps characters to bytes (or retains a token's
@@ -562,22 +565,34 @@ def tokenizer_presentation_bound(tokenizer):
     import tokenizers
     from tensorfold.token_metadata import tokenizer_identity, tokenizer_vocab_size
 
+    if type(precise_bytelevel) is not bool:
+        raise ValueError("tokenizer payload projection requires an explicit precision mode")
     if type(tokenizer) is not tokenizers.Tokenizer or tokenizers.__version__ != "0.23.3":
         raise ValueError("tiered resource promises require the supported tokenizers 0.23.3 frontend")
     decoder = tokenizer.decoder
     state = None if decoder is None else json.loads(decoder.__getstate__())
     vocab = _size(tokenizer_vocab_size(tokenizer), "actual tokenizer vocabulary")
     maximum = decoded_maximum = 0
-    plain_bytelevel = state is not None and state["type"] == "ByteLevel"
+    lexical_ratio = decoded_ratio = escaped_ratio = (0, 1)
+    plain_bytelevel = precise_bytelevel and state is not None and state["type"] == "ByteLevel"
+    def larger_ratio(previous, numerator, denominator):
+        return (numerator, denominator) if numerator * previous[1] > previous[0] * denominator else previous
     for index in range(vocab):
         piece = tokenizer.id_to_token(index)
         if piece is not None:  # Prepared UNUSED matrix rows have no text.
             maximum = max(maximum, len(piece.encode("utf-8")))
             if plain_bytelevel:
-                decoded_maximum = max(decoded_maximum, len(decoder.decode([piece]).encode("utf-8")))
+                decoded = decoder.decode([piece])
+                decoded_bytes = len(decoded.encode("utf-8"))
+                decoded_maximum = max(decoded_maximum, decoded_bytes)
+                denominator = len(str(index)) + 1  # decimal ID and its array separator
+                lexical_ratio = larger_ratio(lexical_ratio, len(piece.encode("utf-8")), denominator)
+                decoded_ratio = larger_ratio(decoded_ratio, decoded_bytes, denominator)
+                escaped_ratio = larger_ratio(escaped_ratio, len(json.encoder.encode_basestring_ascii(decoded)) - 2, denominator)
     if plain_bytelevel:
         return PresentationBound(tokenizer_identity(tokenizer), vocab, maximum, decoded_maximum, 0,
-                                 max(maximum, decoded_maximum), 0, "tokenizers-0.23.3/bytelevel-concat-v2")
+                                 max(maximum, decoded_maximum), 0, "tokenizers-0.23.3/bytelevel-concat-v2",
+                                 lexical_ratio, decoded_ratio, escaped_ratio)
     a, b, count_a, count_b = maximum, 0, 1, 0
     peak_a, peak_b = a, b
     pending = [state]
@@ -629,8 +644,171 @@ def _python_layout():
             "bytearray": sys.getsizeof(bytearray()), "integer": sys.getsizeof(sys.maxsize)}
 
 
+@dataclass(frozen=True)
+class _JsonPayloadPolicy:
+    identity: str
+    files: tuple
+    recursion_limit: int
+    frame_work: int
+
+    def record(self):
+        return {"schema": "tensorfold.cpython-json-payload", "version": 1,
+                "runtime_identity": self.identity, "files": self.files,
+                "fresh_tree_bytes_per_encoded_byte": 45, "c_container_depth": 10000,
+                "python_recursion_limit": self.recursion_limit, "frame_work_bytes": self.frame_work,
+                "scope": "selected object/vector payload; allocator/C-stack/native workspace qualification separate"}
+
+
+def _json_payload_policy():
+    """Bind the actual Ubuntu CPython build before using its tighter layout.
+
+    The C parser's depth is a compiled runtime property, distinct from Python's
+    mutable recursion setting. Source/header pairing and all byte identities
+    are recorded in the selected-runtime derivation, not inferred from 3.12.3.
+    """
+    import _json
+    import copy
+    import platform
+    import sysconfig
+    from pathlib import Path
+    from tensorfold.engine.model_identity import capture_model_identity
+    from .execution_identity import _small
+
+    if (sys.implementation.name != "cpython" or sys.version_info[:3] != (3, 12, 3)
+            or sys.platform != "linux" or platform.machine() != "x86_64" or struct.calcsize("P") != 8
+            or sys.get_int_max_str_digits() != 4300
+            or sysconfig.get_config_var("Py_DEBUG") not in (None, 0)
+            or sysconfig.get_config_var("Py_TRACE_REFS") not in (None, 0)):
+        raise ValueError("JSON payload projection requires the selected CPython3.12.3 Linux64 build")
+    if (sys.getsizeof("") != 41 or sys.getsizeof([]) != 56 or sys.getsizeof({}) != 64
+            or sys.getsizeof({"": None}) != 184 or sys.getsizeof((1 << 64) - 1) != 36):
+        raise ValueError("JSON payload projection requires its actual selected object layout")
+    expected = {
+        "python": (Path(sys.executable).resolve(), 8020928, "e50d468e8b0adfb05733f5b87b3cff34829c4a8c1aea50c865aa8bdfe4bb150f"),
+        "json-native": (Path(_json.__file__).resolve(), 48952, "ca8e35c58f7bc8e27258c4af43651c941413bc6318903621253485b0395758a3"),
+        "libpython": (Path("/usr/lib/x86_64-linux-gnu/libpython3.12.so.1.0"), 9061000,
+                      "1021f236227334ded6d1bbbc4bb6f5d933f793d8397c969896cfbdf03ce96223"),
+        "pystate": (Path("/usr/include/python3.12/cpython/pystate.h"), 17228,
+                    "11494795dd1d6945fbf8036af5ccf247463e94d405a760924a1c78f78ebfc4ec"),
+        "ceval": (Path("/usr/include/python3.12/internal/pycore_ceval.h"), 5265,
+                  "1af22b50c9ececfc4c3a5f37ecb70cc1c0eefad5a2656e6e22fc088cae54e226"),
+        "frame": (Path("/usr/include/python3.12/internal/pycore_frame.h"), 9256,
+                  "97c7e2722af4c30c240b8b3c867a54b2fe49a4207d2e566c6a19a9d190fd0f8a"),
+        "copy": (Path(copy.__file__).resolve(), 8412,
+                 "cbd25547933176fcf6bb05c2adc9f4796d15ac20b9b82dcf890daea7203daeab"),
+        "json-api": (Path(json.__file__).resolve(), 14020,
+                     "d5d41e2c29049515d295d81a6d40b4890fbec8d8482cfb401630f8ef2f77e4d5"),
+        "json-decoder": (Path(json.decoder.__file__).resolve(), 12473,
+                         "9f02654649816145bc76f8c210a5fe3ba1de142d4d97a1c93105732e747c285b"),
+    }
+    mapped = {"python": set(), "libpython": set(), "json-native": set()}
+    for line in _small("/proc/self/maps", 4 << 20).decode().splitlines():
+        fields = line.split(None, 5)
+        if len(fields) != 6:
+            continue
+        for role in mapped:
+            candidate = fields[5].removesuffix(" (deleted)")
+            if Path(candidate).name == expected[role][0].name:
+                if fields[5].endswith(" (deleted)"):
+                    raise ValueError("JSON payload projection cannot use a retired runtime artifact")
+                mapped[role].add(Path(fields[5]).resolve(strict=True))
+    required = ("python", "json-native")
+    if (any(mapped[role] != {expected[role][0].resolve(strict=True)} for role in required)
+            or mapped["libpython"] and mapped["libpython"] != {expected["libpython"][0].resolve(strict=True)}):
+        raise ValueError("JSON payload projection requires its actual loaded parser and Python runtime")
+    captured = capture_model_identity({name: row[0] for name, row in expected.items()},
+        runtime_identity={"policy": "cpython-json-payload-v1"},
+        authorize=lambda _name, path: path.resolve(strict=True), max_files=len(expected),
+        max_file_bytes=max(row[1] for row in expected.values()),
+        max_total_bytes=sum(row[1] for row in expected.values()))
+    if any((item.size, item.sha256) != expected[item.logical_name][1:] for item in captured.files):
+        raise ValueError("JSON payload projection has no proof for the actual runtime/header content")
+    captured.verify_unchanged()
+    functions = (copy.deepcopy, copy._deepcopy_list, copy._deepcopy_dict, copy._keep_alive,
+                 json.loads, json.JSONDecoder.decode, json.JSONDecoder.raw_decode,
+                 json.JSONDecoder.__init__, json.JSONDecodeError.__init__)
+    slots = max(fn.__code__.co_nlocals + len(fn.__code__.co_cellvars) + len(fn.__code__.co_freevars)
+                + fn.__code__.co_stacksize for fn in functions)
+    # Materialized heap frame, active backing, traceback, iterator/items/pair,
+    # bound append and transient id. Include Python's error-reporting headroom.
+    per_frame = (136 + 8 * slots) + (72 + 8 * slots) + 56 + 72 + 40 + 56 + 72 + 36
+    recursion = _size(sys.getrecursionlimit(), "actual Python recursion limit")
+    return _JsonPayloadPolicy(captured.model_prefix,
+        tuple((item.logical_name, item.size, item.sha256) for item in captured.files),
+        recursion, _size((recursion + 50) * per_frame + 36, "JSON/copy frame payload"))
+
+
+def _fresh_dict_payload(count, entry_bytes):
+    """Fresh monotone selected-CPython table, not the separate churn bound."""
+    if not count:
+        return 64, 0
+    capacity = 8 if count <= 5 else 1 << (((3 * count + 1) // 2) - 1).bit_length()
+    def table(rows):
+        width = 1 if rows < 256 else 2 if rows < 65536 else 4 if rows < 1 << 32 else 8
+        return 32 + rows * width + (2 * rows // 3) * entry_bytes
+    return 64 + table(capacity), table(capacity // 2) if capacity > 8 else 0
+
+
+def _append_list_payload(count):
+    capacity = 0 if not count else count + (count >> 3) + 6
+    return 56 + 8 * capacity
+
+
+def _json_tree_payload(encoded_bytes, policy):
+    if policy is None:
+        layout = _python_layout()
+        return encoded_bytes * max(layout["dict_entry"], layout["unicode"] + 4, layout["integer"])
+    return _size(45 * encoded_bytes, "fresh JSON tree payload", zero=True)
+
+
+def _json_copy_working(encoded_bytes, policy):
+    containers = encoded_bytes // 2
+    memo, old = _fresh_dict_payload(containers + 1, 24)
+    _keys, old_keys = _fresh_dict_payload(encoded_bytes // 3, 16)
+    list_overlap = _append_list_payload(containers) - 56
+    return _total((memo, 36 * (containers + 1), _append_list_payload(containers),
+                   max(old, old_keys, list_overlap), policy.frame_work))
+
+
+def _json_parse_payload(encoded_bytes, policy):
+    """Default selected scanner, including malformed-prefix/error peaks."""
+    _size(encoded_bytes, "JSON input bytes", zero=True)
+    depth, keys = min(encoded_bytes, 10000), (encoded_bytes + 1) // 4
+    memo, old = _fresh_dict_payload(keys, 16)
+    raw = sys.getsizeof(b"") + encoded_bytes
+    digits = len(str(encoded_bytes + 1))
+    error_chars = max(72 + 3 * digits, 136 + digits, 83, 111 + digits,
+                      108 + 2 * digits, 49, 45, 28)
+    def ascii_string(chars):
+        return 41 + chars
+    error_writer = 2 * (80 + 4 * max(error_chars + error_chars // 4 + 1, 237))
+    error_strings = (ascii_string(49) + ascii_string(28) + ascii_string(9) + ascii_string(56)
+        + ascii_string(error_chars) + 3 * ascii_string(digits) + 72 + 64 + error_writer)
+    fixed = 512 + 88 + 64 + 184 + 320 + 144 + 1448 + error_strings + policy.frame_work
+    terms = {"fresh_tree": _json_tree_payload(encoded_bytes, policy), "open_containers": 45 * depth,
+        "key_memo": memo, "one_container_resize": max(old, _append_list_payload(encoded_bytes // 2) - 56),
+        "raw_input": raw, "unicode_error_input_copy": raw, "decoded_document": 2 * (80 + 4 * encoded_bytes),
+        "unicode_writer": 2 * (80 + 4 * (encoded_bytes + encoded_bytes // 4 + 1)),
+        "number_source": 49 + encoded_bytes, "fixed_headers_error_strings_frames": fixed}
+    return {"schema": "tensorfold.selected-json-parse-payload-v1", "terms": terms,
+            "total_bytes": _total(terms.values()), "c_depth_bound": depth, "key_count_bound": keys}
+
+
+def _responses_cache_wrappers(limit, connections):
+    # OrderedDict's keys table and fast-node mirror may both be old/new at
+    # resize. Nodes themselves are separately linked; this is the churn cap.
+    capacity = 1 << (max(8, 3 * (limit + 1)) - 1).bit_length()
+    width = 1 if capacity < 256 else 2 if capacity < 65536 else 4 if capacity < 1 << 32 else 8
+    table = 32 + capacity * width + (2 * capacity // 3) * 24
+    ordered = 128 + 2 * (table + 8 * capacity) + 32 * (limit + 1)
+    entries = limit + 1 + 2 * connections
+    return {"ordered_dict_keys_mirrors_nodes": ordered, "entry_count": entries,
+            "entry_payload_bytes": entries * 536, "shared_attribute_keys": 768,
+            "total_bytes": _total((ordered, entries * 536, 768))}
+
+
 def continuation_payload_bytes(*, context, vocab_size, presentation, max_body_bytes, copy_enabled,
-                               presentation_fixed=0):
+                               presentation_fixed=0, json_policy=None):
     """Named future owned Python/NumPy payloads for ONE logical CPU owner.
 
     InputClaim independently pays the original full prompt and encoded replay.
@@ -691,12 +869,14 @@ def continuation_payload_bytes(*, context, vocab_size, presentation, max_body_by
     # Parsed permissive tool outputs and JSON/SSE serialization may coexist
     # with the decoded reply. Use the same conservative node projection as
     # bounded input JSON, plus six-byte JSON escaping of each output codepoint.
-    node = max(layout["dict_entry"], layout["unicode"] + 4, layout["integer"])
-    reply_graph = chars * node
+    # Project-created tool/output wrappers are not a fresh parsed tree whose
+    # own encoded length equals the decoded model text. Keep their independent
+    # generic source-role bound until that schema has a stronger proof.
+    reply_graph = _json_tree_payload(chars, None)
     reply_wire = 6 * chars + layout["bytes"]
     # Original stop/tool/request fields can remain reachable through an exact
     # suspended/completed callback owner after the HTTP parser returns.
-    request_graph = max_body_bytes * node
+    request_graph = _json_tree_payload(max_body_bytes, json_policy)
     return {"continuation_lists": lists, "mailbox": mailbox, "copy_index": copies,
             "presentation_strings": text, "reply_graph_and_wire": reply_graph + reply_wire,
             "request_graph": request_graph, "input_prompt": 0,
@@ -710,7 +890,8 @@ def continuation_payload_bytes(*, context, vocab_size, presentation, max_body_by
             "project_payload_bytes": _total((lists, mailbox, copies, text, reply_graph, reply_wire, request_graph))}
 
 
-def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_requests, max_http_body_bytes):
+def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_requests, max_http_body_bytes,
+                          json_policy=None, ordinary_fifo_children=False):
     """Named Python owners for the serialized TP actor, separate from native IO.
 
     The selected protocol bounds commands and ACKs by MAX_MESSAGE_BYTES and
@@ -749,9 +930,9 @@ def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_req
 
     peers, pending, frame = world - 1, max_pending_requests, MAX_MESSAGE_BYTES
     node = max(layout["dict_entry"], layout["unicode"] + 4, layout["integer"])
-    if continuation_terms["request_graph"] != max_http_body_bytes * node:
+    if continuation_terms["request_graph"] != _json_tree_payload(max_http_body_bytes, json_policy):
         raise ValueError("RPC projection needs its actual continuation HTTP/body layout")
-    graph = _size(frame * node, "RPC parsed graph")
+    graph = _json_tree_payload(frame, json_policy)
     text = layout["unicode"] + frame  # Both bounded publishers produce ASCII.
     raw = layout["bytes"] + frame
     # _execute publishes only an error class name, a 64-hex state digest,
@@ -858,8 +1039,26 @@ def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_req
 
     # One source pack/control graph: prompt/owed/carry aliases are not new
     # payloads. R*node bounds only the newly created RPC metadata subset.
-    source_graph = graph
-    receive = graph + raw + text
+    # Variable source subtrees are declared JSON/token lists (source tuples
+    # are smaller than the equivalent append lists). Fixed Stats/controller
+    # merges need their own table allowance rather than the parsed-tree lemma.
+    # Counts include old/working/result records and merge input footprints.
+    source_records = {"stats_own": 10, "stats_both": 7, "stats_return_inputs": 19,
+        "controller_maximum": 4, "controller_configured": 4, "controller_effective": 4,
+        "freeze_values_and_update": 8, "freeze_family": 2, "freeze_migration": 3,
+        "freeze_record": 10, "freeze_workload": 10, "boundary_values": 4,
+        "boundary_family_and_replacement": 4, "boundary_record": 5}
+    source_record_tables = {}
+    for name, fields in source_records.items():
+        # A merge may reserve for both current and incoming fixed-key maps.
+        # The churn table rule and two tables also fund its old/new cut.
+        table, _capacity = dictionary_table(2 * fields, 2)
+        source_record_tables[name] = layout["dict"] + 2 * table
+    source_fixed = _total(source_record_tables.values())
+    source_graph = frame * node if json_policy is None else graph + source_fixed
+    parsed = None if json_policy is None else _json_parse_payload(frame, json_policy)
+    parse_extra = 0 if parsed is None else parsed["total_bytes"] - graph - raw - text
+    receive = graph + raw + text + parse_extra
     dispatch = graph + max(encoding + 5 * layout["dict_entry"], digest_working)
     # During ACK publication the current command graph and new status graph
     # remain live. Status encoding and digest construction happen serially.
@@ -867,7 +1066,7 @@ def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_req
     peer_working = max(receive, dispatch, peer_ack)
     ack_batch = pointers(peers) + peers * raw
     # The last decoded remote status remains across the next json.loads RHS.
-    ack_parse = text + 2 * graph
+    ack_parse = text + 2 * graph + parse_extra
     stages = {
         "source_encoding": source_graph + encoding,
         "publication_and_peer_work": source_graph + text + peers * peer_working,
@@ -878,10 +1077,29 @@ def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_req
     # Stream/carry/media/retention children survive their parent body through
     # ordinary references. These new follower RPC metadata subsets are paid
     # once per logical caller; prompt integers/owed lists use their roles above.
-    persistent_children = peers * pending * graph
+    child_schema = None
+    child_payload = graph
+    if ordinary_fifo_children:
+        # Enforced FIFO carry=None removes the opaque dictionary root.
+        # Prompt/owed lists and integers have separate follower roles above;
+        # follow() rebuilds grammar Spec.text instead of retaining its int list.
+        # Strings in Spec/principal/typed Intent consume disjoint wire extents.
+        # Three LogicalReferences and the bounded typed records have <=30
+        # attributes each; charge their full selected attribute backing.
+        typed_record = stream_header + 336
+        integer = max(layout["integer"], sys.getsizeof(10 ** 4300 - 1))
+        child_schema = {"schema": "tensorfold.fifo-text-child-payload-v1", "carry": None,
+            "variable_string_bytes": 5 * frame,
+            "stream_object_and_attributes": stream_header + layout["dict"] + stream_table,
+            "sampling_spec_constraint_intent_references": 8 * typed_record,
+            "aliases_and_scalar_headers": pointers(3) + 16 * integer + 12 * layout["unicode"],
+            "largest_retained_integer_bytes": integer}
+        child_payload = _total(value for name, value in child_schema.items()
+                               if type(value) is int and name != "largest_retained_integer_bytes")
+    persistent_children = peers * pending * child_payload
     # N request/error journals plus one managed actor error root per rank.
     # Raised receive/publication paths preserve byte/text/graph diagnostics.
-    error_owners = world * (pending + 1) * (graph + raw + text)
+    error_owners = (pending + 1) * (source_graph + peers * graph + world * (raw + text))
     leader_prompt_refs = pending * partition["per_list_pointer_bytes"]
     fixed = {"follower_owned_rpc_children": persistent_children,
              "preserved_rpc_error_owners": error_owners,
@@ -892,8 +1110,11 @@ def tp_rpc_python_payload(continuation_terms, *, world, context, max_pending_req
             "per_follower_scope": per_follower, "named_rpc_terms": fixed,
             "phase_working_bytes": stages, "frame_bytes": frame,
             "json_graph_bytes": graph, "ascii_text_bytes": text, "python_bytes_bytes": raw,
+            "source_json_graph_bytes": source_graph, "parse_working": parsed,
+            "source_fixed_record_tables": source_record_tables,
+            "persistent_child_schema": child_schema,
             "source_ack_graph_bytes": ack_graph, "source_ack_schema": "error-state-completion-v1",
-            "per_http_rpc_error_tail_bytes": graph + raw + text,
+            "per_http_rpc_error_tail_bytes": max(source_graph, graph) + raw + text,
             "encoder_working_bytes": encoding, "digest_working_bytes": digest_working,
             "runtime_recursion_limit": recursion, "encoder_frame_header_bytes": frame_header,
             "leader_request_map_metadata": leader_maps,
@@ -913,102 +1134,8 @@ def retained_constraint_reason(catalog, *, logical_retained):
     return None
 
 
-def finalize_retention_resources(catalog, *, tokenizer, max_pending_requests,
-                                max_waiting_input_bytes, max_http_connections, output_queue_tokens=None,
-                                max_http_body_bytes=None, logical_api_limits=None):
-    """Freeze actual endpoint obligations before handlers/accepted generation.
-
-    Physical admission is a current source-candidate check, not an exclusive OS
-    grant: concurrent unrelated consumers may still exhaust the host. Existing
-    OS reserve/cgroup authorities apply without rank-multiplying global caps.
-    """
-    from tensorfold.cuda.capacity import admit_host_commitment
-    from tensorfold.server.request_body import LIMIT
-
-    catalog.check_health()
-    baseline = catalog.host_resources
-    if type(baseline) is not HostBaseline:
-        raise ValueError("FIFO host admission requires the actual ordinary steady header baseline")
-    for name, value in (("pending request limit", max_pending_requests),
-                        ("waiting input bytes", max_waiting_input_bytes), ("HTTP connection limit", max_http_connections)):
-        _size(value, name)
-    if output_queue_tokens is not None:
-        _size(output_queue_tokens, "output queue tokens")
-    decoder = catalog._cohort.multi
-    if decoder is None:
-        raise ValueError("endpoint host resources require the actual bound decoder")
-    copy_enabled = decoder.copy
-    body_bytes = LIMIT if max_http_body_bytes is None else max(LIMIT, _size(max_http_body_bytes, "HTTP route body bound"))
-    bound = tokenizer_presentation_bound(tokenizer)
-    context = catalog.states[0].logical_context
-    if any(state.logical_context != context for state in catalog.states):
-        raise ValueError("endpoint host resources require one admitted logical context")
-    terms = continuation_payload_bytes(context=context, vocab_size=bound.vocab_size,
-        presentation=bound.decoded_utf8_bytes_per_token, presentation_fixed=bound.decoded_utf8_fixed_bytes,
-        max_body_bytes=body_bytes, copy_enabled=copy_enabled)
-    if output_queue_tokens is not None:
-        terms["mailbox"] = terms["mailbox"] * min(context, output_queue_tokens) // context
-        terms["project_payload_bytes"] = _total(value for name, value in terms.items()
-                                                if name not in ("project_payload_bytes", "input_prompt", "token_list_roles", "text_roles", "list_partition"))
-    header = retention_header_resources(catalog.policy, catalog.world, slots=len(catalog.states))
-    sessions = 0 if catalog.policy is None else catalog.policy.max_sessions
-    rpc_python = tp_rpc_python_payload(terms, world=catalog.world, context=context,
-        max_pending_requests=max_pending_requests, max_http_body_bytes=body_bytes)
-    # Replicated Stream state exists on every rank; detok/HTTP are leader-only.
-    per_owner = terms["project_payload_bytes"] + (catalog.world - 1) * rpc_python["per_follower_scope_bytes"]
-    generation_owners = max_pending_requests
-    input_floor = None
-    if catalog.policy is None:
-        input_floor = _size(decoder.input_reservation_bytes(), "mandatory logical input claim")
-        generation_owners = min(generation_owners, max_waiting_input_bytes // input_floor)
-    model_cpu = (generation_owners + sessions) * per_owner
-    # App.run's logical RequestLimit ends before the HTTP handler serializes
-    # and writes its final response. Slow completed sockets and new model jobs
-    # may therefore coexist; the real HTTP connection cap owns that tail.
-    completed_http = max_http_connections * (terms["presentation_strings"] + terms["reply_graph_and_wire"]
-        + terms["continuation_lists"] // len(terms["token_list_roles"]))
-    http_rpc_errors = max_http_connections * rpc_python["per_http_rpc_error_tail_bytes"]
-    cpu = model_cpu + completed_http + http_rpc_errors
-    layout = _python_layout()
-    # A JSON graph has no more nodes than encoded bytes. The singleton table
-    # bound covers a dictionary/list/scalar node, including its pointer cell.
-    # This deliberately conservative wire bound is independent of token shape.
-    node = max(layout["dict_entry"], layout["unicode"] + 4, layout["integer"])
-    transport = max_http_connections * body_bytes * node
-    # The backing cap already pays encoded manifest bytes. Pay additional
-    # parsed graph/object headers for all admitted protected generations.
-    backed = (0 if catalog.policy is None or catalog.policy.tier != "ram" else min(
-        sessions + max_pending_requests + catalog.prefix_limit,
-        catalog.policy.ram_bytes // catalog.minimum_future_bytes))
-    # Published and replacement parsed generations may coexist; encoding,
-    # fragments and the joined input are separate source-owned wire buffers.
-    manifests = backed * catalog._manifest_bytes * (2 * node + 3)
-    if logical_api_limits is None:
-        import inspect
-        from tensorfold.server.responses import Store
-
-        # The existing lazy default cache still owns deep-copied standard
-        # response/message graphs. Read its actual constructor contract, not a
-        # second hard-coded 256MiB default or a throwaway Store instance.
-        signature = inspect.signature(Store)
-        cached = _size(signature.parameters["max_bytes"].default, "default Responses cache bytes")
-        logical_api = (1 + max_http_connections) * cached * node
-        logical_receipt = {"mode": "existing bounded in-memory Responses cache", "encoded_cache_bytes": cached}
-    else:
-        from tensorfold.server.api_records import ApiRecordLimits
-
-        if type(logical_api_limits) is not ApiRecordLimits:
-            raise ValueError("logical API host resources require the actual parsed ApiRecordLimits")
-        # GET/list materializations and active response operations have
-        # separately bounded ownership. Parse temporaries coexist with their
-        # checked trees; encoded history is not the incoming body cap.
-        logical_api = ((logical_api_limits.max_active_operations + max_http_connections)
-                       * logical_api_limits.max_materialized_bytes
-                       + max_http_connections * (logical_api_limits.max_history_bytes
-                           + logical_api_limits.max_operation_bytes) * node)
-        logical_receipt = {"mode": "configured standard SQL records", "limits": asdict(logical_api_limits),
-                           "native_sqlite_allocator": "qualification pending; not an RSS certificate"}
-    fixed = header.global_host_bytes
+def _native_host_commitment(catalog, baseline):
+    """One authoritative selected-native protocol obligation for every caller."""
     native_slots = baseline.native_state_slots or len(catalog.states)
     if native_slots < len(catalog.states):
         raise ValueError("native protocol State highwater is below the actual admitted State count")
@@ -1027,6 +1154,285 @@ def finalize_retention_resources(catalog, *, tokenizer, max_pending_requests,
         native_prefix = native_sync_prefix_payload(world=catalog.world, slots=native_slots)
         unpaid_fixed = max(0, native_fixed["global_native_fixed_payload_bytes"] - baseline.prepaid_native_fixed_payload_bytes)
         unpaid_prefix = max(0, native_prefix["global_native_prefix_payload_bytes"] - baseline.prepaid_native_prefix_payload_bytes)
+    return native_fixed, native_prefix, unpaid_fixed, unpaid_prefix
+
+
+def _model_host_projection(catalog, *, tokenizer, max_pending_requests, max_waiting_input_bytes,
+                           body_bytes, output_queue_tokens, fifo_child_schema=None, precise_payloads=True):
+    """Shared real model/caller projection; endpoint roles are added by adapters."""
+    catalog.check_health()
+    baseline = catalog.host_resources
+    if type(baseline) is not HostBaseline:
+        raise ValueError("FIFO host admission requires the actual ordinary steady header baseline")
+    for name, value in (("pending request limit", max_pending_requests),
+                        ("waiting input bytes", max_waiting_input_bytes), ("source payload bytes", body_bytes)):
+        _size(value, name)
+    if output_queue_tokens is not None:
+        _size(output_queue_tokens, "output queue tokens")
+    decoder = catalog._cohort.multi
+    if decoder is None:
+        raise ValueError("endpoint host resources require the actual bound decoder")
+    copy_enabled = decoder.copy
+    bound = tokenizer_presentation_bound(tokenizer, precise_bytelevel=precise_payloads)
+    # Tight native/JSON phase accounting is qualified for the actual plain
+    # ByteLevel frontend. Other supported decoder compositions keep their
+    # existing conservative projection rather than borrowing this proof.
+    json_policy = (_json_payload_policy()
+                   if bound.decoder == "tokenizers-0.23.3/bytelevel-concat-v2" else None)
+    context = catalog.states[0].logical_context
+    if any(state.logical_context != context for state in catalog.states):
+        raise ValueError("endpoint host resources require one admitted logical context")
+    terms = continuation_payload_bytes(context=context, vocab_size=bound.vocab_size,
+        presentation=bound.decoded_utf8_bytes_per_token, presentation_fixed=bound.decoded_utf8_fixed_bytes,
+        max_body_bytes=body_bytes, copy_enabled=copy_enabled, json_policy=json_policy)
+    if output_queue_tokens is not None:
+        terms["mailbox"] = terms["mailbox"] * min(context, output_queue_tokens) // context
+        terms["project_payload_bytes"] = _total(value for name, value in terms.items()
+                                                if name not in ("project_payload_bytes", "input_prompt", "token_list_roles", "text_roles", "list_partition"))
+    header = retention_header_resources(catalog.policy, catalog.world, slots=len(catalog.states))
+    sessions = 0 if catalog.policy is None else catalog.policy.max_sessions
+    ordinary_children = (json_policy is not None and catalog.policy is None
+        and fifo_child_schema is not None and getattr(decoder, "media_runtime", None) is None)
+    if fifo_child_schema is not None and (fifo_child_schema != {"schema": "tensorfold.tp-fifo-retained-children",
+            "version": 1, "context": context, "vocab": bound.vocab_size}):
+        raise ValueError("FIFO child schema differs from the actual model/tokenizer geometry")
+    rpc_python = tp_rpc_python_payload(terms, world=catalog.world, context=context,
+        max_pending_requests=max_pending_requests, max_http_body_bytes=body_bytes, json_policy=json_policy,
+        ordinary_fifo_children=ordinary_children)
+    # Replicated Stream state exists on every rank; detok/HTTP are leader-only.
+    per_owner = terms["project_payload_bytes"] + (catalog.world - 1) * rpc_python["per_follower_scope_bytes"]
+    generation_owners = max_pending_requests
+    input_floor = None
+    if catalog.policy is None and json_policy is not None:
+        input_floor = _size(decoder.input_reservation_bytes(), "mandatory logical input claim")
+        generation_owners = min(generation_owners, max_waiting_input_bytes // input_floor)
+    model_cpu = (generation_owners + sessions) * per_owner
+    return {
+        "baseline": baseline,
+        "decoder": decoder,
+        "copy_enabled": copy_enabled,
+        "bound": bound,
+        "json_policy": json_policy,
+        "context": context,
+        "terms": terms,
+        "header": header,
+        "sessions": sessions,
+        "rpc_python": rpc_python,
+        "generation_owners": generation_owners,
+        "input_floor": input_floor,
+        "model_cpu": model_cpu,
+    }
+
+
+@dataclass(frozen=True)
+class FiniteBackendCaller:
+    """Prepared finite inputs and a synchronous bounded token/result consumer.
+
+    Input preparation and immutable artifact reads complete before admission.
+    This caller has no HTTP, Store, media or matcher route. It retains at most
+    the declared results; its callback validates IDs before appending them.
+    The native model/context/cache contract is unchanged.
+    """
+    max_source_bytes: int
+    max_input_tokens: int
+    max_output_tokens: int
+    retained_results: int
+    max_receipt_bytes: int
+
+    def __post_init__(self):
+        for name, value in asdict(self).items():
+            _size(value, "finite caller " + name)
+
+
+def _scheduler_child_schema(scheduler):
+    from .tp_scheduler import TensorParallelDecoder
+
+    adapter = scheduler.decoder
+    return adapter.fifo_retained_child_schema() if type(adapter) is TensorParallelDecoder else None
+
+
+def _admit_host_record(catalog, record, materialized):
+    from tensorfold.cuda.capacity import admit_host_commitment
+
+    if catalog.has_retained:
+        raise ValueError("host resources must finalize before request admission")
+    identity = hashlib.sha256(json.dumps(record, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+    old = getattr(catalog, "host_resource_envelope", None)
+    if old is not None and old["identity"] != identity:
+        raise ValueError("the active retention endpoint resource envelope is immutable")
+    authority = admit_host_commitment(record["global_host_commitment_bytes"], materialized_owned_bytes=materialized)
+    result = {**record, "identity": identity, "authority": authority}
+    catalog.host_resource_envelope = result
+    return result
+
+
+def finalize_backend_resources(catalog, *, tokenizer, scheduler, request_limit, caller):
+    """Admit the real model and a finite local caller through the common owner.
+
+    HTTP/metadata/Store terms are absent because this is a distinct enforced
+    caller interface, not because HTTP limits were set to zero. No submission
+    may precede the ordinary physical/cgroup commitment admission below.
+    """
+    from tensorfold.cuda.scheduler import Scheduler
+    from tensorfold.server.request_limits import RequestLimit
+    from .tokenizer_payload import bytelevel_decode_payload
+
+    if type(caller) is not FiniteBackendCaller or type(request_limit) is not RequestLimit or type(scheduler) is not Scheduler:
+        raise ValueError("finite backend admission requires its typed caller, Scheduler and RequestLimit owners")
+    if request_limit.maximum != 1:
+        raise ValueError("finite backend caller requires exactly one logical request owner")
+    if (scheduler.admission_policy != "fifo" or scheduler._submitted or request_limit.used
+            or scheduler._request_limit not in (None, request_limit)):
+        raise ValueError("finite backend resources must precede submission under the same real FIFO owner")
+    if catalog.policy is not None or getattr(catalog._cohort.multi, "media_runtime", None) is not None:
+        raise ValueError("finite backend caller supports ordinary text state without retained/media ownership")
+    pending = _size(request_limit.maximum, "finite logical request limit")
+    waiting = _size(scheduler.max_waiting_input_bytes, "actual finite FIFO input credit")
+    core = _model_host_projection(catalog, tokenizer=tokenizer, max_pending_requests=pending,
+        max_waiting_input_bytes=waiting, body_bytes=caller.max_source_bytes,
+        output_queue_tokens=scheduler.output_queue_tokens, fifo_child_schema=_scheduler_child_schema(scheduler))
+    context, bound, policy = core["context"], core["bound"], core["json_policy"]
+    if policy is None or caller.max_input_tokens + caller.max_output_tokens > context:
+        raise ValueError("finite caller input/output bounds must fit the actual native logical context")
+    decoder = catalog._cohort.multi
+    owned = scheduler.decoder.decoder if hasattr(scheduler.decoder, "decoder") else scheduler.decoder
+    if owned.states is not decoder.states or owned.w is not decoder.w:
+        raise ValueError("finite caller Scheduler differs from the model catalog owner")
+    native_fixed, native_prefix, unpaid_fixed, unpaid_prefix = _native_host_commitment(catalog, core["baseline"])
+    native_decode = bytelevel_decode_payload(bound, context=caller.max_output_tokens)
+    layout = _python_layout()
+    integer = max(layout["integer"], sys.getsizeof(bound.vocab_size - 1))
+    caller_terms = {
+        "prepared_source_strings_and_buffers": 2 * (80 + 5 * caller.max_source_bytes),
+        "original_input_ids": _append_list_payload(caller.max_input_tokens) + caller.max_input_tokens * integer,
+        "retained_result_ids": caller.retained_results * (
+            _append_list_payload(caller.max_output_tokens) + caller.max_output_tokens * integer),
+        "retained_decoded_text": caller.retained_results * (80 + 5 * native_decode["decoded_utf8_bytes"]),
+        "one_native_decode_and_conversion": max(native_decode["native_heap_requested_bytes"],
+                                                  native_decode["result_to_python_payload_bytes"]),
+        "bounded_report_graph": caller.max_receipt_bytes * layout["dict_entry"],
+        "bounded_report_encoding_and_wire": 5 * caller.max_receipt_bytes + policy.frame_work,
+    }
+    baseline, header, rpc = core["baseline"], core["header"], core["rpc_python"]
+    total = _total((baseline.baseline_host_bytes, header.global_host_bytes, waiting,
+        core["model_cpu"], rpc["global_rpc_python_working_bytes"],
+        unpaid_fixed, unpaid_prefix, *caller_terms.values()))
+    materialized = baseline.materialized_host_bytes
+    if catalog._buffer is not None and catalog._buffer.is_pinned():
+        materialized += catalog.world * catalog._buffer.nbytes
+    record = {"schema": "tensorfold.finite-backend-host-envelope-v1", "caller": asdict(caller),
+        "caller_role": "prepared-finite-inputs/synchronous-token-callback/local-bounded-reports",
+        "context_tokens": context, "world": catalog.world, "state_slots": len(catalog.states),
+        "max_pending_requests": pending, "global_waiting_input_bytes": waiting,
+        "tokenizer": asdict(bound), "json_payload_policy": policy.record(), "header": header.record(),
+        "continuation": core["terms"], "generation_owner_bound": {"version": 1,
+            "owners": core["generation_owners"], "mandatory_input_claim_bytes": core["input_floor"]},
+        "global_model_cpu_projection_bytes": core["model_cpu"], "tp_rpc_python": rpc,
+        "global_rpc_python_working_bytes": rpc["global_rpc_python_working_bytes"],
+        "native_fixed": native_fixed, "native_prefix": native_prefix,
+        "global_unpaid_native_fixed_payload_bytes": unpaid_fixed,
+        "global_unpaid_native_prefix_payload_bytes": unpaid_prefix,
+        "ordinary_host_baseline": asdict(baseline), "caller_payload": caller_terms,
+        "native_decode": native_decode, "global_host_commitment_bytes": total,
+        "materialized_owned_bytes": materialized,
+        "evidence": "source payload commitment; allocator/C-stack/driver/device/P3 qualification separate"}
+    return _admit_host_record(catalog, record, materialized)
+
+
+def finalize_retention_resources(catalog, *, tokenizer, max_pending_requests,
+                                max_waiting_input_bytes, max_http_connections, output_queue_tokens=None,
+                                max_http_body_bytes=None, logical_api_limits=None, fifo_child_schema=None):
+    """Freeze actual endpoint obligations before handlers/accepted generation.
+
+    Physical admission is a current source-candidate check, not an exclusive OS
+    grant: concurrent unrelated consumers may still exhaust the host. Existing
+    OS reserve/cgroup authorities apply without rank-multiplying global caps.
+    """
+    from tensorfold.server.request_body import LIMIT
+
+    _size(max_http_connections, "HTTP connection limit")
+    body_bytes = LIMIT if max_http_body_bytes is None else max(LIMIT, _size(max_http_body_bytes, "HTTP route body bound"))
+    # The complete tighter HTTP/preparation/cache phase proof is a separate
+    # open region. Preserve its conservative frontend projection while the
+    # finite local caller uses the independently closed model-only boundary.
+    core = _model_host_projection(catalog, tokenizer=tokenizer, max_pending_requests=max_pending_requests,
+        max_waiting_input_bytes=max_waiting_input_bytes, body_bytes=body_bytes,
+        output_queue_tokens=output_queue_tokens, fifo_child_schema=fifo_child_schema, precise_payloads=False)
+    baseline = core["baseline"]
+    copy_enabled = core["copy_enabled"]
+    bound = core["bound"]
+    json_policy = core["json_policy"]
+    context = core["context"]
+    terms = core["terms"]
+    header = core["header"]
+    sessions = core["sessions"]
+    rpc_python = core["rpc_python"]
+    generation_owners = core["generation_owners"]
+    input_floor = core["input_floor"]
+    model_cpu = core["model_cpu"]
+    # App.run's logical RequestLimit ends before the HTTP handler serializes
+    # and writes its final response. Slow completed sockets and new model jobs
+    # may therefore coexist; the real HTTP connection cap owns that tail.
+    completed_http = max_http_connections * (terms["presentation_strings"] + terms["reply_graph_and_wire"]
+        + terms["continuation_lists"] // len(terms["token_list_roles"]))
+    http_rpc_errors = max_http_connections * rpc_python["per_http_rpc_error_tail_bytes"]
+    cpu = model_cpu + completed_http + http_rpc_errors
+    layout = _python_layout()
+    # A JSON graph has no more nodes than encoded bytes. The singleton table
+    # bound covers a dictionary/list/scalar node, including its pointer cell.
+    # This deliberately conservative wire bound is independent of token shape.
+    node = max(layout["dict_entry"], layout["unicode"] + 4, layout["integer"])
+    incoming_json = None if json_policy is None else _json_parse_payload(body_bytes, json_policy)
+    transport = max_http_connections * (body_bytes * node if incoming_json is None else incoming_json["total_bytes"])
+    # The backing cap already pays encoded manifest bytes. Pay additional
+    # parsed graph/object headers for all admitted protected generations.
+    backed = (0 if catalog.policy is None or catalog.policy.tier != "ram" else min(
+        sessions + max_pending_requests + catalog.prefix_limit,
+        catalog.policy.ram_bytes // catalog.minimum_future_bytes))
+    # Published and replacement parsed generations may coexist; encoding,
+    # fragments and the joined input are separate source-owned wire buffers.
+    manifests = backed * catalog._manifest_bytes * (2 * node + 3)
+    if logical_api_limits is None:
+        import inspect
+        from tensorfold.server.responses import Store
+
+        # The existing lazy default cache still owns deep-copied standard
+        # response/message graphs. Read its actual constructor contract, not a
+        # second hard-coded 256MiB default or a throwaway Store instance.
+        signature = inspect.signature(Store)
+        cached = _size(signature.parameters["max_bytes"].default, "default Responses cache bytes")
+        cache_limit = _size(signature.parameters["limit"].default, "default Responses cache count")
+        # Current cached trees, old pinned generations and their clone/memo
+        # work are distinct. Conversation also owns flattened pointer lists.
+        cache_current = _json_tree_payload(cached, json_policy)
+        cache_copy = (cached * node if json_policy is None else
+            90 * cached + _json_copy_working(cached, json_policy)
+            + _append_list_payload(cached // 2) + _append_list_payload(cache_limit))
+        cache_wrappers = (None if json_policy is None else
+                          _responses_cache_wrappers(cache_limit, max_http_connections))
+        logical_api = cache_current + max_http_connections * cache_copy
+        if cache_wrappers is not None:
+            logical_api += cache_wrappers["total_bytes"]
+        logical_receipt = {"mode": "existing bounded in-memory Responses cache", "encoded_cache_bytes": cached,
+            "cached_tree_bytes": cache_current, "per_http_old_source_clone_memo_bytes": cache_copy,
+            "cache_entry_limit": cache_limit, "cache_wrappers": cache_wrappers,
+            "projection_status": "existing conservative HTTP baseline; tighter complete HTTP region remains open"}
+    else:
+        from tensorfold.server.api_records import ApiRecordLimits
+
+        if type(logical_api_limits) is not ApiRecordLimits:
+            raise ValueError("logical API host resources require the actual parsed ApiRecordLimits")
+        # GET/list materializations and active response operations have
+        # separately bounded ownership. Parse temporaries coexist with their
+        # checked trees; encoded history is not the incoming body cap.
+        logical_api = ((logical_api_limits.max_active_operations + max_http_connections)
+                       * logical_api_limits.max_materialized_bytes
+                       + max_http_connections * (logical_api_limits.max_history_bytes
+                           + logical_api_limits.max_operation_bytes) * node)
+        logical_receipt = {"mode": "configured standard SQL records", "limits": asdict(logical_api_limits),
+                           "native_sqlite_allocator": "qualification pending; not an RSS certificate"}
+    fixed = header.global_host_bytes
+    native_fixed, native_prefix, unpaid_fixed, unpaid_prefix = _native_host_commitment(catalog, baseline)
     total = _total((baseline.baseline_host_bytes, fixed, max_waiting_input_bytes, cpu, transport, manifests,
                     logical_api, rpc_python["global_rpc_python_working_bytes"], unpaid_fixed, unpaid_prefix))
     materialized = baseline.materialized_host_bytes
@@ -1041,6 +1447,9 @@ def finalize_retention_resources(catalog, *, tokenizer, max_pending_requests,
         "world": catalog.world, "max_pending_requests": max_pending_requests,
         "max_http_connections": max_http_connections, "output_queue_tokens": output_queue_tokens,
         "max_http_body_bytes": body_bytes, "copy_enabled": copy_enabled,
+        "json_payload_policy": (json_policy.record() if json_policy is not None else
+            {"mode": "existing conservative builtin-decoder projection", "tight_native_scope": False}),
+        "incoming_json": incoming_json,
         "generation_owner_bound": {"version": 1, "owners": generation_owners,
             "mandatory_input_claim_bytes": input_floor,
             "scope": "existing global FIFO input credit through complete logical caller lifetime"},
@@ -1061,11 +1470,4 @@ def finalize_retention_resources(catalog, *, tokenizer, max_pending_requests,
         "native_constraints": ("ordinary unretained matcher residency/allocator qualification pending" if catalog.policy is None
                                else "retained/tiered combination refused before compilation"),
         "evidence": catalog.evidence}
-    identity = hashlib.sha256(json.dumps(record, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-    old = getattr(catalog, "host_resource_envelope", None)
-    if old is not None and old["identity"] != identity:
-        raise ValueError("the active retention endpoint resource envelope is immutable")
-    authority = admit_host_commitment(total, materialized_owned_bytes=materialized)
-    result = {**record, "identity": identity, "authority": authority}
-    catalog.host_resource_envelope = result
-    return result
+    return _admit_host_record(catalog, record, materialized)
