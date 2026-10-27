@@ -920,3 +920,9 @@ int family_prepare_value_guard_cuda() {
     C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, value_guard_kernel));
     return 1;
 }
+
+int family_prepare_owner_prelude_cuda() {
+    cudaFuncAttributes attributes;
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, prep_kernel));
+    return 1;
+}

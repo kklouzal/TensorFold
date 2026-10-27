@@ -8,7 +8,8 @@ import torch
 from tensorfold.cuda.sm70 import family_ops as ops
 from tensorfold.families.qwen4_exp.cuda import gdn, glue
 
-pytestmark = pytest.mark.skipif(torch.cuda.get_device_capability() != (7, 0), reason="SM70 fused family")
+pytestmark = pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_device_capability() != (7, 0),
+                               reason="SM70 fused family")
 
 
 def invoke(name, native, *args, **kwargs):
@@ -246,7 +247,8 @@ def test_native_attention_prep_host_geometry_and_existing_int8_bytes(kb, vb):
 
 @pytest.mark.parametrize("rows", [1, 2, 3, 9, 17, 37])
 @pytest.mark.parametrize("bits", [0, 8])
-def test_prep_exact_torch_stored_bytes_across_prefill_and_decode_reduction_shapes(rows, bits):
+@pytest.mark.parametrize("independent_rows", [False, True])
+def test_prep_exact_torch_stored_bytes_across_prefill_and_decode_reduction_shapes(rows, bits, independent_rows):
     torch.manual_seed(1237)
     qh, kh, hd, ih, iw, base = 3, 1, 256, 4, 128, 273
     packed = torch.randn((rows, 2 * qh * hd + 2 * kh * hd + (ih + 1) * iw), device="cuda", dtype=torch.float16) * 3
@@ -263,7 +265,7 @@ def test_prep_exact_torch_stored_bytes_across_prefill_and_decode_reduction_shape
         status = torch.tensor([0, -2], device="cuda", dtype=torch.int32)
         invoke("attn_prep", native, packed, position, qw, kw, iqw, frequency, q, key, value, iq, index, 1e-6,
                q_heads=qh, kv_heads=kh, head_dim=hd, index_heads=ih, index_dim=iw,
-               ks=ks, vs=vs, bits=bits, status=status)
+               ks=ks, vs=vs, bits=bits, status=status, independent_rows=independent_rows)
         results.append((q, key, value, iq, index, ks, vs))
     for actual, expected in zip(results[1], results[0]):
         torch.testing.assert_close(actual, expected, atol=0, rtol=0)

@@ -37,6 +37,7 @@ void family_pool_staged_cuda(const T&, const T&, T&, const T&, const T&, const T
 void family_ring_publish_cuda(const T&, T&, const T&, int, int, const O&, const O&, int, const O&);
 void family_value_guard_cuda(const T&, T&, const T&, const O&, int, int);
 int family_prepare_value_guard_cuda();
+int family_prepare_owner_prelude_cuda();
 void family_qsa_dense_cuda(const T&, T&, T&, int);
 void family_qsa_rows_cuda(const T&, const T&, const T&, T&, T&, T&, T&, int, int, int, int);
 
@@ -490,7 +491,14 @@ int prepare_value_guard() {
     return family_prepare_value_guard_cuda();
 }
 
+int prepare_owner_prelude() {
+    const auto* prop = at::cuda::getDeviceProperties(c10::cuda::current_device());
+    TORCH_CHECK(prop->major == 7 && prop->minor == 0, "owner prelude residency requires SM70");
+    return family_prepare_owner_prelude_cuda();
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.def("prepare_owner_prelude", &prepare_owner_prelude);
     m.def("value_guard", &value_guard); m.def("prepare_value_guard", &prepare_value_guard);
     m.def("writeback", &writeback); m.def("normed", &normed); m.def("act", &act); m.def("mix", &mix);
     m.def("rms", &rms); m.def("gate", &gate); m.def("ple_embed", &ple_embed); m.def("ple_gate", &ple_gate);

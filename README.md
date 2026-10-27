@@ -1,5 +1,13 @@
 # TensorFold fork
 
+The private `source-owner-target-prelude-trial` prepares plain native-context Q8
+owner frames through the existing fused family preparation kernel. Dedicated
+immutable zero and original State positions separate frame addresses from RoPE
+coordinates. Existing pre-gate scratch owns bounded K/V/scales/raw-index outputs;
+cache and compact-indexer publication transactions remain unchanged. A distinct
+profile epoch and pre-admission control/header funding retain the 24-window
+contract. Numerical, quality and six-concurrency performance gates are pending.
+
 The private owner/target guard candidate also prepares the unique N1 piece
 graph's immutable identity maps once. Consumer streams join their initialization
 event; repeated host fills/uploads are removed. Ordinary multi-lane maps keep

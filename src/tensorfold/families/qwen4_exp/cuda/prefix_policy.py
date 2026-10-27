@@ -29,7 +29,10 @@ OWNER_TARGET_GREEDY_STATE = ("sm70-prefix-epoch-v1", hashlib.sha256(OWNER_TARGET
 OWNER_TARGET_GUARD_PROFILE = "source-owner-target-guard-trial"
 OWNER_TARGET_GUARD_IDENTITY = "sm70-native-owner-n1-pieces-target-greedy-valueguard-v1:" + QSA_SELECTION
 OWNER_TARGET_GUARD_STATE = ("sm70-prefix-epoch-v1", hashlib.sha256(OWNER_TARGET_GUARD_IDENTITY.encode()).hexdigest())
-EARLY_IDENTITY_STATES = (FAMILY_PREFIX_STATE, PACKED_GRAPH_STATE, OWNER_GRAPH_STATE, TARGET_GREEDY_STATE, OWNER_TARGET_GREEDY_STATE, OWNER_TARGET_GUARD_STATE)
+OWNER_TARGET_PRELUDE_PROFILE = "source-owner-target-prelude-trial"
+OWNER_TARGET_PRELUDE_IDENTITY = "sm70-native-owner-frame-prelude-existing-prep-zero-delta-v1:" + QSA_SELECTION
+OWNER_TARGET_PRELUDE_STATE = ("sm70-prefix-epoch-v1", hashlib.sha256(OWNER_TARGET_PRELUDE_IDENTITY.encode()).hexdigest())
+EARLY_IDENTITY_STATES = (FAMILY_PREFIX_STATE, PACKED_GRAPH_STATE, OWNER_GRAPH_STATE, TARGET_GREEDY_STATE, OWNER_TARGET_GREEDY_STATE, OWNER_TARGET_GUARD_STATE, OWNER_TARGET_PRELUDE_STATE)
 
 
 def identity(profile):
@@ -50,6 +53,8 @@ def identity(profile):
         return OWNER_TARGET_GREEDY_IDENTITY
     if profile == OWNER_TARGET_GUARD_PROFILE:
         return OWNER_TARGET_GUARD_IDENTITY
+    if profile == OWNER_TARGET_PRELUDE_PROFILE:
+        return OWNER_TARGET_PRELUDE_IDENTITY
     return IDENTITY if profile in ("optimized", "reference") else None
 
 
@@ -67,6 +72,8 @@ def state_epoch(profile):
         return OWNER_TARGET_GREEDY_STATE
     if profile == OWNER_TARGET_GUARD_PROFILE:
         return OWNER_TARGET_GUARD_STATE
+    if profile == OWNER_TARGET_PRELUDE_PROFILE:
+        return OWNER_TARGET_PRELUDE_STATE
     return FAMILY_PREFIX_STATE if profile == FAMILY_PREFIX_PROFILE else None
 
 
@@ -96,7 +103,7 @@ def reuse_allowed(w, sampling, *, draft, vision, position, kv_pair=None):
     ordinary = draft and vision is None
     if not ordinary or w.meta.get("execution_provider") != "sm70":
         return ordinary
-    if w.meta.get("sm70_profile") in (FAMILY_PREFIX_PROFILE, PACKED_PROFILE, PACKED_GRAPH_PROFILE, OWNER_GRAPH_PROFILE, TARGET_GREEDY_PROFILE, OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE):
+    if w.meta.get("sm70_profile") in (FAMILY_PREFIX_PROFILE, PACKED_PROFILE, PACKED_GRAPH_PROFILE, OWNER_GRAPH_PROFILE, TARGET_GREEDY_PROFILE, OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE):
         return _family_prefix_allowed(sampling, position, kv_pair)
     if w.meta.get("sm70_profile") == "source-family-trial":
         return False  # Cold qualification has no same-format cached-suffix receipt yet.
@@ -118,7 +125,7 @@ def reuse_allowed(w, sampling, *, draft, vision, position, kv_pair=None):
 def serial_reuse_allowed(w, sampling, *, draft, position, kv_pair, vision=None):
     """Serial/twin Q4 has the same qualification; legacy serial policy stays intact."""
     if (w.meta.get("execution_provider") == "sm70"
-            and w.meta.get("sm70_profile") in (FAMILY_PREFIX_PROFILE, PACKED_PROFILE, PACKED_GRAPH_PROFILE, OWNER_GRAPH_PROFILE, TARGET_GREEDY_PROFILE, OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE)):
+            and w.meta.get("sm70_profile") in (FAMILY_PREFIX_PROFILE, PACKED_PROFILE, PACKED_GRAPH_PROFILE, OWNER_GRAPH_PROFILE, TARGET_GREEDY_PROFILE, OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE)):
         return draft and vision is None and _family_prefix_allowed(sampling, position, kv_pair)
     if (w.meta.get("execution_provider") == "sm70"
             and w.meta.get("sm70_profile") == "source-family-trial"):

@@ -215,8 +215,80 @@ def _encode(value, format, status, layer, *, error):
     return ops.quantize_int8(value, status=status, layer=layer)
 
 
+
+def _native_frame_prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
+    """Reuse the qualified scalar-position prep into a bounded frame, not a history.
+
+    The model owns a separate initialized immutable zero. Position zero addresses
+    frame outputs; the original State position is the existing RoPE delta input.
+    Only plain native-context Q8 text uses this specialization. Existing cache
+    and CompactIndexer transactions copy the frame before the actor reuses gated.
+    """
+    if (getattr(weights, "positions", None) is not None or state.image_positions is not None
+            or state.rope_delta != 0 or getattr(state, "media_profile_identity", None) is not None):
+        return False  # No native writes; preserve the ordinary coordinate/codec route.
+    c, a = weights.cfg, layer.attn
+    ai = state.history_placement.target_layers if mtp else state.att_index[layer.index]
+    cache = state.mtp_kc if mtp else state.kc[ai]
+    if (cache.key_format.bits != 8 or cache.value_format.bits != 8
+            or cache.key_format.codec or cache.value_format.codec):
+        return False
+    if (not projection.is_cuda or projection.dtype != torch.float16 or not projection.is_contiguous()
+            or not buffers.gated.is_contiguous() or buffers.gated.dtype != torch.float16):
+        return False
+    if not 0 <= start < stop <= buffers.rows or stop > projection.shape[0]:
+        raise ValueError("native owner frame must fit its prepared input/output rows")
+    if buffers.target_indexer_position is not None or buffers.mtp_indexer_position is not None:
+        return False
+    rows, capacity, dim = stop - start, buffers.rows, c.head_dim
+    # The original pre-gate scratch is idle until attention returns. Contiguous
+    # frame arrays occupy 800 bytes/row in the admitted 1536-byte/row slab.
+    storage = buffers.gated.view(torch.uint8).view(-1)
+    payload, scale, raw = capacity * dim, capacity * (dim // 32) * 2, capacity * c.index_dim * 2
+    if 2 * payload + 2 * scale + raw > storage.numel():
+        raise ValueError("native owner frame exceeds its existing gated scratch")
+    key = storage[:payload].view(torch.int8).view(capacity, 1, dim)
+    value = storage[payload:2 * payload].view(torch.int8).view(capacity, 1, dim)
+    ks = storage[2 * payload:2 * payload + scale].view(torch.float16).view(capacity, 1, dim // 32)
+    vs = storage[2 * payload + scale:2 * payload + 2 * scale].view(torch.float16).view(capacity, 1, dim // 32)
+    ik = storage[2 * payload + 2 * scale:2 * payload + 2 * scale + raw].view(torch.float16).view(capacity, c.index_dim)
+    from tensorfold.cuda.sm70.family_native import extension
+
+    zero = weights.meta["sm70_owner_prelude_zero"]
+    absolute = state.mtp_pos if mtp else state.pos_dev
+    extension().prep(projection[start:stop], zero, a.q_scale, a.k_scale, a.iq_scale, weights.inv_freq,
+        buffers.q[start:stop], key, value, buffers.iq[start:stop], ik, ks, vs, state.kv_status,
+        absolute, None, c.heads, 1, dim, c.index_heads, c.index_dim, 8, 8, layer.index,
+        c.eps, c.rope_attention_factor, not buffers.prefill)
+    pos = state.mtp_len if mtp else state.pos
+    cache.append(pos, key[:rows], value[:rows], ks[:rows], vs[:rows])
+    if state.history_rank == state.history_placement.indexer_owner(state.history_slot, ai,
+                                                                  include_mtp=hasattr(state, "mtp_kc")):
+        from .compact_indexer import coordinate_rows
+
+        # The native prelude already handled RoPE; coordinates here retain the
+        # original unrotated indexer transaction and are needed only by its owner.
+        coordinates = coordinate_rows(state, torch.arange(rows, device=projection.device) + pos)
+        entry = state.compact_indexer.append(ai, pos, ik[:rows], coordinates,
+            buffers.compact_indexer_stage, start, stop, mtp=mtp,
+            expected=(state.slot_generation, state.history_generation))
+        entry.pool(state.mtp_pooled if mtp else state.pooled[ai], a.ik_scale, weights.inv_freq,
+                   c.eps, c.mrope_section, c.rope_attention_factor)
+        if mtp:
+            expected = (state.slot_generation, state.history_generation)
+            entry.publish_commit(entry.prepare_commit(pos + rows, expected), pos + rows, expected)
+    if not mtp:
+        state.target_tentative_length = pos + rows
+    weights.meta["sm70_owner_prelude_submitted_frames"] += 1
+    return True
+
 def prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
     """Prepare one bounded frame; only owners publish persistent rows."""
+    from .prefix_policy import OWNER_TARGET_PRELUDE_PROFILE
+
+    if (weights.meta.get("sm70_profile") == OWNER_TARGET_PRELUDE_PROFILE
+            and _native_frame_prepare(projection, state, layer, weights, buffers, start, stop, mtp=mtp)):
+        return
     c, a = weights.cfg, layer.attn
     ai = state.history_placement.target_layers if mtp else state.att_index[layer.index]
     cache = state.mtp_kc if mtp else state.kc[ai]

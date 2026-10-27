@@ -32,20 +32,24 @@ def request(module, **changes):
     return module.unique_graph_request(module.OWNER_GRAPH_TRIAL, **args)
 
 
-@pytest.mark.parametrize("target,guard", [(False, False), (True, False), (True, True)])
-def test_new_profile_requires_issued_native_owner_and_grants_only_exact_nonattention_pieces(source, monkeypatch, target, guard):
+@pytest.mark.parametrize("target,guard,prelude", [(False, False, False), (True, False, False), (True, True, False), (True, True, True)])
+def test_new_profile_requires_issued_native_owner_and_grants_only_exact_nonattention_pieces(source, monkeypatch, target, guard, prelude):
     module = source.module
-    selected = module.OWNER_TARGET_GUARD_TRIAL if guard else module.OWNER_TARGET_GREEDY_TRIAL if target else module.OWNER_GRAPH_TRIAL
+    selected = module.OWNER_TARGET_PRELUDE_TRIAL if prelude else module.OWNER_TARGET_GUARD_TRIAL if guard else module.OWNER_TARGET_GREEDY_TRIAL if target else module.OWNER_GRAPH_TRIAL
     monkeypatch.setenv(module.PROFILE_ENV, selected)
     if guard:
         monkeypatch.setattr(family_native, "extension", lambda: source.calls.append("extension") or
-                            NS(prepare_value_guard=lambda: source.calls.append("guard-code")))
+                            NS(prepare_value_guard=lambda: source.calls.append("guard-code"),
+                               prepare_owner_prelude=lambda: source.calls.append("prelude-code")))
     monkeypatch.setattr(greedy_native, "extension", lambda: None)
     monkeypatch.setattr(gguf_ops, "extension", lambda: None)
     assert module.configure(source.text, tp=8, torch=family.torch) == selected
     assert family.selectors(source.policy) == (True, False, False, False, False, False,
                                               "packed_exact", "native32", None)
     weights = family.weights(source)
+    if prelude:
+        weights.device = "cpu"
+        monkeypatch.setattr(family.torch.cuda, "current_stream", lambda *a: NS(synchronize=lambda: None))
     weights.meta.update(history_layout="unique", owner_workspaces={role: object() for role in ("decode", "mtp", "prefill")})
     weights.mtp = NS(layer=NS(linear=False))
     contract = module.unique_graph_request(selected, method="mtp", depth=2, kv_pair=get_pair("int8"),
@@ -91,6 +95,9 @@ def test_combined_prefix_epoch_cannot_borrow_old_graph_or_eager_state_before_mut
 
 
 @pytest.mark.parametrize("profile,slots,refused", [
+    (prefix_policy.OWNER_TARGET_PRELUDE_PROFILE, 23, True),
+    (prefix_policy.OWNER_TARGET_PRELUDE_PROFILE, 24, False),
+    (prefix_policy.OWNER_TARGET_PRELUDE_PROFILE, 26, False),
     (prefix_policy.OWNER_TARGET_GUARD_PROFILE, 23, True),
     (prefix_policy.OWNER_TARGET_GUARD_PROFILE, 24, False),
     (prefix_policy.OWNER_TARGET_GUARD_PROFILE, 26, False),
