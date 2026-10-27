@@ -14,6 +14,16 @@ coordinates. Existing pre-gate scratch owns bounded K/V/scales/raw-index outputs
 cache and compact-indexer publication transactions remain unchanged. A distinct
 profile epoch and pre-admission control/header funding retain the 24-window
 contract. Numerical, quality and six-concurrency performance gates are pending.
+The finite diagnostic opt-in `--profile-concurrency 8` or `16` captures exactly
+one instrumented cohort with the pinned public all-thread Torch CPU/CUDA
+profiler. It retains the existing30-second readiness bound,10-second decode
+window and expected cancellation/drain proof, plus a two-token Notebook bringup.
+It requires the ordinary fast-grid arguments with512 output cells and refuses
+quality/serial/repetition combinations. CPU labels cover batching, owner
+preparation, experts and collectives; shapes/stacks/memory capture stay disabled.
+The diagnostic is separate from the unchanged all-six performance comparison;
+its timings cannot establish throughput gains or quality. Protected CUPTI28
+and before/after source/retirement guards remain required on all eight ranks.
 
 The private owner/target guard candidate also prepares the unique N1 piece
 graph's immutable identity maps once. Consumer streams join their initialization
