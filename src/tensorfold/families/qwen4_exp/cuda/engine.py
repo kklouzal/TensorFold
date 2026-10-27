@@ -1443,7 +1443,8 @@ class FlashNextEngine:
             self.e = None
             if managed:
                 self._profile_build.phase("allocating_state")
-            self.multi = MultiDecoder(w, slots=streams, capacity=self.max_len, depth=self.depth,
+            self.multi = MultiDecoder(w, slots=streams, capacity=self.max_len, logical_context=self.context_window,
+                                      depth=self.depth,
                                       confidence=self.confidence, keep=KEEP, points=self.points,
                                       kv_pair=self.kv_pair, share=share, vision=self.vision,
                                       prefill_rows=self.prefill_rows, workspace_bytes=prompt_workspace,
@@ -1454,7 +1455,6 @@ class FlashNextEngine:
                                       **({"execution_rows": execution_rows} if execution_rows is not None else {}),
                                       **({"memory_live": owner_preparation.live_bytes} if owner_preparation is not None else {}),
                                       **({"full_windows": resident_windows} if resident_windows is not None else {}))
-            self.multi.logical_context = self.context_window
             if dflash_plan is not None:
                 planned = self.capacity_plan["dflash2"]["resources"]
                 windows = sum(state.dflash2.nbytes for state in self.multi.states)
@@ -1530,7 +1530,7 @@ class FlashNextEngine:
                     self.scheduler = Scheduler(self.multi, max_streams=streams, **self._admission_options)
         else:
             self.e = Engine(w, capacity=self.max_len, max_rows=max(8, self.depth + 1), graphs=graphs,
-                            kv_pair=self.kv_pair, prefill_rows=self.prefill_rows)
+                            kv_pair=self.kv_pair, prefill_rows=self.prefill_rows, logical_context=self.context_window)
             if automatic_experts:
                 self.serial = self.e.twin()
                 self._configure_auto_experts(torch, streams, vision_workspace_bytes=workspace)
@@ -2155,12 +2155,13 @@ class FlashNextEngine:
     def context_window(self) -> int:
         """Prompt and reply capacity after reserving speculative scratch positions."""
 
-        return max(0, self.max_len - self.depth - 1)
+        plan = getattr(self, "capacity_plan", None)
+        return plan["context_window"] if plan is not None else max(0, self.max_len - self.depth - 1)
 
     def _limit(self, prompt: list[int], max_tokens: int) -> int:
-        room = self.max_len - len(prompt) - self.depth - 1
+        room = self.context_window - len(prompt)
         if room < 1:
-            raise ValueError(f"a prompt of {len(prompt)} tokens leaves no room in the {self.max_len}-token context")
+            raise ValueError(f"a prompt of {len(prompt)} tokens leaves no room in the {self.context_window}-token context")
         return max(1, min(max_tokens, room))
 
     def _resume(self, prompt: list[int]):

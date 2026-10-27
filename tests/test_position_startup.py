@@ -196,7 +196,7 @@ def test_coordinate_activation_is_shared_fresh_and_retires_owned_cpu_keys(tmp_pa
         owner.w = model
         owner.position_profile = profile
         owner._media_inputs_enabled = False
-        owner.capacity_plan = {"position_profile": {"resolved": profile.receipt()}}
+        owner.capacity_plan = {"context_window": 64, "position_profile": {"resolved": profile.receipt()}}
         owner.execution_provider, owner.sm70_profile = "sm70", "reference"
         owner.kv_pair, owner.method_geometry = get_pair("fp16"), MethodGeometry("none", 0)
         participants.append((owner, model))

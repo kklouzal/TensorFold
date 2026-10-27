@@ -45,6 +45,7 @@ def allocation_block():
         "kv_value_dtype",
         "workspace_bytes",
         "full_windows",
+        "logical_context",
     ]
     f = ast.FunctionDef(
         name="prepare",
@@ -79,7 +80,7 @@ def test_production_constructor_owns_every_promised_cache_and_counts_it_once(slo
             self.capacity, self.limit = rows, limit
             self.dspark_runtime = NS(plan=NS(cache_row_bytes=aux)) if aux else None
             self.array = Array(self.cache_bytes())
-            calls.append((rows, limit, max_rows))
+            calls.append((rows, limit, max_rows, kwargs["logical_context"]))
 
         def cache_bytes(self, rows=None):
             return (self.capacity if rows is None else rows) * (100 + aux)
@@ -103,10 +104,10 @@ def test_production_constructor_owns_every_promised_cache_and_counts_it_once(slo
     # This isolated allocation block starts after the constructor binds its
     # media owner. These language-only fixtures have no media resource claim.
     dec = NS(controller=None, media_runtime=None)
-    ns["prepare"](dec, NS(), slots, 262148, 3, "int8", None, None, None, 0, full)
+    ns["prepare"](dec, NS(), slots, 262148, 3, "int8", None, None, None, 0, full, 262144)
     materialized = selection in ("equal", "larger")
     rows = 262148 if materialized else 256
-    assert calls == [(rows, 262148, 4)] * slots
+    assert calls == [(rows, 262148, 4, 262144)] * slots
     assert dec.full_resident == materialized
     assert dec.slot_bytes == rows * (100 + aux)
     assert sum(st.array.nbytes for st in dec.free) == slots * rows * (100 + aux)

@@ -244,6 +244,9 @@ def state_inventory(state, *, stream=None, pending_hc=None, recoveries=(), recov
         raise ValueError("retained recovery inventory exceeds the admitted version bound")
     state.retention_method_recovery_versions = recovery_versions
     state.kv_check()
+    if (not 0 <= state.pos <= state.logical_context
+            or not 0 <= state.mtp_len <= state.logical_context):
+        raise ValueError("retained State frontier exceeds its logical context")
     if state.target_tentative_length != state.pos or getattr(state, "media_input_span", None) is not None:
         raise ValueError("retained State capture requires its resolved target/input boundary")
     # A partially completed physical migration is a valid mixed page map.
@@ -503,6 +506,8 @@ def state_restore_plan(state, records, *, stream=None, continuation="new-turn", 
                 or any(type(metadata[key]) is not int or not 0 <= metadata[key] <= state.limit
                        for key in ("pos", "mtp_len", "mtp_drafted"))
                 or metadata["mtp_drafted"] > metadata["mtp_len"]
+                or metadata["pos"] > state.logical_context
+                or metadata["mtp_len"] > state.logical_context
                 or metadata["media_profile"] != state.media_profile_identity
                 or metadata["media_identity"] != state.media_identity):
             raise ValueError("retained rank state/profile/frontier differs from the current admitted destination")

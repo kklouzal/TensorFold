@@ -1525,3 +1525,9 @@ Source-built V100 runtimes retain the reference attention path. The private
 cu126 attention candidate queries its wheel-specific cuBLAS metadata only for
 its exact historical Torch/git/CUDA build; other builds keep their actual
 math/workspace/device descriptor and remain ineligible for that candidate.
+
+The V100 State separates its admitted logical token/position lifetime from
+physical cache storage, including method guard rows. Full-window reservation
+continues to allocate and charge every physical row; guards do not extend
+context or positional validity. Clone, recovery and retention preserve both
+limits.

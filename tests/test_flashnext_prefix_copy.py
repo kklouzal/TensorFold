@@ -18,6 +18,7 @@ def slot(dtype, capacity, pos):
     st.kv_pair = get_pair(dtype)
     st.kv_key_dtype, st.kv_value_dtype = st.kv_pair.key_dtype, st.kv_pair.value_dtype
     st.kv_identity = (st.kv_pair.identity, "stored-basis-native64-v1")
+    st.logical_context = st.capacity
     st.kv_status, st._kv_pending, st._kv_error = None, False, None
     st._resize_error = st._resize_frames_pending = st._history_error = None
     st.slot_generation, st.history_generations = 0, None

@@ -73,7 +73,8 @@ class MultiDecoder:
                  share: float = SHARE, points=None, vision=None, workspace_bytes: int = 0, kv_pair=None,
                  kv_key_dtype: str | None = None, kv_value_dtype: str | None = None, graphs: bool = False,
                  graph_budget=..., graph_header_room: int | None = None, vision_workspace_bytes: int = 0,
-                 full_windows: int | None = None, execution_rows: int | None = None, memory_live=None) -> None:
+                 full_windows: int | None = None, execution_rows: int | None = None, memory_live=None,
+                 logical_context: int | None = None) -> None:
         if w.comm is not None and w.meta.get("execution_provider") != "sm70":
             raise ValueError("concurrent tensor-parallel Flash Next requires the SM70 execution provider")
         budget = (multi_graphs.budget_bytes() if graphs else 0) if graph_budget is ... else graph_budget
@@ -83,6 +84,10 @@ class MultiDecoder:
             raise ValueError("full KV windows must be a positive integer")
         if memory_live is not None and not callable(memory_live):
             raise ValueError("prepared memory admission must provide a callable live-byte reader")
+        if logical_context is not None:
+            if type(logical_context) is not int or not 0 < logical_context <= capacity:
+                raise ValueError("decoder logical context must fit its physical cache capacity")
+            self.logical_context = logical_context
         self.full_windows = full_windows
         self.w, self.depth, self.confidence, self.capacity = w, depth, confidence, capacity
         from .rotor_decoder import RotorDecoderPolicy
@@ -180,7 +185,8 @@ class MultiDecoder:
         self.full_resident = full_windows is not None and full_windows >= slots
         initial_capacity = capacity if self.full_resident else min(capacity, FIRST)
         self.free = [State(w, initial_capacity, depth + 1, kv_dtype, limit=capacity, kv_pair=kv_pair,
-                           kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, slot=slot)
+                           kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, slot=slot,
+                           logical_context=logical_context)
                      for slot in range(slots)]
         self.states = tuple(self.free)
         self._migration_cursor = 0

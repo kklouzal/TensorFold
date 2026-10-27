@@ -167,9 +167,11 @@ class Engine:
 
     def __init__(self, w: Weights, *, capacity: int = 4096, max_rows: int = 8, prefill_rows: int = PREFILL_ROWS,
                  graphs: bool = False, kv_dtype: str = "bf16", kv_pair=None,
-                 kv_key_dtype: str | None = None, kv_value_dtype: str | None = None) -> None:
+                 kv_key_dtype: str | None = None, kv_value_dtype: str | None = None,
+                 logical_context: int | None = None) -> None:
         self.w = w
         self.capacity = capacity
+        self.logical_context = logical_context
         self.rows, self.prefill_rows = max_rows, prefill_rows
         self.buf = Buffers(w, max_rows, capacity, moe_prefill=True)       # the experts' arithmetic MultiDecoder's use
         self.mbuf = Buffers(w, max_rows, capacity, owner_role="mtp") if w.mtp is not None else None
@@ -179,7 +181,7 @@ class Engine:
         enroll(w, self.buf)
         enroll(w, self.mbuf, mtp=True)
         self.st = State(w, capacity, max_rows, kv_dtype, kv_pair=kv_pair,
-                        kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype)
+                        kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, logical_context=logical_context)
         self.kv_pair = self.st.kv_pair
         self._sample_plan = self._draft_plan = None
         self._draft_map = None
@@ -229,7 +231,9 @@ class Engine:
         other.buf, other.mbuf, other.pbuf, other.graphs = self.buf, None, self.pbuf, None
         other.kv_pair = self.kv_pair
         other._sample_plan, other._draft_plan, other._draft_map = self._sample_plan, self._draft_plan, self._draft_map
-        other.st = State(self.w, self.capacity, self.rows, kv_pair=self.st.kv_pair)
+        other.logical_context = self.logical_context
+        other.st = State(self.w, self.capacity, self.rows, kv_pair=self.st.kv_pair,
+                         logical_context=self.logical_context)
         return other
 
     def forward(self, tokens: Sequence[int]) -> torch.Tensor:
