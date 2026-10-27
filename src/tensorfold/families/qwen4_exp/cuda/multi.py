@@ -127,13 +127,15 @@ class MultiDecoder:
         self.converged, self.prefill_rows = converges(w), prefill_rows
         # rounds beside a filling prompt size its pass so decoding keeps ``share`` of the pass's time (0: whole passes)
         self.share, self.round_s, self.row_s = share, None, None
-        self.buf = Buffers(w, rows, capacity, moe_prefill=True)
-        self.mbuf = Buffers(w, rows, capacity, owner_role="mtp") if w.mtp is not None else None
+        self.buf = Buffers(w, rows, capacity, moe_prefill=True, prepared_text_coordinates=w.positions is not None)
+        self.mbuf = (Buffers(w, rows, capacity, owner_role="mtp", prepared_text_coordinates=w.positions is not None)
+                     if w.mtp is not None else None)
         self.speculation = MethodGeometry("mtp" if self.mbuf is not None else
                                           "dspark" if getattr(w, "dspark", None) is not None else
                                           "dflash2" if getattr(w, "dflash2", None) is not None else "none",
                                           depth)
-        self.pbuf = Buffers(w, prefill_rows + (rows if self.converged else 0), capacity, prefill=True)
+        self.pbuf = Buffers(w, prefill_rows + (rows if self.converged else 0), capacity, prefill=True,
+                            prepared_text_coordinates=w.positions is not None)
         self._sample_plan = self._draft_plan = None
         if w.comm is not None:
             self._sample_plan = self.buf.sample_plan = SamplingShard(w, w.head.n, offset=int(w.meta["vocab_offset"]))

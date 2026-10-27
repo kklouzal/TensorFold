@@ -164,7 +164,9 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
     from tensorfold.cuda.sm70 import attention_qualification, execution_policy, family_ops
     from tensorfold.families.qwen4_exp import gguf
     from tensorfold.families.qwen4_exp.cuda import engine, exl3_pack, gguf_admission, padded_linears
-    from tensorfold.families.qwen4_exp.cuda.history_placement import MIGRATION_OVERLAP_BYTES, coordinate_source_host_bytes
+    from tensorfold.families.qwen4_exp.cuda.history_placement import (
+        MIGRATION_OVERLAP_BYTES, coordinate_source_host_bytes, prepared_coordinate_host_resources,
+    )
     from tensorfold.families.qwen4_exp.rope import RopeParameters
     from tensorfold.families.qwen4_exp.cuda.retention_policy import RetentionPolicy
 
@@ -265,7 +267,9 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
 
         coordinate_rows = max(prefill_rows, min(40 * (depth + 1), execution_rows))
         expected_host = 8 * (multi_static_domains(text, 40, depth + 1, False)[1] + 8 * 40 * 8
-                             + coordinate_source_host_bytes(coordinate_rows))
+                             + coordinate_source_host_bytes(coordinate_rows)
+                             + prepared_coordinate_host_resources(min(40 * (depth + 1), execution_rows),
+                                                                  prefill_rows, mtp=False)["total_host_bytes"])
         fixed = native_sync_fixed_payload(world=8, ram=retention_tier == "ram", slots=40,
             fd_limit=owner._retention_native_runtime["hard_nofile"], host_bytes=len("test"))
         prefix = native_sync_prefix_payload(world=8, slots=40)

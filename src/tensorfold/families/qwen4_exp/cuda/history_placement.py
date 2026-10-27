@@ -48,6 +48,42 @@ def coordinate_source_host_bytes(rows: int) -> int:
     return max(68 * rows, 56 * rows + 24)
 
 
+def prepared_coordinate_host_resources(rows: int, prefill_rows: int, *, mtp: bool) -> dict:
+    """Additional persistent pins and known headers for the selected source ABI.
+
+    Existing generic issuance's pageable peak remains a separate obligation.
+    Torch04cf/LP64 headers: TensorImpl176, StorageImpl96, version counter24,
+    Python Tensor72, Python CUDA event112; the cached NumPy view adds128 and
+    its detached Tensor's176+72. Private allocator/driver effects are not RSS
+    guarantees. The ordinary source runtime guard binds this selected ABI.
+    """
+    _int(rows, "prepared coordinate execution rows", 1)
+    _int(prefill_rows, "prepared coordinate prefill rows", 1)
+    if type(mtp) is not bool:
+        raise ValueError("prepared coordinate method participation must be boolean")
+    arenas, roles = 2 + int(mtp), 2 + 2 * int(mtp)
+    payload = 24 * (rows + prefill_rows) * (1 + int(mtp))
+    tensor_event_headers = 72 + 176 + 96 + 24 + 112 + 128 + 176 + 72
+    # New slotted owner88, four two-element lists4*72, device24. Also pay a
+    # complete Staging object56, old/new <=16-field dictionary tables2*464,
+    # and old/new CPython3.12 shared-value arrays2*30*8; no alias credit.
+    arena_headers = 88 + 4 * 72 + 24 + 56 + 2 * 464 + 2 * 30 * 8
+    # One serialized issuer additionally holds a CPU Tensor view248 and two
+    # NumPy row views2*128. The fixed int64 array-interface mapping has six
+    # keys: dict272 + ASCII key strings329 + data tuple/pointer92 + descr221
+    # + typestr52 + shape120 + version28. Pay its independent pointer/shape
+    # temporaries312+32+72 too; these are headers, not coordinate payloads.
+    interface_headers = 272 + 329 + 92 + 221 + 52 + 120 + 28 + 312 + 32 + 72
+    transient_headers = 248 + 2 * 128 + interface_headers
+    metadata = arenas * arena_headers + roles * tensor_event_headers + transient_headers
+    return {"schema": "tensorfold.prepared-coordinate-host-v1", "pinned_payload_bytes": payload,
+            "known_header_bytes": metadata, "total_host_bytes": payload + metadata,
+            "arenas": arenas, "roles": roles, "tensor_event_headers_per_role": tensor_event_headers,
+            "owner_headers_per_arena": arena_headers, "transient_headers": transient_headers,
+            "array_interface_headers": interface_headers,
+            "runtime_private_storage": "allocator/driver event state remains separately unqualified"}
+
+
 @dataclass(frozen=True)
 class HistoryPlacement:
     world: int

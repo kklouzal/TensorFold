@@ -95,6 +95,90 @@ class IssuedCoordinates:
     proof: CoordinateProof
 
 
+@dataclass(frozen=True)
+class CoordinateIssue:
+    """One actual CPU span's destination role/context, never claimed extrema."""
+    first: int
+    last: int
+    position: PositionOperands
+    profile_identity: str
+    generation: int
+    media_identity: str | None
+    row_start: int
+
+
+def issue_prepared_coordinate_batch(host, host_values, destination, requests, *, owner, max_rows, submitted):
+    """Validate owned CPU rows and copy once into final tracked int64 storage.
+
+    The serialized producer retains immutable pinned ``host`` until its DMA
+    completion event. ``submitted`` records that event even after a copy's
+    ambiguous failure. Old destination readers retire before this call, and
+    the caller publishes the frame only after every final proof is constructed.
+    """
+    if (not isinstance(host, torch.Tensor) or host.device.type != "cpu" or host.dtype != torch.int64
+            or host.ndim != 2 or host.shape[1] != 3 or not host.is_contiguous()
+            or type(max_rows) is not int or max_rows <= 0 or not 0 < host.shape[0] <= max_rows
+            or type(requests) is not tuple or not 0 < len(requests) <= host.shape[0] or owner is None
+            or not callable(submitted)):
+        raise ValueError("prepared coordinates require complete owned CPU int64 rows and a current frame")
+    weakref.ref(owner)
+    if (not isinstance(destination, torch.Tensor) or destination.shape != host.shape
+            or destination.dtype != torch.int64 or not destination.is_contiguous()
+            or destination.device.type not in ("cpu", "cuda")):
+        raise ValueError("prepared coordinates require exact final CPU/CUDA int64 storage")
+    if destination.is_cuda and not host.is_pinned():
+        raise ValueError("asynchronous coordinate transfer requires its owned pinned source")
+    if (type(host_values) is not np.ndarray or host_values.dtype != np.dtype(np.int64)
+            or host_values.shape != tuple(host.shape) or not host_values.flags.c_contiguous
+            or host_values.__array_interface__["data"][0] != host.data_ptr()):
+        raise ValueError("prepared coordinate values must be the actual owned host rows")
+    if destination.device == host.device:
+        left, right = host.untyped_storage(), destination.untyped_storage()
+        if (left.data_ptr() < right.data_ptr() + right.nbytes()
+                and right.data_ptr() < left.data_ptr() + left.nbytes()):
+            raise ValueError("prepared coordinate source and destination must not alias")
+    raw, plans, cursor = host_values, [], 0
+    for request in requests:
+        if (type(request) is not CoordinateIssue or type(request.first) is not int or type(request.last) is not int
+                or request.first != cursor or not cursor < request.last <= len(raw)):
+            raise ValueError("prepared coordinate requests must cover each source row exactly once")
+        _context(request.profile_identity, request.generation, request.media_identity)
+        domain = _position(request.position)
+        rows = raw[request.first:request.last]
+        minimum, maximum = tuple(int(x) for x in rows.min(axis=0)), tuple(int(x) for x in rows.max(axis=0))
+        domain.validate_span(request.row_start, len(rows), coordinate_min=minimum, coordinate_max=maximum)
+        if min(minimum) < 0 or max(maximum) >= MAX_POSITION:
+            raise ValueError("coordinates exceed the signed-int31 device position representation")
+        plans.append((request, minimum, maximum))
+        cursor = request.last
+    if cursor != len(raw):
+        raise ValueError("prepared coordinate requests leave uncovered source rows")
+    # Preserve the prior packed-copy mutation reservation, even though the
+    # prepared representation now needs only one physical destination write.
+    require_mutation_budget(destination, len(requests))
+    primary = None
+    try:
+        with torch.inference_mode(False):
+            destination.copy_(host, non_blocking=destination.is_cuda)
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        try:
+            submitted()
+        except BaseException as retirement:
+            if primary is not None:
+                from tensorfold.cleanup import raise_failures
+
+                raise_failures(primary, (retirement,))
+            raise
+    with torch.inference_mode(False):
+        return tuple(_issued(destination[request.first:request.last], request.position,
+            profile_identity=request.profile_identity, generation=request.generation,
+            media_identity=request.media_identity, row_start=request.row_start,
+            minimum=minimum, maximum=maximum, owner=owner) for request, minimum, maximum in plans)
+
+
 def _issued(tensor, position, *, profile_identity, generation, media_identity, row_start, minimum, maximum,
             owner=None):
     proof = object.__new__(CoordinateProof)

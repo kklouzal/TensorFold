@@ -173,9 +173,11 @@ class Engine:
         self.capacity = capacity
         self.logical_context = logical_context
         self.rows, self.prefill_rows = max_rows, prefill_rows
-        self.buf = Buffers(w, max_rows, capacity, moe_prefill=True)       # the experts' arithmetic MultiDecoder's use
-        self.mbuf = Buffers(w, max_rows, capacity, owner_role="mtp") if w.mtp is not None else None
-        self.pbuf = Buffers(w, prefill_rows, capacity, prefill=True)
+        self.buf = Buffers(w, max_rows, capacity, moe_prefill=True,
+                           prepared_text_coordinates=w.positions is not None)  # MultiDecoder's expert arithmetic.
+        self.mbuf = (Buffers(w, max_rows, capacity, owner_role="mtp", prepared_text_coordinates=w.positions is not None)
+                     if w.mtp is not None else None)
+        self.pbuf = Buffers(w, prefill_rows, capacity, prefill=True, prepared_text_coordinates=w.positions is not None)
         from .hc_plans import enroll
 
         enroll(w, self.buf)
