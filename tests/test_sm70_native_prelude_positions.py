@@ -57,3 +57,33 @@ def test_native_binding_refuses_non_native_or_inconsistent_role_without_mutation
     assert not _native_prelude_position(role)
     assert not _native_prelude_binding(replace(binding, target=role))
     assert weights.positions is binding
+
+def test_only_actual_text_coordinate_producer_marks_scalar_recipe(monkeypatch):
+    from tests.test_compact_position_frames import prepared
+    from tensorfold.families.qwen4_exp.cuda import compact_indexer as indexer
+
+    buffers, _position, states, windows, segments = prepared(context_identity="1" * 64)
+    for state in states:
+        state.media_input_span = None
+        state.image_positions = None
+        state.rope_delta = 0
+        state.rope_delta_dev = torch.zeros(1, dtype=torch.int32)
+    indexer.stage_target_indexer_frame(buffers, segments, tuple(windows))
+    assert indexer._scalar_text_frame(buffers.target_indexer_frame) is False
+    # A fresh actual text producer creates canonical rows under the same issued
+    # role/context, and is the only path that grants the private scalar recipe.
+    indexer.stage_text_indexer_frame(buffers, segments)
+    assert indexer._scalar_text_frame(buffers.target_indexer_frame) is True
+    buffers.input_preparation_context.close()
+
+def test_text_producer_marker_reuses_exact_paid_frame_field_layout():
+    from tensorfold.families.qwen4_exp.cuda.compact_indexer import IndexerFrame, _ScalarTextIndexerFrame
+    from dataclasses import fields
+
+    args = (1, 3, (), False, None, None, None)
+    ordinary, text = IndexerFrame(*args), IndexerFrame(*args)
+    object.__setattr__(text, "__class__", _ScalarTextIndexerFrame)
+    assert tuple(x.name for x in fields(ordinary)) == tuple(x.name for x in fields(text))
+    assert ordinary.__sizeof__() == text.__sizeof__()
+    assert ordinary.__dict__.__sizeof__() == text.__dict__.__sizeof__()
+    assert ordinary.__dict__.keys() == text.__dict__.keys()

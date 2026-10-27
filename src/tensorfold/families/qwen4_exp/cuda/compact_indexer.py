@@ -86,6 +86,16 @@ class IndexerFrame:
     active: bool = False
 
 
+
+class _ScalarTextIndexerFrame(IndexerFrame):
+    """Same paid fields/layout; type records the canonical text producer."""
+    __slots__ = ()
+
+
+def _scalar_text_frame(frame):
+    return type(frame) is _ScalarTextIndexerFrame
+
+
 def _profile_context(buffers, segments):
     context = buffers.input_preparation_context
     if context is not None and any(
@@ -120,7 +130,7 @@ def _revoke_frame(buffers, prefix):
     return frame_id
 
 
-def _stage_frame(buffers, segments, coordinates, *, mtp):
+def _stage_frame(buffers, segments, coordinates, *, mtp, scalar_text_recipe=False):
     from .position_coordinates import CoordinateTransfer, IssuedCoordinates, _signature, copy_coordinate_batch
 
     _profile_context(buffers, segments)
@@ -146,6 +156,10 @@ def _stage_frame(buffers, segments, coordinates, *, mtp):
     stage = buffers.compact_indexer_stage
     candidate = IndexerFrame(getattr(buffers, prefix + "_indexer_frame_id") + 1,
                              count, tuple(rows), mtp, position, stage, storage)
+    if scalar_text_recipe:
+        # Both classes have identical dict/weakref layout; changing the type
+        # keeps the exact paid base dictionary rather than a second key table.
+        object.__setattr__(candidate, "__class__", _ScalarTextIndexerFrame)
     transfers, owners, metadata, cursor, segment = [], [], [], 0, 0
     for window in coordinates:
         if (type(window) is not CoordinateWindow or type(window.first) is not int or type(window.last) is not int
@@ -159,7 +173,7 @@ def _stage_frame(buffers, segments, coordinates, *, mtp):
             raise ValueError("issued coordinate windows require one current admitted State context")
         if window.source_owner is not None:
             owner = window.source_owner
-            if type(owner) is not IndexerFrame or not owner.active:
+            if type(owner) not in (IndexerFrame, _ScalarTextIndexerFrame) or not owner.active:
                 raise ValueError("coordinate source frame was revoked or retired")
             if not any(owner is previous for previous in owners):
                 owners.append(owner)
@@ -232,7 +246,7 @@ def _validate_frame(buffers, segments, *, mtp):
         for state, first, last in segments:
             _position_span(state, first, last, position, mtp=mtp, explicit=False)
         return None
-    if (type(frame) is not IndexerFrame or not frame.active or frame.mtp is not mtp or frame.position is not position
+    if (type(frame) not in (IndexerFrame, _ScalarTextIndexerFrame) or not frame.active or frame.mtp is not mtp or frame.position is not position
             or frame.frame_id != getattr(buffers, prefix + "_indexer_frame_id")
             or values is None or values.shape != (frame.token_rows, 3) or values.dtype != torch.int64
             or storage is not frame.storage or values.device != storage.device or len(frame.segments) != len(segments)
@@ -277,7 +291,7 @@ def stage_text_indexer_frame(buffers, segments, *, mtp=False):
         issue_text_indexer_coordinates(state, position, state.mtp_len if mtp else state.pos,
                                        last - first, max_rows=buffers.rows), position)
         for state, first, last in segments)
-    _stage_frame(buffers, segments, windows, mtp=mtp)
+    _stage_frame(buffers, segments, windows, mtp=mtp, scalar_text_recipe=True)
 
 
 def validate_target_indexer_frame(buffers, segments):

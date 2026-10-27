@@ -266,8 +266,11 @@ def _native_frame_prepare(projection, state, layer, weights, buffers, start, sto
     binding = getattr(weights, "positions", None)
     if binding is not None:
         expected = binding.mtp if mtp else binding.target
-        if position is not expected or not _native_prelude_position(position):
-            return False
+        from .compact_indexer import _scalar_text_frame
+
+        frame = buffers.mtp_indexer_frame if mtp else buffers.target_indexer_frame
+        if (position is not expected or not _native_prelude_position(position) or not _scalar_text_frame(frame)):
+            return False  # Arbitrary issued THW coordinates retain their ordinary path.
         frequency, sections, amplitude = position.inv_freq, position.sections, position.amplitude
     else:
         if position is not None:
