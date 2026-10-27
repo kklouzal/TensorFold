@@ -40,7 +40,7 @@ MAX_RENDERED_BYTES = 65536
 MAX_PROMPT_TOKENS = 4096
 MAX_TOKENS = 512
 LEADER_RECEIPT_BYTES = 512 << 10
-FOLLOWER_RECEIPT_BYTES = 128 << 10
+FOLLOWER_RECEIPT_BYTES = 256 << 10
 SUPERVISOR_RECEIPT_BYTES = 64 << 10
 MAX_RECEIPT_BYTES = LEADER_RECEIPT_BYTES + (WORLD - 1) * FOLLOWER_RECEIPT_BYTES + SUPERVISOR_RECEIPT_BYTES
 FATAL_REPORT_GRACE_SECONDS = 30.0
@@ -81,7 +81,7 @@ def digest(path):
 def write_report(path, value, *, allowance):
     """Bound the aggregate live report; disk checkpoints do not create live trees.
 
-    The leader owns512KiB, seven followers128KiB each, and the supervisor64KiB:
+    The leader owns512KiB, seven followers256KiB each, and the supervisor64KiB:
     their sum is the caller's funded global receipt allowance. Overflow is a
     failed diagnostic; preserve its complete evidence separately for review.
     """
