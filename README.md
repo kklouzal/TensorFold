@@ -24,6 +24,11 @@ graph allowance. It creates no evidence receipts or production selection.
 The ordinary diagnostic default and legacy private-attention gate are unchanged;
 component, full-model quality and the required concurrency-grid performance
 gates remain separate before adoption.
+The diagnostic's opt-in `--triton-cache-root` assigns a persistent distinct
+cache directory to each child before Python imports the CUDA helper. It avoids
+cross-process helper publication races while retaining Triton's own content
+keys and the Engine's complete loaded-library verification. The launcher
+preserves its inherited cache setting when the option is absent.
 
 An isolated CPU preflight candidate uses public Store batched reads and atomic
 counters during rank input preparation. Bounded reusable outcome slots retain
