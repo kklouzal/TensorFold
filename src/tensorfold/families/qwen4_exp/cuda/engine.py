@@ -1520,14 +1520,10 @@ class FlashNextEngine:
                 self.capacity_plan["retention"] = {
                     **catalog.record(), "full_future_session_bytes": catalog.future_claim()}
                 self._publish_retention_catalog(catalog)
-            if not managed:
-                if self.comm is not None:
-                    from .tp_scheduler import TensorParallelDecoder
+            if not managed and self.comm is not None:
+                from .tp_scheduler import TensorParallelDecoder
 
-                    self.tp_decoder = TensorParallelDecoder(self.multi, self)
-                    self.scheduler = Scheduler(self.tp_decoder, max_streams=streams, **self._admission_options) if rank == 0 else None
-                else:
-                    self.scheduler = Scheduler(self.multi, max_streams=streams, **self._admission_options)
+                self.tp_decoder = TensorParallelDecoder(self.multi, self)
         else:
             self.e = Engine(w, capacity=self.max_len, max_rows=max(8, self.depth + 1), graphs=graphs,
                             kv_pair=self.kv_pair, prefill_rows=self.prefill_rows, logical_context=self.context_window)
@@ -1698,6 +1694,11 @@ class FlashNextEngine:
                 self._profile_build.bind_execution_manifest(execution_profile_manifest) if managed else
                 bind_execution_manifest(self, execution_profile_manifest))
             self.multi.execution_manifest_installer = self._install_execution_manifest
+        # Public FIFO configuration changes admission semantics. Synthetic
+        # warmup must finish on every rank before installing those semantics.
+        if self.concurrent and not managed and (self.comm is None or self.rank == 0):
+            self.scheduler = Scheduler(self.tp_decoder if self.comm is not None else self.multi,
+                                       max_streams=streams, **self._admission_options)
         if self.scheduler is not None and not managed:
             self.scheduler.start()            # warmup's synthetic streams belong solely to the constructor
 

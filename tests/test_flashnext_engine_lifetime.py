@@ -19,7 +19,7 @@ def engine_type():
     tree = ast.parse(SOURCE.read_text())
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "FlashNextEngine")
     keep = {"close", "_close_resources", "_begin_request", "_prune_requests", "_end_request", "_retire_request", "generate", "follow",
-            "_limit", "_resume", "supports_logprobs"}
+            "_limit", "context_window", "_resume", "supports_logprobs"}
     body = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in keep]
     unit = ast.Module(body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0),
                            ast.ClassDef(name="Engine", bases=[], keywords=[], body=body, decorator_list=[])],
@@ -53,6 +53,7 @@ def engine(scheduler=None):
     e.multi = SimpleNamespace(buf=SimpleNamespace(hc_plans=plan), mbuf=None, recover_failed_slots=lambda: None)
     e.e = e.serial = None
     e.tp, e.vision, e.depth, e.max_len, e.cache = 1, None, 4, 2053, []
+    e.capacity_plan = {"context_window": 2048}
     e._serial = lambda *args, **kwargs: {"serial": True}
     e._decode = lambda *args, **kwargs: {"draft": True}
     return e
