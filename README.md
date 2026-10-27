@@ -61,6 +61,13 @@ remain cold. The finite diagnostic's `--expect-prefix-reuse --repetitions 10`
 checks a cold first request followed by the maximal legal same-prompt prefix
 before its pending anchor. Partial-prefix, recovery, slot ownership, full-context
 quality and performance qualification remain pending before production selection.
+The private `source-packed-trial` additionally selects the existing exact packed
+expert and native M32 concatenation operators. It retains reference attention,
+routing and padding policies, and grants no graph or device-greedy readiness.
+Its distinct State/prefix epoch permits the same guarded INT8 greedy text reuse.
+The operators passed 82 actual-checkpoint V100 component controls, including TP8
+offsets and projection layouts. Full-model integration, capacity, output quality
+and performance remain unqualified; the default stays `reference`.
 Its combined source/media authority also checks the protected CPU processor and
 decoder closure; a source-only record cannot satisfy the combined verifier.
 The additive [CPU media source image](deploy/v100/media-foundation.md) supplies
