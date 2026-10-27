@@ -1280,3 +1280,31 @@ def test_owner_piece_tool_intent_and_manifest_reach_real_factory_with_24_native_
     assert options["max_waiting_input_bytes"] == probe.waiting_input_credit(args)
     assert args.fast_grid and args.quality_spotchecks and args.tokens == 512
     assert probe.MAX_RECEIPT_BYTES == 2424832
+
+
+def test_overlap_flag_requires_manifest_and_each_child_inherits_before_start(tmp_path, monkeypatch):
+    from tensorfold.cuda import expert_launch
+    monkeypatch.delenv("TENSORFOLD_STARTUP_CONTENT_OVERLAP", raising=False)
+    with pytest.raises(SystemExit):
+        probe.arguments(cli(tmp_path)+["--overlap-content-capture"])
+    manifest=tmp_path/"execution.json"
+    manifest.write_text(json.dumps({"schema":"tensorfold.execution-profile-manifest","version":1,"artifacts":{}}))
+    raw=cli(tmp_path)+["--execution-profile-manifest",str(manifest),"--overlap-content-capture"]
+    args=probe.arguments(raw)
+    seen=[]
+    def observe(commands,environments,**_kwargs):
+        assert len(commands)==len(environments)==8
+        for command,environment in zip(commands,environments,strict=True):
+            assert "--overlap-content-capture" in command
+            assert environment["TENSORFOLD_STARTUP_CONTENT_OVERLAP"]=="1"
+            seen.append(int(command[-1]))
+        return 0
+    monkeypatch.setattr(probe,"installed_identity",lambda _wheel:{})
+    monkeypatch.setattr(expert_launch,"supervise",observe)
+    assert probe.launch(args,raw)==0 and sorted(seen)==list(range(8))
+    assert "TENSORFOLD_STARTUP_CONTENT_OVERLAP" not in os.environ
+    assert json.loads((args.out/"launch-final.json").read_text())["settings"]["overlap_content_capture"]
+    with pytest.raises(SystemExit):
+        probe.arguments(raw+["--rank","1"])
+    monkeypatch.setenv("TENSORFOLD_STARTUP_CONTENT_OVERLAP","1")
+    assert probe.arguments(raw+["--rank","1"]).overlap_content_capture
