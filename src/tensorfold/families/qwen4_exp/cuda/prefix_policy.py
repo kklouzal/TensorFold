@@ -17,7 +17,7 @@ PACKED_STATE = ("sm70-prefix-epoch-v1", hashlib.sha256(PACKED_IDENTITY.encode())
 PACKED_GRAPH_PROFILE = "source-packed-graphs-trial"
 PACKED_GRAPH_IDENTITY = "sm70-packed-exact-native32-n1-piece-graphs-int8-greedy-prefix-trial-v1:" + QSA_SELECTION
 PACKED_GRAPH_STATE = ("sm70-prefix-epoch-v1", hashlib.sha256(PACKED_GRAPH_IDENTITY.encode()).hexdigest())
-PROFILE_STATES = (FAMILY_PREFIX_STATE, PACKED_STATE, PACKED_GRAPH_STATE)
+EARLY_IDENTITY_STATES = (FAMILY_PREFIX_STATE, PACKED_GRAPH_STATE)
 
 
 def identity(profile):
