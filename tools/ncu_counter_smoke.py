@@ -32,6 +32,7 @@ def command(script, out):
 def profiled_call(operation, start, stop):
     from tensorfold.cleanup import raise_failures
 
+    secondary = [None]  # Allocate outcome storage before acquiring profiler state.
     primary, result, started = None, None, False
     try:
         start()
@@ -39,13 +40,12 @@ def profiled_call(operation, start, stop):
         result = operation()
     except BaseException as error:
         primary = error
-    secondary = None
     if started:
         try:
             stop()
         except BaseException as error:
-            secondary = error
-    raise_failures(primary, () if secondary is None else (secondary,))
+            secondary[0] = error
+    raise_failures(primary, secondary)
     return result
 
 

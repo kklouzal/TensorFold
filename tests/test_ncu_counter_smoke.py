@@ -56,3 +56,25 @@ def test_nonfinite_or_negative_hardware_counter_is_not_a_pass(value):
     text = '"Metric Name","Metric Value"\n"sm__cycles_elapsed.avg","' + value + '"\n'
     with pytest.raises(ValueError):
         smoke.parse_counters(text)
+
+def test_profiler_outcome_storage_exists_before_start_and_is_not_repacked(monkeypatch):
+    import sys
+    cleanup = pytest.importorskip("tensorfold.cleanup")
+    original = cleanup.raise_failures
+    observed = []
+    primary, secondary = ValueError("operation failed"), MemoryError("stop failed")
+    def start():
+        slots = sys._getframe(1).f_locals["secondary"]
+        assert slots == [None]
+        observed.append(slots)
+    def operation():
+        raise primary
+    def stop():
+        raise secondary
+    def transport(error, errors):
+        assert errors is observed[0] and errors == [secondary]
+        original(error, errors)
+    monkeypatch.setattr(cleanup, "raise_failures", transport)
+    with pytest.raises(ValueError) as caught:
+        smoke.profiled_call(operation, start, stop)
+    assert caught.value is primary
