@@ -1074,18 +1074,20 @@ class MultiDecoder:
             raise mark_error_state_retired(ValueError("prompt token IDs differ from the selected model vocabulary"))
         return room
 
-    def input_reservation_bytes(self, stream):
+    def input_reservation_bytes(self, stream=None):
         """Actual complete prompt growth for one logical App operation.
 
         Thinking/gating may issue larger backend prompts under that same owner.
         Native token IDs and the list allocation are charged, not serialized
         int32 extents. Fixed replay sources remain the same physical lease.
+        With no stream, return the mandatory text-only floor of every claim;
+        endpoint commitment uses the same formula as actual enqueue admission.
         """
         rows = self.capacity - self.depth - 2
         header = sys.getsizeof([])
         pointer = sys.getsizeof([None]) - header
         integer = sys.getsizeof(min(self.w.cfg.vocab - 1, (1 << 31) - 1))
-        replay = getattr(stream.vision, "replay", None)
+        replay = None if stream is None else getattr(stream.vision, "replay", None)
         sources = 0 if replay is None else sum(reference.byte_length for reference in replay.refs)
         return header + (rows + 1) * pointer + rows * integer + sources
 

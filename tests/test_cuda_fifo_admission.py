@@ -356,6 +356,8 @@ def test_fifo_ticket_and_policy_reach_all_eight_actual_tp_controls(cohort):
     store.wait = wait
     for rank, peer in enumerate(cohort):
         decoder = peer.decoder
+        decoder.logical_context = decoder.prefill_rows
+        decoder.w.cfg = NS(vocab=64)  # The controlled peer emits IDs modulo 64.
         decoder.w.positions = object()
         decoder.w.meta = {"rank": rank, "world": 8, "coordinate_profile_identity": "a" * 64}
         decoder.input_preparation_context = install_input_preparation(decoder.w)
@@ -395,6 +397,8 @@ def test_valid_shaped_peer_request_drift_is_rejected_before_any_gpu_slot(monkeyp
     peers = []
     for rank in range(8):
         decoder = PeerDecoder(rank, 8, store)
+        decoder.logical_context = decoder.prefill_rows
+        decoder.w.cfg = NS(vocab=64)  # The controlled peer emits IDs modulo 64.
         decoder.w.positions = object()
         decoder.w.meta = {"rank": rank, "world": 8, "coordinate_profile_identity": "a" * 64}
         decoder.input_preparation_context = install_input_preparation(decoder.w)

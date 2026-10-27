@@ -1554,3 +1554,12 @@ Oversized results retain the existing eviction order, including the position of
 a replaced ID. Allocation failure during cache publication clears the affected
 cache and reports the failure, so an entry cannot remain available without its
 byte charge. Cyclic stored parent chains fail within the cache's existing bound.
+
+The V100 finite backend caller admits one logical text request at a time through
+the same model, native-buffer and tensor-parallel host commitment authority before
+submission. Its bounded token/result consumer adds no HTTP, metadata or Responses
+cache route. The owned ByteLevel payload helper binds the actual tokenizer/native
+artifact and selected Python runtime; valid FIFO child metadata has an enforced
+versioned schema. Wheel `f17b5d8c` passed 182 focused normal-installed resource and
+FIFO checks. Actual target admission/output, the complete HTTP envelope, model
+quality, capacity and performance remain separate pending qualification gates.

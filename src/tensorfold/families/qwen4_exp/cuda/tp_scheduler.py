@@ -20,6 +20,7 @@ from .owner_execution import FAMILY_FIELDS
 from . import media_requests
 
 MAX_PROTOCOL_SEQUENCE = (1 << 63) - 1
+FIFO_CHILD_SCHEMA = ("tensorfold.tp-fifo-retained-children", 1)
 
 
 def _check_protocol_advance(value, label):
@@ -398,7 +399,42 @@ class TensorParallelDecoder:
         if stream is not None:
             self.wires.pop(id(stream), None)
 
+    def _fifo_child_geometry(self):
+        context = getattr(self.decoder, "logical_context", None)
+        vocab = getattr(getattr(getattr(self.decoder, "w", None), "cfg", None), "vocab", None)
+        if type(context) is not int or context <= 0 or type(vocab) is not int or vocab <= 0:
+            raise ValueError("FIFO child schema requires the actual logical context and model vocabulary")
+        return context, vocab
+
+    def fifo_retained_child_schema(self):
+        """Describe the guards on this actual bound FIFO adapter, not a mode hint."""
+        if self.admission_policy != "fifo":
+            return None
+        context, vocab = self._fifo_child_geometry()
+        return {"schema": FIFO_CHILD_SCHEMA[0], "version": FIFO_CHILD_SCHEMA[1],
+                "context": context, "vocab": vocab}
+
+    def _validate_fifo_children(self, prompt, owed, sampling, epoch, committed):
+        context, vocab = self._fifo_child_geometry()
+        for role, values in (("prompt", prompt), ("owed", owed)):
+            if type(values) is not list or len(values) > context:
+                raise ValueError(f"FIFO {role} must be a token list within the logical context")
+            if any(type(token) is not int or not 0 <= token < vocab for token in values):
+                raise ValueError(f"FIFO {role} token IDs differ from the selected model vocabulary")
+        # These fields otherwise survive directly in Stream/Sampling. Reject
+        # opaque wire trees; scalar integer widths remain the parser's domain.
+        if (sampling is not None and (type(sampling) is not list or len(sampling) != 5
+                or not isinstance(sampling[0], int)
+                or any(not isinstance(value, (int, float)) for value in sampling[1:]))):
+            raise ValueError("FIFO sampling requires a flat native numeric record")
+        if epoch is not None and (type(epoch) is not int or epoch < 0):
+            raise ValueError("FIFO profile epoch must be None or a nonnegative native integer")
+        if type(committed) is not int or committed < 0:
+            raise ValueError("FIFO committed output count must be a nonnegative native integer")
+
     def _pack(self, stream):
+        if self.admission_policy == "fifo" and stream.carry is not None:
+            raise ValueError("FIFO request cannot carry legacy continuation statistics")
         from tensorfold.engine.grammar import pack
 
         sampling = stream.sampling
@@ -406,10 +442,14 @@ class TensorParallelDecoder:
         if ((stream.vision is not None and owner is None)
                 or stream.probabilities is not None or stream.penalties is not None):
             raise ValueError("tensor-parallel Flash Next requests do not support vision, logprobs or penalties")
+        wire_sampling = None if sampling is None else [sampling.seed, sampling.temperature, sampling.top_k,
+                                                       sampling.top_p, sampling.min_p]
+        if self.admission_policy == "fifo":
+            self._validate_fifo_children(stream.prompt, stream.owed, wire_sampling,
+                                         stream.profile_epoch, stream.committed_output_tokens)
         result = {"prompt": stream.prompt, "count": stream.count, "draft": stream.draft,
                 "stop_eos": stream.stop_eos, "background": stream.background,
-                "sampling": None if sampling is None else [sampling.seed, sampling.temperature, sampling.top_k,
-                                                           sampling.top_p, sampling.min_p],
+                "sampling": wire_sampling,
                 "grammar": pack(stream.constraint), "owed": stream.owed, "carry": stream.carry,
                 "token_limit": stream.token_limit is not None, "profile_epoch": stream.profile_epoch,
                 "committed_output_tokens": stream.committed_output_tokens}
@@ -441,6 +481,11 @@ class TensorParallelDecoder:
         return result
 
     def _unpack(self, body):
+        if self.admission_policy == "fifo":
+            if body["carry"] is not None:
+                raise ValueError("received FIFO request cannot carry legacy continuation statistics")
+            self._validate_fifo_children(body["prompt"], body["owed"], body["sampling"],
+                                         body["profile_epoch"], body["committed_output_tokens"])
         from tensorfold.engine.exact_sampling import Sampling
 
         constraint = None

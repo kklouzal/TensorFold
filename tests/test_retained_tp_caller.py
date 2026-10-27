@@ -43,6 +43,7 @@ def test_enqueue_readers_precede_common_expiry_and_actual_idle_ram_transfer_then
         decoder.streams, decoder.filling, decoder.held = {}, [], {}
         decoder.prefill_rows, decoder.points, decoder.arrived = 16, None, lambda: False
         decoder.capacity, decoder.depth, decoder.kv_pair = 257, 0, source.kv_pair
+        decoder.logical_context = source.logical_context
         decoder.memory_gate = NS(held=sum(state.cache_bytes() for state in decoder.states))
         decoder.graphs, decoder.full_resident = None, True
         decoder._pass_rows = lambda: 16

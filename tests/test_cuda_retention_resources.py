@@ -26,6 +26,7 @@ from tests.test_cuda_admission import Engine
 from tests.test_cuda_admission import http_server
 from tests.test_conversations_api import call
 from tests.test_serving_profile_transitions import PreparedDouble
+from tests.test_retention_resources import resource_decoder
 
 
 class ConstraintEngine(Engine):
@@ -51,9 +52,9 @@ def selected_tokenizer():
 
 
 def catalog(policy):
-    return NS(policy=policy, world=1, states=[NS(limit=128)], _manifest_bytes=1024,
+    return NS(policy=policy, world=1, states=[NS(limit=131, logical_context=128)], _manifest_bytes=1024,
               _buffer=None, _ram=None, has_retained=False, prefix_limit=2, minimum_future_bytes=1 << 20,
-              host_resources=HostBaseline(0, 0), _cohort=NS(multi=NS(copy=False)),
+              host_resources=HostBaseline(0, 0), _cohort=NS(multi=resource_decoder()),
               check_health=lambda: None, evidence="source-candidate")
 
 
@@ -62,7 +63,7 @@ def configured_app(tmp_path, monkeypatch, policy, *, max_http_body_bytes=None, l
     model_directory(tmp_path)
     engine = ConstraintEngine()
     engine.retention_catalog = catalog(policy)
-    engine.scheduler = Scheduler(NS(), max_streams=1, admission_policy="fifo", max_waiting_input_bytes=4096,
+    engine.scheduler = Scheduler(NS(), max_streams=1, admission_policy="fifo", max_waiting_input_bytes=16384,
                                  output_queue_tokens=output_queue_tokens)
     engine.vision = NS(is_media_runtime=True, tokenizer=selected_tokenizer())
     engine.chat_template = server.ChatTemplate(tmp_path)
@@ -87,11 +88,43 @@ def test_actual_adopted_tokenizer_and_host_receipt_precede_scheduler_admission(t
     app, engine, admission = configured_app(tmp_path, monkeypatch, policy)
     receipt = engine.retention_catalog.host_resource_envelope
     assert len(admission) == 1 and receipt["max_pending_requests"] == 2
-    assert receipt["max_http_connections"] == 4 and receipt["global_waiting_input_bytes"] == 4096
+    assert receipt["max_http_connections"] == 4 and receipt["global_waiting_input_bytes"] == 16384
     assert receipt["context_tokens"] == 128 and receipt["output_queue_tokens"] is None
     assert receipt["tokenizer"]["tokenizer_identity"] == tokenizer_presentation_bound(app.tok).tokenizer_identity
     assert receipt["authority"]["release_qualified"] is False
     assert engine.scheduler._request_limit is app._request_limit
+
+
+def test_full_future_input_credit_caps_generation_owners_through_between_subruns():
+    from tensorfold.cuda.scheduler import AdmissionStatus, Waiting
+    from tensorfold.families.qwen4_exp.cuda.retention_resources import _model_host_projection
+    from tensorfold.server.errors import CapacityError
+
+    selected = catalog(None)
+    selected.states = [NS(limit=262147, logical_context=262144)]
+    decoder = selected._cohort.multi = resource_decoder(262144)
+    floor = decoder.input_reservation_bytes()
+    core = _model_host_projection(selected, tokenizer=selected_tokenizer(),
+        max_pending_requests=4, max_waiting_input_bytes=16 << 20,
+        body_bytes=96 << 20, output_queue_tokens=None)
+    assert core["context"] == 262144
+    assert selected.states[0].limit == 262147
+    assert core["input_floor"] == floor
+    assert core["generation_owners"] == 1
+    assert core["model_cpu"] == core["terms"]["project_payload_bytes"]
+
+    waiting = Waiting(policy="fifo", max_input_bytes=16 << 20)
+    def entry():
+        return NS(admission_status=AdmissionStatus(-1, 0.0, floor, None)), object()
+    first, second = entry(), entry()
+    claim = waiting.publish(first, reserved_bytes=floor, register=lambda _claim: None)
+    claim.backend_retired(first[1])
+    assert first[0].admission_status.phase == "between_subruns"
+    with pytest.raises(CapacityError):
+        waiting.publish(second, reserved_bytes=floor)
+    claim.close()
+    replacement = waiting.publish(second, reserved_bytes=floor)
+    replacement.close()
 
 
 def test_actual_output_credit_cap_reduces_admitted_mailbox_payload(tmp_path, monkeypatch):

@@ -10,11 +10,12 @@ import pytest
 from tensorfold.families.qwen4_exp.cuda.retention_resources import (
     HostBaseline, finalize_retention_resources, native_sync_fixed_payload, native_sync_prefix_payload,
 )
+from tests.test_retention_resources import resource_decoder
 
 
 def _catalog(baseline):
-    return SimpleNamespace(policy=None, world=2, states=[SimpleNamespace(limit=16)],
-        _manifest_bytes=0, _buffer=None, _cohort=SimpleNamespace(multi=SimpleNamespace(copy=False)),
+    return SimpleNamespace(policy=None, world=2, states=[SimpleNamespace(limit=19, logical_context=16)],
+        _manifest_bytes=0, _buffer=None, _cohort=SimpleNamespace(multi=resource_decoder(16)),
         check_health=lambda: None, has_retained=False, prefix_limit=2, minimum_future_bytes=1,
         evidence="CPU source-reference", host_resources=baseline)
 
@@ -52,6 +53,7 @@ def test_all_mode_finalizer_names_and_pays_native_and_python_once(monkeypatch):
     assert record["global_unpaid_native_prefix_payload_bytes"] == record["native_prefix"]["global_native_prefix_payload_bytes"]
     rpc = record["tp_rpc_python"]
     continuation = record["continuation"]
+    assert record["generation_owner_bound"]["owners"] == 2
     assert record["global_model_cpu_projection_bytes"] == 2 * (
         continuation["project_payload_bytes"] + rpc["per_follower_scope_bytes"])
     assert record["global_rpc_python_working_bytes"] == rpc["global_rpc_python_working_bytes"] > 0
@@ -81,7 +83,7 @@ def test_prepaid_header_protocol_obligations_are_not_charged_again(monkeypatch):
 def test_profile_cannot_credit_a_smaller_protocol_state_or_descriptor_envelope(monkeypatch):
     monkeypatch.setattr(resource, "getrlimit", lambda _which: (32, 64))
     catalog = _catalog(HostBaseline(100, 0, native_state_slots=1, native_fd_limit=64))
-    catalog.states.append(SimpleNamespace(limit=16))
+    catalog.states.append(SimpleNamespace(limit=19, logical_context=16))
     with pytest.raises(ValueError, match="State highwater"):
         _finalize(catalog, monkeypatch)
     catalog.states.pop()

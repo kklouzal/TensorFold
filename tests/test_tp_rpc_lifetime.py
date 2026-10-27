@@ -33,7 +33,9 @@ def follower(*, apply_error=None, cleanup_error=None):
     engine.scheduler = None
     oracle = NS(receives=0, retirements=0, stream=None, body=None, prompt=None, carry=None)
     unpacker = TensorParallelDecoder.__new__(TensorParallelDecoder)
-    unpacker.admission_policy = "fifo"
+    # Opaque carried statistics belong to the legacy continuation producer.
+    # FIFO's separate schema tests reject this root before publication.
+    unpacker.admission_policy = "legacy"
 
     def receive():
         oracle.receives += 1

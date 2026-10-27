@@ -46,7 +46,7 @@ def test_actual_prepared_policy_and_validated_catalog_binding_freeze_copy_resour
         monkeypatch.delenv("TENSORFOLD_MTP_COPY", raising=False)
     else:
         monkeypatch.setenv("TENSORFOLD_MTP_COPY", configured)
-    weights = NS(comm=None, meta={"rank": 0}, cfg=NS(eos=()), layers=[],
+    weights = NS(comm=None, meta={"rank": 0}, cfg=NS(eos=(), vocab=248320), layers=[],
                  dflash2=object() if dflash else None)
     decoder = multi.MultiDecoder.__new__(multi.MultiDecoder)
     boundary = RuntimeError("next buffer acquisition")
