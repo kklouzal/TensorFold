@@ -1717,3 +1717,13 @@ graph budget, physical admission and full-window reservations. The finite probe
 requests graphs only for this profile and refuses an eager-only result. Default
 profiles are unchanged. Actual full-model graph quality and 85-token/s
 qualification remain pending.
+
+The private owner-piece candidate uses the same funded finite TP protocol and
+fast six-grid harness as the comparison baseline. Its tool forwards the explicit
+native-owner manifest and requests graphs only for the explicit packed-graph or
+owner-piece profiles; the Engine retains method, source, ownership and capacity
+admission. Rank cache directories are inherited before worker startup. The
+24-window fast screen retains the 30-second readiness and 10-second decode
+windows, bounded cancellation/drain, graph counter intervals and independent
+quality spot checks. This integration is a candidate; actual matched-grid
+performance, quality and the single-request target remain unqualified.

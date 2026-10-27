@@ -718,7 +718,8 @@ def test_prefix_expectation_accepts_each_explicit_distinct_packed_epoch(tmp_path
 
 
 @pytest.mark.parametrize("profile,expected", [(None, False), ("source-family-trial", False),
-    ("source-packed-trial", False), ("source-packed-graphs-trial", True)])
+    ("source-packed-trial", False), ("source-packed-graphs-trial", True),
+    ("source-owner-pieces-trial", True)])
 def test_worker_requests_graphs_only_for_explicit_graph_profile(tmp_path, monkeypatch, profile, expected):
     from tensorfold import hub, serve_options
     from tensorfold.cuda.cohort import FAILURE_FD_ENV
@@ -748,25 +749,29 @@ def test_worker_requests_graphs_only_for_explicit_graph_profile(tmp_path, monkey
         os.close(read_fd)
 
 
+@pytest.mark.parametrize("profile", ["source-packed-graphs-trial", "source-owner-pieces-trial"])
 @pytest.mark.parametrize("captured,keys,allowed", [(False, True, False), (True, False, False), (True, True, True)])
-def test_graph_trial_record_requires_actual_admitted_owner_and_reports_its_budget(captured, keys, allowed):
-    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL
-    from tensorfold.families.qwen4_exp.cuda.multi_graphs import UNIQUE_CAPTURE_CONTRACT
+def test_graph_trial_record_requires_actual_admitted_owner_and_reports_its_budget(captured, keys, allowed, profile):
+    from tensorfold.families.qwen4_exp.cuda.multi_graphs import (
+        UNIQUE_CAPTURE_CONTRACT, UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT,
+    )
+    contract = (UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT if profile == "source-owner-pieces-trial"
+                else UNIQUE_CAPTURE_CONTRACT)
 
     admission = {"planned_bytes": 4096, "room_bytes": 128}
     graphs = SimpleNamespace(verify={1: object()} if keys else {}, mtp={1: object()} if keys else {})
-    engine = SimpleNamespace(sm70_profile=PACKED_GRAPH_TRIAL, graphs_enabled=True,
+    engine = SimpleNamespace(sm70_profile=profile, graphs_enabled=True,
         multi=SimpleNamespace(graphs=graphs, graph_record={"captured": captured}),
-        w=SimpleNamespace(meta={"unique_capture_contract": UNIQUE_CAPTURE_CONTRACT}),
+        w=SimpleNamespace(meta={"unique_capture_contract": contract}),
         capacity_plan={"multi_graphs": admission})
     report = {}
     if allowed:
-        probe.record_execution_profile(engine, report, requested=PACKED_GRAPH_TRIAL)
+        probe.record_execution_profile(engine, report, requested=profile)
         assert report["unique_graph_trial"]["admission"] is admission
-        assert report["unique_graph_trial"]["contract"] == UNIQUE_CAPTURE_CONTRACT
+        assert report["unique_graph_trial"]["contract"] == contract
     else:
         with pytest.raises(ValueError, match="admitted unique-history graph owner"):
-            probe.record_execution_profile(engine, report, requested=PACKED_GRAPH_TRIAL)
+            probe.record_execution_profile(engine, report, requested=profile)
 
 
 @pytest.mark.parametrize("wrong", [False, True])
@@ -1217,3 +1222,53 @@ def test_unconfigured_rank_cache_preserves_inherited_environment(tmp_path, monke
     monkeypatch.setattr(expert_launch, "supervise", observe)
     assert probe.launch(args, []) == 0
 
+
+
+def test_owner_piece_tool_intent_and_manifest_reach_real_factory_with_24_native_windows(tmp_path, monkeypatch):
+    import json
+    from tensorfold import hub, serve_options
+    from tensorfold.cuda.cohort import FAILURE_FD_ENV
+    import tensorfold.cuda.exl3.format as exl3
+    import tensorfold.families.qwen4_exp.gguf as gguf
+    import tensorfold.families.qwen4_exp.cuda.engine as engine_module
+
+    monkeypatch.setenv("TENSORFOLD_SM70_PROFILE", "source-owner-pieces-trial")
+    manifest = tmp_path / "execution.json"
+    manifest.write_text(json.dumps({"schema": "tensorfold.execution-profile-manifest", "version": 1, "artifacts": {}}))
+    args = probe.arguments(cli(tmp_path) + ["--session-ceiling", "24", "--execution-profile-manifest", str(manifest),
+        "--concurrency-grid", "--fast-grid", "--quality-spotchecks", "--tokens", "512"])
+    args.rank = 1
+    args.out.mkdir()
+    draft = tmp_path / "draft-config"
+    draft.mkdir()
+    (draft / "config.json").write_text(json.dumps({"architectures": ["StockMTP"]}))
+    primary = RuntimeError("stop at the real factory Engine acquisition")
+    seen = []
+    def constructor(directory, **options):
+        seen.append(options)
+        raise primary
+    monkeypatch.setattr(probe, "installed_identity", lambda _wheel: {})
+    monkeypatch.setattr(hub, "resolve", lambda *_args, **_kwargs: tmp_path)
+    monkeypatch.setattr(serve_options, "drafter_metadata_source", lambda _source: draft)
+    monkeypatch.setattr(exl3, "is_exl3", lambda _: False)
+    monkeypatch.setattr(gguf, "resolve_gguf", lambda _: Path("target.gguf"))
+    monkeypatch.setattr(gguf, "metadata_config", lambda _: {"num_key_value_heads": 2})
+    monkeypatch.setattr(engine_module, "FlashNextEngine", constructor)
+    read_fd, write_fd = os.pipe()
+    monkeypatch.setenv(FAILURE_FD_ENV, str(write_fd))
+    try:
+        with pytest.raises(RuntimeError) as caught:
+            probe.worker(args)
+        assert caught.value is primary
+    finally:
+        os.close(write_fd)
+        os.close(read_fd)
+    assert len(seen) == 1
+    options = seen[0]
+    assert options["graphs"] is True and options["execution_profile_manifest"] == manifest
+    assert options["adaptive_sessions"] is True and options["session_ceiling"] == options["streams"] == 24
+    assert (options["max_len"], options["tp"], options["depth"], options["confidence"], options["kv_dtype"]) == (
+        262144, 8, 2, .7, "int8")
+    assert options["max_waiting_input_bytes"] == probe.waiting_input_credit(args)
+    assert args.fast_grid and args.quality_spotchecks and args.tokens == 512
+    assert probe.MAX_RECEIPT_BYTES == 1507328
