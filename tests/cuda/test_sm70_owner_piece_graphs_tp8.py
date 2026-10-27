@@ -16,7 +16,7 @@ import pytest
 torch = pytest.importorskip("torch")
 
 
-def _worker(rank, port, target_greedy=False):
+def _worker(rank, port, target_greedy=False, profile_directory=None):
     import faulthandler
     import traceback
     from tensorfold.cleanup import finish, rollback
@@ -79,28 +79,21 @@ def _worker(rank, port, target_greedy=False):
             capture_ready=True, unique_capture_contract=UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT,
             sm70_profile=OWNER_GRAPH_PROFILE)
         if target_greedy == "bound-prelude":
-            import tempfile
-            from pathlib import Path
             from tensorfold.families.qwen4_exp.position_profile import (
                 resolve_position_profile, prepare_position_vectors, bind_position_profile,
             )
 
-            # Match the actual Engine resolve/prepare/load/bind order. This is
-            # a native role binding, not a None-position toy authorization.
-            with tempfile.TemporaryDirectory() as directory:
-                config = {"model_type": "qwen4_exp", "text_config": {
-                    "head_dim": 256, "hidden_size": base.cfg.hidden, "num_attention_heads": 24,
-                    "max_position_embeddings": 262144,
-                    "rope_parameters": {"rope_type": "default", "rope_theta": 10000000,
-                        "partial_rotary_factor": .25, "mrope_interleaved": True,
-                        "mrope_section": [11, 11, 10]}}}
-                (Path(directory) / "config.json").write_text(json.dumps(config))
-                profile = resolve_position_profile(directory, requested_context=257)
-                prepared = prepare_position_vectors(profile, mtp_active=True)
-                base.cfg.rope = profile.target.rope
-                base.inv_freq = prepared.target_cpu.to(base.device)
-                bind_position_profile(base, profile, mtp_active=True, prepared=prepared)
-                base.meta.update(position_profile_identity=profile.identity, position_profile_epoch=profile.epoch)
+            # The parent owns one real shared source path through all worker
+            # retirement. Resolved identity includes source paths, so separate
+            # rank-local temporary directories are different authorities.
+            assert profile_directory is not None
+            profile = resolve_position_profile(profile_directory, requested_context=257)
+            prepared = prepare_position_vectors(profile, mtp_active=True)
+            base.cfg.rope = profile.target.rope
+            base.inv_freq = prepared.target_cpu.to(base.device)
+            bind_position_profile(base, profile, mtp_active=True, prepared=prepared)
+            base.meta.update(position_profile_identity=profile.identity, position_profile_epoch=profile.epoch)
+            phase("position-profile/" + profile.identity)
             assert base.positions is not None and base.positions.mtp is not None
 
         text = {"hidden_size": base.cfg.hidden, "num_attention_heads": 24, "num_key_value_heads": 2,
@@ -133,6 +126,7 @@ def _worker(rank, port, target_greedy=False):
                 weights.meta["coordinate_profile_identity"] = hashlib.sha256(
                     (weights.positions.profile.identity + f"/fixture-model/{len(input_contexts)}").encode()).hexdigest()
                 context = install_input_preparation(weights)
+                phase("input-profile/" + context.identity)
                 input_contexts.append(context)
                 assert context is weights.meta["input_preparation_context"]
             preparation = None
@@ -247,14 +241,25 @@ def test_v100_tp8_native_owner_exact_pieces_match_native_eager_frames_and_commit
     with socket.socket() as listener:
         listener.bind(("127.0.0.1", 0))
         port = listener.getsockname()[1]
-    context = torch.multiprocessing.spawn(_worker, args=(port, target_greedy), nprocs=8, join=False)
-    try:
-        deadline = time.monotonic() + 240
-        while not context.join(timeout=1):
-            if time.monotonic() >= deadline:
-                raise TimeoutError("combined native-owner exact-piece participant did not retire")
-    finally:
-        for process in context.processes:
-            if process.is_alive():
-                process.kill()
-            process.join(timeout=10)
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory(prefix="tf-owner-prelude-shared-") as directory:
+        config = {"model_type": "qwen4_exp", "text_config": {
+            "head_dim": 256, "hidden_size": 256, "num_attention_heads": 24,
+            "max_position_embeddings": 262144,
+            "rope_parameters": {"rope_type": "default", "rope_theta": 10000000,
+                "partial_rotary_factor": .25, "mrope_interleaved": True,
+                "mrope_section": [11, 11, 10]}}}
+        (Path(directory) / "config.json").write_text(json.dumps(config))
+        context = torch.multiprocessing.spawn(_worker, args=(port, target_greedy, directory), nprocs=8, join=False)
+        try:
+            deadline = time.monotonic() + 240
+            while not context.join(timeout=1):
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("combined native-owner exact-piece participant did not retire")
+        finally:
+            for process in context.processes:
+                if process.is_alive():
+                    process.kill()
+                process.join(timeout=10)

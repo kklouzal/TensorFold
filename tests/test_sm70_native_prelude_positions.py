@@ -87,3 +87,17 @@ def test_text_producer_marker_reuses_exact_paid_frame_field_layout():
     assert ordinary.__sizeof__() == text.__sizeof__()
     assert ordinary.__dict__.__sizeof__() == text.__dict__.__sizeof__()
     assert ordinary.__dict__.keys() == text.__dict__.keys()
+
+def test_shared_parent_source_path_keeps_all_eight_context_channels_identical(tmp_path):
+    from concurrent.futures import ThreadPoolExecutor
+    import hashlib
+
+    path = put(tmp_path / "shared-native", config())
+    def resolve(_rank):
+        profile = resolve_position_profile(path.parent, requested_context=257)
+        return profile.identity, hashlib.sha256((profile.identity + "/fixture-model/2").encode()).hexdigest()
+    with ThreadPoolExecutor(max_workers=8) as workers:
+        values = list(workers.map(resolve, range(8)))
+    assert len(set(values)) == 1
+    other = put(tmp_path / "different-native", config())
+    assert resolve_position_profile(other.parent, requested_context=257).identity != values[0][0]
