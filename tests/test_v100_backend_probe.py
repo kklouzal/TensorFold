@@ -4,6 +4,8 @@ import hashlib
 import json
 import os
 import signal
+import subprocess
+import sys
 import time
 import weakref
 from types import SimpleNamespace
@@ -30,6 +32,7 @@ def test_default_arguments_preserve_native_profile_without_override_flags(tmp_pa
     assert args.tokens == 128 and args.prompt == probe.DEFAULT_PROMPT and not args.serial_reference
     assert args.repetitions == 1 and args.instrumented_departure_grace_seconds is None
     assert args.execution_profile_manifest is None and args.execution_manifest_identity is None
+    assert args.triton_cache_root is None
     assert args.devices == [str(index) for index in range(8)]
     assert args.requested_sm70_profile is None and "TENSORFOLD_SM70_PROFILE" not in os.environ
     assert not hasattr(args, "context") and not hasattr(args, "precision") and not hasattr(args, "position_profile_manifest")
@@ -831,3 +834,79 @@ def test_instrumented_departure_and_exit_record_map_to_rank_order(tmp_path, monk
     assert record["supervision"]["available"] is True
     assert record["supervision"]["rank_order"] == [1, 2, 3, 4, 5, 6, 7, 0]
     assert record["supervision"]["children"][0]["pid"] == 42
+
+
+def test_rank_cache_root_is_inherited_distinct_and_resumable_before_worker_start(tmp_path, monkeypatch):
+    from tensorfold.cuda import expert_launch
+
+    root = tmp_path / "persistent-cache"
+    raw = cli(tmp_path) + ["--triton-cache-root", str(root)]
+    args = probe.arguments(raw)
+    monkeypatch.setenv("TRITON_CACHE_DIR", "parent-shared-cache")
+    seen = []
+    def observe(commands, environments, **_kwargs):
+        for command, environment in zip(commands, environments, strict=True):
+            rank = int(command[-1])
+            expected = str(root / f"rank-{rank}")
+            assert environment["TRITON_CACHE_DIR"] == expected
+            assert environment["CUDA_VISIBLE_DEVICES"] == str(rank)
+            assert command[2:-2] == raw
+            seen.append(expected)
+        assert os.environ["TRITON_CACHE_DIR"] == "parent-shared-cache"
+        return 0
+    monkeypatch.setattr(probe, "installed_identity", lambda _wheel: {})
+    monkeypatch.setattr(expert_launch, "supervise", observe)
+    assert probe.launch(args, raw) == 0 and len(set(seen)) == 8
+    record = json.loads((args.out / "launch-final.json").read_text())
+    assert record["settings"]["triton_cache_root"] == str(root)
+    assert not root.exists()  # Cache creation/content keys remain Triton's responsibility.
+
+
+
+def test_worker_cache_control_requires_matching_environment_at_argument_boundary(tmp_path, monkeypatch):
+    root = tmp_path / "persistent-cache"
+    raw = cli(tmp_path) + ["--triton-cache-root", str(root), "--rank", "3"]
+    monkeypatch.delenv("TRITON_CACHE_DIR", raising=False)
+    with pytest.raises(SystemExit):
+        probe.arguments(raw)
+    monkeypatch.setenv("TRITON_CACHE_DIR", str(root / "rank-2"))
+    with pytest.raises(SystemExit):
+        probe.arguments(raw)
+    monkeypatch.setenv("TRITON_CACHE_DIR", str(root / "rank-3"))
+    args = probe.arguments(raw)
+    assert args.rank == 3 and args.triton_cache_root == root
+
+
+
+@pytest.mark.parametrize("manifest", [False, True])
+def test_worker_cache_arguments_validate_in_fresh_process_before_triton_import(tmp_path, manifest):
+    root = tmp_path / "persistent-cache"
+    raw = cli(tmp_path) + ["--triton-cache-root", str(root), "--rank", "3"]
+    if manifest:
+        path = tmp_path / "execution.json"
+        path.write_text(json.dumps({"schema": "tensorfold.execution-profile-manifest", "version": 1,
+                                    "artifacts": {}}))
+        raw += ["--execution-profile-manifest", str(path)]
+    code = ("import os,sys; from tools.v100_backend_probe import arguments; "
+            "args=arguments(sys.argv[1:]); "
+            "assert 'triton' not in sys.modules and 'torch' not in sys.modules; "
+            "assert os.environ['TRITON_CACHE_DIR']==str(args.triton_cache_root/'rank-3')")
+    result = subprocess.run([sys.executable, "-c", code, *raw],
+        env=dict(os.environ, TRITON_CACHE_DIR=str(root / "rank-3")),
+        cwd=Path(probe.__file__).resolve().parent.parent, capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+
+def test_unconfigured_rank_cache_preserves_inherited_environment(tmp_path, monkeypatch):
+    from tensorfold.cuda import expert_launch
+
+    args = probe.arguments(cli(tmp_path))
+    monkeypatch.setenv("TRITON_CACHE_DIR", "existing-owner-cache")
+    def observe(_commands, environments, **_kwargs):
+        assert all(environment["TRITON_CACHE_DIR"] == "existing-owner-cache" for environment in environments)
+        return 0
+    monkeypatch.setattr(probe, "installed_identity", lambda _wheel: {})
+    monkeypatch.setattr(expert_launch, "supervise", observe)
+    assert probe.launch(args, []) == 0
+

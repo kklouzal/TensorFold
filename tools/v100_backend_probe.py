@@ -121,6 +121,8 @@ def arguments(argv=None):
     parser.add_argument("--image-identity", required=True, help="actual immutable base image sha256 identity")
     parser.add_argument("--base-commit", help="optional base commit; never a claim that dirty source equals it")
     parser.add_argument("--out", type=Path, required=True, help="new private result directory")
+    parser.add_argument("--triton-cache-root", type=Path,
+                        help="opt-in persistent cache root: each child inherits TRITON_CACHE_DIR=ROOT/rank-N before startup; Triton retains its source/platform/configuration keys")
     parser.add_argument("--gpus", default="0,1,2,3,4,5,6,7")
     parser.add_argument("--master-port", type=int, default=29607)
     parser.add_argument("--timeout-seconds", type=float, default=1800)
@@ -157,6 +159,12 @@ def arguments(argv=None):
     if (len(args.devices) != WORLD or len(set(args.devices)) != WORLD
             or any(not value or value != value.strip() for value in args.devices)):
         parser.error("--gpus requires eight distinct nonempty GPU identities")
+    if args.triton_cache_root is not None:
+        args.triton_cache_root = args.triton_cache_root.expanduser().resolve()
+        if args.rank is not None:
+            expected = str(args.triton_cache_root / f"rank-{args.rank}")
+            if os.environ.get("TRITON_CACHE_DIR") != expected:
+                parser.error("worker TRITON_CACHE_DIR must be inherited from the launcher before startup")
     from tensorfold.cuda.sm70.execution_policy import PROFILE_ENV
 
     # The existing constructor owns supported values, runtime qualification and
@@ -440,7 +448,8 @@ def worker(args):
               "argv": sys.argv, "complete": False, "replies": [],
               "repetitions": args.repetitions,
               "process_identity": {"pid": os.getpid(), "parent_pid": os.getppid(),
-                                   "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES")},
+                                   "cuda_visible_devices": os.environ.get("CUDA_VISIBLE_DEVICES"),
+                                   "triton_cache_dir": os.environ.get("TRITON_CACHE_DIR")},
               "qualification": "finite-backend-diagnostic-only; HTTP/design qualification remains open"}
     engine, primary, failures = None, None, [None] * 3
     allowance = FOLLOWER_RECEIPT_BYTES if args.rank else LEADER_RECEIPT_BYTES
@@ -527,6 +536,7 @@ def launch(args, argv):
             "kv_dtype": "int8", "parallel": "auto", "kv_full_windows": "auto", "indexer_history": "gpu",
             "max_waiting_input_bytes": INPUT_CREDIT, "logical_callers": 1,
             "requested_sm70_profile": args.requested_sm70_profile,
+            "triton_cache_root": str(args.triton_cache_root) if args.triton_cache_root is not None else None,
             "instrumented_departure_grace_seconds": args.instrumented_departure_grace_seconds,
             "repetitions": args.repetitions,
             "output_queue_tokens": args.tokens, "prefill_rows_env": os.environ.get("TENSORFOLD_PREFILL_ROWS", "2048")},
@@ -581,8 +591,11 @@ def launch(args, argv):
         read_fd, write_fd = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
         for rank in rank_order:
             commands.append([sys.executable, str(Path(__file__).resolve()), *argv, "--rank", str(rank)])
-            environments.append(dict(os.environ, CUDA_VISIBLE_DEVICES=args.devices[rank],
-                                     **{FAILURE_FD_ENV: str(write_fd)}))
+            environment = dict(os.environ, CUDA_VISIBLE_DEVICES=args.devices[rank],
+                               **{FAILURE_FD_ENV: str(write_fd)})
+            if args.triton_cache_root is not None:
+                environment["TRITON_CACHE_DIR"] = str(args.triton_cache_root / f"rank-{rank}")
+            environments.append(environment)
         receipt["commands"] = commands
         write_report(args.out / "launch.json", receipt, allowance=SUPERVISOR_RECEIPT_BYTES)
         for index, signum in enumerate(signums):
