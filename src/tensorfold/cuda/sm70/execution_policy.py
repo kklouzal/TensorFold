@@ -8,6 +8,7 @@ import re
 
 from tensorfold.families.qwen4_exp.cuda.prefix_policy import (
     PACKED_GRAPH_PROFILE as PACKED_GRAPH_TRIAL, OWNER_GRAPH_PROFILE as OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_PROFILE as OWNER_TARGET_GREEDY_TRIAL,
+    OWNER_TARGET_GROUPED_PROFILE as OWNER_TARGET_GROUPED_TRIAL,
 )
 
 PROFILE_ENV = "TENSORFOLD_SM70_PROFILE"
@@ -15,6 +16,7 @@ FAMILY_TRIAL = "source-family-trial"
 FAMILY_PREFIX_TRIAL = "source-family-prefix-trial"
 PACKED_TRIAL = "source-packed-trial"
 TARGET_GREEDY_TRIAL = "source-target-greedy-trial"
+GROUPED_TRIAL = "source-grouped-moe-trial"
 # The existing engine owns this process-wide policy at quiescent startup or
 # profile preparation. A successful configure replaces it before weight and
 # request publication; serving never mutates these selectors or their record.
@@ -194,7 +196,7 @@ def _family_software():
     return record
 
 
-def _prepare_family_trial(text, tp, torch, *, packed=False, target_greedy=False):
+def _prepare_family_trial(text, tp, torch, *, packed=False, target_greedy=False, grouped=False):
     # This trial changes no weight/KV representation, persistent workspace,
     # graph allowance or capacity rule. Native module residency precedes the
     # existing physical-free/admission baseline and weight loading.
@@ -212,7 +214,9 @@ def _prepare_family_trial(text, tp, torch, *, packed=False, target_greedy=False)
     if packed:
         from .gguf_ops import extension as gguf_extension
 
-        gguf_extension()  # Selected packed/concat module precedes the physical baseline too.
+        module = gguf_extension()
+        if grouped:
+            module.prepare_grouped()  # Load the selected kernel code before initial admission.
     if target_greedy:
         from .greedy_native import extension as greedy_extension
 
@@ -235,9 +239,9 @@ def configure(text, *, tp, torch, record_graph_inputs=None):
     global _SELECTED, _FAMILY_SOFTWARE
     profile = os.environ.get(PROFILE_ENV, "reference")
     if profile not in ("reference", "optimized", FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL, PACKED_GRAPH_TRIAL,
-                       OWNER_GRAPH_TRIAL, TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL):
+                       OWNER_GRAPH_TRIAL, TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GROUPED_TRIAL, GROUPED_TRIAL):
         raise ValueError(f"{PROFILE_ENV} must be reference, optimized, {FAMILY_TRIAL}, {FAMILY_PREFIX_TRIAL}, "
-                         f"{PACKED_TRIAL}, {PACKED_GRAPH_TRIAL}, {OWNER_GRAPH_TRIAL}, {TARGET_GREEDY_TRIAL} or {OWNER_TARGET_GREEDY_TRIAL}")
+                         f"{PACKED_TRIAL}, {PACKED_GRAPH_TRIAL}, {OWNER_GRAPH_TRIAL}, {TARGET_GREEDY_TRIAL}, {OWNER_TARGET_GREEDY_TRIAL}, {OWNER_TARGET_GROUPED_TRIAL} or {GROUPED_TRIAL}")
     if record_graph_inputs is not None and not callable(record_graph_inputs):
         raise ValueError("NCCL graph input journal must be callable")
     graph_policy = graph_inputs() if tp > 1 else None
@@ -259,15 +263,17 @@ def configure(text, *, tp, torch, record_graph_inputs=None):
                       and all(identity.get(key) == value for key, value in REQUIRED_IDENTITY.items()))
         if not compatible:
             raise ValueError("optimized SM70 profile requires the qualified TP8 Flash Next geometry and pinned Volta foundation")
-    family_trial = profile in (FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL, PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL)
-    packed_trial = profile in (PACKED_TRIAL, PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL)
+    family_trial = profile in (FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL, PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GROUPED_TRIAL, GROUPED_TRIAL)
+    packed_trial = profile in (PACKED_TRIAL, PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GROUPED_TRIAL, GROUPED_TRIAL)
     family_software = (_prepare_family_trial(text, tp, torch, packed=packed_trial,
-                                             target_greedy=profile in (TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL))
+                                             target_greedy=profile in (TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GROUPED_TRIAL),
+                                             grouped=profile in (GROUPED_TRIAL, OWNER_TARGET_GROUPED_TRIAL))
                        if family_trial else None)
     family_ops._NATIVE_FAMILY = enabled or family_trial
     family_ops._NATIVE_ATTENTION = enabled
     routing_native._NATIVE_LOGITS = padded_linears._ENABLED = enabled
-    gguf_weights.GGUFExperts.implementation = "packed_exact" if enabled or packed_trial else "reference"
+    gguf_weights.GGUFExperts.implementation = ("packed_grouped_exact" if profile in (GROUPED_TRIAL, OWNER_TARGET_GROUPED_TRIAL) else
+        "packed_exact" if enabled or packed_trial else "reference")
     gguf_weights.GGUFConcat.implementation = "native32" if enabled or packed_trial else "reference"
     gguf_prefill.WORKSPACE_BUDGET_BYTES = (1 << 30) if enabled else None
     dspark_proposal_graphs._ENABLED = dspark_context_graphs._ENABLED = enabled
@@ -279,7 +285,7 @@ def configure(text, *, tp, torch, record_graph_inputs=None):
 def unique_graph_request(profile, *, method, depth, kv_pair, unique_history, indexer_history, graphs, concurrent, vision,
                          owner_preparation=None):
     """Issue the N1 capture contract only from the real pre-load method request."""
-    if profile not in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL):
+    if profile not in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GROUPED_TRIAL):
         return None
     if (method != "mtp" or type(depth) is not int or depth != 2 or unique_history is not True
             or indexer_history != "gpu" or graphs is not True or concurrent is not True or vision
@@ -287,7 +293,7 @@ def unique_graph_request(profile, *, method, depth, kv_pair, unique_history, ind
         raise ValueError("source-packed-graphs-trial requires concurrent unique GPU histories, INT8 KV, stock MTP depth2 and graphs")
     from tensorfold.families.qwen4_exp.cuda.multi_graphs import UNIQUE_CAPTURE_CONTRACT
 
-    if profile in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL):
+    if profile in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GROUPED_TRIAL):
         from tensorfold.families.qwen4_exp.cuda.multi_graphs import UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT
         from tensorfold.families.qwen4_exp.cuda.owner_execution import KERNEL_FAMILY, UNCAPTURED, FULL_COLLECTIVE
 
@@ -304,7 +310,7 @@ def unique_graph_request(profile, *, method, depth, kv_pair, unique_history, ind
 
 def prepare_weights(w, *, graph_contract=None):
     """Mark native owners only after the same profile was admitted on every rank."""
-    if _SELECTED in (FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL, PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL):
+    if _SELECTED in (FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL, PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GROUPED_TRIAL, GROUPED_TRIAL):
         import torch
 
         _family_runtime(torch)
@@ -324,30 +330,33 @@ def prepare_weights(w, *, graph_contract=None):
         w.meta["sm70_family_trial"] = {"qualification": "unqualified-candidate", "software": software,
             "attention": "reference", "graphs": "eager",
             "prefix_reuse": "int8-greedy-text-trial" if _SELECTED in (
-                FAMILY_PREFIX_TRIAL, PACKED_TRIAL, PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL) else "cold"}
-        if _SELECTED in (PACKED_TRIAL, PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL):
+                FAMILY_PREFIX_TRIAL, PACKED_TRIAL, PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GROUPED_TRIAL, GROUPED_TRIAL) else "cold"}
+        if _SELECTED in (PACKED_TRIAL, PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GROUPED_TRIAL, GROUPED_TRIAL):
             w.meta["sm70_family_trial"].update(experts="packed_exact", concat="native32")
-        if _SELECTED in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL):
+        if _SELECTED in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GROUPED_TRIAL):
             from tensorfold.families.qwen4_exp.cuda.multi_graphs import (
                 UNIQUE_CAPTURE_CONTRACT, UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT,
             )
 
-            expected = UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT if _SELECTED in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL) else UNIQUE_CAPTURE_CONTRACT
+            expected = UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT if _SELECTED in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GROUPED_TRIAL) else UNIQUE_CAPTURE_CONTRACT
             if (graph_contract != expected or w.meta.get("history_layout") != "unique"
                     or w.mtp is None or w.mtp.layer.linear):
                 raise ValueError("loaded graph trial requires its issued depth2 contract and unique stock attention MTP")
-            if _SELECTED in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL) and set(w.meta.get("owner_workspaces", {})) != {"decode", "mtp", "prefill"}:
+            if _SELECTED in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GROUPED_TRIAL) and set(w.meta.get("owner_workspaces", {})) != {"decode", "mtp", "prefill"}:
                 raise ValueError("loaded owner-piece trial requires its canonical prepared role workspaces")
             w.meta.update(capture_ready=True, unique_capture_contract=expected)
             w.meta["sm70_family_trial"]["graphs"] = expected
-            if _SELECTED in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL):
+            if _SELECTED in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GROUPED_TRIAL):
                 w.meta["sm70_family_trial"]["attention"] = "prepared-native-owner-eager-trial"
-        if _SELECTED in (TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL):
+        if _SELECTED in (TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GROUPED_TRIAL):
             from tensorfold.families.qwen4_exp.cuda.target_greedy import POLICY
 
             w.meta["sm70_target_greedy_trial"] = {"policy": POLICY, "qualification": "unqualified-candidate",
                                                 "mtp_confidence": "original-fp32-lse-numpy-fp64"}
             w.meta["target_greedy_owner"] = None
+        if _SELECTED in (GROUPED_TRIAL, OWNER_TARGET_GROUPED_TRIAL):
+            w.meta["sm70_family_trial"].update(experts="packed_grouped_exact",
+                workspace="decoder-plan-act-t16", numerical_contract="original-independent-row-reductions-v1")
     w.meta["sm70_profile"] = _SELECTED
     if _SELECTED == "optimized":
         from .attention_qualification import metadata_prepare

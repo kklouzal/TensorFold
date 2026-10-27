@@ -31,6 +31,7 @@ class TestPromptPass(unittest.TestCase):
                                          ("sm70", "source-family-prefix-trial", 1),
                                          ("sm70", "source-packed-trial", 1),
                                          ("sm70", "source-packed-graphs-trial", 1),
+                                         ("sm70", "source-grouped-moe-trial", 1),
                                          ("sm70", "reference", 3), ("cuda", "source-family-trial", 3),
                                          ("cuda", "optimized", 3), ("cuda", "reference", 3),
                                          ("sm70", None, 3), (None, "optimized", 3)):

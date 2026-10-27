@@ -437,7 +437,10 @@ def moe_block(layer: LayerW, w: Weights, b: Buffers, R: int) -> tuple:
         execute = m.experts.forward
         if b.prefill:
             execute = getattr(m.experts, "forward_prefill", execute)
-        execute(b.mixed[:R], buf.pick[:R], out=buf.y[:R])
+        if not b.prefill and getattr(m.experts, "implementation", None) == "packed_grouped_exact":
+            execute(b.mixed[:R], buf.pick[:R], out=buf.y[:R], workspace=buf)
+        else:
+            execute(b.mixed[:R], buf.pick[:R], out=buf.y[:R])
         if w.comm is None:
             return 2, buf.y[:R], buf.wts[:R]
         glue.moe_partial(buf.y[:R], buf.wts[:R], b.part_moe, R)

@@ -18,14 +18,15 @@ def test_same_single_plan_reaches_admission_loader_and_receipt(enabled, stock_mt
         if not isinstance(node,ast.Assign):
             continue
         if isinstance(node.value,ast.Call) and isinstance(node.value.func,ast.Name) \
-                and node.value.func.id in ('prefill_expert_plan','capacity_options'):
+                and node.value.func.id in ('prefill_expert_plan','capacity_options') \
+                and not any(isinstance(arg,ast.Starred) for arg in node.value.args):
             assignments.append(node)
         elif any(isinstance(t,ast.Attribute) and t.attr=='_gguf_prefill_receipt' for t in node.targets):
             assignments.append(node)
     assignments.sort(key=lambda node:node.lineno)
     plan=NS(receipt=lambda:{'pairs':32}) if enabled else None
     events=[]
-    target=NS(depth=3,mtp_model_dir=None,rope=None)
+    target=NS(depth=3,mtp_model_dir=None,rope=None,position_profile=None)
 
     def choose(text,**kwargs):
         events.append(('choose',text,kwargs))
@@ -40,7 +41,7 @@ def test_same_single_plan_reaches_admission_loader_and_receipt(enabled, stock_mt
 
     env=dict(self=target,prefill_expert_plan=choose,capacity_options=admission,load=load,text={'hidden_size':2560},
              rows0=2048,tp=4,rank=0,mtp=stock_mtp,stock_mtp=stock_mtp,ids=None,model_dir=Path('/checkpoint'),draft_vocab='default',
-             ple_on_ssd=False,reads=None,prefetch=False,gguf=True,eos_token_ids=None,expert_session=None,
+             ple_on_ssd=False,reads=None,prefetch=False,gguf=True,sm70=True,nvfp4_source=False,eos_token_ids=None,expert_session=None,
              vram_experts=None,vram_experts_pin='off')
     exec(compile(ast.Module(body=assignments,type_ignores=[]),str(path),'exec'),env)
     call=next(n for n in ast.walk(method) if isinstance(n,ast.Call) and isinstance(n.func,ast.Name) and n.func.id=='load')

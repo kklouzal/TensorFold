@@ -32,16 +32,16 @@ def request(module, **changes):
     return module.unique_graph_request(module.OWNER_GRAPH_TRIAL, **args)
 
 
-@pytest.mark.parametrize("target", [False, True])
-def test_new_profile_requires_issued_native_owner_and_grants_only_exact_nonattention_pieces(source, monkeypatch, target):
+@pytest.mark.parametrize("target,grouped", [(False, False), (True, False), (True, True)])
+def test_new_profile_requires_issued_native_owner_and_grants_only_exact_nonattention_pieces(source, monkeypatch, target, grouped):
     module = source.module
-    selected = module.OWNER_TARGET_GREEDY_TRIAL if target else module.OWNER_GRAPH_TRIAL
+    selected = module.OWNER_TARGET_GROUPED_TRIAL if grouped else module.OWNER_TARGET_GREEDY_TRIAL if target else module.OWNER_GRAPH_TRIAL
     monkeypatch.setenv(module.PROFILE_ENV, selected)
     monkeypatch.setattr(greedy_native, "extension", lambda: None)
-    monkeypatch.setattr(gguf_ops, "extension", lambda: None)
+    monkeypatch.setattr(gguf_ops, "extension", lambda: NS(prepare_grouped=lambda: None))
     assert module.configure(source.text, tp=8, torch=family.torch) == selected
     assert family.selectors(source.policy) == (True, False, False, False, False, False,
-                                              "packed_exact", "native32", None)
+                                              "packed_grouped_exact" if grouped else "packed_exact", "native32", None)
     weights = family.weights(source)
     weights.meta.update(history_layout="unique", owner_workspaces={role: object() for role in ("decode", "mtp", "prefill")})
     weights.mtp = NS(layer=NS(linear=False))
@@ -51,6 +51,8 @@ def test_new_profile_requires_issued_native_owner_and_grants_only_exact_nonatten
     assert contract == UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT
     module.prepare_weights(weights, graph_contract=contract)
     assert ("sm70_target_greedy_trial" in weights.meta) is target
+    if grouped:
+        assert weights.meta["sm70_family_trial"]["workspace"] == "decoder-plan-act-t16"
     assert weights.meta["capture_ready"] is True
     assert weights.meta["unique_capture_contract"] == contract
     assert weights.meta["sm70_family_trial"]["attention"] == "prepared-native-owner-eager-trial"
@@ -85,6 +87,9 @@ def test_combined_prefix_epoch_cannot_borrow_old_graph_or_eager_state_before_mut
 
 
 @pytest.mark.parametrize("profile,slots,refused", [
+    (prefix_policy.OWNER_TARGET_GROUPED_PROFILE, 23, True),
+    (prefix_policy.OWNER_TARGET_GROUPED_PROFILE, 24, False),
+    (prefix_policy.OWNER_TARGET_GROUPED_PROFILE, 26, False),
     (prefix_policy.OWNER_TARGET_GREEDY_PROFILE, 23, True),
     (prefix_policy.OWNER_TARGET_GREEDY_PROFILE, 24, False),
     (prefix_policy.OWNER_TARGET_GREEDY_PROFILE, 26, False),

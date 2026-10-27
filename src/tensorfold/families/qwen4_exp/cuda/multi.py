@@ -899,10 +899,39 @@ class MultiDecoder:
         self._shrink(s.st)
         if all(f is not s.st for f in self.free):
             self.free.append(s.st)
+        self._warm_grouped_experts()
         if self.graph_record["reason"] is None and self.graphs is None:
             self.capture_graphs()
         if self.controller is not None:
             self.controller.reset_observations()
+
+    @torch.no_grad()
+    def _warm_grouped_experts(self):
+        """Warm actual bank/scratch paths after loading, before public use.
+
+        The ordinary synthetic request intentionally retains its R<=3 route.
+        Kernel residency was prepared before initial model admission. These
+        private post-load rows use only existing scratch, never State or tickets.
+        Later router/staging writes replace them before any public consumer.
+        """
+        if self.w.meta.get("sm70_profile") not in ("source-grouped-moe-trial", "source-owner-target-grouped-trial"):
+            return
+        roles = [(self.buf, [layer.moe.experts for layer in self.w.layers])]
+        if self.mbuf is not None:
+            roles.append((self.mbuf, [self.w.mtp.layer.moe.experts]))
+        for buffer, banks in roles:
+            if buffer.rows < 4:
+                continue  # No eligible grouped call can reach this fixed owner.
+            x, picks, output = buffer.mixed[:4], buffer.moe.pick[:4], buffer.moe.y[:4]
+            x.zero_()
+            for slot in range(self.w.cfg.top_k):
+                picks[:, slot].fill_(slot)
+            picks[:, self.w.cfg.top_k].fill_(self.w.cfg.experts)
+            for bank in banks:
+                if bank.implementation != "packed_grouped_exact":
+                    raise ValueError("grouped warmup requires every actual prepared expert bank")
+                bank.forward(x, picks, out=output, workspace=buffer.moe)
+        torch.cuda.synchronize(self.w.device)
 
     @torch.no_grad()
     def _prepare_graph_floor(self):
@@ -1552,7 +1581,8 @@ class MultiDecoder:
                     and meta.get("sm70_profile") in ("optimized", "source-family-trial", "source-family-prefix-trial",
                                                      "source-packed-trial", "source-packed-graphs-trial",
                                                      "source-owner-pieces-trial", "source-target-greedy-trial",
-                                                     "source-owner-target-greedy-trial"))
+                                                     "source-owner-target-greedy-trial", "source-grouped-moe-trial",
+                                                     "source-owner-target-grouped-trial"))
         for s in self._order():
             start = self.fills[s.sid][2]
             n = min(len(s.prompt) - start, room)

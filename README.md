@@ -1,5 +1,12 @@
 # TensorFold fork
 
+The private `source-owner-target-grouped-trial` adds the separately component-tested
+grouped expert coefficient-reuse provider to prepared owners, N1 piece graphs and
+GPU target acceptance. It keeps the original row reductions, R<=3 specialization,
+MTP confidence, and the 24-window Q8 capacity floor. Existing decoder arenas own
+the grouped plan and activation scratch. Installed CPU integration controls cover this composition; target numerical,
+model quality and six-concurrency performance gates remain pending.
+
 The private `source-owner-target-greedy-trial` composes prepared native owners and
 N1 piece graphs with exact target-only GPU greedy selection and chain acceptance.
 Target graph heads export original logits; compact target packets gather on the
@@ -118,6 +125,17 @@ Its distinct State/prefix epoch permits the same guarded INT8 greedy text reuse.
 The operators passed 82 actual-checkpoint V100 component controls, including TP8
 offsets and projection layouts. Full-model integration, capacity, output quality
 and performance remain unqualified; the default stays `reference`.
+The private `source-grouped-moe-trial` adds a bounded grouped SIMT candidate for
+4..32 decode rows. It reuses decoded expert coefficients while retaining each
+row's original FP32 gate/up and K80 down reduction order and FP16 activation.
+Kernel code is made resident before initial model admission; actual bank/scratch
+paths warm after loading. The existing decoder Plan/activation arena is reused
+across layers; no expert
+bank retains an extra workspace. R<=3, prompts, shared Dense and generic helper
+routes retain their original execution. A distinct State/prefix/cohort epoch
+separates this candidate. GPU numerical, model-quality and all six matched
+1/2/4/8/16/24 throughput gates remain pending, including strict N1>85 and
+N24 aggregate>600 committed tokens/s; no gain or release claim is made.
 Its combined source/media authority also checks the protected CPU processor and
 decoder closure; a source-only record cannot satisfy the combined verifier.
 The additive [CPU media source image](deploy/v100/media-foundation.md) supplies

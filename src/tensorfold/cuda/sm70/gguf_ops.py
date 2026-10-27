@@ -37,11 +37,13 @@ def extension():
         key.update(path.read_bytes())
     contracts = here.parent / "kernels/tensor_contracts.cuh"
     tables = here / "gguf_decode_tables.cuh"
-    for header in (contracts, tables):
+    plan = here.parent / "expert_plan.cuh"
+    pdl = here.parent / "kernels/pdl.cuh"
+    for header in (contracts, tables, plan, pdl):
         key.update(header.read_bytes())
     from .source_cache import stage_sources
 
-    staged = stage_sources(sources, headers=[contracts, tables])
+    staged = stage_sources(sources, headers=[contracts, tables, plan, pdl])
     return build.load("tf_gguf_" + key.hexdigest()[:20], staged, need=(7, 0),
                       extra_cflags=host_flags, extra_cuda_cflags=flags)
 
@@ -110,4 +112,19 @@ def concat32(x, weights, out):
 def dense_wmma(x, weight, out):
     """Optional fixed-partition Volta WMMA provider; separate math qualification required."""
     extension().dense_wmma(x, weight, out)
+    return out
+
+
+def experts_grouped(x, picks, gate, up, down, shared, out, workspace):
+    """Borrow the decoder's existing plan/activation arena for this stream call.
+
+    No bank retains this workspace. Original direct/noneligible entrypoints
+    keep their own error and execution paths; this core preserves invalid-ID
+    NaNs and duplicate output slots without a host count read.
+    """
+    plan = workspace.plan
+    extension().experts_grouped(x, picks, gate.data, gate.ggml_type, gate.column_offset,
+        up.data, up.ggml_type, up.column_offset, down.data, down.ggml_type, down.column_offset,
+        *(part.weight for part in shared), out, workspace.act,
+        plan.members, plan.items, plan.counts, plan.rank, plan.hist)
     return out
