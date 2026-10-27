@@ -52,7 +52,6 @@ PROTECTED_TORCH_GIT = "04cf2557f315a350e7eea7ab064288def65db75a"
 PROTECTED_CUPTI = Path("/usr/local/cuda-12.9/targets/x86_64-linux/lib/libcupti.so.2025.2.1")
 PROTECTED_CUPTI_SHA = "2fdab19dc3fccdd4b2f5eba137aabefc68e685f6497bb38eea649866c5672a2a"
 MAPPING_SNAPSHOT_BYTES = 16 << 20
-TARGET_TEMPLATE_SHA = "12827f24b742ea4e80cdc12dbcf9622227056b9f797252a3149263d4f9aaadce"
 SOURCE_FILES = (
     "tensorfold/__init__.py", "tensorfold/families/qwen4_exp/__init__.py",
     "tensorfold/families/qwen4_exp/cuda/engine.py",
