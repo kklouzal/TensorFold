@@ -455,3 +455,22 @@ def test_profile_concurrency_is_one_instrumented_cohort_without_all6_credit(tmp_
 def test_profile_concurrency_refuses_unbounded_or_misleading_combinations(tmp_path,extra):
     with pytest.raises(SystemExit):
         probe.arguments(cli(tmp_path)+extra)
+
+
+def test_profile_observer_payload_is_funded_globally_before_any_request(tmp_path, monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda import retention_resources
+    args=probe.arguments(cli(tmp_path)+["--concurrency-grid","--fast-grid","--tokens","512","--profile-concurrency","8"])
+    monkeypatch.setattr(probe,"prepared_prompt",lambda *_args:([1],{"rendered":"Notebook"}))
+    seen=[]
+    error=RuntimeError("stop at real host admission, before requests")
+    def finalize(_catalog,*,caller,**_kwargs):
+        expected=finite.control_payload_bytes(512)+finite.screen_control_payload_bytes()+8*(128<<10)
+        assert caller.control_payload_bytes==expected
+        assert caller.max_concurrent_requests==24 and caller.max_receipt_bytes==60620800
+        seen.append(caller)
+        raise error
+    monkeypatch.setattr(retention_resources,"finalize_backend_resources",finalize)
+    engine=NS(retention_catalog=object(),scheduler=object())
+    with pytest.raises(RuntimeError) as caught:
+        probe.run_concurrency_leader(engine,object(),args,{})
+    assert caught.value is error and len(seen)==1

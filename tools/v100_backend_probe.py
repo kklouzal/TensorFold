@@ -52,6 +52,7 @@ PROTECTED_TORCH_GIT = "04cf2557f315a350e7eea7ab064288def65db75a"
 PROTECTED_CUPTI = Path("/usr/local/cuda-12.9/targets/x86_64-linux/lib/libcupti.so.2025.2.1")
 PROTECTED_CUPTI_SHA = "2fdab19dc3fccdd4b2f5eba137aabefc68e685f6497bb38eea649866c5672a2a"
 MAPPING_SNAPSHOT_BYTES = 16 << 20
+CONCURRENT_OBSERVER_BYTES_PER_RANK = 128 << 10
 SOURCE_FILES = (
     "tensorfold/__init__.py", "tensorfold/families/qwen4_exp/__init__.py",
     "tensorfold/families/qwen4_exp/cuda/engine.py",
@@ -463,7 +464,7 @@ class RankCapture:
     """One pinned profiler per process; started post-warm, retired after engine."""
     def __init__(self, args):
         self.args, self.owner, self.bindings = args, None, []
-        self.failures = [None] * 133  # Five diagnostics/owners plus at most128 independent binding restorations.
+        self.failures = [None] * 134  # Five diagnostics,128 binding restores and one batch snapshot.
         self.record = {"schema": "tensorfold.finite-rank-profile-v1", "rank": args.rank,
                        "pid": os.getpid(), "complete": False}
 
@@ -508,7 +509,7 @@ class RankCapture:
         try:
             self.record["batch_observations"] = concurrent_observation_snapshot()
         except BaseException as error:
-            failures[132] = error
+            failures[133] = error
         try:
             if self.owner is not None:
                 try:
@@ -1038,7 +1039,8 @@ def run_concurrency_leader(engine, tokenizer, args, report):
         max_receipt_bytes=(finite.MAXIMUM + 1) * MAX_RECEIPT_BYTES,
         max_concurrent_requests=finite.MAXIMUM, worker_stack_bytes=finite.STACK_BYTES,
         control_payload_bytes=finite.control_payload_bytes(args.tokens) + quality_control
-            + (finite.screen_control_payload_bytes(args.tokens) if getattr(args, "fast_grid", False) else 0))
+            + (finite.screen_control_payload_bytes(args.tokens) if getattr(args, "fast_grid", False) else 0)
+            + (WORLD * CONCURRENT_OBSERVER_BYTES_PER_RANK if getattr(args, "profile_concurrency", None) is not None else 0))
     limit, pool = RequestLimit(finite.MAXIMUM), None
     primary, failures = None, [None, None]
     report["concurrency"] = {"grid": finite.GRID, "caller": caller.__dict__,
@@ -1046,6 +1048,10 @@ def run_concurrency_leader(engine, tokenizer, args, report):
         "schedule": "fixed ascending N, bringup then sustained, MTP then optional serial, repeated; simultaneous burst barrier",
         "stack_size_before_pool": __import__("threading").stack_size(),
         "helper_sha256": digest(finite.__file__), "eos": "ordinary stop_eos=True",
+        "observer_instrumentation": ({"global_fixed_control_bytes": WORLD * CONCURRENT_OBSERVER_BYTES_PER_RANK,
+            "allocation_phase": "post-warmcapturestart; includedinfullcallercommitmentbeforerequestpublication; nocreditforalreadymaterializedbytes",
+            "Kineto_native_buffers": "separate diagnostic instrumentation, boundedworkload/container320GiB; notclaimedproductioncapacityqualification"}
+            if getattr(args, "profile_concurrency", None) is not None else None),
         "qualification": "measurement harness; no performance or quality qualification until matched actual runs"}
     try:
         report["host_admission"] = finalize_backend_resources(engine.retention_catalog,
