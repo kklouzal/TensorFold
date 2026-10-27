@@ -429,8 +429,8 @@ def test_common_funding_and_per_case_graph_counters_exclude_bringup_and_warmup(t
     receipts, admission = [], []
     def finalize(_catalog, *, caller, **_kwargs):
         assert caller.max_concurrent_requests == caller.retained_results == 24
-        assert probe.MAX_RECEIPT_BYTES == 1507328
-        assert caller.max_receipt_bytes == 25 * 1507328 == 37683200
+        assert probe.MAX_RECEIPT_BYTES == 2424832
+        assert caller.max_receipt_bytes == 25 * 2424832 == 60620800
         admission.append(caller)
         return {'test_only': True}
     class Pool:
