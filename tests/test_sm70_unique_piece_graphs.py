@@ -68,6 +68,40 @@ def test_same_marker_cannot_capture_an_unqualified_fourth_row_at_greater_depth()
     assert graph._plan("mtp", [(state, 0, 4)]) is None
 
 
+@pytest.mark.parametrize("active", [0, 1, 2, 4, 8, 16, 24])
+@pytest.mark.parametrize("kind", ["verify", "mtp"])
+def test_concurrent_grid_declines_before_private_staging_even_for_one_participant(active, kind):
+    from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder
+
+    accessed = []
+
+    class Decoder:
+        live = MultiDecoder.live
+
+        def __init__(self):
+            self.streams = dict.fromkeys(range(active // 2), object())
+            self.filling = [object() for _ in range(active - active // 2)]
+
+        @property
+        def buf(self):
+            accessed.append("buffer")
+            return NS(owner_kernel_family="torch-reference", owner_graph_family="uncaptured", rotor_lookup=True)
+
+        mbuf = buf
+
+    graph = object.__new__(bound_graphs.BoundStateGraphs)
+    graph.unique, graph.closed, graph.dec = True, False, Decoder()
+    assert graph._forward(kind, [(object(), 0, 1)]) is None
+    assert accessed == (["buffer"] if active <= 1 else [])
+
+
+def test_replicated_graphs_do_not_consume_the_unique_active_count_policy():
+    graph = object.__new__(bound_graphs.BoundStateGraphs)
+    graph.unique, graph.closed = False, False
+    graph.dec = NS(buf=NS(rotor_lookup=True), live=lambda: pytest.fail("replicated active policy queried"))
+    assert graph._forward("verify", [(object(), 0, 1)]) is None
+
+
 def test_physical_guard_rows_do_not_extend_the_unique_capture_logical_domain():
     graph, (state, _) = planner()
     state.pos = 262143

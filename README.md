@@ -1618,3 +1618,6 @@ graph budget, physical admission and full-window reservations. The finite probe
 requests graphs only for this profile and refuses an eager-only result. Default
 profiles are unchanged. Actual full-model graph quality and 85-token/s
 qualification remain pending.
+When more than one request is active, this trial uses the ordinary eager
+forward before private graph staging, including one-participant MTP substeps.
+All original engine rows and full-window State reservations remain available.

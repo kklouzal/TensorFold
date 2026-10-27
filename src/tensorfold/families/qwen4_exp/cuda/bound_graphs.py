@@ -416,6 +416,8 @@ class BoundStateGraphs:
     def _forward(self, kind, segs, *, mtp_positions=None, device_tokens=None):
         if self.closed:
             raise RuntimeError("bound graph owner is closed")
+        if self.unique and self.dec.live() > 1:
+            return None  # The N1 contract cannot change a concurrent request's ordinary eager schedule.
         source = self.dec.buf if kind == "verify" else self.dec.mbuf
         if self.unique and (source.owner_kernel_family != "torch-reference"
                             or source.owner_graph_family != "uncaptured"):
