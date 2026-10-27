@@ -35,6 +35,8 @@ void family_pool_cuda(const T&, T&, const T&, const T&, const T&, const O&, int,
 void family_pool_staged_cuda(const T&, const T&, T&, const T&, const T&, const T&, const O&,
                              int, int, int, float, float, const O&, const O&, int, const O&);
 void family_ring_publish_cuda(const T&, T&, const T&, int, int, const O&, const O&, int, const O&);
+void family_value_guard_cuda(const T&, T&, const T&, const O&, int, int);
+int family_prepare_value_guard_cuda();
 void family_qsa_dense_cuda(const T&, T&, T&, int);
 void family_qsa_rows_cuda(const T&, const T&, const T&, T&, T&, T&, T&, int, int, int, int);
 
@@ -427,7 +429,69 @@ void qsa_rows(const T& query, const T& pooled, const T& position, T sparse, T co
     family_qsa_rows_cuda(query, pooled, position, sparse, counts, ids, scores, rows, ratio, budget, blocks);
 }
 
+
+namespace {
+std::pair<uintptr_t, uintptr_t> guard_extent(const T& tensor) {
+    TORCH_CHECK((tensor.dim() == 2 || tensor.dim() == 3) && tensor.stride(-1) == 1,
+                "value guard requires rank2/rank3 contiguous inner dimensions");
+    const int64_t heads = tensor.dim() == 3 ? tensor.size(1) : 1;
+    const int64_t dims = tensor.size(-1);
+    TORCH_CHECK(tensor.size(0) <= std::numeric_limits<int>::max() && heads > 0 && dims > 0,
+                "value guard requires bounded rows and nonempty inner dimensions");
+    const int64_t middle = tensor.dim() == 3 ? tensor.stride(1) : 0;
+    const unsigned __int128 row_span = static_cast<unsigned __int128>(heads - 1) * middle + dims;
+    TORCH_CHECK(middle >= 0 && (heads == 1 || middle >= dims) && tensor.stride(0) >= 0
+                && (tensor.size(0) <= 1 || static_cast<unsigned __int128>(tensor.stride(0)) >= row_span),
+                "value guard rows and heads must be disjoint");
+    const unsigned __int128 extent = tensor.numel() == 0 ? 0 :
+        (static_cast<unsigned __int128>(tensor.size(0) - 1) * tensor.stride(0) + row_span) * tensor.element_size();
+    const auto first = reinterpret_cast<uintptr_t>(tensor.data_ptr());
+    TORCH_CHECK(extent <= std::numeric_limits<uintptr_t>::max() - first &&
+                extent / tensor.element_size() <= std::numeric_limits<int64_t>::max(),
+                "value guard address extent exceeds int64 addressing");
+    return {first, first + static_cast<uintptr_t>(extent)};
+}
+bool guard_disjoint(std::pair<uintptr_t, uintptr_t> a, std::pair<uintptr_t, uintptr_t> b) {
+    return a.first == a.second || b.first == b.second || a.first >= b.second || b.first >= a.second;
+}
+}
+void value_guard(const T& input, T output, const T& status, int64_t flag, int64_t layer, O live) {
+    TORCH_CHECK(input.is_cuda() && (input.scalar_type() == at::kHalf || input.scalar_type() == at::kFloat),
+                "value guard requires CUDA FP16 or FP32 input");
+    const auto* prop = at::cuda::getDeviceProperties(input.get_device());
+    TORCH_CHECK(prop->major == 7 && prop->minor == 0, "value guard requires SM70");
+    TORCH_CHECK(output.device() == input.device() && output.scalar_type() == input.scalar_type()
+                && output.sizes() == input.sizes(), "value guard output must match input dtype/device/shape");
+    check(status, input, at::kInt, "value guard status");
+    TORCH_CHECK(status.numel() == 2 && flag >= std::numeric_limits<int>::min()
+                && flag <= std::numeric_limits<int>::max() && layer >= std::numeric_limits<int>::min()
+                && layer <= std::numeric_limits<int>::max(), "value guard status/flag/layer geometry");
+    if (live) {
+        check(*live, input, at::kInt, "value guard live rows");
+        TORCH_CHECK(live->numel() == 1, "value guard live rows requires one scalar");
+    }
+    const auto source = guard_extent(input), target = guard_extent(output);
+    const auto sb = reinterpret_cast<uintptr_t>(status.data_ptr());
+    const std::pair<uintptr_t, uintptr_t> status_span{sb, sb + 2 * sizeof(int)};
+    TORCH_CHECK(guard_disjoint(source, target) && guard_disjoint(source, status_span)
+                && guard_disjoint(target, status_span), "value guard writes must not alias reads or status");
+    if (live) {
+        const auto lb = reinterpret_cast<uintptr_t>(live->data_ptr());
+        const std::pair<uintptr_t, uintptr_t> live_span{lb, lb + sizeof(int)};
+        TORCH_CHECK(guard_disjoint(target, live_span) && guard_disjoint(status_span, live_span),
+                    "value guard live scalar must not alias writes");
+    }
+    c10::cuda::CUDAGuard guard(input.device());
+    family_value_guard_cuda(input, output, status, live, int(flag), int(layer));
+}
+int prepare_value_guard() {
+    const auto* prop = at::cuda::getDeviceProperties(c10::cuda::current_device());
+    TORCH_CHECK(prop->major == 7 && prop->minor == 0, "value guard residency requires SM70");
+    return family_prepare_value_guard_cuda();
+}
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
+    m.def("value_guard", &value_guard); m.def("prepare_value_guard", &prepare_value_guard);
     m.def("writeback", &writeback); m.def("normed", &normed); m.def("act", &act); m.def("mix", &mix);
     m.def("rms", &rms); m.def("gate", &gate); m.def("ple_embed", &ple_embed); m.def("ple_gate", &ple_gate);
     m.def("ple_conv", &ple_conv); m.def("add", &add); m.def("partial", &partial); m.def("shift", &shift);

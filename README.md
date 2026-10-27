@@ -1,5 +1,20 @@
 # TensorFold fork
 
+The private `source-owner-target-guard-trial` composes existing owner/target piece
+graphs with exact native finite-value guards in unique-history preparation.
+Existing q/iq and disjoint pre-gate scratch slices own sanitized outputs; raw
+projection gate columns remain unchanged. Invalid padded values are sanitized
+without poisoning live rows, and original status bits/first-layer checks remain.
+Kernel residency precedes admission; no device payload or context change is
+introduced. SM70 adversarial/TP8 numerical and model/six-concurrency quality
+and performance gates remain pending for this candidate.
+
+The finite diagnostic funds 256 KiB per follower report, 512 KiB for the leader
+and 64 KiB for supervision (2,424,832 bytes total). This preserves complete
+source evidence after the observed 132,256-byte readiness reports exceeded the
+old follower slice. The caller funds the full derived bound before submission;
+overflow still fails and saves the complete report. Runtime code is unchanged.
+
 The private `source-owner-target-greedy-trial` composes prepared native owners and
 N1 piece graphs with exact target-only GPU greedy selection and chain acceptance.
 Target graph heads export original logits; compact target packets gather on the

@@ -1552,7 +1552,7 @@ class MultiDecoder:
                     and meta.get("sm70_profile") in ("optimized", "source-family-trial", "source-family-prefix-trial",
                                                      "source-packed-trial", "source-packed-graphs-trial",
                                                      "source-owner-pieces-trial", "source-target-greedy-trial",
-                                                     "source-owner-target-greedy-trial"))
+                                                     "source-owner-target-greedy-trial", "source-owner-target-guard-trial"))
         for s in self._order():
             start = self.fills[s.sid][2]
             n = min(len(s.prompt) - start, room)

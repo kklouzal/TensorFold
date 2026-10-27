@@ -285,6 +285,22 @@ __device__ __forceinline__ float guarded(float value, int* status, int flag, int
     return 0.f;
 }
 
+
+__global__ void value_guard_kernel(const void* input, void* output, bool is_float, int64_t elements,
+    int64_t heads, int64_t dims, int64_t in_row, int64_t in_head, int64_t out_row, int64_t out_head,
+    int* status, int flag, int layer, const int* live) {
+    for (int64_t at = int64_t(blockIdx.x) * blockDim.x + threadIdx.x; at < elements;
+         at += int64_t(gridDim.x) * blockDim.x) {
+        const int64_t row = at / (heads * dims), within = at % (heads * dims);
+        const int64_t head = within / dims, col = within % dims;
+        const float value = guarded(read(input, is_float, row * in_row + head * in_head + col),
+                                    status, flag, layer, int(row), live);
+        const int64_t to = row * out_row + head * out_head + col;
+        if (is_float) static_cast<float*>(output)[to] = value;
+        else static_cast<__half*>(output)[to] = __float2half_rn(value);
+    }
+}
+
 struct FloatSquareReader {
     const float* values;
     __device__ __forceinline__ float operator()(int col) const {
@@ -881,4 +897,26 @@ void family_qsa_rows_cuda(const T& query, const T& pooled, const T& position, T&
         else launch(qsa_rows_kernel<16>);
     }
     C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+
+// The output is an existing exclusive actor buffer. No allocation or host read.
+void family_value_guard_cuda(const T& input, T& output, const T& status, const O& live, int flag, int layer) {
+    const int64_t elements = input.numel();
+    if (!elements) return;
+    const int64_t heads = input.dim() == 3 ? input.size(1) : 1;
+    const int64_t dims = input.size(-1);
+    const int blocks = int(std::min<int64_t>((elements - 1) / THREADS + 1, 4096));
+    value_guard_kernel<<<blocks, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+        input.data_ptr(), output.data_ptr(), input.scalar_type() == at::kFloat, elements, heads, dims,
+        input.stride(0), input.dim() == 3 ? input.stride(1) : 0,
+        output.stride(0), output.dim() == 3 ? output.stride(1) : 0,
+        status.data_ptr<int>(), flag, layer, live ? live->data_ptr<int>() : nullptr);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+int family_prepare_value_guard_cuda() {
+    cudaFuncAttributes attributes;
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, value_guard_kernel));
+    return 1;
 }

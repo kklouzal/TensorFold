@@ -223,17 +223,35 @@ def prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
     pos = state.mtp_len if mtp else state.pos
     rows = stop - start
     p = projection[start:stop]
+    # These actor-owned arrays have no live consumers during input preparation.
+    # q/iq are overwritten again after normalization/rotation. gated's key,
+    # value and index-key slices stay disjoint until append/pool submissions
+    # retire in current-stream order; the attention gate writes gated only
+    # after this entire preparation/attention call returns. Raw projection
+    # gate columns remain untouched. No new device allocation or history exists.
+    guarded_out = weights.meta.get("sm70_native_guard_trial") is True
+    query_out = buffers.q[start:stop] if guarded_out else None
+    iq_out = buffers.iq[start:stop] if guarded_out else None
+    if guarded_out:
+        if c.heads * c.head_dim < 2 * c.head_dim + c.index_dim:
+            raise ValueError("native guard requires the admitted disjoint gated scratch geometry")
+        scratch = buffers.gated[start:stop]
+        key_out = scratch[:, :c.head_dim].reshape(rows, 1, c.head_dim)
+        value_out = scratch[:, c.head_dim:2 * c.head_dim].reshape(rows, 1, c.head_dim)
+        ik_out = scratch[:, 2 * c.head_dim:2 * c.head_dim + c.index_dim]
+    else:
+        key_out = value_out = ik_out = None
     positions = torch.arange(rows, device=p.device) + pos
     at = c.heads * 2 * c.head_dim
-    query = ops._guard(p[:, :at].reshape(rows, c.heads, 2, c.head_dim)[:, :, 0], state.kv_status, 1, layer.index)
-    key = ops._guard(p[:, at:at + c.head_dim].reshape(rows, 1, c.head_dim), state.kv_status, 2, layer.index)
+    query = ops._guard(p[:, :at].reshape(rows, c.heads, 2, c.head_dim)[:, :, 0], state.kv_status, 1, layer.index, out=query_out)
+    key = ops._guard(p[:, at:at + c.head_dim].reshape(rows, 1, c.head_dim), state.kv_status, 2, layer.index, out=key_out)
     at += c.head_dim
-    value = ops._guard(p[:, at:at + c.head_dim].reshape(rows, 1, c.head_dim), state.kv_status, 4, layer.index)
+    value = ops._guard(p[:, at:at + c.head_dim].reshape(rows, 1, c.head_dim), state.kv_status, 4, layer.index, out=value_out)
     at += c.head_dim
     iq = ops._guard(p[:, at:at + c.index_heads * c.index_dim].reshape(rows, c.index_heads, c.index_dim),
-                    state.kv_status, 16, layer.index)
+                    state.kv_status, 16, layer.index, out=iq_out)
     at += c.index_heads * c.index_dim
-    ik = ops._guard(p[:, at:at + c.index_dim], state.kv_status, 16, layer.index)
+    ik = ops._guard(p[:, at:at + c.index_dim], state.kv_status, 16, layer.index, out=ik_out)
 
     def normalize(value, weight):
         if buffers.prefill:
@@ -254,15 +272,18 @@ def prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
     rotary_positions = torch.arange(rows, device=p.device, dtype=torch.int64)
     query = ops.rotary(normalize(query, a.q_scale), frequencies, rotary_positions, **options)
     key = ops.rotary(normalize(key, a.k_scale), frequencies, rotary_positions, **options)
-    query = ops._guard(query, state.kv_status, 1, layer.index)
-    key = ops._guard(key, state.kv_status, 2, layer.index)
+    query = ops._guard(query, state.kv_status, 1, layer.index, out=query_out)
+    key = ops._guard(key, state.kv_status, 2, layer.index, out=key_out)
     if cache.key_format.codec:
         ops._rotor_rotate(query, buffers.q[start:stop], codec=cache.key_format.codec,
                           status=state.kv_status, layer=layer.index)
     else:
         buffers.q[start:stop].copy_(ops.h32(query).half() if cache.key_format.quantized else query)
-    buffers.iq[start:stop].copy_(ops._guard(
-        ops.rotary(normalize(iq, a.iq_scale), frequencies, rotary_positions, **options), state.kv_status, 16, layer.index))
+    prepared_iq = ops._guard(
+        ops.rotary(normalize(iq, a.iq_scale), frequencies, rotary_positions, **options),
+        state.kv_status, 16, layer.index, out=iq_out)
+    if not guarded_out or prepared_iq is not iq_out:
+        buffers.iq[start:stop].copy_(prepared_iq)  # status=None retains the original passthrough contract.
     key_codes, key_scales = _encode(key, cache.key_format, state.kv_status, layer.index, error=2)
     value_codes, value_scales = _encode(value, cache.value_format, state.kv_status, layer.index, error=4)
     cache.append(pos, key_codes, value_codes, key_scales, value_scales)

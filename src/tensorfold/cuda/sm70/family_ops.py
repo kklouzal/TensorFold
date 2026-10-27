@@ -208,15 +208,24 @@ def _live_mask(value, valid_rows):
         value.shape[0], *([1] * (value.ndim - 1)))
 
 
-def _guard(value, status, error, layer, valid_rows=None):
+def _guard(value, status, error, layer, valid_rows=None, *, out=None):
     if status is None:
         return value
+    if out is not None and value.is_cuda:
+        from .family_native import extension
+
+        extension().value_guard(value, out, status, error, layer, valid_rows)
+        return out
     valid = torch.isfinite(value) & (value.abs() <= 2**30)
     live = _live_mask(value, valid_rows)
     bad = ((~valid) if live is None else (~valid & live)).any()
     status[0].bitwise_or_(bad.int() * error)
     status[1].copy_(torch.where(bad & (status[1] == -2), layer, status[1]))
-    return torch.where(valid, value, 0)
+    result = torch.where(valid, value, 0)
+    if out is not None:
+        out.copy_(result)
+        return out
+    return result
 
 
 def quantize_int8(value, *, status=None, layer=0, valid_rows=None):
