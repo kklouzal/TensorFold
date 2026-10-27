@@ -232,9 +232,12 @@ class ModelIdentity:
                 _close(scope, primary)
 
 
-def _hash_descriptor(fd, size):
+def _hash_descriptor(fd, size, cancelled=None):
     hasher, read = hashlib.sha256(), 0
     while read < size:
+        if cancelled is not None and cancelled():
+            from concurrent.futures import CancelledError
+            raise CancelledError("startup model content capture cancelled")
         block = os.read(fd, min(_READ_BYTES, size - read))
         if not block:
             raise ValueError("model execution input was truncated during hashing")
@@ -257,7 +260,7 @@ def _issue_identity(runtime, contents, *, bytes_read, hashes_reused, started):
 def capture_model_identity(files: dict[str, Path], *, runtime_identity, authorize,
                            max_file_bytes: int, max_total_bytes: int,
                            reuse: ModelIdentity | None = None, reuse_is_immutable: bool = False,
-                           max_files: int = 65536, max_name_bytes: int = 4096) -> ModelIdentity:
+                           max_files: int = 65536, max_name_bytes: int = 4096, cancelled=None) -> ModelIdentity:
     """Hash a complete caller-selected, authorized execution input closure.
 
     Byte budgets are explicit owner policy, not hardware/model-size defaults.
@@ -266,6 +269,8 @@ def capture_model_identity(files: dict[str, Path], *, runtime_identity, authoriz
     guarantee that inputs have stayed immutable since the prior capture.
     """
     started = time.perf_counter()
+    if cancelled is not None and not callable(cancelled):
+        raise ValueError("model identity cancellation requires a callable")
     if (type(files) is not dict or not files
             or any(type(n) is not int or n < 0 for n in (max_file_bytes, max_total_bytes))
             or any(type(n) is not int or n <= 0 for n in (max_files, max_name_bytes))
@@ -306,7 +311,7 @@ def capture_model_identity(files: dict[str, Path], *, runtime_identity, authoriz
                 digest = old.sha256
                 reused += 1
             else:
-                digest, read = _hash_descriptor(fd, info.st_size)
+                digest, read = _hash_descriptor(fd, info.st_size, cancelled) if cancelled is not None else _hash_descriptor(fd, info.st_size)
                 read_bytes += read
             if _identity(os.fstat(fd)) != before or _identity(path.stat(follow_symlinks=False)) != before:
                 raise ValueError("model execution input changed during identity capture")
