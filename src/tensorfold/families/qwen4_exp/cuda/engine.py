@@ -96,6 +96,7 @@ class FlashNextEngine:
         self._media_inputs_enabled = False  # Only the admitted media-profile parser may enable this.
         self.media_profile = self._media_authority = self._media_software_binding = self._media_numeric_scope = None
         self._startup_reads: list = []
+        self._startup_content_plan = self._startup_content_capture = None
         self._prepared_family_plan = _prepared_family_plan
         try:
             self._initialize(model_dir, depth=depth, confidence=confidence, draft_vocab=draft_vocab, max_len=max_len, context_explicit=context_explicit, tp=tp, rank=rank, master=master, port=port, prefetch=prefetch, graphs=graphs, streams=streams, ple_on_ssd=ple_on_ssd, kv_dtype=kv_dtype, share=share, vision=vision, vision_urls=vision_urls, yarn_factor=yarn_factor, vram_experts=vram_experts, kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, expert_session=expert_session, kv_full_windows=kv_full_windows, vram_experts_pin=vram_experts_pin, eos_token_ids=eos_token_ids, chat_template_file=chat_template_file, chat_template_name=chat_template_name, mtp_model_dir=mtp_model_dir, dspark_model_dir=dspark_model_dir, dflash2_model_dir=dflash2_model_dir, indexer_history=indexer_history, adaptive_sessions=adaptive_sessions, session_ceiling=session_ceiling, execution_rows=execution_rows, execution_profile_manifest=execution_profile_manifest, family_manifest=family_manifest, position_profile_manifest=position_profile_manifest, media_profile_manifest=media_profile_manifest, max_waiting_input_bytes=max_waiting_input_bytes, max_waiting_input_bytes_per_principal=max_waiting_input_bytes_per_principal, output_queue_tokens=output_queue_tokens, queue_timeout_s=queue_timeout_s, retention_policy=retention_policy)
@@ -1164,6 +1165,11 @@ class FlashNextEngine:
                 media_resources["shared_host_payload_bound"])
             host_capacity["host_extra_staging"] = host_capacity.get("host_extra_staging", 0) + (
                 media_resources["vision_loading_host_payload_bound"])
+        from .startup_content import prepare as prepare_startup_content
+
+        self._startup_content_plan = prepare_startup_content(self, manifest if execution_profile_manifest is not None else None)
+        if self._startup_content_plan is not None:
+            host_capacity["host_extra_staging"] = host_capacity.get("host_extra_staging", 0) + self._startup_content_plan.host_bytes
         self.capacity_plan = admit(model_dir, max_len, context_explicit, torch,
                                    capacity_geometry(geometry, model_dir, vision and not media_requested, rank, workspace),
                                    weight_rule,
@@ -1339,6 +1345,13 @@ class FlashNextEngine:
             self._indexer_history_session = HistorySession(history_plan, allocator,
                 torch.device("cuda", torch.cuda.current_device()), maximum_owners=history_maximum_owners)
             self.capacity_plan["indexer_history"].update(placement)
+        if self._startup_content_plan is not None:
+            self.capacity_plan["startup_execution_content"] = self._startup_content_plan.record()
+            if self.rank == 0:
+                # All ranks agreed the funded option before this single owner
+                # starts. Registration precedes Thread.start for rollback.
+                self._startup_content_capture = self._startup_content_plan.start(self, manifest)
+                self._startup_content_capture.start()
         reads = self._startup_reads                              # the n-gram tables' pages, read while the weights load
         if managed:
             self._profile_build.phase("loading_weights")
@@ -1740,6 +1753,7 @@ class FlashNextEngine:
             self.capacity_plan["execution_profile_binding"] = (
                 self._profile_build.bind_execution_manifest(execution_profile_manifest) if managed else
                 bind_execution_manifest(self, execution_profile_manifest))
+            self._stop_startup_content()
             self.multi.execution_manifest_installer = self._install_execution_manifest
         # Public FIFO configuration changes admission semantics. Synthetic
         # warmup must finish on every rank before installing those semantics.
@@ -1759,6 +1773,16 @@ class FlashNextEngine:
         receipt = bind_execution_manifest(self, relative_name, rebind=True, manifest_root=root)
         self.capacity_plan["execution_profile_binding"] = receipt
         return receipt
+
+    def _stop_startup_content(self) -> None:
+        """Retire the sole immutable-file borrower before engine resources."""
+        capture = getattr(self, "_startup_content_capture", None)
+        if capture is not None:
+            try:
+                capture.close()
+            finally:
+                if capture.closed:
+                    self._startup_content_capture = None
 
     def _drain_startup_reads(self) -> None:
         """Observe every accepted read; retain any interrupted pending owner."""
@@ -1789,7 +1813,7 @@ class FlashNextEngine:
         """Read borrowers retire before plans, files or the communicator."""
         primary = None
         try:
-            self._drain_startup_reads()
+            finish((self._stop_startup_content, self._drain_startup_reads))
         except BaseException as error:
             primary = error
         if self._startup_reads:
@@ -2082,6 +2106,9 @@ class FlashNextEngine:
                   getattr(getattr(self, "_dflash_pairing", None), "identity", None),
                   expert_policy, proposal_policy, context_policy, attention_policy,
                   getattr(self, "sm70_profile", None), prefix_policy, getattr(self, "kv_full_windows", None)]
+        overlap = getattr(self, "_startup_content_plan", None)
+        if overlap is not None:
+            policy.append(["startup-content-overlap", overlap.record(), overlap.python_stack_setting])
         if getattr(self, "position_profile", None) is not None:
             policy.append(["position-profile", self.position_profile.identity, self.position_profile.epoch,
                            self.position_method_binding])
@@ -2501,6 +2528,7 @@ class FlashNextEngine:
 
     def _close_resources(self, *, preserve_transport: bool = False) -> None:
         """After request drain, keep owners intact until their device fence."""
+        self._stop_startup_content()
         catalog = getattr(self, "retention_catalog", None)
         if catalog is not None:
             self._withdraw_retention_catalog(catalog)

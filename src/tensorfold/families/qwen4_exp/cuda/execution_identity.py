@@ -441,12 +441,13 @@ def _draft_vocabulary(engine):
             "sha256": hashlib.sha256(canonical.tobytes(order="C")).hexdigest()}
 
 
-def _capture(files, before, expected, *, reuse=None):
+def _capture(files, before, expected, *, reuse=None, cancelled=None):
     total = sum(value["stat"][2] for value in before.values())
     receipt = capture_model_identity(files, runtime_identity={"schema": SCHEMA, "version": VERSION},
         authorize=lambda name, path: path.resolve(strict=True),
         max_file_bytes=max(v["stat"][2] for v in before.values()), max_total_bytes=total,
-        reuse=reuse, reuse_is_immutable=reuse is not None)
+        reuse=reuse, reuse_is_immutable=reuse is not None,
+        **({"cancelled": cancelled} if cancelled is not None else {}))
     contents = {f.logical_name: {"size": f.size, "sha256": f.sha256} for f in receipt.files}
     if any(contents[name] != record for name, record in expected.items()):
         raise ValueError("execution profile checkpoint content differs from its declared SHA256")
@@ -1046,8 +1047,10 @@ def _bind_execution_manifest(engine, manifest_path, *, rebind, channel, manifest
         union, expected = context["union"], context["expected"]
         capture_files = {name: Path(value["path"]) for name, value in union.items()}
         pairing = getattr(engine, "_dflash_pairing", None)
-        if rebind or pairing is not None:
-            prior = engine._execution_input_authorities if rebind else (pairing.authority,)
+        overlap = getattr(engine, "_startup_content_capture", None)
+        if rebind or pairing is not None or overlap is not None:
+            prior = (engine._execution_input_authorities if rebind else
+                     (overlap.result(),) if overlap is not None else (pairing.authority,))
             if rebind and (not prior or prior[0] is not engine._execution_input_authority):
                 raise ValueError("current-process execution input authority was replaced")
             authorities, contents, read, reused = _capture_reusing(capture_files, union, expected, prior)
@@ -1056,7 +1059,8 @@ def _bind_execution_manifest(engine, manifest_path, *, rebind, channel, manifest
             authority, contents = _capture(capture_files, union, expected)
             authorities, read, reused = (authority,), authority.bytes_read, 0
         context.update(authority=authority, authorities=authorities)
-        return {"contents": contents, "bytes_read": read, "hashes_reused": reused}
+        return {"contents": contents, "bytes_read": read, "hashes_reused": reused,
+                **({"startup_artifact_capture": overlap.record()} if overlap is not None else {})}
 
     outcome = _phase(engine, channel, "content", content)[0]
 
@@ -1106,6 +1110,8 @@ def _bind_execution_manifest(engine, manifest_path, *, rebind, channel, manifest
                 "content_passes": int(not rebind), "shared_immutable_same_host": True,
                 "bytes_read_this_binding": outcome["bytes_read"], "hashes_reused_this_binding": outcome["hashes_reused"],
                 "evidence_receipts": len(context["evidence"]),
-                "profiles_installed": context["manifest"].get("profiles") is not None}
+                "profiles_installed": context["manifest"].get("profiles") is not None,
+                **({"startup_artifact_capture": outcome["startup_artifact_capture"]}
+                   if "startup_artifact_capture" in outcome else {})}
 
     return _phase(engine, channel, "commit", commit, may_refuse=False)[0]
