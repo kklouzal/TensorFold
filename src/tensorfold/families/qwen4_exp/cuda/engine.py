@@ -935,7 +935,7 @@ class FlashNextEngine:
             if tp > 1 and concurrent and not adaptive_sessions:
                 from .kv_status import workspace_bytes
 
-                status_device, status_host = workspace_bytes(streams, tp)
+                status_device, status_host = workspace_bytes(streams, tp, candidate_rows=row_envelope(streams))
                 options["device_workspace_bytes"] += status_device
                 options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + status_host
             for key in ("host_resident", "host_extra_staging", "host_workspace_bytes"):
@@ -1037,7 +1037,7 @@ class FlashNextEngine:
 
                     media_extra = boundary_resources(hidden_width=int(text.get("hc_count", 4)) * int(text["hidden_size"]),
                         slots=count, keep=KEEP, points=POINTS)["additional_device_bytes"]
-                status_bytes = status_workspace(count, tp)[0] if tp > 1 else 0
+                status_bytes = status_workspace(count, tp, candidate_rows=row_envelope(count))[0] if tp > 1 else 0
 
                 def additions(total):
                     costs = {"kv_cohort_workspace": status_bytes}
@@ -1099,7 +1099,7 @@ class FlashNextEngine:
                 from tensorfold.cuda.geometry import multi_static_domains
 
                 total = tp * multi_static_domains(text, count, each, mtp)[1]
-                total += tp * status_workspace(count, tp)[1] if tp > 1 else 0
+                total += tp * status_workspace(count, tp, candidate_rows=row_envelope(count))[1] if tp > 1 else 0
                 if self.position_profile is not None:
                     from .history_placement import coordinate_source_host_bytes
 
@@ -1167,7 +1167,8 @@ class FlashNextEngine:
                 self._native_protocol_resources = native_protocol_payload(streams)
                 self.capacity_plan["native_protocol"] = {
                     **self._native_protocol_resources, "abi": self._retention_native_runtime}
-            status_device, status_host = status_workspace(streams, tp) if tp > 1 else (0, 0)
+            status_device, status_host = (status_workspace(streams, tp, candidate_rows=row_envelope(streams))
+                                          if tp > 1 else (0, 0))
             if dspark_plan is not None:
                 dspark_cache_copies = streams
                 main_rows = row_envelope(streams)

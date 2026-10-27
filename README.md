@@ -61,6 +61,11 @@ remain cold. The finite diagnostic's `--expect-prefix-reuse --repetitions 10`
 checks a cold first request followed by the maximal legal same-prompt prefix
 before its pending anchor. Partial-prefix, recovery, slot ownership, full-context
 quality and performance qualification remain pending before production selection.
+The TP readback candidate combines validated KV status and already-gathered
+sampling packets in one bounded host transfer. It retains exact candidate bits
+and owns its CPU result separately from the reusable pinned slab; status-only
+paths and sampler fallbacks remain available. Device and throughput qualification
+of this transport change remain pending.
 Its combined source/media authority also checks the protected CPU processor and
 decoder closure; a source-only record cannot satisfy the combined verifier.
 The additive [CPU media source image](deploy/v100/media-foundation.md) supplies
