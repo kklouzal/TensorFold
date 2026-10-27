@@ -25,6 +25,14 @@ def test_actual_resolve_prepare_bind_native_roles_are_admissible(tmp_path):
     assert _native_prelude_position(binding.target) and _native_prelude_position(binding.mtp)
     assert binding.target.inv_freq is weights.inv_freq
     assert binding.target.domain.rope.native_context == 262144
+    from tensorfold.families.qwen4_exp.cuda.input_preparation import install_input_preparation
+
+    weights.meta = {"coordinate_profile_identity": profile.identity}
+    weights.comm = None
+    context = install_input_preparation(weights)
+    assert weights.meta["input_preparation_context"] is context
+    assert context.prepare("fixture-native-roles", lambda: binding.target) is binding.target
+    context.close()
 
 
 @pytest.mark.parametrize("change", ["yarn", "extended", "foreign-sections", "amplitude", "unissued"])

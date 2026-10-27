@@ -39,7 +39,7 @@ def _worker(rank, port, target_greedy=False):
 
     family_ops._NATIVE_FAMILY, family_ops._NATIVE_ATTENTION = True, False
     comm, failed, graphs, diagnostic = NCCL(), False, None, None
-    preparations, target_owners = [], []
+    preparations, target_owners, input_contexts = [], [], []
     faulthandler.dump_traceback_later(60, file=sys.stderr)
 
     def phase(label):
@@ -64,6 +64,7 @@ def _worker(rank, port, target_greedy=False):
             torch.cuda.synchronize()
             finish(lambda owner=owner: owner.retire_after_fence(fenced=True) for owner in target_owners)
         close_preparations()
+        finish(context.close for context in reversed(input_contexts))
         finish((lambda: comm.close(abort=failed), faulthandler.cancel_dump_traceback_later, diagnostic_failure))
 
     try:
@@ -123,6 +124,17 @@ def _worker(rank, port, target_greedy=False):
                     weights.meta["sm70_owner_prelude_zero"] = torch.zeros(1, dtype=torch.int32, device=weights.device)
                     weights.meta["sm70_owner_prelude_submitted_frames"] = 0
                     torch.cuda.current_stream(weights.device).synchronize()
+            if weights.positions is not None:
+                from tensorfold.families.qwen4_exp.cuda.input_preparation import install_input_preparation
+
+                # The Engine issues one shared coordinate activation before
+                # this actual installer. Use a deterministic fixture identity,
+                # distinct per model owner and equal across all eight ranks.
+                weights.meta["coordinate_profile_identity"] = hashlib.sha256(
+                    (weights.positions.profile.identity + f"/fixture-model/{len(input_contexts)}").encode()).hexdigest()
+                context = install_input_preparation(weights)
+                input_contexts.append(context)
+                assert context is weights.meta["input_preparation_context"]
             preparation = None
             if native:
                 preparation = OwnerPreparation(spec, role_rows={"decode": 3, "mtp": 3, "prefill": 8},
