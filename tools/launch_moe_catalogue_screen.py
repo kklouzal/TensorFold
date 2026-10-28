@@ -4,13 +4,13 @@ import json
 import pathlib
 import subprocess
 import time
-OUT = pathlib.Path('/home/kklouzal/tensorfold-v100-qualification-20261026/perf85-joint-hc-moe-4d2b-20261028')
+OUT = pathlib.Path('/home/kklouzal/tensorfold-v100-qualification-20261026/perf85-joint-hc-moe-4d2b-cleanup-20261028')
 ROOT = OUT.parent
 candidate = json.loads((OUT / 'candidate.json').read_text())
 if hashlib.sha256((OUT / 'execution-manifest.json').read_bytes()).hexdigest() != candidate['execution_manifest_sha256']:
     raise RuntimeError('native manifest copy differs')
 IMAGE = 'sha256:96f6961708d064a9d2f9e73d4df43ce8a5695c1499f16943b670c21fd971e15e'
-NAME = 'tensorfold-v100-joint-hc-moe-4d2b'
+NAME = 'tensorfold-v100-joint-hc-moe-4d2b-cleanup'
 
 def now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()

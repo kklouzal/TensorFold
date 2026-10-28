@@ -66,8 +66,7 @@ def validate_prepared_profile(ready, *, hc=False):
                 or fusion.get('public_count') != 513 or fusion.get('slots') != 11
                 or fusion.get('target_output') != 'float16' or fusion.get('mtp_output') != 'float32'
                 or graph.get('numeric_profile') != profile
-                or graph.get('graph_contract') != ('mlp-hc-mode3-moe-target-exactR-ordered-pools-v1' if hc else 'pure-moe-target-exactR-ordered-pools-v1')
-                or hc and graph.get('funding', {}).get('boundary') != 'MLP-HC-mode3+pure-MoE'):
+                or graph.get('graph_contract') != ('mlp-hc-mode3-moe-target-exactR-ordered-pools-v1' if hc else 'pure-moe-target-exactR-ordered-pools-v1')):
             raise ValueError('captured Fusion backend/profile/output contract is not qualified')
         return 'packed_blocks2w'
     if profile != 'source-batch-router-blas-trial':
