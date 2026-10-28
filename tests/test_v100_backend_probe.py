@@ -1308,3 +1308,63 @@ def test_overlap_flag_requires_manifest_and_each_child_inherits_before_start(tmp
         probe.arguments(raw+["--rank","1"])
     monkeypatch.setenv("TENSORFOLD_STARTUP_CONTENT_OVERLAP","1")
     assert probe.arguments(raw+["--rank","1"]).overlap_content_capture
+
+
+def test_zero_confidence_is_explicit_bounded_all6_quality_experiment(tmp_path):
+    assert probe.arguments(cli(tmp_path)).mtp_confidence == 0.7
+    args = cli(tmp_path) + ["--fast-grid", "--concurrency-grid", "--fast-grid-protocol", "fast-grid-v2",
+                           "--tokens", "2048", "--quality-spotchecks", "--mtp-confidence", "0"]
+    assert probe.arguments(args).mtp_confidence == 0.0
+    for bad in ("-1", "0.1", "1", "nan", "inf"):
+        with pytest.raises(SystemExit):
+            probe.arguments(args[:-1] + [bad])
+    with pytest.raises(SystemExit):
+        probe.arguments(cli(tmp_path) + ["--mtp-confidence", "0"])
+    with pytest.raises(SystemExit):
+        probe.arguments([arg for arg in args if arg != "--quality-spotchecks"])
+
+
+@pytest.mark.parametrize("confidence", [0.0, 0.7])
+def test_worker_forwards_declared_confidence_to_real_factory_boundary(tmp_path, monkeypatch, confidence):
+    from tensorfold import hub, serve_options
+    from tensorfold.cuda.cohort import FAILURE_FD_ENV
+    from tensorfold.families import qwen4_exp
+    primary = ValueError("stop at owned constructor boundary")
+    seen = []
+    def construct(*_args, **kwargs):
+        seen.append((kwargs["mtp_confidence"], kwargs["mtp_drafts"], kwargs["kv_dtype"]))
+        raise primary
+    monkeypatch.setattr(probe, "installed_identity", lambda _wheel: {})
+    monkeypatch.setattr(hub, "resolve", lambda *_args, **_kwargs: tmp_path)
+    monkeypatch.setattr(serve_options, "drafter_metadata_source", lambda _source: tmp_path)
+    monkeypatch.setattr(qwen4_exp, "cuda_engine", construct)
+    read_fd, write_fd = os.pipe()
+    monkeypatch.setenv(FAILURE_FD_ENV, str(write_fd))
+    args = SimpleNamespace(rank=1, wheel=tmp_path, model=tmp_path, mtp=tmp_path, master_port=29607,
+        tokens=2048, out=tmp_path, requested_sm70_profile="source-owner-target-prelude-trial",
+        repetitions=1, mtp_confidence=confidence)
+    try:
+        with pytest.raises(ValueError) as failure:
+            probe.worker(args)
+        assert failure.value is primary
+        assert seen == [(confidence, 2, "int8")]
+    finally:
+        os.close(write_fd)
+        os.close(read_fd)
+
+
+def test_check_engine_requires_actual_declared_confidence_before_admission():
+    ns = SimpleNamespace
+    engine = ns(capacity_plan={"session_capacity": {"context_tokens": probe.CONTEXT,
+        "configured_ceiling": 24, "resident_capacity": 24, "full_context_commitments": 24},
+        "kv_full_windows": {"materialized": True}}, tp=8, depth=2, confidence=0.0,
+        context_window=probe.CONTEXT, indexer_history="gpu", kv_pair=ns(key_dtype="int8", value_dtype="int8"),
+        w=ns(mtp=object(), meta={"execution_provider": "sm70", "execution_dtype": "float16",
+            "full": ns(hidden=2560, layers=48, vocab=248320)}), scheduler=ns(_request_limit=None),
+        retention_catalog=object())
+    probe.check_engine(engine, session_ceiling=24, confidence=0.0)
+    with pytest.raises(ValueError):
+        probe.check_engine(engine, session_ceiling=24)
+    engine.confidence = 0.7
+    with pytest.raises(ValueError):
+        probe.check_engine(engine, session_ceiling=24, confidence=0.0)

@@ -151,6 +151,8 @@ def arguments(argv=None):
                         help="explicit protocol: v1 uses320/512outputcells; v2 funds2048cells for full10s >85tokens/s screens; sameprompts/window/EOS/quality")
     parser.add_argument("--quality-spotchecks", action="store_true",
                         help="after the unchanged concurrency grid, run six fixed independent answer/format checks with320-token allowances; requires grid and --tokens>=320")
+    parser.add_argument("--mtp-confidence", type=float, choices=(0.0, CONFIDENCE), default=CONFIDENCE,
+                        help="private proposal-length experiment:0 permits the second draft within existingdepth2; default0.7; zero requires fast-grid-v2/all6 quality checks; greedy verifier/EOS unchanged")
     parser.add_argument("--thinking", action="store_true", help="pass enable_thinking=True to the unchanged target template")
     parser.add_argument("--serial-reference", action="store_true", help="also run a separately labeled draft=False reply with MTP loaded")
     parser.add_argument("--rank", type=int, help=argparse.SUPPRESS)
@@ -174,6 +176,8 @@ def arguments(argv=None):
         parser.error("--fast-grid requires --concurrency-grid, protocol-outputcap320or512(v1)/2048(v2), --repetitions1 and MTPonly")
     if args.quality_spotchecks and (not args.concurrency_grid or args.tokens < 320):
         parser.error("--quality-spotchecks requires --concurrency-grid and --tokens>=320 for the declared caller funding")
+    if args.mtp_confidence != CONFIDENCE and not (args.fast_grid and args.fast_grid_protocol == "fast-grid-v2" and args.quality_spotchecks):
+        parser.error("zero MTP confidence requires explicit fast-grid-v2 and --quality-spotchecks")
     if args.expect_prefix_reuse and args.repetitions < 2:
         parser.error("--expect-prefix-reuse requires at least2 repetitions")
     if (not 1 <= args.master_port <= 65535 or not math.isfinite(args.timeout_seconds)
@@ -350,11 +354,11 @@ def prepared_prompt(engine, tokenizer, args):
                     "rendered": rendered, "token_ids": tokens}
 
 
-def check_engine(engine, *, session_ceiling=None):
+def check_engine(engine, *, session_ceiling=None, confidence=CONFIDENCE):
     """Refuse a changed execution profile before host finalization/admission."""
     plan = engine.capacity_plan
     solved, full = plan["session_capacity"], plan["kv_full_windows"]
-    if (engine.tp != WORLD or engine.depth != DEPTH or engine.confidence != CONFIDENCE
+    if (engine.tp != WORLD or engine.depth != DEPTH or engine.confidence != confidence
             or engine.context_window != CONTEXT or engine.indexer_history != "gpu"
             or engine.kv_pair.key_dtype != "int8" or engine.kv_pair.value_dtype != "int8"
             or engine.w.mtp is None or engine.scheduler is None or engine.retention_catalog is None
@@ -457,7 +461,10 @@ def run_leader(engine, tokenizer, args, report):
     )
     from tensorfold.server.request_limits import RequestLimit
 
-    if getattr(args, "session_ceiling", None) is None:
+    confidence = getattr(args, "mtp_confidence", CONFIDENCE)
+    if confidence != CONFIDENCE:
+        check_engine(engine, session_ceiling=getattr(args, "session_ceiling", None), confidence=confidence)
+    elif getattr(args, "session_ceiling", None) is None:
         check_engine(engine)
     else:
         check_engine(engine, session_ceiling=args.session_ceiling)
@@ -713,7 +720,7 @@ def run_concurrency_leader(engine, tokenizer, args, report):
             "model_identity": {"model_path": str(args.model), "mtp_path": str(args.mtp),
                 "prepared_model_dir": report.get("prepared_model_dir"), "profile": engine.sm70_profile,
                 "context": CONTEXT, "tp": WORLD, "kv_dtype": "int8", "mtp_drafts": DEPTH,
-                "mtp_confidence": CONFIDENCE, "thinking": args.thinking,
+                "mtp_confidence": getattr(args, "mtp_confidence", CONFIDENCE), "thinking": args.thinking,
                 "sampling": {"seed": 17, "temperature": 0, "top_k": 0, "top_p": 1},
                 "tokenizer_identity": report["tokenizer_identity"], "native_flags": report["native_flags"],
                 "wheel_sha256": digest(args.wheel), "source_hold_sha256": digest(args.source_hold)},
@@ -845,7 +852,7 @@ def worker(args):
         precision.set_mode(precision.CHECKPOINT)
         prompt_precision.set_fp8(prompt_precision.FP8_BY_DEFAULT)
         engine = cuda_engine(model, drafter=str(companion), draft_method="mtp", tp=WORLD, rank=args.rank,
-            master="127.0.0.1", master_port=args.master_port, mtp_drafts=DEPTH, mtp_confidence=CONFIDENCE,
+            master="127.0.0.1", master_port=args.master_port, mtp_drafts=DEPTH, mtp_confidence=getattr(args, "mtp_confidence", CONFIDENCE),
             context=CONTEXT, context_explicit=True,
             parallel=getattr(args, "session_ceiling", None) or "auto", kv_full_windows="auto",
             kv_dtype="int8", indexer_history="gpu", max_waiting_input_bytes=waiting_input_credit(args),
@@ -931,7 +938,7 @@ def launch(args, argv):
         "concurrency_helper_sha256": digest(concurrency_module().__file__) if args.concurrency_grid else None,
         "installed": installed_identity(args.wheel),
         "execution_profile_manifest": getattr(args, "execution_manifest_identity", None),
-        "settings": {"context": CONTEXT, "tp": WORLD, "depth": DEPTH, "confidence": CONFIDENCE,
+        "settings": {"context": CONTEXT, "tp": WORLD, "depth": DEPTH, "confidence": getattr(args, "mtp_confidence", CONFIDENCE),
             "kv_dtype": "int8", "parallel": getattr(args, "session_ceiling", None) or "auto",
             "session_ceiling": getattr(args, "session_ceiling", None), "kv_full_windows": "auto", "indexer_history": "gpu",
             "max_waiting_input_bytes": waiting_input_credit(args),

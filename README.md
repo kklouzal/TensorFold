@@ -1,5 +1,13 @@
 # TensorFold fork
 
+A private probe experiment can explicitly use `--mtp-confidence 0` with
+`--fast-grid --fast-grid-protocol fast-grid-v2 --tokens 2048
+--concurrency-grid --quality-spotchecks`. This changes the existing depth-two
+MTP proposal stopping threshold from the default0.7; target greedy verification,
+EOS, model tensors and the24-window Q8 capacity remain unchanged. Extra drafts
+can be rejected and need not improve throughput. This tool-only candidate is
+unqualified until actual six-concurrency and fixed-quality checks pass.
+
 Finite operational screens can explicitly select `--fast-grid-protocol fast-grid-v2
 --tokens 2048` with the existing fast-grid arguments. The2048-cell output budget
 allows a full10-second observation above85tokens/s, while v1 keeps its320/512-cell
