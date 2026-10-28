@@ -1,5 +1,13 @@
 # TensorFold fork
 
+Flash Next's CUDA ModelOpt decode candidate omits unused MLP hyper-connection
+group sums while retaining the mixed activation arithmetic, attention/head
+sums and shared scratch allocation. Its focused host controls passed 49 checks;
+one existing device-dependent module was skipped. Pinned SDK, native bit checks,
+installed ARM64, serial/native-MTP model identity and comparative decode
+performance remain pending. No throughput gain is established.
+[Candidate contract and validation scope](docs/recipes/qwen3.8-flash-next.md#modelopt-decode-mlp-group-sums-candidate).
+
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.
 Source `ed24272a` passed 100 source CPU checks and 100 fresh installed ARM64

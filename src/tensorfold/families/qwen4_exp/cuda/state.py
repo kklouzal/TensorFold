@@ -32,6 +32,9 @@ class Buffers:
         dev = w.device
         wide = c.streams * c.hidden
         self.rows, self.prefill = rows, prefill
+        # ModelOpt decode MoE consumes mixed rows, never their affine group
+        # sums. Keep this role policy fixed with the model/buffer allocations.
+        self.mlp_mix_sums = prefill or c.quant != "modelopt" or w.x3 is not None
         self.rotor_lookup = False  # operation-owned constexpr selection; graphs and unqualified requests stay original
         self.hc_plans = None
         head_rows = ENDS if prefill else rows

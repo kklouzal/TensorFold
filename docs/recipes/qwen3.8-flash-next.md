@@ -150,6 +150,35 @@ The CUDA engine reads published ModelOpt NVFP4 exports as they ship, MTP head in
 tensorfold serve local-inference-lab/Qwen3.8-Flash-Next-NVFP4 --host 0.0.0.0 --port 8080
 ```
 
+### ModelOpt decode MLP group-sums candidate
+
+The CUDA ModelOpt decode buffers prepare an MLP-only policy that omits the
+hyper-connection mixer's unused 32-element group-sum reductions and XS stores.
+The routed/shared expert paths consume the mixed activations, without these
+affine group sums. This applies to both ordinary decode and native-MTP layer
+execution. Attention, MTP embedding projections and final heads retain their
+live group sums. Prompt execution, affine/EXL3 paths, HC plans and the default
+`hc_mix` interface retain their original outputs. The shared XS scratch tensor
+remains allocated; this is not a device-memory saving.
+
+The mixed-activation operations and BF16 rounding order, launch grid, PDL
+ordering and graph/state lifecycle are unchanged in source. One prepared
+boolean reference per buffer and an additional no-sums kernel specialization
+are introduced; first compilation and complete-request costs still require
+measurement. The policy belongs to the prepared model/buffer lifetime, rather
+than a mutable serving option.
+
+On the development host, 49 source/control tests passed, with one existing
+Torch/device-dependent module skipped. These include the prepared format/role
+policy, attention versus MLP propagation, pending branches/native-MTP and launch
+arguments. Twelve authored CUDA cases compare complete mixed bits against the
+default path and check untouched XS/input bytes, versions and canaries. Those
+cases, the existing independent HC oracle, pinned SDK/installed ARM64 checks,
+serial/native-MTP graph/eager model identity and comparative decode performance
+are pending. The candidate starts from the public `949` source family; earlier
+private HC/final-readout results do not qualify this change. No throughput gain
+or production selection is claimed.
+
 | Checkpoint (revision) | Routed experts | DeltaNet, attention, shared expert | n-gram table |
 | --- | --- | --- | --- |
 | `local-inference-lab/Qwen3.8-Flash-Next-NVFP4` (`7c4f1bc1`) | NVFP4 | MXFP8 | NVFP4 rows |

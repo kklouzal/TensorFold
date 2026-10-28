@@ -56,8 +56,12 @@ def _embed(w: Weights, ids: torch.Tensor, copies: int, out: torch.Tensor) -> tor
 
 
 def hc_block(hc: HC, b: Buffers, R: int, eps: float, streams: int, low: int, mode: int, inject_prev,
-             inject_out, h: torch.Tensor, branch=None, y=None, wts=None) -> None:
-    """Write the pending branch back into the streams h (in place), then the hyper-connection's read-out: b.mixed [R, D] (+ group sums), and its inject gates into ``inject_out``."""
+             inject_out, h: torch.Tensor, branch=None, y=None, wts=None, *, mixed_sums: bool = True) -> None:
+    """Write back into h, then mixed rows, group sums and inject gates.
+
+    Only the prepared ModelOpt decode MoE role marks ``mixed_sums`` unused;
+    its B16 readout may omit XS. Other readouts retain the original outputs.
+    """
 
     if b.prefill and R > FUSED_ROWS and isinstance(hc.down, qmm.Q4):
         fused = _hc_fuser(h.device)
@@ -67,7 +71,7 @@ def hc_block(hc: HC, b: Buffers, R: int, eps: float, streams: int, low: int, mod
             _readout_plain(hc, b, h, R, eps, streams, low, inject_out[:R] if hc.inject else None, normed=True)
             return
     glue.hc_writeback(h[:R], h[:R], b.pss[:R], streams, mode, branch=branch, inject=inject_prev, y=y, wts=wts)
-    _readout(hc, b, h, R, eps, streams, low, inject_out[:R] if hc.inject else None)
+    _readout(hc, b, h, R, eps, streams, low, inject_out[:R] if hc.inject else None, mixed_sums=mixed_sums)
 
 
 # prompt chunks of more rows take the fused write-back and norm (``hc_check.fuser``) when it is enabled; every decode
@@ -76,16 +80,18 @@ def hc_block(hc: HC, b: Buffers, R: int, eps: float, streams: int, low: int, mod
 FUSED_ROWS = 16
 
 
-def _readout(hc: HC, b: Buffers, h: torch.Tensor, R: int, eps: float, streams: int, low: int, inject) -> None:
+def _readout(hc: HC, b: Buffers, h: torch.Tensor, R: int, eps: float, streams: int, low: int, inject, *,
+             mixed_sums: bool = True) -> None:
     """normed streams -> down -> SiLU / inject -> up -> mix: b.mixed [R, D] and its group sums."""
 
     if getattr(hc.down, "kernel", "qmm") == "b16":     # an NVFP4 checkpoint: the same steps, bf16 kernels
-        _readout_b16(hc, b, h, R, eps, streams, low, inject)
+        _readout_b16(hc, b, h, R, eps, streams, low, inject, mixed_sums=mixed_sums)
     else:
         _readout_plain(hc, b, h, R, eps, streams, low, inject)
 
 
-def _readout_b16(hc: HC, b: Buffers, h: torch.Tensor, R: int, eps: float, streams: int, low: int, inject) -> None:
+def _readout_b16(hc: HC, b: Buffers, h: torch.Tensor, R: int, eps: float, streams: int, low: int, inject, *,
+                 mixed_sums: bool = True) -> None:
     """The read-out on the bf16 kernels: norm, down, activation and inject gates, up, the mix; same bits per row."""
 
     glue.hc_normed(h[:R], b.pss[:R], hc.scale, b.normed[:R], b.xs_normed[:R], streams, eps)
@@ -93,7 +99,7 @@ def _readout_b16(hc: HC, b: Buffers, h: torch.Tensor, R: int, eps: float, stream
                                                                device=h.device), f32=True)
     glue.hc_act(got, b.act[:R], b.xs_act[:R], inject, streams, low)
     _mm(b.act[:R], hc.up, b.xs_act[:R], b.up[:R], b)
-    glue.hc_mix(b.up[:R], b.normed[:R], b.mixed[:R], b.xs_mixed[:R], streams)
+    glue.hc_mix(b.up[:R], b.normed[:R], b.mixed[:R], b.xs_mixed[:R], streams, sums=mixed_sums)
 
 
 def _readout_plain(hc: HC, b: Buffers, h: torch.Tensor, R: int, eps: float, streams: int, low: int, inject,
@@ -451,7 +457,10 @@ def _pre_moe(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int,
         mode, branch = gdn_block(layer, w, segs, b, R, cuts)
     else:
         mode, branch = attn_block(layer, w, segs, b, R, mtp, context)
-    hc_block(layer.mlp_hc, b, R, c.eps, c.streams, c.low, mode, b.inj_a[:R], b.inj_m, h, branch=branch)
+    # Only this B16 ModelOpt decode readout has an unconsumed XS result.
+    # Attention/final heads and every other format keep their original sums.
+    hc_block(layer.mlp_hc, b, R, c.eps, c.streams, c.low, mode, b.inj_a[:R], b.inj_m, h, branch=branch,
+             mixed_sums=b.mlp_mix_sums)
 
 
 def layer_forward(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int, pending, *,

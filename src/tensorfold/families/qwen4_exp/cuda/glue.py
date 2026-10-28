@@ -229,7 +229,8 @@ def hc_act(dn: torch.Tensor, act: torch.Tensor, xs: torch.Tensor, inj: torch.Ten
 
 
 @triton.jit
-def _hc_mix(UP, NORMED, MIXED, XS, D: tl.constexpr, S: tl.constexpr, BLOCK: tl.constexpr, PDL: tl.constexpr = False):
+def _hc_mix(UP, NORMED, MIXED, XS, D: tl.constexpr, S: tl.constexpr, BLOCK: tl.constexpr, PDL: tl.constexpr = False,
+            SUMS: tl.constexpr = True):
     """Program (r, c): mixed[d] = bf16((sum over streams, in order, of bf16(bf16(sigmoid(up_s)) * normed_s)) / S) for dims [c BLOCK, (c + 1) BLOCK), and its 32-group sums."""
 
     pdl_wait(PDL)
@@ -243,15 +244,17 @@ def _hc_mix(UP, NORMED, MIXED, XS, D: tl.constexpr, S: tl.constexpr, BLOCK: tl.c
         total += (_bsig(u) * n).to(tl.bfloat16).to(tl.float32)
     m = (total / S).to(tl.bfloat16)
     tl.store(MIXED + r * D + d, m)
-    sums = tl.sum(tl.reshape(m.to(tl.float32), (BLOCK // 32, 32)), axis=1)
-    tl.store(XS + r * (D // 32) + c * (BLOCK // 32) + tl.arange(0, BLOCK // 32), sums)
+    if SUMS:
+        sums = tl.sum(tl.reshape(m.to(tl.float32), (BLOCK // 32, 32)), axis=1)
+        tl.store(XS + r * (D // 32) + c * (BLOCK // 32) + tl.arange(0, BLOCK // 32), sums)
 
 
 def hc_mix(up: torch.Tensor, normed: torch.Tensor, mixed: torch.Tensor, xs: torch.Tensor, streams: int,
-           block: int = 256) -> None:
+           block: int = 256, *, sums: bool = True) -> None:
+    """Write mixed rows; an explicitly unused ``xs`` stays untouched when sums=False."""
     rows, wide = up.shape
     d = wide // streams
-    _hc_mix[(rows, d // block)](up, normed, mixed, xs, D=d, S=streams, BLOCK=block, num_warps=2,
+    _hc_mix[(rows, d // block)](up, normed, mixed, xs, D=d, S=streams, BLOCK=block, SUMS=sums, num_warps=2,
                                 PDL=pdl.ON, launch_pdl=pdl.ON)
 
 
