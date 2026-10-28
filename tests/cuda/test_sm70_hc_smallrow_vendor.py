@@ -38,6 +38,7 @@ def test_direct_vendor_bits_original_weight_alias_and_capture_replay(monkeypatch
     weights = tuple(part.weight for part in original.parts) if len(parts) == 2 else (original.weight,)
     assert all(actual is expected for actual, expected in zip(candidate.weights, weights))
     diagnostics = []
+    cleanup_failures = [None]  # Reserve before capture can accept work or a primary failure.
     graph = torch.cuda.CUDAGraph()
     side = torch.cuda.Stream()
     primary = None
@@ -97,7 +98,8 @@ def test_direct_vendor_bits_original_weight_alias_and_capture_replay(monkeypatch
             torch.cuda.synchronize()
             graph.reset()
         except BaseException as cleanup:
-            raise_failures(primary, [cleanup])
+            cleanup_failures[0] = cleanup
+            raise_failures(primary, cleanup_failures)
 
 
 @torch.inference_mode()
@@ -109,7 +111,7 @@ def test_native_rejects_invalid_geometry_and_alias_before_output_mutation():
     with pytest.raises(RuntimeError, match='1..3'):
         operation(torch.ones((4, 320), dtype=torch.float16, device='cuda'), (weight,), output)
     assert bool((output == 7).all())
-    with pytest.raises(RuntimeError, match='geometry'):
+    with pytest.raises(RuntimeError, match='accepts only original down/inject/up geometries'):
         operation(x, (weight[:10],), output)
     assert bool((output == 7).all())
     before = weight.clone()
