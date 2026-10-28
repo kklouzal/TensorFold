@@ -1,0 +1,151 @@
+KERNEL_FIRST_MATCHES
+6,1921,3525040,-;Write protecting the kernel read-only data: 43008k
+30,1933,3630004,-;systemd[1]: Successfully made /usr/ read-only.
+6,1992,4175978,-;Btrfs loaded, zoned=yes, fsverity=yes
+6,2015,4804766,-;ata1: SATA max UDMA/133 abar m524288@0x9d100000 port 0x9d100100 irq 63 lpm-pol 1 ext
+6,2016,4804769,-;ata2: SATA max UDMA/133 abar m524288@0x9d100000 port 0x9d100180 irq 63 lpm-pol 1 ext
+6,2033,5120532,-;ata4: SATA link down (SStatus 0 SControl 300)
+6,2034,5120566,-;ata5: SATA link down (SStatus 0 SControl 300)
+6,2035,5120599,-;ata2: SATA link up 6.0 Gbps (SStatus 133 SControl 300)
+6,2036,5120637,-;ata3: SATA link down (SStatus 0 SControl 300)
+4,2037,5120727,-;ata2.00: Model 'INTEL SSDSC2KB240G7', rev 'SCV10121', applying quirks: zeroaftertrim
+6,2038,5120753,-;ata2.00: ATA-10: INTEL SSDSC2KB240G7, SCV10121, max UDMA/133
+6,2039,5120760,-;ata2.00: 468862128 sectors, multi 1: LBA48 NCQ (depth 32)
+6,2040,5120919,-;ata2.00: configured for UDMA/133
+6,2041,5128288,-;ata8: SATA link down (SStatus 0 SControl 300)
+6,2042,5128369,-;ata1: SATA link up 6.0 Gbps (SStatus 133 SControl 300)
+6,2043,5128412,-;ata6: SATA link down (SStatus 0 SControl 300)
+4,2044,5128511,-;ata1.00: Model 'INTEL SSDSC2KB240G7', rev 'SCV10121', applying quirks: zeroaftertrim
+6,2045,5128539,-;ata1.00: ATA-10: INTEL SSDSC2KB240G7, SCV10121, max UDMA/133
+6,2046,5128545,-;ata1.00: 468862128 sectors, multi 1: LBA48 NCQ (depth 32)
+6,2047,5128705,-;ata1.00: configured for UDMA/133
+6,2050,5129998,-;ata1.00: Enabling discard_zeroes_data
+5,2051,5130034,-;sd 0:0:0:0: [sda] 468862128 512-byte logical blocks: (240 GB/224 GiB)
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+5,2052,5130045,-;sd 0:0:0:0: [sda] 4096-byte physical blocks
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+5,2053,5130077,-;sd 0:0:0:0: [sda] Write Protect is off
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+7,2054,5130082,-;sd 0:0:0:0: [sda] Mode Sense: 00 3a 00 00
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+5,2055,5130109,-;sd 0:0:0:0: [sda] Write cache: enabled, read cache: enabled, doesn't support DPO or FUA
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,2056,5130156,-;sd 0:0:0:0: [sda] Preferred minimum I/O size 4096 bytes
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,2059,5131216,-;ata2.00: Enabling discard_zeroes_data
+6,2066,5135885,-;ata7: SATA link down (SStatus 0 SControl 300)
+6,2067,5139445,-;ata2.00: Enabling discard_zeroes_data
+6,2068,5144462,-;ata1.00: Enabling discard_zeroes_data
+6,2070,5153690,-; sda: sda1 sda2
+5,2071,5153889,-;sd 0:0:0:0: [sda] Attached SCSI disk
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,2072,5179665,-;BTRFS: device fsid d1de554f-61f1-4c7f-bd50-a7945e336b30 devid 2 transid 11425 /dev/sdb (8:16) scanned by (udev-worker) (731)
+6,2073,5199625,-;BTRFS: device fsid d1de554f-61f1-4c7f-bd50-a7945e336b30 devid 1 transid 11425 /dev/sda2 (8:2) scanned by (udev-worker) (821)
+6,2074,5301204,-;BTRFS info (device sda2): first mount of filesystem d1de554f-61f1-4c7f-bd50-a7945e336b30
+6,2075,5301211,-;BTRFS info (device sda2): using crc32c checksum algorithm
+6,2076,5310157,-;BTRFS info (device sda2): bdev /dev/sda2 errs: wr 0, rd 0, flush 0, corrupt 397, gen 0
+6,2077,5338888,-;BTRFS info (device sda2): enabling ssd optimizations
+6,2078,5338899,-;BTRFS info (device sda2): turning on async discard
+6,2079,5338904,-;BTRFS info (device sda2): enabling free space tree
+3,2221,7029359,-;ata1: log page 10h reported inactive tag 0
+3,2222,7029402,-;ata1.00: exception Emask 0x3 SAct 0x30786 SErr 0x3000400 action 0x6
+3,2223,7029431,-;ata1.00: irq_stat 0x44000008
+3,2224,7029447,-;ata1: SError: { Proto TrStaTrns UnrecFIS }
+3,2225,7029470,-;ata1.00: failed command: READ FPDMA QUEUED
+3,2226,7029488,-;ata1.00: cmd 60/40:08:b8:09:82/00:00:00:00:00/40 tag 1 ncq dma 32768 in\x0a         res 41/84:00:00:00:00/00:00:00:00:00/00 Emask 0x12 (ATA bus error)
+3,2227,7029542,-;ata1.00: status: { DRDY ERR }
+3,2228,7029559,-;ata1.00: error: { ICRC ABRT }
+3,2229,7029576,-;ata1.00: failed command: READ FPDMA QUEUED
+3,2230,7029593,-;ata1.00: cmd 60/48:10:f8:09:82/00:00:00:00:00/40 tag 2 ncq dma 36864 in\x0a         res 41/84:00:00:00:00/00:00:00:00:00/00 Emask 0x12 (ATA bus error)
+3,2231,7029643,-;ata1.00: status: { DRDY ERR }
+3,2232,7029659,-;ata1.00: error: { ICRC ABRT }
+3,2233,7029676,-;ata1.00: failed command: READ FPDMA QUEUED
+3,2234,7029694,-;ata1.00: cmd 60/20:38:40:0a:82/05:00:00:00:00/40 tag 7 ncq dma 671744 in\x0a         res 41/84:00:00:00:00/00:00:00:00:00/00 Emask 0x12 (ATA bus error)
+3,2235,7029743,-;ata1.00: status: { DRDY ERR }
+3,2236,7029758,-;ata1.00: error: { ICRC ABRT }
+3,2237,7029774,-;ata1.00: failed command: READ FPDMA QUEUED
+3,2238,7029792,-;ata1.00: cmd 60/00:40:48:4b:94/20:00:02:00:00/40 tag 8 ncq dma 4194304 in\x0a         res 41/84:00:00:00:00/00:00:00:00:00/00 Emask 0x12 (ATA bus error)
+3,2239,7029841,-;ata1.00: status: { DRDY ERR }
+3,2240,7029856,-;ata1.00: error: { ICRC ABRT }
+3,2241,7030520,-;ata1.00: failed command: READ FPDMA QUEUED
+3,2242,7031134,-;ata1.00: cmd 60/20:48:80:17:e3/00:00:12:00:00/40 tag 9 ncq dma 16384 in\x0a         res 41/84:00:00:00:00/00:00:00:00:00/00 Emask 0x12 (ATA bus error)
+3,2243,7032387,-;ata1.00: status: { DRDY ERR }
+3,2244,7032992,-;ata1.00: error: { ICRC ABRT }
+3,2245,7033629,-;ata1.00: failed command: READ FPDMA QUEUED
+3,2246,7034474,-;ata1.00: cmd 60/20:50:80:2c:f1/00:00:12:00:00/40 tag 10 ncq dma 16384 in\x0a         res 41/84:00:00:00:00/00:00:00:00:00/00 Emask 0x12 (ATA bus error)
+3,2247,7036106,-;ata1.00: status: { DRDY ERR }
+3,2248,7036939,-;ata1.00: error: { ICRC ABRT }
+3,2249,7037746,-;ata1.00: failed command: READ FPDMA QUEUED
+3,2250,7038536,-;ata1.00: cmd 60/00:80:48:6b:94/20:00:02:00:00/40 tag 16 ncq dma 4194304 in\x0a         res 41/84:00:00:00:00/00:00:00:00:00/00 Emask 0x12 (ATA bus error)
+3,2251,7040122,-;ata1.00: status: { DRDY ERR }
+3,2252,7040923,-;ata1.00: error: { ICRC ABRT }
+3,2253,7041707,-;ata1.00: failed command: READ FPDMA QUEUED
+3,2254,7042501,-;ata1.00: cmd 60/30:88:88:09:82/00:00:00:00:00/40 tag 17 ncq dma 24576 in\x0a         res 41/84:00:00:00:00/00:00:00:00:00/00 Emask 0x12 (ATA bus error)
+3,2255,7044065,-;ata1.00: status: { DRDY ERR }
+3,2256,7044855,-;ata1.00: error: { ICRC ABRT }
+6,2257,7045648,-;ata1: hard resetting link
+6,2264,7351832,-;ata1: SATA link up 6.0 Gbps (SStatus 133 SControl 300)
+6,2265,7352203,-;ata1.00: configured for UDMA/133
+6,2266,7352299,-;sd 0:0:0:0: [sda] tag#1 FAILED Result: hostbyte=DID_OK driverbyte=DRIVER_OK cmd_age=0s
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,2267,7352309,-;sd 0:0:0:0: [sda] tag#1 Sense Key : Aborted Command [current] 
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,2268,7352325,-;sd 0:0:0:0: [sda] tag#1 Add. Sense: Scsi parity error
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,2269,7352339,-;sd 0:0:0:0: [sda] tag#1 CDB: Read(10) 28 00 00 82 09 b8 00 00 40 00
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+3,2270,7352344,-;I/O error, dev sda, sector 8522168 op 0x0:(READ) flags 0x80700 phys_seg 1 prio class 2
+
+SYSFS
+sda state running
+sda model INTEL SSDSC2KB24
+sda vendor ATA
+sda rev 0121
+sdb state running
+sdb model INTEL SSDSC2KB24
+sdb vendor ATA
+sdb rev 0121
+COMMAND ['btrfs', 'filesystem', 'usage', '-b', '/'] EXIT 0
+Overall:
+    Device size:		      478984888320
+    Device allocated:		      331861721088
+    Device unallocated:		      147123167232
+    Device missing:		                 0
+    Device slack:		                 0
+    Used:			      318458343424
+    Free (estimated):		      158567968768	(min: 85006385152)
+    Free (statfs, df):		      158565847040
+    Data ratio:			              1.00
+    Metadata ratio:		              2.00
+    Global reserve:		         421937152	(used: 0)
+    Multiple profiles:		                no
+
+Data,single: Size:327499644928, Used:316054843392 (96.51%)
+   /dev/sda2	205093076992
+   /dev/sdb	122406567936
+
+Metadata,RAID1: Size:2147483648, Used:1201684480 (55.96%)
+   /dev/sda2	2147483648
+   /dev/sdb	2147483648
+
+System,RAID1: Size:33554432, Used:65536 (0.20%)
+   /dev/sda2	  33554432
+   /dev/sdb	  33554432
+
+Unallocated:
+   /dev/sda2	31653363712
+   /dev/sdb	115469803520
+
+
+COMMAND_ERROR ['smartctl', '-a', '/dev/sda'] [Errno 5] Input/output error: 'smartctl'

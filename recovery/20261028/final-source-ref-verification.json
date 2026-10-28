@@ -1,0 +1,2403 @@
+{
+  "at": "2026-10-28T18:20:25.038703+00:00",
+  "verified_count": 479,
+  "total": 479,
+  "mismatches": [],
+  "rows": [
+    {
+      "local_ref": "refs/heads/auto-model-metadata-20261017",
+      "sha": "3553ecffdf4f7d7e6b1063dbe97a26ec71c00c2d",
+      "remote_ref": "refs/heads/emergency/20261028/heads/auto-model-metadata-20261017"
+    },
+    {
+      "local_ref": "refs/heads/backup/campaign-qwen38-35b61ae4-20261019",
+      "sha": "35b61ae415f9dbed72ebde9c1aa2b7199f05cf43",
+      "remote_ref": "refs/heads/emergency/20261028/heads/backup/campaign-qwen38-35b61ae4-20261019"
+    },
+    {
+      "local_ref": "refs/heads/backup/campaign-qwen38-pre-rebase-20261019",
+      "sha": "1621fa2fa55bb3366b64ce9bf54f792e5a3f163f",
+      "remote_ref": "refs/heads/emergency/20261028/heads/backup/campaign-qwen38-pre-rebase-20261019"
+    },
+    {
+      "local_ref": "refs/heads/campaign-fp8-20261019",
+      "sha": "9d9a28a1cf838027333f83618adbb60e6a5d38f2",
+      "remote_ref": "refs/heads/emergency/20261028/heads/campaign-fp8-20261019"
+    },
+    {
+      "local_ref": "refs/heads/campaign-fp8-hooks-20261019",
+      "sha": "2f9adf416605f4f5cd3ed5a8b6df078fd4ba8c83",
+      "remote_ref": "refs/heads/emergency/20261028/heads/campaign-fp8-hooks-20261019"
+    },
+    {
+      "local_ref": "refs/heads/campaign-gemma4-20261018",
+      "sha": "b7bef36afe699ac0d1471faa50cfe1574e71f4e7",
+      "remote_ref": "refs/heads/emergency/20261028/heads/campaign-gemma4-20261018"
+    },
+    {
+      "local_ref": "refs/heads/campaign-infra-20261018",
+      "sha": "d2a6edf723c7b09b16efdb01c4e194f60898d2fd",
+      "remote_ref": "refs/heads/emergency/20261028/heads/campaign-infra-20261018"
+    },
+    {
+      "local_ref": "refs/heads/campaign-infra-20261019",
+      "sha": "30ddab3b87f6dc0932ff77a504e98c423d2938cc",
+      "remote_ref": "refs/heads/emergency/20261028/heads/campaign-infra-20261019"
+    },
+    {
+      "local_ref": "refs/heads/campaign-moe-20261018",
+      "sha": "43f8af167db9a25c770eb6b4e20cf3cedf48f314",
+      "remote_ref": "refs/heads/emergency/20261028/heads/campaign-moe-20261018"
+    },
+    {
+      "local_ref": "refs/heads/campaign-moe-dedupe-20261019",
+      "sha": "43f8af167db9a25c770eb6b4e20cf3cedf48f314",
+      "remote_ref": "refs/heads/emergency/20261028/heads/campaign-moe-dedupe-20261019"
+    },
+    {
+      "local_ref": "refs/heads/campaign-moe-graphmem-20261019",
+      "sha": "30935317ffa49da1952e7abe9698fb0766124fdb",
+      "remote_ref": "refs/heads/emergency/20261028/heads/campaign-moe-graphmem-20261019"
+    },
+    {
+      "local_ref": "refs/heads/campaign-moe-proto-20261019",
+      "sha": "ba3617e2fb2b6af78ee9b0a2a8f4625c696ecd77",
+      "remote_ref": "refs/heads/emergency/20261028/heads/campaign-moe-proto-20261019"
+    },
+    {
+      "local_ref": "refs/heads/campaign-qwen36-20261018",
+      "sha": "5cd7fc71e6a9cbc350b50dca05b4955f1f3a566b",
+      "remote_ref": "refs/heads/emergency/20261028/heads/campaign-qwen36-20261018"
+    },
+    {
+      "local_ref": "refs/heads/campaign-qwen36-d2-20261019",
+      "sha": "a41e43eaa4c12fe937505c1e6af939d3ad4ca47d",
+      "remote_ref": "refs/heads/emergency/20261028/heads/campaign-qwen36-d2-20261019"
+    },
+    {
+      "local_ref": "refs/heads/campaign-qwen36-nvfp4-20261019",
+      "sha": "cb5ec0c8776b59a1069a477d5fdacbd07c167c51",
+      "remote_ref": "refs/heads/emergency/20261028/heads/campaign-qwen36-nvfp4-20261019"
+    },
+    {
+      "local_ref": "refs/heads/campaign-qwen36-yarn-20261019",
+      "sha": "7adf2b7014ccaf18ce600c4948d4ce5306e2e6e8",
+      "remote_ref": "refs/heads/emergency/20261028/heads/campaign-qwen36-yarn-20261019"
+    },
+    {
+      "local_ref": "refs/heads/campaign-qwen38-20261018",
+      "sha": "7abefad2b2478361d0f9f8d057a1ec10e8e3440d",
+      "remote_ref": "refs/heads/emergency/20261028/heads/campaign-qwen38-20261018"
+    },
+    {
+      "local_ref": "refs/heads/campaign-qwen38-kv-20261018",
+      "sha": "f1629dd6672d42c0577b6e9af9378c5bb286e5ff",
+      "remote_ref": "refs/heads/emergency/20261028/heads/campaign-qwen38-kv-20261018"
+    },
+    {
+      "local_ref": "refs/heads/campaign-qwen38-vocab-20261019",
+      "sha": "b0466c3f885bbde615846dea9431a7fd5e3717c1",
+      "remote_ref": "refs/heads/emergency/20261028/heads/campaign-qwen38-vocab-20261019"
+    },
+    {
+      "local_ref": "refs/heads/campaign-sampling-20261018",
+      "sha": "f61b3b0adae479c5c181534ef26dc84fdedf766b",
+      "remote_ref": "refs/heads/emergency/20261028/heads/campaign-sampling-20261018"
+    },
+    {
+      "local_ref": "refs/heads/campaign-sampling-rs-20261018",
+      "sha": "a6c8f08e6cb6dd8ef3260d43a37d8ab73ccf99b5",
+      "remote_ref": "refs/heads/emergency/20261028/heads/campaign-sampling-rs-20261018"
+    },
+    {
+      "local_ref": "refs/heads/cold-build-docs-20261018",
+      "sha": "7abf2220b407f701610a102c3cb0bf4078fb5cc6",
+      "remote_ref": "refs/heads/emergency/20261028/heads/cold-build-docs-20261018"
+    },
+    {
+      "local_ref": "refs/heads/cpu-final-triage-20261017",
+      "sha": "2319d8fa30629d76cc4206f7994061138c0f4e2f",
+      "remote_ref": "refs/heads/emergency/20261028/heads/cpu-final-triage-20261017"
+    },
+    {
+      "local_ref": "refs/heads/cpu-triage-20261017",
+      "sha": "9a5685282d8d11b98415e8f7b0c09b0735165acd",
+      "remote_ref": "refs/heads/emergency/20261028/heads/cpu-triage-20261017"
+    },
+    {
+      "local_ref": "refs/heads/desktop-d13-20261017",
+      "sha": "90ebf7caef15aaffe3964fc5eeb25cc87fb65a9b",
+      "remote_ref": "refs/heads/emergency/20261028/heads/desktop-d13-20261017"
+    },
+    {
+      "local_ref": "refs/heads/desktop-d13-integration-20261017",
+      "sha": "dc312813033cdb0c3a6f224414505a37d765fa3d",
+      "remote_ref": "refs/heads/emergency/20261028/heads/desktop-d13-integration-20261017"
+    },
+    {
+      "local_ref": "refs/heads/desktop-d13-wi5-20261017",
+      "sha": "587350b4658737f6b738c60af909b1d8c3e17582",
+      "remote_ref": "refs/heads/emergency/20261028/heads/desktop-d13-wi5-20261017"
+    },
+    {
+      "local_ref": "refs/heads/desktop-d14-20261017",
+      "sha": "d84cc6eafed4b684fa6e45b3207467f45d0ff710",
+      "remote_ref": "refs/heads/emergency/20261028/heads/desktop-d14-20261017"
+    },
+    {
+      "local_ref": "refs/heads/desktop-deploy-20261017",
+      "sha": "ca334f33c11c2a0d959be8dd2f1c3b14b16820b7",
+      "remote_ref": "refs/heads/emergency/20261028/heads/desktop-deploy-20261017"
+    },
+    {
+      "local_ref": "refs/heads/desktop-docs-20261017",
+      "sha": "5b74aa04c96a798862fd32b3945122e06cb96a10",
+      "remote_ref": "refs/heads/emergency/20261028/heads/desktop-docs-20261017"
+    },
+    {
+      "local_ref": "refs/heads/desktop-ep-20261017",
+      "sha": "bec7d7e28ccf776a4a2629b00a284abb7e55423d",
+      "remote_ref": "refs/heads/emergency/20261028/heads/desktop-ep-20261017"
+    },
+    {
+      "local_ref": "refs/heads/desktop-kv-20261017",
+      "sha": "2bd345093e452f91d54acce4a645ee2a0b3fdd39",
+      "remote_ref": "refs/heads/emergency/20261028/heads/desktop-kv-20261017"
+    },
+    {
+      "local_ref": "refs/heads/desktop-nvfp4-20261017",
+      "sha": "d660d75d145ec29afa597edb3a80396809ae4e9c",
+      "remote_ref": "refs/heads/emergency/20261028/heads/desktop-nvfp4-20261017"
+    },
+    {
+      "local_ref": "refs/heads/desktop-nvfp4-boundary-20261017",
+      "sha": "4bf67ab0f15d657b548d84f42bdb45482d8909e1",
+      "remote_ref": "refs/heads/emergency/20261028/heads/desktop-nvfp4-boundary-20261017"
+    },
+    {
+      "local_ref": "refs/heads/desktop-nvfp4-common-20261017",
+      "sha": "8b9bb6a86c5711cd6c48f833f990ae24fd9f9280",
+      "remote_ref": "refs/heads/emergency/20261028/heads/desktop-nvfp4-common-20261017"
+    },
+    {
+      "local_ref": "refs/heads/desktop-nvfp4-loader-20261017",
+      "sha": "1e3c489c64550988c4b6bcfe19496815630db9d1",
+      "remote_ref": "refs/heads/emergency/20261028/heads/desktop-nvfp4-loader-20261017"
+    },
+    {
+      "local_ref": "refs/heads/desktop-packed-20261017",
+      "sha": "c11fb8284ec64443e1c74cca2293b9da87f17899",
+      "remote_ref": "refs/heads/emergency/20261028/heads/desktop-packed-20261017"
+    },
+    {
+      "local_ref": "refs/heads/desktop-performance-docs-20261017",
+      "sha": "ea60bb5eccba14c263ebfa7aaaf011da044a89e5",
+      "remote_ref": "refs/heads/emergency/20261028/heads/desktop-performance-docs-20261017"
+    },
+    {
+      "local_ref": "refs/heads/desktop-routing-20261017",
+      "sha": "5daa59115c7dcd8b430de2a2119fcd37d87c5de1",
+      "remote_ref": "refs/heads/emergency/20261028/heads/desktop-routing-20261017"
+    },
+    {
+      "local_ref": "refs/heads/desktop-ssd-harness-20261017",
+      "sha": "8da3bf609be5b0cea174dd21adcfe0f93871b46b",
+      "remote_ref": "refs/heads/emergency/20261028/heads/desktop-ssd-harness-20261017"
+    },
+    {
+      "local_ref": "refs/heads/desktop-transfer-20261017",
+      "sha": "dc65cbccb7156a2b3240d7078e0c6379754dfae8",
+      "remote_ref": "refs/heads/emergency/20261028/heads/desktop-transfer-20261017"
+    },
+    {
+      "local_ref": "refs/heads/emergency/20261028/wip/c-gemma4",
+      "sha": "9bfe40ea89282cc918a0413c6f6ad386571e6d0e",
+      "remote_ref": "refs/heads/emergency/20261028/wip/c-gemma4"
+    },
+    {
+      "local_ref": "refs/heads/emergency/20261028/wip/c-moe-dedupe",
+      "sha": "22c529ca309332e9ce3faa5e6bcb467ecd45a43d",
+      "remote_ref": "refs/heads/emergency/20261028/wip/c-moe-dedupe"
+    },
+    {
+      "local_ref": "refs/heads/emergency/20261028/wip/c-moe-graphmem",
+      "sha": "57480faa9cc9ab96f8bdc329db2239aa299df78e",
+      "remote_ref": "refs/heads/emergency/20261028/wip/c-moe-graphmem"
+    },
+    {
+      "local_ref": "refs/heads/emergency/20261028/wip/c-qwen36-yarn",
+      "sha": "2e223651655f140408bdfc0498ab7e72d5a9901b",
+      "remote_ref": "refs/heads/emergency/20261028/wip/c-qwen36-yarn"
+    },
+    {
+      "local_ref": "refs/heads/emergency/20261028/wip/c-qwen38-vocab",
+      "sha": "00012409c7cf85f7e10f4961785a1a6674f3da7c",
+      "remote_ref": "refs/heads/emergency/20261028/wip/c-qwen38-vocab"
+    },
+    {
+      "local_ref": "refs/heads/emergency/20261028/wip/c-sampling",
+      "sha": "a4f67fcd11d05fd93b9adaf015d231f424612bca",
+      "remote_ref": "refs/heads/emergency/20261028/wip/c-sampling"
+    },
+    {
+      "local_ref": "refs/heads/emergency/20261028/wip/idea1",
+      "sha": "c5e5e22fae719c1b6320ba2b3844f586c48ea5fe",
+      "remote_ref": "refs/heads/emergency/20261028/wip/idea1"
+    },
+    {
+      "local_ref": "refs/heads/emergency/20261028/wip/idea2",
+      "sha": "1b3c902520b6776c0a8f56c1981c154acac99ef9",
+      "remote_ref": "refs/heads/emergency/20261028/wip/idea2"
+    },
+    {
+      "local_ref": "refs/heads/emergency/20261028/wip/idea3",
+      "sha": "3ea8239cc7f093e5740861bac7d54334061b351e",
+      "remote_ref": "refs/heads/emergency/20261028/wip/idea3"
+    },
+    {
+      "local_ref": "refs/heads/emergency/20261028/wip/idea3b",
+      "sha": "724a92fca125d9bc0f36cc17a3e31bbd97a447e1",
+      "remote_ref": "refs/heads/emergency/20261028/wip/idea3b"
+    },
+    {
+      "local_ref": "refs/heads/emergency/20261028/wip/perf-decode-flash-20261022",
+      "sha": "8207ebc57e24491900b2b48e461cd46d12767889",
+      "remote_ref": "refs/heads/emergency/20261028/wip/perf-decode-flash-20261022"
+    },
+    {
+      "local_ref": "refs/heads/emergency/20261028/wip/perf-decode-gemma-fp8-maxfinite-20261023",
+      "sha": "e5fb76bf7fd8d8f47b9e0c30398d4c9f7d56cfdc",
+      "remote_ref": "refs/heads/emergency/20261028/wip/perf-decode-gemma-fp8-maxfinite-20261023"
+    },
+    {
+      "local_ref": "refs/heads/emergency/20261028/wip/perf-decode-gemma-moe-up-20261023",
+      "sha": "5e9fe05f68ceec02fb0b2b643cb7ca3d38c0f8c2",
+      "remote_ref": "refs/heads/emergency/20261028/wip/perf-decode-gemma-moe-up-20261023"
+    },
+    {
+      "local_ref": "refs/heads/emergency/20261028/wip/perf-decode-qwen-20261022",
+      "sha": "16589c54e41f62233db04f6397fc0bf8c1e3431d",
+      "remote_ref": "refs/heads/emergency/20261028/wip/perf-decode-qwen-20261022"
+    },
+    {
+      "local_ref": "refs/heads/emergency/20261028/wip/perf-qwen-bulk-projection-20261022",
+      "sha": "4301b17506e0933637bf33f7736544f5bcc95f57",
+      "remote_ref": "refs/heads/emergency/20261028/wip/perf-qwen-bulk-projection-20261022"
+    },
+    {
+      "local_ref": "refs/heads/emergency/20261028/wip/v100-family-prefix-20261027",
+      "sha": "44e7753820c014c4bc9af903847407b5ed8bf683",
+      "remote_ref": "refs/heads/emergency/20261028/wip/v100-family-prefix-20261027"
+    },
+    {
+      "local_ref": "refs/heads/emergency/20261028/wip/v100-family-trial-20261027",
+      "sha": "829b5845d4047accbfa0246aa1dbcc64d3b7f2b4",
+      "remote_ref": "refs/heads/emergency/20261028/wip/v100-family-trial-20261027"
+    },
+    {
+      "local_ref": "refs/heads/emergency/20261028/wip/v100-fast-tokenizer-20261027",
+      "sha": "ad6079d4e7bbef68c6c6f9dd56d397a9b63e8a24",
+      "remote_ref": "refs/heads/emergency/20261028/wip/v100-fast-tokenizer-20261027"
+    },
+    {
+      "local_ref": "refs/heads/emergency/20261028/wip/v100-finite-quality-20261027",
+      "sha": "eb3511e3c7f37e551573f79a18d31cc691c77997",
+      "remote_ref": "refs/heads/emergency/20261028/wip/v100-finite-quality-20261027"
+    },
+    {
+      "local_ref": "refs/heads/emergency/20261028/wip/v100-owner-fixture-diagnostics-20261027",
+      "sha": "80dbb1026eef329878ed035b4fbfdff2222b2d12",
+      "remote_ref": "refs/heads/emergency/20261028/wip/v100-owner-fixture-diagnostics-20261027"
+    },
+    {
+      "local_ref": "refs/heads/emergency/20261028/wip/v100-portable-audit-20261026",
+      "sha": "4af5f5dd022a60823d8eb54c80607fa191b61f58",
+      "remote_ref": "refs/heads/emergency/20261028/wip/v100-portable-audit-20261026"
+    },
+    {
+      "local_ref": "refs/heads/emergency/20261028/wip/v100-profiler-capture-20261027",
+      "sha": "2c2db60341130fa2c6dda07b4a927a65c55ec9c8",
+      "remote_ref": "refs/heads/emergency/20261028/wip/v100-profiler-capture-20261027"
+    },
+    {
+      "local_ref": "refs/heads/final-loader-fixture-20261017",
+      "sha": "2090c59e6f757ea17766f58afb3e84984a165639",
+      "remote_ref": "refs/heads/emergency/20261028/heads/final-loader-fixture-20261017"
+    },
+    {
+      "local_ref": "refs/heads/finish-api-strict-20261017",
+      "sha": "0240cefea90fcd83a593384259b7346875e3603c",
+      "remote_ref": "refs/heads/emergency/20261028/heads/finish-api-strict-20261017"
+    },
+    {
+      "local_ref": "refs/heads/finish-d13-20261017",
+      "sha": "9dc84044ef9875c0ebdec46cf186721da41fa66e",
+      "remote_ref": "refs/heads/emergency/20261028/heads/finish-d13-20261017"
+    },
+    {
+      "local_ref": "refs/heads/finish-d13-installed-20261017",
+      "sha": "d9812b8f27f4367bdaaecad19c1e22643f3e0770",
+      "remote_ref": "refs/heads/emergency/20261028/heads/finish-d13-installed-20261017"
+    },
+    {
+      "local_ref": "refs/heads/finish-d14-20261017",
+      "sha": "c593c49130bfb22543b0225e96c171fab57689ad",
+      "remote_ref": "refs/heads/emergency/20261028/heads/finish-d14-20261017"
+    },
+    {
+      "local_ref": "refs/heads/finish-d14-ignore-eos-20261017",
+      "sha": "4c0bc784d67f01bcd17150c3f15e696946ab6744",
+      "remote_ref": "refs/heads/emergency/20261028/heads/finish-d14-ignore-eos-20261017"
+    },
+    {
+      "local_ref": "refs/heads/finite-exit-audit-20261027",
+      "sha": "d69ed5a25ae870e4486a7db512255fcf22dc157b",
+      "remote_ref": "refs/heads/emergency/20261028/heads/finite-exit-audit-20261027"
+    },
+    {
+      "local_ref": "refs/heads/fix-cuda-managed-read-20261023",
+      "sha": "437e61e5829f6bbdd92a4c59fc0f3377fa3446a2",
+      "remote_ref": "refs/heads/emergency/20261028/heads/fix-cuda-managed-read-20261023"
+    },
+    {
+      "local_ref": "refs/heads/flashnext-final-composition-20261018",
+      "sha": "297e8487bc44e941d0fffeac753ac465c72165ce",
+      "remote_ref": "refs/heads/emergency/20261028/heads/flashnext-final-composition-20261018"
+    },
+    {
+      "local_ref": "refs/heads/flashnext-graph-auto-20261018",
+      "sha": "449bae0bf1775a5ceb69c8f34f5611f1ba09fb8c",
+      "remote_ref": "refs/heads/emergency/20261028/heads/flashnext-graph-auto-20261018"
+    },
+    {
+      "local_ref": "refs/heads/flashnext-graph-fixedcount-20261018",
+      "sha": "9a4b0e49a4f003599106810ddd141a56e67b3557",
+      "remote_ref": "refs/heads/emergency/20261028/heads/flashnext-graph-fixedcount-20261018"
+    },
+    {
+      "local_ref": "refs/heads/flashnext-modelopt-a4-20261018",
+      "sha": "f7369899f949f62b3aafaa763d0ba178b5baeba8",
+      "remote_ref": "refs/heads/emergency/20261028/heads/flashnext-modelopt-a4-20261018"
+    },
+    {
+      "local_ref": "refs/heads/flashnext-modelopt-a4-combined-20261018",
+      "sha": "cc70a3b0aa65b0b38b553e81eb405dffae5ad60b",
+      "remote_ref": "refs/heads/emergency/20261028/heads/flashnext-modelopt-a4-combined-20261018"
+    },
+    {
+      "local_ref": "refs/heads/flashnext-modelopt-a4-combined-root-20261018",
+      "sha": "1e04aa92caff8daa35df49fa9472beb7e0bf7046",
+      "remote_ref": "refs/heads/emergency/20261028/heads/flashnext-modelopt-a4-combined-root-20261018"
+    },
+    {
+      "local_ref": "refs/heads/flashnext-modelopt-a4-gpu-load-20261018",
+      "sha": "e7f1f8b52119d232363db6d3941a78c33b855fb1",
+      "remote_ref": "refs/heads/emergency/20261028/heads/flashnext-modelopt-a4-gpu-load-20261018"
+    },
+    {
+      "local_ref": "refs/heads/flashnext-modelopt-a4-plan-combined-20261018",
+      "sha": "bd1f0e9d624183b341bc615adefc0c308ad88aa5",
+      "remote_ref": "refs/heads/emergency/20261028/heads/flashnext-modelopt-a4-plan-combined-20261018"
+    },
+    {
+      "local_ref": "refs/heads/flashnext-modelopt-a4-plan-diagnostic-20261018",
+      "sha": "8b742bbdabdc90fd9319e1a75ed27a82308b15ba",
+      "remote_ref": "refs/heads/emergency/20261028/heads/flashnext-modelopt-a4-plan-diagnostic-20261018"
+    },
+    {
+      "local_ref": "refs/heads/flashnext-modelopt-a4-plan-general-20261018",
+      "sha": "376a1f6f59e0d0844704ba9b42857c17a03f7c21",
+      "remote_ref": "refs/heads/emergency/20261028/heads/flashnext-modelopt-a4-plan-general-20261018"
+    },
+    {
+      "local_ref": "refs/heads/flashnext-modelopt-a4-read-plan-20261018",
+      "sha": "7ffa009baa16013fd37ec5319cf1152ca0b7a738",
+      "remote_ref": "refs/heads/emergency/20261028/heads/flashnext-modelopt-a4-read-plan-20261018"
+    },
+    {
+      "local_ref": "refs/heads/flashnext-modelopt-a4-shared-input-20261018",
+      "sha": "524eae32dbed042976f08f15934e9fc306bdc3f4",
+      "remote_ref": "refs/heads/emergency/20261028/heads/flashnext-modelopt-a4-shared-input-20261018"
+    },
+    {
+      "local_ref": "refs/heads/foundation-fixture-isolation-20261018",
+      "sha": "30f033aab410c4339fc5619a315698e2c4b6e18c",
+      "remote_ref": "refs/heads/emergency/20261028/heads/foundation-fixture-isolation-20261018"
+    },
+    {
+      "local_ref": "refs/heads/foundation-guard-20261017",
+      "sha": "b6dc4a8f675d3afa1a88cd082c00a67aae34eca1",
+      "remote_ref": "refs/heads/emergency/20261028/heads/foundation-guard-20261017"
+    },
+    {
+      "local_ref": "refs/heads/foundation-source-build-20261017",
+      "sha": "abb67d6231903b67da2dd3fbca208c9e8b667180",
+      "remote_ref": "refs/heads/emergency/20261028/heads/foundation-source-build-20261017"
+    },
+    {
+      "local_ref": "refs/heads/foundation-triton-tools-20261017",
+      "sha": "0db7bdb14fcc7ec4b4e9fda856d56c776a129717",
+      "remote_ref": "refs/heads/emergency/20261028/heads/foundation-triton-tools-20261017"
+    },
+    {
+      "local_ref": "refs/heads/foundation-triton-tools-followup-20261017",
+      "sha": "a69284b637cbca536e57bc2376e7902cdd995138",
+      "remote_ref": "refs/heads/emergency/20261028/heads/foundation-triton-tools-followup-20261017"
+    },
+    {
+      "local_ref": "refs/heads/gb10-nvfp4-docs-20261018",
+      "sha": "c3cf484cd8442d4511fcea21c12a5d196958c35e",
+      "remote_ref": "refs/heads/emergency/20261028/heads/gb10-nvfp4-docs-20261018"
+    },
+    {
+      "local_ref": "refs/heads/heretic-a4-select-cleanup-20261017",
+      "sha": "2e14de265caf407184d5ef70c774b8105ce9d3e4",
+      "remote_ref": "refs/heads/emergency/20261028/heads/heretic-a4-select-cleanup-20261017"
+    },
+    {
+      "local_ref": "refs/heads/heretic-b16-head-20261017",
+      "sha": "e64f5df88c23f5b6e5e9bd9e85a39c1ed776497b",
+      "remote_ref": "refs/heads/emergency/20261028/heads/heretic-b16-head-20261017"
+    },
+    {
+      "local_ref": "refs/heads/heretic-b16-small-rows-20261017",
+      "sha": "ffed48e4861e65bb1d9bd5971fb2f1d0010fc934",
+      "remote_ref": "refs/heads/emergency/20261028/heads/heretic-b16-small-rows-20261017"
+    },
+    {
+      "local_ref": "refs/heads/heretic-blob-a4-20261017",
+      "sha": "8b4ac4e4b2456e0a17ea56a4ac1014c29b0e9488",
+      "remote_ref": "refs/heads/emergency/20261028/heads/heretic-blob-a4-20261017"
+    },
+    {
+      "local_ref": "refs/heads/heretic-cache-20261017",
+      "sha": "9845e8f0f60f917431d0b1bb97c2c38c51b1f3f2",
+      "remote_ref": "refs/heads/emergency/20261028/heads/heretic-cache-20261017"
+    },
+    {
+      "local_ref": "refs/heads/heretic-dflash-20261017",
+      "sha": "c95e77d89e5c36c09646d408836ac6acd927460f",
+      "remote_ref": "refs/heads/emergency/20261028/heads/heretic-dflash-20261017"
+    },
+    {
+      "local_ref": "refs/heads/heretic-dflash-tiles-20261017",
+      "sha": "6aabbcb6e2f9295f0983dbc00d99eb19c36d638a",
+      "remote_ref": "refs/heads/emergency/20261028/heads/heretic-dflash-tiles-20261017"
+    },
+    {
+      "local_ref": "refs/heads/heretic-final-20261017",
+      "sha": "dfb63b7c21f4a91e714687e96fc55cf8c92b0851",
+      "remote_ref": "refs/heads/emergency/20261028/heads/heretic-final-20261017"
+    },
+    {
+      "local_ref": "refs/heads/heretic-loader-20261017",
+      "sha": "71b71fc77c66c9a9fd684fe2667141d0962b6261",
+      "remote_ref": "refs/heads/emergency/20261028/heads/heretic-loader-20261017"
+    },
+    {
+      "local_ref": "refs/heads/heretic-native-a4-20261017",
+      "sha": "7d944337b1cf852cb9038094bc080b94f60af4d9",
+      "remote_ref": "refs/heads/emergency/20261028/heads/heretic-native-a4-20261017"
+    },
+    {
+      "local_ref": "refs/heads/heretic-nvfp4-20261017",
+      "sha": "abb67d6231903b67da2dd3fbca208c9e8b667180",
+      "remote_ref": "refs/heads/emergency/20261028/heads/heretic-nvfp4-20261017"
+    },
+    {
+      "local_ref": "refs/heads/heretic-scales-20261017",
+      "sha": "4524adbe4c0a9c193d7d69f9ce23b93deddea1f6",
+      "remote_ref": "refs/heads/emergency/20261028/heads/heretic-scales-20261017"
+    },
+    {
+      "local_ref": "refs/heads/heretic-static-20261017",
+      "sha": "00c83d698f9ca4e299ac8882966f9104087828b8",
+      "remote_ref": "refs/heads/emergency/20261028/heads/heretic-static-20261017"
+    },
+    {
+      "local_ref": "refs/heads/local-nccl-store-20261017",
+      "sha": "4755ac0f490b66f680de01492fbf85ef13f1d6b3",
+      "remote_ref": "refs/heads/emergency/20261028/heads/local-nccl-store-20261017"
+    },
+    {
+      "local_ref": "refs/heads/metadata-constructor-order-20261017",
+      "sha": "1ef45580c47e95d8ac9874a86fce4dcf2dd137d6",
+      "remote_ref": "refs/heads/emergency/20261028/heads/metadata-constructor-order-20261017"
+    },
+    {
+      "local_ref": "refs/heads/metadata-defaults-20261017",
+      "sha": "b6c37bb717f26f4bab268f4bc1cdcf398549d5a7",
+      "remote_ref": "refs/heads/emergency/20261028/heads/metadata-defaults-20261017"
+    },
+    {
+      "local_ref": "refs/heads/metadata-layout-20261017",
+      "sha": "9e204c525e03747ecb22386e63f6daf02a132c39",
+      "remote_ref": "refs/heads/emergency/20261028/heads/metadata-layout-20261017"
+    },
+    {
+      "local_ref": "refs/heads/metadata-quant-20261017",
+      "sha": "b6fdf9133d124ff26abdc4e8d3752a05809fde24",
+      "remote_ref": "refs/heads/emergency/20261028/heads/metadata-quant-20261017"
+    },
+    {
+      "local_ref": "refs/heads/metadata-qwen-comm-20261017",
+      "sha": "1ea20477e35270cda94180d885d7ee96214b8441",
+      "remote_ref": "refs/heads/emergency/20261028/heads/metadata-qwen-comm-20261017"
+    },
+    {
+      "local_ref": "refs/heads/moe-prefill-batch-20261017",
+      "sha": "1e8c8ea4934695ddd89ae8262e2e3fcf4ce8f482",
+      "remote_ref": "refs/heads/emergency/20261028/heads/moe-prefill-batch-20261017"
+    },
+    {
+      "local_ref": "refs/heads/nvfp4-campaign-20261018",
+      "sha": "bd2ebac6317ae7db835572152a97b113520999ee",
+      "remote_ref": "refs/heads/emergency/20261028/heads/nvfp4-campaign-20261018"
+    },
+    {
+      "local_ref": "refs/heads/nvfp4-host-precision-20261018",
+      "sha": "b83f03e030238ef70f52cd9cd003a7b54a970877",
+      "remote_ref": "refs/heads/emergency/20261028/heads/nvfp4-host-precision-20261018"
+    },
+    {
+      "local_ref": "refs/heads/nvfp4-load-host-budget-20261017",
+      "sha": "b9d370166da39a5e5d0df19d7d3921bd7d1631b2",
+      "remote_ref": "refs/heads/emergency/20261028/heads/nvfp4-load-host-budget-20261017"
+    },
+    {
+      "local_ref": "refs/heads/nvfp4-load-packing-20261017",
+      "sha": "5f9fd9bb46a8c3183f724df68733c0fc3dc2730c",
+      "remote_ref": "refs/heads/emergency/20261028/heads/nvfp4-load-packing-20261017"
+    },
+    {
+      "local_ref": "refs/heads/nvfp4-optional-sdk-test-20261017",
+      "sha": "8c0728c4b544dac87a98fdf424a90e2a18e10b60",
+      "remote_ref": "refs/heads/emergency/20261028/heads/nvfp4-optional-sdk-test-20261017"
+    },
+    {
+      "local_ref": "refs/heads/perf-api",
+      "sha": "354b565941d3d0d629d06d5f254e5d1fb73c61ce",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-api"
+    },
+    {
+      "local_ref": "refs/heads/perf-bandwidth",
+      "sha": "18a7c4483cb90d9433fefa9f9f0a80c87f295b98",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-bandwidth"
+    },
+    {
+      "local_ref": "refs/heads/perf-build-capture-io-20261023",
+      "sha": "6a9689d0b7f5206fce69c2380f0e6ed21a433572",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-build-capture-io-20261023"
+    },
+    {
+      "local_ref": "refs/heads/perf-bw-attn",
+      "sha": "443b4fc8e5b7e65184adf8821f6a83f2ac40bceb",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-bw-attn"
+    },
+    {
+      "local_ref": "refs/heads/perf-bw-chain",
+      "sha": "9a1932e4147b612b42de4a8dcfd41ce6bc701514",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-bw-chain"
+    },
+    {
+      "local_ref": "refs/heads/perf-bw-chain-d13",
+      "sha": "dbe5864c2384bfce797077911c1ce2c0a81b85a2",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-bw-chain-d13"
+    },
+    {
+      "local_ref": "refs/heads/perf-bw-chain-d14",
+      "sha": "0e901a4342763c351b2d9ed507a3945f48fdc31e",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-bw-chain-d14"
+    },
+    {
+      "local_ref": "refs/heads/perf-bw-clean",
+      "sha": "b76a5a2ad08a3150931e3c4ba06a6f8023be3215",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-bw-clean"
+    },
+    {
+      "local_ref": "refs/heads/perf-bw-gdn",
+      "sha": "a96f9fe190524848f54535bbadfbec4ecd902bad",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-bw-gdn"
+    },
+    {
+      "local_ref": "refs/heads/perf-bw-hc",
+      "sha": "af7a2e225835608e6c1c44bf1d2d6a31c2403c3f",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-bw-hc"
+    },
+    {
+      "local_ref": "refs/heads/perf-bw-int",
+      "sha": "3dd2b63672383d1a12861e89ba626011aeddce89",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-bw-int"
+    },
+    {
+      "local_ref": "refs/heads/perf-bw-int2",
+      "sha": "1a2836b061e0744c82909cd19cb0d74363274c98",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-bw-int2"
+    },
+    {
+      "local_ref": "refs/heads/perf-bw-qmm",
+      "sha": "bc8e966341be95dba90425069285e7721d452bf6",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-bw-qmm"
+    },
+    {
+      "local_ref": "refs/heads/perf-bw-qmm-d13",
+      "sha": "6c32e0aa4dfa1b56ec309c2ff105ceafccc6ace1",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-bw-qmm-d13"
+    },
+    {
+      "local_ref": "refs/heads/perf-bw-qmm-d14",
+      "sha": "5c90b342b51e328512de6d0975b6f7bfa74be1b4",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-bw-qmm-d14"
+    },
+    {
+      "local_ref": "refs/heads/perf-clean-a",
+      "sha": "9d24f93658f9f92640a8051078b4865648446d27",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-clean-a"
+    },
+    {
+      "local_ref": "refs/heads/perf-clean-b",
+      "sha": "fed5af4e74cffbe5b74dd55d6df77c41a190fd0f",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-clean-b"
+    },
+    {
+      "local_ref": "refs/heads/perf-clean-d14",
+      "sha": "bf61cc3ebe33e4e2936c0be9eed3e3a7d0e8ff11",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-clean-d14"
+    },
+    {
+      "local_ref": "refs/heads/perf-decode-flash-20261022",
+      "sha": "949e5e02c18dfbda9812eb68e042dab0e97e3d6b",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-decode-flash-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-decode-gemma-20261022",
+      "sha": "4c73ffd120aa9cc570135aee886e66a9e5fa0be4",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-decode-gemma-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-decode-gemma-body-graphs-20261023",
+      "sha": "348e7012ed6484a5ecfc0882664253de139fb409",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-decode-gemma-body-graphs-20261023"
+    },
+    {
+      "local_ref": "refs/heads/perf-decode-gemma-fp8-greedy-alt-20261024",
+      "sha": "266cd0299561227e98d534ee710810a6a17be49d",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-decode-gemma-fp8-greedy-alt-20261024"
+    },
+    {
+      "local_ref": "refs/heads/perf-decode-gemma-fp8-head-20261023",
+      "sha": "6e9d1fad93f5a251fab6ed5ebd921cb10f8ca4ea",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-decode-gemma-fp8-head-20261023"
+    },
+    {
+      "local_ref": "refs/heads/perf-decode-gemma-fp8-head-cache-20261024",
+      "sha": "20499c1cefb12da9379bb34ced5fd15a96c6ca66",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-decode-gemma-fp8-head-cache-20261024"
+    },
+    {
+      "local_ref": "refs/heads/perf-decode-gemma-fp8-maxfinite-20261023",
+      "sha": "de6ba2678e3c86c464cf198dddd59007d24346aa",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-decode-gemma-fp8-maxfinite-20261023"
+    },
+    {
+      "local_ref": "refs/heads/perf-decode-gemma-fp8-prepare-20261023",
+      "sha": "4ab3fad7c78134cb67c82a18d68485ce4a835c6e",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-decode-gemma-fp8-prepare-20261023"
+    },
+    {
+      "local_ref": "refs/heads/perf-decode-gemma-fp8-scratch-20261024",
+      "sha": "04372bed624d1ce14333d9886276068943956b34",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-decode-gemma-fp8-scratch-20261024"
+    },
+    {
+      "local_ref": "refs/heads/perf-decode-gemma-greedy-20261023",
+      "sha": "e4277966619a6e7ab1b76a0401d11945a9b8c281",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-decode-gemma-greedy-20261023"
+    },
+    {
+      "local_ref": "refs/heads/perf-decode-gemma-greedy-max-20261023",
+      "sha": "5978bbe46dc3d0600a5b814193c521a59e409844",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-decode-gemma-greedy-max-20261023"
+    },
+    {
+      "local_ref": "refs/heads/perf-decode-gemma-head-20261023",
+      "sha": "f4a88d38bdd034ec4bfb2853f357288f9506cc90",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-decode-gemma-head-20261023"
+    },
+    {
+      "local_ref": "refs/heads/perf-decode-gemma-head-cache-20261023",
+      "sha": "612d3e6b46654ee673ecc3f4be1fa2796df5c0d8",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-decode-gemma-head-cache-20261023"
+    },
+    {
+      "local_ref": "refs/heads/perf-decode-gemma-moe-up-20261023",
+      "sha": "47b6fd0bf59ca9f67a52a633e7bd6264940e4271",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-decode-gemma-moe-up-20261023"
+    },
+    {
+      "local_ref": "refs/heads/perf-decode-gemma-target-max-20261023",
+      "sha": "77569ead832bcdf9dfce2ab0d247bbe50635573e",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-decode-gemma-target-max-20261023"
+    },
+    {
+      "local_ref": "refs/heads/perf-decode-qwen-20261022",
+      "sha": "949e5e02c18dfbda9812eb68e042dab0e97e3d6b",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-decode-qwen-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-expandable-packing-20261021",
+      "sha": "6bf31eea5d91ea6dfae45403ce30d9d7b707473e",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-expandable-packing-20261021"
+    },
+    {
+      "local_ref": "refs/heads/perf-final-20261013",
+      "sha": "4f13bc844e39e178aae154696914f38ce9016ac2",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-final-20261013"
+    },
+    {
+      "local_ref": "refs/heads/perf-flash-cached-empty-20261022",
+      "sha": "5b0e3f813d639b9a33eccd616042b5d89b0e0cab",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-flash-cached-empty-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-flash-chain-metadata-20261022",
+      "sha": "01cc5c32b39e9f17d8b06c787f2270c4e2e3dcbf",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-flash-chain-metadata-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-flash-readout-20261022",
+      "sha": "656eeb5069f135135bc5ef43a90c64034def541b",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-flash-readout-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-flash-readout-tool-budget-20261022",
+      "sha": "299cd909f3f203aeb3db436dc9ed8af88230c8e2",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-flash-readout-tool-budget-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-gemma-graph-preparation-20261022",
+      "sha": "d42d79d08fb95bddb1ef79891fac8c9a3887498b",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-gemma-graph-preparation-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-gemma-replay-closure-20261022",
+      "sha": "22b4c7a5a93775f390e9a840fbfadf4f460b9b3d",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-gemma-replay-closure-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-idea1-select",
+      "sha": "328489c5d0b561ac840499d55effde0f837186fa",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-idea1-select"
+    },
+    {
+      "local_ref": "refs/heads/perf-idea2-round",
+      "sha": "ade71aa4150cfe805c4b5eb41b5a6a9b0ecb08d2",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-idea2-round"
+    },
+    {
+      "local_ref": "refs/heads/perf-idea3-drafting",
+      "sha": "32b4ab99b6b0b7f4ca34f30be12fd1a630b866e5",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-idea3-drafting"
+    },
+    {
+      "local_ref": "refs/heads/perf-idea3-phase2",
+      "sha": "263d72037f0e16cb365568ce19ad490e851930ba",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-idea3-phase2"
+    },
+    {
+      "local_ref": "refs/heads/perf-idea3-rework",
+      "sha": "db7b74575334f822d527eec4cadbe8fd47dad07c",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-idea3-rework"
+    },
+    {
+      "local_ref": "refs/heads/perf-ideas-20261013",
+      "sha": "263d72037f0e16cb365568ce19ad490e851930ba",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-ideas-20261013"
+    },
+    {
+      "local_ref": "refs/heads/perf-native-preparation-20261021",
+      "sha": "5c28dff8de536026eb1cd8f5b580994418106ebe",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-native-preparation-20261021"
+    },
+    {
+      "local_ref": "refs/heads/perf-native-preparation-five-20261022",
+      "sha": "08010f4d06843a0c5556e838a343e7e5afc5f696",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-native-preparation-five-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-qwen-bulk-loading-20261021",
+      "sha": "dcfc448a400083c031d6dd779abf66432e55c70c",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-qwen-bulk-loading-20261021"
+    },
+    {
+      "local_ref": "refs/heads/perf-qwen-bulk-projection-20261022",
+      "sha": "1c2045b232068b8378031c22b0990639f3e984e6",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-qwen-bulk-projection-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-qwen-bulk-staged-copy-20261022",
+      "sha": "d3523145b739ce70023ebf3eee72be66b8a6ccd2",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-qwen-bulk-staged-copy-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-qwen-expandable-fragments-20261022",
+      "sha": "84eacce1efdbd400aedcafa262e418bf9ed43c02",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-qwen-expandable-fragments-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-qwen-native-bank-20261022",
+      "sha": "9734f82a46a6dfa31ecc67167a76369bca0ee1a3",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-qwen-native-bank-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-qwen-native-bank-c-exchange-20261022",
+      "sha": "1f88d99cb66b9cdd6e08f4ed8307e8300e8852fc",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-qwen-native-bank-c-exchange-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-qwen-native-bank-c-exchange-inline-20261022",
+      "sha": "3fed5e39c8f5962093af510f947b70cff65e3adb",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-qwen-native-bank-c-exchange-inline-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-qwen-native-bank-inline-20261022",
+      "sha": "e87214fb8a348b984995ecb64e55144d8ec6eec4",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-qwen-native-bank-inline-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-qwen-native-bank-integrated-20261022",
+      "sha": "fcbaeea373dd13fc82d2fce40bd2b70241ecd622",
+      "remote_ref": "refs/heads/perf-qwen-native-bank-integrated-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-qwen-native-bank-metadata-20261022",
+      "sha": "430936c8d0cb7c27de67c6d880fb6948dd44ceb9",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-qwen-native-bank-metadata-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-qwen-native-bank-metadata-c-exchange-inline-20261022",
+      "sha": "5f1bd46c2a19f734fb0e470f5a0aa85128f80963",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-qwen-native-bank-metadata-c-exchange-inline-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-qwen-native-bank-parallel-20261022",
+      "sha": "280a69ff3bbc531978e2f4591d43e18146d70390",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-qwen-native-bank-parallel-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-qwen-native-bank-parallel-expert-20261022",
+      "sha": "8b7ec5a2909fe9b4822804a31d9fa95c3f0d8197",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-qwen-native-bank-parallel-expert-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-qwen-native-bank-sf-first-20261022",
+      "sha": "a5a83247cf7b3e4763740778cc1a10634e53b455",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-qwen-native-bank-sf-first-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-qwen-native-bank-vector-20261022",
+      "sha": "ab3c33ba4cd23c844f2c4ff34f2a875fd3101c0c",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-qwen-native-bank-vector-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-qwen-native-bank-workspace-20261022",
+      "sha": "3334c196898b1d137d2477a6e9e8283cda9bc70e",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-qwen-native-bank-workspace-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-qwen-native-factor-errors-20261022",
+      "sha": "95b83e0668cdcf2930260633978ad9fc5d8f1110",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-qwen-native-factor-errors-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-resume-paused-20261021",
+      "sha": "33578d83ea35d96b074674604da238ead2d01691",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-resume-paused-20261021"
+    },
+    {
+      "local_ref": "refs/heads/perf-rq6-lookup",
+      "sha": "94b6743555a42ccdae82ea843a3a76a50065b6cd",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-rq6-lookup"
+    },
+    {
+      "local_ref": "refs/heads/perf-rq6-on-ideas",
+      "sha": "7375ddcbf9d91751706050a12e19ea8fe066da46",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-rq6-on-ideas"
+    },
+    {
+      "local_ref": "refs/heads/perf-rq6G-on-ideas",
+      "sha": "d1416db09e2a0e59d584d4509eb9941db7114445",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-rq6G-on-ideas"
+    },
+    {
+      "local_ref": "refs/heads/perf-rq6G0",
+      "sha": "5e81802c463a6a41c4d4c9b03450f31df41922b6",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-rq6G0"
+    },
+    {
+      "local_ref": "refs/heads/perf-rq6S-on-ideas",
+      "sha": "a6ebe4d2ab2b43f83e8bf9afd8611e6ba8a49759",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-rq6S-on-ideas"
+    },
+    {
+      "local_ref": "refs/heads/perf-shared-shard-path-20261022",
+      "sha": "0ece058b37eaaefdb247d43bdb3c4db72f778d82",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-shared-shard-path-20261022"
+    },
+    {
+      "local_ref": "refs/heads/perf-strict",
+      "sha": "c84c1a6ace473b1e3da7119160dce26830c6b62d",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-strict"
+    },
+    {
+      "local_ref": "refs/heads/perf-verified-loading-20261021",
+      "sha": "5247097207945c1f160f06bf312594226dec01a1",
+      "remote_ref": "refs/heads/emergency/20261028/heads/perf-verified-loading-20261021"
+    },
+    {
+      "local_ref": "refs/heads/python-0.6",
+      "sha": "89fd5efc1e97cfc5db097a896e76a56a857275ac",
+      "remote_ref": "refs/heads/python-0.6"
+    },
+    {
+      "local_ref": "refs/heads/qualify-campaign-evidence-20261019",
+      "sha": "005217d72a98139d1572e5e0f69c1dfb94ac8052",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-campaign-evidence-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-chain-geometry-20261019",
+      "sha": "a8e2962cb4333c53aab75bc285070d3c660c3f75",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-chain-geometry-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-common-finalcore-20261019",
+      "sha": "15702c49ba19f9aa2a51a6e1fdfd1120dee2de9d",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-common-finalcore-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-common-rs-20261019",
+      "sha": "981f3916759dbb9a686363fdc11824ce33a6e482",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-common-rs-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-composed-fixes-20261019",
+      "sha": "fd7ef06abd3a8a766230345a7d6884e5bb3af1e2",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-composed-fixes-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-draft-confidence-20261019",
+      "sha": "3200137395453d6ee36bde692c8dbafe8e3ad0c2",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-draft-confidence-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-gemma-cache-sampling-20261019",
+      "sha": "e7cde74c0cfd5297baa3e9d2fc0651c8e605a0ac",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-gemma-cache-sampling-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-gemma-common-deploy-20261019",
+      "sha": "24f377cd4c9b0bf4fe35a41f417f4c708bd9f868",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-gemma-common-deploy-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-gemma-common-finalcore-20261019",
+      "sha": "14335766b68a0f0c5a173e2f7f516973fc7eb8e6",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-gemma-common-finalcore-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-gemma-fullv2-attn16-20261019",
+      "sha": "d1eeec2c4320348695eeb4a0db026234914550c0",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-gemma-fullv2-attn16-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-gemma-fullv2-attn64s-20261019",
+      "sha": "2b7fb30cb8e2e8f58d0d56aa808f2e608499d1cf",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-gemma-fullv2-attn64s-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-gemma-fullv2-attnrev-20261019",
+      "sha": "0c4bc40d2ca933a54ba2469ade2c6b633ed9bb65",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-gemma-fullv2-attnrev-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-gemma-fullv2-base-20261019",
+      "sha": "c0da6c59c04a9440b653a68c43603c87fc4165fe",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-gemma-fullv2-base-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-gemma-fullv2-combinedesc-20261019",
+      "sha": "ba23ee2d6b94e3fc67843e8cbb4546083defff30",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-gemma-fullv2-combinedesc-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-gemma-fullv2-rmswarps-20261019",
+      "sha": "97cd94ab2f8154aff020fa04d2fe9f6795643c00",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-gemma-fullv2-rmswarps-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-gemma-gate-peers-20261019",
+      "sha": "28007ab113896fea77820f4c3141b6d6fc3a5c28",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-gemma-gate-peers-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-gemma-kl-lifecycle-20261019",
+      "sha": "f0867da49b7ac89610a38a9340a8eb1648bd417c",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-gemma-kl-lifecycle-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-gemma-moe-20261019",
+      "sha": "4f33497d3b4e52e1d2eaa275566a03a796f5092d",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-gemma-moe-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-integration-20261019",
+      "sha": "437e61e5829f6bbdd92a4c59fc0f3377fa3446a2",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-integration-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-moe-dedupe-20261019",
+      "sha": "ce30b259696ceb7cd23680c0d2ddcc840fe4c4ae",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-moe-dedupe-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-moe-dedupe-808-20261019",
+      "sha": "634c1f81ba7669ca94b2b359cd113096ece66a78",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-moe-dedupe-808-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-moe-dedupe-b0-20261019",
+      "sha": "290f30060a9aea4c81b94717e1b7edeffc77f5e5",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-moe-dedupe-b0-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-moe-dedupe-final-20261019",
+      "sha": "1081d690ea1a55e48cfc3f0b0895535721af4535",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-moe-dedupe-final-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-qwen36-affine-reference-20261019",
+      "sha": "5b563a2ec126e438fb8e8ccc629ac69d5f3b30d2",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-qwen36-affine-reference-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-qwen36-affine-rs-808-20261019",
+      "sha": "dfeb3fd8cd00638c70d1722d8c4014b87e9a69d7",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-qwen36-affine-rs-808-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-qwen36-affine-rs-final-20261019",
+      "sha": "c924cb08e718a6116b8a155964d095f9b54df278",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-qwen36-affine-rs-final-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-qwen36-affine-rs-reference-20261019",
+      "sha": "070e0bc37cd5175862769fe7d1324503e47cc7e1",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-qwen36-affine-rs-reference-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-qwen36-order-20261019",
+      "sha": "24f994e95dca47b2693f8a502ee3fa996e176f9d",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-qwen36-order-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-qwen36-yarn-20261019",
+      "sha": "0026e75e393b47d1685c6a55b46887a10cc4442f",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-qwen36-yarn-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-qwen38-arena-20261019",
+      "sha": "63530543e625686c58a9917ae20d31fcdd96d4b1",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-qwen38-arena-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-qwen38-vocab-20261019",
+      "sha": "b729f1386691bc4ff2f4bc6fac4ac4194a2f4b1b",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-qwen38-vocab-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-qwen38-vocab-808-20261019",
+      "sha": "08748f9b8498b8101d4a429157c5ab7d11a559d0",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-qwen38-vocab-808-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-qwen38-vocab-composed-20261019",
+      "sha": "cce8ff61e7147bb407578761fe4dbc71575f8601",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-qwen38-vocab-composed-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-qwen38-vocab-final-20261019",
+      "sha": "cce8ff61e7147bb407578761fe4dbc71575f8601",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-qwen38-vocab-final-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-qwen38-vocab-finalcore-20261019",
+      "sha": "d6e85e8f614720d6376879411d8bb0a4988ce746",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-qwen38-vocab-finalcore-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-qwen38-vocab-rs-20261019",
+      "sha": "78df054d4c5dab93ee605b2a6cbf9c8c1352f495",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-qwen38-vocab-rs-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-qwen38-vocab-rs-factory-20261019",
+      "sha": "67e7288df8aadf0986f8462a89fdac22ba1d95fd",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-qwen38-vocab-rs-factory-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-rejection-20261019",
+      "sha": "bc0f4ea0890658064ec7e46ed8ea6724e97329f9",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-rejection-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-requant-20261019",
+      "sha": "5d1b874010ab5013b54f65d70347e795b308e92c",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-requant-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-requant-peak-20261019",
+      "sha": "da781de8f5b2e9559c51d2e6e4c11368e8582af3",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-requant-peak-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qualify-small-nvfp4-20261017",
+      "sha": "a600def0fa5860ecbd74bad18d1efab009e3439d",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-small-nvfp4-20261017"
+    },
+    {
+      "local_ref": "refs/heads/qualify-stats-20261019",
+      "sha": "db2cf421955ef28084b5678595f19f6d8bdde785",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qualify-stats-20261019"
+    },
+    {
+      "local_ref": "refs/heads/qwen-nvfp4-startup-20261017",
+      "sha": "5bcc00d896912c10826309873be7c811fd73c8f6",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qwen-nvfp4-startup-20261017"
+    },
+    {
+      "local_ref": "refs/heads/qwen-serving-setup-20261017",
+      "sha": "d87eda57c70a41dc145d1c8e4db53a4652d971f4",
+      "remote_ref": "refs/heads/emergency/20261028/heads/qwen-serving-setup-20261017"
+    },
+    {
+      "local_ref": "refs/heads/recovery/d13-review-20261028",
+      "sha": "4b6d176f2d3bca2aee3b88b05aa8282ccfab389a",
+      "remote_ref": "refs/heads/recovery/d13-review-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/grouped-finish-paused-20261028",
+      "sha": "5b52e804e84bef1f5187a32b2848e315fe0a898a",
+      "remote_ref": "refs/heads/recovery/grouped-finish-paused-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/checkpoint",
+      "sha": "ab0ca67770c4b68f9954277f28be670da078a4ac",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/checkpoint"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-batch-execution-rows-20261028",
+      "sha": "60980af6dca5f5b33b761f978265f8c93843648b",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-batch-execution-rows-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-best-single-profile-20261028",
+      "sha": "3f460a4f8ce83479cc035ca2d7b5d9f4be1b9e8c",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-best-single-profile-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-compact-pool-namespace-20261028",
+      "sha": "37518d018730da786dd5577bfaa7f6d2fb1a4885",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-compact-pool-namespace-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-compact-pool-preparation-20261028",
+      "sha": "1572417190ed494e7afb6ea2894874f233dad2ba",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-compact-pool-preparation-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-compact-tail-pool-integration-20261028",
+      "sha": "9d4a4c256e28378d7ec413cbdc9df5bf4f518d7f",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-compact-tail-pool-integration-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-concurrent-prelude-alias-profile-20261027",
+      "sha": "8f1f904d7b9b54d415447ad687ee3843bb8c3c80",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-concurrent-prelude-alias-profile-20261027"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-concurrent-prelude-profile-20261027",
+      "sha": "c26ac773a7aea910beb26fc8c25df4f7744a696f",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-concurrent-prelude-profile-20261027"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-concurrent-profile-20261027",
+      "sha": "67a10e579b6ca4e747915ed5d82903997cc75d9a",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-concurrent-profile-20261027"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-concurrent-startup-mtp-profile-20261027",
+      "sha": "02643c0689438c64fb4313d7ddda0d4ed262fe48",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-concurrent-startup-mtp-profile-20261027"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-cpu-parent-acquisition-20261028",
+      "sha": "ea563863386e472818e73a726dd925a5c766f3a5",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-cpu-parent-acquisition-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-cpu-parent-rescan-20261028",
+      "sha": "7e3ba65aa2c8ab937a688d88dd6fc5f44b6f3e33",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-cpu-parent-rescan-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-dense-execution-rows-20261028",
+      "sha": "f0a78fa0f607256db459486ed4989ed7a41dddb3",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-dense-execution-rows-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-dense-hc-physical-tiles-20261028",
+      "sha": "43e514dd170e7dcba8a5290ab4191e9d7f9318db",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-dense-hc-physical-tiles-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-dense-large-row-tiles-20261028",
+      "sha": "c517964eb7bebc3543274dc7be7ab920788384d5",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-dense-large-row-tiles-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-dense-n24-profile-20261028",
+      "sha": "6ef006ae68c4ac16bb500519f4b27c8f7ef21125",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-dense-n24-profile-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-dense-n24-profile-closefix-20261028",
+      "sha": "4c75bed1ec3fc801722b4f74f8664a352405434e",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-dense-n24-profile-closefix-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-descriptor-current-n24-profile-20261028",
+      "sha": "86b841b879b24ceecb131dd320679d224e7e1d17",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-descriptor-current-n24-profile-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-fast-grid-v2-20261027",
+      "sha": "bebf7cbc0bf2b4d3b59bf650764e16457accc7f5",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-fast-grid-v2-20261027"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-fast-profiler-20261027",
+      "sha": "a4af1a783bcb782743572a3b78d93e3c674daae5",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-fast-profiler-20261027"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-hot16-current-n24-profile-20261028",
+      "sha": "84cc902d49d57689aff2d15cbfe0646c126a4f2c",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-hot16-current-n24-profile-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-joint-single-profile-20261028",
+      "sha": "b6369c36131c6432dc82fa7e058be65daaa92dc1",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-joint-single-profile-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-mtp-confidence-zero-20261028",
+      "sha": "2aee41c95b979c53d1c7c699878d425708e5fd5c",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-mtp-confidence-zero-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-owner-attention-single-final-profile-20261028",
+      "sha": "dc05c3f890d582a1fc3b7946a38cb8fdfa7850bd",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-owner-attention-single-final-profile-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-owner-attention-single-profile-20261028",
+      "sha": "939a26265e5e69e4184fb43e0fe8cff30796664d",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-owner-attention-single-profile-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-ring-single-profile-20261028",
+      "sha": "c94ad8dbfbfd6b694c04512e76d6476ba548a7d8",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-ring-single-profile-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-router-cublas-batched-20261028",
+      "sha": "490a49c2013f29b9551eec5d573da7c5fa852b63",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-router-cublas-batched-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-router-cublas-model-20261028",
+      "sha": "30c3bf3199cd6cb45075c1e749b2c798ed0c8412",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-router-cublas-model-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-router-cublas-model-wiring-20261028",
+      "sha": "f0a3bfd535f039315591d8b2f1cdba8d348f03c1",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-router-cublas-model-wiring-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-router-gdn-integration-20261028",
+      "sha": "146f8a818d11ea69ca5b9cbd0f3d1f90067896ac",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-router-gdn-integration-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-router-gdn-n24-profile-20261028",
+      "sha": "eb7179abb8826a30f952c6d0759b268f75242984",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-router-gdn-n24-profile-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-router-gdn-shared-fusion-20261028",
+      "sha": "42f522f02ef9c58237bfaf7eafd7b18adefa3ed8",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-router-gdn-shared-fusion-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-router-gdn-wmma80-20261028",
+      "sha": "1db0dbab8d3d033516ae6b6747ee509e107693c7",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-router-gdn-wmma80-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-startup-guard-maps-20261027",
+      "sha": "c0f49f4998e47af99633a099769b675dbdd3fd43",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-startup-guard-maps-20261027"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-startup-hash-overlap-20261027",
+      "sha": "32bc97fbddbd4157894fd88af5608142870bf0ce",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-startup-hash-overlap-20261027"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-startup-mtp-prelude-20261027",
+      "sha": "521d78ba1edffab669546d6b1ee26bfa17db09e8",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-startup-mtp-prelude-20261027"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-startup-prelude-20261027",
+      "sha": "ee248b80fdddfe01fb1af1a595385fd84928c44e",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-startup-prelude-20261027"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-startup-three-file-hash-20261027",
+      "sha": "d73d4c962a4a691e7150eb4f77923a5b0121bfbd",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-startup-three-file-hash-20261027"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-unique-static-maps-20261027",
+      "sha": "cff7b6b89f90b56f4cfa62211a646329697206be",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-unique-static-maps-20261027"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-vendor-blas-n1-shapes-20261028",
+      "sha": "2ae90c586acdfdb30b3a1040b10a84fe4c884353",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-vendor-blas-n1-shapes-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-vendor-blas-retire-envelope-20261028",
+      "sha": "734484a2cd2760f97954918145674323691e865e",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-vendor-blas-retire-envelope-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-vendor-blas-shapes-outcome-20261028",
+      "sha": "b4e6af85c2b742512ffe573a1266747f5ac89e98",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-vendor-blas-shapes-outcome-20261028"
+    },
+    {
+      "local_ref": "refs/heads/recovery/profile-tool/20261028/v100-wmma80-current-harness-20261028",
+      "sha": "e1881d5457de738c5cb4bfe635b8f8347c1cd854",
+      "remote_ref": "refs/heads/recovery/profile-tool/20261028/v100-wmma80-current-harness-20261028"
+    },
+    {
+      "local_ref": "refs/heads/remediate-attention-20261017",
+      "sha": "f28fad273595c668a27f699002bce0d492acecab",
+      "remote_ref": "refs/heads/emergency/20261028/heads/remediate-attention-20261017"
+    },
+    {
+      "local_ref": "refs/heads/remediate-build-20261017",
+      "sha": "12f1e0165bed1ef42dd66f1564977e36a4e07dff",
+      "remote_ref": "refs/heads/emergency/20261028/heads/remediate-build-20261017"
+    },
+    {
+      "local_ref": "refs/heads/remediate-cuda-20261017",
+      "sha": "5daa59115c7dcd8b430de2a2119fcd37d87c5de1",
+      "remote_ref": "refs/heads/emergency/20261028/heads/remediate-cuda-20261017"
+    },
+    {
+      "local_ref": "refs/heads/remediate-d13-20261017",
+      "sha": "a1ef06feaba10470c8aed3473736c9216de1a39d",
+      "remote_ref": "refs/heads/emergency/20261028/heads/remediate-d13-20261017"
+    },
+    {
+      "local_ref": "refs/heads/remediate-d13-attention-20261017",
+      "sha": "69ce16613744f6dfb2564d49379f0fb910c67196",
+      "remote_ref": "refs/heads/emergency/20261028/heads/remediate-d13-attention-20261017"
+    },
+    {
+      "local_ref": "refs/heads/remediate-d14-20261017",
+      "sha": "46352cd3ebfdacc5901f027284aaaab580833422",
+      "remote_ref": "refs/heads/emergency/20261028/heads/remediate-d14-20261017"
+    },
+    {
+      "local_ref": "refs/heads/remediate-desktop-20261017",
+      "sha": "41a43d57941409fb05182859f0843a7d3862aeda",
+      "remote_ref": "refs/heads/emergency/20261028/heads/remediate-desktop-20261017"
+    },
+    {
+      "local_ref": "refs/heads/remediate-glm-exl3-20261017",
+      "sha": "42692f054d2405300c3dc58d3e65c00552a6ff7e",
+      "remote_ref": "refs/heads/emergency/20261028/heads/remediate-glm-exl3-20261017"
+    },
+    {
+      "local_ref": "refs/heads/remediate-qwen-moe-20261017",
+      "sha": "c718c3d535722816744cd2bf6627f3364ffde84a",
+      "remote_ref": "refs/heads/emergency/20261028/heads/remediate-qwen-moe-20261017"
+    },
+    {
+      "local_ref": "refs/heads/resource-budget-20261017",
+      "sha": "8ea3c63132828f36b558f0fea8ec7bc1895dd3e5",
+      "remote_ref": "refs/heads/emergency/20261028/heads/resource-budget-20261017"
+    },
+    {
+      "local_ref": "refs/heads/strict-json-tools-20261017",
+      "sha": "a3faa682641edb74534a7ebbb68c6b213f199eec",
+      "remote_ref": "refs/heads/emergency/20261028/heads/strict-json-tools-20261017"
+    },
+    {
+      "local_ref": "refs/heads/triton38-rotorquant-20261017",
+      "sha": "d59a3515897e5d7d8cc6aa2d3b3cef80f3e611a9",
+      "remote_ref": "refs/heads/emergency/20261028/heads/triton38-rotorquant-20261017"
+    },
+    {
+      "local_ref": "refs/heads/v100-adaptive-compact-20261025",
+      "sha": "0b68a8d2bceb675ff5687060b828ca7f751fbc0f",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-adaptive-compact-20261025"
+    },
+    {
+      "local_ref": "refs/heads/v100-adaptive-dflash-20261025",
+      "sha": "bd0762f00866576b441e86bc8dada6959a797eeb",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-adaptive-dflash-20261025"
+    },
+    {
+      "local_ref": "refs/heads/v100-adaptive-foundation-20261025",
+      "sha": "d03bddcd9905f077c1d2124f359468b25a440afd",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-adaptive-foundation-20261025"
+    },
+    {
+      "local_ref": "refs/heads/v100-adaptive-media-binding-20261025",
+      "sha": "579eef854b5ac4f80c878a50b2e0e4c0c777a347",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-adaptive-media-binding-20261025"
+    },
+    {
+      "local_ref": "refs/heads/v100-adaptive-media-front-20261025",
+      "sha": "48f384710695d4be1e2758ee0a25d7d0c0d5ae43",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-adaptive-media-front-20261025"
+    },
+    {
+      "local_ref": "refs/heads/v100-adaptive-media-mtp-20261025",
+      "sha": "f1231881f00a1ffc1ea193e8317ea78f6244bf54",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-adaptive-media-mtp-20261025"
+    },
+    {
+      "local_ref": "refs/heads/v100-adaptive-native-20261025",
+      "sha": "752b37e82b0a99fed09f5584f491794efe131803",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-adaptive-native-20261025"
+    },
+    {
+      "local_ref": "refs/heads/v100-adaptive-nvfp4-20261025",
+      "sha": "a09cf7cf6f91e9a7d587b860de769853755d2b3e",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-adaptive-nvfp4-20261025"
+    },
+    {
+      "local_ref": "refs/heads/v100-adaptive-position-20261025",
+      "sha": "b3ad478a9f7fac8c4555f4679a9b71e28a3bbd91",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-adaptive-position-20261025"
+    },
+    {
+      "local_ref": "refs/heads/v100-adaptive-position-profiles-20261025",
+      "sha": "c211d705be1224ccd38ba589d7b830cac8342c20",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-adaptive-position-profiles-20261025"
+    },
+    {
+      "local_ref": "refs/heads/v100-adaptive-profiles-20261025",
+      "sha": "ce13e59fc2e412b19837c4637d924bb461ffbc3e",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-adaptive-profiles-20261025"
+    },
+    {
+      "local_ref": "refs/heads/v100-adaptive-queues-20261025",
+      "sha": "ac8f25ad3d2bf209d1216453e936640f75bf5a6a",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-adaptive-queues-20261025"
+    },
+    {
+      "local_ref": "refs/heads/v100-adaptive-sc117-20261025",
+      "sha": "3fc6ac12421446f19388bd47ee1afe24e1a5f579",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-adaptive-sc117-20261025"
+    },
+    {
+      "local_ref": "refs/heads/v100-adaptive-sc117-runtime-20261025",
+      "sha": "7d3ddbb9d066fe7451769ad9a36739619ce2d618",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-adaptive-sc117-runtime-20261025"
+    },
+    {
+      "local_ref": "refs/heads/v100-batch-execution-rows-20261028",
+      "sha": "60980af6dca5f5b33b761f978265f8c93843648b",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-batch-execution-rows-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-batch-expert72-20261028",
+      "sha": "b3b5e27eb9218f4f844859e3520c06cea58276d9",
+      "remote_ref": "refs/heads/v100-batch-expert72-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-batch-frame-packets-20261028",
+      "sha": "712283679f89b80a9d58420694f93febd7160771",
+      "remote_ref": "refs/heads/v100-batch-frame-packets-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-best-single-profile-20261028",
+      "sha": "3f460a4f8ce83479cc035ca2d7b5d9f4be1b9e8c",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-best-single-profile-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-common-grid-integration-20261027",
+      "sha": "75d660a77ffcdb89ca7135805eb539a99ec22732",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-common-grid-integration-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-compact-pool-namespace-20261028",
+      "sha": "37518d018730da786dd5577bfaa7f6d2fb1a4885",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-compact-pool-namespace-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-compact-pool-preparation-20261028",
+      "sha": "1572417190ed494e7afb6ea2894874f233dad2ba",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-compact-pool-preparation-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-compact-tail-fixture-20261028",
+      "sha": "eeb168c12b3637805f55fbb0a10701b9ab8e1831",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-compact-tail-fixture-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-compact-tail-pool-integration-20261028",
+      "sha": "9d4a4c256e28378d7ec413cbdc9df5bf4f518d7f",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-compact-tail-pool-integration-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-compact-tail-screen-20261028",
+      "sha": "122d66dc0cd09d338b4561ccf04e9e520e6a8ddb",
+      "remote_ref": "refs/heads/v100-compact-tail-screen-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-compact-tail-slices-20261028",
+      "sha": "d3a68247b0a650cbc67db144ddc36d0c6b7f9403",
+      "remote_ref": "refs/heads/v100-compact-tail-slices-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-concurrency-probe-20261027",
+      "sha": "b379b302b2e6d1fd9aa2756ff7e1301a9d9c1439",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-concurrency-probe-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-concurrent-prelude-alias-profile-20261027",
+      "sha": "8f1f904d7b9b54d415447ad687ee3843bb8c3c80",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-concurrent-prelude-alias-profile-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-concurrent-prelude-profile-20261027",
+      "sha": "c26ac773a7aea910beb26fc8c25df4f7744a696f",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-concurrent-prelude-profile-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-concurrent-profile-20261027",
+      "sha": "67a10e579b6ca4e747915ed5d82903997cc75d9a",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-concurrent-profile-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-concurrent-startup-mtp-profile-20261027",
+      "sha": "02643c0689438c64fb4313d7ddda0d4ed262fe48",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-concurrent-startup-mtp-profile-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-coordinate-staging-20261027",
+      "sha": "44998ba7b814ab7e7baa9ef864ec8d5528bbb174",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-coordinate-staging-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-cpu-counter-diagnostic-20261028",
+      "sha": "a3b2640ae1f182a1f211e2bef894436144c47128",
+      "remote_ref": "refs/heads/v100-cpu-counter-diagnostic-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-cpu-parent-acquisition-20261028",
+      "sha": "ea563863386e472818e73a726dd925a5c766f3a5",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-cpu-parent-acquisition-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-cpu-parent-rescan-20261028",
+      "sha": "7e3ba65aa2c8ab937a688d88dd6fc5f44b6f3e33",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-cpu-parent-rescan-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-current-mtp-hc-20261028",
+      "sha": "6434099199a0c3dcd139641e4471c62ec9dba728",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-current-mtp-hc-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-dense-execution-rows-20261028",
+      "sha": "f0a78fa0f607256db459486ed4989ed7a41dddb3",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-dense-execution-rows-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-dense-hc-native-domain-20261028",
+      "sha": "e96357ed2ab84d32e705c9288ef9018b7542ea1c",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-dense-hc-native-domain-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-dense-hc-physical-tiles-20261028",
+      "sha": "43e514dd170e7dcba8a5290ab4191e9d7f9318db",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-dense-hc-physical-tiles-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-dense-independent-20261028",
+      "sha": "b92c58283e72c9dad528f67ac288ad06e44c1908",
+      "remote_ref": "refs/heads/v100-dense-independent-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-dense-large-row-targetflags-20261028",
+      "sha": "2a1c9dcffc597524d148b6b6aa2ff7fb7f8473e3",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-dense-large-row-targetflags-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-dense-large-row-tiles-20261028",
+      "sha": "c517964eb7bebc3543274dc7be7ab920788384d5",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-dense-large-row-tiles-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-dense-n24-profile-20261028",
+      "sha": "6ef006ae68c4ac16bb500519f4b27c8f7ef21125",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-dense-n24-profile-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-dense-n24-profile-closefix-20261028",
+      "sha": "4c75bed1ec3fc801722b4f74f8664a352405434e",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-dense-n24-profile-closefix-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-descriptor-current-n24-profile-20261028",
+      "sha": "86b841b879b24ceecb131dd320679d224e7e1d17",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-descriptor-current-n24-profile-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-descriptor-host-words-20261028",
+      "sha": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "remote_ref": "refs/heads/v100-descriptor-host-words-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-descriptor-host-words-workflow-20261028",
+      "sha": "ddad3c63c9f5d4476560cbb9b8bf1a5928af76a1",
+      "remote_ref": "refs/heads/v100-descriptor-host-words-workflow-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-dp4a-actual-cost-20261028",
+      "sha": "cb5707bf3d41d359bce8d62344e1f87385874414",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-dp4a-actual-cost-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-dp4a-actual-cost-roots-20261028",
+      "sha": "c99a583ca075df3d509d274b7ced818b4347df85",
+      "remote_ref": "refs/heads/v100-dp4a-actual-cost-roots-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-dp4a-expert-prototype-20261028",
+      "sha": "074a79bf329c4d0759d2bf8e37f9502143f1fb50",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-dp4a-expert-prototype-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-dp4a-lifetime-successor-20261028",
+      "sha": "d945a7d90638ff978b131b8e68635142c7db96f0",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-dp4a-lifetime-successor-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-dp4a-retention-cleanup-20261028",
+      "sha": "3f1a09da72b3dddfb18ad9b93b280de0cef96c13",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-dp4a-retention-cleanup-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-dp4a-status-alias-20261028",
+      "sha": "f6528497ea01bb31e3b1be0282de469dce7f8940",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-dp4a-status-alias-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-dp4a-target-enrollment-20261028",
+      "sha": "52b98e9f61194f2f198c9b57a02069d2eb23e418",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-dp4a-target-enrollment-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-empty-owner-20261027",
+      "sha": "9f8685068ae00473cec617238c12b0d74b6e5a46",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-empty-owner-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-exact-gateup-fastv2-20261028",
+      "sha": "e33d7c3286fcd6356aada4bace610317e5a00cce",
+      "remote_ref": "refs/heads/v100-exact-gateup-fastv2-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-exact-gateup-finite-fixture-20261028",
+      "sha": "a5fd784f35f64d2ebe8fa3933c65b1ad9f97068d",
+      "remote_ref": "refs/heads/v100-exact-gateup-finite-fixture-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-exact-gateup-two-warps-20261028",
+      "sha": "6289e3cb41c6843638c5e5c6719773aa81d089b1",
+      "remote_ref": "refs/heads/v100-exact-gateup-two-warps-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-expert72-screen-20261028",
+      "sha": "2cd2d9bb5156b45544a8dac8a405ae267bb8b3e4",
+      "remote_ref": "refs/heads/v100-expert72-screen-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-fast-grid-20261027",
+      "sha": "dfaa0be9465aa100535b7b8d093ca913068e9dfc",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-fast-grid-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-fast-grid-v2-20261027",
+      "sha": "bebf7cbc0bf2b4d3b59bf650764e16457accc7f5",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-fast-grid-v2-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-fifo-shutdown-snapshot-20261028",
+      "sha": "d3314e2ffdea1a3eac888f61873c53c0dc8ebdec",
+      "remote_ref": "refs/heads/v100-fifo-shutdown-snapshot-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-fifo-snapshot-combined-20261028",
+      "sha": "dc6fd0caa04af4e2ff9a2d600a8c0deed90b5329",
+      "remote_ref": "refs/heads/v100-fifo-snapshot-combined-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-fused-combined-20261027",
+      "sha": "af00e6e06402b0781199d4612cc43630ae17db13",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-fused-combined-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-fused-coordinate-20261027",
+      "sha": "869bc0b20458bb9f8e8735046edf659b15334af0",
+      "remote_ref": "refs/heads/v100-fused-coordinate-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-fused-readback-20261027",
+      "sha": "645f83db7f56ea74758ffde3e0d037a7e0278abc",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-fused-readback-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-gdn-startup3-20261028",
+      "sha": "2a053c55b958300b7f290dd80efdd133419d43bd",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-gdn-startup3-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-gdn-state-batch-20261028",
+      "sha": "73c463cd2445c659a0c4c6513aba9d041855ecbf",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-gdn-state-batch-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-gdn-state-batch-screen-20261028",
+      "sha": "6e028857e2f1b02c8265e924e82931f454e486eb",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-gdn-state-batch-screen-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-gdn-state-batch-seal-20261028",
+      "sha": "f6a0d02113716c75408fac2dc5e991b6380c43b3",
+      "remote_ref": "refs/heads/v100-gdn-state-batch-seal-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-gpu-local-affinity-20261028",
+      "sha": "f11b36c245c596da4a39278b30fa04139ff5f32d",
+      "remote_ref": "refs/heads/v100-gpu-local-affinity-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-graph-ceiling24-20261027",
+      "sha": "1918166c756857dc176eccb035ddf6f1c95f1561",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-graph-ceiling24-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-graph-execution-report-20261027",
+      "sha": "669d1f7628ad4931fc9c847343ca11f4e5712361",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-graph-execution-report-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-graph-materialized-gpu-20261027",
+      "sha": "79963c0d7d95ab7e1b16c6fc2ef01ec7d081ae85",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-graph-materialized-gpu-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-graph-receipts-20261027",
+      "sha": "1a3bc3843719b36cb7191f37f5e80a7cbdeb91e2",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-graph-receipts-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-graph-resource-report-20261027",
+      "sha": "87cce8a642246f9b4e48d3f6c771ced3ac0c7c9f",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-graph-resource-report-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-grouped-moe-trial-20261027",
+      "sha": "379af620b224af21f38e3d2ceca8f8f1419bce27",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-grouped-moe-trial-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-hc-moe-component-20261028",
+      "sha": "8ed7bd05f3b461cba0eff8b5db1231a7402850e8",
+      "remote_ref": "refs/heads/v100-hc-moe-component-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-hc-moe-hot-rows-20261028",
+      "sha": "f0300ac8166349882a3de5f82687e0bf836eeff5",
+      "remote_ref": "refs/heads/v100-hc-moe-hot-rows-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-hc-moe-hot-rows-screen-20261028",
+      "sha": "101f75eed0787145092338004d0138a58715f4d0",
+      "remote_ref": "refs/heads/v100-hc-moe-hot-rows-screen-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-hc-moe-shared-pool-oracle-20261028",
+      "sha": "5cd45e3bf41458151f50bdcb8a05dd69640106bd",
+      "remote_ref": "refs/heads/v100-hc-moe-shared-pool-oracle-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-hot16-current-n24-profile-20261028",
+      "sha": "84cc902d49d57689aff2d15cbfe0646c126a4f2c",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-hot16-current-n24-profile-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-input-mailbox-codec-20261028",
+      "sha": "3631459aa91b71c8ad1dd5b1608524065972c581",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-input-mailbox-codec-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-input-mailbox-selfwait-20261028",
+      "sha": "bc7db03ac728499a5752ed06214e00e8057d7d93",
+      "remote_ref": "refs/heads/v100-input-mailbox-selfwait-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-input-preparation-dependency-20261025",
+      "sha": "ee0244083e40df14b7798adc2e324a4fc371647e",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-input-preparation-dependency-20261025"
+    },
+    {
+      "local_ref": "refs/heads/v100-joint-candidate-finish-20261028",
+      "sha": "d5ebfce578dc8a1e3c59bdd27f3dd1558c14043f",
+      "remote_ref": "refs/heads/v100-joint-candidate-finish-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-joint-candidate-screen-20261028",
+      "sha": "8d9eeaae1082645679bb02869b2d622515f4791f",
+      "remote_ref": "refs/heads/v100-joint-candidate-screen-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-joint-hc-moe-20261028",
+      "sha": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+      "remote_ref": "refs/heads/v100-joint-hc-moe-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-joint-hc-moe-screen-20261028",
+      "sha": "022b492d98e531f08900322c6b65fa2b80a0edb6",
+      "remote_ref": "refs/heads/v100-joint-hc-moe-screen-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-joint-hc-moe-screen-cleanup-20261028",
+      "sha": "723a023a1f279d7cb5b7666acf528d126d78a271",
+      "remote_ref": "refs/heads/v100-joint-hc-moe-screen-cleanup-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-joint-single-profile-20261028",
+      "sha": "b6369c36131c6432dc82fa7e058be65daaa92dc1",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-joint-single-profile-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-moe-catalogue-screen-20261028",
+      "sha": "4db0bc65db11cde26c8414e0b96748f59715b9e9",
+      "remote_ref": "refs/heads/v100-moe-catalogue-screen-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-moe-fusion-screen-20261028",
+      "sha": "654d456e7ebac066f52c2e9a0867d09297455473",
+      "remote_ref": "refs/heads/v100-moe-fusion-screen-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-moe-region-graphs-20261028",
+      "sha": "b06cb17997a444ebfb9b11d83e48be1441c9c3f1",
+      "remote_ref": "refs/heads/v100-moe-region-graphs-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-moe-shared-fusion-20261028",
+      "sha": "073649a963d0d2df5f6b8fbd207de51ad2ab5d64",
+      "remote_ref": "refs/heads/v100-moe-shared-fusion-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-mtp-confidence-zero-20261028",
+      "sha": "2aee41c95b979c53d1c7c699878d425708e5fd5c",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-mtp-confidence-zero-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-n1-frame-descriptors-20261028",
+      "sha": "149e52a28a3297b7c98383a5576083b2743c23ed",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-n1-frame-descriptors-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-native-dense-trial-20261027",
+      "sha": "92d0b5956a5e88a4b182cbc4a280bd3b59c3e1d4",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-native-dense-trial-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-native-owner-trial-20261027",
+      "sha": "5376e2d3be0ee0f69c953e9f46cf60679357441f",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-native-owner-trial-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-ncu-component-20261027",
+      "sha": "1d56666309566087b4da514d29a45b4f2b9afbc1",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-ncu-component-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-ncu-operator-20261027",
+      "sha": "685198621e0d841b0782e91a9061561fd5815a35",
+      "remote_ref": "refs/heads/v100-ncu-operator-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-ncu-operator-int32-20261028",
+      "sha": "7af9b891cfef4047d2340bb539c7f8c3ac0e65b6",
+      "remote_ref": "refs/heads/v100-ncu-operator-int32-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-owner-attention-graphs-20261028",
+      "sha": "deec48bef2370b01e473661638683f15a80f43f9",
+      "remote_ref": "refs/heads/v100-owner-attention-graphs-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-owner-attention-single-final-profile-20261028",
+      "sha": "dc05c3f890d582a1fc3b7946a38cb8fdfa7850bd",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-owner-attention-single-final-profile-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-owner-attention-single-profile-20261028",
+      "sha": "939a26265e5e69e4184fb43e0fe8cff30796664d",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-owner-attention-single-profile-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-owner-batch-prelude-20261027",
+      "sha": "08188e8303b00e992efa710be2a37be8cfe90e61",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-owner-batch-prelude-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-owner-descriptor-ring-20261027",
+      "sha": "8ac214f9c2a164e73c4577ee3f7df5e518326357",
+      "remote_ref": "refs/heads/v100-owner-descriptor-ring-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-owner-native-prelude-20261027",
+      "sha": "631d5e25dacf450b165903a7654e1e24559d5b7a",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-owner-native-prelude-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-owner-piece-integration-20261027",
+      "sha": "7afe2564d251f268e2e33c27e5ab78eb3e724100",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-owner-piece-integration-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-owner-pieces-fast-20261027",
+      "sha": "266ff97681194f026116bfc516a4728b06da23a1",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-owner-pieces-fast-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-owner-prelude-coordinate-alias-20261027",
+      "sha": "ff95df40a6f835ae042df2acf2c528804545374b",
+      "remote_ref": "refs/heads/v100-owner-prelude-coordinate-alias-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-owner-prelude-mtp-text-20261027",
+      "sha": "e3ed8297483da2c58cb0c0067c9f5e848d35b6f8",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-owner-prelude-mtp-text-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-owner-prelude-native-positions-20261027",
+      "sha": "734960f4c279a92c7ce008439763fde34003c827",
+      "remote_ref": "refs/heads/v100-owner-prelude-native-positions-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-owner-target-funded-fast-20261027",
+      "sha": "3b649c72f37a8e2c56692af55b82769f62fc87a6",
+      "remote_ref": "refs/heads/v100-owner-target-funded-fast-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-owner-target-greedy-20261027",
+      "sha": "5ff2be14b5f5efe0c265654769dd39750b45a2ca",
+      "remote_ref": "refs/heads/v100-owner-target-greedy-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-owner-target-grouped-20261027",
+      "sha": "ed058b1e690adbe70be04a0ed99d5d8a09457c88",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-owner-target-grouped-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-owner-target-grouped-funded-20261027",
+      "sha": "5915c1bd6f072ed34db622bb2ed941280112930b",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-owner-target-grouped-funded-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-owner-target-guard-20261027",
+      "sha": "815f4ef9c130dceb720874430aa45f34181cff63",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-owner-target-guard-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-owner-target-guard-maps-20261027",
+      "sha": "0a097d87fe30a7f0dcc6f9840d231c29e84efdcc",
+      "remote_ref": "refs/heads/v100-owner-target-guard-maps-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-packed-graphs-active-grid-20261027",
+      "sha": "4c2f0e4d26444541c47ad2eebd5056429165cac8",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-packed-graphs-active-grid-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-packed-graphs-integration-20261027",
+      "sha": "3c08cfb50ffc7359d12898a82fb394f3f14ae379",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-packed-graphs-integration-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-packed-graphs-intent-20261027",
+      "sha": "af902e61779643df89bda7abcdafd5b0921e1a53",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-packed-graphs-intent-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-packed-kernel-exact-20261027",
+      "sha": "cde5777e198fc3239822f29af82689141017d76f",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-packed-kernel-exact-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-phase-mailbox-20261027",
+      "sha": "ed79d7ba80bbe62df5b827e2e5c212ee06110a10",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-phase-mailbox-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-ring-single-profile-20261028",
+      "sha": "c94ad8dbfbfd6b694c04512e76d6476ba548a7d8",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-ring-single-profile-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-router-cublas-batched-20261028",
+      "sha": "490a49c2013f29b9551eec5d573da7c5fa852b63",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-router-cublas-batched-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-router-cublas-model-20261028",
+      "sha": "30c3bf3199cd6cb45075c1e749b2c798ed0c8412",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-router-cublas-model-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-router-cublas-model-wiring-20261028",
+      "sha": "f0a3bfd535f039315591d8b2f1cdba8d348f03c1",
+      "remote_ref": "refs/heads/v100-router-cublas-model-wiring-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-router-gdn-integration-20261028",
+      "sha": "146f8a818d11ea69ca5b9cbd0f3d1f90067896ac",
+      "remote_ref": "refs/heads/v100-router-gdn-integration-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-router-gdn-n24-profile-20261028",
+      "sha": "eb7179abb8826a30f952c6d0759b268f75242984",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-router-gdn-n24-profile-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-router-gdn-shared-fusion-20261028",
+      "sha": "42f522f02ef9c58237bfaf7eafd7b18adefa3ed8",
+      "remote_ref": "refs/heads/v100-router-gdn-shared-fusion-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-router-gdn-wmma80-20261028",
+      "sha": "1db0dbab8d3d033516ae6b6747ee509e107693c7",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-router-gdn-wmma80-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-router-moe-catalogue-20261028",
+      "sha": "f6978a15ca8448ddbbebfaedbf9d11c6b802c3c6",
+      "remote_ref": "refs/heads/v100-router-moe-catalogue-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-router-moe-region-graphs-20261028",
+      "sha": "800396fa9f6908b9dea0a0edb47bbecc72cb9c2b",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-router-moe-region-graphs-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-source-family-prefix-trial-20261027",
+      "sha": "7d0f54ebd2a1e5d3fdd865945cecc7737ddd4d79",
+      "remote_ref": "refs/heads/v100-source-family-prefix-trial-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-source-family-trial-20261027",
+      "sha": "f5f640e0ee49b4e84da6283b38cfabaf66d14394",
+      "remote_ref": "refs/heads/v100-source-family-trial-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-source-packed-trial-20261027",
+      "sha": "35a457d5857e3337fd1f5ac556ed35b89af26ac0",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-source-packed-trial-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-source-wmma80-trial-20261027",
+      "sha": "f9f644663cede4f9bb8989736eb342842acddae1",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-source-wmma80-trial-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-startup-guard-maps-20261027",
+      "sha": "c0f49f4998e47af99633a099769b675dbdd3fd43",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-startup-guard-maps-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-startup-hash-overlap-20261027",
+      "sha": "32bc97fbddbd4157894fd88af5608142870bf0ce",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-startup-hash-overlap-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-startup-mtp-prelude-20261027",
+      "sha": "521d78ba1edffab669546d6b1ee26bfa17db09e8",
+      "remote_ref": "refs/heads/v100-startup-mtp-prelude-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-startup-prelude-20261027",
+      "sha": "ee248b80fdddfe01fb1af1a595385fd84928c44e",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-startup-prelude-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-startup-three-file-hash-20261027",
+      "sha": "d73d4c962a4a691e7150eb4f77923a5b0121bfbd",
+      "remote_ref": "refs/heads/v100-startup-three-file-hash-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-target-greedy-20261027",
+      "sha": "41894a4548bcc0224e89804f77a08d8f3547fa1e",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-target-greedy-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-unique-graphs-20261027",
+      "sha": "6b46606965c45679b17a0bbc58964a2c5e1d09c0",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-unique-graphs-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-unique-graphs-prefix-diagnostic-20261027",
+      "sha": "a09bc4ee1bbeca87491998b4be8bd57932ac9528",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-unique-graphs-prefix-diagnostic-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-unique-graphs-retirement-20261027",
+      "sha": "432e3cda298812e02e911bfd66cd5dc505c3ba8c",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-unique-graphs-retirement-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-unique-graphs-rightsize-20261027",
+      "sha": "4e7d0f375b9946ecdd66f890ee49a010d1b0b49e",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-unique-graphs-rightsize-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-unique-graphs-transfer-20261027",
+      "sha": "28c97f1690582e5842211f4d504d90994f08cb39",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-unique-graphs-transfer-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-unique-static-maps-20261027",
+      "sha": "cff7b6b89f90b56f4cfa62211a646329697206be",
+      "remote_ref": "refs/heads/v100-unique-static-maps-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-v6-cpu-checkpoint-20261026",
+      "sha": "7d3ddbb9d066fe7451769ad9a36739619ce2d618",
+      "remote_ref": "refs/heads/v100-v6-cpu-checkpoint-20261026"
+    },
+    {
+      "local_ref": "refs/heads/v100-vendor-blas-n1-shapes-20261028",
+      "sha": "2ae90c586acdfdb30b3a1040b10a84fe4c884353",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-vendor-blas-n1-shapes-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-vendor-blas-retire-envelope-20261028",
+      "sha": "734484a2cd2760f97954918145674323691e865e",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-vendor-blas-retire-envelope-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-vendor-blas-shapes-outcome-20261028",
+      "sha": "b4e6af85c2b742512ffe573a1266747f5ac89e98",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-vendor-blas-shapes-outcome-20261028"
+    },
+    {
+      "local_ref": "refs/heads/v100-wmma80-candidate-20261027",
+      "sha": "cf1f1c788191c78564ba0e0759e7279914af907d",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-wmma80-candidate-20261027"
+    },
+    {
+      "local_ref": "refs/heads/v100-wmma80-current-harness-20261028",
+      "sha": "e1881d5457de738c5cb4bfe635b8f8347c1cd854",
+      "remote_ref": "refs/heads/emergency/20261028/heads/v100-wmma80-current-harness-20261028"
+    },
+    {
+      "local_ref": "refs/heads/verification-git-20261018",
+      "sha": "8523189b37c6fd8c0e319e5bce040104c36be811",
+      "remote_ref": "refs/heads/emergency/20261028/heads/verification-git-20261018"
+    },
+    {
+      "local_ref": "refs/heads/work/v100-batch-mtp-one-draft-20261028",
+      "sha": "5dd48d29501ecb1c1f4ebabb62ccd4396bc128a0",
+      "remote_ref": "refs/heads/work/v100-batch-mtp-one-draft-20261028"
+    },
+    {
+      "local_ref": "refs/heads/work/v100-candidate-finish-catalogue-20261028",
+      "sha": "9a026217d09222fd9f360e778ce921a0bf598f83",
+      "remote_ref": "refs/heads/work/v100-candidate-finish-catalogue-20261028"
+    },
+    {
+      "local_ref": "refs/heads/work/v100-candidate-finish-graph-20261028",
+      "sha": "7fe472b647d9b609c833e1f97f836ec6750da88d",
+      "remote_ref": "refs/heads/work/v100-candidate-finish-graph-20261028"
+    },
+    {
+      "local_ref": "refs/heads/work/v100-coalesced-candidate-readback-20261028",
+      "sha": "9f52e8b680cc082dd7a4c4b8d6c1a83e7a7b10f1",
+      "remote_ref": "refs/heads/work/v100-coalesced-candidate-readback-20261028"
+    },
+    {
+      "local_ref": "refs/heads/work/v100-current-dense-residency-20261028",
+      "sha": "f0a78fa0f607256db459486ed4989ed7a41dddb3",
+      "remote_ref": "refs/heads/work/v100-current-dense-residency-20261028"
+    },
+    {
+      "local_ref": "refs/heads/work/v100-current-native-dense-20261028",
+      "sha": "8c5c0cf88df905df28baf2624050dcb0c0fcda7b",
+      "remote_ref": "refs/heads/work/v100-current-native-dense-20261028"
+    },
+    {
+      "local_ref": "refs/heads/work/v100-dense-batch-prelude-20261028",
+      "sha": "7de2259b1a402542b91fde9e906a9ebb07f4c949",
+      "remote_ref": "refs/heads/work/v100-dense-batch-prelude-20261028"
+    },
+    {
+      "local_ref": "refs/heads/work/v100-dense-three-file-startup-20261028",
+      "sha": "694b1c223f17d7716fdd78736d91087480ac7d6f",
+      "remote_ref": "refs/heads/work/v100-dense-three-file-startup-20261028"
+    },
+    {
+      "local_ref": "refs/heads/work/v100-hc-smallrow-fixture-c6-20261028",
+      "sha": "7b1167ffd615272bba0ae78753f34831cbe06c13",
+      "remote_ref": "refs/heads/work/v100-hc-smallrow-fixture-c6-20261028"
+    },
+    {
+      "local_ref": "refs/heads/work/v100-hc-smallrow-integration-20261028",
+      "sha": "ee6f69c2f857867c1e6223c8248fcb6c5ed0ee50",
+      "remote_ref": "refs/heads/work/v100-hc-smallrow-integration-20261028"
+    },
+    {
+      "local_ref": "refs/heads/work/v100-hc-smallrow-vendor-20261028",
+      "sha": "a976a29bd56942fa875baceda780c316e9931656",
+      "remote_ref": "refs/heads/work/v100-hc-smallrow-vendor-20261028"
+    },
+    {
+      "local_ref": "refs/heads/work/v100-native-storage-metadata-20261028",
+      "sha": "4f2a73c78293b0e282d10aef9ffb11d831cbe243",
+      "remote_ref": "refs/heads/work/v100-native-storage-metadata-20261028"
+    },
+    {
+      "local_ref": "refs/heads/work/v100-ple-combined-staging-20261028",
+      "sha": "146f8a818d11ea69ca5b9cbd0f3d1f90067896ac",
+      "remote_ref": "refs/heads/work/v100-ple-combined-staging-20261028"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/base",
+      "sha": "cadcae5ce7e729cc4e6eadae44552f9b02dd1985",
+      "remote_ref": "refs/heads/emergency/20261028/detached/base-4e49ee92"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/base-clean",
+      "sha": "1a2836b061e0744c82909cd19cb0d74363274c98",
+      "remote_ref": "refs/heads/emergency/20261028/detached/base-clean-e7480fa7"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/gate-clean",
+      "sha": "b76a5a2ad08a3150931e3c4ba06a6f8023be3215",
+      "remote_ref": "refs/heads/emergency/20261028/detached/gate-clean-07fb8f43"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/gb10-a4-cpu-1d643d2c",
+      "sha": "1d643d2c3253dbfd4cb38aae3841887fe3dcb59c",
+      "remote_ref": "refs/heads/emergency/20261028/detached/gb10-a4-cpu-1d643d2c-104c9416"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/gb10-a4-cpu-7bc40906",
+      "sha": "7bc4090619a642e38571e3687c244337297402ce",
+      "remote_ref": "refs/heads/emergency/20261028/detached/gb10-a4-cpu-7bc40906-884ab334"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/heretic-static-base",
+      "sha": "c17b02aefaceb9cf57c4af7bde95266322bdc0f3",
+      "remote_ref": "refs/heads/emergency/20261028/detached/heretic-static-base-9a952368"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/integ",
+      "sha": "263d72037f0e16cb365568ce19ad490e851930ba",
+      "remote_ref": "refs/heads/emergency/20261028/detached/integ-5af8b5bd"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-family-exit-integration-20261027",
+      "sha": "f0e321004753c9a749f08f36fd0de35e88b35058",
+      "remote_ref": "refs/heads/emergency/20261028/detached/v100-family-exit-integration-20261027-87de26af"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-fast-profiler-20261027",
+      "sha": "a4af1a783bcb782743572a3b78d93e3c674daae5",
+      "remote_ref": "refs/heads/emergency/20261028/detached/v100-fast-profiler-20261027-8775754e"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-fast-tokenizer-20261027",
+      "sha": "add6042394c2279a1d4f5f38eadc3ad4c242d897",
+      "remote_ref": "refs/heads/emergency/20261028/detached/v100-fast-tokenizer-20261027-1c8b411c"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-finite-quality-20261027",
+      "sha": "76fa3a50d1206f2889789a61945842fd2b89d57e",
+      "remote_ref": "refs/heads/emergency/20261028/detached/v100-finite-quality-20261027-8a771b7a"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-fixture-diagnostics-20261027",
+      "sha": "4e7d0f375b9946ecdd66f890ee49a010d1b0b49e",
+      "remote_ref": "refs/heads/emergency/20261028/detached/v100-owner-fixture-diagnostics-20261027-a9df50fe"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-perf85-integration-20261027",
+      "sha": "c7bea7902bb0639b432edbcbbacbbad04deb4cb6",
+      "remote_ref": "refs/heads/emergency/20261028/detached/v100-perf85-integration-20261027-7409372e"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-phase-integration-20261027",
+      "sha": "7d0f54ebd2a1e5d3fdd865945cecc7737ddd4d79",
+      "remote_ref": "refs/heads/emergency/20261028/detached/v100-phase-integration-20261027-461576e5"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-portable-audit-20261026",
+      "sha": "f80c4f87c662085a32e2737835b981011df5abf0",
+      "remote_ref": "refs/heads/emergency/20261028/detached/v100-portable-audit-20261026-bfc78bde"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-profiler-capture-20261027",
+      "sha": "7d0f54ebd2a1e5d3fdd865945cecc7737ddd4d79",
+      "remote_ref": "refs/heads/emergency/20261028/detached/v100-profiler-capture-20261027-58480815"
+    },
+    {
+      "worktree": "/home/kklouzal/audit-artifacts/gemma4-throughput-20261020/candidate-arm64/source-capture-only",
+      "sha": "cda5d48e0f8f589bf8dbf28b50c8fea752684b89",
+      "remote_ref": "refs/heads/emergency/20261028/detached/source-capture-only-977d9e38"
+    },
+    {
+      "worktree": "/home/kklouzal/audit-artifacts/gemma4-throughput-20261020/release-guard32/source-capture-only",
+      "sha": "259b4238ae16d8019c106603f104b18cbffb385a",
+      "remote_ref": "refs/heads/emergency/20261028/detached/source-capture-only-148fee57"
+    }
+  ]
+}

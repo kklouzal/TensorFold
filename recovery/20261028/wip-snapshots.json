@@ -1,0 +1,289 @@
+{
+  "at": "2026-10-28T18:09:46.842918+00:00",
+  "snapshots": [
+    {
+      "worktree": "/Warehouse/TensorFold-wt/c-gemma4",
+      "parent": "b7bef36afe699ac0d1471faa50cfe1574e71f4e7",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/c-gemma4",
+      "commit": "9bfe40ea89282cc918a0413c6f6ad386571e6d0e",
+      "paths": [
+        "tests/cuda/test_gemma_cuda_graphs.py",
+        "src/tensorfold/families/gemma4/cuda/engine.py",
+        "tests/test_gemma_cuda_engine.py"
+      ],
+      "verification": "WIP snapshot only; no tests run"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/c-moe-dedupe",
+      "parent": "43f8af167db9a25c770eb6b4e20cf3cedf48f314",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/c-moe-dedupe",
+      "commit": "22c529ca309332e9ce3faa5e6bcb467ecd45a43d",
+      "paths": [
+        "src/tensorfold/cuda/nvfp4/experts_a4.cu",
+        "src/tensorfold/cuda/nvfp4/grouped_a4.py"
+      ],
+      "verification": "WIP snapshot only; no tests run"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/c-moe-graphmem",
+      "parent": "30935317ffa49da1952e7abe9698fb0766124fdb",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/c-moe-graphmem",
+      "commit": "57480faa9cc9ab96f8bdc329db2239aa299df78e",
+      "paths": [
+        "src/tensorfold/families/qwen3_5_moe/cuda/chain_graphs.py",
+        "tests/cuda/test_qwen_moe_chain_graphs.py"
+      ],
+      "verification": "WIP snapshot only; no tests run"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/c-qwen36-yarn",
+      "parent": "7adf2b7014ccaf18ce600c4948d4ce5306e2e6e8",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/c-qwen36-yarn",
+      "commit": "2e223651655f140408bdfc0498ab7e72d5a9901b",
+      "paths": [
+        "tests/cuda/test_qwen36_yarn.py",
+        "README.md",
+        "docs/recipes/qwen3.6-moe.md",
+        "src/tensorfold/families/qwen3_5_moe/__init__.py",
+        "src/tensorfold/families/qwen3_5_moe/cuda/engine.py",
+        "src/tensorfold/families/qwen3_5_moe/cuda/nvfp4_engine.py",
+        "src/tensorfold/families/qwen3_5_moe/cuda/nvfp4_load.py",
+        "src/tensorfold/families/qwen3_5_moe/cuda/weights.py",
+        "tests/test_qwen35_yarn.py",
+        "tests/test_qwen36_nvfp4_load_controls.py",
+        "tests/test_qwen36_yarn_wiring.py",
+        "tests/test_qwen_nvfp4_startup.py"
+      ],
+      "verification": "WIP snapshot only; no tests run"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/c-qwen38-vocab",
+      "parent": "b0466c3f885bbde615846dea9431a7fd5e3717c1",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/c-qwen38-vocab",
+      "commit": "00012409c7cf85f7e10f4961785a1a6674f3da7c",
+      "paths": [
+        "tests/cuda/test_qwen27_draft_vocab.py",
+        "src/tensorfold/families/qwen3_5/cuda/affine_memory.py",
+        "src/tensorfold/families/qwen3_5/cuda/dflash2.py",
+        "src/tensorfold/families/qwen3_5/cuda/draft_tree.py",
+        "src/tensorfold/families/qwen3_5/cuda/engine.py",
+        "src/tensorfold/families/qwen3_5/cuda/exl3_load.py",
+        "tests/cuda_27b_headers.py",
+        "tests/test_cuda_memory_plan.py"
+      ],
+      "verification": "WIP snapshot only; no tests run"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/c-sampling",
+      "parent": "9d9a28a1cf838027333f83618adbb60e6a5d38f2",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/c-sampling",
+      "commit": "a4f67fcd11d05fd93b9adaf015d231f424612bca",
+      "paths": [
+        "src/tensorfold/cuda/requant.py",
+        "src/tensorfold/families/qwen3_5_moe/cuda/dflash.py",
+        "src/tensorfold/families/qwen3_5_moe/cuda/nvfp4_engine.py",
+        "src/tensorfold/families/qwen3_5_moe/dflash_metadata.py",
+        "tests/cuda/test_qwen36_dflash.py",
+        "tests/cuda/test_requant_cuda.py",
+        "tests/test_qwen_nvfp4_startup.py",
+        "tests/test_requant.py"
+      ],
+      "verification": "WIP snapshot only; no tests run"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/idea1",
+      "parent": "328489c5d0b561ac840499d55effde0f837186fa",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/idea1",
+      "commit": "c5e5e22fae719c1b6320ba2b3844f586c48ea5fe",
+      "paths": [
+        "IDEA1-NOTES.md"
+      ],
+      "verification": "WIP snapshot only; no tests run"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/idea2",
+      "parent": "ade71aa4150cfe805c4b5eb41b5a6a9b0ecb08d2",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/idea2",
+      "commit": "1b3c902520b6776c0a8f56c1981c154acac99ef9",
+      "paths": [
+        "IDEA2-NOTES.md"
+      ],
+      "verification": "WIP snapshot only; no tests run"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/idea3",
+      "parent": "32b4ab99b6b0b7f4ca34f30be12fd1a630b866e5",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/idea3",
+      "commit": "3ea8239cc7f093e5740861bac7d54334061b351e",
+      "paths": [
+        "IDEA3-NOTES.md"
+      ],
+      "verification": "WIP snapshot only; no tests run"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/idea3b",
+      "parent": "263d72037f0e16cb365568ce19ad490e851930ba",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/idea3b",
+      "commit": "724a92fca125d9bc0f36cc17a3e31bbd97a447e1",
+      "paths": [
+        "IDEA3B-NOTES.md"
+      ],
+      "verification": "WIP snapshot only; no tests run"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-decode-flash-20261022",
+      "parent": "949e5e02c18dfbda9812eb68e042dab0e97e3d6b",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/perf-decode-flash-20261022",
+      "commit": "8207ebc57e24491900b2b48e461cd46d12767889",
+      "paths": [
+        "tests/cuda/test_flashnext_hc_mix_optional_sums.py",
+        "tests/test_flashnext_modelopt_mlp_xs_control.py",
+        "README.md",
+        "docs/recipes/qwen3.8-flash-next.md",
+        "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+        "src/tensorfold/families/qwen4_exp/cuda/glue.py",
+        "src/tensorfold/families/qwen4_exp/cuda/state.py"
+      ],
+      "verification": "WIP snapshot only; no tests run"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-decode-gemma-fp8-maxfinite-20261023",
+      "parent": "de6ba2678e3c86c464cf198dddd59007d24346aa",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/perf-decode-gemma-fp8-maxfinite-20261023",
+      "commit": "e5fb76bf7fd8d8f47b9e0c30398d4c9f7d56cfdc",
+      "paths": [],
+      "verification": "WIP snapshot only; no tests run"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-decode-gemma-moe-up-20261023",
+      "parent": "47b6fd0bf59ca9f67a52a633e7bd6264940e4271",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/perf-decode-gemma-moe-up-20261023",
+      "commit": "5e9fe05f68ceec02fb0b2b643cb7ca3d38c0f8c2",
+      "paths": [
+        "tests/cuda/test_gemma4_cuda_moe_bench.py",
+        "tests/test_gemma4_cuda_moe_bench.py",
+        "tools/gemma4_cuda_moe_bench.py",
+        "README.md",
+        "docs/gemma-moe-up-validation.md",
+        "src/tensorfold/cuda/build.py",
+        "tests/test_benchmark_output.py",
+        "tests/test_cuda_build.py",
+        "tools/benchmark_output.py"
+      ],
+      "verification": "WIP snapshot only; no tests run"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-decode-qwen-20261022",
+      "parent": "949e5e02c18dfbda9812eb68e042dab0e97e3d6b",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/perf-decode-qwen-20261022",
+      "commit": "16589c54e41f62233db04f6397fc0bf8c1e3431d",
+      "paths": [
+        "tests/test_qwen27_decode_sums.py",
+        "README.md",
+        "docs/optimization-validation.md",
+        "src/tensorfold/families/qwen3_5/cuda/engine.py",
+        "src/tensorfold/families/qwen3_5/cuda/forward.py",
+        "src/tensorfold/families/qwen3_5/cuda/glue.py",
+        "tests/cuda/test_qwen27_glue.py",
+        "tests/cuda/test_qwen27_nvfp4.py",
+        "tests/test_qwen27_startup_metadata.py"
+      ],
+      "verification": "WIP snapshot only; no tests run"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-qwen-bulk-projection-20261022",
+      "parent": "1c2045b232068b8378031c22b0990639f3e984e6",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/perf-qwen-bulk-projection-20261022",
+      "commit": "4301b17506e0933637bf33f7736544f5bcc95f57",
+      "paths": [
+        "README.md",
+        "docs/nvfp4-loading-validation.md"
+      ],
+      "verification": "WIP snapshot only; no tests run"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-family-prefix-20261027",
+      "parent": "7d0f54ebd2a1e5d3fdd865945cecc7737ddd4d79",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/v100-family-prefix-20261027",
+      "commit": "44e7753820c014c4bc9af903847407b5ed8bf683",
+      "paths": [
+        "tools/v100_backend_probe.py"
+      ],
+      "verification": "WIP snapshot only; no tests run"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-family-trial-20261027",
+      "parent": "f5f640e0ee49b4e84da6283b38cfabaf66d14394",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/v100-family-trial-20261027",
+      "commit": "829b5845d4047accbfa0246aa1dbcc64d3b7f2b4",
+      "paths": [
+        "tests/cuda/test_sm70_gguf_concat.py",
+        "tests/cuda/test_sm70_gguf_exact_actual.py"
+      ],
+      "verification": "WIP snapshot only; no tests run"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-fast-tokenizer-20261027",
+      "parent": "add6042394c2279a1d4f5f38eadc3ad4c242d897",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/v100-fast-tokenizer-20261027",
+      "commit": "ad6079d4e7bbef68c6c6f9dd56d397a9b63e8a24",
+      "paths": [
+        "README.md",
+        "src/tensorfold/cuda/server.py",
+        "src/tensorfold/families/qwen4_exp/cuda/tokenizer_encode_payload.py",
+        "src/tensorfold/server/segments.py",
+        "tests/test_segment_encoder.py",
+        "tests/test_tokenizer_encode_payload.py"
+      ],
+      "verification": "WIP snapshot only; no tests run"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-finite-quality-20261027",
+      "parent": "76fa3a50d1206f2889789a61945842fd2b89d57e",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/v100-finite-quality-20261027",
+      "commit": "eb3511e3c7f37e551573f79a18d31cc691c77997",
+      "paths": [
+        "tests/test_finite_quality.py",
+        "tools/finite_quality.py",
+        "README.md",
+        "tools/v100_backend_probe.py"
+      ],
+      "verification": "WIP snapshot only; no tests run"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-fixture-diagnostics-20261027",
+      "parent": "4e7d0f375b9946ecdd66f890ee49a010d1b0b49e",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/v100-owner-fixture-diagnostics-20261027",
+      "commit": "80dbb1026eef329878ed035b4fbfdff2222b2d12",
+      "paths": [
+        "tests/test_sm70_owner_graph_diagnostics.py",
+        "tests/cuda/test_sm70_owner_graphs.py"
+      ],
+      "verification": "WIP snapshot only; no tests run"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-portable-audit-20261026",
+      "parent": "f80c4f87c662085a32e2737835b981011df5abf0",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/v100-portable-audit-20261026",
+      "commit": "4af5f5dd022a60823d8eb54c80607fa191b61f58",
+      "paths": [
+        "tests/test_v100_backend_probe.py",
+        "tools/v100_backend_probe.py",
+        "tests/cuda/test_sm70_unique_history.py"
+      ],
+      "verification": "WIP snapshot only; no tests run"
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-profiler-capture-20261027",
+      "parent": "7d0f54ebd2a1e5d3fdd865945cecc7737ddd4d79",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/v100-profiler-capture-20261027",
+      "commit": "2c2db60341130fa2c6dda07b4a927a65c55ec9c8",
+      "paths": [
+        "README.md",
+        "tests/test_v100_backend_probe.py",
+        "tools/v100_backend_probe.py"
+      ],
+      "verification": "WIP snapshot only; no tests run"
+    }
+  ]
+}

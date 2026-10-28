@@ -1,0 +1,89 @@
+{
+  "schema": "tensorfold.service-wait-inventory-emergency-backup-v1",
+  "status": "Emergencybackupcomplete; development/tests/ALLV100access stopped",
+  "owner": "/root/service_wait_inventory",
+  "worktrees": [
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-descriptor-host-words-20261028",
+      "branch": "v100-descriptor-host-words-20261028",
+      "HEAD": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "pushed_remote": "origin (https://github.com/kklouzal/TensorFold.git)",
+      "verified_remote_SHA": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "dirty_remaining": "",
+      "backup_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-descriptor-host-words-workflow-20261028",
+      "branch": "v100-descriptor-host-words-workflow-20261028",
+      "HEAD": "ddad3c63c9f5d4476560cbb9b8bf1a5928af76a1",
+      "pushed_remote": "origin (https://github.com/kklouzal/TensorFold.git)",
+      "verified_remote_SHA": "ddad3c63c9f5d4476560cbb9b8bf1a5928af76a1",
+      "dirty_remaining": "",
+      "backup_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-gpu-local-affinity-20261028",
+      "branch": "v100-gpu-local-affinity-20261028",
+      "HEAD": "f11b36c245c596da4a39278b30fa04139ff5f32d",
+      "pushed_remote": "origin (https://github.com/kklouzal/TensorFold.git)",
+      "verified_remote_SHA": "f11b36c245c596da4a39278b30fa04139ff5f32d",
+      "dirty_remaining": "",
+      "backup_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-cpu-counter-diagnostic-20261028",
+      "branch": "v100-cpu-counter-diagnostic-20261028",
+      "HEAD": "a3b2640ae1f182a1f211e2bef894436144c47128",
+      "pushed_remote": "origin (https://github.com/kklouzal/TensorFold.git)",
+      "verified_remote_SHA": "a3b2640ae1f182a1f211e2bef894436144c47128",
+      "dirty_remaining": "",
+      "backup_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-input-mailbox-selfwait-20261028",
+      "branch": "v100-input-mailbox-selfwait-20261028",
+      "HEAD": "bc7db03ac728499a5752ed06214e00e8057d7d93",
+      "pushed_remote": "origin (https://github.com/kklouzal/TensorFold.git)",
+      "verified_remote_SHA": "bc7db03ac728499a5752ed06214e00e8057d7d93",
+      "dirty_remaining": "",
+      "backup_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-fifo-snapshot-combined-20261028",
+      "branch": "v100-fifo-snapshot-combined-20261028",
+      "HEAD": "dc6fd0caa04af4e2ff9a2d600a8c0deed90b5329",
+      "pushed_remote": "origin (https://github.com/kklouzal/TensorFold.git)",
+      "verified_remote_SHA": "dc6fd0caa04af4e2ff9a2d600a8c0deed90b5329",
+      "dirty_remaining": "",
+      "backup_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-hc-moe-component-20261028",
+      "branch": "v100-hc-moe-component-20261028",
+      "HEAD": "8ed7bd05f3b461cba0eff8b5db1231a7402850e8",
+      "pushed_remote": "origin (https://github.com/kklouzal/TensorFold.git)",
+      "verified_remote_SHA": "8ed7bd05f3b461cba0eff8b5db1231a7402850e8",
+      "dirty_remaining": "",
+      "backup_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-hc-moe-shared-pool-oracle-20261028",
+      "branch": "v100-hc-moe-shared-pool-oracle-20261028",
+      "HEAD": "5cd45e3bf41458151f50bdcb8a05dd69640106bd",
+      "pushed_remote": "origin (https://github.com/kklouzal/TensorFold.git)",
+      "verified_remote_SHA": "5cd45e3bf41458151f50bdcb8a05dd69640106bd",
+      "dirty_remaining": "",
+      "backup_verified": true
+    }
+  ],
+  "pending_counter_WIP": {
+    "branch": "v100-cpu-counter-diagnostic-20261028",
+    "commit": "a3b2640ae1f182a1f211e2bef894436144c47128",
+    "verification": "UNVERIFIED unfinishedprototype; no countertests/stagedpreflight/D13; mustnotstageorrun",
+    "source_or_plan_backup": "recovery/service-wait-inventory-20261028;8readonlyartifact/source snapshots899288bytes withhashmanifest"
+  },
+  "required_NUMA": "f11b/205b retained131CPU+sourceD13a440+actual7294audit9a2353b0; thisemergencybackup performednoverificationrun",
+  "secret_and_scope_inspection": "Reviewed ownedchangedpaths/diff; secret-format searchreturnednomatches; no unrelatedsourcechanges included; sourceWIP andreadonlyownedplan snapshots only",
+  "shared_source_handoff": "JointHC28ac was shared/grouped-owned; myleafworkalreadycommittedintegrated andnopendingownededits. Rootinventories sharedtrees. Native-storage-metadata WIP belongsdense_current_candidate, notthisowner.",
+  "postpause_activity": "Onlylocal source/status/secretinspection, readonlyartifactbackup copies, gitcommit andexplicitlyauthorizedGitHubpush/lsremote. No tests/builds/development/V100uploads/preflight/container/GPU/SSH activity. No forcepush/historyrewrite."
+}

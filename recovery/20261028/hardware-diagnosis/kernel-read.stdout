@@ -1,0 +1,197 @@
+6,4085,135332726900,-;sd 0:0:0:0: [sda] tag#29 FAILED Result: hostbyte=DID_BAD_TARGET driverbyte=DRIVER_OK cmd_age=0s
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,4086,135332726906,-;sd 0:0:0:0: [sda] tag#29 CDB: Write(10) 2a 00 00 a2 94 98 00 00 08 00
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+3,4087,135332726908,-;I/O error, dev sda, sector 10654872 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 2
+3,4088,135332727401,-;BTRFS error (device sda2 state EA): bdev /dev/sda2 errs: wr 1286, rd 49, flush 1, corrupt 1435, gen 0
+6,4089,135332727838,-;sd 0:0:0:0: [sda] tag#30 FAILED Result: hostbyte=DID_BAD_TARGET driverbyte=DRIVER_OK cmd_age=0s
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,4090,135332727841,-;sd 0:0:0:0: [sda] tag#30 CDB: Write(10) 2a 00 04 1d 33 18 00 00 08 00
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+3,4091,135332727842,-;I/O error, dev sda, sector 69022488 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 2
+3,4092,135332728147,-;BTRFS error (device sda2 state EA): bdev /dev/sda2 errs: wr 1287, rd 49, flush 1, corrupt 1435, gen 0
+6,4093,135332728458,-;sd 0:0:0:0: [sda] tag#0 FAILED Result: hostbyte=DID_BAD_TARGET driverbyte=DRIVER_OK cmd_age=0s
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,4094,135332728460,-;sd 0:0:0:0: [sda] tag#0 CDB: Write(10) 2a 00 04 16 ea 70 00 00 08 00
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+3,4095,135332728462,-;I/O error, dev sda, sector 68610672 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 2
+3,4096,135332728753,-;BTRFS error (device sda2 state EA): bdev /dev/sda2 errs: wr 1288, rd 49, flush 1, corrupt 1435, gen 0
+6,4097,135332729053,-;sd 0:0:0:0: [sda] tag#1 FAILED Result: hostbyte=DID_BAD_TARGET driverbyte=DRIVER_OK cmd_age=0s
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,4098,135332729055,-;sd 0:0:0:0: [sda] tag#1 CDB: Write(10) 2a 00 17 4b 85 78 00 00 08 00
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+3,4099,135332729056,-;I/O error, dev sda, sector 390825336 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 2
+3,4100,135332729348,-;BTRFS error (device sda2 state EA): bdev /dev/sda2 errs: wr 1289, rd 49, flush 1, corrupt 1435, gen 0
+6,4101,135332729643,-;sd 0:0:0:0: [sda] tag#2 FAILED Result: hostbyte=DID_BAD_TARGET driverbyte=DRIVER_OK cmd_age=0s
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,4102,135332729645,-;sd 0:0:0:0: [sda] tag#2 CDB: Write(10) 2a 00 17 60 f9 38 00 00 08 00
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+3,4103,135332729646,-;I/O error, dev sda, sector 392231224 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 2
+3,4104,135332729936,-;BTRFS error (device sda2 state EA): bdev /dev/sda2 errs: wr 1290, rd 49, flush 1, corrupt 1435, gen 0
+6,4105,135332730232,-;sd 0:0:0:0: [sda] tag#3 FAILED Result: hostbyte=DID_BAD_TARGET driverbyte=DRIVER_OK cmd_age=0s
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,4106,135332730234,-;sd 0:0:0:0: [sda] tag#3 CDB: Write(10) 2a 00 04 0f 39 c0 00 00 08 00
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+3,4107,135332730235,-;I/O error, dev sda, sector 68106688 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 2
+3,4108,135332730526,-;BTRFS error (device sda2 state EA): bdev /dev/sda2 errs: wr 1291, rd 49, flush 1, corrupt 1435, gen 0
+6,4109,135332730818,-;sd 0:0:0:0: [sda] tag#4 FAILED Result: hostbyte=DID_BAD_TARGET driverbyte=DRIVER_OK cmd_age=0s
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,4110,135332730820,-;sd 0:0:0:0: [sda] tag#4 CDB: Write(10) 2a 00 17 48 e1 e8 00 00 08 00
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+3,4111,135332730821,-;I/O error, dev sda, sector 390652392 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 2
+3,4112,135332731114,-;BTRFS error (device sda2 state EA): bdev /dev/sda2 errs: wr 1292, rd 49, flush 1, corrupt 1435, gen 0
+6,4113,135332731407,-;sd 0:0:0:0: [sda] tag#5 FAILED Result: hostbyte=DID_BAD_TARGET driverbyte=DRIVER_OK cmd_age=0s
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,4114,135332731409,-;sd 0:0:0:0: [sda] tag#5 CDB: Write(10) 2a 00 17 60 62 c0 00 00 08 00
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+3,4115,135332731410,-;I/O error, dev sda, sector 392192704 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 2
+3,4116,135332731699,-;BTRFS error (device sda2 state EA): bdev /dev/sda2 errs: wr 1293, rd 49, flush 1, corrupt 1435, gen 0
+6,4117,135332731992,-;sd 0:0:0:0: [sda] tag#6 FAILED Result: hostbyte=DID_BAD_TARGET driverbyte=DRIVER_OK cmd_age=0s
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,4118,135332731994,-;sd 0:0:0:0: [sda] tag#6 CDB: Write(10) 2a 00 04 1d 51 c8 00 00 08 00
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+3,4119,135332731995,-;I/O error, dev sda, sector 69030344 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 2
+3,4120,135332732284,-;BTRFS error (device sda2 state EA): bdev /dev/sda2 errs: wr 1294, rd 49, flush 1, corrupt 1435, gen 0
+6,4122,135345907265,-;sd 0:0:0:0: [sda] tag#10 FAILED Result: hostbyte=DID_BAD_TARGET driverbyte=DRIVER_OK cmd_age=0s
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,4123,135345907270,-;sd 0:0:0:0: [sda] tag#10 CDB: Read(10) 28 00 1a b3 ad 28 00 00 08 00
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+3,4125,135345907273,-;I/O error, dev sda, sector 447982888 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 2
+4,4126,135345907692,-;btrfs_dev_stat_inc_and_print: 60 callbacks suppressed
+3,4127,135345907694,-;BTRFS error (device sda2 state EA): bdev /dev/sda2 errs: wr 1353, rd 51, flush 1, corrupt 1435, gen 0
+6,4128,135349274944,-;sd 0:0:0:0: [sda] tag#15 FAILED Result: hostbyte=DID_BAD_TARGET driverbyte=DRIVER_OK cmd_age=0s
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,4129,135349274949,-;sd 0:0:0:0: [sda] tag#15 CDB: Read(10) 28 00 1a b3 ad c8 00 00 08 00
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+3,4130,135349274951,-;I/O error, dev sda, sector 447983048 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 2
+3,4131,135349275263,-;BTRFS error (device sda2 state EA): bdev /dev/sda2 errs: wr 1353, rd 52, flush 1, corrupt 1435, gen 0
+6,4132,135355904488,-;sd 0:0:0:0: [sda] tag#4 FAILED Result: hostbyte=DID_BAD_TARGET driverbyte=DRIVER_OK cmd_age=0s
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,4133,135355904494,-;sd 0:0:0:0: [sda] tag#4 CDB: Read(10) 28 00 1a b3 ac c0 00 00 08 00
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+3,4134,135355904496,-;I/O error, dev sda, sector 447982784 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 2
+3,4135,135355904969,-;BTRFS error (device sda2 state EA): bdev /dev/sda2 errs: wr 1353, rd 53, flush 1, corrupt 1435, gen 0
+6,4136,135375905407,-;sd 0:0:0:0: [sda] tag#22 FAILED Result: hostbyte=DID_BAD_TARGET driverbyte=DRIVER_OK cmd_age=0s
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,4137,135375905412,-;sd 0:0:0:0: [sda] tag#22 CDB: Read(10) 28 00 1a b3 ad 28 00 00 08 00
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+3,4138,135375905414,-;I/O error, dev sda, sector 447982888 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 2
+3,4139,135375905816,-;BTRFS error (device sda2 state EA): bdev /dev/sda2 errs: wr 1353, rd 54, flush 1, corrupt 1435, gen 0
+43,4140,135375906505,-;systemd-journald[1053]: Failed to rotate /var/log/journal/a9826c4fe89443a0b84d544db4d15cba/system.journal: Read-only file system (Dropped 122 similar message(s))
+43,4143,135375907706,-;systemd-journald[1053]: Failed to rotate /var/log/journal/a9826c4fe89443a0b84d544db4d15cba/system.journal: Read-only file system
+43,4146,135375908439,-;systemd-journald[1053]: Failed to rotate /var/log/journal/a9826c4fe89443a0b84d544db4d15cba/system.journal: Read-only file system
+6,4149,135379274144,-;sd 0:0:0:0: [sda] tag#5 FAILED Result: hostbyte=DID_BAD_TARGET driverbyte=DRIVER_OK cmd_age=0s
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,4150,135379274149,-;sd 0:0:0:0: [sda] tag#5 CDB: Read(10) 28 00 1a b3 ad 10 00 00 08 00
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+3,4151,135379274151,-;I/O error, dev sda, sector 447982864 op 0x0:(READ) flags 0x0 phys_seg 1 prio class 2
+3,4152,135379274445,-;BTRFS error (device sda2 state EA): bdev /dev/sda2 errs: wr 1353, rd 55, flush 1, corrupt 1435, gen 0
+6,4153,135382727100,-;sd 0:0:0:0: [sda] tag#31 FAILED Result: hostbyte=DID_BAD_TARGET driverbyte=DRIVER_OK cmd_age=0s
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,4154,135382727105,-;sd 0:0:0:0: [sda] tag#31 CDB: Write(10) 2a 00 00 a2 94 98 00 00 08 00
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+3,4155,135382727108,-;I/O error, dev sda, sector 10654872 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 2
+3,4156,135382727652,-;BTRFS error (device sda2 state EA): bdev /dev/sda2 errs: wr 1354, rd 55, flush 1, corrupt 1435, gen 0
+6,4157,135382728137,-;sd 0:0:0:0: [sda] tag#0 FAILED Result: hostbyte=DID_BAD_TARGET driverbyte=DRIVER_OK cmd_age=0s
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,4158,135382728140,-;sd 0:0:0:0: [sda] tag#0 CDB: Write(10) 2a 00 17 5a 90 88 00 00 08 00
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+3,4159,135382728141,-;I/O error, dev sda, sector 391811208 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 2
+3,4160,135382728524,-;BTRFS error (device sda2 state EA): bdev /dev/sda2 errs: wr 1355, rd 55, flush 1, corrupt 1435, gen 0
+6,4161,135382728854,-;sd 0:0:0:0: [sda] tag#1 FAILED Result: hostbyte=DID_BAD_TARGET driverbyte=DRIVER_OK cmd_age=0s
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,4162,135382728856,-;sd 0:0:0:0: [sda] tag#1 CDB: Write(10) 2a 00 04 1d 33 28 00 00 08 00
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+3,4163,135382728858,-;I/O error, dev sda, sector 69022504 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 2
+3,4164,135382729185,-;BTRFS error (device sda2 state EA): bdev /dev/sda2 errs: wr 1356, rd 55, flush 1, corrupt 1435, gen 0
+6,4165,135382729511,-;sd 0:0:0:0: [sda] tag#2 FAILED Result: hostbyte=DID_BAD_TARGET driverbyte=DRIVER_OK cmd_age=0s
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,4166,135382729514,-;sd 0:0:0:0: [sda] tag#2 CDB: Write(10) 2a 00 17 48 d7 80 00 00 08 00
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+3,4167,135382729515,-;I/O error, dev sda, sector 390649728 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 2
+3,4168,135382729835,-;BTRFS error (device sda2 state EA): bdev /dev/sda2 errs: wr 1357, rd 55, flush 1, corrupt 1435, gen 0
+6,4169,135382730163,-;sd 0:0:0:0: [sda] tag#6 FAILED Result: hostbyte=DID_BAD_TARGET driverbyte=DRIVER_OK cmd_age=0s
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,4170,135382730165,-;sd 0:0:0:0: [sda] tag#6 CDB: Write(10) 2a 00 17 47 7f 58 00 00 08 00
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+3,4171,135382730167,-;I/O error, dev sda, sector 390561624 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 2
+3,4172,135382730491,-;BTRFS error (device sda2 state EA): bdev /dev/sda2 errs: wr 1358, rd 55, flush 1, corrupt 1435, gen 0
+6,4173,135382730784,-;sd 0:0:0:0: [sda] tag#7 FAILED Result: hostbyte=DID_BAD_TARGET driverbyte=DRIVER_OK cmd_age=0s
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,4174,135382730786,-;sd 0:0:0:0: [sda] tag#7 CDB: Write(10) 2a 00 04 07 ac 80 00 00 08 00
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+3,4175,135382730787,-;I/O error, dev sda, sector 67611776 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 2
+3,4176,135382731075,-;BTRFS error (device sda2 state EA): bdev /dev/sda2 errs: wr 1359, rd 55, flush 1, corrupt 1435, gen 0
+6,4177,135382731371,-;sd 0:0:0:0: [sda] tag#8 FAILED Result: hostbyte=DID_BAD_TARGET driverbyte=DRIVER_OK cmd_age=0s
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,4178,135382731373,-;sd 0:0:0:0: [sda] tag#8 CDB: Write(10) 2a 00 17 5a 78 f8 00 00 08 00
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+3,4179,135382731374,-;I/O error, dev sda, sector 391805176 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 2
+3,4180,135382731663,-;BTRFS error (device sda2 state EA): bdev /dev/sda2 errs: wr 1360, rd 55, flush 1, corrupt 1435, gen 0
+6,4181,135382731955,-;sd 0:0:0:0: [sda] tag#9 FAILED Result: hostbyte=DID_BAD_TARGET driverbyte=DRIVER_OK cmd_age=0s
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,4182,135382731956,-;sd 0:0:0:0: [sda] tag#9 CDB: Write(10) 2a 00 04 16 ea 80 00 00 08 00
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+3,4183,135382731958,-;I/O error, dev sda, sector 68610688 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 2
+3,4184,135382732248,-;BTRFS error (device sda2 state EA): bdev /dev/sda2 errs: wr 1361, rd 55, flush 1, corrupt 1435, gen 0
+6,4185,135382732571,-;sd 0:0:0:0: [sda] tag#11 FAILED Result: hostbyte=DID_BAD_TARGET driverbyte=DRIVER_OK cmd_age=0s
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,4186,135382732573,-;sd 0:0:0:0: [sda] tag#11 CDB: Write(10) 2a 00 17 48 45 a8 00 00 08 00
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+3,4187,135382732575,-;I/O error, dev sda, sector 390612392 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 2
+3,4188,135382732888,-;BTRFS error (device sda2 state EA): bdev /dev/sda2 errs: wr 1362, rd 55, flush 1, corrupt 1435, gen 0
+6,4189,135382733210,-;sd 0:0:0:0: [sda] tag#12 FAILED Result: hostbyte=DID_BAD_TARGET driverbyte=DRIVER_OK cmd_age=0s
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+6,4190,135382733212,-;sd 0:0:0:0: [sda] tag#12 CDB: Write(10) 2a 00 17 5d 5a d0 00 00 08 00
+ SUBSYSTEM=scsi
+ DEVICE=+scsi:0:0:0:0
+3,4191,135382733213,-;I/O error, dev sda, sector 391994064 op 0x1:(WRITE) flags 0x800 phys_seg 1 prio class 2
+3,4192,135382733527,-;BTRFS error (device sda2 state EA): bdev /dev/sda2 errs: wr 1363, rd 55, flush 1, corrupt 1435, gen 0
+

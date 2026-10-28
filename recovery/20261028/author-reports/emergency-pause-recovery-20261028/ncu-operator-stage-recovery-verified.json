@@ -1,0 +1,203 @@
+{
+  "schema": "tensorfold-paused-agent-recovery-v1",
+  "owner": "ncu_operator_stage",
+  "remote": "origin https://github.com/kklouzal/TensorFold.git",
+  "at": 1793211066.4641926,
+  "rows": [
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-input-mailbox-codec-20261028",
+      "branch": "v100-input-mailbox-codec-20261028",
+      "HEAD": "3631459aa91b71c8ad1dd5b1608524065972c581",
+      "recovery_branch": "recovery/ncu-operator-stage/20261028/v100-input-mailbox-codec-20261028",
+      "dirty_remaining": "",
+      "pushed_SHA": "3631459aa91b71c8ad1dd5b1608524065972c581",
+      "remote_HEAD_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dp4a-target-enrollment-20261028",
+      "branch": "v100-dp4a-target-enrollment-20261028",
+      "HEAD": "52b98e9f61194f2f198c9b57a02069d2eb23e418",
+      "recovery_branch": "recovery/ncu-operator-stage/20261028/WIP-UNHELD-verification-blocked-enrollment-52b98e9f",
+      "dirty_remaining": "",
+      "pushed_SHA": "52b98e9f61194f2f198c9b57a02069d2eb23e418",
+      "remote_HEAD_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dp4a-status-alias-20261028",
+      "branch": "v100-dp4a-status-alias-20261028",
+      "HEAD": "f6528497ea01bb31e3b1be0282de469dce7f8940",
+      "recovery_branch": "recovery/ncu-operator-stage/20261028/v100-dp4a-status-alias-20261028",
+      "dirty_remaining": "",
+      "pushed_SHA": "f6528497ea01bb31e3b1be0282de469dce7f8940",
+      "remote_HEAD_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dp4a-retention-cleanup-20261028",
+      "branch": "v100-dp4a-retention-cleanup-20261028",
+      "HEAD": "3f1a09da72b3dddfb18ad9b93b280de0cef96c13",
+      "recovery_branch": "recovery/ncu-operator-stage/20261028/v100-dp4a-retention-cleanup-20261028",
+      "dirty_remaining": "",
+      "pushed_SHA": "3f1a09da72b3dddfb18ad9b93b280de0cef96c13",
+      "remote_HEAD_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dp4a-lifetime-successor-20261028",
+      "branch": "v100-dp4a-lifetime-successor-20261028",
+      "HEAD": "d945a7d90638ff978b131b8e68635142c7db96f0",
+      "recovery_branch": "recovery/ncu-operator-stage/20261028/v100-dp4a-lifetime-successor-20261028",
+      "dirty_remaining": "",
+      "pushed_SHA": "d945a7d90638ff978b131b8e68635142c7db96f0",
+      "remote_HEAD_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dp4a-expert-prototype-20261028",
+      "branch": "v100-dp4a-expert-prototype-20261028",
+      "HEAD": "074a79bf329c4d0759d2bf8e37f9502143f1fb50",
+      "recovery_branch": "recovery/ncu-operator-stage/20261028/v100-dp4a-expert-prototype-20261028",
+      "dirty_remaining": "",
+      "pushed_SHA": "074a79bf329c4d0759d2bf8e37f9502143f1fb50",
+      "remote_HEAD_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027",
+      "branch": "v100-ncu-operator-20261027",
+      "HEAD": "685198621e0d841b0782e91a9061561fd5815a35",
+      "recovery_branch": "recovery/ncu-operator-stage/20261028/v100-ncu-operator-20261027",
+      "dirty_remaining": "",
+      "pushed_SHA": "685198621e0d841b0782e91a9061561fd5815a35",
+      "remote_HEAD_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-ncu-operator-int32-20261028",
+      "branch": "v100-ncu-operator-int32-20261028",
+      "HEAD": "7af9b891cfef4047d2340bb539c7f8c3ac0e65b6",
+      "recovery_branch": "recovery/ncu-operator-stage/20261028/v100-ncu-operator-int32-20261028",
+      "dirty_remaining": "",
+      "pushed_SHA": "7af9b891cfef4047d2340bb539c7f8c3ac0e65b6",
+      "remote_HEAD_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-ncu-component-20261027",
+      "branch": "v100-ncu-component-20261027",
+      "HEAD": "1d56666309566087b4da514d29a45b4f2b9afbc1",
+      "recovery_branch": "recovery/ncu-operator-stage/20261028/v100-ncu-component-20261027",
+      "dirty_remaining": "",
+      "pushed_SHA": "1d56666309566087b4da514d29a45b4f2b9afbc1",
+      "remote_HEAD_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-batch-expert72-20261028",
+      "branch": "v100-batch-expert72-20261028",
+      "HEAD": "b3b5e27eb9218f4f844859e3520c06cea58276d9",
+      "recovery_branch": "recovery/ncu-operator-stage/20261028/v100-batch-expert72-20261028",
+      "dirty_remaining": "",
+      "pushed_SHA": "b3b5e27eb9218f4f844859e3520c06cea58276d9",
+      "remote_HEAD_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-current-mtp-hc-20261028",
+      "branch": "v100-current-mtp-hc-20261028",
+      "HEAD": "6434099199a0c3dcd139641e4471c62ec9dba728",
+      "recovery_branch": "recovery/ncu-operator-stage/20261028/v100-current-mtp-hc-20261028",
+      "dirty_remaining": "",
+      "pushed_SHA": "6434099199a0c3dcd139641e4471c62ec9dba728",
+      "remote_HEAD_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dense-hc-native-domain-20261028",
+      "branch": "v100-dense-hc-native-domain-20261028",
+      "HEAD": "e96357ed2ab84d32e705c9288ef9018b7542ea1c",
+      "recovery_branch": "recovery/ncu-operator-stage/20261028/v100-dense-hc-native-domain-20261028",
+      "dirty_remaining": "",
+      "pushed_SHA": "e96357ed2ab84d32e705c9288ef9018b7542ea1c",
+      "remote_HEAD_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dense-independent-20261028",
+      "branch": "v100-dense-independent-20261028",
+      "HEAD": "b92c58283e72c9dad528f67ac288ad06e44c1908",
+      "recovery_branch": "recovery/ncu-operator-stage/20261028/v100-dense-independent-20261028",
+      "dirty_remaining": "",
+      "pushed_SHA": "b92c58283e72c9dad528f67ac288ad06e44c1908",
+      "remote_HEAD_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dense-large-row-targetflags-20261028",
+      "branch": "v100-dense-large-row-targetflags-20261028",
+      "HEAD": "2a1c9dcffc597524d148b6b6aa2ff7fb7f8473e3",
+      "recovery_branch": "recovery/ncu-operator-stage/20261028/v100-dense-large-row-targetflags-20261028",
+      "dirty_remaining": "",
+      "pushed_SHA": "2a1c9dcffc597524d148b6b6aa2ff7fb7f8473e3",
+      "remote_HEAD_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-exact-gateup-fastv2-20261028",
+      "branch": "v100-exact-gateup-fastv2-20261028",
+      "HEAD": "e33d7c3286fcd6356aada4bace610317e5a00cce",
+      "recovery_branch": "recovery/ncu-operator-stage/20261028/v100-exact-gateup-fastv2-20261028",
+      "dirty_remaining": "",
+      "pushed_SHA": "e33d7c3286fcd6356aada4bace610317e5a00cce",
+      "remote_HEAD_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-exact-gateup-finite-fixture-20261028",
+      "branch": "v100-exact-gateup-finite-fixture-20261028",
+      "HEAD": "a5fd784f35f64d2ebe8fa3933c65b1ad9f97068d",
+      "recovery_branch": "recovery/ncu-operator-stage/20261028/v100-exact-gateup-finite-fixture-20261028",
+      "dirty_remaining": "",
+      "pushed_SHA": "a5fd784f35f64d2ebe8fa3933c65b1ad9f97068d",
+      "remote_HEAD_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-exact-gateup-two-warps-20261028",
+      "branch": "v100-exact-gateup-two-warps-20261028",
+      "HEAD": "6289e3cb41c6843638c5e5c6719773aa81d089b1",
+      "recovery_branch": "recovery/ncu-operator-stage/20261028/v100-exact-gateup-two-warps-20261028",
+      "dirty_remaining": "",
+      "pushed_SHA": "6289e3cb41c6843638c5e5c6719773aa81d089b1",
+      "remote_HEAD_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-gdn-startup3-20261028",
+      "branch": "v100-gdn-startup3-20261028",
+      "HEAD": "2a053c55b958300b7f290dd80efdd133419d43bd",
+      "recovery_branch": "recovery/ncu-operator-stage/20261028/v100-gdn-startup3-20261028",
+      "dirty_remaining": "",
+      "pushed_SHA": "2a053c55b958300b7f290dd80efdd133419d43bd",
+      "remote_HEAD_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-gdn-state-batch-20261028",
+      "branch": "v100-gdn-state-batch-20261028",
+      "HEAD": "73c463cd2445c659a0c4c6513aba9d041855ecbf",
+      "recovery_branch": "recovery/ncu-operator-stage/20261028/v100-gdn-state-batch-20261028",
+      "dirty_remaining": "",
+      "pushed_SHA": "73c463cd2445c659a0c4c6513aba9d041855ecbf",
+      "remote_HEAD_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-gdn-state-batch-screen-20261028",
+      "branch": "v100-gdn-state-batch-screen-20261028",
+      "HEAD": "6e028857e2f1b02c8265e924e82931f454e486eb",
+      "recovery_branch": "recovery/ncu-operator-stage/20261028/v100-gdn-state-batch-screen-20261028",
+      "dirty_remaining": "",
+      "pushed_SHA": "6e028857e2f1b02c8265e924e82931f454e486eb",
+      "remote_HEAD_verified": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-gdn-state-batch-seal-20261028",
+      "branch": "v100-gdn-state-batch-seal-20261028",
+      "HEAD": "f6a0d02113716c75408fac2dc5e991b6380c43b3",
+      "recovery_branch": "recovery/ncu-operator-stage/20261028/v100-gdn-state-batch-seal-20261028",
+      "dirty_remaining": "",
+      "pushed_SHA": "f6a0d02113716c75408fac2dc5e991b6380c43b3",
+      "remote_HEAD_verified": true
+    }
+  ],
+  "all_committed_pushed_remote_HEAD_verified": true,
+  "force_push": false,
+  "tests_run": false,
+  "V100_access": false,
+  "cause_scope": "dp4a-kernel-cause-20261028 is artifact-only; no source worktree/native edits existed; existing script/receipts remain local for Root artifact inventory",
+  "verification_limits": "Model enrollment52b98 intentionally WIP/UNHELD, latest unbuilt and own fixture failure recorded; recovery publication is preservation, not qualification."
+}

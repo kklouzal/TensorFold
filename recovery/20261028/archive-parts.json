@@ -1,0 +1,15 @@
+{
+  "archive_sha256": "a2e2b8a14ff0e559e3fdb7a686da071673ff977260483874dbdef080fc91cc0e",
+  "parts": [
+    {
+      "path": "portable-evidence.tar.gz.part-00",
+      "bytes": 33554432,
+      "sha256": "14a364df21aabff037065a3b438a94109da2aac73762a5dbdc4f73e434221e17"
+    },
+    {
+      "path": "portable-evidence.tar.gz.part-01",
+      "bytes": 23554542,
+      "sha256": "b5077d49a2062e8da1d8a08d9ea51ef803ac003b8c105fc0d67887bc3bda6686"
+    }
+  ]
+}

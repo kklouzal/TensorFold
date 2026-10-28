@@ -1,0 +1,105 @@
+{
+  "status": "PAUSED_RECOVERY_PUSH_VERIFIED",
+  "remote": "https://github.com/kklouzal/TensorFold.git",
+  "remote_V100_access": false,
+  "tests_or_development_after_pause": false,
+  "no_force_push": true,
+  "worktrees": [
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-native-storage-metadata-20261028",
+      "branch": "work/v100-native-storage-metadata-20261028",
+      "HEAD": "4f2a73c78293b0e282d10aef9ffb11d831cbe243",
+      "pushed_SHA": "4f2a73c78293b0e282d10aef9ffb11d831cbe243",
+      "dirty_remaining": "",
+      "push_exit": 0
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-hc-smallrow-integration-20261028",
+      "branch": "work/v100-hc-smallrow-integration-20261028",
+      "HEAD": "ee6f69c2f857867c1e6223c8248fcb6c5ed0ee50",
+      "pushed_SHA": "ee6f69c2f857867c1e6223c8248fcb6c5ed0ee50",
+      "dirty_remaining": "",
+      "push_exit": 0
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-hc-smallrow-vendor-20261028",
+      "branch": "work/v100-hc-smallrow-vendor-20261028",
+      "HEAD": "a976a29bd56942fa875baceda780c316e9931656",
+      "pushed_SHA": "a976a29bd56942fa875baceda780c316e9931656",
+      "dirty_remaining": "",
+      "push_exit": 0
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-hc-smallrow-fixture-c6-20261028",
+      "branch": "work/v100-hc-smallrow-fixture-c6-20261028",
+      "HEAD": "7b1167ffd615272bba0ae78753f34831cbe06c13",
+      "pushed_SHA": "7b1167ffd615272bba0ae78753f34831cbe06c13",
+      "dirty_remaining": "",
+      "push_exit": 0
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-candidate-finish-graph-20261028",
+      "branch": "work/v100-candidate-finish-graph-20261028",
+      "HEAD": "7fe472b647d9b609c833e1f97f836ec6750da88d",
+      "pushed_SHA": "7fe472b647d9b609c833e1f97f836ec6750da88d",
+      "dirty_remaining": "",
+      "push_exit": 0
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-candidate-finish-catalogue-20261028",
+      "branch": "work/v100-candidate-finish-catalogue-20261028",
+      "HEAD": "9a026217d09222fd9f360e778ce921a0bf598f83",
+      "pushed_SHA": "9a026217d09222fd9f360e778ce921a0bf598f83",
+      "dirty_remaining": "",
+      "push_exit": 0
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-ple-combined-staging-20261028",
+      "branch": "work/v100-ple-combined-staging-20261028",
+      "HEAD": "146f8a818d11ea69ca5b9cbd0f3d1f90067896ac",
+      "pushed_SHA": "146f8a818d11ea69ca5b9cbd0f3d1f90067896ac",
+      "dirty_remaining": "",
+      "push_exit": 0
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-coalesced-candidate-readback-20261028",
+      "branch": "work/v100-coalesced-candidate-readback-20261028",
+      "HEAD": "9f52e8b680cc082dd7a4c4b8d6c1a83e7a7b10f1",
+      "pushed_SHA": "9f52e8b680cc082dd7a4c4b8d6c1a83e7a7b10f1",
+      "dirty_remaining": "",
+      "push_exit": 0
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dense-batch-prelude-20261028",
+      "branch": "work/v100-dense-batch-prelude-20261028",
+      "HEAD": "7de2259b1a402542b91fde9e906a9ebb07f4c949",
+      "pushed_SHA": "7de2259b1a402542b91fde9e906a9ebb07f4c949",
+      "dirty_remaining": "",
+      "push_exit": 0
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-current-dense-residency-20261028",
+      "branch": "work/v100-current-dense-residency-20261028",
+      "HEAD": "f0a78fa0f607256db459486ed4989ed7a41dddb3",
+      "pushed_SHA": "f0a78fa0f607256db459486ed4989ed7a41dddb3",
+      "dirty_remaining": "",
+      "push_exit": 0
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-current-native-dense-20261028",
+      "branch": "work/v100-current-native-dense-20261028",
+      "HEAD": "8c5c0cf88df905df28baf2624050dcb0c0fcda7b",
+      "pushed_SHA": "8c5c0cf88df905df28baf2624050dcb0c0fcda7b",
+      "dirty_remaining": "",
+      "push_exit": 0
+    }
+  ],
+  "native_metadata": "4f2a73c7 WIP UNTESTED, no compile/tests/wheel/GPU. All7owned pending files committed.",
+  "HC_integration": "ee6f69c2 WIP UNTESTED emptyrecoverylabel onHC+c928 composition; noNUMAmerge/build/HOLD/modelstage.",
+  "artifacts_preserved": [
+    "HC6fe8/7b116actual10GPU PASS only, old61317failure",
+    "compute-drilldown-reconciliation.json all54",
+    "cpu-storage-view-plan.json",
+    "hc-smallrow-vendor-20261028/math-hold-cpu-priority-checkpoint.json"
+  ]
+}
