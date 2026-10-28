@@ -431,7 +431,7 @@ def stage_ple_rows(p, b: Buffers, ids: np.ndarray, at: int = 0) -> None:
     b.ple_b[rows].copy_(b.ple_hb[rows].view(torch.bfloat16), non_blocking=True)
 
 
-def moe_block(layer: LayerW, w: Weights, b: Buffers, R: int) -> tuple:
+def moe_block(layer: LayerW, w: Weights, b: Buffers, R: int, *, _local_only: bool = False) -> tuple | None:
     """Routed experts + the shared expert. Returns the pending write-back: (2, slots y, weights) on one GPU, (3, gathered fp32 partials, None) across ranks."""
 
     m = layer.moe
@@ -443,10 +443,14 @@ def moe_block(layer: LayerW, w: Weights, b: Buffers, R: int) -> tuple:
         if b.prefill:
             execute = getattr(m.experts, "forward_prefill", execute)
         execute(b.mixed[:R], buf.pick[:R], out=buf.y[:R])
+        if _local_only:
+            return None  # Private pure-region capture excludes partial reduction and collectives.
         if w.comm is None:
             return 2, buf.y[:R], buf.wts[:R]
         glue.moe_partial(buf.y[:R], buf.wts[:R], b.part_moe, R)
         return 3, _gather(w, b, b.part_moe, b.g_moe, R), None
+    if _local_only:
+        raise ValueError("local MoE region requires the original GGUF resident branch")
     if getattr(m.experts, "kernel", "qmm") == "expert_parallel":
         buf = b.moe
         moe_mod.router(b.mixed[:R], m.router, buf.logits[:R])
