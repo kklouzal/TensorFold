@@ -1,0 +1,97 @@
+{
+  "schema": "tensorfold.descriptor-host-words-HOLD-v1",
+  "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+  "APP": "4b0ea6b51047f93b2b973ed5a467d8c279b94f6d85c683c4258a712ff6edd99f",
+  "base": "f030/d851 Root-audited current hot16 reference; final audit0acd1aea",
+  "source_paths": {
+    "src/tensorfold/families/qwen4_exp/cuda/history_owner.py": {
+      "sha256": "29fe48793f1daddb7a4af4f375390cb29e7df94ba10168c51f42708ff0003f10",
+      "bytes": 90209
+    },
+    "tests/test_native_descriptor_host_words.py": {
+      "sha256": "ad6ee6232228314d965e8fb777696688f799bf2a6c88d99a5218a576df9eabeb",
+      "bytes": 7021
+    }
+  },
+  "evidence": {
+    "cpu-command.json": {
+      "sha256": "2ca2d31f8628e7c316ef7e10346804d16bdfd123add90745c447a5b673d2c003",
+      "bytes": 1630
+    },
+    "cpu-exit.json": {
+      "sha256": "32903159016182fa2871681fb806bc4b31c04bfa4d7d5a500ee83060963c6813",
+      "bytes": 44
+    },
+    "cpu.log": {
+      "sha256": "3fc148cdf31f2e9ef32f2c010650a76f5bd73d1776ba8598231cbc6b35f5fe6a",
+      "bytes": 1248
+    },
+    "verify-command.json": {
+      "sha256": "db2971fb03050ef00878a7dd2295fb5f11a7fb98c97f52d284346cef4ecf7a4e",
+      "bytes": 1534
+    },
+    "verify-exit.json": {
+      "sha256": "105ff5357f5233e5810c5c930fcdb16b5b502d07ee276e5fde8bd0b5751a4f7d",
+      "bytes": 44
+    },
+    "verify.log": {
+      "sha256": "ec4b01209c2db9089b0ec30c1a15947b792efb4d22567e936cf0ceebbc88374b",
+      "bytes": 716
+    },
+    "wheel-provenance.json": {
+      "sha256": "8332edc577ca201c2c47cfa35494201a2a5eea132b915619a69701b7e0b43fbc",
+      "bytes": 127745
+    },
+    "protected-before.json": {
+      "sha256": "0796f5f0ac9e15bd582eb5d8adad666452326bc38924cb2b6274d9bc68d7e4a1",
+      "bytes": 6015
+    },
+    "protected-after.json": {
+      "sha256": "0796f5f0ac9e15bd582eb5d8adad666452326bc38924cb2b6274d9bc68d7e4a1",
+      "bytes": 6015
+    },
+    "numpy-contract.json": {
+      "sha256": "0f0ef9bdd9274fc1e8703840a8d2e01f635b14d517b7503b54f536c890572780",
+      "bytes": 1367
+    },
+    "structural-source-proof.json": {
+      "sha256": "36a99363f6ba783295d78298ccdc30fbad6c8a282a330185b8048b58fd15cd76",
+      "bytes": 1135
+    }
+  },
+  "reused_oracle": "Root73896test-only5cd45/unchanged4d2b onepool192keys384strictIQ18/20replaysPASS7.52;2MiBreserved/0activeobserved only, notEngine/accounting proof",
+  "pool_contract": "oneownedHCpool reusedfor768exacttargetR/layerkeys; noescapingprivateintermediates; externaloperands retained; sameoriginalstream/48layercycle/issuedHCcut/partialpoison/positiveglobalretirement; N1/candidatepoolsdistinct. ExistingduplicatepoolIDrefusalretained.",
+  "rows": [
+    4,
+    5,
+    6,
+    8,
+    9,
+    10,
+    11,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    30,
+    31,
+    32
+  ],
+  "N1": "R1..3 remainoutsidecatalogue; originalprivatepieces unchanged; fullR1..32deferreduntilboundplanparticipationcontract",
+  "numeric": "Unchanged native/math/FP32rec/selectedFusion/Router/GDN/HC+candidate graph policy; ONLY CPU descriptor row representation changed",
+  "funding": "sameinclusive1GiB/rankMoEhostfuture passedbeforeauthoritativeadmit;driver/opaque/allocatorresourceschargedONCEphysicalmaxdeltas+settlement;singlepoolinactiveexcludedonce/no2MiBfreecredit. Native24Q8stillrequiredafterallactualcharges.",
+  "CPU": "81normal-installed affectedCPU controlsPASS7.15/Ruff/pip/protected;727FDc79 installed/canonical/wheel source binding",
+  "GPU": "UNRUN successor; Root alone may launch all-six; no gain claim",
+  "remaining": [
+    "soleD13 source/package closure",
+    "Root all-six current f030/d851 comparison"
+  ],
+  "new_scope": "Cold ndarray view of SAME pinned descriptor mirror; replace per-row CPU torch.tensor/copy with direct16word assignment. Original validation/zeroing/DMA/native_done/upload/collective order unchanged.",
+  "metadata": "One bounded ndarray and retained base Tensor wrapper per existing OwnerBuffers; no ndarray owned payload or extra host/device mirror.128B+72B wrappers observed on pinnedSDK (not allocator bound); metadata lies within existing operating metadata allowance. No increased budgets/admission credits; mirror/view held through existing positive retirement or retained on failure.",
+  "inherited_HOLD": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/hc-moe-hot-rows-integration-20261028/fast-stage/package/source-hold.json",
+    "sha256": "8021154e213e1383b2a26290d14cb4d5318dfb0c80eee7cb003e3f9fc5e2979d"
+  }
+}

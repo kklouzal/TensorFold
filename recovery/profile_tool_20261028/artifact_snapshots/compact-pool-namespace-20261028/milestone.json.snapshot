@@ -1,0 +1,35 @@
+{
+  "schema": "compact-pool-preparation-ready-checkpoint-v1",
+  "state": "SOURCE_FROZEN_CPU_AND_STAGE_VERIFIED; GPU45/NUMAall6 UNRUN Rootonly",
+  "source": "37518d018730da786dd5577bfaa7f6d2fb1a4885",
+  "APP": "ed3283ac32cb39659d64b4ad39c9019b52fc6d6fcda7d6465ffbbfdbcf55c385",
+  "HOLD": "1f1d66d37bee91e9c71a9df94d407413dddca3af24a1fb50a68cd4dd0d17156b",
+  "CPU": "69PASS4.16s;1explicitknownbaselineengineASTfailure deselected, exactnormal4b0baselinefailure/sourceproof retainedunder../compact-pool-preparation-20261028; no testmodified or numericalcontractweakened",
+  "stage": {
+    "status": "STAGEDONLY NOTEXECUTED",
+    "files": 15,
+    "APP": "ed3283ac32cb39659d64b4ad39c9019b52fc6d6fcda7d6465ffbbfdbcf55c385",
+    "HOLD": "1f1d66d37bee91e9c71a9df94d407413dddca3af24a1fb50a68cd4dd0d17156b",
+    "controller_sha256": "98409b1196941f98dba56f52c4fda9955674bc978f00c83c70bf923bc8a954ab",
+    "command": "bash /home/kklouzal/tensorfold-v100-qualification-20261026/compact-pool-prep-controls-20261028/package/launch-command.sh",
+    "fresh_evidence": true,
+    "GPU": "Rootonly45strictcontrols; noall6/P3claim"
+  },
+  "preflight": "Actualstagednormal727FDc79 package/protected/fixturehashes +45testcollection +oracleimports exit0; noGPUexecution",
+  "evidence": {
+    "source-hold.json": "1f1d66d37bee91e9c71a9df94d407413dddca3af24a1fb50a68cd4dd0d17156b",
+    "structural-proof.json": "beb56e46e46bb59055f3aa564d4354889bd94ecd3faaf7b20e3334c49f128d27",
+    "cpu-command.json": "cc2aad9324584bd258480160f565ae73c58c5c0a4ec4992eebc867dddc81570e",
+    "cpu-exit.json": "6e8d28ce074ac71373f86fb5875f4d65d01c9ca240eba822548679a01e4847c6",
+    "cpu.log": "a559410202c3d5e5407d178561fb1363f0b6b087d3bf24396666e9b852a64016",
+    "wheel-provenance.json": "1baad3481a2c24d2e420a2e6a66628a41ace0b12543ac4b847f56e7de7e6e166",
+    "gpu-stage/preflight-command.json": "5286fd84e95c24d0415acbbd1d91f5ee6bd83c17af87264b2e6e8802d7042e11",
+    "gpu-stage/preflight-exit.json": "e704520ac9e5be2fa7003a463dab6d8a7ec91c061acd0c5a5c2ea381c7e0c0ff",
+    "gpu-stage/preflight.log": "e752c9f8136d72d26924df7862792f9c8bc28c2cd0e9a27096a142976faf48bb",
+    "gpu-stage/upload-command.json": "38c0a7181567d4786855e5f9f789f74564df89ade09892c9aebe226c0dd75ee7",
+    "gpu-stage/upload-exit.json": "fe4bfd11b13d61cf2503670ec776f52aedf31f6ec611b32208812ab462d0f80d",
+    "gpu-stage/stage-ready.json": "eef25921bd3720309c04c326573bcc99befc01db851053bd05008688775da8c5"
+  },
+  "integration": "Root/oneownercomposesheldTAIL+POOL; neededstrictcombinedcontrols thenNUMAf11all6/tasks/full24Q8headers. Rowauthority8021 remainsseparate fromnewPoolHOLDschema; avoidrepeatingoldschema postcheckerfailure.",
+  "followups": "Borrowed alignedraw/coordinate views andprepaidlease-ownedworkspaces remaincredibleexplicitcandidates in../compact-pool-preparation.../reuse-candidate-assessment.json; notselected/noimplicitunsafealias."
+}

@@ -1,0 +1,127 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T22:12:52.581641+00:00",
+  "status": "CLOSED standalone startup-owned content-overlap source; no V100 startup gain claim",
+  "reviewer": "/root/cleanup_review",
+  "policy": "One combined D13; capability defaultoff; Root owns integration/GPU",
+  "workspace": "/Warehouse/TensorFold-wt/v100-startup-hash-overlap-20261027",
+  "commit": "32bc97fbddbd4157894fd88af5608142870bf0ce",
+  "base": "3b649c72f37a8e2c56692af55b82769f62fc87a6",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-content-overlap-20261027/source-hold.json",
+    "sha256": "ad0fc0fbf1593208f8f3c55e77a677d54e08e92342362d620da57e40d9a548f8"
+  },
+  "source_paths": {
+    "README.md": "5053080705f788c6a8b7617452e3b474ae796616bd1c4ad4e2269e3a08db6283",
+    "deploy/v100/source-foundation.md": "63625b9bb4ac2bc33873a62d60f2de4dc6d446e54841ecc20d72cad3fd2395b7",
+    "src/tensorfold/_fd_owner.c": "aa5d4a6773f7d26c7dc43e0bf0817fb127e9d8a70de103f99acc8999fe6c3931",
+    "src/tensorfold/engine/model_identity.py": "37e76bdb643b4ab7ae47b6c449df5b8415b55602fac3165e0d99f6a5e9725298",
+    "src/tensorfold/families/qwen4_exp/cuda/engine.py": "8a708bf7b14791f336a847b55415372348af893ff51befa2c923c4bef2ee65e2",
+    "src/tensorfold/families/qwen4_exp/cuda/execution_identity.py": "6c98e903e161f4304170c82a8f8f8d1d688c15f2907de170c65b25a8eb6c0aa9",
+    "src/tensorfold/families/qwen4_exp/cuda/startup_content.py": "8ee9590394ca9d8ce6f57db67a3352c2c677597559eecb6528bd1855507ad010",
+    "tests/test_flashnext_engine_lifetime.py": "cf8a039f1e411442aed70d70c97775eadbdf9c4f7b1441e453921ab0dc0638f0",
+    "tests/test_startup_content.py": "0e7b8637e5319879bf2bf7eccaa4db4f73a53975315b58911a8569707b8fb3c3"
+  },
+  "wheel": {
+    "path": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3135074,
+    "sha256": "d9bb3fe13e4882964db671e4189811e7e20d6c1a6c2ebf093293d7340a6e0f64"
+  },
+  "FD": [
+    {
+      "path": "tensorfold/_fd_owner.abi3.so",
+      "bytes": 46344,
+      "sha256": "c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d"
+    }
+  ],
+  "scope": "Nine affected source/test/docs paths plus direct ModelIdentity/file-scope/manifest/constructor/rollback contracts within3hops. No library algorithm reimplementation, no installedpatch or new hashcache.",
+  "checks": {
+    "normal_installed": "153PASS+5subtests6.97s, including nativeFD/lifetime/modelidentity and realSIGALRM/timingOOM/resourceboundary controls; Ruff/pip0",
+    "package": "All717 current canonical package files independently equal finald9bb wheel; exactnewFDc79bound, oldFD4a notwhitelisted",
+    "native_equivalence": "Existing ownedFD implementation region byte-exactbase3b649; only typedpthreadattributequery API/modulemethods/neededfeaturemacro added. RequiredFDnormal/faultsourcechecks included in153",
+    "reviewer_diagnostic": "Actual pinnedSDK3.12.3/realThread/POSIXsignal/currentoldCapture witness reproduced prematurejoinretirement, no private Threadstate mutation; only native stackquery boundary supplied successfulvalue. Finalmaintainedcontrols directly cover fixedcut withoutthatdouble. No GPU/remoteactions/broadduplicategate."
+  },
+  "findings": [
+    {
+      "rules": [
+        "U2",
+        "M0",
+        "C0"
+      ],
+      "finding": "PinnedCPython Thread.join interrupted by real KeyboardInterrupt can mark threadstopped while hash/file operationstillactive; laterCapture.close setclosedTrue prematurely",
+      "disposition": "Resolved with worker-owned operation_retired latch, mandatoryafterjoin. Interrupted result/rollback cannot publishclosed/releaseengineownership untilactualoperationcleanup. Startfailure remains uncertain unlessproved; ownerretained on unjoinablecreation. NativeOSthreadstackreclamation explicitlyunclaimed andconservativecommitmentretained."
+    },
+    {
+      "rules": [
+        "O0",
+        "C6",
+        "U2"
+      ],
+      "finding": "Final monotonic_ns PyLong allocation couldfail before completionlatch, stranding allwaiters after actualthreadexit",
+      "disposition": "Resolved with preallocatedfinish_errors slot and unconditionalnestedfinally latchpublication; result/close preservehashprimary andtimingsecondary viaexistingraise_failures. Faultcontrolswrittenafterfixcoverhashsuccess/refusal."
+    },
+    {
+      "rules": [
+        "M1",
+        "S1"
+      ],
+      "finding": "Initial worker plan re-enumerated artifact_files andlacked an explicit bounded filename/path domain for its8MiBworking allowance",
+      "disposition": "Resolved by sharingactualalreadyenumerated enabledpreload capture_files, noGGUFmetadataparse. <=64files,4096bytenames and<=64KiB printableASCII names/resolvedpaths enforcebeforeworkerallocation; otherenabledinputsrefuse whiledefaultserialsupportunchanged. Source-derivedread/metadata/canonical/coordinationroles recorded."
+    }
+  ],
+  "contracts": {
+    "resource": "Oneglobalrank0worker. Beforeinitialadmit charge64MiBstackceiling+nativeguard+8MiBworking once globally, retainedthroughsteadyenginecommitment; allranksettingsagreebeforeworkerstart. Nativeplannedandactualpthread stack/guardtypedqueries do notmodifyprocessdefaults; processownerkeepsdefaultsfixedduringconstruction. ActualLinuxglibcCPython3.12scopeexplicit.",
+    "identity": "Workerfreshlyhashesoriginalimmutableartifactclosure withdeclaredSHA/stat checks andcurrentprocessissuedModelIdentity; no persisted/stat-onlyauthority. Bindingonlyreusesissuedunchangedartifactgroups; newlyloadedsource/native/librarygroupsfreshlycapturedafterload, peerinventory/sourceguard checksunchanged beforepublication.",
+    "cancellation": "Cooperativecheckbetween1MiBos.read calls; doesnotpromiseinterruptOSblockedread. Capture/engineownerretaineduntilownedoperationcleanup; rollback/close retirementprecedeplan/files/transportrelease.",
+    "default": "Unsetretainsserialhashing; opt-inunsupportedprofiles/platforms/metadatarefuse. No model/sampler/KV/graph/policydefaultchange.",
+    "error": "Originalhasherror andfixeddiagnosticsecondary retained; no logging-onlysuccess or swallowing. Cancellationrecognizedonlywhenownedcancelflagset. Requiredfiledescriptorcleanup usesexistingownedFDscope."
+  },
+  "cleanup_disposition": "No verified remaining dead path/unjustifiedduplicateauthority or necessary safecleanup in finalscope. Reuses existingModelIdentity/hash/file-scope/source-binding machinery; typednativequery avoidsuntypedctypeslayoutguess/globalstackmutation. Separateworker/serial paths have required capability/lifetime roles. No P3equivalence from smallsource/defaultbranch alone.",
+  "pending": [
+    "ActualRoot V100 startupoverlap timing/IOcontention and integratedsoftware/quality/performance",
+    "Any compositionwithguardmaps/newprofiles needs boundedcurrentintegrationreview and wholeartifactbinding",
+    "No blanket library allocator/RSS/nativeOSstackdeallocation guarantee; sourceworkingpayload andexplicitstackbudgetonly"
+  ],
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-content-overlap-20261027/start.json",
+      "sha256": "46be50e617033562aa186233b5e2a21cd889d391268aa7a1100ea2039d76535f"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-content-overlap-20261027/exit.json",
+      "sha256": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-content-overlap-20261027/controls.log",
+      "sha256": "19de7150ee62ba66974a4aacc055599bd7b7ef17f4fea43babae1efe0678e5f0"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-content-overlap-20261027/wheel-provenance.json",
+      "sha256": "37f1143323cea1b9e25329b598487b923384e606ce33b3e4ecfc6f362ff96263"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-content-overlap-20261027/resource-bound.json",
+      "sha256": "79e0b000c6a8aebb099624aa9ecef3574277af661fd1c4066b4921a1b6f7da6e"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-content-overlap-20261027/ledger.json",
+      "sha256": "94261ec376e9c7e8abe800aa1b70d5521548633a6f04c7958d142db860b53522"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-hash-overlap-20261027/d13/join-interrupt-witness.py",
+      "sha256": "1d2818dc704fbbc69cf9fe2ce86767ff9a028b128f7c190ba7a4243d4db910b6"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-hash-overlap-20261027/d13/join-interrupt-command.json",
+      "sha256": "c3e2f3804adf03415d1cec465aba6da46ae589580375fa0271624ae6e88a8492"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-hash-overlap-20261027/d13/join-interrupt-witness-result.json",
+      "sha256": "2083413d0f8ac1e0a3fac273e6a88d9a6685342d3334e5c4623f3ee607d120e9"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-hash-overlap-20261027/d13/join-interrupt-exit.json",
+      "sha256": "99a0d98f8da63532e1cde45f8a739d465d1a8635a57599c6fbe9200a3f4ee274"
+    }
+  ]
+}

@@ -1,0 +1,23 @@
+{
+  "copy": [
+    "scp",
+    "-i",
+    "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+    "-o",
+    "BatchMode=yes",
+    "/Warehouse/TensorFold-portable-audit-20261026/joint-single-profile-20261028/analysis-stage/payload.tar",
+    "kklouzal@71.94.200.200:/home/kklouzal/tensorfold-v100-qualification-20261026/profile-joint-fbaa-n1-20261028/analysis-tools-upload.tar"
+  ],
+  "verify": [
+    "ssh",
+    "-i",
+    "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+    "-o",
+    "BatchMode=yes",
+    "kklouzal@71.94.200.200",
+    "python3",
+    "-"
+  ],
+  "stdin": "from pathlib import Path\nimport hashlib,json,tarfile\nroot=Path('/home/kklouzal/tensorfold-v100-qualification-20261026/profile-joint-fbaa-n1-20261028');out=root/'analysis-tools'\nif out.exists():raise RuntimeError('analysisdestinationexists')\nout.mkdir()\nwith tarfile.open(root/'analysis-tools-upload.tar')as a:\n for m in a.getmembers():\n  if not m.isfile()or '/'in m.name:raise RuntimeError('unsafeanalysisentry')\n  (out/m.name).write_bytes(a.extractfile(m).read())\nexpected={'analyze_concurrent.py': '989e8bf2a6c2ef46c95b63c4575f9af326853908537b0fbb0085fd224658cc5b', 'analyze_decode.py': '301f6a75ce46266f63c5ab9b28aaccb85dbe4535ed2fe8f6f75caa2d8f3e63c6', 'analyze_traces.py': '780c7d40cc90b4226212d4e1e0dcccaebeaad01e9c4148beaa15b790bda58df1', 'source-hold.json': '6513f4b617278146a9367d086dd74b1b50bd75c15d6170238bfb343f6f922619', 'combined-review-final.json': '32fa58fda61da06ca09b3c2af0cd53ae840a25b9821dd4ca463af23e387e3265'}\nfor n,want in expected.items():\n if hashlib.sha256((out/n).read_bytes()).hexdigest()!=want:raise RuntimeError('analysisbytes differ')\nprint(json.dumps({'status':'STAGEDONLY NOTEXECUTED','files':expected,'destination':str(out)}))\n",
+  "no_analysis_executed": true
+}

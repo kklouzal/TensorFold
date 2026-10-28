@@ -1,0 +1,12 @@
+{
+  "unchanged_guard_map_runtime_files": 715,
+  "explicit_changed_runtime_surfaces": [
+    "tensorfold/_fd_owner.c",
+    "tensorfold/engine/model_identity.py",
+    "tensorfold/families/qwen4_exp/cuda/engine.py",
+    "tensorfold/families/qwen4_exp/cuda/execution_identity.py",
+    "tensorfold/families/qwen4_exp/cuda/startup_content.py"
+  ],
+  "all_others_byte_exact": true,
+  "whole_package_source_files": 717
+}

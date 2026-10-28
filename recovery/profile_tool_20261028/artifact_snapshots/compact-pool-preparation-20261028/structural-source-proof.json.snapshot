@@ -1,0 +1,10 @@
+{
+  "base": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+  "math_reduction_cast_RMS_padding_AST_exact": true,
+  "rotary_guard_publish_reader_mark_AST_exact": true,
+  "raw_generic_else_AST_exact": true,
+  "coordinates_generic_else_AST_exact": true,
+  "TAIL_AST_exact_untouched": true,
+  "independent_frozen_old_Torch_oracle_AST_exact_except_function_name": true,
+  "native_and_engine_files_byteexact": true
+}

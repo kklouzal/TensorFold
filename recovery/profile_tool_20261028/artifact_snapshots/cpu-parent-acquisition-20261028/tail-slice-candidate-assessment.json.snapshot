@@ -1,0 +1,23 @@
+{
+  "schema": "tensorfold.Cache-tail-contiguous-slice-candidate-v1",
+  "state": "SOURCE_ASSESSED_CREDIBLE; NOTIMPLEMENTED/NOTSELECTED/NOnewGPUtest",
+  "reference": "Exactcurrentc928/4b0 Cache.tail578\u2013610, RATIO4; Root71209 CPUparentrescan reporta444d6ec",
+  "measured_signal": "Roundparent1780index_select/890where/890index_copy_/890arange/3560remainder fits445nonemptytails. Counts source-compatible, not directfunctionentry measurement; individualinclusivewall overlaps.",
+  "algebra": [
+    "r=length%4,0<r<4; first=length-r is divisibleby4. Thus arange(first,length)%4=[0,...,r-1].",
+    "old=(positions<start) is monotone. old_count=min(r,max(0,start-first)); source suffix startsfirst+old_count-start.",
+    "Existinglegalbase/span invariants boundlength<=start+len(raw). Therefore chosennew suffix iswithinraw; protectedprefix[0:old_count] iswithin4-rowprotected arrays. Bothrawand3-axiscoordinates use identicalcut.",
+    "Freshzero outputs remainRATIOrows; prefixprotected/rawcopies fillonly[0:r], preservezero[r:4]. Existinglength==self.n clone path andalignedlength<n zero fastpath remain unchanged."
+  ],
+  "candidate": "Use supported contiguous slices+copy_ forprotectedprefix andnewspan suffix (<=2pieces peroutput), retaining same reading lease overALLoldinputs andsamegeneration/span/refusal checks. No nativekernel rewrite/precisionchange needed toinvestigate.",
+  "contracts_to_prove": [
+    "Length/generation/Span.resolved/baseproposal validation beforecopy andsameactive_span lease; no droppederror/statuscheck.",
+    "BothrawHalfandcoordinateInt64 exactbits, sourceindexcoverage forpartialcuts/rollback/MTP/prefixsnapshot. No reusedescapingoutput withoutlifetimeproof; preservegenericCPU/autograd/unsupporteddomains orprovecurrentinferenceboundary.",
+    "Existingreading/native-consumer/stream/DMAfrontier, currentSpan staging epoch andfailurepoison/positive retirement. No same-stream/CUDAeventremoved byhostalgebra.",
+    "Torchmutationauthority issuedafterconstruction mustremainvalid; candidatecopy-count maychange internaltempTensorversion butmustnotbreak caller/view/snapshotvalidation.",
+    "Alloutputallocations remainprepublication; newpartialcopyfailure retainsfreshoutput/inputs untillease retirement. No accidentalold/newoutputalias orsourceoverwrite.",
+    "Focused independentoriginaltensor-indexing oracle acrosslegalRATIO/base/span combinations, thenactualtargetGPUbitwise/lifecyclecontrols +all6 developmentP3/task screen; no candidatepromotionfromcountreductionalone."
+  ],
+  "priority": "Narrow exactmetadata candidate beforefloatpoolfusion. Pool remainsdistinct FP32/Half/RMS/MRoPE/status numericalcontract; do notsilentlyreuse a differentlyrounded nativeRMS.",
+  "scope": "Read-onlycandidateassessment sidecar; Rootregister/source immutable. No implementation/retest/rescan/remoteGPU inthisartifact."
+}

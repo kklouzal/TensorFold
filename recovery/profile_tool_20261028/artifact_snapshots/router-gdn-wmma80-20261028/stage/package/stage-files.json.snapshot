@@ -1,0 +1,90 @@
+{
+  "bootstrap-finite.sh": {
+    "bytes": 967,
+    "sha256": "6660e47e85dc18d783de04e4bcaab0abb97200fc6b8a0082db1d82ce66eb4e76"
+  },
+  "candidate.json": {
+    "bytes": 2301,
+    "sha256": "96ed2e6ce999fdc028365ed33bdc5f5c309d54c9ce5d5e29a0cd9db01bcd3694"
+  },
+  "execution-manifest.json": {
+    "bytes": 1360,
+    "sha256": "95336693957314d74ba50328679d2b9a37552cb3e11a891b7a4a1900503e5673"
+  },
+  "expected-image-content.json": {
+    "bytes": 6481,
+    "sha256": "75a2fa9669c12e69e62e0a57694211a7b9ab91e0bd54b72e9830676856d19c2b"
+  },
+  "expected-oci-manifest.json": {
+    "bytes": 15680,
+    "sha256": "96f6961708d064a9d2f9e73d4df43ce8a5695c1499f16943b670c21fd971e15e"
+  },
+  "launch-finite.py": {
+    "bytes": 6254,
+    "sha256": "a5364ed803abd363c95eddabeceabc3e7ab1155dc9a83d4cd385f07884fcc7ca"
+  },
+  "protected-files.json": {
+    "bytes": 1052,
+    "sha256": "291d7d19e5b2134691d6016859b9bc5d6c95a3d005ae22ca02600a9bcf5847f9"
+  },
+  "run_wmma_controls.py": {
+    "bytes": 1221,
+    "sha256": "640e3cf9a84ad1f3cbd996ceeb4b9906157217fdc96f1cbaa6e82503e0b71880"
+  },
+  "source-hold.json": {
+    "bytes": 5090,
+    "sha256": "187d041f4b17a2034349e939e92f7b57ede41445b07264e48716ffa3638be565"
+  },
+  "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl": {
+    "bytes": 3166261,
+    "sha256": "a96a5de15d05c8e6a7c5b37658639933b7fbe0b28260cb77ed7c69afd3cd84fd"
+  },
+  "tests/cuda/gguf_fixture.py": {
+    "bytes": 8928,
+    "sha256": "ccf0b3979c99168029723045f399d5b90ae4d55f16812eecc8d0222f6f835631"
+  },
+  "tests/cuda/test_sm70_gguf_exact.py": {
+    "bytes": 5640,
+    "sha256": "b00219849468ebe07c2c0243d5e70e5a53ce1a2993bc04a45157f9a38dc463f3"
+  },
+  "tests/cuda/test_sm70_gguf_wmma80.py": {
+    "bytes": 7977,
+    "sha256": "0899cae17d174de99519b744952f06fd13606098ecd926d27f47bf285af83be8"
+  },
+  "tests/cuda/test_sm70_wmma80_current.py": {
+    "bytes": 5105,
+    "sha256": "599b832f4030aa1411197d08864b81ee7ffc3fcb663a3b6d3ca0159ba796297e"
+  },
+  "tests/fixtures/gguf_mixed_ggml.npz": {
+    "bytes": 153289,
+    "sha256": "25bb9fbd8f5ccbdac5482d4ce1542327d3f00a8bd5d671c512ea679d0dcc5eaa"
+  },
+  "tools/benchmark_output.py": {
+    "bytes": 3369,
+    "sha256": "ce7c0a0cdf80842dc67021ddc938ae32a2c8df39dfd4f36e5f48e72149484cfa"
+  },
+  "tools/finite_concurrency.py": {
+    "bytes": 40599,
+    "sha256": "d009cf94050754115fdb0295b39aaa787904b09478464aeb772d8782b97eb86b"
+  },
+  "tools/finite_quality.py": {
+    "bytes": 3389,
+    "sha256": "c498bd046e78c34bfc7db16c7decd43ec182151b24b3e09da282b9de0dac77a3"
+  },
+  "tools/prepare_owner_trial_manifest.py": {
+    "bytes": 3062,
+    "sha256": "cd90a33ff81c60cffc1f180f0a756312cec2d06b4a29d4322cf622d7ca3b2741"
+  },
+  "tools/v100_backend_probe.py": {
+    "bytes": 79957,
+    "sha256": "0655f73fdf767e948b89520d68726c0704c0442023dc0c62eb1949e1c8b9c992"
+  },
+  "verify_installed.py": {
+    "bytes": 1337,
+    "sha256": "63f282f45c4d87d83c3aed01102761e3455d3afa9f2c7fab2baa0e283c9575d3"
+  },
+  "wheel-provenance.json": {
+    "bytes": 126589,
+    "sha256": "4481b17a24888801c7baf0194ceb35ee414ca0e047aa8cc02e53d23e80ceb330"
+  }
+}

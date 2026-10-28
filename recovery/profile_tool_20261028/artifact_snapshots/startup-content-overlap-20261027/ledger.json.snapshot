@@ -1,0 +1,53 @@
+{
+  "schema": "tensorfold.startup-content-overlap-ledger-v1",
+  "objective": "ReduceiterationstartupbyoverlappingfreshfullartifactSHAwithmodelload/warmup; no persistent/stat-onlyhashauthority, no decodequality/throughputregression",
+  "target": "PrivateLinux/glibcCPython3.12TP8MTPsource-owner-pieces/source-owner-target-greedyprofiles; defaultoff; noimplicitnewguardprofilecapability",
+  "base": "3b649c72f37a8e2c56692af55b82769f62fc87a6/funded997e",
+  "design_alignment": [
+    "Design\u00a715hostresourcefundingbeforeacquisition: global64MiBstack+nativeguard+8MiBworking",
+    "Design\u00a721currentprocessauthorityandcontent/lifetimestatchecks kept; native/libs freshafterload",
+    "Design\u00a724actualV100startup/all6perf/qualityUNRUN; no CPUgateclaimasdevicequalification"
+  ],
+  "scope": "engine beginpreload->initialadmit->_same_settings->rank0workerbeforeload->manifestcontentreusing->verification/commit->join; rollback/closeownsjoin;<=3caller/calleehops",
+  "candidates": {
+    "selected_for_prototype": "oneboundedCPUhasherafterinitialadmit, fullissuedModelIdentityreuse",
+    "constraint_ruled_out": "persistentstat-only/disksavedhashauthority; bypassfileguards; process-widepthread/Pythonstackmutation; untypedctypespthread_attrsizeguess",
+    "pending": "actualstartupoverlapbenefit/IOcontention onV100host; futureguard-profilecompositionafteritsindependentselection"
+  },
+  "facts": [
+    "model_identity._READ_BYTES=1MiB; cancellation checkedbetweenreads",
+    "startupcapturefiles<=64/logicalname<=4096UTF8bytes;8MiBhash+metadataworkingbound",
+    "nativeplannedqueryusespthread_attr_init/optionalexplicitPythonstacksize; currentworkerreadspthread_getattr_np; no globals mutated",
+    "rootfrozenlauncherstack64MiB mirroredCPUgate",
+    "all8policyagreementincludesplan/budget beforeworkerstart; onlyrank0createsworker",
+    "freshnative/source/librarycapturethroughunchanged_capture_reusing; allrankstats checks beforepublication remain"
+  ],
+  "references": [
+    {
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.12.3/Python/thread_pthread.h",
+      "applicability": "PinnedSDKCPython3.12.3; pthread_attr_init + optionalinterpreterstackoverride, LinuxTHREAD_STACK_SIZEdefault0. Nativeactualplanned-v-worker64MiBqueryverified."
+    },
+    {
+      "url": "https://sourceware.org/glibc/manual/latest/html_node/Default-Thread-Attributes.html",
+      "applicability": "CurrentLinux/glibc threadattributes are process defaults; avoidassumingcurrentRLIMIT_STACK equalsstartupdefault"
+    },
+    {
+      "url": "https://raw.githubusercontent.com/python/cpython/v3.12.3/Lib/threading.py",
+      "applicability": "Thread._wait_for_tstate_lock interruptioncanmarkstoppedwhileoperationruns; independentD13actualsignalwitnesspreserved; ownoperationcompletionlatchrequired"
+    }
+  ],
+  "checks": {
+    "initial": "NativebuildPASS;123checksPASS/18fixture failurespreserved (lifetimeprojectionmissingnewhelper+mutationerrorpattern); next142+5subtestsPASS",
+    "current": "Final153CPU+5subtestsPASS6.97s/Ruff/pip/717normalfiles+FDc79",
+    "GPU": "UNRUN"
+  },
+  "limitations": [
+    "Threadconfigurationmustremainfixedbyprocessownerduringconstructor",
+    "CooperativecancelcannotforciblyretirefilesystemreadblockedinsideOS; ownerretaineduntiljoin",
+    "NewownedFDextensionartifacthashmustbepinnedinstage; no blanketoldFD4awhitelist",
+    "Full85/600targetsandgeneralservice/designqualificationremainopen"
+  ],
+  "source_hold_sha256": "ad0fc0fbf1593208f8f3c55e77a677d54e08e92342362d620da57e40d9a548f8",
+  "join_signal_negative_evidence": "Dedicatedreviewerpacketpathwasunavailableaftercontextnetworkrestoration; maintainedrealSIGALRMregressioncurrentlyPASS, preservesnegativeconditionsandprimary/ownerretention",
+  "retirement_fix": "Worker-ownedoperation_retired latch mandatory afterjoin, finaltimingallocationfailurecannotstrandlatch"
+}

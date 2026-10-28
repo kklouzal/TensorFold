@@ -1,0 +1,6 @@
+{
+  "ssh_host": "kklouzal@71.94.200.200",
+  "remote_command": "sudo -n env PYTHONDONTWRITEBYTECODE=1 taskset -c 0,1 nice -n 19 python3 /home/kklouzal/tensorfold-v100-qualification-20261026/profile-router-gdn-7c0a-n24-20261028/analysis-tools/analyze_concurrent.py > /home/kklouzal/tensorfold-v100-qualification-20261026/profile-router-gdn-7c0a-n24-20261028/analysis-cpu.stdout 2> /home/kklouzal/tensorfold-v100-qualification-20261026/profile-router-gdn-7c0a-n24-20261028/analysis-cpu.stderr",
+  "source_hold": "6513f4b617278146a9367d086dd74b1b50bd75c15d6170238bfb343f6f922619",
+  "no_execution_performed": true
+}

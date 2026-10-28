@@ -1,0 +1,27 @@
+{
+  "copy": [
+    "scp",
+    "-i",
+    "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+    "-o",
+    "BatchMode=yes",
+    "/Warehouse/TensorFold-portable-audit-20261026/router-gdn-integration-20261028/fast-stage/payload.tar",
+    "kklouzal@71.94.200.200:/home/kklouzal/tensorfold-v100-qualification-20261026/perf85-router-gdn-startup3-7c0a-20261028.tar"
+  ],
+  "verify": [
+    "ssh",
+    "-i",
+    "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+    "-o",
+    "BatchMode=yes",
+    "kklouzal@71.94.200.200",
+    "python3",
+    "-",
+    "/home/kklouzal/tensorfold-v100-qualification-20261026/perf85-router-gdn-startup3-7c0a-20261028",
+    "/home/kklouzal/tensorfold-v100-qualification-20261026/perf85-router-gdn-startup3-7c0a-20261028.tar",
+    "2b75bc8d4b383fbea972c820ae8d313b5c147348bbaf525c87eca69f878d95ce"
+  ],
+  "stdin_source": "/Warehouse/TensorFold-portable-audit-20261026/router-gdn-integration-20261028/fast-stage/remote-verifier.py",
+  "cwd": "/home/kklouzal",
+  "no_GPU": true
+}

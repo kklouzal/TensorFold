@@ -1,0 +1,28 @@
+from pathlib import Path
+import json
+import pytest
+import xml.etree.ElementTree as ET
+
+
+def main():
+    import torch
+    from tensorfold.cuda.sm70 import gguf_ops
+    from tensorfold.cuda.sm70.execution_policy import _family_runtime
+    _family_runtime(torch)
+    module=gguf_ops.extension()
+    if module.prepare_shared_fusion()!=32 or module.prepare_dense32()!=4:
+        raise RuntimeError('selectedcode residency mustcomplete')
+    argv=['-s','-c','/dev/null','-o','pythonpath=/qualification/tests/cuda','-o','junit_family=legacy',
+          '-p','no:cacheprovider','-vv','--junitxml=/probe/shared-fusion-current.xml',
+          '/qualification/tests/cuda/test_sm70_shared_fusion_current.py']
+    code=pytest.main(argv)
+    Path('/probe/shared-fusion-controls-exit.json').write_text(json.dumps({'exit_code':int(code),'argv':argv,
+        'scope':'6INT32/513top11 genericshared-fusionF16target/F32MTP row/capture/invalid/aliascontrols; empiricalerrorsnotqualitythreshold'})+'\n')
+    if code:raise SystemExit(code)
+    cases=ET.parse('/probe/shared-fusion-current.xml').getroot().findall('.//testcase')
+    if len(cases)!=6 or any(case.find('skipped') is not None for case in cases):
+        raise RuntimeError('6actualSM70controls/no skips required')
+
+
+if __name__=='__main__':
+    main()

@@ -1,0 +1,9 @@
+{
+  "wheel_sha256": "d817e2c23da4ea46863086ea66c99ff506dec6538a0ead280a6e64ef528f98c8",
+  "source_hold_sha256": "e1fe5a59a73661f753d21c04aa439eab9b8cc47809d381cca0b16f9342c5b72c",
+  "fixture_source_hold_sha256": "e28a258e32fefd5f4b583ccbc361fa2e4eb9d827711e7bec44d641e36e08657b",
+  "source_commit": "dac6bbade215fe7f1eb7de00a37d498c994cf587",
+  "source_profile": "source-owner-target-prelude-trial",
+  "source_review": "pendingD13",
+  "scope": "53unchangedMTP/alias/nativekernelcases newthree-file-hashwholewheel; actualworker3startupnotGPUfixturequalified"
+}

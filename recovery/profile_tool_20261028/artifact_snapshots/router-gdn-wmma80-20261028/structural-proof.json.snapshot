@@ -1,0 +1,15 @@
+{
+  "WMMA80_whole_kernel_and_launch_block_byte_equal_cf1f": true,
+  "block_sha256": "ead68994cfe797bdc21e5afc981d3001880fd4f1715a9bf19306c4bab37064ed",
+  "changed_math": "none in WMMA kernels; approximate oldsplit8policy explicitlydeclared",
+  "new_native": "only37variantFuncGetAttributesresidencyquery plusrestoredoldbindings/commonwmma dispatch",
+  "strict_oracle": "oldtest_sm70_gguf_wmma80.py byteexactcf1f; exactoraclespreserved; newINT32FP32/513/top11/fullrow-safetycases6 collectednotGPUrun",
+  "shared_prefill": "forward_prefill/_write_shared actualASTequal146f; no genericDenseWMMAflag",
+  "forward_prefill_AST_equal146f": true,
+  "_write_shared_AST_equal146f": true,
+  "forward_reference_AST_equal146f": true,
+  "forward_exact_AST_equal146f": true,
+  "src/tensorfold/families/qwen4_exp/cuda/forward.py": "byteexact146f",
+  "src/tensorfold/families/qwen4_exp/cuda/gdn_state_batch.py": "byteexact146f",
+  "src/tensorfold/families/qwen4_exp/cuda/execution_identity.py": "byteexact146f"
+}

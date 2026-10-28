@@ -1,0 +1,9 @@
+The remaining eager CPU work has a concrete compact-indexer fingerprint. In the current4b0 N24 core, compute parent counts match355 repeated pool chains (includingRMS, rotary andfinite guard), while round counts match445 nonempty raw/coordinate tail reconstructions. These counts are directlymeasured; assigning them tofunction invocations is strongsource/count matching, not a directfunctionlabel proof.
+
+The pool chain remains after nativeownerprep: `_publish_native_frame` calls `Cache.pool`, which usesarange/gathers/where, sequentialRATIO4 FP32sum->Half, TorchRMS, rotary andstatus guard. Commit reaches `Cache.tail` throughState/CompactIndexer generation-awaretransactions. A bitwise native tail path is a narrower firstcandidate than approximating poolmath, provided pairedoutputs, zero/padding, commit/snapshot lifetimes, errors andgeneration authority remain exact. No implementation orGPUacceptance is claimed.
+
+Directcompute stillhas12238mm,106974slice,131120as_strided,13712copy and15025empty events. These are source-backed projection/viewdispatch candidates; missing shapes/stacks prevent assigningalltoHC orinferringphysicalGPUallocation. Inclusiveoperator/APIwalls overlap and are notsummed intoCPUbusy orremovabletime.
+
+The requiredcompletionfrontier remains:round90StreamSync.726s;compute369EventSync.608s. SourceKVStatusCohortreadback explains a crediblepath, butnearestprojectdoesnotidentifyexactGPUcause orjustifybarrierremoval. NUMA/socketGPUlocalbinding remains arequiredseparateexperiment.
+
+Root71209one-rank rescan verified1,416,389,948B SHA33859e46… in24.219s with266,969,088BmaxRSS. Onlythesmallreport/logswerearchived. Currentraw/reports/source remainimmutable; no newremoteanalysis orGPUrun.

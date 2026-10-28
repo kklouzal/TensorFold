@@ -1,0 +1,44 @@
+import datetime,hashlib,json,pathlib,subprocess,time
+OUT=pathlib.Path('/home/kklouzal/tensorfold-v100-qualification-20261026/perf85-router-cublas-model-fee8-20261028')
+ROOT=OUT.parent
+candidate=json.loads((OUT/'candidate.json').read_text())
+if hashlib.sha256((OUT/'execution-manifest.json').read_bytes()).hexdigest()!=candidate['execution_manifest_sha256']:raise RuntimeError('native manifest copy differs')
+IMAGE='sha256:96f6961708d064a9d2f9e73d4df43ce8a5695c1499f16943b670c21fd971e15e'
+NAME='tensorfold-v100-router-cublas-fee8'
+def now():return datetime.datetime.now(datetime.timezone.utc).isoformat()
+def write(name,value):(OUT/name).write_text(json.dumps(value,indent=2,sort_keys=True)+'\n')
+def run(argv,label):
+ with (OUT/(label+'.stdout')).open('w') as stdout,(OUT/(label+'.stderr')).open('w') as stderr:r=subprocess.run(argv,stdout=stdout,stderr=stderr)
+ write(label+'.command.json',{'argv':argv,'exit_code':r.returncode,'at':now()})
+ if r.returncode:raise RuntimeError(label+' failed')
+ return (OUT/(label+'.stdout')).read_text()
+def docker(*args):return ['sudo','-n','docker',*args]
+expected=json.loads((OUT/'expected-image-content.json').read_text());raw=(OUT/'expected-oci-manifest.json').read_bytes()
+if hashlib.sha256(raw).hexdigest()!=IMAGE.removeprefix('sha256:'):raise RuntimeError('normative manifest differs')
+actual=json.loads(run(docker('image','inspect',IMAGE),'image-before'))[0]
+for key in ('Id','Descriptor','RootFS','Os','Architecture'):
+ if actual[key]!=expected[key]:raise RuntimeError('normative image identity differs: '+key)
+config=hashlib.sha256(json.dumps(actual['Config'],sort_keys=True,separators=(',',':')).encode()).hexdigest()
+if config!=expected['config_sha256']:raise RuntimeError('image Config differs')
+containers=run(docker('ps','--format','{{.Names}}'),'containers-before').splitlines()
+if containers!=['portainer']:raise RuntimeError('unexpected live container; coordinate Root GPU owner')
+portainer=run(docker('inspect','--format','{{.Id}} {{.Image}} {{json .Mounts}} {{json .HostConfig.RestartPolicy}}','portainer'),'portainer-before')
+run(['nvidia-smi','--query-gpu=index,uuid,name,driver_version,memory.used,pstate,power.limit,ecc.mode.current,clocks.current.graphics,clocks.current.memory','--format=csv'],'gpu-before')
+base='/models/sc117/90a3350cd800ec1fe0d1660a38414ad9e985782f'
+args=['--model',base+'/IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00001-of-00002.gguf','--mtp',base+'/mtp-Qwen3.8-Flash-Next-Q8_0.gguf','--wheel','/qualification/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl','--source-hold','/qualification/source-hold.json','--image-identity',IMAGE,'--out','/probe/run','--tokens','2048','--fast-grid-protocol','fast-grid-v2','--session-ceiling','24','--concurrency-grid','--fast-grid','--quality-spotchecks','--repetitions','1','--timeout-seconds','900','--base-commit','30c3bf3199cd6cb45075c1e749b2c798ed0c8412']
+args += ['--overlap-content-capture','--native-dense-trial','--owner-batch-prelude-trial','--router-blas-trial']
+args += ['--execution-profile-manifest','/qualification/execution-manifest.json','--triton-cache-root','/cache/triton-owner-full8-v1']
+argv=docker('run','--detach','--name',NAME,'--runtime','nvidia','--gpus','all','--network','none','--ipc','host','--cpus','32','--memory','320g','--memory-swap','320g','--pids-limit','4096','--ulimit','memlock=-1:-1','--ulimit','stack=67108864','--ulimit','core=0')
+for key,value in {'TENSORFOLD_SM70_PROFILE':'source-batch-router-blas-trial','CUDA_MODULE_LOADING':'LAZY','TENSORFOLD_PREFILL_ROWS':'256','PYTHONUNBUFFERED':'1','PYTHONDONTWRITEBYTECODE':'1','TENSORFOLD_NO_UPDATE_CHECK':'1','TF_GGUF_ASSETS_DIR':'/cache/gguf_assets','OMP_NUM_THREADS':'1','MKL_NUM_THREADS':'1','OPENBLAS_NUM_THREADS':'1','BLIS_NUM_THREADS':'1','NUMEXPR_NUM_THREADS':'1','TOKENIZERS_PARALLELISM':'false','MAX_JOBS':'2'}.items():argv+=['-e',key+'='+value]
+argv+=['--mount','type=bind,src=/home/kklouzal/models/tensorfold-v100,dst=/models,readonly','--mount','type=bind,src='+str(ROOT/'cache-f8')+',dst=/cache','--mount','type=bind,src='+str(OUT)+',dst=/qualification,readonly','--mount','type=bind,src='+str(OUT/'results')+',dst=/probe','--entrypoint','/bin/bash',IMAGE,'/qualification/bootstrap-finite.sh',*args]
+write('launch-host.json',{'at':now(),'boot_id':pathlib.Path('/proc/sys/kernel/random/boot_id').read_text().strip(),'meminfo':pathlib.Path('/proc/meminfo').read_text(),'region':'Experimental pointer-batched FP32router eagerdecode/MTP; canonicalgraphs/prefill; qualityunqualified; samecommonFASTv2explicit2048cap/30ready10s; nativeownerfull8 manifest9533; graphsrequestTrue; auto graphbudget; grid1,2,4,8,16,24; offeredN/funded24/actualslots24; native262144/int8/TP8/MTP2/0.7/rows32/ceiling24/prefill256; HTTP remainsOPEN','actual_admission_required_before_submit':True})
+cid=run(argv,'container-launch').strip();state={'at':now(),'container':NAME,'container_id':cid,'argv':argv,'status':'started-private-finite','wheel_sha256':candidate['wheel_sha256'],'source_hold_sha256':candidate['source_hold_sha256'],'tool_sha256':candidate['tool_sha256'],'qualification':'PRIVATE NUMERIC EXPERIMENT FAST six-grid screen +independentafter-grid quality; notfullqualification; no85/sameNregression/quality qualification from one repetition'}
+write('controller-progress.json',state);print(json.dumps(state),flush=True)
+while True:
+ observation=json.loads(run(docker('inspect','--format','{{json .State}}',cid),'state-current'));state.update(at=now(),docker_state=observation);write('controller-progress.json',state)
+ if not observation['Running']:break
+ time.sleep(10)
+run(docker('logs','--timestamps',cid),'full-run');run(['nvidia-smi','--query-gpu=index,uuid,memory.used,utilization.gpu,power.draw,temperature.gpu','--format=csv'],'gpu-after')
+after=run(docker('inspect','--format','{{.Id}} {{.Image}} {{json .Mounts}} {{json .HostConfig.RestartPolicy}}','portainer'),'portainer-after')
+if after!=portainer:raise RuntimeError('Portainer preservation differs')
+state.update(status='terminal',finished_utc=now(),portainer_preserved=True);write('controller-progress.json',state);print(json.dumps(state),flush=True)

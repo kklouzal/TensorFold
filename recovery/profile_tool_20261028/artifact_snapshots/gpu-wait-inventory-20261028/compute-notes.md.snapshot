@@ -1,0 +1,85 @@
+This is the completed bounded compute contribution to the pipeline GPU-wait inventory. It is read-only: no optimization, new profile, GPU run or remote heavy work was performed. It covers54compute entries,36owned source files,323CPU/native-API pattern sites and118owned CUDA synchronization/atomic/loop sites. All inventoried runtime bytes match7de2259b/APP86cb. The read checkout60980adds only the separate row-option tool; its runtime is byte-identical7de.
+
+The selected current region is private batch-prelude Dense: TP8/V100SM70, targetFP16, Q8MTP depth2/confidence0.7, Q8K/V, FP32recurrence,262144nativecontext,24resident sessions and32execution rows. Native family kernels and packed_exact experts are selected. Native router logits and optional padded linears are disabled. GGUF prefill pair planning is unselected. Unique native paged owner attention is selected; the unrelated legacy/native nonowner attention optimization is not.
+
+Historical timing belongs to APP4efe, not current86cb. The protected N24trace has a common10-second window and3071ns clock hull,16target compute calls,4.451s exclusive compute CPU wall,24,026FP32GEMV kernels,140,108total kernels, rank0non-NCCL sum1.861s/NCCL sum6.352s/no-kernel intervals1.787s. Across ranks, similar math1.861–1.914s coexists with varying NCCL3.529–6.663s and gaps1.476–4.557s. These are instrumented wall/kernel sums, not CPU busy cycles, useful utilization or link-saturation proof. Batch86cb changes host preparation and throughput, so old preparation costs are not copied onto it.
+
+The source exposes compute-wide dispatch topology rather than one isolated slow kernel. Each target window loops48layers (36linear/12fullattention), with two HC sequences per layer and a final mixer. TP8output/MoE reductions require96activation collectives, plus48owner-attention collectives, approximately144compute collectives per target forward before head/status traffic. This is a source topology count, not a measured per-window call ledger.
+
+Current FP16decode routing deliberately uses one FP32GEMV per row because native logits are disabled for this private profile. That can produce R*48router GEMVs per target window. Native stable expert selection remains active; it does not remove router launch cost. The historical FP32GEMV count is consistent with this source path but lacks exact parent attribution in the retained aggregate report.
+
+Dense/Concat native helpers retain fixed-M32 ATen products. Small/unprepared/strided cases can still allocate staging and result buffers and copy outputs. Generic native concat holds per-part result tensors unless the special HC-F32/QKV-half direct layout applies. Above32rows, Dense falls into PythonM32tiles with zero/copy/mm/copy; packed experts also fall into selected-weight decode/BMM reference. Current target row32avoids that expert decode cliff, but MTPfc_h uses physicalrows=logicalrows*HCstreams: R96/128can occur even with logical32. Frozen tiler991fand HCWIP43e still create workspace only for logicalBuffer.rows>32, so neither fixes default32MTPphysicalrows; this is a recorded candidate, not implementation during inventory.
+
+FP16GDNcurrently launches one causal native chain per State/linear layer. With localNV6, each launch has six1024-thread CTAs, so its grid can occupy at most six SMs before considering actual occupancy. The batched gdn_multi tree is explicitly excluded forFP16; blindly enabling it would change the recurrence contract. Prefix rejection adds per-layer replay and tail shifts. Native batched State-chain/replay is a credible structural alternative, requiring exact state, conv and accepted-prefix oracles.
+
+PLE can block the CPU feeder inside layer execution: sparse CPU mmap gather, IQ4_NLdecode/FP16conversion, pinned-buffer copy and late H2Dwork. Native PLE conv is still one call per State and launches separate normalization and convolution kernels. Table I/O, PLE layer presence and cached/prefill region determine frequency; no unmeasured page-fault delay is invented.
+
+Compact indexer pooling remains a Torch graph on completed4-row groups after current batch prep: arange/clamp/index_select/where,FP32group sum, FP16storage, normalization padding to preserve CUDA reduction mode, RMS, coordinate RoPE, guard and publication. Reject/cut tails add bounded clone/zeros/index operations. Source scalar metadata controls lengths; these operations do not imply host readback. Native QSA short/mid contexts use dense/selector kernels; above4096pooled groups (~16krawtokens) it falls to Torch scoring/stable sorts and temporary storage. The short prompt trace does not measure that long-context region.
+
+GPUinternal synchronization is separated from CPU-fed waiting. Reachable GDN/family/paged-attention/expert/routing bodies contain CTAbarriers, warp collectives and WMMA synchronization for shared-memory publication/reductions/causal state. They are not presumed removable. AtomicCAS sites are first-error latches, not CAS spin waits. No owned CPU-fed polling loop or threadfence-spin protocol was found in the bounded reachable bodies. NCCL/CUBLAS internals remain opaque; vendor occupancy, memory stalls and internal barriers require later measurements/contracts, not invented source enumeration. Launch error checks/cudaGetLastError are not assumed device-completion fences.
+
+Tensor factories and metadata checks are distinguished from synchronization. empty/zeros, per-part vectors, TensorImpl/view creation and alias/shape validation can consume CPU dispatch time or trigger allocator/lazy-context work. A caching allocator miss may stall, but no per-factory CUDA synchronization is asserted. Explicit status/DMA/pointer-packet/graph retirement boundaries are handed to sibling audits and must be reconciled by Root; this compute inventory does not double-count their historical EventSynchronize cost.
+
+A correctness finding changes qualification provenance: Root actually executed immutable991f/c517 GPUstage session27920,32PASS1.07s/Docker0/normal718FD. Its fixture set allow_fp16_reduced_precision_reduction=False, while7de_family_runtime requiresTrue and allow_fp16_accumulation=False. The result is EXECUTED_WRONG_MATH_REGION, not unrun and not a causal GPU failure. Production APPflags were unchanged. Old raw/stage remain immutable; the same32strict oracles must run with corrected/asserted target flags after inventory before target qualification.
+
+Every entry below has exact source anchor, call chain, condition/frequency, domain/wait mechanism, correctness purpose, evidence scope, candidate and needed proof in compute-inventory.json. Reference/BF16/EXL3/other-codec/optional-plan paths are retained and explicitly not credited as current hot work.
+
+| ID | Source anchor | Reachability | Area / mechanism |
+|---|---|---|---|
+| C01 | families/qwen4_exp/cuda/forward.py:705 | reachable-current | serial Python dispatch, view construction and many small native/ATen launches can drain GPU queue |
+| C02 | families/qwen4_exp/cuda/forward.py:41 | reachable-current | Python routing and repeated shape/dtype/view validation before library/native launch |
+| C03 | cuda/sm70/gguf_ops.cu:720 | reachable-current | unprepared rows allocate M32 pad and GEMM result; pad/copy kernels; prepared contiguous aligned fullM32 can mm_out directly |
+| C04 | families/qwen4_exp/cuda/gguf_weights.py:193 | reachable-current | fresh zeros(M32,K), copy input, mm return allocation, copy result for every tile |
+| C05 | cuda/sm70/gguf_ops.cu:799 | reachable-current | generic native concat keeps vector of per-part at::mm temporary results plus concatenation copy; direct paths only specific HC-F32/QKV-half shapes |
+| C06 | families/qwen4_exp/cuda/gguf_weights.py:287 | reachable-current | repeats Dense pad/copy/mm/copy per part and tile |
+| C07 | families/qwen4_exp/cuda/forward.py:68 | reachable-current | writeback→norm→down→activation→up→mix are dependent separate launches; decode down.partials allocates returned logical outputs when no prepared plan |
+| C08 | cuda/sm70/family.cu:755 | reachable-current | small elementwise/reduction kernel boundaries and per-call native argument checks; optional rms out/xs allocation if caller omits them |
+| C09 | families/qwen4_exp/cuda/mtp.py:174 | reachable-current | additional dependent launches and Torch metadata; fc_h physical rows=n*HCstreams, unlike logical forecast |
+| C10 | families/qwen4_exp/cuda/gguf_weights.py:357 | reachable-current | gather/decode selected packed rows creates values; optional expand/reshape/contiguous and copy into caller output |
+| C11 | cuda/moe.py:88 | reachable-current | x.float materialization, then per-row value[row]@weight.T and copy; many tiny GEMV launches |
+| C12 | cuda/moe.py:177 | reachable-current | stable routing reduction/sort kernel and dependent expert launch; generic argsort/gather/softmax/casts add ops if native predicates fail |
+| C13 | families/qwen4_exp/cuda/gguf_weights.py:439 | reachable-current | packed dot-product kernels and their dependent activation/down; input/block geometry limits grid utilization |
+| C14 | families/qwen4_exp/cuda/gguf_weights.py:449 | reachable-current | shared expert still uses newly returned tensors and separate elementwise kernels despite routed core native |
+| C15 | families/qwen4_exp/cuda/gguf_weights.py:403 | reachable-current | indices/arange/where/index_select plus gate/up/down decoded banks,3BMMs,activation and copies |
+| C16 | families/qwen4_exp/cuda/gguf_weights.py:456 | reachable-current | prefill explicitly takes original reference pair-BMM route even small R; potential readiness overhead and dynamic temporaries |
+| C17 | families/qwen4_exp/cuda/forward.py:175 | reachable-current | per-State Python/native dispatch; currentTP8 nv6 kernel has6CTAs of1024threads, at most6SMs active per such kernel before occupancy effects |
+| C18 | families/qwen4_exp/cuda/forward.py:186 | reachable-current | clone conv state, chain, copy cut snapshots,shift windows; many small operations for cached-token prefills |
+| C19 | families/qwen4_exp/cuda/forward.py:1017 | reachable-current | per-layer/per-State replay reconstructs prefix then updates tails; many small kernels/copies |
+| C20 | families/qwen4_exp/cuda/forward.py:407 | reachable-current | np fancy-index copy, IQ4_NL CPU decode,FP16 convert/finite check and pinned copies block launch feeder; page faults possible |
+| C21 | families/qwen4_exp/cuda/forward.py:398 | reachable-current | per-State Python dispatch and two dependent kernels then later tail shift |
+| C22 | families/qwen4_exp/cuda/forward.py:366 | reachable-current | separate embed/group sums, key/value projections,gate,conv; generic refs if profile/layout unsupported |
+| C23 | families/qwen4_exp/cuda/history_owner.py:1036 | reachable-current | batch reduces prep launches, but per-State Q8/cache/indexer publish and pool still occur |
+| C24 | families/qwen4_exp/cuda/history_owner.py:1051 | reachable-current | CPU loops/fill/copy/zero plus all8 collective ordering can expose late-rank waits; ownership allows only relevant indexer rank to score |
+| C25 | cuda/sm70/family_ops.py:619 | reachable-current | native dense-flag or score+stable selector kernel, low rows may expose little parallelism; dependent selection gather |
+| C26 | cuda/sm70/family_ops.py:628 | reachable-current | arange/where/scores zeros; per-index-head M32 FP32 GEMMs then stable argsort/sort and index materialization |
+| C27 | families/qwen4_exp/cuda/compact_indexer.py:613 | reachable-current | arange/clamp/index_select/where/reshape/floats/adds,normalization zero-padupTo16,RMS/RoPE/guard and publish |
+| C28 | families/qwen4_exp/cuda/compact_indexer.py:578 | reachable-current | zeros_like/clone/arange/index_select/where/index_copy for bounded4-row tail and coords |
+| C29 | families/qwen4_exp/cuda/history_owner.py:904 | reachable-current | QK/decode/normalization/PV phases require data dependencies; distinct kernels and collectives have latency |
+| C30 | families/qwen4_exp/cuda/forward.py:32 | reachable-current | many small dependent collectives, input stream-event edges and late CPU-fed peer arrivals; bandwidth vswait not separable here |
+| C31 | families/qwen4_exp/cuda/compact_indexer.py:234 | reachable-current | repeated tuple/generation/shape/version checks can slow dispatch; no Tensor data extraction found |
+| C32 | families/qwen4_exp/cuda/forward.py:570 | reachable-current | streams.copy_, ending-index tensor/device copy/index_select, mixer and head projection before sampling |
+| C33 | families/qwen4_exp/cuda/mtp.py:174 | reachable-current | embedding and norm buffers reused but embedding decode returns temps; external next_inputs.copy_+record_stream ownership edge |
+| C34 | cuda/sm70/gguf_ops.py:12 | reachable-current | JIT/host compiler/driver module load and firstCUBLAScontext/workspace can leave GPUwaiting; not inferred perhotcall |
+| C35 | cuda/sm70/gguf_ops.cu:737 | reachable-current | metadata checks/guard/stream lookup andlaunch error query are host overhead; initialization possible firsttouch |
+| C36 | families/qwen4_exp/cuda/gguf_weights.py:831 | reachable-current | reader/mmap/conversion and bounded GPUcopies/decode; CPUfinite checksandchunk loops canserializefeedingGPU |
+| C37 | families/qwen4_exp/cuda/gguf_weights.py:992 | reachable-current | bool(torch.isfinite(...).all()) on CUDA synchronizesvalidation; finalcuda.synchronize beforetable/read retirement |
+| C38 | families/qwen4_exp/cuda/forward.py:887 | not-reachable-current | separate decode/prefill vsmergedexperts opportunity; current branch intentionallynotselected |
+| C39 | families/qwen4_exp/cuda/gdn_multi.py:110 | not-reachable-current | batched front/tree/back; mirrorcopied.synchronize belongsotherdtype path, not currenthotF16 |
+| C40 | families/qwen4_exp/cuda/attn_multi.py:234 | not-reachable-current | mirrorcopied.synchronize/tablecopy andchunkedattention kernels notcurrentowner path |
+| C41 | cuda/sm70/family_ops.py:734 | not-reachable-current | per-row/perheadQK/softmax/PV orboundedtiles; arange/mask/dequant/copies; nativeattentionoptimized flag false inprivateBatch |
+| C42 | families/qwen4_exp/cuda/forward.py:98 | not-reachable-current | optionalfusers/plans/temporaryf32 outputs; no evidenceactivecurrent |
+| C43 | cuda/sm70/family_ops.py:76 | not-reachable-current | bool(bad.any()) appearsinRotorQuantgeneric path; CPU-onlybool(invalid) branch isnotGPUreadback; current_guardusesGPUstatus tensors |
+| C44 | families/qwen4_exp/cuda/forward.py:626 | sibling-handoff | b.staged.synchronize pinned-source reuse; statuspeers.cpu().tolist andhost event reads areexplicitwaits; notdeep-auditedhere |
+| C45 | cuda/sm70/gguf_ops.cu:720 | reachable-current | Python/TensorImpl/std::vector overhead; allocatorpool miss/cudaMalloc orlazyload mayblock, butempty/zeros doesNOTproveeverycall synchronizes |
+| C46 | cuda/sm70/gdn.cu:100 | reachable-current | __syncthreads/__syncwarp coordinate shared reduction/state update; recurrence serial inrow |
+| C47 | cuda/sm70/paged_attention.cu:131 | reachable-current | CTAbarriers publish shared query/keytiles,uniformerror flag andWMMAresults; *_sync warpcollectives |
+| C48 | cuda/sm70/family.cu:30 | reachable-current | CTAbarriers/sharedwrites,CUBblocksort andwarpcollectives aredevice dependencies, nothost waits |
+| C49 | cuda/sm70/gguf_ops.cu:406 | reachable-current | gate/up warps join beforeSwiGLU; width160warp WMMA synchronization; denseWMMAbarriers930+notcurrent |
+| C50 | cuda/sm70/routing.cu:60 | reachable-current | CTAcooperation forstable routing; native-logitsoptional sourcebarriersmustnotbecreditedactive |
+| C51 | cuda/sm70/compact_indexer.cu:12 | reachable-current | atomicCASfirst-error-latch isNOTbusy-spin;noownedpollingloopobserved; interkernelorder comesfromstream/events |
+| C52 | cuda/sm70/torch_reduce.cuh:40 | reachable-current | shared barriers andshfl_down_sync implement chosenFP32tree |
+| C53 | cuda/sm70/execution_policy.py:181 | correctness-finding-not-wait | wrongfixtureflagdoesnotcreateCPUwaitbutinvalidatesnumericqualification:991f32GPUactuallyranunderFalse whiletargetrequiresTrue |
+
+| C54 | cuda/experts.py:112 | cold allocation current; route/_ext inactiveGGUF | MoEBuffers always creates grouped.Plan fivezero buffers, startup/graph preparation allocation; no grouped hot-kernel attribution |
+
+Scope completion is bounded to the primary-assigned compute graph and listed owned files. It does not claim every instruction in upstream runtimes, every other supported model/platform route, or global optimality. No candidate is selected from this inventory; removal/implementation starts only after Root reconciles the complete pipeline inventory.

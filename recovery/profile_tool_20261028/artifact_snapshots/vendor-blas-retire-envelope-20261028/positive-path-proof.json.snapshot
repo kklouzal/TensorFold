@@ -1,0 +1,8 @@
+{
+  "run": true,
+  "retire": true,
+  "payload_bound": true,
+  "metrics": true,
+  "shapes": true,
+  "timed_measurement_try_body_exact": true
+}

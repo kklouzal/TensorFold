@@ -1,0 +1,11 @@
+{
+  "existingCUDA_body_byte_equal146f": true,
+  "newCUDA": "only32existingfunctionattributequeries; no launch/modelallocation/algorithmchange",
+  "math": "existingpacked_blocks2w body; IQusesgenericprojection, sharedFFNinexistingpackedkernels; targetF16/MTPF32",
+  "resources": "activation\u2264168960bytes; defaultnative2MiBsmallsegmentoperatingcredit +64KiBhost/rank,32codequeries;graphsettlementadditional/24floor preserved",
+  "unqualified": "old20metrics notacceptederrorthreshold; no currentP3/qualityclaim",
+  "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py": "byteexact146f",
+  "src/tensorfold/families/qwen4_exp/cuda/forward.py": "byteexact146f",
+  "src/tensorfold/families/qwen4_exp/cuda/gdn_state_batch.py": "byteexact146f",
+  "src/tensorfold/families/qwen4_exp/cuda/execution_identity.py": "byteexact146f"
+}

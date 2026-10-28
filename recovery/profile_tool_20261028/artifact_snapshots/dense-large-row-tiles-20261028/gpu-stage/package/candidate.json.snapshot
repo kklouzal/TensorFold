@@ -1,0 +1,9 @@
+{
+  "wheel_sha256": "991fd09081a9f3029e25ac67f02c10477f07a0f65ad210f24d953799e9388737",
+  "source_hold_sha256": "989e7a47e2be511d037bfe1c1657e72f436eaa33e2a489ac8457990b2e0a3fe1",
+  "fixture_source_hold_sha256": "45050a96d329c7edd6e045463f17cd26213aa7e0c4564addb398eedc6a9266b4",
+  "source_commit": "c517964eb7bebc3543274dc7be7ab920788384d5",
+  "source_profile": "source-dense-owner-batch-prelude-trial",
+  "source_review": "pendingcleanup_review",
+  "scope": "DENSEONLYownedM32largeprojectiontiles;97+1CPU/32GPUcollected; Expertsunchanged; strictnumericGPUUNRUN; noP3claim"
+}

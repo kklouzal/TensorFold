@@ -1,0 +1,11 @@
+from pathlib import Path
+import json,pytest
+
+def main():
+    args=['-s','-c','/dev/null','-o','pythonpath=/qualification/tests /qualification/tests/cuda /qualification','-p','no:cacheprovider','-x','-vv','--junitxml=/evidence/guard-target.xml','/qualification/tests/cuda/test_sm70_value_guard.py','/qualification/tests/cuda/test_sm70_owner_piece_graphs_tp8.py::test_v100_tp8_native_owner_exact_pieces_match_native_eager_frames_and_commits[guard]']
+    code=pytest.main(args)
+    Path('/evidence/pytest-exit.json').write_text(json.dumps({'exit_code':int(code),'argv':args,'scope':'69guardGPU0adversarial+1TP8profile/stateintegration; nofullmodelquality/performance'})+'\n')
+    raise SystemExit(code)
+
+if __name__ == "__main__":
+    main()

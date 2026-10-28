@@ -1,0 +1,13 @@
+{
+  "only5_function_ASTs_differ_b636": [
+    "_write_region_capture_ledger",
+    "check_router_blas_engine",
+    "graph_execution_snapshot",
+    "project_observers",
+    "write_moe_capture_ledger"
+  ],
+  "all_other_capture_helpers_classes_exact": true,
+  "src_diff_from_101f": "",
+  "reader_exact_b636_4c75": true,
+  "observer_exact_b636": true
+}

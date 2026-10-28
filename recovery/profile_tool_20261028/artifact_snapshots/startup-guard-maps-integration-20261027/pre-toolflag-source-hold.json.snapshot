@@ -1,0 +1,46 @@
+{
+  "schema": "tensorfold.startup-guard-maps-composition-v1",
+  "commit": "e1ac812ac248eafe55303f41f22f4dd3a1d76340",
+  "worktree": "/Warehouse/TensorFold-wt/v100-startup-guard-maps-20261027",
+  "guard_map_base": "870f392dadb02dff74e892573a42f0a271facf8f",
+  "standalone_startup": "32bc97fb",
+  "standalone_hold_sha256": "ad0fc0fbf1593208f8f3c55e77a677d54e08e92342362d620da57e40d9a548f8",
+  "source_paths": {
+    "README.md": "b0f727ebf2def43f99373635e61332b38879f7e72ffcdccbeb993e56002929b3",
+    "deploy/v100/source-foundation.md": "a561ca9a8cc827a237a917570c9ef3089d240becf73e3c70289ecf7829b6988c",
+    "src/tensorfold/_fd_owner.c": "aa5d4a6773f7d26c7dc43e0bf0817fb127e9d8a70de103f99acc8999fe6c3931",
+    "src/tensorfold/engine/model_identity.py": "37e76bdb643b4ab7ae47b6c449df5b8415b55602fac3165e0d99f6a5e9725298",
+    "src/tensorfold/families/qwen4_exp/cuda/engine.py": "eec7766a79e45579abf9d468c49290144f61818d967034bb69d5bc54e7e08ac3",
+    "src/tensorfold/families/qwen4_exp/cuda/execution_identity.py": "6c98e903e161f4304170c82a8f8f8d1d688c15f2907de170c65b25a8eb6c0aa9",
+    "src/tensorfold/families/qwen4_exp/cuda/startup_content.py": "4a7218c0972de571a2c018740f304c43dc1d37cfd16d3be9e5a62b078b878e3b",
+    "tests/test_flashnext_engine_lifetime.py": "cf8a039f1e411442aed70d70c97775eadbdf9c4f7b1441e453921ab0dc0638f0",
+    "tests/test_startup_content.py": "d5c248d33b40ffce8abec8b0b5157e33658c1cc3ea701d09205344d0e513dbf7"
+  },
+  "wheel": {
+    "path": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3138199,
+    "sha256": "26d49fea19db1cf7d1cc12fae99830068fe16f2d1f4ce5095dea8fb4f3b9c08c"
+  },
+  "compiled_extensions": [
+    {
+      "path": "tensorfold/_fd_owner.abi3.so",
+      "bytes": 46344,
+      "sha256": "c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d"
+    }
+  ],
+  "source_files": 717,
+  "controls": {
+    "checks": 477,
+    "subtests": 5,
+    "seconds": 14.78,
+    "exit_code": 0,
+    "log_sha256": "e01b02e42428c8dcd9f77cd4ef02251e7be135093cfe36b4ce4749ab93edb3b5",
+    "start_sha256": "c6df998994cf3473011d22b708f66d19e8c9016be7f5d4cb041bc3c3c9445ec7",
+    "pip": "PASS",
+    "Ruff": "PASS",
+    "normalwholewheel": "717+newFDc79 exact"
+  },
+  "composition": "Guard/mapskernelmathbyteidenticalselectedbase; startupimplementationidenticalstandaloneexceptexpliciteligibilityguardtrialstring anddocumentation. allrankbudget/processsourceauthority/retirementchecks unchanged.",
+  "GPU": "UNRUN; needsactual70GPUguard/statecontrols plusall6/startupfullmodel comparison; CPUchecksnogain/qualityclaim",
+  "global_host_bytes": 75501568
+}

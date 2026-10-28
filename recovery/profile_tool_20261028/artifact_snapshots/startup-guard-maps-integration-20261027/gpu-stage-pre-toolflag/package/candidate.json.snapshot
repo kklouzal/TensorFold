@@ -1,0 +1,9 @@
+{
+  "wheel_sha256": "26d49fea19db1cf7d1cc12fae99830068fe16f2d1f4ce5095dea8fb4f3b9c08c",
+  "source_hold_sha256": "4c0fab6f47f948cb8bf3b2b37b6062c698b9ea8d55c81d221ebd05049ad98e32",
+  "fixture_source_hold_sha256": "70ec99b7f7acd07aba7e9ca4e2da7f14f883907b672e474140f797697d70319e",
+  "source_commit": "e1ac812ac248eafe55303f41f22f4dd3a1d76340",
+  "source_profile": "source-owner-target-guard-trial",
+  "source_review": "pendingRootD13",
+  "scope": "70unchangedGPUguard/statecontrolswithstartupcompositionwholewheel; overlapworkerCPUfailurealreadycovered; actualfullmodelstartup/throughputUNRUN"
+}

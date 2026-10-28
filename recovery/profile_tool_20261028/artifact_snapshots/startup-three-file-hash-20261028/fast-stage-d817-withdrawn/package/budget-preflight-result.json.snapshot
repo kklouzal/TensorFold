@@ -1,0 +1,135 @@
+{
+  "schema": "tensorfold.fast-v2-offline-funded-budget-v1",
+  "reference_receipt": "actual3224N8admitted.json",
+  "old_reproduced_exact": true,
+  "old": {
+    "output_tokens": 512,
+    "global_host_commitment_bytes": 225708770615,
+    "cpu_span": 4614,
+    "model_cpu_bytes": 5347629336,
+    "rpc_bytes": 169344114494,
+    "caller_payload": {
+      "prepared_source_strings_and_buffers": 16715520,
+      "original_input_ids": 4426176,
+      "retained_result_ids": 555456,
+      "retained_decoded_text": 7866240,
+      "one_native_decode_and_conversion": 589984,
+      "bounded_report_graph": 13579059200,
+      "bounded_report_encoding_and_wire": 322357664,
+      "additional_native_decode_and_conversion": 13569632,
+      "worker_stacks": 1610612736,
+      "bounded_caller_control_payload": 131682048
+    },
+    "native_decode": {
+      "schema": "tensorfold.bytelevel-native-decode-payload-v1",
+      "budget": {
+        "context_ids": 512
+      },
+      "input_ids": 512,
+      "lexical_bytes": 131072,
+      "raw_bytelevel_bytes": 65536,
+      "decoded_utf8_bytes": 65536,
+      "phase_heap_requested_bytes": {
+        "token_lookup_clone_and_header_growth": 170080,
+        "piece_and_flat_bytes": 354568,
+        "lossy_and_to_string": 395296,
+        "decoder_join": 133144
+      },
+      "native_heap_requested_bytes": 395296,
+      "result_to_python_payload_bytes": 589984,
+      "json_escaped_content_bytes": 393216,
+      "json_escaped_string_bytes": 393218,
+      "policy": {
+        "identity": "model-content-v1:2d3079d3f16582e2f8e23dbff28255448b418f2807e24609961b74667c8b0189",
+        "files": [
+          [
+            "tokenizers-native",
+            11326992,
+            "4b1458a379296762a034d3bc89299c0c35b4eefb0577acca922f481b262c65a1"
+          ],
+          [
+            "tokenizers-sbom",
+            151305,
+            "6faa23324b2b53b4a8da9b451a675610cc45e1a23e8c5bb0740c080064e1ba0d"
+          ]
+        ],
+        "rust": "1.99.0/b940084d7",
+        "pyo3": "0.29.2",
+        "tokenizers_core": "0.23.2",
+        "source": "https://github.com/rust-lang/rust/blob/b940084d7/library/alloc/src/raw_vec/mod.rs",
+        "scope": "requested native heap layouts; allocator usable bytes/retention/RSS and fixed stack separate"
+      },
+      "evidence": "source-owned requested layouts; Python owners/allocator/RSS/fixed stack separate"
+    },
+    "wire_command_bytes": 255024
+  },
+  "v2": {
+    "output_tokens": 2048,
+    "global_host_commitment_bytes": 227565905207,
+    "cpu_span": 6150,
+    "model_cpu_bytes": 7135533336,
+    "rpc_bytes": 169344446270,
+    "caller_payload": {
+      "prepared_source_strings_and_buffers": 16715520,
+      "original_input_ids": 4426176,
+      "retained_result_ids": 2214336,
+      "retained_decoded_text": 31459200,
+      "one_native_decode_and_conversion": 2359456,
+      "bounded_report_graph": 13579059200,
+      "bounded_report_encoding_and_wire": 322357664,
+      "additional_native_decode_and_conversion": 54267488,
+      "worker_stacks": 1610612736,
+      "bounded_caller_control_payload": 132861696
+    },
+    "native_decode": {
+      "schema": "tensorfold.bytelevel-native-decode-payload-v1",
+      "budget": {
+        "context_ids": 2048
+      },
+      "input_ids": 2048,
+      "lexical_bytes": 524288,
+      "raw_bytelevel_bytes": 262144,
+      "decoded_utf8_bytes": 262144,
+      "phase_heap_requested_bytes": {
+        "token_lookup_clone_and_header_growth": 680032,
+        "piece_and_flat_bytes": 1417480,
+        "lossy_and_to_string": 1581088,
+        "decoder_join": 532504
+      },
+      "native_heap_requested_bytes": 1581088,
+      "result_to_python_payload_bytes": 2359456,
+      "json_escaped_content_bytes": 1572864,
+      "json_escaped_string_bytes": 1572866,
+      "policy": {
+        "identity": "model-content-v1:2d3079d3f16582e2f8e23dbff28255448b418f2807e24609961b74667c8b0189",
+        "files": [
+          [
+            "tokenizers-native",
+            11326992,
+            "4b1458a379296762a034d3bc89299c0c35b4eefb0577acca922f481b262c65a1"
+          ],
+          [
+            "tokenizers-sbom",
+            151305,
+            "6faa23324b2b53b4a8da9b451a675610cc45e1a23e8c5bb0740c080064e1ba0d"
+          ]
+        ],
+        "rust": "1.99.0/b940084d7",
+        "pyo3": "0.29.2",
+        "tokenizers_core": "0.23.2",
+        "source": "https://github.com/rust-lang/rust/blob/b940084d7/library/alloc/src/raw_vec/mod.rs",
+        "scope": "requested native heap layouts; allocator usable bytes/retention/RSS and fixed stack separate"
+      },
+      "evidence": "source-owned requested layouts; Python owners/allocator/RSS/fixed stack separate"
+    },
+    "wire_command_bytes": 255024
+  },
+  "additional_conservative_startup_and_role_bytes": 75567104,
+  "v2_conservative_total_bytes": 227641472311,
+  "captured_usable_host_bytes": 330583744512,
+  "projected_headroom_bytes": 102942272201,
+  "context": 262144,
+  "Q8_KV_windows": 24,
+  "GPU_allocation_change": false,
+  "scope": "Offline exact source-equation replay using captured actual tokenizer/runtime/baseline geometry; not current live admission or allocator/RSS/driver qualification. Live physical/cgroup admission remains required before submission."
+}

@@ -1,0 +1,31 @@
+from pathlib import Path
+import ast,hashlib,json,subprocess,sys,tarfile
+out,upload,want=Path(sys.argv[1]),Path(sys.argv[2]),sys.argv[3]
+sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+if out.exists() or sha(upload)!=want:raise RuntimeError('unique stage/tar hash differs')
+tmp=Path(str(out)+'.upload')
+tmp.mkdir()
+with tarfile.open(upload) as archive:
+    for member in archive.getmembers():
+        if not member.isfile() or member.name.startswith('/') or '..' in Path(member.name).parts:
+            raise RuntimeError('unsafe archive entry')
+    archive.extractall(tmp,filter='data')
+for name,row in json.loads((tmp/'stage-files.json').read_text()).items():
+    if (tmp/name).stat().st_size!=row['bytes'] or sha(tmp/name)!=row['sha256']:
+        raise RuntimeError('stage entry differs '+name)
+c=json.loads((tmp/'candidate.json').read_text());w=json.loads((tmp/'wheel-provenance.json').read_text())
+if len(w['source_files'])!=721 or w['compiled_extensions'][0]['sha256']!='c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d':raise RuntimeError('normal wholewheel/FD differs')
+if sha(tmp/'tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl')!=c['wheel_sha256'] or c['wheel_sha256']!=w['wheel']['sha256']:raise RuntimeError('wheel differs')
+if sha(tmp/'source-hold.json')!=c['source_hold_sha256']:raise RuntimeError('HOLD differs')
+for name,want in c['tool_dependencies'].items():
+    if sha(tmp/name)!=want:raise RuntimeError('tool differs')
+if sha(tmp/'execution-manifest.json')!=c['execution_manifest_sha256'] or c['execution_manifest_sha256']!='95336693957314d74ba50328679d2b9a37552cb3e11a891b7a4a1900503e5673':raise RuntimeError('native owner manifest differs')
+s=(tmp/'launch-finite.py').read_text()
+for literal in ['source-batch-router-blas-trial','--router-blas-trial','--gdn-state-batch-trial',"'--startup-content-workers','3'",'--owner-batch-prelude-trial','--native-dense-trial',"'--tokens','2048'",'fast-grid-v2',"'--session-ceiling','24'",'--quality-spotchecks','--concurrency-grid','--overlap-content-capture']:
+    if literal not in s:raise RuntimeError('controller contract missing '+literal)
+if '--execution-rows' in s:raise RuntimeError('default32 must be retained')
+for p in tmp.rglob('*.py'):ast.parse(p.read_text())
+subprocess.run(['bash','-n',str(tmp/'bootstrap-finite.sh')],check=True)
+(tmp/'results').mkdir();tmp.rename(out)
+r={'status':'STAGED ONLY; NOT EXECUTED','out':str(out),'files':len(json.loads((out/'stage-files.json').read_text())),'candidate':c,'controller_sha256':sha(out/'launch-finite.py'),'launch_command':['python3',str(out/'launch-finite.py')],'required_before_launch':'D13 source/stage release; Root GPU lease; shared3controls then actualall6+pairedquality; experimental numeric candidate no acceptance'}
+(out/'stage-ready.json').write_text(json.dumps(r,indent=2)+'\n');print(json.dumps(r))

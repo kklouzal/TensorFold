@@ -1,0 +1,26 @@
+{
+  "schema": "tensorfold-private-target-region-fixture-successor-v1",
+  "source_commit": "2a1c9dcffc597524d148b6b6aa2ff7fb7f8473e3",
+  "APP_source": "c517964eb7bebc3543274dc7be7ab920788384d5",
+  "APP_wheel": "991fd09081a9f3029e25ac67f02c10477f07a0f65ad210f24d953799e9388737",
+  "APP_source_byteexact": true,
+  "original_APP_HOLD": "989e7a47e2be511d037bfe1c1657e72f436eaa33e2a489ac8457990b2e0a3fe1",
+  "original_GPU32_reference": "parentreportedPASS underfixture reductionFalse; oldsource/stage/logs preserved, nottargetTrueFalsequalification",
+  "new_target_GPU32": "UNRUN;Rootexclusive",
+  "target_math_flags": {
+    "allow_fp16_reduced_precision_reduction": true,
+    "allow_fp16_accumulation": false
+  },
+  "fixture_policy": "assertactualflagsbefore+after; nevermutatesflags; bankATenoracle/testfunctionASTsbyteexact",
+  "checks": {
+    "CPU_flag_controls": 3,
+    "seconds": 1.59,
+    "GPUcollected": 32,
+    "collector_seconds": 0.4,
+    "Ruff": "PASS",
+    "wholewheel": "normal718canonicalsource+FDc79PASS;nooverlay",
+    "source_proof_sha256": "e7a11a499cecd6d34c375bf182c470640d9f0a29304b6875f761910ed1574dbb",
+    "CPU_log_sha256": "ca0975547fa4410c7320625c96769904ff34db8f610e8d98d5eaba8ce9545082"
+  },
+  "scope": "fixture/controlleronly; noDense/HC/Expert/nativeAPP/math changes; noHC256extension; noP3claim"
+}

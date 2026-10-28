@@ -1,0 +1,82 @@
+{
+  "schema": "router-model-final-provenance-v1",
+  "commands": {
+    "CPU-command.json": {
+      "argv": [
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--cpus",
+        "2",
+        "--memory",
+        "8g",
+        "-e",
+        "CUDA_VISIBLE_DEVICES=",
+        "-e",
+        "PYTHONDONTWRITEBYTECODE=1",
+        "-e",
+        "TORCH_CUDA_ARCH_LIST=7.0",
+        "--mount",
+        "type=bind,src=/Warehouse/TensorFold-wt/v100-router-cublas-model-20261028,dst=/source,readonly",
+        "--mount",
+        "type=bind,src=/Warehouse/TensorFold-portable-audit-20261026/router-cublas-model-20261028,dst=/evidence",
+        "--entrypoint",
+        "/bin/bash",
+        "sha256:30fda46a4c40422e055e0615a8186fc1c39678be9c8c9761885fc0cb77c28993",
+        "-c",
+        "set -euo pipefail; mkdir /attention-source; tar --exclude=.git --exclude=__pycache__ -C /source -cf - . | tar -C /attention-source -xf -; python -m pip wheel --no-build-isolation --no-deps /attention-source -w /evidence/wheels; python -m pip install --no-index --no-deps --force-reinstall --no-compile /evidence/wheels/*.whl; python -m pip check; python -m pytest -c /dev/null -o \"pythonpath=/source/tests /source\" -p no:cacheprovider -q /source/tests/test_sm70_router_blas.py /source/tests/test_sm70_router_blas_model.py /source/tests/test_sm70_execution_policy.py /source/tests/test_sm70_family_prefix_policy.py /source/tests/test_v100_backend_probe.py /source/tests/test_fast_grid.py; python -m pytest -c /dev/null -o \"pythonpath=/source/tests /source\" -p no:cacheprovider --collect-only -q /source/tests/cuda/test_sm70_router_blas.py; python -m ruff check --no-cache /source/src/tensorfold/cuda/sm70/router_blas.py /source/tests/test_sm70_router_blas.py /source/tests/cuda/test_sm70_router_blas.py /source/tests/test_sm70_router_blas_model.py /source/src/tensorfold/cuda/sm70/execution_policy.py /source/src/tensorfold/families/qwen4_exp/cuda/prefix_policy.py /source/src/tensorfold/families/qwen4_exp/cuda/state.py /source/src/tensorfold/families/qwen4_exp/cuda/forward.py /source/src/tensorfold/families/qwen4_exp/cuda/engine.py /source/tools/v100_backend_probe.py; mkdir -p /evidence/cpu-api-build; python - <<'COMPILE'\nfrom torch.utils.cpp_extension import load\nload(name=\"tf_router_blas_cpucompile\",sources=[\"/source/src/tensorfold/cuda/sm70/router_blas.cpp\"],with_cuda=True,extra_cflags=[\"-O3\"],extra_ldflags=[\"-lcublas\"],build_directory=\"/evidence/cpu-api-build\",verbose=True)\nCOMPILE"
+      ],
+      "cwd": "/home/kklouzal",
+      "no_GPU": true
+    },
+    "package-command.json": {
+      "argv": [
+        "docker",
+        "run",
+        "--rm",
+        "--network",
+        "none",
+        "--cpus",
+        "2",
+        "--memory",
+        "8g",
+        "-e",
+        "CUDA_VISIBLE_DEVICES=",
+        "-e",
+        "PYTHONDONTWRITEBYTECODE=1",
+        "-e",
+        "TORCH_CUDA_ARCH_LIST=7.0",
+        "--mount",
+        "type=bind,src=/Warehouse/TensorFold-wt/v100-router-cublas-model-20261028,dst=/source,readonly",
+        "--mount",
+        "type=bind,src=/Warehouse/TensorFold-portable-audit-20261026/router-cublas-model-20261028,dst=/evidence",
+        "--entrypoint",
+        "/bin/bash",
+        "sha256:30fda46a4c40422e055e0615a8186fc1c39678be9c8c9761885fc0cb77c28993",
+        "-c",
+        "set -euo pipefail; python -m pip install --no-index --no-deps --force-reinstall --no-compile /evidence/wheels/*.whl; python /evidence/verify-wheel.py; python -m pytest -c /dev/null -o \"pythonpath=/source/tests /source\" -p no:cacheprovider --collect-only -q /source/tests/cuda/test_sm70_router_blas.py; python -m ruff check --no-cache /source/tests/cuda/test_sm70_router_blas.py; python /source/tools/v100_backend_probe.py --help"
+      ],
+      "cwd": "/home/kklouzal",
+      "no_GPU": true
+    }
+  },
+  "results": {
+    "CPU-exit.json": {
+      "exit_code": 0
+    },
+    "package-exit.json": {
+      "exit_code": 0
+    }
+  },
+  "logs": {
+    "CPU.log": "e9bb06936fe78cb6ea35046a9ccaee3b93a9ab83b1f97a7ba76fd46423dabffa",
+    "package.log": "11d70ceaa5e57bc1837bbd7af3081c31c79a1cb290adedd875e737fd88adcc3c"
+  },
+  "initial_failure": "CPU-initial-failure.log andexit retained; one oldtestnamespace missing newROUTER_BLAS_TRIAL, correctednamespace+bothprofilefund assertions; implementation unchanged",
+  "package": "normalinstalled720canonical+FDc79 verified; source build /attention-source; no overlays",
+  "CPUwarning": "CUDAinvisible CPPcompile fallback CUDA_HOME expected andrecorded; no GPUclaim",
+  "post_CPU_change": "Onlynew3GPUsharedownership test functions appended after266CPU gate; separate package command collected31/Ruff/pass. Packaged runtime unchanged.",
+  "GPU": "UNRUN; Root exclusive lease"
+}

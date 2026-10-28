@@ -1,0 +1,334 @@
+#!/usr/bin/env python3
+"""Read-only, bounded streaming analysis of completed Kineto Chrome traces.
+
+No Torch/CUDA imports. Durations are instrumented wall intervals, not CPU busy
+time or throughput. Project labels and API/CPU operator durations are inclusive.
+"""
+import argparse
+from bisect import bisect_right
+from collections import Counter, defaultdict
+from concurrent.futures import ProcessPoolExecutor
+import hashlib
+import heapq
+import json
+import math
+import os
+from pathlib import Path
+import time
+
+CHUNK = 1 << 20
+MAX_CARRY = 16 << 20
+MAX_NAMES = 16384
+MAX_RANGES = 200000
+MAX_CORRELATIONS = 8000000
+MAX_KERNELS = 4000000
+MAX_REPORT = 512 << 10
+
+
+class Stream:
+    def __init__(self, path):
+        self.file = path.open("r", encoding="utf-8", newline="")
+        self.decoder = json.JSONDecoder()
+        self.digest = hashlib.sha256()
+        self.buffer, self.position, self.eof, self.bytes = "", 0, False, 0
+
+    def more(self):
+        self.buffer = self.buffer[self.position:]
+        self.position = 0
+        block = self.file.read(CHUNK)
+        raw = block.encode("utf-8")
+        self.digest.update(raw)
+        self.bytes += len(raw)
+        self.eof = not block
+        self.buffer += block
+        if len(self.buffer) > MAX_CARRY:
+            raise ValueError("JSON value/carry exceeds explicit16777216-character analysis bound")
+
+    def peek(self):
+        while True:
+            while self.position < len(self.buffer) and self.buffer[self.position].isspace():
+                self.position += 1
+            if self.position < len(self.buffer):
+                return self.buffer[self.position]
+            if self.eof:
+                return ""
+            self.more()
+
+    def expect(self, character):
+        if self.peek() != character:
+            raise ValueError("malformed Chrome JSON delimiter: expected" + character)
+        self.position += 1
+
+    def value(self):
+        self.peek()
+        while True:
+            try:
+                value, end = self.decoder.raw_decode(self.buffer, self.position)
+                if end == len(self.buffer) and not self.eof:
+                    self.more()
+                    continue
+                self.position = end
+                return value
+            except json.JSONDecodeError:
+                if self.eof:
+                    raise
+                self.more()
+
+    def events(self, header):
+        self.expect("{")
+        seen = False
+        while self.peek() != "}":
+            key = self.value()
+            self.expect(":")
+            if key == "traceEvents":
+                if seen:
+                    raise ValueError("duplicate traceEvents")
+                seen = True
+                self.expect("[")
+                while self.peek() != "]":
+                    event = self.value()
+                    if not isinstance(event, dict):
+                        raise ValueError("trace event must be an object")
+                    yield event
+                    if self.peek() != ",":
+                        break
+                    self.position += 1
+                self.expect("]")
+            else:
+                header[key] = self.value()
+            if self.peek() != ",":
+                break
+            self.position += 1
+        self.expect("}")
+        if not seen or self.peek():
+            raise ValueError("missing events or trailing JSON data")
+
+
+def add(table, key, duration):
+    if key not in table:
+        if len(table) >= MAX_NAMES:
+            raise ValueError("distinct analysis names exceed declared bound")
+        table[key] = [0, 0.0, 0.0]
+    row = table[key]
+    row[0] += 1
+    row[1] += duration
+    row[2] = max(row[2], duration)
+
+
+def top(table, maximum=40):
+    return [{"name": name[:512], "name_truncated": len(name) > 512,
+             "count": row[0], "inclusive_us": row[1], "maximum_us": row[2]}
+            for name, row in sorted(table.items(), key=lambda item: item[1][1], reverse=True)[:maximum]]
+
+
+def api_group(name):
+    lower = name.lower()
+    if "synchroniz" in lower or "waitevent" in lower:
+        return "synchronization"
+    if "query" in lower:
+        return "queries"
+    if "memcpy" in lower or "memset" in lower:
+        return "transfer_or_memset"
+    if any(part in lower for part in ("alloc", "free", "memrelease", "memcreate", "memmap", "memunmap")):
+        return "allocation_or_mapping"
+    if "launch" in lower:
+        return "launch"
+    return "other"
+
+
+def timelines(ranges):
+    result = {}
+    for tid, values in ranges.items():
+        points = []
+        for index, (start, end, name) in enumerate(values):
+            if end <= start:
+                continue
+            points.append((start, end, index, name))
+            points.append((end, end, index, None))
+        points.sort()
+        heap, segments, previous = [], [], None
+        for start, end, index, name in points:
+            if previous is not None and previous < start and heap:
+                segments.append((previous, start, heap[0][3]))
+            while heap and heap[0][1] <= start:
+                heapq.heappop(heap)
+            if name is not None and end > start:
+                heapq.heappush(heap, (-start, end, index, name))
+            previous = start
+        result[tid] = ([row[0] for row in segments], segments)
+    return result
+
+
+def phase_at(index, tid, timestamp):
+    starts, segments = index.get(tid, ([], []))
+    at = bisect_right(starts, timestamp) - 1
+    return segments[at][2] if at >= 0 and timestamp < segments[at][1] else "outside_project_labels"
+
+
+def union(intervals):
+    end = None
+    total = largest_gap = 0.0
+    for start, finish in sorted(intervals):
+        if end is None or start > end:
+            if end is not None:
+                largest_gap = max(largest_gap, start - end)
+            total += finish - start
+            end = finish
+        elif finish > end:
+            total += finish - end
+            end = finish
+    return {"union_us": total, "largest_gap_us": largest_gap}
+
+
+def analyze(arguments):
+    directory, output, rank = arguments
+    directory, output = Path(directory), Path(output)
+    path = directory / f"rank-{rank}-trace.json"
+    profile = json.loads((directory / f"rank-{rank}-profile.json").read_text())
+    final = json.loads((directory / f"rank-{rank}-final.json").read_text())
+    if not profile.get("complete") or not final.get("complete"):
+        raise ValueError("rank retirement/profile is not complete")
+    for boundary in ("before", "after"):
+        if profile["source_" + boundary]["status"] != "verified-source-software":
+            raise ValueError("rank source guard is not verified")
+    initial = path.stat()
+    started = time.monotonic()
+    header, categories, flows = {}, Counter(), Counter()
+    cpu, apis, kernels_by_name, labels, cpu_by_phase = {}, {}, {}, {}, {}
+    ranges, active, last_cpu = defaultdict(list), defaultdict(list), {}
+    runtime, kernel_rows, gpu_intervals = {}, [], []
+    events = nonmonotonic = duplicate_correlations = 0
+    device_ids = Counter()
+    stream = Stream(path)
+    try:
+        for event in stream.events(header):
+            events += 1
+            category, name, ph = event.get("cat", ""), event.get("name", ""), event.get("ph", "")
+            categories[category] += 1
+            if ph in ("s", "f"):
+                flows[category + ":" + ph] += 1
+            if ph != "X":
+                continue
+            ts, duration = event.get("ts"), event.get("dur")
+            if not isinstance(ts, (int, float)) or not isinstance(duration, (int, float)) or not math.isfinite(ts + duration) or duration < 0:
+                raise ValueError("invalid timed event")
+            tid, args = event.get("tid"), event.get("args", {})
+            if category in ("cpu_op", "user_annotation"):
+                if ts < last_cpu.get(tid, -math.inf):
+                    nonmonotonic += 1
+                last_cpu[tid] = ts
+                active[tid] = [row for row in active[tid] if row[0] > ts]
+            if category == "user_annotation" and name.startswith(("tensorfold/cpu/", "tensorfold/body/", "tensorfold/host/")):
+                add(labels, name, duration)
+                if sum(len(rows) for rows in ranges.values()) >= MAX_RANGES:
+                    raise ValueError("project range count exceeds declared bound")
+                ranges[tid].append((ts, ts + duration, name))
+                active[tid].append((ts + duration, name))
+            if category == "cpu_op":
+                add(cpu, name, duration)
+                phase = active[tid][-1][1] if active[tid] else "outside_project_labels"
+                add(cpu_by_phase, phase + " | " + name, duration)
+            elif category in ("cuda_runtime", "cuda_driver"):
+                add(apis, name, duration)
+                correlation = args.get("correlation")
+                if isinstance(correlation, int):
+                    if correlation in runtime:
+                        raise ValueError("ambiguous duplicate runtime correlation")
+                    runtime[correlation] = (name, ts, duration, tid)
+                    if len(runtime) > MAX_CORRELATIONS:
+                        raise ValueError("runtime correlations exceed declared bound")
+            elif category == "kernel":
+                if duration <= 0:
+                    raise ValueError("CUDA kernel has no positive actual duration")
+                add(kernels_by_name, name, duration)
+                device_ids[str(args.get("device"))] += 1
+                kernel_rows.append((ts, duration, args.get("correlation"), name))
+                gpu_intervals.append((ts, ts + duration))
+                if len(kernel_rows) > MAX_KERNELS:
+                    raise ValueError("kernel rows exceed declared bound")
+    finally:
+        stream.file.close()
+    current = path.stat()
+    if (initial.st_ino, initial.st_size, initial.st_mtime_ns) != (current.st_ino, current.st_size, current.st_mtime_ns):
+        raise ValueError("trace changed during read-only analysis")
+    raw_sha = stream.digest.hexdigest()
+    if raw_sha != profile["trace"]["sha256"] or stream.bytes != initial.st_size:
+        raise ValueError("trace SHA/byte count differs from completed rank receipt")
+    if not kernel_rows or not categories["cuda_runtime"] or not labels.get("tensorfold/cpu/input-prepare"):
+        raise ValueError("required actual kernel/runtime/CPU preparation evidence absent")
+    index = timelines(ranges)
+    runtime_by_phase, kernel_by_phase, projected_time, api_groups = {}, {}, {}, {}
+    for values in index.values():
+        for start, end, name in values[1]:
+            add(projected_time, name, end - start)
+    for name, ts, duration, tid in runtime.values():
+        phase = phase_at(index, tid, ts)
+        add(runtime_by_phase, phase + " | " + name, duration)
+        add(api_groups, phase + " | " + api_group(name), duration)
+    linked, delays = 0, []
+    for ts, duration, correlation, name in kernel_rows:
+        origin = runtime.get(correlation)
+        phase = "unmatched_kernel_correlation"
+        if origin is not None:
+            linked += 1
+            phase = phase_at(index, origin[3], origin[1])
+            delays.append(ts - origin[1])
+        add(kernel_by_phase, phase + " | " + ("NCCL" if "nccl" in name.lower() else "non_NCCL"), duration)
+    delays.sort()
+    windows = sorted((start, end, tid) for tid, rows in ranges.items() for start, end, name in rows if name == "tensorfold/host/generate")
+    window_reports = []
+    for number, (start, end, tid) in enumerate(windows, 1):
+        intervals = [(max(start, a), min(end, b)) for a, b in gpu_intervals if b > start and a < end]
+        window_reports.append({"ordered_generate_call": number, "tid": tid, "start_us": start, "end_us": end,
+                               "wall_us": end - start, "CUDA_kernel_intersection": union(intervals)})
+    report = {"schema": "tensorfold.streamed-kineto-analysis-v1", "rank": rank,
+        "trace": {"path": str(path), "bytes": stream.bytes, "sha256": raw_sha},
+        "completed_profile_and_source_guards": True,
+        "header": {key: header.get(key) for key in ("schemaVersion", "trace_id", "cuda_driver_version", "cuda_runtime_version", "cupti_version", "baseTimeNanoseconds")},
+        "events": events, "categories": dict(categories), "flows": dict(flows), "kernel_device_ids": dict(device_ids),
+        "actual_kernel_count": len(kernel_rows), "actual_cuda_runtime_count": categories["cuda_runtime"],
+        "project_label_ranges": top(labels), "project_innermost_thread_wall_segments": top(projected_time),
+        "top_CPU_operators_inclusive": top(cpu), "top_CPU_operators_by_project_start": top(cpu_by_phase, 60),
+        "CPU_event_order_violations": nonmonotonic,
+        "CPU_project_start_attribution_valid": nonmonotonic == 0,
+        "CUDA_APIs": top(apis), "CUDA_APIs_by_project_start": top(runtime_by_phase, 60),
+        "CUDA_API_groups_by_project_start": top(api_groups, 60),
+        "top_GPU_kernels": top(kernels_by_name), "GPU_kernels_by_originating_project": top(kernel_by_phase, 60),
+        "GPU_kernel_intervals": union(gpu_intervals), "leader_generate_windows": window_reports,
+        "correlation": {"linked_kernels": linked, "unmatched_kernels": len(kernel_rows) - linked,
+                        "runtime_correlation_duplicates": duplicate_correlations,
+                        "kernel_start_minus_API_start_us": {"min": delays[0], "p50": delays[len(delays)//2], "p95": delays[int((len(delays)-1)*.95)], "max": delays[-1]} if delays else None},
+        "analysis_elapsed_s": time.monotonic() - started,
+        "limits": {"carry_characters": MAX_CARRY, "carry_utf8_bytes_upper_bound": 4 * MAX_CARRY, "read_chunk_characters": CHUNK, "names_per_table": MAX_NAMES, "project_ranges": MAX_RANGES,
+                   "runtime_correlations": MAX_CORRELATIONS, "kernels": MAX_KERNELS, "report_bytes": MAX_REPORT},
+        "interpretation": "Profiled wall intervals; CPU operators/APIs inclusive and start-assigned to innermost same-thread project label. Kernel union includes NCCL waiting kernels; not useful-compute utilization. Generate windows are actual ordered host calls; current short diagnostic has onlyone MTP call. CPU labels exclude gpu_user_annotation. No CPU-busy, throughput, quality or unprofiled-gain inference."}
+    encoded = json.dumps(report, indent=2, allow_nan=False) + "\n"
+    if len(encoded.encode()) > MAX_REPORT:
+        raise ValueError("analysis report exceeds explicit512KiB bound")
+    (output / f"rank-{rank}-analysis.json").write_text(encoded)
+    return {"rank": rank, "kernels": len(kernel_rows), "runtime": categories["cuda_runtime"],
+            "events": events, "seconds": report["analysis_elapsed_s"], "sha256": raw_sha,
+            "CPU_order_violations": nonmonotonic}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--input", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--workers", type=int, default=4, choices=range(1, 5))
+    parser.add_argument("--ranks", default="0,1,2,3,4,5,6,7")
+    args = parser.parse_args()
+    ranks = [int(value) for value in args.ranks.split(",")]
+    if not ranks or len(set(ranks)) != len(ranks) or any(rank not in range(8) for rank in ranks):
+        parser.error("unique actual ranks0..7 required")
+    args.output.mkdir(parents=True, exist_ok=True)
+    configuration = {"argv": os.sys.argv, "python": os.sys.version, "source_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
+                     "workers": args.workers, "scope": "read-only completed traces; no Torch/CUDA imports"}
+    (args.output / "analysis-command.json").write_text(json.dumps(configuration, indent=2) + "\n")
+    with ProcessPoolExecutor(max_workers=args.workers) as pool:
+        for result in pool.map(analyze, [(str(args.input), str(args.output), rank) for rank in ranks]):
+            print(json.dumps(result), flush=True)
+
+
+if __name__ == "__main__":
+    main()

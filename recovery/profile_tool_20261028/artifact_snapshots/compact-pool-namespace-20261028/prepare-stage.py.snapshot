@@ -1,0 +1,22 @@
+from pathlib import Path
+import hashlib,json,shutil,tarfile,shlex,ast
+B=Path(__file__).parent;OLD=B.parent/'compact-tail-slices-integration-20261028/fixture-slot-fix/package';W=Path('/Warehouse/TensorFold-wt/v100-compact-pool-namespace-20261028');P=B/'gpu-stage/package';P.mkdir(parents=True)
+sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+for name in ('bootstrap.sh','verify_stage.py','verify_installed.py','protected-files.json'):shutil.copy2(OLD/name,P/name)
+for name in ('source-hold.json','wheel-provenance.json'):shutil.copy2(B/name,P/name)
+shutil.copy2(next((B/'wheels').glob('*.whl')),P/'tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl')
+for name in ('tests/compact_pool_reference.py','tests/test_compact_pool_preparation.py','tests/cuda/test_sm70_compact_pool_preparation.py'):
+ out=P/name;out.parent.mkdir(exist_ok=True,parents=True);shutil.copy2(W/name,out)
+fixture={'schema':'canonical-pool-fixture-HOLD-v1','canonical':str(W),'commit':'37518d018730da786dd5577bfaa7f6d2fb1a4885','paths':[{'path':str(p.relative_to(P)),'sha256':sha(p)} for p in (P/'tests').rglob('*.py')],'controls':45,'scope':'strictactualsameGPUoriginalpool; no tolerance/P3/NUMAall6claim'};(P/'fixture-source-hold.json').write_text(json.dumps(fixture,indent=2)+'\n')
+c={'wheel_sha256':sha(P/'tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl'),'source_hold_sha256':sha(P/'source-hold.json'),'fixture_source_hold_sha256':sha(P/'fixture-source-hold.json'),'expected_tests':45,'scope':'POOLprepstrictbit/math/RMS16/nonfinite/status component only; noP3/fullmodel/NUMAclaim'};(P/'candidate.json').write_text(json.dumps(c,indent=2)+'\n')
+s=(OLD/'run_controls.py').read_text().replace('tail.xml','pool.xml').replace('test_sm70_compact_tail_slices.py','test_sm70_compact_pool_preparation.py').replace('outcome.passed==2','outcome.passed==45').replace('strictSM70tailbytes/lease/snapshotpublication','strictSM70poolprepbits/RMS16padding/status');(P/'run_controls.py').write_text(s)
+p=P/'verify_installed.py';s=p.read_text().replace('import torch,os\n','import torch,os,sys\n').replace("if not torch.cuda.is_available() or torch.cuda.get_device_capability()!=(7,0):raise RuntimeError('actualSM70 required')\nprint(json.dumps({'torch_revision':torch.version.git_version,'cuda':torch.version.cuda,'device':torch.cuda.get_device_name(),'capability':torch.cuda.get_device_capability(),'TORCH_EXTENSIONS_DIR':os.environ.get('TORCH_EXTENSIONS_DIR'),'CUDA_CACHE_PATH':os.environ.get('CUDA_CACHE_PATH')}),flush=True)","if '--cpu-preflight' not in sys.argv:\n if not torch.cuda.is_available() or torch.cuda.get_device_capability()!=(7,0):raise RuntimeError('actualSM70 required')\n print(json.dumps({'torch_revision':torch.version.git_version,'cuda':torch.version.cuda,'device':torch.cuda.get_device_name(),'capability':torch.cuda.get_device_capability(),'TORCH_EXTENSIONS_DIR':os.environ.get('TORCH_EXTENSIONS_DIR'),'CUDA_CACHE_PATH':os.environ.get('CUDA_CACHE_PATH')}),flush=True)\nelse:print('CPU package/import preflight only; no hardware claim',flush=True)")
+assert '--cpu-preflight' in s;p.write_text(s)
+p=P/'bootstrap.sh';s=p.read_text().replace('set +e\n',"python -m pytest -c /dev/null -o 'pythonpath=/qualification/tests /qualification/tests/cuda /qualification' -p no:cacheprovider --collect-only -q /qualification/tests/cuda/test_sm70_compact_pool_preparation.py > /evidence/collect.txt\nset +e\n",1);p.write_text(s)
+root='/home/kklouzal/tensorfold-v100-qualification-20261026/compact-pool-prep-controls-20261028';argv=json.loads((OLD/'launch-command.json').read_text());argv=[x.replace('tf-compact-tail-slot-fix-controls','tf-compact-pool-prep-controls').replace('/home/kklouzal/tensorfold-v100-qualification-20261026/compact-tail-slot-fix-controls-20261028',root) for x in argv];(P/'launch-command.json').write_text(json.dumps(argv,indent=2)+'\n');(P/'launch-command.sh').write_text('#!/bin/bash\nset -euo pipefail\nexec '+shlex.join(argv)+'\n')
+for p in P.rglob('*.py'):ast.parse(p.read_text())
+files={str(p.relative_to(P)):{'bytes':p.stat().st_size,'sha256':sha(p)} for p in P.rglob('*') if p.is_file()};(P/'stage-files.json').write_text(json.dumps(files,indent=2)+'\n')
+with tarfile.open(B/'gpu-stage/payload.tar','w') as archive:
+ for p in sorted(P.rglob('*')):
+  if p.is_file():archive.add(p,arcname=str(p.relative_to(P)))
+print(json.dumps({'files':len(files),'APP':c['wheel_sha256'],'HOLD':c['source_hold_sha256'],'payload':sha(B/'gpu-stage/payload.tar'),'controller':sha(P/'launch-command.sh'),'remote':root,'command':'bash '+root+'/package/launch-command.sh'}))

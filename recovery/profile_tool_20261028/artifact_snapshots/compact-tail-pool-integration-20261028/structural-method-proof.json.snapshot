@@ -1,0 +1,15 @@
+{
+  "schema": "tail-pool-method-composition-proof-v1",
+  "TAIL_methods_exact_d3a": true,
+  "POOL_methods_exact_37518": true,
+  "only_APP_file_vs_c928": [
+    "src/tensorfold/families/qwen4_exp/cuda/compact_indexer.py"
+  ],
+  "Tail_GPU_and_CPUfixture_successor_eeb168_source_exact": true,
+  "POOL_frozen_oracle_exact37518": true,
+  "fixture_conflict_disposition": "eeb168CPUhunk expectedprioruncommittedcapture-slotfixtureincrement absentind3a. IntegratedexactbothfrozenCPU/GPUfixtureblobsfromeeb168, notblanketAPPconflictresolution; no runtime hunk conflict/edits.",
+  "no_new_numeric_mode_or_retained_payload_fields": true,
+  "GPU": "Rootonly; no prototypeindividualP3claimorcombinedall6acceptance",
+  "wholemodule_AST_except_two_methods_and_their_helpers_exact_c928": true,
+  "Cache_constructor_fields_and_other_method_AST_exact": true
+}

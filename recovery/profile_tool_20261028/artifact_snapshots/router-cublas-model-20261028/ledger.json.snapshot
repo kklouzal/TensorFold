@@ -1,0 +1,71 @@
+{
+  "schema": "router-cublas-model-prototype-v1",
+  "base": "490a49c2",
+  "reference_app": "86cb036dbcd2068f7b86956a8c3968355aa6509862b20e64f9c2a87f61f17500",
+  "authorization": "Root explicit private model experiment under user nonmaterial-quality allowance; not qualified",
+  "numeric_evidence": {
+    "strict28": "18 logit bit failures,10 passes; all28 picks and rounded FP16 route-weight bits exact",
+    "max_abs_observed": 2.0712614059448242e-06,
+    "worst_case_bound": "UNKNOWN; empirical range is not a universal bound"
+  },
+  "invariants": [
+    "default canonical router unchanged",
+    "24resident262144 Q8 windows",
+    "native MTP2/confidence.7 unchanged",
+    "FP32 recurrence unchanged",
+    "global math flags unchanged",
+    "shared per-role staging; no weights copied"
+  ],
+  "pending": [
+    "D13source/stage",
+    "3sharedownership actualCUDA controls",
+    "actualpairedmodel quality/all6FASTv2/reference comparison",
+    "broaderquality/fixedlength/repeats lateracceptance; no selection"
+  ],
+  "implementation": "clean30c3bf31 APPfee8555e/720FDc79",
+  "checks": "268CPU6.27s/Ruff/pip/help/CPPcompile+import/packagePASS;31GPUcollected actualunrun",
+  "HOLD": "source-hold-prefill.json SHAb0c4be5680d5f73f0a3e931e900feb8c3f01e498d6291a7c6c3be542dc790c31",
+  "stage": "fast-stage-prefill unique perf85-router-cublas-model-fee8-20261028; D13pending Rootlaunchonly",
+  "coverage": "Eager canonicaltarget/MTP only. Prefill and graph-only Buffers canonical; no graph scratch crossstream assumption. Actualperrolecalls reported from existing snapshots.",
+  "oldstage": "9011WITHDRAWNunexecuted; missingseparateprefilleligibility remediated withactualmethod tests",
+  "actual_root_run": {
+    "execution": 76978,
+    "source": "Root launch notification; no results claimed",
+    "status": "LIVE; source/stage immutable",
+    "APP": "fee8555e39f8072ea399ca4171874778b6e8e0b370ad3528413e15d7a49d9f87",
+    "HOLD": "b0c4be5680d5f73f0a3e931e900feb8c3f01e498d6291a7c6c3be542dc790c31",
+    "reference_86cb_rates": [
+      30.8,
+      22.8,
+      37.3,
+      56.2,
+      73.0,
+      73.3
+    ],
+    "separate_GDN_provisional_rates": [
+      30.8,
+      23.3,
+      37.3,
+      59.2,
+      78.4,
+      75.7
+    ],
+    "concurrency": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      24
+    ],
+    "qualification": "D13/actualquality/rates/counters pending; GDN not composed"
+  },
+  "resource_precision_review": {
+    "status": "OPEN D13 question; no live mutation",
+    "current_charge": "801024 rawGPU tensorpayload perrank",
+    "possible512granule_charge": 814592,
+    "difference": 13568,
+    "source_relation": "existingbatch_prelude.workspace_bytes rounds perallocation512; routerpointertables atcapacity32 are256B",
+    "qualification": "whether genericallocatorreserve already covers granules requires explicitdisposition, not assumed"
+  }
+}

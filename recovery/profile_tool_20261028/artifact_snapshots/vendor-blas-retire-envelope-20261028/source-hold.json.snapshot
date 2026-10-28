@@ -1,0 +1,19 @@
+{
+  "schema": "vendor-BLAS-retirement-envelope-successor-v1",
+  "source": "/Warehouse/TensorFold-wt/v100-vendor-blas-retire-envelope-20261028",
+  "commit": "734484a2cd2760f97954918145674323691e865e",
+  "base": "b4e6af85c2b742512ffe573a1266747f5ac89e98",
+  "scope": "Tool-only C6 retirement/outcome preparation failure; no APP/native/geometry/timing change. Actual b4e6/25315 remains immutable. No GPU repeat required/inferred.",
+  "files": {
+    "tools/v100_dense_shape_diagnostic.py": "fbf794a73dcc23f92b2f39fe83952c9ee77502e654d65d867047b9c4382c9c37",
+    "tests/test_v100_dense_shape_diagnostic.py": "e637591785e29b11aa04f4fb37db225a11f2d2201a43f7fded488cdd69900ba8"
+  },
+  "evidence": {
+    "controls-command.json": "67b1fde3de56d1fefa9bbb078c50e8b36196b0a0acd12666417cf810b73a3016",
+    "controls.log": "17eb12f6aa90d35dfbaf7821f16939be348bcbd5fe33790a6a50c4c78adce5ce",
+    "controls-exit.json": "1c8968d5940a4d09185467101c49d7afd81b2cb09ab2961c9039e79530dc5f9a",
+    "positive-path-proof.json": "42e98f49ae94e156596cb1d1d273105eaa2382864262d756ac7c53c30b9751f4"
+  },
+  "status": "15 actual-function CPU controls PASS4.05s; Ruff/help exit0; D13 closure pending",
+  "ownership": "Unexpected retirement errors retain TimingOwner in the named-primary traceback, including graphs/context/variants and fixed5-slot failure journal; native prior cause/context retained in traceback during outcome-compaction allocation failure."
+}

@@ -1,0 +1,21 @@
+{
+  "objective": "SelectcompleteMTPnativeprelude+startupoverlapcandidate whilepreservingall1/2/4/8/16/24decode/qualityconstraints,24full262144Q8K/VFP32state",
+  "source": "a7b1661f/HOLDfa8620/APP5635/FDc79",
+  "base": "e3ed8297actualMTPproducer+710ccoordinatealias; closed7779/fa6eownedstartupworker",
+  "milestone": "683CPU+5subtestsPASS16.66s/Ruff/pip/help/717canonical+FDexact",
+  "proof": "Allsrcoutside5startupintegrationpathsexacte3ed; startuphelpers4filesexactfa6e; MTPconfidence/CUDA/actualproducer/counters/8192hostperrankfundingexacte3ed",
+  "resource": "globalstartup75501568bytes+native8192host/rank;256KiBfollowers/60620800global24callerreceipts; noGPUallocation/geometrychange",
+  "design_checks": [
+    "\u00a715hardresourcesfundedbeforeacquisition",
+    "\u00a721fullfresh88GBcontentauthority/currentprocessmodelidentity reuse+fullstats+expectedhashchecks; allrankroleagreement",
+    "\u00a724actualnewwholewheel53+all6quality/nativecounter andmatchedperformance pending; noCPUqualasGPUgainclaim"
+  ],
+  "stages": {
+    "actual53": "startup-mtp-prelude-5635-controls-20261027 (22files,38447937receipt)",
+    "enabledall6": "perf85-startup-mtp-prelude-5635-fast24-20261027 (8e6ec2bccontroller)"
+  },
+  "GPU": "UNRUNbydelegate; Rootonly;D13sourceassessmentpendingthen53beforeall6",
+  "comparison": "Current3224verified26.6/18.7/29.3/39.4/46.9/47.8 allvalid, qualitysame4PASS2historicalFAIL. fa6estartupfirstpaired80.204s/20%lower butN2/N4dropsnotroundedequivalent; completeMTPcandidateeachNmustbeat/preserve.",
+  "quality": "Same6completedchecks/historicalfailuresretained; broadqualityunqualified; no qualitythresholdweakened",
+  "next": "D13source/stagebinding\u2192Rootactual53positiveMTPcounter\u2192Rootenabledall6/startupmeasurements; no morebuilds/testsrequestedbydelegate"
+}

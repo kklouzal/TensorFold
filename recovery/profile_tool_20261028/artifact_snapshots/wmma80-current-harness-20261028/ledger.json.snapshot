@@ -1,0 +1,43 @@
+{
+  "task": "narrowWMMAcorrectivesuccessor",
+  "source": "e1881d5457de738c5cb4bfe635b8f8347c1cd854",
+  "APP": "4899d93a192bdb228fedf7837c81a7f46c5cd7f62088e9d91a10760df8cde815",
+  "HOLD": "69ac1f40ae54564d1c1a13898a91873ae9738d27b7174c3633b8104a38544902",
+  "status": "Root98679TERMINAL;6safetyPASS3.81s;all6valid butNOTSELECTED",
+  "checks": "5affectedCPU1.97s/Ruff/normal721FDc79; nativecodebitexact1db compileevidence reused",
+  "fixes": [
+    "routedconstructorcount512\u2192publiccount513/sharedID512; prior513\u2192514 mismatch causedreferenceNaNs",
+    "rejectHIPallocatorenv alias inexistingdefaultnativeguard",
+    "supportedlegacyJUnitmetricproperties,no warningfilters"
+  ],
+  "preserved_failure": "router-gdn-wmma80-20261028/actual-a96a-safety-failure;5FAIL1PASS3.95s, no modeltiers,all5warningsretained",
+  "D13": "combined-review-final.json closed39dfe3ab Rootreviewernotification; source/stageonly",
+  "pending": [
+    "Root6actualsafetycontrols/no skips",
+    "Rootall6rates+WMMA/Router/GDNusage+all8native24/taskquality versus146f7c0",
+    "approximation/broadquality/repeatedacceptance remainsopen"
+  ],
+  "actual": {
+    "rates": [
+      28.9,
+      25.8,
+      44.4,
+      69.7,
+      98.6,
+      99.7
+    ],
+    "reference": [
+      31.1,
+      25.8,
+      43.7,
+      71.0,
+      102.7,
+      103.8
+    ],
+    "quality": "sixfulltext+IDs exact4pass2histfail",
+    "prefix": "54/55shorterprefixesexact;N1firstdifference194(characterizationnotqualityloss)",
+    "capacity": "all8actualWMMA49/Router/GDN/native24/row32 pass",
+    "audit": "router-gdn-wmma80-20261028/actual-first-all6-4899/comparison-vs-146f-7c0a.json",
+    "safety": "actual-safety-proof.json separatefrommodelresults"
+  }
+}

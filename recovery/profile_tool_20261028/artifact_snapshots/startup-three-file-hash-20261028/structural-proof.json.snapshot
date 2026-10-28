@@ -1,0 +1,10 @@
+{
+  "unchanged_canonical_runtime_files": 718,
+  "modified_runtime_modules": [
+    "tensorfold/families/qwen4_exp/cuda/execution_identity.py",
+    "tensorfold/families/qwen4_exp/cuda/startup_content.py"
+  ],
+  "nativeFD_CUDA_MTP_coordinatecounter_Engine_byte_exact": true,
+  "default_SingleCapture_methods": "Originalbehaviorpreserved; addedauthorities()returnsoneissuedresult; newGroupusedonlyexplicitworkers3",
+  "FASTv2": "cherrypickclosedbebf7; helperd009 unchanged"
+}

@@ -1,0 +1,3627 @@
+{
+  "wheel": {
+    "path": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3163059,
+    "sha256": "7c0acdfb2957c82ea69eb9e47fe8b1239c72b6c9c7aaa3242898631e121b6a51"
+  },
+  "source_files": [
+    {
+      "path": "tensorfold/__init__.py",
+      "bytes": 137,
+      "sha256": "fdc3b9c9e54fd20a7aca02113787d82cd8ac28cb10e5142225c718c2d4e6288e"
+    },
+    {
+      "path": "tensorfold/__main__.py",
+      "bytes": 58,
+      "sha256": "1d2c182701095903a9c668e06500dd4ad04196dcbcdc0eeb192a606519b1893d"
+    },
+    {
+      "path": "tensorfold/_fd_owner.c",
+      "bytes": 13970,
+      "sha256": "aa5d4a6773f7d26c7dc43e0bf0817fb127e9d8a70de103f99acc8999fe6c3931"
+    },
+    {
+      "path": "tensorfold/chat_metadata.py",
+      "bytes": 4370,
+      "sha256": "6dce4a83dc101f142d2933c085ac446bff0fe93732ac4a2b763235a774d1caa5"
+    },
+    {
+      "path": "tensorfold/checkpoint_metadata.py",
+      "bytes": 4732,
+      "sha256": "3bcf0bf9ad8fe7d12606814f3bd2ae0e3fe141a34ed44ad441db5935f12c6014"
+    },
+    {
+      "path": "tensorfold/checkpoint_quantization.py",
+      "bytes": 18313,
+      "sha256": "aaa68cfdba11bcb82ca1acd7eca14c557702bfbfddec010bdcb371820f372fb9"
+    },
+    {
+      "path": "tensorfold/cleanup.py",
+      "bytes": 7502,
+      "sha256": "3df16814548569dc1c8d2c850f6035e825916506a79148efcc55a9b544cc9218"
+    },
+    {
+      "path": "tensorfold/cli.py",
+      "bytes": 54544,
+      "sha256": "d753b68e732f5a3be85882b5d51b6970c2297924d5602740ad6ea0191974160a"
+    },
+    {
+      "path": "tensorfold/cli_args.py",
+      "bytes": 30264,
+      "sha256": "d4b1189f2d7abd5684ec89fa6031d6e5fa29ff87744ced32289cfed9101f6d1b"
+    },
+    {
+      "path": "tensorfold/cli_plan.py",
+      "bytes": 7073,
+      "sha256": "d95150aa82f21f7cb595fe99af96b330f5a1c7d2b4699cf7a5d80ca430d0d73d"
+    },
+    {
+      "path": "tensorfold/file_io.py",
+      "bytes": 5901,
+      "sha256": "568849d0a37ee8e62ef87068ae88c35cd64f12d8f55094988bffe9b6f643dd9e"
+    },
+    {
+      "path": "tensorfold/hub.py",
+      "bytes": 9964,
+      "sha256": "c60c7b38460c4ce01263d8e3c479e5a36b8525cbb71439df1f6d38eaa076f43f"
+    },
+    {
+      "path": "tensorfold/quantization.py",
+      "bytes": 5564,
+      "sha256": "4b63984275245eb33a2cb46c4d2cb1481e5d877bbb9b8ff57fd860f7c355eacb"
+    },
+    {
+      "path": "tensorfold/serve_options.py",
+      "bytes": 32486,
+      "sha256": "73a01766ec851b4bd2ed0a3ee0f935a8540ae4fd08bfcfd6b7fcd37335af6f5e"
+    },
+    {
+      "path": "tensorfold/thread_work.py",
+      "bytes": 4025,
+      "sha256": "4514959bf8af182b7c9b4e183d7984e784c0a6f997388d2a55cb141104428826"
+    },
+    {
+      "path": "tensorfold/token_metadata.py",
+      "bytes": 15220,
+      "sha256": "05820b1ba77dc42198816c0cd9d3a68385e59f1c4f0e5cecbe608d0dd3565e20"
+    },
+    {
+      "path": "tensorfold/tool_parameters.py",
+      "bytes": 3952,
+      "sha256": "c6fc2ad4f4bd7bd63bbf73f7898aa857763d842fd7ca5f42603abf8111401a18"
+    },
+    {
+      "path": "tensorfold/update.py",
+      "bytes": 13989,
+      "sha256": "574ec0d9f84bf7260f5015a6ed7ba686cb73e4f8a0f58af7b6ce84b1e3f45e75"
+    },
+    {
+      "path": "tensorfold/control/__init__.py",
+      "bytes": 116,
+      "sha256": "5c136f1b3a2516f82cccd19fddc36c01088673cbd4c5938707d7508a57fa6445"
+    },
+    {
+      "path": "tensorfold/control/__main__.py",
+      "bytes": 48,
+      "sha256": "935a1c1166b0c1ea35a82256345000bf2c73ded718d77773bc27a71ecce28f7d"
+    },
+    {
+      "path": "tensorfold/control/app.py",
+      "bytes": 15610,
+      "sha256": "d0cadf7b3a4f33d6a07e8999298f3311650c1b10886ed21d842830e19607c054"
+    },
+    {
+      "path": "tensorfold/control/cli.py",
+      "bytes": 14690,
+      "sha256": "1309c6845349f4081af888f3ecd733d38993f4b3fa11e47c91dea0ffe0b87c64"
+    },
+    {
+      "path": "tensorfold/control/config.py",
+      "bytes": 9820,
+      "sha256": "558b59c334a0529274c01874682f5685d7ab088b65a2601a07d0e265861262ab"
+    },
+    {
+      "path": "tensorfold/control/demo.py",
+      "bytes": 1787,
+      "sha256": "9f0947bf11f97e1d1c1341b51d5b02858033fd149972ceb39c140e34dbc81c89"
+    },
+    {
+      "path": "tensorfold/control/launchd.py",
+      "bytes": 11425,
+      "sha256": "2d9fb3c0808f45719ef2408a4ed139fdee0e222d9d6ff4fce35952f3651d0148"
+    },
+    {
+      "path": "tensorfold/control/logs.py",
+      "bytes": 2853,
+      "sha256": "e411928b701090f9acc42d9919ecbf7368d7f25b32d1e0e8bf47a229673b73b8"
+    },
+    {
+      "path": "tensorfold/control/runner.py",
+      "bytes": 4721,
+      "sha256": "2405be3e9379b0132500aa7fbc0066cd553edae98996a5ae21a97f979af4efaa"
+    },
+    {
+      "path": "tensorfold/control/safety.py",
+      "bytes": 4731,
+      "sha256": "4fa398c32e05e533a8092609649fda1a255490123a5f57f1e48f18b341f7f382"
+    },
+    {
+      "path": "tensorfold/control/telemetry.py",
+      "bytes": 11839,
+      "sha256": "3816084fe06955875cf46f97b2e1ebd3a42db09b9e481ca0852eac5782c9817c"
+    },
+    {
+      "path": "tensorfold/control/view.py",
+      "bytes": 18617,
+      "sha256": "28b30ae0c49e93f5f5966eed8ca483dcfd3a35fa5e03513971fae3558050d2f0"
+    },
+    {
+      "path": "tensorfold/control/assets/__init__.py",
+      "bytes": 72,
+      "sha256": "f066e9649ecfcd6deba36b11cf82e2a9a914bc32f82d8f16e3b0016cc46ed439"
+    },
+    {
+      "path": "tensorfold/control/assets/logo-pixels.json",
+      "bytes": 11723,
+      "sha256": "a2f1272246a347a5961bf64ad8d1b17dfc52a069689dea6fb58f4a9eb57269ad"
+    },
+    {
+      "path": "tensorfold/cuda/__init__.py",
+      "bytes": 117,
+      "sha256": "c836dd0526b132b0186e20eda993055a1b6855e163ddb18f3fed8ca21c9d4578"
+    },
+    {
+      "path": "tensorfold/cuda/allocation_bound.py",
+      "bytes": 11400,
+      "sha256": "b2d9f218a0af285b8bf5584ed54ec8ae32cfcfb9fbbbe16937e542002990378f"
+    },
+    {
+      "path": "tensorfold/cuda/build.py",
+      "bytes": 14466,
+      "sha256": "dc3c104e47f423550b6ac7f4d9b51b63d9a489e3c3232bd6f4e277d6faddf767"
+    },
+    {
+      "path": "tensorfold/cuda/capacity.py",
+      "bytes": 54162,
+      "sha256": "5b8c932d7d1af417563a6b559c7d965ce391ce4d1d05233969887f8c3d86c719"
+    },
+    {
+      "path": "tensorfold/cuda/chat_template.py",
+      "bytes": 5174,
+      "sha256": "c0b77780322c483664e06fed8917dbfc8f8b1e9c4c904140b1e49e20bc8f88dc"
+    },
+    {
+      "path": "tensorfold/cuda/cohort.py",
+      "bytes": 1185,
+      "sha256": "b326582f1a741f67e154bb7615d390abfb7911c56dbeae64c89d864b4e7e904f"
+    },
+    {
+      "path": "tensorfold/cuda/comm.py",
+      "bytes": 40483,
+      "sha256": "3a6e3fa81307522c1df6f36b66748d38c12930a37a9e794688ec9eec2ae4d196"
+    },
+    {
+      "path": "tensorfold/cuda/direct_read.py",
+      "bytes": 24369,
+      "sha256": "7b054f329c3b932463f6b634981ced53830c37cf145d8bf186c0455e6edffcc4"
+    },
+    {
+      "path": "tensorfold/cuda/engine_lifetime.py",
+      "bytes": 1785,
+      "sha256": "afe08289d6f69a57f417e3dba807eb1851b180f0c5914eab92979e0fe0c35ac0"
+    },
+    {
+      "path": "tensorfold/cuda/expert_cache.py",
+      "bytes": 30113,
+      "sha256": "2a496f8d6d3f57d6e73a9a2eb343a7669764ed8615c6ad3bc6c3f2c19d619441"
+    },
+    {
+      "path": "tensorfold/cuda/expert_launch.py",
+      "bytes": 15374,
+      "sha256": "7e54e574858336e209322ab9aa20ac991a1fc9788ed035e0e903272c6756ae9a"
+    },
+    {
+      "path": "tensorfold/cuda/expert_parallel.py",
+      "bytes": 7133,
+      "sha256": "8e1e36ba0173d8ac2df76144b04d7bc908316b72c1dd31e6157620a8a18447e2"
+    },
+    {
+      "path": "tensorfold/cuda/expert_pin.cpp",
+      "bytes": 4586,
+      "sha256": "3d951a43d6c7ab9018dd026e1b5b7e7887d9e6d94b0c367b7e01851a77305c25"
+    },
+    {
+      "path": "tensorfold/cuda/expert_pin.py",
+      "bytes": 10805,
+      "sha256": "3d6b6d8d70dd7e834112652c6900246c1a5e082e976f7efc2fa578a911249f83"
+    },
+    {
+      "path": "tensorfold/cuda/expert_rank.py",
+      "bytes": 6004,
+      "sha256": "ff89150263455d8fc0265193aa727c8f6be985187c4609e58ed5995fedb873e4"
+    },
+    {
+      "path": "tensorfold/cuda/expert_window.py",
+      "bytes": 2573,
+      "sha256": "0983ddf362c12f5b99ccc33319b2f2e19e4277bfacc7ad2a00e2a51c294ad7d7"
+    },
+    {
+      "path": "tensorfold/cuda/experts.cpp",
+      "bytes": 6468,
+      "sha256": "a4f6cda4e1dea92757431a5c4f7ebfe47acf0ee6b33126d11eedef395b7847e7"
+    },
+    {
+      "path": "tensorfold/cuda/experts.cu",
+      "bytes": 15540,
+      "sha256": "9744f9e1af558ad231a413657af9111af06c1d80a00d577f07fe75edf8e430d3"
+    },
+    {
+      "path": "tensorfold/cuda/experts.cuh",
+      "bytes": 4227,
+      "sha256": "bd971baa15b3fd0a8bfc102807aebe636690e92fa7ef8ccd8b98db8626bd0fdd"
+    },
+    {
+      "path": "tensorfold/cuda/experts.py",
+      "bytes": 8575,
+      "sha256": "2fe86bb23c9b193be0ce9a47af15c79a87e8d82fb0e2eb82eaaf22262b613412"
+    },
+    {
+      "path": "tensorfold/cuda/experts_pack.cu",
+      "bytes": 3143,
+      "sha256": "791fa672bb3f894de94d0675a097700189c98b11c1a5ad298beaa49ed38473e5"
+    },
+    {
+      "path": "tensorfold/cuda/experts_prefill.cu",
+      "bytes": 1604,
+      "sha256": "d336dbcae9f075c48b88fc12ba0231deb0f1f0a772ad3012fc62d19b9ac5837f"
+    },
+    {
+      "path": "tensorfold/cuda/experts_prefill.cuh",
+      "bytes": 8192,
+      "sha256": "37d3a6da5814a2edaf9c2ce664067a6f7664609d081bcc48347266c53f47ce43"
+    },
+    {
+      "path": "tensorfold/cuda/experts_window.cu",
+      "bytes": 2078,
+      "sha256": "1636c721f2aa9a95671c1651cd1373fec296180449cd149c9e265a252f9a781c"
+    },
+    {
+      "path": "tensorfold/cuda/foundation_tools.py",
+      "bytes": 13956,
+      "sha256": "ba86846f48a43e323732dc0ba4611af33abfbc4c4cc23aeed38853a6c71510e9"
+    },
+    {
+      "path": "tensorfold/cuda/geometry.py",
+      "bytes": 41545,
+      "sha256": "12a775fec954ea6d89dd175cea19845a036335b394a79bb5536ed589a9c3b61c"
+    },
+    {
+      "path": "tensorfold/cuda/health.py",
+      "bytes": 5540,
+      "sha256": "ddfe9dfb8fd19dbefdac74ebb38849843988285e50d3a849cd55ef86db6ccd64"
+    },
+    {
+      "path": "tensorfold/cuda/host_experts.py",
+      "bytes": 11251,
+      "sha256": "0e205d182d3784e9f61c9907d9dfe4c74a4f539a55b8da3f9318e2da5d488a2c"
+    },
+    {
+      "path": "tensorfold/cuda/host_pin.py",
+      "bytes": 12399,
+      "sha256": "63fdfa91c6475e27e946a0b702daeed1ff5cc65bca903c49233dd544f32b8efb"
+    },
+    {
+      "path": "tensorfold/cuda/http.py",
+      "bytes": 21622,
+      "sha256": "846b6c0ae962bb0a76dab960cfd221b551f52dbba664e5618c6ae6703d5a665a"
+    },
+    {
+      "path": "tensorfold/cuda/kv_arena.py",
+      "bytes": 17763,
+      "sha256": "12842cf6ae96c4e8d4798686341e4bc3cd6c2adf01fa0a7c369d1b2276d3d3f1"
+    },
+    {
+      "path": "tensorfold/cuda/local_store.py",
+      "bytes": 6759,
+      "sha256": "2842bf5b72fd6cc19fe075db4b809d14720465d54565e79cab7e893206584007"
+    },
+    {
+      "path": "tensorfold/cuda/logprobs.py",
+      "bytes": 8513,
+      "sha256": "e7c869e1ccc28f00124f3add62d7d91184534a3bd2c133f81e4f6e08a0c4f956"
+    },
+    {
+      "path": "tensorfold/cuda/markers.py",
+      "bytes": 4293,
+      "sha256": "6d94da488e6ea10457c9717124a5681d3863fe1daea6394b699dfe961c2d75d1"
+    },
+    {
+      "path": "tensorfold/cuda/memory_gate.py",
+      "bytes": 3396,
+      "sha256": "3b32c47f17d11c7ea8d3cfb27b36a37ec572a9ffe5e5441c5b4a7504adfc5d1b"
+    },
+    {
+      "path": "tensorfold/cuda/moe.py",
+      "bytes": 14165,
+      "sha256": "1063e13aa9faec0445faccc15160e4d31f8a330519577022b8a9c11d73b391e3"
+    },
+    {
+      "path": "tensorfold/cuda/numa_memory.cpp",
+      "bytes": 6134,
+      "sha256": "e002fb7574279addb3b829dabafd0dcdfdf099d905b91fb29633ffcaca73290f"
+    },
+    {
+      "path": "tensorfold/cuda/numa_memory.py",
+      "bytes": 16452,
+      "sha256": "006aceac186ae15755a5919d272fd805f4eff4cbd490e4ee342427974e78a1f9"
+    },
+    {
+      "path": "tensorfold/cuda/output_mailbox.py",
+      "bytes": 9256,
+      "sha256": "248cbd5e32e8bffb0d4f891eff4f3082fe8197cbd29b4c4680418fb913b650d7"
+    },
+    {
+      "path": "tensorfold/cuda/packed_experts.py",
+      "bytes": 15246,
+      "sha256": "da6c82a6994ec789e8cc81d5cf84d21cf21b65fbbb13b7cf6ea896bb03e297ed"
+    },
+    {
+      "path": "tensorfold/cuda/pdl.py",
+      "bytes": 3237,
+      "sha256": "96da5528efd82c91a0322b0a621d4aa4761d563d49478f8e26c5dbe779ed596a"
+    },
+    {
+      "path": "tensorfold/cuda/precision.py",
+      "bytes": 1339,
+      "sha256": "298f448610c4b8abc7f81558ca9db4ed767c8a53553af266d5828bb11a50e4b9"
+    },
+    {
+      "path": "tensorfold/cuda/profile_app.py",
+      "bytes": 8900,
+      "sha256": "28bedb4c4e3640d6a88dfd0862b89c08256660669dec023cd2fc3fe816ea26c6"
+    },
+    {
+      "path": "tensorfold/cuda/profile_binding.py",
+      "bytes": 12846,
+      "sha256": "d3f9c0ebc7741ac5311c26f79ea2238808fdbec609812aa8d97f437bfd2a52b1"
+    },
+    {
+      "path": "tensorfold/cuda/prompt_precision.py",
+      "bytes": 1238,
+      "sha256": "2d190812ad9034fc2c0188a06f9fe814be0eab655cca08257c383160de323251"
+    },
+    {
+      "path": "tensorfold/cuda/rank_protocol.py",
+      "bytes": 17841,
+      "sha256": "5df5da6f2bb085e9ad24f8dca499d01173684cc08ce60cc7e0458f8cba529e02"
+    },
+    {
+      "path": "tensorfold/cuda/read_budget.py",
+      "bytes": 1846,
+      "sha256": "a29fe8a33923bea57b6a8c0b4324c82dbe46ac78442aca8d7cf77be78b94e25d"
+    },
+    {
+      "path": "tensorfold/cuda/reply_text.py",
+      "bytes": 9493,
+      "sha256": "7060181df51059aa121924d11d8bff6139792ee6bef2567445507f41700a8b46"
+    },
+    {
+      "path": "tensorfold/cuda/requant.py",
+      "bytes": 12425,
+      "sha256": "15000baf207947fa33dd5e153595eee9c267a081e04989e05b29443440a72500"
+    },
+    {
+      "path": "tensorfold/cuda/route.cu",
+      "bytes": 14787,
+      "sha256": "2fd5c137b44e070fcbebf42bdcae00952bb1e825b192be887835daa9cc0088dd"
+    },
+    {
+      "path": "tensorfold/cuda/sampling.py",
+      "bytes": 55176,
+      "sha256": "e77397a4cc0fe61dbd2a9bc3f91f4a0f13da5d2a967d094d69b7ec23404adfb9"
+    },
+    {
+      "path": "tensorfold/cuda/scheduler.py",
+      "bytes": 75345,
+      "sha256": "ac85b824817299ec087d66fcdc7baccf14a4a3ca736e7ed8c2d37cb71074a17d"
+    },
+    {
+      "path": "tensorfold/cuda/server.py",
+      "bytes": 70265,
+      "sha256": "8bf7c63d140b4f98e05ba5e84d62fbd8500aab95c4e9d72df91b066d21682d6e"
+    },
+    {
+      "path": "tensorfold/cuda/speculative.py",
+      "bytes": 13769,
+      "sha256": "dbe5c169ba7cb89e0acca40a948ce4e5adfaff5f31734140b47b928cf4a93c26"
+    },
+    {
+      "path": "tensorfold/cuda/store_fields.py",
+      "bytes": 710,
+      "sha256": "65d7633bf15a01fee1ca736d14d1b12e5c2af02af62860709e11f141f35f7b16"
+    },
+    {
+      "path": "tensorfold/cuda/store_wait.py",
+      "bytes": 865,
+      "sha256": "2b0a759b9c99364c8592364717051de65359e79c560fba5fe5db9f6e1bb663db"
+    },
+    {
+      "path": "tensorfold/cuda/streams.py",
+      "bytes": 12355,
+      "sha256": "afdb4ecc78f80652a409416254b063584ce94731330390e8288dacd50144c286"
+    },
+    {
+      "path": "tensorfold/cuda/tensor_file.py",
+      "bytes": 18048,
+      "sha256": "28971e345e9a93512073a5997903480ee229d6c6eb947dc55d5b7c1be019d18d"
+    },
+    {
+      "path": "tensorfold/cuda/turns.py",
+      "bytes": 2144,
+      "sha256": "288b706a9b59a37988c248b7698bf690a0584808dde6a85f661930879c3bef5d"
+    },
+    {
+      "path": "tensorfold/cuda/exl3/__init__.py",
+      "bytes": 268,
+      "sha256": "26fa342ba8a3031a5b281d6c10fcbdc9dff3a27610e511c0d7a7f536ead024b0"
+    },
+    {
+      "path": "tensorfold/cuda/exl3/cache_layout.py",
+      "bytes": 4629,
+      "sha256": "93571f4ba6e621798c75548a1190d70326324c5131fb641d2a03bc4d737c8019"
+    },
+    {
+      "path": "tensorfold/cuda/exl3/decode.cuh",
+      "bytes": 6464,
+      "sha256": "ba15a981479856466caba0ece6fcbee149343759fe247147c2066642d54993af"
+    },
+    {
+      "path": "tensorfold/cuda/exl3/experts.cpp",
+      "bytes": 7465,
+      "sha256": "a6efac76e9708ba73da6d9c9e9ab809861ddfe8c708fecaeda7a40f191058e57"
+    },
+    {
+      "path": "tensorfold/cuda/exl3/experts.cu",
+      "bytes": 19235,
+      "sha256": "3b8401c7ca54c0d8e1b27613518876e65889a1bdec24b63708d3358f04b80452"
+    },
+    {
+      "path": "tensorfold/cuda/exl3/experts.py",
+      "bytes": 10734,
+      "sha256": "7eabd6198c8b9bba5561ec0fa5edf3edc2335a47248ca6ffff23c69c15a0565f"
+    },
+    {
+      "path": "tensorfold/cuda/exl3/experts_cb0.cu",
+      "bytes": 293,
+      "sha256": "719ce51b1eb0218a36578adb9145358ee1271f0bbc72cfc575f3a273856bc236"
+    },
+    {
+      "path": "tensorfold/cuda/exl3/experts_cb1.cu",
+      "bytes": 291,
+      "sha256": "dad1e479d6047d4af6b30d38dab492df4534b829f8ef34d69552f6f033ee8825"
+    },
+    {
+      "path": "tensorfold/cuda/exl3/experts_cb2.cu",
+      "bytes": 292,
+      "sha256": "bcf5ea9c9d6f36dafa3132f52529006dfe0853425bad03040a9e37164f9266c4"
+    },
+    {
+      "path": "tensorfold/cuda/exl3/experts_grouped.cuh",
+      "bytes": 15041,
+      "sha256": "c34d245b5f425922f847acae25b1d44d847953af57cdafe5153b05761afbdb0b"
+    },
+    {
+      "path": "tensorfold/cuda/exl3/format.py",
+      "bytes": 17536,
+      "sha256": "dcc68da0d56e0b314f486bfa16c8f14b0ba13051670da4ed7f445f0e4aaa7648"
+    },
+    {
+      "path": "tensorfold/cuda/exl3/host_experts.py",
+      "bytes": 54651,
+      "sha256": "d9225207942c080fba5fabf13a47952e5cb927e6e8f1d64dd8c8dfcc348e0751"
+    },
+    {
+      "path": "tensorfold/cuda/exl3/inspect.py",
+      "bytes": 4397,
+      "sha256": "7f08c68855f0e94a8573e713eeaa04bc982d19d5f82605b2c78bea13db570c99"
+    },
+    {
+      "path": "tensorfold/cuda/exl3/linear.cpp",
+      "bytes": 3957,
+      "sha256": "a80e17f39a7bde64ef2e8e01717d014caf72d66f535bdc9ee81160d71d17b6c5"
+    },
+    {
+      "path": "tensorfold/cuda/exl3/linear.cu",
+      "bytes": 17644,
+      "sha256": "4251bec24334bcae9d97d5ed2ef9cdf44cb7163243cd4079a18e253922f627fe"
+    },
+    {
+      "path": "tensorfold/cuda/exl3/linear.py",
+      "bytes": 8772,
+      "sha256": "aa267ee0f517fa9759f21c95419942c7c1f304be1bb8899975196e945f8c33d3"
+    },
+    {
+      "path": "tensorfold/cuda/exl3/prefill.py",
+      "bytes": 4239,
+      "sha256": "8a14f0df77b9b31512853df66d64eaf06da07da7f2184071444fab0851cd9489"
+    },
+    {
+      "path": "tensorfold/cuda/kernels/__init__.py",
+      "bytes": 114,
+      "sha256": "0816090b04070f2f17347bee5cd7ba0ef262e432e579dd35c40eeae353b2294a"
+    },
+    {
+      "path": "tensorfold/cuda/kernels/affine.py",
+      "bytes": 4453,
+      "sha256": "74967b517a5a0f253f6cfaacc85ce8fc31d0eaddb5367e97985d2469140ac19d"
+    },
+    {
+      "path": "tensorfold/cuda/kernels/affine_kernels.py",
+      "bytes": 2943,
+      "sha256": "9165d92bf0a3908ce525b69802f14b4534bf9615bc8e470f539e72f0902fa1a5"
+    },
+    {
+      "path": "tensorfold/cuda/kernels/attention.py",
+      "bytes": 14681,
+      "sha256": "863214f4b217d48e848ba2e95c57eb967bba7c3943238b8b1ac7ba73f6a076dd"
+    },
+    {
+      "path": "tensorfold/cuda/kernels/gdn.cpp",
+      "bytes": 13061,
+      "sha256": "1cb1a065a782f336b68080a4d4456a1acd3c1e38992ded756bb026efd50d394f"
+    },
+    {
+      "path": "tensorfold/cuda/kernels/gdn.cu",
+      "bytes": 18125,
+      "sha256": "b779e9c41fd66e82db2f9b6f246a55c8f5462231604e47d4ccbf930397f9700b"
+    },
+    {
+      "path": "tensorfold/cuda/kernels/gdn.py",
+      "bytes": 15638,
+      "sha256": "13f33655b93a9d0f5259bfeed22cae46bc7d0413ff11b30201ebc979a0c3ee43"
+    },
+    {
+      "path": "tensorfold/cuda/kernels/gdn_prefill.cu",
+      "bytes": 8824,
+      "sha256": "cbb1cb0f7953d833c428e0919732740e03d9b8e81b32db68d4370bdb6543dfe4"
+    },
+    {
+      "path": "tensorfold/cuda/kernels/kernel_configuration.cuh",
+      "bytes": 1688,
+      "sha256": "5fe390a43e706ac43a6ab040b48f07439278a97a8afa0da475ef99efd91c98e3"
+    },
+    {
+      "path": "tensorfold/cuda/kernels/pdl.cuh",
+      "bytes": 1672,
+      "sha256": "f73879d260903b714db509910bdce85927c8b6a4393da9c2d3e1af903381ff83"
+    },
+    {
+      "path": "tensorfold/cuda/kernels/prefill_attention.cpp",
+      "bytes": 3450,
+      "sha256": "c5ec261e5a8a871e4383ad3292710a9bfdecf84ea04baef0f97f0edec8ba6722"
+    },
+    {
+      "path": "tensorfold/cuda/kernels/prefill_attention.cu",
+      "bytes": 13303,
+      "sha256": "e5511f4b29b2a9ec2fa0c272bd7efc83c219ca1fb2f2aed2906edb263cbbbf84"
+    },
+    {
+      "path": "tensorfold/cuda/kernels/prefill_attention.py",
+      "bytes": 6795,
+      "sha256": "672c9054f83121f80eae8088cb8bd1c8a249a45fd3dace237df45e51457edabf"
+    },
+    {
+      "path": "tensorfold/cuda/kernels/qmm.cpp",
+      "bytes": 21536,
+      "sha256": "8368be187a21074a4a79521f23213d71129e664914d73b8e57616c850ee8a48e"
+    },
+    {
+      "path": "tensorfold/cuda/kernels/qmm.cu",
+      "bytes": 18359,
+      "sha256": "0dcc0bb6282553459ca6686767c1931e281b5f7f8304423022036aa7bc729980"
+    },
+    {
+      "path": "tensorfold/cuda/kernels/qmm.py",
+      "bytes": 14102,
+      "sha256": "ad30a2c250cbd86af50689d110f553afa1f203e39625adf7558bd6cba57f074e"
+    },
+    {
+      "path": "tensorfold/cuda/kernels/qmm_frag.cuh",
+      "bytes": 5588,
+      "sha256": "476da5f919b1593375faab72c4c6c75f7620b78ae0a85f60856c80102e715833"
+    },
+    {
+      "path": "tensorfold/cuda/kernels/qmm_group.cu",
+      "bytes": 21428,
+      "sha256": "c9611306b77c7fca5528a5357acf80a951de33febea9736b9002f570d6a9d4c6"
+    },
+    {
+      "path": "tensorfold/cuda/kernels/qmm_policy.cuh",
+      "bytes": 3095,
+      "sha256": "9c52ded127f5f256b817e79a373fe0fedd6e4218e57f351139594bc6b251b6ef"
+    },
+    {
+      "path": "tensorfold/cuda/kernels/qmm_prefill.cu",
+      "bytes": 9373,
+      "sha256": "95131d007d6f2a4ada40f6bbe62ee686a6773f5794e2fd6f248a8678e944c1c5"
+    },
+    {
+      "path": "tensorfold/cuda/kernels/qmm_prefill8.cu",
+      "bytes": 15657,
+      "sha256": "13581006db90846f4943a655c96a8e4d542c6bbd344e500b2da9b59ffc607241"
+    },
+    {
+      "path": "tensorfold/cuda/kernels/qmm_tiles.py",
+      "bytes": 548,
+      "sha256": "2768f581909a9b0df95a1405d9db9f2e1a3214156c683a339ffefd55f67d022c"
+    },
+    {
+      "path": "tensorfold/cuda/kernels/tensor_contracts.cuh",
+      "bytes": 3155,
+      "sha256": "c898150d996c8ead0c3426b805fb589572b0331e41f2e4dedaaca327eaa39d86"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/__init__.py",
+      "bytes": 123,
+      "sha256": "edecfd2fbf67a9694abb16400f04e417eabf39d2e8aa8a6d24949d1f0cfcace4"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/act.cu",
+      "bytes": 8980,
+      "sha256": "c5ea6280c10c4d58dabd518fa044077229e33164922afd28a56c156bc0f48717"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/cache_a4.py",
+      "bytes": 3677,
+      "sha256": "61fb9fd30c948279aea35d6bc7d30a822d7ea85ecfacdccb0eb503b43ceb095c"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/checkpoint.cpp",
+      "bytes": 14627,
+      "sha256": "9462a00059c77f78fce28dfa556a62f760ba344e861135f6b528f0a7fd8e5eac"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/checkpoint.py",
+      "bytes": 11910,
+      "sha256": "30741724b100f0d0e8cbbc6f30b70b02593c953ecfa2ed96261394d1b45847b1"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/epilogue.cuh",
+      "bytes": 1393,
+      "sha256": "6dcfe21661f210ab3b8cb231aba01bcca9511680eecbe25799bbc6c0d2e8ae2c"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/experts.cu",
+      "bytes": 8524,
+      "sha256": "5d42a8d9e60e98b0b9b3325a20b5543f7c37c9dde1f72ce282b023a562136630"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/experts.py",
+      "bytes": 6530,
+      "sha256": "9a3d9ce1527306daaa264b38926588c613eab483a310631bf8507fc1f10a448d"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/experts_a4.cpp",
+      "bytes": 19054,
+      "sha256": "4805e1f9b0d6e7474562cef67fffc64599aef93dfe3ea5b23794f6cea13c8532"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/experts_a4.cu",
+      "bytes": 36130,
+      "sha256": "37eea06dd02a2c70ca093b507e8be5b1beb80c9095174a91bf6eb3a311874a2e"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/experts_a4.py",
+      "bytes": 14416,
+      "sha256": "849e2ca604000d263df14934f298481c8fb42dba1c31eeb5d4458dd86686650c"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/format.py",
+      "bytes": 14529,
+      "sha256": "14535b2ae2b8ef4747ac6900f723532d47887c09c23245e62710aa1d4a226dbb"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/gemm_ck.cu",
+      "bytes": 14973,
+      "sha256": "3c82bf98045da1b59a2e63d6602d183642e283874a07d3634f376e981a3647b0"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/gemm_ws.cu",
+      "bytes": 14236,
+      "sha256": "71f37b1af8166928bdcdecdc904037c6e852deac105b0773beac6c28d63c505c"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/grouped_a4.py",
+      "bytes": 4316,
+      "sha256": "95e7e207c3b519ae6dbe8e3afed74d626264f88a1505711cd17f3503fedfc66b"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/host_experts.py",
+      "bytes": 13862,
+      "sha256": "7958c8605990fdd9630ce49687ef613c106eecbd982f71c7690cfbb2c5227c91"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/host_layout.py",
+      "bytes": 9592,
+      "sha256": "babc322b45cee41b71878a5dd897b3552ce913b8c4f3aa29b73c34c7cbc570fd"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/lane4.cu",
+      "bytes": 20285,
+      "sha256": "8e7f4a366520ed7155fbea02e8548083b4b3cf1db1a44a5a2e183d0936f3dd5e"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/linear.py",
+      "bytes": 26400,
+      "sha256": "8b598fade507e0b10d689a30164c4706470a697a19cf57fd9a03b838e4feeb58"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/mma4.cuh",
+      "bytes": 1766,
+      "sha256": "257ed3bdc913d6aacc8b387c25a70e27cf9a1fcaab82109f783b6717917b556a"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/modelopt_cache.py",
+      "bytes": 1613,
+      "sha256": "6462a82714bb3dd1e9a7e0903be000ee8baa929283573f4edbb5b881a9b028ea"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/modelopt_experts.py",
+      "bytes": 5577,
+      "sha256": "f4ae6e51c895d6b350cf398a62f78478c48eb88ebb95e1dcce892061a4625f44"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/modelopt_layout.py",
+      "bytes": 8424,
+      "sha256": "96903b79d090a0250734c2c63b19361832885b22ee9c6b71ccc050ebcb5568fc"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/nvfp4q.cuh",
+      "bytes": 1554,
+      "sha256": "db4691e70f2dae7d26037781077b20b173d58104041a8da6a85f771ee6ccb561"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/prompt.cpp",
+      "bytes": 2443,
+      "sha256": "c03531a2d3d9b452705be3b5f7ac0465ceb07feca02bbdc3ff11c6ec010003b1"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/prompt.cu",
+      "bytes": 11728,
+      "sha256": "9031441154a1b050d7b91176f9a5b0dc4d84d2a6f2af1d86e4723dc862f9f9ba"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/qmmf.cpp",
+      "bytes": 4927,
+      "sha256": "44cc4c3fb7c6ca61b1ea83bbd0ab5487c6b4e00003668f2aeea82be886b01854"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/qmmf.cu",
+      "bytes": 21371,
+      "sha256": "f19b39e079affccc08f1c1936615ba6aa4ab5ec9be4e80d3be7355dbd7caaf24"
+    },
+    {
+      "path": "tensorfold/cuda/nvfp4/swiglu4.cuh",
+      "bytes": 5102,
+      "sha256": "aeda040bf903e2ba874a44acb82f13f0f14488ee9bfcd2aa9ea2a0d86d7f4898"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/__init__.py",
+      "bytes": 167,
+      "sha256": "1a73af1c8899c755c46e3d7d78170ebbd3ac7b462a6d29a5afc64d9b4412bae4"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/attention.cu",
+      "bytes": 20000,
+      "sha256": "634a01eb6ecb21fcf573b5d9e59ae13809207b064967409aca3215342645deb0"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/attention_bindings.cpp",
+      "bytes": 5767,
+      "sha256": "246a5aa190ce68251606501bdb7d77293ff9d5c3bd870d9e6605d02a20116504"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/attention_native.py",
+      "bytes": 4395,
+      "sha256": "eefd79dfc22ef4ffd7d21f66aec4091e864b617ed90cee71da177a8048b8f501"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/attention_qualification.py",
+      "bytes": 3905,
+      "sha256": "ef3982fdc0d761c9c3c6322402191bfa16750a9af3a71a24f629f9f6525c497d"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/bindings.cpp",
+      "bytes": 297,
+      "sha256": "30f14e9ce49c805aa5e079fe54124e4080658e1ea48c1f598f1a15bc9dc2f885"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/compact_indexer.cu",
+      "bytes": 1422,
+      "sha256": "c5b54e8f60eaeaac6b31a249c9c11a1c4d3e2bb04c7fe48d12b3a95f65254e8e"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/compact_indexer.py",
+      "bytes": 3438,
+      "sha256": "308aab78086bc5942bf4489ca3ca83477e4f7700bb56cab07f8d1b9978d0d3cc"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/compact_indexer_bindings.cpp",
+      "bytes": 2365,
+      "sha256": "34b575011551d366817e121d840194a83d0221d84fac8b2797be0cc72a5691f2"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/execution_policy.py",
+      "bytes": 26599,
+      "sha256": "6527bcd1befdb943da685815561f27b6f1ff94f5676cd66ba4aeb8df3784b0c5"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/family.cu",
+      "bytes": 58895,
+      "sha256": "b50e134a4084dae5b3defcc90f2599b20eebad9dab09e9d6134e5424a83bbe61"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/family_bindings.cpp",
+      "bytes": 39506,
+      "sha256": "42aaf20664475587a3aab78433dc9623468dec8d9688614fa5f6a59644f7da9b"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/family_native.py",
+      "bytes": 1516,
+      "sha256": "4bd1088d0ab385af8efeafde8c3e05eed51be46eb3f2266ad54c6aa90db80690"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/family_ops.py",
+      "bytes": 47007,
+      "sha256": "1781c6438efeb8571c9558e0a368c908420a473c6a4bb59d5e3d6c2d8eae067b"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/foundation_headers.py",
+      "bytes": 11322,
+      "sha256": "5c12e0f06cfc57255448615f7a6775d946ae1e77bb6920371ad5a62639ce53ea"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/gdn.cu",
+      "bytes": 15259,
+      "sha256": "58f59c834412b80f6531ca51db41211b138c2be3ce9f7e871c46fd420e802b60"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/gdn_bindings.cpp",
+      "bytes": 18704,
+      "sha256": "6675ab507ed3133351342ae0d5214cf068849122abd285791f449c57c31bdef8"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/gdn_native.py",
+      "bytes": 1482,
+      "sha256": "77b53b5184de80da9b6b6432837ebfb0e2140930a3aded0a072c536ccf4ac744"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/gguf_decode_tables.cuh",
+      "bytes": 35223,
+      "sha256": "6a9086795605f2da78cbf576db8f5632a321680957ab97282d446ca36dbca487"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/gguf_ops.cpp",
+      "bytes": 2624,
+      "sha256": "fe18d377e3ebc098de89897be15eb49f61036d9aa5a5bcaf283b6b45da966c7e"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/gguf_ops.cu",
+      "bytes": 66879,
+      "sha256": "567c190116c4f3871bac617ed14ef8c7a553ce2929251abc0c0286788843067d"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/gguf_ops.py",
+      "bytes": 5202,
+      "sha256": "1784bac928dbb74cdc0b5f3758150831f761ae407a211c09400528dc9c314304"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/greedy.cu",
+      "bytes": 7725,
+      "sha256": "cc825de82888a7f2b6e136723c1951d394af8b782efa6ea091a6b3e1960bc655"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/greedy_bindings.cpp",
+      "bytes": 5487,
+      "sha256": "d44d15b04d91e2daa71b4d022e43794e97a8c816eb56a76e3979db32c99fb22a"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/greedy_native.py",
+      "bytes": 1208,
+      "sha256": "db7f4e1dc5aab25ab38b8b0ac9fe772004fb0241434aab58dc753031d34546c0"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/media_software_binding.py",
+      "bytes": 13040,
+      "sha256": "0291cb9695c031f6e00d9435ad2bc21a78b1b9f183f2aa3dbdda122448a0011b"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/nvfp4_decode.cuh",
+      "bytes": 863,
+      "sha256": "927f7903e428ebeb9511d7e1a144373e16e8f5affd0ba2dbb88de4ada1d47d98"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/nvfp4_layout.cuh",
+      "bytes": 489,
+      "sha256": "1acbb666d678ed6849b1f9979dcb3100138f7226d21acd4cf4b97d31f0268934"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/nvfp4_layout.py",
+      "bytes": 2512,
+      "sha256": "790a90472edaa06d389a080bdd7ba3b90fbfc285fbf6fa4756ea441e168992ac"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/nvfp4_ops.cpp",
+      "bytes": 955,
+      "sha256": "fb04225014e3033aadcaae680cfa8b90860f772a2aed0feb2deef29234c864de"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/nvfp4_ops.cu",
+      "bytes": 26771,
+      "sha256": "b595c396df6f50b8818e3f6e8c4e9df433da3fbad38eff16686c571591f5608c"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/nvfp4_ops.py",
+      "bytes": 2536,
+      "sha256": "5067d26f5f139ff1b020d14741d6c5fe9a1ed2a874c9b690828cc0998a68be27"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/packed_kv_decode.cuh",
+      "bytes": 1390,
+      "sha256": "c8657a401137cf1de3fbb80cc11373976ad2f732c55130c4ace60f54736b0d71"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/paged_attention.cu",
+      "bytes": 20090,
+      "sha256": "120e352267604a99dda5000a506a8666bc4918713dfd60e00f93ce2172073ffe"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/paged_attention.py",
+      "bytes": 5535,
+      "sha256": "ffcc37bc2f4e8413d62ed34f25ec4ec09a2364f85c2b9c8897c6b877c6a204c9"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/paged_attention_bindings.cpp",
+      "bytes": 8832,
+      "sha256": "ee1bb07e12b612e6f58b0f2eed21e6ece6369dc5b548acfc2e23b675deabca5d"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/paged_attention_descriptor.cuh",
+      "bytes": 815,
+      "sha256": "932de7e9d521a9e123ad2133c2e97fc0104c041c1091d11a871bf8037aad1be7"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/paged_attention_descriptor.py",
+      "bytes": 1433,
+      "sha256": "1b14e4f2743ed259924b66150baf8c178bc2811648ecb3ebe8641a6ec1c5e045"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/primitives.cu",
+      "bytes": 4865,
+      "sha256": "87949122353aaa84fc17092c98539f67af6ba866e3034fe81bfa5eb2f4273c18"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/provider.py",
+      "bytes": 7261,
+      "sha256": "82afc74fe64bda6b64ae741ac81d3a9c61c3718bfd52b8a9aebbbd6015be5718"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/pv_dispatch.cuh",
+      "bytes": 56097,
+      "sha256": "1b23608f58a7f8e3c2a717924a3104b88831da64b35addf41aed8390a848742f"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/rotorquant_compact.py",
+      "bytes": 17819,
+      "sha256": "6757ebf92092f1f63b090a50a891e7299c643ce0baecb5046f932f0e0f0e5199"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/rotorquant_q4.cu",
+      "bytes": 12595,
+      "sha256": "a9fac8d6f71b87806ca6ae7646f4db1c2e2d6fff74ec0c5a1a8144b1a2df4177"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/rotorquant_q4.cuh",
+      "bytes": 11351,
+      "sha256": "55cf44442ba425e52a9244ae559cb61937c5812e2d5e0d315e2c81334909dbf5"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/rotorquant_q4_bindings.cpp",
+      "bytes": 10261,
+      "sha256": "a1afb48ced92c2ab8001dd6f7a124b5bf36f7f1422ce96b68901e76d6d5e7830"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/rotorquant_q4_native.py",
+      "bytes": 4633,
+      "sha256": "1fe43d8f4ee03a88b57fa7a9172d2c4dfd1d4b0262f5282e0866ea2a80e01121"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/rotorquant_q4_tables.cuh",
+      "bytes": 5323,
+      "sha256": "b1e1feb8efb035ffa7b7aefcde742705f3c1bb4ae59865afbf763ff7806667a4"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/rotorquant_q4_tables.py",
+      "bytes": 2678,
+      "sha256": "8cfa74d9349e4fcc2bc2947a8428ce384df4e585ce9b9498bca9bfef0fd6259d"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/router_blas.cpp",
+      "bytes": 6991,
+      "sha256": "516562968c8ced2217d92977b06ea33f2b97ad0902000b3d485392fca354c3ea"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/router_blas.py",
+      "bytes": 4466,
+      "sha256": "48f85e762c7368d46fc2363383c6ad73d25bb77099803705abb707c3a917404a"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/routing.cu",
+      "bytes": 6525,
+      "sha256": "8b7a92bbd8ee63643d55a668ae45de060d374d7a84e297c7731d72ef23752de1"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/routing_bindings.cpp",
+      "bytes": 4469,
+      "sha256": "24def3a902e9f12c714a81647155bc50b45cc65a9256711e2c1b99dfab8a289e"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/routing_native.py",
+      "bytes": 2325,
+      "sha256": "5525336859514100515851f7bbdec5883ccaadb9a46b3ca6ab718c414164e803"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/software_binding.py",
+      "bytes": 13293,
+      "sha256": "ad06eafb08510c3e2ab8c4cc5fd3faa736f67b83692fb380d9181c7d543c2589"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/source_cache.py",
+      "bytes": 5034,
+      "sha256": "a380e2823257aedd568809726d08efd68943b2185252deb8f199fca3ddfcf1ac"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/tensor_mutation.py",
+      "bytes": 809,
+      "sha256": "9dfa4f2c26411e922bd906ad029f255a8097469e7dbb1a45540a6ce77eaaef4e"
+    },
+    {
+      "path": "tensorfold/cuda/sm70/torch_reduce.cuh",
+      "bytes": 2603,
+      "sha256": "237ca6c39ba74b481ab5fac6b9bd15775d0852ab8ecb5607f740f1d7d53f723a"
+    },
+    {
+      "path": "tensorfold/drafters/__init__.py",
+      "bytes": 95,
+      "sha256": "71c478e22a155619150574c9f40b16abc5573e0428c2705b38634cf44d311308"
+    },
+    {
+      "path": "tensorfold/drafters/calibration.py",
+      "bytes": 3786,
+      "sha256": "9841597cebf12c5d2467e8fc58850e39570d4265fa2263edbf54f2e43c0c9ade"
+    },
+    {
+      "path": "tensorfold/drafters/dflash_attention.py",
+      "bytes": 3137,
+      "sha256": "c06846f35c06a154c2a7480f9d0adf597cbdcadb04bfcc91e0584c015f3e4799"
+    },
+    {
+      "path": "tensorfold/drafters/dflash_batch.py",
+      "bytes": 7090,
+      "sha256": "35eb13418bd990bbbebb1b3ad0ceed4456b5120c1771591dfd352c51f4459965"
+    },
+    {
+      "path": "tensorfold/drafters/dflash_block.py",
+      "bytes": 1895,
+      "sha256": "2e665ac248e7a0eda500a268324982523cec8a7a407a664e0a88eb8496ae66b0"
+    },
+    {
+      "path": "tensorfold/drafters/dflash_capture.py",
+      "bytes": 884,
+      "sha256": "6138d3b0c31b2cbc1be2ffdee3d3b66f7d32c9f17a33f01d6e700730f83e77c8"
+    },
+    {
+      "path": "tensorfold/drafters/dflash_drafter.py",
+      "bytes": 9773,
+      "sha256": "41a3c1d7d9e9ead7d3e6a4f4d3acc8011e6ab6087e5fdcb0866b832f14847b95"
+    },
+    {
+      "path": "tensorfold/drafters/dflash_proposer.py",
+      "bytes": 29794,
+      "sha256": "3204878559003ce57d7223debe5a6a7f1b4d696322a859e0ab737a0ca9f42428"
+    },
+    {
+      "path": "tensorfold/drafters/dflash_tree.py",
+      "bytes": 4170,
+      "sha256": "22a3d38683c7f6636e05e0f288a5f90777684f966da04a18e7bc9665a494c0e7"
+    },
+    {
+      "path": "tensorfold/drafters/draft_ngram.py",
+      "bytes": 9438,
+      "sha256": "6ef77d98f8ae873071bf6d599d8462cbdd52d045aa2a75243e00d3e1ab00daea"
+    },
+    {
+      "path": "tensorfold/drafters/vendor/__init__.py",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "tensorfold/drafters/vendor/z_lab_dflash/README.md",
+      "bytes": 304,
+      "sha256": "744e4c68de6678f15c5d947d9c5e3ef63cff3ae8f4077195156be9ebe9a31287"
+    },
+    {
+      "path": "tensorfold/drafters/vendor/z_lab_dflash/__init__.py",
+      "bytes": 0,
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "tensorfold/drafters/vendor/z_lab_dflash/model_mlx.py",
+      "bytes": 35272,
+      "sha256": "2f8598eaca4cb814e63ea69e791c1bdf55ba82280bfd299f9141906356b7cb87"
+    },
+    {
+      "path": "tensorfold/engine/__init__.py",
+      "bytes": 59,
+      "sha256": "9e2112f60c994c655ab22bb186c6f9513bfbf7bd0df025a72388e83bf7412607"
+    },
+    {
+      "path": "tensorfold/engine/allocate.py",
+      "bytes": 1579,
+      "sha256": "c8ed5520012d406387dcfc8e23c7460d3d778dd37dc9f3aaefa8ffed7f1b555d"
+    },
+    {
+      "path": "tensorfold/engine/alternating_kv.py",
+      "bytes": 4234,
+      "sha256": "2d1f515d59d7e11b7158a92f72d174711cf0ed246bd5b81eb9658e679ffd4164"
+    },
+    {
+      "path": "tensorfold/engine/call_gate.py",
+      "bytes": 10484,
+      "sha256": "a5f94a933a79fba1e26209505099d17814c7a2feddf54b793f89ad6f66a28cd0"
+    },
+    {
+      "path": "tensorfold/engine/exact_sampling.py",
+      "bytes": 9781,
+      "sha256": "a65baa7ed2cf8f5e9719326c09406ac1f6b4ae0d5484bf027a3cf505fa832a00"
+    },
+    {
+      "path": "tensorfold/engine/family_common.py",
+      "bytes": 1740,
+      "sha256": "d18f6b871907487ee877e92ed413aa4b871db69bb7c61ba96d28f8ee8fd13f1e"
+    },
+    {
+      "path": "tensorfold/engine/family_depth.py",
+      "bytes": 8236,
+      "sha256": "8aa9a63778b11a4a3bc751bbbb3423b712981d4a35a06f5e3346e1eda4058f0b"
+    },
+    {
+      "path": "tensorfold/engine/family_prefill.py",
+      "bytes": 16477,
+      "sha256": "48f8bed50b8528fd4f55da5593b9ff340a8642e804939314a027c311993ed6dc"
+    },
+    {
+      "path": "tensorfold/engine/family_shared.py",
+      "bytes": 10302,
+      "sha256": "bdb8ededafce39cd956dc463418f3f2dc004ae0957784c168e41527e2cd6e8ae"
+    },
+    {
+      "path": "tensorfold/engine/gpu_sampling.py",
+      "bytes": 15932,
+      "sha256": "eb182899559d3bac063c4f468d4e55b5dd12bc336a77672bdb52ca6131854051"
+    },
+    {
+      "path": "tensorfold/engine/grammar.py",
+      "bytes": 27457,
+      "sha256": "a137e831b8415aae6b0746eb73cac95ae1f9beae406fe90250c41d9c7a9d7402"
+    },
+    {
+      "path": "tensorfold/engine/lane_engine.py",
+      "bytes": 19562,
+      "sha256": "852ce1e7e2d8f887e999e20ecc065dc40bce9f4c44d53845e42cf2c49a1b89ad"
+    },
+    {
+      "path": "tensorfold/engine/lane_family.py",
+      "bytes": 24965,
+      "sha256": "5650bce8ffca3e13ce9195f054ec2248d8e340668e11bd46a4d1d608bbfe7113"
+    },
+    {
+      "path": "tensorfold/engine/memory.py",
+      "bytes": 7170,
+      "sha256": "69787feb2afc12034f34deba4071025d4d1bbd5b5c36da7d07b91641f0c9af46"
+    },
+    {
+      "path": "tensorfold/engine/model_closure.py",
+      "bytes": 8503,
+      "sha256": "ecf9176fa1a2772adbae5258062432b85484b0aa734c2edb28428cfcf6e98cdc"
+    },
+    {
+      "path": "tensorfold/engine/model_identity.py",
+      "bytes": 23587,
+      "sha256": "37e76bdb643b4ab7ae47b6c449df5b8415b55602fac3165e0d99f6a5e9725298"
+    },
+    {
+      "path": "tensorfold/engine/penalties.py",
+      "bytes": 11047,
+      "sha256": "ede95b716770b2a6064a45691864a1b739466cad7eafb4df3f93a99c5c6f38c6"
+    },
+    {
+      "path": "tensorfold/engine/prefill_plan.py",
+      "bytes": 8533,
+      "sha256": "28f917f14f9e33ffa4e88c4ec81267bde99cb1520633e9718f3a14d1d7625c1d"
+    },
+    {
+      "path": "tensorfold/engine/prefill_step.py",
+      "bytes": 4361,
+      "sha256": "825cbbedfb9096e883a4c142d57d3cfc310fa1ea2ea064551d518743ae017ee1"
+    },
+    {
+      "path": "tensorfold/engine/prefix_snapshots.py",
+      "bytes": 12226,
+      "sha256": "8bd27e893b54b69a3fd072793ae672615aa798e7a6fadaf1fd114ad72c4f6e4d"
+    },
+    {
+      "path": "tensorfold/engine/probabilities.py",
+      "bytes": 1822,
+      "sha256": "942126908158755838862a77b444825a5c85409dbc93004eecec67b16f364196"
+    },
+    {
+      "path": "tensorfold/engine/rejection.py",
+      "bytes": 13775,
+      "sha256": "ffd8942e3f8488f72d33d5f14ca978b26ff76c377974b1cb3bb31d39cf03efeb"
+    },
+    {
+      "path": "tensorfold/engine/snapshot_builtin.py",
+      "bytes": 16528,
+      "sha256": "bcc30a4265a762cd1df6d4dfc335992084444beaf6c5cc61828726b5c021c8db"
+    },
+    {
+      "path": "tensorfold/engine/snapshot_codec.py",
+      "bytes": 3168,
+      "sha256": "d4b06fec0de38fbc071175c86a733b0b0eb0ae1d634363fd1296b06b887fa34a"
+    },
+    {
+      "path": "tensorfold/engine/snapshot_file.py",
+      "bytes": 9076,
+      "sha256": "c6991b5056b3aa404d47154916304d50d37110982c6feae658efe6773a1deaee"
+    },
+    {
+      "path": "tensorfold/engine/snapshot_integrity.py",
+      "bytes": 9440,
+      "sha256": "86d5e65ec8aa1ed6ce6c17c01d659523537ad6ccc22ea2bec3c813657258c1f1"
+    },
+    {
+      "path": "tensorfold/engine/snapshot_payload.py",
+      "bytes": 15948,
+      "sha256": "5c1d40bad2f2435e2f0e2bc9f43c4851929189642fd577caa6d16d0c0110ee4f"
+    },
+    {
+      "path": "tensorfold/engine/snapshot_registry.py",
+      "bytes": 19338,
+      "sha256": "9a160d825817c5507deaf340819ea518a2a8a58fa08883110e0560a4dc831773"
+    },
+    {
+      "path": "tensorfold/engine/snapshot_restore.py",
+      "bytes": 2028,
+      "sha256": "48438e17e58334886a452571d288e63880eb9e841b7465f4038b2e8f12a994c0"
+    },
+    {
+      "path": "tensorfold/engine/snapshot_stream.py",
+      "bytes": 4554,
+      "sha256": "c021559fa31ea93ad4dc75182e61e1089713b3c6b8b13f01d055a66712b9f5d3"
+    },
+    {
+      "path": "tensorfold/engine/speculative.py",
+      "bytes": 5735,
+      "sha256": "353ffe4c831d01207b2813138609099e42036f75ce0ad3803e41bf272eaa6d31"
+    },
+    {
+      "path": "tensorfold/engine/tool_draft.py",
+      "bytes": 16444,
+      "sha256": "b4142171ab256ba74cb2f7a4b0dbca206bce3c51fd42b9896d8be8cb137224f3"
+    },
+    {
+      "path": "tensorfold/engine/topk.py",
+      "bytes": 5939,
+      "sha256": "f110effbad4dd13c96f658c0be5ea3e9709ef7d9e25fa1156d9e4dfe0923458d"
+    },
+    {
+      "path": "tensorfold/families/__init__.py",
+      "bytes": 9987,
+      "sha256": "a7667c15a2c434183ea858a0ed4d4ffbeb5c4eb5dd1428f63b762f939788415a"
+    },
+    {
+      "path": "tensorfold/families/model_code.py",
+      "bytes": 6524,
+      "sha256": "92eb59a122fc79e134e0217aa44e4606848a321ec21838db1633c56e10f2d45f"
+    },
+    {
+      "path": "tensorfold/families/tokenizer.py",
+      "bytes": 4813,
+      "sha256": "75b3df8d4342d8b4edb6b80a16d332b1c6361870353bd2ce86380de8dfd8f32e"
+    },
+    {
+      "path": "tensorfold/families/bonsai/__init__.py",
+      "bytes": 3457,
+      "sha256": "10fe624ba196334e2f7cab59a8cc83f01dfda7d9e2ae5c84a919927358befdca"
+    },
+    {
+      "path": "tensorfold/families/bonsai/modules.py",
+      "bytes": 3861,
+      "sha256": "0c1cbd702f0649751bc0382161548038ee23c2cb7b2b8d1ed1bf61bc4e873293"
+    },
+    {
+      "path": "tensorfold/families/bonsai/pack.py",
+      "bytes": 12727,
+      "sha256": "47cacdd45fb9d352516921fa3b8bc81e6cac1a0926a45074b58daf57e5d73ee6"
+    },
+    {
+      "path": "tensorfold/families/deepseek_v4/__init__.py",
+      "bytes": 4029,
+      "sha256": "0c1470245ef5c6845be33c4048d6becc43e66160142a455db3956458102968f3"
+    },
+    {
+      "path": "tensorfold/families/deepseek_v4/attention.py",
+      "bytes": 14530,
+      "sha256": "3135495fc88672fd099512421a681487ea4384c3d42041144cd3499284fbb880"
+    },
+    {
+      "path": "tensorfold/families/deepseek_v4/caches.py",
+      "bytes": 4757,
+      "sha256": "301db66f3fa9ca658693a6334c0a620afb046a5752e0efba233411d53def8aa6"
+    },
+    {
+      "path": "tensorfold/families/deepseek_v4/compressor.py",
+      "bytes": 7261,
+      "sha256": "e6a2ac9e6f46da2a2c85aa44524f59903d95fd8eabbc02c772d7ee684846899c"
+    },
+    {
+      "path": "tensorfold/families/deepseek_v4/config.py",
+      "bytes": 6019,
+      "sha256": "4f7db0353242d1552ee838b74655aceb67df867d4ee8dc0c981c48817f88f1f0"
+    },
+    {
+      "path": "tensorfold/families/deepseek_v4/convert.py",
+      "bytes": 7343,
+      "sha256": "056c3b173c9cd5720d28a4e161e146844d57813161b92c099a088ff885a36ef9"
+    },
+    {
+      "path": "tensorfold/families/deepseek_v4/dense.py",
+      "bytes": 1400,
+      "sha256": "cfd45ce899496f2711dab94f36f2bec8856db9ba5c14c9722b5e5b0e60cbb39b"
+    },
+    {
+      "path": "tensorfold/families/deepseek_v4/dspark.py",
+      "bytes": 6843,
+      "sha256": "15c652ceae228ded41220705a9880cb7380aba75906c2f2de356526705315d38"
+    },
+    {
+      "path": "tensorfold/families/deepseek_v4/model.py",
+      "bytes": 8306,
+      "sha256": "0ac0279aba85126d233f3b03c61c0b3140a25752337d11f12bd5839ca3d94bae"
+    },
+    {
+      "path": "tensorfold/families/deepseek_v4/moe.py",
+      "bytes": 7737,
+      "sha256": "83c3492bd1e6922b845f994024b43def11bc5e530b532d3a647927dc6d98e255"
+    },
+    {
+      "path": "tensorfold/families/deepseek_v4/mtp.py",
+      "bytes": 3766,
+      "sha256": "e2bc3f9c59ccf5e675e83eceeb9238fee7d1d3a00e07ec7517f23b53b13ce6af"
+    },
+    {
+      "path": "tensorfold/families/deepseek_v4/prompts.py",
+      "bytes": 3434,
+      "sha256": "e7b8a694da311f07d7f82f8c2a0699c8d328c258c28251082f8eb59fb03a9320"
+    },
+    {
+      "path": "tensorfold/families/deepseek_v4/rendering.py",
+      "bytes": 12171,
+      "sha256": "d2cf2ef3cf28b23d1922afa464796cb24ae38035e008b1a93ca31bae6b3094d6"
+    },
+    {
+      "path": "tensorfold/families/deepseek_v4/runtime.py",
+      "bytes": 10169,
+      "sha256": "ed062b2a7fa1e5cd636b3e4b20753a6e97f4152a2033dcb971010e5f5d20fa7c"
+    },
+    {
+      "path": "tensorfold/families/deepseek_v4/weights.py",
+      "bytes": 8018,
+      "sha256": "fd309f641a4420eefdb73ca63d4543a3a7924001bc4938030d8b800e2213309b"
+    },
+    {
+      "path": "tensorfold/families/deepseek_v4/vendor/__init__.py",
+      "bytes": 100,
+      "sha256": "7e25674e0e425e861bf413de66db5a0b8be5eea43392166ff0cf61571b5308f1"
+    },
+    {
+      "path": "tensorfold/families/deepseek_v4/vendor/encoding_dsv4.py",
+      "bytes": 27908,
+      "sha256": "bdbd57c132a1b3725042323d02b98b9d1df28e5f388f134399555d041f5055e0"
+    },
+    {
+      "path": "tensorfold/families/gemma4/__init__.py",
+      "bytes": 6735,
+      "sha256": "7432a4ede1826a9ab94e1499a87269d1d1875abe0bacaad6ed713b283bcfdf8e"
+    },
+    {
+      "path": "tensorfold/families/gemma4/cache.py",
+      "bytes": 9917,
+      "sha256": "b069e6108634ef01208457e12038046fd9c33f67df174bc66a06b9c771bc5977"
+    },
+    {
+      "path": "tensorfold/families/gemma4/dflash_metadata.py",
+      "bytes": 9701,
+      "sha256": "7d18b7c9350847eff82513016e82feaaa44bd1c81df2f881335dfad0e67e1379"
+    },
+    {
+      "path": "tensorfold/families/gemma4/drafts.py",
+      "bytes": 896,
+      "sha256": "2bed0fb8563d4ac5aeb55fcd13f1709fb8b84efd7890b47b1c66b72457b10ddc"
+    },
+    {
+      "path": "tensorfold/families/gemma4/model.py",
+      "bytes": 15859,
+      "sha256": "60479a11d7a329273848cae5cc1f531bd267b4a1781ab7f5f17af859d6db5c16"
+    },
+    {
+      "path": "tensorfold/families/gemma4/cuda/__init__.py",
+      "bytes": 172,
+      "sha256": "0459342157e80d9ad6806669da7c6661adb6e21a3e73fd300c3dd93a005cf42c"
+    },
+    {
+      "path": "tensorfold/families/gemma4/cuda/attention.py",
+      "bytes": 23634,
+      "sha256": "5c668b958ae8624de20e617f0872f97bf561267564e2012412f866b4435a71df"
+    },
+    {
+      "path": "tensorfold/families/gemma4/cuda/capacity.py",
+      "bytes": 9772,
+      "sha256": "93555afcf0c762b9745ffa585d4e4764b39ce75fdf4c30abd3b4cc36504e0f03"
+    },
+    {
+      "path": "tensorfold/families/gemma4/cuda/dflash.py",
+      "bytes": 17360,
+      "sha256": "03643eaba4b13b0326919276ed9d5c340039d7b3be94f5f58dbe61e3322fa9e9"
+    },
+    {
+      "path": "tensorfold/families/gemma4/cuda/engine.py",
+      "bytes": 22538,
+      "sha256": "48890f396ec060bafb2adbef7c93b43eea705323b6d3727e867e92906daf2d3c"
+    },
+    {
+      "path": "tensorfold/families/gemma4/cuda/experts.py",
+      "bytes": 7668,
+      "sha256": "9d652961d8278e2be48a943dc7f7ca3a26469b206210c71a929d2796b8328991"
+    },
+    {
+      "path": "tensorfold/families/gemma4/cuda/forward.py",
+      "bytes": 19336,
+      "sha256": "de88c303fb302e7b2ff6350a5f2ffa893623186783de9037e7e1eb1518196aad"
+    },
+    {
+      "path": "tensorfold/families/gemma4/cuda/glue.py",
+      "bytes": 5638,
+      "sha256": "1bfaf5eac4895ff8cb39245bfa8a0f7fa28c73cbda94dc670bc859dc36d7b88f"
+    },
+    {
+      "path": "tensorfold/families/gemma4/cuda/graphs.py",
+      "bytes": 5027,
+      "sha256": "12f44a274f7ff9601b09c493f541d0e5edea1f13b01fab0bf7c00fc5a8ef3668"
+    },
+    {
+      "path": "tensorfold/families/gemma4/cuda/head.py",
+      "bytes": 3180,
+      "sha256": "c07ebd72617215ba7bd47d1ea66ac6550ef4a59ff13f664e6bb6cd07a125d9ad"
+    },
+    {
+      "path": "tensorfold/families/gemma4/cuda/linear.py",
+      "bytes": 7876,
+      "sha256": "03c8b9a2631e8acc4a1fa90f3879d31e2c2e402a45d37c72f0e9e3b6609dcaea"
+    },
+    {
+      "path": "tensorfold/families/gemma4/cuda/nvfp4_experts.py",
+      "bytes": 9303,
+      "sha256": "ee29432dd769dd9aa53da645d43325879bbe695ace8512481570a6973d587059"
+    },
+    {
+      "path": "tensorfold/families/gemma4/cuda/nvfp4_weights.py",
+      "bytes": 12743,
+      "sha256": "f3b4f383ec3f77dad867f8be54ffe0d3009917c06a0de121bae9bde8e6a9af62"
+    },
+    {
+      "path": "tensorfold/families/gemma4/cuda/state.py",
+      "bytes": 8683,
+      "sha256": "7877d54ca9a1f56e47ee14478cda9fcadec870d3921ae7a1ee4b02394aa365f5"
+    },
+    {
+      "path": "tensorfold/families/gemma4/cuda/vision.py",
+      "bytes": 34934,
+      "sha256": "7603b18c0e7107d66b671f210f6d103033e758ee9bbd9d975a1682c138f88e29"
+    },
+    {
+      "path": "tensorfold/families/gemma4/cuda/weights.py",
+      "bytes": 17329,
+      "sha256": "312b32642157bf6fd7a7d554c7617e953264220b6bc27bfff4d477386fef6ad1"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/__init__.py",
+      "bytes": 12415,
+      "sha256": "a48c3299a9d50c990b939458ac5a4ceff39f8f5efdb06dafe0cf7828aec95b2a"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/caches.py",
+      "bytes": 5730,
+      "sha256": "d918025267634f1ca89ce91018b3692adf0550b1f4876ea0cd9313f00b49d40f"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/config.py",
+      "bytes": 5592,
+      "sha256": "34cca0310e880c85b983747ae9c4f0d6acadfc73281a2dbf524b72e125c147f6"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/kda.py",
+      "bytes": 8320,
+      "sha256": "93e85b8d217d7af6fea297f47afd8b11253b404810b0f1f6f3c64f2561e563b5"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/layouts.py",
+      "bytes": 2857,
+      "sha256": "9ddf6d37a3634cf1e9f8d01ff273abde9bd137ffe2320c7ff9e4e2deb15e15d4"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/linear.py",
+      "bytes": 6568,
+      "sha256": "7d98c757281ea3f26daff0f9298496976318670b21d766e47a9d02630f77d2c2"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/mla.py",
+      "bytes": 18200,
+      "sha256": "98a7888178498dbcafdf34837969dbd75c03551815bf1b01f4d60d2f15b8fc35"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/mlp.py",
+      "bytes": 10420,
+      "sha256": "dd2e39bfb21e925dee54f9a2b105f4bff5f8ad285d33a863f0c2a68da02673b1"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/model.py",
+      "bytes": 12054,
+      "sha256": "6fb551d75d7fdad937c9b2b3eedfccfbf5e8ab2ce27790a8d37ae07af64c1c9c"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/mtp.py",
+      "bytes": 2425,
+      "sha256": "59dd056369025dc2c9ea79e80a03c96ff9033a4f3d532fd800dc4b885c059f8c"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/prompts.py",
+      "bytes": 2587,
+      "sha256": "765ca993248e0958db311f2c4d29fec32fcd53eedbb007646664cb70b7c25ee1"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/runtime.py",
+      "bytes": 21895,
+      "sha256": "a0263c2ed3de77e920e1b04a8723bf282d9c0570279ddc21240a79fbfe366ce0"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/stream.py",
+      "bytes": 3699,
+      "sha256": "bbe46d507c60c0e3ae99512913bfdd5f4c0e78037652e5e0dce00f0c0a3d58be"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/weights.py",
+      "bytes": 11979,
+      "sha256": "9048dda28514da597e49991bf25947e6e90fdd3fc5abab3a369c1901663022fd"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/cuda/__init__.py",
+      "bytes": 249,
+      "sha256": "41547ad715dbdd580105692d394b8d4d380c4a78e0cf5ce42ed13119cbc6d0ad"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/cuda/app.py",
+      "bytes": 3692,
+      "sha256": "88b1d1e2b07769547ba132402de8abb01cc9ded2ff7065063b6287eeee9f0566"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/cuda/attention.py",
+      "bytes": 5425,
+      "sha256": "8cc84e7db2c0062a5b29475a0cbc30ef3a4b63a3a4c36590fb31e690b4d362f7"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/cuda/decode.py",
+      "bytes": 27146,
+      "sha256": "5ea77a6e6cc089c73f1daac10fe40a4dc36c2237ac6dab703e069fa5d758038d"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/cuda/dflash2.py",
+      "bytes": 23429,
+      "sha256": "15aaf20f667c2e350cfabc75d99cd47588820f2d1969c3286f8c8761349ab8cf"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/cuda/drafter_choice.py",
+      "bytes": 6904,
+      "sha256": "e06f1b3a35ee8618c8c7b8b5b4bdee4a09afb5411976897a7d1ffb61068987f3"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/cuda/engine.py",
+      "bytes": 38652,
+      "sha256": "171eb394111f4fc14c63c60de049ac354441e1ce2d3dca9cb6c3dac526f5f9c5"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/cuda/exl3.cpp",
+      "bytes": 4422,
+      "sha256": "cc73c4249e6244a7d21fca0b8ba1f8b3e64d1e2fe3bf717f15a99864b626e199"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/cuda/exl3.cu",
+      "bytes": 14932,
+      "sha256": "40f0366daed232d704866b7b703d7eb699f6f383f72c5f7be351fe5f1bcff28e"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/cuda/exl3.py",
+      "bytes": 4271,
+      "sha256": "fcd0707d0f1ac6e0a060df4d8adf53a2ce32a7112e04211e44089c49f9bacd86"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/cuda/exl3_generic.py",
+      "bytes": 406,
+      "sha256": "942aabb3b1262072d522bad5545a3aaedf28c0e40bb3c015ab0f988484766f1e"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/cuda/exl3_mm.py",
+      "bytes": 3791,
+      "sha256": "ad2c5391cd503e07fd812aadd70b3fe52fa89bca756418efd4af46e1d8dc44e8"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/cuda/forward.py",
+      "bytes": 27787,
+      "sha256": "acc6013b5b7f048d23644dbd71d631d40ad1dac114a2db34bba28c84484952af"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/cuda/glue.py",
+      "bytes": 18471,
+      "sha256": "570cf75978f6b7de80b52cfd33c3f0c34f6fbb615c2f8d114af999e6fbee46cb"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/cuda/graphs.py",
+      "bytes": 3484,
+      "sha256": "43e31efc653c61d3e0c0a6fef4bc78afaa057582d16c7a8613986d3a73a4465d"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/cuda/kda.cpp",
+      "bytes": 6604,
+      "sha256": "41ecafa01f1c7561223972479a97157562681d7ff96b474df6298aa78983fbec"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/cuda/kda.cu",
+      "bytes": 21189,
+      "sha256": "873ceac4de9bc755aca5685c978ba677ecc73bd0ba62cf215908fdc0ae73e47b"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/cuda/kda.py",
+      "bytes": 4792,
+      "sha256": "ea144c7203e9050ec4a0c4851f182e32b05277e63c03e591946b9f25dda001c8"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/cuda/latent.py",
+      "bytes": 16889,
+      "sha256": "998592abfdfd7c69ec2682071df5208bf5d871a635380242f9c8f1e0f5104f3b"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/cuda/mtp.py",
+      "bytes": 2806,
+      "sha256": "5d75bfcc93cd4eebdb54d1b5053e3b9c0295745e2a813fd2f6726be0af3c8657"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/cuda/prof.py",
+      "bytes": 1779,
+      "sha256": "b62f4814f8cbaf36a65b8e42ed04d49a129232ea90700c91c76fd5ae33d16bf7"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/cuda/qmm.py",
+      "bytes": 10338,
+      "sha256": "cf9d7f9717ebdc4089e9e6e68b3a85578d865b43aec788bb8f2fc88cfaeaa9ae"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/cuda/score.py",
+      "bytes": 1141,
+      "sha256": "711fe8377046d9f9572cfdd1343ef1f292c7d0c457ca28b757ba5e7f5f0c3453"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/cuda/sparse.py",
+      "bytes": 15304,
+      "sha256": "64e5a804c7251a8026586b709fcb4ed2908f6c2d1433404ce7e05b1eed57cf57"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/cuda/split.py",
+      "bytes": 15580,
+      "sha256": "f2ddb086bd6d9a0ec6e5434ae81b660169c5bd63901f933688f498444f899c21"
+    },
+    {
+      "path": "tensorfold/families/glm5_next/cuda/weights.py",
+      "bytes": 20441,
+      "sha256": "03c57fc302501b5b05749bd5a5a96dd46760b63e0709d8e711e1ca53c04b7b3f"
+    },
+    {
+      "path": "tensorfold/families/nemotron_h/__init__.py",
+      "bytes": 6084,
+      "sha256": "f9f62edaa006c015402f4874aef013150ad3700c4ee4c947b2d8b50ff0d48428"
+    },
+    {
+      "path": "tensorfold/families/nemotron_h/draft_ids.txt",
+      "bytes": 191325,
+      "sha256": "436840405e3507339efe85c410bb87a927ede7eb44eae620c0dda225c392d45f"
+    },
+    {
+      "path": "tensorfold/families/nemotron_h/model.py",
+      "bytes": 29630,
+      "sha256": "af198107e2aff491c1e2eb16d4e8bd1a158531d34168026b09e3bb0ea87e8256"
+    },
+    {
+      "path": "tensorfold/families/nemotron_h/mtp.py",
+      "bytes": 4542,
+      "sha256": "114636958adb803e0fb448109c19e377732dfa7172cddae3f0c785202dbe1557"
+    },
+    {
+      "path": "tensorfold/families/nemotron_h/prompt_pass.py",
+      "bytes": 5213,
+      "sha256": "9cb76ae934efb7c7042e0d2dbd60ffc3ca48b646de12c46cacc3ad8c019f2314"
+    },
+    {
+      "path": "tensorfold/families/nemotron_h/state_cache.py",
+      "bytes": 1400,
+      "sha256": "30ba804848c8b607db459e9736ae68ab4e10456231cbef1298484f88818a380b"
+    },
+    {
+      "path": "tensorfold/families/nemotron_h/cuda/__init__.py",
+      "bytes": 372,
+      "sha256": "d4907f8335e9126ffe995a7af7376b66d088028468362acf54b437d0c17a2810"
+    },
+    {
+      "path": "tensorfold/families/nemotron_h/cuda/app.py",
+      "bytes": 21638,
+      "sha256": "f2bc2f401098f94aeaf27524bba9734d0ce98a13a0897110ce47ceb3bfdbb12e"
+    },
+    {
+      "path": "tensorfold/families/nemotron_h/cuda/attention.py",
+      "bytes": 5623,
+      "sha256": "e6e5a9cf263546d22651d51d18575a0dc72bd980c97c222379deeb873320db65"
+    },
+    {
+      "path": "tensorfold/families/nemotron_h/cuda/decode.py",
+      "bytes": 11204,
+      "sha256": "3542ebf91ef54f0a1c9278c9e0819194faa8a797be9d555f05c90ca6d8478a14"
+    },
+    {
+      "path": "tensorfold/families/nemotron_h/cuda/engine.py",
+      "bytes": 18727,
+      "sha256": "07210cbd3566840590b064b46809fd4af6f968fee89c93bc61f08537f9e157bb"
+    },
+    {
+      "path": "tensorfold/families/nemotron_h/cuda/glue.py",
+      "bytes": 7433,
+      "sha256": "afb6009ea74277dd92d47c4d896afd9ab7bf82a2288b3c180f85d4550f0cd99d"
+    },
+    {
+      "path": "tensorfold/families/nemotron_h/cuda/mamba.py",
+      "bytes": 11314,
+      "sha256": "e57e9eab89a9f140b7617c32c373bdb067b8a41ef8d09bb70d615fe88f7009b0"
+    },
+    {
+      "path": "tensorfold/families/nemotron_h/cuda/mtp.py",
+      "bytes": 10617,
+      "sha256": "75a67186310aa9a821903e9de02867279602ea37925bddf363e87ef3be1848f0"
+    },
+    {
+      "path": "tensorfold/families/nemotron_h/cuda/reference.py",
+      "bytes": 6530,
+      "sha256": "e3c05a918b088e8da66c36b088bfae654ffed3638d2f19210bf7a141c9292895"
+    },
+    {
+      "path": "tensorfold/families/nemotron_h/cuda/sampler.py",
+      "bytes": 20920,
+      "sha256": "9f859115cfe7d2ffe63a1376c47e5afc442d45a6b3b4857ae61865cb1cafecee"
+    },
+    {
+      "path": "tensorfold/families/nemotron_h/cuda/scan_rows.cpp",
+      "bytes": 1606,
+      "sha256": "431f91bcf3966385c1d8c2342e05a267902b3b51bcb0154f52682f84e7c8b32b"
+    },
+    {
+      "path": "tensorfold/families/nemotron_h/cuda/scan_rows.cu",
+      "bytes": 5889,
+      "sha256": "2c7544fdc81a53ae4865c45245bc97b32110516d67f65d051de93b812e6a6db2"
+    },
+    {
+      "path": "tensorfold/families/nemotron_h/cuda/tp.py",
+      "bytes": 12738,
+      "sha256": "ed4054bedc3afc40c8f604c78543e63e5cb680359ae25e5b3d71da171f60c424"
+    },
+    {
+      "path": "tensorfold/families/nemotron_h/cuda/weights.py",
+      "bytes": 10843,
+      "sha256": "d8183129bfc3ecfec2b687d184eb973c68b71ec4c9937db9e78707ffc5666c9a"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/__init__.py",
+      "bytes": 18839,
+      "sha256": "9f9b7ba0c94143aaf110ea4a0f6835d1c5c8a3a7c72019ac38d46d3550597b57"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/config_metadata.py",
+      "bytes": 13271,
+      "sha256": "1d5dc56987cd09a23ea0fcdca7b3df0b36ad6aba857f9cb0ffe198d23cc22cb1"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/dflash2_calibration.json",
+      "bytes": 5708,
+      "sha256": "b6542f456c37f2e986e82e2d595f84f21125f8e4e8db382e8d5f20d80b364915"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/dflash_head.py",
+      "bytes": 11455,
+      "sha256": "aa35d80d1f7fc22a85a72667e4ff7323145c05729f8284dfde2fb3d3db4dcd62"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/family.py",
+      "bytes": 15999,
+      "sha256": "7074d543a4dbd4f475a0cae92c03bb1f9860daf83967e2006f5b050a59351092"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/cuda/__init__.py",
+      "bytes": 106,
+      "sha256": "e711d4bedc9d5b25998402856564701db0fb20634dab3508a332e79ed2665382"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/cuda/affine_memory.py",
+      "bytes": 3935,
+      "sha256": "7be33c34254005290f2cf77d36cc53709c51fd1f75c61dee58c62b5f3a97d6e7"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/cuda/b16.cpp",
+      "bytes": 1201,
+      "sha256": "5588e706e4516eb282f10902662cc41571df24cb84ba01fbda12e2e470bebaa9"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/cuda/b16.cu",
+      "bytes": 20815,
+      "sha256": "9e343bb2f14d4e64422b8e219734bdc6ad0bf5415de060355d94436a5a678ce9"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/cuda/b16.py",
+      "bytes": 2593,
+      "sha256": "8e13e4ff669fed116e7687477c5f8931a30b9758ecc2071a0e4016d7f789480b"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/cuda/decode.py",
+      "bytes": 18736,
+      "sha256": "1d9e7b092c11f9e94e9818c175617218f2419a85911c0976fb12e4c1ee9019c3"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/cuda/decode_tp.py",
+      "bytes": 17388,
+      "sha256": "2b1cfd34c3beaa4459c193c3e5df1c33aafdfa3dca5c8521d9ed8270505e2653"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/cuda/dflash2.py",
+      "bytes": 38381,
+      "sha256": "e6954feeb53cd4b2e94c94ff017c03cd87cf624153a9e3ac1d7d4ebe7fdb5c69"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/cuda/distributed.py",
+      "bytes": 13409,
+      "sha256": "5c77b65cda57b442d2c0e4f0ce37d108aed4f05e08fc127dce3b9157d5dbaea4"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/cuda/draft_attention.py",
+      "bytes": 9587,
+      "sha256": "117e4578e0181446acfac8b79a3f2e6fbd7c355a153e8d69ee084ff09100ad81"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/cuda/draft_tree.py",
+      "bytes": 6800,
+      "sha256": "88391f807d5e06e8556cbb8f900c350adb21e15dabbf72298d3925ba9c25613d"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/cuda/engine.py",
+      "bytes": 29329,
+      "sha256": "ee6f5cfec5b970eaf5e9281741842366d3bc2e920f8d1e1ae78ff24093440a51"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/cuda/exl3_load.py",
+      "bytes": 15963,
+      "sha256": "19b972aed2146f20223f886af32df0afc92a8d64ec7725836c0cbacb9392c246"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/cuda/forward.py",
+      "bytes": 27695,
+      "sha256": "23514a4622d9afc8d8fdd7a5912f0c11ce906b779582dc2e79b4b11f69967592"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/cuda/glue.py",
+      "bytes": 12681,
+      "sha256": "eb0c67b17ac5ee2389a0a27ad8ee27e193d4672ab1c3a599b757a37d7a1f2960"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/cuda/multi.py",
+      "bytes": 45452,
+      "sha256": "87306165e90791218bd6e69c50d4c64ea10eda00058d077b26c361c1ff32f0cd"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/cuda/nvfp4_load.py",
+      "bytes": 14558,
+      "sha256": "83da4c8d37b54b3b3035d08a1c06454a8bc425d2a811da3ac30ccaa61ea05ba0"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/cuda/nvfp4_memory.py",
+      "bytes": 9001,
+      "sha256": "650510c2a537a0384c164c3a3a0fbc0dfe5a2b051447ecd01a90026eec513e6a"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/cuda/prefill.py",
+      "bytes": 20948,
+      "sha256": "bffa9b475250d0b8e73d9a5a569b19a8f6ed2007cd179e85bbc6d3375faea4c9"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/cuda/prefill_bf16.py",
+      "bytes": 539,
+      "sha256": "c5ba8e900a1b90007a6d500e18f8aa6448acd1d9178a03203dd234d4c24728cd"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/cuda/prefill_glue.py",
+      "bytes": 5137,
+      "sha256": "a335920b5e044f6ad62e16abe8fc5ea0022cbd3d15bc015ddb6de64a7459b886"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/cuda/qmm.py",
+      "bytes": 7854,
+      "sha256": "d9e501aa631fcd989fa63e46f2b40cfeb97c7270a0fc231ca9059c9fc742378d"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/cuda/qmm_fast.py",
+      "bytes": 5299,
+      "sha256": "919d1a71b1af0aa463067a1b611d8b0fa062968f2ff47892d15018d677e55e62"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/cuda/reference.py",
+      "bytes": 7270,
+      "sha256": "aa601011485d1db5ab294304556bbfd396c1b2f26151a6bb250479b44cc10d51"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5/cuda/weights.py",
+      "bytes": 30035,
+      "sha256": "627163caeaa9594db4ad906c3923e8918842ae1264acaad0ecb9b70bc0070516"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5_moe/__init__.py",
+      "bytes": 10360,
+      "sha256": "295aef2ae9289fa8698b59ed195c73ef6be648c73b04da741a9bc04bfb967393"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5_moe/dflash_metadata.py",
+      "bytes": 9615,
+      "sha256": "985180052dcb09be6cdae329cf20d2b5d86a1aaccedee1f08a2d88fa2185e243"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5_moe/family.py",
+      "bytes": 14535,
+      "sha256": "92a2d263e355209f70afc3f48fe290815f1257af2d3a55da9b339b2f119f1068"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5_moe/mtp.py",
+      "bytes": 6910,
+      "sha256": "61ec75e7ea977f1d8de89d69a528fd579b2b1d3016930a0064b41f4a4cfa142f"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5_moe/ram_experts.py",
+      "bytes": 20384,
+      "sha256": "78caaed230bc744c9b4e99ba1391fdf17757efb44fd4652af2e531aaf72eb323"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5_moe/cuda/__init__.py",
+      "bytes": 315,
+      "sha256": "2212023e22411b5d1ef0dfab97ff025cc7ba244ae29f0c0e4669f05133bd90d0"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5_moe/cuda/chain_graphs.py",
+      "bytes": 11469,
+      "sha256": "4bd2c422a75aab2bf70033ff9cbf9e9038e46ace1ec150d136918db0d0cf343c"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5_moe/cuda/decode.py",
+      "bytes": 11643,
+      "sha256": "19e026fde3b52dc2f350225a1a87bc13bf431e0f047197ccea2133d747b2d59b"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5_moe/cuda/dflash.py",
+      "bytes": 16372,
+      "sha256": "0f33ff52efe1dd0f8aec7c52d0f27723b16dfac3d5e71c6f01d68ffdf37f0515"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5_moe/cuda/engine.py",
+      "bytes": 11651,
+      "sha256": "662f7ce6535cb939f33fe8314e07dc704d5f5648871bdbb7a117e889454e2c64"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5_moe/cuda/graphs.py",
+      "bytes": 3824,
+      "sha256": "7bcf47b4ce75bce7381b07784f1f37a0ff5c8fe2cdc6cd0f1a3cb216b6902746"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5_moe/cuda/mtp.py",
+      "bytes": 9428,
+      "sha256": "fbf143ddd938fd704e9e8738c07a67822255452fd440ab7286d826df67a50f7d"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5_moe/cuda/multi.py",
+      "bytes": 16427,
+      "sha256": "da0bb0ae9fc75989c44535d547b4f55423712fb65fe4c99c03332f1985c5e3c8"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5_moe/cuda/nvfp4_engine.py",
+      "bytes": 18678,
+      "sha256": "297271a5fa0b01e85be746f5dba60fca52ae74f0305457da5e87fd5f5f4610eb"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5_moe/cuda/nvfp4_load.py",
+      "bytes": 7166,
+      "sha256": "a61139ac69a123676806cb61919d92504f562ed31738631dd4cfc612756d1c94"
+    },
+    {
+      "path": "tensorfold/families/qwen3_5_moe/cuda/weights.py",
+      "bytes": 6758,
+      "sha256": "6388eb5420e2b1a526d8dd9e03dc0812ac828edabc1efe4eb9e222b357624f50"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/__init__.py",
+      "bytes": 21617,
+      "sha256": "5eb7ad3075d70e2beafb80c3a7d93d7823ef02bdd96685bf1e6a3dee3f2c834a"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/decode.py",
+      "bytes": 32004,
+      "sha256": "9d75177407e8d9f10d0b99c87d30eb4d4bf00ad88e5b6cf34b5b13e3b9cf1da0"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/draft_head.py",
+      "bytes": 7802,
+      "sha256": "18c619c376cad54339030fc1b5fb984a8807c0b66bf86c799bfdee7fc532810b"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/expert_authority.py",
+      "bytes": 1764,
+      "sha256": "08b8da9cfed4055ac2f8292e875d24e16f9a0a1cc499956540f26a6bc6b99209"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/frontend_metadata.py",
+      "bytes": 2089,
+      "sha256": "e164338cf115069c59a513ccc66d54d3688e8aedb83eb0c4379227d0dbc1612e"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/gguf.py",
+      "bytes": 24528,
+      "sha256": "1f5913b3b7702ae93ef13cd059e01398737f303ebb3e2c4f1f75bfed8745b599"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/gguf_assets.py",
+      "bytes": 10358,
+      "sha256": "4f900f4eb8da6f822da274f997c6458979f354f58264913764c5804fb427d155"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/gguf_iq.py",
+      "bytes": 3942,
+      "sha256": "dca6656310a24c634ff46f2dbc148f36eb69548aeda1bfd5c018893cb52291fa"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/gguf_tables.py",
+      "bytes": 31299,
+      "sha256": "3add9c33523ee59f4a7cf33b65e107668e692838e4ccfd2ef780eb043f2be66b"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/host_table.py",
+      "bytes": 36125,
+      "sha256": "dd0b3c2c7cedfa7e439a97c6e7e67e0a1b31d374e5cf56428320557576e85ae4"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/kv_formats.py",
+      "bytes": 9891,
+      "sha256": "8af666e348cfc5bfab2652de302fe0c85434d0b5d0dee5d9da49b5c2541f3e09"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/media_plan.py",
+      "bytes": 13720,
+      "sha256": "6769cea4165ab763b807cd8ee151fb160f1fd5ccde237411b6df3bdd246af2ce"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/media_positions.py",
+      "bytes": 8177,
+      "sha256": "43a305eb5febcc1f1717e45501074680c1c5c281a13c397db48409b9a77363d4"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/model.py",
+      "bytes": 20294,
+      "sha256": "fce437c8e2936222c983b5a9058209d2f37e8fabac8fddd320b99b2b106f29ae"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/model_layers.py",
+      "bytes": 23991,
+      "sha256": "a6a66d4670c13359016a9d326ab10953a9cfa871ac675daea3e79af9168a06d9"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/mtp.py",
+      "bytes": 4009,
+      "sha256": "943b6fc5a6eb962329c7ddf455ef8572ec389d23cb443d57db74090021685d91"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/mtp_cache.py",
+      "bytes": 2129,
+      "sha256": "b488ae77cb8a7f85894852df19608284fd3baec2d299c25d6a81e475b6f88dff"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/native_ssd.py",
+      "bytes": 4837,
+      "sha256": "bb00519abdd9ff598421242c48c296fc4de9e859df2ca1d4dee53fc822ca5e1c"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/ngram_hash.py",
+      "bytes": 1431,
+      "sha256": "2be4b2ea320abfb85378bea1d8611c93c83ce9db8d08edf87d72a15ffa31916d"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/ple_lifetime.py",
+      "bytes": 5341,
+      "sha256": "9a562066f19b18d3fbfb33d5b4f2d637a66649c223a4a81807d7b44d73501810"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/position_profile.py",
+      "bytes": 31574,
+      "sha256": "382a3ab39bccf871b63424629ee814fdfa472c262ab33d200ff5d3229a53f7f9"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/qsa_selection.py",
+      "bytes": 440,
+      "sha256": "33cc923c4c03a89c74048ddc0f5d68069b7322631ed1acd7610f85287fa68e28"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/ram_experts.py",
+      "bytes": 21135,
+      "sha256": "fb6b3c56e7f5b8569928f46f9e9ae36202ef758d51b91d5566d71644ed1f75f1"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/read_ahead.py",
+      "bytes": 10352,
+      "sha256": "82ecfab54c313f412af62efdeeb64bb4a5b8a97f0b26a31528fff6c7e052c924"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/rope.py",
+      "bytes": 10186,
+      "sha256": "63484cf4f2fbeb371c7c3cae783d30f33d6cce0a8d6a47ce1c59c0df6b69080b"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/runtime.py",
+      "bytes": 31065,
+      "sha256": "edeb634e9ee09b3f4a85655101b9f404ad61a3920aa4f13f737f7f6b6a5aa7a9"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/ssd_read.cpp",
+      "bytes": 7181,
+      "sha256": "01e73b656edd85373cf6b755fdd6112de7c42ca797a88f3f05a93c0fbbc3bac3"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/ssd_table.py",
+      "bytes": 14465,
+      "sha256": "ff59e8953406a529bdc1bdc1834e164872e96c62d3280a3536488728ce2b7471"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/stream.py",
+      "bytes": 5688,
+      "sha256": "e6ed411621b48ff25e7b574c9a531c457fa3f74da88c5c223ebe1b3b9c445c8b"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/table_file.py",
+      "bytes": 4719,
+      "sha256": "f27f04c4fbad31a0210127b8d557e87ce87d6f03c4d70ca997ba10354b74e8f1"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/table_lifetime.py",
+      "bytes": 14977,
+      "sha256": "98ec2b867e97c29f57836aa25600b9819b86761356e46c5efe64774da50f80d8"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/__init__.py",
+      "bytes": 327,
+      "sha256": "73d91783f3a7b2df1a1093f4a7fdc010c424b37f4ce4fbe1bce30b7f96b2ef08"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/adaptive_controller.py",
+      "bytes": 35890,
+      "sha256": "37a7bb9648ad1d1be945807020c051d3fa0f9a447f49eb16e3663de7ddb6f230"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/attention.py",
+      "bytes": 44886,
+      "sha256": "8577468c613f4a38f6710c56c83c473b95c11f26bfd14f107facb6b809dfcc34"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/attn_multi.py",
+      "bytes": 17358,
+      "sha256": "861487b5fd62141950d41ca3581067665490deac3b811f681f961bd4243d518e"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/batch_prelude.py",
+      "bytes": 5910,
+      "sha256": "9ec941959f6e31096ff2f4f54c1163eb644d38a3603c3e80937841b23e11b92c"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/bf16.py",
+      "bytes": 6602,
+      "sha256": "df1dc1e2a11516de4f43aedfec4126843d05517316ac84672d0b318ee225d8ee"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/bound_graphs.py",
+      "bytes": 39149,
+      "sha256": "db997f68058ecba75aa55d32e9d7ab5a7faf5a826d06590cfad34ee07b7a58c6"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/compact_indexer.py",
+      "bytes": 47565,
+      "sha256": "c670af98affd35a00a5964e8402b68c15f0b718c4a3ef338d1684c1b0342daaa"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/decode.py",
+      "bytes": 32954,
+      "sha256": "f87ad6cd93ef1da614a56fe2a923e638551071cc8ed1ac3241e1c36db35b9b77"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/device_greedy.py",
+      "bytes": 11830,
+      "sha256": "1e2dc72efa0f0f0397c20df3c2e23c7c981191a5d043d7276373a6a6304c50ac"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/dflash2_config.py",
+      "bytes": 7453,
+      "sha256": "312a96c46fe148c0f5b94089dca4ff8deaa283241c9bb09c2ff73fb477e361d6"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/dflash2_features.py",
+      "bytes": 3540,
+      "sha256": "c0b0dd843cb885cfb5ddf054842495bc046a2a95d4d05a47e29530ec0ce4794c"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/dflash2_manifest.py",
+      "bytes": 16218,
+      "sha256": "4024f1d4d29c4a9ded651a74a0d29b6659a9ab3ac0931888732f4834ea4527d5"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/dflash2_ops.py",
+      "bytes": 4663,
+      "sha256": "613d757d850828dae7be715cd35ac705cf183f3b0bdf9a34ab6d80b41c46c57d"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/dflash2_provider.py",
+      "bytes": 13857,
+      "sha256": "4a0f9d30aa092a6c35df628088b960d2d910a4ee940acb745967a78d45fc3707"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/dflash2_runtime.py",
+      "bytes": 31410,
+      "sha256": "38a0cd3debea3c57a37ba6b21d0a7369d5190f7611a6248dada04fbf1451acf9"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/dflash2_verify.py",
+      "bytes": 5722,
+      "sha256": "54a54bee2c0774f01a597a860b7707d283360238ad7d2c27a3d9ed67b1002527"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/dflash2_weights.py",
+      "bytes": 18443,
+      "sha256": "82271a746616cce83ff90ccd2f23bfd87c353bb1697e07bae2b0f060c878af94"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/draft_vocab.txt",
+      "bytes": 467348,
+      "sha256": "88d5b483a849ae9245b78b69f41f11cdfc8b5c024f0786c1c8196263857cc93e"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/dspark_LICENSE.txt",
+      "bytes": 11346,
+      "sha256": "1495e1e757ef4d0925a2350563cf5754bb23c51701a8ec4fb3c5cdcbedae6747"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/dspark_admission.py",
+      "bytes": 4738,
+      "sha256": "af3009935b9c59ccc2c4b4b43cd419a04f9ca4faa0adbda0f0e7a151154762e4"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/dspark_config.py",
+      "bytes": 7472,
+      "sha256": "ba5911d193a22bff585e2cf29a9992e817c3e434027ab23d1cce54d27616ef94"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/dspark_context_graphs.py",
+      "bytes": 8191,
+      "sha256": "a254d9777f285567f395243d43e69c190fa5590f78dcfe677cde5e8da19e906e"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/dspark_cuda.py",
+      "bytes": 40202,
+      "sha256": "8c56015ab253373f3e7e086648147107b0c8af638d9cdf1c4a6cc876cef56291"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/dspark_proposal_graphs.py",
+      "bytes": 17476,
+      "sha256": "e212b222ecdc5629c5ec63b5f8eb31b18a759bc6773e5c2f467329bb55f315c6"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/dspark_provider.py",
+      "bytes": 16454,
+      "sha256": "42866c6db3541cbd14ab9031f3ec43fa45758da16f89f81c725e55e62f3f1241"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/dspark_reference.py",
+      "bytes": 4745,
+      "sha256": "569d83e37c62b88920e60fc5d016f04e517c534d23bf76fef49a689e887fa95f"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/dspark_runtime.py",
+      "bytes": 15675,
+      "sha256": "1a259abbb5f766dff0a5c88f62480c0fbe489ffea6ce66371e7f5a83e7131538"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/dspark_taps.py",
+      "bytes": 21847,
+      "sha256": "59fb98f9ed46516147c5fb3dea2b29baa63e5136b94c8b432fc8b5389f6e29dd"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/dspark_weights.py",
+      "bytes": 9983,
+      "sha256": "44b07740010d1392a06b8f19e6e33a77365a6098b1d1280b7cd2c540120e3bf6"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/engine.py",
+      "bytes": 185150,
+      "sha256": "6080ff9489e557d1c20132dae4eaf34e851088b126bd858b6376db6422a842c4"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/execution_identity.py",
+      "bytes": 60502,
+      "sha256": "3c0cb0f2177f3a68ae902b1d6b5b3cfa620e4c278541300d74cec60bb0e1b309"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/execution_observations.py",
+      "bytes": 10449,
+      "sha256": "8e2102385ded60ae2ab20652f19245d5a1a66a1a07beeafd217a1d35b6d7e0bd"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/exl3.py",
+      "bytes": 17441,
+      "sha256": "e579704106a3804fa9f7575eb7ccd7cc1a5f494df54bf08fd75169b803afd7ee"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/exl3_mm.py",
+      "bytes": 13115,
+      "sha256": "09eb03974d4f86ffb4c7be857fc0a6fc31705272739c4aa5828a45f38ecd2a06"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/exl3_pack.py",
+      "bytes": 9368,
+      "sha256": "71134d433ab50368281803d71117b809d9df3f032e5c0d38d0299a0c3e2838d2"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/expert_parallel.py",
+      "bytes": 30795,
+      "sha256": "336adb902eb87f94c6d8bf6fa5e752cef2e6d9a7eb6875491aaa0567c4cc4420"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/forward.py",
+      "bytes": 55222,
+      "sha256": "f6f783ac252f4e802a69f78fbbd4421d3e2a8a0f49dc00e8ac824560d14cef99"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/gdn.cpp",
+      "bytes": 2478,
+      "sha256": "2c84d93bdd38ddb254e1d2dd1c979e5486ad0fa0f09dae58c6c326fc70f39937"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/gdn.cu",
+      "bytes": 10380,
+      "sha256": "9c280d8389c8732d709e2786e99c44d70b66621f95a23909f28a3c0439314bbd"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/gdn.py",
+      "bytes": 3219,
+      "sha256": "f385fd53042cba9e7037c93a979e0491c82e04e41d328ed3f5716b754d59cb61"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/gdn_io.cpp",
+      "bytes": 2330,
+      "sha256": "27ca231802b2bdba64380851e65b61e0021e22c41695378b539a2b68b30317f8"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/gdn_io.cu",
+      "bytes": 6977,
+      "sha256": "bce5668398f324a3f27a00fb0d4fa4c925bb894c6cf5ef52664731feba7a2d9b"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/gdn_io.py",
+      "bytes": 1716,
+      "sha256": "3c116a9d94b5ea215b0bf58998264debd3de6c4c77205425870d36adfe131704"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/gdn_multi.py",
+      "bytes": 7218,
+      "sha256": "d0cbb5328efefb40af1b4fe4e9e0ae7a24eab50072b47be75cf36e0fa89f3558"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/gdn_state_batch.py",
+      "bytes": 8368,
+      "sha256": "697817f61cffe7dad0463eba2afab7a9c76b344c2e08fc201f0971e2891dfdb4"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/gguf_admission.py",
+      "bytes": 1804,
+      "sha256": "433739d7e9c429e63981f805b89190dfc874c4a2b527732f418fc512f5d013da"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/gguf_mtp_weights.py",
+      "bytes": 14801,
+      "sha256": "946b2442a9e917a22169749c329e824f570c8d1b76a7a89dfb0be2b4b76aff56"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/gguf_prefill.py",
+      "bytes": 6256,
+      "sha256": "c8a023efa1b3d9e5643e272e7c7e60362adf286ca31eeaf34c8415f059af7839"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+      "bytes": 54332,
+      "sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/glue.py",
+      "bytes": 36629,
+      "sha256": "4fc186e44e36fb61eeb4d93dfe61666306fbdb7d4fb05b1a714e06e621b45890"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/graphs.py",
+      "bytes": 6171,
+      "sha256": "ef2b30017a586230300f9aa29c385aacf3875c2a4e782240938d85f1bfba1b5e"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/hc_check.py",
+      "bytes": 5220,
+      "sha256": "e5241860067d233fb438ca1c71d736f1932e355caf92a81198f5af7077c6fbcd"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/hc_fused.py",
+      "bytes": 3669,
+      "sha256": "0cedb247eb4269e218dc61eb7edabe56e19a54fb98120bd39c1c961bd8b95994"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/hc_plans.py",
+      "bytes": 7094,
+      "sha256": "8704c54f256c02a53c57f9c0c08fd0a03847606aff6224439000f1c360f2f5eb"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/hc_upmix.py",
+      "bytes": 4164,
+      "sha256": "e2d0a75c4b080e511fdb14f67786b7b90a18c762b4644b45feefc8f1f7afb577"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/history_owner.py",
+      "bytes": 89854,
+      "sha256": "3a0324ebe2ed88106531abd116dbddeb1e2f70f20d251302b073c4e189d82a08"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/history_placement.py",
+      "bytes": 11796,
+      "sha256": "acf1e3aa723eb6c21095cda14a1468f0154d6f5593350ee7982c941c1d789776"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/history_runtime.py",
+      "bytes": 4226,
+      "sha256": "43dfaed4f23a648a19ef07ef08da68a942cd1ff2eb90f87470fe68d17608bae7"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/image_rows.py",
+      "bytes": 3258,
+      "sha256": "ea9e2492c4d492cd1e7e3872eea0e8eae98a67531e8dc904b21ba45b3934cc7d"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/indexer_admission.py",
+      "bytes": 5995,
+      "sha256": "94ac62f8178df077f3415a732f12d525461877ab76657ca29df8160392849169"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/indexer_history.py",
+      "bytes": 25973,
+      "sha256": "77fc758f416645a92c554c744b5265355a998979abd8fb9546aa5adf491f5286"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/input_preparation.py",
+      "bytes": 15523,
+      "sha256": "09143e4628b38639088b31d58e8de7b1befd4b48367d1a81b9fd102e00ab2cd5"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/kv_pair.py",
+      "bytes": 13365,
+      "sha256": "68eca3c8a30380cdda5c058d2fca91746ed1e7449c1cfa7ad7660a66d92499f2"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/kv_status.py",
+      "bytes": 6675,
+      "sha256": "7bdfdec25674c348d55d71bdbc1a2ce9299abebc0e9c1fbb6278ed43f069928e"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/kvcache.py",
+      "bytes": 9356,
+      "sha256": "3554d4d09f145b66141cf7a060c46d404a6c269d54a4f9d4c7ae75d56a21263a"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/kvquant.py",
+      "bytes": 3042,
+      "sha256": "b893b9841117629f3e6f37eb9e3c3994242bf8d3476657f7cc6885d3bb6c8123"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/lane_admission.py",
+      "bytes": 2296,
+      "sha256": "6cb2d7b2bb32e7b894500706048a0b944ad1712067bdcc81fba3f1cda68f7a67"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/media_inputs.py",
+      "bytes": 9146,
+      "sha256": "d2807c22c0259a00912a3d4422f6a616a94925c70a541c5d8fccc7fa3ed68d6d"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/media_mtp.py",
+      "bytes": 23224,
+      "sha256": "f99a37a40740a01ec88d20db789e22fc97c865ec1bd374cbb6041542735ab8c4"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/media_numerics.py",
+      "bytes": 5577,
+      "sha256": "408765d4379c7ec09531db4409991038c05ae628751af01e2de33cc641c442b8"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/media_producer.py",
+      "bytes": 17043,
+      "sha256": "03710e4a40d4c3a830569f114c90282fb6f5caf88ff3f21201d4f9a3c6d2d535"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/media_profile.py",
+      "bytes": 10151,
+      "sha256": "83a643d71e75e2f53c152befb23f284969f7762a6e27a1c7d8506b81dcc762f6"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/media_requests.py",
+      "bytes": 11895,
+      "sha256": "6290c5de99b4697bf170c1979363a43b6a52c51a7c4d9915324e6c4ca5ab44ea"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/media_runtime.py",
+      "bytes": 27298,
+      "sha256": "efe83b7dff958775d697c874277547769371a41d61175b4d90b33ddd14785f5e"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/media_wire.py",
+      "bytes": 12057,
+      "sha256": "4932a9cba181a0352f5a5e716728b9f38654dffc115644c21e4ad798d2b554d2"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/method_retention.py",
+      "bytes": 34464,
+      "sha256": "e72ce5861705b48861fca6c8b437b2a12c5885de717752816477f9adcaff4117"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/mmproj_vision.py",
+      "bytes": 9690,
+      "sha256": "952da61e2b8b80c77da4ac244f35815d19f9633931aa1e9545c39e891d65575a"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/mmproj_weights.py",
+      "bytes": 10790,
+      "sha256": "b8398551f00d8475ebff2fb22c98e5290295605b3d44352f7834e5bca63d90de"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/mtp.py",
+      "bytes": 13573,
+      "sha256": "178f2e4cf2ebaacb77bd1190d77c9800b3532c4d772aa329eb217d1e1657a9f7"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/multi.py",
+      "bytes": 150678,
+      "sha256": "8fa35205fdf8e9a2a499006c11b038af2f59b4233f4e4d21fb0931269ca2f20f"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/multi_graphs.py",
+      "bytes": 23421,
+      "sha256": "dba5294098e04feaf6e720ab0c9cf03b4dfbaed271d5428ba5a305f8ada25ceb"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/ngram.py",
+      "bytes": 3319,
+      "sha256": "4934fa303f47b57c8bc6637e55f5409a5b3a627d4e47805a8d8a039d34630b7c"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/nvfp4.py",
+      "bytes": 17810,
+      "sha256": "fd806395a28b83dbeb411e44a5e1af30070e81c646e913c6a3e442d729b5b682"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/nvfp4_moe.py",
+      "bytes": 17157,
+      "sha256": "106f79e55903d811ab5c87cd0572430f2132fd14267d720d660cfddd79b771b9"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/owner_execution.py",
+      "bytes": 1539,
+      "sha256": "1d36eee541155fa3730df7a659ca3ceabb6d54fafba5d3ca875441bde49d78a7"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/owner_graphs.py",
+      "bytes": 15926,
+      "sha256": "9640920ebdd309417348d4a349b3546249fb5736baa91f984247873cb8ba897c"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/owner_preparation.py",
+      "bytes": 19498,
+      "sha256": "60f2055f1eac66fd109502aa17c8b3789179251b5c0bfea4e9188b7321c73d0b"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/padded_linears.py",
+      "bytes": 6819,
+      "sha256": "2d4300ba9dee11c4781dcebda5b861eef98c05f8b8e6cfbaf61096973d26c421"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/position_coordinates.py",
+      "bytes": 17530,
+      "sha256": "d4ae2435b67b64ff384e69ffe8a41b2421f6564d590c495740b3ca0338099840"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/prefix_policy.py",
+      "bytes": 9189,
+      "sha256": "55bbc812c542e80ec6c0b7416e1788c695cdea9be8c1b492148dfc7c569920eb"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/prefixes.py",
+      "bytes": 9327,
+      "sha256": "d8683adae0c5b99c7640741a06e82fadcb118b094f65eb6b8c61e83275e88b0a"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/profile_construction.py",
+      "bytes": 13282,
+      "sha256": "bea0a199fe1d75f974b90d4c2c08f72fd7956c03e0286b63c5c8c7adf9036850"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/prompt_plan.py",
+      "bytes": 2356,
+      "sha256": "600a94e873d492e26d993d3272d36ff2bf786a4a0fe5b7fd1ce395282b5d2822"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/qmm.py",
+      "bytes": 17535,
+      "sha256": "2200dbb0f9a07b5fcd45521e2d53f9cdb7732b2fd849274b0d0bafeb9011112d"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/ram_backing.py",
+      "bytes": 13449,
+      "sha256": "1d21a52cf3f191c7baa65ca5ab611966590cd96683391e831855bb52d0859f0e"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/reader.py",
+      "bytes": 11448,
+      "sha256": "3f1b07daac9f7ac9630a82b272b18b6850aae169339bdaacdef2a7fae41214f4"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/retained_catalog.py",
+      "bytes": 119913,
+      "sha256": "5ee6572610b21858c2e68388144f5488c76faa8737169b7aaf27236a0cb28960"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/retained_host.py",
+      "bytes": 11294,
+      "sha256": "8d54465cab6e8137e4b214adf14703527453f1c7edc6c5c51b24b7ac3ccc2d6d"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/retained_parts.py",
+      "bytes": 3856,
+      "sha256": "60bdab0a34cc4958f9382cfc02e26ad9cb539182a7afd8ac16e2556606e0756b"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/retention_policy.py",
+      "bytes": 4569,
+      "sha256": "40718d2499ee76a58cc883f31ac414343efa9b76031f729ba4a8723c6cdea457"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/retention_resources.py",
+      "bytes": 96912,
+      "sha256": "edf4cfeddd2cb721a58385e5c506e0f78e894d2aee8c9a732e97d0ef7d23156b"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/retention_wake.py",
+      "bytes": 16404,
+      "sha256": "5f912f3beb288e74bc822bdaff6264726be18de6794bb687e83c3ff2b8b9e9e0"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/rotor_decoder.py",
+      "bytes": 3330,
+      "sha256": "fc99c3754fd7d586906df7565aedc32397d643fa50557da74870bb3e4e25e302"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/rotorquant_kernel.py",
+      "bytes": 24670,
+      "sha256": "a12adb1a3ef831971158e76bdbde01251ef18d941695a9409d09a34eb8f843dd"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/rotorquant_ref.py",
+      "bytes": 63284,
+      "sha256": "1fe9f9465587f3b352845794efc9fb3b6b2004decac21ed52fb284a49eb39dca"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/service_memory.py",
+      "bytes": 11297,
+      "sha256": "a940037e72a51047b77be69f7446a61a0921c4c6743da27ec029ad5b62f967d1"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/serving_profiles.py",
+      "bytes": 25869,
+      "sha256": "6a03300c21e28ec3374e5c6ff7332c129670d4305dc38e17a7cf214d6a44dc1b"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/serving_runtime.py",
+      "bytes": 20709,
+      "sha256": "6b54a93fd8f061e5c47407ca1db9ed05afabe5086a3bac45a2fbce720494462e"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/sm70_kv.py",
+      "bytes": 2935,
+      "sha256": "1fa881238d9aba634dd2afe85fb04548b2eecede8adca3855b4f6450a6ed0349"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/sm70_mtp_weights.py",
+      "bytes": 13247,
+      "sha256": "50b06accbf700b59f3706897edc1171cae3f97192243e0e7120a69da92bff810"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/sm70_nvfp4.py",
+      "bytes": 23595,
+      "sha256": "7486102a65a446db213faf782605e47c3c404d9bee02e8f2a5902c69f62dcf8b"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/sm70_nvfp4_weights.py",
+      "bytes": 45230,
+      "sha256": "29b3dbaee6e65673c1c7cfc2eabc8272e56576f3802bb52937685a64fccaf232"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/sm70_weight_manifest.py",
+      "bytes": 18636,
+      "sha256": "430e78d9fd8ea301ccc5a771365324ec65dc43d968f3af0dc8b490dab1e3caf5"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/speculation.py",
+      "bytes": 7041,
+      "sha256": "4d7bfbe95154ec900f719895948109ab5c3a3cc547af807633f0f6faacca1c60"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/startup_content.py",
+      "bytes": 19901,
+      "sha256": "d83d1e3811cca316dfbf69764558749c4aceccedd3198c341dce864641d35e5d"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/state.py",
+      "bytes": 73858,
+      "sha256": "b4b15e6952544d32bfda5665bf16b7fb1bf3532feca983900329ebcab4a3e36e"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/state_retention.py",
+      "bytes": 34192,
+      "sha256": "0bc2169fa9d138fd784b8088013995e2068df7979718ea8e590d675ad40365f2"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/target_greedy.py",
+      "bytes": 9177,
+      "sha256": "b34fca3b2c6855f2655e7f0d51c448921fe6610574d9c9943bc61cb2689a0079"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/tokenizer_payload.py",
+      "bytes": 7259,
+      "sha256": "e0326d2829eb95c0b68244c1716cf084e959011cdc7eb995d00d9cd5cdc94dc4"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/tp_scheduler.py",
+      "bytes": 67107,
+      "sha256": "c0713df801cc4f51f727e0e75427ae3a0536a3ca366cb2c885f784a597cf8d5f"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/weight_types.py",
+      "bytes": 19623,
+      "sha256": "59c0053e64421d40f56ada35bde877b988bd50b2ea8fe57105106844e1bc1325"
+    },
+    {
+      "path": "tensorfold/families/qwen4_exp/cuda/weights.py",
+      "bytes": 36586,
+      "sha256": "623ae973d388281fe7bc7ac524d7a08ff3affc859622f85910fc0e7344094816"
+    },
+    {
+      "path": "tensorfold/kernels/__init__.py",
+      "bytes": 75,
+      "sha256": "97660617bb545f562401ffec52f9aa2de4c3071c3127314657b017eca379b94c"
+    },
+    {
+      "path": "tensorfold/kernels/device.py",
+      "bytes": 1010,
+      "sha256": "44c2f41f832cffb9eb5b8e18c52a2365230565f0b9a7f3523382462895c567fd"
+    },
+    {
+      "path": "tensorfold/kernels/inputs.py",
+      "bytes": 1091,
+      "sha256": "e13ffabe1a413781c846f50aeb69181ecb668a2ef8860311ae1222f96fcaf32c"
+    },
+    {
+      "path": "tensorfold/kernels/threads.py",
+      "bytes": 3434,
+      "sha256": "52e09eb44eb28b8230e4d98a2c11130466dddba8a6350a0307df36d5b3a3f753"
+    },
+    {
+      "path": "tensorfold/kernels/deepseek/__init__.py",
+      "bytes": 24,
+      "sha256": "c6ae2dabdd79dc31662b1139b9d66fed27858327f36b506bed5ae539334e44e4"
+    },
+    {
+      "path": "tensorfold/kernels/deepseek/v4/__init__.py",
+      "bytes": 77,
+      "sha256": "91499c686446db91cd87550ab1d76e228e49a6941b19683484250814853fe208"
+    },
+    {
+      "path": "tensorfold/kernels/deepseek/v4/attention.py",
+      "bytes": 10549,
+      "sha256": "cb92058675de42c574a90e4906836566d18f5d1b5eb42c1dbf18f3a13d9b046b"
+    },
+    {
+      "path": "tensorfold/kernels/deepseek/v4/moe.py",
+      "bytes": 8827,
+      "sha256": "28c627d24923bc3729fef2ff42b9fe6427259cb80da6e8abb9bc2a22a004bbc0"
+    },
+    {
+      "path": "tensorfold/kernels/deepseek/v4/pool.py",
+      "bytes": 3895,
+      "sha256": "98c2e04bfe80a546c9cf0032c47bfae7c4fa21e124fddda73c51243e5d31bcfe"
+    },
+    {
+      "path": "tensorfold/kernels/deepseek/v4/rope.py",
+      "bytes": 2873,
+      "sha256": "487b0709866a751e20bd61a98fb2bd70305c4d10f8ce19667d661e698943c018"
+    },
+    {
+      "path": "tensorfold/kernels/deepseek/v4/rows.py",
+      "bytes": 9525,
+      "sha256": "95982410e4e8a8e42f92d1962e9e813d0f6ac0a5897e56dc8ee47e7e0c1acf01"
+    },
+    {
+      "path": "tensorfold/kernels/gemma/__init__.py",
+      "bytes": 21,
+      "sha256": "7b02b8e92a4a65e86a4a02828a337951366096bcdafb2f8e1ba1d87716e4b622"
+    },
+    {
+      "path": "tensorfold/kernels/gemma/v1/__init__.py",
+      "bytes": 101,
+      "sha256": "7888d62af39c89e6bae567c9cfc5ff8c91231ef38732c0bdb8299d853128374b"
+    },
+    {
+      "path": "tensorfold/kernels/gemma/v1/attention.py",
+      "bytes": 7625,
+      "sha256": "3c4574223716355e0e9ecd307e2facaeb5bb898aa5e3c7f4561062f4e74dc69d"
+    },
+    {
+      "path": "tensorfold/kernels/gemma/v1/base.py",
+      "bytes": 1343,
+      "sha256": "96ca22545a067f6295ef02f464363cd21fc88a56903638730b1955e5fbc63556"
+    },
+    {
+      "path": "tensorfold/kernels/gemma/v1/decode.py",
+      "bytes": 10109,
+      "sha256": "9e98a05fa354e809664e9431424f9a49aefa5be0584c293816d915716c77708c"
+    },
+    {
+      "path": "tensorfold/kernels/gemma/v1/glue.py",
+      "bytes": 12214,
+      "sha256": "78de80e9e62fa7948eac5c2ee15caab3c74094d9299f3f0e38b27a0a533229d2"
+    },
+    {
+      "path": "tensorfold/kernels/gemma/v1/matmul.py",
+      "bytes": 3037,
+      "sha256": "d26970b0bb28463b447ba596e800f67b9cf4c1d8268cb7b0ed7296a0c6ebe869"
+    },
+    {
+      "path": "tensorfold/kernels/gemma/v1/moe.py",
+      "bytes": 12389,
+      "sha256": "e475d240e9b500775bb23154d4c3d0590a14cb788d3dc76ce4ef02ecb50bdffd"
+    },
+    {
+      "path": "tensorfold/kernels/glm/__init__.py",
+      "bytes": 19,
+      "sha256": "d2f498ba4427965d3554e590771e3bcb224c7b0c4e4397fbcb6c6060d22f340e"
+    },
+    {
+      "path": "tensorfold/kernels/glm/flash/__init__.py",
+      "bytes": 29,
+      "sha256": "2bc60dc973a15113f4f08191e8cf0f75d302931f6c366602edff97c61ed46612"
+    },
+    {
+      "path": "tensorfold/kernels/glm/flash/v1/__init__.py",
+      "bytes": 73,
+      "sha256": "346f056d49027beebb11011df02dcfc6c46818f24ab1f2af7899985e295ce56a"
+    },
+    {
+      "path": "tensorfold/kernels/glm/flash/v1/fused.py",
+      "bytes": 1918,
+      "sha256": "99f443fc52c9e4ce0bd3f8e0bad9a620edaf2778ddb73dc46ce32d86239d888b"
+    },
+    {
+      "path": "tensorfold/kernels/glm/flash/v1/hc.py",
+      "bytes": 12153,
+      "sha256": "5d76fc06f00be8fab50d789ae13aac00a9c861b7547e34e6cbcbeeb6e649945f"
+    },
+    {
+      "path": "tensorfold/kernels/glm/flash/v1/kda.py",
+      "bytes": 15539,
+      "sha256": "302c8aaee20ad2232b72b29902cae27a8198825d39cbcdb8d272054e21eaf300"
+    },
+    {
+      "path": "tensorfold/kernels/glm/flash/v1/kernels.py",
+      "bytes": 29637,
+      "sha256": "7184b8fa1dc2bd913fc34e783d7ff93bcf762a8bef4dc7d89574120a22121668"
+    },
+    {
+      "path": "tensorfold/kernels/glm/flash/v1/moe.py",
+      "bytes": 23413,
+      "sha256": "7d5629d315d5415b33d835469545d09871a35cece2a3b109782c576aa0311b9c"
+    },
+    {
+      "path": "tensorfold/kernels/glm/flash/v1/prompt.py",
+      "bytes": 16579,
+      "sha256": "0b2a72b219e39a8cda0a5cbf893fd983ddf3be400c2925802a56ebcf7026250c"
+    },
+    {
+      "path": "tensorfold/kernels/glm/flash/v1/sparse_attention.py",
+      "bytes": 5541,
+      "sha256": "adc4571e03ce29e990baf027bc021f607ebbb301b667d784d4a4448aecbbd4e0"
+    },
+    {
+      "path": "tensorfold/kernels/glm/flash/v1/stream_moe.py",
+      "bytes": 7132,
+      "sha256": "31de29432290de1c3dcfdfed9c1d65f39f80fbcc76f7338e94047eaf506ab9bf"
+    },
+    {
+      "path": "tensorfold/kernels/glm/flash/v1/widths.py",
+      "bytes": 10366,
+      "sha256": "e948ca920480f8fabfdc7a8d5d74ac2f0ec1abaaa3f2b36381220494c821fa68"
+    },
+    {
+      "path": "tensorfold/kernels/nemotron/__init__.py",
+      "bytes": 31,
+      "sha256": "27ad1ed92286229263edfe7f7dfb50e66d3fbc829d70dd1b179db4a406d8bfed"
+    },
+    {
+      "path": "tensorfold/kernels/nemotron/lightning/__init__.py",
+      "bytes": 38,
+      "sha256": "f9cbb431f8c0f946a0b942aa1a495ec4672e78c6b8c8808d49b9f3c87200c355"
+    },
+    {
+      "path": "tensorfold/kernels/nemotron/lightning/v1/__init__.py",
+      "bytes": 77,
+      "sha256": "c4c28073475817fe5a7a356928c49e914a5464e2018a11f72827d10bea2dcaea"
+    },
+    {
+      "path": "tensorfold/kernels/nemotron/lightning/v1/kernels.py",
+      "bytes": 32814,
+      "sha256": "bb6a167bc09d72c173d17b8ae033cc7e5371f1055217ec0541a552fc2f2aec10"
+    },
+    {
+      "path": "tensorfold/kernels/nemotron/lightning/v1/rows.py",
+      "bytes": 18452,
+      "sha256": "648eb82a2352ca016c9f59ee2069414eb5d658f8a01911f6f6946fdb93f59b44"
+    },
+    {
+      "path": "tensorfold/kernels/nemotron/lightning/v1/sources.py",
+      "bytes": 8504,
+      "sha256": "77a57a4863bd538b926cf6aff9232d8e2c8043fd39b94f897f816af3377bb158"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/__init__.py",
+      "bytes": 20,
+      "sha256": "8487b88ef59af4a723e5afa6614e13b8f3d686e41fc6c9e9cedb52cd5e9d1597"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/dense/__init__.py",
+      "bytes": 34,
+      "sha256": "2b6eec726d2f3a31fdc313639288a61d5aa9848db000ada0d10b36de5050b227"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/dense/v1/__init__.py",
+      "bytes": 67,
+      "sha256": "95ab120332366704fc5aeaac38a96c4cd85695e96d151eae6f8374028bdb855c"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/dense/v1/affine_rows.py",
+      "bytes": 8035,
+      "sha256": "e5c471ecf0a49572128d2c7c4a8c10f38956013ca063cceec2ac08d99ce251d9"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/dense/v1/exact_attention.py",
+      "bytes": 2759,
+      "sha256": "c130be13a44c0ab0b608e8dca024954c5c125e92f9035b11e69aaaff8e5466e7"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/dense/v1/lane_attention.py",
+      "bytes": 14542,
+      "sha256": "fc66173e75b660c069011eb15d63ca51368132f017c55fc49d5c91c6529efd91"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/dense/v1/lane_fuse.py",
+      "bytes": 15760,
+      "sha256": "5515344ba8cfe9afaeb62f29a69467c2c5efab0a5ed6b927afd492a2a62eb906"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/dense/v1/lane_gdn.py",
+      "bytes": 39254,
+      "sha256": "1d33f132457efd554516149eea0dea8d86ef4d79e92ae7b26a1212df244e650d"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/dense/v1/lane_glue.py",
+      "bytes": 11925,
+      "sha256": "ed3b014447e11d7a68cf9c672e17b5eb902eae267dec28a9504c1a7c0c4473f2"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/dense/v1/lane_multi.py",
+      "bytes": 12126,
+      "sha256": "7464dcf75f7e70b18bdb4e6e632b0b6a46f82ef6897c4c815ba84f4fd5d9063b"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/dense/v1/lane_qmm.py",
+      "bytes": 28238,
+      "sha256": "949fad48e8f05e2340043e300a92b84710f59d8f68f80034549332e7939bd077"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/dense/v1/lane_stage.py",
+      "bytes": 9309,
+      "sha256": "0b60714f347eca2b5010d840b2fb23933389c4ce79093bd0bb34daa67a6d2fcc"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/dense/v1/lane_tree.py",
+      "bytes": 10245,
+      "sha256": "59f88ea97fd61af306ace5da89c4af86558910c502e976d5d65aa804414f5a75"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/dense/v1/lane_widen.py",
+      "bytes": 10298,
+      "sha256": "d4590f75af8e631a46c3947cd7a4089dbc8c1db9d41e4fa45e94e8264705a33e"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/dense/v1/projection_operation.py",
+      "bytes": 2422,
+      "sha256": "076c07ea65b0077816035c186c6045569be8d5b664e1a5d109b8ec07ecf44de2"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/dense/v1/prompt_attention.py",
+      "bytes": 1602,
+      "sha256": "af5560a373fcc6e8a94114b3ad92032c44faf0e3f743297d435bc8354613841e"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/dense/v1/row_attention.py",
+      "bytes": 11917,
+      "sha256": "56fbfe068223483c846c4bf825d866d27485683a95b5b832f686624fea384a53"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/dense/v1/row_forward.py",
+      "bytes": 46067,
+      "sha256": "77e268a9c71314343f36329ec28cc16ce2ef1956f9c9a7d8e82cd11c11894eab"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/dense/v1/row_glue.py",
+      "bytes": 14306,
+      "sha256": "4861406804152b8e23acd8fb3ced578aaef9fff3e31faeac847a6d60240933ec"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/dense/v1/row_matmul.py",
+      "bytes": 13622,
+      "sha256": "3fcaa1f66d796fb733fb37de0545cef9de27b8e5fa63f804665ce84adc8a2422"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/dense/v1/row_streams.py",
+      "bytes": 6986,
+      "sha256": "525d5277ea9a28f5c4ad8b5d1393e396651fad7e80dc7a45e9b6b664bef8fd38"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/dense/v1/simd_qmm.py",
+      "bytes": 24074,
+      "sha256": "897f5824280540956766028f35b36586c81aef26cacf21488b4b31f6218527f0"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/dense/v1/simd_qmm_bits.py",
+      "bytes": 15031,
+      "sha256": "c8aab12180295bdcb54f044ea4246657049594b5feeee15eedebcf8a2543b8e4"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/dense/v1/stream_attention.py",
+      "bytes": 22908,
+      "sha256": "3381971a3d6db63c805b45805abea3fd463fa6b730e0bf28028369ecb0b4f655"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/dense/v1/stream_gdn.py",
+      "bytes": 17064,
+      "sha256": "4b626c300c2ed9e0119e404b0f46521cf518fa2e0a144c4c8360875429390824"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/flash_next/__init__.py",
+      "bytes": 34,
+      "sha256": "5db707813b8903b18a0dee1fd17195a71a97708fb1d85e31a681f070053d8609"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/flash_next/v1/__init__.py",
+      "bytes": 73,
+      "sha256": "43a04be8a694786de1e0b0342a7a9039e767fb4377d5bec132f523ec8b754b79"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/flash_next/v1/attention.py",
+      "bytes": 28928,
+      "sha256": "b81ddcd0093a2e7308d0b5b87b0760c2711a676665ab8c02f857da99928280ee"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/flash_next/v1/base.py",
+      "bytes": 22579,
+      "sha256": "dd241383c6e8f0803279098c39eab293ad14e331c5001de9103c322011f8bd8f"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/flash_next/v1/embed.py",
+      "bytes": 19061,
+      "sha256": "d3a0a9de0cb19aaad92dae0a2ffbc8a94837fbb04e1b31b1b4819cb0b7fe643f"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/flash_next/v1/experts.py",
+      "bytes": 17811,
+      "sha256": "826aea869bbc4d9d37914a2659aed832e66754facc4c50a91dd4ba527e9a5700"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/flash_next/v1/gdn.py",
+      "bytes": 15548,
+      "sha256": "abcd9b6aeb4f98783a30a695820041a008af26d98fe1453b58a213edfeee07dc"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/flash_next/v1/hc.py",
+      "bytes": 21305,
+      "sha256": "ab01535b27cbc36f5ec821d90d00a3b397c8ec39266de1f26ad2ef2181372068"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/flash_next/v1/prefill.py",
+      "bytes": 9765,
+      "sha256": "2ee1bc01eb9c5db32189fa0264e79eb06212cc73ec21862458330052d341dbaf"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/flash_next/v1/prefill_hc.py",
+      "bytes": 8800,
+      "sha256": "b9a1758d7799edf5cf205efc253599205cb422bec25a5e6a3e070e2620ba7576"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/flash_next/v1/prefill_mm.py",
+      "bytes": 24187,
+      "sha256": "9b8003bba5d57bd614db4e0ac66ec93d24595d5791a106f99268e4be07ad539c"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/flash_next/v1/row_tiles.py",
+      "bytes": 8378,
+      "sha256": "0cc9cb006cc473939b2e3d491929304ef0da25ea0f7ad06c015c359bc81d480a"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/flash_next/v1/rows.py",
+      "bytes": 19893,
+      "sha256": "bd1f285abafbb1142f12c24a68d41f57ede8f879cf5b7e55927604a6dfc2b0bf"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/flash_next/v1/stream_experts.py",
+      "bytes": 5538,
+      "sha256": "00d24d85ad9a46cc762d45b4159e10adf48dcb4febf8f8a6bedb1e12ecf9e354"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/prism/__init__.py",
+      "bytes": 68,
+      "sha256": "884f99d2af89bbc47b498057181ee81776eb93b4d5b011a37a6ad803f4812420"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/prism/v1/__init__.py",
+      "bytes": 63,
+      "sha256": "d4633de61e62264b15eefb5c9e3e582c5c59d1680e92936e323118b8300670f7"
+    },
+    {
+      "path": "tensorfold/kernels/qwen/prism/v1/rotate.py",
+      "bytes": 5422,
+      "sha256": "5145b9db55d2145234332880e4bc2319717ded38278d68baa62c483ce68a6900"
+    },
+    {
+      "path": "tensorfold/server/__init__.py",
+      "bytes": 110,
+      "sha256": "e08d86d206c2b9089993e28ebef2c965a8b9c9ff267d0e657f7d0eccba16a37b"
+    },
+    {
+      "path": "tensorfold/server/admission.py",
+      "bytes": 1875,
+      "sha256": "f2bfda8b15f1673531de42c07378a90f2de71210fced6a757874c9f719b2e3ed"
+    },
+    {
+      "path": "tensorfold/server/anthropic.py",
+      "bytes": 3087,
+      "sha256": "17bd0782e183e49098a2838b485bbb6f7955f2ce57580839c66a68ca52e2dd85"
+    },
+    {
+      "path": "tensorfold/server/anthropic_translate.py",
+      "bytes": 18976,
+      "sha256": "fe825651e921581684b12450f4b43061c61b5e7b5ec5fef4fa712da412c3aa95"
+    },
+    {
+      "path": "tensorfold/server/api_record_media.py",
+      "bytes": 7724,
+      "sha256": "650ac968099642ad8a0db27eb26f32f4ad491b247a528657b70b14455a694c31"
+    },
+    {
+      "path": "tensorfold/server/api_records.py",
+      "bytes": 51045,
+      "sha256": "aecb223a272e11f595d2831c6418b8dfcffeee9193e9da3e2c45ed308b2da309"
+    },
+    {
+      "path": "tensorfold/server/app.py",
+      "bytes": 39907,
+      "sha256": "592c7659a4690157a102cfbb103380f471e8d896bdfbf01e61cde6c4c9d9185f"
+    },
+    {
+      "path": "tensorfold/server/auth_http.py",
+      "bytes": 4581,
+      "sha256": "9519ffaf351ba32abde8c459ea19345636ac220b5e4769423718858b06b7cc33"
+    },
+    {
+      "path": "tensorfold/server/authentication.py",
+      "bytes": 9974,
+      "sha256": "e146954aea8449650cd76648ca1b0c99d985f7bea1278113577252e75f492db6"
+    },
+    {
+      "path": "tensorfold/server/cancellation.py",
+      "bytes": 3912,
+      "sha256": "6adf405bcba936b77f001ab065b70224da23ec954d8300eb52b5518b227acb6d"
+    },
+    {
+      "path": "tensorfold/server/checkpoints.py",
+      "bytes": 14282,
+      "sha256": "1c9848efac64a49befb0634cb008859659c8158c788f786c9f816d064f2c5df3"
+    },
+    {
+      "path": "tensorfold/server/conversations.py",
+      "bytes": 6231,
+      "sha256": "ef576a050115deadea5932ce077c688136b88843e2ee38b21665dc0ed822fc4d"
+    },
+    {
+      "path": "tensorfold/server/decision_requests.py",
+      "bytes": 6718,
+      "sha256": "9d578228f2994a845d7157d135a356009094120ec2c6a425ef3fbfd2c3b6a023"
+    },
+    {
+      "path": "tensorfold/server/decisions.py",
+      "bytes": 15120,
+      "sha256": "dbdd9abd92280d74094c2d11759e88de9f16f2b1f439f2be4cf65f093eee88da"
+    },
+    {
+      "path": "tensorfold/server/errors.py",
+      "bytes": 3486,
+      "sha256": "27b66250648cf3dcb8363b7f69f2d170442b5d2ea1f5b8a45bc3f150a7070d04"
+    },
+    {
+      "path": "tensorfold/server/failure_capture.py",
+      "bytes": 4801,
+      "sha256": "065b14179d2506c2b8875b0a57b2583075d6798f9021684fdb21e2c7e4592317"
+    },
+    {
+      "path": "tensorfold/server/gemma_values.py",
+      "bytes": 10823,
+      "sha256": "8b3ad639bf0030f5d63649c706007f8f7eaf959e2127ea4e329a5740cf9506bb"
+    },
+    {
+      "path": "tensorfold/server/http.py",
+      "bytes": 48190,
+      "sha256": "2fb444c2ac56705c4080a4dc9915a5019246a21b8f7705501e5e2392bc6162a7"
+    },
+    {
+      "path": "tensorfold/server/live.py",
+      "bytes": 7272,
+      "sha256": "e209f9bd415882f17503d2155154c1876b56a08013bdaeea3a1ddc3e0079bead"
+    },
+    {
+      "path": "tensorfold/server/memory_budget.py",
+      "bytes": 11653,
+      "sha256": "8248735affb760337fa68d0edc90f0c02015359e761bc17f6c6e8c577779be43"
+    },
+    {
+      "path": "tensorfold/server/messages.py",
+      "bytes": 6036,
+      "sha256": "5ec8a7fd07b046587114e69432343310edf3cf31d7b323dfd1827a5c0d704f6c"
+    },
+    {
+      "path": "tensorfold/server/metrics.py",
+      "bytes": 30015,
+      "sha256": "0792387d356261415bd4e13e29ebfc4a71e5dc4c6984c6252efe15d879300897"
+    },
+    {
+      "path": "tensorfold/server/probabilities.py",
+      "bytes": 3462,
+      "sha256": "486fd4fd9a574be2e0d55b0f51aee433e4c23f67a79405b228a3333c0bb6995e"
+    },
+    {
+      "path": "tensorfold/server/prompt_blocks.py",
+      "bytes": 6663,
+      "sha256": "6c6e6b4864b5a2afe21a0630206de78f202a489ea50ac2873997ea82df7b90e8"
+    },
+    {
+      "path": "tensorfold/server/prompt_fill.py",
+      "bytes": 12659,
+      "sha256": "4e7a6471407687cb2d21b7bbb326cb178d1a76d11bf9f13b2c07575a14089b8e"
+    },
+    {
+      "path": "tensorfold/server/prompt_memory.py",
+      "bytes": 27154,
+      "sha256": "4d6c18c7dca9b0a5ad718ee5fe324c707f0d85dd9cf05ae4f06b3a3c9931418b"
+    },
+    {
+      "path": "tensorfold/server/prompts.py",
+      "bytes": 7532,
+      "sha256": "2dea252a1530a8a83461a48db220411d7a77fefc08e6192512f396912ea7b5f8"
+    },
+    {
+      "path": "tensorfold/server/request_body.py",
+      "bytes": 6454,
+      "sha256": "96213cfc3d9db60de57beb64f444dc6e304cc99125d718dd6c52ebe91f5895b3"
+    },
+    {
+      "path": "tensorfold/server/request_ids.py",
+      "bytes": 4573,
+      "sha256": "6bff4b73d96b11bfee1339a2695f2af41b687e2e69c890fea9e3ccff3b0c09d6"
+    },
+    {
+      "path": "tensorfold/server/request_limits.py",
+      "bytes": 19528,
+      "sha256": "79dfd1b669f679e6bb06b3a919c9d91eee6ae922b2e8f7ec5d2ed1984d7541d3"
+    },
+    {
+      "path": "tensorfold/server/request_options.py",
+      "bytes": 15637,
+      "sha256": "ab4c47de4a3641a5d7fd15d3c28c9c8f092eb6b43571de2907b962f2839e37b8"
+    },
+    {
+      "path": "tensorfold/server/residency.py",
+      "bytes": 1597,
+      "sha256": "cd74db253f2413d1f7cc4f47f053aa868a41178fbd97643252a411036287a5fa"
+    },
+    {
+      "path": "tensorfold/server/responses.py",
+      "bytes": 25217,
+      "sha256": "72b7535780bdce87b0a95d152ddc388845df09836b510ad74ca292367af8f525"
+    },
+    {
+      "path": "tensorfold/server/responses_translate.py",
+      "bytes": 26914,
+      "sha256": "50e85713b6d49364569da9ba19579092298674a707ae4a8faf4a7fe372c0f884"
+    },
+    {
+      "path": "tensorfold/server/runtime.py",
+      "bytes": 8164,
+      "sha256": "e080d76d2577f87d551bd234d576fc694306f69ccc4ab7b9f439b550c38ba414"
+    },
+    {
+      "path": "tensorfold/server/scheduler.py",
+      "bytes": 39911,
+      "sha256": "421c2c47482b9da68e7b04ea08e64bf9dbe34145ee540aaa15d6b04832f754ad"
+    },
+    {
+      "path": "tensorfold/server/segments.py",
+      "bytes": 3989,
+      "sha256": "6e401cce15a031a01de96342a798175a3e8d6de72c59d7520434418daa4fba5c"
+    },
+    {
+      "path": "tensorfold/server/stacks.py",
+      "bytes": 2202,
+      "sha256": "da7467429d4d8d17c7299edd08a8c781f47696df14d1b9c851addd31225e7b08"
+    },
+    {
+      "path": "tensorfold/server/stats.py",
+      "bytes": 9924,
+      "sha256": "292fd9243e3147233605ad32756f7746ef2c1134830a17c3640d5a84df02e29f"
+    },
+    {
+      "path": "tensorfold/server/stopping.py",
+      "bytes": 3035,
+      "sha256": "0a6c353fd592925c9b3311ed214044009359f6dcdbcd5c886ac233f1976292ee"
+    },
+    {
+      "path": "tensorfold/server/stream_gate.py",
+      "bytes": 3017,
+      "sha256": "2d85f71b041dee9116f0a10f0d3a9df238c86998d5aa8886520efa27d4b4516c"
+    },
+    {
+      "path": "tensorfold/server/strict_gemma_tools.py",
+      "bytes": 20657,
+      "sha256": "d4bb0764437e84435d9cd10ced22be51764e55b9ab8b17ccdb323a1aa36594aa"
+    },
+    {
+      "path": "tensorfold/server/strict_grammar.py",
+      "bytes": 1680,
+      "sha256": "f1c20e967e79088833cdc4f43f2fe6939bc8773e8b2b73bfbeaca4a9c93ff0eb"
+    },
+    {
+      "path": "tensorfold/server/strict_scalar_tools.py",
+      "bytes": 8633,
+      "sha256": "bb89d05bab8caf0c2c9f8949e94e16b642883c2285d44628a0e2b5af5eca0c1d"
+    },
+    {
+      "path": "tensorfold/server/strict_tools.py",
+      "bytes": 58885,
+      "sha256": "8c7c25f7420a0dbccd1089817312ae223e511b1f491a6d66b5ccbf4498152859"
+    },
+    {
+      "path": "tensorfold/server/text.py",
+      "bytes": 11015,
+      "sha256": "26f0f877aba2bea20ed85aef1b7286357b156b59688b592b1e024d4f66a004e9"
+    },
+    {
+      "path": "tensorfold/server/thinking_notes.py",
+      "bytes": 4247,
+      "sha256": "00326ac8bd98b01d1451fccf1dd29d00c8eaefcd205d7269ed5663d09c469188"
+    },
+    {
+      "path": "tensorfold/server/token_routes.py",
+      "bytes": 7880,
+      "sha256": "bf2dbb0335949104388f4893b6f62ffc03272ba2f129863f9018b89c810483dc"
+    },
+    {
+      "path": "tensorfold/server/tool_policy.py",
+      "bytes": 4343,
+      "sha256": "b038acedf3fada1c1a09920f5f7184128fece7419368ec6bc2918910c4b919d3"
+    },
+    {
+      "path": "tensorfold/server/tools.py",
+      "bytes": 19140,
+      "sha256": "154879519ca75e9f3c1050e4e2d4c1670de7c139a56cb2e20c23444ee4f4abd1"
+    },
+    {
+      "path": "tensorfold/streaming/__init__.py",
+      "bytes": 107,
+      "sha256": "69fa58f426672a4a69bde1d46075e600ac91ad685ae916fe96b1e69184e8e8e8"
+    },
+    {
+      "path": "tensorfold/streaming/build.py",
+      "bytes": 3354,
+      "sha256": "90887a97d11b697690172fd5679d0637f49a8c8fc3c52d20d6656bbfa8d5fe25"
+    },
+    {
+      "path": "tensorfold/streaming/checkpoint.py",
+      "bytes": 1057,
+      "sha256": "3e5c477d0947ca8c90196224ce825b2ea4e77e9900f8ab2af3976505f925cb02"
+    },
+    {
+      "path": "tensorfold/streaming/pool.py",
+      "bytes": 9569,
+      "sha256": "5300c0c86f9e51b731eeb56b551fe5a8a04445f2fca20ec85ec51d387c5183e8"
+    },
+    {
+      "path": "tensorfold/streaming/hostsync/CMakeLists.txt",
+      "bytes": 823,
+      "sha256": "a4778fed8d32db483f3c0660ff90966c70d2dd17332412b5045fcb5f7d39d307"
+    },
+    {
+      "path": "tensorfold/streaming/hostsync/__init__.py",
+      "bytes": 61,
+      "sha256": "024fdb0ca48d0b311b1def6526e6081cf00f55ea2e82ca9a896b256f12ff1cc1"
+    },
+    {
+      "path": "tensorfold/streaming/hostsync/hostsync.cpp",
+      "bytes": 4675,
+      "sha256": "748078eb3d7d24ef5cc394058b772f19c795941b8fb81a48225a92807d532fe2"
+    },
+    {
+      "path": "tensorfold/vision/__init__.py",
+      "bytes": 82,
+      "sha256": "5332f770e6777b0da800665db0ab270579795708d619dfd2901e91c276890afe"
+    },
+    {
+      "path": "tensorfold/vision/config.py",
+      "bytes": 1405,
+      "sha256": "86ea3334b0bbda8406043ff494fead0e7799d061677d4afa9835b48550d523ec"
+    },
+    {
+      "path": "tensorfold/vision/exl3_convert.py",
+      "bytes": 5618,
+      "sha256": "2e3a9cd6410dac80f568ea4995ce5ccf8be59ee70fc5f6b95ab435bd90394aff"
+    },
+    {
+      "path": "tensorfold/vision/glm_mlx.py",
+      "bytes": 4622,
+      "sha256": "0129431a624097da7486bab6cdf3ff9c8d94d357ba5728f4372160a58958ee2e"
+    },
+    {
+      "path": "tensorfold/vision/glm_processing.py",
+      "bytes": 7529,
+      "sha256": "cea5c4cf2edbf7a1f8ce9227d6b9146d928439163a400537d4f833fc391f8390"
+    },
+    {
+      "path": "tensorfold/vision/images.py",
+      "bytes": 13197,
+      "sha256": "28fcfa32f72a8bcd83013067694affe218a0e0e2d64711b8aa56f283c47333b2"
+    },
+    {
+      "path": "tensorfold/vision/images_http.py",
+      "bytes": 8086,
+      "sha256": "b4e6f94fe8c18fa1a22a884654911bc8d2851534c4677c47ea70760c8655e56c"
+    },
+    {
+      "path": "tensorfold/vision/media_frontend.py",
+      "bytes": 20536,
+      "sha256": "ac1a517a867acf0b3358a1163ca81d23c369ded8d77830cec2cc29701f7d5552"
+    },
+    {
+      "path": "tensorfold/vision/media_work.py",
+      "bytes": 23753,
+      "sha256": "536771fac571676b2c43efe6bfedb2b95713a298240c7a63f1d05652ee546b1e"
+    },
+    {
+      "path": "tensorfold/vision/media_worker.py",
+      "bytes": 18362,
+      "sha256": "df717ced750bbdfe8107a7d4b4a58a0ad951fb3f0a43bc5e4257000cdc8af1b5"
+    },
+    {
+      "path": "tensorfold/vision/qwen_checkpoint.py",
+      "bytes": 5808,
+      "sha256": "4577c24aad9359f1cd34a8a3785da178d3b9f1e60e8ba39e05108f089c577953"
+    },
+    {
+      "path": "tensorfold/vision/qwen_cuda.py",
+      "bytes": 22872,
+      "sha256": "c5a422322b3500feb59616513e15df00b9b8e4e129182d08576f1205228ef46d"
+    },
+    {
+      "path": "tensorfold/vision/qwen_mlx.py",
+      "bytes": 5436,
+      "sha256": "15b8f8c0b996c7743892cfb96a6cb126ece7e317d0d93a0d9bfcb10c729d969d"
+    },
+    {
+      "path": "tensorfold/vision/qwen_processing.py",
+      "bytes": 22273,
+      "sha256": "f104ea0e24785af68ee02f76eaaf03f7a014dde1d5f48c4ea453d9fbd8924982"
+    },
+    {
+      "path": "tensorfold/vision/replay.py",
+      "bytes": 25775,
+      "sha256": "8c12135c363af73c859f662afde634ccbaa8119ba44b4b9de4d76095e88d9f9b"
+    },
+    {
+      "path": "tensorfold/vision/rotary.py",
+      "bytes": 3085,
+      "sha256": "e1eb3eff11d195bbeb2b0009f1106cd593f94dd23638081f9b750925c6d7f69f"
+    },
+    {
+      "path": "tensorfold/vision/videos.py",
+      "bytes": 8359,
+      "sha256": "268c3391bbbef78cd1855af98273bc3dd44102be9db1e28062826e9a8a517601"
+    }
+  ],
+  "compiled_extensions": [
+    {
+      "path": "tensorfold/_fd_owner.abi3.so",
+      "bytes": 46344,
+      "sha256": "c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d"
+    }
+  ],
+  "source_overlay": false,
+  "native_source_sha256": "aa5d4a6773f7d26c7dc43e0bf0817fb127e9d8a70de103f99acc8999fe6c3931",
+  "planned_thread_stack_guard": [
+    8388608,
+    4096
+  ]
+}

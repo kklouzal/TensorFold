@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""Partition completed traces by actual first committed callback, no GPU imports."""
+import argparse
+from collections import Counter, defaultdict
+from concurrent.futures import ProcessPoolExecutor
+import hashlib
+import json
+from pathlib import Path
+import time
+
+from analyze_traces import Stream, add, top, api_group, timelines, phase_at, union
+
+
+def analyze(arguments):
+    directory, output, rank, definition, *explicit_receipt = arguments
+    directory, output = Path(directory), Path(output)
+    path = directory / f"rank-{rank}-trace.json"
+    profile = json.loads((directory / f"rank-{rank}-profile.json").read_text())
+    final_name = explicit_receipt[0] if explicit_receipt else f"rank-{rank}-final.json"
+    if final_name not in (f"rank-{rank}-final.json", f"rank-{rank}-final.overflow.json"):
+        raise ValueError("explicit rank receipt filename invalid")
+    final = json.loads((directory / final_name).read_text())
+    if not profile.get("complete") or not final.get("complete"):
+        raise ValueError("incomplete actual rank")
+    for boundary in ("before", "after"):
+        if profile["source_" + boundary]["status"] != "verified-source-software":
+            raise ValueError("source guard missing")
+    windows = []
+    for reply in definition["replies"]:
+        for kind, start, end in (
+            ("full_generate", reply["generate_start_us"], reply["generate_end_us"]),
+            ("before_first_commit_core", reply["generate_start_us"], reply["first_commit_lower_us"]),
+            ("decode_core", reply["first_commit_upper_us"], reply.get("decode_core_end_us", reply["generate_end_us"])),
+            ("decode_expanded", reply["first_commit_lower_us"], reply["generate_end_us"]),
+        ):
+            windows.append({"label": reply["label"] + "/" + kind, "start_us": start, "end_us": end,
+                "operators": {}, "runtime_APIs": {}, "runtime_by_project": {}, "API_groups": {},
+                "kernels": {}, "kernel_groups": {}, "kernel_origin": {}, "project_labels": {},
+                "project_by_thread": {}, "intervals": [], "counts": Counter(), "linked": 0, "launch_origin": {}, "graph_metadata": Counter()})
+    started, header = time.monotonic(), {}
+    initial = path.stat()
+    ranges, runtime, kernels = defaultdict(list), {}, []
+    stream = Stream(path)
+    try:
+        for event in stream.events(header):
+            if event.get("ph") != "X":
+                continue
+            category, name = event.get("cat", ""), event.get("name", "")
+            ts, duration, tid, args = event.get("ts"), event.get("dur"), event.get("tid"), event.get("args", {})
+            if not isinstance(ts, (int, float)) or not isinstance(duration, (int, float)) or duration < 0:
+                raise ValueError("invalid timed event")
+            project = category == "user_annotation" and name.startswith(("tensorfold/cpu/", "tensorfold/body/", "tensorfold/host/"))
+            if project:
+                ranges[tid].append((ts, ts + duration, name))
+                if sum(len(rows) for rows in ranges.values()) > 200000:
+                    raise ValueError("project range bound exceeded")
+            in_full = any(row["generate_start_us"] <= ts < row["generate_end_us"] for row in definition["replies"])
+            if category in ("cuda_runtime", "cuda_driver") and in_full:
+                correlation = args.get("correlation")
+                if isinstance(correlation, int):
+                    if correlation in runtime:
+                        raise ValueError("ambiguous duplicate runtime correlation")
+                    runtime[correlation] = (name, ts, duration, tid)
+                    if len(runtime) > 8000000:
+                        raise ValueError("correlation bound exceeded")
+            if category == "kernel" and any(ts < row["generate_end_us"] and ts + duration > row["generate_start_us"] for row in definition["replies"]):
+                kernels.append((ts, duration, name, args.get("correlation"), args.get("graph id"), args.get("graph node id")))
+                if len(kernels) > 4000000:
+                    raise ValueError("kernel bound exceeded")
+            for window in windows:
+                if category == "kernel":
+                    first, last = max(ts, window["start_us"]), min(ts + duration, window["end_us"])
+                    if last > first:
+                        window["intervals"].append((first, last))
+                if project:
+                    overlap = min(ts + duration, window["end_us"]) - max(ts, window["start_us"])
+                    if overlap > 0:
+                        add(window["project_labels"], name, overlap)
+                        add(window["project_by_thread"], name + " | tid=" + str(tid), overlap)
+                if not window["start_us"] <= ts < window["end_us"]:
+                    continue
+                duration_in = min(duration, window["end_us"] - ts)
+                window["counts"][category] += 1
+                if category == "cpu_op":
+                    add(window["operators"], name, duration_in)
+                elif category in ("cuda_runtime", "cuda_driver"):
+                    add(window["runtime_APIs"], name, duration_in)
+                    add(window["API_groups"], api_group(name), duration_in)
+                elif category == "kernel":
+                    add(window["kernels"], name, duration_in)
+                    add(window["kernel_groups"], "NCCL" if "nccl" in name.lower() else "non_NCCL", duration_in)
+    finally:
+        stream.file.close()
+    after = path.stat()
+    if (initial.st_ino, initial.st_size, initial.st_mtime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns):
+        raise ValueError("input changed")
+    if stream.bytes != initial.st_size or stream.digest.hexdigest() != profile["trace"]["sha256"]:
+        raise ValueError("raw trace SHA/size mismatch")
+    if header.get("baseTimeNanoseconds") != definition["baseTimeNanoseconds"]:
+        raise ValueError("cross-rank trace base differs")
+    index = timelines(ranges)
+    for window in windows:
+        for name, ts, duration, tid in runtime.values():
+            if window["start_us"] <= ts < window["end_us"]:
+                add(window["runtime_by_project"], phase_at(index, tid, ts) + " | " + name, min(duration, window["end_us"] - ts))
+        for ts, duration, name, correlation, graph_id, graph_node_id in kernels:
+            if window["start_us"] <= ts < window["end_us"]:
+                origin = runtime.get(correlation)
+                phase = "unmatched_correlation"
+                launch = "unmatched_graph_node" if graph_id or graph_node_id else "unmatched_kernel"
+                if origin is not None:
+                    window["linked"] += 1
+                    phase = phase_at(index, origin[3], origin[1])
+                    launch = "cudaGraphLaunch" if "graphlaunch" in origin[0].lower() else ("ordinary_kernel_launch" if "launch" in origin[0].lower() else "other_correlated_runtime")
+                add(window["launch_origin"], launch, min(duration, window["end_us"] - ts))
+                window["graph_metadata"]["with_graph_id" if graph_id else "without_graph_id"] += 1
+                window["graph_metadata"]["with_graph_node_id" if graph_node_id else "without_graph_node_id"] += 1
+                add(window["kernel_origin"], phase + " | " + ("NCCL" if "nccl" in name.lower() else "non_NCCL"), min(duration, window["end_us"] - ts))
+        intervals = window.pop("intervals")
+        window["GPU_kernel_union"] = union(intervals)
+        start, end = window["start_us"], window["end_us"]
+        merged = []
+        for first, last in sorted(intervals):
+            first, last = max(start, first), min(end, last)
+            if last <= first:
+                continue
+            if merged and first <= merged[-1][1]:
+                merged[-1][1] = max(merged[-1][1], last)
+            else:
+                merged.append([first, last])
+        cursor, gap_count, gap_total, gap_maximum = start, 0, 0.0, 0.0
+        for first, last in merged:
+            if first > cursor:
+                gap_count += 1
+                gap_total += first - cursor
+                gap_maximum = max(gap_maximum, first - cursor)
+            cursor = max(cursor, last)
+        if end > cursor:
+            gap_count += 1
+            gap_total += end - cursor
+            gap_maximum = max(gap_maximum, end - cursor)
+        window["GPU_no_kernel_intervals"] = {"count": gap_count, "total_us": gap_total,
+            "maximum_us": gap_maximum, "includes_boundary_gaps": True,
+            "scope": "no traced kernel on this rank GPU in observed window; NCCL waits count as kernel activity, not useful compute"}
+        exclusive = {}
+        for tid, (_starts, segments) in index.items():
+            for first, last, name in segments:
+                overlap = min(last, end) - max(first, start)
+                if overlap > 0:
+                    add(exclusive, name + " | tid=" + str(tid), overlap)
+        window["project_exclusive_thread_wall"] = top(exclusive, 48)
+        for key in ("operators", "runtime_APIs", "runtime_by_project", "API_groups", "kernels", "kernel_groups", "kernel_origin", "project_labels", "project_by_thread", "launch_origin"):
+            window[key] = top(window[key], 32)
+        window["counts"] = dict(window["counts"])
+        window["graph_metadata"] = dict(window["graph_metadata"])
+    result = {"schema": "tensorfold.first-commit-trace-partition-v1", "rank": rank,
+        "trace_sha256": stream.digest.hexdigest(), "trace_bytes": stream.bytes,
+        "analysis_elapsed_s": time.monotonic() - started, "definition": definition, "windows": windows,
+        "explicit_failed_publication_diagnostic": bool(explicit_receipt), "authoritative_receipt_name": final_name,
+        "interpretation": "Actual timed events start-assigned to windows; durations clipped at window end. Project labels clipped by interval intersection and inclusive/nested. CPU/APIs are profiled wall intervals, not CPU busy time. Kernel union includes NCCL wait kernels. decode_core is certainly after first committed callback; decode_expanded brackets boundary uncertainty. Graph nodes correlate by actual CUPTI correlation id to cudaGraphLaunch when present; graph ids alone do not establish launch identity. Unmatched graph nodes stay unattributed. CPUlabels exclude gpu_user_annotation. No speed/quality claim."}
+    encoded = json.dumps(result, indent=2, allow_nan=False) + "\n"
+    if len(encoded.encode()) > 512 << 10:
+        raise ValueError("bounded512KiB decode report overflow")
+    (output / f"rank-{rank}-decode.json").write_text(encoded)
+    return {"rank": rank, "seconds": result["analysis_elapsed_s"],
+            "counts": {row["label"]: row["counts"] for row in windows if row["label"].endswith("decode_core")}}
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--input", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--definition", type=Path, required=True)
+    parser.add_argument("--workers", type=int, default=4, choices=range(1, 5))
+    args = parser.parse_args()
+    definition = json.loads(args.definition.read_text())
+    args.output.mkdir(parents=True, exist_ok=True)
+    with ProcessPoolExecutor(max_workers=args.workers) as pool:
+        for row in pool.map(analyze, [(str(args.input), str(args.output), rank, definition) for rank in range(8)]):
+            print(json.dumps(row), flush=True)
+
+
+if __name__ == "__main__":
+    main()

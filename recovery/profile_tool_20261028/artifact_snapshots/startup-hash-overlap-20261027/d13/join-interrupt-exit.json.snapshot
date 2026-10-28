@@ -1,0 +1,30 @@
+{
+  "at": "2026-10-27T21:45:56.319728+00:00",
+  "argv": [
+    "docker",
+    "run",
+    "--rm",
+    "--network",
+    "none",
+    "--cpus",
+    "1",
+    "--memory",
+    "256m",
+    "-e",
+    "CUDA_VISIBLE_DEVICES=",
+    "--mount",
+    "type=bind,src=/Warehouse/TensorFold-wt/v100-startup-hash-overlap-20261027,dst=/source,readonly",
+    "--mount",
+    "type=bind,src=/Warehouse/TensorFold-portable-audit-20261026/startup-hash-overlap-20261027/d13,dst=/evidence",
+    "--entrypoint",
+    "python",
+    "sha256:30fda46a4c40422e055e0615a8186fc1c39678be9c8c9761885fc0cb77c28993",
+    "/evidence/join-interrupt-witness.py"
+  ],
+  "cwd": "/home/kklouzal",
+  "source_before": "39c18db68ff158797eb63255591a2140927298c9d1c97a067c0dd4c136ee6b1f",
+  "witness_sha256": "1d2818dc704fbbc69cf9fe2ce86767ff9a028b128f7c190ba7a4243d4db910b6",
+  "exit_code": 0,
+  "source_after": "39c18db68ff158797eb63255591a2140927298c9d1c97a067c0dd4c136ee6b1f",
+  "log_sha256": "c01776a26710a2c0b27dd795ed5bcdf9f522642740df9bb956e2190cb93038ed"
+}

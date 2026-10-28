@@ -1,0 +1,27 @@
+from pathlib import Path
+import hashlib,json,subprocess,shutil,shlex
+r=Path(__file__).parent;s=Path('/Warehouse/TensorFold-wt/v100-dense-large-row-targetflags-20261028');old=r.parent/'gpu-stage/package';sha=lambda p:hashlib.sha256(Path(p).read_bytes()).hexdigest()
+def dump(p,v):p.write_text(json.dumps(v,indent=2)+'\n')
+commit=subprocess.check_output(['git','rev-parse','HEAD'],cwd=s,text=True).strip();assert not subprocess.check_output(['git','status','--porcelain'],cwd=s,text=True);assert not subprocess.check_output(['git','diff','--name-only','c517964eb7bebc3543274dc7be7ab920788384d5','HEAD','--','src'],cwd=s,text=True)
+p=r/'package';shutil.copytree(old,p)
+fixture='tests/cuda/test_sm70_large_dense_tiles.py';shutil.copy2(s/fixture,p/fixture)
+hold=json.loads((p/'fixture-source-hold.json').read_text());hold['source_commit']=commit
+for row in hold['paths']:
+ if row['path']==fixture:row.update(bytes=(s/fixture).stat().st_size,sha256=sha(s/fixture))
+hold['target_math_region']={'reduction':True,'accumulation':False,'policy':'observe+assertbeforeafter; noflagwrites','oracle':'allfunctionASTsunchanged; strictoriginalATenM32/rtol0/checks/casecounts unchanged'}
+dump(p/'fixture-source-hold.json',hold)
+shutil.copy2(r/'structural-proof.json',p/'target-region-proof.json')
+newhold={'schema':'tensorfold-private-target-region-fixture-successor-v1','source_commit':commit,'APP_source':'c517964eb7bebc3543274dc7be7ab920788384d5','APP_wheel':'991fd09081a9f3029e25ac67f02c10477f07a0f65ad210f24d953799e9388737','APP_source_byteexact':True,'original_APP_HOLD':sha(old/'source-hold.json'),'original_GPU32_reference':'parentreportedPASS underfixture reductionFalse; oldsource/stage/logs preserved, nottargetTrueFalsequalification','new_target_GPU32':'UNRUN;Rootexclusive','target_math_flags':{'allow_fp16_reduced_precision_reduction':True,'allow_fp16_accumulation':False},'fixture_policy':'assertactualflagsbefore+after; nevermutatesflags; bankATenoracle/testfunctionASTsbyteexact','checks':{'CPU_flag_controls':3,'seconds':1.59,'GPUcollected':32,'collector_seconds':.40,'Ruff':'PASS','wholewheel':'normal718canonicalsource+FDc79PASS;nooverlay','source_proof_sha256':sha(r/'structural-proof.json'),'CPU_log_sha256':sha(r/'cpu.log')},'scope':'fixture/controlleronly; noDense/HC/Expert/nativeAPP/math changes; noHC256extension; noP3claim'}
+dump(p/'source-hold.json',newhold);shutil.copy2(p/'source-hold.json',r/'source-hold.json')
+runner=(p/'run_controls.py').read_text();a="    residency = prepare_before_tensor_work()";runner=runner.replace(a,a+"\n    from test_sm70_large_dense_tiles import target_math_policy\n    policy_before = target_math_policy()\n    Path('/evidence/target-math-policy-before.json').write_text(json.dumps(policy_before, indent=2)+'\\n')")
+a="    code=pytest.main(args)";runner=runner.replace(a,a+"\n    import torch\n    policy_after = {'allow_fp16_reduced_precision_reduction':torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction,\n                    'allow_fp16_accumulation':torch.backends.cuda.matmul.allow_fp16_accumulation}\n    Path('/evidence/target-math-policy-after.json').write_text(json.dumps(policy_after, indent=2)+'\\n')")
+runner=runner.replace("    cases=ET.parse", "    if policy_after != policy_before:\n        raise RuntimeError('actualtargetmathflags changed during Dense gate')\n    cases=ET.parse");(p/'run_controls.py').write_text(runner)
+c=json.loads((p/'candidate.json').read_text());c.update(source_hold_sha256=sha(p/'source-hold.json'),fixture_source_hold_sha256=sha(p/'fixture-source-hold.json'),source_commit=commit,target_region_proof_sha256=sha(p/'target-region-proof.json'));dump(p/'candidate.json',c)
+remote='/home/kklouzal/tensorfold-v100-qualification-20261026/dense-large-tiles-991f-targetflags-2a1c-20261028'
+command=json.loads((p/'launch-command.json').read_text());a=command['argv'] if isinstance(command,dict) else command
+oldremote='/home/kklouzal/tensorfold-v100-qualification-20261026/dense-large-tiles-991f-controls-20261028';a=[x.replace(oldremote,remote).replace('tf-dense-large-tiles-991f-controls','tf-dense-large-tiles-991f-targetflags-2a1c')for x in a]
+dump(p/'launch-command.json',{'argv':a,'scope':'Rootexclusive actual32 unchanged991f/normal718FDc79, actualTrueFalse flags assertions, noP3claim'})
+(p/'launch-command.sh').write_text('#!/bin/bash\nset -euo pipefail\n# Rootexclusive; authorneverexecutesGPU.\n'+shlex.join(a)+'\n')
+dump(p/'stage-files.json',{str(f.relative_to(p)):{'bytes':f.stat().st_size,'sha256':sha(f)} for f in sorted(p.rglob('*')) if f.is_file() and f.name!='stage-files.json'})
+dump(r/'ready.json',{'source_commit':commit,'APP991f_unchanged':True,'HOLD':sha(p/'source-hold.json'),'fixture_HOLD':sha(p/'fixture-source-hold.json'),'manifest':sha(p/'stage-files.json'),'files':len(json.loads((p/'stage-files.json').read_text())),'package_bytes':sum(f.stat().st_size for f in p.rglob('*') if f.is_file()),'remote':remote,'launch':['bash',remote+'/launch-command.sh'],'GPU':'UNRUNauthor','setup':'remote evidence directory mustexist/empty/writable beforeREADY; stagerchecksseparately'})
+print((r/'ready.json').read_text())

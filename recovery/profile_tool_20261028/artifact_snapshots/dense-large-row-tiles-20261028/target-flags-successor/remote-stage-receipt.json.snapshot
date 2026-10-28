@@ -1,0 +1,16 @@
+{
+  "verify_argv": [
+    "ssh",
+    "-i",
+    "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+    "-o",
+    "BatchMode=yes",
+    "kklouzal@71.94.200.200",
+    "python3 - <<'CHECK'\nimport pathlib,json,hashlib,os\nr=pathlib.Path('/home/kklouzal/tensorfold-v100-qualification-20261026/dense-large-tiles-991f-targetflags-2a1c-20261028')\nm=json.loads((r/'stage-files.json').read_text())\nfor n,row in m.items():\n p=r/n;assert p.stat().st_size==row['bytes'] and hashlib.sha256(p.read_bytes()).hexdigest()==row['sha256'],n\np=r/'evidence'\nassert not p.is_symlink();p.mkdir(exist_ok=True)\nassert p.is_dir() and not any(p.iterdir()) and os.access(p,os.W_OK|os.X_OK)\nprint(json.dumps({'status':'PASS','files':len(m),'manifest_sha256':hashlib.sha256((r/'stage-files.json').read_bytes()).hexdigest(),'evidence_directory':'exists/empty/writable/nonsymlink','GPU':'notlaunched'}))\nCHECK"
+  ],
+  "exit": 0,
+  "stdout": "{\"status\": \"PASS\", \"files\": 16, \"manifest_sha256\": \"7fc2265ebdd040f049f5809676d9e20b869e4ecdb92c4cae852a5ea15803ae52\", \"evidence_directory\": \"exists/empty/writable/nonsymlink\", \"GPU\": \"notlaunched\"}\n",
+  "stderr": "",
+  "timestamp": 1793174387.0814974,
+  "GPU": "UNRUNauthor"
+}

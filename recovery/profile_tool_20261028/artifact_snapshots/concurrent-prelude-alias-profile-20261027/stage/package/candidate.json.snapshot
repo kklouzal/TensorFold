@@ -1,0 +1,24 @@
+{
+  "wheel_sha256": "32246b49a07dbc3b22ee6ff31c8745a1368fb3e203a0071ecddaa32b00bcf882",
+  "source_hold_sha256": "73cebb2f5990b5e5643295545cccf94027d080ae58a83a1c4032a00aaabac5ef",
+  "tool_sha256": "3e902f71f3f56b2e06be89c7c3ed34227e153794304ee999a90b56c8f9785cc2",
+  "tool_dependencies": {
+    "tools/v100_backend_probe.py": "3e902f71f3f56b2e06be89c7c3ed34227e153794304ee999a90b56c8f9785cc2",
+    "tools/finite_concurrency.py": "39e77fde13ef4d0a4ef59b8e531bc32b072096d714190ef3fc7993e5eb8cbffe",
+    "tools/finite_quality.py": "c498bd046e78c34bfc7db16c7decd43ec182151b24b3e09da282b9de0dac77a3",
+    "tools/benchmark_output.py": "ce7c0a0cdf80842dc67021ddc938ae32a2c8df39dfd4f36e5f48e72149484cfa",
+    "tools/prepare_owner_trial_manifest.py": "cd90a33ff81c60cffc1f180f0a756312cec2d06b4a29d4322cf622d7ca3b2741",
+    "tools/concurrent_observers.py": "2dd59a77cba7bc652f9c67d7809085d83ebb8ec1c5be9f3fab0c9540af76d748"
+  },
+  "execution_manifest_sha256": "95336693957314d74ba50328679d2b9a37552cb3e11a891b7a4a1900503e5673",
+  "source_profile": "source-owner-target-prelude-trial",
+  "session_ceiling": 24,
+  "recovery_commit": "8f1f904d7b9b54d415447ad687ee3843bb8c3c80",
+  "triton_cache_root": "/cache/triton-owner-full8-v1",
+  "qualification": "ONEinstrumentedN8aliasfixedprelude32246diagnostic AFTERactual53+unprofiledall6/quality/counterverification; no gainclaim",
+  "funding": {
+    "follower_bytes": 262144,
+    "global_receipt_bytes": 2424832
+  },
+  "profile_concurrency": 8
+}

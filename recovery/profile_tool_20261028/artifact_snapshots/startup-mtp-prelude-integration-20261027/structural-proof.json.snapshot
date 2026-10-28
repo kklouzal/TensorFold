@@ -1,0 +1,18 @@
+{
+  "MTP_base_runtime_all_other_files_byte_exact_e3ed": 715,
+  "explicit_startup_changed_runtime_surfaces": [
+    "tensorfold/_fd_owner.c",
+    "tensorfold/engine/model_identity.py",
+    "tensorfold/families/qwen4_exp/cuda/engine.py",
+    "tensorfold/families/qwen4_exp/cuda/execution_identity.py",
+    "tensorfold/families/qwen4_exp/cuda/startup_content.py"
+  ],
+  "closedfa6e_helpers_byte_exact": {
+    "tensorfold/families/qwen4_exp/cuda/startup_content.py": true,
+    "tensorfold/engine/model_identity.py": true,
+    "tensorfold/_fd_owner.c": true,
+    "tensorfold/families/qwen4_exp/cuda/execution_identity.py": true
+  },
+  "kernel_math_MTP_confidence_actualMTPproducer_coordinate_alias_nativecounter_byte_exact": "e3ed",
+  "engine_additions": "Exactclosedstartupplan+globalhostadmission+singleownedworkerbeforeload+reuse/join/lifecycle/settings; e3ednativeheader8192host/rankcounterfundingandcapacityfloorunchanged"
+}

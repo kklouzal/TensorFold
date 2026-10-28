@@ -1,0 +1,22 @@
+{
+  "commit": "c517964eb7bebc3543274dc7be7ab920788384d5",
+  "paths": [
+    {
+      "path": "tests/cuda/test_sm70_dense_residency.py",
+      "sha256": "0f6eb82ef6ef4b4dc940adf55669090b7af0f4312aa1574e8a055348bf3acd0c"
+    },
+    {
+      "path": "tests/cuda/test_sm70_large_dense_tiles.py",
+      "sha256": "8ad25ee1a27ea5f0e701b2a61d1342f4931b95145dc3c3b876e103aed1e867fd",
+      "bytes": 5413
+    }
+  ],
+  "collection": "32actualtargetCUDAcasescollectedCPU;UNRUNhardware; no skipsaccepted",
+  "source_commit": "2a1c9dcffc597524d148b6b6aa2ff7fb7f8473e3",
+  "target_math_region": {
+    "reduction": true,
+    "accumulation": false,
+    "policy": "observe+assertbeforeafter; noflagwrites",
+    "oracle": "allfunctionASTsunchanged; strictoriginalATenM32/rtol0/checks/casecounts unchanged"
+  }
+}

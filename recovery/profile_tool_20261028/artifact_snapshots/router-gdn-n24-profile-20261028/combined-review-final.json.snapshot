@@ -1,0 +1,31 @@
+{
+  "schema": "tensorfold.combined-d13-tool-only-profile-binding-v1",
+  "at": "2026-10-28T09:27:41.364144+00:00",
+  "reviewer": "/root/cleanup_review",
+  "commit": "eb7179abb8826a30f952c6d0759b268f75242984",
+  "HOLD_sha256": "37af705d56ab599e8c0d51df085777ffb24a30c1056a57f38ea946e5273e8ab9",
+  "APP": "7c0acdfb2957c82ea69eb9e47fe8b1239c72b6c9c7aaa3242898631e121b6a51 unchanged146f normal721+FDc79",
+  "status": "BOUNDED TOOL-PORT/IDENTITY/RESOURCE/PRIMARY-ERROR +CURRENT STAGE REVIEW CLOSED; actualdiagnosticcompletion/analysis Root-owned",
+  "independent_checks": [
+    "src diffemptyvs146f;8heldtool/test/doc/sourcepathhashes matched/currenttreeclean. Normal721installedidentity/coldfactory Router+GDN/startup3/followerchecks retained, no vendor/app patch.",
+    "8protectedhelpers/class actualAST independentlyEXACTclosed4c75: finish_failures, protected_cupti_identity, observed_call, trace_summary, mapping_snapshot, profile_clock_anchor, concurrent_observation_snapshot, RankCapture. Reader57800+observer9480bytes EXACT4c75. No duplicateframework/native/readersuite.",
+    "18stagedpayloadrows hashes/sizes checked; stagedHOLDmatchescurrent; controller8dc1775b50ed8ac5264863e9555faa7f8625f8aceaeffc5b094d0f4d3e7b19d3 bound, freshoneN24diagnosticmetadata notstaleall6qualitycaption.",
+    "223CPU6.27noskips +final5profile/identity+4phase/label PASS/Ruff/normal721FD proof reused; initialtestRufflambda stylefailure retained andAST-neutralfix. No reviewertest/GPU/profiling/remoteheavy."
+  ],
+  "new_boundary_assessment": [
+    "observed_phase_call preserves exact(engine,channel,stage,operation,*,may_refuse=True) interface andwraps onlytheexistingzeroargoperation throughunchangedreviewedobserved_call; underlying_phase callsoperation() once. No Storeproxy/key/timing/protocol/owner change.",
+    "Actual_phase result andManifestRefusal cause controls demonstrateoperation result/error precedence retained; nestedlabel end/timer/primary cleanup usesclosedhelper. Newlabels representCPUranges/inclusiveoperation+enqueue scope, notCPUbusy/GPUcompletion proof.",
+    "Directoriginalfunctionaliases stagedforforward.stage_late/stage_ple_rows; instance GGUFPLETable._gather_flat andReadAhead.gather; exactgguf_weights.decode_rows modulealias; mailboxexchange/retire; RolePlans.run/GDN.submit. Module/class alias restoration andstaticdescriptor handling bounded128bindings/134journal retained. No double-store interception or kernel/mathematics changes.",
+    "Captureisafterconstructorwarmup/ready, finishafterEngine/transportretirement; rawsequenceincludesbringup/readiness/core/drain/close aslabelled. Onlyfrozenactual10sN24core islateranalysiswindow; noqualityloop/all6P3credit."
+  ],
+  "resource": [
+    "ActualFiniteBackendCaller.control_payload includes8*(6GiBreader+128KiBobserver) inadditionbothcounterfamilies andexisting2048FASTv2finitebuffers BEFOREfinalize andlogicalpublication, nocreditforalreadymaterializedowners. ActualcallerboundaryCPUcontrol verifiedexactsum.",
+    "Globalfuturestreamreader51539607552B plusobserver1048576B; closedreaderrequested-object/6GiB proof reused. 8GiBraw/eventcount/characterbounds areacceptance/refusal, notexportquota oruniversalRSS.",
+    "NativeKineto/driver/exportbuffers separateinstrumentation under320GiBcgroup, notfunded/provedboundedbyreaderallowance. Runtimepeak/noOOM/retirement/sourceguards remainactualRoot evidence; preserve24windowphysicaladmission/refuseifcannotfit."
+  ],
+  "remaining": [
+    "Root19391 reportedLIVE, noactualsuccess/complete/quality result invented. All8naturalterminalcomplete/source/CUPTI28/rawSHA/retirement/clockchecks required beforeclosed6513CPUanalysis; initialonlyPortainer then2niceworkers/leaseguard retained.",
+    "Current7c0diagnostic caninformchangedbottleneck, butinstrumentationperturbs andold4efeprofiles remaindifferentREGION; nostalltimeutilization/causal/P3/superiority inference fromlabels orcounts alone.",
+    "No85single/600aggregate/serviceorbroaderqualitycompletion claim; no unnecessarycleanup oradditionalconcrete scopefinding."
+  ]
+}

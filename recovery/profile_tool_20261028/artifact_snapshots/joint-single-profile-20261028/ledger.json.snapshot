@@ -1,0 +1,48 @@
+{
+  "task": "RootonlyONE-N1 all8Torch CPU+CUDA onverifiedd5eb/fbaa",
+  "base_runtime": "d5ebfce578dc8a1e3c59bdd27f3dd1558c14043f",
+  "base_tool": "8d9eeaae",
+  "scope": "APPsrcbyteexact726FDc79; MoE/fusion/candidate/GDN/startup3/currentfactory/coldledgers preserved",
+  "diagnostic": "N1/2048/10s/noshapes-memory-stacks/noquality-noall6-noP3credit, all24nativeQ8windowsretained",
+  "status": "Root6937analysisexit0/processretired; localboundedinterpretationcomplete",
+  "resources": "closed6GiBreader+128KiBobserver perrank beforefinalize, existingcold145/64ledgers separate, nativeKineto320GiBcgroup diagnostic only",
+  "pending": [
+    "RootN1changedbottleneckcandidates requiringownership+actualP3",
+    "no instrumentedP3/quality/utilizationclaim"
+  ],
+  "source": "b6369c36131c6432dc82fa7e058be65daaa92dc1",
+  "HOLD": "95527c1a0a58112c15ebc0a01cd2ed09b8d62ef5d36ab186b0d7e2791c917d9c",
+  "checks": "236CPU6.41s/Ruff/help/normal726FDc79 exactruntime_source/protectedhelperproofPASS",
+  "stage": {
+    "destination": "profile-joint-fbaa-n1-20261028",
+    "controller": "800d3818aa14df90700618e5736806736394e3ab28ee00025076920b48975e34",
+    "manifest_entries": 18,
+    "freshresults": true
+  },
+  "Root_capture": {
+    "session": 23026,
+    "APP": "verifiedd5eb/fbaa unchanged, notnewHC4d2b",
+    "N": 1,
+    "resident_windows": 24,
+    "core_seconds": 10,
+    "output_cap": 2048,
+    "raw_bytes": 7300767645,
+    "all8_complete_retired": true,
+    "metadata": "actual-capture",
+    "raw": "remoteimmutable"
+  },
+  "analysis": "actual-findings.json/.md bindall8source/CUPTI/raw/clock/native24 androle15verify/2MTP topology",
+  "Root_analysis": {
+    "session": 6937,
+    "workers": 2,
+    "nice": 19,
+    "CPUs": [
+      0,
+      1
+    ],
+    "allowance_GiB": 16,
+    "P3_overlap": false,
+    "authorremoteanalysis": false
+  },
+  "D13": "source/stageclosed871fe941; actualcapture/analysisseparate"
+}

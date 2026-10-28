@@ -1,0 +1,36 @@
+from pathlib import Path
+import json
+import pytest
+import xml.etree.ElementTree as ET
+
+
+def main():
+    import sys
+    sys.path.insert(0, '/qualification/tests/cuda')
+    from test_sm70_dense_residency import prepare_before_tensor_work
+    residency = prepare_before_tensor_work()
+    from test_sm70_large_dense_tiles import target_math_policy
+    policy_before = target_math_policy()
+    Path('/evidence/target-math-policy-before.json').write_text(json.dumps(policy_before, indent=2)+'\n')
+    Path('/evidence/lazy-dense-residency.json').write_text(json.dumps(residency, indent=2)+'\n')
+    args=['-s','-c','/dev/null','-o','pythonpath=/qualification/tests /qualification/tests/cuda /qualification',
+          '-p','no:cacheprovider','-x','-vv','--junitxml=/evidence/dense-large-tiles.xml',
+          '/qualification/tests/cuda/test_sm70_large_dense_tiles.py']
+    code=pytest.main(args)
+    import torch
+    policy_after = {'allow_fp16_reduced_precision_reduction':torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction,
+                    'allow_fp16_accumulation':torch.backends.cuda.matmul.allow_fp16_accumulation}
+    Path('/evidence/target-math-policy-after.json').write_text(json.dumps(policy_after, indent=2)+'\n')
+    Path('/evidence/pytest-exit.json').write_text(json.dumps({'exit_code':int(code),'argv':args,
+        'scope':'32SM70rtol0bank-standardATenoracles48/64/72,F16/F32,strides,HC/QKV/head,samestreamgraph,abort; noP3claim'})+'\n')
+    if code:
+        raise SystemExit(code)
+    if policy_after != policy_before:
+        raise RuntimeError('actualtargetmathflags changed during Dense gate')
+    cases=ET.parse('/evidence/dense-large-tiles.xml').getroot().findall('.//testcase')
+    if len(cases)!=32 or any(case.find('skipped') is not None for case in cases):
+        raise RuntimeError('exact32actualGPUcases/no skips required')
+
+
+if __name__=='__main__':
+    main()

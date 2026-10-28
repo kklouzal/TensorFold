@@ -1,0 +1,7 @@
+{
+  "wheel_sha256": "fbaabca3ba2a7594c8712e0824733da035f3a3db63f454c520ecfa337010ee0d",
+  "source_hold_sha256": "4e57ac5708d78cd361442d4cc7d77d5984c90da5acd2f8903dd8b9dbd63db62a",
+  "tool_sha256": "cbfd245b88f254944bda37dc32293bf519217bcd782ef2d87107fd6c9ce84328",
+  "qualification": "GPU0vendorBLASshape microdiagnosticonly,no model/backendchange,no speed/qualityclaim",
+  "corrective_successor": "primary/contextpreservation,captureownership/fence/reset,thirdweightconstructioncredit; noAPPorgeometry/timingchange"
+}

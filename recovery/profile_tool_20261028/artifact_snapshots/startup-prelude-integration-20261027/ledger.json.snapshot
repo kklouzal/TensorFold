@@ -1,0 +1,24 @@
+{
+  "objective": "ReduceV100iterationstartupbyoverlappingfullfreshartifactSHAwithloading/warmup whilepreservingnativepreludeperformance/quality/all24Q8capacity",
+  "source": "ee248b80/HOLDf633/fa6eAPP/newFDc79; base710ccanonicalcoordinatesfixed",
+  "design_check": [
+    "\u00a715startupresourcesfunded75501568Bglobal beforethreadstart/admission, hostcommitmentretainedthroughengine",
+    "\u00a721freshcontentauthority/currentprocessissuance/allstatandexpectedhashguardsunchanged; native/source/libclosurecapturedafterload",
+    "\u00a724realGPUcomponent/fullmodelstartup/all6qualityandperformancegatesopen; noCPUgateusedasdeviceP3claim"
+  ],
+  "CPU": "678PASS+5subtests16.52s/Ruff/pip/help/717source+FDc79exact",
+  "D13": "combined-review-final.json81bebcccCLOSEDsource; nativeworker/C6/lifecycles/proofsreused7779",
+  "GPU": "UNRUN Rootexclusive;53GPUmultipleattentionunchangedfixturesstage+startupenabledfullall6stagebothEXACT/emptyresults",
+  "numerical_contract": "all710cfilesexcept5ownedstartupintegrationpathsbyteexact, includesMTP/nativekernels/coordinateborrowfix; startupworkeronlyPRELUDEeligibilityextension",
+  "stages": {
+    "component": "startup-prelude-fa6e-controls-20261027",
+    "all6": "perf85-startup-prelude-fa6e-fast24-20261027"
+  },
+  "measurements_required": [
+    "actualcaptureworkerstart/end/registrationwait/hashedbytes/reusedcount",
+    "controllerstartup/modelreadytotalvs3224",
+    "nativepreludesubmittedframespositive",
+    "all1/2/4/8/16/24commonfastnonregression/qualitysamecontract; noaggregatehidingloss"
+  ],
+  "next": "Root53componentnewwholewheel\u2192all6enabledstartupbenchmarkaftercurrent3224baseline; noGPUlaunchbydelegate"
+}

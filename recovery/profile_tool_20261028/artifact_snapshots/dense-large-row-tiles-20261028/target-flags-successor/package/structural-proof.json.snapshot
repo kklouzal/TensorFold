@@ -1,0 +1,16 @@
+{
+  "base": "60980af6",
+  "byte_exact": {
+    "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py": true,
+    "src/tensorfold/families/qwen4_exp/cuda/forward.py": true,
+    "src/tensorfold/cuda/sm70/gguf_ops.py": true,
+    "src/tensorfold/cuda/sm70/gguf_ops.cu": true,
+    "src/tensorfold/cuda/sm70/gguf_ops.cpp": true,
+    "src/tensorfold/families/qwen4_exp/cuda/state.py": true
+  },
+  "live_tensors_no_alias_result_list": "EachnativeM32targetiscopiedordirectfinalcallerownedviewbeforeadvancingtile; onlyCPUviewsretainedtemporary. HCprivatepartialsoldexistingimmediateglueconsumer/samestreamrestriction.",
+  "factory_bounds": "ProfileDense/Batch+F16+CUDA+rows>32+notprefill; othersoldfactoryreturnsunmodified.",
+  "guarded_defaults": "Genericreference/autograd/layout/overlap/unsupportedpartpoliciesearlyreturnNone beforeGPUwrites, oldmatrixoperationownssemantics/errors.",
+  "host_fixed_case": "ActualEngineASTblock+row_envelopecoversnonadaptive24/defaultNone72; adaptiveNone32;explicit64;floorcheck remainsrowprobe unchanged.",
+  "clean": true
+}

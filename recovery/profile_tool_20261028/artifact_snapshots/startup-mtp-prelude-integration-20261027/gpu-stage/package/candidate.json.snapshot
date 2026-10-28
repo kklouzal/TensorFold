@@ -1,0 +1,9 @@
+{
+  "wheel_sha256": "5635735f68db932f41cab3da94747e6f6c2f15673c60b71e220ec96c9f9e0314",
+  "source_hold_sha256": "fa8620e74c713c3b6a51334e95c88aa204d9c2de4a151438a79222f537956c9e",
+  "fixture_source_hold_sha256": "e28a258e32fefd5f4b583ccbc361fa2e4eb9d827711e7bec44d641e36e08657b",
+  "source_commit": "a7b1661f7f2016571067fa8fc1a1c220f08fb303",
+  "source_profile": "source-owner-target-prelude-trial",
+  "source_review": "pendingD13",
+  "scope": "53unchangednewMTPcases inclpositiveMTPnativecounter+2attentionlayeraliasguard, startupcompositionwholewheel; actualstartup/all6open"
+}

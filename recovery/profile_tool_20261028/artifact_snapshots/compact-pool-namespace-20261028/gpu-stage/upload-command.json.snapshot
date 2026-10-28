@@ -1,0 +1,30 @@
+{
+  "copy": [
+    "scp",
+    "-i",
+    "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=20",
+    "/Warehouse/TensorFold-portable-audit-20261026/compact-pool-namespace-20261028/gpu-stage/payload.tar",
+    "kklouzal@71.94.200.200:/home/kklouzal/tensorfold-v100-qualification-20261026/compact-pool-prep-controls-20261028.tar"
+  ],
+  "verify": [
+    "ssh",
+    "-i",
+    "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=20",
+    "kklouzal@71.94.200.200",
+    "python3",
+    "-",
+    "/home/kklouzal/tensorfold-v100-qualification-20261026/compact-pool-prep-controls-20261028",
+    "497c692dfde3ac892c1cb4ef8cf969fec2a4d80b90fbf9acc594bd9145d2bf89"
+  ],
+  "stdin": "from pathlib import Path\nimport hashlib,json,sys,tarfile,ast,subprocess\nout=Path(sys.argv[1]);upload=Path(str(out)+'.tar');sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()\nif out.exists() or sha(upload)!=sys.argv[2]:raise RuntimeError('freshstage/tarhash differs')\npackage=out/'package';package.mkdir(parents=True)\nwith tarfile.open(upload) as archive:\n for m in archive.getmembers():\n  if not m.isfile() or m.name.startswith('/') or '..' in Path(m.name).parts:raise RuntimeError('unsafe stageentry')\n archive.extractall(package,filter='data')\nfiles=json.loads((package/'stage-files.json').read_text())\nif {str(p.relative_to(package)) for p in package.rglob('*') if p.is_file()}!=set(files)|{'stage-files.json'}:raise RuntimeError('stagefile set differs')\nfor name,row in files.items():\n p=package/name\n if p.stat().st_size!=row['bytes'] or sha(p)!=row['sha256']:raise RuntimeError('stagebytes differ '+name)\nc=json.loads((package/'candidate.json').read_text());p=json.loads((package/'wheel-provenance.json').read_text())\nif c['wheel_sha256']!='ed3283ac32cb39659d64b4ad39c9019b52fc6d6fcda7d6465ffbbfdbcf55c385' or sha(package/'tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl')!=c['wheel_sha256'] or sha(package/'source-hold.json')!=c['source_hold_sha256']:raise RuntimeError('APP/HOLD mismatch')\nif len(p['source_files'])!=727 or p['compiled_extensions'][0]['sha256']!='c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d':raise RuntimeError('normal727FDc79 required')\nfor p in package.rglob('*.py'):ast.parse(p.read_text())\nsubprocess.run(['bash','-n',str(package/'bootstrap.sh'),str(package/'launch-command.sh')],check=True)\n(out/'evidence').mkdir()\nr={'status':'STAGEDONLY NOTEXECUTED','files':len(files),'APP':c['wheel_sha256'],'HOLD':c['source_hold_sha256'],'controller_sha256':sha(package/'launch-command.sh'),'command':'bash '+str(package/'launch-command.sh'),'fresh_evidence':True,'GPU':'Rootonly45strictcontrols; noall6/P3claim'}\n(out/'stage-ready.json').write_text(json.dumps(r,indent=2)+'\\n');print(json.dumps(r))\n",
+  "started_ns": 1793209891143854631,
+  "noGPU": true
+}

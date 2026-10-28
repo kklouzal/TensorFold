@@ -1,0 +1,4 @@
+{
+  "not_executed": true,
+  "reason": "Do not copy into installed package; actual normalwheel build/install gate required."
+}

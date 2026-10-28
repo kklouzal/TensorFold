@@ -1,0 +1,115 @@
+#!/usr/bin/env python3
+"""CPU-only concurrent profile analysis after terminal all8 retirement."""
+from concurrent.futures import ProcessPoolExecutor
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+from analyze_traces import Stream
+from analyze_decode import analyze
+
+def derive(directory, count):
+    leader=json.loads((directory/"rank-0-final.json").read_text())
+    case=json.loads((directory/f"fast-mtp-target-n{count:02d}.json").read_text())
+    screen=case["screen"]
+    if not screen["measurement_valid"] or not screen["all_workers_permits_backend_owners_drained"]:
+        raise ValueError("instrumented cohort did not provide a valid correlated window/drain; retain invalid diagnostic separately")
+    begin,end=screen["begin_monotonic_ns"],screen["end_monotonic_ns"]
+    if not 0<begin<end:
+        raise ValueError("invalid frozen monotonic decode window")
+    rank0=json.loads((directory/"rank-0-profile.json").read_text())
+    offsets=[]
+    anchors=[]
+    for rank in range(8):
+        profile=json.loads((directory/f"rank-{rank}-profile.json").read_text())
+        final=json.loads((directory/f"rank-{rank}-final.json").read_text())
+        if not profile["complete"] or not final["complete"] or not profile["engine_transport_retired"]:
+            raise ValueError("all8 complete source/capture/engine retirement required")
+        for boundary in ("before","after"):
+            if profile["source_"+boundary]["status"]!="verified-source-software" or profile["cupti_"+boundary]["API"]!=28:
+                raise ValueError("source/CUPTI28 boundary not qualified")
+            anchor=profile["clock_"+boundary]
+            lo=anchor["unix_ns"]-anchor["monotonic_upper_ns"]
+            hi=anchor["unix_ns"]-anchor["monotonic_lower_ns"]
+            offsets.append((lo,hi))
+            anchors.append({"rank":rank,"boundary":boundary,**anchor})
+    # Use the hull of observed offset intervals, not a zero-uncertainty guess.
+    low=min(a for a,_ in offsets);high=max(b for _,b in offsets)
+    if high-low>10000000:
+        raise ValueError("observed clock-offset drift/uncertainty exceeds10ms diagnostic sensitivity; no precise window claim")
+    path=directory/"rank-0-trace.json";header={};generate=[]
+    stream=Stream(path)
+    try:
+        for event in stream.events(header):
+            if event.get("ph")=="X" and event.get("cat")=="user_annotation" and event.get("name")=="tensorfold/host/generate":
+                generate.append((event["ts"],event["ts"]+event["dur"]))
+                if len(generate)>count+1:
+                    raise ValueError("unexpected extra instrumented generation calls")
+    finally:
+        stream.file.close()
+    if stream.digest.hexdigest()!=rank0["trace"]["sha256"] or stream.bytes!=path.stat().st_size:
+        raise ValueError("leader raw trace identity differs")
+    base=header["baseTimeNanoseconds"]
+    start_low=(begin+low-base)/1000;start_high=(begin+high-base)/1000
+    end_low=(end+low-base)/1000;end_high=(end+high-base)/1000
+    calls=sorted(generate)[-count:]
+    if len(calls)!=count or not all(a<=start_low<=start_high<end_low<=end_high<=b for a,b in calls):
+        raise ValueError("clock-translated frozen window not contained in every actual concurrent generate range")
+    return {"schema":"tensorfold.correlated-concurrent-trace-window-v1","baseTimeNanoseconds":base,
+        "offered":count,"frozen_screen":screen,"clock_observations":anchors,
+        "translation":{"offset_lower_ns":low,"offset_upper_ns":high,"observed_hull_width_ns":high-low,
+            "validation":"translated window contained in all actual concurrent CPU generate ranges",
+            "limitation":"clock calibration inferred stable between bracketing observations; no universal no-clock-step proof"},
+        "replies":[{"label":f"concurrent{count}-instrumented","generate_start_us":start_low,"generate_end_us":end_high,
+                    "first_commit_lower_us":start_low,"first_commit_upper_us":start_high,"decode_core_end_us":end_low}],
+        "conservative_core_end_us":end_low,
+        "scope":"instrumented common live-decode window, not single-token callback or throughput evidence"}
+
+def batch_delta(case):
+    snapshots=case["batch_observations"]
+    before,after=snapshots["before"],snapshots["after"]
+    if before is None or after is None or after["overflowed"]:
+        raise ValueError("actual bounded batch counters unavailable/overflowed")
+    result={"scope":"leader scheduler/compute geometry across this cohort readiness+timed window+cancel/drain; excludes two-tokenbringup; not exclusively the10swindow"}
+    for name in ("round_live","ready_segments","selected_segments","selected_rows","compute_rows","compute_segments","owner_rows"):
+        if len(before[name])!=len(after[name]):
+            raise ValueError("batch histogram schema changed")
+        values=[b-a for a,b in zip(before[name],after[name],strict=True)]
+        if any(value<0 for value in values):
+            raise ValueError("batch histograms decreased")
+        result[name]=values
+    result["phases"]={name:{"calls":values["calls"]-before["phases"][name]["calls"],
+        "host_elapsed_ns":values["host_elapsed_ns"]-before["phases"][name]["host_elapsed_ns"]}
+        for name,values in after["phases"].items()}
+    return result
+
+
+def main():
+    root=Path(__file__).resolve().parent.parent
+    state=json.loads((root/"controller-progress.json").read_text())
+    if state["status"]!="terminal" or state["docker_state"]["Running"] or state["docker_state"]["ExitCode"]!=0:
+        raise ValueError("strict terminal-success controller required")
+    if subprocess.check_output(["sudo","-n","docker","ps","--format","{{.Names}}"],text=True).splitlines()!=["portainer"]:
+        raise ValueError("Root GPU lease must be idle before CPU analysis")
+    directory=root/"results/run"
+    count=json.loads((root/"candidate.json").read_text())["profile_concurrency"]
+    output=root/"analysis-concurrent-v1"
+    output.mkdir(exist_ok=False)
+    definition=derive(directory,count)
+    (output/"window-definition.json").write_text(json.dumps(definition,indent=2)+"\n")
+    with ProcessPoolExecutor(max_workers=2) as pool:
+        for result in pool.map(analyze,[(str(directory),str(output),rank,definition) for rank in range(8)]):
+            print(json.dumps(result),flush=True)
+    profiles=[json.loads((directory/f"rank-{rank}-profile.json").read_text()) for rank in range(8)]
+    reports=[json.loads((output/f"rank-{rank}-decode.json").read_text()) for rank in range(8)]
+    summary={"schema":"tensorfold.all8-concurrent-diagnostic-v1","complete":True,"offered":count,
+        "trace_identities":[{"rank":r["rank"],"sha256":r["trace_sha256"],"bytes":r["trace_bytes"]} for r in reports],
+        "windows":[{"rank":r["rank"],"window":next(w for w in r["windows"] if w["label"].endswith("/decode_core"))} for r in reports],
+        "batch_observations":[{"rank":i,"counts":p["batch_observations"]} for i,p in enumerate(profiles)],
+        "leader_cohort_batch_delta":batch_delta(json.loads((directory/f"fast-mtp-target-n{count:02d}.json").read_text())),
+        "scope":"instrumenteddiagnosticonly; readiness/window validity separate; no performancecomparison/quality/utilizationclaim"}
+    (output/"all8-summary.json").write_text(json.dumps(summary,indent=2)+"\n")
+    print(json.dumps({"complete":True,"output":str(output)}),flush=True)
+
+if __name__=="__main__":
+    main()

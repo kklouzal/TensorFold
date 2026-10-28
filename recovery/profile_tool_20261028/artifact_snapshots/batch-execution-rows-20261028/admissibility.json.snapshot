@@ -1,0 +1,9 @@
+{
+  "Engine": "engine.py:594-606allrankexecutionpolicyandmin(count*3,requested)row_envelope;634-643ownerrolebounds;730session_geometry execution_rows;1230actualexecution_envelope;MultiDecoder107-1093<=rows<=slots*3",
+  "Owner": "owner_execution.row_buckets includesexactendpoint64/72;history_owner.native_bucket checksagainstpreparedrole;OwnerPreparation usesactualroleboundandmeasuredbudget phases",
+  "budgets": "indexed_stream_geometry usesexecution_rows tofundfixedarenas;24 fullwindows/KVrecurrence unchanged; grownscratchmustpassactualGPUcapacitysolver andhostretentionfinalizer. Callercontrol/results/stacks dependrequests/outputcap24/2048unchanged; existingbatch8192global evidencefund unchanged.",
+  "fallback": "gguf_weights.GGUFDense._native32_eligible requiresrows<=MATMUL_ROWS32; stackednative32onlyrows<=32; largerrowscall matmul_reference, so noallnativeclaim/numericalequivalence/perfgainassumed.",
+  "defaults": "Newargumentdefault32, Enginekwargomittedwhen32; existingprofiledefaults remain same nativefactory inputs.",
+  "rowdomain_actual_reference": "LocalDenseN24ready.execution_envelope.target_rows32;selectedRows<=32 with24resident. Old48..72 assumptiondisproved.",
+  "scope": "RuntimeAPP86cbexact7de; noSDKbuild, no installedoverlay; finite_concurrency/finite_quality unchanged."
+}

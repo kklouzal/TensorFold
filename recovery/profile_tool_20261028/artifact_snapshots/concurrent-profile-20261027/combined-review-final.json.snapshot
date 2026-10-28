@@ -1,0 +1,104 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T22:30:05.532078+00:00",
+  "status": "CLOSED protected concurrent profile+batch observer source; ready Root N8/N16 instrumenteddiagnostic, not performance comparison",
+  "reviewer": "/root/cleanup_review",
+  "policy": "One task-wide combinedD13; boundedtool/caller/observer/retirement/funding scope; no second audit",
+  "commit": "67a10e579b6ca4e747915ed5d82903997cc75d9a",
+  "workspace": "/Warehouse/TensorFold-wt/v100-concurrent-profile-20261027",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/source-hold.json",
+    "sha256": "f64d81440bae2a01020d46e216c87aaac0768c2ba61720789c69ba0753c14d95"
+  },
+  "source_paths": {
+    "README.md": "eccfa0fdb00c681b416f293015d76998358e7ce977894e30ba9c6b1e9083c265",
+    "tests/test_concurrent_observers.py": "3dba4ddf749becc1a6476b0e5f9946c39173ade1d2cda0e7d5a781e4363abbdb",
+    "tests/test_fast_grid.py": "ca6859196492633de71b247f2ac995a930e8cc37cf696eee7f61d90af6f7bbe9",
+    "tests/test_v100_backend_probe.py": "be3312c41751231b006d4eedb83f14584fed251f02fc9340d277e355fe5977f8",
+    "tools/concurrent_observers.py": "2dd59a77cba7bc652f9c67d7809085d83ebb8ec1c5be9f3fab0c9540af76d748",
+    "tools/v100_backend_probe.py": "0c3088a0b2bb0b54d65d7148f10cefde342409a26fe680972b1036020867fcf2"
+  },
+  "runtime_wheel_unchanged": "84a8618aa1752683a643697d3ad732cc47137910302dd374736594eee9e8901e",
+  "checks": {
+    "runtime_src_and_finite_quality_helper_diffempty": "Independently comparedbase870f; selectedAPP84a/716source+FD4a unchanged",
+    "source6currenthashes": true,
+    "normalCPU": "145base4.90s andfinal5module1.68s passed; overlapnotadded. Ruff/pip/help PASS. Actualargv/cwd/env/logs/exit0 provenance suppliedretrospectively withoutnewrun.",
+    "protectedprimitives": "protected_cupti_identity,observed_call,trace_summary,mapping_snapshot wholeASTsexactalreadyreviewedcorrectedshortprofiler",
+    "localstage_files_verified": 18,
+    "current_controller": "d74beb0d176150b213b3fedefbb034441f8e16ac7d425fa310e0a933a1b961ce",
+    "GPUbyreviewer": false
+  },
+  "findings": [
+    {
+      "rules": [
+        "C5",
+        "C6",
+        "O0"
+      ],
+      "finding": "Initialnewobserver rawrecord context andunguardedfinally counters/timing couldreplace originaloperationfailure",
+      "disposition": "Resolvedguardedlabel/finish+primarytransport; directoriginal+record_exit/timerfault tests. Tuple argumentallocation itself also guardedbeforeprimaryhelper; no logs-onlypropagation."
+    },
+    {
+      "rules": [
+        "C6",
+        "M0"
+      ],
+      "finding": "Batchsnapshotfailure slot132 overlapped lastpossible128thbindingrestore at5+127",
+      "disposition": "Resolved134slotjournal; restores5..132, dedicatedbatchsnapshot133. Independentfailures retained.",
+      "execution_neutrality": "Normalobserverbinding/workloadsunchanged; only failurepreservation improved."
+    },
+    {
+      "rules": [
+        "M1",
+        "O1"
+      ],
+      "finding": "Promisedfixedcounter/snapshotinstrumentation payload was not yet included in actualfinitecaller",
+      "disposition": "Resolvedglobal8*128KiB =1,048,576B additionalcontrolterm onlyprofilemode beforefinalizer/logicalrequestpublication. Counterallocationpostwarmcapturestart accuratelydisclosed; no already-materializedcredit. Kineto nativebuffers remain separatediagnosticinstrumentation underfiniteworkload/container320GiB, notproductionmemoryproof."
+    }
+  ],
+  "contracts": {
+    "workload": "Optin8or16 only, requiresfastgrid/concurrencygrid512outputcells,noquality/serial/repeats. One2tokenNotebookbringup thenone30sreadiness/10sdecode expectedcancel+fullnative/Future/permit/backend/mailboxdrain. Ordinaryall6 path and finitehelperbytesunchanged; diagnosticnevergetsall6credit.",
+    "transparency": "ActualMulti._round,Controller.select,forward.compute aliases andhistory_owner.prepare invokeoriginalargument/result exactlyonce; fixedhistograms observehostgeometry. Genericcompute labelsremovedfromfirstplan beforeone sharednewcompute wrapper replacesactualaliases; no doublewrap. Expert/NCCLclasslabels usereviewedprimarypreservingobserved_call.",
+    "metadata": "Seven fixedhistograms/12bounded accumulators+overflowlatch; fixedoverflowbins declared. round_live counts notdone decoder.streams (excludesfilling), ready/selected/compute counts have distinctsource meanings. No inputtensor/Stream retention; no newGPUquery/readback. Histogramsare submittedcalls, notGPUcompletion.",
+    "ownership": "One explicitrank-processplan, serializeddecoderactor writes. Snapshotsatbringup/caseactualdrain andfinalengine/transportretirement; boundedcopies only. Bindingjournalregisteredbeforepatches, partialsetup restoredafterengineclose; allbinding failures aggregated. Processlifetimeglobalcounterowner intentional; no secondplan/rearm.",
+    "capture": "PinnedpublicTorch04cf allthreadCPU/CUDA trace-only,CUPTI28 exactprotectedmapping/hash/API andsourcebeforeafter; no shapes/memory/stacks; originalsourceguards andCUPTIfailureclassification retained. RawtracecompleteplusCPUactual user_annotationrequired, no mirroredGPU-asCPUcounts.",
+    "clock": "Eachrankbefore/aftercapture recordsmonotoniclower/unix/monotonicupper anchors; translationisboundedobservation, notexactcrossclockequality/guessedoffset. ActualfrozenFASTwindowstimestampsretained forlaterpostprocessing.",
+    "funding": "Same256KiBfollowers/global2,424,832/grid60,620,800 plus1MiBfixedobservercontrol; native24fullcontext/Q8/FP32/TP8/MTP.7 andactualadmission/sourceprofile/manifest/cache unchanged."
+  },
+  "cleanup_disposition": "Existingpubliccapture/boundedFASTpipeline reused. Oneobservergeometryauthority andsharedwrappers retainrequiredroles; no verifiedremainingdeadpath, unjustifiedduplicateimplementation or necessarysafesimplification. Counter/frameinstrumentationisHOTdiagnosticwork, notshippinggain/equivalenceproof.",
+  "pending": [
+    "Root actualN8/N16 capture success/all8source+CUPTI+retirement/traceidentity andhonestexport errors",
+    "Separatecurrenttracepostprocessorreview forfrozenwindow/clockuncertainty/correlation/actualbatchinterpretation; no analysisresultclaimedhere",
+    "All6unprofiledperformance/quality/85/600/nearfullhistory/full24capacity remainseparate; instrumentedTPScannotqualifygain"
+  ],
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/controls-funded.log",
+      "sha256": "75f278dd74d4545f622a555e6004b3c222cc2f87df5c81aa638d962eb791c7d4"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/module-final-controls.log",
+      "sha256": "f7b152e5643a49175f44f5eccd1a3b6dd7da8611c7ed579758a5921d6c85ae3f"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/controls-provenance.json",
+      "sha256": "ae1a8f8b40c5139c40f4ea8e3b15f971845b27adc5475a3a67fda05caebc675d"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/stage/stage-ready.json",
+      "sha256": "759cd0209a977e32c003d2dc358755dcb7be122ac2dfb2de84c962f031eb7ae9"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/stage/package/launch-finite.py",
+      "sha256": "d74beb0d176150b213b3fedefbb034441f8e16ac7d425fa310e0a933a1b961ce"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/stage/package/stage-files.json",
+      "sha256": "0a518f0708f1213311fd5a311afef144e69286bcd556014dd2c6715a5fe664ee"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/ledger.json",
+      "sha256": "fadc8bdb5aad6fae67b3c7e6816ff3bbf67ff02532089c6e707f773194db3a3f"
+    }
+  ]
+}

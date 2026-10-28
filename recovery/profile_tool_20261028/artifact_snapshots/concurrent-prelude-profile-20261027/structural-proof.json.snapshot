@@ -1,0 +1,14 @@
+{
+  "observer_module_byte_exact": true,
+  "protected_helpers_AST": {
+    "protected_cupti_identity": true,
+    "observed_call": true,
+    "mapping_snapshot": true,
+    "trace_summary": true,
+    "profile_clock_anchor": true,
+    "RankCapture": true,
+    "project_observers": true
+  },
+  "runtime_src_diff_empty": true,
+  "base_prelude_requirements_preserved": "OWNER_TARGET_PRELUDE_TRIAL inactualprofilevalidation/graphconstructor; owner.prelude_submitted_frames inhostcounters, currentprocessonly; no newcapability claim"
+}

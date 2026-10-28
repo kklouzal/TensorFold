@@ -1,0 +1,33 @@
+{
+  "argv": [
+    "docker",
+    "run",
+    "--rm",
+    "--network",
+    "none",
+    "--cpus",
+    "2",
+    "--memory",
+    "8g",
+    "-e",
+    "CUDA_VISIBLE_DEVICES=",
+    "-e",
+    "PYTHONDONTWRITEBYTECODE=1",
+    "-e",
+    "TENSORFOLD_TEST_INSTALLED_WHEEL=/reference/wheels/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "--mount",
+    "type=bind,src=/Warehouse/TensorFold-wt/v100-joint-single-profile-20261028,dst=/source,readonly",
+    "--mount",
+    "type=bind,src=/Warehouse/TensorFold-portable-audit-20261026/joint-candidate-finish-integration-20261028,dst=/reference,readonly",
+    "--mount",
+    "type=bind,src=/Warehouse/TensorFold-portable-audit-20261026/joint-single-profile-20261028,dst=/evidence",
+    "--entrypoint",
+    "/bin/bash",
+    "sha256:30fda46a4c40422e055e0615a8186fc1c39678be9c8c9761885fc0cb77c28993",
+    "-c",
+    "set -euo pipefail; python -m pip install --no-index --no-deps --force-reinstall --no-compile /reference/wheels/*.whl; python -m pip check; python -m pytest -c /dev/null -o \"pythonpath=/source/tests /source\" -p no:cacheprovider -q /source/tests/test_v100_backend_probe.py /source/tests/test_fast_grid.py /source/tests/test_concurrent_observers.py /source/tests/test_joint_single_profile.py /source/tests/test_gdn_state_batch_probe.py /source/tests/test_gdn_startup3_integration.py /source/tests/test_moe_capture_ledger.py /source/tests/test_moe_screen_coverage.py; python -m ruff check --no-cache /source/tools/v100_backend_probe.py /source/tools/concurrent_observers.py /source/tools/profile_trace_reader.py /source/tests/test_joint_single_profile.py /source/tests/test_concurrent_observers.py; python /source/tools/v100_backend_probe.py --help"
+  ],
+  "cwd": "/home/kklouzal",
+  "no_GPU": true,
+  "APP_unchanged": "fbaabca3ba2a7594c8712e0824733da035f3a3db63f454c520ecfa337010ee0d"
+}

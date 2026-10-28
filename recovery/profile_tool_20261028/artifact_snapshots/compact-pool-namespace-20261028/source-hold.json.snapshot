@@ -1,0 +1,103 @@
+{
+  "schema": "tensorfold.compact-pool-preparation-namespace-HOLD-v1",
+  "commit": "37518d018730da786dd5577bfaa7f6d2fb1a4885",
+  "canonical": "/Warehouse/TensorFold-wt/v100-compact-pool-namespace-20261028",
+  "base": "c928/4b0 runtime; NUMAf11 exactbaseline32.9/45.5/76.1/112.1/127.3/129.9",
+  "APP": "ed3283ac32cb39659d64b4ad39c9019b52fc6d6fcda7d6465ffbbfdbcf55c385",
+  "source_paths": {
+    "src/tensorfold/families/qwen4_exp/cuda/compact_indexer.py": {
+      "sha256": "fb1f22e1053c50190f6bf1d76053cebde2749e700fc9bddf3891cb2464d3d557",
+      "bytes": 50018
+    },
+    "tests/compact_pool_reference.py": {
+      "sha256": "e6e92c435b1ee6bbaccf23cf26bd8aebd87bd89ab33d153acbb599234e27cdad",
+      "bytes": 2295
+    },
+    "tests/test_compact_pool_preparation.py": {
+      "sha256": "3f9c5798b08e9f3c41e7b68f3d9a7711dc316308f4722e23f8eeb45c7da041b6",
+      "bytes": 9060
+    },
+    "tests/cuda/test_sm70_compact_pool_preparation.py": {
+      "sha256": "4ae7efd092253479b62016633dea19e2e6121f8f2679dd3b1a5ffeea97a52a1f",
+      "bytes": 2366
+    }
+  },
+  "base_runtime_HOLD": "b5c78eb23e5d4c5111a707506a8afb5623cef81c0dd6412c70c1376786560f3a",
+  "inherited_row_HOLD": "8021154e213e1383b2a26290d14cb4d5318dfb0c80eee7cb003e3f9fc5e2979d",
+  "rows": [
+    4,
+    5,
+    6,
+    8,
+    9,
+    10,
+    11,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    30,
+    31,
+    32
+  ],
+  "pool_contract": "oneownedHCpool reusedfor768exacttargetR/layerkeys; noescapingprivateintermediates; externaloperands retained; sameoriginalstream/48layercycle/issuedHCcut/partialpoison/positiveglobalretirement; N1/candidatepoolsdistinct. ExistingduplicatepoolIDrefusalretained.",
+  "N1": "R1..3 remainoutsidecatalogue; originalprivatepieces unchanged; fullR1..32deferreduntilboundplanparticipationcontract",
+  "numeric": "FP32sum\u2192Half/RMS16padding/rotary/guard/copy AST exact c928; raw+coordinate values exact source algebra +CPUfullcomparison; GPUbitwise gate pending. No newapproxmode/profileepoch/native/kernel body.",
+  "funding": "sameinclusive1GiB/rankMoEhostfuture passedbeforeauthoritativeadmit;driver/opaque/allocatorresourceschargedONCEphysicalmaxdeltas+settlement;singlepoolinactiveexcludedonce/no2MiBfreecredit. Native24Q8stillrequiredafterallactualcharges.",
+  "evidence": {
+    "protected.py": {
+      "sha256": "8f8b852bc36f782cf11c329e87a236611102714c58402c0bbfe1eec563dc6f23",
+      "bytes": 513
+    },
+    "verify-wheel.py": {
+      "sha256": "026a6e066e1eec62a5b876238451520413c16e1e56f53e9ee8a2f0c570c775f5",
+      "bytes": 2034
+    },
+    "cpu-command.json": {
+      "sha256": "cc2aad9324584bd258480160f565ae73c58c5c0a4ec4992eebc867dddc81570e",
+      "bytes": 1979
+    },
+    "cpu.log": {
+      "sha256": "a559410202c3d5e5407d178561fb1363f0b6b087d3bf24396666e9b852a64016",
+      "bytes": 4964
+    },
+    "protected-before.json": {
+      "sha256": "0796f5f0ac9e15bd582eb5d8adad666452326bc38924cb2b6274d9bc68d7e4a1",
+      "bytes": 6015
+    },
+    "wheel-provenance.json": {
+      "sha256": "1baad3481a2c24d2e420a2e6a66628a41ace0b12543ac4b847f56e7de7e6e166",
+      "bytes": 127746
+    },
+    "protected-after.json": {
+      "sha256": "0796f5f0ac9e15bd582eb5d8adad666452326bc38924cb2b6274d9bc68d7e4a1",
+      "bytes": 6015
+    },
+    "cpu-exit.json": {
+      "sha256": "6e8d28ce074ac71373f86fb5875f4d65d01c9ca240eba822548679a01e4847c6",
+      "bytes": 59
+    },
+    "structural-proof.json": {
+      "sha256": "beb56e46e46bb59055f3aa564d4354889bd94ecd3faaf7b20e3334c49f128d27",
+      "bytes": 660
+    }
+  },
+  "CPU": "69PASS4.16s/1explicitbaseline-staleASTdeselection; normal727FDc79/Ruff/pip/protectedPASS;45GPUtests collected.",
+  "package": "Normalwholewheel727sources+FDc79 verified canonical/installed allfiles; nooverlay.45GPUcases collected/imported onnormalnewwheel beforestage.",
+  "new_temporaries": "No newretainedCachefields/weight/historycopies. Catoutputs sameW\u00d7dimHalf andB\u00d73Int64 payloadasoldwhere outputs; oldindex/gather/masktemporaries removed. Runtimeallocator/code effects actualwarm/capacity proof pending; notallocationfree claim. Reuse/prepaid/borrow variants explicit crediblefollowups, notselected.",
+  "GPU": "UNRUN Rootonly; strict45beforeall6. TAIL unchanged; integrateonlyheldTailthenrequiredNUMAall6/tasks+all8resources beforeprovisionalkeep.",
+  "D13": "source read requested; no runtimegain/quality/wholemodelclaim",
+  "predecessor_HOLD_sha256": "27cab3a9c27765d4c350c5c7740281065469fca6758839d6bc1ef7df1c93d442",
+  "namespace_fix": "Explicit Cache._pool_slices_supported(self,span) cannotdispatchsubclasscoincidentaloverride; subclassoriginalpath bits/controlPASS. Old157/HOLD27ca preserved; no oldGPUclaimed.",
+  "reused_evidence": {
+    "/Warehouse/TensorFold-portable-audit-20261026/compact-pool-preparation-20261028/structural-source-proof.json": "63ef5cfbbbaeabc62d6726def456954fa1e0c95631a5d06e2530fdfc39066e7c",
+    "/Warehouse/TensorFold-portable-audit-20261026/compact-pool-preparation-20261028/baseline-stale-caller-disposition.json": "3c9c66330ac3e00385ac680f18106a818bee2688f2230886a8781ff27c44606a",
+    "/Warehouse/TensorFold-portable-audit-20261026/compact-pool-preparation-20261028/baseline-stale-caller-command.json": "8b12208c3325c9ce5d06e065238b58dc9261ab84a7a459ecbef271ae86d31e32",
+    "/Warehouse/TensorFold-portable-audit-20261026/compact-pool-preparation-20261028/baseline-stale-caller.log": "2edd9c2297b35a18f3677b253afb819466bec007389de9b08c5f0965e126263e",
+    "/Warehouse/TensorFold-portable-audit-20261026/compact-pool-preparation-20261028/baseline-stale-caller-exit.json": "875f0c0d07c55e3f02ba52742b26513c7089907c567df99a2e5973e9ee7705d7",
+    "/Warehouse/TensorFold-portable-audit-20261026/compact-pool-preparation-20261028/source-contract-plan.json": "778b8df931a0534db2a8842d107ea3cfa081280742165d8ed7a27a283520e747",
+    "/Warehouse/TensorFold-portable-audit-20261026/compact-pool-preparation-20261028/reuse-candidate-assessment.json": "a17d6f398ae7825466f9919c92a5cd6c890e9c13e4e1b55ab69db773546eb26d"
+  }
+}

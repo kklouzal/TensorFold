@@ -1,0 +1,45 @@
+from pathlib import Path
+import ast,hashlib,json,shutil,tarfile
+A=Path(__file__).parent;B=A.parent;W=Path('/Warehouse/TensorFold-wt/v100-descriptor-current-n24-profile-20261028')
+OLD=B/'joint-single-profile-20261028/stage/package';P=A/'stage/package';P.mkdir(parents=True)
+sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+for p in OLD.rglob('*'):
+ if p.is_file() and p.name!='stage-files.json':
+  dst=P/p.relative_to(OLD);dst.parent.mkdir(exist_ok=True,parents=True);shutil.copy2(p,dst)
+for name in ['tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl']:
+ shutil.copy2(B/'descriptor-host-words-20261028/wheels'/name,P/name)
+shutil.copy2(B/'descriptor-host-words-20261028/wheel-provenance.json',P/'wheel-provenance.json')
+shutil.copy2(A/'source-hold.json',P/'source-hold.json')
+shutil.copy2(B/'descriptor-host-words-20261028/source-hold.json',P/'runtime-source-hold.json')
+shutil.copy2(B/'hc-moe-hot-rows-integration-20261028/fast-stage/package/source-hold.json',P/'row-policy-source-hold.json')
+shutil.copy2(B/'descriptor-host-words-20261028/actual-first-all6-4b0e/row-policy-inheritance-proof.json',P/'row-policy-inheritance-proof.json')
+for p in (P/'tools').glob('*.py'):
+ if (W/'tools'/p.name).exists():shutil.copy2(W/'tools'/p.name,p)
+shutil.copy2(W/'tools/moe_screen_coverage.py',P/'tools/moe_screen_coverage.py')
+c=json.loads((B/'hc-moe-hot-rows-integration-20261028/fast-stage/package/candidate.json').read_text())
+c.update(wheel_sha256=sha(P/'tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl'),source_hold_sha256=sha(P/'source-hold.json'),runtime_source_hold_sha256=sha(P/'runtime-source-hold.json'),row_policy_sha256=sha(P/'row-policy-source-hold.json'),row_policy_inheritance_proof_sha256=sha(P/'row-policy-inheritance-proof.json'),tool_sha256=sha(P/'tools/v100_backend_probe.py'),recovery_commit='86b841b879b24ceecb131dd320679d224e7e1d17',profile_concurrency=24,reader_global_host_bytes=8*(6<<30),observer_global_host_bytes=8*(128<<10),qualification='ONE-N24all8CPU+CUDAinstrumenteddiagnosticonly; noP3/all6/qualitycredit; actualAPP4b0 descriptor/native math unchanged',reference='Currentc928/4b0 provisional investigation reference; priorf030/d851 separate uninstrumented all6',corrective_successor='CurrentdescriptorCPUrowrepresentation+hot16/sharedpool/HC/MoE/Candidate/Fusion/Router/GDN/startup3; instrumentationonly')
+c['tool_dependencies']={str(p.relative_to(P)):sha(p) for p in (P/'tools').glob('*.py')}
+(P/'candidate.json').write_text(json.dumps(c,indent=2)+'\n')
+p=P/'verify_installed.py';p.write_text(p.read_text().replace('726','727'))
+preflight="""python - <<'VERIFY_PROFILE_POLICY'
+import json, pathlib, sys
+root = pathlib.Path('/qualification')
+sys.path.insert(0, str(root / 'tools'))
+from v100_backend_probe import validate_profile_row_policy
+candidate = json.loads((root / 'candidate.json').read_text())
+result = validate_profile_row_policy(root / 'runtime-source-hold.json', root / 'row-policy-source-hold.json',
+    root / 'tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl',
+    runtime_sha=candidate['runtime_source_hold_sha256'], row_sha=candidate['row_policy_sha256'])
+pathlib.Path('/probe/profile-row-policy-preflight.json').write_text(json.dumps(result, indent=2)+'\\n')
+print(json.dumps(result), flush=True)
+VERIFY_PROFILE_POLICY
+"""
+p=P/'bootstrap-finite.sh';s=p.read_text().replace("unset TENSORFOLD_MULTI_GRAPH_MIB\n",preflight+"unset TENSORFOLD_MULTI_GRAPH_MIB\n");p.write_text(s)
+p=P/'launch-finite.py';s=p.read_text().replace('profile-joint-fbaa-n1-20261028','profile-descriptor-4b0e-n24-20261028').replace('tensorfold-v100-profile-joint-n1','tensorfold-v100-profile-descriptor-n24').replace("'--profile-concurrency', '1'","'--profile-concurrency', '24'").replace('d5ebfce578dc8a1e3c59bdd27f3dd1558c14043f','c9284c500dd9c983a9673f42ad6061ef190dc591').replace("'TENSORFOLD_SM70_CANDIDATE_REGION_GRAPHS': '1',","'TENSORFOLD_SM70_CANDIDATE_REGION_GRAPHS': '1', 'TENSORFOLD_SM70_HC_MOE_REGION_GRAPHS': '1', 'TENSORFOLD_SM70_HC_MOE_SHARED_POOL': '1',").replace('ExperimentalMoEcatalogue30/31/32','CurrentdescriptorHC-MoEhot16sharedpool768keys').replace('ONEinstrumentedN1','ONEinstrumentedN24').replace('InstrumentedONE-N1all8diagnostic;noall6/quality/P3credit;APPfbaaunchanged','InstrumentedONE-N24all8diagnostic;noall6/quality/P3credit;APP4b0unchanged')
+p.write_text(s)
+for p in P.rglob('*.py'):ast.parse(p.read_text())
+files={str(p.relative_to(P)):{'sha256':sha(p),'bytes':p.stat().st_size} for p in P.rglob('*') if p.is_file()};(P/'stage-files.json').write_text(json.dumps(files,indent=2)+'\n')
+with tarfile.open(A/'stage/payload.tar','w') as archive:
+ for p in sorted(P.rglob('*')):
+  if p.is_file():archive.add(p,arcname=str(p.relative_to(P)))
+print('stagefiles',len(files),'APP',c['wheel_sha256'],'controller',sha(P/'launch-finite.py'),'payload',sha(A/'stage/payload.tar'))

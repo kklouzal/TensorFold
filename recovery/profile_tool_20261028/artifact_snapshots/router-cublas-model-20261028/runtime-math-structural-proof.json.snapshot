@@ -1,0 +1,8 @@
+{
+  "base": "490a49c2 actual3dee28diagnostic",
+  "successor": "30c3bf31 actualfee8live",
+  "CPP_actual_run_body_byte_equal": true,
+  "run_body_sha256": "aea25513063199d1839ab2465f272bc872af93e32ad16eab62da1c88c2c29c30",
+  "changes": "constructor optionalsharing existing input/output/XY tensors andnewprofile eagerdispatch; no cuBLASAPI/scalars/layout/castpoints/runcheckchanges",
+  "scope": "runbodyequality preserves API operation/configuration, not proof of canonical rowbitidentity, modelquality or performance"
+}

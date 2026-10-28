@@ -1,0 +1,127 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T22:23:18.262350+00:00",
+  "status": "CLOSED startup overlap+guardmaps+tool optin source; no startup/performance selection",
+  "reviewer": "/root/cleanup_review",
+  "commit": "c0f49f4998e47af99633a099769b675dbdd3fd43",
+  "workspace": "/Warehouse/TensorFold-wt/v100-startup-guard-maps-20261027",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-guard-maps-integration-20261027/source-hold.json",
+    "sha256": "8c4e23435a89ed99fc7ef7ba2d1b28d1bc48fee116bba76097f97b4589386768"
+  },
+  "source_paths": {
+    "README.md": "de69bb8f9f819104d6f69fa7953cf705824f70fd31135bd6b459d96987b41588",
+    "deploy/v100/source-foundation.md": "a561ca9a8cc827a237a917570c9ef3089d240becf73e3c70289ecf7829b6988c",
+    "src/tensorfold/_fd_owner.c": "aa5d4a6773f7d26c7dc43e0bf0817fb127e9d8a70de103f99acc8999fe6c3931",
+    "src/tensorfold/engine/model_identity.py": "37e76bdb643b4ab7ae47b6c449df5b8415b55602fac3165e0d99f6a5e9725298",
+    "src/tensorfold/families/qwen4_exp/cuda/engine.py": "eec7766a79e45579abf9d468c49290144f61818d967034bb69d5bc54e7e08ac3",
+    "src/tensorfold/families/qwen4_exp/cuda/execution_identity.py": "6c98e903e161f4304170c82a8f8f8d1d688c15f2907de170c65b25a8eb6c0aa9",
+    "src/tensorfold/families/qwen4_exp/cuda/startup_content.py": "4134f8e069645296bd62a785affd61bc7042350ac3b9eb8f676117154e39011d",
+    "tests/test_flashnext_engine_lifetime.py": "cf8a039f1e411442aed70d70c97775eadbdf9c4f7b1441e453921ab0dc0638f0",
+    "tests/test_startup_content.py": "2b5d58e45f78dce86c0a6bcb1a68c3a607f9bff07cfc1a75bcdff5fbefd44c9f",
+    "tests/test_v100_backend_probe.py": "db05ceb804188d9768976dfc7bb2e476152f1c5c10be2c1936a963934d64ab06",
+    "tools/v100_backend_probe.py": "d484ec17d2ec5bfb2ddbb6b5bce4501b399386fefc1202854cef5ba66bd1e9ec"
+  },
+  "wheel": {
+    "path": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3138447,
+    "sha256": "7779ad26b0069b5185ad744c83e8ac6fd5642a1307242ff4f4d510c590550153"
+  },
+  "FD": [
+    {
+      "path": "tensorfold/_fd_owner.abi3.so",
+      "bytes": 46344,
+      "sha256": "c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d"
+    }
+  ],
+  "scope": "Eleven source/test/tool/docs paths; directconstructor/resource/manifest/file/worker/cleanup andchild-env lifetimes. Reuse closed32bc standalone96aea and49dbguardmap12a51; no new native math.",
+  "structural_proofs": {
+    "runtime_delta": "Only five startup runtime files differguardmapbase870f; allothernativeguard/map/owner/target/sampler/State bytes remainselectedbase. _fd_owner,model_identity,execution_identity exactclosedstandalone32bc.",
+    "worker": "ActualModelIdentityfreshartifactSHA duringload; originalinventorybound<=64files/64KiBASCII. Global64MiBstack+actualguard+8MiBwork fundedbeforeadmit; allrankpolicyagreebeforeoneRank0start. Existingadditionalnative/source/librarycapturefreshafterload; no disk/stat-onlyauthority.",
+    "retirement": "Ownoperationlatch isrequiredafterjoin; finaltimingfaultcannotstrandlatch. OSblockedreadcompletionnotpromised; cancelbetween1MiBreads. Actualoperation/descriptorcleanup beforeengineownersretire; nativeOSstackreclaimunclaimed/conservativecommitmentretained.",
+    "optin": "Tool requiresmanifest,setsENV=1 for all8childrenbeforePythonstartup andrefuseswrongworkerinheritance; parentenvunchanged. Defaultunsetserial; explicitguardprofileextensionretainsplatform/method/noMedia/identity requirements.",
+    "waittelemetry": "Start/endmeasureactualregistrationwait aroundjoin+ownlatch, no inferredreadcost/overlapspeedup. Fixedslotsretaindiagnosticerrors; outcomehelperprotectsargumentcompaction beforecoldprimarytransport."
+  },
+  "findings": [
+    {
+      "rules": [
+        "C6",
+        "C5"
+      ],
+      "finding": "Waitmetricsdelta allocated compacterrorlist beforeprimarypreservinghelper, aftermarkingobserved; MemoryErrorcouldreplacehashprimary",
+      "disposition": "Resolvedc0f _raise_outcome capturesnamedprimary/fixedsecondaries, compactsinsideprotectedtry, raisesoriginalorfirstexistingerror fromallocation. Removedunusedno_errors. Actualresult/close allocationcut controls requirefaultfiredandprimaryidentity/cause; initialnonfiringtestnegativepreserved."
+    },
+    {
+      "rules": [
+        "X4",
+        "X6"
+      ],
+      "finding": "HOLDcontrols.start_sha256 wasambiguous; start.json represents earlierbuild, actualexpectedhash belonged to final-controls-command.json",
+      "disposition": "Exactsuccessfulfinalprelaunchrecord located/verified, additivecontrols-source-record-pointer.json clarifies withoutrewritingfrozenHOLD orrerun. Final480executedargv/cwd/env/exit/log bound."
+    }
+  ],
+  "checks": {
+    "normalinstalled": "480PASS+5subtests18.90s/Ruff/pip; source11currenthashes/start/log verified",
+    "wholewheel": "All717sourcefiles andexactnewFDc79 independentlymatched7779ZIP; oldFD4a notwhitelisted",
+    "nativeidentity": "ExistingFDbodybyteexactbase plusownedtypedpthreadquery APIs; nativeFDnormal/faultsourcechecks included",
+    "stage": "Current20localGPUfiles/hashpins+guardedmainrunner verified; source717+FDc79/protectedclosurepinned. NoGPUorremoteexecutionbyreviewer",
+    "no_duplicated_build_suite": "Allauthorvalidresultsreused; onlyboundedsource/ZIP/hashproofsperformed"
+  },
+  "cleanup_disposition": "Outcomehelperconsolidatesrequiredcoldfailurehandling. Existingserial/overlap/reference/native/unsupportedpaths and independentoracles preserved. Noverifiedremainingdeadpath/unjustifiedduplicateauthority or necessarysafesimplification.",
+  "pending": [
+    "Rootwholecurrent7779artifact/native/source/70GPUcomponentacceptance andactualenabledstartup/modelmeasurement",
+    "Actualstartupwalltime/IOcontention/memory/quality/all6speed; no gainfromCPUsourceproof",
+    "Strict85/600/full24/nearfullhistory/no regionalregression",
+    "Pretool26d4/c696stageswithdrawnhistorical; no retroactivecurrentartifactsuccess"
+  ],
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-guard-maps-integration-20261027/source-hold.json",
+      "sha256": "8c4e23435a89ed99fc7ef7ba2d1b28d1bc48fee116bba76097f97b4589386768"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-guard-maps-integration-20261027/final-controls-command.json",
+      "sha256": "fe359ca4b38a854a9b8dcd1916fd6f3b6f3523108717ff0592d68da324c17e38"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-guard-maps-integration-20261027/controls-final-exit.json",
+      "sha256": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-guard-maps-integration-20261027/controls-final.log",
+      "sha256": "121e2eb08c728f8f7a1828d9decf714129d541fe091c6cbe91f99544a50890c0"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-guard-maps-integration-20261027/controls-provenance.json",
+      "sha256": "c825d9a9f02873cd1f9cb3bdd60529ae08e30764b01131b94c49d529d017c48c"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-guard-maps-integration-20261027/controls-source-record-pointer.json",
+      "sha256": "8e6430c3278f851b321fe341de10eed80e4cf8d7dd71c2b52dec77c0291efc5d"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-guard-maps-integration-20261027/resource-bound.json",
+      "sha256": "79e0b000c6a8aebb099624aa9ecef3574277af661fd1c4066b4921a1b6f7da6e"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-guard-maps-integration-20261027/structural-proof.json",
+      "sha256": "7d2df1f1ec763876d842a288eba285bd48c6a7ccf114e4bea251f0b06b4d1941"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-guard-maps-integration-20261027/wheel-provenance.json",
+      "sha256": "1c752aed9e983b3e336a0eb39a2f59b92daeb248972d0739c9bbf186717646fa"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-guard-maps-integration-20261027/gpu-stage/stage-receipt.json",
+      "sha256": "21198896399091eb0f0e2e0f00d41487d0cb771a24080d7090660566e4f15457"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-guard-maps-integration-20261027/fast-stage/stage-ready.json",
+      "sha256": "7ea41a738ae4afe93cf7f3e28db41ae8c56737ce00347f3c88fb1666de364d8f"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-guard-maps-integration-20261027/ledger.json",
+      "sha256": "cbfb63a72632f608ec0f507034244bc57ea63fbfdc1746310642ecd1b90d796c"
+    }
+  ]
+}

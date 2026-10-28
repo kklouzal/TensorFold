@@ -1,0 +1,65 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T22:33:37.797845+00:00",
+  "status": "CLOSED bounded concurrent frozen-window CPU analysis source; actualcaptureanalysis pending",
+  "reviewer": "/root/cleanup_review",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/source-hold.json",
+    "sha256": "6513f4b617278146a9367d086dd74b1b50bd75c15d6170238bfb343f6f922619"
+  },
+  "sources": {
+    "analyze_traces.py": "780c7d40cc90b4226212d4e1e0dcccaebeaad01e9c4148beaa15b790bda58df1",
+    "analyze_decode.py": "301f6a75ce46266f63c5ab9b28aaccb85dbe4535ed2fe8f6f75caa2d8f3e63c6",
+    "analyze_concurrent.py": "989e8bf2a6c2ef46c95b63c4575f9af326853908537b0fbb0085fd224658cc5b",
+    "test_concurrent_analysis.py": "795eb451107eb97a142cef304edb1bc3b11230522f21e89844de18484c211887"
+  },
+  "scope": "Task-local derive frozenFASTwindow\u2192boundedstreamingCPUproject/API/kernelorigin andactivity reports, leaderbatchcounterdelta, guarded2workerpostprocessor. Reuse correctedpreviousStream/correlation/mirror/retirement/hashcode; no generalprofilerorJSONaudit.",
+  "contracts": {
+    "authorization": "OnlyafterstrictterminalcontrollerDocker0/all8completeengine+transport/source+CUPTI28 andRootGPUleaseidle. Guardedmain preventsCPythonforkserver reentry; CPUworkers2, noTorch/CUDA/modelimports orGPUqueries. No analysisonlivecapture.",
+    "clock": "Actualfrozenbegin/endmonotonicns plusall8before/afterbracketedUnix-monotonic offsets. Hullobservations\u2014notoneguessedoffset\u2014providesstart/enduncertainty, rejectobservedhull>10ms, requiretranslatedouterwindowinsideeveryactualleadercohortgeneratecall. Conservativecorestartupper/endouterlower andexpandedouter retained. Stableclockbetweenobservations isexplicitassumption, not universalproof ofnosteps.",
+    "source": "N8/N16actualreport/drainvalidity required; invalidreadiness notpromoted to validwindow. Exactlyselectedgeneratecalls separatedfrom2tokenbringup; perrankrawhash/bytes/stat andtracebasechecks retained.",
+    "kernel": "ActualCUPTIcorrelation tographlaunch/plain/otherruntime only; graphmetadataalone neverproveslaunch. Duplicatesrefuse; unmatchednodesunattributed. Start-assignedeventcounts remainexplicitlystart-assigned. GPUactivityunion/gaps nowclipalloverlappingintervals includingboundary-crossers; NCCLwaits countactivity, notusefulcompute.",
+    "CPU": "user_annotation only (noGPUmirror); inclusive/nested andinnermostexclusiveperthreadwallsegments separate. No CPUbusytime/utilization/throughput inference.",
+    "batch": "Leaderbefore/after delta excludesbringupbutincludesreadiness+measurement+cancel/drain; explicitlynotonly10s. Fixedhistogramwidths/overflow/decrease refusal, actualsubmittedselection/computegeometry notphysicalGPUconcurrency guarantee.",
+    "bounds": "Same1MiBcharacterchunks/16MiBcarrycharacters(4xUTF8upper),4Mkernel/8Mcorrelation/200Kproject/512KiBperrankreport; actualtwoCPUworkers; rawtracesretained. No universalphysicalRSSclaim."
+  },
+  "finding": {
+    "rules": [
+      "O1",
+      "F3",
+      "P0"
+    ],
+    "finding": "New no-kernel-gap report initiallyreusedstart-assignedinterval list, omittingkernelsstartingbeforewindow butoverlappingit; couldinventboundaryidle",
+    "disposition": "Resolvedby collectingallkernelintervalsoverlappingouterwindow andclippingintersectionbeforestart-assignedcountfilter. Addedactualanalyzeboundarycrossingregression withindependentexpected5usactivity/4.99usgap; legacycountsstay2. NoGPU/rawtracererunrequiredforpostprocessorfix."
+  },
+  "checks": {
+    "six_independentCPUcontrols": "PASS0.010s, actualexecutedargv/cwd/noenv/exit/log provenancebound; prior4/5groupsseparatehistoricalnotadded",
+    "sourcefourhashes": true,
+    "reviewer": "Newderive/fullwindow/domain/reports/callerread; currenthashes/provenance andsuppliedboundaryregressioninspected; no actuallarge-traceanalysis orduplicate suite",
+    "capture": "Source67a10/f64d/d49e reviewedseparately; currentanalysis doesnotretroactivelyqualifycapture orunsupportedinference"
+  },
+  "cleanup_disposition": "Existingstream/parser/timeline/correlation/aggregationhelpers reused. Newwindowderivation has distinctmonotoniccohortclockcontract fromoldfirstcallbackmodel; requiredcore/expandeduncertainty notduplicate. Noverifiedremainingdeadpath/unjustifiedduplicatemodel or necessarysafesimplification.",
+  "pending": [
+    "Rootcurrentall8captureterminal/rawsourceCUPTIretirement outcomes and actualCPUanalysis",
+    "Interpretationofactualbatch/criticalpath/profiledata beforecandidateselection",
+    "Unprofiledall6/quality/85/600/full24nearfullhistorygates remainseparate"
+  ],
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/controls-provenance.json",
+      "sha256": "cbd2a9d7b509524d4297019cfe6b8f43b9412c54a62b3718aa1996e173c6bef6"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/controls-boundary.log",
+      "sha256": "6153e7494c25ae8613a99d176c15d85920a22020775e01ff568331ed7085ef37"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/controls.log",
+      "sha256": "6fa60c23326e3e4c6ae1861c669f2f7d1e8ee06a6752daa83532996baca2ff88"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/controls-final.log",
+      "sha256": "d9702a91694a5588d063be20179b29ae50864b9e1cf2ff4d2746b2e48a3bab7d"
+    }
+  ]
+}

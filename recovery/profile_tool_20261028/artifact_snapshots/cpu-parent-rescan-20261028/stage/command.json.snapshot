@@ -1,0 +1,30 @@
+{
+  "copy": [
+    "scp",
+    "-i",
+    "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=20",
+    "/Warehouse/TensorFold-portable-audit-20261026/cpu-parent-rescan-20261028/stage/payload.tar",
+    "kklouzal@71.94.200.200:/home/kklouzal/tensorfold-v100-qualification-20261026/profile-descriptor-4b0e-n24-20261028/cpu-parent-rescan-upload.tar"
+  ],
+  "verify": [
+    "ssh",
+    "-i",
+    "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+    "-o",
+    "BatchMode=yes",
+    "-o",
+    "ConnectTimeout=20",
+    "kklouzal@71.94.200.200",
+    "python3",
+    "-",
+    "/home/kklouzal/tensorfold-v100-qualification-20261026/profile-descriptor-4b0e-n24-20261028",
+    "a7d6f9d26e6800be2ae0ad3a2a9057e3bbd87ffec5c4d91a50e51ed0679e3097"
+  ],
+  "stdin": "from pathlib import Path\nimport ast,hashlib,json,sys,tarfile\nroot=Path(sys.argv[1]);out=root/'cpu-parent-rescan-tools';upload=root/'cpu-parent-rescan-upload.tar';sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()\nif out.exists() or sha(upload)!=sys.argv[2]:raise RuntimeError('unique toolstage/tarhash differs')\nfor name in ('rank0-cpu-parent-v1.json','rank0-cpu-parent-v1.stdout','rank0-cpu-parent-v1.stderr'):\n if (root/name).exists():raise RuntimeError('fresh result/log paths required')\nif sha(root/'tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl')!='4b0ea6b51047f93b2b973ed5a467d8c279b94f6d85c683c4258a712ff6edd99f':raise RuntimeError('actual normal APP differs')\nif sha(root/'analysis-tools/analyze_traces.py')!='780c7d40cc90b4226212d4e1e0dcccaebeaad01e9c4148beaa15b790bda58df1':raise RuntimeError('closed parser differs')\nout.mkdir()\nwith tarfile.open(upload) as a:\n for m in a.getmembers():\n  if not m.isfile() or '/' in m.name:raise RuntimeError('unsafe toolstage entry')\n  (out/m.name).write_bytes(a.extractfile(m).read())\nfor name,want in json.loads((out/'files.json').read_text()).items():\n if sha(out/name)!=want:raise RuntimeError('stagedsource hash differs')\nast.parse((out/'rescan_cpu_parent.py').read_text())\nprint(json.dumps({'status':'STAGEDONLY NOEXECUTION','source_sha256':sha(out/'rescan_cpu_parent.py'),'HOLD_sha256':sha(out/'source-hold.json'),'path':str(out),'python':sys.version,'raw_read':False,'out_fresh':True}))\n",
+  "started_ns": 1793205591412501525,
+  "no_analysis_execution": true
+}

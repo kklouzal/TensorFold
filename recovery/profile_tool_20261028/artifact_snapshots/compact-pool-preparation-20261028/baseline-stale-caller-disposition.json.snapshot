@@ -1,0 +1,13 @@
+{
+  "schema": "preexisting-caller-AST-gate-disposition-v1",
+  "failure": "test_actual_engine_pre_admission_batch_packet_and_counter_funding raisesStopIteration whilelookingfor exact ASTstring self.sm70_profile == OWNER_BATCH_PRELUDE_TRIAL",
+  "actual_baseline": "Normal4b0wheelSHA4b0ea6b5 installed independently; fullbaselinecommand/log/exit1 retained; samefailure beforecandidate pool source executes",
+  "candidate": "Samefailure in initialnormalcandidate gate; no changedengine/testsource",
+  "hashes": {
+    "engine_SHA256": "344087804912f3d0f9e913f0a7945b0a251e26e23f76bc05a6ca5e3b2c83847b",
+    "test_SHA256": "d0c302b0433e137d078543b8eb8e8509b1b09054314359e04197ee022518e242",
+    "baseline_wheel_SHA256": "4b0ea6b51047f93b2b973ed5a467d8c279b94f6d85c683c4258a712ff6edd99f"
+  },
+  "source_proof": "Canonicalc928/normal4b0/currentcandidate engine andtest bytes exact; taskonlychangescompact_indexer.pool/helper. Currentengineprofilepredicate evolvedbeforetask; ASTtext search no longerlocatesit. No funding/testcontract corrected orweakened.",
+  "disposition": "Documented preexisting unrelatedfailedtest retained; finalaffectedCPUgate67PASS explicitly1deselected, notblanketallchecksPASS. No requirement waiver/newcapacityclaim; actualNUMAall8 full24resourceaudit andunchangedforecast/header math remain separate."
+}

@@ -1,0 +1,27 @@
+from pathlib import Path
+import json
+import pytest
+import xml.etree.ElementTree as ET
+
+
+def main():
+    import torch
+    from tensorfold.cuda.sm70 import gguf_ops
+    from tensorfold.cuda.sm70.execution_policy import _family_runtime
+    _family_runtime(torch)
+    module=gguf_ops.extension()
+    if module.prepare_wmma80()!=37 or module.prepare_dense32()!=4:
+        raise RuntimeError('all selected nativecode variants must be resident')
+    argv=['-s','-c','/dev/null','-o','pythonpath=/qualification/tests/cuda','-p','no:cacheprovider','-vv',
+          '--junitxml=/probe/wmma-current.xml','/qualification/tests/cuda/test_sm70_wmma80_current.py']
+    code=pytest.main(argv)
+    Path('/probe/wmma-controls-exit.json').write_text(json.dumps({'exit_code':int(code),'argv':argv,
+        'scope':'6currentINT32FP32/513/top11/mixed/selfrow/capture/bounds/alias controls; empiricalerror only, no quality acceptance'})+'\n')
+    if code:raise SystemExit(code)
+    cases=ET.parse('/probe/wmma-current.xml').getroot().findall('.//testcase')
+    if len(cases)!=6 or any(case.find('skipped') is not None for case in cases):
+        raise RuntimeError('6actualSM70controls/no skips required')
+
+
+if __name__=='__main__':
+    main()

@@ -1,0 +1,92 @@
+{
+  "schema": "tensorfold.hc-moe-hot16-HOLD-v1",
+  "commit": "f0300ac8166349882a3de5f82687e0bf836eeff5",
+  "APP": "d8511a00e290e7e77385f9f6fa32ee1909febdbe45f23f53495ebc7bf44d745c",
+  "base": "28ac/4d2b actualIQEngine120.3N24 checkpoint",
+  "source_paths": {
+    "README.md": {
+      "sha256": "b2cf9ddcd4c2ee7c0be912faf06b14201ad9f73932fba35605b56b670be8e020",
+      "bytes": 191341
+    },
+    "src/tensorfold/families/qwen4_exp/cuda/engine.py": {
+      "sha256": "344087804912f3d0f9e913f0a7945b0a251e26e23f76bc05a6ca5e3b2c83847b",
+      "bytes": 190002
+    },
+    "src/tensorfold/families/qwen4_exp/cuda/moe_region_catalogue.py": {
+      "sha256": "4c9653e2231c616921f8cca25a9c38ddb12d2b466cc18642f93997fec4396b39",
+      "bytes": 22652
+    },
+    "src/tensorfold/families/qwen4_exp/cuda/multi_graphs.py": {
+      "sha256": "75b96ffa78f8009ca26f6b1fa1407d511901d11c9971853c10efc024ccc991b2",
+      "bytes": 28670
+    },
+    "tests/test_hc_moe_hot_rows.py": {
+      "sha256": "5cfb461dcc916782118206fbd46973c9f19ec2606bb4ae2a6eb4671b62c3b891",
+      "bytes": 8296
+    }
+  },
+  "evidence": {
+    "normal.log": {
+      "sha256": "3b6e6a920165f557f0719484d6809573568772d6fd8239185a98e79bb8219088",
+      "bytes": 1754
+    },
+    "normal-exit.json": {
+      "sha256": "15ced6ba750cbb8e60cfaf4e77a7f1c9bff7758599e576231d7dca81f0479800",
+      "bytes": 43
+    },
+    "normal-command.json": {
+      "sha256": "e7d77a587c4ec55d8385ae8a12371d52f3cb25f56a4969d97d66c099b6eb438c",
+      "bytes": 2492
+    },
+    "wheel-provenance.json": {
+      "sha256": "1ee39bd04fad163bd0dae65607a828133169d73ac3e7173ffba0a12542c00806",
+      "bytes": 127746
+    },
+    "protected-before.json": {
+      "sha256": "0796f5f0ac9e15bd582eb5d8adad666452326bc38924cb2b6274d9bc68d7e4a1",
+      "bytes": 6015
+    },
+    "protected-after.json": {
+      "sha256": "0796f5f0ac9e15bd582eb5d8adad666452326bc38924cb2b6274d9bc68d7e4a1",
+      "bytes": 6015
+    },
+    "structural-source-proof.json": {
+      "sha256": "3deb94a0215882c24e5b4e23f45f6d62feae2bee7bbcc8e8af21f7e5e8d9cf9e",
+      "bytes": 13181
+    },
+    "milestone.json": {
+      "sha256": "28808afbfc8811eb9236c2d89ff18284eb537b643da32f31397c64eedf5c610b",
+      "bytes": 1513
+    }
+  },
+  "reused_oracle": "Root73896test-only5cd45/unchanged4d2b onepool192keys384strictIQ18/20replaysPASS7.52;2MiBreserved/0activeobserved only, notEngine/accounting proof",
+  "pool_contract": "oneownedHCpool reusedfor768exacttargetR/layerkeys; noescapingprivateintermediates; externaloperands retained; sameoriginalstream/48layercycle/issuedHCcut/partialpoison/positiveglobalretirement; N1/candidatepoolsdistinct. ExistingduplicatepoolIDrefusalretained.",
+  "rows": [
+    4,
+    5,
+    6,
+    8,
+    9,
+    10,
+    11,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    30,
+    31,
+    32
+  ],
+  "N1": "R1..3 remainoutsidecatalogue; originalprivatepieces unchanged; fullR1..32deferreduntilboundplanparticipationcontract",
+  "numeric": "sameFusionprofile/backend/privatearithmeticpolicy;neworthogonalgraphflag/prefixidentityonlywhenenabled;all97nativeandmath/State/forward/N1/candidatemodules byteexact28ac",
+  "funding": "sameinclusive1GiB/rankMoEhostfuture passedbeforeauthoritativeadmit;driver/opaque/allocatorresourceschargedONCEphysicalmaxdeltas+settlement;singlepoolinactiveexcludedonce/no2MiBfreecredit. Native24Q8stillrequiredafterallactualcharges.",
+  "CPU": "70affectednormalinstalledPASS6.21/Ruff/pip/protected727FDc79. Factory/cycle/dedup/host/N1controls areCPUproxies, NOTactualadmission.",
+  "GPU": "newhot16Engine/admission/lifecycle/quality/P3UNRUNRootonly",
+  "remaining": [
+    "sourceD13binding",
+    "769phase/16rowcounter/coverageadapter",
+    "Rootactualall8capacity/settledbudget/QA/prefix/all6measurement"
+  ]
+}

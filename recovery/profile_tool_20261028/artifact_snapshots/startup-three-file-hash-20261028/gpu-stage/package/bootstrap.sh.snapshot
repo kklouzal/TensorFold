@@ -1,0 +1,15 @@
+#!/bin/bash
+set -euo pipefail
+cd /qualification
+python /qualification/verify_stage.py
+python -m pip install --no-index --no-deps --force-reinstall --no-compile /qualification/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl
+python -m pip check
+python /qualification/verify_installed.py
+set +e
+python /qualification/run_controls.py
+test_status=$?
+python /qualification/verify_installed.py
+verify_status=$?
+set -e
+if [ "$test_status" -ne 0 ]; then exit "$test_status"; fi
+exit "$verify_status"

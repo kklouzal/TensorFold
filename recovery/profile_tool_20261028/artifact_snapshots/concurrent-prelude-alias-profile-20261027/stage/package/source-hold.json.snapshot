@@ -1,0 +1,30 @@
+{
+  "schema": "tensorfold.concurrent-prelude-profile-tool-v1",
+  "commit": "8f1f904d7b9b54d415447ad687ee3843bb8c3c80",
+  "worktree": "/Warehouse/TensorFold-wt/v100-concurrent-prelude-alias-profile-20261027",
+  "base": "710c9b6a3b91072d1d15a8356cfe91464cd1419b",
+  "source_paths": {
+    "README.md": "cffb8fbdea5b57ef46d8a97d4f581fd367607bebf5740957c177aa9c232fb038",
+    "tests/test_concurrent_observers.py": "3dba4ddf749becc1a6476b0e5f9946c39173ade1d2cda0e7d5a781e4363abbdb",
+    "tests/test_fast_grid.py": "ca6859196492633de71b247f2ac995a930e8cc37cf696eee7f61d90af6f7bbe9",
+    "tests/test_v100_backend_probe.py": "be3312c41751231b006d4eedb83f14584fed251f02fc9340d277e355fe5977f8",
+    "tools/concurrent_observers.py": "2dd59a77cba7bc652f9c67d7809085d83ebb8ec1c5be9f3fab0c9540af76d748",
+    "tools/v100_backend_probe.py": "3e902f71f3f56b2e06be89c7c3ed34227e153794304ee999a90b56c8f9785cc2"
+  },
+  "runtime_wheel_unchanged": "32246b49a07dbc3b22ee6ff31c8745a1368fb3e203a0071ecddaa32b00bcf882",
+  "runtime_source_diff_empty": true,
+  "instrumentation_reused_from": "67a10e579b6ca4e747915ed5d82903997cc75d9a/f64d; actualN8all8capture/sourceCUPTI/retirementproved; sameobservermodulebyteexact",
+  "controls": {
+    "checks": 146,
+    "seconds": 4.99,
+    "exit_code": 0,
+    "log_sha256": "22b370fecf176aeb123d13530f9f753340f7855bb360c69db509548562cf3b3f",
+    "normal_wheel": "32246exact",
+    "Ruff": "PASS",
+    "pip": "PASS",
+    "help": "PASS"
+  },
+  "preserved_prelude": "Exactbaseprofilefactory/record_execution_profile OWNER_TARGET_PRELUDE_TRIAL +owner.prelude_submitted_frames counter; no kernel/math/fixturechanges",
+  "GPU": "UNRUN. Rootmustwaitaliasfixedruntimeactual53TP8cases+currentuninstrumentedall6/quality/counterverification; no902for32246gainclaimfromthissource",
+  "protocol": "OneinstrumentedN8cohort30sreadiness10sdecode512capcancel/drain; ordinaryall6separateunchanged; sameCUPTI28/clockanchors/batchhists;256Kfollowers+1MiBglobalobservercontrol"
+}

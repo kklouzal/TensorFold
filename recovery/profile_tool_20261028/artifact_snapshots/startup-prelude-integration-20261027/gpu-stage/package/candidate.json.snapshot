@@ -1,0 +1,10 @@
+{
+  "wheel_sha256": "fa6e3561f076e26709de186b87336760062ba2747b1a1d9bd482fc0e78b580aa",
+  "source_hold_sha256": "f633c8f5ee888412bb142685bbfbf8dfbc54ffacebce65afeb11bb8c3cbe6782",
+  "fixture_source_hold_sha256": "d685fecef4a86f31fbaefd75b6645e4bd32a382b439f1b8aaffe825e2182f587",
+  "source_commit": "ee248b80fdddfe01fb1af1a595385fd84928c44e",
+  "source_profile": "source-owner-target-prelude-trial",
+  "source_review": "pendingD13",
+  "scope": "ROOTFIX53strictmath/offset/fault+actualboundTP8TWOattentionlayerframes/state/request/prefix. Explicitcoordinatealiaspreserved, signatureguardunchanged; fullmodelunqualified.",
+  "qualification": "Startup+fixedpreludecandidate; actual53multipleattentioncomponentcasesunchanged, notfullmodelstartup/quality/performanceproof"
+}

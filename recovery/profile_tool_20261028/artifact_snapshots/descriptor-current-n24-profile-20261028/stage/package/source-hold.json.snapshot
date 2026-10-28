@@ -1,0 +1,35 @@
+{
+  "schema": "tensorfold.descriptor-current-N24-profile-HOLD-v1",
+  "canonical": "/Warehouse/TensorFold-wt/v100-descriptor-current-n24-profile-20261028",
+  "commit": "86b841b879b24ceecb131dd320679d224e7e1d17",
+  "runtime_commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+  "APP": "4b0ea6b51047f93b2b973ed5a467d8c279b94f6d85c683c4258a712ff6edd99f",
+  "runtime_HOLD": "b5c78eb23e5d4c5111a707506a8afb5623cef81c0dd6412c70c1376786560f3a",
+  "row_policy_HOLD": "8021154e213e1383b2a26290d14cb4d5318dfb0c80eee7cb003e3f9fc5e2979d",
+  "source": {
+    "tests/test_concurrent_observers.py": "6080e5e62b721a3c1fe70afe54b6bf5c64a218406fa2f65b0b9a0b60612c4b02",
+    "tests/test_descriptor_n24_profile.py": "80cde8911e8ca8ef3be0ffffbe96cedb25a60f7a36fcf01be35bff74f3fb1e80",
+    "tests/test_hot16_n24_profile.py": "110aee66f07cdf0c6038e7c77ee2520d774cc636ae726af075c48990ea13fd02",
+    "tests/test_joint_single_profile.py": "f5e0c425a37698c3c65eb7aecdb423f1a058db6ccdf23fa85ffc4255ec3db566",
+    "tests/test_moe_capture_ledger.py": "a6fae3091ba90069cf8c6a200e8bd776f03892e01e2561d42ab017aa75a0c9e1",
+    "tests/test_moe_screen_coverage.py": "eea07a1308ef313a5d68e3585838a289c5d0748402aebd04e76bdea20a94525a",
+    "tests/test_v100_backend_probe.py": "62d3df43d3e73b8ba344f19c5f84f33e65759fc597ae82cd6e62c5a545366f6f",
+    "tools/concurrent_observers.py": "9480e96af0ff0368d628b0f35ff01b657d703760f726ce8bd9970b392c8d5d76",
+    "tools/moe_screen_coverage.py": "4ef97170b2f4c7dc05fa2b691f04d252db3ffdfa8e4acfef1e96764b4e3213b4",
+    "tools/profile_trace_reader.py": "57800bcb181ff0f3510ef2caf76cfe9b54f985b7aca27c67588c38f37f4da68b",
+    "tools/v100_backend_probe.py": "2ef23642336378f987c97fd9d7de9ea55f8633742dd3818299575aaa0e6048ee"
+  },
+  "evidence": {
+    "CPU-initial-missing-tool-tests.log": "dc8dbfb282ab96671abdc91afd7bda71c89e44ad3a3b5d4fa9df3c3887c1fab4",
+    "CPU-initial-missing-tool-tests-command.json": "4e2dc353b11135b4dd2fe4ac694400d948190b8d0de3ef44427b4dc79eb4a2c2",
+    "CPU-initial-missing-tool-tests-exit.json": "ceb6cf4227c48a6ae8222907281bb101e8506c856fb52e1a82350d72fe3240b7",
+    "CPU-command.json": "98101e5b12c6b621faa9fa5dda26ffa7b261ca230be4f17f24fcff75898f56b4",
+    "CPU.log": "f243f386d3896c701148de48aae30e9f0bb2ef30ab3568cf724fddbf8ded7b67",
+    "CPU-exit.json": "88715a7772ace92e39306dd134c93ad804cbbd210066313acfb153c1d1cf906b",
+    "structural-proof.json": "2a51c6a84f8cca4047dae97d18aba08c1f2735efecb3c1211d30adae0e989019"
+  },
+  "CPU": "234PASS11.95s/Ruff/pip/help, actual4b0 normal installedidentity/exactb5c7 and8021 preflight parser exercised including originalschema refusal; initialmissinginheritedtooltests invocation exit4 preserved then3unchanged101ftool/testfiles restored.",
+  "protected": "All84cc classes/helpers/functions exact, one new private prelaunch policy helper. APPsrc byteexactc928 normal727FDc79; no build/runtime overlay.",
+  "contract": "Root-only ONE24 cohort/all8TorchCPU+CUDA10s/core2048/readiness30; full24native262144Q8; sameRouter/GDN/Fusion/HCsharedhot16/MoE/Candidate/startup3. Instrumented noP3/all6/qualitycredit.",
+  "stage": "Fresh stage pending hashes/actual installed preflight and D13. Three HOLDs remain separate; no schema renamed. No authorGPU."
+}

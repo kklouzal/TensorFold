@@ -1,0 +1,66 @@
+{
+  "status": "STAGED EXACT; NOT EXECUTED",
+  "at": "2026-10-27T22:18:15.439196+00:00",
+  "remote": "/home/kklouzal/tensorfold-v100-qualification-20261026/startup-guard-maps-7779-controls-20261027",
+  "source_commit": "c0f49f4998e47af99633a099769b675dbdd3fd43",
+  "source_review": "Root must await combined source closure before run/release",
+  "payload_sha256": "873d7e967075b6ef6e4b68dfac42754e9a48c4380fe4f89b51530123c2cb1f01",
+  "stage_manifest_sha256": "8306d87d303053d099c39fc8d91c832cb2b828efd9a43e2ec0d4534d5fb18b44",
+  "commands": [
+    {
+      "argv": [
+        "ssh",
+        "-i",
+        "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+        "-o",
+        "BatchMode=yes",
+        "kklouzal@71.94.200.200",
+        "python3 -c 'from pathlib import Path\nimport json,sys\np,q,a=map(Path,sys.argv[1:])\nif any(path.exists() for path in (p,q,a)):raise RuntimeError('\"'\"'new stage destination must not exist'\"'\"')\nq.mkdir()\nprint(json.dumps({'\"'\"'new_temporary'\"'\"':str(q)}))\n' /home/kklouzal/tensorfold-v100-qualification-20261026/startup-guard-maps-7779-controls-20261027 /home/kklouzal/tensorfold-v100-qualification-20261026/startup-guard-maps-7779-controls-20261027.upload /home/kklouzal/tensorfold-v100-qualification-20261026/startup-guard-maps-7779-controls-20261027.stage.tar"
+      ],
+      "exit_code": 0,
+      "stdout": "{\"new_temporary\": \"/home/kklouzal/tensorfold-v100-qualification-20261026/startup-guard-maps-7779-controls-20261027.upload\"}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "scp",
+        "-i",
+        "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+        "-o",
+        "BatchMode=yes",
+        "/Warehouse/TensorFold-portable-audit-20261026/startup-guard-maps-integration-20261027/gpu-stage/stage-payload.tar",
+        "kklouzal@71.94.200.200:/home/kklouzal/tensorfold-v100-qualification-20261026/startup-guard-maps-7779-controls-20261027.stage.tar"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "ssh",
+        "-i",
+        "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+        "-o",
+        "BatchMode=yes",
+        "kklouzal@71.94.200.200",
+        "python3 -c 'from pathlib import Path\nimport hashlib,json,subprocess,sys,tarfile\np,q,a=map(Path,sys.argv[1:4]);payload,expected=sys.argv[4:]\nif hashlib.sha256(a.read_bytes()).hexdigest()!=payload:raise RuntimeError('\"'\"'uploaded payload differs'\"'\"')\nwith tarfile.open(a) as archive:\n for entry in archive.getmembers():\n  if not entry.isfile() or entry.name.startswith('\"'\"'/'\"'\"') or '\"'\"'..'\"'\"' in Path(entry.name).parts:raise RuntimeError('\"'\"'unsafe stage entry'\"'\"')\n archive.extractall(q,filter='\"'\"'data'\"'\"')\nmanifest=q/'\"'\"'stage-files.json'\"'\"'\nif hashlib.sha256(manifest.read_bytes()).hexdigest()!=expected:raise RuntimeError('\"'\"'stage manifest differs'\"'\"')\nrows=json.loads(manifest.read_text())\nfor name,row in rows.items():\n raw=(q/name).read_bytes()\n if len(raw)!=row['\"'\"'bytes'\"'\"'] or hashlib.sha256(raw).hexdigest()!=row['\"'\"'sha256'\"'\"']:raise RuntimeError(name)\nfor name in ('\"'\"'verify_installed.py'\"'\"','\"'\"'verify_stage.py'\"'\"','\"'\"'run_controls.py'\"'\"'):compile((q/name).read_bytes(),str(q/name),'\"'\"'exec'\"'\"')\nsubprocess.run(['\"'\"'bash'\"'\"','\"'\"'-n'\"'\"',str(q/'\"'\"'bootstrap.sh'\"'\"'),str(q/'\"'\"'launch-command.sh'\"'\"')],check=True)\n(q/'\"'\"'evidence'\"'\"').mkdir()\nif any((q/'\"'\"'evidence'\"'\"').iterdir()):raise RuntimeError('\"'\"'evidence not empty'\"'\"')\nq.rename(p)\nprint(json.dumps({'\"'\"'status'\"'\"':'\"'\"'STAGED EXACT; NOT EXECUTED'\"'\"','\"'\"'remote'\"'\"':str(p),'\"'\"'files_verified'\"'\"':len(rows),'\"'\"'evidence_empty'\"'\"':True,'\"'\"'source_commit'\"'\"':'\"'\"'c0f49f4998e47af99633a099769b675dbdd3fd43'\"'\"','\"'\"'normal_package_source_files'\"'\"':717,'\"'\"'all_installed_files'\"'\"':718,'\"'\"'wheel_sha256'\"'\"':hashlib.sha256((p/'\"'\"'tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl'\"'\"').read_bytes()).hexdigest(),'\"'\"'stage_manifest_sha256'\"'\"':hashlib.sha256((p/'\"'\"'stage-files.json'\"'\"').read_bytes()).hexdigest(),'\"'\"'source_review'\"'\"':'\"'\"'Root must await closure before GPU run/release'\"'\"'}))\n' /home/kklouzal/tensorfold-v100-qualification-20261026/startup-guard-maps-7779-controls-20261027 /home/kklouzal/tensorfold-v100-qualification-20261026/startup-guard-maps-7779-controls-20261027.upload /home/kklouzal/tensorfold-v100-qualification-20261026/startup-guard-maps-7779-controls-20261027.stage.tar 873d7e967075b6ef6e4b68dfac42754e9a48c4380fe4f89b51530123c2cb1f01 8306d87d303053d099c39fc8d91c832cb2b828efd9a43e2ec0d4534d5fb18b44"
+      ],
+      "exit_code": 0,
+      "stdout": "{\"status\": \"STAGED EXACT; NOT EXECUTED\", \"remote\": \"/home/kklouzal/tensorfold-v100-qualification-20261026/startup-guard-maps-7779-controls-20261027\", \"files_verified\": 20, \"evidence_empty\": true, \"source_commit\": \"c0f49f4998e47af99633a099769b675dbdd3fd43\", \"normal_package_source_files\": 717, \"all_installed_files\": 718, \"wheel_sha256\": \"7779ad26b0069b5185ad744c83e8ac6fd5642a1307242ff4f4d510c590550153\", \"stage_manifest_sha256\": \"8306d87d303053d099c39fc8d91c832cb2b828efd9a43e2ec0d4534d5fb18b44\", \"source_review\": \"Root must await closure before GPU run/release\"}\n",
+      "stderr": ""
+    }
+  ],
+  "verification": {
+    "status": "STAGED EXACT; NOT EXECUTED",
+    "remote": "/home/kklouzal/tensorfold-v100-qualification-20261026/startup-guard-maps-7779-controls-20261027",
+    "files_verified": 20,
+    "evidence_empty": true,
+    "source_commit": "c0f49f4998e47af99633a099769b675dbdd3fd43",
+    "normal_package_source_files": 717,
+    "all_installed_files": 718,
+    "wheel_sha256": "7779ad26b0069b5185ad744c83e8ac6fd5642a1307242ff4f4d510c590550153",
+    "stage_manifest_sha256": "8306d87d303053d099c39fc8d91c832cb2b828efd9a43e2ec0d4534d5fb18b44",
+    "source_review": "Root must await closure before GPU run/release"
+  },
+  "completed_utc": "2026-10-27T22:18:18.567892+00:00"
+}

@@ -1,0 +1,70 @@
+{
+  "expected-image-content.json": {
+    "sha256": "75a2fa9669c12e69e62e0a57694211a7b9ab91e0bd54b72e9830676856d19c2b",
+    "bytes": 6481
+  },
+  "expected-oci-manifest.json": {
+    "sha256": "96f6961708d064a9d2f9e73d4df43ce8a5695c1499f16943b670c21fd971e15e",
+    "bytes": 15680
+  },
+  "protected-files.json": {
+    "sha256": "291d7d19e5b2134691d6016859b9bc5d6c95a3d005ae22ca02600a9bcf5847f9",
+    "bytes": 1052
+  },
+  "verify_installed.py": {
+    "sha256": "63f282f45c4d87d83c3aed01102761e3455d3afa9f2c7fab2baa0e283c9575d3",
+    "bytes": 1337
+  },
+  "bootstrap-finite.sh": {
+    "sha256": "a50a0afca01393d8e50835783873a789b8216365a2770c6b83955a286b0e9d9c",
+    "bytes": 882
+  },
+  "execution-manifest.json": {
+    "sha256": "95336693957314d74ba50328679d2b9a37552cb3e11a891b7a4a1900503e5673",
+    "bytes": 1360
+  },
+  "launch-finite.py": {
+    "sha256": "8e6ec2bc875288ad8fd10041f27b424dc3ff879180a453283ddd1b0630f59e93",
+    "bytes": 5946
+  },
+  "source-hold.json": {
+    "sha256": "fa8620e74c713c3b6a51334e95c88aa204d9c2de4a151438a79222f537956c9e",
+    "bytes": 3099
+  },
+  "wheel-provenance.json": {
+    "sha256": "968c593e9ccb5160bf670a2267bb86b64e755dcedec2052221b1a09feaa2bedc",
+    "bytes": 125873
+  },
+  "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl": {
+    "sha256": "5635735f68db932f41cab3da94747e6f6c2f15673c60b71e220ec96c9f9e0314",
+    "bytes": 3141377
+  },
+  "candidate.json": {
+    "sha256": "0460c6796b0d0785fb99ff0dad2b59b3d3c49aa724cc8284d820087e3f2245c9",
+    "bytes": 1573
+  },
+  "baseline-comparison-identity.json": {
+    "sha256": "1a0b6b2b8467c42f654d6a8239340075804b00d737cae4138ef17bc2d809148e",
+    "bytes": 3852
+  },
+  "tools/v100_backend_probe.py": {
+    "sha256": "baedbe56d9b0d68bd9470b34b3badb0625db5ea512e3a1b670ee742234ca4f42",
+    "bytes": 62891
+  },
+  "tools/finite_concurrency.py": {
+    "sha256": "39e77fde13ef4d0a4ef59b8e531bc32b072096d714190ef3fc7993e5eb8cbffe",
+    "bytes": 39546
+  },
+  "tools/finite_quality.py": {
+    "sha256": "c498bd046e78c34bfc7db16c7decd43ec182151b24b3e09da282b9de0dac77a3",
+    "bytes": 3389
+  },
+  "tools/benchmark_output.py": {
+    "sha256": "ce7c0a0cdf80842dc67021ddc938ae32a2c8df39dfd4f36e5f48e72149484cfa",
+    "bytes": 3369
+  },
+  "tools/prepare_owner_trial_manifest.py": {
+    "sha256": "cd90a33ff81c60cffc1f180f0a756312cec2d06b4a29d4322cf622d7ca3b2741",
+    "bytes": 3062
+  }
+}

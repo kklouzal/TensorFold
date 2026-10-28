@@ -1,0 +1,146 @@
+{
+  "schema": "fbaaN1-bounded-dense-source-assessment-v1",
+  "mode": "LOCALREADONLY source+savedsummary, no newimplementation/GPU/rawrescan",
+  "runtime": "d5eb/fbaa726FDc79 exactly",
+  "measured": {
+    "top_reported_GEMM_families": [
+      {
+        "name": "void cutlass::Kernel2<cutlass_70_wmma_tensorop_s161616gemm_f16_32x32_64x2_tn_align8>(cutlass_70_wmma_tensorop_s161616gemm_f16_32x32_64x2_tn_align8::Params)",
+        "name_truncated": false,
+        "count": 21277,
+        "inclusive_us": 516568.5060000014,
+        "maximum_us": 288.318
+      },
+      {
+        "name": "volta_fp16_s884gemm_fp16_128x64_ldg8_f2f_tn",
+        "name_truncated": false,
+        "count": 14063,
+        "inclusive_us": 321520.733999996,
+        "maximum_us": 26.784
+      },
+      {
+        "name": "void cutlass::Kernel2<cutlass_70_tensorop_f16_s884gemm_relu_f16_64x64_tn_align8>(cutlass_70_tensorop_f16_s884gemm_relu_f16_64x64_tn_align8::Params)",
+        "name_truncated": false,
+        "count": 11817,
+        "inclusive_us": 207588.8360000021,
+        "maximum_us": 24.896
+      },
+      {
+        "name": "void cutlass::Kernel2<cutlass_70_wmma_tensorop_s161616gemm_f16_32x32_64x2_tn_align2>(cutlass_70_wmma_tensorop_s161616gemm_f16_32x32_64x2_tn_align2::Params)",
+        "name_truncated": false,
+        "count": 13699,
+        "inclusive_us": 143137.84099999996,
+        "maximum_us": 11.648
+      },
+      {
+        "name": "void cutlass::Kernel2<cutlass_70_wmma_tensorop_f16_s161616gemm_f16_32x32_64x2_tn_align8>(cutlass_70_wmma_tensorop_f16_s161616gemm_f16_32x32_64x2_tn_align8::Params)",
+        "name_truncated": false,
+        "count": 8251,
+        "inclusive_us": 93707.4569999998,
+        "maximum_us": 95.007
+      },
+      {
+        "name": "void cutlass::Kernel2<cutlass_70_tensorop_f16_s884gemm_f16_64x64_tn_align2>(cutlass_70_tensorop_f16_s884gemm_f16_64x64_tn_align2::Params)",
+        "name_truncated": false,
+        "count": 9936,
+        "inclusive_us": 90101.32600000121,
+        "maximum_us": 11.904
+      }
+    ],
+    "top_reported_F32_GEMV": [
+      {
+        "name": "void gemv2T_kernel_val<int, int, float, float, float, float, 128, 16, 4, 4, false, false, cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<float const>, cublasGemvTensorStridedBatched<float const>, cublasGemvTensorStridedBatched<float>, float> >(cublasGemvParamsEx<int, cublasGemvTensorStridedBatched<float const>, cublasGemvTensorStridedBatched<float const>, cublasGemvTensorStridedBatched<float>, float>, float, float)",
+        "name_truncated": false,
+        "count": 16343,
+        "inclusive_us": 194140.97399999492,
+        "maximum_us": 18.304
+      }
+    ],
+    "reported_GEMM_kernel_count": 79043,
+    "reported_GEMM_sum_s": 1.3726247000000005,
+    "reported_GEMV_sum_s": 0.19414097399999491,
+    "top32_table_scope": "reportedfamiliesonly; no claimcompleteallGEMMs/exactpercaller",
+    "non_NCCL_total_s": 4.230433273901358,
+    "kernel_map_limitation": "stacks/shapesdisabled andCPUlabelsinsideboundgraphsnotreexecuted. GEMMfamilynames do notidentifyweight/caller. Currentdata cannot splitwholefamilies intoHC/head/other proportions."
+  },
+  "source_backed_operands": {
+    "GGUFDense": "gguf_weights.py134-140 constructorrequirescontiguousF16weights; MatrixPlan nonpackedresidentbytes n*k*2; loadermaterializesGGUFDense. RuntimeactivationsF16.",
+    "dense32": "gguf_ops.cu724-778 requiresF16x+weight, usesF16padded[32,K]. F32outputbranches callat::mm(...out_dtypeFloat) ormm_out(...Float); no input/weightF32conversion. CopiesretainrequestedF16/F32output.",
+    "concat32": "gguf_ops.cu800-875 requiresF16parts+x, commonF16M32padding, separatepartGEMMs preserveoriginalN/K/order. F32partialoutput doesnotmeanFP32weights/inputs.",
+    "router_F32": "gguf_weights.py646-647 and884-896 half_to_float roundsselectedcoefficientsF16thenretainsF32. cuda/moe.router makesF32x andcanonicalindependentrow1xK GEMV; currentN1graphbuffers skipmainRolePlans (eagerFalse), so16343F32GEMVs are source-consistentrouterwork, notproofHC_F32dense. Exactallcountmappingunavailable.",
+    "runtime_math_flags": "execution_policy._family_runtime enforcespreferredCublas,allow_fp16_reduced_precision_reduction=True,allow_fp16_accumulation=False,SM70/Torch04cf/CUDA12.9. ThusF32output/inferredTensorCorekernelname doesnotproveallintermediate reductionsstrictF32. Do notsilentlyflipselectedflags; newcandidatecontractmustresolveprecisionexplicitly."
+  },
+  "caller_map_possible_not_timings": [
+    {
+      "caller": "HCdown+inject",
+      "chain": "hc_block\u2192_readout_plain\u2192_down_act\u2192GGUFConcat.partials\u2192matmul_native32\u2192concat32",
+      "operands": "F16normalizedstreams andF16weights",
+      "geometry": "twooriginalpartGEMMs[K10240,N320] and[K10240,N4], M32padded",
+      "output": "F32partials\u2192hc_reduce_act/hc_act, activationF16; HCup F16input/F16weights\u2192F16out[N10240,K320]",
+      "evidence": "forward.py75-146;gguf_weights.py218,304,628-635;state.py100-109;gguf_ops.cu838-868",
+      "unavailable": "percallerGPUtime/count split"
+    },
+    {
+      "caller": "finalHCmixer+vocabhead",
+      "chain": "forward.finish\u2192_readout\u2192_mm(w.head)",
+      "operands": "F16weights/input forboth; headresultF32logits",
+      "geometry": "mixerdownnoinjectN320/K10240,upN10240/K320;headranklocalN=vocab/8,K2560, M32preserved forlogicalR1..3",
+      "evidence": "forward.py582-610;gguf_weights.py704-707;state.py154",
+      "unavailable": "headGEMMvsHCshare inreportedgenericGEMMfamilies"
+    },
+    {
+      "caller": "GDN/attention/PLEprojections",
+      "chain": "forward._mm\u2192GGUFDense/GGUFConcat\u2192dense32/concat32",
+      "operands": "F16weights/activations; resultF16orF32accordingtobufout (TPpartialsgenerallyF32)",
+      "geometry": "actualownedK/Nperprojection, fixedM32chunks wheneligible",
+      "evidence": "forward.py40-58,162-280,366-396;state.pyfields;gguf_weights.pyplanner.matrix",
+      "unavailable": "genericGEMMfamilycannotseparatealltheseprojections"
+    },
+    {
+      "caller": "MTPfc_e/fc_h",
+      "chain": "mtp producer\u2192_mm; gguf_mtp_weights.pynextn.eh_proj split",
+      "operands": "F16matrixweights andnormalizedF16activation; normweightsF32 aredistinctvectors",
+      "geometry": "fc_h perHCstreamphysicalrows=logicalR*4, K/N2560. N1smallphysicalrowsstillM32padded. HC4d2bnotthisAPP/notmeasuredN1replay.",
+      "evidence": "gguf_mtp_weights.py115-163;GGUFDense/native32 eligibility",
+      "unavailable": "nofc_hdirectlabel or exactfamilyattribution"
+    }
+  ],
+  "design15_and_supported_library_candidates": {
+    "design_path": "docs/v100-adaptive-inference-design.md1097-1124",
+    "official_source": "https://docs.nvidia.com/cuda/archive/12.9.1/cublas/index.html",
+    "verified_api_facts": "GemmEx supportsF16A/B withF32compute andF16/F32outputs. Compute32F_PEDANTIC prescribesF32phases; FAST16Fpermitsconversion. DISALLOW_REDUCED_PRECISION_REDUCTION forcescompute-type reductions. Lt exposesworkspace/alignment/reduction preferences andheuristics; queries mayloadcode. SetStream resetsworkspace. APIs haveSM70paths, butactualshapeheuristicmayreturnunsupported.",
+    "choices_ranked": [
+      {
+        "candidate": "ranklocalGemmEx/Lt selection atsameM32 first",
+        "changes": "sameF16weights/input/layout/output/mathtarget, boundedcachedalgorithm+workspace outsidehotpath",
+        "gates": "anychangedreductionalgorithm stillneedsindependentnumerical/quality checks; no globalpreferredBLAS flip; no performanceclaim"
+      },
+      {
+        "candidate": "actualsmallM1/2/3 (andMTPphysical4/8/12) ratherthanfixedM32",
+        "changes": "shape/librarydispatch/reductiontree change, evenidenticalretainedF16operands",
+        "gates": "NEWnumeric epoch/candidate; rowinvariance/targetverifier/quality/acceptance/all6/capture/allocator/24floor; no assume32xsavings"
+      },
+      {
+        "candidate": "dedicatedcapture-sidepointerbatchedF32routerplan",
+        "changes": "replacecanonicalmanyrow1 GEMVs insideN1boundcaptures usingexistingownedbatchedalternative",
+        "gates": "mainRolePlanstreamownership forbidsborrowing; existingBLSstrictlogitfailures remain, capture-ownedbuffers/credit/lifetime/newnumericcontract required; ~.194sreportedGEMV notthewholeN1cost"
+      },
+      {
+        "candidate": "operandprecisionconversion",
+        "changes": "denseweightsalreadyF16 so no unexplainedF32dense-toHalfconversion justified. RouterF32storage camefromHalfrounding butswitchingcompute stillchangesreduction andsampling",
+        "gates": "explicitnewnumericcandidate/no silentconversion or changingmathflags; actualquality+P3required"
+      }
+    ]
+  },
+  "disposition": "SUBSTANTIALreportedGEMMwork~1.373s/10sinstrumentedcore, butnotestablishedHC/head-onlynorFP32operanddensepadding. Bothdescriptor/frontier andranklocaldense-shape/library avenuescredible; no newimplementation or exclusiveonebottleneckclaim.",
+  "source_sha256": {
+    "src/tensorfold/families/qwen4_exp/cuda/forward.py": "375b2ac52136211648dd3cd37e1e24c1ddeadbfa769c70f042b3077f819348bb",
+    "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd",
+    "src/tensorfold/families/qwen4_exp/cuda/gguf_mtp_weights.py": "946b2442a9e917a22169749c329e824f570c8d1b76a7a89dfb0be2b4b76aff56",
+    "src/tensorfold/families/qwen4_exp/cuda/state.py": "ed34d299cad803f72301087a980901dcb478f4dfed5ea3fc06d4bfaa4e62bf1b",
+    "src/tensorfold/cuda/sm70/gguf_ops.cu": "7644cb96b5984ed8f475146300452e975f6a7bd7eb10215ce087caeb40113134",
+    "src/tensorfold/cuda/moe.py": "1063e13aa9faec0445faccc15160e4d31f8a330519577022b8a9c11d73b391e3",
+    "src/tensorfold/cuda/sm70/execution_policy.py": "20e72f72dd757c9d546de257cedb07ca6c1cd2d21f068a0dc3148e6238f1227a",
+    "docs/v100-adaptive-inference-design.md": "5ccbbb27cdd1ccbf2d04fb63b1036937aa304b1bc9af93cf6bb01c80f2f0519a"
+  }
+}

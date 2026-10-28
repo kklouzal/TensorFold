@@ -1,0 +1,338 @@
+{
+  "schema": "current4b0-nearest-project-API-followup-v1",
+  "scope": "Exact savedrank0 nearest-project API start-attribution; durationwindowendclipped. Childprojectranges excluded by deepestphase. APIwall notCPUbusy; nestedAPI intervals mayoverlap. GlobalATen32hasno parent map. No residualPython CPUtime calculated.",
+  "parent_API": {
+    "tensorfold/body/concurrent/compute_decode": [
+      {
+        "name": "tensorfold/body/concurrent/compute_decode | cudaEventSynchronize",
+        "name_truncated": false,
+        "count": 369,
+        "inclusive_us": 607901.3439999999,
+        "maximum_us": 8670.753
+      },
+      {
+        "name": "tensorfold/body/concurrent/compute_decode | cudaLaunchKernel",
+        "name_truncated": false,
+        "count": 62734,
+        "inclusive_us": 433736.03999999707,
+        "maximum_us": 3130.089
+      },
+      {
+        "name": "tensorfold/body/concurrent/compute_decode | cudaMemcpyAsync",
+        "name_truncated": false,
+        "count": 8348,
+        "inclusive_us": 99129.9599999997,
+        "maximum_us": 850.414
+      },
+      {
+        "name": "tensorfold/body/concurrent/compute_decode | cuLaunchKernel",
+        "name_truncated": false,
+        "count": 10762,
+        "inclusive_us": 68206.74700000013,
+        "maximum_us": 248.63
+      },
+      {
+        "name": "tensorfold/body/concurrent/compute_decode | cudaEventRecordWithFlags",
+        "name_truncated": false,
+        "count": 3570,
+        "inclusive_us": 5303.3640000000105,
+        "maximum_us": 12.684
+      },
+      {
+        "name": "tensorfold/body/concurrent/compute_decode | cudaStreamIsCapturing",
+        "name_truncated": false,
+        "count": 5412,
+        "inclusive_us": 4691.223000000004,
+        "maximum_us": 17.943
+      },
+      {
+        "name": "tensorfold/body/concurrent/compute_decode | cudaDeviceGetAttribute",
+        "name_truncated": false,
+        "count": 10762,
+        "inclusive_us": 4592.037000000011,
+        "maximum_us": 11.264
+      }
+    ],
+    "tensorfold/body/concurrent/round": [
+      {
+        "name": "tensorfold/body/concurrent/round | cudaStreamSynchronize",
+        "name_truncated": false,
+        "count": 90,
+        "inclusive_us": 726052.2739999999,
+        "maximum_us": 25925.351
+      },
+      {
+        "name": "tensorfold/body/concurrent/round | cudaLaunchKernel",
+        "name_truncated": false,
+        "count": 16492,
+        "inclusive_us": 112911.10899999992,
+        "maximum_us": 2079.771
+      },
+      {
+        "name": "tensorfold/body/concurrent/round | cudaMemcpyAsync",
+        "name_truncated": false,
+        "count": 1099,
+        "inclusive_us": 11076.626,
+        "maximum_us": 31.442
+      }
+    ]
+  },
+  "global_ATen_top32_unattributed": [
+    {
+      "name": "aten::mm",
+      "name_truncated": false,
+      "count": 13447,
+      "inclusive_us": 494451.28499999765,
+      "maximum_us": 3160.192
+    },
+    {
+      "name": "aten::slice",
+      "name_truncated": false,
+      "count": 129686,
+      "inclusive_us": 445988.5979999963,
+      "maximum_us": 1631.894
+    },
+    {
+      "name": "aten::copy_",
+      "name_truncated": false,
+      "count": 21032,
+      "inclusive_us": 367690.21500000195,
+      "maximum_us": 2250.857
+    },
+    {
+      "name": "aten::where",
+      "name_truncated": false,
+      "count": 5256,
+      "inclusive_us": 169988.03299999997,
+      "maximum_us": 153.898
+    },
+    {
+      "name": "aten::to",
+      "name_truncated": false,
+      "count": 9932,
+      "inclusive_us": 168930.37399999975,
+      "maximum_us": 2261.035
+    },
+    {
+      "name": "aten::fill_",
+      "name_truncated": false,
+      "count": 12690,
+      "inclusive_us": 162788.4579999997,
+      "maximum_us": 2159.62
+    },
+    {
+      "name": "aten::_to_copy",
+      "name_truncated": false,
+      "count": 5317,
+      "inclusive_us": 159451.3200000002,
+      "maximum_us": 2259.512
+    },
+    {
+      "name": "aten::as_strided",
+      "name_truncated": false,
+      "count": 187186,
+      "inclusive_us": 134065.67900000003,
+      "maximum_us": 1338.185
+    },
+    {
+      "name": "aten::remainder",
+      "name_truncated": false,
+      "count": 7128,
+      "inclusive_us": 127149.30099999996,
+      "maximum_us": 770.942
+    },
+    {
+      "name": "aten::select",
+      "name_truncated": false,
+      "count": 35362,
+      "inclusive_us": 108618.57999999955,
+      "maximum_us": 1605.197
+    },
+    {
+      "name": "aten::empty",
+      "name_truncated": false,
+      "count": 20977,
+      "inclusive_us": 106125.22399999989,
+      "maximum_us": 807.632
+    },
+    {
+      "name": "aten::index_select",
+      "name_truncated": false,
+      "count": 4070,
+      "inclusive_us": 98170.85299999999,
+      "maximum_us": 179.209
+    },
+    {
+      "name": "aten::mul",
+      "name_truncated": false,
+      "count": 4632,
+      "inclusive_us": 79491.29599999999,
+      "maximum_us": 2088.303
+    },
+    {
+      "name": "aten::arange",
+      "name_truncated": false,
+      "count": 3326,
+      "inclusive_us": 71312.25500000008,
+      "maximum_us": 117.558
+    },
+    {
+      "name": "aten::t",
+      "name_truncated": false,
+      "count": 13310,
+      "inclusive_us": 64274.32099999976,
+      "maximum_us": 251.621
+    },
+    {
+      "name": "aten::zero_",
+      "name_truncated": false,
+      "count": 3533,
+      "inclusive_us": 56352.4280000001,
+      "maximum_us": 74.579
+    },
+    {
+      "name": "aten::empty_strided",
+      "name_truncated": false,
+      "count": 7001,
+      "inclusive_us": 52491.92400000014,
+      "maximum_us": 1633.189
+    },
+    {
+      "name": "aten::lt",
+      "name_truncated": false,
+      "count": 2435,
+      "inclusive_us": 48888.12299999999,
+      "maximum_us": 53.843
+    },
+    {
+      "name": "aten::view",
+      "name_truncated": false,
+      "count": 19148,
+      "inclusive_us": 42195.579999999834,
+      "maximum_us": 340.389
+    },
+    {
+      "name": "aten::record_stream",
+      "name_truncated": false,
+      "count": 21570,
+      "inclusive_us": 41534.964000000335,
+      "maximum_us": 20.016
+    },
+    {
+      "name": "aten::abs",
+      "name_truncated": false,
+      "count": 1544,
+      "inclusive_us": 37558.20500000004,
+      "maximum_us": 2048.237
+    },
+    {
+      "name": "aten::resize_",
+      "name_truncated": false,
+      "count": 10217,
+      "inclusive_us": 36401.51600000002,
+      "maximum_us": 32.163
+    },
+    {
+      "name": "aten::zeros_like",
+      "name_truncated": false,
+      "count": 1298,
+      "inclusive_us": 36074.17599999996,
+      "maximum_us": 122.012
+    },
+    {
+      "name": "aten::clamp",
+      "name_truncated": false,
+      "count": 1663,
+      "inclusive_us": 35904.20099999998,
+      "maximum_us": 181.838
+    },
+    {
+      "name": "aten::scalar_tensor",
+      "name_truncated": false,
+      "count": 1930,
+      "inclusive_us": 35815.015999999974,
+      "maximum_us": 114.608
+    },
+    {
+      "name": "aten::isfinite",
+      "name_truncated": false,
+      "count": 386,
+      "inclusive_us": 34506.42400000001,
+      "maximum_us": 170.616
+    },
+    {
+      "name": "aten::transpose",
+      "name_truncated": false,
+      "count": 13310,
+      "inclusive_us": 31284.107999999847,
+      "maximum_us": 108.0
+    },
+    {
+      "name": "aten::add",
+      "name_truncated": false,
+      "count": 1930,
+      "inclusive_us": 30862.439000000042,
+      "maximum_us": 50.129
+    },
+    {
+      "name": "aten::unsqueeze",
+      "name_truncated": false,
+      "count": 5421,
+      "inclusive_us": 28774.95900000005,
+      "maximum_us": 514.004
+    },
+    {
+      "name": "aten::sub",
+      "name_truncated": false,
+      "count": 1663,
+      "inclusive_us": 28110.996999999992,
+      "maximum_us": 43.429
+    },
+    {
+      "name": "aten::__and__",
+      "name_truncated": false,
+      "count": 1544,
+      "inclusive_us": 28051.704000000067,
+      "maximum_us": 289.444
+    },
+    {
+      "name": "aten::eq",
+      "name_truncated": false,
+      "count": 1544,
+      "inclusive_us": 26917.124000000054,
+      "maximum_us": 40.693
+    }
+  ],
+  "source_candidates_only": [
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+      "lines": [
+        543,
+        576,
+        820
+      ],
+      "callchain": "_pre_moe -> eagerattentionHC/gdn/attn/PLE -> qualifiedHC_MoE; _kv_check -> workspace.check. CurrentHCcatalogue suppressesonlytargetMLPHC+MoE, notallpreMoEwork.",
+      "limitation": "No savedoperator-parent table proveswhichcaller ownsallglobalviews/mm/copies."
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/multi.py",
+      "lines": [
+        2140,
+        2482,
+        2508
+      ],
+      "callchain": "_round target and _mtp (aftermtp_compute childreturns) bothcall _kv_check -> KVStatusCohort.check -> _readback -> cudaStreamSynchronize; _round commit/statepublication remains outsidecompute/MTP labels.",
+      "limitation": "Source-compatible explanation forround90StreamSync; exact90callsite attribution requires finerlabel/stack/CPUevent ancestry notpresent inoldreports."
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/kv_status.py",
+      "lines": [
+        72,
+        84
+      ],
+      "callchain": "_readback issues statusD2H and same-stream completion beforecheck_received/tolist.",
+      "limitation": "Requiredstatus-first failureboundary; existingpacked/splitcoalescedscreen notselected."
+    }
+  ],
+  "next": "Rootauthorizedpreparation ofoneboundedrank0CPUoperator-parentrescan, but no remotecpu executionlease yet; currentraw/reports frozen."
+}

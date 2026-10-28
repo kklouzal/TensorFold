@@ -1,0 +1,33 @@
+"""Explicit SM70 compile/link/import check; no hardware or numerical qualification."""
+from pathlib import Path
+import hashlib,json,os,subprocess
+import torch
+from torch.utils import cpp_extension
+from tensorfold.cuda import build
+from tensorfold.cuda.sm70.foundation_headers import selected_headers
+
+assert os.environ.get('CUDA_VISIBLE_DEVICES') == ''
+assert not torch.cuda.is_initialized()
+root=Path('/source/src/tensorfold/cuda/sm70')
+sources=[root/'gguf_ops.cpp',root/'gguf_ops.cu']
+foundation=selected_headers()
+assert foundation is not None
+kwargs={'extra_cflags':['-O3'], 'extra_cuda_cflags':['-O3','--fmad=false','-gencode=arch=compute_70,code=sm_70'],
+        'extra_include_paths':list(map(str,foundation.roots)), 'extra_ldflags':build._toolkit()}
+identity=foundation.build_identity(kwargs)
+name='tf_gguf_compile_only_'+hashlib.sha256(b''.join(p.read_bytes() for p in sources)).hexdigest()[:16]
+directory=Path('/evidence/build')/name;directory.mkdir(exist_ok=True)
+module=cpp_extension.load(name,sources=list(map(str,sources)),build_directory=str(directory),
+                          with_cuda=True,verbose=True,**kwargs)
+foundation.verify()
+assert not torch.cuda.is_initialized()
+record={'schema':'tensorfold.sm70-gguf-compile-only-v1','status':'compile/link/import-only; no GPU execution',
+        'torch':str(torch.__version__),'torch_git':torch.version.git_version,'cuda':torch.version.cuda,
+        'compiler':subprocess.check_output([str(Path(cpp_extension.CUDA_HOME)/'bin/nvcc'),'--version'],text=True),
+        'host_compiler':subprocess.check_output(['c++','--version'],text=True),'flags':kwargs,
+        'foundation_build_identity':identity,'module':module.__file__,
+        'module_sha256':hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest(),
+        'source_sha256':{str(p):hashlib.sha256(p.read_bytes()).hexdigest() for p in sources},
+        'exports':[name for name in ('experts','experts_exact','experts_wmma80','prepare_wmma80','experts_blocks2w','decode','dense32','concat32') if hasattr(module,name)]}
+Path('/evidence/compile-only.json').write_text(json.dumps(record,indent=2)+'\n')
+print(json.dumps({k:record[k] for k in ('status','module_sha256','exports')}))

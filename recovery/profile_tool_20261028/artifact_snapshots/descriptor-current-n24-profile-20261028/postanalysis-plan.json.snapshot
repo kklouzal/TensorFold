@@ -1,0 +1,21 @@
+{
+  "schema": "current4b0-N24-postanalysis-local-interpretation-plan-v1",
+  "state": "PREPARED_ONLY; Root12636 live; NOarchive/remoteanalysis executed",
+  "archive_helper_sha256": "6e28b504a5ebd8bc25fbed236040ee3c165d417c8df2c41e435efd6ee0fd6ec0",
+  "Root_grant": "actual12636 terminal0 AND parent/workers retired, then archive64MiB max reports (no raw trace copies/rescans)",
+  "local_reads": [
+    "all8-summary.json",
+    "window-definition.json",
+    "rank0..7-decode.json",
+    "savedcurrentcase/capturemetadata"
+  ],
+  "rank_metrics": [
+    "CPU user_annotation inclusive/exclusive project wall intervals; no CPU-busy inference",
+    "CUDA runtime API counts/wall and parent labels; graphlaunch/node correlation",
+    "GPU nonNCCL kernel SUM, NCCL wait-inclusive SUM, clippedactivity union and no-kernel gaps; may include DMA/control/other activity, not idle/utilization",
+    "Selected row/segment hist delta and HC/MoE/Candidate counters; snapshots include warm/readiness/drain unless purecore labels prove narrower",
+    "Current source/APP/threeHOLDs/nativeworkload/clockhull/corebounds and actualrawSHA identity before comparing any older source"
+  ],
+  "comparisons": "Describe structural change versus146f7c0 N24 only with source/workdomain/instrumentation limits. Do not compare diagnostic75.7 to shipping120.3 as algorithmic regression/gain. No cross-count absolute throughput inference fromfbaaN1.",
+  "actionable_rank": "Rank remaining source-level boundaries by measured purecore wall/kernel scopes; send exact source+role evidence to owner/graphs/HC/PLE experts, retaining unresolved GPU ancestry insidegraph replay and NCCL wait."
+}

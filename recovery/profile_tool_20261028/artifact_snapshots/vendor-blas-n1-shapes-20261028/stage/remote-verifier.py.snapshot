@@ -1,0 +1,22 @@
+from pathlib import Path
+import ast,hashlib,json,subprocess,sys,tarfile
+out,upload,want=Path(sys.argv[1]),Path(sys.argv[2]),sys.argv[3]
+sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+if out.exists()or sha(upload)!=want:raise RuntimeError('uniquestage/tarhash differs')
+tmp=Path(str(out)+'.upload');tmp.mkdir()
+with tarfile.open(upload)as a:
+ for m in a.getmembers():
+  if not m.isfile()or m.name.startswith('/')or'..'in Path(m.name).parts:raise RuntimeError('unsafeentry')
+ a.extractall(tmp,filter='data')
+for n,row in json.loads((tmp/'stage-files.json').read_text()).items():
+ if (tmp/n).stat().st_size!=row['bytes']or sha(tmp/n)!=row['sha256']:raise RuntimeError('stagebytes differ')
+c=json.loads((tmp/'candidate.json').read_text());w=json.loads((tmp/'wheel-provenance.json').read_text())
+if len(w['source_files'])!=726 or w['compiled_extensions'][0]['sha256']!='c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d':raise RuntimeError('normal726/FD differs')
+if sha(tmp/'tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl')!=c['wheel_sha256']or c['wheel_sha256']!='fbaabca3ba2a7594c8712e0824733da035f3a3db63f454c520ecfa337010ee0d':raise RuntimeError('APP notexactfbaa')
+if sha(tmp/'source-hold.json')!=c['source_hold_sha256']or sha(tmp/'v100_dense_shape_diagnostic.py')!=c['tool_sha256']:raise RuntimeError('tool/HOLD differs')
+for p in tmp.glob('*.py'):ast.parse(p.read_text())
+subprocess.run(['bash','-n',str(tmp/'bootstrap.sh')],check=True)
+if '--root-gpu-lease' not in (tmp/'bootstrap.sh').read_text():raise RuntimeError('missingRootleaseintent')
+(tmp/'results').mkdir();tmp.rename(out)
+r={'status':'STAGEDONLY NOTEXECUTED','out':str(out),'files':len(json.loads((out/'stage-files.json').read_text())),'controller_sha256':sha(out/'launch-diagnostic.py'),'candidate':c,'launch_command':['python3',str(out/'launch-diagnostic.py')],'preconditions':'RootidleexclusiveGPU0/D13assessment; syntheticmicro no modelP3 or quality/capacityclaim'}
+(out/'stage-ready.json').write_text(json.dumps(r,indent=2)+'\n');print(json.dumps(r))

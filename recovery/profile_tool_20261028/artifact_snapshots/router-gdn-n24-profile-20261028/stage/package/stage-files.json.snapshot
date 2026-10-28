@@ -1,0 +1,74 @@
+{
+  "bootstrap-finite.sh": {
+    "bytes": 924,
+    "sha256": "8f936cb551e437204d2048e7ee0e16ceaf01a3904ec3606c2ddc97e7e9b700c1"
+  },
+  "candidate.json": {
+    "bytes": 2442,
+    "sha256": "9556722efe6515400ca80b601a08d29149f410aea232c4fa99dc2774bb77b4e6"
+  },
+  "execution-manifest.json": {
+    "bytes": 1360,
+    "sha256": "95336693957314d74ba50328679d2b9a37552cb3e11a891b7a4a1900503e5673"
+  },
+  "expected-image-content.json": {
+    "bytes": 6481,
+    "sha256": "75a2fa9669c12e69e62e0a57694211a7b9ab91e0bd54b72e9830676856d19c2b"
+  },
+  "expected-oci-manifest.json": {
+    "bytes": 15680,
+    "sha256": "96f6961708d064a9d2f9e73d4df43ce8a5695c1499f16943b670c21fd971e15e"
+  },
+  "launch-finite.py": {
+    "bytes": 6217,
+    "sha256": "8dc1775b50ed8ac5264863e9555faa7f8625f8aceaeffc5b094d0f4d3e7b19d3"
+  },
+  "protected-files.json": {
+    "bytes": 1052,
+    "sha256": "291d7d19e5b2134691d6016859b9bc5d6c95a3d005ae22ca02600a9bcf5847f9"
+  },
+  "source-hold.json": {
+    "bytes": 3516,
+    "sha256": "37af705d56ab599e8c0d51df085777ffb24a30c1056a57f38ea946e5273e8ab9"
+  },
+  "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl": {
+    "bytes": 3163059,
+    "sha256": "7c0acdfb2957c82ea69eb9e47fe8b1239c72b6c9c7aaa3242898631e121b6a51"
+  },
+  "tools/benchmark_output.py": {
+    "bytes": 3369,
+    "sha256": "ce7c0a0cdf80842dc67021ddc938ae32a2c8df39dfd4f36e5f48e72149484cfa"
+  },
+  "tools/concurrent_observers.py": {
+    "bytes": 7183,
+    "sha256": "9480e96af0ff0368d628b0f35ff01b657d703760f726ce8bd9970b392c8d5d76"
+  },
+  "tools/finite_concurrency.py": {
+    "bytes": 40599,
+    "sha256": "d009cf94050754115fdb0295b39aaa787904b09478464aeb772d8782b97eb86b"
+  },
+  "tools/finite_quality.py": {
+    "bytes": 3389,
+    "sha256": "c498bd046e78c34bfc7db16c7decd43ec182151b24b3e09da282b9de0dac77a3"
+  },
+  "tools/prepare_owner_trial_manifest.py": {
+    "bytes": 3062,
+    "sha256": "cd90a33ff81c60cffc1f180f0a756312cec2d06b4a29d4322cf622d7ca3b2741"
+  },
+  "tools/profile_trace_reader.py": {
+    "bytes": 3134,
+    "sha256": "57800bcb181ff0f3510ef2caf76cfe9b54f985b7aca27c67588c38f37f4da68b"
+  },
+  "tools/v100_backend_probe.py": {
+    "bytes": 100952,
+    "sha256": "4e2aa75c3e3a3af32f8a541a9d40398fbeef3f0a7634dccb21946e4a4ad8df58"
+  },
+  "verify_installed.py": {
+    "bytes": 1337,
+    "sha256": "63f282f45c4d87d83c3aed01102761e3455d3afa9f2c7fab2baa0e283c9575d3"
+  },
+  "wheel-provenance.json": {
+    "bytes": 126589,
+    "sha256": "784ed7268f849b96614f0f4fa1d34d2b1fe48f5379d78ee79e5b607ba061aa67"
+  }
+}

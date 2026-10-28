@@ -1,0 +1,53 @@
+{
+  "status": "STAGING ONLY; no Docker/GPU execution",
+  "at": "2026-10-28T00:16:57.013285+00:00",
+  "remote": "/home/kklouzal/tensorfold-v100-qualification-20261026/startup-three-file-d817-controls-20261028",
+  "source_commit": "dac6bbade215fe7f1eb7de00a37d498c994cf587",
+  "source_review": "Root must await combined source closure before run/release",
+  "payload_sha256": "2ef7ee9883e25350967481b13cf8ec693a515b9111f3873e2f80612d5dbfdd12",
+  "stage_manifest_sha256": "3eeb0b37f953e5b0da3d9bfb16fbbc9196467f49a0222f591b01110d3fc8975b",
+  "commands": [
+    {
+      "argv": [
+        "ssh",
+        "-i",
+        "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+        "-o",
+        "BatchMode=yes",
+        "kklouzal@71.94.200.200",
+        "python3 -c 'from pathlib import Path\nimport json,sys\np,q,a=map(Path,sys.argv[1:])\nif any(path.exists() for path in (p,q,a)):raise RuntimeError('\"'\"'new stage destination must not exist'\"'\"')\nq.mkdir()\nprint(json.dumps({'\"'\"'new_temporary'\"'\"':str(q)}))\n' /home/kklouzal/tensorfold-v100-qualification-20261026/startup-three-file-d817-controls-20261028 /home/kklouzal/tensorfold-v100-qualification-20261026/startup-three-file-d817-controls-20261028.upload /home/kklouzal/tensorfold-v100-qualification-20261026/startup-three-file-d817-controls-20261028.stage.tar"
+      ],
+      "exit_code": 0,
+      "stdout": "{\"new_temporary\": \"/home/kklouzal/tensorfold-v100-qualification-20261026/startup-three-file-d817-controls-20261028.upload\"}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "scp",
+        "-i",
+        "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+        "-o",
+        "BatchMode=yes",
+        "/Warehouse/TensorFold-portable-audit-20261026/startup-three-file-hash-20261028/gpu-stage/stage-payload.tar",
+        "kklouzal@71.94.200.200:/home/kklouzal/tensorfold-v100-qualification-20261026/startup-three-file-d817-controls-20261028.stage.tar"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "ssh",
+        "-i",
+        "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+        "-o",
+        "BatchMode=yes",
+        "kklouzal@71.94.200.200",
+        "python3 -c 'from pathlib import Path\nimport hashlib,json,subprocess,sys,tarfile\np,q,a=map(Path,sys.argv[1:4]);payload,expected=sys.argv[4:]\nif hashlib.sha256(a.read_bytes()).hexdigest()!=payload:raise RuntimeError('\"'\"'uploaded payload differs'\"'\"')\nwith tarfile.open(a) as archive:\n for entry in archive.getmembers():\n  if not entry.isfile() or entry.name.startswith('\"'\"'/'\"'\"') or '\"'\"'..'\"'\"' in Path(entry.name).parts:raise RuntimeError('\"'\"'unsafe stage entry'\"'\"')\n archive.extractall(q,filter='\"'\"'data'\"'\"')\nmanifest=q/'\"'\"'stage-files.json'\"'\"'\nif hashlib.sha256(manifest.read_bytes()).hexdigest()!=expected:raise RuntimeError('\"'\"'stage manifest differs'\"'\"')\nrows=json.loads(manifest.read_text())\nfor name,row in rows.items():\n raw=(q/name).read_bytes()\n if len(raw)!=row['\"'\"'bytes'\"'\"'] or hashlib.sha256(raw).hexdigest()!=row['\"'\"'sha256'\"'\"']:raise RuntimeError(name)\nfor name in ('\"'\"'verify_installed.py'\"'\"','\"'\"'verify_stage.py'\"'\"','\"'\"'run_controls.py'\"'\"'):compile((q/name).read_bytes(),str(q/name),'\"'\"'exec'\"'\"')\nsubprocess.run(['\"'\"'bash'\"'\"','\"'\"'-n'\"'\"',str(q/'\"'\"'bootstrap.sh'\"'\"'),str(q/'\"'\"'launch-command.sh'\"'\"')],check=True)\n(q/'\"'\"'evidence'\"'\"').mkdir()\nif any((q/'\"'\"'evidence'\"'\"').iterdir()):raise RuntimeError('\"'\"'evidence not empty'\"'\"')\nq.rename(p)\nprint(json.dumps({'\"'\"'status'\"'\"':'\"'\"'STAGED EXACT; NOT EXECUTED'\"'\"','\"'\"'remote'\"'\"':str(p),'\"'\"'files_verified'\"'\"':len(rows),'\"'\"'evidence_empty'\"'\"':True,'\"'\"'source_commit'\"'\"':'\"'\"'dac6bbade215fe7f1eb7de00a37d498c994cf587'\"'\"','\"'\"'normal_package_source_files'\"'\"':717,'\"'\"'all_installed_files'\"'\"':718,'\"'\"'wheel_sha256'\"'\"':hashlib.sha256((p/'\"'\"'tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl'\"'\"').read_bytes()).hexdigest(),'\"'\"'stage_manifest_sha256'\"'\"':hashlib.sha256((p/'\"'\"'stage-files.json'\"'\"').read_bytes()).hexdigest(),'\"'\"'source_review'\"'\"':'\"'\"'Root must await closure before GPU run/release'\"'\"'}))\n' /home/kklouzal/tensorfold-v100-qualification-20261026/startup-three-file-d817-controls-20261028 /home/kklouzal/tensorfold-v100-qualification-20261026/startup-three-file-d817-controls-20261028.upload /home/kklouzal/tensorfold-v100-qualification-20261026/startup-three-file-d817-controls-20261028.stage.tar 2ef7ee9883e25350967481b13cf8ec693a515b9111f3873e2f80612d5dbfdd12 3eeb0b37f953e5b0da3d9bfb16fbbc9196467f49a0222f591b01110d3fc8975b"
+      ],
+      "exit_code": 0,
+      "stdout": "{\"status\": \"STAGED EXACT; NOT EXECUTED\", \"remote\": \"/home/kklouzal/tensorfold-v100-qualification-20261026/startup-three-file-d817-controls-20261028\", \"files_verified\": 22, \"evidence_empty\": true, \"source_commit\": \"dac6bbade215fe7f1eb7de00a37d498c994cf587\", \"normal_package_source_files\": 717, \"all_installed_files\": 718, \"wheel_sha256\": \"d817e2c23da4ea46863086ea66c99ff506dec6538a0ead280a6e64ef528f98c8\", \"stage_manifest_sha256\": \"3eeb0b37f953e5b0da3d9bfb16fbbc9196467f49a0222f591b01110d3fc8975b\", \"source_review\": \"Root must await closure before GPU run/release\"}\n",
+      "stderr": ""
+    }
+  ]
+}

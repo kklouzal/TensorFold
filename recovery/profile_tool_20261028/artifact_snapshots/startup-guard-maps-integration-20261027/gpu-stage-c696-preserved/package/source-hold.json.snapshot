@@ -1,0 +1,49 @@
+{
+  "schema": "tensorfold.startup-guard-maps-composition-v1",
+  "commit": "ca5ff95e4256216b165e7a88c1c6a0bc76c7b84d",
+  "worktree": "/Warehouse/TensorFold-wt/v100-startup-guard-maps-20261027",
+  "guard_map_base": "870f392dadb02dff74e892573a42f0a271facf8f",
+  "standalone_startup": "32bc97fb",
+  "standalone_hold_sha256": "ad0fc0fbf1593208f8f3c55e77a677d54e08e92342362d620da57e40d9a548f8",
+  "source_paths": {
+    "README.md": "de69bb8f9f819104d6f69fa7953cf705824f70fd31135bd6b459d96987b41588",
+    "deploy/v100/source-foundation.md": "a561ca9a8cc827a237a917570c9ef3089d240becf73e3c70289ecf7829b6988c",
+    "src/tensorfold/_fd_owner.c": "aa5d4a6773f7d26c7dc43e0bf0817fb127e9d8a70de103f99acc8999fe6c3931",
+    "src/tensorfold/engine/model_identity.py": "37e76bdb643b4ab7ae47b6c449df5b8415b55602fac3165e0d99f6a5e9725298",
+    "src/tensorfold/families/qwen4_exp/cuda/engine.py": "eec7766a79e45579abf9d468c49290144f61818d967034bb69d5bc54e7e08ac3",
+    "src/tensorfold/families/qwen4_exp/cuda/execution_identity.py": "6c98e903e161f4304170c82a8f8f8d1d688c15f2907de170c65b25a8eb6c0aa9",
+    "src/tensorfold/families/qwen4_exp/cuda/startup_content.py": "841662d38c4aa3bb20c8655660d05ee6e0bff27b7d09dbbc46cdedee62250d45",
+    "tests/test_flashnext_engine_lifetime.py": "cf8a039f1e411442aed70d70c97775eadbdf9c4f7b1441e453921ab0dc0638f0",
+    "tests/test_startup_content.py": "4327ae7b733ea368ebcb3fdb3c4e7e3e12b2c65da7b20606b964b525e9a82d20",
+    "tests/test_v100_backend_probe.py": "db05ceb804188d9768976dfc7bb2e476152f1c5c10be2c1936a963934d64ab06",
+    "tools/v100_backend_probe.py": "d484ec17d2ec5bfb2ddbb6b5bce4501b399386fefc1202854cef5ba66bd1e9ec"
+  },
+  "wheel": {
+    "path": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3138379,
+    "sha256": "c696b9e18a86c644f3058fa044fb41348bc9ad1f9f37d9146efa1bcea6065d12"
+  },
+  "compiled_extensions": [
+    {
+      "path": "tensorfold/_fd_owner.abi3.so",
+      "bytes": 46344,
+      "sha256": "c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d"
+    }
+  ],
+  "source_files": 717,
+  "controls": {
+    "checks": 478,
+    "subtests": 5,
+    "seconds": 15.51,
+    "exit_code": 0,
+    "log_sha256": "39868cd92887bce91a4593e17d4a39d0d6f6f1aafe1630a139d0affb283dc6d9",
+    "start_sha256": "67baf1dffa7367005d29eab02627d7e0052c0399562e3f2cfbfcabd360159324",
+    "pip": "PASS",
+    "Ruff": "PASS",
+    "normalwholewheel": "717+newFDc79 exact"
+  },
+  "composition": "Guard/mapskernelmathbyteidenticalselectedbase; startupimplementationidenticalstandaloneexceptexpliciteligibilityguardtrialstring anddocumentation. allrankbudget/processsourceauthority/retirementchecks unchanged.",
+  "GPU": "UNRUN; needsactual70GPUguard/statecontrols plusall6/startupfullmodel comparison; CPUchecksnogain/qualityclaim",
+  "global_host_bytes": 75501568,
+  "optin_tool": "--overlap-content-capture =>all8childENV=1beforestartup; manifestrequired/childinheritancechecked; nofactoryAPIsignaturechange. Actualcapturestart/end/read/reuse+registrationwaitintervalrecorded."
+}

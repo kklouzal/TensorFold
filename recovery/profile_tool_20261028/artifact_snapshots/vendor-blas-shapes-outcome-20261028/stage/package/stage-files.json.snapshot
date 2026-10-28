@@ -1,0 +1,46 @@
+{
+  "verify_installed.py": {
+    "bytes": 1587,
+    "sha256": "ad30b71ec079f9a2184a3fdcb43937322a7b1efc860ea869d24f1d15467efe2e"
+  },
+  "protected-files.json": {
+    "bytes": 1052,
+    "sha256": "291d7d19e5b2134691d6016859b9bc5d6c95a3d005ae22ca02600a9bcf5847f9"
+  },
+  "expected-image-content.json": {
+    "bytes": 6481,
+    "sha256": "75a2fa9669c12e69e62e0a57694211a7b9ab91e0bd54b72e9830676856d19c2b"
+  },
+  "expected-oci-manifest.json": {
+    "bytes": 15680,
+    "sha256": "96f6961708d064a9d2f9e73d4df43ce8a5695c1499f16943b670c21fd971e15e"
+  },
+  "source-hold.json": {
+    "bytes": 3165,
+    "sha256": "4e57ac5708d78cd361442d4cc7d77d5984c90da5acd2f8903dd8b9dbd63db62a"
+  },
+  "wheel-provenance.json": {
+    "bytes": 127559,
+    "sha256": "389de11c60d59142e45d8d0ee505d599566278378677bbf436f67941d2b4fef5"
+  },
+  "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl": {
+    "bytes": 3184824,
+    "sha256": "fbaabca3ba2a7594c8712e0824733da035f3a3db63f454c520ecfa337010ee0d"
+  },
+  "v100_dense_shape_diagnostic.py": {
+    "bytes": 14716,
+    "sha256": "cbfd245b88f254944bda37dc32293bf519217bcd782ef2d87107fd6c9ce84328"
+  },
+  "bootstrap.sh": {
+    "bytes": 327,
+    "sha256": "dd9f9c89db49f5476ca4f786b13b6258f2d4a0934e8138eb9cc9ec4683ebc105"
+  },
+  "candidate.json": {
+    "bytes": 519,
+    "sha256": "a45f13d471d9505332e16611e523396fe0063d4a83b04755b697cbef893ec275"
+  },
+  "launch-diagnostic.py": {
+    "bytes": 4329,
+    "sha256": "ae5af32b548e7025dfd628474ed6c58404790d47527f7c83e508ebb7f7ec0e36"
+  }
+}

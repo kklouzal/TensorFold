@@ -1,0 +1,104 @@
+{
+  "schema": "tensorfold.combined-d13-review-v1",
+  "at": "2026-10-28T00:34:01.092030+00:00",
+  "status": "CLOSED current source/remediation; successorstages/hardware remain separate",
+  "scope": "Onlytwo startup runtime modules plus direct unchangedEngine/ModelIdentity/file+cleanup/CLI+closedFASTv2 integration/tests/docs within3hops; no newnative/math audit or broad rerun",
+  "commit": "8840939d84307dc98f4afd2c1a045b3ab44ef339",
+  "hold_sha256": "478ad0dde5bbf72eafda7804fefc6528c279a028b500127162e52a55de448a0f",
+  "wheel": {
+    "path": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3143947,
+    "sha256": "a2a591e796b544c3590d4e0d37146a8ebaa8aae6784751fab4586d1d348f8df2"
+  },
+  "source_paths": {
+    "README.md": "0f71525637c2da506d3e5fe48a9df2636cbc1cf4914a28d21fa5d42afb298e34",
+    "deploy/v100/source-foundation.md": "6ae5efaeb02981d61b978956e60aa391605725fb49c2cd622212e30fd1a483c6",
+    "src/tensorfold/families/qwen4_exp/cuda/execution_identity.py": "3c0cb0f2177f3a68ae902b1d6b5b3cfa620e4c278541300d74cec60bb0e1b309",
+    "src/tensorfold/families/qwen4_exp/cuda/startup_content.py": "ceced8801a7f8e086a3da1d466b51ff8ea77c3be25078e3362168a8350ef4e8f",
+    "tests/test_fast_grid.py": "d4143aa014a1febdb2eaf6965489a0d4f0ca5531c7cb1b332a3ce030789c20a8",
+    "tests/test_finite_backend_resources.py": "f0a4c4ec313cec559394a67b478bb6656ad9c1e69ba9352da72b4cb53f80b225",
+    "tests/test_finite_concurrency.py": "97215b843a57ea0f5dbf2d0449536af5af4b4ad177aab2f8a09cbd86258191c6",
+    "tests/test_finite_tp_contract.py": "c985bc86d9b89dce0652375a9cc50abba82025d37c9dad5908a62ce35fc35c21",
+    "tests/test_startup_content_parallel.py": "309bdd40698a986dadcd74462fb73a2ad71cbbefbfa4e87694748da417bd3260",
+    "tests/test_v100_backend_probe.py": "245b6890e47fe825c5a08976aa7c3993e082f5ced942b95cdbf9be932f5f8d56",
+    "tools/finite_concurrency.py": "d009cf94050754115fdb0295b39aaa787904b09478464aeb772d8782b97eb86b",
+    "tools/v100_backend_probe.py": "31e23a870323fa37d06791b628a8eaee4b12bd594374ce3909b947fa10f6c9ec"
+  },
+  "dispositions": [
+    {
+      "rules": [
+        "C5",
+        "C6",
+        "D13",
+        "Q0"
+      ],
+      "finding": "OldGroup suppressedcancelledsibling evenwhen itsactualCapture.result attached genuinefinish/wait/compactionfailure; error_observed preventedclosefromreportingagain. Recorded9a1ae8finding; olddac6/d817data/stages retained.",
+      "remediation": "8840939d suppressesonlysameowned expected cancellation withno independentfinish/waitslot/nativecause/context; firstgenuinepartition/parentfailureahead ofmodifiedcancel, modifiedcancel+secondaryretained. ActualGroupfinishclock/wait/compactionfaultcontrols assertgenuineValueErroridentity andsecondaryreachablethroughnativecause/context/groups afterclose. NoSingleCapture method rewrites."
+    },
+    {
+      "rules": [
+        "M0",
+        "U0",
+        "U1",
+        "U2",
+        "A2"
+      ],
+      "status": "clean",
+      "proof": "Exactly3Captureowners+Thread/Event/errorjournals allocated beforeanyThread.start; one-shotstart, partialbefore/afteraccept failuresretainallowners. Failurescancelallsiblingsbetween1MiBreads, noexecutor/selfwaiting. EachunchangedSingleCaptureownoperation_retired latch remainsafterjoin, includingactualsignal-interruptedjoin/rollback. Group.closeattemptsall3, requiresallcapture.closed, incompleteownerremainsretained. NativeOSstackreclaimnotinferred; fixedcommitment stays throughengine."
+    },
+    {
+      "rules": [
+        "C3",
+        "L1",
+        "M3",
+        "A0",
+        "N0"
+      ],
+      "status": "clean",
+      "proof": "Deterministicdisjointwholefilebins bysize/name/count/index; 3independentSHA256currentprocessissuedModelIdentityreceipts, no chunkdigestcombination/disk-stat-onlycache. ModelIdentityusesimmutableissuer+perobjectweakref, no sharedmutableregistryintroduced. authorities()passesall3 toexisting_capture_reusing; eachreceipt/allstats/expectedSHA/fullinventoryverified, freshnative/source/libscheckedafterload. Singleadapterreturnsoneauthority withalloldmethodsASTidentical."
+    },
+    {
+      "rules": [
+        "M1",
+        "T0",
+        "V3"
+      ],
+      "status": "clean",
+      "proof": "Default1, explicit3only; <=64files/64KiBprintableASCIIinventoryandnonemptypartitions retained. Prepay3*(64MiBstack+actual4096guard+8MiBworking)=226504704globalB beforestart, _same_settingsrecords actualworkers for allrankconsensus. Atmost3independent1-FDscopes; eachlocalfileownerretiredonfailure. SmallfixedGroupjournals fitexistingperworkerworking allowances; Engine/MTP/native24Q8/context/admission sourceunchanged."
+    },
+    {
+      "rules": [
+        "X5",
+        "X6",
+        "D14",
+        "F2"
+      ],
+      "status": "clean integratedsource",
+      "proof": "715othera7b1canonicalruntimefiles/nativeFDc79/kernels/State/coordinate/MTPbyteexact; enginepreallocation/digest/start/rollbackcallorder reused. ClosedFASTv2helperleafcomposedparametrically, workersCLI/envinheritedbeforeall8spawn and mismatchrefuses; defaultworker1/v1 retained. Startupparallelismisonlycandidate, performanceequivalence/gainnotinferredfromstructural/CPUtests."
+    },
+    {
+      "rules": [
+        "D13",
+        "S0",
+        "P5",
+        "Q3"
+      ],
+      "status": "clean",
+      "proof": "Captureauthoritiesadapter hasexistingmulti-receiptinterfacepurpose; Groupfixed3ownership/cancel/outcomehelper avoidsduplicatehashalgorithm/executor. Helperdistinction betweenexpected,pureexpected,andgenuineprimaryisrequiredtoavoidverifiedloss. Independentserialhashoracles andlegacycapturetests preserved; no verifieddead/unjustifiedduplicatepath."
+    }
+  ],
+  "evidence": {
+    "CPU": "759+5subtests41.63s/Ruff/pip/help/normal717source+FDc79; exactheldsource/log/command/exits verified",
+    "commands_sha256": "4512e9ae41ff26b405e8fa066ed8187f66ac6fdad27325dab943fc7c4286d14d",
+    "exit_sha256": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17",
+    "controls_provenance_sha256": "065027362899a4d5342fb4e046ca557b1fb669f65b03ae34590630402d2a30b5",
+    "structural_proof_sha256": "e8f27a8744b53a73d24ee262db0f81de6b538c372275351cd0fdc45777b56eb7",
+    "old_finding_sha256": "9a1ae8f52c154b5a0282b6d018292bbfaf7e560871f7fb0d36e6a20e0300ea3c",
+    "reviewer": "Read/hash/AST only; noGPU/build/testduplication"
+  },
+  "remaining": [
+    "Oldd817stageswithdrawn/unexecuted; newa2a5component+workers3FASTstage refresh/binding pending",
+    "Rootrequired53component andactualnewstartup/all6/quality/physicaladmission/resource/counterproofs",
+    "Serialvs3workerloading/startup/P3 comparison, no85/600/broadquality/releasequalificationfromsource/CPU"
+  ]
+}

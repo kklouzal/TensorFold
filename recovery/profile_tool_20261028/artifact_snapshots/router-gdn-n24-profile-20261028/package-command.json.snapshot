@@ -1,0 +1,33 @@
+{
+  "argv": [
+    "docker",
+    "run",
+    "--rm",
+    "--network",
+    "none",
+    "--cpus",
+    "2",
+    "--memory",
+    "8g",
+    "-e",
+    "CUDA_VISIBLE_DEVICES=",
+    "-e",
+    "PYTHONDONTWRITEBYTECODE=1",
+    "-e",
+    "TENSORFOLD_TEST_INSTALLED_WHEEL=/reference/wheels/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "--mount",
+    "type=bind,src=/Warehouse/TensorFold-wt/v100-router-gdn-n24-profile-20261028,dst=/source,readonly",
+    "--mount",
+    "type=bind,src=/Warehouse/TensorFold-portable-audit-20261026/router-gdn-integration-20261028,dst=/reference,readonly",
+    "--mount",
+    "type=bind,src=/Warehouse/TensorFold-portable-audit-20261026/router-gdn-n24-profile-20261028,dst=/evidence",
+    "--entrypoint",
+    "/bin/bash",
+    "sha256:30fda46a4c40422e055e0615a8186fc1c39678be9c8c9761885fc0cb77c28993",
+    "-c",
+    "set -euo pipefail; python -m pip install --no-index --no-deps --force-reinstall --no-compile /reference/wheels/*.whl; python /evidence/verify-wheel.py; python -m pytest -c /dev/null -o \"pythonpath=/source/tests /source\" -p no:cacheprovider -q /source/tests/test_fast_grid.py -k \"profile_concurrency_is_one\"; python -m ruff check --no-cache /source/tools/v100_backend_probe.py /source/tests/test_router_gdn_profile.py; python /source/tools/v100_backend_probe.py --help"
+  ],
+  "cwd": "/home/kklouzal",
+  "no_GPU": true,
+  "APP_unchanged": "7c0acdfb2957c82ea69eb9e47fe8b1239c72b6c9c7aaa3242898631e121b6a51"
+}

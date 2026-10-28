@@ -1,0 +1,6 @@
+{
+  "remote_command": "sudo -n env PYTHONDONTWRITEBYTECODE=1 taskset -c 0,1 nice -n 19 python3 /home/kklouzal/tensorfold-v100-qualification-20261026/profile-joint-fbaa-n1-20261028/analysis-tools/analyze_concurrent.py > /home/kklouzal/tensorfold-v100-qualification-20261026/profile-joint-fbaa-n1-20261028/analysis-cpu.stdout 2> /home/kklouzal/tensorfold-v100-qualification-20261026/profile-joint-fbaa-n1-20261028/analysis-cpu.stderr",
+  "root_owns_lease": true,
+  "preconditions": "actualcaptureterminal0/all8complete+retired/initialonlyPortainer; max2niceCPU; noP3untilallworkersretire",
+  "no_execution": true
+}

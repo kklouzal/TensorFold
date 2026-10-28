@@ -1,0 +1,28 @@
+{
+  "schema": "tensorfold.combined-d13-Root-author-actual-scope-companion-v1",
+  "at": "2026-10-28T08:47:18.427314+00:00",
+  "source_review_sha256": "08cc204df041629c3367af7c463143b9e4bed708f5a26482724274834edd415f",
+  "immutable_source": "146f/APP7c0a/HOLDdf095",
+  "evidence": "Root97046 +profileauthorlocalactual-first-all6-7c0a audits; reviewer didnotrunGPU orrepeatrawanalysis",
+  "actual_all6_TPS": [
+    31.1,
+    25.8,
+    43.7,
+    71.0,
+    102.7,
+    103.8
+  ],
+  "reported_checks": [
+    "all6valid/noRequesterrors",
+    "all8actualRouter/GDNfactoryfundchecks/native24Q8 pass",
+    "bothfamiliespositiveN>1;N1GDN/nativebatches0",
+    "55commonprefixes+6fullanswerIDs/text exactlybothrefs",
+    "all3wholefilehashoperationsretired/joined and226504704globalcommitmentretained"
+  ],
+  "terminal": "Docker1same2historicalqualityfailures;4/6matchesbaseline, notupgradedtosuccess",
+  "limits": [
+    "Singlequickfirstscreen/correlatedconditions; repeatability/broadquality/stability/longhistory remainsOPEN/deferreduser.",
+    "VendorFP32routerlogitbitsdifferent; no universalquality/routingequivalence orbit-identicalcontractclaim.",
+    "Roottier24>16>8>4>2>1 provisionalkeep/acceptabilitydecision separate; 85single/600aggregate/servicegoals notcomplete."
+  ]
+}

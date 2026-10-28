@@ -1,0 +1,27 @@
+{
+  "copy": [
+    "scp",
+    "-i",
+    "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+    "-o",
+    "BatchMode=yes",
+    "/Warehouse/TensorFold-portable-audit-20261026/router-cublas-model-wiring-20261028/fast-stage/payload.tar",
+    "kklouzal@71.94.200.200:/home/kklouzal/tensorfold-v100-qualification-20261026/perf85-router-cublas-model-f721-20261028.tar"
+  ],
+  "verify": [
+    "ssh",
+    "-i",
+    "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+    "-o",
+    "BatchMode=yes",
+    "kklouzal@71.94.200.200",
+    "python3",
+    "-",
+    "/home/kklouzal/tensorfold-v100-qualification-20261026/perf85-router-cublas-model-f721-20261028",
+    "/home/kklouzal/tensorfold-v100-qualification-20261026/perf85-router-cublas-model-f721-20261028.tar",
+    "08f13551c139e46d04038898a3642c73032eeebf10d265f4e98a8057b411edf5"
+  ],
+  "stdin_source": "/Warehouse/TensorFold-portable-audit-20261026/router-cublas-model-wiring-20261028/fast-stage/remote-verifier.py",
+  "cwd": "/home/kklouzal",
+  "no_GPU": true
+}

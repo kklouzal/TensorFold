@@ -1,0 +1,21 @@
+{
+  "schema": "canonical-pool-fixture-HOLD-v1",
+  "canonical": "/Warehouse/TensorFold-wt/v100-compact-pool-namespace-20261028",
+  "commit": "37518d018730da786dd5577bfaa7f6d2fb1a4885",
+  "paths": [
+    {
+      "path": "tests/compact_pool_reference.py",
+      "sha256": "e6e92c435b1ee6bbaccf23cf26bd8aebd87bd89ab33d153acbb599234e27cdad"
+    },
+    {
+      "path": "tests/test_compact_pool_preparation.py",
+      "sha256": "3f9c5798b08e9f3c41e7b68f3d9a7711dc316308f4722e23f8eeb45c7da041b6"
+    },
+    {
+      "path": "tests/cuda/test_sm70_compact_pool_preparation.py",
+      "sha256": "4ae7efd092253479b62016633dea19e2e6121f8f2679dd3b1a5ffeea97a52a1f"
+    }
+  ],
+  "controls": 45,
+  "scope": "strictactualsameGPUoriginalpool; no tolerance/P3/NUMAall6claim"
+}

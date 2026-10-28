@@ -1,0 +1,77 @@
+{
+  "schema": "task-wide-combined-D13-review-v1",
+  "at": "2026-10-28T11:08:18.814483+00:00",
+  "reviewer": "/root/cleanup_review",
+  "scope": "WMMA80 private current-reference experts numeric experiment; incremental corrective source/harness/allocator premise; reuse exact kernel/caller/resource read in parent receipt; no expansion or source edits",
+  "parent_review": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/router-gdn-wmma80-20261028/combined-review-current.json",
+    "sha256": "fe2b97ef059268704bf6b3aedaf135e9ef95951307b1cd0c954b7558c6be495c"
+  },
+  "source": {
+    "commit": "e1881d5457de738c5cb4bfe635b8f8347c1cd854",
+    "HOLD_sha256": "69ac1f40ae54564d1c1a13898a91873ae9738d27b7174c3633b8104a38544902",
+    "APP_sha256": "4899d93a192bdb228fedf7837c81a7f46c5cd7f62088e9d91a10760df8cde815",
+    "source_paths_verified": 21,
+    "check_files_verified": 4,
+    "canonical_packaged_files": 721,
+    "FD_sha256": "c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d",
+    "only_APP_delta_vs1db": [
+      "src/tensorfold/cuda/sm70/execution_policy.py"
+    ]
+  },
+  "stage": {
+    "payload_files_verified": 22,
+    "manifest_sha256": "9517041e30aa01eb19dc795e3b216bd1bae5daa724f21cae21a8d71f03ffdaa2",
+    "controller_sha256": "ede59fd9de2edce01f6581c7fbd3c8e339d2e50ec7f0f738c4522e2a87251942",
+    "source_hold_matches": true,
+    "stage_ready_sha256": "59025607dae6ce6053d3049e252642ad90a8568923d25e19177f473013e0756b"
+  },
+  "disposition": "SOURCE_AND_HELD_STAGE_REVIEW_CLOSED_FOR_PRIVATE_CORRECTED_SAFETY_THEN_ALL6_EXPERIMENT; NO_NUMERIC_QUALITY_OR_PERFORMANCE_ACCEPTANCE",
+  "findings": [
+    {
+      "id": "WMMA-ALLOC-DEFAULT-01",
+      "rules": [
+        "M1",
+        "T0",
+        "V1",
+        "X3"
+      ],
+      "status": "CLOSED_OWNED_SUCCESSOR",
+      "remediation": "The one APP edit rejects PYTORCH_HIP_ALLOC_CONF in the same pre-warm default-native guard; the pinned04cf three env aliases are all covered. Actual helper control passes native backend+HIP large_segment_size_mb:40 and asserts rejection before software/native preparation.",
+      "premise": "Selected fresh process/qwen4/bootstrap has no allocator setter; native defaults20MiB medium and2MiB small verified from04cf. No assurance for arbitrary external programmatic allocator mutation; that is outside this default-runtime REGION."
+    },
+    {
+      "id": "WMMA-FIXTURE-SHARED-ID-01",
+      "rules": [
+        "Q0",
+        "Q4",
+        "X12"
+      ],
+      "status": "CLOSED_FIXTURE_CONTRACT_SOURCE; CORRECTED_GPU_UNRUN_BY_REVIEWER",
+      "remediation": "Pass routed512; actual constructor adds1 and fixture asserts total513. Original error_record/finite/bitwise shared-slot/row/capture/malformed/alias assertions unchanged. Actual constructor CPU control adds independent contract check. Prior5FAIL/1PASS packet immutable, not retroactively passed."
+    },
+    {
+      "id": "WMMA-JUNIT-PROPERTIES",
+      "rules": [
+        "X4",
+        "Q1",
+        "O1"
+      ],
+      "status": "DISPOSITIONED_SUPPORTED_HARNESS_PROTOCOL",
+      "remediation": "Five prior warnings all record_property/xunit2 incompatibility. Harness selects supported legacy JUnit for original empirical properties; no warning filters or mathematical changes."
+    }
+  ],
+  "verification": {
+    "focused_CPU": "5PASS1.97s; controls-command.json/controls-exit.json/controls.log hash-bound in HOLD",
+    "Ruff_package": "passed per exact log/exit",
+    "native_math": "CPP/CUDA/adapter byte-exact1db; reuse330CPU compile proof, no native rebuild/numerical rerun by reviewer",
+    "strict_oracles": "all original42 retained; corrected6 collected, actual Root outcome not inferred"
+  },
+  "resource_disposition": "Default-native raw temporary maximum5575680B at32x33, actual1858560B at32x11;22MiB/rank retained through Engine device admission,64KiB/rank host,37variants prewarmed. Separate settled graph obligations and native24 Q8 floor remain; no weight replication or unknown native-heap bound claimed.",
+  "cleanup": "No further verified dead code/unjustified duplication in held candidate scope. Required independent oracles and rejected historical results retained. No reviewer source changes.",
+  "open_acceptance": [
+    "Corrected actual6 safety outcomes",
+    "Actual all6 speed/capacity/output quality under new numeric epoch",
+    "Accepted approximation bounds/task quality, known87-token/error records and broader quality/repeatability remain unqualified"
+  ]
+}

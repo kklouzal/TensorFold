@@ -1,0 +1,35 @@
+{
+  "schema": "router-cublas-model-fast-experiment-v1",
+  "wheel_sha256": "7c0acdfb2957c82ea69eb9e47fe8b1239c72b6c9c7aaa3242898631e121b6a51",
+  "source_hold_sha256": "df0955955546d4f6b374120cb0a62f094445a86818a36ba047c62148807767c0",
+  "tool_sha256": "a89f337f0164d272e22187c2120f10cc5d0a444184b4e2977c99da7e2d6657ef",
+  "tool_dependencies": {
+    "tools/v100_backend_probe.py": "a89f337f0164d272e22187c2120f10cc5d0a444184b4e2977c99da7e2d6657ef",
+    "tools/finite_concurrency.py": "d009cf94050754115fdb0295b39aaa787904b09478464aeb772d8782b97eb86b",
+    "tools/finite_quality.py": "c498bd046e78c34bfc7db16c7decd43ec182151b24b3e09da282b9de0dac77a3",
+    "tools/benchmark_output.py": "ce7c0a0cdf80842dc67021ddc938ae32a2c8df39dfd4f36e5f48e72149484cfa",
+    "tools/prepare_owner_trial_manifest.py": "cd90a33ff81c60cffc1f180f0a756312cec2d06b4a29d4322cf622d7ca3b2741"
+  },
+  "execution_manifest_sha256": "95336693957314d74ba50328679d2b9a37552cb3e11a891b7a4a1900503e5673",
+  "source_profile": "source-batch-router-blas-trial",
+  "session_ceiling": 24,
+  "execution_rows": 32,
+  "recovery_commit": "146f8a818d11ea69ca5b9cbd0f3d1f90067896ac",
+  "funding": {
+    "follower_bytes": 262144,
+    "global_receipt_bytes": 2424832
+  },
+  "startup_content_overlap": true,
+  "router_gpu_bytes_per_rank": 814592,
+  "router_host_bytes_global": 7471104,
+  "qualification": "privateintegratedsingleFASTv2screen; noquality/repeatability/85qualification; strict18logitfailures retained",
+  "required_native_counter": "allN>1 positive router_blas.target.calls+mtp.calls ANDgdn.batch_submitted_layers ANDnativeowner target/MTPbatches. N1 GDN+nativeownerbatchdelta0, canonicalgraphrouter retainsactualcoverage reporting. All8factorypreflightsbeforefollow.",
+  "reference": "f721Router Ns30.7/25.8/42.9/67.3/95.8/92.6 andGDNf6 Ns30.8/23.3/37.3/59.2/78.4/75.7; sixqualityexact4pass2fail",
+  "fast_grid_protocol": "fast-grid-v2",
+  "output_cell_bound": 2048,
+  "corrective_successor": "coherentRouterf0a3+GDNf6+held3wholefilehash; no mathcodechange",
+  "router_gpu_payload_bytes_per_rank": 801024,
+  "startup_content_workers": 3,
+  "startup_global_host_bytes": 226504704,
+  "gdn_state_batch": true
+}

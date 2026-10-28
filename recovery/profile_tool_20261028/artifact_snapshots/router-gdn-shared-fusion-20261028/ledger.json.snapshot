@@ -1,0 +1,60 @@
+{
+  "task": "SEPARATEcurrentgenericpacked/shared-fusion candidate",
+  "reference": "146f/7c0",
+  "assessment": "shared-fusion-current-assessment-20261028/assessment.json",
+  "status": "Root68618TERMINAL;6safetyPASS3.92s;all6validandallabove7c0; provisionalonly",
+  "mode": "source-router-gdn-shared-fusion-trial; packed_blocks2wAPI, currentIQusegenericprojection; notWMMA/no2warpclaim",
+  "contract": "512routed/public513;F16target/F32MTP;weights/quantbytes/defaults/currentRouter/GDN/startup3/prefill/N1graphs preserved",
+  "credit": "2MiBnative_smallsegment +64KiBhostperrank,32existingcodevariantresidencybeforebaseline;graphsettlementadditional/native24floor",
+  "pending": [
+    "Rootprovisionalselection/disposition",
+    "laterrepeat/fixedlength/broaderqualityacceptanceuserdeferred",
+    "source/stageimmutable noauthorGPU"
+  ],
+  "source": "42f522f02ef9c58237bfaf7eafd7b18adefa3ed8",
+  "APP": "76047cf24e274a10549619ed3a6064551ba71d756d1dc007a25ffdfd28bb2af5",
+  "HOLD": "08edabd6a5ca89d933e8cf0a58e113fd45468c2eaa2de4721263cacbb648902f",
+  "checks": "332CPU7.82s/Ruff/pip/help/normal721FDc79+SM70compile-link-importPASS",
+  "stage": {
+    "path": "perf85-generic-shared-fusion-7604-20261028",
+    "controller": "c527a4a8fc3bbab47f507e3397554302d0892b60bfd8f96067d7e6ffe2a37e0c",
+    "manifest_entries": 21,
+    "six_safety_then_all6": true
+  },
+  "Root_actual": {
+    "session": 68618,
+    "safety": "6controls/no skips mustcompletebeforemodeltierinterpretation",
+    "scope": "genericpacked/shared-fusion actualIQbranch, nottwoWarp/WMMA",
+    "reference_146f_7c0": [
+      31.1,
+      25.8,
+      43.7,
+      71.0,
+      102.7,
+      103.8
+    ]
+  },
+  "actual": {
+    "rates": [
+      32.1,
+      29.7,
+      51.1,
+      78.5,
+      105.6,
+      107.6
+    ],
+    "reference": [
+      31.1,
+      25.8,
+      43.7,
+      71.0,
+      102.7,
+      103.8
+    ],
+    "quality": "sixfulltext+IDs exact4pass2histfail",
+    "prefix": "54/55exact_to_shorter,N1firstdifference194(characterization)",
+    "all8": "native24materialized/row32/generic49banks/F16target-F32MTP/Router/GDN/funding/nativeallocator/settledgraphs pass",
+    "audit": "/Warehouse/TensorFold-portable-audit-20261026/generic-shared-fusion-current-20261028/actual-first-all6-7604/comparison-vs-146f7c0.json"
+  },
+  "D13": "combined-review-final.json closedfff395ae; metadataoutsidepayloadcaptioncorrection savedlocal/remote"
+}

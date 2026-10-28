@@ -1,0 +1,24 @@
+{
+  "schema": "tensorfold.closed-single-fbaa-analysis-stage-v1",
+  "source_hold_sha256": "6513f4b617278146a9367d086dd74b1b50bd75c15d6170238bfb343f6f922619",
+  "closed_review_sha256": "32fa58fda61da06ca09b3c2af0cd53ae840a25b9821dd4ca463af23e387e3265",
+  "files": {
+    "analyze_concurrent.py": "989e8bf2a6c2ef46c95b63c4575f9af326853908537b0fbb0085fd224658cc5b",
+    "analyze_decode.py": "301f6a75ce46266f63c5ab9b28aaccb85dbe4535ed2fe8f6f75caa2d8f3e63c6",
+    "analyze_traces.py": "780c7d40cc90b4226212d4e1e0dcccaebeaad01e9c4148beaa15b790bda58df1",
+    "source-hold.json": "6513f4b617278146a9367d086dd74b1b50bd75c15d6170238bfb343f6f922619",
+    "combined-review-final.json": "32fa58fda61da06ca09b3c2af0cd53ae840a25b9821dd4ca463af23e387e3265"
+  },
+  "destination": "/home/kklouzal/tensorfold-v100-qualification-20261026/profile-joint-fbaa-n1-20261028/analysis-tools",
+  "execution": "Root only AFTER actualcaptureDocker0/all8complete/sourceCUPTI28/retirement; initialonlyPortainer; sudo-nfileaccess; 2nice19CPUcores0,1; noGPU/P3whileCPUworkerslive",
+  "actual_capture_provenance": {
+    "source_commit": "b6369c36131c6432dc82fa7e058be65daaa92dc1",
+    "HOLD": "95527c1a0a58112c15ebc0a01cd2ed09b8d62ef5d36ab186b0d7e2791c917d9c",
+    "APP": "fbaabca3ba2a7594c8712e0824733da035f3a3db63f454c520ecfa337010ee0d",
+    "runtime": "d5ebfce578dc8a1e3c59bdd27f3dd1558c14043f",
+    "profile_concurrency": 1,
+    "controller": "800d3818aa14df90700618e5736806736394e3ab28ee00025076920b48975e34",
+    "Root_capture": 23026
+  },
+  "scope": "Exactclosed6513source dynamiccount1/n01window+2generatecalls. All8source/CUPTI28/retirement/rawhash/clockcore/graphlaunchcorrelation/kernelgaps preserved. CPUnewhead/targetowner/candidate/bound/MoElabels reported automatically; graphinnerCPUnotfabricated. NoP3/qualitycredit."
+}

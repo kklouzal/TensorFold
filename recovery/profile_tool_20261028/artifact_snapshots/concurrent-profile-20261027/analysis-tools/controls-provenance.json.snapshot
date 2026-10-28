@@ -1,0 +1,22 @@
+{
+  "retrospective": true,
+  "argv": [
+    "python3",
+    "-m",
+    "unittest",
+    "discover",
+    "-s",
+    "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools",
+    "-p",
+    "test_concurrent_analysis.py",
+    "-v"
+  ],
+  "cwd": "/home/kklouzal",
+  "env_overrides": [],
+  "exit_code": 0,
+  "result": "6tests/0.010s/OK",
+  "log": "controls-boundary.log",
+  "log_sha256": "6153e7494c25ae8613a99d176c15d85920a22020775e01ff568331ed7085ef37",
+  "source_hold_sha256": "6513f4b617278146a9367d086dd74b1b50bd75c15d6170238bfb343f6f922619",
+  "scope": "CPUlocalfixtures; noactualhost/GPUcapturetouched"
+}

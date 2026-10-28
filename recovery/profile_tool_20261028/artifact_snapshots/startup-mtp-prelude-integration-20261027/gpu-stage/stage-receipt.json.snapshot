@@ -1,0 +1,66 @@
+{
+  "status": "STAGED EXACT; NOT EXECUTED",
+  "at": "2026-10-27T23:20:08.936234+00:00",
+  "remote": "/home/kklouzal/tensorfold-v100-qualification-20261026/startup-mtp-prelude-5635-controls-20261027",
+  "source_commit": "a7b1661f7f2016571067fa8fc1a1c220f08fb303",
+  "source_review": "Root must await combined source closure before run/release",
+  "payload_sha256": "93faf44d0e9909d8fedb52bb61ef66ccdca8170ddffa5793c76eb29e44dcd8b9",
+  "stage_manifest_sha256": "0e0e572f28e3b3d7a0dc7c3332c95c2a6db5b8da5c7e46d40540eb8abbf4217c",
+  "commands": [
+    {
+      "argv": [
+        "ssh",
+        "-i",
+        "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+        "-o",
+        "BatchMode=yes",
+        "kklouzal@71.94.200.200",
+        "python3 -c 'from pathlib import Path\nimport json,sys\np,q,a=map(Path,sys.argv[1:])\nif any(path.exists() for path in (p,q,a)):raise RuntimeError('\"'\"'new stage destination must not exist'\"'\"')\nq.mkdir()\nprint(json.dumps({'\"'\"'new_temporary'\"'\"':str(q)}))\n' /home/kklouzal/tensorfold-v100-qualification-20261026/startup-mtp-prelude-5635-controls-20261027 /home/kklouzal/tensorfold-v100-qualification-20261026/startup-mtp-prelude-5635-controls-20261027.upload /home/kklouzal/tensorfold-v100-qualification-20261026/startup-mtp-prelude-5635-controls-20261027.stage.tar"
+      ],
+      "exit_code": 0,
+      "stdout": "{\"new_temporary\": \"/home/kklouzal/tensorfold-v100-qualification-20261026/startup-mtp-prelude-5635-controls-20261027.upload\"}\n",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "scp",
+        "-i",
+        "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+        "-o",
+        "BatchMode=yes",
+        "/Warehouse/TensorFold-portable-audit-20261026/startup-mtp-prelude-integration-20261027/gpu-stage/stage-payload.tar",
+        "kklouzal@71.94.200.200:/home/kklouzal/tensorfold-v100-qualification-20261026/startup-mtp-prelude-5635-controls-20261027.stage.tar"
+      ],
+      "exit_code": 0,
+      "stdout": "",
+      "stderr": ""
+    },
+    {
+      "argv": [
+        "ssh",
+        "-i",
+        "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+        "-o",
+        "BatchMode=yes",
+        "kklouzal@71.94.200.200",
+        "python3 -c 'from pathlib import Path\nimport hashlib,json,subprocess,sys,tarfile\np,q,a=map(Path,sys.argv[1:4]);payload,expected=sys.argv[4:]\nif hashlib.sha256(a.read_bytes()).hexdigest()!=payload:raise RuntimeError('\"'\"'uploaded payload differs'\"'\"')\nwith tarfile.open(a) as archive:\n for entry in archive.getmembers():\n  if not entry.isfile() or entry.name.startswith('\"'\"'/'\"'\"') or '\"'\"'..'\"'\"' in Path(entry.name).parts:raise RuntimeError('\"'\"'unsafe stage entry'\"'\"')\n archive.extractall(q,filter='\"'\"'data'\"'\"')\nmanifest=q/'\"'\"'stage-files.json'\"'\"'\nif hashlib.sha256(manifest.read_bytes()).hexdigest()!=expected:raise RuntimeError('\"'\"'stage manifest differs'\"'\"')\nrows=json.loads(manifest.read_text())\nfor name,row in rows.items():\n raw=(q/name).read_bytes()\n if len(raw)!=row['\"'\"'bytes'\"'\"'] or hashlib.sha256(raw).hexdigest()!=row['\"'\"'sha256'\"'\"']:raise RuntimeError(name)\nfor name in ('\"'\"'verify_installed.py'\"'\"','\"'\"'verify_stage.py'\"'\"','\"'\"'run_controls.py'\"'\"'):compile((q/name).read_bytes(),str(q/name),'\"'\"'exec'\"'\"')\nsubprocess.run(['\"'\"'bash'\"'\"','\"'\"'-n'\"'\"',str(q/'\"'\"'bootstrap.sh'\"'\"'),str(q/'\"'\"'launch-command.sh'\"'\"')],check=True)\n(q/'\"'\"'evidence'\"'\"').mkdir()\nif any((q/'\"'\"'evidence'\"'\"').iterdir()):raise RuntimeError('\"'\"'evidence not empty'\"'\"')\nq.rename(p)\nprint(json.dumps({'\"'\"'status'\"'\"':'\"'\"'STAGED EXACT; NOT EXECUTED'\"'\"','\"'\"'remote'\"'\"':str(p),'\"'\"'files_verified'\"'\"':len(rows),'\"'\"'evidence_empty'\"'\"':True,'\"'\"'source_commit'\"'\"':'\"'\"'a7b1661f7f2016571067fa8fc1a1c220f08fb303'\"'\"','\"'\"'normal_package_source_files'\"'\"':717,'\"'\"'all_installed_files'\"'\"':718,'\"'\"'wheel_sha256'\"'\"':hashlib.sha256((p/'\"'\"'tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl'\"'\"').read_bytes()).hexdigest(),'\"'\"'stage_manifest_sha256'\"'\"':hashlib.sha256((p/'\"'\"'stage-files.json'\"'\"').read_bytes()).hexdigest(),'\"'\"'source_review'\"'\"':'\"'\"'Root must await closure before GPU run/release'\"'\"'}))\n' /home/kklouzal/tensorfold-v100-qualification-20261026/startup-mtp-prelude-5635-controls-20261027 /home/kklouzal/tensorfold-v100-qualification-20261026/startup-mtp-prelude-5635-controls-20261027.upload /home/kklouzal/tensorfold-v100-qualification-20261026/startup-mtp-prelude-5635-controls-20261027.stage.tar 93faf44d0e9909d8fedb52bb61ef66ccdca8170ddffa5793c76eb29e44dcd8b9 0e0e572f28e3b3d7a0dc7c3332c95c2a6db5b8da5c7e46d40540eb8abbf4217c"
+      ],
+      "exit_code": 0,
+      "stdout": "{\"status\": \"STAGED EXACT; NOT EXECUTED\", \"remote\": \"/home/kklouzal/tensorfold-v100-qualification-20261026/startup-mtp-prelude-5635-controls-20261027\", \"files_verified\": 22, \"evidence_empty\": true, \"source_commit\": \"a7b1661f7f2016571067fa8fc1a1c220f08fb303\", \"normal_package_source_files\": 717, \"all_installed_files\": 718, \"wheel_sha256\": \"5635735f68db932f41cab3da94747e6f6c2f15673c60b71e220ec96c9f9e0314\", \"stage_manifest_sha256\": \"0e0e572f28e3b3d7a0dc7c3332c95c2a6db5b8da5c7e46d40540eb8abbf4217c\", \"source_review\": \"Root must await closure before GPU run/release\"}\n",
+      "stderr": ""
+    }
+  ],
+  "verification": {
+    "status": "STAGED EXACT; NOT EXECUTED",
+    "remote": "/home/kklouzal/tensorfold-v100-qualification-20261026/startup-mtp-prelude-5635-controls-20261027",
+    "files_verified": 22,
+    "evidence_empty": true,
+    "source_commit": "a7b1661f7f2016571067fa8fc1a1c220f08fb303",
+    "normal_package_source_files": 717,
+    "all_installed_files": 718,
+    "wheel_sha256": "5635735f68db932f41cab3da94747e6f6c2f15673c60b71e220ec96c9f9e0314",
+    "stage_manifest_sha256": "0e0e572f28e3b3d7a0dc7c3332c95c2a6db5b8da5c7e46d40540eb8abbf4217c",
+    "source_review": "Root must await closure before GPU run/release"
+  },
+  "completed_utc": "2026-10-27T23:20:12.078437+00:00"
+}

@@ -1,0 +1,31 @@
+from pathlib import Path
+import ast,hashlib,json,subprocess,sys,tarfile
+out,upload,want=Path(sys.argv[1]),Path(sys.argv[2]),sys.argv[3]
+sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+if out.exists()or sha(upload)!=want:raise RuntimeError('unique stage/tarhash differs')
+tmp=Path(str(out)+'.upload');tmp.mkdir()
+with tarfile.open(upload)as a:
+ for m in a.getmembers():
+  if not m.isfile()or m.name.startswith('/')or '..'in Path(m.name).parts:raise RuntimeError('unsafe stageentry')
+ a.extractall(tmp,filter='data')
+for n,row in json.loads((tmp/'stage-files.json').read_text()).items():
+ if (tmp/n).stat().st_size!=row['bytes']or sha(tmp/n)!=row['sha256']:raise RuntimeError('stagebytes differ '+n)
+c=json.loads((tmp/'candidate.json').read_text());w=json.loads((tmp/'wheel-provenance.json').read_text())
+if len(w['source_files'])!=726 or w['compiled_extensions'][0]['sha256']!='c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d':raise RuntimeError('normal726/FD differs')
+if sha(tmp/'tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl')!=c['wheel_sha256']or c['wheel_sha256']!='fbaabca3ba2a7594c8712e0824733da035f3a3db63f454c520ecfa337010ee0d':raise RuntimeError('APP notexactfbaa')
+if sha(tmp/'source-hold.json')!=c['source_hold_sha256']:raise RuntimeError('HOLDdiffers')
+for n,want in c['tool_dependencies'].items():
+ if sha(tmp/n)!=want:raise RuntimeError('toolhashdiffers')
+if sha(tmp/'execution-manifest.json')!=c['execution_manifest_sha256']:raise RuntimeError('manifestdiffers')
+for p in tmp.rglob('*.py'):ast.parse(p.read_text())
+s=(tmp/'launch-finite.py').read_text();tree=ast.parse(s)
+args=next(n.value for n in tree.body if isinstance(n,ast.Assign)and any(isinstance(t,ast.Name)and t.id=='args'for t in n.targets))
+values=[n.value if isinstance(n,ast.Constant)else None for n in args.elts]
+for name,want in [('--profile-concurrency','1'),('--tokens','2048'),('--session-ceiling','24'),('--repetitions','1')]:
+ if values[values.index(name)+1]!=want:raise RuntimeError('countprotocol differs '+name)
+if '--quality-spotchecks'in values or 'moe-execution-coverage' in s:raise RuntimeError('diagnostic falselyrequestsall6/quality')
+if c['profile_concurrency']!=1 or c['startup_content_workers']!=3:raise RuntimeError('diagnostic count/startuppolicy differs')
+subprocess.run(['bash','-n',str(tmp/'bootstrap-finite.sh')],check=True)
+(tmp/'results').mkdir();tmp.rename(out)
+r={'status':'STAGEDONLY NOTEXECUTED','out':str(out),'manifest_entries':len(json.loads((out/'stage-files.json').read_text())),'candidate':c,'controller_sha256':sha(out/'launch-finite.py'),'launch_command':['python3',str(out/'launch-finite.py')],'preconditions':'RootonlyidleGPUlease/D13assessment;all8captureguard/readiness/core/drain/retirementproofactual; noall6/P3credit'}
+(out/'stage-ready.json').write_text(json.dumps(r,indent=2)+'\n');print(json.dumps(r))

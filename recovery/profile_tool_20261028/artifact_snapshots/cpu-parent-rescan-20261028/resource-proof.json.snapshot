@@ -1,0 +1,20 @@
+{
+  "schema": "cpu-parent-rescan-resource-proof-v1",
+  "hardcap": "own process RLIMIT_AS<=8GiB, never raises inheritedlowerlimit",
+  "reader": "Unchanged closed780c Stream; existing6GiB reader planning allowance retained, not a smaller invented byte cap. Stream character/UTF8/header parsing contract unchanged.",
+  "other_fixed_operating_allowance": 2147483648,
+  "other_bounds": {
+    "selected_cpu_API_tuple_records": 1000000,
+    "project_ranges": 200000,
+    "interned_names": 8192,
+    "name_max_Unicode_characters": 512,
+    "parent_category_name_groups": 16384,
+    "report_encoded_bytes": 2097152,
+    "rank": 0,
+    "processes": 1
+  },
+  "CPython3_12_layout_reasoning": "Event5tuples+distinctts/duration/tid/category <=~256MiB at1M; IDs set<128MiB;200k3tuple ranges+400kendpoint sort/heap/index+segments<256MiB;8192UCS4names<32MiB;16384groups/resultdicts/JSON <=128MiB. Remaining1GiB+ covers Python/runtime/metadata and temporary references; hardAScapenforcesfail/refusal instead ofunboundedgrowth. These source-informed conservative estimates are not RSSmeasurements; actualmaxRSS recorded.",
+  "selected_trace": "rank0 currentreceipt1416389948bytes; neverloadsrawwholefile, kernels ignored; fullSHA recomputed duringone stream",
+  "measurement_scope": "Count+inclusiveCPU/APIwall byone deepest project atclippedstart. NestedCPUops/APIs mayoverlap; no exclusiveCPUbusy/residual/inferredGPUutilization.",
+  "error_contract": "Read/close andoutputwrite/close actualfailureprimary/nativecause/context preserved; outputfresh x; capfailuresrefuse ratherthantruncate; oldrawandanalysis untouched."
+}

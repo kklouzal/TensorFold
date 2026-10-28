@@ -1,0 +1,51 @@
+{
+  "schema": "tensorfold.startup-prelude-integration-v1",
+  "commit": "ee248b80fdddfe01fb1af1a595385fd84928c44e",
+  "worktree": "/Warehouse/TensorFold-wt/v100-startup-prelude-20261027",
+  "base_runtime": "710c9b6a3b91072d1d15a8356cfe91464cd1419b",
+  "closed_startup": "c0f49f49/7779",
+  "source_paths": {
+    "README.md": "9ac9763ba6f2cb924996b0bbe458efd1d51fcc290fd88543b8c18268bc5d0363",
+    "deploy/v100/source-foundation.md": "aae4e2ca3f15844a8b1f9571ea24575921e5ee0ec368d4af8fd1f82dc1216d35",
+    "src/tensorfold/_fd_owner.c": "aa5d4a6773f7d26c7dc43e0bf0817fb127e9d8a70de103f99acc8999fe6c3931",
+    "src/tensorfold/engine/model_identity.py": "37e76bdb643b4ab7ae47b6c449df5b8415b55602fac3165e0d99f6a5e9725298",
+    "src/tensorfold/families/qwen4_exp/cuda/engine.py": "18c00f1ce043e61232fdbb2eeb96e49fbfbc2f9c82421777c4a425c97d5b09f5",
+    "src/tensorfold/families/qwen4_exp/cuda/execution_identity.py": "6c98e903e161f4304170c82a8f8f8d1d688c15f2907de170c65b25a8eb6c0aa9",
+    "src/tensorfold/families/qwen4_exp/cuda/startup_content.py": "cadd8df67397e350b9dfb61b18f5dfe818df3dfedd74fdebff671dbb6d0987d6",
+    "tests/test_flashnext_engine_lifetime.py": "cf8a039f1e411442aed70d70c97775eadbdf9c4f7b1441e453921ab0dc0638f0",
+    "tests/test_startup_content.py": "a67fbd6d1c3aeea105dfe6a89df04d91d9df10fa5e0de493d9f42c4a5545369e",
+    "tests/test_v100_backend_probe.py": "db05ceb804188d9768976dfc7bb2e476152f1c5c10be2c1936a963934d64ab06",
+    "tools/v100_backend_probe.py": "fb238bbdc8a96120e58853165df38e6b73b66bcb3348e3a238ec8ab16a872f79"
+  },
+  "wheel": {
+    "path": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3140883,
+    "sha256": "fa6e3561f076e26709de186b87336760062ba2747b1a1d9bd482fc0e78b580aa"
+  },
+  "compiled_extensions": [
+    {
+      "path": "tensorfold/_fd_owner.abi3.so",
+      "bytes": 46344,
+      "sha256": "c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d"
+    }
+  ],
+  "source_files": 717,
+  "native_source_sha256": "aa5d4a6773f7d26c7dc43e0bf0817fb127e9d8a70de103f99acc8999fe6c3931",
+  "controls": {
+    "checks": 678,
+    "subtests": 5,
+    "seconds": 16.52,
+    "exit_code": 0,
+    "log_sha256": "f9b93d6f2508c6d658778d5b580757dd9e8081fbae824fba159444ce922061b1",
+    "start_sha256": "16aae1166fff1fa4ae9297fd814a6c93b82aa34594e54d52b1ba43dca8e10efb",
+    "Ruff": "PASS",
+    "pip": "PASS",
+    "help": "PASS",
+    "package": "717canonical+newFDc79 exact normalinstalled"
+  },
+  "structural_proof_sha256": "c3df9d4323e643928d75fc02d1cd3f4ea510f8801aa2a40ae59192f740609b36",
+  "startup_resource_global_bytes": 75501568,
+  "contract": "Exactclosed7779current-process fullhashauthority+ownedcompletionlatch/cancellation/resourcefunding andtoolinheritance reused; extendsenabledPRELUDEeligibilityonly. Nativekernel/MTP/coordinateviewbytes710cexact.",
+  "GPU": "UNRUN; needsactual53multipleattentionfixture onnewwholewheel then startupenabledall6/quality/nativecounter versus3224; no gainclaim",
+  "default": "Unsetretainsserialcapture; privateoptinENVthrough --overlap-content-capture"
+}

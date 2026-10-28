@@ -1,0 +1,30 @@
+{
+  "argv": [
+    "docker",
+    "run",
+    "--rm",
+    "--network",
+    "none",
+    "--cpus",
+    "2",
+    "--memory",
+    "8g",
+    "--ulimit",
+    "stack=67108864",
+    "-e",
+    "PYTHONDONTWRITEBYTECODE=1",
+    "-e",
+    "CUDA_VISIBLE_DEVICES=",
+    "--mount",
+    "type=bind,src=/Warehouse/TensorFold-wt/v100-dense-large-row-tiles-20261028,dst=/source,readonly",
+    "--mount",
+    "type=bind,src=/Warehouse/TensorFold-portable-audit-20261026/dense-large-row-tiles-20261028,dst=/evidence",
+    "--entrypoint",
+    "/bin/bash",
+    "sha256:30fda46a4c40422e055e0615a8186fc1c39678be9c8c9761885fc0cb77c28993",
+    "-c",
+    "set -euo pipefail\nmkdir /attention-source\ntar --exclude=.git --exclude=.ruff_cache --exclude=__pycache__ -C /source -cf - . | tar -C /attention-source -xf -\npython -m pip wheel --no-build-isolation --no-deps /attention-source --wheel-dir /evidence/wheels\npython -m pip install --no-index --no-deps --force-reinstall --no-compile /evidence/wheels/*.whl\npython -m pip check\npython -m pytest -c /dev/null -o \"pythonpath=/source/tests /source\" -p no:cacheprovider -q /source/tests/test_sm70_large_dense_tiles.py /source/tests/test_sm70_native_dense_dispatch.py /source/tests/test_sm70_padded_linears.py /source/tests/test_flashnext_padded_admission.py /source/tests/test_execution_rows_probe.py\npython -m ruff check --no-cache /source/src/tensorfold/families/qwen4_exp/cuda/padded_linears.py /source/src/tensorfold/families/qwen4_exp/cuda/engine.py /source/tests/test_sm70_large_dense_tiles.py\npython /evidence/verify-wheel.py\n"
+  ],
+  "cwd": "/Warehouse/TensorFold-wt/v100-dense-large-row-tiles-20261028",
+  "no_GPU": true
+}

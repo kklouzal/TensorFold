@@ -1,0 +1,38 @@
+from pathlib import Path
+import hashlib
+import importlib.metadata
+import json
+import zipfile
+from tensorfold import _fd_owner
+
+root=Path("/evidence")
+wheel=next((root/"wheels").glob("*.whl"))
+dist=importlib.metadata.distribution("tensorfold")
+source,extensions=[],[]
+with zipfile.ZipFile(wheel) as archive:
+    for name in archive.namelist():
+        if not name.startswith("tensorfold/") or name.endswith("/"):
+            continue
+        raw=archive.read(name)
+        if Path(dist.locate_file(name)).read_bytes()!=raw:
+            raise ValueError("normalinstalledsource differs "+name)
+        path=Path("/source/src")/name
+        row={"path":name,"bytes":len(raw),"sha256":hashlib.sha256(raw).hexdigest()}
+        if path.exists():
+            if path.read_bytes()!=raw:
+                raise ValueError("canonicalsource differs "+name)
+            source.append(row)
+        else:
+            extensions.append(row)
+if len(source)!=726 or len(extensions)!=1 or extensions[0]["path"]!="tensorfold/_fd_owner.abi3.so":
+    raise ValueError("required726canonical+oneownedFDextensionclosure differs")
+canonical_c=Path("/source/src/tensorfold/_fd_owner.c")
+if _fd_owner._source_sha256!=hashlib.sha256(canonical_c.read_bytes()).hexdigest():
+    raise ValueError("newownednativeFDquery source identity differs")
+if _fd_owner._limited_api!=0x030B0000 or _fd_owner._ownership_version!=2:
+    raise ValueError("nativeFDownership/limitedAPIcontract differs")
+result={"wheel":{"path":wheel.name,"bytes":wheel.stat().st_size,"sha256":hashlib.sha256(wheel.read_bytes()).hexdigest()},
+    "source_files":source,"compiled_extensions":extensions,"source_overlay":False,
+    "native_source_sha256":_fd_owner._source_sha256,"planned_thread_stack_guard":_fd_owner._thread_stack_layout(0)}
+(root/"wheel-provenance.json").write_text(json.dumps(result,indent=2)+"\n")
+print(json.dumps({"wheel":result["wheel"],"source_files":len(source),"compiled_extensions":extensions,"planned_thread_stack_guard":result["planned_thread_stack_guard"]}),flush=True)

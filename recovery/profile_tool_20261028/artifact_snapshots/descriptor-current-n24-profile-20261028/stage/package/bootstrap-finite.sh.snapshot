@@ -1,0 +1,30 @@
+#!/bin/bash
+set -euo pipefail
+python -m pip install --no-index --no-deps --force-reinstall --no-compile /qualification/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl
+python -m pip check
+python /qualification/verify_installed.py
+python - <<'VERIFY_TOOLS'
+import hashlib,json,pathlib
+root=pathlib.Path('/qualification')
+for name,want in json.loads((root/'candidate.json').read_text())['tool_dependencies'].items():
+    if hashlib.sha256((root/name).read_bytes()).hexdigest()!=want:
+        raise RuntimeError('tool dependency mismatch '+name)
+print('verified exact finite concurrency tool closure',flush=True)
+VERIFY_TOOLS
+python /qualification/tools/v100_backend_probe.py --help > /probe/normal-installed-help.txt
+python /qualification/tools/prepare_owner_trial_manifest.py --help >/dev/null
+python /qualification/verify_installed.py
+python - <<'VERIFY_PROFILE_POLICY'
+import json, pathlib, sys
+root = pathlib.Path('/qualification')
+sys.path.insert(0, str(root / 'tools'))
+from v100_backend_probe import validate_profile_row_policy
+candidate = json.loads((root / 'candidate.json').read_text())
+result = validate_profile_row_policy(root / 'runtime-source-hold.json', root / 'row-policy-source-hold.json',
+    root / 'tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl',
+    runtime_sha=candidate['runtime_source_hold_sha256'], row_sha=candidate['row_policy_sha256'])
+pathlib.Path('/probe/profile-row-policy-preflight.json').write_text(json.dumps(result, indent=2)+'\n')
+print(json.dumps(result), flush=True)
+VERIFY_PROFILE_POLICY
+unset TENSORFOLD_MULTI_GRAPH_MIB
+exec python /qualification/tools/v100_backend_probe.py "$@"

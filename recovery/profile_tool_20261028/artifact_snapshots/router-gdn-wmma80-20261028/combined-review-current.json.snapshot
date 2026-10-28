@@ -1,0 +1,70 @@
+{
+  "schema": "task-wide-combined-D13-review-v1",
+  "at": "2026-10-28T11:04:12.882691+00:00",
+  "reviewer": "/root/cleanup_review",
+  "policy": {
+    "primary": "direct user single combined D13; /home/kklouzal/AGENTS.md",
+    "repo_separate_pair_text": "overridden by direct user single-reviewer instruction",
+    "scope": "held WMMA80 private experts-only candidate and direct selector, allocation, Engine, graph and harness boundaries; exact pinned allocator source for premise"
+  },
+  "source": {
+    "worktree": "/Warehouse/TensorFold-wt/v100-router-gdn-wmma80-20261028",
+    "commit": "1db0dbab8d3d033516ae6b6747ee509e107693c7",
+    "HOLD_sha256": "187d041f4b17a2034349e939e92f7b57ede41445b07264e48716ffa3638be565",
+    "APP_sha256": "a96a5de15d05c8e6a7c5b37658639933b7fbe0b28260cb77ed7c69afd3cd84fd",
+    "source_paths_verified": 21,
+    "checks_verified": 9,
+    "canonical_packaged_files_verified": 721,
+    "FD_sha256": "c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d",
+    "stage_payload_verified": 22,
+    "controller_sha256": "a5364ed803abd363c95eddabeceabc3e7ab1155dc9a83d4cd385f07884fcc7ca"
+  },
+  "disposition": "EXACT_HELD_BINDING_VERIFIED; SOURCE_ADMISSION_OPEN_PENDING_DEFAULT_ALLOCATOR_GUARD; NUMERICAL_SAFETY_RUN_FAILED_FIXTURE; NO_SELECTION_OR_ALL6_CREDIT",
+  "verified_scope": [
+    "Native WMMA gate/up/down/activation block is the retained distinct cf1f split8 numeric policy, not exact-BMM equivalence. Direct source checks retain full-warp uniform invalid/shared-ID branches, original PackedView type/extent checks, INT32/INT64, mixed-kind selectors, no weight replica, output alias checks and complete output writes.",
+    "Two temporary allocations: FP16 activation rows*slots*80*2 and FP32 partials rows*slots*80*8*2*4; maximum32*33 raw5575680B, actual32*11 raw1858560B. Default native segment premise is20MiB medium partials plus2MiB small activation; allocations and reuse follow the same current serving stream. Output is already owned by the original caller.",
+    "Engine adds22MiB/rank device and64KiB/rank host before authoritative admission. All37 WMMA kernel variants are attribute-resolved before physical baseline. Graph private-pool commitments retain independent existing settlement; operating credit does not turn graph-private inactive bytes into reusable spare. Native24 Q8 floor and all-rank profile/method/row contracts remain.",
+    "Owned selected qwen4 Engine/bootstrap paths have no programmatic allocator setter. Unrelated qwen3 engines do; this review makes no claim for arbitrary pre-mutated library processes.",
+    "Private profile and State/prefix epoch are distinct; original prompt/shared/Dense/router/GDN/startup paths retained as described in structural proof. Approximate numerical/error and historical87-token divergence records remain unqualified."
+  ],
+  "findings": [
+    {
+      "id": "WMMA-ALLOC-DEFAULT-01",
+      "rules": [
+        "M1",
+        "T0",
+        "V1",
+        "X3"
+      ],
+      "status": "OPEN; author notified; do not mutate held1db0",
+      "source": "src/tensorfold/cuda/sm70/execution_policy.py:214-217",
+      "fact": "Guard omits PYTORCH_HIP_ALLOC_CONF. Pinned04cf c10/core/AllocatorConfig.cpp:49-58 reads CUDA,HIP,unified environment keys on the CUDA build. HIP large_segment_size_mb can change medium allocation segment size while backend remains native and the other checked variables are absent.",
+      "required": "Reject the omitted supported override or validate effective default settings in an owned successor; preserve old source and actual run. No evidence says this variable affected Root5291."
+    },
+    {
+      "id": "WMMA-FIXTURE-SHARED-ID-01",
+      "rules": [
+        "Q0",
+        "Q4",
+        "X12"
+      ],
+      "status": "ACTUAL_FAILED; coherent fixture-only successor pending author",
+      "source": "tests/cuda/test_sm70_wmma80_current.py:47 vs gguf_weights.py:383-386",
+      "fact": "GGUFExperts constructor adds1 to routed count. Fixture passes513 despite512 routed packed banks, so public shared ID becomes513 while picks use512. Raw native shared512 zero handling and public reference use different IDs. This independently explains reference/shared-slot nonfinite failure without granting WMMA numeric proof.",
+      "actual": {
+        "log": "/Warehouse/TensorFold-portable-audit-20261026/router-gdn-wmma80-20261028/actual-a96a-safety-failure/full-run.log",
+        "log_sha256": "3dc1f3737129044ff9d46bd4e7ab5c768dfaa293cb79cb1b1db2cbf019289769",
+        "summary": "5failed/1passed/5warnings in3.95s; all6 not reached"
+      },
+      "required": "Correct constructor routed count to512 and add actual constructor/public-shared-contract control; retain original failure. Strict existing numeric comparisons remain."
+    }
+  ],
+  "cleanup": "No verified dead code or unjustified duplicate found in this candidate scope. Retained original kernels/oracles/reference paths serve required candidate and historical evidence roles. No source cleanup performed.",
+  "execution": "Read-only source/Git/hash/ZIP verification only; no GPU, source edits, vendor patch, tests or remote process launched by reviewer.",
+  "pending": [
+    "Author default-allocator guard successor and focused proof",
+    "Author shared-ID fixture successor and exact binding",
+    "Root actual corrected safety and any all6/quality evidence",
+    "Explicit accepted approximate quality contract and repeatability remain outside this source receipt"
+  ]
+}

@@ -1,0 +1,483 @@
+{
+  "schema": "tensorfold.generic-packed-shared-fusion-existing-evidence-v1",
+  "source_reference": "146f8a81/7c0a, existing GGUFExperts.forward_blocks2w /gguf_ops.experts(blockwise=True,projection_warps=2)",
+  "mechanism": "For actualobservedIQ18/21/22/23+Q8MTP8, kquants(12or13 bothG/U) predicateFALSE so genericpackedG/U. True2warpprojection requires12/13,16Balign,offset0,K%256. Do notmarketactualIQcandidateas2warp.",
+  "arithmetic": "genericpacked G/U warpFMA and8-strided-lane down reduction differscurrentexact4contiguous20-term down. SharedFFN evaluatedinsidepackedkernels insteadoriginalseparateDense3projections+SwiGLU/where; also changes sharedreductiontree. Weightsbytes/input/activationF16 preserved; targetoutF16 andMTPoutF32 mustremain.",
+  "evidence": {
+    "old20_metriccases": "R1/R3,10typepairs,finite/self-row/INT32F16cast validated; noerroracceptancethreshold",
+    "metrics": [
+      {
+        "independent_fp64": {
+          "half_bin_mismatches": 2,
+          "max_abs": 6.676418706774712e-08,
+          "relative_l2": 6.394638315816413e-08,
+          "rms": 8.216035396198108e-09,
+          "values": 7680
+        },
+        "kinds": [
+          18,
+          20
+        ],
+        "method": "forward_blocks2w",
+        "original_bmm": {
+          "half_bin_mismatches": 5,
+          "max_abs": 1.1920928955078125e-07,
+          "relative_l2": 1.0211463177528444e-07,
+          "rms": 1.3120013840128645e-08,
+          "values": 7680
+        },
+        "quality_status": "unqualified; metrics do not establish nonmaterial model loss",
+        "rows": 1
+      },
+      {
+        "independent_fp64": {
+          "half_bin_mismatches": 8,
+          "max_abs": 1.3899989426136017e-07,
+          "relative_l2": 7.09310725064083e-08,
+          "rms": 1.2663239364367396e-08,
+          "values": 23040
+        },
+        "kinds": [
+          18,
+          20
+        ],
+        "method": "forward_blocks2w",
+        "original_bmm": {
+          "half_bin_mismatches": 12,
+          "max_abs": 1.7881393432617188e-07,
+          "relative_l2": 1.1376623903450386e-07,
+          "rms": 2.0310550356902277e-08,
+          "values": 23040
+        },
+        "quality_status": "unqualified; metrics do not establish nonmaterial model loss",
+        "rows": 3
+      },
+      {
+        "independent_fp64": {
+          "half_bin_mismatches": 0,
+          "max_abs": 3.483364707790315e-10,
+          "relative_l2": 3.698502280189029e-08,
+          "rms": 8.019220141709453e-11,
+          "values": 7680
+        },
+        "kinds": [
+          18,
+          42
+        ],
+        "method": "forward_blocks2w",
+        "original_bmm": {
+          "half_bin_mismatches": 2,
+          "max_abs": 2.0954757928848267e-09,
+          "relative_l2": 9.594489636459156e-08,
+          "rms": 2.0803103742468009e-10,
+          "values": 7680
+        },
+        "quality_status": "unqualified; metrics do not establish nonmaterial model loss",
+        "rows": 1
+      },
+      {
+        "independent_fp64": {
+          "half_bin_mismatches": 2,
+          "max_abs": 5.820766091346741e-10,
+          "relative_l2": 5.1402534949044325e-08,
+          "rms": 1.5556306876843555e-10,
+          "values": 23040
+        },
+        "kinds": [
+          18,
+          42
+        ],
+        "method": "forward_blocks2w",
+        "original_bmm": {
+          "half_bin_mismatches": 5,
+          "max_abs": 2.0954757928848267e-09,
+          "relative_l2": 1.0737460250415505e-07,
+          "rms": 3.249552377047795e-10,
+          "values": 23040
+        },
+        "quality_status": "unqualified; metrics do not establish nonmaterial model loss",
+        "rows": 3
+      },
+      {
+        "independent_fp64": {
+          "half_bin_mismatches": 0,
+          "max_abs": 1.7593265511095524e-08,
+          "relative_l2": 6.807777010849885e-08,
+          "rms": 2.278525340234785e-09,
+          "values": 7680
+        },
+        "kinds": [
+          21,
+          20
+        ],
+        "method": "forward_blocks2w",
+        "original_bmm": {
+          "half_bin_mismatches": 3,
+          "max_abs": 2.2351741790771484e-08,
+          "relative_l2": 1.0092978293596466e-07,
+          "rms": 3.3780640440263703e-09,
+          "values": 7680
+        },
+        "quality_status": "unqualified; metrics do not establish nonmaterial model loss",
+        "rows": 1
+      },
+      {
+        "independent_fp64": {
+          "half_bin_mismatches": 6,
+          "max_abs": 1.7412821762263775e-07,
+          "relative_l2": 6.879365603282365e-08,
+          "rms": 1.617188040929358e-08,
+          "values": 23040
+        },
+        "kinds": [
+          21,
+          20
+        ],
+        "method": "forward_blocks2w",
+        "original_bmm": {
+          "half_bin_mismatches": 12,
+          "max_abs": 2.384185791015625e-07,
+          "relative_l2": 1.1648980091189816e-07,
+          "rms": 2.738419883197243e-08,
+          "values": 23040
+        },
+        "quality_status": "unqualified; metrics do not establish nonmaterial model loss",
+        "rows": 3
+      },
+      {
+        "independent_fp64": {
+          "half_bin_mismatches": 0,
+          "max_abs": 3.483364707790315e-10,
+          "relative_l2": 6.14330214153435e-08,
+          "rms": 5.7307888793499805e-11,
+          "values": 7680
+        },
+        "kinds": [
+          21,
+          42
+        ],
+        "method": "forward_blocks2w",
+        "original_bmm": {
+          "half_bin_mismatches": 2,
+          "max_abs": 2.0954757928848267e-09,
+          "relative_l2": 1.8222116662960617e-07,
+          "rms": 1.699852903883157e-10,
+          "values": 7680
+        },
+        "quality_status": "unqualified; metrics do not establish nonmaterial model loss",
+        "rows": 1
+      },
+      {
+        "independent_fp64": {
+          "half_bin_mismatches": 2,
+          "max_abs": 1.9208528101444244e-09,
+          "relative_l2": 6.205268355127945e-08,
+          "rms": 4.999131860290738e-10,
+          "values": 23040
+        },
+        "kinds": [
+          21,
+          42
+        ],
+        "method": "forward_blocks2w",
+        "original_bmm": {
+          "half_bin_mismatches": 5,
+          "max_abs": 2.0954757928848267e-09,
+          "relative_l2": 7.049451019214404e-08,
+          "rms": 5.679228274634086e-10,
+          "values": 23040
+        },
+        "quality_status": "unqualified; metrics do not establish nonmaterial model loss",
+        "rows": 3
+      },
+      {
+        "independent_fp64": {
+          "half_bin_mismatches": 2,
+          "max_abs": 1.0186340659856796e-08,
+          "relative_l2": 6.336989324815482e-08,
+          "rms": 1.6293298130090998e-09,
+          "values": 7680
+        },
+        "kinds": [
+          22,
+          20
+        ],
+        "method": "forward_blocks2w",
+        "original_bmm": {
+          "half_bin_mismatches": 6,
+          "max_abs": 1.6763806343078613e-08,
+          "relative_l2": 9.319969744059593e-08,
+          "rms": 2.3962963803847574e-09,
+          "values": 7680
+        },
+        "quality_status": "unqualified; metrics do not establish nonmaterial model loss",
+        "rows": 1
+      },
+      {
+        "independent_fp64": {
+          "half_bin_mismatches": 5,
+          "max_abs": 1.099215296562761e-08,
+          "relative_l2": 6.320754358787966e-08,
+          "rms": 1.3949119329260573e-09,
+          "values": 23040
+        },
+        "kinds": [
+          22,
+          20
+        ],
+        "method": "forward_blocks2w",
+        "original_bmm": {
+          "half_bin_mismatches": 10,
+          "max_abs": 2.2351741790771484e-08,
+          "relative_l2": 9.851315866408118e-08,
+          "rms": 2.174062973575349e-09,
+          "values": 23040
+        },
+        "quality_status": "unqualified; metrics do not establish nonmaterial model loss",
+        "rows": 3
+      },
+      {
+        "independent_fp64": {
+          "half_bin_mismatches": 0,
+          "max_abs": 3.483364707790315e-10,
+          "relative_l2": 5.465770701273814e-08,
+          "rms": 5.887422061250414e-11,
+          "values": 7680
+        },
+        "kinds": [
+          22,
+          42
+        ],
+        "method": "forward_blocks2w",
+        "original_bmm": {
+          "half_bin_mismatches": 2,
+          "max_abs": 2.0954757928848267e-09,
+          "relative_l2": 1.5621279496017783e-07,
+          "rms": 1.6826367343298636e-10,
+          "values": 7680
+        },
+        "quality_status": "unqualified; metrics do not establish nonmaterial model loss",
+        "rows": 1
+      },
+      {
+        "independent_fp64": {
+          "half_bin_mismatches": 2,
+          "max_abs": 4.3712589103961363e-10,
+          "relative_l2": 5.642339985561182e-08,
+          "rms": 5.088293053501304e-11,
+          "values": 23040
+        },
+        "kinds": [
+          22,
+          42
+        ],
+        "method": "forward_blocks2w",
+        "original_bmm": {
+          "half_bin_mismatches": 5,
+          "max_abs": 2.0954757928848267e-09,
+          "relative_l2": 1.785945004693458e-07,
+          "rms": 1.6105749417644794e-10,
+          "values": 23040
+        },
+        "quality_status": "unqualified; metrics do not establish nonmaterial model loss",
+        "rows": 3
+      },
+      {
+        "independent_fp64": {
+          "half_bin_mismatches": 1,
+          "max_abs": 1.285923644900322e-06,
+          "relative_l2": 6.548240654815707e-08,
+          "rms": 1.4364594108933774e-07,
+          "values": 7680
+        },
+        "kinds": [
+          23,
+          20
+        ],
+        "method": "forward_blocks2w",
+        "original_bmm": {
+          "half_bin_mismatches": 3,
+          "max_abs": 1.9073486328125e-06,
+          "relative_l2": 1.05184812895057e-07,
+          "rms": 2.307394009272023e-07,
+          "values": 7680
+        },
+        "quality_status": "unqualified; metrics do not establish nonmaterial model loss",
+        "rows": 1
+      },
+      {
+        "independent_fp64": {
+          "half_bin_mismatches": 5,
+          "max_abs": 1.285923644900322e-06,
+          "relative_l2": 6.527962056074638e-08,
+          "rms": 8.513981650100583e-08,
+          "values": 23040
+        },
+        "kinds": [
+          23,
+          20
+        ],
+        "method": "forward_blocks2w",
+        "original_bmm": {
+          "half_bin_mismatches": 13,
+          "max_abs": 1.9073486328125e-06,
+          "relative_l2": 1.0463147282081066e-07,
+          "rms": 1.3646378792709158e-07,
+          "values": 23040
+        },
+        "quality_status": "unqualified; metrics do not establish nonmaterial model loss",
+        "rows": 3
+      },
+      {
+        "independent_fp64": {
+          "half_bin_mismatches": 0,
+          "max_abs": 1.6065314412117004e-08,
+          "relative_l2": 6.350641206440899e-08,
+          "rms": 5.147458209319888e-09,
+          "values": 7680
+        },
+        "kinds": [
+          23,
+          42
+        ],
+        "method": "forward_blocks2w",
+        "original_bmm": {
+          "half_bin_mismatches": 0,
+          "max_abs": 1.4901161193847656e-08,
+          "relative_l2": 6.258351639281619e-08,
+          "rms": 5.072653452938021e-09,
+          "values": 7680
+        },
+        "quality_status": "unqualified; metrics do not establish nonmaterial model loss",
+        "rows": 1
+      },
+      {
+        "independent_fp64": {
+          "half_bin_mismatches": 0,
+          "max_abs": 1.6065314412117004e-08,
+          "relative_l2": 6.225669510182818e-08,
+          "rms": 3.0016565900113465e-09,
+          "values": 23040
+        },
+        "kinds": [
+          23,
+          42
+        ],
+        "method": "forward_blocks2w",
+        "original_bmm": {
+          "half_bin_mismatches": 2,
+          "max_abs": 1.4901161193847656e-08,
+          "relative_l2": 6.155405194639942e-08,
+          "rms": 2.9677790860392013e-09,
+          "values": 23040
+        },
+        "quality_status": "unqualified; metrics do not establish nonmaterial model loss",
+        "rows": 3
+      },
+      {
+        "independent_fp64": {
+          "half_bin_mismatches": 49,
+          "max_abs": 3.004824975505471e-07,
+          "relative_l2": 2.3616351323233255e-06,
+          "rms": 8.411044116613969e-08,
+          "values": 7680
+        },
+        "kinds": [
+          8,
+          8
+        ],
+        "method": "forward_blocks2w",
+        "original_bmm": {
+          "half_bin_mismatches": 3,
+          "max_abs": 2.2351741790771484e-08,
+          "relative_l2": 1.1295191417349615e-07,
+          "rms": 4.022821043305893e-09,
+          "values": 7680
+        },
+        "quality_status": "unqualified; metrics do not establish nonmaterial model loss",
+        "rows": 1
+      },
+      {
+        "independent_fp64": {
+          "half_bin_mismatches": 55,
+          "max_abs": 3.004824975505471e-07,
+          "relative_l2": 1.3889934953062191e-06,
+          "rms": 4.862440043572969e-08,
+          "values": 23040
+        },
+        "kinds": [
+          8,
+          8
+        ],
+        "method": "forward_blocks2w",
+        "original_bmm": {
+          "half_bin_mismatches": 9,
+          "max_abs": 2.9802322387695312e-08,
+          "relative_l2": 1.1140349212611077e-07,
+          "rms": 3.899894467216066e-09,
+          "values": 23040
+        },
+        "quality_status": "unqualified; metrics do not establish nonmaterial model loss",
+        "rows": 3
+      },
+      {
+        "independent_fp64": {
+          "half_bin_mismatches": 3,
+          "max_abs": 6.359186954796314e-08,
+          "relative_l2": 7.041093730939096e-08,
+          "rms": 1.1465567308864508e-08,
+          "values": 7680
+        },
+        "kinds": [
+          12,
+          7
+        ],
+        "method": "forward_blocks2w",
+        "original_bmm": {
+          "half_bin_mismatches": 8,
+          "max_abs": 1.1920928955078125e-07,
+          "relative_l2": 1.0588150132960277e-07,
+          "rms": 1.724151853947974e-08,
+          "values": 7680
+        },
+        "quality_status": "unqualified; metrics do not establish nonmaterial model loss",
+        "rows": 1
+      },
+      {
+        "independent_fp64": {
+          "half_bin_mismatches": 6,
+          "max_abs": 9.045470505952835e-08,
+          "relative_l2": 6.95563532485295e-08,
+          "rms": 9.264977914562627e-09,
+          "values": 23040
+        },
+        "kinds": [
+          12,
+          7
+        ],
+        "method": "forward_blocks2w",
+        "original_bmm": {
+          "half_bin_mismatches": 14,
+          "max_abs": 1.1920928955078125e-07,
+          "relative_l2": 1.0305402963560823e-07,
+          "rms": 1.3726902926988404e-08,
+          "values": 23040
+        },
+        "quality_status": "unqualified; metrics do not establish nonmaterial model loss",
+        "rows": 3
+      }
+    ],
+    "max_abs_vsBMM": 1.9073486328125e-06,
+    "max_relativeL2_vsBMM": 1.8222116662960617e-07,
+    "max_halfbin_vsBMM": 14,
+    "currentP3": "none; oldWMMAall6negative isdifferentoperator andnotthiscandidate judgement"
+  },
+  "resources": {
+    "activation_payload32x11": 56320,
+    "activation_payload32x33": 168960,
+    "partials": "none; Splits1, no weightreplicas",
+    "needed": "before-baselinecodeattribute residencyforselectedgeneric/block2w/downvariants; explicitdefaultnativeallocator2MiBsmallsegmentoperatingcredit +boundedhostmetadata, existinggraphsettlement/24floor retained; actualfirstcurrentqual pending"
+  },
+  "smallest_current_candidate": "isolated146fexpertsselector packed_blocks2w /namedgenericsharedfusionnumericepoch, inheritRouter/GDN/startup3/Dense32/prefill/N1graphs; no mathbodyrewrite or WMMAport. Constructor512routed\u2192513public/shared512. Retainexactoracles. CurrentINT32/513/top11/R1/3/30/31/32 F16target/F32MTP selfrow/capture/invalid/noalias controls andoneall6+same6tasks; broadqualitylater.",
+  "disposition": "credibleprivategenericpacked/shared-fusioncandidate; numericquality/currentresource/performanceOPEN; Rootauthorizesminimalprototype, no tests/GPUyet"
+}

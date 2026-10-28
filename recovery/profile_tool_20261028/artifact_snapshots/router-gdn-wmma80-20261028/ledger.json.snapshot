@@ -1,0 +1,31 @@
+{
+  "task": "ownedWMMA80experts-onlyprivatecomposition on146f",
+  "assessment": "wmma80-current-reassessment-20261028/assessment.json",
+  "status": "Root5291LIVE; source1db0/HOLD187d/stageimmutable, noauthorGPU",
+  "private_profile": "source-router-gdn-wmma80-trial",
+  "required_flags": "currentRouter/GDN/startup3 plus--wmma80-trial, newnumericStateepoch",
+  "known_failures": "old87-token outputdivergence, errorrecords empiricalonly; no threshold/exactoracleweakening",
+  "resource_plan": "22MiB/rank+64KiB/rankhost, nativeallocator/defaultenvrestriction,37variantcodewarm beforebaseline, graphsettlementadditional,24floor unchanged",
+  "pending": [
+    "D13resource/source/stageclosure",
+    "Rootactual6safetycontrols",
+    "Rootactualall6/capacity/selectors/quality comparativeaudit"
+  ],
+  "source": "1db0dbab8d3d033516ae6b6747ee509e107693c7",
+  "APP": "a96a5de15d05c8e6a7c5b37658639933b7fbe0b28260cb77ed7c69afd3cd84fd",
+  "HOLD": "187d041f4b17a2034349e939e92f7b57ede41445b07264e48716ffa3638be565",
+  "checks": "330CPU7.92s/Ruff/normal721FDc79/SM70compile-link-import/noCUDAcontextPASS; new6GPUcontrols precedemodel loop",
+  "Root_actual": {
+    "session": 5291,
+    "safety_control_gate": "mustpass6/no skips beforeall6",
+    "reference_146f_7c0": [
+      31.1,
+      25.8,
+      43.7,
+      71.0,
+      102.7,
+      103.8
+    ],
+    "quality_scope": "unchanged6tasks; prefix/outputdifferencecharacterization notautomaticpass/fail; broadqualitylaterunqualified"
+  }
+}

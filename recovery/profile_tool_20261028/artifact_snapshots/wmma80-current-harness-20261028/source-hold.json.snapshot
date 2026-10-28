@@ -1,0 +1,62 @@
+{
+  "schema": "tensorfold.private-current-WMMA80-composition-v1",
+  "commit": "e1881d5457de738c5cb4bfe635b8f8347c1cd854",
+  "worktree": "/Warehouse/TensorFold-wt/v100-wmma80-current-harness-20261028",
+  "base": "146f8a818d11ea69ca5b9cbd0f3d1f90067896ac",
+  "APP": "4899d93a192bdb228fedf7837c81a7f46c5cd7f62088e9d91a10760df8cde815",
+  "source_paths": {
+    "README.md": "61eae258118edb7d13b1052bd129c0e96a96dfc8d6dac185bed9f6ad48972fee",
+    "src/tensorfold/cuda/sm70/execution_policy.py": "0c7bbfc40191a6e8ece6de19b4ab1fb406b93c969ce130a7833b231349bd6e09",
+    "src/tensorfold/cuda/sm70/gguf_ops.cpp": "3c2c8300ddf7ca736cc1052069b43aae35b551d10918b55cdf86d4c06e649c77",
+    "src/tensorfold/cuda/sm70/gguf_ops.cu": "f50db57db640cdb32aefc210ee49f8a3ae39beac3a25a9b36d5d1b0e9783e902",
+    "src/tensorfold/cuda/sm70/gguf_ops.py": "f20ce5a1e78006c8d44b2ef90d31ebaa98c1bb2f2958678806c824089fd058cb",
+    "src/tensorfold/cuda/sm70/router_blas.py": "e451c523176725c34493a76171c700a5d1f93068836dd3da94b0bed0b074dffb",
+    "src/tensorfold/families/qwen4_exp/cuda/bound_graphs.py": "d972841f683fc682ffbe9cf26134eb195906145358ac18271279006c4805a754",
+    "src/tensorfold/families/qwen4_exp/cuda/engine.py": "42075d6fb1b963cdcd01f9bd241dce8d4df1c422e726ecb715b13276dadfd5e1",
+    "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py": "8c7b5e3ea20f399f944bd0d227126dc7073ac23bf8928a59195c67fcd91c3286",
+    "src/tensorfold/families/qwen4_exp/cuda/history_owner.py": "6741249abecd06e9c9f8dfbdc38ea6ceec9bc228bb6a1e8e89074fc20a62486f",
+    "src/tensorfold/families/qwen4_exp/cuda/multi.py": "ee721a2c1ef7c19bf1e9e1e93b17ea09689de653c4ce2d34342b766274522d53",
+    "src/tensorfold/families/qwen4_exp/cuda/prefix_policy.py": "ee71cdd8f348bcaabe4fc7c4a8293c3492ae552c2826f4542deb0f2e22cd5f15",
+    "src/tensorfold/families/qwen4_exp/cuda/startup_content.py": "3e15c902d07af75d9abd1ef49f0ad1a4f29ae39792bc7e4c6759dedc38f48f24",
+    "src/tensorfold/families/qwen4_exp/cuda/target_greedy.py": "8ccfe7ed9c01534b444eac4cde80adf502e27570bcd6d9ad6db97cc056eb2cd5",
+    "tests/cuda/test_sm70_gguf_wmma80.py": "0899cae17d174de99519b744952f06fd13606098ecd926d27f47bf285af83be8",
+    "tests/cuda/test_sm70_wmma80_current.py": "8e3821dbf575475b6f0d99fc0bebc4d8c7ed9c80ef85fadaba01459df3782ef3",
+    "tests/test_fast_grid.py": "4de6516c358b8ca4b51a41cdb8b2614106cdd65bc0f9a74d48eb4772258e6479",
+    "tests/test_sm70_execution_policy.py": "e749acefa0763b9caf8e05ac0798c1f582b0b219e0fcae6ca311c19b3809df1a",
+    "tests/test_sm70_router_blas_model.py": "650812a01d409334e1e289510ff6612feb421423a208e243e44cde757bf509f5",
+    "tests/test_wmma80_current_policy.py": "135e6ee5a4b42aa40c47c7da2fbc50718e230c569eb2f1bf76788655bf64990f",
+    "tools/v100_backend_probe.py": "0655f73fdf767e948b89520d68726c0704c0442023dc0c62eb1949e1c8b9c992"
+  },
+  "checks": {
+    "controls-command.json": "74d6b3925c4323a98d3435df1e7106a1420ebaf2ba4eac1efe0b6806fa48cf86",
+    "controls-exit.json": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17",
+    "controls.log": "3e0cb41d7f29bcde2aec875b821b5c8c1175b9f0ab6a43ab4d074abbc415a78b",
+    "wheel-provenance.json": "9a5ec2917a7d6428bade18e43b2f52e1dcc83ac58b3244fb29ace7ee5a0d5452"
+  },
+  "checks_scope": "5affectedCPU/policy controlsPASS/Ruff/normal721FDc79;6strictGPUcontrolscollectedUNRUN. NativeCPP/CUDA/adapterbitexact1db reusepriorSM70compile, no nativebuildrepeat.",
+  "numeric_policy": "ownedcf1f kernels byteexact; FP16weights/activation,FP32WMMA split8 differsBMM. Originalshared/prefill/reference/exactpaths preserved; old87-token divergence and20WMMA empiricalerrorrecords retained. No tolerance/qualityacceptance invented.",
+  "selectors": "onlyexperts packed_wmma80 in explicitnewsource-router-gdn-wmma80-trial/numericStateepoch; inheritedRouter/GDN/startup3/Dense32/FP32state/Q8/24/row32/MTP2/.7; no genericDenseWMMA/globaloptimizedflag",
+  "resources": {
+    "raw_temporary_max32x33": 5575680,
+    "actual32x11": 1858560,
+    "device_operating_per_rank": 23068672,
+    "host_per_rank": 65536,
+    "native_allocator_region": "default native CUDAallocator, noenv overrides;20MiBlarge+2MiBsmallsegmentcredit; all37WMMAvariants attribute-materialized beforephysicalbaseline. Graphcommitments additionalexistingphysicalsettlement;24floor checkedactualbeforekeep",
+    "no_weight_replication": true
+  },
+  "assessment": "wmma80-current-reassessment-20261028/assessment.json",
+  "pending": [
+    "D13source/stage/resourcepremiseclosure",
+    "Rootactual6INT32FP32/513/top11/mixed/row/capture/alias/invalidcontrols",
+    "Rootall6FASTv2+unchanged6quality/currentnative24floor vs7c0",
+    "broadquality/repeatslaterunqualified; no speedacceptance"
+  ],
+  "corrective_scope": {
+    "APP": "onlyrejectPYTORCH_HIP_ALLOC_CONF inexistingdefault-nativeallocatorguard",
+    "fixture": "GGUFExpertsconstructorarg=countROUTED512, constructorstores513; prior513wronglystored514 and failed publicsharedproduction; finite/error/shared/rowchecksretained",
+    "JUnit": "use supportedlegacy output soerrorproperties retained; no warningfilter",
+    "prior_failure": "/Warehouse/TensorFold-portable-audit-20261026/router-gdn-wmma80-20261028/actual-a96a-safety-failure/full-run.log",
+    "prior_failure_sha256": "3dc1f3737129044ff9d46bd4e7ab5c768dfaa293cb79cb1b1db2cbf019289769",
+    "warnings": "5identicalrecord_property/xunit2incompatibility; allfivepreserved, fixedthroughsupportedlegacyJUnit, no CUDA/mathwarning"
+  }
+}

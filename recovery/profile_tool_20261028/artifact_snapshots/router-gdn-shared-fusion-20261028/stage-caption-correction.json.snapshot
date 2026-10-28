@@ -1,0 +1,9 @@
+{
+  "schema": "shared-fusion-stage-caption-correction-v1",
+  "held_source_package_unchanged": true,
+  "original_stage_ready_sha256": "e44e48c28ca12ea201ccb4bdac7c678c88a242b3924172cf87c6122e544aa68d",
+  "original_required_before_launch": "D13 source/stage release; Root GPU lease; shared3controls then actualall6+pairedquality; experimental numeric candidate no acceptance",
+  "correction": "The executable run_fusion_controls.py requires6actualcurrentgenericpacked/shared-fusion safety cases and no skips before all6FASTv2+unchanged6task loop. The inherited shared3 caption was stale and never controlled execution.",
+  "actual_safety": "Root68618 sixPASS3.92s; actual-first-all6-7604/shared-fusion-current.xml",
+  "D13": "combined-review-final.json closedfff395ae; source/stage only, no broadacceptance"
+}

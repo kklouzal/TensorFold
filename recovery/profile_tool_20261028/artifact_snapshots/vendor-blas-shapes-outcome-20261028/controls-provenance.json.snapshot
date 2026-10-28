@@ -1,0 +1,69 @@
+{
+  "final": {
+    "argv": [
+      "docker",
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "--cpus",
+      "2",
+      "--memory",
+      "8g",
+      "-e",
+      "CUDA_VISIBLE_DEVICES=",
+      "-e",
+      "PYTHONDONTWRITEBYTECODE=1",
+      "--mount",
+      "type=bind,src=/Warehouse/TensorFold-wt/v100-vendor-blas-shapes-outcome-20261028,dst=/source,readonly",
+      "--mount",
+      "type=bind,src=/Warehouse/TensorFold-portable-audit-20261026/joint-candidate-finish-integration-20261028,dst=/reference,readonly",
+      "--entrypoint",
+      "/bin/bash",
+      "sha256:30fda46a4c40422e055e0615a8186fc1c39678be9c8c9761885fc0cb77c28993",
+      "-c",
+      "set -euo pipefail; python -m pip install --no-index --no-deps --force-reinstall --no-compile /reference/wheels/*.whl; python -m pytest -c /dev/null -o \"pythonpath=/source/tests /source\" -p no:cacheprovider -q /source/tests/test_v100_dense_shape_diagnostic.py; python -m ruff check --no-cache /source/tools/v100_dense_shape_diagnostic.py /source/tests/test_v100_dense_shape_diagnostic.py; python /source/tools/v100_dense_shape_diagnostic.py --help"
+    ],
+    "cwd": "/home/kklouzal",
+    "noGPU": true
+  },
+  "final_exit": {
+    "exit_code": 0
+  },
+  "finalowner": {
+    "argv": [
+      "docker",
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "--cpus",
+      "2",
+      "--memory",
+      "8g",
+      "-e",
+      "CUDA_VISIBLE_DEVICES=",
+      "-e",
+      "PYTHONDONTWRITEBYTECODE=1",
+      "--mount",
+      "type=bind,src=/Warehouse/TensorFold-wt/v100-vendor-blas-shapes-outcome-20261028,dst=/source,readonly",
+      "--mount",
+      "type=bind,src=/Warehouse/TensorFold-portable-audit-20261026/joint-candidate-finish-integration-20261028,dst=/reference,readonly",
+      "--entrypoint",
+      "/bin/bash",
+      "sha256:30fda46a4c40422e055e0615a8186fc1c39678be9c8c9761885fc0cb77c28993",
+      "-c",
+      "set -euo pipefail; python -m pip install --no-index --no-deps --force-reinstall --no-compile /reference/wheels/*.whl; python -m pytest -c /dev/null -o \"pythonpath=/source/tests /source\" -p no:cacheprovider -q /source/tests/test_v100_dense_shape_diagnostic.py -k \"actual_timed or actual_timing_owner or actual_handler\"; python -m ruff check --no-cache /source/tools/v100_dense_shape_diagnostic.py /source/tests/test_v100_dense_shape_diagnostic.py; python /source/tools/v100_dense_shape_diagnostic.py --help"
+    ],
+    "cwd": "/home/kklouzal",
+    "noGPU": true
+  },
+  "finalowner_exit": {
+    "exit_code": 0
+  },
+  "logs": {
+    "controls-final.log": "f22fde81adc3e59b35d44b26042d276aecd6429525fd1471628206070057db15",
+    "controls-final-owner.log": "468116043d8fe61ca4e444e6b311f078f6e164284aef5139818d63dcf1ad4fe4"
+  },
+  "scope": "onlyaffectedtoolcontrols; previous7baselinegeometry/metriccontrols reused; APPfbaaexact"
+}

@@ -1,0 +1,50 @@
+{
+  "schema": "tensorfold.startupguard-executed-controls-v1",
+  "actual_session": 68989,
+  "exit_code": 0,
+  "argv": [
+    "docker",
+    "run",
+    "--rm",
+    "--network",
+    "none",
+    "--cpus",
+    "2",
+    "--memory",
+    "8g",
+    "--ulimit",
+    "stack=67108864",
+    "-e",
+    "PYTHONDONTWRITEBYTECODE=1",
+    "-e",
+    "CUDA_VISIBLE_DEVICES=",
+    "--mount",
+    "type=bind,src=/Warehouse/TensorFold-wt/v100-startup-guard-maps-20261027,dst=/source,readonly",
+    "--mount",
+    "type=bind,src=/Warehouse/TensorFold-portable-audit-20261026/startup-guard-maps-integration-20261027,dst=/evidence",
+    "--entrypoint",
+    "/bin/bash",
+    "sha256:30fda46a4c40422e055e0615a8186fc1c39678be9c8c9761885fc0cb77c28993",
+    "-c",
+    "set -euo pipefail\nmkdir /attention-source\ntar --exclude=.git --exclude=.ruff_cache --exclude=__pycache__ -C /source -cf - . | tar -C /attention-source -xf -\npython -m pip wheel --no-build-isolation --no-deps /attention-source --wheel-dir /evidence/wheels\npython -m pip install --no-index --no-deps --force-reinstall --no-compile /evidence/wheels/*.whl\npython -m pip check\npython -m pytest -c /dev/null -o \"pythonpath=/source/tests /source\" -p no:cacheprovider -q /source/tests/test_startup_content.py /source/tests/test_model_identity_boundary.py /source/tests/test_model_identity_process.py /source/tests/test_shared_model_identity.py /source/tests/test_execution_profile_identity.py /source/tests/test_flashnext_engine_lifetime.py /source/tests/test_fd_owner_native.py /source/tests/test_snapshot_fd_owner_native.py /source/tests/test_fd_owner_fault_source_control.py /source/tests/test_sm70_value_guard.py /source/tests/test_sm70_unique_piece_graphs.py /source/tests/test_sm70_owner_piece_adapter.py /source/tests/test_sm70_owner_piece_policy.py /source/tests/test_sm70_target_greedy_policy.py /source/tests/test_target_greedy.py /source/tests/test_fast_grid.py /source/tests/test_finite_concurrency.py /source/tests/test_v100_backend_probe.py\npython -m ruff check --no-cache /source/src/tensorfold/engine/model_identity.py /source/src/tensorfold/families/qwen4_exp/cuda/startup_content.py /source/src/tensorfold/families/qwen4_exp/cuda/execution_identity.py /source/src/tensorfold/families/qwen4_exp/cuda/engine.py /source/tests/test_startup_content.py /source/tools/v100_backend_probe.py /source/tests/test_v100_backend_probe.py\n\npython /evidence/verify-wheel.py\n"
+  ],
+  "cwd": "/home/kklouzal",
+  "log": "controls.log",
+  "log_sha256": "39868cd92887bce91a4593e17d4a39d0d6f6f1aafe1630a139d0affb283dc6d9",
+  "source_record_sha256": "67baf1dffa7367005d29eab02627d7e0052c0399562e3f2cfbfcabd360159324",
+  "source_hold_sha256": "d1ac2642635baf57298c007ee8fa11f98de35e501957b4e46216842e017346b2",
+  "counts": {
+    "passed": 478,
+    "subtests": 5
+  },
+  "seconds": 15.51,
+  "normalwholewheel": {
+    "path": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3138379,
+    "sha256": "c696b9e18a86c644f3058fa044fb41348bc9ad1f9f37d9146efa1bcea6065d12"
+  },
+  "package_files": 717,
+  "FD_source_andartifact_bound": true,
+  "GPUexecution": "none",
+  "provenance": "startrecordmadebeforeactualbuild; terminalcodefromexec/write_stdin; sourceimmutableafter"
+}

@@ -1,0 +1,38 @@
+{
+  "schema": "tensorfold.combined-d13-review-v1",
+  "at": "2026-10-28T02:31:36.769953+00:00",
+  "status": "CLOSED receiptJSONrootfix/source+stage; startupP3notpresumed",
+  "scope": "OneAPPline Group.record partitions representation+README/actualphasecanonicalregression; reuseae4f/d9dworker/hash/ownership/nativeproofs; Rootsolewriter",
+  "commit": "d73d4c962a4a691e7150eb4f77923a5b0121bfbd",
+  "hold_sha256": "6c56eabfeb3240d9daf42d4d4c06f73228c3a1f8fe36c6034e8fffee05c5ca23",
+  "wheel": {
+    "path": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3143992,
+    "sha256": "175196fc0af92f9a91fcd3044461f5475b8de2cf19fbf31a42f540a92b443be4"
+  },
+  "finding": {
+    "rules": [
+      "C3",
+      "A0",
+      "Q0",
+      "X5"
+    ],
+    "prior": "Grouprecordtuple-of-tuples rejectedbyactualstrictcanonical_runtime_jsonduringphase publication;89525startupfailedbeforerequests. Reviewerpriorreceiptconsumercheckmissedthisboundary.",
+    "remediation": "Onlyreturneddiagnosticpartitionscopytolist-of-lists; internalimmutablepartition/authority/hash/perworkercompletion/state unchanged; serializerstrictunchanged. Actualexecution_identity._phase Store.set/get runsrealcanonicalvalidationregression, notbuiltinjson-onlyproxy.112CPU12.41normal1751/Ruff/pip plusSDKscopedtestRuff, no unchangedhelp rerunclaim."
+  },
+  "source_assessment": "No algorithm/numeric/counter/control/floor/data changes. Fixedbounded<=64namepartitionarraysfitexisting3*8MiBworkingbudget; allocationonlyafterworkersretired, ordinaryexceptionretainsowner underexistingoutcome. No dead/duplicatedpathintroduced.",
+  "evidence": {
+    "CPU_command_sha256": "0972f524a40d417f3ab52e0d081d52af8f629ebb488c8ff746469a13c2993bdd",
+    "CPU_exit_sha256": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17",
+    "CPU_log_sha256": "239321d43260ebf23c757e08d3a4ccf35eb65cef3498cca7732748d84606a7bb",
+    "stage_files": 19,
+    "stage_manifest_sha256": "4aed4a36e4613d54ea6a39a54683d7653f61cac15a3a34c963f4f10391bf470f",
+    "reviewer": "Read/hash/sourceonly, noGPU/build/testduplication",
+    "Root_actual": "Current1751all8READY/contentbindingpassed,3workeroperationsretired,total88021025919Bhashed159.964s; all6valid30.7/20.3/33.3/51.6/65.1/65.3, likelyhistqualityterminal1 Rootstillinspecting. Noauthoritativecomparativestartupgainorequivalenceinferred."
+  },
+  "remaining": [
+    "Rootarchivequality/nativeID/drain/currentworkers3/physicaladmission receipts andmatchedsingleworkerstartupcomparison",
+    "CurrentdevelopmentreferenceDense4efe/tier24>16>8>4>2>1 acceptance; no sourcefixclaimchangesperformancepriority",
+    "No85/600/broadquality/servicequalificationfromthismetadatafix"
+  ]
+}

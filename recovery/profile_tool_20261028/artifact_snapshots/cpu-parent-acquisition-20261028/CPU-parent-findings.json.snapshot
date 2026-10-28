@@ -1,0 +1,1181 @@
+{
+  "schema": "tensorfold.current4b0-rank0-CPU-parent-findings-v1",
+  "scope": "BoundedlocalinterpretationofRoot71209 completedselectedrankrescan. No newremoteanalysis/rawread/GPU. Counts andinclusiveCPU/APIwallbyone nearestproject; nested durations overlap and mustnotbesummed intoexclusiveCPUbusy/Pythonresidual.",
+  "actual": {
+    "complete": true,
+    "rank": 0,
+    "core_start_us": 2347020943687.529,
+    "core_end_us": 2347030943685.347,
+    "raw_sha256": "33859e46bbeac56e109a958e3c95a1a3bb2ea02fd39d14a3a5fc6dd65ad05431",
+    "raw_bytes": 1416389948,
+    "elapsed_seconds": 24.21865716400498,
+    "memory_limit_bytes": 8589934592,
+    "observed_maxrss_bytes": 266969088,
+    "source_sha256": "61465b23b26db6eb4b7cf2edc0fc0d5cd3f2335c6ca81ea03e787bddc0a6cb7c",
+    "helper_sha256": "780c7d40cc90b4226212d4e1e0dcccaebeaad01e9c4148beaa15b790bda58df1",
+    "selected_events": 812547,
+    "project_ranges": 26757
+  },
+  "group_count": 267,
+  "parent_groups": {
+    "tensorfold/body/concurrent/compute_decode": [
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cuda_runtime",
+        "name": "cudaEventSynchronize",
+        "count": 369,
+        "inclusive_us": 607901.345703125,
+        "maximum_us": 8670.7529296875
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::mm",
+        "count": 12238,
+        "inclusive_us": 443362.5986328125,
+        "maximum_us": 3160.19189453125
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cuda_runtime",
+        "name": "cudaLaunchKernel",
+        "count": 62734,
+        "inclusive_us": 433736.04931640625,
+        "maximum_us": 3130.0888671875
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::slice",
+        "count": 106974,
+        "inclusive_us": 357075.07958984375,
+        "maximum_us": 1631.89404296875
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::copy_",
+        "count": 13712,
+        "inclusive_us": 217491.74951171875,
+        "maximum_us": 2118.7509765625
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::where",
+        "count": 3905,
+        "inclusive_us": 132246.4033203125,
+        "maximum_us": 153.89794921875
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cuda_runtime",
+        "name": "cudaMemcpyAsync",
+        "count": 8348,
+        "inclusive_us": 99129.9306640625,
+        "maximum_us": 850.4140625
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::as_strided",
+        "count": 131120,
+        "inclusive_us": 92994.8837890625,
+        "maximum_us": 1338.18505859375
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::to",
+        "count": 6776,
+        "inclusive_us": 84557.09423828125,
+        "maximum_us": 284.50390625
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::empty",
+        "count": 15025,
+        "inclusive_us": 78748.40185546875,
+        "maximum_us": 793.6572265625
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::_to_copy",
+        "count": 3581,
+        "inclusive_us": 78477.0361328125,
+        "maximum_us": 283.59619140625
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::mul",
+        "count": 4260,
+        "inclusive_us": 73201.24951171875,
+        "maximum_us": 2088.30322265625
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cuda_driver",
+        "name": "cuLaunchKernel",
+        "count": 10762,
+        "inclusive_us": 68206.72802734375,
+        "maximum_us": 248.6298828125
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::t",
+        "count": 12238,
+        "inclusive_us": 58232.30419921875,
+        "maximum_us": 251.62109375
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::remainder",
+        "count": 2840,
+        "inclusive_us": 53383.75927734375,
+        "maximum_us": 770.94189453125
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::arange",
+        "count": 2130,
+        "inclusive_us": 44289.5283203125,
+        "maximum_us": 117.55810546875
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::index_select",
+        "count": 1775,
+        "inclusive_us": 43293.78173828125,
+        "maximum_us": 166.68505859375
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::fill_",
+        "count": 3450,
+        "inclusive_us": 41539.74560546875,
+        "maximum_us": 44.7958984375
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::view",
+        "count": 16163,
+        "inclusive_us": 35576.06201171875,
+        "maximum_us": 340.38916015625
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::abs",
+        "count": 1420,
+        "inclusive_us": 34708.69775390625,
+        "maximum_us": 2048.23681640625
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::lt",
+        "count": 1775,
+        "inclusive_us": 33928.171875,
+        "maximum_us": 52.4619140625
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::scalar_tensor",
+        "count": 1775,
+        "inclusive_us": 32757.78076171875,
+        "maximum_us": 114.60791015625
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::isfinite",
+        "count": 355,
+        "inclusive_us": 31455.39990234375,
+        "maximum_us": 170.6162109375
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::select",
+        "count": 7530,
+        "inclusive_us": 29638.1923828125,
+        "maximum_us": 83.8232421875
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::transpose",
+        "count": 12238,
+        "inclusive_us": 28311.88037109375,
+        "maximum_us": 108.0
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::add",
+        "count": 1775,
+        "inclusive_us": 28140.236328125,
+        "maximum_us": 38.27294921875
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::__and__",
+        "count": 1420,
+        "inclusive_us": 25708.005859375,
+        "maximum_us": 289.44384765625
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::eq",
+        "count": 1420,
+        "inclusive_us": 24490.6455078125,
+        "maximum_us": 40.69287109375
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::bitwise_and",
+        "count": 1420,
+        "inclusive_us": 23340.45068359375,
+        "maximum_us": 287.9140625
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::clamp",
+        "count": 1065,
+        "inclusive_us": 22850.90283203125,
+        "maximum_us": 181.837890625
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::resize_",
+        "count": 6035,
+        "inclusive_us": 21495.73681640625,
+        "maximum_us": 32.1630859375
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::empty_strided",
+        "count": 3936,
+        "inclusive_us": 21416.33837890625,
+        "maximum_us": 131.44580078125
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::record_stream",
+        "count": 10136,
+        "inclusive_us": 19688.1923828125,
+        "maximum_us": 18.23681640625
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::reshape",
+        "count": 5504,
+        "inclusive_us": 19292.853515625,
+        "maximum_us": 175.10498046875
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::unsqueeze",
+        "count": 3282,
+        "inclusive_us": 18621.68212890625,
+        "maximum_us": 514.00390625
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::zero_",
+        "count": 1091,
+        "inclusive_us": 17672.513671875,
+        "maximum_us": 74.5791015625
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::sub",
+        "count": 1065,
+        "inclusive_us": 17653.2060546875,
+        "maximum_us": 43.42919921875
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::narrow",
+        "count": 2340,
+        "inclusive_us": 12405.443359375,
+        "maximum_us": 92.841796875
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::clone",
+        "count": 386,
+        "inclusive_us": 10693.87890625,
+        "maximum_us": 88.88818359375
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::index",
+        "count": 355,
+        "inclusive_us": 10353.70166015625,
+        "maximum_us": 55.87890625
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::zeros",
+        "count": 355,
+        "inclusive_us": 9043.57421875,
+        "maximum_us": 83.7822265625
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::any",
+        "count": 355,
+        "inclusive_us": 8850.48388671875,
+        "maximum_us": 210.59912109375
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::mean",
+        "count": 355,
+        "inclusive_us": 8680.21044921875,
+        "maximum_us": 194.45703125
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::ne",
+        "count": 355,
+        "inclusive_us": 7397.9931640625,
+        "maximum_us": 39.97802734375
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::le",
+        "count": 355,
+        "inclusive_us": 6953.4521484375,
+        "maximum_us": 34.98779296875
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::div",
+        "count": 355,
+        "inclusive_us": 6680.03076171875,
+        "maximum_us": 32.81494140625
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::bitwise_not",
+        "count": 355,
+        "inclusive_us": 6199.69091796875,
+        "maximum_us": 245.76806640625
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::sin",
+        "count": 355,
+        "inclusive_us": 5922.12744140625,
+        "maximum_us": 51.16796875
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::bitwise_or_",
+        "count": 355,
+        "inclusive_us": 5917.81298828125,
+        "maximum_us": 32.365234375
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::cos",
+        "count": 355,
+        "inclusive_us": 5852.609375,
+        "maximum_us": 244.2138671875
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::rsqrt",
+        "count": 355,
+        "inclusive_us": 5836.9453125,
+        "maximum_us": 32.23193359375
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cuda_runtime",
+        "name": "cudaEventRecordWithFlags",
+        "count": 3570,
+        "inclusive_us": 5303.3681640625,
+        "maximum_us": 12.68408203125
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cuda_runtime",
+        "name": "cudaStreamIsCapturing",
+        "count": 5412,
+        "inclusive_us": 4691.24560546875,
+        "maximum_us": 17.94287109375
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cuda_runtime",
+        "name": "cudaDeviceGetAttribute",
+        "count": 10762,
+        "inclusive_us": 4592.037109375,
+        "maximum_us": 11.26416015625
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cuda_runtime",
+        "name": "cudaStreamWaitEvent",
+        "count": 1473,
+        "inclusive_us": 2618.8203125,
+        "maximum_us": 9.12109375
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cuda_runtime",
+        "name": "cudaOccupancyMaxActiveBlocksPerMultiprocessor",
+        "count": 1476,
+        "inclusive_us": 2174.29052734375,
+        "maximum_us": 9.6171875
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::expand",
+        "count": 386,
+        "inclusive_us": 1853.55810546875,
+        "maximum_us": 78.28076171875
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::empty_like",
+        "count": 31,
+        "inclusive_us": 274.6162109375,
+        "maximum_us": 18.89013671875
+      },
+      {
+        "parent": "tensorfold/body/concurrent/compute_decode",
+        "category": "cpu_op",
+        "name": "aten::_unsafe_view",
+        "count": 31,
+        "inclusive_us": 69.07470703125,
+        "maximum_us": 2.76220703125
+      }
+    ],
+    "tensorfold/body/concurrent/round": [
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cuda_runtime",
+        "name": "cudaStreamSynchronize",
+        "count": 90,
+        "inclusive_us": 726052.2749023438,
+        "maximum_us": 25925.35107421875
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cuda_runtime",
+        "name": "cudaLaunchKernel",
+        "count": 16492,
+        "inclusive_us": 112911.08984375,
+        "maximum_us": 2079.77099609375
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cpu_op",
+        "name": "aten::remainder",
+        "count": 3560,
+        "inclusive_us": 60719.15234375,
+        "maximum_us": 87.916015625
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cpu_op",
+        "name": "aten::select",
+        "count": 22033,
+        "inclusive_us": 59449.484375,
+        "maximum_us": 1605.19677734375
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cpu_op",
+        "name": "aten::index_select",
+        "count": 1780,
+        "inclusive_us": 41457.42724609375,
+        "maximum_us": 179.208984375
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cpu_op",
+        "name": "aten::fill_",
+        "count": 2152,
+        "inclusive_us": 32086.3525390625,
+        "maximum_us": 43.455078125
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cpu_op",
+        "name": "aten::zeros_like",
+        "count": 1142,
+        "inclusive_us": 31736.125,
+        "maximum_us": 122.01220703125
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cpu_op",
+        "name": "aten::where",
+        "count": 890,
+        "inclusive_us": 22287.2373046875,
+        "maximum_us": 103.5859375
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cpu_op",
+        "name": "aten::arange",
+        "count": 890,
+        "inclusive_us": 20164.45703125,
+        "maximum_us": 56.1318359375
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cpu_op",
+        "name": "aten::zero_",
+        "count": 1142,
+        "inclusive_us": 19070.34423828125,
+        "maximum_us": 50.14599609375
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cpu_op",
+        "name": "aten::as_strided",
+        "count": 26768,
+        "inclusive_us": 17841.63427734375,
+        "maximum_us": 17.466796875
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cpu_op",
+        "name": "aten::index_copy_",
+        "count": 890,
+        "inclusive_us": 16658.24609375,
+        "maximum_us": 194.205078125
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cpu_op",
+        "name": "aten::copy_",
+        "count": 1099,
+        "inclusive_us": 16378.8291015625,
+        "maximum_us": 44.416015625
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cpu_op",
+        "name": "aten::record_stream",
+        "count": 7478,
+        "inclusive_us": 14163.2646484375,
+        "maximum_us": 20.01611328125
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cuda_runtime",
+        "name": "cudaMemcpyAsync",
+        "count": 1099,
+        "inclusive_us": 11076.61865234375,
+        "maximum_us": 31.44189453125
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cpu_op",
+        "name": "aten::resize_",
+        "count": 3115,
+        "inclusive_us": 10953.9375,
+        "maximum_us": 20.01611328125
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cpu_op",
+        "name": "aten::empty",
+        "count": 3115,
+        "inclusive_us": 10836.20458984375,
+        "maximum_us": 20.123046875
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cpu_op",
+        "name": "aten::lt",
+        "count": 445,
+        "inclusive_us": 10314.67431640625,
+        "maximum_us": 53.8427734375
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cpu_op",
+        "name": "aten::empty_like",
+        "count": 1142,
+        "inclusive_us": 9911.75537109375,
+        "maximum_us": 28.43798828125
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cpu_op",
+        "name": "aten::clamp",
+        "count": 445,
+        "inclusive_us": 9487.24755859375,
+        "maximum_us": 39.51806640625
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cpu_op",
+        "name": "aten::empty_strided",
+        "count": 1142,
+        "inclusive_us": 8123.03271484375,
+        "maximum_us": 26.35498046875
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cpu_op",
+        "name": "aten::sub",
+        "count": 445,
+        "inclusive_us": 7671.677734375,
+        "maximum_us": 37.455078125
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cpu_op",
+        "name": "aten::unsqueeze",
+        "count": 1652,
+        "inclusive_us": 6976.78173828125,
+        "maximum_us": 64.4072265625
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cpu_op",
+        "name": "aten::slice",
+        "count": 1303,
+        "inclusive_us": 6892.740234375,
+        "maximum_us": 63.9619140625
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cuda_runtime",
+        "name": "cudaEventRecordWithFlags",
+        "count": 2122,
+        "inclusive_us": 2961.7763671875,
+        "maximum_us": 19.283203125
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cuda_runtime",
+        "name": "cudaStreamIsCapturing",
+        "count": 2302,
+        "inclusive_us": 1780.09814453125,
+        "maximum_us": 14.6220703125
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cpu_op",
+        "name": "aten::to",
+        "count": 445,
+        "inclusive_us": 535.5654296875,
+        "maximum_us": 18.298828125
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cpu_op",
+        "name": "aten::view",
+        "count": 90,
+        "inclusive_us": 292.89111328125,
+        "maximum_us": 5.06005859375
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cuda_runtime",
+        "name": "cudaEventSynchronize",
+        "count": 30,
+        "inclusive_us": 195.05224609375,
+        "maximum_us": 8.90283203125
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cpu_op",
+        "name": "aten::resolve_conj",
+        "count": 180,
+        "inclusive_us": 67.82763671875,
+        "maximum_us": 4.38818359375
+      },
+      {
+        "parent": "tensorfold/body/concurrent/round",
+        "category": "cpu_op",
+        "name": "aten::resolve_neg",
+        "count": 180,
+        "inclusive_us": 45.3369140625,
+        "maximum_us": 0.5341796875
+      }
+    ]
+  },
+  "source_count_fingerprints": [
+    {
+      "parent": "tensorfold/body/concurrent/compute_decode",
+      "inferred_source_family": "Cache.pool -> rms/rotary/_guard",
+      "inferred_pattern_units": 355,
+      "actual_operator_counts": [
+        {
+          "parent": "tensorfold/body/concurrent/compute_decode",
+          "category": "cpu_op",
+          "name": "aten::where",
+          "count": 3905,
+          "inclusive_us": 132246.4033203125,
+          "maximum_us": 153.89794921875,
+          "fingerprint_multiplier": 11
+        },
+        {
+          "parent": "tensorfold/body/concurrent/compute_decode",
+          "category": "cpu_op",
+          "name": "aten::remainder",
+          "count": 2840,
+          "inclusive_us": 53383.75927734375,
+          "maximum_us": 770.94189453125,
+          "fingerprint_multiplier": 8
+        },
+        {
+          "parent": "tensorfold/body/concurrent/compute_decode",
+          "category": "cpu_op",
+          "name": "aten::arange",
+          "count": 2130,
+          "inclusive_us": 44289.5283203125,
+          "maximum_us": 117.55810546875,
+          "fingerprint_multiplier": 6
+        },
+        {
+          "parent": "tensorfold/body/concurrent/compute_decode",
+          "category": "cpu_op",
+          "name": "aten::index_select",
+          "count": 1775,
+          "inclusive_us": 43293.78173828125,
+          "maximum_us": 166.68505859375,
+          "fingerprint_multiplier": 5
+        },
+        {
+          "parent": "tensorfold/body/concurrent/compute_decode",
+          "category": "cpu_op",
+          "name": "aten::isfinite",
+          "count": 355,
+          "inclusive_us": 31455.39990234375,
+          "maximum_us": 170.6162109375,
+          "fingerprint_multiplier": 1
+        },
+        {
+          "parent": "tensorfold/body/concurrent/compute_decode",
+          "category": "cpu_op",
+          "name": "aten::mean",
+          "count": 355,
+          "inclusive_us": 8680.21044921875,
+          "maximum_us": 194.45703125,
+          "fingerprint_multiplier": 1
+        },
+        {
+          "parent": "tensorfold/body/concurrent/compute_decode",
+          "category": "cpu_op",
+          "name": "aten::rsqrt",
+          "count": 355,
+          "inclusive_us": 5836.9453125,
+          "maximum_us": 32.23193359375,
+          "fingerprint_multiplier": 1
+        },
+        {
+          "parent": "tensorfold/body/concurrent/compute_decode",
+          "category": "cpu_op",
+          "name": "aten::sin",
+          "count": 355,
+          "inclusive_us": 5922.12744140625,
+          "maximum_us": 51.16796875,
+          "fingerprint_multiplier": 1
+        },
+        {
+          "parent": "tensorfold/body/concurrent/compute_decode",
+          "category": "cpu_op",
+          "name": "aten::cos",
+          "count": 355,
+          "inclusive_us": 5852.609375,
+          "maximum_us": 244.2138671875,
+          "fingerprint_multiplier": 1
+        },
+        {
+          "parent": "tensorfold/body/concurrent/compute_decode",
+          "category": "cpu_op",
+          "name": "aten::bitwise_or_",
+          "count": 355,
+          "inclusive_us": 5917.81298828125,
+          "maximum_us": 32.365234375,
+          "fingerprint_multiplier": 1
+        },
+        {
+          "parent": "tensorfold/body/concurrent/compute_decode",
+          "category": "cpu_op",
+          "name": "aten::zeros",
+          "count": 355,
+          "inclusive_us": 9043.57421875,
+          "maximum_us": 83.7822265625,
+          "fingerprint_multiplier": 1
+        }
+      ],
+      "evidence_strength": "Direct nearest-project operator counts plus exact source-compatible multiplicities; NOT measured per-function entry count, exclusive CPUtime, or uniqueness proof. No inclusive durations summed."
+    },
+    {
+      "parent": "tensorfold/body/concurrent/round",
+      "inferred_source_family": "Cache.tail partial raw/coordinate reconstruction",
+      "inferred_pattern_units": 445,
+      "actual_operator_counts": [
+        {
+          "parent": "tensorfold/body/concurrent/round",
+          "category": "cpu_op",
+          "name": "aten::remainder",
+          "count": 3560,
+          "inclusive_us": 60719.15234375,
+          "maximum_us": 87.916015625,
+          "fingerprint_multiplier": 8
+        },
+        {
+          "parent": "tensorfold/body/concurrent/round",
+          "category": "cpu_op",
+          "name": "aten::index_select",
+          "count": 1780,
+          "inclusive_us": 41457.42724609375,
+          "maximum_us": 179.208984375,
+          "fingerprint_multiplier": 4
+        },
+        {
+          "parent": "tensorfold/body/concurrent/round",
+          "category": "cpu_op",
+          "name": "aten::where",
+          "count": 890,
+          "inclusive_us": 22287.2373046875,
+          "maximum_us": 103.5859375,
+          "fingerprint_multiplier": 2
+        },
+        {
+          "parent": "tensorfold/body/concurrent/round",
+          "category": "cpu_op",
+          "name": "aten::arange",
+          "count": 890,
+          "inclusive_us": 20164.45703125,
+          "maximum_us": 56.1318359375,
+          "fingerprint_multiplier": 2
+        },
+        {
+          "parent": "tensorfold/body/concurrent/round",
+          "category": "cpu_op",
+          "name": "aten::index_copy_",
+          "count": 890,
+          "inclusive_us": 16658.24609375,
+          "maximum_us": 194.205078125,
+          "fingerprint_multiplier": 2
+        },
+        {
+          "parent": "tensorfold/body/concurrent/round",
+          "category": "cpu_op",
+          "name": "aten::lt",
+          "count": 445,
+          "inclusive_us": 10314.67431640625,
+          "maximum_us": 53.8427734375,
+          "fingerprint_multiplier": 1
+        },
+        {
+          "parent": "tensorfold/body/concurrent/round",
+          "category": "cpu_op",
+          "name": "aten::clamp",
+          "count": 445,
+          "inclusive_us": 9487.24755859375,
+          "maximum_us": 39.51806640625,
+          "fingerprint_multiplier": 1
+        },
+        {
+          "parent": "tensorfold/body/concurrent/round",
+          "category": "cpu_op",
+          "name": "aten::sub",
+          "count": 445,
+          "inclusive_us": 7671.677734375,
+          "maximum_us": 37.455078125,
+          "fingerprint_multiplier": 1
+        }
+      ],
+      "evidence_strength": "Direct nearest-project operator counts plus exact source-compatible multiplicities; NOT measured per-function entry count, exclusive CPUtime, or uniqueness proof. No inclusive durations summed."
+    }
+  ],
+  "current_source_anchors": [
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/compact_indexer.py",
+      "function": "Cache.tail",
+      "line": 578,
+      "end_line": 611,
+      "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "sha256": "c670af98affd35a00a5964e8402b68c15f0b718c4a3ef338d1684c1b0342daaa"
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/compact_indexer.py",
+      "function": "Cache.pool",
+      "line": 613,
+      "end_line": 644,
+      "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "sha256": "c670af98affd35a00a5964e8402b68c15f0b718c4a3ef338d1684c1b0342daaa"
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/compact_indexer.py",
+      "function": "Cache.prepare_commit",
+      "line": 646,
+      "end_line": 659,
+      "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "sha256": "c670af98affd35a00a5964e8402b68c15f0b718c4a3ef338d1684c1b0342daaa"
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/compact_indexer.py",
+      "function": "Cache.publish_commit",
+      "line": 661,
+      "end_line": 671,
+      "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "sha256": "c670af98affd35a00a5964e8402b68c15f0b718c4a3ef338d1684c1b0342daaa"
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/compact_indexer.py",
+      "function": "CompactIndexer.commit",
+      "line": 848,
+      "end_line": 856,
+      "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "sha256": "c670af98affd35a00a5964e8402b68c15f0b718c4a3ef338d1684c1b0342daaa"
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/history_owner.py",
+      "function": "_publish_native_frame",
+      "line": 264,
+      "end_line": 287,
+      "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "sha256": "29fe48793f1daddb7a4af4f375390cb29e7df94ba10168c51f42708ff0003f10"
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/history_owner.py",
+      "function": "_native_frame_prepare",
+      "line": 289,
+      "end_line": 348,
+      "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "sha256": "29fe48793f1daddb7a4af4f375390cb29e7df94ba10168c51f42708ff0003f10"
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/batch_prelude.py",
+      "function": "BatchPrelude.submit",
+      "line": 24,
+      "end_line": 96,
+      "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "sha256": "9ec941959f6e31096ff2f4f54c1163eb644d38a3603c3e80937841b23e11b92c"
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/state.py",
+      "function": "State.set_pos",
+      "line": 587,
+      "end_line": 597,
+      "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "sha256": "ed34d299cad803f72301087a980901dcb478f4dfed5ea3fc06d4bfaa4e62bf1b"
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/state.py",
+      "function": "State._compact_commit",
+      "line": 625,
+      "end_line": 631,
+      "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "sha256": "ed34d299cad803f72301087a980901dcb478f4dfed5ea3fc06d4bfaa4e62bf1b"
+    },
+    {
+      "path": "src/tensorfold/cuda/sm70/family_ops.py",
+      "function": "_guard",
+      "line": 211,
+      "end_line": 228,
+      "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "sha256": "1781c6438efeb8571c9558e0a368c908420a473c6a4bb59d5e3d6c2d8eae067b"
+    },
+    {
+      "path": "src/tensorfold/cuda/sm70/family_ops.py",
+      "function": "rms",
+      "line": 252,
+      "end_line": 259,
+      "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "sha256": "1781c6438efeb8571c9558e0a368c908420a473c6a4bb59d5e3d6c2d8eae067b"
+    },
+    {
+      "path": "src/tensorfold/cuda/sm70/family_ops.py",
+      "function": "rotary",
+      "line": 359,
+      "end_line": 384,
+      "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "sha256": "1781c6438efeb8571c9558e0a368c908420a473c6a4bb59d5e3d6c2d8eae067b"
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+      "function": "_mm",
+      "line": 41,
+      "end_line": 55,
+      "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38"
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+      "function": "_down_act",
+      "line": 129,
+      "end_line": 146,
+      "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38"
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+      "function": "_pre_moe",
+      "line": 543,
+      "end_line": 573,
+      "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38"
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+      "function": "layer_forward",
+      "line": 576,
+      "end_line": 582,
+      "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38"
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+      "function": "_kv_check",
+      "line": 820,
+      "end_line": 854,
+      "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38"
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/multi.py",
+      "function": "MultiDecoder._round",
+      "line": 1982,
+      "end_line": 2285,
+      "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "sha256": "6ba5230d206044b053449c005df196f0a7c20ffdf9f67569bac7fac1d5f17efd"
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/multi.py",
+      "function": "MultiDecoder._mtp",
+      "line": 2482,
+      "end_line": 2506,
+      "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "sha256": "6ba5230d206044b053449c005df196f0a7c20ffdf9f67569bac7fac1d5f17efd"
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/kv_status.py",
+      "function": "KVStatusCohort._readback",
+      "line": 72,
+      "end_line": 81,
+      "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "sha256": "7bdfdec25674c348d55d71bdbc1a2ce9299abebc0e9c1fbb6278ed43f069928e"
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/kv_status.py",
+      "function": "KVStatusCohort.check",
+      "line": 83,
+      "end_line": 88,
+      "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "sha256": "7bdfdec25674c348d55d71bdbc1a2ce9299abebc0e9c1fbb6278ed43f069928e"
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+      "function": "GGUFDense.matmul",
+      "line": 141,
+      "end_line": 156,
+      "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd"
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+      "function": "GGUFDense.matmul_native32",
+      "line": 183,
+      "end_line": 186,
+      "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd"
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+      "function": "GGUFConcat.partials",
+      "line": 304,
+      "end_line": 305,
+      "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd"
+    }
+  ],
+  "ranked_remaining_work": [
+    {
+      "priority": 1,
+      "area": "Compact indexer Torch pool/tail transactions",
+      "evidence": "355-unit pool fingerprint insidecompute;445-unit nonemptytail fingerprint insideround. Individualcounts:where3905/.132246s,remainder2840/.053384s,index_select1775/.043294s,arange2130/.044290s,isfinite355/.031455s;roundindex_select1780/.041457s,remainder3560/.060719s,where890/.022287s,index_copy890/.016658s. These are individualinclusive scopes, not additive savings.",
+      "source_callchain": "TargetnativeOwnerBatchPrelude.submit -> _publish_native_frame -> CompactIndexer.append -> Cache.pool -> family_ops.rms/rotary/_guard. Targetcommit -> State.set_pos/_compact_commit -> CompactIndexer.commit -> Cache.prepare_commit -> Cache.tail -> publish_commit.",
+      "smallest_credible_candidate": "Nativebitwise boundedtail reconstruction first; then exact supported fixedRATIO4 pool with chosen FP32 reduction/cast points, rotary/guard/status semantics. Existingcompact_indexer nativeAPI onlypublishes/copies bytes; no already-qualifiedpool/tailmath alternative found inthat ownedmodule.",
+      "proof_needed": "Generation/Span/read-lease/stream/DMA/status-first retirement; raw+coordinatepair; exact zero/padding/rollback/partialcommit/snapshot isolation. Pool mustpreserve sequentialRATIO4 FP32 sum ->Half ->TorchFP32 RMS/half ->rotary casts ->finite/error latch. CurrentnativeRMS hasdifferentAPI/reduction not automaticallyexact; strictindependentGPUoracles first, numericcandidate onlyunderexplicitcontractifdifferences. Prepay boundedworkspaces/results; no reuse ofescaping snapshot/header allocations."
+    },
+    {
+      "priority": 2,
+      "area": "Remaining direct dense/projection and viewdispatch",
+      "evidence": "Compute has12238aten::mm/.443363s andmatching12238t/.058232s/transpose.028312s;106974slice/.357075s,131120as_strided/.092995s;13712copy/.217492s;15025empty/.078748s. No shapes orCPUcallstack were recorded.",
+      "source_callchain": "_pre_moe preservesattentionHC/GDN/attention/PLE beforeHC+MoEgraph; _mm andGGUFDense/GGUFConcat native32 submitATen/cuBLAS; repeatedviews andpaddedstaging remainoutsidecapturedregion.",
+      "smallest_credible_candidate": "Source-specificprepared boundedview/projection authority andsupportedlargergraphregions; existing vendorBLASsmallM numericcandidate hasseparateevidence. Do notassignallmm toHC orallviews toonecaller withoutmorelabels/sourceproof.",
+      "proof_needed": "Keepcanonicalweight/input/output/accumulatordtypes andfixedM32numericpolicy unlessexplicitnewnumericcandidate. Precomputedviews mustownstorage/generation/R/stream/profile/cacheepoch andcaller mutationtracking. empty eventislogicalallocatorcall, notproofphysicalGPUallocation. Nestedviews/mm API durations cannotbesummed."
+    },
+    {
+      "priority": 3,
+      "area": "Required status/round completion frontier",
+      "evidence": "Round90cudaStreamSynchronize/.726052s max25.925ms;16492cudaLaunchKernel/.112911s;1099memcpy/.011077s. Compute369EventSync/.607901s and62734launch/.433736s remain blocking/submission scopes.",
+      "source_callchain": "_round target +_mtp afteritsmtp_computechild bothinvoke _kv_check -> KVStatusCohort.check -> _readback ->pinnedstatusD2H+current_stream.synchronize; commit addsnativeState publicationwork.",
+      "smallest_credible_candidate": "Retainstatus-first semanticfrontier; onlycoalescealreadyinitializedpayloads withsamefailure/retirement/rankorder. Priorpacked/splitprototypewasunselected, notproofeveryalternativeexhausted.",
+      "proof_needed": "Nearestprojectidentifiesparent, notexactcallsitefor90events orGPUcause. APIwallmayinclude deferredGPU/NCCL/scheduling. No deletingwait/guard or subtractingit asfreeCPUgain."
+    },
+    {
+      "priority": 4,
+      "area": "NUMA/socket-local CPU-GPU placement",
+      "evidence": "CurrentCPUparseattributesbookkeeping/launches toselectedcoordinator thread; earlierall8nonNCCL mathSUM nearlyuniform whileNCCLwait/gapsvary.",
+      "smallest_credible_candidate": "User-requiredbindingexperiment is independentlyinprogress; retain exactCPU/GPU/NUMA mask/source/workload andmeasure alltiers.",
+      "proof_needed": "No source/countpattern aloneprovesNUMAcausality orlocalitygain."
+    }
+  ],
+  "uncertainty": [
+    "Nearestproject is selectedbythreadandclippedstart; exactfunctioncountsareinferredfingerprints, not profilerfunctionevents.",
+    "Tables retainall267parent/opgroups undercaps; CPUoperatornesting remainsinclusive. No inventednonoverlaporPythonresidual.",
+    "CurrentrawfullSHA matchesactual83159 capture/12636all8analysis;24.219s rescan and266969088BmaxRSS areanalysiscost, notmodelperformance.",
+    "Fixed24Q8/native262144 row32/HC-MoEhot16/Fusion/Candidate/GDN/Router/startup3 APP4b0 only; do nottransferhistoricalcausality orcrosscountspeed."
+  ],
+  "evidence": {
+    "report_sha256": "a444d6ecfd5290b70bbde54273632aa27e6f731d434fe4a6a4578f8138824ca7",
+    "archive_tar_sha256": "4bc189b4b61f6f0b07efdfd3c6068958735092f7e24fc6ee5767bc1cae4e0b71",
+    "source_HOLD_sha256": "34f02a8d68061137297d1b65e0aecf08fe0fb86055786b6b2192b3d05053b7da"
+  }
+}

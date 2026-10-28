@@ -1,0 +1,75 @@
+"""Stage immutable startup guard/map GPU controls only. Root alone launches them."""
+from pathlib import Path
+import datetime
+import hashlib
+import json
+import shlex
+import subprocess
+
+OUT = Path(__file__).resolve().parent
+HOST = "kklouzal@71.94.200.200"
+KEY = "/home/kklouzal/.ssh/tensorfold_v100_ed25519"
+REMOTE = "/home/kklouzal/tensorfold-v100-qualification-20261026/startup-guard-maps-7779-controls-20261027"
+TEMPORARY, UPLOAD = REMOTE + ".upload", REMOTE + ".stage.tar"
+
+
+def sha(path):
+    return hashlib.sha256(Path(path).read_bytes()).hexdigest()
+
+
+record = {"status": "STAGING ONLY; no Docker/GPU execution", "at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+          "remote": REMOTE, "source_commit": "c0f49f4998e47af99633a099769b675dbdd3fd43",
+          "source_review": "Root must await combined source closure before run/release",
+          "payload_sha256": sha(OUT / "stage-payload.tar"),
+          "stage_manifest_sha256": sha(OUT / "package/stage-files.json"), "commands": []}
+
+
+def run(argv):
+    result = subprocess.run(argv, capture_output=True, text=True)
+    record["commands"].append({"argv": argv, "exit_code": result.returncode,
+                               "stdout": result.stdout, "stderr": result.stderr})
+    (OUT / "stage-progress.json").write_text(json.dumps(record, indent=2) + "\n")
+    if result.returncode:
+        raise RuntimeError(result.stderr or result.stdout)
+    return result.stdout
+
+
+code = """from pathlib import Path
+import json,sys
+p,q,a=map(Path,sys.argv[1:])
+if any(path.exists() for path in (p,q,a)):raise RuntimeError('new stage destination must not exist')
+q.mkdir()
+print(json.dumps({'new_temporary':str(q)}))
+"""
+run(["ssh", "-i", KEY, "-o", "BatchMode=yes", HOST,
+     shlex.join(["python3", "-c", code, REMOTE, TEMPORARY, UPLOAD])])
+run(["scp", "-i", KEY, "-o", "BatchMode=yes", str(OUT / "stage-payload.tar"), HOST + ":" + UPLOAD])
+code = """from pathlib import Path
+import hashlib,json,subprocess,sys,tarfile
+p,q,a=map(Path,sys.argv[1:4]);payload,expected=sys.argv[4:]
+if hashlib.sha256(a.read_bytes()).hexdigest()!=payload:raise RuntimeError('uploaded payload differs')
+with tarfile.open(a) as archive:
+ for entry in archive.getmembers():
+  if not entry.isfile() or entry.name.startswith('/') or '..' in Path(entry.name).parts:raise RuntimeError('unsafe stage entry')
+ archive.extractall(q,filter='data')
+manifest=q/'stage-files.json'
+if hashlib.sha256(manifest.read_bytes()).hexdigest()!=expected:raise RuntimeError('stage manifest differs')
+rows=json.loads(manifest.read_text())
+for name,row in rows.items():
+ raw=(q/name).read_bytes()
+ if len(raw)!=row['bytes'] or hashlib.sha256(raw).hexdigest()!=row['sha256']:raise RuntimeError(name)
+for name in ('verify_installed.py','verify_stage.py','run_controls.py'):compile((q/name).read_bytes(),str(q/name),'exec')
+subprocess.run(['bash','-n',str(q/'bootstrap.sh'),str(q/'launch-command.sh')],check=True)
+(q/'evidence').mkdir()
+if any((q/'evidence').iterdir()):raise RuntimeError('evidence not empty')
+q.rename(p)
+print(json.dumps({'status':'STAGED EXACT; NOT EXECUTED','remote':str(p),'files_verified':len(rows),'evidence_empty':True,'source_commit':'c0f49f4998e47af99633a099769b675dbdd3fd43','normal_package_source_files':717,'all_installed_files':718,'wheel_sha256':hashlib.sha256((p/'tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl').read_bytes()).hexdigest(),'stage_manifest_sha256':hashlib.sha256((p/'stage-files.json').read_bytes()).hexdigest(),'source_review':'Root must await closure before GPU run/release'}))
+"""
+verified = json.loads(run(["ssh", "-i", KEY, "-o", "BatchMode=yes", HOST,
+    shlex.join(["python3", "-c", code, REMOTE, TEMPORARY, UPLOAD,
+                record["payload_sha256"], record["stage_manifest_sha256"]])]))
+record.update(status="STAGED EXACT; NOT EXECUTED", verification=verified,
+              completed_utc=datetime.datetime.now(datetime.timezone.utc).isoformat())
+(OUT / "stage-receipt.json").write_text(json.dumps(record, indent=2) + "\n")
+print(json.dumps({"receipt": str(OUT / "stage-receipt.json"), "receipt_sha256": sha(OUT / "stage-receipt.json"),
+                  "verification": verified}, indent=2), flush=True)

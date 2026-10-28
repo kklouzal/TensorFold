@@ -1,0 +1,63 @@
+{
+  "schema": "tensorfold.T60-local-actual-pointer-v1",
+  "scope": "Additive exact operational pointer; prior96-entry reconciliation immutable. No new inference/profile/GPU.",
+  "cases": [
+    {
+      "offered": 1,
+      "TPS": 31.1,
+      "measurement_valid": true,
+      "passed": true,
+      "source": "/Warehouse/TensorFold-portable-audit-20261026/input-mailbox-selfwait-20261028/actual-first-all6/run/fast-mtp-target-n01.json",
+      "sha256": "0aac4794196d64224b21f30014793e53546b69a4c0fddd00625c86340148a5ef"
+    },
+    {
+      "offered": 2,
+      "TPS": 22.8,
+      "measurement_valid": true,
+      "passed": true,
+      "source": "/Warehouse/TensorFold-portable-audit-20261026/input-mailbox-selfwait-20261028/actual-first-all6/run/fast-mtp-target-n02.json",
+      "sha256": "6c5b8b61460d14a086f311f7b568542432257de7c9ea53f6dbe5b3600803635d"
+    },
+    {
+      "offered": 4,
+      "TPS": 36.0,
+      "measurement_valid": true,
+      "passed": true,
+      "source": "/Warehouse/TensorFold-portable-audit-20261026/input-mailbox-selfwait-20261028/actual-first-all6/run/fast-mtp-target-n04.json",
+      "sha256": "a51403b626171cc6598503f5202785513d8c5ad2024f2787f71d647dae75b83f"
+    },
+    {
+      "offered": 8,
+      "TPS": 56.2,
+      "measurement_valid": true,
+      "passed": true,
+      "source": "/Warehouse/TensorFold-portable-audit-20261026/input-mailbox-selfwait-20261028/actual-first-all6/run/fast-mtp-target-n08.json",
+      "sha256": "3b1abe6bfddd14656e1bd0abc67c039702ff99ea8d7d5f14bcb2f81b065e00c2"
+    },
+    {
+      "offered": 16,
+      "TPS": 73.0,
+      "measurement_valid": true,
+      "passed": true,
+      "source": "/Warehouse/TensorFold-portable-audit-20261026/input-mailbox-selfwait-20261028/actual-first-all6/run/fast-mtp-target-n16.json",
+      "sha256": "b99ae45d2434047854e807a81ec63d284e807bce264a6545f01fb40547634526"
+    },
+    {
+      "offered": 24,
+      "TPS": 70.6,
+      "measurement_valid": true,
+      "passed": true,
+      "source": "/Warehouse/TensorFold-portable-audit-20261026/input-mailbox-selfwait-20261028/actual-first-all6/run/fast-mtp-target-n24.json",
+      "sha256": "419655965160b02b887235e10444f9a7e86e37b842805aa99eb1f65839d4c5c9"
+    }
+  ],
+  "reference86cb_N1_N2_N4_N8_N16_N24": [
+    30.8,
+    22.8,
+    37.3,
+    56.2,
+    73,
+    73.3
+  ],
+  "disposition": "First-screen N24 loss70.6vs73.3; Root not selected. No repeatability/globaltransportinferiority or new safetyclaim. Historical sidecar status all6unrun is stale."
+}

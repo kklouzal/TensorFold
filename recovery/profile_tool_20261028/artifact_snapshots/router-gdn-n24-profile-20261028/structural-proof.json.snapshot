@@ -1,0 +1,22 @@
+{
+  "finish_failures": "actualASTexact4c75",
+  "protected_cupti_identity": "actualASTexact4c75",
+  "observed_call": "actualASTexact4c75",
+  "trace_summary": "actualASTexact4c75",
+  "mapping_snapshot": "actualASTexact4c75",
+  "profile_clock_anchor": "actualASTexact4c75",
+  "concurrent_observation_snapshot": "actualASTexact4c75",
+  "RankCapture": "actualASTexact4c75",
+  "tools/concurrent_observers.py": {
+    "byteexact4c75": true,
+    "sha256": "9480e96af0ff0368d628b0f35ff01b657d703760f726ce8bd9970b392c8d5d76"
+  },
+  "tools/profile_trace_reader.py": {
+    "byteexact4c75": true,
+    "sha256": "57800bcb181ff0f3510ef2caf76cfe9b54f985b7aca27c67588c38f37f4da68b"
+  },
+  "APPsrcdiffempty_vs146f": true,
+  "project_observers_delta": "transparentRouter/GDN/PLEexistingcalllabels+ownedmailboxexchange/retire; zeroarg_phaseoperationcallback observedwithoutStoreproxy; projectbindingcap128 unchanged",
+  "currenta89workerretained": "all8GDN+Routerfactorychecks/startup3/coldflags/followerchecks preserved, capturestartafterready/enginewarm, capturefinishafterengineclose",
+  "reader_budget": "explicit6GiB/rank in actualcallercontrolpayload beforefinalize, plus128KiBobservers; sharednativeKineto320GiBcgroupseparateinstrumentation"
+}

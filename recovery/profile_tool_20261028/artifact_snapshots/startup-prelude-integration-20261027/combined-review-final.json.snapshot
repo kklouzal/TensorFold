@@ -1,0 +1,80 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T22:55:49.371781+00:00",
+  "status": "CLOSED startup-owned hash +correctedprelude source integration; stages/actualRootverification separate",
+  "reviewer": "/root/cleanup_review",
+  "commit": "ee248b80fdddfe01fb1af1a595385fd84928c44e",
+  "workspace": "/Warehouse/TensorFold-wt/v100-startup-prelude-20261027",
+  "base": "710c9b6a3b91072d1d15a8356cfe91464cd1419b",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-prelude-integration-20261027/source-hold.json",
+    "sha256": "f633c8f5ee888412bb142685bbfbf8dfbc54ffacebce65afeb11bb8c3cbe6782"
+  },
+  "wheel": {
+    "path": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3140883,
+    "sha256": "fa6e3561f076e26709de186b87336760062ba2747b1a1d9bd482fc0e78b580aa"
+  },
+  "FD": [
+    {
+      "path": "tensorfold/_fd_owner.abi3.so",
+      "bytes": 46344,
+      "sha256": "c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d"
+    }
+  ],
+  "scope": "Elevenaffectedsource/test/tool/docs paths anddirectresource/admit/identity/worker/rollback/childenv contracts; reuse startup14950b andcoordinatealias477598, no new numericalreview/build/GPU.",
+  "proofs": {
+    "unchangedprelude": "Only five startup runtimefiles differ710c; everyotherpreviousruntime source independentlybyteexact710c (715existing files inauthors fullinventoryproof), includingprepkernel/nativebindings/MTP/cache/framevalidator/coordinatealiasfix. Allselectednative24Q8/FP32state/metadata resources/profileidentity guards retained.",
+    "startup": "Native_fd_owner,model_identity andexecution_identity byteexactclosedc0f7779. Removing onlyexplicitPRELUDEstring fromstartupeligibilitytuple restoresentireclosedworker bytes. Ownedretirementlatch/finaltimestamp/outcomeallocation/cancellation/expectedSHA/stat/provenance behavior unchanged.",
+    "engine_merge": "Constructorstartupfields, pre-admission host_extra_staging, existing_same_settings planrecord, singleRank0startafterconsensusbeforeload, currentprocessModelIdentityreuse atmanifestbinding, close/rollback retirement beforeengineowners\u2014allsameknownstartupaddition. Existing710cPRELUDEzero/view/markerfunding and24residentfloor untouched.",
+    "funding": "Global64MiBstack+observedpthreadguard+8MiBwork (75,501,568BselectedSDK) beforeactualinitialadmit. Originalpreloadinventory<=64files/64KiBprintableASCII, noGGUFmetadataparse; same64MiB/guard actualquery beforehashwork. Conservativehostcommitment retainedthroughengine; no OSstackreclamation orcompletephysicalRSSclaim.",
+    "identity": "FreshfullartifactSHA overlapsloadonlyafteradmission; currentprocessissuedauthority reusedwithunchangedoriginalinventory/stat/declaredSHA. Freshnative/source/libs afterload andallpeerbindingchecks remain. No disk/stat-onlycache, hash omission orguardbypass.",
+    "ownership": "Sameone-shotthread/ownedoperationcompletion; cooperativecancelbetween1MiBreads, blockedOSreadretainsordinaryIOcompletioncontract. Uncertainstart/join retainsowner; originalerror anddiagnosticsecondarypreserved.",
+    "tool": "Existing--overlap-content-capture/manifestrequirement/preimportallrankenv only; no parentenvmutation. All6FAST/quality/controlhelperbytes andcriteriaunchanged. Unsetserialdefault retained."
+  },
+  "cleanup_disposition": "No verifiedremainingdeadpath/unjustifiedduplicateauthority or necessarysafesimplification inminimalmerge. Distinctworker/serial paths have selectedcapability/lifetime roles; no extrasubsystem/reviewer introduced.",
+  "findings": [],
+  "checks": {
+    "current_source11hashes": true,
+    "normalinstalled": "678PASS+5subtests16.52s/Ruff/pip/help, exactexecutedcommands/cwd/env/start/log hashesbound",
+    "wholewheel": "All717currentcanonicalsource andexactFDc79 independentlyequal finalfa6eZIP; oldFD4a notsilentlyaccepted",
+    "structural": "Authors fullsourceinventoryproof independentlyspot-confirmedviaactualgitdelta andwholeZIP/currentparity; sourceclean",
+    "reviewer": "No duplicatedsuite/build/GPU/remoteDocker"
+  },
+  "pending": [
+    "Rootimmutable53componentstage binding andcurrentwholefa6e software/native/numericalacceptance",
+    "Actualenabledstartupwalltime/IOcontention/workerretirement/memory/allrankbinding andfullmodeloutputs",
+    "Actualall6quality/24fullnativewindows/85single/>600N24/no regionalregression andnearfullhistory; source/CPUequivalence doesnotestablishgain",
+    "Current3224ordinaryall6run remainsseparatebaseline/evidence, notretroactivefa6equalification"
+  ],
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-prelude-integration-20261027/source-hold.json",
+      "sha256": "f633c8f5ee888412bb142685bbfbf8dfbc54ffacebce65afeb11bb8c3cbe6782"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-prelude-integration-20261027/start.json",
+      "sha256": "16aae1166fff1fa4ae9297fd814a6c93b82aa34594e54d52b1ba43dca8e10efb"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-prelude-integration-20261027/exit.json",
+      "sha256": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-prelude-integration-20261027/controls.log",
+      "sha256": "f9b93d6f2508c6d658778d5b580757dd9e8081fbae824fba159444ce922061b1"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-prelude-integration-20261027/controls-provenance.json",
+      "sha256": "238d3542a126ba37da02339d22c88f633029526e949bfa54311bd7ab10ffa618"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-prelude-integration-20261027/structural-proof.json",
+      "sha256": "c3df9d4323e643928d75fc02d1cd3f4ea510f8801aa2a40ae59192f740609b36"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-prelude-integration-20261027/wheel-provenance.json",
+      "sha256": "3d8b39579314ce6ced6f1db1c1433ab1227fc444f390f9db2f4a0f735d05d9f2"
+    }
+  ]
+}

@@ -1,0 +1,13 @@
+Current APP4b0 / runtimec928 N24 diagnostic (all8 capture/source/CUPTI28/retirement and independent raw SHA checks passed). Root83159 capture and12636 analysis are terminal;11,350,129,191 bytes of raw traces remain remote. Commoncore9.999997818s, clockhull2.182us. Instrumented75.7TPS is not a performance comparison or quality qualification.
+
+Rank0 CPU project wall: compute6.361s inclusive /4.314s exclusive; round9.897/1.592s; descriptor1.009/.629s plus nested signatures.311s/storage.069s. These intervals include blocking CUDA APIs, scheduling and instrumentation. The .608s EventSync undercompute and .727s roundStreamSync cannot be counted as pureCPU execution or automatic savings.
+
+Reported GPU expert gate/up+down families consume2.212s of3.559s nonNCCL kernelSUM (62.2%); the main target-format families accountfor2.182s(61.3%) andtheMTP Q8/F32-output family adds.0302s. HC/MoE graph origin totals2.601s (73.1%) includingHC/router/other graphmath. IQ22/18/21 gate-up and genericINT32 down are the main math targets. Ordinarymappedkernels113305 remain alongside78347 graphmappedkernels. Candidate graphs are active:91 launches and53278kernels, with.167s GPUkernelSUM.
+
+NCCL kernelSUM3.202s is wait-inclusive; allrankrange3.030–3.705s. NonNCCLrankSUMs3.558–3.572s are nearlyuniform. Kernelunionrank0 6.761s leaves3.239s with no tracedkernel, includingpossibleDMA/memset/control/untracedactivity. This is not a utilization or NUMA-causality measurement. Requiredsocket/GPUlocalCPUbinding is an independentlymeasured nextcandidate; do not infer whichrank is slow fromNCCL alone.
+
+Currentownerframefrontier remains material:428descriptorstages;5304signature/storagevisits. Hostrowrepresentation changed in4b0, so this measures what remains rather than estimating a historical saving. Stableframe/descriptorhoisting needsgeneration/version/stream/DMAauthority. PLE is smaller:late.167s inclusive, CPUdecode.042s; H2Denqueue is not transferduration.
+
+Full24 is live, but the wholecohortselectedsegments histogram favors12/13/14 andR30/31/32 underrow32; it includesreadiness/drain. Wholecohort47capturedforwards/2256layerhits are not purecorecounts. Allcounter/row/role data and sourceanchors are retained in current-N24-findings.json.
+
+No rawrescan, newremoteanalysis, GPUlaunch, P3gain or broadquality claim. Older7c0N24 andfbaaN1 profiles retain their own source/workload/instrumentation identities.

@@ -1,0 +1,9 @@
+{
+  "status": "WITHDRAWN_UNEXECUTED",
+  "at": "2026-10-27T22:46:45.298767+00:00",
+  "reason": "Root902funinstrumentedfullmodelwarmupfailed issuedcoordinateversionguard; noTPS. Entry.begin reconstructedcoordinatecopy mutatesissuedStaging.coordinates; source/runtimefixauthor grouped_finish. No profiler/instrumentation defect inferred.",
+  "stage": "concurrent8-902f-profile-20261027",
+  "unchanged_valid_reference": "84a8actualN8all8capture/findings retainedvalid",
+  "next": "Waitminimalownedruntimecoordinateborrowfix+actualsource/quality/numerics; thenrebaseunchangedtoolprofile/newwholeAPPmanifest/HOLD; no902flaunch",
+  "GPUexecution": "NONE bythisauthor"
+}

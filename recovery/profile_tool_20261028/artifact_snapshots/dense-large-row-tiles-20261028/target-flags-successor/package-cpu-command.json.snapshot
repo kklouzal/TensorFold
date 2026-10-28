@@ -1,0 +1,25 @@
+{
+  "argv": [
+    "docker",
+    "run",
+    "--rm",
+    "--network",
+    "none",
+    "--cpus",
+    "1",
+    "--memory",
+    "3g",
+    "-e",
+    "PYTHONDONTWRITEBYTECODE=1",
+    "-e",
+    "CUDA_VISIBLE_DEVICES=",
+    "--mount",
+    "type=bind,src=/Warehouse/TensorFold-portable-audit-20261026/dense-large-row-tiles-20261028/target-flags-successor/package,dst=/qualification,readonly",
+    "--entrypoint",
+    "/bin/bash",
+    "sha256:30fda46a4c40422e055e0615a8186fc1c39678be9c8c9761885fc0cb77c28993",
+    "-c",
+    "set -euo pipefail\npython /qualification/verify_stage.py\npython -m pip install --no-index --no-deps --force-reinstall --no-compile /qualification/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl\nbash -n /qualification/bootstrap.sh\nbash -n /qualification/launch-command.sh\npython - <<'CHECK'\nimport importlib.util,pathlib\np=pathlib.Path('/qualification/run_controls.py')\ns=importlib.util.spec_from_file_location('dense_controls',p);m=importlib.util.module_from_spec(s);s.loader.exec_module(m)\nassert callable(m.main)\nprint('frozen Dense32 target-policy runner guarded import/shell/manifest PASS;GPUmain notexecuted')\nCHECK\n"
+  ],
+  "cwd": "/home/kklouzal"
+}

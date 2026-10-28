@@ -1,0 +1,75 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T23:29:42.942641+00:00",
+  "status": "CLOSED tool-only protected5635concurrentprofile+descriptorlabels; launchconditionalRootbaselinevalidation",
+  "reviewer": "/root/cleanup_review",
+  "commit": "02643c0689438c64fb4313d7ddda0d4ed262fe48",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-startup-mtp-profile-20261027/source-hold.json",
+    "sha256": "189820034aad6ca9cf41d0567f68c1ef6d083aa18838c9f8f859e77199f99cac"
+  },
+  "runtime": "5635735f68db932f41cab3da94747e6f6c2f15673c60b71e220ec96c9f9e0314",
+  "scope": "Six tool/test/README paths sincea7b1; newfourdescriptor/signature/frame labels +knownstartupenv/MTP-rolemetrics merge. Reuse closed67a/f64d/d49e concurrent/8f1f-fd616preludeinstrumentation and5635source92e8. No runtimepackage/kernel/fixture/mathdiff.",
+  "proofs": {
+    "runtime": "srcdiffempty a7b1, unchanged717+FDc79 whole5635; allnumerical/source/identity capabilitiesunchanged",
+    "protected": "SevenpublicCUPTI/source/maps/clock/capture helpers wholeASTsexact8f1f; observermodulebyteexact67a. Same134failurejournal/128bindinglimit/fixed1MiBobserverfunding/256Kfollowers/globalgridreceipt bound.",
+    "new_statics": "ReadoriginalOwnerBuffers._state_storage/_storage_signature via rawvars descriptor, requireexactstaticmethod, wrap __func__ and installstaticmethod(wrapper), journalrawdescriptorforrestoration. Actualinstancecall/sourceclasscalls retainnoextraself; testcalls/result/labels andrawdescriptoridentityrestored. No native/rawpointer/layout mutation.",
+    "new_aliases": "OwnerBuffers.stage_native_descriptors method wrapsactualoriginal; compact_indexer._validate_frame onlyactualmodulefunctionaliasesbyidentity. Existingcompute/owner/selector wrappers andnodecounter semantics unchanged, no doublewrappedcompute. ObservationsarePythonhostinclusivework,nottensors/GPU completion.",
+    "errors": "Newlabelsusereviewedobserved_call withfixedsecondaryslots/primaryguard; restoresoriginalclassdescriptors afterengine/transportretirement andthenindependentaudit. No diagnosticswallowing/defaultsuccess.",
+    "startup_rolemetrics": "Exactclosedpreimportallrankoptin/manifestguard andboundedMTPcounterunknown/derivedtargetlogic retained; current5635ordinarybaseline/counteraudit mustprecedecapture.",
+    "protocol": "OneN8/N16instrumentedcohort/30sready/10sdecode/512capcancel+fullactualdrain, cheap2tokenbringup; originalall6unprofiled+quality remainseparate. No capturedecreasesconstcontext/Q8/FP32State/MTPdepth2.7/ceiling24/nativeowner/cache proof."
+  },
+  "finding": {
+    "rules": [
+      "A0",
+      "O1",
+      "X4"
+    ],
+    "finding": "Stagecontroller copiedstale descriptive32246regionlabel despiteactual5635pins",
+    "disposition": "Source/HOLD/argvunchanged; literalcorrected to5635startup+canonicalMTPbeforeexecution. Oldcontroller/stage-ready retained; refreshed18filemanifest/currentef69controllerverified, noCPU/GPUrerun."
+  },
+  "checks": {
+    "source6currenthashes": true,
+    "CPU": "148PASS5.55s/Ruff/pip/help onnormalexact5635; actualargv/cwd/env/exit/log provenancebound",
+    "staticdescriptor": "Actualoriginalfunction/binding/restoration regressioninspected; exacttype guards beforeinstallation",
+    "localstage": 18,
+    "controller": "ef69de4ad5958d09a48bce64a5727212956debc1873d578d90308ac69122af1a",
+    "reviewer": "NoGPUorremoteDocker/duplicatebuild/suite"
+  },
+  "cleanup_disposition": "Sharedobserved_call reuseavoidsnewerror/telemetryframework. Staticdescriptorhandling hasactualbindingcontract; fourlabelsobserve distinctsource roles. No verifiedremainingdeadpath/unjustifiedduplicateauthority or necessarysafesimplification withinnewscope.",
+  "launch_conditions": [
+    "Rootcurrent5635unprofiledall6quality/nativeMTProlecounterauditvalidbeforeN8instrumentedrun",
+    "RootexclusiveGPUlease/immutablecorrectedstage/protectedCUPTI28/source guards",
+    "InstrumentationtimingsnotTPSgain/qualityqualification; rawcapture/source/retirementoutcomesmustbeverified"
+  ],
+  "pending": [
+    "Actual5635all6andchanged-bottleneckcapture; stage isunexecuted atsourcebinding",
+    "Broaderquality/85/600/full24nearfullhistory/no regionalregression remainseparate"
+  ],
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-startup-mtp-profile-20261027/source-hold.json",
+      "sha256": "189820034aad6ca9cf41d0567f68c1ef6d083aa18838c9f8f859e77199f99cac"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-startup-mtp-profile-20261027/controls.log",
+      "sha256": "e7ffcbf395ca3df61cd3ea7fcb2006fcde060549668c4183a5b600283d384fef"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-startup-mtp-profile-20261027/controls-provenance.json",
+      "sha256": "8c30419d3f0cbdfabf2e1cc0e349926b65d056b838986febd1efc115c64b127d"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-startup-mtp-profile-20261027/stage/stage-ready.json",
+      "sha256": "e0906d86ddb9ca8fb348c2a0ec49c2c66d42961120de8660670cab8dc6f56ab2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-startup-mtp-profile-20261027/stage/package/launch-finite.py",
+      "sha256": "ef69de4ad5958d09a48bce64a5727212956debc1873d578d90308ac69122af1a"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-startup-mtp-profile-20261027/stage/package/stage-files.json",
+      "sha256": "88f2a6218793f5ecf797af82cfa622ee004227ef6943650324230bb080a5bc45"
+    }
+  ]
+}

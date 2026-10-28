@@ -1,0 +1,106 @@
+import hashlib
+import json
+from pathlib import Path
+import tempfile
+import unittest
+
+from analyze_concurrent import derive, batch_delta
+from analyze_decode import analyze
+
+class Controls(unittest.TestCase):
+    def setUp(self):
+        self.owner=tempfile.TemporaryDirectory()
+        self.root=Path(self.owner.name)
+        self.out=self.root/"out"
+        self.out.mkdir()
+        self.events=[{"ph":"X","cat":"user_annotation","name":"tensorfold/host/generate","ts":500,"dur":10,"tid":1}]
+        self.events += [{"ph":"X","cat":"user_annotation","name":"tensorfold/host/generate","ts":1000,"dur":100,"tid":i+2} for i in range(8)]
+        self.events += [
+            {"ph":"X","cat":"user_annotation","name":"tensorfold/body/concurrent/owner_prepare","ts":1011,"dur":5,"tid":2},
+            {"ph":"X","cat":"gpu_user_annotation","name":"tensorfold/body/concurrent/owner_prepare","ts":1011,"dur":20,"tid":8},
+            {"ph":"X","cat":"cuda_runtime","name":"cudaGraphLaunch","ts":1012,"dur":1,"tid":2,"args":{"correlation":1}},
+            {"ph":"X","cat":"kernel","name":"graph_node","ts":1013,"dur":1,"args":{"device":0,"correlation":1,"graph id":7,"graph node id":3}},
+            {"ph":"X","cat":"cuda_runtime","name":"cudaLaunchKernel","ts":1014,"dur":1,"tid":2,"args":{"correlation":2}},
+            {"ph":"X","cat":"kernel","name":"ordinary","ts":1015,"dur":1,"args":{"device":0,"correlation":2}}]
+        raw=json.dumps({"baseTimeNanoseconds":0,"traceEvents":self.events}).encode()
+        self.raw=raw
+        self.profile={"complete":True,"engine_transport_retired":True,"trace":{"sha256":hashlib.sha256(raw).hexdigest()},
+            "source_before":{"status":"verified-source-software"},"source_after":{"status":"verified-source-software"},
+            "cupti_before":{"API":28},"cupti_after":{"API":28},
+            "clock_before":{"monotonic_lower_ns":10000,"monotonic_upper_ns":10010,"unix_ns":1000000},
+            "clock_after":{"monotonic_lower_ns":40000,"monotonic_upper_ns":40010,"unix_ns":1030000}}
+        for rank in range(8):
+            (self.root/f"rank-{rank}-profile.json").write_text(json.dumps(self.profile))
+            (self.root/f"rank-{rank}-final.json").write_text(json.dumps({"complete":True}))
+        (self.root/"rank-0-trace.json").write_bytes(raw)
+        self.screen={"measurement_valid":True,"all_workers_permits_backend_owners_drained":True,
+            "begin_monotonic_ns":20000,"end_monotonic_ns":30000}
+        self.save_screen()
+    def save_screen(self):
+        (self.root/"fast-mtp-target-n08.json").write_text(json.dumps({"screen":self.screen}))
+    def tearDown(self):
+        self.owner.cleanup()
+    def test_bracketed_clock_conversion_core_graph_origins_and_CPU_only_labels(self):
+        definition=derive(self.root,8)
+        self.assertEqual(definition["translation"]["observed_hull_width_ns"],10)
+        self.assertEqual(definition["replies"][0]["decode_core_end_us"],1019.99)
+        analyze((str(self.root),str(self.out),0,definition))
+        report=json.loads((self.out/"rank-0-decode.json").read_text())
+        core=next(w for w in report["windows"] if w["label"].endswith("/decode_core"))
+        labels={r["name"]:r["inclusive_us"] for r in core["project_labels"]}
+        self.assertEqual(labels["tensorfold/body/concurrent/owner_prepare"],5)
+        self.assertEqual({r["name"]:r["count"] for r in core["launch_origin"]},{"cudaGraphLaunch":1,"ordinary_kernel_launch":1})
+        self.assertAlmostEqual(core["GPU_no_kernel_intervals"]["total_us"],7.99,places=6)
+        self.assertTrue(core["project_exclusive_thread_wall"])
+    def test_invalid_readiness_window_stays_invalid(self):
+        self.screen["measurement_valid"]=False
+        self.save_screen()
+        with self.assertRaisesRegex(ValueError,"valid correlated"):
+            derive(self.root,8)
+    def test_uncontained_clock_translation_refuses_instead_of_guessing(self):
+        self.screen["begin_monotonic_ns"]=200000
+        self.screen["end_monotonic_ns"]=210000
+        self.save_screen()
+        with self.assertRaisesRegex(ValueError,"not contained"):
+            derive(self.root,8)
+    def test_crossing_start_kernel_is_activity_without_inventing_a_start_assigned_count(self):
+        crossing={"ph":"X","cat":"kernel","name":"started_before_window","ts":1009,"dur":4,
+                  "args":{"device":0,"correlation":99}}
+        self.events.append(crossing)
+        raw=json.dumps({"baseTimeNanoseconds":0,"traceEvents":self.events}).encode()
+        (self.root/"rank-0-trace.json").write_bytes(raw)
+        profile=dict(self.profile)
+        profile["trace"]={"sha256":hashlib.sha256(raw).hexdigest()}
+        (self.root/"rank-0-profile.json").write_text(json.dumps(profile))
+        definition=derive(self.root,8)
+        analyze((str(self.root),str(self.out),0,definition))
+        report=json.loads((self.out/"rank-0-decode.json").read_text())
+        core=next(w for w in report["windows"] if w["label"].endswith("/decode_core"))
+        self.assertEqual(core["counts"]["kernel"],2)
+        self.assertAlmostEqual(core["GPU_kernel_union"]["union_us"],5,places=6)
+        self.assertAlmostEqual(core["GPU_no_kernel_intervals"]["total_us"],4.99,places=6)
+    def test_cohort_histogram_deltas_exclude_before_snapshot_and_refuse_decrease(self):
+        before={"overflowed":False,"phases":{"round":{"calls":4,"host_elapsed_ns":10}}}
+        after={"overflowed":False,"phases":{"round":{"calls":7,"host_elapsed_ns":30}}}
+        for name in ("round_live","ready_segments","selected_segments","selected_rows","compute_rows","compute_segments","owner_rows"):
+            before[name]=[0,1,2]
+            after[name]=[0,3,5]
+        result=batch_delta({"batch_observations":{"before":before,"after":after}})
+        self.assertEqual(result["selected_rows"],[0,2,3])
+        self.assertEqual(result["phases"]["round"],{"calls":3,"host_elapsed_ns":20})
+        after["compute_rows"]=[0,0,0]
+        with self.assertRaisesRegex(ValueError,"decreased"):
+            batch_delta({"batch_observations":{"before":before,"after":after}})
+    def test_missing_rank_guard_and_modified_rawhash_refuse(self):
+        p=self.root/"rank-7-profile.json"
+        row=json.loads(p.read_text());row["source_after"]["status"]="unqualified"
+        p.write_text(json.dumps(row))
+        with self.assertRaisesRegex(ValueError,"source/CUPTI"):
+            derive(self.root,8)
+        p.write_text(json.dumps(self.profile))
+        (self.root/"rank-0-trace.json").write_bytes(self.raw+b" ")
+        with self.assertRaisesRegex(ValueError,"trace identity"):
+            derive(self.root,8)
+
+if __name__=="__main__":
+    unittest.main()

@@ -1,0 +1,39 @@
+{
+  "schema": "tensorfold.current-hot16-N24-profile-port-plan-v1",
+  "status": "PREPARATION_ONLY; noGPUlaunch/noAPPedit/noassertedstage",
+  "reference": {
+    "runtime_commit": "f0300ac8166349882a3de5f82687e0bf836eeff5",
+    "tool_commit": "101f75eed0787145092338004d0138a58715f4d0",
+    "APP": "d8511a00e290e7e77385f9f6fa32ee1909febdbe45f23f53495ebc7bf44d745c",
+    "normal_wheel": "hc-moe-hot-rows-integration-20261028/wheels",
+    "runtime_HOLD": "8021154e213e1383b2a26290d14cb4d5318dfb0c80eee7cb003e3f9fc5e2979d",
+    "tool_HOLD": "e725d014bd37dc4c8f440244f3e2de4a31459c8f62a7464ce7bc217b9e9d5f3b",
+    "conditional": "If descriptor-hostwords successor passes actual all6 audit first, rebind this tool-only port to that frozen normal APP instead; do not substitute source under existing stage."
+  },
+  "reuse": {
+    "profile_source": "b6369c36131c6432dc82fa7e058be65daaa92dc1",
+    "source_dir": "/Warehouse/TensorFold-wt/v100-joint-single-profile-20261028",
+    "N24_previous": "router-gdn-n24-profile-20261028/source-hold.json",
+    "capture": "Protected CUPTI28/Torch04cf/all8 RankCapture + observer/CPUannotations/staticdescriptor/primarypreserving cleanup; no vendor/App patch",
+    "reader": "source4c75 6GiB/rank capture-reader, closed6513 two-worker window analyzer count24/n24/core/hull/graphcorrelation/rawhash"
+  },
+  "minimal_port": [
+    "Create isolated canonical from current101f tool/runtimef030; port b636 diagnostic tools only; source src/ remains byte-exact current APP.",
+    "Retain current hot16 cold ledger: _write_region_capture_ledger derives maximum_graphs from owned funding(independent), instead of old hardcoded145; current769 records/768keys. Carry graph_execution_snapshot histogram all rows1..32, not old30..32 only.",
+    "Keep corrected Router scope ordinary vs captured separately accounted RolePlans. Add installed source-audit hc_moe_region/moe_region_catalogue/multi_graphs plus existing changed engine/forward; no absent Ring/Frame leaves.",
+    "Optional transparent HCReadoutMoERegion.replay_prevalidated CPU label needs raw class method/restore/primary controls (subclass overrides MoERegion, so existing base wrapper alone misses it). Reuse observed_call; no new observer framework.",
+    "Derive current controller from actual101f FASTv2 stage, preserving allcurrent HC/MoE/shared-pool/Candidate/GDN/Fusion/Router flags, startupworkers3, exactmanifest and full24 rows32/Q8/262144; profile_concurrency24, noquality,10s,output2048,ready30s.",
+    "Update every literal count/caption/qualification and fresh results/normal-wheel/verifier/FDc79 bindings; immutable stage/HOLD+D13 before Rootlaunch. No extra all6/broadquality or new APP build just to port profiling."
+  ],
+  "funding": {
+    "reader_global_bytes": 51539607552,
+    "observer_global_bytes": 1048576,
+    "startup_hash_global_bytes": 226504704,
+    "leader_receipt_bytes": 524288,
+    "follower_receipt_bytes": 262144,
+    "note": "Use actual shared global receipt sum, current prepaid graph pools/host operating allowance and runtimecapacity before logical submit. Kineto native memory remains separately process-capped320GiB, not falsely proved from project counters; raw completeness/trace-summary resource refusal must fail visibly."
+  },
+  "controls": "Reuse closed parser/worker/source/capture/finite controls, add actual normal d851 installed_identity +3 changed hot16 functions +HC wrapper fault/restore if added. Narrow normal SDK CPU gate; no numerical GPU oracle required for APP-byte-exact instrumentation. Root only does actual all8 capture and later2niceCPU analysis after all8 terminal.",
+  "Root_lease": "No authorGPU, remote-heavy analysis or P3 overlap. Stage after other quick packet gates as directed. No actual count24 results assumed.",
+  "measurement": "One active cohort24/10s diagnostic only. Preserve nativeID prefix/cap/EOS/readiness/drain/window/source/CUPTI/maps/clock/graph-node attribution and per-role cold/current counters; no all6/quality/P3 credit."
+}

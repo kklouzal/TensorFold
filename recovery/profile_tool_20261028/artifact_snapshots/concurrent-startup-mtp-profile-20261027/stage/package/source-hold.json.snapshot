@@ -1,0 +1,34 @@
+{
+  "schema": "tensorfold.concurrent-startup-MTP-profile-tool-v1",
+  "commit": "02643c0689438c64fb4313d7ddda0d4ed262fe48",
+  "worktree": "/Warehouse/TensorFold-wt/v100-concurrent-startup-mtp-profile-20261027",
+  "base_runtime": "a7b1661f7f2016571067fa8fc1a1c220f08fb303",
+  "runtime_whole_wheel": "5635735f68db932f41cab3da94747e6f6c2f15673c60b71e220ec96c9f9e0314",
+  "source_paths": {
+    "README.md": "424ca08d2990ce4e4710c87a5505e76d3161c15b873850505ad1fb2a0268f868",
+    "tests/test_concurrent_observers.py": "3dba4ddf749becc1a6476b0e5f9946c39173ade1d2cda0e7d5a781e4363abbdb",
+    "tests/test_fast_grid.py": "ca6859196492633de71b247f2ac995a930e8cc37cf696eee7f61d90af6f7bbe9",
+    "tests/test_v100_backend_probe.py": "2fe792372534e8dac979c79026f989dbea6c1d0f1f05fd0c4cb10bf11ccbfb2a",
+    "tools/concurrent_observers.py": "2dd59a77cba7bc652f9c67d7809085d83ebb8ec1c5be9f3fab0c9540af76d748",
+    "tools/v100_backend_probe.py": "8ff55ce242e0e58d9730a32960d50b20b617927b8e6b8cf077035ebefa70bfff"
+  },
+  "runtime_source_diff_empty": true,
+  "controls": {
+    "checks": 148,
+    "seconds": 5.55,
+    "exit_code": 0,
+    "log_sha256": "e7ffcbf395ca3df61cd3ea7fcb2006fcde060549668c4183a5b600283d384fef",
+    "normal_wheel": "5635exact",
+    "Ruff": "PASS",
+    "pip": "PASS",
+    "help": "PASS"
+  },
+  "capture": "Sameprotected67a10/CUPTI28/clockanchors/postwarmcapture; workerjoinedbeforeconstructorreturns; same1MiBglobalfixedobserverfunding+256Kfollowers; max128bindings+134independentfailurejournal",
+  "new_labels": [
+    "OwnerBuffers.stage_native_descriptors",
+    "OwnerBuffers._state_storage (rawstaticmethodpreserved)",
+    "OwnerBuffers._storage_signature (rawstaticmethodpreserved)",
+    "compact_indexer._validate_frame (actualmodulealiasesonlyonce)"
+  ],
+  "GPU": "UNRUN; Rootrequirescurrent5635uninstrumentedall6quality/nativeMTProlecounter beforeN8profile. No instrumentationTPSgain/qualityclaim"
+}

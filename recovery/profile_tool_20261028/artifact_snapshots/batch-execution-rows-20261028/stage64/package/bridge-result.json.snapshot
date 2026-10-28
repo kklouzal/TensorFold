@@ -1,0 +1,387 @@
+{
+  "schema": "tensorfold.fast-v1-v2-real-trace-bridge-v1",
+  "source_packet_sha256": "1a769426772ca1e254c020b9327f9536bbec7d78690e227252d5906f3081357f",
+  "evidence": "Actual3224all6realwindowcallbackandnativeIDreplay throughunchangedactualScreenTokens record/native_record, exactequality",
+  "results": [
+    {
+      "N": 1,
+      "protocol_source": "fast-grid-v1",
+      "measured_tokens": 266,
+      "all_same_records_512_vs2048": true,
+      "rows": [
+        {
+          "request": 0,
+          "all_callback_ids": 268,
+          "all_native_ids": 268,
+          "measured_window_tokens": 266
+        }
+      ]
+    },
+    {
+      "N": 2,
+      "protocol_source": "fast-grid-v1",
+      "measured_tokens": 187,
+      "all_same_records_512_vs2048": true,
+      "rows": [
+        {
+          "request": 0,
+          "all_callback_ids": 95,
+          "all_native_ids": 95,
+          "measured_window_tokens": 93
+        },
+        {
+          "request": 1,
+          "all_callback_ids": 96,
+          "all_native_ids": 96,
+          "measured_window_tokens": 94
+        }
+      ]
+    },
+    {
+      "N": 4,
+      "protocol_source": "fast-grid-v1",
+      "measured_tokens": 293,
+      "all_same_records_512_vs2048": true,
+      "rows": [
+        {
+          "request": 0,
+          "all_callback_ids": 78,
+          "all_native_ids": 78,
+          "measured_window_tokens": 74
+        },
+        {
+          "request": 1,
+          "all_callback_ids": 77,
+          "all_native_ids": 77,
+          "measured_window_tokens": 74
+        },
+        {
+          "request": 2,
+          "all_callback_ids": 75,
+          "all_native_ids": 75,
+          "measured_window_tokens": 71
+        },
+        {
+          "request": 3,
+          "all_callback_ids": 79,
+          "all_native_ids": 79,
+          "measured_window_tokens": 74
+        }
+      ]
+    },
+    {
+      "N": 8,
+      "protocol_source": "fast-grid-v1",
+      "measured_tokens": 394,
+      "all_same_records_512_vs2048": true,
+      "rows": [
+        {
+          "request": 0,
+          "all_callback_ids": 61,
+          "all_native_ids": 61,
+          "measured_window_tokens": 50
+        },
+        {
+          "request": 1,
+          "all_callback_ids": 58,
+          "all_native_ids": 58,
+          "measured_window_tokens": 50
+        },
+        {
+          "request": 2,
+          "all_callback_ids": 57,
+          "all_native_ids": 57,
+          "measured_window_tokens": 51
+        },
+        {
+          "request": 3,
+          "all_callback_ids": 56,
+          "all_native_ids": 56,
+          "measured_window_tokens": 50
+        },
+        {
+          "request": 4,
+          "all_callback_ids": 54,
+          "all_native_ids": 54,
+          "measured_window_tokens": 48
+        },
+        {
+          "request": 5,
+          "all_callback_ids": 48,
+          "all_native_ids": 48,
+          "measured_window_tokens": 46
+        },
+        {
+          "request": 6,
+          "all_callback_ids": 51,
+          "all_native_ids": 51,
+          "measured_window_tokens": 47
+        },
+        {
+          "request": 7,
+          "all_callback_ids": 62,
+          "all_native_ids": 62,
+          "measured_window_tokens": 52
+        }
+      ]
+    },
+    {
+      "N": 16,
+      "protocol_source": "fast-grid-v1",
+      "measured_tokens": 469,
+      "all_same_records_512_vs2048": true,
+      "rows": [
+        {
+          "request": 0,
+          "all_callback_ids": 32,
+          "all_native_ids": 32,
+          "measured_window_tokens": 27
+        },
+        {
+          "request": 1,
+          "all_callback_ids": 29,
+          "all_native_ids": 29,
+          "measured_window_tokens": 25
+        },
+        {
+          "request": 2,
+          "all_callback_ids": 56,
+          "all_native_ids": 56,
+          "measured_window_tokens": 32
+        },
+        {
+          "request": 3,
+          "all_callback_ids": 54,
+          "all_native_ids": 54,
+          "measured_window_tokens": 30
+        },
+        {
+          "request": 4,
+          "all_callback_ids": 57,
+          "all_native_ids": 57,
+          "measured_window_tokens": 31
+        },
+        {
+          "request": 5,
+          "all_callback_ids": 51,
+          "all_native_ids": 51,
+          "measured_window_tokens": 29
+        },
+        {
+          "request": 6,
+          "all_callback_ids": 48,
+          "all_native_ids": 48,
+          "measured_window_tokens": 31
+        },
+        {
+          "request": 7,
+          "all_callback_ids": 47,
+          "all_native_ids": 47,
+          "measured_window_tokens": 32
+        },
+        {
+          "request": 8,
+          "all_callback_ids": 42,
+          "all_native_ids": 42,
+          "measured_window_tokens": 31
+        },
+        {
+          "request": 9,
+          "all_callback_ids": 45,
+          "all_native_ids": 45,
+          "measured_window_tokens": 31
+        },
+        {
+          "request": 10,
+          "all_callback_ids": 40,
+          "all_native_ids": 40,
+          "measured_window_tokens": 30
+        },
+        {
+          "request": 11,
+          "all_callback_ids": 38,
+          "all_native_ids": 38,
+          "measured_window_tokens": 28
+        },
+        {
+          "request": 12,
+          "all_callback_ids": 34,
+          "all_native_ids": 34,
+          "measured_window_tokens": 27
+        },
+        {
+          "request": 13,
+          "all_callback_ids": 31,
+          "all_native_ids": 31,
+          "measured_window_tokens": 26
+        },
+        {
+          "request": 14,
+          "all_callback_ids": 31,
+          "all_native_ids": 31,
+          "measured_window_tokens": 28
+        },
+        {
+          "request": 15,
+          "all_callback_ids": 57,
+          "all_native_ids": 57,
+          "measured_window_tokens": 31
+        }
+      ]
+    },
+    {
+      "N": 24,
+      "protocol_source": "fast-grid-v1",
+      "measured_tokens": 478,
+      "all_same_records_512_vs2048": true,
+      "rows": [
+        {
+          "request": 0,
+          "all_callback_ids": 22,
+          "all_native_ids": 22,
+          "measured_window_tokens": 18
+        },
+        {
+          "request": 1,
+          "all_callback_ids": 31,
+          "all_native_ids": 31,
+          "measured_window_tokens": 21
+        },
+        {
+          "request": 2,
+          "all_callback_ids": 58,
+          "all_native_ids": 58,
+          "measured_window_tokens": 22
+        },
+        {
+          "request": 3,
+          "all_callback_ids": 22,
+          "all_native_ids": 22,
+          "measured_window_tokens": 18
+        },
+        {
+          "request": 4,
+          "all_callback_ids": 56,
+          "all_native_ids": 56,
+          "measured_window_tokens": 22
+        },
+        {
+          "request": 5,
+          "all_callback_ids": 57,
+          "all_native_ids": 57,
+          "measured_window_tokens": 22
+        },
+        {
+          "request": 6,
+          "all_callback_ids": 54,
+          "all_native_ids": 54,
+          "measured_window_tokens": 20
+        },
+        {
+          "request": 7,
+          "all_callback_ids": 48,
+          "all_native_ids": 48,
+          "measured_window_tokens": 18
+        },
+        {
+          "request": 8,
+          "all_callback_ids": 47,
+          "all_native_ids": 47,
+          "measured_window_tokens": 19
+        },
+        {
+          "request": 9,
+          "all_callback_ids": 45,
+          "all_native_ids": 45,
+          "measured_window_tokens": 20
+        },
+        {
+          "request": 10,
+          "all_callback_ids": 21,
+          "all_native_ids": 21,
+          "measured_window_tokens": 18
+        },
+        {
+          "request": 11,
+          "all_callback_ids": 42,
+          "all_native_ids": 42,
+          "measured_window_tokens": 19
+        },
+        {
+          "request": 12,
+          "all_callback_ids": 40,
+          "all_native_ids": 40,
+          "measured_window_tokens": 19
+        },
+        {
+          "request": 13,
+          "all_callback_ids": 38,
+          "all_native_ids": 38,
+          "measured_window_tokens": 19
+        },
+        {
+          "request": 14,
+          "all_callback_ids": 35,
+          "all_native_ids": 35,
+          "measured_window_tokens": 21
+        },
+        {
+          "request": 15,
+          "all_callback_ids": 34,
+          "all_native_ids": 34,
+          "measured_window_tokens": 21
+        },
+        {
+          "request": 16,
+          "all_callback_ids": 32,
+          "all_native_ids": 32,
+          "measured_window_tokens": 22
+        },
+        {
+          "request": 17,
+          "all_callback_ids": 29,
+          "all_native_ids": 29,
+          "measured_window_tokens": 19
+        },
+        {
+          "request": 18,
+          "all_callback_ids": 26,
+          "all_native_ids": 26,
+          "measured_window_tokens": 20
+        },
+        {
+          "request": 19,
+          "all_callback_ids": 26,
+          "all_native_ids": 26,
+          "measured_window_tokens": 20
+        },
+        {
+          "request": 20,
+          "all_callback_ids": 21,
+          "all_native_ids": 21,
+          "measured_window_tokens": 18
+        },
+        {
+          "request": 21,
+          "all_callback_ids": 32,
+          "all_native_ids": 32,
+          "measured_window_tokens": 22
+        },
+        {
+          "request": 22,
+          "all_callback_ids": 25,
+          "all_native_ids": 25,
+          "measured_window_tokens": 18
+        },
+        {
+          "request": 23,
+          "all_callback_ids": 58,
+          "all_native_ids": 58,
+          "measured_window_tokens": 22
+        }
+      ]
+    }
+  ],
+  "maximum_native_ids": 268,
+  "scope": "Counter/output semantics on identical recorded delivery histories with oldcapinactive. Not a runtime performance-equivalence or new2048all6measurement claim; actualnewhostadmission/timingrequired."
+}

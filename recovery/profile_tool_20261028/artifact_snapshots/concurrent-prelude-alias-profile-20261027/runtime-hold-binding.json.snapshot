@@ -1,0 +1,9 @@
+{
+  "runtime_source_hold_sha256": "fc5e9976e0338bfa1dfae76d28c90515095df124e8c71fcbb9346bed249cf915",
+  "runtime_source_hold_path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-coordinate-alias-20261027/source-hold.json",
+  "profile_source_hold_sha256": "73cebb2f5990b5e5643295545cccf94027d080ae58a83a1c4032a00aaabac5ef",
+  "tool_source": "8f1f904d",
+  "runtime_source": "710c9b6a",
+  "runtime_wheel": "32246b49a07dbc3b22ee6ff31c8745a1368fb3e203a0071ecddaa32b00bcf882",
+  "disclosure": "RuntimeHOLDpublishedaftertoolstage; additiveprovenancebindonly/no stage/HOLD/source edits. Actual53+all6quality/counterstillrequired."
+}

@@ -1,0 +1,254 @@
+[
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-fast-profiler-20261027",
+    "branch": null,
+    "HEAD": "a4af1a783bcb782743572a3b78d93e3c674daae5",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-unique-static-maps-20261027",
+    "branch": "v100-unique-static-maps-20261027",
+    "HEAD": "cff7b6b89f90b56f4cfa62211a646329697206be",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-startup-hash-overlap-20261027",
+    "branch": "v100-startup-hash-overlap-20261027",
+    "HEAD": "32bc97fbddbd4157894fd88af5608142870bf0ce",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-startup-guard-maps-20261027",
+    "branch": "v100-startup-guard-maps-20261027",
+    "HEAD": "c0f49f4998e47af99633a099769b675dbdd3fd43",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-startup-prelude-20261027",
+    "branch": "v100-startup-prelude-20261027",
+    "HEAD": "ee248b80fdddfe01fb1af1a595385fd84928c44e",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-startup-mtp-prelude-20261027",
+    "branch": "v100-startup-mtp-prelude-20261027",
+    "HEAD": "521d78ba1edffab669546d6b1ee26bfa17db09e8",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-startup-three-file-hash-20261027",
+    "branch": "v100-startup-three-file-hash-20261027",
+    "HEAD": "d73d4c962a4a691e7150eb4f77923a5b0121bfbd",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-concurrent-profile-20261027",
+    "branch": "v100-concurrent-profile-20261027",
+    "HEAD": "67a10e579b6ca4e747915ed5d82903997cc75d9a",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-concurrent-prelude-profile-20261027",
+    "branch": "v100-concurrent-prelude-profile-20261027",
+    "HEAD": "c26ac773a7aea910beb26fc8c25df4f7744a696f",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-concurrent-prelude-alias-profile-20261027",
+    "branch": "v100-concurrent-prelude-alias-profile-20261027",
+    "HEAD": "8f1f904d7b9b54d415447ad687ee3843bb8c3c80",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-concurrent-startup-mtp-profile-20261027",
+    "branch": "v100-concurrent-startup-mtp-profile-20261027",
+    "HEAD": "02643c0689438c64fb4313d7ddda0d4ed262fe48",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-fast-grid-v2-20261027",
+    "branch": "v100-fast-grid-v2-20261027",
+    "HEAD": "bebf7cbc0bf2b4d3b59bf650764e16457accc7f5",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-ring-single-profile-20261028",
+    "branch": "v100-ring-single-profile-20261028",
+    "HEAD": "c94ad8dbfbfd6b694c04512e76d6476ba548a7d8",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-best-single-profile-20261028",
+    "branch": "v100-best-single-profile-20261028",
+    "HEAD": "3f460a4f8ce83479cc035ca2d7b5d9f4be1b9e8c",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-owner-attention-single-profile-20261028",
+    "branch": "v100-owner-attention-single-profile-20261028",
+    "HEAD": "939a26265e5e69e4184fb43e0fe8cff30796664d",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-owner-attention-single-final-profile-20261028",
+    "branch": "v100-owner-attention-single-final-profile-20261028",
+    "HEAD": "dc05c3f890d582a1fc3b7946a38cb8fdfa7850bd",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-mtp-confidence-zero-20261028",
+    "branch": "v100-mtp-confidence-zero-20261028",
+    "HEAD": "2aee41c95b979c53d1c7c699878d425708e5fd5c",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028",
+    "branch": "v100-dense-n24-profile-20261028",
+    "HEAD": "6ef006ae68c4ac16bb500519f4b27c8f7ef21125",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028",
+    "branch": "v100-dense-n24-profile-closefix-20261028",
+    "HEAD": "4c75bed1ec3fc801722b4f74f8664a352405434e",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-dense-execution-rows-20261028",
+    "branch": "v100-dense-execution-rows-20261028",
+    "HEAD": "f0a78fa0f607256db459486ed4989ed7a41dddb3",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028",
+    "branch": "v100-batch-execution-rows-20261028",
+    "HEAD": "60980af6dca5f5b33b761f978265f8c93843648b",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-dense-large-row-tiles-20261028",
+    "branch": "v100-dense-large-row-tiles-20261028",
+    "HEAD": "c517964eb7bebc3543274dc7be7ab920788384d5",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-dense-hc-physical-tiles-20261028",
+    "branch": "v100-dense-hc-physical-tiles-20261028",
+    "HEAD": "43e514dd170e7dcba8a5290ab4191e9d7f9318db",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-router-cublas-batched-20261028",
+    "branch": "v100-router-cublas-batched-20261028",
+    "HEAD": "490a49c2013f29b9551eec5d573da7c5fa852b63",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-router-cublas-model-20261028",
+    "branch": "v100-router-cublas-model-20261028",
+    "HEAD": "30c3bf3199cd6cb45075c1e749b2c798ed0c8412",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-router-cublas-model-wiring-20261028",
+    "branch": "v100-router-cublas-model-wiring-20261028",
+    "HEAD": "f0a3bfd535f039315591d8b2f1cdba8d348f03c1",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-router-gdn-integration-20261028",
+    "branch": "v100-router-gdn-integration-20261028",
+    "HEAD": "146f8a818d11ea69ca5b9cbd0f3d1f90067896ac",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-router-gdn-n24-profile-20261028",
+    "branch": "v100-router-gdn-n24-profile-20261028",
+    "HEAD": "eb7179abb8826a30f952c6d0759b268f75242984",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-router-gdn-wmma80-20261028",
+    "branch": "v100-router-gdn-wmma80-20261028",
+    "HEAD": "1db0dbab8d3d033516ae6b6747ee509e107693c7",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-wmma80-current-harness-20261028",
+    "branch": "v100-wmma80-current-harness-20261028",
+    "HEAD": "e1881d5457de738c5cb4bfe635b8f8347c1cd854",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-router-gdn-shared-fusion-20261028",
+    "branch": "v100-router-gdn-shared-fusion-20261028",
+    "HEAD": "42f522f02ef9c58237bfaf7eafd7b18adefa3ed8",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-joint-single-profile-20261028",
+    "branch": "v100-joint-single-profile-20261028",
+    "HEAD": "b6369c36131c6432dc82fa7e058be65daaa92dc1",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-vendor-blas-n1-shapes-20261028",
+    "branch": "v100-vendor-blas-n1-shapes-20261028",
+    "HEAD": "2ae90c586acdfdb30b3a1040b10a84fe4c884353",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-vendor-blas-shapes-outcome-20261028",
+    "branch": "v100-vendor-blas-shapes-outcome-20261028",
+    "HEAD": "b4e6af85c2b742512ffe573a1266747f5ac89e98",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-vendor-blas-retire-envelope-20261028",
+    "branch": "v100-vendor-blas-retire-envelope-20261028",
+    "HEAD": "734484a2cd2760f97954918145674323691e865e",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-hot16-current-n24-profile-20261028",
+    "branch": "v100-hot16-current-n24-profile-20261028",
+    "HEAD": "84cc902d49d57689aff2d15cbfe0646c126a4f2c",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-descriptor-current-n24-profile-20261028",
+    "branch": "v100-descriptor-current-n24-profile-20261028",
+    "HEAD": "86b841b879b24ceecb131dd320679d224e7e1d17",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-cpu-parent-rescan-20261028",
+    "branch": "v100-cpu-parent-rescan-20261028",
+    "HEAD": "7e3ba65aa2c8ab937a688d88dd6fc5f44b6f3e33",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-cpu-parent-acquisition-20261028",
+    "branch": "v100-cpu-parent-acquisition-20261028",
+    "HEAD": "ea563863386e472818e73a726dd925a5c766f3a5",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-compact-pool-preparation-20261028",
+    "branch": "v100-compact-pool-preparation-20261028",
+    "HEAD": "1572417190ed494e7afb6ea2894874f233dad2ba",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-compact-pool-namespace-20261028",
+    "branch": "v100-compact-pool-namespace-20261028",
+    "HEAD": "37518d018730da786dd5577bfaa7f6d2fb1a4885",
+    "dirty": []
+  },
+  {
+    "worktree": "/Warehouse/TensorFold-wt/v100-compact-tail-pool-integration-20261028",
+    "branch": "v100-compact-tail-pool-integration-20261028",
+    "HEAD": "9d4a4c256e28378d7ec413cbdc9df5bf4f518d7f",
+    "dirty": []
+  }
+]

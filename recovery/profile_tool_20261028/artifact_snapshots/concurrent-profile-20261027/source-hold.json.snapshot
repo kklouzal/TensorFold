@@ -1,0 +1,26 @@
+{
+  "schema": "tensorfold.concurrent-profile-tool-v1",
+  "commit": "67a10e579b6ca4e747915ed5d82903997cc75d9a",
+  "worktree": "/Warehouse/TensorFold-wt/v100-concurrent-profile-20261027",
+  "source_paths": {
+    "README.md": "eccfa0fdb00c681b416f293015d76998358e7ce977894e30ba9c6b1e9083c265",
+    "tests/test_concurrent_observers.py": "3dba4ddf749becc1a6476b0e5f9946c39173ade1d2cda0e7d5a781e4363abbdb",
+    "tests/test_fast_grid.py": "ca6859196492633de71b247f2ac995a930e8cc37cf696eee7f61d90af6f7bbe9",
+    "tests/test_v100_backend_probe.py": "be3312c41751231b006d4eedb83f14584fed251f02fc9340d277e355fe5977f8",
+    "tools/concurrent_observers.py": "2dd59a77cba7bc652f9c67d7809085d83ebb8ec1c5be9f3fab0c9540af76d748",
+    "tools/v100_backend_probe.py": "0c3088a0b2bb0b54d65d7148f10cefde342409a26fe680972b1036020867fcf2"
+  },
+  "runtime_wheel_unchanged": "84a8618aa1752683a643697d3ad732cc47137910302dd374736594eee9e8901e",
+  "runtime_diff_empty": true,
+  "controls": {
+    "base": 145,
+    "base_log_sha256": "75f278dd74d4545f622a555e6004b3c222cc2f87df5c81aa638d962eb791c7d4",
+    "final_module": 5,
+    "module_log_sha256": "f7b152e5643a49175f44f5eccd1a3b6dd7da8611c7ed579758a5921d6c85ae3f",
+    "status": "PASS/Ruff/pip/help; final134slotjournalchangeexecutionneutralexceptindependentfailurepreservation"
+  },
+  "instrumentation": "ProtectedpublicTorch04cfCPU/CUDAallthreads/CUPTI28; no shapes/memory/stacks. OneN8or16 fastcohort30sready10sdecode/cancel+native/Future/logicaldrain. Ordinaryall6unchanged, instrumentednoall6credit/noqualityclaim.",
+  "observer": "actualroundlive/selectionNandrows/compute/historypreparefixedhists+expert/NCCLlabels; <=8KiBserializedpayload;128KiBperrankglobal1MiBfundedcontrolbeforelogicalsubmit; allocationpostwarmcapturestartaccuratelyreported;nativeKinetobuffersseparatediagnosticcontainerboundnotproductionproof",
+  "failure_contract": "transparentprimarypreservinglabel/timer/argumentallocation;134preallocatedcapturefailuresincludesindependent128bindingrestores+batchsnapshot",
+  "GPU": "UNRUN; Rootexclusive"
+}

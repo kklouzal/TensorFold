@@ -1,0 +1,6 @@
+#!/bin/bash
+set -euo pipefail
+python -m pip install --no-index --no-deps --force-reinstall --no-compile /qualification/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl
+python -m pip check
+python /qualification/verify_installed.py
+exec python /qualification/v100_dense_shape_diagnostic.py --out /probe/dense-shapes --root-gpu-lease

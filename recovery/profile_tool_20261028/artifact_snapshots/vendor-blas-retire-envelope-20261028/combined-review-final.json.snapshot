@@ -1,0 +1,91 @@
+{
+  "schema": "task-wide-combined-D13-diagnostic-outcome-review-v1",
+  "at": "2026-10-28T15:45:44.558365+00:00",
+  "reviewer": "/root/cleanup_review",
+  "scope": "VendorBLASshape tool-only timing/input/resource/graph/context/lifetime/outcome cleanup plusexactheldsource/measurementreuse. No APP/native/model mutation orP3/qualityadmission; libraryalgorithms notreaudited.",
+  "final_source": {
+    "commit": "734484a2cd2760f97954918145674323691e865e",
+    "HOLD_sha256": "dc20c68095b4347b1a702ff383f4708a00fe661ed01c7ad0a4a5e8ce051d2762",
+    "source_files_verified": 2,
+    "evidence_files_verified": 4,
+    "APP": "fbaabca3ba2a7594c8712e0824733da035f3a3db63f454c520ecfa337010ee0d unchanged726FDc79",
+    "normal_APP_src_diff_empty": true
+  },
+  "executed_held_packet": {
+    "commit": "b4e6af85c2b742512ffe573a1266747f5ac89e98",
+    "HOLD_sha256": "4e57ac5708d78cd361442d4cc7d77d5984c90da5acd2f8903dd8b9dbd63db62a",
+    "held_source_paths_verified": 3,
+    "held_check_files_verified": 6,
+    "payload_files_verified": 11,
+    "manifest_sha256": "9f2a8da8eb2304f23ddec4d82cf53a0819ca6d2ee81b486c7289ac94f5d39ece",
+    "controller_sha256": "ae5af32b548e7025dfd628474ed6c58404790d47527f7c83e508ebb7f7ec0e36",
+    "wheel_sha256": "fbaabca3ba2a7594c8712e0824733da035f3a3db63f454c520ecfa337010ee0d",
+    "status": "Root25315executedb4e6packet; nohold/livebytesmutated. Final734tool-onlyfixnotrelabeledasthatmeasurement; noGPUrepeatneeded."
+  },
+  "disposition": "FINAL_TOOL_FAILURE_CONTRACT_CLEANUP_AND_BOUNDED_DIAGNOSTIC_SOURCE_BINDING_REVIEW_CLOSED; NO_REMAINING_CONCRETE_FINDINGS_WITHIN_SCOPE",
+  "findings": [
+    {
+      "id": "BLAS-NONE-SECONDARY",
+      "rules": [
+        "C5",
+        "C6"
+      ],
+      "status": "CLOSED_B4E6",
+      "fix": "Successfulfailure-report writebare-reraisesoriginalerror; actualdiagnosticwriterfailure onlyaggregated. Actualhandlercontrols preserveidentity/nativecause/context/noNone artifacts."
+    },
+    {
+      "id": "BLAS-CAPTURE-CONTEXT-RETIREMENT",
+      "rules": [
+        "C6",
+        "M0",
+        "U2"
+      ],
+      "status": "CLOSED_B4E6",
+      "fix": "Graphpublishedbeforecapture, bodyexceptionnameduntilcontext exitoutcome; fixedslotscaptureexit/fence/resets. Positivefence+allresets precedeclear; uncertainenter/exit/fence/reset keepscontext/graphs/pointeesattachedtoVariants. Actualhelperfaultcontrols covercuts."
+    },
+    {
+      "id": "BLAS-WEIGHT-CONSTRUCTION-BOUND",
+      "rules": [
+        "M1",
+        "V0"
+      ],
+      "status": "CLOSED_B4E6",
+      "fix": "3xweightpayload accounts2retainedplusrandn*scaleconstructiontemporary; inputrecipe unchanged. Same2GiBprojectcap+actualTorchreservationcheck,8MiBreportbound. StaleHOLDtwo-weightshorthand isdescriptive; correctivescopeandactualcode explicitlycharge3."
+    },
+    {
+      "id": "BLAS-FINALIZER-PREPARATION",
+      "rules": [
+        "C6",
+        "M0"
+      ],
+      "status": "CLOSED_734",
+      "fix": "Wholeowner.retire callguardedwithpreallocated5thslot; unexpectedpreparationMemoryError cannotreplacenamedbodyprimary. Nativepriorcause/context savedasnamedtracebackrefs beforecleanup/outcome; compactionMemoryError retainsprimary/roots/failurejournal. ActualtimedretireMemoryErrorandactualoutcomecompaction controls assertroot/ownerretention."
+    }
+  ],
+  "contracts_verified": [
+    "ActualnativeM32helper versusdirect/pad4/8/16/32+preparedmath on7fixedsourcegeometries/21rowcases; F16operands andsource-roleF16/F32outputs unchanged, actualpinned_family_runtime observed,no setters/backend/vendor/librarypatch. Syntheticweights, notactualcheckpointdistribution/fullDecoder proof.",
+    "Onehotweight versusalternating2addresses, bounded<=221variants/3samples/8replays/4unrolledprojections. Shapes/payloads explicit. Completepaths includepad/copy; preparedmath excludes themandisnotdrop-inmodelcost. Outputsconsumed/bitwise+abs/RMS/relative errorsrecorded, nonfinite outputsrefuse.",
+    "GraphCPUenqueue usesperf_counter_ns; GPUstart/stopEventelapsed ms converted1e6 to ns per32projections. Samecurrentstream afterreplay; stop.synchronize positivelyretires. GPUstreamelapsed includespossibleCPUenqueue starvation, notisolatedkernel time. Firsttwoweightwallcalls include diagnosticclones, priorcase/cache dependent, notmatchedcoldstart.",
+    "TimingOwner stronglyownsgraphs/context/variantsbeforeacceptedcapture; originalinputs/weights/pads/output/result retained. Afterpositivefence/reset, capturedresultTensor itself stillownsallocation forcomparison; no concurrentrebind ornewmodelstorageclaim. Failureabortsinsteadofbenchmarkcontinuation; uncertainowner remainsretained, noCPU/GPUstateconcealment.",
+    "GPU_LIMIT isproject/observedTorchreserved envelope, notuniversaldriver/library/allocatorpeakproof. Actualcached/privatepool/libraryeffects recordedconditions; tensorconstruction estimator includesthirdweight. No L2flush orwholedecoderreuse claim. Reports boundedserialized8MiB; ordinarydiagnosticIO separatefromtimedloop."
+  ],
+  "positive_measurement_reuse": {
+    "independent_AST_comparison": {
+      "run": true,
+      "payload_bound": true,
+      "metrics": true,
+      "shapes": true,
+      "TimingOwner.retire": true,
+      "timed_measurement_try_body": true
+    },
+    "proof_sha256": "42e98f49ae94e156596cb1d1d273105eaa2382864262d756ac7c53c30b9751f4",
+    "scope": "Numericalinputrecipe/shape/config/entiremeasurementtry/run/positive-retire sourceunchangedb4e6. Reuseactualb4e6completed221cases asreferenceevidence only; additionalcoldPythonfailureguards donotcreatefresh734timingmeasurements orendtoendperformanceequivalence claim."
+  },
+  "verification": "Final15actualfunctionCPUcontrolsPASS4.05s/Ruff/help; exactcommand/cwd/exits/logshashbound. Previous13+final6subsetcontrolsheldb4e6; no invented19distinct count. Sourcehistoryold2ae/9a59unrun preserved, b4e6/25315 immutable, noAPPbuild orGPUrepeat.",
+  "cleanup": "NecessaryTimingOwner/errorjournalpurpose explicit; allverifiedfailure/retention/resource violations remediated. No newdeadcode/unjustifiedduplication found; baseline/native/vendorpathsandindependenterror metrics retained. No reviewersourceedits/GPU/tests.",
+  "actual_scope": "Rootreports25315completed221successrecords; rawmeasurementarchive/source/provenance remainb4e6. Thisreviewdoesnotgradebestvariant, acceptoutputerror, orclaimmodel/capacity/quality/P3gain.",
+  "pending_acceptance": [
+    "Rootactualtiming/error/cache/clock/resourceinspection; uncertainty andlatermodelquality contract beforeselection",
+    "Anyintegrationneedsnewcurrentmodel/P0-P2/funding/native24 andcontrolledall6evidence; microdiagnostic alone insufficient"
+  ]
+}

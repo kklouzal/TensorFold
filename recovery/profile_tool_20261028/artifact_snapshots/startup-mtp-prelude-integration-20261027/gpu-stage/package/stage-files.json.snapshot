@@ -1,0 +1,90 @@
+{
+  "source-hold.json": {
+    "sha256": "fa8620e74c713c3b6a51334e95c88aa204d9c2de4a151438a79222f537956c9e",
+    "bytes": 3099
+  },
+  "recovery-commit.json": {
+    "sha256": "5bb1aecbfa8cce4e69b2713553fe477982af4cbc39767ffe1a81108684849bc2",
+    "bytes": 77
+  },
+  "protected-files.json": {
+    "sha256": "291d7d19e5b2134691d6016859b9bc5d6c95a3d005ae22ca02600a9bcf5847f9",
+    "bytes": 1052
+  },
+  "verify_stage.py": {
+    "sha256": "d7f0cb312c1d23227a556452119cda5fea602e43f7e90e7a33348b847973aa8a",
+    "bytes": 395
+  },
+  "bootstrap.sh": {
+    "sha256": "49ade76ef63fdcfa772214fc2affd7b277376c796d21454a62d2916d81700f80",
+    "bytes": 488
+  },
+  "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl": {
+    "sha256": "5635735f68db932f41cab3da94747e6f6c2f15673c60b71e220ec96c9f9e0314",
+    "bytes": 3141377
+  },
+  "wheel-provenance.json": {
+    "sha256": "968c593e9ccb5160bf670a2267bb86b64e755dcedec2052221b1a09feaa2bedc",
+    "bytes": 125873
+  },
+  "fixture-source-hold.json": {
+    "sha256": "e28a258e32fefd5f4b583ccbc361fa2e4eb9d827711e7bec44d641e36e08657b",
+    "bytes": 1548
+  },
+  "candidate.json": {
+    "sha256": "9e4f531f4a2076645351ee23b54e7ed5020584c7b9fd349b0e1899deb4338ee7",
+    "bytes": 580
+  },
+  "verify_installed.py": {
+    "sha256": "b42505d36750fd212ba511bb4d4e008c1b16e47029802918bafe7e380849201c",
+    "bytes": 2650
+  },
+  "run_controls.py": {
+    "sha256": "d9b495765f91b9e3c0f4c3230ca7ec9e5cdcfa4b08e71a3a746be7d0738c5d03",
+    "bytes": 880
+  },
+  "launch-command.json": {
+    "sha256": "4dc1062a37f3d9ed6526bb1aeb1b1539f6d6eec7565bfc66454e5aad447c3133",
+    "bytes": 1082
+  },
+  "launch-command.sh": {
+    "sha256": "8e65ebd3713b03f862d9233e3afa4ab5498a6b5aeba6c1655d98163e34e437f0",
+    "bytes": 1035
+  },
+  "tests/__init__.py": {
+    "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "bytes": 0
+  },
+  "tests/conftest.py": {
+    "sha256": "931447949b328a38f27db797379403aa35d461345b8ad1d42319702e0593085f",
+    "bytes": 2291
+  },
+  "tests/cuda/test_sm70_owner_piece_graphs_tp8.py": {
+    "sha256": "3728f47e3b14917197dda5a822ccf5fb0db160dcb9cdd200a3256947fe26d0e2",
+    "bytes": 17652
+  },
+  "tests/cuda/test_sm70_unique_piece_graphs_tp8.py": {
+    "sha256": "90a2d0b74ab2585c4e98f00638e4e5cc4419fb2877f5a50b743a39ac32e33dd9",
+    "bytes": 10376
+  },
+  "tests/cuda/test_flashnext_sm70_mtp.py": {
+    "sha256": "2dde66dfb9ca5b069cd3698803e7e68ada686c663c988bf8fd9ab18b0155ab82",
+    "bytes": 7282
+  },
+  "tests/cuda/test_flashnext_sm70_family.py": {
+    "sha256": "a175bd3574fd721245a4daf992e30955b01857b831d91170fe4ae025d90899bc",
+    "bytes": 24232
+  },
+  "tests/cuda/test_sm70_value_guard.py": {
+    "sha256": "2fac38b61f396afeca8fb4daf0e0c78fd8b1e5243ff24f5376a1add920705080",
+    "bytes": 6354
+  },
+  "tests/cuda/test_sm70_fused_family.py": {
+    "sha256": "351f79e4d9472b02e63c01efbe08cead199b1d0566a859c95e677a7105fff8d5",
+    "bytes": 26648
+  },
+  "tests/cuda/test_sm70_owner_prelude.py": {
+    "sha256": "48665842014ce1893d676493ac2d5e451d71129ce3efcf5004d0f8c1cabb5dfe",
+    "bytes": 4797
+  }
+}

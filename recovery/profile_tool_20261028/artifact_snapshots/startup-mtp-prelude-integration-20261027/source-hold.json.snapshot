@@ -1,0 +1,50 @@
+{
+  "schema": "tensorfold.startup-mtp-prelude-integration-v1",
+  "commit": "a7b1661f7f2016571067fa8fc1a1c220f08fb303",
+  "worktree": "/Warehouse/TensorFold-wt/v100-startup-mtp-prelude-20261027",
+  "base_MTP": "e3ed8297483da2c58cb0c0067c9f5e848d35b6f8",
+  "base_MTP_hold_sha256": "9d734c2941c42ab6bd95c8fdbbf321e6affb6bea29db976d61724fc85d848006",
+  "closed_startup": "ee248b80/fa6e (7779semanticsunchanged)",
+  "source_paths": {
+    "README.md": "cdbfdac937f3d4bc7f1ec82468887d4aea50311e5143b93ec25d2bd3ebb059e4",
+    "deploy/v100/source-foundation.md": "aae4e2ca3f15844a8b1f9571ea24575921e5ee0ec368d4af8fd1f82dc1216d35",
+    "src/tensorfold/_fd_owner.c": "aa5d4a6773f7d26c7dc43e0bf0817fb127e9d8a70de103f99acc8999fe6c3931",
+    "src/tensorfold/engine/model_identity.py": "37e76bdb643b4ab7ae47b6c449df5b8415b55602fac3165e0d99f6a5e9725298",
+    "src/tensorfold/families/qwen4_exp/cuda/engine.py": "089631bf9aed52351b6730cc4e879bc03699bb72786cd9b31cb93f8175240d0a",
+    "src/tensorfold/families/qwen4_exp/cuda/execution_identity.py": "6c98e903e161f4304170c82a8f8f8d1d688c15f2907de170c65b25a8eb6c0aa9",
+    "src/tensorfold/families/qwen4_exp/cuda/startup_content.py": "cadd8df67397e350b9dfb61b18f5dfe818df3dfedd74fdebff671dbb6d0987d6",
+    "tests/test_flashnext_engine_lifetime.py": "cf8a039f1e411442aed70d70c97775eadbdf9c4f7b1441e453921ab0dc0638f0",
+    "tests/test_startup_content.py": "a67fbd6d1c3aeea105dfe6a89df04d91d9df10fa5e0de493d9f42c4a5545369e",
+    "tests/test_v100_backend_probe.py": "db05ceb804188d9768976dfc7bb2e476152f1c5c10be2c1936a963934d64ab06",
+    "tools/v100_backend_probe.py": "baedbe56d9b0d68bd9470b34b3badb0625db5ea512e3a1b670ee742234ca4f42"
+  },
+  "wheel": {
+    "path": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3141377,
+    "sha256": "5635735f68db932f41cab3da94747e6f6c2f15673c60b71e220ec96c9f9e0314"
+  },
+  "compiled_extensions": [
+    {
+      "path": "tensorfold/_fd_owner.abi3.so",
+      "bytes": 46344,
+      "sha256": "c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d"
+    }
+  ],
+  "source_files": 717,
+  "controls": {
+    "checks": 683,
+    "subtests": 5,
+    "seconds": 16.66,
+    "exit_code": 0,
+    "log_sha256": "916ceda52416c18d877cf0ab293da1ace160a941d9f67bd4bdfb95641f32c6aa",
+    "start_sha256": "f864d06e70f4370ed3757ca2ececeffeb7424a22c5286ccb606740f4ec11d220",
+    "Ruff": "PASS",
+    "pip": "PASS",
+    "help": "PASS",
+    "package": "717canonical+FDc79 normalinstalledwholewheelexact"
+  },
+  "structural_proof_sha256": "25c48106c34ccfbfdcc443f4539b055c6948d629a4fad6998c5e6ce5d31e0324",
+  "resource_funding": "Globalstartup75501568B64MiBstack+guard+8MiBworking; e3edrolecounter8192host/rank retained; 256Kfollowers/24full262144Q8K/VFP32state unchanged",
+  "GPU": "UNRUN. Needactual53newwholewheel inclpositiveMTPnativecounter andactual2attentionlayeraliasregression; thenstartupenabledall6/quality/counter/startup comparison vs3224; no performancegainclaim",
+  "fallbacks": "Defaultserialhashingunchanged; MTPcustom/media/deferred-boundaryproducerunchanged; enablesonlyactualknownMTPtextproducer, noframeguardweakening"
+}

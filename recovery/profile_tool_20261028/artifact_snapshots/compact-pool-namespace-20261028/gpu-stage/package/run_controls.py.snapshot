@@ -1,0 +1,11 @@
+from pathlib import Path
+import json,pytest
+class Outcomes:
+ def __init__(self):self.passed=0;self.skipped=0
+ def pytest_runtest_logreport(self,report):
+  if report.when=='call' and report.passed:self.passed+=1
+  if report.skipped:self.skipped+=1
+def main():
+ outcome=Outcomes();args=['-s','-c','/dev/null','-o','pythonpath=/qualification/tests /qualification/tests/cuda /qualification','-p','no:cacheprovider','-x','-vv','--junitxml=/evidence/pool.xml','/qualification/tests/cuda/test_sm70_compact_pool_preparation.py'];code=int(pytest.main(args,plugins=[outcome]));complete=code==0 and outcome.passed==45 and outcome.skipped==0
+ Path('/evidence/pytest-result.json').write_text(json.dumps({'exit':code,'passed':outcome.passed,'skipped':outcome.skipped,'complete':complete,'scope':'strictSM70poolprepbits/RMS16padding/status only; noP3/NUMAmodelclaim'})+'\n');raise SystemExit(0 if complete else code or 1)
+if __name__=='__main__':main()

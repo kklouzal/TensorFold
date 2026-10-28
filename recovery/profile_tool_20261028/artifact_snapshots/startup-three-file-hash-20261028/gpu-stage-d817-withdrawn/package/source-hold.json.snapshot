@@ -1,0 +1,69 @@
+{
+  "schema": "tensorfold.startup-three-file-hash-v1",
+  "commit": "dac6bbade215fe7f1eb7de00a37d498c994cf587",
+  "worktree": "/Warehouse/TensorFold-wt/v100-startup-three-file-hash-20261027",
+  "base": "a7b1661f7f2016571067fa8fc1a1c220f08fb303",
+  "source_paths": {
+    "README.md": "0f71525637c2da506d3e5fe48a9df2636cbc1cf4914a28d21fa5d42afb298e34",
+    "deploy/v100/source-foundation.md": "6ae5efaeb02981d61b978956e60aa391605725fb49c2cd622212e30fd1a483c6",
+    "src/tensorfold/families/qwen4_exp/cuda/execution_identity.py": "3c0cb0f2177f3a68ae902b1d6b5b3cfa620e4c278541300d74cec60bb0e1b309",
+    "src/tensorfold/families/qwen4_exp/cuda/startup_content.py": "73f5093a7812f404e1b076d7cbeca02d27e8468d19459663ab8bc732ab339628",
+    "tests/test_fast_grid.py": "d4143aa014a1febdb2eaf6965489a0d4f0ca5531c7cb1b332a3ce030789c20a8",
+    "tests/test_finite_backend_resources.py": "f0a4c4ec313cec559394a67b478bb6656ad9c1e69ba9352da72b4cb53f80b225",
+    "tests/test_finite_concurrency.py": "97215b843a57ea0f5dbf2d0449536af5af4b4ad177aab2f8a09cbd86258191c6",
+    "tests/test_finite_tp_contract.py": "c985bc86d9b89dce0652375a9cc50abba82025d37c9dad5908a62ce35fc35c21",
+    "tests/test_startup_content_parallel.py": "0e919c6c61600ad0e1b5af9899efef1efdb2fdf3a6fefb1bbfea18753a45e40f",
+    "tests/test_v100_backend_probe.py": "245b6890e47fe825c5a08976aa7c3993e082f5ced942b95cdbf9be932f5f8d56",
+    "tools/finite_concurrency.py": "d009cf94050754115fdb0295b39aaa787904b09478464aeb772d8782b97eb86b",
+    "tools/v100_backend_probe.py": "31e23a870323fa37d06791b628a8eaee4b12bd594374ce3909b947fa10f6c9ec"
+  },
+  "wheel": {
+    "path": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3143721,
+    "sha256": "d817e2c23da4ea46863086ea66c99ff506dec6538a0ead280a6e64ef528f98c8"
+  },
+  "compiled_extensions": [
+    {
+      "path": "tensorfold/_fd_owner.abi3.so",
+      "bytes": 46344,
+      "sha256": "c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d"
+    }
+  ],
+  "source_files": 717,
+  "controls": {
+    "tests": 756,
+    "subtests": 5,
+    "seconds": 35.07,
+    "exit_code": 0,
+    "log_sha256": "3bd885ac3654ebcde08b5fce2df5e1e2711fb65d82b4029e7cb95f869431f191",
+    "start_sha256": "e4d8b4539284e32393cb0c01b27fa34814b47d52135a92f7395045ad6ce4a9be",
+    "Ruff": "PASS",
+    "pip": "PASS",
+    "help": "PASS",
+    "package": "717canonical+FDc79wholewheel exact"
+  },
+  "fixed_scope": "OnlytwoownedstartupPythonmodulesmodifiedinruntime;715othercanonicalfilesbyteexacta7b1 includingnativeC79/FD/kernel/MTP/coordinate/counter/Engineadmission; toolscomposealreadyclosedFASTv22048",
+  "worker_contract": "Default1; explicitCLI/env3 partitions completefiles greedysize/name/countstabletieorder. ExistingCaptureperworkerowncompletionlatch/stackcheck/cancel/read/FDcleanup reused; noexecutor/nochunkhashcombination. Failuresnotifycancelallsiblings, allacceptedownersjoined/heldthroughpartialstart/signals; genuinepartitionerrornotexpectedcancelprimary. Named6errorrefssurvivediagnosticallocationfailure.",
+  "identity": "EachpartitioncapturecurrentprocessissuedModelIdentity; bind_capture_reusing(authorities()) verifiesunchangedallfiles/declaredexpectedhashes/content inventory beforepublication; freshsource/libsafterload; sortedcontentmapidentitydeterministic",
+  "resources": {
+    "workers_global": 3,
+    "global_host_bytes": 226504704,
+    "per_worker_stack_upper_bytes": 67108864,
+    "per_worker_guard_bytes_actual_pinned": 4096,
+    "per_worker_hash_metadata_bytes": 8388608,
+    "input_bounds": "<=64files/64KiBprintableASCIIlogicalnames+paths; disjointpartitions; conservativelyfund8MiBperworker; modelEngineadmitincludestotalbeforestart/_same_settingsallrankconsensus",
+    "native_OS_stack_reclamation": "not inferred; fixedglobalcommitmentretainedthroughengine"
+  },
+  "negative_controls": [
+    "RealSIGALRMinterruptsall3actualThread.join +rollback/ownlatches retainacceptedowners",
+    "Partialstartbeforeacceptanceuncertainownerretained/originalerror+acceptedpeersretired",
+    "PartialstartAFTERnativeacceptance joinsactualacceptedworkers",
+    "ActualwrongpartitionSHArejects no partialauthoritypublication",
+    "Siblingfailurecancelsboundedreads/expectedcancelnotreplacehasherror",
+    "Cancellationfailurepersistsuntilreported",
+    "Outcomecompactionallocationfaultretainsnamedoriginal+secondary",
+    "Independentserialvs3wholefilehashes/contentmap+reusedcounts exact; barrierobserves3actualThreads"
+  ],
+  "protocol": "ClosedFASTv22048cap helpersselectedexplicitly; defaultv1 andworker1 unchanged; full24native262144Q8floors unmodified",
+  "GPU": "UNRUN; no startupgain/throughput/qualityclaim. Needsnewwholewheel53+Rootstartup/all6compare afterD13; do not mutatecurrentmodels/stages."
+}

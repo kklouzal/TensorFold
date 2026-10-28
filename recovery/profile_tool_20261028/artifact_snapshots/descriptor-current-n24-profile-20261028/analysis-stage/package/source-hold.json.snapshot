@@ -1,0 +1,15 @@
+{
+  "schema": "tensorfold.concurrent-profile-analysis-hold-v1",
+  "sources": {
+    "analyze_traces.py": "780c7d40cc90b4226212d4e1e0dcccaebeaad01e9c4148beaa15b790bda58df1",
+    "analyze_decode.py": "301f6a75ce46266f63c5ab9b28aaccb85dbe4535ed2fe8f6f75caa2d8f3e63c6",
+    "analyze_concurrent.py": "989e8bf2a6c2ef46c95b63c4575f9af326853908537b0fbb0085fd224658cc5b",
+    "test_concurrent_analysis.py": "795eb451107eb97a142cef304edb1bc3b11230522f21e89844de18484c211887"
+  },
+  "controls": "6actualderive/analyzefunctionchecksPASS inclcrossing-startkernelactivityintersection withoutinventingstartassignedcounts",
+  "bounds": "2CPUworkersniceonlyaftercontrollerterminal0+all8retired/source/CUPTI28, rawhashall8streamsamepass; borrowedStream1MiBcharacterchunks/16MiBcharcarry(max4xUTF8); fixed4Mkernel/8Mcorrelation/200Klabels/512KiBperrankreport; noTorchGPUimports",
+  "window": "Frozenfastcohortmonotonicbegin/end mapsviahullall8beforeafterUnix/monotonicanchorintervals;rejectobservedhull>10ms andrejectnotcontainedinall8actualgeneratecalls. Corestartupper/endouterlower,expandedhullretained; sampledclockstabilityassumptionexplicit, notzeroerror",
+  "new_reports": "CPUprojectinclusiveANDinnermostexclusiveperthread labels separated; API/kernelorigincorrelations graphLaunchvplain/unattributed; no-traced-kernelintervalgapsincludingboundaries; NCCLwaitnotusefulcomputeutil; leadercohortbatchhistdeltasaftercheapbringup throughdrain notexclusivemeasured10s",
+  "actual_new_capture": "LIVEunderRoot; noactualCPUanalysisrun yet",
+  "activity_intersection": "Alloverlappingkernelintervalsclippedtoeachwindow evenwhenkernelstartbeforewindow/fullfrozenwindow; startassignedkernelcount/durationtablesexplicitlyseparate"
+}

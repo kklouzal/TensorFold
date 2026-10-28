@@ -1,0 +1,24 @@
+{
+  "argv": [
+    "env",
+    "PYTHONPATH=/Warehouse/TensorFold-portable-audit-20261026/descriptor-host-words-20261028/wheels/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl:/Warehouse/TensorFold-wt/v100-cpu-parent-acquisition-20261028:/Warehouse/TensorFold-wt/v100-cpu-parent-acquisition-20261028/tests",
+    "PYTHONDONTWRITEBYTECODE=1",
+    "PYTEST_DISABLE_PLUGIN_AUTOLOAD=1",
+    "CUDA_VISIBLE_DEVICES=",
+    "TENSORFOLD_TEST_ANALYZER=/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_traces.py",
+    "TENSORFOLD_TEST_CAPTURE=/Warehouse/TensorFold-portable-audit-20261026/descriptor-current-n24-profile-20261028/actual-capture/metadata",
+    "TENSORFOLD_TEST_REPORTS=/Warehouse/TensorFold-portable-audit-20261026/descriptor-current-n24-profile-20261028/actual-analysis/reports",
+    "python3",
+    "-m",
+    "pytest",
+    "-c",
+    "/dev/null",
+    "-p",
+    "no:cacheprovider",
+    "-q",
+    "/Warehouse/TensorFold-wt/v100-cpu-parent-acquisition-20261028/tests/test_cpu_parent_rescan.py"
+  ],
+  "cwd": "/Warehouse/TensorFold-wt/v100-cpu-parent-acquisition-20261028",
+  "started_ns": 1793205799266851403,
+  "target": "CPython3.14.4 sameversionremotehost; actualnormal4b0wholewheelzipimport; noGPU/rawread"
+}

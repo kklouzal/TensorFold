@@ -1,0 +1,28 @@
+{
+  "schema": "tensorfold.batch-execution-rows-tool-v1",
+  "commit": "60980af6dca5f5b33b761f978265f8c93843648b",
+  "worktree": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028",
+  "runtime_base": "7de2259b1a402542b91fde9e906a9ebb07f4c949",
+  "runtime_whole_wheel": "86cb036dbcd2068f7b86956a8c3968355aa6509862b20e64f9c2a87f61f17500",
+  "source_paths": {
+    "README.md": "400946ca9ca7c64568371a05816cccc547d195680c565effd5b08316ea22edec",
+    "tools/v100_backend_probe.py": "33293541d5b59d86653f58a70d20a394b3783ab245765c7bf0e1e65ef68d2931",
+    "tests/test_execution_rows_probe.py": "c7a37aed05d6cb75db964cb4afe9a14bf3d17bf5fa0d5f9b993aa460d4be9f41"
+  },
+  "runtime_src_diff_empty": true,
+  "controls": {
+    "tests": 8,
+    "test_seconds": 0.67,
+    "exit_code": 0,
+    "log_sha256": "c6d8fefea37deab5ccaaf0606accdf3b01b1ccdda61e4283a00a10399fd482a0",
+    "command_sha256": "43b75e60857f70330c32300c0b63b315a66f2e2b636dfc1b7b12abe199e6def2",
+    "Ruff": "PASS",
+    "pip": "PASS",
+    "help": "PASS",
+    "scope": "Narrowactualfactory32omit/64/72forward, CLIbounds, realcheck_engine rows+24floor refusal, realindexed_stream_geometry+nativeownerbucketendpoints32/64/72; unchangedruntimeprior81GPUproofretained."
+  },
+  "default": "32retained; defaultfactorydoesNOTpassnewkwarg (preservesoldNone\u2192adaptive32 path). Overridesonlyexplicit64/72 withnativeDense/session24/FASTv2+sixquality.",
+  "actual_admission": "Engineexistingexecution_rowsallrankconsensus; modelgeometry/OwnerPreparation/statusarenas usebound. Toolchecksengine.execution_rowsandcapacityexecution_envelope.target_rows requestedexactANDresident24 beforelogicalcalleradmission; nofloorlowering.",
+  "performance_and_quality": "UNRUNprivatecandidate; noassumedgainR>32Denseexistingreferencefallback. Firstsingleall6v2and6qualitydevelopmentonly; fixedlengthrepeats/broaderqualitylateracceptance perlatestusersteering.",
+  "GPU": "UNRUNRootexclusive"
+}

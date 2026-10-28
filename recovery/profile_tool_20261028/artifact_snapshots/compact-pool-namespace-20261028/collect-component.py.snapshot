@@ -1,0 +1,50 @@
+"""Root-granted bounded retired component result archive; no GPU/analysis job."""
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import tarfile
+import time
+
+ROOT='/home/kklouzal/tensorfold-v100-qualification-20261026/compact-pool-prep-controls-20261028'
+REMOTE=r'''
+from pathlib import Path
+import hashlib,json,subprocess,sys,tarfile,io
+root=Path(sys.argv[1]);state=json.loads(subprocess.check_output(['sudo','-n','docker','inspect','--format','{{json .State}}','tf-compact-pool-prep-controls'],text=True))
+if state['Running']:raise RuntimeError('actualcomponent stillrunning; retirement required')
+files=[]
+for p in sorted((root/'evidence').rglob('*')):
+ if p.is_file():files.append((p,Path('evidence')/p.relative_to(root/'evidence')))
+for name in ('candidate.json','source-hold.json','fixture-source-hold.json','stage-files.json','launch-command.json'):
+ files.append((root/'package'/name,Path('package')/name))
+if len(files)>128 or sum(p.stat().st_size for p,_ in files)>8<<20:raise RuntimeError('bounded128files/8MiB componentpacket exceeded; no truncation')
+receipt={'docker_state':state,'files':{str(name):{'sha256':hashlib.sha256(p.read_bytes()).hexdigest(),'bytes':p.stat().st_size} for p,name in files},'scope':'actualretiredGPUcomponent only; Dockerfailure retained asfailure; noP3/fullmodelclaim'}
+print(json.dumps(receipt),file=sys.stderr,flush=True)
+with tarfile.open(fileobj=sys.stdout.buffer,mode='w|') as archive:
+ for p,name in files:archive.add(p,arcname=str(name),recursive=False)
+ raw=json.dumps(state,indent=2).encode();info=tarfile.TarInfo('docker-state.json');info.size=len(raw);archive.addfile(info,io.BytesIO(raw))
+'''
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--root-component-terminal-grant',action='store_true',required=True)
+    parser.parse_args()
+    out=Path(__file__).parent/'actual-component';out.mkdir(exist_ok=False)
+    argv=['ssh','-i','/home/kklouzal/.ssh/tensorfold_v100_ed25519','-o','BatchMode=yes','-o','ConnectTimeout=20','kklouzal@71.94.200.200','python3','-',ROOT]
+    (out/'archive-command.json').write_text(json.dumps({'argv':argv,'cwd':str(Path.cwd()),'stdin':REMOTE,'started_ns':time.time_ns(),'Root_terminal_grant':True},indent=2)+'\n')
+    with (out/'component.tar').open('wb') as stdout,(out/'archive.stderr').open('wb') as stderr:
+        result=subprocess.run(argv,input=REMOTE.encode(),stdout=stdout,stderr=stderr)
+    receipt={'exit_code':result.returncode,'finished_ns':time.time_ns(),'tar_sha256':hashlib.sha256((out/'component.tar').read_bytes()).hexdigest()}
+    (out/'archive-receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
+    if result.returncode:raise RuntimeError('componentarchivefailed; partialtar/logretained')
+    with tarfile.open(out/'component.tar') as archive:
+        for m in archive.getmembers():
+            if not m.isfile() or m.name.startswith('/') or '..' in Path(m.name).parts:raise ValueError('unsafe componententry')
+        archive.extractall(out,filter='data')
+    for name,want in json.loads((out/'archive.stderr').read_text())['files'].items():
+        p=out/name
+        if p.stat().st_size!=want['bytes'] or hashlib.sha256(p.read_bytes()).hexdigest()!=want['sha256']:raise ValueError('archivehash differs')
+    print(json.dumps(receipt))
+
+if __name__=='__main__':main()

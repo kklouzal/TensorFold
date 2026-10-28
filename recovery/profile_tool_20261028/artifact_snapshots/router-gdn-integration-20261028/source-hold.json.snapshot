@@ -1,0 +1,75 @@
+{
+  "schema": "tensorfold.router-gdn-startup3-integration-v1",
+  "commit": "146f8a818d11ea69ca5b9cbd0f3d1f90067896ac",
+  "worktree": "/Warehouse/TensorFold-wt/v100-router-gdn-integration-20261028",
+  "parents": [
+    "f0a3bfd535f039315591d8b2f1cdba8d348f03c1",
+    "f6a0d02113716c75408fac2dc5e991b6380c43b3",
+    "2a053c55b958300b7f290dd80efdd133419d43bd"
+  ],
+  "APP": "7c0acdfb2957c82ea69eb9e47fe8b1239c72b6c9c7aaa3242898631e121b6a51",
+  "source_paths": {
+    "README.md": "2c3e1db7ebb7353642e38c2d4612bea85cfba04101b0d2ddeeca913e39fdb180",
+    "src/tensorfold/cuda/moe.py": "1063e13aa9faec0445faccc15160e4d31f8a330519577022b8a9c11d73b391e3",
+    "src/tensorfold/cuda/sm70/execution_policy.py": "6527bcd1befdb943da685815561f27b6f1ff94f5676cd66ba4aeb8df3784b0c5",
+    "src/tensorfold/cuda/sm70/gdn.cu": "58f59c834412b80f6531ca51db41211b138c2be3ce9f7e871c46fd420e802b60",
+    "src/tensorfold/cuda/sm70/gdn_bindings.cpp": "6675ab507ed3133351342ae0d5214cf068849122abd285791f449c57c31bdef8",
+    "src/tensorfold/cuda/sm70/router_blas.cpp": "516562968c8ced2217d92977b06ea33f2b97ad0902000b3d485392fca354c3ea",
+    "src/tensorfold/cuda/sm70/router_blas.py": "48f85e762c7368d46fc2363383c6ad73d25bb77099803705abb707c3a917404a",
+    "src/tensorfold/families/qwen4_exp/cuda/bound_graphs.py": "db997f68058ecba75aa55d32e9d7ab5a7faf5a826d06590cfad34ee07b7a58c6",
+    "src/tensorfold/families/qwen4_exp/cuda/engine.py": "6080ff9489e557d1c20132dae4eaf34e851088b126bd858b6376db6422a842c4",
+    "src/tensorfold/families/qwen4_exp/cuda/execution_identity.py": "3c0cb0f2177f3a68ae902b1d6b5b3cfa620e4c278541300d74cec60bb0e1b309",
+    "src/tensorfold/families/qwen4_exp/cuda/forward.py": "f6f783ac252f4e802a69f78fbbd4421d3e2a8a0f49dc00e8ac824560d14cef99",
+    "src/tensorfold/families/qwen4_exp/cuda/gdn_state_batch.py": "697817f61cffe7dad0463eba2afab7a9c76b344c2e08fc201f0971e2891dfdb4",
+    "src/tensorfold/families/qwen4_exp/cuda/history_owner.py": "3a0324ebe2ed88106531abd116dbddeb1e2f70f20d251302b073c4e189d82a08",
+    "src/tensorfold/families/qwen4_exp/cuda/multi.py": "8fa35205fdf8e9a2a499006c11b038af2f59b4233f4e4d21fb0931269ca2f20f",
+    "src/tensorfold/families/qwen4_exp/cuda/prefix_policy.py": "55bbc812c542e80ec6c0b7416e1788c695cdea9be8c1b492148dfc7c569920eb",
+    "src/tensorfold/families/qwen4_exp/cuda/startup_content.py": "d83d1e3811cca316dfbf69764558749c4aceccedd3198c341dce864641d35e5d",
+    "src/tensorfold/families/qwen4_exp/cuda/state.py": "b4b15e6952544d32bfda5665bf16b7fb1bf3532feca983900329ebcab4a3e36e",
+    "src/tensorfold/families/qwen4_exp/cuda/target_greedy.py": "b34fca3b2c6855f2655e7f0d51c448921fe6610574d9c9943bc61cb2689a0079",
+    "tests/cuda/test_sm70_gdn_state_batch_cuda.py": "4a7db2df2c2b628a525d1a9e5f2eb6fa2e3a53a5ffafe5bdf75f48007c5735c2",
+    "tests/cuda/test_sm70_router_blas.py": "5361985236c9fa68a98c0f6d5ea035bafa310dd51bafc75f4cf97d791e952977",
+    "tests/test_fast_grid.py": "974009726005b31d5ee3cdb97538c8336fc7493807650e6aec5fcc60f8c12a87",
+    "tests/test_gdn_startup3_integration.py": "99712f29f37b4fa728b8ca99ab288aebbd6674802ef4a0e62e3b9580236a39b2",
+    "tests/test_gdn_state_batch_probe.py": "40042f081e7323fec4170e04af0d93dd2cec139c6d73d1c58ebf1c73596fa2a6",
+    "tests/test_gdn_state_batch_seal.py": "a112987d26abc74a6dc067b90348a73549e8fdc73d9946cb7b8c096329faf213",
+    "tests/test_sm70_execution_policy.py": "bab2f51aec4156e38d732d1b0ae15e9ed9988821480005b1d09110405f6aa84b",
+    "tests/test_sm70_gdn_state_batch.py": "98e98033b984005481d2616ef92062fd1258eb83e8e70d4f2c2602cab3fa54fb",
+    "tests/test_sm70_router_blas.py": "920f86f6991aacdfb285efc588e511fac20086780327e09009847f2a86ee4a96",
+    "tests/test_sm70_router_blas_model.py": "cedd51792a507acb6940ef057e85bcb1887695e23b387b645b28367abcef902d",
+    "tests/test_startup_content.py": "f270505da3633b4980ac04be76d65146d5961662245c0bfeaeb1f89d01f7ac34",
+    "tests/test_startup_content_parallel.py": "593169ae7983cc61213e46512839a4cc27c1f7c054260a9a292b02dac86272de",
+    "tests/test_v100_backend_probe.py": "91187ff7d1461b3bddff3fe5a7eb9e85c5145da4c5d5c9eef5fa7561cd77ec36",
+    "tools/v100_backend_probe.py": "a89f337f0164d272e22187c2120f10cc5d0a444184b4e2977c99da7e2d6657ef"
+  },
+  "checks": {
+    "CPU-command.json": "3000ba554d4be95632c9a22f80509154ce546b71af0e09474ed0c5ce5e9dc0d3",
+    "CPU-exit.json": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17",
+    "CPU.log": "7a684b74b13e0bfe6b8051bc1190e5fe6452629af787410b14b0b418e4236719",
+    "wheel-provenance.json": "784ed7268f849b96614f0f4fa1d34d2b1fe48f5379d78ee79e5b607ba061aa67",
+    "structural-proof.json": "b3f57ef1fababa3583528e5cc5aaf2b9ff65504656d6f0f7004f39224e1d818b"
+  },
+  "CPU": "327PASS7.95sec/Ruff/pip/help/normal721FDc79; all runtime installedpackagebytes verified, no overlays",
+  "REGION": "explicit source-batch-router-blas-trial +GDNENV1 +startup-content-workers3; TP8/Q8/262144/resident24/row32/MTP2/.7, targetTrue/accumFalse unchanged",
+  "implementation": "Router/GDNnative bytes exactqualified parents; C6follower/seal behaviorretained; existingepoch Router experimental numericmode; prefill/graph-only routercanonical. Defaultprofile/oneworker unchanged.",
+  "budgets": {
+    "router_gpu_charge_per_rank": 814592,
+    "router_raw_gpu_payload_per_rank": 801024,
+    "router_global_host": 7471104,
+    "GDN_extra_gpu": 0,
+    "GDN_global_host": "8*existingworkspace_bytes(36)[1], unmodifiedhelper",
+    "startup3_global_host": 226504704,
+    "caller_counters": "existing8192batch +8192GDN receiptfields fundedbeforelogicalsubmit; all8factorypreflights beforefollow"
+  },
+  "prior_actual_evidence": {
+    "Router": "f721 actual55prefixes andsixfullqualityIDs/text exact86cb/GDN; rates30.7/25.8/42.9/67.3/95.8/92.6; N1onefewer token vs308 retained",
+    "GDN": "f6Root50numeric +all6first30.8/23.3/37.3/59.2/78.4/75.7",
+    "strict_operator": "18FP32logitbitfailures retained; all28pick/roundedweights matched; empiricalonly unknownworstcase",
+    "quality": "historical4pass2fail unchanged sixspotchecks; broadqualitynotqualified"
+  },
+  "pending": [
+    "D13combinedsource/stage",
+    "Rootintegratedall6+quality+actualRouter/GDNcounters+all8capacity",
+    "repeat/fixedlength/broaderquality acceptance deferred; no productionselection"
+  ]
+}

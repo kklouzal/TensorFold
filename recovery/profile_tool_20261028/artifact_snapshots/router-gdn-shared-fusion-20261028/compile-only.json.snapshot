@@ -1,0 +1,40 @@
+{
+  "schema": "tensorfold.sm70-gguf-compile-only-v1",
+  "status": "compile/link/import-only; no GPU execution",
+  "torch": "2.14.1+tfcu129sm70",
+  "torch_git": "04cf2557f315a350e7eea7ab064288def65db75a",
+  "cuda": "12.9",
+  "compiler": "nvcc: NVIDIA (R) Cuda compiler driver\nCopyright (c) 2005-2025 NVIDIA Corporation\nBuilt on Tue_May_27_02:21:03_PDT_2025\nCuda compilation tools, release 12.9, V12.9.86\nBuild cuda_12.9.r12.9/compiler.36037853_0\n",
+  "host_compiler": "c++ (Ubuntu 13.3.0-6ubuntu2~24.04.1) 13.3.0\nCopyright (C) 2023 Free Software Foundation, Inc.\nThis is free software; see the source for copying conditions.  There is NO\nwarranty; not even for MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.\n\n",
+  "flags": {
+    "extra_cflags": [
+      "-O3"
+    ],
+    "extra_cuda_cflags": [
+      "-O3",
+      "--fmad=false",
+      "-gencode=arch=compute_70,code=sm_70"
+    ],
+    "extra_include_paths": [
+      "/opt/tensorfold-native/cccl-3.5.0/include",
+      "/opt/tensorfold-native/cutlass-4.8.1/include"
+    ],
+    "extra_ldflags": []
+  },
+  "foundation_build_identity": "8b8b3b913707a65407d2fc8bb385f8e196b17c724166ddfd64398641bc854f0b",
+  "module": "/evidence/build/tf_gguf_compile_only_23e657656c6f97a7/tf_gguf_compile_only_23e657656c6f97a7.so",
+  "module_sha256": "3a0a47ec93d248fba06bbb205c954fa9cb3af0108cf22d10dddd3b0863d4747e",
+  "source_sha256": {
+    "/source/src/tensorfold/cuda/sm70/gguf_ops.cpp": "93524b4dca628f3f8a40866d03fabc59cfdbba2d6c98ac8d9da95da8e14a87be",
+    "/source/src/tensorfold/cuda/sm70/gguf_ops.cu": "7644cb96b5984ed8f475146300452e975f6a7bd7eb10215ce087caeb40113134"
+  },
+  "exports": [
+    "experts",
+    "experts_exact",
+    "prepare_shared_fusion",
+    "experts_blocks2w",
+    "decode",
+    "dense32",
+    "concat32"
+  ]
+}

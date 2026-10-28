@@ -1,0 +1,29 @@
+{
+  "schema": "tensorfold.hot16-current-N24-profile-HOLD-v1",
+  "canonical": "/Warehouse/TensorFold-wt/v100-hot16-current-n24-profile-20261028",
+  "commit": "84cc902d49d57689aff2d15cbfe0646c126a4f2c",
+  "runtime_commit": "f0300ac8166349882a3de5f82687e0bf836eeff5",
+  "APP": "d8511a00e290e7e77385f9f6fa32ee1909febdbe45f23f53495ebc7bf44d745c",
+  "normal_source_files": 727,
+  "source": {
+    "tests/test_concurrent_observers.py": "6080e5e62b721a3c1fe70afe54b6bf5c64a218406fa2f65b0b9a0b60612c4b02",
+    "tests/test_hot16_n24_profile.py": "110aee66f07cdf0c6038e7c77ee2520d774cc636ae726af075c48990ea13fd02",
+    "tests/test_joint_single_profile.py": "f5e0c425a37698c3c65eb7aecdb423f1a058db6ccdf23fa85ffc4255ec3db566",
+    "tests/test_v100_backend_probe.py": "62d3df43d3e73b8ba344f19c5f84f33e65759fc597ae82cd6e62c5a545366f6f",
+    "tools/concurrent_observers.py": "9480e96af0ff0368d628b0f35ff01b657d703760f726ce8bd9970b392c8d5d76",
+    "tools/profile_trace_reader.py": "57800bcb181ff0f3510ef2caf76cfe9b54f985b7aca27c67588c38f37f4da68b",
+    "tools/v100_backend_probe.py": "065c549e59d118851989d5f76b064d51caa178a923befaf62713bae4081a9f8d"
+  },
+  "evidence": {
+    "port-plan.json": "606682d0569c172322e8c19ed0407d86e4bcc3009dfa7c81eafa8d1f6ac62f6d",
+    "CPU-command.json": "1bff7678e5e2c8f6f1fa8ce3e3800e9aecf25455617c29ce235ac543b24b2414",
+    "CPU.log": "a32c090442c3548428aba2aea95ad2575f417c913a8773692b25e68066555b9d",
+    "CPU-exit.json": "d2833ac4102edc48ad5b1331654f4a1fa9789d2bdd2738552113757b1ac6981d",
+    "structural-proof.json": "33be3d9aadb953a31e3112d40d6f633a0e0e2d8a7ba5040d73a31b2748daba3c"
+  },
+  "CPU": "233PASS11.68s/Ruff/pip-check/help; actual normal installed wholewheel identity included",
+  "protected": "All b636 helpers/RankCapture exact except5 disclosed functions; current cold ledger769 policy,row1..32 counters and new observed_call HC override only. Reader/observer byte-exact. No source runtime/APP edit/build.",
+  "resources": "Existing6GiB/rank streaming reader+128KiB/rank observer prepaid before finalize; fixed134 journal/max128 bindings unchanged;320GiB native Kineto process cap not allocation proof. Current Router/GDN/Fusion/HC/MoE/Candidate/startup3 floors remain.",
+  "stage": "NOTSTAGED; Root chooses exact current reference after descriptor all6 audit; then rebind fresh immutable stage. No author GPU or remote-heavy work.",
+  "D13": "source review requested; no capture pass inferred"
+}

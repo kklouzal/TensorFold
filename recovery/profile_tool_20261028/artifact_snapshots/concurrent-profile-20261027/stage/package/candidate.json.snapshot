@@ -1,0 +1,24 @@
+{
+  "wheel_sha256": "84a8618aa1752683a643697d3ad732cc47137910302dd374736594eee9e8901e",
+  "source_hold_sha256": "f64d81440bae2a01020d46e216c87aaac0768c2ba61720789c69ba0753c14d95",
+  "tool_sha256": "0c3088a0b2bb0b54d65d7148f10cefde342409a26fe680972b1036020867fcf2",
+  "tool_dependencies": {
+    "tools/v100_backend_probe.py": "0c3088a0b2bb0b54d65d7148f10cefde342409a26fe680972b1036020867fcf2",
+    "tools/finite_concurrency.py": "39e77fde13ef4d0a4ef59b8e531bc32b072096d714190ef3fc7993e5eb8cbffe",
+    "tools/finite_quality.py": "c498bd046e78c34bfc7db16c7decd43ec182151b24b3e09da282b9de0dac77a3",
+    "tools/benchmark_output.py": "ce7c0a0cdf80842dc67021ddc938ae32a2c8df39dfd4f36e5f48e72149484cfa",
+    "tools/prepare_owner_trial_manifest.py": "cd90a33ff81c60cffc1f180f0a756312cec2d06b4a29d4322cf622d7ca3b2741",
+    "tools/concurrent_observers.py": "2dd59a77cba7bc652f9c67d7809085d83ebb8ec1c5be9f3fab0c9540af76d748"
+  },
+  "execution_manifest_sha256": "95336693957314d74ba50328679d2b9a37552cb3e11a891b7a4a1900503e5673",
+  "source_profile": "source-owner-target-guard-trial",
+  "session_ceiling": 24,
+  "recovery_commit": "67a10e579b6ca4e747915ed5d82903997cc75d9a",
+  "triton_cache_root": "/cache/triton-owner-full8-v1",
+  "qualification": "ONEinstrumentedN8diagnostic/notall6comparison/noquality; protectedpublicTorchCUPTI28; no85/600claim",
+  "funding": {
+    "follower_bytes": 262144,
+    "global_receipt_bytes": 2424832
+  },
+  "profile_concurrency": 8
+}

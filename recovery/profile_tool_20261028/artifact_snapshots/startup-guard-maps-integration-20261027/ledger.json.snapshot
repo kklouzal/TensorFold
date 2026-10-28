@@ -1,0 +1,13 @@
+{
+  "objective": "Overlapfreshfullartifacthashwithload/warmuptoreduceV100iterationstartup, preservingdecode/math/qualityand24Q8capacity",
+  "base": "870f392d contains49db/84a8guardmaps; standalone32bc/ad0fc/D13closed96aeadeb",
+  "implementation": "c0f49f49/HOLD8c4e/7779APP/FDc79; sameisolatedguardmaps+startup composition; protectedoutcomecompactionremediation",
+  "CPUverification": "480PASS+5subtests/Ruff/pip/717canonical+FDexact",
+  "GPU": "UNRUN; successor7779actual70GPU+enabledall6stagesready; priorc696withdrawnpreserved",
+  "metrics": "capturerank0start/finish/byteshashed/registrationwait, contentbindingbytesread/reused; existingcontrollerstart/terminaltotal; hashesfullcontentnotpersistedstatcache",
+  "resources": "75,501,568Bglobalstartupfundedbeforeload;64MiBstack+4096guard+8MiBworking; budgetretainedthroughengine evenafteroperationlatch;256KiBallfollowers",
+  "retirement": "Ownedfinalcompletionlatchafterhash/descriptors+timestampsecondary; realSIGALRMresult+rollbackandMemoryErrortestsPASS; nativeOSstackreclamationnotassumed",
+  "quality_andperformance": "No currentGPUstartupgain/noall6nonregression/broadqualityclaim; firstenabledfullmodelmustproverealengineconstructor+binding",
+  "review": "D13solecleanup_reviewfinalcompositionpending",
+  "root_GPU_lease": "exclusiveRoot; noGPUlaunch/noCPUanalysisonremote"
+}

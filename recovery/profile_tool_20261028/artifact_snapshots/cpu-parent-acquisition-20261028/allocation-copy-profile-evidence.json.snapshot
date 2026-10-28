@@ -1,0 +1,277 @@
+{
+  "schema": "tensorfold.cpu-allocation-copy-profile-evidence-v1",
+  "source": "actual-71209/rank0-cpu-parent-v2.json",
+  "APP": "4b0e_unboundinstrumentedN24_before_REQUIREDNUMA",
+  "scope": "nearestproject count+inclusiveopspans;notCPUbusy/notadditive/notallocationbytes",
+  "groups": [
+    {
+      "parent": "tensorfold/body/concurrent/compute_decode",
+      "category": "cpu_op",
+      "name": "aten::copy_",
+      "count": 13712,
+      "inclusive_us": 217491.74951171875,
+      "maximum_us": 2118.7509765625
+    },
+    {
+      "parent": "tensorfold/body/concurrent/compute_decode",
+      "category": "cpu_op",
+      "name": "aten::empty",
+      "count": 15025,
+      "inclusive_us": 78748.40185546875,
+      "maximum_us": 793.6572265625
+    },
+    {
+      "parent": "tensorfold/body/concurrent/compute_decode",
+      "category": "cpu_op",
+      "name": "aten::_to_copy",
+      "count": 3581,
+      "inclusive_us": 78477.0361328125,
+      "maximum_us": 283.59619140625
+    },
+    {
+      "parent": "tensorfold/cpu/input-prepare",
+      "category": "cpu_op",
+      "name": "aten::copy_",
+      "count": 2823,
+      "inclusive_us": 53808.5361328125,
+      "maximum_us": 71.255859375
+    },
+    {
+      "parent": "tensorfold/cpu/input-prepare",
+      "category": "cpu_op",
+      "name": "aten::_to_copy",
+      "count": 1022,
+      "inclusive_us": 43369.59033203125,
+      "maximum_us": 111.3720703125
+    },
+    {
+      "parent": "tensorfold/body/mtp",
+      "category": "cpu_op",
+      "name": "aten::copy_",
+      "count": 2020,
+      "inclusive_us": 36869.8583984375,
+      "maximum_us": 132.77001953125
+    },
+    {
+      "parent": "tensorfold/body/concurrent/compute_decode",
+      "category": "cpu_op",
+      "name": "aten::empty_strided",
+      "count": 3936,
+      "inclusive_us": 21416.33837890625,
+      "maximum_us": 131.44580078125
+    },
+    {
+      "parent": "tensorfold/body/concurrent/round",
+      "category": "cpu_op",
+      "name": "aten::index_copy_",
+      "count": 890,
+      "inclusive_us": 16658.24609375,
+      "maximum_us": 194.205078125
+    },
+    {
+      "parent": "tensorfold/body/concurrent/round",
+      "category": "cpu_op",
+      "name": "aten::copy_",
+      "count": 1099,
+      "inclusive_us": 16378.8291015625,
+      "maximum_us": 44.416015625
+    },
+    {
+      "parent": "tensorfold/cpu/choose-gathered",
+      "category": "cpu_op",
+      "name": "aten::_to_copy",
+      "count": 91,
+      "inclusive_us": 14535.41162109375,
+      "maximum_us": 1735.09716796875
+    },
+    {
+      "parent": "tensorfold/body/mtp",
+      "category": "cpu_op",
+      "name": "aten::empty",
+      "count": 2427,
+      "inclusive_us": 12827.53515625,
+      "maximum_us": 25.30615234375
+    },
+    {
+      "parent": "tensorfold/cpu/kv-status",
+      "category": "cpu_op",
+      "name": "aten::_to_copy",
+      "count": 252,
+      "inclusive_us": 12601.544921875,
+      "maximum_us": 2259.51220703125
+    },
+    {
+      "parent": "tensorfold/cpu/ple-row-stage",
+      "category": "cpu_op",
+      "name": "aten::copy_",
+      "count": 394,
+      "inclusive_us": 12026.67041015625,
+      "maximum_us": 45.90380859375
+    },
+    {
+      "parent": "tensorfold/body/concurrent/round",
+      "category": "cpu_op",
+      "name": "aten::empty",
+      "count": 3115,
+      "inclusive_us": 10836.20458984375,
+      "maximum_us": 20.123046875
+    },
+    {
+      "parent": "tensorfold/cpu/input-prepare",
+      "category": "cpu_op",
+      "name": "aten::empty_strided",
+      "count": 1022,
+      "inclusive_us": 10730.001953125,
+      "maximum_us": 30.1201171875
+    },
+    {
+      "parent": "tensorfold/body/concurrent/compute_decode",
+      "category": "cpu_op",
+      "name": "aten::clone",
+      "count": 386,
+      "inclusive_us": 10693.87890625,
+      "maximum_us": 88.88818359375
+    },
+    {
+      "parent": "tensorfold/body/mtp",
+      "category": "cpu_op",
+      "name": "aten::_to_copy",
+      "count": 371,
+      "inclusive_us": 10467.7255859375,
+      "maximum_us": 126.26904296875
+    },
+    {
+      "parent": "tensorfold/cpu/kv-status",
+      "category": "cpu_op",
+      "name": "aten::copy_",
+      "count": 252,
+      "inclusive_us": 10369.72900390625,
+      "maximum_us": 2250.85693359375
+    },
+    {
+      "parent": "tensorfold/body/concurrent/round",
+      "category": "cpu_op",
+      "name": "aten::empty_like",
+      "count": 1142,
+      "inclusive_us": 9911.75537109375,
+      "maximum_us": 28.43798828125
+    },
+    {
+      "parent": "tensorfold/cpu/native-descriptor-stage",
+      "category": "cpu_op",
+      "name": "aten::copy_",
+      "count": 428,
+      "inclusive_us": 9706.38330078125,
+      "maximum_us": 57.173828125
+    },
+    {
+      "parent": "tensorfold/body/concurrent/round",
+      "category": "cpu_op",
+      "name": "aten::empty_strided",
+      "count": 1142,
+      "inclusive_us": 8123.03271484375,
+      "maximum_us": 26.35498046875
+    },
+    {
+      "parent": "tensorfold/cpu/choose-gathered",
+      "category": "cpu_op",
+      "name": "aten::empty_strided",
+      "count": 91,
+      "inclusive_us": 7734.38720703125,
+      "maximum_us": 1633.18896484375
+    },
+    {
+      "parent": "tensorfold/cpu/choose-gathered",
+      "category": "cpu_op",
+      "name": "aten::copy_",
+      "count": 91,
+      "inclusive_us": 6212.76806640625,
+      "maximum_us": 145.19580078125
+    },
+    {
+      "parent": "tensorfold/body/mtp",
+      "category": "cpu_op",
+      "name": "aten::empty_strided",
+      "count": 558,
+      "inclusive_us": 3662.869140625,
+      "maximum_us": 21.5380859375
+    },
+    {
+      "parent": "tensorfold/body/finish-head",
+      "category": "cpu_op",
+      "name": "aten::empty",
+      "count": 349,
+      "inclusive_us": 3163.06494140625,
+      "maximum_us": 807.6318359375
+    },
+    {
+      "parent": "tensorfold/body/mtp",
+      "category": "cpu_op",
+      "name": "aten::index_copy_",
+      "count": 120,
+      "inclusive_us": 2477.37548828125,
+      "maximum_us": 213.58203125
+    },
+    {
+      "parent": "tensorfold/body/finish-head",
+      "category": "cpu_op",
+      "name": "aten::copy_",
+      "count": 91,
+      "inclusive_us": 2433.87841796875,
+      "maximum_us": 48.615234375
+    },
+    {
+      "parent": "tensorfold/body/router-batched",
+      "category": "cpu_op",
+      "name": "aten::copy_",
+      "count": 122,
+      "inclusive_us": 2391.7998046875,
+      "maximum_us": 35.3671875
+    },
+    {
+      "parent": "tensorfold/body/mtp",
+      "category": "cpu_op",
+      "name": "aten::empty_like",
+      "count": 156,
+      "inclusive_us": 1361.7314453125,
+      "maximum_us": 73.70703125
+    },
+    {
+      "parent": "tensorfold/body/mtp",
+      "category": "cpu_op",
+      "name": "aten::clone",
+      "count": 31,
+      "inclusive_us": 935.1181640625,
+      "maximum_us": 106.42578125
+    },
+    {
+      "parent": "tensorfold/cpu/kv-status",
+      "category": "cpu_op",
+      "name": "aten::empty_strided",
+      "count": 252,
+      "inclusive_us": 825.291015625,
+      "maximum_us": 13.7880859375
+    },
+    {
+      "parent": "tensorfold/body/experts",
+      "category": "cpu_op",
+      "name": "aten::empty",
+      "count": 61,
+      "inclusive_us": 549.9814453125,
+      "maximum_us": 14.837890625
+    },
+    {
+      "parent": "tensorfold/body/concurrent/compute_decode",
+      "category": "cpu_op",
+      "name": "aten::empty_like",
+      "count": 31,
+      "inclusive_us": 274.6162109375,
+      "maximum_us": 18.89013671875
+    }
+  ],
+  "limits": [
+    "Tensoremptyiscaching-allocator/object activity,notproofphysicalCUDAalloc",
+    "copynamesmayincludedtypeconversion/CPU/deviceops;determineactualsource/boundary/lifetime",
+    "sourcebindings unchanged4b0NUMA butthistracewasunbound; donotclaimcurrentNUMAmillisecondcost"
+  ]
+}

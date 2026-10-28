@@ -1,0 +1,45 @@
+{
+  "schema": "tensorfold.Dense-large-row-nativeM32-tiles-v1",
+  "commit": "c517964eb7bebc3543274dc7be7ab920788384d5",
+  "worktree": "/Warehouse/TensorFold-wt/v100-dense-large-row-tiles-20261028",
+  "base": "60980af6",
+  "base_APP": "86cb036dbcd2068f7b86956a8c3968355aa6509862b20e64f9c2a87f61f17500",
+  "wheel_sha256": "991fd09081a9f3029e25ac67f02c10477f07a0f65ad210f24d953799e9388737",
+  "source_paths": {
+    "README.md": "8ec7fa151083bd68b096894796be0fb5d1ff42f5ae4c2ed4b8da78a72b34b01f",
+    "src/tensorfold/families/qwen4_exp/cuda/padded_linears.py": "7c7cd3397bef10ec5b045ccb7fd938f65d3cb8794f4c56c3519fe646b7cbca59",
+    "src/tensorfold/families/qwen4_exp/cuda/engine.py": "0965aed46f0372726c3b167c3182479622358482980e44d61d9c72e5e67f2903",
+    "tools/v100_backend_probe.py": "3bc577caccc0478d2bf99abc035988036903dfaef1ef14ff2a24a0d1a8060e7a",
+    "tests/test_sm70_large_dense_tiles.py": "bf2e02a22e202eb4eb40af10b288af8c560c62d4804ad67fbbdde9add4f841f2",
+    "tests/cuda/test_sm70_large_dense_tiles.py": "a262a31247c14e9d261a17d1c25d4721c91ae04aacb0b0b4efac08dd11556ef6",
+    "tests/test_execution_rows_probe.py": "d31cda29b959c08e6477e3fc0fb1145c0a6ceeb2b8215653d0f7ad1cb94be888",
+    "tests/test_flashnext_padded_admission.py": "2c5e54ee6f6bf0ebd19c255d7da11b4e305fe05dd9b4e15b66f4667c0fe56547"
+  },
+  "package": "Normal718canonicalfiles+FDc79verified; allggufnativePY/CU/CPP/headersunchanged, noSDKbuild/overlay",
+  "implementation": "PrivateDense/Batch decodeF16 Buffersrows>32 chooseownedTiledLinears viaexistingpaddedhook. Small-rowGGUF bodies/forward/Expertsunchanged. Partouter/tileinnerorder; prepaidalignedM32input/output; finaloutputcopiedbeforereuse; HConlyimmediateconsumer;constructionstream/singleBufferswriter. Generic/autograd/alias/foreignstream/reference pathsunchanged.",
+  "resources": {
+    "GPU_per_role_example_rows64": 6781440,
+    "GPU_per_role_example_rows72": 6802048,
+    "roles": "target+MTP; constructionbudgetsharedlayoutactualallocation; prefillskip; rolebuffersnotshared",
+    "host_per_role": 65536,
+    "host_global_TP8_target_MTP": 1048576,
+    "host_binding": "host_capacity.host_workspace_bytes beforestartup/physicaladmission; adaptiveboundexplicit/default32+ceiling, fixedboundactualrow_envelope; fixed24None\u219272charged.",
+    "prepaid_views": "8retainedTensorheaders;bounded~32temporarytile/viewheaders+smalltuples/dicts+streamwrapper/counters in64KiB/role; noresultaliaslist/per-callcache. NativeATenmanagedmetadata underexistingprovidercontract."
+  },
+  "checks": {
+    "CPU": 97,
+    "CPU_seconds": 5.37,
+    "factory_followup": 1,
+    "CUDA_collected": 32,
+    "Ruff": "PASS",
+    "pip": "PASS",
+    "wholewheel_FD": "PASS718/c79",
+    "build_command": "17c739146f51ac9dfb1c50534a0d8cc2e1d60928b1fc57d1c4a87a1f31a27e43",
+    "build_log": "28034cdf5a1a1c317697d60ddaa411ff1aefab42f111f5a56c7024307f61c22b",
+    "build_exit": "a302ea1721a2e972783e03ddb82f6768a85b3cae761d52c9bf2b74625c8546de",
+    "factory_collection_log": "b8c7f44a5ea89afedcde9625461ef3c29f79779d41ca27d4f7e16fcbd223bf32",
+    "initial_failures": "80PASS8fixturefailurespreserved/triaged; integersareCPUcontrolleronly, strictGPUrtol0untouched. Stalegguf_geometryfixturecorrectedtoactualsm70geometrysemanticfunding."
+  },
+  "proof": "GGUFDense/GGUFConcat/GGUFExperts/forward._mm/_down_act/nativeops unchanged;N1<=32 kernels remain original; newguardonlyprivatepreparedhookonlarge-buffercontexts. NoGPUmath/perfgainclaimbeforetargetoracles.",
+  "GPU": "UNRUN; Rootexclusive;32strictbankstandardATenoraclesR48/64/72/F16/F32/strides/actualHCQKV/head31040/samestreamgraph/abort. Expertlargecapcandidateownedseparately byncu_operator_stage; no jointclaim."
+}

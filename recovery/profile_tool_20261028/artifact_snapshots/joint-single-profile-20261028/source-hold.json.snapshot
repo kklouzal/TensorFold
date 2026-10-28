@@ -1,0 +1,44 @@
+{
+  "schema": "tensorfold.joint-single-Torch-profile-v1",
+  "commit": "b6369c36131c6432dc82fa7e058be65daaa92dc1",
+  "worktree": "/Warehouse/TensorFold-wt/v100-joint-single-profile-20261028",
+  "runtime_commit": "d5ebfce578dc8a1e3c59bdd27f3dd1558c14043f",
+  "tool_base": "8d9eeaae1082645679bb02869b2d622515f4791f",
+  "APP": "fbaabca3ba2a7594c8712e0824733da035f3a3db63f454c520ecfa337010ee0d",
+  "APPsrcdiffempty": true,
+  "source_paths": {
+    "README.md": "e80c7bbd64d8e297d99ab67f767951e0686df1c01e7534e4c58fc2e96b38f581",
+    "tests/test_concurrent_observers.py": "6080e5e62b721a3c1fe70afe54b6bf5c64a218406fa2f65b0b9a0b60612c4b02",
+    "tests/test_fast_grid.py": "e3023f14f8d12174d51a062fe510d926692ec7f2a7463c7b6958471a2aba91cb",
+    "tests/test_joint_single_profile.py": "f5e0c425a37698c3c65eb7aecdb423f1a058db6ccdf23fa85ffc4255ec3db566",
+    "tests/test_v100_backend_probe.py": "62d3df43d3e73b8ba344f19c5f84f33e65759fc597ae82cd6e62c5a545366f6f",
+    "tools/concurrent_observers.py": "9480e96af0ff0368d628b0f35ff01b657d703760f726ce8bd9970b392c8d5d76",
+    "tools/profile_trace_reader.py": "57800bcb181ff0f3510ef2caf76cfe9b54f985b7aca27c67588c38f37f4da68b",
+    "tools/v100_backend_probe.py": "fd60ebbed9498d21829e52a14a508f86e70bddc0ddeb2e6b4fc92ef54c453e5d"
+  },
+  "checks": {
+    "CPU-command.json": "7eb6aeb6c2da60f26e51bb5fc7ed48996c0943debf1fee1f0f47f57e6d1ce639",
+    "CPU-exit.json": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17",
+    "CPU.log": "5483c231553151047ab098b025daa10a61e45da22635725a29794157eba4dda1",
+    "package-command.json": "770b4ae97795de1c894d3f4a57fb02d04d0e72295194045e282fd0d8af56f855",
+    "package-exit.json": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17",
+    "package.log": "8cfc4950c4456b2697bfb517a190f2e2d2c7b9d9f7fa44c7f6bb3dde08d0983f",
+    "wheel-provenance.json": "c0b73889ae0523f0b2a0bf466d51a2f3f4b761a23a584ba0fdc6b2f27560a50d",
+    "structural-proof.json": "fbc9263272724e45cf939f070642ce324c3129f4429ba1421bb1d3224b1c8d88"
+  },
+  "checks_scope": "236CPU6.41s/Ruff/help;normal726FDc79installedsourcefullverification. Initialobserverplanfixture ownershipfailure retained thenisolatedfresh-owner fixtures; runtimeguardnotchanged.",
+  "capture": "all8pinned04cf/CUDA12.9/CUPTI28/postwarmCPU+CUDA; oneN1/2048/10score/30ready/cancel+retire;24nativeQ8windowsreserved; noquality/all6/P3credit; shapes/stacks/memoryoff",
+  "resources": {
+    "observer_per_rank": 131072,
+    "reader_per_rank": 6442450944,
+    "global_reader": 51539607552,
+    "native_Kineto": "separate320GiBdiagnosticcgroup; no nativepeakqualification",
+    "runtime": "MoE145/candidate64coldledgers andall8actualfactorychecks/futurecommitments retained; no APP change"
+  },
+  "labels": "existingCPUbound-replay,TargetGreedy gather/finish,finish-head/candidates/localpacket,CandidateRegion/MoERegionreplay,collective/APIwaits; no CPUinnerheadlabel fabricatedforpreexistinggraphreplay",
+  "pending": [
+    "D13source/stage",
+    "Rootactualall8capture/retirement/clock/source/rawSHA/validN1core",
+    "Root2niceCPUanalysisafterterminalonly; noauthorGPU/remoteheavy"
+  ]
+}

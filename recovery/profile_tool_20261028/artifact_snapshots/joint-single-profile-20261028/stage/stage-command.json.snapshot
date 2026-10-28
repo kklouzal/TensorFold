@@ -1,0 +1,26 @@
+{
+  "copy": [
+    "scp",
+    "-i",
+    "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+    "-o",
+    "BatchMode=yes",
+    "/Warehouse/TensorFold-portable-audit-20261026/joint-single-profile-20261028/stage/payload.tar",
+    "kklouzal@71.94.200.200:/home/kklouzal/tensorfold-v100-qualification-20261026/profile-joint-fbaa-n1-20261028.tar"
+  ],
+  "verify": [
+    "ssh",
+    "-i",
+    "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+    "-o",
+    "BatchMode=yes",
+    "kklouzal@71.94.200.200",
+    "python3",
+    "-",
+    "/home/kklouzal/tensorfold-v100-qualification-20261026/profile-joint-fbaa-n1-20261028",
+    "/home/kklouzal/tensorfold-v100-qualification-20261026/profile-joint-fbaa-n1-20261028.tar",
+    "16dd53d9d43fb1ea3fd5652d8f1602f7929d67a8d7c6ae9afd63b122b88b56ac"
+  ],
+  "stdin_source": "/Warehouse/TensorFold-portable-audit-20261026/joint-single-profile-20261028/stage/remote-verifier.py",
+  "noGPU": true
+}

@@ -1,0 +1,7 @@
+{
+  "wheel_sha256": "ed3283ac32cb39659d64b4ad39c9019b52fc6d6fcda7d6465ffbbfdbcf55c385",
+  "source_hold_sha256": "1f1d66d37bee91e9c71a9df94d407413dddca3af24a1fb50a68cd4dd0d17156b",
+  "fixture_source_hold_sha256": "26a465eb24a46cfa297a7abc96f1a625a97522d0c49cc042497fd56a989efab7",
+  "expected_tests": 45,
+  "scope": "POOLprepstrictbit/math/RMS16/nonfinite/status component only; noP3/fullmodel/NUMAclaim"
+}

@@ -1,0 +1,58 @@
+{
+  "bootstrap.sh": {
+    "sha256": "49ade76ef63fdcfa772214fc2affd7b277376c796d21454a62d2916d81700f80",
+    "bytes": 488
+  },
+  "candidate.json": {
+    "sha256": "4322bcc138866ea93debc4f85785395bf9dbd0c8138f2fc14574893a26c27200",
+    "bytes": 468
+  },
+  "fixture-source-hold.json": {
+    "sha256": "b671d1a975501b3509d1a368fb0a1cbc05f6985df2c0d5d94dfb72a01d1f697c",
+    "bytes": 290
+  },
+  "launch-command.json": {
+    "sha256": "aa8e0ce35b3c5db263076978d705b1501fd53d7412da456731acd064aa5b9377",
+    "bytes": 1444
+  },
+  "launch-command.sh": {
+    "sha256": "c49fc999c5d4b5faa4a11964854c501fd94e373985446823f5bfbff1d9dc3d31",
+    "bytes": 1087
+  },
+  "protected-files.json": {
+    "sha256": "291d7d19e5b2134691d6016859b9bc5d6c95a3d005ae22ca02600a9bcf5847f9",
+    "bytes": 1052
+  },
+  "run_controls.py": {
+    "sha256": "bc584809059ab4a7e06fb9457f5f02ecaba14bf0f8bef7fa76c12fbe01a14999",
+    "bytes": 1111
+  },
+  "source-hold.json": {
+    "sha256": "dc4971ad2c634287824333481aa017ec0b5cf7c47457f3055e61a1aa1b015aa2",
+    "bytes": 2433
+  },
+  "structural-proof.json": {
+    "sha256": "9fd22b494eb0b63560e0802dd49f99cee05d96606d47ce27b264b9cd1581bde8",
+    "bytes": 467
+  },
+  "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl": {
+    "sha256": "3deef3e760bfedcdf9f92fd897c93af4947c9cf92d4d90499471be12038d58c0",
+    "bytes": 3151757
+  },
+  "tests/cuda/test_sm70_router_blas.py": {
+    "sha256": "5da9002e18672fa584e35f115a953c660cb636ad88028d3b706fcbf18c82fd27",
+    "bytes": 3790
+  },
+  "verify_installed.py": {
+    "sha256": "9c70c1c7d32c381f66383706a70b4ed86f011f4ca76c6aac80118b7b9a43e868",
+    "bytes": 2650
+  },
+  "verify_stage.py": {
+    "sha256": "d7f0cb312c1d23227a556452119cda5fea602e43f7e90e7a33348b847973aa8a",
+    "bytes": 395
+  },
+  "wheel-provenance.json": {
+    "sha256": "2c92d61d15e4588467fb66ca37e3de3e07858f9e7def36e7142cef7653bab69c",
+    "bytes": 126400
+  }
+}

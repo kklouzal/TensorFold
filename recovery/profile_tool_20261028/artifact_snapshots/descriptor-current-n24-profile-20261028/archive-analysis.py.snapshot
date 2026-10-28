@@ -1,0 +1,57 @@
+"""Root-granted archive of completed saved-trace reports; never runs analysis."""
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tarfile
+import time
+
+ROOT='/home/kklouzal/tensorfold-v100-qualification-20261026/profile-descriptor-4b0e-n24-20261028'
+REMOTE=r'''
+import json,os,sys,tarfile,stat
+from pathlib import Path
+root=Path(sys.argv[1]);folder=root/'analysis-concurrent-v1'
+for entry in Path('/proc').iterdir():
+ if not entry.name.isdigit() or int(entry.name)==os.getpid():continue
+ try:args=(entry/'cmdline').read_bytes().split(b'\0')
+ except (FileNotFoundError,ProcessLookupError,PermissionError):continue
+ if str(root/'analysis-tools/analyze_concurrent.py').encode() in args:raise RuntimeError('analysis parent still active; Root must establish worker retirement too')
+summary=json.loads((folder/'all8-summary.json').read_text())
+if summary['complete']is not True or summary['offered']!=24 or len(summary['trace_identities'])!=8 or len(summary['windows'])!=8:raise RuntimeError('current count24 all8 completed summary required')
+case=json.loads((root/'results/run/fast-mtp-target-n24.json').read_text())
+if not case['screen']['measurement_valid']:raise RuntimeError('validactual24window required')
+candidate=json.loads((root/'candidate.json').read_text())
+if candidate['wheel_sha256']!='4b0ea6b51047f93b2b973ed5a467d8c279b94f6d85c683c4258a712ff6edd99f':raise RuntimeError('wrong APP analysis source')
+paths=[(p,Path('reports')/p.name) for p in sorted(folder.iterdir()) if p.is_file()]
+for name in ('analysis-cpu.stdout','analysis-cpu.stderr','controller-progress.json','candidate.json'):
+ paths.append((root/name,Path('metadata')/name))
+if len(paths)>128 or sum(p.stat().st_size for p,_ in paths)>64<<20:raise RuntimeError('completed report archive exceeds128files/64MiB; retain and fail, nevertruncate')
+for p,_ in paths:
+ if not stat.S_ISREG(p.lstat().st_mode):raise RuntimeError('report must be regular file')
+print(json.dumps({'complete':True,'offered':24,'files':len(paths),'raw_SHA_verified_by_closed_analyzer':summary['trace_identities'],'scope':'saved CPU reports only; no new analysis/raw read; Root grants parent+worker retirement'}),file=sys.stderr,flush=True)
+with tarfile.open(fileobj=sys.stdout.buffer,mode='w|') as archive:
+ for path,name in paths:archive.add(path,arcname=str(name),recursive=False)
+'''
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--root-analysis-terminal-grant',action='store_true',required=True)
+    parser.parse_args()
+    out=Path(__file__).parent/'actual-analysis';out.mkdir(exist_ok=False)
+    argv=['ssh','-i','/home/kklouzal/.ssh/tensorfold_v100_ed25519','-o','BatchMode=yes','-o','ConnectTimeout=20','kklouzal@71.94.200.200','sudo','-n','python3','-',ROOT]
+    (out/'archive-command.json').write_text(json.dumps({'argv':argv,'cwd':str(Path.cwd()),'stdin':REMOTE,'started_ns':time.time_ns(),'Root_analysis_terminal_and_workers_retired_grant':True},indent=2)+'\n')
+    with (out/'reports.tar').open('wb') as stdout,(out/'archive.stderr').open('wb') as stderr:
+        result=subprocess.run(argv,input=REMOTE.encode(),stdout=stdout,stderr=stderr)
+    receipt={'exit_code':result.returncode,'finished_ns':time.time_ns(),'no_new_analysis':True}
+    with (out/'reports.tar').open('rb') as source:receipt['tar_sha256']=hashlib.file_digest(source,'sha256').hexdigest()
+    (out/'archive-receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
+    if result.returncode:raise RuntimeError('archive failed; partial archive/stderr retained')
+    with tarfile.open(out/'reports.tar') as archive:
+        for member in archive.getmembers():
+            if not member.isfile() or member.name.startswith('/') or '..' in Path(member.name).parts:raise ValueError('unsafe report entry')
+        archive.extractall(out,filter='data')
+    print(json.dumps(receipt))
+
+if __name__=='__main__':main()

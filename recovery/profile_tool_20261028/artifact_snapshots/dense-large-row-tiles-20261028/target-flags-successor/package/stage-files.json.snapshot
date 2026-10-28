@@ -1,0 +1,66 @@
+{
+  "bootstrap.sh": {
+    "bytes": 488,
+    "sha256": "49ade76ef63fdcfa772214fc2affd7b277376c796d21454a62d2916d81700f80"
+  },
+  "candidate.json": {
+    "bytes": 677,
+    "sha256": "9718e5e74789753d7dc6baea1880b03b8ef01b0008ab238e6242a4e65a821956"
+  },
+  "fixture-source-hold.json": {
+    "bytes": 791,
+    "sha256": "21a7326fb1c3c8d06437d0be01a5f65a4eecae9bd6fe8936928623bfb5d521c9"
+  },
+  "launch-command.json": {
+    "bytes": 1523,
+    "sha256": "ee1441ba8129e21abbe691398be95c1ffef5cdeed0ead7185a1025b900eb6f7b"
+  },
+  "launch-command.sh": {
+    "bytes": 1114,
+    "sha256": "ee34106511ce8afe3b3b90606b924bf62ca2399e461ec3791be548d2eda282fe"
+  },
+  "protected-files.json": {
+    "bytes": 1052,
+    "sha256": "291d7d19e5b2134691d6016859b9bc5d6c95a3d005ae22ca02600a9bcf5847f9"
+  },
+  "run_controls.py": {
+    "bytes": 1901,
+    "sha256": "b303ab4f8a331785bbff6ebed0d4847cfac5c2692572ec0b16f2020bbb59f55f"
+  },
+  "source-hold.json": {
+    "bytes": 1324,
+    "sha256": "34c20fc2b7b55e40dcf9111edea66ed153a73ee6f06e521ad654ed37f125fdac"
+  },
+  "structural-proof.json": {
+    "bytes": 1053,
+    "sha256": "53b7c39f0a89eb539f218c3e16aa8a40ddb5ae627beaee1bb2d61fbe99e2b557"
+  },
+  "target-region-proof.json": {
+    "bytes": 1056,
+    "sha256": "e7a11a499cecd6d34c375bf182c470640d9f0a29304b6875f761910ed1574dbb"
+  },
+  "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl": {
+    "bytes": 3150804,
+    "sha256": "991fd09081a9f3029e25ac67f02c10477f07a0f65ad210f24d953799e9388737"
+  },
+  "tests/cuda/test_sm70_dense_residency.py": {
+    "bytes": 1604,
+    "sha256": "0f6eb82ef6ef4b4dc940adf55669090b7af0f4312aa1574e8a055348bf3acd0c"
+  },
+  "tests/cuda/test_sm70_large_dense_tiles.py": {
+    "bytes": 5413,
+    "sha256": "8ad25ee1a27ea5f0e701b2a61d1342f4931b95145dc3c3b876e103aed1e867fd"
+  },
+  "verify_installed.py": {
+    "bytes": 2650,
+    "sha256": "c9a280955568a5de936f857e0b382adbe9e32ca35820f8207230eed18f6126aa"
+  },
+  "verify_stage.py": {
+    "bytes": 395,
+    "sha256": "d7f0cb312c1d23227a556452119cda5fea602e43f7e90e7a33348b847973aa8a"
+  },
+  "wheel-provenance.json": {
+    "bytes": 126061,
+    "sha256": "5193b3375d3f2c86bc7cda77481a9f6b9d30744a7f7e90753c5a9e449c72c1f5"
+  }
+}

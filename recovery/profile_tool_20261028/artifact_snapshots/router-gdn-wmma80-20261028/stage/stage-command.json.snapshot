@@ -1,0 +1,27 @@
+{
+  "copy": [
+    "scp",
+    "-i",
+    "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+    "-o",
+    "BatchMode=yes",
+    "/Warehouse/TensorFold-portable-audit-20261026/router-gdn-wmma80-20261028/stage/payload.tar",
+    "kklouzal@71.94.200.200:/home/kklouzal/tensorfold-v100-qualification-20261026/perf85-wmma80-current-a96a-20261028.tar"
+  ],
+  "verify": [
+    "ssh",
+    "-i",
+    "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+    "-o",
+    "BatchMode=yes",
+    "kklouzal@71.94.200.200",
+    "python3",
+    "-",
+    "/home/kklouzal/tensorfold-v100-qualification-20261026/perf85-wmma80-current-a96a-20261028",
+    "/home/kklouzal/tensorfold-v100-qualification-20261026/perf85-wmma80-current-a96a-20261028.tar",
+    "ad3e4f03ddd3940982f4b6cde58614d689a53d8bf5ce4c1164b74d8de7874874"
+  ],
+  "stdin_source": "/Warehouse/TensorFold-portable-audit-20261026/router-gdn-wmma80-20261028/stage/remote-verifier.py",
+  "cwd": "/home/kklouzal",
+  "noGPU": true
+}

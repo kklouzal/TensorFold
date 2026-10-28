@@ -1,0 +1,12 @@
+{
+  "state": "PREPAREDONLY; Root84930live,noactualcollectorinvocation",
+  "collector_sha256": "0d667aac5f5e753cc924b84dac921876488af5d08013e19a8b627df9afc424ef",
+  "checks_after_grant": [
+    "ActualDockerterminal/exit status preserved, no fakepass forfailedcontainer",
+    "ExactAPPed328/HOLD1f1d/source37518/fixturehash manifest; normal727FDc79 before/after guards fromRootrunlogs",
+    "pytest-result.complete=True,exit0,passed45,skipped0; JUnit45cases nofailure/error/skips; collected45declaredcases",
+    "Separate40ordinarycases+4nonfinite/signedzero+1stalegeneration, sameGPU0 oldindexed strictbyte comparison; declarednormalizationRows16 foractualCUDAfixtureCachecapacity64",
+    "No tolerance/performance/broadquality/capture/laterfullmodelclaim; TAILintegration+NUMAf11all6 remainsrequired"
+  ],
+  "execution": "No authorGPU/heavyremoteanalysis; onlybounded8MiB metadataafterRootexplicitgrant"
+}

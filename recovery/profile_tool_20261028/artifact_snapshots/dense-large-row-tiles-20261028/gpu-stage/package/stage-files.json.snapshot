@@ -1,0 +1,62 @@
+{
+  "bootstrap.sh": {
+    "sha256": "49ade76ef63fdcfa772214fc2affd7b277376c796d21454a62d2916d81700f80",
+    "bytes": 488
+  },
+  "candidate.json": {
+    "sha256": "ff8fc79bed2b23e807d98daa4aff7d7caa45a34a3e2e1a823d3db80c35466ca6",
+    "bytes": 577
+  },
+  "fixture-source-hold.json": {
+    "sha256": "45050a96d329c7edd6e045463f17cd26213aa7e0c4564addb398eedc6a9266b4",
+    "bytes": 471
+  },
+  "launch-command.json": {
+    "sha256": "e896602b5f6bc761b44d914413161c3fd30d5ce25a732d7b904dde4a3011c5d2",
+    "bytes": 1448
+  },
+  "launch-command.sh": {
+    "sha256": "a3bc248f23d92cd5973af8b1a7a42baa5609082e7047fa0ec8f9e947c3d7fd11",
+    "bytes": 1045
+  },
+  "protected-files.json": {
+    "sha256": "291d7d19e5b2134691d6016859b9bc5d6c95a3d005ae22ca02600a9bcf5847f9",
+    "bytes": 1052
+  },
+  "run_controls.py": {
+    "sha256": "81b65d147bf489714048f4fcda71d77c4b47764a0873f8746abaab662288a2a2",
+    "bytes": 1228
+  },
+  "source-hold.json": {
+    "sha256": "989e7a47e2be511d037bfe1c1657e72f436eaa33e2a489ac8457990b2e0a3fe1",
+    "bytes": 3678
+  },
+  "structural-proof.json": {
+    "sha256": "53b7c39f0a89eb539f218c3e16aa8a40ddb5ae627beaee1bb2d61fbe99e2b557",
+    "bytes": 1053
+  },
+  "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl": {
+    "sha256": "991fd09081a9f3029e25ac67f02c10477f07a0f65ad210f24d953799e9388737",
+    "bytes": 3150804
+  },
+  "tests/cuda/test_sm70_dense_residency.py": {
+    "sha256": "0f6eb82ef6ef4b4dc940adf55669090b7af0f4312aa1574e8a055348bf3acd0c",
+    "bytes": 1604
+  },
+  "tests/cuda/test_sm70_large_dense_tiles.py": {
+    "sha256": "a262a31247c14e9d261a17d1c25d4721c91ae04aacb0b0b4efac08dd11556ef6",
+    "bytes": 5028
+  },
+  "verify_installed.py": {
+    "sha256": "c9a280955568a5de936f857e0b382adbe9e32ca35820f8207230eed18f6126aa",
+    "bytes": 2650
+  },
+  "verify_stage.py": {
+    "sha256": "d7f0cb312c1d23227a556452119cda5fea602e43f7e90e7a33348b847973aa8a",
+    "bytes": 395
+  },
+  "wheel-provenance.json": {
+    "sha256": "5193b3375d3f2c86bc7cda77481a9f6b9d30744a7f7e90753c5a9e449c72c1f5",
+    "bytes": 126061
+  }
+}

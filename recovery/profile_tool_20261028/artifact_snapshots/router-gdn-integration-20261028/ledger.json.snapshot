@@ -1,0 +1,70 @@
+{
+  "parents": [
+    "f0a3bfd5 Routerf721",
+    "f6a0d021 sealedGDN90f",
+    "2a053c55 startup3ffe3"
+  ],
+  "implementation": "semanticmergeadditivefunding/routerprofileGDNeligibility; inherited3hashwholefile/authorities unchanged; C6followerfailurepreserved",
+  "CPU_status": "327PASS7.95s/Ruff/pip/help/normal721FDc79 exactsourcebytes",
+  "GPU": "UNRUN Rootexclusive",
+  "budgets": {
+    "router_device_per_rank": 814592,
+    "router_rawpayload_per_rank": 801024,
+    "router_host_global": 7471104,
+    "startup3_host_global": 226504704,
+    "GDN_host": "existingworkspace_bytes36*tp unchanged, plus8192 evidencecaller"
+  },
+  "quality": "experimentalrouter semantics; historical18strictlogit failures unchanged, observed55prefixes+6answers exact onf721, notbound/qualification",
+  "pending": [
+    "D13source/stageclosure",
+    "laterfixedlength/repeated/broaderqualityacceptance userdeferred",
+    "Rootchangedbottleneckcandidates sourcefrozen; noauthorGPU"
+  ],
+  "source": "146f8a818d11ea69ca5b9cbd0f3d1f90067896ac clean",
+  "APP": "7c0acdfb2957c82ea69eb9e47fe8b1239c72b6c9c7aaa3242898631e121b6a51",
+  "HOLD_SHA": "df0955955546d4f6b374120cb0a62f094445a86818a36ba047c62148807767c0",
+  "Root_actual": {
+    "exec": 97046,
+    "status": "TERMINAL Root97046exit0/Docker1 unchangedhistoricalqualityfailure",
+    "controller": "281d3d5cbebbfa3d5726d0dfd348753d4208a8000f25b85b38adca0b99f48d93",
+    "separate_GDN_reference": [
+      30.8,
+      23.3,
+      37.3,
+      59.2,
+      78.4,
+      75.7
+    ],
+    "reference_scope": "singlequickdevelopmentscreens only, notacceptancequalified",
+    "reference_Router_f721": [
+      30.7,
+      25.8,
+      42.9,
+      67.3,
+      95.8,
+      92.6
+    ],
+    "rates": [
+      31.1,
+      25.8,
+      43.7,
+      71.0,
+      102.7,
+      103.8
+    ],
+    "request_errors": 0,
+    "all6_valid": true,
+    "all8_native24": true,
+    "all55_common_prefixes_exact_both_refs": true,
+    "six_quality_full_text_and_IDs_exact_both_refs": true,
+    "all3_hash_operations_retired": true
+  },
+  "analysis": {
+    "report": "actual-first-all6-7c0a/comparison-vs-f721-GDN.json",
+    "narrative": "actual-first-all6-7c0a/findings.md",
+    "startup_anchors": "actual-first-all6-7c0a/startup-cycle-authoritative-anchors.json",
+    "cycle_proxy_saved_seconds": 79.585559523,
+    "cycle_proxy": "Dockerstart toreadyfileartifactpublication; notexactinternalreadiness",
+    "disposition": "strongprivateprovisional composite; N2observedsame asf721, otherNsabove; notP3equivalence/repeatability or broadqualityqualified"
+  }
+}

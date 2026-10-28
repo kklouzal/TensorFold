@@ -1,0 +1,40 @@
+{
+  "schema": "router-cublas-model-fast-experiment-v1",
+  "wheel_sha256": "7c0acdfb2957c82ea69eb9e47fe8b1239c72b6c9c7aaa3242898631e121b6a51",
+  "source_hold_sha256": "37af705d56ab599e8c0d51df085777ffb24a30c1056a57f38ea946e5273e8ab9",
+  "tool_sha256": "4e2aa75c3e3a3af32f8a541a9d40398fbeef3f0a7634dccb21946e4a4ad8df58",
+  "tool_dependencies": {
+    "tools/v100_backend_probe.py": "4e2aa75c3e3a3af32f8a541a9d40398fbeef3f0a7634dccb21946e4a4ad8df58",
+    "tools/finite_concurrency.py": "d009cf94050754115fdb0295b39aaa787904b09478464aeb772d8782b97eb86b",
+    "tools/finite_quality.py": "c498bd046e78c34bfc7db16c7decd43ec182151b24b3e09da282b9de0dac77a3",
+    "tools/benchmark_output.py": "ce7c0a0cdf80842dc67021ddc938ae32a2c8df39dfd4f36e5f48e72149484cfa",
+    "tools/prepare_owner_trial_manifest.py": "cd90a33ff81c60cffc1f180f0a756312cec2d06b4a29d4322cf622d7ca3b2741",
+    "tools/concurrent_observers.py": "9480e96af0ff0368d628b0f35ff01b657d703760f726ce8bd9970b392c8d5d76",
+    "tools/profile_trace_reader.py": "57800bcb181ff0f3510ef2caf76cfe9b54f985b7aca27c67588c38f37f4da68b"
+  },
+  "execution_manifest_sha256": "95336693957314d74ba50328679d2b9a37552cb3e11a891b7a4a1900503e5673",
+  "source_profile": "source-batch-router-blas-trial",
+  "session_ceiling": 24,
+  "execution_rows": 32,
+  "recovery_commit": "eb7179abb8826a30f952c6d0759b268f75242984",
+  "funding": {
+    "follower_bytes": 262144,
+    "global_receipt_bytes": 2424832
+  },
+  "startup_content_overlap": true,
+  "router_gpu_bytes_per_rank": 814592,
+  "router_host_bytes_global": 7471104,
+  "qualification": "ONEinstrumentedN24diagnosticonly, noP3/all6/qualitycredit",
+  "required_native_counter": "allN>1 positive router_blas.target.calls+mtp.calls ANDgdn.batch_submitted_layers ANDnativeowner target/MTPbatches. N1 GDN+nativeownerbatchdelta0, canonicalgraphrouter retainsactualcoverage reporting. All8factorypreflightsbeforefollow.",
+  "reference": "f721Router Ns30.7/25.8/42.9/67.3/95.8/92.6 andGDNf6 Ns30.8/23.3/37.3/59.2/78.4/75.7; sixqualityexact4pass2fail",
+  "fast_grid_protocol": "fast-grid-v2",
+  "output_cell_bound": 2048,
+  "corrective_successor": "coherentRouterf0a3+GDNf6+held3wholefilehash; no mathcodechange",
+  "router_gpu_payload_bytes_per_rank": 801024,
+  "startup_content_workers": 3,
+  "startup_global_host_bytes": 226504704,
+  "gdn_state_batch": true,
+  "profile_concurrency": 24,
+  "reader_global_host_bytes": 51539607552,
+  "observer_global_host_bytes": 1048576
+}

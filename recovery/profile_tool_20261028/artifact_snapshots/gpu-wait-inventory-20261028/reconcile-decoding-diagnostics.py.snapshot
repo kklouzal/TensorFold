@@ -1,0 +1,211 @@
+"""Read-only reconciliation. Resolve immutable Git blobs, never the DP4A WIP tree."""
+import ast, hashlib, json, subprocess
+from pathlib import Path
+from datetime import datetime, timezone
+B=Path('/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028')
+A=B.parent
+REPO=Path('/Warehouse/TensorFold-wt/v100-dp4a-target-enrollment-20261028')
+COMMITS=['28ac5b2da8660542c156adf60b8a3e5072b89244','f0300ac8166349882a3de5f82687e0bf836eeff5']
+OLD='7de2259b1a402542b91fde9e906a9ebb07f4c949'
+def digest(data):return hashlib.sha256(data).hexdigest()
+def load(p):return json.loads(p.read_text())
+cache={}
+def source(commit,path):
+ key=(commit,path)
+ if key not in cache:
+  raw=subprocess.check_output(['git','-C',str(REPO),'show',f'{commit}:{path}'])
+  cache[key]=(raw,ast.parse(raw))
+ return cache[key]
+def functions(tree):
+ result={}
+ def walk(n,prefix=''):
+  for x in ast.iter_child_nodes(n):
+   if isinstance(x,(ast.ClassDef,ast.FunctionDef,ast.AsyncFunctionDef)):
+    name=prefix+x.name
+    if not isinstance(x,ast.ClassDef):result[name]=x
+    walk(x,name+'.')
+   else:walk(x,prefix)
+ walk(tree);return result
+
+def anchors(path,line):
+ raw,t=source(OLD,path);fs=functions(t)
+ containing=[(k,n) for k,n in fs.items() if n.lineno<=line<=n.end_lineno]
+ if containing:name,_=min(containing,key=lambda pair:pair[1].end_lineno-pair[1].lineno)
+ else:name=None
+ result=[]
+ for commit in COMMITS:
+  data,tree=source(commit,path);current=functions(tree)
+  n=current.get(name)
+  result.append({'commit':commit,'path':path,'sha256':digest(data),'original_function':name,
+   'current_function':name if n else None,'line':n.lineno if n else None,'end_line':n.end_lineno if n else None,
+   'same_function_AST_as_7de':ast.dump(n,include_attributes=False)==ast.dump(fs[name],include_attributes=False) if n else None,
+   'resolution':'immutable Git blob; local DP4A worktree has unrelated uncommitted enrollment WIP and is excluded'})
+ return result
+
+D=load(B/'decoding-inventory.json');G=load(B/'diagnostics-inventory.json');R=load(B/'root-control-inventory.json')
+notes={
+1:('SOURCE_ASSESSED_COMPOSITE','Round remains coordinator: target forward -> status/selection -> commit -> proposals -> delivery. Graph enrollment eliminates subsets of launches, not CPU acceptance/order.','Use exact sub-boundary profiles; no entire round-time savings claim.'),
+2:('OPERATIONALLY_ACTIVE_VERIFIED_COMPONENT','N1 BoundStateGraphs and enclosing finite MoE/HC graphs have independent controls plus all-six coverage; f030 hot16 extends row keys, not every path.','N1 15 verify/2 MTP pieces remain; whole-forward segmented graph is an assessed candidate, not implemented completion.'),
+3:('SOURCE_ASSESSED_PARTIALLY_GRAPHED','Current source enrolls exact-row finite MoE/HC regions and candidate packets; eager attention/GDN/PLE/collectives and unsupported keys remain.','No source proof that all layer dispatch is removed; cite graph counters by actual row.'),
+4:('OPERATIONALLY_ACTIVE_VERIFIED_COMPONENT','CandidateRegion captures original per-row FP32 clone/top32/ID/LSE packet only; collective/status/CPU choice remain outside.','fbaa and f030 audits prove64 keys/actual role-row deltas; N1 bound target has no CandidateRegion target replay. Do not infer zero candidate work.'),
+5:('REQUIRED_ERROR_BOUNDARY_ASSESSED','Current KVStatusCohort enforces every producing frame before acceptance/exposure. Coalesced packed/split alternative had two semantic GPU controls, then no N24 gain in a451 screen.','Status-first and fatal latch cannot be dropped. Original/current source is authoritative; coalescing was not selected.'),
+6:('REQUIRED_COLLECTIVE_ASSESSED','Per-State status copied into fixed packet then all-rank gather. Numeric/status checks and rank agreement have a safety purpose.','Fuse only already-produced initialized payloads with identical order and error timing.'),
+7:('REQUIRED_HOST_COMPLETION_ASSESSED','Pinned status D2H copy and stream completion prove visibility before host decode. Packed/split candidate is screened unselected.','A GPU event or async label does not itself make host bytes ready; no safe blanket fence deletion.'),
+8:('REQUIRED_ERROR_BOUNDARY_ASSESSED','Completed words parsed/latch failures before score, recurrence/codec/index state commit.','Cannot classify semantic validation as disposable diagnostics.'),
+9:('REQUIRED_HOST_BOUNDARY_ASSESSED','KVWords.settle couples pending status to candidate readback, including exception paths.','Any movement must preserve status-first errors on failed score preparation.'),
+10:('SOURCE_ASSESSED_UNSELECTED_COALESCING','CPU gathered selection still materializes completed candidate packet. a451 coalescing semantic controls passed but first all6 did not improve N24.','GPU-resident complete selection/confidence is a credible future numerical/ordering candidate, not implemented or universally proved.'),
+11:('SOURCE_ASSESSED_REQUIRED_SAMPLING','Canonical physical first maximum/global-ID keyed policies, truncation proof and fallback repair implement sampling semantics.','Any native replacement must preserve ties/IDs/RNG/top-k-off/EOS/error ordering; current source not fully ported to device.'),
+12:('SOURCE_ASSESSED_REQUIRED_CONFIDENCE','MTP confidence promotes FP32 normalizers to FP64 exponent/log/sum on CPU; not a disposable statistic.','Approximate/GPU confidence requires an explicit numeric contract plus target acceptance/task quality; no implementation selected here.'),
+13:('OPERATIONALLY_ACTIVE_N1_VERIFIED','TargetGreedy is native N1 target acceptance with completed status feedback. Actual fbaa N1:138 target finishes, .474903s StreamSync under finish; native GPU accept ~.001413s summed.','Wait includes deferred producer/GPU/rank work, not .474903s pure CPU or removable time. Generic N>1 path differs.'),
+14:('REQUIRED_ALGORITHM_ASSESSED','Accept/prefix/commit exact greedy verifier; proposes speculative tokens but target verification controls exposure.','Do not change accepted-prefix semantics to manufacture speed.'),
+15:('REQUIRED_STOP_CONTRACT_ASSESSED','User token_limit and all-rank prefix decisions prevent divergent termination and extra exposed IDs.','Callback/limit costs source-assessed, no isolated performance experiment.'),
+16:('REQUIRED_STATE_COMMIT_ASSESSED','Verified accepted prefix drives recurrent replay, shifts, position/index publication, and status checks.','Capture/replay can specialize only with original per-State ownership/generation and error semantics.'),
+17:('OPERATIONALLY_ACTIVE_GDN_OPTIMIZED','Current GDN state-batch/shared-table path groups selected FP16 recurrent state work; scalar per-State route remains required for unsupported domains.','GDN actual50 controls and f6/composite all6 evidence; speed cannot be assigned solely to this call from integrated counters.'),
+18:('INACTIVE_SELECTED_FP16_REQUIRED_OTHER_DOMAIN','BF16 table host mirror/copy fence is not the selected FP16 GDN route.','Retain supported BF16 route; no universal-inactive claim or deletion.'),
+19:('INACTIVE_SELECTED_FP16_REQUIRED_OTHER_DOMAIN','BF16 deferred replay/flush path is separate from selected F16 graph/state-batch decode.','Cancellation/blocked State BF16 recovery stays defined; no present timed cost inferred.'),
+20:('REQUIRED_STATE_PUBLICATION_ASSESSED','set_pos commits checked indexer/position transitions; fill is asynchronous device work, not intrinsically a host readback.','Preserve generation/native completion frontier; avoid duplicate unchanged checks only after lifetime proof.'),
+21:('SOURCE_ASSESSED_REQUIRED_MTP','Canonical draft_all refresh/rewind/proposal chain remains; native MTP input producer routed after prior fixed 3224/5635 work.','Actual role counters prove routing; no elimination of target verification.'),
+22:('REQUIRED_DMA_REUSE_ASSESSED','MTP staging pinned IDs/last rows and HC copies must not overwrite buffers before DMA consumption; synchronize guards reuse.','Batching staging needs same-stream lifetime proof; no measured per-site saving selected.'),
+23:('REQUIRED_ALIAS_HANDLING_ASSESSED','Overlap clone guards overlapping source/mtp_in before D2D copy.','Remove only with exact disjoint-span proof, not optimistic alias assumption.'),
+24:('REQUIRED_STREAM_LIFETIME_ASSESSED','Explicit next_inputs copy/record_stream protects cross-stream allocation lifetime.','Record_stream is allocator lifetime, not proof of CPU blocking; no observed scalar item transfer.'),
+25:('SOURCE_ASSESSED_PARTIALLY_GRAPHED','Shared MTP head and CandidateRegion retain full output and original FP32 candidate math; TP collective/status/readback stay eager.','Head direct-M shape is separate numerical candidate from graph packet capture.'),
+26:('REQUIRED_ERROR_AND_CONFIDENCE_BOUNDARY','MTP _kv_check then _picks must complete/validate status and select original proposal/confidence.','Current CPU readback remains genuine; no global all-device sampling claim.'),
+27:('SOURCE_ASSESSED_UNSELECTED_COALESCING','words.settle + choose_gathered(with_prob=True) is the MTP host decision frontier. a451 packed/split prototype not selected.','Preserve FP32 candidate/FP64 confidence and ties; no invented speed tolerance.'),
+28:('SOURCE_ASSESSED_UNSELECTED_POLICY_EXPERIMENT','Default confidence .7 stops later proposals. Explicit0 experiment all6:30.1/20.9/33.8/50/55.4/54.8; not selected due high-N loss.','More proposals do not imply more accepted tokens; user nonmaterial quality allowance is not permission to approximate acceptance.'),
+29:('REQUIRED_DEVICE_POSITION_PUBLICATION','set_mtp_len advances/rewinds position device metadata for following native indexer work.','fill_ enqueue is not intrinsically host synchronization; semantics/generation remain.'),
+30:('INACTIVE_TP8_REQUIRED_NONTP','NonTP KVWords + packed score copy/fence is not selected TP8 path.','Retain supported nonTP error/visibility behavior; no performance qualification for that region.'),
+31:('INACTIVE_GREEDY_TP8_REQUIRED_STOCHASTIC_NONTP','NonTP stochastic complete-row repair CPU copy is conditional, not finite temp0 TP8 execution.','No deletion: top-k-off/truncation repair has correctness purpose.'),
+32:('INACTIVE_SELECTED_FASTPATH_REQUIRED_GENERIC','Generic sample_rows argmax/flags host metadata is supported alternate path; current TP8 gathered greedy and N1 TargetGreedy differ.','No measured current scalar-readback attribution from inventory alone.'),
+33:('INACTIVE_SELECTED_FASTPATH_REQUIRED_GENERIC','Generic with_prob/stochastic packed CPU metadata handles supported sampling alternatives.','Require explicit supported probability/numeric contract before replacing.'),
+34:('INACTIVE_TP8_REQUIRED_NONTP','NonTP launch_streams groups packet copies with one completion fence, then validates queued status.','Existing coalescing should be preserved; no added one-fence-per-row regression.'),
+35:('CONDITIONAL_COMPLETE_ROW_REPAIR_ASSESSED','_group_choose may borrow complete CPU score rows when truncation/probability contract requires repair.','Operationally inactive in finite temp0 selected path; reachable for supported policies.'),
+36:('INACTIVE_GREEDY_REQUIRED_TP_NUCLEUS','TP nucleus global F64 flag/width/max header CPU completion is necessary for supported stochastic domain.','No current greedy hotspot claim; generic algorithm/device alternative requires same distributions and failures.'),
+37:('INACTIVE_GREEDY_REQUIRED_TP_NUCLEUS','Nucleus candidate/mass/width exchange computes exact cutoff/share proof; may require CPU round trip.','Not qualified/eliminated by current CandidateRegion graphs.'),
+38:('CONDITIONAL_EFFECTIVE_PROBABILITY_ASSESSED','Metadata and full-row cache support requested effective probabilities and stochastic repair.','No proof inactive for all service requests; selected short screens only restrict actual path.'),
+39:('COLD_SAMPLER_METADATA_ASSESSED','ShardSampler construction validates shard width/global-ID metadata through gathers/CPU materialization.','Cold per-construction work, not assumed per-token; reusable immutable plan needs identity contract.'),
+40:('CONDITIONAL_GENERIC_SHARDED_SAMPLING_ASSESSED','sample_shards packets/normalizer/gatherCPU/repair are independent supported sampler, not all reached by current tp temp0 shortcut.','Source-assessed, no same-region speed candidate selected.'),
+41:('INACTIVE_NO_LOGPROBS_REQUIRED_OUTPUT_FEATURE','Requested logprobs capture .cpu/.item/alternatives is deliberate output materialization.','Current finite Sampling0 does not request it; preserve output feature and budget if enabled.'),
+42:('REQUIRED_PROPOSAL_TO_DELIVERY_ORDER','Draft/commit feeds take only validated committed IDs, then output lifecycle.','Cannot publish unverified proposals to remove host coordination.'),
+43:('REQUIRED_OUTPUT_ORDER_ASSESSED','Stream.take/emit retains native IDs until bounded mailbox consumer takes them.','Per-token Python/list overhead is assessed but no equivalent batched API candidate is qualified.'),
+44:('REQUIRED_BACKPRESSURE_ASSESSED','Production plan reserves bounded mailbox capacity before computation/admission.','Source-assessed; batching output reservations must preserve cancellation and slow-client progress.'),
+45:('REQUIRED_OUTPUT_PUBLICATION_ASSESSED','Mailbox.put publishes ordered committed tokens/progress/terminal under bounded capacity.','Not a device completion primitive; potential CPU lock contention unmeasured.'),
+46:('REQUIRED_CONSUMER_WAIT_ASSESSED','Condition.wait may sleep the requesting thread awaiting output; callback work/complete_delivery acknowledges bounded output.','Do not label blocked client wait as worker CPU busy or GPU stall without dependency correlation.'),
+47:('REQUIRED_CALLBACK_AND_STATS_ASSESSED','Scheduler delivers IDs/progress and acknowledges mailbox slots; finite tools additionally timestamp/count.','Production stats/formatting differs from instrumented callback; no static claim of zero disabled cost.'),
+48:('REQUIRED_TP_COMMAND_PROTOCOL_ASSESSED','TP invocation ACK compare/deletion controls command agreement and retirement; Store waits are CPU control, distinct from NCCL/device completion.','No safe local skip absent all-rank publication/error/lifetime proof; transport partition owns detailed protocol.'),
+49:('SOURCE_ASSESSED_UNSELECTED_T60','InputPreparation operation/build, mailbox exchange and consumed/ack retirement are distinct CPU phases. T60 self-WAIT branch prototype CPU154+nativeStore passed; Root negative screen, not selected.','Skipping self-WAIT did not prove all CPU Store work unnecessary; epoch/key bounds/failure retirement must remain.'),
+50:('REQUIRED_DEVICE_ORDERING_ASSESSED','Compact indexer wait_event/record_stream/native_done establishes producer ordering and owner lifetime; CPU wait_event call need not block host.','Already-owned native owner prep and graph-safe ABI improve work; generation/DMA frontier remains required.'),
+51:('CONDITIONAL_REQUIRED_DIRECT_STATUS','Direct State.kv_check .cpu.tolist is a genuine host materialization when status is still pending; cohort latches avoid some repeated reads.','Current direct-vs-cohort call multiplicity is not fully attributed by generic CUDA event totals; source frontier assessed, optimization open.'),
+52:('REQUIRED_FAILURE_RETIREMENT','Failed retained restore/request retirement explicitly fences consumers before shrink/drop/release.','Cold conditional error path cannot be deleted on performance grounds; uncertain retirement retains owners.'),
+53:('REQUIRED_RESET_RESTORE_LIFETIME','Reset/restore snapshots synchronize before State generations and buffers can be reused.','Not routine successful per-token work; preserve cancellation/retry/retention semantics.'),
+54:('INACTIVE_MAIN_ENGINE_REQUIRED_SERIAL_DIAGNOSTIC','Serial decode/verify convenience timing helpers explicitly synchronize before/after, separate from production coordinator.','Do not attribute their timer drains to normal finite Engine path.'),
+55:('REQUIRED_COLLECTIVE_SOURCE_ASSESSED','NCCL gather and library-owned internal stream events implement TP ordering/visibility.','Kernel SUM is wait-inclusive, not bandwidth/utilization. Batching collectives needs dependency/rank-order proof; no invented library-internal audit.'),
+56:('SOURCE_ASSESSED_NEW_NUMERIC_CANDIDATE','Dense/HC/head use Half operands with outputF32 where required, fixedM32 native policy; outputF32 does not imply F32 operands. Source-assessment + b4e6 shape diagnostic expose smaller-M alternatives.','Actual221captured/eager bits exact per own mode, baseline-vs-direct bits may differ. Synthetic geometry timing is not model speed/quality; no backend conversion selected.'),
+57:('REQUIRED_TARGET_STAGING_ASSESSED','Pinned target IDs/PLE row transfer reuse event protects prior DMA; ReadAhead gather/decode/H2D first-error ordering preserved.','Actual fbaa N1 PLE late~.092s inclusive vs10s core, not a dominant hypothetical CPU decode issue; other counts/source differ.'),
+58:('REQUIRED_DESCRIPTOR_DMA_ASSESSED','Batch-prelude upload event protects reuse; native selected input prep avoids old Torch dynamic-shape launch storm.','Descriptor/frame catalogue epoch/prepayment must preserve same producer stream and coordinate alias/version. No all-waits-eliminated claim.'),
+59:('SOURCE_ASSESSED_OPEN_OWNER_FRONTIER','Owner stage_native_descriptors still pays storage catalogue/signature traversal and upload reuse event. fbaa N1:1882 stage calls2.243s inclusive/2.108s exclusive;2610 EventSync APIs total1.514s scopewholeCPU.','Hoist stable descriptor validation only with pointer/version/profile/role/placement invalidation proof; not .2s copy saving inferred.'),
+60:('REQUIRED_ROW_BUDGET_ASSESSED_UNSELECTED_RAISE','Adaptive complete-window plan row32 atslots24 is explicit budget. Rows64 supported screen suffered21/23.1TPS atN16/24;72 staged unrun.','Do not raise blindly; R>32 dense/expert fallback and work-domain changes need actual native paths/budget + all6 proof. Current budget remains32.'),
+61:('INACTIVE_TEXT_ONLY_REQUIRED_MEDIA','Media CPU preparation/readiness required for media routes; finite text-only screen bypasses it.','Do not globally remove/error-shortcut media or assume HTTP service has no such waits.'),
+62:('REQUIRED_ERROR_CONTAINMENT','TP failure ACK/drop/reply and clear_failure_frames preserve complete terminal outcomes and consumer retirement.','Not diagnostic logging; cancellation/timeout does not prove work retired.'),
+63:('INACTIVE_NO_GRAMMAR_REQUIRED_CONSTRAINT','Constraint.mask stages allowed IDs/status and device mask; scalar status CPU operations are real for constrained requests.','Current six unconstrained quality/screens do not qualify strict grammar performance. State/cache/backend generation must remain.'),
+64:('REQUIRED_CONDITIONAL_GRAMMAR_LIFETIME','RetainedHost.capture/retire_backend invokes device staging retirement before captured host/schema ownership changes.','No grammar in finite prompt workload, but stop/error/retained-state region remains supported.'),
+65:('REQUIRED_CONDITIONAL_BACKEND_RETIREMENT','Grammar device staging ownership survives until backend/stream consumers are retired.','No general diagnostic-inactive claim; preserve exact failure/cancellation and backend identity.')}
+
+records=[]
+for e in D['areas']:
+ i=int(e['id'][1:]);state,assessment,next_proof=notes[i]
+ sites=[s for s in D['explicit_callsite_index'] if s.get('area')==e['id']]
+ refs=anchors(e['path'],e['line'])
+ # Locate all indexed original functions as current immutable function anchors.
+ callrefs=[]
+ for s in sites:
+  callrefs.append({'original_line':s['line'],'function':s['function'],'operations':s.get('operations'), 'source':s['source'],
+                   'current':anchors(s['path'],s['line'])})
+ records.append({'id':'decoding:'+e['id'],'source_inventory':'decoding-inventory.json','state':state,
+  'original_inventory_record':e,'current_source':refs,'indexed_boundary_calls':callrefs,'assessment':assessment,
+  'remaining_required_proof':next_proof,'performance_scope':'source assessment and explicitly cited component/first-screen evidence only; no per-entry repeatable P3 qualification or universal no-wait proof'})
+
+# Diagnostics remain explicitly separate from production dispatch; original immutable
+# sources/reader successor are retained, latest fbaa instrumentation attached below.
+diag_notes={
+1:'Current28ac/f030 production APP is uninstrumented; ordinary finite benchmark still has callback/stat observers. fbaa b636 capture is a separate declared CPU+CUDA REGION, not a new algorithm.',
+2:'Barrier aligns offered request cohort. ThreadPool tasks are bounded by selected count/24; readiness and cancellation can wait while all requests become decode-ready. Required harness coordination, not production inference math.',
+3:'TimedTokens validates/copies native IDs and fills bounded timestamps. This is finitebench overhead and still active without CUPTI; no overhead-free P3 claim.',
+4:'Observe polls actual queue/live/readiness while invoking scheduler metadata. It is benchmark-induced work; source-assessed, per-poll overhead not measured separately.',
+5:'Freeze one10s monotonic interval, signal cancellation, preserve EOS/cap/error invalidation. Stop requests are not retirement proof; final native ID trace/drain required.',
+6:'Future.result/close/finalobserve explicitly wait for request/callback/native work retirement. These drains are outside frozen decode rate; failures cannot be hidden as valid completion.',
+7:'Native retired Stream.out is CPU list copying for raw-token/prefix proof, after retirement. v2 funds2048-bound list arrays; not a GPU .cpu readback.',
+8:'Sampling temp0 and stats/presentation callback are owned finitebench workload. Fixed six320-token quality tasks are separate from one instrumented window.',
+9:'RankCapture starts only after startup/warm readiness; all8 stop/export after request/Engine transport retirement, using bounded journal/restore guards. fbaa capture23026 actual0; no P3 credit.',
+10:'Public Torch2.14/Kineto CUPTI28 all-thread CPU+CUDA creates observer/native buffering/enqueue effects. Shapes/stacks/memory disabled. Native320GiB cgroup is a process limit, not a proven global profiler allocation bound.',
+11:'record_function wrappers preserve original dispatch/results/primary plus diagnostic failures and restore raw staticmethod descriptors. They add CPU events/ancestry, not CUDA busy scopes.',
+12:'Bounded CPU-only counters/histograms may include warm/readiness/drain; role/per-window deltas differ from lifetime totals. N24 observer bound covers prefill256 separately from decode72; no device scalar reads introduced.',
+13:'Pinned04cf proof shows use_device=cuda -> autogradprofile.__exit__ -> device.synchronize before _disable_profiler. Export/stop latency is not decode-core algorithm time.',
+14:'Trace export, source binding, full raw SHA and bounded summary parse run after model shutdown. They can extend controller wall time and retain raw events, not decode TPS or utilization.',
+15:'Clock anchors surround actual monotonic window; source/maps/CUPTI identities and all8 retirement separately validated. No clock-domain equality invented; report core/hull uncertainty.',
+16:'Historical6ef succeeded positive normal summary/capture. Its old failure/resource contract was remediated later475/4c75, not retroactively credited. Preserve old guards/results as actual source identity.',
+17:'4c75 deletes duplicate boundary parsed value before more and funds6GiB/rank reader in caller,48GiB global future capture path. Current b636 profiling port reuses this reader/funding; postprocessing2worker16GiB task is separate.',
+18:'NCU kernel replay/profiler start-op-synchronize-stop serializes/replays profiled work and is not a production timing REGION. config clock/cache flags as recorded, not presumed defaults.',
+19:'NCU sections/metrics/filters/export affect replay/retention/collection. Counter test native actual bank path must match current type/geometry; no direct microkernel->model gain extrapolation.',
+20:'Reference/exact bank oracle .cpu/numpy uint32 comparisons synchronize by design. These are numerical verification readbacks outside selected profiled operator; no claim production does every comparison.',
+21:'Actual NCU7af9 fixture uses INT32 expert IDs; earlier originalINT64 is separate evidence. Type dispatch makes old profile not direct proof of current variant.',
+22:'NCU report --import/rawCSV occurs after profiler terminal and is bounded CPU tool work. Parsing gaps/failure kept; no active decoder contention if Root lease obeyed.',
+23:'Strict normal analyzer terminal0/source/all8 guards + initial onlyPortainer before two workers. Historical explicit FAILED-PUBLICATION receipt-overflow forensics is separate, never converts Docker1 to success.',
+24:'Window derive uses all8 before/after clock hull and all8 generate containment; labelcount1/n24 explicit. GPU kernel activity intersection includes crossing-start boundary; start-assigned counts distinguished.',
+25:'Two nice19 pinned CPU0,1 processes, guarded main entrypoints/forkserver import safety and16GiB task; Root prohibits P3 while active. No inferred physical GPU overlap/utilization.',
+26:'CPU user_annotation exclusive/inclusive separate; runtime duplicate correlations rejected; graph-node versus cudaGraphLaunch/API coupling retained; no arbitrary matching to last overwritten ID.',
+27:'Streaming reader bounds Unicode characters; UTF8 bytes up to4x; source4c75 retain/cleanup fixes and6GiB envelope. Fixed tables/output/rawhash preserve complete trace. Full raw retained remote, not rescanned for this reconciliation.',
+28:'Controller supervises all8 failure pipes, deadlines/child outcomes/transport retirement. Root lease prevents profiler/P3/analysis contamination; unrelated Portainer remains. Cancellation/stop is not child completion.',
+29:'Actual instrumentation is REGION-specific. fbaa N1 instrumented27.1TPS is not normal31.9 model performance; historical4efeN24 37.2 vs65.3 is not algorithmic gain. No all-count comparison from a single window.'}
+latest=Path('/Warehouse/TensorFold-wt/v100-joint-single-profile-20261028')
+for e in G['entries']:
+ i=int(e['id'][1:]);p=Path(e['source']['path']);raw=p.read_bytes();snap=dict(e['source']);snap['actual_current_file_sha256']=digest(raw)
+ # Match the old entry source line to its containing qualified function.
+ t=ast.parse(raw) if p.suffix=='.py' else None
+ fs=functions(t) if t else {};line=e['source']['line'];matching=[(k,n) for k,n in fs.items() if n.lineno<=line<=n.end_lineno]
+ if matching:
+  name,n=min(matching,key=lambda x:x[1].end_lineno-x[1].lineno);snap.update(function=name,end_line=n.end_lineno)
+ newer=latest/'tools'/p.name
+ if newer.exists():
+  data=newer.read_bytes();snap['latest_fbaa_tool']={'path':str(newer),'sha256':digest(data),'commit':'b6369c36131c6432dc82fa7e058be65daaa92dc1'}
+ records.append({'id':'diagnostics:'+e['id'],'source_inventory':'diagnostics-inventory.json','state':'SOURCE_ASSESSED_DIAGNOSTIC_REGION_REQUIRED_LIFETIMES',
+  'original_inventory_record':e,'source_snapshot':snap,'assessment':diag_notes[i],
+  'remaining_required_proof':'No new instrumentation/backend change proposed. Affected future failure/resource/capture guards remain required; successful previous capture does not qualify changed source.','performance_scope':'No repeatable P3 or production overhead inference; operational captures/counter tests and postprocess proofs retain exact source/workload identities.'})
+for e in R['entries']:
+ records.append({'id':e['id'],'source_inventory':'root-control-inventory.json','original_inventory_record':e,
+  'current_source':anchors(e['source_path'],e['line']),
+  'state':'SOURCE_ASSESSED_UNSELECTED_SNAPSHOT' if e['id'].endswith('01') else 'OPERATIONALLY_CONDITIONAL_REQUIRED_REBIND',
+  'assessment':('FIFO discarded boundary dict snapshot elimination is a source-neutral candidate but actual65c9 firstall6 lost3TPSN24 versus7c0 and was not selected. Current28ac/f030 source still uses controller.boundary(); CPU lock/snapshot is not a CUDA fence.' if e['id'].endswith('01') else 'Pending manifest requests serialize explicit rebind/identity authority; ordinary finite decode has no measured-window request. Initial/opt-in manifest registration can do source/stat/hash/Store work; not globally inactive startup.'),
+  'remaining_required_proof':'No measured per-boundary CPU cost; preserve settings atomicity, all-rank plan, actor ownership and explicit rebind validation. Root register unchanged.'})
+assert len(records)==96 and len({e['id'] for e in records})==96
+assert all(len(e['current_source'])==2 for e in records if 'current_source' in e)
+manifest=[{'commit':c,'path':p,'sha256':digest(raw),'bytes':len(raw)} for (c,p),(raw,t) in sorted(cache.items()) if c in COMMITS]
+# Source/evidence referenced by this bounded reconciliation. Hashes avoid stale pointers.
+files=['decoding-inventory.json','diagnostics-inventory.json','root-control-inventory.json','decoding-entry-register.json','decoding-drilldown.json','transport-t60-drilldown.json','service-drilldown.json','graph-dispatch-drilldown.json','compute-drilldown-reconciliation.json',
+ '../joint-single-profile-20261028/actual-findings.json','../joint-single-profile-20261028/dense-source-assessment.json',
+ '../joint-candidate-finish-integration-20261028/actual-first-all6-fbaa/independent-audit.json',
+ '../hc-moe-hot-rows-integration-20261028/actual-first-all6-d851/independent-audit.json',
+ '../fifo-snapshot-combined-20261028/selection.json','../vendor-blas-shapes-outcome-20261028/actual-b4e6/quick-shape-comparison.json',
+ '../vendor-blas-retire-envelope-20261028/source-hold.json']
+evidence=[{'path':str((B/f).resolve()),'sha256':digest((B/f).read_bytes())} for f in files]
+out={'schema':'tensorfold.decoding-diagnostics-drilldown-reconciliation-v1','created_utc':datetime.now(timezone.utc).isoformat(),
+ 'status':'ALL96_SOURCE_AND_EVIDENCE_RECONCILED; performance/quality acceptance not implied',
+ 'scope':'Artifact-only local read.65decoding+29diagnostics+2rootcontrols. No source/register edits, GPU/build/new profiling or remote analysis.',
+ 'source_policy':'Both exact28ac/f030 immutable Git blobs used; local28ac checkout contains uncommitted DP4A target WIP and is deliberately NOT source evidence for incumbent. Current selected config/profile and source are separately cited; no claim source revision alone enables every conditional path.',
+ 'counts':{'decoding':65,'diagnostics':29,'root_control':2,'total':96,'original_decoding_callsite_records_mapped':sum(len(x.get('indexed_boundary_calls',[])) for x in records)},
+ 'source_manifest':manifest,'evidence':evidence,'entries':records,
+ 'cross_family_evidence':{
+  'enclosing_graphs':'fbaa:d5eb; f030:d851 audits contain exact candidate/MoE/HC phase key counts and per-case issued-cut deltas. N1R1..3 hot16 excluded; no uniform seven-piece bound model (actual verify15/MTP2 across3keys).',
+  'packed_readback':'a451 semanticGPU2pass but firstall6 30.7/22.8/36.7/57.7/73/73.3, no N24gain; split vs packed microchoice inconclusive, no wholesale status elimination.',
+  'T60':'Existing self-WAIT prototype/source/nativeStore controls assessed; Root negative screen not selected. Historical transport-t60 sidecar status is stale. Current immutable input_preparation blob is attached; no declaration all Store barriers removable.',
+  'FIFO':'65c9 firstall6 vs146f7c0:30.8/25.8/43.7/69.7/102.7/100.8 vs31.1/25.8/43.7/71/102.7/103.8; not selected, not repeatable global inferiority.',
+  'capture_lifetimes':'b636/fbaa actual23026 capture0/all8retirement,6937 analysis0/complete,7,300,767,645B raw retained. CPU/graph/kernel/gap data remains instrumented/core-specific. New vendor finalizer C6 successor734484a2 CPU15pass is not retroactive failure-path qualification of successfulb4e6.',
+  'vendor_BLAS':'Actualb4e6/25315 complete221cases/all captured-own-eager bits exact,maxreserved390070272B. Direct smallerM HC/head alternatives reduce synthetic complete path medians but some differ in bits; not working backend/modelquality or end-to-end selection. Shared extension cache missing from controller is a separate future iteration-time candidate, not a measurement correction.'},
+ 'genuinely_open_questions':[
+  {'ids':['decoding:D10','decoding:D12','decoding:D27'],'state':'SOURCE_ASSESSED_OPEN_CANDIDATE','question':'Device-resident complete greedy/cutoff/confidence with exact FP32/FP64 and status-first semantics remains unimplemented. Existing GPU TargetGreedy only resolves eligible N1 target; MTP host confidence and N>1 packet readback remain.'},
+  {'ids':['decoding:D51','decoding:D52','decoding:D53'],'state':'SOURCE_ASSESSED_MEASUREMENT_GAP','question':'Direct pending State.kv_check versus cohort-latched validation/retirement counts are not individually attributed by current observer. No evidence these cold/conditional paths explain steady wait or can be dropped.'},
+  {'ids':['decoding:D48','decoding:D49','decoding:D55'],'state':'SOURCE_ASSESSED_OPEN_DEPENDENCY_PROOF','question':'Phase/store/collective wait is measured at coarse CPU API scopes; arrival/rank/device critical path decomposition and safe phase coalescing remain open. Source correctness already assessed, not unassessed API.'},
+  {'ids':['decoding:D43','decoding:D44','decoding:D45','decoding:D46','decoding:D47'],'state':'SOURCE_ASSESSED_NO_ISOLATED_P3','question':'Per-token host output/backpressure/callback/stat work is source-assessed; no isolated same-REGION qualified batched delivery candidate. Client sleep not GPU busy.'},
+  {'ids':['decoding:D59','decoding:D56','decoding:D60'],'state':'SOURCE_ASSESSED_ACTIVE_CANDIDATES','question':'Descriptor frame frontiers, small-M projection numerical alternatives, and row>32 native geometry need separate actual model contracts and all-tier verification; old readback or rows64 failures do not exhaust them.'},
+  {'ids':['diagnostics:D02','diagnostics:D03','diagnostics:D04','diagnostics:D10'],'state':'SOURCE_ASSESSED_OVERHEAD_UNMEASURED','question':'Finite polling/callback overhead and Kineto native buffering are not individually production overhead measurements; no globally inactive assertion. No new profiling needed merely to complete reconciliation.'}],
+ 'limitations':['Every inventory ID has a source/disposition/evidence mapping; this is not global optimum, all-region qualification, or elimination of every wait.','No current28ac/f030 profile run was synthesized from historical4efe/fbaa data. Source and instrumentation/workload changes restrict transfer.','No new ownership/numeric/quality tolerances; stop/cancel and all8 retirement/error/source/raw guards remain mandatory.','Root master register deliberately unchanged; owner may import these evidence pointers/statuses after review.']}
+p=B/'decoding-diagnostics-drilldown-reconciliation.json';p.write_text(json.dumps(out,indent=2)+'\n');print(p,digest(p.read_bytes()),len(records),len(manifest))

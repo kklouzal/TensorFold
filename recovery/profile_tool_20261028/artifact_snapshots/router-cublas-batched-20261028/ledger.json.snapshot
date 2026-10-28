@@ -1,0 +1,61 @@
+{
+  "schema": "tensorfold.compute-drilldown-register-v1",
+  "inventory_sha256": "c3ad4b83c36fbf68278e3e97153dc19e75218badc58f94bdd581755206dfa730",
+  "active_entries": [
+    "C11",
+    "C12"
+  ],
+  "priority": "Userpipelineinventorycomplete\u2192onebigsource: canonicalper-rowFP32MoErouter dispatch",
+  "base": "7de2259b/86cb; source-dense-owner-batch-prelude-trial; rows32/TP8/Q8/24; reducedFP16True/accumFalse",
+  "why_canonical": "moe.router independent_rows=True loopsRowFP32GEMV; sourcecomment actualMchanges FP32 GEMM reduction andcanmove selectedsoftmaxweight overFP16boundary. Native_logitspreparedcustomcodeonlyenabledcoupledoptimized profile; privateBatchkeepsFalse. DisableddoesnotitselfproveallsupportedbatchedAPIsinferior.",
+  "candidates": [
+    {
+      "candidate": "CUDA12.9.2cublasSgemvBatched/sharedreadonlyA pointerarray",
+      "disposition": "selectedforboundedoperatorprototype; APIadmissible,exactnumericcontractUNPROVEN untilRootV100zero-toleranceoracles",
+      "reason": "devicepointerarraysupportsuniformindependentGEMV; onlyYnonoverlaprequired, noWeightreplication; pointerAeachaliasesreadonlyweight. SourceNoTF32Guard/currentTorchhandle/hostpointermode+constructionstream checked."
+    },
+    {
+      "candidate": "SgemvStridedBatched strideA0",
+      "disposition": "constraint-ruled-out",
+      "reason": "Official12.9.2offsetsmustnotzero. Cannotborrow newer/undocumentedbroadcast orreplicateweights toforcepositiveAstride."
+    },
+    {
+      "candidate": "full-RFP32GEMM/torchmatmul",
+      "disposition": "blockedexactcanonicalcontract",
+      "reason": "Ownedcurrentcommentdocuments Mdependentreduction; exactnear-tie/weightboundary proofabsent; do notwaive0tol."
+    },
+    {
+      "candidate": "existingcustomserial_logits",
+      "disposition": "retainedseparatecandidate/oracle, notnewfirstimplementation",
+      "reason": "Alreadyavailablebutprivateprofiledisabled; no globaloptimizedflagbecauseenablesunrelatedfamily/attention/paddedpaths."
+    },
+    {
+      "candidate": "parallelSGEMVstreams",
+      "disposition": "deferreduntilbatchedAPIexactresult; crediblelibraryalternative butstillRhostsubmissions/newstreamlifetimes",
+      "reason": "Vendorperformanceadviceconditional; no claiminferiorwithoutmeasurement."
+    }
+  ],
+  "vendor_contract": {
+    "source": "https://docs.nvidia.com/cuda/archive/12.9.2/cublas/index.html#cublas-t-gemvbatched",
+    "strided": "https://docs.nvidia.com/cuda/archive/12.9.2/cublas/index.html#cublas-t-gemvstridedbatched",
+    "facts": "Pointer arraysliveondevice;Acolmajor dimensionsm=2560,n=513,lda2560,transposeT; scalaralpha1/beta0host; Xstep1/Ystep1;disjointY; use16bytealignedpointees;Yrowstride516keepsalignment. No bitwiseequivalenceorperformanceguarantee assumed."
+  },
+  "implementation_checkpoint": "Privateunusedrouter_blas.cpp/.py preparedoperator only; no productionselector/globalflagschanged. Modelintegration/actualallranksettings+host/GPUadmission deferred untilnumericadmissibility, avoidingcodedinvalidfastpath.",
+  "resources": {
+    "per_plan_GPU_capacity32": 394496,
+    "host_per_plan": 16384,
+    "owns": "F32input/outputpadded+3pointerarrays; originalweightstoragealiasretained,nocopy; coldpointeruploadblocking/sourcebytesretire; input/outcopyonconstructionstream",
+    "full_model_todo": "Reuseper-roleinput/outputwithregisteredrouterweightpointerarrays insteadofper-layerweightreplication; fundallplansbeforeadmit+24floor; sourceconsensus explicitprivatefeatureonly. No defaultdispatchchangebeforeoracles."
+  },
+  "gates": {
+    "CPU": "normalwheel/12controls/APIcompilecurrentlyrunning; noresultassumed",
+    "GPU": "Rootexclusiveonly;28exactR1/2/3/8/16/24/32random/cancellation/near-tie/signedzero bit+stableTopKweightoraclesauthoredUNRUN; correcttargetflagsassertednotmutated",
+    "P3": "afterexactGPU+integration,firstall6quickcurrentquality320; no provisionalkeepunlessallrequiredNnonregression; repeated/broadqualificationdeferred peruser"
+  },
+  "held_other_work": "Dense991factual32PASSwrongmathREGIONrecorded;HC43eWIPfrozen; no changesnow",
+  "provenance": {
+    "worktree": "/Warehouse/TensorFold-wt/v100-router-cublas-batched-20261028",
+    "runtime_policy_diff": "NONE; nativeflag/math code unchanged exceptnewunusedmodule sources",
+    "source_priorities": "NoGPU/profiling/remoteheavy byagent"
+  }
+}

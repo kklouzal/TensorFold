@@ -1,0 +1,86 @@
+{
+  "schema": "tensorfold.router-cublas-model-experiment-v1",
+  "commit": "f0a3bfd535f039315591d8b2f1cdba8d348f03c1",
+  "worktree": "/Warehouse/TensorFold-wt/v100-router-cublas-model-wiring-20261028",
+  "operator_base": "490a49c2013f29b9551eec5d573da7c5fa852b63",
+  "reference_runtime": "7de2259b1a402542b91fde9e906a9ebb07f4c949",
+  "APP": "f7213e8d82109d4de3fd20c0a87e0150c3e56866360448d8585c55203f4e378a",
+  "source_paths": {
+    "README.md": "d484ab241a92def6cb6cdff9a3546720c2457dde977844a03c6cf9d25ae91970",
+    "src/tensorfold/cuda/moe.py": "1063e13aa9faec0445faccc15160e4d31f8a330519577022b8a9c11d73b391e3",
+    "src/tensorfold/cuda/sm70/execution_policy.py": "2aeab8520790d366fbb4bdc1de67aaa70be43911173101c959b1147b1a40afea",
+    "src/tensorfold/cuda/sm70/router_blas.cpp": "516562968c8ced2217d92977b06ea33f2b97ad0902000b3d485392fca354c3ea",
+    "src/tensorfold/cuda/sm70/router_blas.py": "48f85e762c7368d46fc2363383c6ad73d25bb77099803705abb707c3a917404a",
+    "src/tensorfold/families/qwen4_exp/cuda/bound_graphs.py": "db997f68058ecba75aa55d32e9d7ab5a7faf5a826d06590cfad34ee07b7a58c6",
+    "src/tensorfold/families/qwen4_exp/cuda/engine.py": "8cea3cce041d3a4ab241c46353f0c6ddc9e5a267bb043270ceaa54e8ac0d27a9",
+    "src/tensorfold/families/qwen4_exp/cuda/forward.py": "db13c7b78630642c2bd2018e40f14b74f1edbc81bc6c651ae5008996d120ec7c",
+    "src/tensorfold/families/qwen4_exp/cuda/history_owner.py": "3a0324ebe2ed88106531abd116dbddeb1e2f70f20d251302b073c4e189d82a08",
+    "src/tensorfold/families/qwen4_exp/cuda/multi.py": "554e8ebad651ba3b40c7f7634c0a4b80fdabc85ba8d593ebae45824ba6196996",
+    "src/tensorfold/families/qwen4_exp/cuda/prefix_policy.py": "55bbc812c542e80ec6c0b7416e1788c695cdea9be8c1b492148dfc7c569920eb",
+    "src/tensorfold/families/qwen4_exp/cuda/startup_content.py": "3e44243eac25b76734b6bb6f90941934587f6587022dfa3dbe0c1db39d5768f4",
+    "src/tensorfold/families/qwen4_exp/cuda/state.py": "9f9d7c833e14320d80fb239a506013c4a97c56b3747ec800dc8282655d894188",
+    "src/tensorfold/families/qwen4_exp/cuda/target_greedy.py": "b34fca3b2c6855f2655e7f0d51c448921fe6610574d9c9943bc61cb2689a0079",
+    "tests/cuda/test_sm70_router_blas.py": "5361985236c9fa68a98c0f6d5ea035bafa310dd51bafc75f4cf97d791e952977",
+    "tests/test_fast_grid.py": "974009726005b31d5ee3cdb97538c8336fc7493807650e6aec5fcc60f8c12a87",
+    "tests/test_sm70_execution_policy.py": "5a92dcd963e50235cf88559c67f534af19cf9d29b4a806ebdb4f9b6375ca60c5",
+    "tests/test_sm70_router_blas_model.py": "de6151b5b3c8f0dd2006cd655e7c18e34cc18a0250125b8653b3320d321d750a",
+    "tests/test_v100_backend_probe.py": "a9ee30cf3c3822b578c410b3f8047bdf7e54ff0d2600af378a7de057807720a5",
+    "tools/v100_backend_probe.py": "c9bcabfe8fd75a1240d034c1628f01941a8b002d9ae509366288d26a5877347b"
+  },
+  "package": "normal720canonical+oneFDc79; established /attention-source build, no source overlays",
+  "checks": {
+    "CPU-command.json": {
+      "sha256": "f7cabd4808e3bacce3b6f6788027008c41452b6f16cd5cd5b56d3ac82788a012"
+    },
+    "CPU-exit.json": {
+      "sha256": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17"
+    },
+    "CPU.log": {
+      "sha256": "c2685713f51f0fdb2bb40f8cea5422326c8c455763ff5fa938ab045760fdc1d5"
+    },
+    "package-command.json": {
+      "sha256": "440dbcffd25f36105ca6d2fb8d9630e4e87e57eae65342b357dc83ff8f7ba587"
+    },
+    "package-exit.json": {
+      "sha256": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17"
+    },
+    "package.log": {
+      "sha256": "20041d83b54c1010dc75b97640348ecdc33914607566c720b3b9b75de4ad034e"
+    },
+    "wheel-provenance.json": {
+      "sha256": "a733f04b6570f0d80428ec6f9037d87e12414abde9dfd3f965df1e73ccf35bb3"
+    },
+    "structural-proof.json": {
+      "sha256": "93de528f94ff37a3dd54885bc3dc68dc97af489b8647e705d7fc44936301af23"
+    }
+  },
+  "CPU": "270PASS7.18s/Ruff/pip/help/CPPcompile+link+import/normal720FDc79;31GPUcollected",
+  "REGION": {
+    "profile": "source-batch-router-blas-trial",
+    "router_numeric_implementation": "cublasSgemvBatched shared readonlyA FP32, eagerdecode/MTP only",
+    "graph_only_and_prefill": "canonical per-row GEMV retained",
+    "base_flags": "exact selectedBatch/Dense family; native_logits/padded/privateattention/othergraphselectors remainFalse",
+    "target": "SM70/TP8/MTP2 confidence.7/resident24/context262144/Q8/row32/reducedFP16True/accumFalse"
+  },
+  "resources": {
+    "gpu_bytes_per_rank": 814592,
+    "host_bytes_global_TP8": 7471104,
+    "ownership": "target48/MTP1 weight handles and individualAarrays; sharedX/Y/XYtables perrole, constructionstream serialized, strongweightobjects/originalstorages; calleroutcopy before reuse; no weightreplication",
+    "admission": "actualoptions increments device+tp*host before firstadmit;profileexplicitrestrictions beforeloading",
+    "gpu_payload_bytes_per_rank": 801024,
+    "granule_extra_per_rank": 13568
+  },
+  "numerical_evidence": {
+    "historical_strict28": "18FP32logitbitfail/10PASS, all28picks+roundedweights exact; failures retained",
+    "max_abs_observed": 2.0712614059448242e-06,
+    "worst_case": "UNKNOWN; empiricalrange is not a guaranteed bound",
+    "authorization": "Root explicit private fullmodel experiment under user accepted nonmaterial-quality allowance; no approximatePASS or defaultchange"
+  },
+  "pending": [
+    "D13corrective source/stage",
+    "Rootnewmodelstartup/all6+quality/countercoverage",
+    "pairedreferencequalityassessment andlaterbroaderacceptance"
+  ],
+  "corrective_successor": "fee8 FAILEDstartup (unexpectedPLEpreparedkeyword), no all6data. RestoreentirePLEfunctionexact7deAST; wire ONLY actualGGUFmoe_block.routerprepared. Twoactualsignature/dispatchCPUcontrols. Pointerallocationcharge rounds each512B.",
+  "GPU_component_prior": "fee8 sameCPP actual3sharedownership controlsPASS0.29s beforemodelstartupfailure; historical28strict numeric failures retained, no modelresults"
+}

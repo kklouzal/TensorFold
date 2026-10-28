@@ -1,0 +1,44 @@
+"""Local-only compact comparison of completed instrumented N8 captures."""
+import argparse
+import json
+from pathlib import Path
+
+def compact(directory):
+    summary=json.loads((directory/"analysis-concurrent-v1/all8-summary.json").read_text())
+    case=json.loads((directory/"results/run/fast-mtp-target-n08.json").read_text())
+    if not summary["complete"] or summary["offered"]!=8 or not case["screen"]["measurement_valid"]:
+        raise ValueError("two valid completed N8 diagnostic windows required")
+    rows=[]
+    for item in summary["windows"]:
+        window=item["window"]
+        def amount(key,prefix):
+            return sum(row["inclusive_us"] for row in window[key] if row["name"].startswith(prefix))
+        owner_calls=sum(row["count"] for row in window["project_labels"] if row["name"]=="tensorfold/body/concurrent/owner_prepare")
+        rows.append({"rank":item["rank"],"window_s":(window["end_us"]-window["start_us"])/1e6,
+            "target_owner_exclusive_s":amount("project_exclusive_thread_wall","tensorfold/body/concurrent/owner_prepare |")/1e6,
+            "MTP_owner_exclusive_s":amount("project_exclusive_thread_wall","tensorfold/body/concurrent/mtp_owner_prepare |")/1e6,
+            "owner_label_calls":owner_calls,
+            "owner_cudaLaunch_calls":sum(row["count"] for row in window["runtime_by_project"] if row["name"]=="tensorfold/body/concurrent/owner_prepare | cudaLaunchKernel"),
+            "launch_API_s":amount("API_groups","launch")/1e6,"kernels":window["counts"].get("kernel"),
+            "nonNCCL_kernel_sum_s":amount("kernel_groups","non_NCCL")/1e6,
+            "NCCL_kernel_sum_s":amount("kernel_groups","NCCL")/1e6,
+            "no_traced_kernel_s":window["GPU_no_kernel_intervals"]["total_us"]/1e6,
+            "maximum_no_kernel_ms":window["GPU_no_kernel_intervals"]["maximum_us"]/1000})
+    return {"rows":rows,"raw_trace_identities":summary["trace_identities"],
+        "screen_committed_tokens":sum(row["measured_window_committed_tokens"] for row in case["requests"]),
+        "cohort_batch_geometry":summary["leader_cohort_batch_delta"],
+        "case_native_counter_delta":case.get("graph_execution",{}).get("delta"),
+        "scope":"instrumented frozen10scohort diagnostics; rawper-windowcounts include partialboundaryframes, no unprofiledP3/quality claims"}
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--reference",type=Path,required=True)
+    parser.add_argument("--candidate",type=Path,required=True)
+    parser.add_argument("--out",type=Path,required=True)
+    args=parser.parse_args()
+    before,after=compact(args.reference),compact(args.candidate)
+    args.out.write_text(json.dumps({"reference":before,"candidate":after,
+        "interpretation":"All8rawhashes previously verified by closedanalysis; CPUdurations are hostwall notCPUbusy, inclusiveAPIs/kernelscanoverlap, NCCLkernelincludeswait, kernelactivitynotusefulcomputeutilization. Changedinstrumentationoverhead canchangeabsoluteprofiletime; useunprofiledall6resultsforP3selection."},indent=2)+"\n")
+
+if __name__=="__main__":
+    main()

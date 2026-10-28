@@ -1,0 +1,43 @@
+{
+  "schema": "tensorfold.verified-router-gdn-n24-diagnostic-v1",
+  "commit": "eb7179abb8826a30f952c6d0759b268f75242984",
+  "worktree": "/Warehouse/TensorFold-wt/v100-router-gdn-n24-profile-20261028",
+  "APP": "7c0acdfb2957c82ea69eb9e47fe8b1239c72b6c9c7aaa3242898631e121b6a51",
+  "APP_src_diff_empty_vs146f": true,
+  "source_paths": {
+    "README.md": "4f13b4c2b528db0392b66a029a63518e5768860f77c1f09945f07ddc1a80edba",
+    "tests/test_concurrent_observers.py": "6080e5e62b721a3c1fe70afe54b6bf5c64a218406fa2f65b0b9a0b60612c4b02",
+    "tests/test_fast_grid.py": "ecd85ee3102731e1b81836bab216b3880f76d0cbaf49fcda05f8c6850a643385",
+    "tests/test_router_gdn_profile.py": "ff436b9b22c136592f3c8920bdedcf50eb4cb4f83ac173acf73f9ab7b6afe143",
+    "tests/test_v100_backend_probe.py": "9e8873c51c37b32fd2f78f0bc8009608f5364cb5844bd3d5eefa1d86e71b4603",
+    "tools/concurrent_observers.py": "9480e96af0ff0368d628b0f35ff01b657d703760f726ce8bd9970b392c8d5d76",
+    "tools/profile_trace_reader.py": "57800bcb181ff0f3510ef2caf76cfe9b54f985b7aca27c67588c38f37f4da68b",
+    "tools/v100_backend_probe.py": "4e2aa75c3e3a3af32f8a541a9d40398fbeef3f0a7634dccb21946e4a4ad8df58"
+  },
+  "checks": {
+    "CPU-command.json": "770e60c046b201baebcf115870a341777201124088fc4d6606203640748075fd",
+    "CPU-exit.json": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17",
+    "CPU.log": "0eebffbbe314527a5e8942c6dced3fbf9879ed6490c189debe852153881901d3",
+    "final-command.json": "880b4467b7bb6d15784839c6a3733cbb0ab7491de03867b571e094a991a4886f",
+    "final-before-test-style.log": "31a96810f71d234483dbd08b551b094c5510e4f660db3db289e634ee22588c63",
+    "final-before-test-style-exit.json": "5cc319f54b05a38799195a491c303aa686eab7caccfdbbf1e8b8c07405cb7392",
+    "style-command.json": "087b18e892b81427423739ba568d87665c5b980c0957629e7a3680fab25386aa",
+    "style-exit.json": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17",
+    "style.log": "22c3f29fc7061d58443ac1d47633aa8e0d95869c531285d3f361a65cf21f9686",
+    "wheel-provenance.json": "784ed7268f849b96614f0f4fa1d34d2b1fe48f5379d78ee79e5b607ba061aa67",
+    "structural-proof.json": "d2a580e93febe3b52f043252538aaaad3c7e6808e16e231091f6c36f3907b129"
+  },
+  "checks_scope": "223controlsPASS6.27s/no skips, then5profile/realidentity+4targetlabelsPASS; testlambdaRuff failurepreserved then4PASS2.03s/Ruff/help. No APPbuild/sourceoverlay.",
+  "capture": "closed4c75CUPTI28/04cf/all8/source/maps/134failurejournal/retirement/clock helpers; all8postwarmcapture ONE N24cohort30sreadiness10sdecode/cancel+drain; originalmath; no shapes/stacks/memory",
+  "budgets": {
+    "observer_per_rank": 131072,
+    "reader_per_rank": 6442450944,
+    "global_future_reader": 51539607552,
+    "global_observer": 1048576,
+    "source_of_reader_proof": "dense-n24-profile-closefix-20261028/d13-reader-resource-proof.json",
+    "native_Kineto": "separateinstrumentation under320GiBcgroup; no productioncapacity or nativepeakproof inferred"
+  },
+  "preserved": "a89workerall8Router/GDNfactorychecks,3hashfund226504704/currentauthority/retirement, followerchecks/C6; ordinaryall6 stillunchanged, diagnosticnoquality/noP3credit",
+  "label_scope": "CPUonly; PLErowstage includesgather pluspinnedcopy/H2Denqueue, actualCUDAtransfersonlyfromCUPTIevents. ReadAhead maywaitfuture; genericggufdecodealiasparentprovesPLE. Phaseoperationseparate; mailboxexistingmethodswrapped, no Storeproxy; no inclusive=avoidable claim.",
+  "GPU": "UNRUN Rootleaseonly; D13source/stageassessmentpending"
+}

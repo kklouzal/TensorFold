@@ -1,0 +1,9 @@
+{
+  "remote": "/home/kklouzal/tensorfold-v100-qualification-20261026/perf85-startup-three-file-1751-json-v2-20261028",
+  "wheel": "175196fc0af92f9a91fcd3044461f5475b8de2cf19fbf31a42f540a92b443be4",
+  "hold": "6c56eabfeb3240d9daf42d4d4c06f73228c3a1f8fe36c6034e8fffee05c5ca23",
+  "commit": "d73d4c962a4a691e7150eb4f77923a5b0121bfbd",
+  "payload_sha256": "d06f4a63c367c331fbdd87f006818779963a0811280990ad9d9a95803aefa52f",
+  "stage_files": 19,
+  "manifest_sha256": "4aed4a36e4613d54ea6a39a54683d7653f61cac15a3a34c963f4f10391bf470f"
+}

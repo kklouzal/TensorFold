@@ -1,0 +1,26 @@
+{
+  "schema": "tensorfold.router-cuBLAS-pointer-batch-prototype-v1",
+  "commit": "490a49c2013f29b9551eec5d573da7c5fa852b63",
+  "worktree": "/Warehouse/TensorFold-wt/v100-router-cublas-batched-20261028",
+  "base": "7de2259b1a402542b91fde9e906a9ebb07f4c949",
+  "APP": "3deef3e760bfedcdf9f92fd897c93af4947c9cf92d4d90499471be12038d58c0",
+  "source_paths": {
+    "README.md": "c5300b3139af912ed38d93cc0c03862a4533ec8fd3490236efa7bc4ebe6ce5f9",
+    "src/tensorfold/cuda/sm70/router_blas.cpp": "aaa1f19b9f82ea8a854e968aaf9b8f3fb2b7a0185f8737f1991d2e5488170373",
+    "src/tensorfold/cuda/sm70/router_blas.py": "3c213d0fcdde344c59c4aebb7ee813cdd971e5bdcf7c4ea32a510c5e576c213a",
+    "tests/test_sm70_router_blas.py": "920f86f6991aacdfb285efc588e511fac20086780327e09009847f2a86ee4a96",
+    "tests/cuda/test_sm70_router_blas.py": "5da9002e18672fa584e35f115a953c660cb636ad88028d3b706fcbf18c82fd27"
+  },
+  "package": "Normal720canonical+oneFDc79; /attention-source establishedbuildpath; wrong/build-source priorwheel/logspreservednotstaged",
+  "CPU": "12PASS0.29sec/Ruff/pip; exactSDKcuBLASAPIhostCPPcompile+link+importPASS;28strictCUDAoraclescollectedUNRUN. CUDA-invisiblewarningexpectedCPUcompile, notGPUproof.",
+  "production": "No sourcepolicy/moe/router changes, no coupledglobaloptimizedflags enabled. Unusedprivateoperator only pendingexactnumericadmissibility. Modelallrank/admission/integrationUNRUN.",
+  "API": "Official12.9.2SgemvBatcheddeviceptrarrays; sharedAreadonly, disjoint16alignedYpaddedstride516, alpha1 beta0HOSTmode, transposeT m2560/n513/lda2560/inc1. StridedA0explicitlyinvalidruledout; no weightreplication.",
+  "ownership": "Planstrongoriginalweightstorageview/privateFP32input/output/deviceptrarrays; coldblockingpointeruploadretireshost; runrequiresconstructionstream/inference/noalias/currentweightstorage; existingTorchBLAShandle+scopedNoTF32Guard, no cublassetstatemutation.",
+  "resources": {
+    "capacity32_GPUbytes": 394496,
+    "host_per_plan": 16384,
+    "scope": "Operatorprepaidconstructor only; productionrole-sharing/admissionallranks MUSTbeimplemented/provedbeforeall6 afternumericgate."
+  },
+  "math_REGION": "TargetreducedFP16True/accumFalse assertedvia_family_runtime; notchanged. ExactFloat32bits/stabletopK/FP16roundedweights inclrandom/cancellation/near-tie/signedzero; mismatches savedasraw arrays andremainfailures, noapproxwaiver.",
+  "GPU": "UNRUNRootexclusive;28oraclecasesready; noP3claim"
+}

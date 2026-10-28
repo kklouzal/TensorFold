@@ -1,0 +1,2384 @@
+{
+  "schema": "tensorfold.compute-drilldown-reconciliation-v1",
+  "status": "ALL54MAPPED; nooptimization/qualificationclosure inferred",
+  "at_utc": "2026-10-28T15:41:55.529868+00:00",
+  "objective": "Reconcileactualinvestigations againststalecompute masterstates; identifygenuineopenwait/CPUdispatchquestions, thenassessRootrequestedN>1segmentedboundgraphs. Artifactonly, noGPU/build/source/masterregisteredit.",
+  "source_snapshot": {
+    "canonical_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+    "current_provisional_runtime": "f030/d851 after84734 auditPASS;28ac/4d2b actualretained",
+    "successor": "f030/d851 hot16 complete,auditSHAebe116f3; no repeatedacceptance",
+    "source_manifest": [
+      {
+        "path": "src/tensorfold/cuda/experts.py",
+        "commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "sha256": "2fe86bb23c9b193be0ce9a47af15c79a87e8d82fb0e2eb82eaaf22262b613412"
+      },
+      {
+        "path": "src/tensorfold/cuda/moe.py",
+        "commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "sha256": "1063e13aa9faec0445faccc15160e4d31f8a330519577022b8a9c11d73b391e3"
+      },
+      {
+        "path": "src/tensorfold/cuda/sm70/compact_indexer.cu",
+        "commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "sha256": "c5b54e8f60eaeaac6b31a249c9c11a1c4d3e2bb04c7fe48d12b3a95f65254e8e"
+      },
+      {
+        "path": "src/tensorfold/cuda/sm70/execution_policy.py",
+        "commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "sha256": "20e72f72dd757c9d546de257cedb07ca6c1cd2d21f068a0dc3148e6238f1227a"
+      },
+      {
+        "path": "src/tensorfold/cuda/sm70/family.cu",
+        "commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "sha256": "b50e134a4084dae5b3defcc90f2599b20eebad9dab09e9d6134e5424a83bbe61"
+      },
+      {
+        "path": "src/tensorfold/cuda/sm70/family_ops.py",
+        "commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "sha256": "1781c6438efeb8571c9558e0a368c908420a473c6a4bb59d5e3d6c2d8eae067b"
+      },
+      {
+        "path": "src/tensorfold/cuda/sm70/gdn.cu",
+        "commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "sha256": "58f59c834412b80f6531ca51db41211b138c2be3ce9f7e871c46fd420e802b60"
+      },
+      {
+        "path": "src/tensorfold/cuda/sm70/gguf_ops.cu",
+        "commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "sha256": "7644cb96b5984ed8f475146300452e975f6a7bd7eb10215ce087caeb40113134"
+      },
+      {
+        "path": "src/tensorfold/cuda/sm70/gguf_ops.py",
+        "commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "sha256": "e8facefa818a2efd4fa2ecdc25a43aa533197c8901def465a81fe33d6ea2be57"
+      },
+      {
+        "path": "src/tensorfold/cuda/sm70/paged_attention.cu",
+        "commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "sha256": "120e352267604a99dda5000a506a8666bc4918713dfd60e00f93ce2172073ffe"
+      },
+      {
+        "path": "src/tensorfold/cuda/sm70/routing.cu",
+        "commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "sha256": "8b7a92bbd8ee63643d55a668ae45de060d374d7a84e297c7731d72ef23752de1"
+      },
+      {
+        "path": "src/tensorfold/cuda/sm70/torch_reduce.cuh",
+        "commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "sha256": "237ca6c39ba74b481ab5fac6b9bd15775d0852ab8ecb5607f740f1d7d53f723a"
+      },
+      {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/attn_multi.py",
+        "commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "sha256": "861487b5fd62141950d41ca3581067665490deac3b811f681f961bd4243d518e"
+      },
+      {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/compact_indexer.py",
+        "commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "sha256": "c670af98affd35a00a5964e8402b68c15f0b718c4a3ef338d1684c1b0342daaa"
+      },
+      {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+        "commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38"
+      },
+      {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/gdn_multi.py",
+        "commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "sha256": "d0cbb5328efefb40af1b4fe4e9e0ae7a24eab50072b47be75cf36e0fa89f3558"
+      },
+      {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+        "commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd"
+      },
+      {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/history_owner.py",
+        "commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "sha256": "07388013f5ab624f1aaec592d6acf4e657295de3b1a6cddda5c3e94213169d89"
+      },
+      {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/mtp.py",
+        "commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "sha256": "178f2e4cf2ebaacb77bd1190d77c9800b3532c4d772aa329eb217d1e1657a9f7"
+      }
+    ]
+  },
+  "inputs": {
+    "compute_inventory_sha256": "c3ad4b83c36fbf68278e3e97153dc19e75218badc58f94bdd581755206dfa730",
+    "master_register_sha256_before": "1cf13f722cf8ece5788771af0df5e5fd29ca307ff7e4273074cabeab2939a063",
+    "master_register_modified": false,
+    "master_register_sha256_after": "1cf13f722cf8ece5788771af0df5e5fd29ca307ff7e4273074cabeab2939a063"
+  },
+  "evidence": {
+    "dense-native": {
+      "id": "dense-native",
+      "artifacts": [
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/current-dense-residency-20261028/development-baseline-priority-decision.json",
+          "sha256": "329a3eccabd05ec7285ead3472192bf78f1b1add828713573d7ab7239b17bb26"
+        },
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/current-dense-residency-20261028/actual-first-all6/root-comparison-vs-best-v2.json",
+          "sha256": "5c9537b13519b97960ce8f2e802baaab4ebf6ad6ac35ca5528ea1fa8f0e997f4"
+        },
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/current-dense-residency-20261028/controlled-repeat1/paired-repeat1-comparison.json",
+          "sha256": "601a6704bd83b193a9b528aa06c6b3b6b84be0105ab7bdbe983d1eafabefe687"
+        }
+      ],
+      "scope_and_outcome": "Exact4efe native32 wrapper retained as development baseline after user concurrency priority; first30.7/22.4/35.2/53.2/67.9/65.3, immediate repeat30.6/21.8/34.4/53.2/67.9/65.3 versus5635repeat31.1/19.4/32.5/50/65.1/62.9. N1loss explicit; not equivalence/release qualification. Generic/alias/grad fallbacks remain required."
+    },
+    "dense-domain": {
+      "id": "dense-domain",
+      "artifacts": [
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/dense-large-row-targetflags-20261028/actual-2a1c/archive-receipt.json",
+          "sha256": "3be16643416c1457212e67d620320fef5911e4061e9e57b073615881f3765e14"
+        },
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/dense-hc-native-domain-20261028/combined-review-actual-component-scope.json",
+          "sha256": "32025f459ce3761c084096d61c865329cb643f5673f39f059471e2f5bc28440e"
+        },
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/current-mtp-hc-integration-20261028/actual-first-all6-06ca/audit-vs-146f.json",
+          "sha256": "655be2945d84b3ecae53481835d8f1dd0caca603ddbc82418d5b15b5edde0839"
+        }
+      ],
+      "scope_and_outcome": "Correcttargetflags32Dense tile controls Root48226 PASS.79s and physicalHCdomain33controls Root35183 PASS.51s; oldwrongflag991f/c517 proof preserved separately. MTPHC06ca first31.1/26.2/44.4/71/102.7/98.2 versus146fN24=103.8 not selected;55prefixes/sixanswers exact. Does not prove every generic Dense geometry or model gain."
+    },
+    "batch-prelude": {
+      "id": "batch-prelude",
+      "artifacts": [
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/dense-batch-prelude-integration-20261028/ledger.json",
+          "sha256": "0e7312a7b48ca4a4e16206546fb6f4e02daf695b2ff622b20e46f0893059c5a5"
+        }
+      ],
+      "scope_and_outcome": "Actual81integrated controls Root42561 PASS35.91s, twoattentions/realDense/eightStates\u00d796; all8batch329/MTP109/max8. Removes per-State native prelude launches; first86cb all6 development30.8/22.8/37.3/56.2/73/73.3; no broadquality/acceptance claim."
+    },
+    "router": {
+      "id": "router",
+      "artifacts": [
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/compute-drilldown.json",
+          "sha256": "7c71e8ecb350903a046464a11570a5a682ab4fb3a4137d1171d827c2b56c979c"
+        },
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/router-cublas-model-wiring-20261028/combined-review-final.json",
+          "sha256": "7a72b797052fe69644be720318d178279b90c955466384cdcffe14dfdfe741c7"
+        }
+      ],
+      "scope_and_outcome": "Pointer-batched cuBLAS router is private different numerical epoch: original28strictoperator cases retained18FP32bit failures, all28picks/roundedweights exact. Authorized model investigation;146f/7c0 composite31.1/25.8/43.7/71/102.7/103.8,55prefixes/sixanswers exactownrefs,4PASS2historicalFAIL. No worstcase quality or repeatable superiority. strideA0 API constraint and full-R GEMM tree issue remain distinct."
+    },
+    "GDN": {
+      "id": "GDN",
+      "artifacts": [
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/gdn-drilldown.json",
+          "sha256": "d4523b55f8f8e0c4db7d36ffcb1092ad5d3994992c5bcd57545b07bb99c28b74"
+        },
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/router-gdn-integration-20261028/actual-first-all6-7c0a/comparison-vs-f721-GDN.json",
+          "sha256": "6884828bc2d9990b14ff2c84a9278b5c03bbaf5df34c877c41cf4a2865b6038a"
+        }
+      ],
+      "scope_and_outcome": "FP16State-batched chain exact shared body; actual50native controls, later currentmodelcomposite positive; preserves FP32recurrence and N1scalar path. Replay/commit/prefill bodies intentionally unchanged. Per-layer signature-check hoist remains source-assessed/open, not measured savedtime."
+    },
+    "expert-cap": {
+      "id": "expert-cap",
+      "artifacts": [
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/batch-expert72-20261028/combined-review-actual-component-scope.json",
+          "sha256": "bd70d6bded028fe6c019f3691c415d6b8ec477e25a91869c16db7207b1b598f2"
+        },
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/batch-expert72-20261028/actual-first-all6-rows64/archived-comparison.json",
+          "sha256": "20d8fd60f630bfe8820205c4b8f7941542fa4703f2b05f609f73ab6afe945933"
+        }
+      ],
+      "scope_and_outcome": "Actual43strictsubset controls rows48/64/72 PASS4.25s; not full512performance. Row64 modelscreen severe highN cliff (inventory reports21/23.1 N16/24 versus86cb73/73.3); Dense/expert causes not independently attributed. No cap enlargement selected."
+    },
+    "wmma": {
+      "id": "wmma",
+      "artifacts": [
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/compute-drilldown.json",
+          "sha256": "7c71e8ecb350903a046464a11570a5a682ab4fb3a4137d1171d827c2b56c979c"
+        },
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/router-gdn-wmma80-20261028/actual-first-all6-4899/comparison-vs-146f-7c0a.json",
+          "sha256": "644164cd74b9ce80e4d32d4b9eeaa052ffe06b56c74e3e057297e1be4dd6a5a7"
+        }
+      ],
+      "scope_and_outcome": "CurrentreopenedWMMA80 safety6PASS3.81s, first28.9/25.8/44.4/69.7/98.6/99.7 versus7c0 31.1/25.8/43.7/71/102.7/103.8. Notselectedfirstscreen; sixanswers exact,54/55shortprefixes exact withN1 mismatch194 retained. No universal/repeatable inferiority claim."
+    },
+    "shared-fusion": {
+      "id": "shared-fusion",
+      "artifacts": [
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/compute-drilldown.json",
+          "sha256": "7c71e8ecb350903a046464a11570a5a682ab4fb3a4137d1171d827c2b56c979c"
+        },
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/generic-shared-fusion-current-20261028/actual-first-all6-7604/comparison-vs-146f7c0.json",
+          "sha256": "765a29d54c5e717e6de818eac3e04d238f6d104207180ac78d5c677d9fc9614b"
+        }
+      ],
+      "scope_and_outcome": "Existing packed_blocks2w shared fusion actual6safetyPASS3.92s, first32.1/29.7/51.1/78.5/105.6/107.6; private numericalprofile/provisional. Sixanswers exact,54/55prefixes vs146f; no broadquality or repeatedgain claim. Selectedjoint preserves this backend rather than WMMA."
+    },
+    "MoE-graph": {
+      "id": "MoE-graph",
+      "artifacts": [
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/router-moe-catalogue-integration-20261028/actual-first-all6-6165/independent-audit.json",
+          "sha256": "0b7b622542c45114f2ed3f7273c317a2c65762bee3d26f466f9b31933d433eeb"
+        },
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/moe-shared-fusion-integration-20261028/actual-first-all6-76f4/independent-audit.json",
+          "sha256": "2c6312414c6f70e2c811a4f07cbd72202bd96f1b73a205315d562e5821a95776"
+        }
+      ],
+      "scope_and_outcome": "Actual144keys and145coldphase/all8native24 ledgers. PureMoE graphfirst N24=111.5; jointsharedFusion+MoE N24=110.2. Source-body math preserved; no component-additivity inference or release qualification. Existing MoE3rows30/31/32 underpins laterHCgraph."
+    },
+    "candidate-graph": {
+      "id": "candidate-graph",
+      "artifacts": [
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/candidate-finish-graph-20261028/actual-h1-7fe4/pytest-result.json",
+          "sha256": "1ff371e8a3b894661b52c230fe93a09db42a16fdb277d05d60d27f21e13380ff"
+        },
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/candidate-finish-catalogue-20261028/root-91559-summary.json",
+          "sha256": "036dd5aa806fdec30e8bf60a0f02021616e0ca17454ebcd94356b292483a39b0"
+        },
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/joint-candidate-finish-integration-20261028/actual-first-all6-fbaa/independent-audit.json",
+          "sha256": "1cf107b7bf833e072df625947381d63ec58e9d0cdd92b52615567d5f209b5e56"
+        }
+      ],
+      "scope_and_outcome": "Originalper-row clone/top32/LSE/idcast capture:4actualSM70cases PASS2.18s;64keyalternatingrole/R PASS2.99s; currentjointall8cold64phase ledgers +modelcohort actualcounts. Head/filter/NCCL/status/sampling outside. Exactpacketmath evidence; integratedfirstscreen still provisional, no claimedremovable sum of nestedtopk/LSE totals."
+    },
+    "HC-graph": {
+      "id": "HC-graph",
+      "artifacts": [
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/hc-readout-drilldown.json",
+          "sha256": "3f82c840e763393ced9c8a1c9fcad975f094cd22213ae20fec7cd1091cc9e1f7"
+        },
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/joint-hc-moe-integration-20261028/actual-first-all6-4d2b/independent-audit.json",
+          "sha256": "44286926eb9317ee0ccc85fd0804227e9d3291b5604ec6be559720104b53572d"
+        },
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/hc-moe-hot-rows-integration-20261028/milestone.json",
+          "sha256": "28808afbfc8811eb9236c2d89ff18284eb537b643da32f31397c64eedf5c610b"
+        },
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/hc-moe-hot-rows-integration-20261028/actual-first-all6-d851/independent-audit.json",
+          "sha256": "ebe116f371819946c00fa4c6f9395b50b5d7454af6696584b2081fe4f9fe9c0d"
+        }
+      ],
+      "scope_and_outcome": "MLP-HC+MoE extends existingpureMoE boundary without arithmetic rewrite. Current28ac/4d2b first32.1/30.4/53.5/83.5/117.8/120.3, all8native24/QA/prefixes checked. CombinedHCgraphhits onlyN16/24 inold3rowgrid; lower-tier rates cannotbecreditedtoHC. f030hot16 is successor, terminal Root84734 reported32.1/37.3/59.6/94.4/117.8/120.3; independent auditpending at reconciliation. No repeatedqualification. UPDATE:Root84734 hot16 independentauditPASSresources/coverage/quality;769phases/768keys,threeprivatepools,all8native24/Q8/context262144/row32;sixanswers exactall5refs,55prefixesexact4d2b. f030/d851 currentprovisionalquickreference; no repeatqualification."
+    },
+    "DP4A": {
+      "id": "DP4A",
+      "artifacts": [
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/dp4a-source-feasibility-20261028/candidate-report.json",
+          "sha256": "d69174180db0244b1df7b1996cd487a0b4c102cb1cc5183a9c5ad6cd6ed30731"
+        },
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/dp4a-retention-cleanup-20261028/ledger.json",
+          "sha256": "9c445dcac3c54bf5c693fa13c1efd47e6e5ee1debb393d4772aa0b5e5db84a9e"
+        },
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/dp4a-target-enrollment-20261028/ledger.json",
+          "sha256": "b14454a6698a602c732aa5efe7c2f71a5ba42207f9222902cf7baa40f8bde694"
+        }
+      ],
+      "scope_and_outcome": "Distinctnumericalprofile: f652standalone20GPU PASS2.85s Root57236;3f1a unusedreference cleanup structurallyreuses native/oracles,30CPU. Uniformcoefficient fixture does not demonstrate distinctexpert/neuron discrimination. 28ac targetenrollmentWIP; no publishedHOLD/model/native24/quality/P3. Current sharedfusion compatibility/shared-only outputs mustbe preserved beforemodel trial."
+    },
+    "BLAS": {
+      "id": "BLAS",
+      "artifacts": [
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/vendor-blas-shapes-outcome-20261028/source-hold.json",
+          "sha256": "4e57ac5708d78cd361442d4cc7d77d5984c90da5acd2f8903dd8b9dbd63db62a"
+        },
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/vendor-blas-shapes-outcome-20261028/actual-b4e6/archive-receipt.json",
+          "sha256": "02c95415a43b74ff1b28ddab969b8685ec8393765bb9154efc213413effec547"
+        },
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/vendor-blas-shapes-outcome-20261028/actual-b4e6/results/dense-shapes/result.json",
+          "sha256": "29ba5852b80c9a874322c3cc12e46489da2e5862ee867c620705b9c8636a2c68"
+        },
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/vendor-blas-shapes-outcome-20261028/actual-b4e6/quick-shape-comparison.json",
+          "sha256": "e41b20d3298db31ea9bc387f9b363d0ce4a8b11d9f6ad7ff8b068d093ceb0cba"
+        }
+      ],
+      "scope_and_outcome": "Root25315 correctedb4e6/HOLD4e57 APPfbaa terminal0;221actualcases. Alternating2weights HCdown native~30us/directM1-3~15us, inject14us/6-9us, up20-21us/11-12us; numericdifferencesrecorded (someHCup2/3exact,downF32~1e-7). Cachespecificmicrodiagnostic, notkernel-only/P3/modelquality guarantee. Old2ae/9a59 unrun superseded. Rootauthorizes boundedHCsmallrow vendor numericalprototype onf030; no implementation bythis artifact."
+    },
+    "PLE": {
+      "id": "PLE",
+      "artifacts": [
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/ple-staging-drilldown.json",
+          "sha256": "c778488fa7110e279bda7a197e07b20fcaa0df27d6c607d50399f9560373b4c4"
+        }
+      ],
+      "scope_and_outcome": "Naivecombinedgather/H2D constraint-ruled-out: G1/H1/G2/H2 first-error order andReadAhead cache/failure lifetime. Directpinneddecode deferred: noownedoutAPI andoverflowmustprecedepinnedmutation. 7c0N24PLEstage .133454s incl,CPUdecode .033499s over10s; fbaaN1stage .092145/decode .021406 Rootprofile_tool report, separateREGION. No allavoidable or coldprefill/globalinferiority claim."
+    },
+    "owner-transport": {
+      "id": "owner-transport",
+      "artifacts": [
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/owner-drilldown.json",
+          "sha256": "7ea1dfa7db4b1d377465ab91e03f84dcaf8dc356309ae30abd618e6e8a8056c8"
+        },
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/graph-dispatch-drilldown.json",
+          "sha256": "678ffbddb751a717d6f67573f3f3fc148f98b56877ae39e724cf3176e0a7adde"
+        }
+      ],
+      "scope_and_outcome": "Descriptor/frame/cpu-phase transport has separate ownerpartition. Historical4efe tiny-gap profile notcurrentcausality. Sourcecurrentdescriptorhostconstruction remainsassessedopen; existingFrame c2de/1d83 andT60self-WAIT/FIFOsnapshot notselected screens. Native_done/generation/DMA fences remain required; NCCLduration is wait-inclusive, notwire/saturation."
+    },
+    "status": {
+      "id": "status",
+      "artifacts": [
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/coalesced-candidate-readback-20261028/actual-first-all6-packed/comparison-vs-86cb-and-GDN.json",
+          "sha256": "470c2f4942b9c45e89658249453b7fe7325d20a84813b0ce23be6bb7b12b663d"
+        },
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/decoding-drilldown.json",
+          "sha256": "2af2baa6c0e97fe8ed41d0c56cd481e92ef6558621c9a93d857243342bc358ed"
+        }
+      ],
+      "scope_and_outcome": "Coalescedcandidate/status actual2controls PASS40.67s andpackedfirst30.7/22.8/36.7/57.7/73/73.3; notselectedfirstscreen noN24gainvs86cb, belowGDN75.7. Does notgloballyruleoutinteractionwithlaterGDN/graphcomposite. Status-first/ownedpayload/CPUtieRNG contracts retained."
+    },
+    "profile": {
+      "id": "profile",
+      "artifacts": [
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/router-gdn-n24-profile-20261028/actual-findings.json",
+          "sha256": "ed4328fe2dd3f20711141ca5c9fa8e65bccd1cd9754c5df1b95379ca15aec433"
+        },
+        {
+          "path": "/Warehouse/TensorFold-portable-audit-20261026/joint-single-profile-20261028/actual-findings.json",
+          "sha256": "e7c5d4cc6a2c6acb9b8917a0da89b1893834f967f14c5aaa0d53e8c206e8141a"
+        }
+      ],
+      "scope_and_outcome": "Actual7c0N24 andfbaaN1 profiling arediagnostic only. N24compute_decode CPUexclusive4.47639s,140589CUDAlaunches; CPUlaunchAPI1.067s is notallremovablecriticaltime. N1descriptorEventSync1.510s andboundpiece2.510sexclusive arelaterfbaaREGION, no additivity or rootcause claim. CUDAmemcpyGPU durations notinclosed summary."
+    }
+  },
+  "entries": [
+    {
+      "id": "compute:C01",
+      "inventory_id": "C01",
+      "original_reachability": "reachable-current",
+      "original_candidate": "prepared/fused launch plan or graph/compiled scheduling after entire inventory; retain dependency boundaries",
+      "master_state_read_only": "historicaltrace verified dispatch/gap candidate; currentP3proofpending",
+      "reconciliation": "investigated",
+      "disposition": "Substantialpartial launchcapture implemented/currentprovisional; wholeforward N>1 segmented owner remainsopen.",
+      "evidence_refs": [
+        "MoE-graph",
+        "HC-graph",
+        "candidate-graph",
+        "profile"
+      ],
+      "remaining": "Assess exactN1 barrier and causalinsert boundaries; nofullforwardgain claimed.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "line": 705,
+          "sha256": "104fd013cf175bf51cf92e7cc2363978175fce9f0bc7cd9644bea69c357a29db"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+        "anchor": "compute",
+        "current_lines": [
+          734
+        ],
+        "sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C02",
+      "inventory_id": "C02",
+      "original_reachability": "reachable-current",
+      "original_candidate": "hoist immutable matrix facts into owned prepared plans; retain changing output/input validation",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "investigated",
+      "disposition": "Nativewrapper/preparedphysicaldomain andpureHCcaptures investigated.",
+      "evidence_refs": [
+        "dense-native",
+        "dense-domain",
+        "HC-graph",
+        "BLAS"
+      ],
+      "remaining": "Remaining eager immutablematrixdispatch facts and vendor alternatives lackintegrated proof. RootauthorizedHCsmallrowvendor prototype is nowactive, notunassessed.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "line": 41,
+          "sha256": "104fd013cf175bf51cf92e7cc2363978175fce9f0bc7cd9644bea69c357a29db"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+        "anchor": "_mm",
+        "current_lines": [
+          41
+        ],
+        "sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C03",
+      "inventory_id": "C03",
+      "original_reachability": "reachable-current",
+      "original_candidate": "prepaid aligned M32 input/output or larger-row tiling; inspect direct-path coverage",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "investigated",
+      "disposition": "Exactnative32 current; separatetiles/domain controls positive.",
+      "evidence_refs": [
+        "dense-native",
+        "dense-domain"
+      ],
+      "remaining": "All32directinput/output/pathcoverage and prepaying each hotgeometry notuniversally proven.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/cuda/sm70/gguf_ops.cu",
+          "relative_path": "src/tensorfold/cuda/sm70/gguf_ops.cu",
+          "line": 720,
+          "sha256": "567c190116c4f3871bac617ed14ef8c7a553ce2929251abc0c0286788843067d"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/cuda/sm70/gguf_ops.cu",
+        "anchor": "gguf_dense32(",
+        "current_lines": [
+          720
+        ],
+        "sha256": "7644cb96b5984ed8f475146300452e975f6a7bd7eb10215ce087caeb40113134",
+        "f030_sha256": "7644cb96b5984ed8f475146300452e975f6a7bd7eb10215ce087caeb40113134",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C04",
+      "inventory_id": "C04",
+      "original_reachability": "reachable-current",
+      "original_candidate": "eligible native32 tiling with prepaid workspace; do not blanket-expand native ABI limit",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "investigated",
+      "disposition": "Correctflags tile andphysicalMTPdomain tested; MTPHCscreennotselected.",
+      "evidence_refs": [
+        "dense-domain",
+        "BLAS"
+      ],
+      "remaining": "GenericR>32/autograd/alias fallback remainsrequired; largerphysicaldomain notselectedoncurrentmodel. RootauthorizedHCsmallrowvendor prototype is nowactive, notunassessed.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+          "line": 193,
+          "sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+        "anchor": "matmul_reference",
+        "current_lines": [
+          193,
+          288
+        ],
+        "sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd",
+        "f030_sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C05",
+      "inventory_id": "C05",
+      "original_reachability": "reachable-current",
+      "original_candidate": "prepaid per-part result/direct destination or owned tile plan; no merged-GEMM math change without evidence",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "investigated",
+      "disposition": "Concatpart-outer exactnative32 andcapturedHC preserve originaltwoGEMMs.",
+      "evidence_refs": [
+        "dense-native",
+        "dense-domain",
+        "HC-graph"
+      ],
+      "remaining": "Directdestination part scratch/work elimination outsidecapturedMLPHC remainsopen.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/cuda/sm70/gguf_ops.cu",
+          "relative_path": "src/tensorfold/cuda/sm70/gguf_ops.cu",
+          "line": 799,
+          "sha256": "567c190116c4f3871bac617ed14ef8c7a553ce2929251abc0c0286788843067d"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/cuda/sm70/gguf_ops.cu",
+        "anchor": "gguf_concat32(",
+        "current_lines": [
+          799
+        ],
+        "sha256": "7644cb96b5984ed8f475146300452e975f6a7bd7eb10215ce087caeb40113134",
+        "f030_sha256": "7644cb96b5984ed8f475146300452e975f6a7bd7eb10215ce087caeb40113134",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C06",
+      "inventory_id": "C06",
+      "original_reachability": "reachable-current",
+      "original_candidate": "retain part-outer tiled native32 calls; no append-alias-and-overwrite",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "investigated",
+      "disposition": "Partordering/tilednative preserved andcomponent tested.",
+      "evidence_refs": [
+        "dense-domain",
+        "HC-graph"
+      ],
+      "remaining": "Reference/generic fallback maintained; no blanket concatmathmerge qualification.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+          "line": 287,
+          "sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+        "anchor": "matmul_reference",
+        "current_lines": [
+          193,
+          288
+        ],
+        "sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd",
+        "f030_sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C07",
+      "inventory_id": "C07",
+      "original_reachability": "reachable-current",
+      "original_candidate": "fuse/prepare eligible stages without changing stored boundaries; preallocate logical HC partials with immediate consumer proof",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "investigated",
+      "disposition": "OriginalMLPHCtail capturedwithMoE atcurrenthotrows.",
+      "evidence_refs": [
+        "dense-domain",
+        "HC-graph"
+      ],
+      "remaining": "AttentionHC andfinalmixer purecuts/uncapturedrows remainopen; hc_plansEXL3 notapplicable. RootauthorizedHCsmallrowvendor prototype is nowactive, notunassessed.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "line": 68,
+          "sha256": "104fd013cf175bf51cf92e7cc2363978175fce9f0bc7cd9644bea69c357a29db"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+        "anchor": "hc_block",
+        "current_lines": [
+          68
+        ],
+        "sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C08",
+      "inventory_id": "C08",
+      "original_reachability": "reachable-current",
+      "original_candidate": "coalesce compatible stages / reuse provided outputs; distinguish real missing outputs from already prepaid callers",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "investigated",
+      "disposition": "Familymath reused undercapture/prelude; noarbitrarybarrier deletion.",
+      "evidence_refs": [
+        "HC-graph",
+        "batch-prelude"
+      ],
+      "remaining": "OtherRMS/gate/activation stagefusion unassessed independently, mustpreserve storedboundaries.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/cuda/sm70/family.cu",
+          "relative_path": "src/tensorfold/cuda/sm70/family.cu",
+          "line": 755,
+          "sha256": "b50e134a4084dae5b3defcc90f2599b20eebad9dab09e9d6134e5424a83bbe61"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/cuda/sm70/family.cu",
+        "anchor": "__syncthreads",
+        "current_lines": [
+          30,
+          34,
+          91,
+          201,
+          205,
+          359,
+          366,
+          491
+        ],
+        "sha256": "b50e134a4084dae5b3defcc90f2599b20eebad9dab09e9d6134e5424a83bbe61",
+        "f030_sha256": "b50e134a4084dae5b3defcc90f2599b20eebad9dab09e9d6134e5424a83bbe61",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C09",
+      "inventory_id": "C09",
+      "original_reachability": "reachable-current",
+      "original_candidate": "per-weight semantically bounded M32 reuse for fc_h; not arbitrary R enlargement",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "investigated",
+      "disposition": "MTPphysicalHCcandidate tested/notselectedfirstscreen; originalfinish graph current.",
+      "evidence_refs": [
+        "dense-domain",
+        "candidate-graph"
+      ],
+      "remaining": "Embedding/norm/fc_e/fc_h/add_streams outsidecandidatepacket remain source-open.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/mtp.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/mtp.py",
+          "line": 174,
+          "sha256": "178f2e4cf2ebaacb77bd1190d77c9800b3532c4d772aa329eb217d1e1657a9f7"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/mtp.py",
+        "anchor": "mtp_compute",
+        "current_lines": [
+          134
+        ],
+        "sha256": "178f2e4cf2ebaacb77bd1190d77c9800b3532c4d772aa329eb217d1e1657a9f7",
+        "f030_sha256": "178f2e4cf2ebaacb77bd1190d77c9800b3532c4d772aa329eb217d1e1657a9f7",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C10",
+      "inventory_id": "C10",
+      "original_reachability": "reachable-current",
+      "original_candidate": "decode directly into existing output or fuse replication, keeping quantization and bounds",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "open",
+      "disposition": "Directdecode/replication fusion notimplemented orisolatedmeasured.",
+      "evidence_refs": [
+        "profile"
+      ],
+      "remaining": "GGUFEmbedding.lookup stilldecode temporary, expand/reshape HCcopies, finalout.copy_; noCPU D2H here.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+          "line": 357,
+          "sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+        "anchor": "lookup",
+        "current_lines": [
+          357
+        ],
+        "sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd",
+        "f030_sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C11",
+      "inventory_id": "C11",
+      "original_reachability": "reachable-current",
+      "original_candidate": "qualified equivalent batched native logits or prepared per-row plan; existing disabled candidate not dead",
+      "master_state_read_only": "active drilldown; no verified performance gain",
+      "reconciliation": "investigated",
+      "disposition": "Pointerbatchedvendorrouter selectedprivate numericalepoch/currentcomposite.",
+      "evidence_refs": [
+        "router",
+        "MoE-graph",
+        "HC-graph"
+      ],
+      "remaining": "Strict18FP32bitfailures retained; otherexactrouteralgorithms notexhausted; no broadqualityqualification.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/cuda/moe.py",
+          "relative_path": "src/tensorfold/cuda/moe.py",
+          "line": 88,
+          "sha256": "0091794f1092f394861151bbb4fffb7d6b443fffb5ad2450f6c394cf903b1c8b"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/cuda/moe.py",
+        "anchor": "router",
+        "current_lines": [
+          88
+        ],
+        "sha256": "1063e13aa9faec0445faccc15160e4d31f8a330519577022b8a9c11d73b391e3",
+        "f030_sha256": "1063e13aa9faec0445faccc15160e4d31f8a330519577022b8a9c11d73b391e3",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C12",
+      "inventory_id": "C12",
+      "original_reachability": "reachable-current",
+      "original_candidate": "batch/fuse router+selection only under exact numeric contract; preserve generic supported route",
+      "master_state_read_only": "active drilldown; no verified performance gain",
+      "reconciliation": "investigated",
+      "disposition": "Stablerouting selection reused withinpuregraphs; no algorithmchange.",
+      "evidence_refs": [
+        "router",
+        "MoE-graph",
+        "HC-graph"
+      ],
+      "remaining": "Router+selection fusion/sort alternative stillneedsnumericcontract andfullcost proof.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/cuda/moe.py",
+          "relative_path": "src/tensorfold/cuda/moe.py",
+          "line": 177,
+          "sha256": "0091794f1092f394861151bbb4fffb7d6b443fffb5ad2450f6c394cf903b1c8b"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/cuda/moe.py",
+        "anchor": "select_rows",
+        "current_lines": [
+          179
+        ],
+        "sha256": "1063e13aa9faec0445faccc15160e4d31f8a330519577022b8a9c11d73b391e3",
+        "f030_sha256": "1063e13aa9faec0445faccc15160e4d31f8a330519577022b8a9c11d73b391e3",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C13",
+      "inventory_id": "C13",
+      "original_reachability": "reachable-current",
+      "original_candidate": "larger row-cap/native tiling or grouped expert kernel after algorithm/quality/resource proof",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "investigated",
+      "disposition": "Multipleactualoperator/modelcandidates, currentpacked_blocks2w graphs.",
+      "evidence_refs": [
+        "expert-cap",
+        "wmma",
+        "shared-fusion",
+        "DP4A",
+        "HC-graph"
+      ],
+      "remaining": "DP4Atargetmodel enrollment open; noallprecision/kernelalternatives exhausted.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+          "line": 439,
+          "sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+        "anchor": "forward_exact",
+        "current_lines": [
+          439
+        ],
+        "sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd",
+        "f030_sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C14",
+      "inventory_id": "C14",
+      "original_reachability": "reachable-current",
+      "original_candidate": "caller-owned shared gate/up/down workspace or safe fusion at exact cast points",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "investigated",
+      "disposition": "Sharedexpertwork fused byexistinggenericpacked algorithm underprivateepoch andgraph.",
+      "evidence_refs": [
+        "shared-fusion",
+        "MoE-graph",
+        "HC-graph"
+      ],
+      "remaining": "Otherworkspace/fusion/numeric alternatives requireindependentcontract; no broadqualityclaim.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+          "line": 449,
+          "sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+        "anchor": "_write_shared",
+        "current_lines": [
+          448
+        ],
+        "sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd",
+        "f030_sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C15",
+      "inventory_id": "C15",
+      "original_reachability": "reachable-current",
+      "original_candidate": "qualified packed>=64 or <=32tile route; keep independent reference",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "investigated",
+      "disposition": "Largecapnumericspositive butrow64 highNscreen notselected.",
+      "evidence_refs": [
+        "expert-cap",
+        "dense-domain"
+      ],
+      "remaining": "Currentshortdecode staysR32; prefill/longphysicalrowdomain stillgeneric required.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+          "line": 403,
+          "sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+        "anchor": "forward",
+        "current_lines": [
+          403
+        ],
+        "sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd",
+        "f030_sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C16",
+      "inventory_id": "C16",
+      "original_reachability": "reachable-current",
+      "original_candidate": "qualify small-prefill packed route or bounded larger pair plan; existing optional prefill plan unselected",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "open",
+      "disposition": "Smallprefillpackedroute remainsunqualified; largerdecodecap evidence isnotprefill proof.",
+      "evidence_refs": [
+        "expert-cap"
+      ],
+      "remaining": "Quantifycachedsmallprefill andvalidateoriginalprefillbankarithmetic/peak beforeanyspecialization.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+          "line": 456,
+          "sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+        "anchor": "forward_prefill",
+        "current_lines": [
+          456
+        ],
+        "sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd",
+        "f030_sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C17",
+      "inventory_id": "C17",
+      "original_reachability": "reachable-current",
+      "original_candidate": "batch FP16 State chains across states/heads using same update order; cannot use BF16 tree blindly",
+      "master_state_read_only": "candidate component verified50actualV100; fullmodelP3pending",
+      "reconciliation": "investigated",
+      "disposition": "ExactF16Statebatchedchain implemented/current.",
+      "evidence_refs": [
+        "GDN"
+      ],
+      "remaining": "Repeatedper-layer signaturechecks andgraphdynamicdescriptor ABI remainopen.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "line": 175,
+          "sha256": "104fd013cf175bf51cf92e7cc2363978175fce9f0bc7cd9644bea69c357a29db"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+        "anchor": "gdn_block",
+        "current_lines": [
+          162
+        ],
+        "sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C18",
+      "inventory_id": "C18",
+      "original_reachability": "reachable-current",
+      "original_candidate": "prepaid conv/cut staging or batched prefill chains with validated snapshot publication",
+      "master_state_read_only": "candidate component verified50actualV100; fullmodelP3pending",
+      "reconciliation": "open",
+      "disposition": "Prefillchain/cutpath unchanged; forwardbatchproof doesnotcoverprefilloptimization.",
+      "evidence_refs": [
+        "GDN"
+      ],
+      "remaining": "Prepayconv/cut snapshots orbatchprefill onlywith exactcommit/failure-order proof.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "line": 186,
+          "sha256": "104fd013cf175bf51cf92e7cc2363978175fce9f0bc7cd9644bea69c357a29db"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+        "anchor": "_prefill_chain",
+        "current_lines": [
+          191
+        ],
+        "sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C19",
+      "inventory_id": "C19",
+      "original_reachability": "reachable-current",
+      "original_candidate": "batch replay/conv commit across State catalogue while retaining exact per-row order",
+      "master_state_read_only": "candidate component verified50actualV100; fullmodelP3pending",
+      "reconciliation": "open",
+      "disposition": "Commit/replay/shiftbody intentionallyunchanged despiteforwardbatch.",
+      "evidence_refs": [
+        "GDN"
+      ],
+      "remaining": "Per-State/per-layer replay+tailshift launchbatching/capture hasnotbeen prototyped orattributed.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "line": 1017,
+          "sha256": "104fd013cf175bf51cf92e7cc2363978175fce9f0bc7cd9644bea69c357a29db"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+        "anchor": "commit",
+        "current_lines": [
+          1046
+        ],
+        "sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C20",
+      "inventory_id": "C20",
+      "original_reachability": "reachable-current",
+      "original_candidate": "prefetch/CPUdecode overlap or bounded packed-to-GPU decode with owned staging",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "constrained",
+      "disposition": "Naivecombinedgather+H2D ruledoutunderrequiredfirsterror/ReadAheadcontract.",
+      "evidence_refs": [
+        "PLE"
+      ],
+      "remaining": "Directprepaidoutput remainsdeferred; steadyPLEsmall, coldprefill notruledout.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "line": 407,
+          "sha256": "104fd013cf175bf51cf92e7cc2363978175fce9f0bc7cd9644bea69c357a29db"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+        "anchor": "stage_ple_rows",
+        "current_lines": [
+          412
+        ],
+        "sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C21",
+      "inventory_id": "C21",
+      "original_reachability": "reachable-current",
+      "original_candidate": "batched State PLEconv using pointer table or safe norm-conv fusion",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "open",
+      "disposition": "Per-State PLEconv batching notimplemented; gatheraudit isnotconvproof.",
+      "evidence_refs": [
+        "PLE"
+      ],
+      "remaining": "Preserveper-State causalhistory/dilation/cast/tails; profileisolatedcost beforework.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "line": 398,
+          "sha256": "104fd013cf175bf51cf92e7cc2363978175fce9f0bc7cd9644bea69c357a29db"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+        "anchor": "ple_conv_streams",
+        "current_lines": [
+          403
+        ],
+        "sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C22",
+      "inventory_id": "C22",
+      "original_reachability": "reachable-current",
+      "original_candidate": "fuse compatible stages or prepared projections only after numeric/alias inventory",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "open",
+      "disposition": "Densewrappers apply, butpurePLEembed/norm/gatefusion notimplemented.",
+      "evidence_refs": [
+        "PLE",
+        "dense-native"
+      ],
+      "remaining": "Do not countgatherreadbackevidence asGPUprojection/convqualification.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "line": 366,
+          "sha256": "104fd013cf175bf51cf92e7cc2363978175fce9f0bc7cd9644bea69c357a29db"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+        "anchor": "ple_block",
+        "current_lines": [
+          371
+        ],
+        "sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C23",
+      "inventory_id": "C23",
+      "original_reachability": "reachable-current",
+      "original_candidate": "source inventory only: data publication/pooling can be coalesced; packet/lifecycle owned grouped agent",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "investigated",
+      "disposition": "BatchednativeStateprelude/current plusdescriptorpartition experiments.",
+      "evidence_refs": [
+        "batch-prelude",
+        "owner-transport"
+      ],
+      "remaining": "Hostdescriptor construction/copybookkeeping remainsassessedopen; nofenceelisionproof.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/history_owner.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/history_owner.py",
+          "line": 1036,
+          "sha256": "0662bac7586f171edefb5415e857f73802b7f48fc62de1ec35376be913eb038f"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/history_owner.py",
+        "anchor": "_publish_native_frame",
+        "current_lines": [
+          264
+        ],
+        "sha256": "07388013f5ab624f1aaec592d6acf4e657295de3b1a6cddda5c3e94213169d89",
+        "f030_sha256": "07388013f5ab624f1aaec592d6acf4e657295de3b1a6cddda5c3e94213169d89",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C24",
+      "inventory_id": "C24",
+      "original_reachability": "reachable-current",
+      "original_candidate": "coalesce metadata/query stages or smaller qualified collective family; graph scope sibling",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "investigated",
+      "disposition": "Currentnativequeryprep batching andownergraphN1 path; siblingtransportassessed.",
+      "evidence_refs": [
+        "batch-prelude",
+        "owner-transport"
+      ],
+      "remaining": "Query/indexerselection/gather stages beyondprelude stillopen; noNCCLwireclaim.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/history_owner.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/history_owner.py",
+          "line": 1051,
+          "sha256": "0662bac7586f171edefb5415e857f73802b7f48fc62de1ec35376be913eb038f"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/history_owner.py",
+        "anchor": "attention_layer",
+        "current_lines": [
+          987
+        ],
+        "sha256": "07388013f5ab624f1aaec592d6acf4e657295de3b1a6cddda5c3e94213169d89",
+        "f030_sha256": "07388013f5ab624f1aaec592d6acf4e657295de3b1a6cddda5c3e94213169d89",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C25",
+      "inventory_id": "C25",
+      "original_reachability": "reachable-current",
+      "original_candidate": "parallelize score/select or batch States preserving each State context",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "open",
+      "disposition": "Selectionalgorithm unchanged; batchprelude doesnotoptimizeQSA.",
+      "evidence_refs": [
+        "batch-prelude"
+      ],
+      "remaining": "Parallelstable score/select independentStates needsoriginalordering/numericaloracle.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/cuda/sm70/family_ops.py",
+          "relative_path": "src/tensorfold/cuda/sm70/family_ops.py",
+          "line": 619,
+          "sha256": "1781c6438efeb8571c9558e0a368c908420a473c6a4bb59d5e3d6c2d8eae067b"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/cuda/sm70/family_ops.py",
+        "anchor": "qsa_rows",
+        "current_lines": [
+          619
+        ],
+        "sha256": "1781c6438efeb8571c9558e0a368c908420a473c6a4bb59d5e3d6c2d8eae067b",
+        "f030_sha256": "1781c6438efeb8571c9558e0a368c908420a473c6a4bb59d5e3d6c2d8eae067b",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C26",
+      "inventory_id": "C26",
+      "original_reachability": "reachable-current",
+      "original_candidate": "larger native stable selector with bounded workspace or qualified tiled selection",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "open",
+      "disposition": "Nativecount>4096 fallback existsoutside shortprofile coverage.",
+      "evidence_refs": [
+        "profile"
+      ],
+      "remaining": "Longnativecontext>~16384 rawtokens argsort/matmul/allocation path notperformance-qualified byshortscreens.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/cuda/sm70/family_ops.py",
+          "relative_path": "src/tensorfold/cuda/sm70/family_ops.py",
+          "line": 628,
+          "sha256": "1781c6438efeb8571c9558e0a368c908420a473c6a4bb59d5e3d6c2d8eae067b"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/cuda/sm70/family_ops.py",
+        "anchor": "qsa_rows",
+        "current_lines": [
+          619
+        ],
+        "sha256": "1781c6438efeb8571c9558e0a368c908420a473c6a4bb59d5e3d6c2d8eae067b",
+        "f030_sha256": "1781c6438efeb8571c9558e0a368c908420a473c6a4bb59d5e3d6c2d8eae067b",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C27",
+      "inventory_id": "C27",
+      "original_reachability": "reachable-current",
+      "original_candidate": "owned/prepaid/fused compact pool preserving reduction regime; batch independent State pools",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "investigated",
+      "disposition": "Groupedprelude publication includesexistingpoolcalls; no newpoolreductionmath.",
+      "evidence_refs": [
+        "batch-prelude",
+        "owner-transport"
+      ],
+      "remaining": "BatchindependentStatepooling/fusion remainsopen, ratio4reduction/generationmustpreserve.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/compact_indexer.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/compact_indexer.py",
+          "line": 613,
+          "sha256": "c670af98affd35a00a5964e8402b68c15f0b718c4a3ef338d1684c1b0342daaa"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/compact_indexer.py",
+        "anchor": "append",
+        "current_lines": [
+          823
+        ],
+        "sha256": "c670af98affd35a00a5964e8402b68c15f0b718c4a3ef338d1684c1b0342daaa",
+        "f030_sha256": "c670af98affd35a00a5964e8402b68c15f0b718c4a3ef338d1684c1b0342daaa",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C28",
+      "inventory_id": "C28",
+      "original_reachability": "reachable-current",
+      "original_candidate": "prepaid tiny tail/coordinate scratch with immutable generation/owner leases",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "open",
+      "disposition": "Tail/rollbackguards inventoried, no selectedcommit-scratch optimization.",
+      "evidence_refs": [
+        "owner-transport"
+      ],
+      "remaining": "Unresolvedproposal spans/coordinatepublication cannotbe omitted; prepaytail scratch needsownershipproof.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/compact_indexer.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/compact_indexer.py",
+          "line": 578,
+          "sha256": "c670af98affd35a00a5964e8402b68c15f0b718c4a3ef338d1684c1b0342daaa"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/compact_indexer.py",
+        "anchor": "prepare_commit",
+        "current_lines": [
+          646
+        ],
+        "sha256": "c670af98affd35a00a5964e8402b68c15f0b718c4a3ef338d1684c1b0342daaa",
+        "f030_sha256": "c670af98affd35a00a5964e8402b68c15f0b718c4a3ef338d1684c1b0342daaa",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C29",
+      "inventory_id": "C29",
+      "original_reachability": "reachable-current",
+      "original_candidate": "phase fusion/parallelism or qualified communication reduction only with dependencies preserved",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "investigated",
+      "disposition": "NativeQ8owner andN1eagerattentioninsert guarded; communicationassessed.",
+      "evidence_refs": [
+        "owner-transport",
+        "profile"
+      ],
+      "remaining": "QK/PV/stat/valuephase fusion orqualifiedtransport reduction stillopen; timingswait-inclusive.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/history_owner.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/history_owner.py",
+          "line": 904,
+          "sha256": "0662bac7586f171edefb5415e857f73802b7f48fc62de1ec35376be913eb038f"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/history_owner.py",
+        "anchor": "native_run",
+        "current_lines": [
+          904
+        ],
+        "sha256": "07388013f5ab624f1aaec592d6acf4e657295de3b1a6cddda5c3e94213169d89",
+        "f030_sha256": "07388013f5ab624f1aaec592d6acf4e657295de3b1a6cddda5c3e94213169d89",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C30",
+      "inventory_id": "C30",
+      "original_reachability": "reachable-current",
+      "original_candidate": "coalesce compatible collectives or alternative sum transport preserving/qualifying order",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "investigated",
+      "disposition": "PartialrankorderedNCCL boundaries explicitlykeptoutsidepuregraphs.",
+      "evidence_refs": [
+        "owner-transport",
+        "MoE-graph"
+      ],
+      "remaining": "Collectivecoalescing mustrespect dependencies/rankorder; T60negative screennotglobaltransportinferiority.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "line": 32,
+          "sha256": "104fd013cf175bf51cf92e7cc2363978175fce9f0bc7cd9644bea69c357a29db"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+        "anchor": "_gather",
+        "current_lines": [
+          32
+        ],
+        "sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C31",
+      "inventory_id": "C31",
+      "original_reachability": "reachable-current",
+      "original_candidate": "hoist unchanged invariants to frame issue if preserved, retaining mutable generation checks",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "open",
+      "disposition": "Frameissue/coordinate contracts established, repeatedvalidationstillpresent.",
+      "evidence_refs": [
+        "batch-prelude",
+        "owner-transport"
+      ],
+      "remaining": "Hoistonlyinvariants preservedacrosslayer/reset/migration; no measured currentvalidate-cost attribution.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/compact_indexer.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/compact_indexer.py",
+          "line": 234,
+          "sha256": "c670af98affd35a00a5964e8402b68c15f0b718c4a3ef338d1684c1b0342daaa"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/compact_indexer.py",
+        "anchor": "_validate_frame",
+        "current_lines": [
+          234
+        ],
+        "sha256": "c670af98affd35a00a5964e8402b68c15f0b718c4a3ef338d1684c1b0342daaa",
+        "f030_sha256": "c670af98affd35a00a5964e8402b68c15f0b718c4a3ef338d1684c1b0342daaa",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C32",
+      "inventory_id": "C32",
+      "original_reachability": "reachable-current",
+      "original_candidate": "reuse preallocated end-index/rows, safe fusion; head/sampling boundary handed sibling",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "investigated",
+      "disposition": "Localcandidatepacket graph capturedoriginalrowmath; headprojection/finalHC separate.",
+      "evidence_refs": [
+        "candidate-graph",
+        "HC-graph"
+      ],
+      "remaining": "End-index/rowgathers andfinalmixer optimization remainopen; no tree/tie rewrite.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "line": 570,
+          "sha256": "104fd013cf175bf51cf92e7cc2363978175fce9f0bc7cd9644bea69c357a29db"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+        "anchor": "finish",
+        "current_lines": [
+          585
+        ],
+        "sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C33",
+      "inventory_id": "C33",
+      "original_reachability": "reachable-current",
+      "original_candidate": "direct owned embedding write/recorded input lease; no method/conditioning shortcut",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "open",
+      "disposition": "MTPphysicalHCpreparedcandidate tested; embedding/norm/input conditioning unchanged.",
+      "evidence_refs": [
+        "dense-domain"
+      ],
+      "remaining": "Directownedembedding/recordedinputlease candidate needsalias/error/cast proof; no shortcuttoMTPmethod.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/mtp.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/mtp.py",
+          "line": 174,
+          "sha256": "178f2e4cf2ebaacb77bd1190d77c9800b3532c4d772aa329eb217d1e1657a9f7"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/mtp.py",
+        "anchor": "mtp_compute",
+        "current_lines": [
+          134
+        ],
+        "sha256": "178f2e4cf2ebaacb77bd1190d77c9800b3532c4d772aa329eb217d1e1657a9f7",
+        "f030_sha256": "178f2e4cf2ebaacb77bd1190d77c9800b3532c4d772aa329eb217d1e1657a9f7",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C34",
+      "inventory_id": "C34",
+      "original_reachability": "reachable-current",
+      "original_candidate": "prepare selected variants/reusevalid keyed cache beforetiming; no stale/stat-only identities",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "investigated",
+      "disposition": "Selectedkernel LAZY attributeprepare andwarm/capture residency incorporatedinheldcandidates.",
+      "evidence_refs": [
+        "dense-native",
+        "dense-domain",
+        "GDN"
+      ],
+      "remaining": "Otherselectedvariants requiretheir own readiness/funding; importalone notresidency.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/cuda/sm70/gguf_ops.py",
+          "relative_path": "src/tensorfold/cuda/sm70/gguf_ops.py",
+          "line": 12,
+          "sha256": "1784bac928dbb74cdc0b5f3758150831f761ae407a211c09400528dc9c314304"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/cuda/sm70/gguf_ops.py",
+        "anchor": "extension",
+        "current_lines": [
+          13
+        ],
+        "sha256": "e8facefa818a2efd4fa2ecdc25a43aa533197c8901def465a81fe33d6ea2be57",
+        "f030_sha256": "e8facefa818a2efd4fa2ecdc25a43aa533197c8901def465a81fe33d6ea2be57",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C35",
+      "inventory_id": "C35",
+      "original_reachability": "reachable-current",
+      "original_candidate": "hoist proven immutable facts or prepared entry only with full lifetime proof",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "open",
+      "disposition": "NativeABIguards preserved; no genericpercallCUDAGuard/properties hoist implemented.",
+      "evidence_refs": [
+        "dense-domain"
+      ],
+      "remaining": "Onlyhoist immutabledevicefacts behindprovedlifetime; retainshape/range/error guards.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/cuda/sm70/gguf_ops.cu",
+          "relative_path": "src/tensorfold/cuda/sm70/gguf_ops.cu",
+          "line": 737,
+          "sha256": "567c190116c4f3871bac617ed14ef8c7a553ce2929251abc0c0286788843067d"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/cuda/sm70/gguf_ops.cu",
+        "anchor": "CUDAGuard",
+        "current_lines": [
+          6,
+          152,
+          625,
+          737,
+          826,
+          995
+        ],
+        "sha256": "7644cb96b5984ed8f475146300452e975f6a7bd7eb10215ce087caeb40113134",
+        "f030_sha256": "7644cb96b5984ed8f475146300452e975f6a7bd7eb10215ce087caeb40113134",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C36",
+      "inventory_id": "C36",
+      "original_reachability": "reachable-current",
+      "original_candidate": "pipeline independent load/decode with issued authority and ownership; do not alter payload",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "investigated",
+      "disposition": "Three-filehashstartup iscompositeactual; notproof ofweightmaterializer pipelining.",
+      "evidence_refs": [
+        "router"
+      ],
+      "remaining": "IndependentGGUFload/decode overlap stillsourceopen; canonicalcoefficients/loadingpeak preserved.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+          "line": 831,
+          "sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+        "anchor": "load_gguf",
+        "current_lines": [
+          964
+        ],
+        "sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd",
+        "f030_sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C37",
+      "inventory_id": "C37",
+      "original_reachability": "reachable-current",
+      "original_candidate": "validate immutable source once/targeted event retirement only if all consumersknown",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "open",
+      "disposition": "Startupfinite/positive rope andpositiveCUDAretirement remainrequired, nothotdecode.",
+      "evidence_refs": [
+        "router"
+      ],
+      "remaining": "No establishedsafeweakerdevicefence/immutablecheckhoist atallcleanupfailurecuts.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+          "line": 992,
+          "sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+        "anchor": "load_gguf",
+        "current_lines": [
+          964
+        ],
+        "sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd",
+        "f030_sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C38",
+      "inventory_id": "C38",
+      "original_reachability": "not-reachable-current",
+      "original_candidate": "newqualifiedGGUFmixed-provider candidate, notremoveexistingroute",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "constrained",
+      "disposition": "CurrentTP8GGUF excludes compute_mixed convergence route.",
+      "evidence_refs": [],
+      "remaining": "Requiredotherprofiles retained; newqualifiedmixedprovider wouldbe separatecandidate.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "line": 887,
+          "sha256": "104fd013cf175bf51cf92e7cc2363978175fce9f0bc7cd9644bea69c357a29db"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+        "anchor": "compute_mixed",
+        "current_lines": [
+          916
+        ],
+        "sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C39",
+      "inventory_id": "C39",
+      "original_reachability": "not-reachable-current",
+      "original_candidate": "cannot simplyenableforFP16; useindependentlyqualifiedF16batchedchain",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "constrained",
+      "disposition": "OriginalBF16gdn_multi stillineligibleforselectedFP16.",
+      "evidence_refs": [
+        "GDN"
+      ],
+      "remaining": "Do notenableBF16tree; selectedF16batchC17 isdistinctqualifiedbody.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/gdn_multi.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/gdn_multi.py",
+          "line": 110,
+          "sha256": "d0cbb5328efefb40af1b4fe4e9e0ae7a24eab50072b47be75cf36e0fa89f3558"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/gdn_multi.py",
+        "anchor": "block",
+        "current_lines": [
+          110
+        ],
+        "sha256": "d0cbb5328efefb40af1b4fe4e9e0ae7a24eab50072b47be75cf36e0fa89f3558",
+        "f030_sha256": "d0cbb5328efefb40af1b4fe4e9e0ae7a24eab50072b47be75cf36e0fa89f3558",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C40",
+      "inventory_id": "C40",
+      "original_reachability": "not-reachable-current",
+      "original_candidate": "preserveasrequiredregion/oracle; newF16route needsqualification",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "constrained",
+      "disposition": "OriginalBF16attn_multi excludedfromcurrentuniqueF16owner.",
+      "evidence_refs": [
+        "owner-transport"
+      ],
+      "remaining": "Requiredotherregion/oracle stays; newF16route notautomaticallyqualified.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/attn_multi.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/attn_multi.py",
+          "line": 234,
+          "sha256": "861487b5fd62141950d41ca3581067665490deac3b811f681f961bd4243d518e"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/attn_multi.py",
+        "anchor": "layer",
+        "current_lines": [
+          234
+        ],
+        "sha256": "861487b5fd62141950d41ca3581067665490deac3b811f681f961bd4243d518e",
+        "f030_sha256": "861487b5fd62141950d41ca3581067665490deac3b811f681f961bd4243d518e",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C41",
+      "inventory_id": "C41",
+      "original_reachability": "not-reachable-current",
+      "original_candidate": "retainindependentoracle; onlyadoptoptimizedregionafterevidence",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "constrained",
+      "disposition": "Nonowner/referenceattention isrequiredoutsidecurrentnativeowner.",
+      "evidence_refs": [
+        "owner-transport"
+      ],
+      "remaining": "Do notdeleteoracleor countit ascurrentGPUwait; adoptionneedsseparatecodecproof.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/cuda/sm70/family_ops.py",
+          "relative_path": "src/tensorfold/cuda/sm70/family_ops.py",
+          "line": 734,
+          "sha256": "1781c6438efeb8571c9558e0a368c908420a473c6a4bb59d5e3d6c2d8eae067b"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/cuda/sm70/family_ops.py",
+        "anchor": "attention",
+        "current_lines": [
+          734
+        ],
+        "sha256": "1781c6438efeb8571c9558e0a368c908420a473c6a4bb59d5e3d6c2d8eae067b",
+        "f030_sha256": "1781c6438efeb8571c9558e0a368c908420a473c6a4bb59d5e3d6c2d8eae067b",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C42",
+      "inventory_id": "C42",
+      "original_reachability": "not-reachable-current",
+      "original_candidate": "notdeadbecauseunselected; no ritualcleanup changesduringinventory",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "constrained",
+      "disposition": "ExistingEXL3hc_plans/BF16/padded routes failcurrentGGUF/TP/SDK eligibility.",
+      "evidence_refs": [
+        "HC-graph"
+      ],
+      "remaining": "Keeprequiredotherformat/oracles; newGGUFcapture isseparatefromlooseningoldplan.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "line": 98,
+          "sha256": "104fd013cf175bf51cf92e7cc2363978175fce9f0bc7cd9644bea69c357a29db"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+        "anchor": "_readout",
+        "current_lines": [
+          89
+        ],
+        "sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C43",
+      "inventory_id": "C43",
+      "original_reachability": "not-reachable-current",
+      "original_candidate": "do notcountascurrentGPUwait orremoveguard; maintainrequiredothercodec role",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "constrained",
+      "disposition": "RotorQuant/Q4/genericprep notcurrentplainQ8selectedpath.",
+      "evidence_refs": [],
+      "remaining": "Maintainrequiredcodecvalidation; no currenttimingattributionor deadcodeclaim.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/cuda/sm70/family_ops.py",
+          "relative_path": "src/tensorfold/cuda/sm70/family_ops.py",
+          "line": 76,
+          "sha256": "1781c6438efeb8571c9558e0a368c908420a473c6a4bb59d5e3d6c2d8eae067b"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/cuda/sm70/family_ops.py",
+        "anchor": "_rotor_rotate",
+        "current_lines": [
+          76
+        ],
+        "sha256": "1781c6438efeb8571c9558e0a368c908420a473c6a4bb59d5e3d6c2d8eae067b",
+        "f030_sha256": "1781c6438efeb8571c9558e0a368c908420a473c6a4bb59d5e3d6c2d8eae067b",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C44",
+      "inventory_id": "C44",
+      "original_reachability": "sibling-handoff",
+      "original_candidate": "inventorycross-reference ONLY; packet/graphlifecycle andstatus/sampling ownerseparately",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "investigated",
+      "disposition": "Status/candidate/readback fullycrosspartitioned; coalescedprototype tested/notselectedfirstscreen.",
+      "evidence_refs": [
+        "status",
+        "candidate-graph",
+        "owner-transport"
+      ],
+      "remaining": "Laterinteractionnotgloballyruledout; statusfirst/finite/error/ownedpayload samplingcontracts remainhard.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "line": 626,
+          "sha256": "104fd013cf175bf51cf92e7cc2363978175fce9f0bc7cd9644bea69c357a29db"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+        "anchor": "_kv_check",
+        "current_lines": [
+          820
+        ],
+        "sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C45",
+      "inventory_id": "C45",
+      "original_reachability": "reachable-current",
+      "original_candidate": "prepay/reuseworkspace andstablelayouts; identifyrealallocator/runtime stalls",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "investigated",
+      "disposition": "Preparedslabs andprivategraphpools eliminaterepeatedhostfactories insideselectedcuts.",
+      "evidence_refs": [
+        "dense-native",
+        "dense-domain",
+        "MoE-graph",
+        "HC-graph",
+        "candidate-graph"
+      ],
+      "remaining": "EagerattentionHC/finalmixer/projections stillallocate/reference; noallallocatorstall eliminationclaim.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/cuda/sm70/gguf_ops.cu",
+          "relative_path": "src/tensorfold/cuda/sm70/gguf_ops.cu",
+          "line": 720,
+          "sha256": "567c190116c4f3871bac617ed14ef8c7a553ce2929251abc0c0286788843067d"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/cuda/sm70/gguf_ops.cu",
+        "anchor": "gguf_dense32(",
+        "current_lines": [
+          720
+        ],
+        "sha256": "7644cb96b5984ed8f475146300452e975f6a7bd7eb10215ce087caeb40113134",
+        "f030_sha256": "7644cb96b5984ed8f475146300452e975f6a7bd7eb10215ce087caeb40113134",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C46",
+      "inventory_id": "C46",
+      "original_reachability": "reachable-current",
+      "original_candidate": "parallelindependentStates/heads, notremoveintrarowordering",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "investigated",
+      "disposition": "F16batchparallelizesindependentStateCTAs whileoriginalintrachainbarriersmathretained.",
+      "evidence_refs": [
+        "GDN"
+      ],
+      "remaining": "Commit/replaykernel parallelism isnotcoveredbyforwardbatch; no blindbarrier deletion.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/cuda/sm70/gdn.cu",
+          "relative_path": "src/tensorfold/cuda/sm70/gdn.cu",
+          "line": 100,
+          "sha256": "61560ee1531f58522934062d77408f01e3681d112ce9743dc2b1a995532fb91a"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/cuda/sm70/gdn.cu",
+        "anchor": "chain_body",
+        "current_lines": [
+          54,
+          172,
+          188
+        ],
+        "sha256": "58f59c834412b80f6531ca51db41211b138c2be3ce9f7e871c46fd420e802b60",
+        "f030_sha256": "58f59c834412b80f6531ca51db41211b138c2be3ce9f7e871c46fd420e802b60",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C47",
+      "inventory_id": "C47",
+      "original_reachability": "reachable-current",
+      "original_candidate": "pipeline/tile/parallelism candidateonlywithsameerror/numericcontract",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "open",
+      "disposition": "PagedQ8attentioninternalkernel tile barriers remainunaltered.",
+      "evidence_refs": [
+        "owner-transport"
+      ],
+      "remaining": "Pipeline/tileparallelism notassessedbeyondsourceinventory; preserveinitialization/globalsoftmax/QKPVorder.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/cuda/sm70/paged_attention.cu",
+          "relative_path": "src/tensorfold/cuda/sm70/paged_attention.cu",
+          "line": 131,
+          "sha256": "120e352267604a99dda5000a506a8666bc4918713dfd60e00f93ce2172073ffe"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/cuda/sm70/paged_attention.cu",
+        "anchor": "__syncthreads",
+        "current_lines": [
+          131,
+          138,
+          146,
+          155,
+          174,
+          192,
+          218,
+          233
+        ],
+        "sha256": "120e352267604a99dda5000a506a8666bc4918713dfd60e00f93ce2172073ffe",
+        "f030_sha256": "120e352267604a99dda5000a506a8666bc4918713dfd60e00f93ce2172073ffe",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C48",
+      "inventory_id": "C48",
+      "original_reachability": "reachable-current",
+      "original_candidate": "reducebarriersbyalgorithmicrestructureonlyafterdependencyproof",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "investigated",
+      "disposition": "Families reused/captured, originalreductionsandbarriers retained.",
+      "evidence_refs": [
+        "batch-prelude",
+        "HC-graph"
+      ],
+      "remaining": "No generalbarrierrestructure selected; distinguishbatchlaunch eliminationfromalgorithmicchange.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/cuda/sm70/family.cu",
+          "relative_path": "src/tensorfold/cuda/sm70/family.cu",
+          "line": 30,
+          "sha256": "b50e134a4084dae5b3defcc90f2599b20eebad9dab09e9d6134e5424a83bbe61"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/cuda/sm70/family.cu",
+        "anchor": "__syncthreads",
+        "current_lines": [
+          30,
+          34,
+          91,
+          201,
+          205,
+          359,
+          366,
+          491
+        ],
+        "sha256": "b50e134a4084dae5b3defcc90f2599b20eebad9dab09e9d6134e5424a83bbe61",
+        "f030_sha256": "b50e134a4084dae5b3defcc90f2599b20eebad9dab09e9d6134e5424a83bbe61",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C49",
+      "inventory_id": "C49",
+      "original_reachability": "reachable-current",
+      "original_candidate": "expertgrouping/tile/occupancy alternatives, notblindbarrierdeletion",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "investigated",
+      "disposition": "Packedexpert alternatives haveactualscopednumeric/modelevidence.",
+      "evidence_refs": [
+        "expert-cap",
+        "wmma",
+        "shared-fusion",
+        "DP4A"
+      ],
+      "remaining": "Do notcollapseWMMArejection,sharedfusionprivateepoch andDP4Aoperatorproof intoallkernelqualification.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/cuda/sm70/gguf_ops.cu",
+          "relative_path": "src/tensorfold/cuda/sm70/gguf_ops.cu",
+          "line": 406,
+          "sha256": "567c190116c4f3871bac617ed14ef8c7a553ce2929251abc0c0286788843067d"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/cuda/sm70/gguf_ops.cu",
+        "anchor": "__syncthreads",
+        "current_lines": [
+          406,
+          930,
+          942,
+          948
+        ],
+        "sha256": "7644cb96b5984ed8f475146300452e975f6a7bd7eb10215ce087caeb40113134",
+        "f030_sha256": "7644cb96b5984ed8f475146300452e975f6a7bd7eb10215ce087caeb40113134",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C50",
+      "inventory_id": "C50",
+      "original_reachability": "reachable-current",
+      "original_candidate": "qualifiedbatchedrouter orsortcandidatewith samepolicy",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "investigated",
+      "disposition": "Stable route reusedwithinrouter/MoEgraph; serial_logitsoptionalpath preserved.",
+      "evidence_refs": [
+        "router",
+        "HC-graph"
+      ],
+      "remaining": "Customsort/routerfusion stillunassessedindependently; currentvendorrouter hasdistinctnumericalepoch.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/cuda/sm70/routing.cu",
+          "relative_path": "src/tensorfold/cuda/sm70/routing.cu",
+          "line": 60,
+          "sha256": "8b7a92bbd8ee63643d55a668ae45de060d374d7a84e297c7731d72ef23752de1"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/cuda/sm70/routing.cu",
+        "anchor": "__syncthreads",
+        "current_lines": [
+          60,
+          122,
+          132,
+          135
+        ],
+        "sha256": "8b7a92bbd8ee63643d55a668ae45de060d374d7a84e297c7731d72ef23752de1",
+        "f030_sha256": "8b7a92bbd8ee63643d55a668ae45de060d374d7a84e297c7731d72ef23752de1",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C51",
+      "inventory_id": "C51",
+      "original_reachability": "reachable-current",
+      "original_candidate": "preserveguard; fuseonlywithcompleteowner/visibilityproof",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "constrained",
+      "disposition": "Generation/status atomicfirst-errorlatches arecorrectness guards, notpollingloops.",
+      "evidence_refs": [
+        "batch-prelude",
+        "owner-transport"
+      ],
+      "remaining": "Fusionwouldneedcompletevisibility/ownerproof; no removalorwaittimeclaim.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/cuda/sm70/compact_indexer.cu",
+          "relative_path": "src/tensorfold/cuda/sm70/compact_indexer.cu",
+          "line": 12,
+          "sha256": "c5b54e8f60eaeaac6b31a249c9c11a1c4d3e2bb04c7fe48d12b3a95f65254e8e"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/cuda/sm70/compact_indexer.cu",
+        "anchor": "atomicCAS",
+        "current_lines": [
+          12
+        ],
+        "sha256": "c5b54e8f60eaeaac6b31a249c9c11a1c4d3e2bb04c7fe48d12b3a95f65254e8e",
+        "f030_sha256": "c5b54e8f60eaeaac6b31a249c9c11a1c4d3e2bb04c7fe48d12b3a95f65254e8e",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C52",
+      "inventory_id": "C52",
+      "original_reachability": "reachable-current",
+      "original_candidate": "alternative tree onlyunderexplicitnumeric/qualitycontract",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "constrained",
+      "disposition": "Torchcompatiblereductiontree remainsnumericcontract inexactpaths.",
+      "evidence_refs": [
+        "HC-graph",
+        "GDN"
+      ],
+      "remaining": "Differenttree onlyexplicitP2/profile+qualityacceptance; existinggraphdoesnotchangetree.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/cuda/sm70/torch_reduce.cuh",
+          "relative_path": "src/tensorfold/cuda/sm70/torch_reduce.cuh",
+          "line": 40,
+          "sha256": "237ca6c39ba74b481ab5fac6b9bd15775d0852ab8ecb5607f740f1d7d53f723a"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/cuda/sm70/torch_reduce.cuh",
+        "anchor": "__syncthreads",
+        "current_lines": [
+          40,
+          43,
+          50
+        ],
+        "sha256": "237ca6c39ba74b481ab5fac6b9bd15775d0852ab8ecb5607f740f1d7d53f723a",
+        "f030_sha256": "237ca6c39ba74b481ab5fac6b9bd15775d0852ab8ecb5607f740f1d7d53f723a",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C53",
+      "inventory_id": "C53",
+      "original_reachability": "correctness-finding-not-wait",
+      "original_candidate": "AFTERinventorycorrectfixture/asserttargetflagsandrerun same32strictoracles",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "investigated",
+      "disposition": "Wrongmathregionhistorical32caseproof correctedwithactualtargetTrue/accumFalsecontrols.",
+      "evidence_refs": [
+        "dense-domain"
+      ],
+      "remaining": "Preserveoldwrongflagpacket anddo notextrapolate toallgeometry/modelregions.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/cuda/sm70/execution_policy.py",
+          "relative_path": "src/tensorfold/cuda/sm70/execution_policy.py",
+          "line": 181,
+          "sha256": "27a8eabfd9917eaee648a329499a8b75c55c3850d2b0f1bd728729275415b11c"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/cuda/sm70/execution_policy.py",
+        "anchor": "_family_runtime",
+        "current_lines": [
+          181
+        ],
+        "sha256": "20e72f72dd757c9d546de257cedb07ca6c1cd2d21f068a0dc3148e6238f1227a",
+        "f030_sha256": "20e72f72dd757c9d546de257cedb07ca6c1cd2d21f068a0dc3148e6238f1227a",
+        "f030_same_file_as_28ac": true
+      }
+    },
+    {
+      "id": "compute:C54",
+      "inventory_id": "C54",
+      "original_reachability": "reachable-current cold allocation; grouped route/_ext execution not current",
+      "original_candidate": "omit/lazily construct grouping Plan ONLY when allcurrentGGUF consumers proven absent, preserving otherexpert profiles and resource forecast",
+      "master_state_read_only": "inventoried; drilldown pending",
+      "reconciliation": "open",
+      "disposition": "Coldgrouped.Plan allocation stillconstructed; selectedGGUFexpert routebypassesitsruntimeconsumer.",
+      "evidence_refs": [],
+      "remaining": "No actualallocation/stall measurement orselectedlazyplanchange. Proveallcurrentconsumersabsent andfixcapacityforecastbeforeomitting; preservegenericexperts.",
+      "qualification_closed": false,
+      "source": {
+        "original": {
+          "path": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/cuda/experts.py",
+          "relative_path": "src/tensorfold/cuda/experts.py",
+          "line": 112,
+          "sha256": "2fe86bb23c9b193be0ce9a47af15c79a87e8d82fb0e2eb82eaaf22262b613412"
+        },
+        "current_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+        "relative_path": "src/tensorfold/cuda/experts.py",
+        "anchor": "__init__",
+        "current_lines": [
+          112
+        ],
+        "sha256": "2fe86bb23c9b193be0ce9a47af15c79a87e8d82fb0e2eb82eaaf22262b613412",
+        "f030_sha256": "2fe86bb23c9b193be0ce9a47af15c79a87e8d82fb0e2eb82eaaf22262b613412",
+        "f030_same_file_as_28ac": true
+      }
+    }
+  ],
+  "coverage_counts": {
+    "investigated": 30,
+    "constrained": 9,
+    "open": 15
+  },
+  "global_limits": [
+    "All6shortscreens aredevelopment evidence, not repeatedacceptance/fullquality/85or600completion. Sixqualityanswers often4PASS2historicalFAIL; retainindividualprefixdifferences.",
+    "All54entriescovereddoesnotmeanallcandidatesexhausted; eachentryretainsremainingquestion.",
+    "NCCL/CUDAwall aggregatesmayincludewait/nesting; no wire,saturation,utilizationoravoidabletimeclaim. Current7c0N24/fbaaN1profiles aredifferentREGIONs from28ac/f030.",
+    "BLAS25315 actual221diagnostic complete0, notmodelP3/quality;DP4AenrollmentWIP.",
+    "f030/d851 actualresource/quality/coveragePASS; all6provisionalquickdevelopment, no ties-as-equivalence/repeatqualification."
+  ],
+  "remaining_unassessed_waits": [
+    {
+      "priority": "Rootdesignatednextstructuralassessment",
+      "entries": [
+        "C01",
+        "C17",
+        "C23",
+        "C24",
+        "C30",
+        "C45"
+      ],
+      "candidate": "N>1 segmentedpuregraphs retainingState/GDN/ownerattention/NCCL eager",
+      "state": "Directbarriers/reuse assessedbelow; fulltopologyfollowup deferredafterHCsmallrowhandoff perRootnewpriority",
+      "source": [
+        {
+          "path": "src/tensorfold/families/qwen4_exp/cuda/bound_graphs.py",
+          "commit": "f0300ac8166349882a3de5f82687e0bf836eeff5",
+          "line": 459,
+          "anchor": "if self.native_owner and (len(segs) != 1",
+          "sha256": "2d24771bcb862820079b6dd76531499bf062d1b5beeb06f58a32e15e42613cf6"
+        },
+        {
+          "path": "src/tensorfold/families/qwen4_exp/cuda/bound_graphs.py",
+          "commit": "f0300ac8166349882a3de5f82687e0bf836eeff5",
+          "line": 269,
+          "anchor": "if self.unique and (len(segs) != 1",
+          "sha256": "2d24771bcb862820079b6dd76531499bf062d1b5beeb06f58a32e15e42613cf6"
+        },
+        {
+          "path": "src/tensorfold/families/qwen4_exp/cuda/multi_graphs.py",
+          "commit": "f0300ac8166349882a3de5f82687e0bf836eeff5",
+          "line": 196,
+          "anchor": "def _replay_pieces",
+          "sha256": "75b96ffa78f8009ca26f6b1fa1407d511901d11c9971853c10efc024ccc991b2"
+        }
+      ],
+      "measurement_limit": "7c0N24launch140589/1.067shost is not28acprofile orallavoidablecriticaltime."
+    },
+    {
+      "priority": "unassessedsteadyworkelimination",
+      "entries": [
+        "C10",
+        "C33"
+      ],
+      "candidate": "Embeddingdecode/IDcast/HCreplication intoexistingoutput",
+      "source": [
+        {
+          "path": "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+          "commit": "f0300ac8166349882a3de5f82687e0bf836eeff5",
+          "line": 357,
+          "anchor": "def lookup(self, ids",
+          "sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd"
+        },
+        {
+          "path": "src/tensorfold/families/qwen4_exp/cuda/mtp.py",
+          "commit": "f0300ac8166349882a3de5f82687e0bf836eeff5",
+          "line": 134,
+          "anchor": "def mtp_compute",
+          "sha256": "178f2e4cf2ebaacb77bd1190d77c9800b3532c4d772aa329eb217d1e1657a9f7"
+        }
+      ],
+      "source_fact": "lookup stilldecode temporary, optionallyexpand/reshape HCcopies, finalout.copy_; noCPU D2H here; actualcostunisolated.",
+      "proof": "Exactdecode/cast/outputalias/invalidID/errororder andtarget-MTPweightaliases/funding. OutsideHCvendor scope."
+    },
+    {
+      "priority": "unassessedcommitdispatch",
+      "entries": [
+        "C18",
+        "C19",
+        "C28",
+        "C46"
+      ],
+      "candidate": "Per-State acceptedprefix replay/conv-tailcommit batching/purecuts",
+      "source": [
+        {
+          "path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "commit": "f0300ac8166349882a3de5f82687e0bf836eeff5",
+          "line": 1046,
+          "anchor": "def commit(",
+          "sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38"
+        },
+        {
+          "path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "commit": "f0300ac8166349882a3de5f82687e0bf836eeff5",
+          "line": 191,
+          "anchor": "def _prefill_chain",
+          "sha256": "a5e0c98b8bfe480a7f84ac4bd4ee99ff2c4d1e71f109308c6b04d475aa1cad38"
+        }
+      ],
+      "source_fact": "keep<R loopsGDNlayers perState, thenconv/PLEtailshift; forwardbatch intentionallyleftunchanged. Costunisolated.",
+      "proof": "FP32recurrence, per-Statepartialpublication andfirsterrorprecedence; noreorderedcommitbeforeearlierStatefailure withoutauthority."
+    },
+    {
+      "priority": "unassessedrequiredlongcontextREGION",
+      "entries": [
+        "C25",
+        "C26",
+        "C47"
+      ],
+      "candidate": "StablelongcontextQSA fallback andattentiontilepipeline",
+      "source": [
+        {
+          "path": "src/tensorfold/cuda/sm70/family_ops.py",
+          "commit": "f0300ac8166349882a3de5f82687e0bf836eeff5",
+          "line": 619,
+          "anchor": "def qsa_rows",
+          "sha256": "1781c6438efeb8571c9558e0a368c908420a473c6a4bb59d5e3d6c2d8eae067b"
+        }
+      ],
+      "source_fact": "count>4096 retainsper-headmatmul/clamp/add andstableargsort; >~16384rawtokens branch notexercisedbyshortFASTscreens despite262144capacity.",
+      "proof": "StableIDs/ties, exactscore/treeoracceptedP2,memorybound/fullcontextlatency; no promisedgain/newGPUrequest."
+    },
+    {
+      "priority": "unassessedcoldresourceonly",
+      "entries": [
+        "C54"
+      ],
+      "candidate": "Omitcoldgrouped.Plan onlyforprovenGGUF-only consumers",
+      "source": [
+        {
+          "path": "src/tensorfold/cuda/experts.py",
+          "commit": "f0300ac8166349882a3de5f82687e0bf836eeff5",
+          "line": 109,
+          "anchor": "class Plan",
+          "sha256": "2fe86bb23c9b193be0ce9a47af15c79a87e8d82fb0e2eb82eaaf22262b613412"
+        }
+      ],
+      "source_fact": "Planconstructedcold whilecurrentGGUFbypassesgroupedconsumer; notasteadyGPUwaitmeasurement.",
+      "proof": "Allcurrentconsumers/genericfallbacks andconstructor/failure/capacityforecast; preservethe genericexpertplan."
+    }
+  ],
+  "segmented_Ngt1_assessment": {
+    "status": "PRELIMINARY_BARRIERS_REUSE; fulltopologyfollowup afterHCcandidatehandoff perRoot",
+    "exact_barriers": [
+      {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/bound_graphs.py",
+        "commit": "f0300ac8166349882a3de5f82687e0bf836eeff5",
+        "line": 459,
+        "anchor": "if self.native_owner and (len(segs) != 1",
+        "sha256": "2d24771bcb862820079b6dd76531499bf062d1b5beeb06f58a32e15e42613cf6"
+      },
+      {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/bound_graphs.py",
+        "commit": "f0300ac8166349882a3de5f82687e0bf836eeff5",
+        "line": 269,
+        "anchor": "if self.unique and (len(segs) != 1",
+        "sha256": "2d24771bcb862820079b6dd76531499bf062d1b5beeb06f58a32e15e42613cf6"
+      },
+      {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/bound_graphs.py",
+        "commit": "f0300ac8166349882a3de5f82687e0bf836eeff5",
+        "line": 181,
+        "anchor": "rows, segments = min(rows, UNIQUE_CAPTURE_MAX_ROWS), 1",
+        "sha256": "2d24771bcb862820079b6dd76531499bf062d1b5beeb06f58a32e15e42613cf6"
+      },
+      {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/multi_graphs.py",
+        "commit": "f0300ac8166349882a3de5f82687e0bf836eeff5",
+        "line": 45,
+        "anchor": "UNIQUE_CAPTURE_MAX_ROWS = 3",
+        "sha256": "75b96ffa78f8009ca26f6b1fa1407d511901d11c9971853c10efc024ccc991b2"
+      }
+    ],
+    "barrier_meaning": [
+      "Nativeowner_forward requiresoneState AND decoderlive<=1;unique_plan requiresoneState andwidth<=depth+1/max3;_buffer allocates3rows/oneState.",
+      "Keys bindState-laneidentity/width/context;multistateuniformpadding len(segs)*maxwidth mayexceedR32 despitecompactrows<=32. Statecohort/keep-countkeyspace isnotjust32rowkeys.",
+      "BoundLane recurrentclones andprivateStateviews addretainedbytes/addressgenerations; needactual24floor/funding/reset/migration proof, notzerocostguardremoval.",
+      "GDNStateBatch.submit declinesinsidecapture;currenthost/byvalueframe parametersfreezeStatebindings atcapture. Leaveeager orproveadistinctcapturabledevice-descriptor ABI.",
+      "ExistingN1pieces splitownerattention/PLEstage/PLEconv, but_out_proj/MoE_gatherNCCL stayinsideoldbody. Liftingguardalone violatesrequestedno-allforward-NCCL scope."
+    ],
+    "reuse": [
+      "ExistingPieces begin/endonce/failureownership andon_stream helper",
+      "Uncapturedownerattention receivescurrent(segs,source) viaowner_frame; dynamicselection/PLEinsertcausality",
+      "CurrentpureHC/MoE/candidatecatalogue patterns andphysical/settled/privatepoolaccounting"
+    ],
+    "minimal_first_step": "Sourceproposalonly: captureadditionalpureattention-HC/projection cuts aroundcurrentmainBuffers; keepStatefulGDNbatch,liveownerattention/PLE andallNCCLpartials/gathers eagerbetweenpieces. AvoidnewBoundLaneStateclones initially. New_gather split/producer-consumerstream lease prerequisite; noimplementation orwholeforwardapproval.",
+    "hard_proof_gates": [
+      "compactroworder/counts andStateidentity/generation",
+      "NativeDone/indexercoordinates/descriptorDMA/GDNframelease throughallconsumers",
+      "Originalmath/cast/errororder includingpartialStatefulfailure; noreplayfallback afterinplacemutation",
+      "Finitecatalogue/P5 andprepaidgraph/host/slab/lanecost preserving24nativeQ8fullwindows",
+      "RootstrictTP8/all6/currentquality; no speedclaimfromlaunchcounts"
+    ]
+  },
+  "execution": {
+    "source_edits": false,
+    "master_register_edits": false,
+    "builds": false,
+    "tests": false,
+    "GPU": false,
+    "remote": false
+  },
+  "assessed_open_not_unassessed": [
+    {
+      "candidate": "Descriptorhost construction/signaturewalks andpinnedrow CPUtensorconstruction",
+      "entries": [
+        "C23",
+        "C24",
+        "C31"
+      ],
+      "source": [
+        {
+          "path": "src/tensorfold/families/qwen4_exp/cuda/history_owner.py",
+          "commit": "f0300ac8166349882a3de5f82687e0bf836eeff5",
+          "line": 743,
+          "anchor": "def stage_native_descriptors",
+          "sha256": "07388013f5ab624f1aaec592d6acf4e657295de3b1a6cddda5c3e94213169d89"
+        }
+      ],
+      "owner": "service_wait_inventory owner/transportreconciliation",
+      "state": "Alreadyassessedopen, noimplementation. RequiredDMAreuse waits remain; c2de/1d83 Framefrontload,T60selfwait/FIFOsnapshot screenednotselected,notglobalinferiority."
+    },
+    {
+      "candidate": "GDNper-layerState signaturecheckhoist",
+      "entries": [
+        "C17"
+      ],
+      "source": [
+        {
+          "path": "src/tensorfold/families/qwen4_exp/cuda/gdn_state_batch.py",
+          "commit": "f0300ac8166349882a3de5f82687e0bf836eeff5",
+          "line": 146,
+          "anchor": "def submit(",
+          "sha256": "697817f61cffe7dad0463eba2afab7a9c76b344c2e08fc201f0971e2891dfdb4"
+        }
+      ],
+      "state": "Alreadygdn-drilldown sourcecandidate; openproof/measurement."
+    },
+    {
+      "candidate": "HCvendorlogicalM1..3 versusfixedM32",
+      "entries": [
+        "C02",
+        "C04",
+        "C07"
+      ],
+      "state": "Actual221case microdiagnostic complete; Rootauthorizedprototype nowactive."
+    }
+  ]
+}

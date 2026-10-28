@@ -1,0 +1,46 @@
+{
+  "schema": "tensorfold.startup-hash-working-bound-v1",
+  "scope": "Additionalapplication-controlledsinglehasherworkingownership; existingmanifest/cohort/loaderrolesretaintheirpreviousseparatefunding. Runtimeallocator effectsnotclaimedtotalRSSproof.",
+  "selected_stack": {
+    "upper_bytes": 67108864,
+    "guard": "nativequery; actualpinnedCPU64MiBlauncher4096B",
+    "funded_global_actual": 75501568,
+    "held": "Conservativehost_extra_staging retainedinloadingANDsteadyenginecommitment, neverzeroedfromThread.join/is_alive"
+  },
+  "hash_working_bytes": 8388608,
+  "enforced_input_bounds": {
+    "files": 64,
+    "logical_name_bytes": 4096,
+    "aggregate_printableASCII_logicalnames_andresolvedpaths_bytes": 65536,
+    "enabled_unprovable_input": "refusebeforeworkerallocation;defaultserialunchanged"
+  },
+  "source_derived_roles": [
+    {
+      "role": "boundedreadchunks",
+      "upper_bytes": 2097152,
+      "proof": "Ownedmodel_identity._hash_descriptor os.read max1MiB; assigningnewblockcantransientlyholdold+new. Failurecanretainoldblockintraceback, alreadyinside2chunkallowance."
+    },
+    {
+      "role": "ownedfilemetadata/sort/stat/FileContent/helperrecords",
+      "conservative_upper_bytes": 1048576,
+      "proof": "Atmost64records, bounded64KiBASCIIcombinedstrings. FixedCPython3.12containers/FileContent/pathstat/descriptorobjects; no modelpayloadcopiedintometadata. Multipleboundedmaps plus sortlists admittedinside1MiB; FDIO onefileatime."
+    },
+    {
+      "role": "canonicalization/serialization/encoding",
+      "conservative_upper_bytes": 2097152,
+      "proof": "PrintableASCIItext<=64KiB; JSONquotes/backslashesexpand<=2x, fixed64fileSHA/size/fieldlabels<16KiB. Canonicalenvelope<=144KiBASCII. Multipleencoderparts/join/UTF8/error-roots boundedconservativelyinside2MiB forpinnedCPython3.12; no arbitraryusercallback formatterinidentityenvelope. Readchunksnormallygonebeforeissuance; boundconservativelykeepsbothroles."
+    },
+    {
+      "role": "exceptionroots/fixedthreadcoordination/nativehash/TLSmetadata",
+      "conservative_upper_bytes": 3145728,
+      "proof": "Fixedprimary+onepreallocatedfinishdiagnostic, bounded64files/64KiBtext, no rawpayloadlogging; existingreadchunks/envelopenotdoubleallocatedintoexceptionstrings. Remaining3MiBkeepstheseownerrecordsandruntime-managedmetadataheadroom, notclaimedindependentlibraryheapupperguarantee."
+    }
+  ],
+  "eliminated_unfunded_role": "Plan.start no longerreopensGGUFCheckpointmetadata; begin_execution_manifest retainsoriginalfilesmappingonlywhenenabled, sharingalreadyparsedloaderinventory. No newGGUFmetadata modelindex parsepeak.",
+  "outside_proof": [
+    "Unprovableotherfilename/pathencodingsrefuseenabledmode",
+    "PhysicalOSreadboundedcompletionnotpromised; ownerretaineduntilcooperativeoperationretirement",
+    "ActualV100peak/timing/concurrency/qualityunrun",
+    "NativeOSthreadstackdeallocationnotinferred;conservativehostcommitmentretainedthroughengine"
+  ]
+}

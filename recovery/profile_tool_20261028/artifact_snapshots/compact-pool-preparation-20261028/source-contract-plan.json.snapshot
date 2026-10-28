@@ -1,0 +1,73 @@
+{
+  "schema": "tensorfold.compact-pool-preparation-plan-v1",
+  "state": "SOURCE_CONTRACT_PLAN; no implementation/math change/GPU result",
+  "source": {
+    "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+    "APP": "4b0ea6b51047f93b2b973ed5a467d8c279b94f6d85c683c4258a712ff6edd99f",
+    "path": "/Warehouse/TensorFold-wt/v100-descriptor-host-words-20261028/src/tensorfold/families/qwen4_exp/cuda/compact_indexer.py",
+    "sha256": "c670af98affd35a00a5964e8402b68c15f0b718c4a3ef338d1684c1b0342daaa",
+    "method": "Cache.pool613-643"
+  },
+  "current_reference": {
+    "NUMA_runtime_APP_unchanged": true,
+    "tool_commit": "f11b36c245c596da4a39278b30fa04139ff5f32d",
+    "tool_tree": "/Warehouse/TensorFold-wt/v100-gpu-local-affinity-20261028",
+    "full6_quick_TPS": [
+      32.9,
+      45.5,
+      76.1,
+      112.1,
+      127.3,
+      129.9
+    ],
+    "required": "Full8rank actualUUID/socket-localthreadbinding retained; all24native262144Q8; taskquality/55prefixes audited, no repeatable/broadqualification"
+  },
+  "ownership": {
+    "TAIL": "grouped_finish owns /v100-compact-tail-slices-20261028 compact_indexer.py; pool untouched",
+    "POOL": "profile_tool sourceplan then NEW isolated c928 branch; no sharedfile writes. Compose only after both held and one integration owner coordinates."
+  },
+  "measured_signal": "OldsameAPP4b0 current10sCPUparent rescan Source61465b23 reports355-unit pool-compatible operator fingerprint undercompute; no directpool call-duration claim orNUMAcausality. CurrentNUMA changes throughput/arrival, not thatsource math.",
+  "algebra": [
+    "Let a=span.start, z=span.end=a+len(span.raw), f=a//4, e=z//4, B=e-f. Existing earlyreturn B=0 remains before read/allocate. Let p=a-4*f in[0,3], W=4*B, q=W-p. ForB>0,1<=q<=len(span.raw).",
+    "Originalpositions[4*f,4*e) andprevious=positions<a split exactlyafterp rows. Chosenraw is protected[0:p] followedby span.raw[0:q]. Rawoutput W rows is contiguous aftertorch.cat; no devicearange/clamp/mod/index_select/where needed.",
+    "Originalmember positions4*f+4*j. Ifp>0 onlyfirstmember isold andchooses protected_coordinates[0:1]; remainingcoordinates are span.coordinates[4-p:W-p:4]. Ifp=0 all coordinates are span.coordinates[0:W:4]. Buildfreshcontiguouscoordinates withtorch.cat (includingemptytypedprefix) at ORIGINAL coordinateconstruction point afterRMS.",
+    "Chosen raw/coordinate sourceindices are bounded by existingvalidate_append, Span.end andSpan.check. No reading outsideprotected4 orspan rows, no nonzero/membermask/dynamicdeviceshape or CPUreadback."
+  ],
+  "proposed_increment": {
+    "dispatch": "Guard only ordinary matchingplainTensor/stridedcontiguous storage, canonicalHalfraw/Int64coordinates, samehost/device andlegalnonemptyspan withnon-gradsource domain; preserve oldindexed route for generic/subclass/autograd/dtype/device/shape/error domain. Reuse immutableCache allocationinvariants, do not add storagesignature rescans.",
+    "raw": "torch.cat((self.protected[:p], span.raw[:q]),dim=0) inside unchangedreadinglease, atoriginalrawconstructionpoint. Preservefreshcontiguousraw layout ratherthanborrow differentlystridedinput into subsequent reduction.",
+    "coordinates": "AfterunchangedRMS/padding, torch.cat((protected_coordinates[:1 ifpelse0], span.coordinates[4-p ifpelse0:W-p:4]),dim=0). ResultfreshcontiguousInt64B\u00d73, exactlyoriginalroworder.",
+    "unchanged_math": [
+      "raw.reshape(B,4,dim).float()",
+      "total=raw[:,0]; for member1..3:total=total+raw[:,member] in ORIGINAL order",
+      "value=(total/4).half()",
+      "normalization_rows=max(len(value),min(capacity//4,16)) onCUDA; originalzeros/pad/copy andops.rms branch unchanged",
+      "ops.rotary(value,inv_freq,torch.arange(len(value)),rope=coordinates,length=len(value),sections,scale) unchanged, includinginternalM-RoPEops",
+      "ops._guard(value,status,16,layer) unchanged, samefinite/magnitude/layer latch",
+      "self._copy(value,pooled,span.expected,first) andreader[0]=True unchanged"
+    ]
+  },
+  "eager_errors": [
+    "PreserveSpan.check beforefirst/end andB=0earlyreturn; preserve reading lease overALLprotected/raw/coordinate sources andoriginalCache/Span lifetime/errorretirement.",
+    "Keep rawbuild before FP32math/RMS andcoordinatesbuild afterRMS. DoNOThoistcoordinateallocation/conversion ahead oforiginalmath failure boundary.",
+    "Fastguardmustnotacceptunsupportedempty/rawlayout/subclass/device/dtype/grad cases thatoriginalindexing wouldvalidate differently; oldexactroute remains their supported generic/error behavior. Supported allocationelimination doesnotpromise same temporaryOOM threshold.",
+    "Guarded fastpathmustpreservebits including signedzero/nonfinite status/error containment; do notweakenoriginaltestor invent tolerance. No semanticoutputpublished untilunchangedguard/_copy."
+  ],
+  "lifetimes_resources": [
+    "No Statefield/capturecache introduced; catoutputs temporaryonly andsameorlesssemantic raw/coordinate payloadthanoldwhere outputs; replacesmultipletemporaryindex/gather tensors. Genericroute remains original.",
+    "No inplacewrite toprotected/spanraw/coordinates, no escapingalias ornewbufferreuse. Useoriginalreading owner for sourceTensor record_stream,Cache done andSpan staging mark; samecopy/failurepoison/positive retirement.",
+    "Autograd/conjugate/negative/subclass domain maydispatchoriginal; actualtargetinference nongradplainTensor fastpath isbounded. Freshoutversionissuedafterconstruction mustremainvalid to allreaders.",
+    "No new GPUweight/storage/hostworker/budget flag; wholewheel/sourceallocatorcapacitystillverified beforefullmodel24floor. Runtime-managedtemporaryallocation differences measured, not calledallocationfree."
+  ],
+  "unit_predictions_not_gain_claim": {
+    "per_eligible_pool": "Remove oneouterarange plus2mod+4indexselect+2Tensorwhere construction calls; replace with2cats andboundedhostinteger/slice bookkeeping. Torch overloadtracecounts differ.",
+    "still_required": "rotarycaller+internalarange, RMS/reduction/casts, internalrotary/index_select/where/scalarTensor andguardremain. Whole355isfinite/mathchain isnoteliminated.",
+    "performance": "Counts/inclusivewalls overlap; no summedavings/P3gain untilactualNUMAf11 all6. Retain anygain butno requiredtierregression."
+  },
+  "verification_after_implementation": [
+    "IndependentoldindexedCPUoracle for all startmod4/spanlengths1..32/completegroups/capacity/aligned/partial, nonzeroTHWcoords/rotarysections/scales; raw&coordoutputs andfullpooled/status bits; preservegenericstrided/CPU/grad/subclass/error paths.",
+    "Fault boundaries before/afterrawmath/coordinatebuild/copy; sourceowners/streamlease/firsterror retirement untouched. No duplicate fullpipeline framework.",
+    "ActualGPU strict0tol originalvsnew pool target/MTP legalspans, binaryHalf andInt64coordinatebits, exceptionalnonfinite/status andseparateRMS16padding; compare nativeGPUoperations identical downstream.",
+    "Normalwholewheel/nooverlay/sourceFDc79; narrowCPU/Ruff/integratedsourceD13; composeTAIL onlywhenbothfrozen; RootonlyGPU/all6NUMAf11+unchangedsixquality. No broadrepeats now."
+  ]
+}

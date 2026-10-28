@@ -1,0 +1,41 @@
+{
+  "schema": "ranklocal-vendor-BLAS-shape-diagnostic-v1",
+  "commit": "b4e6af85c2b742512ffe573a1266747f5ac89e98",
+  "worktree": "/Warehouse/TensorFold-wt/v100-vendor-blas-shapes-outcome-20261028",
+  "APP": "fbaabca3ba2a7594c8712e0824733da035f3a3db63f454c520ecfa337010ee0d",
+  "runtime": "d5eb unchangednormal726FDc79",
+  "source_paths": {
+    "README.md": "a6e4ecc15af4bd130ae608676a7483ed8397a443a156e3b27a9149fbb0cbc5b0",
+    "tools/v100_dense_shape_diagnostic.py": "cbfd245b88f254944bda37dc32293bf519217bcd782ef2d87107fd6c9ce84328",
+    "tests/test_v100_dense_shape_diagnostic.py": "4c952a8b0a98cfc78043d806d92405a5ea3b7768e4c3577fbaa861c94c90d632"
+  },
+  "checks": {
+    "controls-final-command.json": "842495363a06759964cf753a16c9d84c86c1d3a4b61a14cfd11ca272a780e759",
+    "controls-final-exit.json": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17",
+    "controls-final.log": "f22fde81adc3e59b35d44b26042d276aecd6429525fd1471628206070057db15",
+    "controls-final-owner-command.json": "9074f94b9fb5780fea32e38ca710958a347df6fb03b4e5878efd4a379f274f0a",
+    "controls-final-owner-exit.json": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17",
+    "controls-final-owner.log": "468116043d8fe61ca4e444e6b311f078f6e164284aef5139818d63dcf1ad4fe4"
+  },
+  "CPU": "13focusedcontrolsPASS4.01s/Ruff/help then6actualhandler/timingownercontrolsPASS.69s onfinalsource; noGPU/APPbuild",
+  "numeric_candidate": "shape-dependent vendor dispatch/reduction changes, no weight/inputconversion, samecurrentflags, no modelquality/speedclaim. NativeM32actualhelperbaseline;preparedmath excludesinputpad/copy;completepathsinclude them.",
+  "workload": "7sourcegeometries,roleF16/F32outputs,21logicalrowcases,finitevariants<=221,3samples/8replays/4unrolledops,hot1androtating2weights; noL2flush/wholedecoderfootprintclaim",
+  "resources": {
+    "GPU_project_operating_cap": 2147483648,
+    "source_payload_estimator": "twoF16weights+boundedpad/results+64MiBworking allowance,checkedbeforegeometry; actualTorchreservedchecked2GiB; library/nativeeffectsseparate measuredconditions",
+    "report_cap": 8388608,
+    "Root_GPU0_only": true
+  },
+  "timing": "graphCPUenqueue andGPUstreamelapsedperprojection, includespossiblesubmissionstarvation notkernel-only;firstsynchronizedcall dependentonpreviouscases/cache notmatchedcold. Outputbits/absolute/RMS/relative errors andcaptured-vs-own-eager recorded.",
+  "pending": [
+    "D13source/stage",
+    "RootactualGPUcontrol/timings/cache/precisioninspection",
+    "noP3/quality/modelcapacityinference"
+  ],
+  "corrective_scope": {
+    "primary": "successfulfailure-report write baresraise, preservesprimaryidentity/priorcause/context, noNone secondary; diagnostic-writeerror aggregatesactualfailure only",
+    "capture": "fixed-slot body/contextcleanup outcome, graphownedbeforecapture; positivefence+reset before release, uncertaincontext/fence/reset retainsownedgraph/context/pointees onVariants",
+    "resource": "sameinputrecipe; thirdconstructionweight nowcharged; same2GiBcap andgeometries/sample/replayprotocol",
+    "old_packet": "2ae90/9a59unrun preserved; no APP/backend/native/modelchange"
+  }
+}

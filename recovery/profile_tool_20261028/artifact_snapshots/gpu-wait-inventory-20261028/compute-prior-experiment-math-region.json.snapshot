@@ -1,0 +1,10 @@
+{
+  "experiment": "991f/c517 Dense tile32CUDAoracles",
+  "actual": "Root27920:32PASS1.07s/Docker0/718FDverified",
+  "classification": "EXECUTED_WRONG_MATH_REGION",
+  "fixture_flag": false,
+  "current7de_target_flag": true,
+  "production_flag_unchanged": true,
+  "disposition": "Preserveactualpass/raw/immutableoldstage; no targetprooforactualGPUfailure; futurecorrectsame32oracles AFTERinventory only",
+  "source_contract": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028/src/tensorfold/cuda/sm70/execution_policy.py"
+}

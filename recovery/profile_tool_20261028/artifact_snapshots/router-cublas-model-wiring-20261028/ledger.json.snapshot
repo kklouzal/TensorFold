@@ -1,0 +1,50 @@
+{
+  "base": "30c3bf31fee8FAILstartup no modelresults",
+  "task": "correctPLE accidentalpreparedkeyword, wireactualGGUFmoe.router, explicit512Ballocationfunding",
+  "rawGPU_payload_per_rank": 801024,
+  "GPU_charge_per_rank": 814592,
+  "quality": "unqualifiedexperimentalnumericprofile; historical18strictfail retained",
+  "pending": [
+    "D13source/stageclosure",
+    "Rootactualnewmodelstartup/all6quality/counters",
+    "conditionalGDNintegrationifallrequiredNsgain; noquality/performanceacceptance"
+  ],
+  "current_source": "f0a3bfd535f039315591d8b2f1cdba8d348f03c1 clean",
+  "APP": "f7213e8d82109d4de3fd20c0a87e0150c3e56866360448d8585c55203f4e378a",
+  "HOLD_SHA": "0930b670aee0e414146eb790cb3adefe557011a8ff6040caecb54f022e733d93",
+  "CPU": "270PASS7.18sec/Ruff/pip/help/CPPcompile+import/package720FDc79",
+  "stage": "19heldfiles remoteperf85-router-cublas-model-f721-20261028; controllerc5044c28;NOTEXECUTED",
+  "actual_fee8": "Root76978Docker1/noOOM unexpectedPLEpreparedkeyword;3sharedPASS0.29s,no modelrates",
+  "scope": "PLErestoredexact7deactualfunctionAST; onlyGGUFmoe_blockrouterprepared; constructor/nativeCPPunchanged",
+  "actual_root_run": {
+    "execution": 45641,
+    "status": "Root-launchedLIVE; no results claimed",
+    "source": "f0a3bfd5 immutable/HOLD0930",
+    "reference86cb": [
+      30.8,
+      22.8,
+      37.3,
+      56.2,
+      73.0,
+      73.3
+    ],
+    "current_best_GDNf6": [
+      30.8,
+      23.3,
+      37.3,
+      59.2,
+      78.4,
+      75.7
+    ],
+    "concurrency": [
+      1,
+      2,
+      4,
+      8,
+      16,
+      24
+    ],
+    "readback_packed_a451": "30.7/22.8/36.7/57.7/73/73.3; Root reportednotselected, no24gain",
+    "analysis_pending": "actualcounts/windows/quality/native router target+MTP coverage; no GPUauthor or remoteheavyCPU"
+  }
+}

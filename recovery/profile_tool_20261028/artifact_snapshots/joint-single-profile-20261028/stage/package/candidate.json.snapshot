@@ -1,0 +1,51 @@
+{
+  "schema": "tensorfold-moe-catalogue-fast-v1",
+  "wheel_sha256": "fbaabca3ba2a7594c8712e0824733da035f3a3db63f454c520ecfa337010ee0d",
+  "source_hold_sha256": "95527c1a0a58112c15ebc0a01cd2ed09b8d62ef5d36ab186b0d7e2791c917d9c",
+  "tool_sha256": "fd60ebbed9498d21829e52a14a508f86e70bddc0ddeb2e6b4fc92ef54c453e5d",
+  "tool_dependencies": {
+    "tools/v100_backend_probe.py": "fd60ebbed9498d21829e52a14a508f86e70bddc0ddeb2e6b4fc92ef54c453e5d",
+    "tools/finite_concurrency.py": "d009cf94050754115fdb0295b39aaa787904b09478464aeb772d8782b97eb86b",
+    "tools/finite_quality.py": "c498bd046e78c34bfc7db16c7decd43ec182151b24b3e09da282b9de0dac77a3",
+    "tools/benchmark_output.py": "ce7c0a0cdf80842dc67021ddc938ae32a2c8df39dfd4f36e5f48e72149484cfa",
+    "tools/prepare_owner_trial_manifest.py": "cd90a33ff81c60cffc1f180f0a756312cec2d06b4a29d4322cf622d7ca3b2741",
+    "tools/concurrent_observers.py": "9480e96af0ff0368d628b0f35ff01b657d703760f726ce8bd9970b392c8d5d76",
+    "tools/profile_trace_reader.py": "57800bcb181ff0f3510ef2caf76cfe9b54f985b7aca27c67588c38f37f4da68b"
+  },
+  "execution_manifest_sha256": "95336693957314d74ba50328679d2b9a37552cb3e11a891b7a4a1900503e5673",
+  "source_profile": "source-router-gdn-shared-fusion-trial",
+  "session_ceiling": 24,
+  "execution_rows": 32,
+  "recovery_commit": "b6369c36131c6432dc82fa7e058be65daaa92dc1",
+  "funding": {
+    "follower_bytes": 262144,
+    "global_receipt_bytes": 2424832
+  },
+  "startup_content_overlap": true,
+  "router_gpu_bytes_per_rank": 814592,
+  "router_host_bytes_global": 7471104,
+  "qualification": "ONE-N1all8CPU+CUDAinstrumenteddiagnosticonly,noP3/all6/qualitycredit",
+  "required_native_counter": "allN>1 independentMTP/GDN/nativeowner positive; target eagercallsORqualifiedMoE full48layerreplays withactualrow/coldkeyproof; eager calls notfabricated",
+  "reference": "comparejoint76f4 andbothparent6165/7604 separately; unchangedquality/prefixpolicy",
+  "fast_grid_protocol": "fast-grid-v2",
+  "output_cell_bound": 2048,
+  "corrective_successor": "joint76f4+originalcandidatepacketgraphsoncanonicaltarget/MTPbuffers; no native/math/kernelchange",
+  "router_gpu_payload_bytes_per_rank": 801024,
+  "startup_content_workers": 3,
+  "startup_global_host_bytes": 226504704,
+  "gdn_state_batch": true,
+  "moe_graph_host_allowance_global": 8589934592,
+  "moe_graph_rows": [
+    30,
+    31,
+    32
+  ],
+  "moe_graphs": 144,
+  "fusion_eager_device_credit": 2097152,
+  "fusion_eager_global_host_credit": 524288,
+  "candidate_graphs": 64,
+  "candidate_graph_host_allowance_global": 8589934592,
+  "profile_concurrency": 1,
+  "reader_global_host_bytes": 51539607552,
+  "observer_global_host_bytes": 1048576
+}

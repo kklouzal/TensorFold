@@ -1,0 +1,9 @@
+{
+  "all84cc_function_class_AST_exact": true,
+  "only_new_private_function": "validate_profile_row_policy",
+  "src_diff_from_c928": "",
+  "reader_observer_byteexact": true,
+  "normal_APP": "4b0ea6b51047f93b2b973ed5a467d8c279b94f6d85c683c4258a712ff6edd99f",
+  "runtime_HOLD_sha256": "b5c78eb23e5d4c5111a707506a8afb5623cef81c0dd6412c70c1376786560f3a",
+  "row_policy_sha256": "8021154e213e1383b2a26290d14cb4d5318dfb0c80eee7cb003e3f9fc5e2979d"
+}

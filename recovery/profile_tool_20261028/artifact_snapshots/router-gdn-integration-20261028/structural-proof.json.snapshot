@@ -1,0 +1,43 @@
+{
+  "src/tensorfold/cuda/sm70/router_blas.cpp": {
+    "byte_equal_to": "f0a3bfd5",
+    "sha256": "516562968c8ced2217d92977b06ea33f2b97ad0902000b3d485392fca354c3ea"
+  },
+  "src/tensorfold/cuda/sm70/router_blas.py": {
+    "byte_equal_to": "f0a3bfd5",
+    "sha256": "48f85e762c7368d46fc2363383c6ad73d25bb77099803705abb707c3a917404a"
+  },
+  "src/tensorfold/cuda/sm70/gdn.cu": {
+    "byte_equal_to": "f6a0d021",
+    "sha256": "58f59c834412b80f6531ca51db41211b138c2be3ce9f7e871c46fd420e802b60"
+  },
+  "src/tensorfold/cuda/sm70/gdn_bindings.cpp": {
+    "byte_equal_to": "f6a0d021",
+    "sha256": "6675ab507ed3133351342ae0d5214cf068849122abd285791f449c57c31bdef8"
+  },
+  "src/tensorfold/families/qwen4_exp/cuda/gdn_state_batch.py": {
+    "byte_equal_to": "f6a0d021",
+    "sha256": "697817f61cffe7dad0463eba2afab7a9c76b344c2e08fc201f0971e2891dfdb4"
+  },
+  "src/tensorfold/families/qwen4_exp/cuda/execution_identity.py": {
+    "byte_equal_to": "2a053c55",
+    "sha256": "3c0cb0f2177f3a68ae902b1d6b5b3cfa620e4c278541300d74cec60bb0e1b309"
+  },
+  "src/tensorfold/families/qwen4_exp/cuda/startup_content.py": {
+    "equal_to_2a053_except": "one explicitRouterprofile eligibility literal",
+    "default1_and_group_lifecycle": "unchanged"
+  },
+  "forward.ple_block": {
+    "actual_function_AST_equal_to": "7de2259b"
+  },
+  "forward.moe_block": {
+    "actual_function_AST_equal_to": "f0a3bfd5"
+  },
+  "forward.gdn_block": {
+    "actual_function_AST_equal_to": "f6a0d021"
+  },
+  "forward._stage": {
+    "actual_function_AST_equal_to": "f6a0d021"
+  },
+  "integration": "Routernumericpolicy remains explicit; GDNENVallowedonRouter+BaseBatch only; enginefundsRouter+GDN+startup3additively; no native numerical body changes; actualintegratedall6pending"
+}

@@ -1,0 +1,85 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T23:22:39.372643+00:00",
+  "status": "CLOSED startup+canonicalMTPprelude source/componentstage integration; Rootactualverification pending",
+  "reviewer": "/root/cleanup_review",
+  "commit": "a7b1661f7f2016571067fa8fc1a1c220f08fb303",
+  "workspace": "/Warehouse/TensorFold-wt/v100-startup-mtp-prelude-20261027",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-mtp-prelude-integration-20261027/source-hold.json",
+    "sha256": "fa8620e74c713c3b6a51334e95c88aa204d9c2de4a151438a79222f537956c9e"
+  },
+  "wheel": {
+    "path": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3141377,
+    "sha256": "5635735f68db932f41cab3da94747e6f6c2f15673c60b71e220ec96c9f9e0314"
+  },
+  "FD": [
+    {
+      "path": "tensorfold/_fd_owner.abi3.so",
+      "bytes": 46344,
+      "sha256": "c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d"
+    }
+  ],
+  "scope": "Elevenheldsource/test/tool/docs paths; reuse closedfa6estartup81be/650c ande3edMTPproducer ae3b sourceproofs. No newkernel/numericalalgorithm/dependencyreview needed.",
+  "proofs": {
+    "source": "Onlyfive startup runtimefiles differbasee3ed; allremainingMTPproducer/counter/overflow/confidence/nativeCUDA/coordinatealias/frame/State files byteexact. Fourstartuphelpers (worker,model_identity,execution_identity,nativeFD) independentlybyteexactclosedfa6e.",
+    "engine": "Directfa6eEnginediff onlye3edextra8192host/rankcounterreserve; knownglobalstartupfunding/consensus/start/reuse/retirement additions preservee3edinitialadmission/native24floor.",
+    "funding": "Oneglobal75,501,568B workerstack+guard+working beforeinitialadmit, e3ed8192host/rankrolemetadatafundretained; same256KiBfollowers/globalreceipt2,424,832/grid60,620,800. Currentpayload/actualHostRSS/nativeOSstackreclamation limitationsunchanged.",
+    "lifecycle": "Ownedoperationlatch\u2014notThread.join/is_alive alone\u2014authoritativeforhashconsumerretirement. Timing/outcomeallocationerrorsretainoriginal+secondary; cancelbetween1MiBreads, OSblockedreadcontractunchanged, uncertainownerkept. Model/source/librarycapturestillfresh, issuedcurrentprocesshashreuse/stat+expectedSHA guardsretained.",
+    "semantics": "Freshfullartifacthashworkerafteradmitbeforeload; MTPcachecoordinatesst.mtp_len(no+1) andactualcanonicaltextproducer/privateframeprovenance exactlye3ed. Explicitcustom/media/deferredboundarytransferskeepoldroutes; initialnativeRole/epoch/coordinateview/Guard validation unchanged.",
+    "tool": "Knownoptinflagsetsall8childenvbeforeimport,explicitmanifestrequired, defaultunsetserial. No all6window/quality/tokens/prefill/context/cache/math/drain alteration."
+  },
+  "checks": {
+    "current11sourcehashes": true,
+    "normalinstalled": "683CPU+5subtests16.66s/Ruff/pip/help, actualexecutedcommands/cwd/env/log/start/proofbound",
+    "wholewheel": "All717currentcanonicalsource+FDc79 independentlyequal5635ZIP; noFD4awhitelist",
+    "componentstage": "22localfilehashpins verified, guardedspawnrunner+53actualMTPcounter/twoattentionoraclesbyteexactplain6c64stage",
+    "reviewer": "NoGPU/remoteDocker/duplicatebuildorsuite"
+  },
+  "cleanup_disposition": "No verifiedremainingdeadpath/unjustifiedduplicateauthority or necessarysafesimplification inexactmerge. Sharedhelpers retainseparatecorrectworker/serial/provenance/failure roles; no newfallback or publiccapabilitygrant.",
+  "findings": [],
+  "pending": [
+    "Rootcurrent563553software/native/numericalacceptance; plain6c6453PASS23.79 isseparatecomponenthistory",
+    "Enabledall6stagefinalbinding andactual5635startup/fullmodel/quality/counteraudit",
+    "Actualstartupbenefit/all6nonregression/85/600/full24nearfullhistoryqualification, nobeyond-scopeequivalenceclaim"
+  ],
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-mtp-prelude-integration-20261027/source-hold.json",
+      "sha256": "fa8620e74c713c3b6a51334e95c88aa204d9c2de4a151438a79222f537956c9e"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-mtp-prelude-integration-20261027/start.json",
+      "sha256": "f864d06e70f4370ed3757ca2ececeffeb7424a22c5286ccb606740f4ec11d220"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-mtp-prelude-integration-20261027/exit.json",
+      "sha256": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-mtp-prelude-integration-20261027/controls.log",
+      "sha256": "916ceda52416c18d877cf0ab293da1ace160a941d9f67bd4bdfb95641f32c6aa"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-mtp-prelude-integration-20261027/controls-provenance.json",
+      "sha256": "1ba6f1b85ff8e03c071b3a59c0bffc6b03145bf25c49c292fd080bf84205501b"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-mtp-prelude-integration-20261027/structural-proof.json",
+      "sha256": "25c48106c34ccfbfdcc443f4539b055c6948d629a4fad6998c5e6ce5d31e0324"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-mtp-prelude-integration-20261027/wheel-provenance.json",
+      "sha256": "968c593e9ccb5160bf670a2267bb86b64e755dcedec2052221b1a09feaa2bedc"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-mtp-prelude-integration-20261027/gpu-stage/stage-receipt.json",
+      "sha256": "384479378801bf66f25115588da740a247c090034ab112e59f25d7401b5e351e"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-mtp-prelude-integration-20261027/gpu-stage/package/stage-files.json",
+      "sha256": "0e0e572f28e3b3d7a0dc7c3332c95c2a6db5b8da5c7e46d40540eb8abbf4217c"
+    }
+  ]
+}

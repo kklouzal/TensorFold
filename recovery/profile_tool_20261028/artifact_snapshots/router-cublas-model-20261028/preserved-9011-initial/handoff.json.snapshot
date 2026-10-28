@@ -1,0 +1,12 @@
+{
+  "source_clean": true,
+  "source_hold": "322e6434b81597a06374551671ce23f8ba830ff17871fa38b15d7b3cf0eb8b69",
+  "APP": "9011e8d72512c44df529849a50a85b7932959f222c7a3338ec2f78a4ebfa5ae0",
+  "stage_ready_sha256": "3230f74adf18b4ea8be8ca1a7201a31f8d38247522d550742ca57e21953f0a22",
+  "actual_GPU": "UNRUN Root lease only",
+  "new_runtime_files": 720,
+  "CPU_passes": 266,
+  "GPU_cases_collected": 31,
+  "CUBLAS_math_API": "unchanged runbody from490a, optionalsharedconstructor only; strict28function AST preserved",
+  "strict28_actual_function_AST_equal": true
+}

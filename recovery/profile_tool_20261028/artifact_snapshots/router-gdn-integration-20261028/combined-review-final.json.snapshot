@@ -1,0 +1,42 @@
+{
+  "schema": "tensorfold.combined-d13-integrated-profile-source-stage-review-v1",
+  "at": "2026-10-28T08:35:34.591243+00:00",
+  "reviewer": "/root/cleanup_review",
+  "commit": "146f8a818d11ea69ca5b9cbd0f3d1f90067896ac",
+  "HOLD_sha256": "df0955955546d4f6b374120cb0a62f094445a86818a36ba047c62148807767c0",
+  "APP_sha256": "7c0acdfb2957c82ea69eb9e47fe8b1239c72b6c9c7aaa3242898631e121b6a51",
+  "status": "INCREMENTAL IMPLEMENTATION/CLEANUP/COMPLIANCE AND CURRENT HELD STAGE REVIEW CLOSED; numericquality/actualP3tierdecision separateRootauthority",
+  "scope": "coherentprivateRouter+sealedGDN+threewholefilehashstartupintegration; reuse7a72router/6898GDN/b277startup/3100canonicalreceipt/d9dgroupownership proofs; relevantconflict/wiring/budget/phase/workerinterfaces only; no duplicate suites/nativeGPU",
+  "independent_structural_checks": [
+    "32heldsourcepaths SHA match andcurrenttreeclean;18manifestedpayloadfiles+manifest19stage files hash/sizechecked; currentHOLD/APP bound",
+    "router_blasCPP/PY BYTEEXACTf0a3; GDNcu/bindings/owner BYTEEXACTf6; execution_identity BYTEEXACT2a053; startup_content exact2a053 exceptONEexplicitRoutereligibleprofileliteral",
+    "ForwardPLE_pre_moe ASTexact7de, actualmoe_block ASTexactf0a3, gdn_block/_stage ASTexactf6 independentlyverified; C6finish/targetfinally reusedunchanged, originalreplay/commit/native/FD preserved",
+    "Finalauthor327CPU7.95s/Ruff/pip/help/package/721canonical+FDc79 andsameinstalledcoldfactory checks bothcomponent families BEFOREleader/follower entry reused; initiala46wheelwithdrawnsupersededbyfinal7c0a, no falsecurrentartifactbinding"
+  ],
+  "integration_obligations": [
+    "NewprivateRouterprofile remains explicitTP8/adaptive24/row32/stockMTP2confidence.7/text; GDNENV1 nowallowed onRouter aswellasBatch, actualmetaflags propagated. Default/unselectedpaths unchanged; N1/prefill/graph-onlyoriginalroutes retained.",
+    "Pre-admission options ADD Routerrounded814592deviceB/rank+7471104hostBglobal, GDN0applicationGPUtensorB+233728hostB/rank for36layers, originalBatch/meta/greedystatus/etc. No overridingonewithanother/no genericsparecredit.",
+    "Startup3existingplanadds226504704Bglobal throughhost admission BEFOREthreadstarts; independentwholefiles/SHA/processauthorities/cancellation+ownretirementlatch/canonicalJSON receipt reused. No metadatahashcache/statonlytrust orcombinedchunkdigest.",
+    "Tools preflightall8actualRouter/GDN classes/role32/cachedweights/fundedcounts andnative24materializedwindows beforelogicalcallerpublication/follow. Followerrequirescheduler=False exception limitedsameknownarchitecture; leaderdefaultrejectstillholds. GDN+Routerevidencecharges8192eachglobaladditive, signedcounters/missingoverflowhonest.",
+    "State/prefixnewRouteridentity retained; GDNscheduling doesnotchangeStateformat/math. Sharedscratchsingleactor/samestream, immutableweight/pointeeownership, activeState/eventfrontier andC6primarypreservation asclosedparents. No sourcehypergraph/math/policy/mutableglobal changes beyonddeclaredprofileeligibility/integration."
+  ],
+  "numeric_contract_limits": [
+    "RouterimplementsdifferentFP32vendorGEMVorder:18oldstrictlogit-bitfailures remainunchanged/preserved,28finitecasesrouteIDs/roundedweightagreement isnotuniversalproof. Thisreview doesnotgrant bit-identical-logit contractqualification orrequiredquality acceptance. Distinctprivateprofile clearlylabelled; Root/userown numeric-contract/qualitydecisionbeforeselection.",
+    "GDNactual50nativebitwise/kernel/sharedbody/replay/commit evidence reused. Startuphashandruntimefusion doNOTestablishGPUnumericequivalence bytiming; actualquality/matchedoutputs remainrequired."
+  ],
+  "actual_as_reported_by_Root": {
+    "run": 97046,
+    "all6_TPS": [
+      31.1,
+      25.8,
+      43.7,
+      71.0,
+      102.7,
+      103.8
+    ],
+    "validity": "allvalid/noRequesterrors perRoot; profileauthor auditing24capacity/bothcounters/exactquality-prefixes/startupretirement",
+    "scope": "Sourceauditdoesnotinventthatpendingrawaudit,repeatability,broadquality,600aggregate/85single orservicequalification. ProvisionaltieredkeepRoot-owned, repeats/broaderchecksdeferredperexplicitfastiterationpolicy."
+  },
+  "cleanup_disposition": "No newconcrete integrationfinding remains after heldadditiveconflicts resolved. Justifiedspecializations/cache/ownership boundaries andindependentoracles preserved; no speculativecleanup/no extra reviewer/GPU/retest.",
+  "stage_controller": "281d3d5c prefix asheld; exactpayloadhashesbound localstage, Rootactualremote/controllerlease outcome separate"
+}

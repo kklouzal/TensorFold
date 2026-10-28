@@ -1,0 +1,51 @@
+{
+  "schema": "tensorfold.startup-content-overlap-source-hold-v1",
+  "commit": "32bc97fbddbd4157894fd88af5608142870bf0ce",
+  "worktree": "/Warehouse/TensorFold-wt/v100-startup-hash-overlap-20261027",
+  "base": "3b649c72f37a8e2c56692af55b82769f62fc87a6",
+  "source_paths": {
+    "README.md": "5053080705f788c6a8b7617452e3b474ae796616bd1c4ad4e2269e3a08db6283",
+    "deploy/v100/source-foundation.md": "63625b9bb4ac2bc33873a62d60f2de4dc6d446e54841ecc20d72cad3fd2395b7",
+    "src/tensorfold/_fd_owner.c": "aa5d4a6773f7d26c7dc43e0bf0817fb127e9d8a70de103f99acc8999fe6c3931",
+    "src/tensorfold/engine/model_identity.py": "37e76bdb643b4ab7ae47b6c449df5b8415b55602fac3165e0d99f6a5e9725298",
+    "src/tensorfold/families/qwen4_exp/cuda/engine.py": "8a708bf7b14791f336a847b55415372348af893ff51befa2c923c4bef2ee65e2",
+    "src/tensorfold/families/qwen4_exp/cuda/execution_identity.py": "6c98e903e161f4304170c82a8f8f8d1d688c15f2907de170c65b25a8eb6c0aa9",
+    "src/tensorfold/families/qwen4_exp/cuda/startup_content.py": "8ee9590394ca9d8ce6f57db67a3352c2c677597559eecb6528bd1855507ad010",
+    "tests/test_flashnext_engine_lifetime.py": "cf8a039f1e411442aed70d70c97775eadbdf9c4f7b1441e453921ab0dc0638f0",
+    "tests/test_startup_content.py": "0e7b8637e5319879bf2bf7eccaa4db4f73a53975315b58911a8569707b8fb3c3"
+  },
+  "wheel": {
+    "path": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3135074,
+    "sha256": "d9bb3fe13e4882964db671e4189811e7e20d6c1a6c2ebf093293d7340a6e0f64"
+  },
+  "source_files": 717,
+  "compiled_extensions": [
+    {
+      "path": "tensorfold/_fd_owner.abi3.so",
+      "bytes": 46344,
+      "sha256": "c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d"
+    }
+  ],
+  "native_source_sha256": "aa5d4a6773f7d26c7dc43e0bf0817fb127e9d8a70de103f99acc8999fe6c3931",
+  "controls": {
+    "checks": 153,
+    "subtests": 5,
+    "exit_code": 0,
+    "seconds": 6.97,
+    "log_sha256": "19de7150ee62ba66974a4aacc055599bd7b7ef17f4fea43babae1efe0678e5f0",
+    "start_record_sha256": "46be50e617033562aa186233b5e2a21cd889d391268aa7a1100ea2039d76535f",
+    "Ruff": "PASS",
+    "pip": "PASS",
+    "normalwholewheel": "717canonical+FDc79 verified"
+  },
+  "resource_proof_sha256": "79e0b000c6a8aebb099624aa9ecef3574277af661fd1c4066b4921a1b6f7da6e",
+  "semantics": "FreshartifactSHAoverlap aftercompleteadmission/beforeload; actualcurrentprocessissuedauthorityreusedonlywithunchangedstats+expectedSHA; native/source/libs stillfreshafterload. Rank0oneworkerboundedby64MiBstack+actualguard+8MiBworking; enabledprivateLinuxglibc3.12TP8MTPmanifestonly.",
+  "retirement": "Workerownedfinalcompletionlatchaftercallback/descriptorcleanup; join/is_alivealoneNEVERauthority. FinaltimestampMemoryErrorretainedsecondary/unconditionalcompletion. Interruptedcleanupretainsoriginalprimaryandowner. NativeOSstackdeallocationunclaimed; conservativefundingkeptthroughengine.",
+  "GPU": "UNRUN; noV100startupgain/throughput/qualityclaim; guardprofilecompositionseparatenext",
+  "limitations": [
+    "OSreadcanblockexistingI/Ocontract; cooperativecancelbetween1MiBreads",
+    "ProcessownerkeepsPython/pthreadthreaddefaultsfixedduringconstruction",
+    "Enabledoverlapinventory<=64files/4096byte-names/64KiBprintableASCIIpath+nametext; defaultserialsupportunchanged"
+  ]
+}

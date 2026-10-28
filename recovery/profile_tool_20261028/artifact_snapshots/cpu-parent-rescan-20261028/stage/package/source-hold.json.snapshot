@@ -1,0 +1,23 @@
+{
+  "schema": "tensorfold.cpu-parent-rescan-HOLD-v1",
+  "canonical": "/Warehouse/TensorFold-wt/v100-cpu-parent-rescan-20261028",
+  "commit": "7e3ba65aa2c8ab937a688d88dd6fc5f44b6f3e33",
+  "base": "86b841b879b24ceecb131dd320679d224e7e1d17",
+  "source": {
+    "tools/rescan_cpu_parent.py": "15d3d022a86c0b3272dbc540da453cb38c674087fd6d7194d577bb097b1b30f2",
+    "tests/test_cpu_parent_rescan.py": "eee3d9340cad02d6c32b35d3cde932d5a4bba647db902e19263e5b7422cdfdfc"
+  },
+  "APP": "4b0ea6b51047f93b2b973ed5a467d8c279b94f6d85c683c4258a712ff6edd99f unchanged; no srcdiff/build/GPU",
+  "evidence": {
+    "CPU-initial-style.log": "4393aede47209ca5dce3db6d18fb153459d9c76392f70197a2ef1e85eee93da5",
+    "CPU-initial-style-command.json": "1f6930e42a2e351d47b09a1cf73576d195dab6173d984942183a5002d2bb6908",
+    "CPU-initial-style-exit.json": "f6355fd6d6c23ca694e2d7279f97e10f9789b87a805fec5be6abf2c0e7f0c463",
+    "CPU-command.json": "749ac8a419f7b1f0b38f0b178edfc039897e7db943e441b325ce81bd51fb6841",
+    "CPU.log": "0dca20fad2bb56653abe390cab874fd0f55ab06726fed2bef65701e6050b77fb",
+    "CPU-exit.json": "52770de28ebe33cdaa4f0ec856b3cb42c2a924c8806e19428a460e5d7adcfb10",
+    "resource-proof.json": "c4efa5d1dd1e48c2a5608358f3f4842753a1129e476521adbde265e7d8d38965"
+  },
+  "CPU": "8PASS0.82s/Ruff/help; initial8PASS then9styleerrors retained beforeformat/finalgates",
+  "remote_rescan": "NOTEXECUTED; Rootlease required; rootonlyrank0 1.416GB sequentialread; normal4b0wheel suppliespurecleanup viazipimport, no installedpatch/torch/GPU",
+  "D13": "source review requested"
+}

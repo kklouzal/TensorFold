@@ -1,0 +1,32 @@
+{
+  "argv": [
+    "docker",
+    "run",
+    "--rm",
+    "--network",
+    "none",
+    "--cpus",
+    "2",
+    "--memory",
+    "12g",
+    "-e",
+    "CUDA_VISIBLE_DEVICES=",
+    "-e",
+    "PYTHONDONTWRITEBYTECODE=1",
+    "-e",
+    "TORCH_CUDA_ARCH_LIST=7.0",
+    "-e",
+    "MAX_JOBS=2",
+    "--mount",
+    "type=bind,src=/Warehouse/TensorFold-wt/v100-router-gdn-wmma80-20261028,dst=/source,readonly",
+    "--mount",
+    "type=bind,src=/Warehouse/TensorFold-portable-audit-20261026/router-gdn-wmma80-20261028,dst=/evidence",
+    "--entrypoint",
+    "/bin/bash",
+    "sha256:30fda46a4c40422e055e0615a8186fc1c39678be9c8c9761885fc0cb77c28993",
+    "-c",
+    "set -euo pipefail; mkdir /attention-source; tar --exclude=.git --exclude=__pycache__ -C /source -cf - . | tar -C /attention-source -xf -; python -m pip wheel --no-build-isolation --no-deps /attention-source -w /evidence/wheels; python -m pip install --no-index --no-deps --force-reinstall --no-compile /evidence/wheels/*.whl; python -m pip check; python /evidence/compile-only.py"
+  ],
+  "cwd": "/home/kklouzal",
+  "noGPU": true
+}

@@ -1,0 +1,102 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T23:35:01.920108+00:00",
+  "status": "CLOSED README-only firststartup+nativeMTPall6screen scope",
+  "reviewer": "/root/cleanup_review",
+  "docs_commit": "521d78ba1edffab669546d6b1ee26bfa17db09e8",
+  "runtime": "a7b1/5635/fa862, source/test/tool diffempty",
+  "packet_sha256": "e02aaac35107637b5d95aef03b283892e9b892b24b4b5ef63dfc82ba429122d3",
+  "independent_raw_checks": {
+    "six_valid_exact10s_windows": [
+      {
+        "N": 1,
+        "tps": 30.8,
+        "reference_tps": 26.6,
+        "mtp_native_frames": 261
+      },
+      {
+        "N": 2,
+        "tps": 19.8,
+        "reference_tps": 18.7,
+        "mtp_native_frames": 171
+      },
+      {
+        "N": 4,
+        "tps": 32.9,
+        "reference_tps": 29.3,
+        "mtp_native_frames": 287
+      },
+      {
+        "N": 8,
+        "tps": 51.6,
+        "reference_tps": 39.4,
+        "mtp_native_frames": 480
+      },
+      {
+        "N": 16,
+        "tps": 65.1,
+        "reference_tps": 46.9,
+        "mtp_native_frames": 767
+      },
+      {
+        "N": 24,
+        "tps": 65.3,
+        "reference_tps": 47.8,
+        "mtp_native_frames": 978
+      }
+    ],
+    "six_quality_texts_exact3224reference": [
+      {
+        "case": "math",
+        "passed": false
+      },
+      {
+        "case": "retrieval",
+        "passed": true
+      },
+      {
+        "case": "logic",
+        "passed": true
+      },
+      {
+        "case": "instruction",
+        "passed": true
+      },
+      {
+        "case": "json",
+        "passed": true
+      },
+      {
+        "case": "code-output",
+        "passed": false
+      }
+    ],
+    "quality_passes": 4,
+    "actual_joined_hashcapture": {
+      "bytes_hashed": 88021025919,
+      "finished_monotonic_ns": 68554919297391,
+      "native_stack_reclamation": "not inferred from Python join; fixed host commitment retained through engine",
+      "registration_wait_finished_monotonic_ns": 68554919500612,
+      "registration_wait_ns": 119299134430,
+      "registration_wait_started_monotonic_ns": 68435620366182,
+      "scope": "current-process content authority; no disk/stat-only hash cache",
+      "started_monotonic_ns": 68317716970148,
+      "thread_join_returned": true,
+      "worker_operation_retired": true
+    }
+  },
+  "claim_scope": "Supports firstscreenobservations30.8/19.8/32.9/51.6/65.1/65.3 overnamed710c/3224sameprotocol26.6/18.7/29.3/39.4/46.9/47.8. Bothnativeprep rolecountersadvanced; actualallownersdrained. Allsixqualityanswerssamewithtwofailures, so notqualitypass. Repetition/uncertainty/broadquality/85/600/nearfullhistory/release remainopen.",
+  "startup_scope": "ImplementationstartsFreshHashworkerbeforeload andactualcaptureverified88,021,025,919B/ownedretirement; registrationwait119,299,134,430ns stillvisible. READMEdoesnotclaimmeasuredstartupgain orattributeallP3gain solelytoMTP/kernel/hashwork. No discardedwaittime/failurestatus.",
+  "cleanup_disposition": "No newstale/conflictingclaim found; hardware/source/image/model/quant/method/prefix/context/capacity/reference/rawidentity explicit. Doc-onlyrequiresno build/test/GPUrepeat.",
+  "pending": "Rootrepeatall6andchanged-bottleneckprofile; no globalSUPERIORselection or goalcompletion fromfirstscreen.",
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-mtp-prelude-integration-20261027/actual-first-fast/root-comparison-vs-3224.json",
+      "sha256": "486e3cc9610c4598c37291824ad96228f2d8957e15b6ccb24999aa2276daacc7"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-coordinate-alias-20261027/actual-fast-first/root-comparison-vs-84a8.json",
+      "sha256": "1eb6771bb167f28fc13aa79b0fa859d924c2d97bc0e6bdc89f329572073379fd"
+    }
+  ]
+}

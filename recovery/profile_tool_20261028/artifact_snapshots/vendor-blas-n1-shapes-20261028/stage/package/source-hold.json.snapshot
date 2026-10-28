@@ -1,0 +1,32 @@
+{
+  "schema": "ranklocal-vendor-BLAS-shape-diagnostic-v1",
+  "commit": "2ae90c586acdfdb30b3a1040b10a84fe4c884353",
+  "worktree": "/Warehouse/TensorFold-wt/v100-vendor-blas-n1-shapes-20261028",
+  "APP": "fbaabca3ba2a7594c8712e0824733da035f3a3db63f454c520ecfa337010ee0d",
+  "runtime": "d5eb unchangednormal726FDc79",
+  "source_paths": {
+    "README.md": "a6e4ecc15af4bd130ae608676a7483ed8397a443a156e3b27a9149fbb0cbc5b0",
+    "tools/v100_dense_shape_diagnostic.py": "a984245b66c9b1a86feab51ad6ba7e14abab06f88198d4a1c03a145f1bf11d7b",
+    "tests/test_v100_dense_shape_diagnostic.py": "15a281867afba782d7dbcbeea5b77600d36069eef9f2febc08f7c1fda256e254"
+  },
+  "checks": {
+    "CPU-command.json": "5ad83be935a0e40ac03b4fa5227b238ace0d74f730b644a8ff839d1f716d68cf",
+    "CPU-exit.json": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17",
+    "CPU.log": "4c2b63aafb7168f3655ebdda0a0005102af5c6801d5667142494fd34065bc6eb"
+  },
+  "CPU": "7PASS3.24sec/Ruff/help; actualCUDA/timingunrun",
+  "numeric_candidate": "shape-dependent vendor dispatch/reduction changes, no weight/inputconversion, samecurrentflags, no modelquality/speedclaim. NativeM32actualhelperbaseline;preparedmath excludesinputpad/copy;completepathsinclude them.",
+  "workload": "7sourcegeometries,roleF16/F32outputs,21logicalrowcases,finitevariants<=221,3samples/8replays/4unrolledops,hot1androtating2weights; noL2flush/wholedecoderfootprintclaim",
+  "resources": {
+    "GPU_project_operating_cap": 2147483648,
+    "source_payload_estimator": "twoF16weights+boundedpad/results+64MiBworking allowance,checkedbeforegeometry; actualTorchreservedchecked2GiB; library/nativeeffectsseparate measuredconditions",
+    "report_cap": 8388608,
+    "Root_GPU0_only": true
+  },
+  "timing": "graphCPUenqueue andGPUstreamelapsedperprojection, includespossiblesubmissionstarvation notkernel-only;firstsynchronizedcall dependentonpreviouscases/cache notmatchedcold. Outputbits/absolute/RMS/relative errors andcaptured-vs-own-eager recorded.",
+  "pending": [
+    "D13source/stage",
+    "RootactualGPUcontrol/timings/cache/precisioninspection",
+    "noP3/quality/modelcapacityinference"
+  ]
+}

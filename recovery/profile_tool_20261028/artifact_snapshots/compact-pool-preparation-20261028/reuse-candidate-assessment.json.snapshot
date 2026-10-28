@@ -1,0 +1,28 @@
+{
+  "schema": "tensorfold.compact-pool-ownership-reuse-candidates-v1",
+  "authority": "Userexplicitallocation/reuse/ownershipmovementexploration; Rootkeepsfirstsimpleexactcatincrementwhilefollowingproofneeded. No newselection/implementationhere.",
+  "reference": "APP4b0+c928 /NUMAf11 baseline129.9N24; candidatefirstincrementfreshcatoutputs samepayloadshape/lifetimesasoldwhere.",
+  "candidates": [
+    {
+      "id": "POOL-BORROW-ALIGNED",
+      "disposition": "CREDIBLE_FOLLOWUP_ADMISSIBILITY_PENDING",
+      "design": "p=0: borrowcontiguous span.raw[:W] instead ofcopycat; subsequentHalf\u2192F32 conversion necessarilycreatesseparatefloatstorage beforeanytotalupdate. Coordinate rowsmaybe borrowstride4 span.coordinateview; rotaryonlyreadsbyindex_select.",
+      "proof": "KeepactiveCache.reading/Span-stagelease untilallqueuedreadsretired; no inplacewrites/sourcealiasescape; ordinaryHalf/Int64/no_grad guards; verifydownstreamstrideAPI/numericunchanged+forwardcancel/exceptionretirement. Originalcatfreshlayout isretaineduntilproof/measurements."
+    },
+    {
+      "id": "POOL-PREPAID-PREP-WORKSPACE",
+      "disposition": "CREDIBLE_FOLLOWUP_ADMISSIBILITY_AND_BUDGET_PENDING",
+      "design": "One bounded Buffers/role-owned raw+coordinate staging slab, rather thanper-Cache fullhistoryreplicas. Wholeframewidth up toadmittedproducerrows; copyprotectedprefix/span suffixintoit andkeep originalFP32sum/RMS/rotary/guardmath.",
+      "payload_formula": "Halfraw 2*producer_rows*dim +Int64coords24*(producer_rows//4) per simultaneouslyleasedworkspace; fordim128,rows32 payload8384B; rows256 payload67072B. Domain/prefill/MTP simultaneousleasecount mustderiveactualBuffers lifetimesbeforefunding, no assumption oneglobalbuffer sufficient.",
+      "proof": "Prepayactualallocatorgranule/operatingcredit+hostmetadata beforelogicaladmission, retainfull24Q8. One owner+exclusivelease+same-stream order or eventjoin acrossstreams; onerror/cancel retainuntilpositiveconsumerretirement. ExistingCache.done foroneCache cannotimplicitlyretireworkspace sharedwithotherCache. No snapshotalias/publiclayoutchange."
+    },
+    {
+      "id": "POOL-PER-MEMBER-BORROW",
+      "disposition": "SOURCE_CANDIDATE_BLOCKED_BY_CURRENT_NO_MATH_CHANGE_SCOPE",
+      "design": "Buildseparateborrowedmemberviews instead ofrawstitch, butthisaltersmathsubmission shape/order andrequiresseparateexactnumeric/dispatch proof.",
+      "proof": "Do not smuggleinto currentprep-onlyincrement; comparecompletecost andFP32/castbehavior ifRootlaterexpands."
+    }
+  ],
+  "first_increment_resource_scope": "No newretainedfields/workers/caches orweight/historycopies. Twofreshcatpayloads equaloldrawwhere/coordinatewhereoutputs, replacingtemporaryindices/gather/masks; runtime-managedallocatorpeak notassumedfree. Hostguardfixedbounded6tensor/shapechecks; actualnewnormalwheel/capacitygate required.",
+  "integration": "TAILowner ownsitsmethod; POOLisolatedmethod. Oncebothheld one integrationowner mergesand rerunsaffectedstrictcontrols/normalpackage/sourceproof, actualNUMAf11 all6beforeprovisionalkeep."
+}

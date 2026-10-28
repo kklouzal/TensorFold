@@ -1,0 +1,13 @@
+{
+  "python": "3.12.3 (main, Aug 31 2026, 10:18:26) [GCC 13.3.0]",
+  "source_sha256": "39c18db68ff158797eb63255591a2140927298c9d1c97a067c0dd4c136ee6b1f",
+  "scope": "Real CPython3.12 Thread/signal cut on the maintained Capture owner.\n\nOnly the new pthread resource-query boundary is replaced by a successful\nvalue so the existing SDK can exercise the live Python implementation.\nNo model, Torch, CUDA, remote operation or private threading-state mutation.\n",
+  "stack_query_boundary": "successful value substituted; no native-query claim",
+  "original_primary_type": "KeyboardInterrupt",
+  "thread_claims_alive_after_interrupted_join": false,
+  "operation_actually_finished_before_close": false,
+  "capture_closed_after_close": true,
+  "operation_actually_finished_after_close": false,
+  "capture_finished_ns_after_close": null,
+  "actual_worker_finally_retired_after_explicit_release": true
+}

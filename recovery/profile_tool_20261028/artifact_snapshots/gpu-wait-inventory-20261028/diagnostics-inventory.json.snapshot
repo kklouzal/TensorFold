@@ -1,0 +1,3030 @@
+{
+  "schema": "tensorfold.diagnostics-GPU-wait-inventory-v1",
+  "status": "BOUNDEDREADONLYPARTITIONCOMPLETE",
+  "scope": "productionuninstrumentedseparation; actualimmutable6efTorch+CUPTI/observer/export/sourceguards; finitebenchbarrier/poll/callback/stats; actualNCU2025.2.1replay/clock/cache/oracles/import; closed6513CPUanalysis/queuecontamination. No upstreamwholelibraryaudit.",
+  "actual_Torch_capture": {
+    "source": "6ef006ae",
+    "HOLD": "5dec7adc3805f5dd8f94d75d2accbce2dfa6b1edafcb368069113c1c27db3280",
+    "APP": "4efee794469bade8b86bf964cca1fd72dd33e98ec4d4228baa5e201747fde2e9",
+    "Rootcapture": 36447,
+    "Rootanalysis": 88866,
+    "actual": "capture0/noOOM/all8positive/source/maps/CUPTI28/retired; analysis0/PIDsretired",
+    "N24_instrumented_TPS": 37.2,
+    "historical_uninstrumented_APP4efe_TPS": 65.3,
+    "comparison": "DIFFERENTinstrumentation/conditions; NOTalgorithmgainoroverheadcalibration"
+  },
+  "pinned_framework": {
+    "method": "READONLYdocker-cp fromexistingstopped tensorfold-v100-dense-4efe-N24-6ef-profile container; noexec/newcontainer/GPU/probe",
+    "version_source": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/pinned-framework/version.py",
+    "git": "04cf2557f315a350e7eea7ab064288def65db75a",
+    "CUDA": "12.9",
+    "public_profiler_SHA": "48829e86a5a28480b5c6e36529206efee393aace7fbc315020cbb7ced2b6b43e",
+    "autograd_profiler_SHA": "c28c6351f599d1b5870b1bab9cc782ab0f375c7677e947b3878205cdbaad7f87",
+    "stop_contract": "CPU+CUDAuse_devicecuda,customcupti_monitorfalse;stop_trace callsautograd.__exit__;427-433device.synchronize before442_disable_profiler",
+    "failedlookup_disposition": "Official04cfrawGitHub404 andlocal5absource NOTusedasexactpinnedproof; actualcontainercopysupersedeslookupuncertainty.",
+    "use_device_predicate": "profiler.py259-262:CUDAactivity\u2192use_devicecuda;279-284custom_profiler_configbackend mustexplicitlyselectcupti_monitor; actualkwargssetonlyallthreads/trace_only;340-347passesuse_devicecuda. autograd.py427-433synchronizesdevice before442_disable_profiler."
+  },
+  "NCU": {
+    "ELF": "/opt/nvidia/nsight-compute/2025.2.1/ncu",
+    "sha256": "a44ff2c735c4dcf66c78f3f430155805d6a0b1f74f26331f98ecec03bfbf3f1a",
+    "target": "Volta-supportedpinnedtoolperRoot/actualsmokecontract; no blanketNsightunsupportedclaim fromoldSystems2025.1.3/CUPTI27mismatch",
+    "original_source": "v100-ncu-operator-20261027 toolINT64 picks; legacycountervariant",
+    "actual_production_label_stage": "7af9b891cfef4047d2340bb539c7f8c3ac0e65b6 packageINT32; APP5635/a7b1notcurrent86cb",
+    "execution_status_caveat": "FrozenHOLDGPU_UNRUN notliveexecutionauthority; actualRootrunreceipts decide. No newprofile/permissionprobehere.",
+    "workload": "statelessexpertcomponent R1/8/32 syntheticuniformtopK10+shared/actualcheckpointweights; no fullmodel/NCCL/attention/P3proof"
+  },
+  "future_reader_scope": {
+    "475": "primary-preservingparser/fileclosefix separatefromoldpositive6ef",
+    "4c75bed1": "delboundaryvaluebeforemore+6GiB/rank48GiBfuturefund; notold16GiBcaptureidentity",
+    "actual6ef": "positivecapturevalidifsummaries/guardsallpass; nofuturefailure/resourcecontractcredit"
+  },
+  "entries": [
+    {
+      "id": "D01",
+      "source": {
+        "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+        "line": 1188,
+        "sha256": "b792ca5bd56b8e33823190570d6287cf03f8e1ee3f820986a7814df9baa7d1dc"
+      },
+      "call_chain": [
+        "worker",
+        "normal installed engine",
+        "optional RankCapture"
+      ],
+      "when": "finite diagnostic only; production serving doesnotcallthis probe",
+      "frequency": "per worker/rank",
+      "work_domain": "region separation",
+      "GPU_wait_mechanism": "model tools add CPUthreads/callbacks/stats andoptionalCUPTI that shipping uninstrumented requests do not inherently include",
+      "correctness_purpose": "separate declared workload/instrumentation from model semantics",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "inventoryfirst; neverinferalgorithmgainfromdifferentinstrumentation",
+      "needed_proof": "sameREGION/input/config/reference and actualsourceidentity",
+      "region": "production vsfinitebench vsCUPTI/NCU"
+    },
+    {
+      "id": "D02",
+      "source": {
+        "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/finite_concurrency.py",
+        "line": 501,
+        "sha256": "d009cf94050754115fdb0295b39aaa787904b09478464aeb772d8782b97eb86b"
+      },
+      "call_chain": [
+        "run_screen_case",
+        "ThreadPool tasks",
+        "threading.Barrier(count+1)"
+      ],
+      "when": "each finite concurrent cohort",
+      "frequency": "Nworkers+coordinator once, N<=24",
+      "work_domain": "CPUthread coordination",
+      "GPU_wait_mechanism": "barrier/permit wait isCPUcoordination, can delay feeding backend; not GPUbarrier",
+      "correctness_purpose": "simultaneousofferedburst with realRequestLimit ownership",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "lowerharnessoverhead onlyafter preserving arrival model",
+      "needed_proof": "offered/admitted/retired counts and timings, equivalentreferenceinstrumentation",
+      "region": "finitebench"
+    },
+    {
+      "id": "D03",
+      "source": {
+        "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/finite_concurrency.py",
+        "line": 76,
+        "sha256": "d009cf94050754115fdb0295b39aaa787904b09478464aeb772d8782b97eb86b"
+      },
+      "call_chain": [
+        "TimedTokens.__call__",
+        "IDsvalidate/extend",
+        "monotonic timestamps/fixedarrays"
+      ],
+      "when": "synchronous emitted chunk callbacks",
+      "frequency": "per chunk, not per proposedtoken necessarily",
+      "work_domain": "CPUcallback/GIL",
+      "GPU_wait_mechanism": "listvalidation/time/array writes executeoncallbackthread; possibleCPU dispatch overhead, noCUDAdatareadbackhere",
+      "correctness_purpose": "bounded known committed-delivery IDs and timestamp samples",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "batch/time capture costs onlywithsame callbacksemantics",
+      "needed_proof": "nativeIDprefix, no postretirement callback, fixedcapacity/exhaustion and timinguncertainty",
+      "region": "finitebench"
+    },
+    {
+      "id": "D04",
+      "source": {
+        "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+        "line": 993,
+        "sha256": "b792ca5bd56b8e33823190570d6287cf03f8e1ee3f820986a7814df9baa7d1dc"
+      },
+      "call_chain": [
+        "run_fast_grid.observe",
+        "scheduler.waiting.requests",
+        "queue_record/live/decoding status"
+      ],
+      "when": "during finitecase; helper polls CPU scheduler metadata",
+      "frequency": "100Hz nominalPOLL_SECONDS=.01; O(N<=24)",
+      "work_domain": "CPUpoll/locks/GIL",
+      "GPU_wait_mechanism": "queue/state tuple snapshots and recorderwork can contendwithCPUmodel feeder; PythonFuture/Event waits notGPUfences",
+      "correctness_purpose": "prove actualallNdecoded membership and avoidsuccess-only/waiting-statecherry-pick",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "reduce/centralizepoll overhead onlyifmembership/timingproofretained",
+      "needed_proof": "actualN readiness/observedinterval/tails/rejections unchanged; current poll cost unmeasured",
+      "region": "finitebench"
+    },
+    {
+      "id": "D05",
+      "source": {
+        "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/finite_concurrency.py",
+        "line": 546,
+        "sha256": "d009cf94050754115fdb0295b39aaa787904b09478464aeb772d8782b97eb86b"
+      },
+      "call_chain": [
+        "run_screen_case",
+        "freeze begin/end",
+        "cancel stopEvent",
+        "callback/progress returnsTrue"
+      ],
+      "when": "once readiness+common decodewindow satisfied",
+      "frequency": "30sreadiness cap/10starget; 320/512v1 or2048v2 cap",
+      "work_domain": "CPUtiming/cancellation",
+      "GPU_wait_mechanism": "deliberate waitingforrealallNactivity then expectedstop; timingend frozenbeforestop, laterGPUwork/drain excluded",
+      "correctness_purpose": "correlated committed delivery interval; EOSandnaturalcapcuts remainexplicit",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "no shortcuts loweringreadiness/drain/quality contracts",
+      "needed_proof": "allNmembershipconfirmedby readSTART throughend; rawpostwindow retained",
+      "region": "finitebench"
+    },
+    {
+      "id": "D06",
+      "source": {
+        "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/finite_concurrency.py",
+        "line": 622,
+        "sha256": "d009cf94050754115fdb0295b39aaa787904b09478464aeb772d8782b97eb86b"
+      },
+      "call_chain": [
+        "run_screen_case.finally",
+        "Future.result",
+        "collector.close",
+        "finalobserve"
+      ],
+      "when": "after expectedstop/error/timeout",
+      "frequency": "all submittedfutures must retire before nextcase",
+      "work_domain": "CPU/backendretirement",
+      "GPU_wait_mechanism": "workerwait and backendcleanup can draininflightGPUwork; cancellationrequest alone isnotcompletion",
+      "correctness_purpose": "no callback/Stream/permit reusebeforeactualcompletion",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "optimizeactualretirement path onlyafter lifecycleaudit; do not skipwait",
+      "needed_proof": "all permits/streams/mailboxes/nativeownersdrained and errorspreserved",
+      "region": "finitebench/cleanup"
+    },
+    {
+      "id": "D07",
+      "source": {
+        "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/finite_concurrency.py",
+        "line": 428,
+        "sha256": "d009cf94050754115fdb0295b39aaa787904b09478464aeb772d8782b97eb86b"
+      },
+      "call_chain": [
+        "ScreenTokens.native_record",
+        "retired Stream.out list",
+        "CPU IDprefixcompare"
+      ],
+      "when": "afterrealdrain only",
+      "frequency": "once/request/cohort",
+      "work_domain": "CPUreport snapshots",
+      "GPU_wait_mechanism": "bounded CPUlist copies andarrays.tolist are NOTCUDA.tolistreadbacks; stats snapshot/JSON/textdecode add postcase wall",
+      "correctness_purpose": "retainundelivered nativeIDs withoutfabricatedtimestamps; callbackprefixexact",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "postcase streaming/reuse ifneeded, not timingalgorithmgain",
+      "needed_proof": "boundedmax2048, undispatchedIDs excludedTPS, noState reads afterretirement",
+      "region": "finitebenchpostprocess"
+    },
+    {
+      "id": "D08",
+      "source": {
+        "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+        "line": 986,
+        "sha256": "b792ca5bd56b8e33823190570d6287cf03f8e1ee3f820986a7814df9baa7d1dc"
+      },
+      "call_chain": [
+        "generate_reply/run_fast_grid.invoke",
+        "engine.generate Sampling temp0",
+        "stats/presentation"
+      ],
+      "when": "per finitebringup/screen/quality request",
+      "frequency": "bringup2tokens; oneprofilecohort or ordinaryall6 plus sixquality320",
+      "work_domain": "CPUrequest/control/report",
+      "GPU_wait_mechanism": "tokenizer/template/rendering/stats andoptionalNVTXmarkers areharnesswork; rawprofile startsbeforetheseToolcalls",
+      "correctness_purpose": "sameprompt/tokenizer/greedy/EOS/context andindependentqualityanswers",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "preparestableinputsoutsidewindowwherecontractpermits",
+      "needed_proof": "labelcold/warm/frontend timing; noomittedquality/nativeIDchecks",
+      "region": "finitebench"
+    },
+    {
+      "id": "D09",
+      "source": {
+        "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+        "line": 1233,
+        "sha256": "b792ca5bd56b8e33823190570d6287cf03f8e1ee3f820986a7814df9baa7d1dc"
+      },
+      "call_chain": [
+        "worker ready",
+        "RankCapture.start",
+        "run_leader/follow",
+        "engine.close",
+        "capture.finish"
+      ],
+      "when": "only--profile-concurrency, postmodelconstructorwarm",
+      "frequency": "all8rankprofilerinstances foronecohort",
+      "work_domain": "CUPTIcollectionscope",
+      "GPU_wait_mechanism": "captureincludesbringup,readiness,drain/ownedclosure andCPUhelpers\u2014notjustpure10s; rawfulltrace larger",
+      "correctness_purpose": "all8source/realCUDAcapture with unambiguouscaseboundaries",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "bounddiagnosticinterval; nohardcodedN1/N8caption",
+      "needed_proof": "actualNcase,all8GPUUUID/rank/PID, rawcounts+sourceguards/retirement",
+      "region": "TorchCUPTI"
+    },
+    {
+      "id": "D10",
+      "source": {
+        "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+        "line": 519,
+        "sha256": "b792ca5bd56b8e33823190570d6287cf03f8e1ee3f820986a7814df9baa7d1dc"
+      },
+      "call_chain": [
+        "RankCapture.start",
+        "torch.profiler.profile CPU+CUDA",
+        "ExperimentalConfig profile_all_threads trace_only"
+      ],
+      "when": "instrumented diagnostic only",
+      "frequency": "one per process/all8; everyselectedCPUop/kernel/graphnode mayrecord",
+      "work_domain": "CUPTI/CPUinstrumentation",
+      "GPU_wait_mechanism": "allthreadCPUeventrecords andCUDAactivity collection add CPU/driver/nativebuffer overhead, timings perturbed; no shapes/memory/stacks reduces scope butnot zero overhead",
+      "correctness_purpose": "realCPUandCUDAevents; forbidtimings-onlylegacyfallback/externalinjection",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "diagnosticnotshippingoptimization; smallest representativecapture",
+      "needed_proof": "actualprotectedCUPTI28maps andpositivekernels/runtime perrank; noestimateuncaptured shippingTPS",
+      "region": "TorchCUPTI"
+    },
+    {
+      "id": "D11",
+      "source": {
+        "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+        "line": 292,
+        "sha256": "b792ca5bd56b8e33823190570d6287cf03f8e1ee3f820986a7814df9baa7d1dc"
+      },
+      "call_chain": [
+        "project_observers",
+        "observed_call",
+        "record_function enter/exit",
+        "original operation"
+      ],
+      "when": "onlywhileRankCaptureinstalled",
+      "frequency": "per patchedprojectfunction invocation",
+      "work_domain": "CPUwrapper/GIL/metadata",
+      "GPU_wait_mechanism": "extraPythonframes/RecordFunctionannotations+failurejournal allocation percall; wrappedrealoperation unchanged",
+      "correctness_purpose": "source-phaseattribution with primarypreservingexit diagnostics",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "reusefixedlabels/boundedbindings; noinstalled/vendorpatch",
+      "needed_proof": "restore originaldescriptors/aliases, preserve errors andserializecounts honestly",
+      "region": "Torchobserver"
+    },
+    {
+      "id": "D12",
+      "source": {
+        "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/concurrent_observers.py",
+        "line": 15,
+        "sha256": "9480e96af0ff0368d628b0f35ff01b657d703760f726ce8bd9970b392c8d5d76"
+      },
+      "call_chain": [
+        "observer_plan",
+        "_Counters",
+        "round/select/compute/prepare wrappers"
+      ],
+      "when": "onlyinstrumented diagnostic",
+      "frequency": "fixed7histograms/12accumulators +percallupdates; snapshotsboundaries",
+      "work_domain": "CPUinstrumentation",
+      "GPU_wait_mechanism": "counter/timer/sumgeometry work isCPU overhead, notGPUcompleted work; noTensorreadbacks",
+      "correctness_purpose": "actualselectedrows/liveStates andphase intervals without inventedutilization",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "keepboundedCPUonly, avoiddoublewrapping importedaliases",
+      "needed_proof": "histrowsdecode72/owner256includingprefill; saturationunknown; cohortscope notpurecore",
+      "region": "Torchobserver"
+    },
+    {
+      "id": "D13",
+      "source": {
+        "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/pinned-framework/profiler.py",
+        "line": 455,
+        "sha256": "48829e86a5a28480b5c6e36529206efee393aace7fbc315020cbb7ced2b6b43e"
+      },
+      "call_chain": [
+        "RankCapture.finish owner.stop",
+        "_KinetoProfile.stop_trace",
+        "autogradprofile.__exit__"
+      ],
+      "when": "standardKineto backend:customcupti_monitor notselectedbycapturekwargs",
+      "frequency": "once/rank AFTERengine.close inactual6ef",
+      "work_domain": "diagnosticGPUdrain",
+      "GPU_wait_mechanism": "exactpinnedsource delegatesexit; autogradCUDAprofile callsdevice_module.synchronize before_disable_profiler",
+      "correctness_purpose": "complete profiler activity/retirement beforeexport",
+      "evidence": "EXACTinstalled04cf sourcecopiedREADONLY fromexistingstopped6efcontainer; profilerSHA48829e86 matchespriorprotectedreceipt; autograd.py427-442 directdevice synchronize",
+      "candidate": "accountstopasdiagnosticoverhead; no shippingwaitremoval implied",
+      "needed_proof": "pinned04cfsource+use_devicecuda/custombackendpredicate, actualstopafterretirement",
+      "region": "Torchpostcapture"
+    },
+    {
+      "id": "D14",
+      "source": {
+        "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+        "line": 568,
+        "sha256": "b792ca5bd56b8e33823190570d6287cf03f8e1ee3f820986a7814df9baa7d1dc"
+      },
+      "call_chain": [
+        "RankCapture.finish",
+        "export_chrome_trace",
+        "digest completefile",
+        "trace_summary"
+      ],
+      "when": "afterengineclose/stop; outsidefrozenwindow",
+      "frequency": "all8exports/hash/summary",
+      "work_domain": "CPU/I/O/profilerflush",
+      "GPU_wait_mechanism": "Chromeexport/nativeflush andcompleteSHA/JSONprocessing can take wall/CPU/disk; export internals beyond pinnedPython opaque",
+      "correctness_purpose": "complete rawprovenance/CPU+CUDA event evidence",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "streamsummary/hash/reuseonlyifintegrityretained; no truncationforpass",
+      "needed_proof": "rawpositiveall8/sourceafter/CUPTIafter/failureclassification and actualexit",
+      "region": "diagnosticpostprocess"
+    },
+    {
+      "id": "D15",
+      "source": {
+        "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+        "line": 493,
+        "sha256": "b792ca5bd56b8e33823190570d6287cf03f8e1ee3f820986a7814df9baa7d1dc"
+      },
+      "call_chain": [
+        "profile_clock_anchor/maps",
+        "protected_cupti_identity",
+        "issue/verify_source_binding"
+      ],
+      "when": "beforecapture andafterexport/retirement",
+      "frequency": "twice/rank plusunderlyingbindings",
+      "work_domain": "CPU/I/O/provenance",
+      "GPU_wait_mechanism": "maps/hash/library identity andfullsourceguard scans consumeCPU/I/O; noGPUmath; canextendtotaliteration time",
+      "correctness_purpose": "same protectedSDK/CUPTI28 andactualclockdomain/provenance",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "boundedoverlap/reuseissuedauthorityonlyunderexistingguardcontracts",
+      "needed_proof": "before/afterfullcontent+mappedlibraries exact; neverrelaxguard forprofilerpass",
+      "region": "diagnosticguard"
+    },
+    {
+      "id": "D16",
+      "source": {
+        "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/profile_trace_reader.py",
+        "line": 45,
+        "sha256": "daa6f82d8f6afbf09f02fe6e37add3cb166ee68cc28ddc63151d05e4a80d3284"
+      },
+      "call_chain": [
+        "6ef trace_summary",
+        "Stream.value/events",
+        "file.close"
+      ],
+      "when": "ACTUAL6efpositivecapture summary",
+      "frequency": "postretirement;1MiBcharreads/16MiBcharcarry;8GiBraw acceptance/8Mevents/4Mkernels",
+      "work_domain": "CPUboundedJSON",
+      "GPU_wait_mechanism": "iterator/hash/reparse atchunkend costsCPU; oldvalue mayoverlap decodedgraphs; noGPUlaunch",
+      "correctness_purpose": "boundedsummary preservingcomplete raw, validateCUDA/CPU presence",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "future475closejournal/4c75delvalue+6GiBreaderfund areSEPARATEsource\u2014notactual6efidentity",
+      "needed_proof": "oldsuccessfulpathonly; oldC6closecouldmaskparserfailure, actualpositivepass notnewfailureproof",
+      "region": "diagnosticpostprocess"
+    },
+    {
+      "id": "D17",
+      "source": {
+        "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+        "line": 56,
+        "sha256": "2b686ec189564f675e3ed4079c4ca878e209a05b1798df7bf23d536a1874f9b3"
+      },
+      "call_chain": [
+        "future4c75reader budget",
+        "callercontrol pre-admission"
+      ],
+      "when": "futuretool successor, NOTold6efcapture",
+      "frequency": "6GiB/rank48GiBglobal reader;actual6ef2GiB/rank16GiB+fixedobserver",
+      "work_domain": "CPUresourcecommitment",
+      "GPU_wait_mechanism": "reservedreader/observer hostheadroom affectsadmission; nativeKineto buffer/filegrowthNOTthis guarantee",
+      "correctness_purpose": "fundsource-controlledparser/headers whilekeep24floor",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "reportactualnativepeak separately under320GiBcgroup/diskpreflight",
+      "needed_proof": "noOOM/all8complete/source/retirement actualcapture; noexportquotaclaimfrom8GiBacceptancecap",
+      "region": "futurediagnosticnotmeasured"
+    },
+    {
+      "id": "D18",
+      "source": {
+        "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_counter_smoke.py",
+        "line": 21,
+        "sha256": "f72a1b1024a3d49e91550fb3df8c5f61c805671097bef4cbaccabf64a5ff3158"
+      },
+      "call_chain": [
+        "ncu CLI",
+        "kernelreplay",
+        "profiled_call start/op/sync/stop"
+      ],
+      "when": "standaloneNCUpermission/operator diagnostics only",
+      "frequency": "one smokeor2filteredexpert kernels, multiplepassesmayoccur",
+      "work_domain": "NCU/kernel replay",
+      "GPU_wait_mechanism": "profilerinjection/replay andexplicit torch.cuda.synchronize insideprofiledoperation distortnormalexecution/timings",
+      "correctness_purpose": "stateless replay-safe countercapture with strict outputbefore/after",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "neveruseasP3throughput; smallestcomponentmatchesgoal",
+      "needed_proof": "pinnedNCU2025.2.1ELF/actualVolta/counters/nonzerooracle andnormalownedwheel",
+      "region": "NCU"
+    },
+    {
+      "id": "D19",
+      "source": {
+        "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_experts_actual.py",
+        "line": 38,
+        "sha256": "21918a6e2d82d4b6c37e8d0f9e4920829bb7013e9c67a21fe3e24962a7c26bf1"
+      },
+      "call_chain": [
+        "NCUcommand",
+        "sections/metrics/filter/export"
+      ],
+      "when": "actualexpertscomponent R1/8/32",
+      "frequency": "SpeedOfLight/MemoryWorkloadAnalysis/Occupancy +3metrics;launchcount2",
+      "work_domain": "NCUcontrol",
+      "GPU_wait_mechanism": "--clock-control none/--cache-control none meansno requestedlocking/flush, NOTproductionequivalentcache/replaystate; actualpasses opaque/unmeasured",
+      "correctness_purpose": "declarecounterconditions/config-fileoff/application-only/profile-from-startoff",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "recordcontrolled/uncontrolledclocks/cache and nohosttuning",
+      "needed_proof": "savedexactargv/version/ELF/sections/rawunits; no token-s inference fromkernel duration",
+      "region": "NCU"
+    },
+    {
+      "id": "D20",
+      "source": {
+        "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_experts_actual.py",
+        "line": 79,
+        "sha256": "21918a6e2d82d4b6c37e8d0f9e4920829bb7013e9c67a21fe3e24962a7c26bf1"
+      },
+      "call_chain": [
+        "fixture actualbankload",
+        "reference/exact warm",
+        "cpu/numpy uint32 oracle",
+        "profiledexact",
+        "aftercpuoracle"
+      ],
+      "when": "outsideandinexplicitNCUoperationboundaries",
+      "frequency": "weightspans/hash beforeprofile; outputsbefore/after; syncinsideoperation",
+      "work_domain": "CUDA\u2192CPU/I/O/validation",
+      "GPU_wait_mechanism": "packed.data.cpu andoutput.cpu/synchronize deliberatelydrainGPU; libraryhash/np.save afterward addsjobwall",
+      "correctness_purpose": "actualcheckpointformat/strictreplay-safe fulloutput equality",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "preserveoracles, excludeoracle/readbackjobwallfromGPUkernel/P3claims",
+      "needed_proof": "actualall512+shared, syntheticIDs scope, nativefullwriteproof; no model/attention/NCCLqualification",
+      "region": "NCUcomponentoracle"
+    },
+    {
+      "id": "D21",
+      "source": {
+        "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/ncu-operator-int32-20261028/package/tools/ncu_experts_actual.py",
+        "line": 38,
+        "sha256": "3eed9c7b32e69f029652ffe854f5befd29542acf5c99e44a577a3967ae0d8c57"
+      },
+      "call_chain": [
+        "7af9synthetic_ids",
+        "toint32",
+        "picks.cuda",
+        "expertInt32nativevariant"
+      ],
+      "when": "actualproduction-label INT32stage vs originalcanonicaltoolINT64",
+      "frequency": "R1/8/32syntheticuniformtopK10+shared",
+      "work_domain": "diagnosticinputrepresentation",
+      "GPU_wait_mechanism": "INT32vsINT64 selectsdifferentindex-specializedkernel/register/byte behavior; countersnotinterchangeable",
+      "correctness_purpose": "matchactualbuf.pickINT32 label; preservelegacyINT64evidence",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "separatevariant labels and originalfrozenvalue parity",
+      "needed_proof": "recorddtype/seed/spans/exactoutputs andactualrunreceipt; sourceHOLDalone notexecution",
+      "region": "NCUvariantprovenance"
+    },
+    {
+      "id": "D22",
+      "source": {
+        "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_counter_smoke.py",
+        "line": 143,
+        "sha256": "f72a1b1024a3d49e91550fb3df8c5f61c805671097bef4cbaccabf64a5ff3158"
+      },
+      "call_chain": [
+        "ncu --import .ncu-rep",
+        "--csv --page raw",
+        "boundedCSVparse"
+      ],
+      "when": "afterGPUtargetterminal",
+      "frequency": "oneimport/report,32MiBexpertCSVcap",
+      "work_domain": "CPUreportanalysis",
+      "GPU_wait_mechanism": "import/export parsing andJSONserialization takeCPU but doNOTlaunch/replayanotherGPUkernel",
+      "correctness_purpose": "retainrequestedfinitecounters withunits/rawreports when--export suppressesconsole",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "reuseactualreport; no extraGPUworkforimport",
+      "needed_proof": "actualimportexit/reportidentity andunit/countervalidation",
+      "region": "NCUpostprocess"
+    },
+    {
+      "id": "D23",
+      "source": {
+        "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_concurrent.py",
+        "line": 87,
+        "sha256": "989e8bf2a6c2ef46c95b63c4575f9af326853908537b0fbb0085fd224658cc5b"
+      },
+      "call_chain": [
+        "strictcontrollerterminal0",
+        "initialonlyPortainer",
+        "derive frozenwindow"
+      ],
+      "when": "ONLYafteractualall8capture/engineclose",
+      "frequency": "onceanalysisjob",
+      "work_domain": "CPUcoordination",
+      "GPU_wait_mechanism": "analysisstartguard preventsprofiling/P3contamination; noassumedcapturepass",
+      "correctness_purpose": "retainfailedcapture/avoidprocessinginvalidwindow asgain",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "initialgateFIRSTthenRootallowednumericalGPUonly; noP3untilbothretired",
+      "needed_proof": "actualparent+workers live/retired/terminal recorded; cannotfakeidleorrestartontimeout",
+      "region": "CPUanalysis"
+    },
+    {
+      "id": "D24",
+      "source": {
+        "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_concurrent.py",
+        "line": 11,
+        "sha256": "989e8bf2a6c2ef46c95b63c4575f9af326853908537b0fbb0085fd224658cc5b"
+      },
+      "call_chain": [
+        "derive",
+        "all8clockhull",
+        "leadergenerate CPUranges"
+      ],
+      "when": "postcapture all8source/CUPTI/completechecks",
+      "frequency": "commonNwindow includesNactualgeneratecalls+cheapwarm",
+      "work_domain": "CPUstream/hash/calibration",
+      "GPU_wait_mechanism": "boundedparseandclockmathonly; monotonic\u2194Unix inferreddriftuncertainty\u2014notzeroerror",
+      "correctness_purpose": "actualcommonwindow matchedtocaseN and allcallerintervals",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "retaincore/expandeduncertainty andfailclockhull>10ms",
+      "needed_proof": "rawleaderSHA, all8brackets,containment/membershipvaliddrained; no transient-clock universalproof",
+      "region": "CPUanalysis"
+    },
+    {
+      "id": "D25",
+      "source": {
+        "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_concurrent.py",
+        "line": 100,
+        "sha256": "989e8bf2a6c2ef46c95b63c4575f9af326853908537b0fbb0085fd224658cc5b"
+      },
+      "call_chain": [
+        "ProcessPoolExecutor(max_workers2)",
+        "mapanalyze8ranks"
+      ],
+      "when": "afterinitialguard; Rootcommandnice19/taskset0,1",
+      "frequency": "2workers+parent;8ranksboundedbatches",
+      "work_domain": "CPU/I/Ohashworkers",
+      "GPU_wait_mechanism": "streamingJSON/hash usesCPU/RAM/disk; cancontendwithP3/torchprofilerifoverlapped\u2014prohibited",
+      "correctness_purpose": "all8rawSHA+source-bound interpretation, boundedretention/reports",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "reuseclosedparser/results; noheavyrescansduringbenchmark",
+      "needed_proof": "actualjobterminal/PIDsretiredbeforeP3; numericalGPUcontrol allowedonlyRootcoordination",
+      "region": "CPUanalysis"
+    },
+    {
+      "id": "D26",
+      "source": {
+        "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_decode.py",
+        "line": 14,
+        "sha256": "301f6a75ce46266f63c5ab9b28aaccb85dbe4535ed2fe8f6f75caa2d8f3e63c6"
+      },
+      "call_chain": [
+        "analyze",
+        "CPUuser_annotation",
+        "runtimecorrelation",
+        "graphlaunchvsplain",
+        "clippedactivityunion"
+      ],
+      "when": "postcapture",
+      "frequency": "everyretainedevent withinboundedtables",
+      "work_domain": "CPUinterpretation",
+      "GPU_wait_mechanism": "inclusive/exclusiveCPUwall, graph-nodeattribution andkernelunion/gaps areanalysis\u2014notCPUbusy/GPUusefulutilization",
+      "correctness_purpose": "avoidmirroredGPUlabels/ambiguousduplicates/boundarycrossinggaperrors",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "retainunknown/unmatched andactualparentlabels; no inventedoverlap",
+      "needed_proof": "all8hashes, duplicatecorrelationrefusal, clippedalloverlappingactivity, eventcountsstartassigned",
+      "region": "CPUanalysis"
+    },
+    {
+      "id": "D27",
+      "source": {
+        "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_traces.py",
+        "line": 20,
+        "sha256": "780c7d40cc90b4226212d4e1e0dcccaebeaad01e9c4148beaa15b790bda58df1"
+      },
+      "call_chain": [
+        "Stream",
+        "boundedtables/output",
+        "readtext\u2192UTF8hash"
+      ],
+      "when": "postcapture CPUonly",
+      "frequency": "1MiBcharacters/read16MiBcarry;4Mkernels/8Mcorrelations/200Kranges/512KiBreport",
+      "work_domain": "CPUallocation/I/O",
+      "GPU_wait_mechanism": "parserbuffers/eventgraphs/correlationmaps consumeRAM; charbounds upTo4xUTF8bytes notbytecaps; noTorch/CUDAimports",
+      "correctness_purpose": "boundedmemoryanalysis andcompletebyteidentity",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "source-controlledboundproof/streaming; future4c75readerdiffnotretroactive",
+      "needed_proof": "logicalcountbounds andrawidentity; no unsourcedexactRSSclaim",
+      "region": "CPUanalysis"
+    },
+    {
+      "id": "D28",
+      "source": {
+        "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+        "line": 1284,
+        "sha256": "b792ca5bd56b8e33823190570d6287cf03f8e1ee3f820986a7814df9baa7d1dc"
+      },
+      "call_chain": [
+        "supervise8workers",
+        "failurepipe",
+        "RootDockerlease/queue"
+      ],
+      "when": "everyfinite/profiler run",
+      "frequency": "8ranks +supervisor;timeout900profiler,grace/drainbounds",
+      "work_domain": "host/processcoordination",
+      "GPU_wait_mechanism": "startup/sourcebind/failurewatchdog/teardown canextenditeration; properqueue keepsunprofiledP3separate",
+      "correctness_purpose": "fatalcontainment/Portainerpreservation/nohiddenbackgroundjob",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "amortizestartuponlywithsamecontracts andtoolsource; no unverifiedfuturecompletion",
+      "needed_proof": "actualterminal/OOM/8finals, sourceclock/capture guards, rootlease/PIDsretired",
+      "region": "Rootoperationqueue"
+    },
+    {
+      "id": "D29",
+      "source": {
+        "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+        "line": 1233,
+        "sha256": "b792ca5bd56b8e33823190570d6287cf03f8e1ee3f820986a7814df9baa7d1dc"
+      },
+      "call_chain": [
+        "uninstrumentedv2 vsTorchprofile vsNCU"
+      ],
+      "when": "comparison interpretation",
+      "frequency": "allruns/regions",
+      "work_domain": "evidenceboundary",
+      "GPU_wait_mechanism": "37.2instrumentedN24 vs65.3historicaluninstrumentedP3 is NOTalgorithmgain/lossestimate; observer+CUPTI+conditionsdiffer",
+      "correctness_purpose": "sameREGIONinstrumentation forperformance selection",
+      "evidence": "source-proven mechanism; overhead amount unmeasured",
+      "candidate": "diagnosticsguidecandidates only; later matchedacceptance asuserdirects",
+      "needed_proof": "rawsource/input/config/order andquality/allN requirements; preservehistoricalfailures",
+      "region": "allregions"
+    }
+  ],
+  "source_manifest": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_concurrent.py",
+      "sha256": "989e8bf2a6c2ef46c95b63c4575f9af326853908537b0fbb0085fd224658cc5b",
+      "bytes": 7438
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_decode.py",
+      "sha256": "301f6a75ce46266f63c5ab9b28aaccb85dbe4535ed2fe8f6f75caa2d8f3e63c6",
+      "bytes": 11577
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_traces.py",
+      "sha256": "780c7d40cc90b4226212d4e1e0dcccaebeaad01e9c4148beaa15b790bda58df1",
+      "bytes": 16046
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/source-hold.json",
+      "sha256": "6513f4b617278146a9367d086dd74b1b50bd75c15d6170238bfb343f6f922619",
+      "bytes": 1710
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/compute-prior-experiment-math-region.json",
+      "sha256": "4d2a64653bc888eed4494dc41ded78aa57630d4f64416ba8a5c7b25fad8b59f3",
+      "bytes": 533
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/pinned-framework/profiler.py",
+      "sha256": "48829e86a5a28480b5c6e36529206efee393aace7fbc315020cbb7ced2b6b43e",
+      "bytes": 71315
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/pinned-framework/version.py",
+      "sha256": "e2ddba962d8727b048866230fc2a51ce27c544ac54456d5b5ceb367ed6d4bf56",
+      "bytes": 323
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/ncu-operator-int32-20261028/package/tools/ncu_experts_actual.py",
+      "sha256": "3eed9c7b32e69f029652ffe854f5befd29542acf5c99e44a577a3967ae0d8c57",
+      "bytes": 11102
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/concurrent_observers.py",
+      "sha256": "9480e96af0ff0368d628b0f35ff01b657d703760f726ce8bd9970b392c8d5d76",
+      "bytes": 7183
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/finite_concurrency.py",
+      "sha256": "d009cf94050754115fdb0295b39aaa787904b09478464aeb772d8782b97eb86b",
+      "bytes": 40599
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/profile_trace_reader.py",
+      "sha256": "daa6f82d8f6afbf09f02fe6e37add3cb166ee68cc28ddc63151d05e4a80d3284",
+      "bytes": 2947
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "sha256": "b792ca5bd56b8e33823190570d6287cf03f8e1ee3f820986a7814df9baa7d1dc",
+      "bytes": 85719
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "sha256": "2b686ec189564f675e3ed4079c4ca878e209a05b1798df7bf23d536a1874f9b3",
+      "bytes": 85966
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_counter_smoke.py",
+      "sha256": "f72a1b1024a3d49e91550fb3df8c5f61c805671097bef4cbaccabf64a5ff3158",
+      "bytes": 9336
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_experts_actual.py",
+      "sha256": "21918a6e2d82d4b6c37e8d0f9e4920829bb7013e9c67a21fe3e24962a7c26bf1",
+      "bytes": 10889
+    }
+  ],
+  "site_index": [
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/concurrent_observers.py",
+      "line": 57,
+      "scope": "observer_plan",
+      "code": "def observer_plan(record_function):",
+      "entry_refs": [
+        "D12"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/concurrent_observers.py",
+      "line": 83,
+      "scope": "label",
+      "code": "owner = record_function(name)",
+      "entry_refs": [
+        "D12"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 84,
+      "scope": "digest",
+      "code": "def digest(path):",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 86,
+      "scope": "digest",
+      "code": "return hashlib.file_digest(source, \"sha256\").hexdigest()",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 134,
+      "scope": "arguments",
+      "code": "parser.add_argument(\"--image-identity\", required=True, help=\"actual immutable base image sha256 identity\")",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 170,
+      "scope": "arguments",
+      "code": "if not re.fullmatch(r\"sha256:[0-9a-f]{64}\", args.image_identity):",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 171,
+      "scope": "arguments",
+      "code": "parser.error(\"--image-identity must be an actual immutable sha256 image identity\")",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 239,
+      "scope": "arguments",
+      "code": "\"sha256\": hashlib.sha256(raw).hexdigest()}",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 260,
+      "scope": "installed_identity",
+      "code": "actual = digest(path)",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 261,
+      "scope": "installed_identity",
+      "code": "expected = hashlib.sha256(archive.read(name)).hexdigest()",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 269,
+      "scope": "installed_identity",
+      "code": "\"record_sha256\": digest(distribution.locate_file(records[0])), \"affected_files\": rows}",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 281,
+      "scope": "protected_cupti_identity",
+      "code": "if paths != {str(PROTECTED_CUPTI)} or digest(PROTECTED_CUPTI) != PROTECTED_CUPTI_SHA:",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 289,
+      "scope": "protected_cupti_identity",
+      "code": "return {\"path\": str(PROTECTED_CUPTI), \"sha256\": PROTECTED_CUPTI_SHA, \"API\": version.value}",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 292,
+      "scope": "observed_call",
+      "code": "def observed_call(function, label, record_function):",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 297,
+      "scope": "observed",
+      "code": "owner = record_function(label)",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 313,
+      "scope": "project_observers",
+      "code": "def project_observers(record_function):",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 335,
+      "scope": "project_observers",
+      "code": "plan.append((module, name, original, observed_call(original, label, record_function)))",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 345,
+      "scope": "project_observers",
+      "code": "plan.append((owner, name, original, observed_call(original, label, record_function)))",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 354,
+      "scope": "project_observers",
+      "code": "staticmethod(observed_call(original.__func__, label, record_function))))",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 359,
+      "scope": "project_observers",
+      "code": "plan.extend(observer_plan(record_function))",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 480,
+      "scope": "mapping_snapshot",
+      "code": "\"path_sha256\": hashlib.sha256(name.encode(\"utf-8\", errors=\"surrogateescape\")).hexdigest(),",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 486,
+      "scope": "mapping_snapshot",
+      "code": "raw_record = {\"path\": str(path), \"sha256\": digest(path), \"bytes\": path.stat().st_size,",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 496,
+      "scope": "mapping_snapshot",
+      "code": "return {\"raw\": raw_record, \"summary_path\": str(summary_path), \"summary_sha256\": digest(summary_path),",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 526,
+      "scope": "start",
+      "code": "from torch.profiler import ProfilerActivity, _ExperimentalConfig, profile, record_function, supported_activities",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 546,
+      "scope": "start",
+      "code": "\"experimental_API_sha256\": hashlib.sha256(_ExperimentalConfig.__init__.__doc__.encode()).hexdigest()}",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 547,
+      "scope": "start",
+      "code": "plan = project_observers(record_function)",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 574,
+      "scope": "finish",
+      "code": "self.owner.export_chrome_trace(str(path))",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 575,
+      "scope": "finish",
+      "code": "self.record[\"trace\"] = {\"path\": str(path), \"sha256\": digest(path), \"bytes\": path.stat().st_size}",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 670,
+      "scope": "record_execution_profile",
+      "code": "\"sha256\": identity_digest(preparation.identity()),",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 699,
+      "scope": "prepared_prompt",
+      "code": "if template is None or template.provenance()[\"sha256\"] != TARGET_TEMPLATE_SHA:",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 936,
+      "scope": "run_quality_spotchecks",
+      "code": "\"prompt_sha256\": hashlib.sha256(prompt[\"rendered\"].encode(\"utf-8\")).hexdigest(),",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 937,
+      "scope": "run_quality_spotchecks",
+      "code": "\"source_prompt_sha256\": hashlib.sha256(prompt[\"messages\"][0][\"content\"].encode(\"utf-8\")).hexdigest(),",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 939,
+      "scope": "run_quality_spotchecks",
+      "code": "\"dataset_sha256\": status[\"dataset_sha256\"],",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 940,
+      "scope": "run_quality_spotchecks",
+      "code": "\"quality_helper_sha256\": status[\"helper_sha256\"],",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 980,
+      "scope": "run_fast_grid",
+      "code": "\"prompt_sha256\": hashlib.sha256(prompt[\"rendered\"].encode(\"utf-8\")).hexdigest(),",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 1077,
+      "scope": "run_concurrency_leader",
+      "code": "\"dataset_sha256\": hashlib.sha256(json.dumps(quality.CASES, ensure_ascii=True, separators=(\",\", \":\")).encode(\"ascii\")).hexdigest(),",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 1078,
+      "scope": "run_concurrency_leader",
+      "code": "\"helper_sha256\": digest(quality.__file__),",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 1089,
+      "scope": "run_concurrency_leader",
+      "code": "\"wheel_sha256\": digest(args.wheel), \"source_hold_sha256\": digest(args.source_hold)},",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 1104,
+      "scope": "run_concurrency_leader",
+      "code": "\"helper_sha256\": digest(finite.__file__), \"eos\": \"ordinary stop_eos=True\",",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 1316,
+      "scope": "launch",
+      "code": "\"source_hold\": {\"path\": str(args.source_hold), \"sha256\": hashlib.sha256(hold).hexdigest()},",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 1317,
+      "scope": "launch",
+      "code": "\"wheel\": {\"path\": str(args.wheel), \"sha256\": digest(args.wheel)},",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 1318,
+      "scope": "launch",
+      "code": "\"tool_sha256\": digest(__file__),",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028/tools/v100_backend_probe.py",
+      "line": 1319,
+      "scope": "launch",
+      "code": "\"concurrency_helper_sha256\": digest(concurrency_module().__file__) if args.concurrency_grid else None,",
+      "entry_refs": [
+        "D17"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_experts_actual.py",
+      "line": 40,
+      "scope": "command",
+      "code": "\"--profile-from-start\", \"off\", \"--replay-mode\", \"kernel\", \"--kernel-name-base\", \"function\",",
+      "entry_refs": [
+        "D19",
+        "D20"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_experts_actual.py",
+      "line": 42,
+      "scope": "command",
+      "code": "\"--metrics\", \",\".join(smoke.METRICS), \"--launch-count\", \"2\", \"--launch-skip\", \"0\", \"--clock-control\", \"none\", \"--cache-control\", \"none\"]",
+      "entry_refs": [
+        "D19",
+        "D20"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_experts_actual.py",
+      "line": 94,
+      "scope": "run_operator",
+      "code": "span[\"retained_sha256\"] = hashlib.sha256(packed.data.cpu().numpy().tobytes()).hexdigest()",
+      "entry_refs": [
+        "D19",
+        "D20"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_experts_actual.py",
+      "line": 109,
+      "scope": "run_operator",
+      "code": "torch.cuda.synchronize()",
+      "entry_refs": [
+        "D19",
+        "D20"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_experts_actual.py",
+      "line": 110,
+      "scope": "run_operator",
+      "code": "before = output.cpu().numpy().copy()",
+      "entry_refs": [
+        "D19",
+        "D20"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_experts_actual.py",
+      "line": 111,
+      "scope": "run_operator",
+      "code": "reference = expected.cpu().numpy().copy()",
+      "entry_refs": [
+        "D19",
+        "D20"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_experts_actual.py",
+      "line": 118,
+      "scope": "operation",
+      "code": "torch.cuda.synchronize()",
+      "entry_refs": [
+        "D19",
+        "D20"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_experts_actual.py",
+      "line": 120,
+      "scope": "run_operator",
+      "code": "after = output.cpu().numpy().copy()",
+      "entry_refs": [
+        "D19",
+        "D20"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_experts_actual.py",
+      "line": 131,
+      "scope": "run_operator",
+      "code": "digest = hashlib.sha256()",
+      "entry_refs": [
+        "D19",
+        "D20"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_experts_actual.py",
+      "line": 135,
+      "scope": "run_operator",
+      "code": "libraries[name] = {\"bytes\": path.stat().st_size, \"sha256\": digest.hexdigest()}",
+      "entry_refs": [
+        "D19",
+        "D20"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_experts_actual.py",
+      "line": 137,
+      "scope": "run_operator",
+      "code": "for name, array in ((\"input\", x.cpu().numpy()), (\"picks\", ids_cpu.numpy()), (\"reference\", reference), (\"before\", before), (\"after\", after)):",
+      "entry_refs": [
+        "D19",
+        "D20"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_experts_actual.py",
+      "line": 143,
+      "scope": "run_operator",
+      "code": "\"model\": str(args.model), \"weight_spans\": spans, \"wheel_sha256\": smoke.sha(args.wheel),",
+      "entry_refs": [
+        "D19",
+        "D20"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_experts_actual.py",
+      "line": 144,
+      "scope": "run_operator",
+      "code": "\"runtime_source\": args.runtime_source, \"fixture_sha256\": smoke.sha(args.source / \"tests/cuda/test_sm70_gguf_exact_actual.py\"),",
+      "entry_refs": [
+        "D19",
+        "D20"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_experts_actual.py",
+      "line": 161,
+      "scope": "launch",
+      "code": "dump(args.out / \"identity.json\", {\"ncu_sha256\": smoke.NCU_SHA, \"wheel_sha256\": wheel_before,",
+      "entry_refs": [
+        "D19",
+        "D20"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_experts_actual.py",
+      "line": 162,
+      "scope": "launch",
+      "code": "\"script_sha256\": smoke.sha(__file__), \"runtime_source\": args.runtime_source,",
+      "entry_refs": [
+        "D19",
+        "D20"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/pinned-framework/profiler.py",
+      "line": 87,
+      "scope": "default",
+      "code": "return obj.tolist()",
+      "entry_refs": [
+        "D13"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/pinned-framework/profiler.py",
+      "line": 286,
+      "scope": "__init__",
+      "code": "# at start, closed at stop (_monitor_window_id), exported by export_chrome_trace.",
+      "entry_refs": [
+        "D13"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/pinned-framework/profiler.py",
+      "line": 398,
+      "scope": "prepare_trace",
+      "code": "# Publish the observer so record_function routes annotations to it. The reference",
+      "entry_refs": [
+        "D13"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/pinned-framework/profiler.py",
+      "line": 399,
+      "scope": "prepare_trace",
+      "code": "# lives in torch.autograd (not the cupti package), so record_function never",
+      "entry_refs": [
+        "D13"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/pinned-framework/profiler.py",
+      "line": 461,
+      "scope": "stop_trace",
+      "code": "# Unpublish the observer (record_function stops routing here) and close the trace",
+      "entry_refs": [
+        "D13"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/pinned-framework/profiler.py",
+      "line": 469,
+      "scope": "export_chrome_trace",
+      "code": "def export_chrome_trace(self, path: str, use_python_export: bool = False):",
+      "entry_refs": [
+        "D13"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/pinned-framework/profiler.py",
+      "line": 503,
+      "scope": "export_chrome_trace",
+      "code": "self.profiler.export_chrome_trace(fp.name, self._trace_metadata)",
+      "entry_refs": [
+        "D13"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/pinned-framework/profiler.py",
+      "line": 514,
+      "scope": "export_chrome_trace",
+      "code": "self.profiler.export_chrome_trace(",
+      "entry_refs": [
+        "D13"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/pinned-framework/profiler.py",
+      "line": 519,
+      "scope": "export_chrome_trace",
+      "code": "self.profiler.export_chrome_trace(fp.name, self._trace_metadata)",
+      "entry_refs": [
+        "D13"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/pinned-framework/profiler.py",
+      "line": 523,
+      "scope": "export_chrome_trace",
+      "code": "self.profiler.export_chrome_trace(path, self._trace_metadata)",
+      "entry_refs": [
+        "D13"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/pinned-framework/profiler.py",
+      "line": 626,
+      "scope": "events",
+      "code": "\"ExperimentalConfig. Use export_chrome_trace() instead.\"",
+      "entry_refs": [
+        "D13"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/pinned-framework/profiler.py",
+      "line": 866,
+      "scope": "handler_fn",
+      "code": "prof.export_chrome_trace(",
+      "entry_refs": [
+        "D13"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/pinned-framework/profiler.py",
+      "line": 898,
+      "scope": "profile",
+      "code": "trace (e.g. via :meth:`export_chrome_trace`) or print a summary.",
+      "entry_refs": [
+        "D13"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/pinned-framework/profiler.py",
+      "line": 981,
+      "scope": "profile",
+      "code": "# prof.export_chrome_trace(\"/tmp/test_trace_\" + str(prof.step_num) + \".json\")",
+      "entry_refs": [
+        "D13"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/pinned-framework/profiler.py",
+      "line": 1073,
+      "scope": "__init__",
+      "code": "self.step_rec_fn: prof.record_function | None = None",
+      "entry_refs": [
+        "D13"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/pinned-framework/profiler.py",
+      "line": 1216,
+      "scope": "start",
+      "code": "self.step_rec_fn = prof.record_function(",
+      "entry_refs": [
+        "D13"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/pinned-framework/profiler.py",
+      "line": 1320,
+      "scope": "step",
+      "code": "self.step_rec_fn = prof.record_function(",
+      "entry_refs": [
+        "D13"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/pinned-framework/profiler.py",
+      "line": 1607,
+      "scope": "_record_pg_config",
+      "code": "torch.autograd._record_function_with_args_enter(",
+      "entry_refs": [
+        "D13"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/ncu-operator-int32-20261028/package/tools/ncu_experts_actual.py",
+      "line": 48,
+      "scope": "command",
+      "code": "\"--profile-from-start\", \"off\", \"--replay-mode\", \"kernel\", \"--kernel-name-base\", \"function\",",
+      "entry_refs": [
+        "D21"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/ncu-operator-int32-20261028/package/tools/ncu_experts_actual.py",
+      "line": 50,
+      "scope": "command",
+      "code": "\"--metrics\", \",\".join(smoke.METRICS), \"--launch-count\", \"2\", \"--launch-skip\", \"0\", \"--clock-control\", \"none\", \"--cache-control\", \"none\"]",
+      "entry_refs": [
+        "D21"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/ncu-operator-int32-20261028/package/tools/ncu_experts_actual.py",
+      "line": 102,
+      "scope": "run_operator",
+      "code": "span[\"retained_sha256\"] = hashlib.sha256(packed.data.cpu().numpy().tobytes()).hexdigest()",
+      "entry_refs": [
+        "D21"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/ncu-operator-int32-20261028/package/tools/ncu_experts_actual.py",
+      "line": 116,
+      "scope": "run_operator",
+      "code": "torch.cuda.synchronize()",
+      "entry_refs": [
+        "D21"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/ncu-operator-int32-20261028/package/tools/ncu_experts_actual.py",
+      "line": 117,
+      "scope": "run_operator",
+      "code": "before = output.cpu().numpy().copy()",
+      "entry_refs": [
+        "D21"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/ncu-operator-int32-20261028/package/tools/ncu_experts_actual.py",
+      "line": 118,
+      "scope": "run_operator",
+      "code": "reference = expected.cpu().numpy().copy()",
+      "entry_refs": [
+        "D21"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/ncu-operator-int32-20261028/package/tools/ncu_experts_actual.py",
+      "line": 125,
+      "scope": "operation",
+      "code": "torch.cuda.synchronize()",
+      "entry_refs": [
+        "D21"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/ncu-operator-int32-20261028/package/tools/ncu_experts_actual.py",
+      "line": 127,
+      "scope": "run_operator",
+      "code": "after = output.cpu().numpy().copy()",
+      "entry_refs": [
+        "D21"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/ncu-operator-int32-20261028/package/tools/ncu_experts_actual.py",
+      "line": 138,
+      "scope": "run_operator",
+      "code": "digest = hashlib.sha256()",
+      "entry_refs": [
+        "D21"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/ncu-operator-int32-20261028/package/tools/ncu_experts_actual.py",
+      "line": 142,
+      "scope": "run_operator",
+      "code": "libraries[name] = {\"bytes\": path.stat().st_size, \"sha256\": digest.hexdigest()}",
+      "entry_refs": [
+        "D21"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/ncu-operator-int32-20261028/package/tools/ncu_experts_actual.py",
+      "line": 144,
+      "scope": "run_operator",
+      "code": "for name, array in ((\"input\", x.cpu().numpy()), (\"picks\", ids_cpu.numpy()), (\"reference\", reference), (\"before\", before), (\"after\", after)):",
+      "entry_refs": [
+        "D21"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/ncu-operator-int32-20261028/package/tools/ncu_experts_actual.py",
+      "line": 150,
+      "scope": "run_operator",
+      "code": "\"model\": str(args.model), \"weight_spans\": spans, \"wheel_sha256\": smoke.sha(args.wheel),",
+      "entry_refs": [
+        "D21"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/ncu-operator-int32-20261028/package/tools/ncu_experts_actual.py",
+      "line": 151,
+      "scope": "run_operator",
+      "code": "\"runtime_source\": args.runtime_source, \"fixture_sha256\": smoke.sha(args.source / \"tests/cuda/test_sm70_gguf_exact_actual.py\"),",
+      "entry_refs": [
+        "D21"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/ncu-operator-int32-20261028/package/tools/ncu_experts_actual.py",
+      "line": 168,
+      "scope": "launch",
+      "code": "dump(args.out / \"identity.json\", {\"ncu_sha256\": smoke.NCU_SHA, \"wheel_sha256\": wheel_before,",
+      "entry_refs": [
+        "D21"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/ncu-operator-int32-20261028/package/tools/ncu_experts_actual.py",
+      "line": 169,
+      "scope": "launch",
+      "code": "\"script_sha256\": smoke.sha(__file__), \"runtime_source\": args.runtime_source,",
+      "entry_refs": [
+        "D21"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/finite_concurrency.py",
+      "line": 95,
+      "scope": "record",
+      "code": "return {\"token_ids\": self.ids, \"chunk_monotonic_ns\": self.times[:self.events].tolist(),",
+      "entry_refs": [
+        "D02",
+        "D03",
+        "D05",
+        "D06",
+        "D07"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/finite_concurrency.py",
+      "line": 96,
+      "scope": "record",
+      "code": "\"chunk_cumulative_committed_tokens\": self.counts[:self.events].tolist()}",
+      "entry_refs": [
+        "D02",
+        "D03",
+        "D05",
+        "D06",
+        "D07"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/finite_concurrency.py",
+      "line": 209,
+      "scope": "owned_pool",
+      "code": "pool, barrier = None, threading.Barrier(MAXIMUM + 1)",
+      "entry_refs": [
+        "D02",
+        "D03",
+        "D05",
+        "D06",
+        "D07"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/finite_concurrency.py",
+      "line": 215,
+      "scope": "owned_pool",
+      "code": "barrier.wait(timeout)",
+      "entry_refs": [
+        "D02",
+        "D03",
+        "D05",
+        "D06",
+        "D07"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/finite_concurrency.py",
+      "line": 217,
+      "scope": "owned_pool",
+      "code": "future.result()",
+      "entry_refs": [
+        "D02",
+        "D03",
+        "D05",
+        "D06",
+        "D07"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/finite_concurrency.py",
+      "line": 252,
+      "scope": "run_case",
+      "code": "abort, barrier = threading.Event(), threading.Barrier(count + 1)",
+      "entry_refs": [
+        "D02",
+        "D03",
+        "D05",
+        "D06",
+        "D07"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/finite_concurrency.py",
+      "line": 266,
+      "scope": "work",
+      "code": "barrier.wait(timeout)",
+      "entry_refs": [
+        "D02",
+        "D03",
+        "D05",
+        "D06",
+        "D07"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/finite_concurrency.py",
+      "line": 297,
+      "scope": "run_case",
+      "code": "barrier.wait(timeout)",
+      "entry_refs": [
+        "D02",
+        "D03",
+        "D05",
+        "D06",
+        "D07"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/finite_concurrency.py",
+      "line": 324,
+      "scope": "run_case",
+      "code": "abort.wait(POLL_SECONDS) if not abort.is_set() else time.sleep(POLL_SECONDS)",
+      "entry_refs": [
+        "D02",
+        "D03",
+        "D05",
+        "D06",
+        "D07"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/finite_concurrency.py",
+      "line": 339,
+      "scope": "run_case",
+      "code": "future.result()",
+      "entry_refs": [
+        "D02",
+        "D03",
+        "D05",
+        "D06",
+        "D07"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/finite_concurrency.py",
+      "line": 501,
+      "scope": "run_screen_case",
+      "code": "stop, failed, barrier = threading.Event(), threading.Event(), threading.Barrier(count + 1)",
+      "entry_refs": [
+        "D02",
+        "D03",
+        "D05",
+        "D06",
+        "D07"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/finite_concurrency.py",
+      "line": 537,
+      "scope": "work",
+      "code": "barrier.wait(min(30, timeout))",
+      "entry_refs": [
+        "D02",
+        "D03",
+        "D05",
+        "D06",
+        "D07"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/finite_concurrency.py",
+      "line": 568,
+      "scope": "run_screen_case",
+      "code": "barrier.wait(min(30, timeout))",
+      "entry_refs": [
+        "D02",
+        "D03",
+        "D05",
+        "D06",
+        "D07"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/finite_concurrency.py",
+      "line": 614,
+      "scope": "run_screen_case",
+      "code": "time.sleep(POLL_SECONDS)",
+      "entry_refs": [
+        "D02",
+        "D03",
+        "D05",
+        "D06",
+        "D07"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/finite_concurrency.py",
+      "line": 632,
+      "scope": "run_screen_case",
+      "code": "future.result()",
+      "entry_refs": [
+        "D02",
+        "D03",
+        "D05",
+        "D06",
+        "D07"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_traces.py",
+      "line": 10,
+      "scope": "module",
+      "code": "from concurrent.futures import ProcessPoolExecutor",
+      "entry_refs": [
+        "D27"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_traces.py",
+      "line": 32,
+      "scope": "__init__",
+      "code": "self.digest = hashlib.sha256()",
+      "entry_refs": [
+        "D27"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_traces.py",
+      "line": 254,
+      "scope": "analyze",
+      "code": "raw_sha = stream.digest.hexdigest()",
+      "entry_refs": [
+        "D27"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_traces.py",
+      "line": 255,
+      "scope": "analyze",
+      "code": "if raw_sha != profile[\"trace\"][\"sha256\"] or stream.bytes != initial.st_size:",
+      "entry_refs": [
+        "D27"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_traces.py",
+      "line": 285,
+      "scope": "analyze",
+      "code": "\"trace\": {\"path\": str(path), \"bytes\": stream.bytes, \"sha256\": raw_sha},",
+      "entry_refs": [
+        "D27"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_traces.py",
+      "line": 310,
+      "scope": "analyze",
+      "code": "\"events\": events, \"seconds\": report[\"analysis_elapsed_s\"], \"sha256\": raw_sha,",
+      "entry_refs": [
+        "D27"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_traces.py",
+      "line": 325,
+      "scope": "main",
+      "code": "configuration = {\"argv\": os.sys.argv, \"python\": os.sys.version, \"source_sha256\": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),",
+      "entry_refs": [
+        "D27"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_traces.py",
+      "line": 328,
+      "scope": "main",
+      "code": "with ProcessPoolExecutor(max_workers=args.workers) as pool:",
+      "entry_refs": [
+        "D27"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_decode.py",
+      "line": 5,
+      "scope": "module",
+      "code": "from concurrent.futures import ProcessPoolExecutor",
+      "entry_refs": [
+        "D26"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_decode.py",
+      "line": 97,
+      "scope": "analyze",
+      "code": "if stream.bytes != initial.st_size or stream.digest.hexdigest() != profile[\"trace\"][\"sha256\"]:",
+      "entry_refs": [
+        "D26"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_decode.py",
+      "line": 114,
+      "scope": "analyze",
+      "code": "launch = \"cudaGraphLaunch\" if \"graphlaunch\" in origin[0].lower() else (\"ordinary_kernel_launch\" if \"launch\" in origin[0].lower() else \"other_correlated_runtime\")",
+      "entry_refs": [
+        "D26"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_decode.py",
+      "line": 157,
+      "scope": "analyze",
+      "code": "\"trace_sha256\": stream.digest.hexdigest(), \"trace_bytes\": stream.bytes,",
+      "entry_refs": [
+        "D26"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_decode.py",
+      "line": 160,
+      "scope": "analyze",
+      "code": "\"interpretation\": \"Actual timed events start-assigned to windows; durations clipped at window end. Project labels clipped by interval intersection and inclusive/nested. CPU/APIs are profiled wall intervals, not CPU busy time. Kernel union includes NCCL wait kernels. decode_core is certainly after first committed callback; decode_expanded brackets boundary uncertainty. Graph nodes correlate by actual CUPTI correlation id to cudaGraphLaunch when present; graph ids alone do not establish launch identity. Unmatched graph nodes stay unattributed. CPUlabels exclude gpu_user_annotation. No speed/quality claim.\"}",
+      "entry_refs": [
+        "D26"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_decode.py",
+      "line": 178,
+      "scope": "main",
+      "code": "with ProcessPoolExecutor(max_workers=args.workers) as pool:",
+      "entry_refs": [
+        "D26"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_concurrent.py",
+      "line": 3,
+      "scope": "module",
+      "code": "from concurrent.futures import ProcessPoolExecutor",
+      "entry_refs": [
+        "D23",
+        "D24",
+        "D25"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_concurrent.py",
+      "line": 50,
+      "scope": "derive",
+      "code": "if stream.digest.hexdigest()!=rank0[\"trace\"][\"sha256\"] or stream.bytes!=path.stat().st_size:",
+      "entry_refs": [
+        "D23",
+        "D24",
+        "D25"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_concurrent.py",
+      "line": 100,
+      "scope": "main",
+      "code": "with ProcessPoolExecutor(max_workers=2) as pool:",
+      "entry_refs": [
+        "D23",
+        "D24",
+        "D25"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/analyze_concurrent.py",
+      "line": 106,
+      "scope": "main",
+      "code": "\"trace_identities\":[{\"rank\":r[\"rank\"],\"sha256\":r[\"trace_sha256\"],\"bytes\":r[\"trace_bytes\"]} for r in reports],",
+      "entry_refs": [
+        "D23",
+        "D24",
+        "D25"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_counter_smoke.py",
+      "line": 18,
+      "scope": "sha",
+      "code": "return hashlib.sha256(Path(path).read_bytes()).hexdigest()",
+      "entry_refs": [
+        "D18",
+        "D22"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_counter_smoke.py",
+      "line": 23,
+      "scope": "command",
+      "code": "\"--profile-from-start\", \"off\", \"--replay-mode\", \"kernel\",",
+      "entry_refs": [
+        "D18",
+        "D22"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_counter_smoke.py",
+      "line": 26,
+      "scope": "command",
+      "code": "\"--launch-skip\", \"0\", \"--clock-control\", \"none\", \"--cache-control\", \"none\",",
+      "entry_refs": [
+        "D18",
+        "D22"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_counter_smoke.py",
+      "line": 75,
+      "scope": "run_smoke",
+      "code": "torch.cuda.synchronize()",
+      "entry_refs": [
+        "D18",
+        "D22"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_counter_smoke.py",
+      "line": 77,
+      "scope": "run_smoke",
+      "code": "before = output.cpu().numpy().copy()",
+      "entry_refs": [
+        "D18",
+        "D22"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_counter_smoke.py",
+      "line": 82,
+      "scope": "operation",
+      "code": "torch.cuda.synchronize()",
+      "entry_refs": [
+        "D18",
+        "D22"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_counter_smoke.py",
+      "line": 84,
+      "scope": "run_smoke",
+      "code": "after = output.cpu().numpy().copy()",
+      "entry_refs": [
+        "D18",
+        "D22"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_counter_smoke.py",
+      "line": 92,
+      "scope": "run_smoke",
+      "code": "\"dtype\": \"float32\", \"expected_sha256\": hashlib.sha256(expected.tobytes()).hexdigest(),",
+      "entry_refs": [
+        "D18",
+        "D22"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_counter_smoke.py",
+      "line": 93,
+      "scope": "run_smoke",
+      "code": "\"before_sha256\": hashlib.sha256(before.tobytes()).hexdigest(),",
+      "entry_refs": [
+        "D18",
+        "D22"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_counter_smoke.py",
+      "line": 94,
+      "scope": "run_smoke",
+      "code": "\"after_sha256\": hashlib.sha256(after.tobytes()).hexdigest(),",
+      "entry_refs": [
+        "D18",
+        "D22"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_counter_smoke.py",
+      "line": 158,
+      "scope": "launch",
+      "code": "(out / \"command.json\").write_text(json.dumps({\"argv\": argv, \"ncu_sha256\": NCU_SHA,",
+      "entry_refs": [
+        "D18",
+        "D22"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_counter_smoke.py",
+      "line": 159,
+      "scope": "launch",
+      "code": "\"script_sha256\": sha(__file__), \"mode\": \"stateless kernel replay\", \"host_tuning\": \"none\"}, indent=2) + \"\\n\")",
+      "entry_refs": [
+        "D18",
+        "D22"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027/tools/ncu_counter_smoke.py",
+      "line": 188,
+      "scope": "launch",
+      "code": "\"ncu_elf_sha256\": NCU_SHA,",
+      "entry_refs": [
+        "D18",
+        "D22"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/profile_trace_reader.py",
+      "line": 15,
+      "scope": "__init__",
+      "code": "self.digest = hashlib.sha256()",
+      "entry_refs": [
+        "D16"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 84,
+      "scope": "digest",
+      "code": "def digest(path):",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 86,
+      "scope": "digest",
+      "code": "return hashlib.file_digest(source, \"sha256\").hexdigest()",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 134,
+      "scope": "arguments",
+      "code": "parser.add_argument(\"--image-identity\", required=True, help=\"actual immutable base image sha256 identity\")",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 170,
+      "scope": "arguments",
+      "code": "if not re.fullmatch(r\"sha256:[0-9a-f]{64}\", args.image_identity):",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 171,
+      "scope": "arguments",
+      "code": "parser.error(\"--image-identity must be an actual immutable sha256 image identity\")",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 239,
+      "scope": "arguments",
+      "code": "\"sha256\": hashlib.sha256(raw).hexdigest()}",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 260,
+      "scope": "installed_identity",
+      "code": "actual = digest(path)",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 261,
+      "scope": "installed_identity",
+      "code": "expected = hashlib.sha256(archive.read(name)).hexdigest()",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 269,
+      "scope": "installed_identity",
+      "code": "\"record_sha256\": digest(distribution.locate_file(records[0])), \"affected_files\": rows}",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 281,
+      "scope": "protected_cupti_identity",
+      "code": "if paths != {str(PROTECTED_CUPTI)} or digest(PROTECTED_CUPTI) != PROTECTED_CUPTI_SHA:",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 289,
+      "scope": "protected_cupti_identity",
+      "code": "return {\"path\": str(PROTECTED_CUPTI), \"sha256\": PROTECTED_CUPTI_SHA, \"API\": version.value}",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 292,
+      "scope": "observed_call",
+      "code": "def observed_call(function, label, record_function):",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 297,
+      "scope": "observed",
+      "code": "owner = record_function(label)",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 313,
+      "scope": "project_observers",
+      "code": "def project_observers(record_function):",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 335,
+      "scope": "project_observers",
+      "code": "plan.append((module, name, original, observed_call(original, label, record_function)))",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 345,
+      "scope": "project_observers",
+      "code": "plan.append((owner, name, original, observed_call(original, label, record_function)))",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 354,
+      "scope": "project_observers",
+      "code": "staticmethod(observed_call(original.__func__, label, record_function))))",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 359,
+      "scope": "project_observers",
+      "code": "plan.extend(observer_plan(record_function))",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 473,
+      "scope": "mapping_snapshot",
+      "code": "\"path_sha256\": hashlib.sha256(name.encode(\"utf-8\", errors=\"surrogateescape\")).hexdigest(),",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 479,
+      "scope": "mapping_snapshot",
+      "code": "raw_record = {\"path\": str(path), \"sha256\": digest(path), \"bytes\": path.stat().st_size,",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 489,
+      "scope": "mapping_snapshot",
+      "code": "return {\"raw\": raw_record, \"summary_path\": str(summary_path), \"summary_sha256\": digest(summary_path),",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 519,
+      "scope": "start",
+      "code": "from torch.profiler import ProfilerActivity, _ExperimentalConfig, profile, record_function, supported_activities",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 539,
+      "scope": "start",
+      "code": "\"experimental_API_sha256\": hashlib.sha256(_ExperimentalConfig.__init__.__doc__.encode()).hexdigest()}",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 540,
+      "scope": "start",
+      "code": "plan = project_observers(record_function)",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 567,
+      "scope": "finish",
+      "code": "self.owner.export_chrome_trace(str(path))",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 568,
+      "scope": "finish",
+      "code": "self.record[\"trace\"] = {\"path\": str(path), \"sha256\": digest(path), \"bytes\": path.stat().st_size}",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 663,
+      "scope": "record_execution_profile",
+      "code": "\"sha256\": identity_digest(preparation.identity()),",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 692,
+      "scope": "prepared_prompt",
+      "code": "if template is None or template.provenance()[\"sha256\"] != TARGET_TEMPLATE_SHA:",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 929,
+      "scope": "run_quality_spotchecks",
+      "code": "\"prompt_sha256\": hashlib.sha256(prompt[\"rendered\"].encode(\"utf-8\")).hexdigest(),",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 930,
+      "scope": "run_quality_spotchecks",
+      "code": "\"source_prompt_sha256\": hashlib.sha256(prompt[\"messages\"][0][\"content\"].encode(\"utf-8\")).hexdigest(),",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 932,
+      "scope": "run_quality_spotchecks",
+      "code": "\"dataset_sha256\": status[\"dataset_sha256\"],",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 933,
+      "scope": "run_quality_spotchecks",
+      "code": "\"quality_helper_sha256\": status[\"helper_sha256\"],",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 973,
+      "scope": "run_fast_grid",
+      "code": "\"prompt_sha256\": hashlib.sha256(prompt[\"rendered\"].encode(\"utf-8\")).hexdigest(),",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 1070,
+      "scope": "run_concurrency_leader",
+      "code": "\"dataset_sha256\": hashlib.sha256(json.dumps(quality.CASES, ensure_ascii=True, separators=(\",\", \":\")).encode(\"ascii\")).hexdigest(),",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 1071,
+      "scope": "run_concurrency_leader",
+      "code": "\"helper_sha256\": digest(quality.__file__),",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 1082,
+      "scope": "run_concurrency_leader",
+      "code": "\"wheel_sha256\": digest(args.wheel), \"source_hold_sha256\": digest(args.source_hold)},",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 1097,
+      "scope": "run_concurrency_leader",
+      "code": "\"helper_sha256\": digest(finite.__file__), \"eos\": \"ordinary stop_eos=True\",",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 1309,
+      "scope": "launch",
+      "code": "\"source_hold\": {\"path\": str(args.source_hold), \"sha256\": hashlib.sha256(hold).hexdigest()},",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 1310,
+      "scope": "launch",
+      "code": "\"wheel\": {\"path\": str(args.wheel), \"sha256\": digest(args.wheel)},",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 1311,
+      "scope": "launch",
+      "code": "\"tool_sha256\": digest(__file__),",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    },
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028/tools/v100_backend_probe.py",
+      "line": 1312,
+      "scope": "launch",
+      "code": "\"concurrency_helper_sha256\": digest(concurrency_module().__file__) if args.concurrency_grid else None,",
+      "entry_refs": [
+        "D01",
+        "D04",
+        "D08",
+        "D09",
+        "D10",
+        "D11",
+        "D14",
+        "D15",
+        "D28",
+        "D29"
+      ],
+      "disposition": "Source-specificdiagnostic/bench/postprocess region inreferencedentries; patternalone notproof ofproductionwait"
+    }
+  ],
+  "unknowns": "NativeKineto buffer/flushinternal timing, NCU numberofpasses/vendorstalls/cacheeffects, allocatorRSS/runtime waits andproductionimpactquantities unmeasured/opaque; do notinvent. Existinglogicalbounds/cgroup/oraclechecks not exactphysicalpeak guarantee.",
+  "no_actions": "Artifactwrites+read-onlylocal/remoteexisting-container sourcecopy only; no newprocessprobes/tests/builds/profiles/GPUs/implementationedits.",
+  "historical_failed_publication_workflow": {
+    "classification": "EXPLICITLYEXCLUDEDseparateauthorizedforensicsworkflow, notnormalanalysisentrypoint",
+    "helper": "analyze_failed_publication.py fromearlierboundedcomplete-overflowreceipt investigation",
+    "reason": "PriorDocker1becausefinalreport138918>131072; authoritativecompleteoverflowretained. Normalrun_analysis/closed6513strictterminal0 staysunchanged; thispartitiondoesnotreinterpretDocker1asnormalcapturepass.",
+    "contract": "OnlyexplicitFAILED-PUBLICATIONdiagnosticinputafterindependentall8source/CUPTI/complete trace/engineclose/retirement/rawhashproof; preserveoverallDocker1/reportpublicationfailure andnoTPSclaim. No silentfallback/truncation orwaivedguard.",
+    "scope": "Historicalconditionaldiagnosticpathretainedforprovenance; actual6efN24normalcaptureDocker0 notthisworkflow. No newcode scan/test/sourceedit."
+  }
+}

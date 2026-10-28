@@ -1,0 +1,20 @@
+{
+  "source_commit": "2a1c9dcffc597524d148b6b6aa2ff7fb7f8473e3",
+  "APP_source": "c517964eb7bebc3543274dc7be7ab920788384d5",
+  "APP_991f_unchanged": true,
+  "all_src_byteexact": true,
+  "all_oracle_and_test_functions_AST_byteexact": [
+    "workspace",
+    "bank_standard_aten",
+    "exercise",
+    "test_large_tiles_preserve_bank_standard_aten_bits_and_neighbors",
+    "test_actual_tp8_projection_shapes_keep_original_part_and_cast_boundaries",
+    "test_large_local_head_and_same_stream_graph_replay_keep_all_chunk_owners",
+    "test_abort_between_tiles_preserves_completed_output_and_retains_live_scratch"
+  ],
+  "only_fixture_delta": "Remove false reduction override; observe/assert reductionTrue andaccumulationFalse before/after, do not write either flag",
+  "old_mathregion": "reductionFalse old32reportedPASS kept; nottargetTrue/Falsequalification",
+  "new_GPU32": "UNRUNauthor; Rootonly",
+  "CPU": "3policycontrolsPASS;32GPUcollected;Ruff;normal718canonicalsource+FDc79",
+  "scope": "noDense/HC/Expert/nativecodeor oracle/tolerance/case changes"
+}

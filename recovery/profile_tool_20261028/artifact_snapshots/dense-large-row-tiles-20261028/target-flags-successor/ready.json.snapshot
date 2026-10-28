@@ -1,0 +1,16 @@
+{
+  "source_commit": "2a1c9dcffc597524d148b6b6aa2ff7fb7f8473e3",
+  "APP991f_unchanged": true,
+  "HOLD": "34c20fc2b7b55e40dcf9111edea66ed153a73ee6f06e521ad654ed37f125fdac",
+  "fixture_HOLD": "21a7326fb1c3c8d06437d0be01a5f65a4eecae9bd6fe8936928623bfb5d521c9",
+  "manifest": "7fc2265ebdd040f049f5809676d9e20b869e4ecdb92c4cae852a5ea15803ae52",
+  "files": 16,
+  "package_bytes": 3300079,
+  "remote": "/home/kklouzal/tensorfold-v100-qualification-20261026/dense-large-tiles-991f-targetflags-2a1c-20261028",
+  "launch": [
+    "bash",
+    "/home/kklouzal/tensorfold-v100-qualification-20261026/dense-large-tiles-991f-targetflags-2a1c-20261028/launch-command.sh"
+  ],
+  "GPU": "UNRUNauthor",
+  "setup": "remote evidence directory mustexist/empty/writable beforeREADY; stagerchecksseparately"
+}

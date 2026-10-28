@@ -1,0 +1,90 @@
+{
+  "execution-manifest.json": {
+    "sha256": "95336693957314d74ba50328679d2b9a37552cb3e11a891b7a4a1900503e5673",
+    "bytes": 1360
+  },
+  "expected-image-content.json": {
+    "sha256": "75a2fa9669c12e69e62e0a57694211a7b9ab91e0bd54b72e9830676856d19c2b",
+    "bytes": 6481
+  },
+  "expected-oci-manifest.json": {
+    "sha256": "96f6961708d064a9d2f9e73d4df43ce8a5695c1499f16943b670c21fd971e15e",
+    "bytes": 15680
+  },
+  "protected-files.json": {
+    "sha256": "291d7d19e5b2134691d6016859b9bc5d6c95a3d005ae22ca02600a9bcf5847f9",
+    "bytes": 1052
+  },
+  "verify_installed.py": {
+    "sha256": "c6fac7d7922231d98796f313a469ec2fea9094cf9aef2697f1b658a2f02f7a0d",
+    "bytes": 1587
+  },
+  "source-hold.json": {
+    "sha256": "03d05466149f3a13ee175d55943352d315b396d3499d1dc347433f36c43804cb",
+    "bytes": 3216
+  },
+  "wheel-provenance.json": {
+    "sha256": "8332edc577ca201c2c47cfa35494201a2a5eea132b915619a69701b7e0b43fbc",
+    "bytes": 127745
+  },
+  "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl": {
+    "sha256": "4b0ea6b51047f93b2b973ed5a467d8c279b94f6d85c683c4258a712ff6edd99f",
+    "bytes": 3191152
+  },
+  "bootstrap-finite.sh": {
+    "sha256": "d40b078c3be0c7389844f78cdfeacb90654af3e2fbf9097a0568533b277711db",
+    "bytes": 1613
+  },
+  "launch-finite.py": {
+    "sha256": "a42d33e1aeff44c1b9bd8c665fa3e6ff4211f53d9de339dc4857c3724a2f3038",
+    "bytes": 6920
+  },
+  "candidate.json": {
+    "sha256": "27e27e615adf6674879444bcdc2bed116e5cc87926035cc4753e36fa347be4a1",
+    "bytes": 3325
+  },
+  "runtime-source-hold.json": {
+    "sha256": "b5c78eb23e5d4c5111a707506a8afb5623cef81c0dd6412c70c1376786560f3a",
+    "bytes": 4450
+  },
+  "row-policy-source-hold.json": {
+    "sha256": "8021154e213e1383b2a26290d14cb4d5318dfb0c80eee7cb003e3f9fc5e2979d",
+    "bytes": 3745
+  },
+  "row-policy-inheritance-proof.json": {
+    "sha256": "4c92d4f2d0bc9bac597136adb711bdca1eeb9127eaa4571bab8673b52e0d341b",
+    "bytes": 1231
+  },
+  "tools/v100_backend_probe.py": {
+    "sha256": "2ef23642336378f987c97fd9d7de9ea55f8633742dd3818299575aaa0e6048ee",
+    "bytes": 111491
+  },
+  "tools/finite_concurrency.py": {
+    "sha256": "d009cf94050754115fdb0295b39aaa787904b09478464aeb772d8782b97eb86b",
+    "bytes": 40599
+  },
+  "tools/finite_quality.py": {
+    "sha256": "c498bd046e78c34bfc7db16c7decd43ec182151b24b3e09da282b9de0dac77a3",
+    "bytes": 3389
+  },
+  "tools/benchmark_output.py": {
+    "sha256": "ce7c0a0cdf80842dc67021ddc938ae32a2c8df39dfd4f36e5f48e72149484cfa",
+    "bytes": 3369
+  },
+  "tools/prepare_owner_trial_manifest.py": {
+    "sha256": "cd90a33ff81c60cffc1f180f0a756312cec2d06b4a29d4322cf622d7ca3b2741",
+    "bytes": 3062
+  },
+  "tools/concurrent_observers.py": {
+    "sha256": "9480e96af0ff0368d628b0f35ff01b657d703760f726ce8bd9970b392c8d5d76",
+    "bytes": 7183
+  },
+  "tools/profile_trace_reader.py": {
+    "sha256": "57800bcb181ff0f3510ef2caf76cfe9b54f985b7aca27c67588c38f37f4da68b",
+    "bytes": 3134
+  },
+  "tools/moe_screen_coverage.py": {
+    "sha256": "4ef97170b2f4c7dc05fa2b691f04d252db3ffdfa8e4acfef1e96764b4e3213b4",
+    "bytes": 10501
+  }
+}

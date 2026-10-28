@@ -1,0 +1,25 @@
+from pathlib import Path
+import json
+import pytest
+import xml.etree.ElementTree as ET
+
+
+def main():
+    import torch
+    from tensorfold.cuda.sm70.execution_policy import _family_runtime
+    from tensorfold.cuda.sm70 import router_blas
+    _family_runtime(torch)
+    router_blas.extension()  # Compile/load library adapter before input tensor work.
+    args=['-s','-c','/dev/null','-o','pythonpath=/qualification/tests /qualification/tests/cuda /qualification',
+          '-p','no:cacheprovider','-vv','--junitxml=/evidence/router-batched.xml','/qualification/tests/cuda/test_sm70_router_blas.py']
+    code=pytest.main(args)
+    Path('/evidence/pytest-exit.json').write_text(json.dumps({'exit_code':int(code),'argv':args,'scope':'28exactlogitbits+stablepicks/weightoracles; noapprox/noP3'})+'\n')
+    if code:
+        raise SystemExit(code)
+    cases=ET.parse('/evidence/router-batched.xml').getroot().findall('.//testcase')
+    if len(cases)!=28 or any(case.find('skipped') is not None for case in cases):
+        raise RuntimeError('28actualSM70cases/no skips required')
+
+
+if __name__=='__main__':
+    main()

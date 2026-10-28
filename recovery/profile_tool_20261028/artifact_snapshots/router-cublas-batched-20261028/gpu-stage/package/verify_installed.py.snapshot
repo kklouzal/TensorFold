@@ -1,0 +1,25 @@
+import pathlib,json,hashlib
+R=pathlib.Path('/qualification');sha=lambda p:hashlib.sha256(pathlib.Path(p).read_bytes()).hexdigest()
+candidate=json.loads((R/'candidate.json').read_text())
+if sha(R/'tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl')!=candidate['wheel_sha256'] or sha(R/'source-hold.json')!=candidate['source_hold_sha256']:raise RuntimeError('wheel/HOLD mismatch')
+p=json.loads((R/'wheel-provenance.json').read_text());import tensorfold
+pkg=pathlib.Path(tensorfold.__file__).resolve().parent;site=pkg.parent;rows=p['source_files']+p['compiled_extensions']
+for row in rows:
+ f=site/row['path']
+ if f.stat().st_size!=row['bytes'] or sha(f)!=row['sha256']:raise RuntimeError('installed package mismatch '+row['path'])
+actual={str(f.relative_to(site)) for f in pkg.rglob('*') if f.is_file() and f.suffix not in ('.pyc','.pyo') and '__pycache__' not in f.parts}
+if actual!={r['path'] for r in rows}:raise RuntimeError('package extra/missing files')
+for f,h in json.loads((R/'protected-files.json').read_text()).items():
+ if sha(f)!=h:raise RuntimeError('protected closure mismatch '+f)
+print(json.dumps({'status':'verified-normal-installed-wholewheel','normal_files':len(p['source_files']),'compiled_extensions':p['compiled_extensions'],'wheel_sha':p['wheel']['sha256'],'source_overlay':False,'private_diagnostic':True}),flush=True)
+
+if len(p['source_files']) != 720 or p['compiled_extensions'] != [{'path':'tensorfold/_fd_owner.abi3.so','sha256':'c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d','bytes':46344}]:raise RuntimeError('required720-source/FDc79 package contract')
+if not str(pkg).startswith('/opt/venv/') or '/qualification' in str(pkg):raise RuntimeError('normal installed package location required')
+import torch,os
+if torch.version.git_version!='04cf2557f315a350e7eea7ab064288def65db75a' or torch.version.cuda!='12.9':raise RuntimeError('current source SDK required')
+if not torch.cuda.is_available() or torch.cuda.get_device_capability()!=(7,0):raise RuntimeError('actual SM70 required; skip is not acceptance')
+print(json.dumps({'torch_revision':torch.version.git_version,'cuda':torch.version.cuda,'device':torch.cuda.get_device_name(),'capability':torch.cuda.get_device_capability(),'TORCH_EXTENSIONS_DIR':os.environ.get('TORCH_EXTENSIONS_DIR'),'CUDA_CACHE_PATH':os.environ.get('CUDA_CACHE_PATH')}),flush=True)
+
+if sha(R/"fixture-source-hold.json")!=candidate["fixture_source_hold_sha256"]:raise RuntimeError("fixture HOLD mismatch")
+for row in json.loads((R/"fixture-source-hold.json").read_text())["paths"]:
+ if sha(R/row["path"])!=row["sha256"]:raise RuntimeError("canonical fixture mismatch "+row["path"])

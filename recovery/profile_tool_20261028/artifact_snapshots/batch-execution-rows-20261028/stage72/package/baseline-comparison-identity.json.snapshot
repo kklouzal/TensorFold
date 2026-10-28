@@ -1,0 +1,44 @@
+{
+  "baseline_candidate": {
+    "wheel_sha256": "4efee794469bade8b86bf964cca1fd72dd33e98ec4d4228baa5e201747fde2e9",
+    "source_hold_sha256": "1747a491a4a8172f90a5676e3e4ffc4102cdab95b80649814508ea7ed2e3154a",
+    "tool_sha256": "177f9b00164106e8fa47655259b63321c713e231b9c8fd0beacd1b9dca2ae8cf",
+    "tool_dependencies": {
+      "tools/v100_backend_probe.py": "177f9b00164106e8fa47655259b63321c713e231b9c8fd0beacd1b9dca2ae8cf",
+      "tools/finite_concurrency.py": "d009cf94050754115fdb0295b39aaa787904b09478464aeb772d8782b97eb86b",
+      "tools/finite_quality.py": "c498bd046e78c34bfc7db16c7decd43ec182151b24b3e09da282b9de0dac77a3",
+      "tools/benchmark_output.py": "ce7c0a0cdf80842dc67021ddc938ae32a2c8df39dfd4f36e5f48e72149484cfa",
+      "tools/prepare_owner_trial_manifest.py": "cd90a33ff81c60cffc1f180f0a756312cec2d06b4a29d4322cf622d7ca3b2741"
+    },
+    "execution_manifest_sha256": "95336693957314d74ba50328679d2b9a37552cb3e11a891b7a4a1900503e5673",
+    "source_profile": "source-owner-target-dense-trial",
+    "session_ceiling": 24,
+    "recovery_commit": "f0a78fa0f607256db459486ed4989ed7a41dddb3",
+    "triton_cache_root": "/cache/triton-owner-full8-v1",
+    "qualification": "PRIVATEexactDenseonqualified4efe;all109scopedcontrolsPASS; closedFASTv2comparecurrentgood5635sameall6/quality/native262144Q8K/V24floor; noallDensecallsnative/perfgainclaim",
+    "funding": {
+      "follower_bytes": 262144,
+      "global_receipt_bytes": 2424832
+    },
+    "startup_content_overlap": true,
+    "startup_global_host_bytes": 75501568,
+    "required_native_counter": "existingowner.prelude_mtp_submitted_framespositive/no unavailableoverflow/all8roleproof; actualDenseimplementationmetadata+qualifiedfixturecounter; genericfallbacksretained; noallDensecallcoverageclaim",
+    "fast_grid_protocol": "fast-grid-v2",
+    "output_cell_bound": 2048
+  },
+  "source_baseline": "/home/kklouzal/tensorfold-v100-qualification-20261026/perf85-dense-fast-v2-2048-4efe-repeat1-20261028",
+  "baseline_first": "/home/kklouzal/tensorfold-v100-qualification-20261026/perf85-dense-fast-v2-2048-4efe-20261028",
+  "new_helper_hashes": {
+    "v100_backend_probe.py": "33293541d5b59d86653f58a70d20a394b3783ab245765c7bf0e1e65ef68d2931",
+    "finite_concurrency.py": "d009cf94050754115fdb0295b39aaa787904b09478464aeb772d8782b97eb86b",
+    "finite_quality.py": "c498bd046e78c34bfc7db16c7decd43ec182151b24b3e09da282b9de0dac77a3",
+    "benchmark_output.py": "ce7c0a0cdf80842dc67021ddc938ae32a2c8df39dfd4f36e5f48e72149484cfa",
+    "prepare_owner_trial_manifest.py": "cd90a33ff81c60cffc1f180f0a756312cec2d06b4a29d4322cf622d7ca3b2741"
+  },
+  "reference": "selectedunconditionalDense4efe developmentbaseline; repeatedconcurrentgains, notreleasequalified",
+  "sameclosedprotocolqualityhelpers": true,
+  "objective": "lexicographic24>16>8>4>2>1; quality/native262144Q8KV24floor/FP32statehard; lower-tiertradeoffs transparent",
+  "run_role": "onequickdevelopment screen now; consistency/repeatedacceptance deferred bylatestuserpriority",
+  "rowbudget_reference": "Actual86cb7deall6rows32 provisionaldevelopmentwinner; compareallNs andsame6quality",
+  "candidate_execution_rows": 72
+}

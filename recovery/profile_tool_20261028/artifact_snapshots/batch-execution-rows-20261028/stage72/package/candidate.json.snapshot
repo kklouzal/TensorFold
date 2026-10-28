@@ -1,0 +1,30 @@
+{
+  "wheel_sha256": "86cb036dbcd2068f7b86956a8c3968355aa6509862b20e64f9c2a87f61f17500",
+  "source_hold_sha256": "297ee45091f8f81075a5e065b5fe27ca7c89de067f1881a4e5a5aa962bef5801",
+  "tool_sha256": "33293541d5b59d86653f58a70d20a394b3783ab245765c7bf0e1e65ef68d2931",
+  "tool_dependencies": {
+    "tools/v100_backend_probe.py": "33293541d5b59d86653f58a70d20a394b3783ab245765c7bf0e1e65ef68d2931",
+    "tools/finite_concurrency.py": "d009cf94050754115fdb0295b39aaa787904b09478464aeb772d8782b97eb86b",
+    "tools/finite_quality.py": "c498bd046e78c34bfc7db16c7decd43ec182151b24b3e09da282b9de0dac77a3",
+    "tools/benchmark_output.py": "ce7c0a0cdf80842dc67021ddc938ae32a2c8df39dfd4f36e5f48e72149484cfa",
+    "tools/prepare_owner_trial_manifest.py": "cd90a33ff81c60cffc1f180f0a756312cec2d06b4a29d4322cf622d7ca3b2741"
+  },
+  "execution_manifest_sha256": "95336693957314d74ba50328679d2b9a37552cb3e11a891b7a4a1900503e5673",
+  "source_profile": "source-dense-owner-batch-prelude-trial",
+  "session_ceiling": 24,
+  "recovery_commit": "60980af6dca5f5b33b761f978265f8c93843648b",
+  "triton_cache_root": "/cache/triton-owner-full8-v1",
+  "qualification": "QUICKsingleall6v2developmentrow72on86cb;actualrow/floor/batchcounter/6qualityproofrequired; noacceptance/repeatsclaim",
+  "funding": {
+    "follower_bytes": 262144,
+    "global_receipt_bytes": 2424832
+  },
+  "startup_content_overlap": true,
+  "startup_global_host_bytes": 75501568,
+  "required_native_counter": "N1batchdelta0; N>1targetbatchdelta>0 ANDMTPbatchdelta>0; no requirementmaxsegments==offeredN (rowbudget32 canselect12-14StatesatN24)",
+  "fast_grid_protocol": "fast-grid-v2",
+  "output_cell_bound": 2048,
+  "batch_evidence_global_host_bytes": 8192,
+  "execution_rows": 72,
+  "reference_execution_rows": 32
+}

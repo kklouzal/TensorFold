@@ -1,0 +1,41 @@
+{
+ "schema": "tensorfold.execution-profile-manifest",
+ "version": 1,
+ "artifacts": {
+  "draft/mtp-Qwen3.8-Flash-Next-Q8_0.gguf": {
+   "size": 4137429312,
+   "sha256": "713b16d7e97246858ebd9a6dec403b1cfc3407d8a539f65401948e20b38b0f91"
+  },
+  "metadata/config.json": {
+   "size": 4739,
+   "sha256": "c7f72e39a12386db157bf1076a2f0c254db7db4185939bc794a9a5e7ef42a006"
+  },
+  "metadata/generation_config.json": {
+   "size": 267,
+   "sha256": "520f0512d7b558c8849d144615a805ab19dbd5cbded930aabb455c2827e4a5f2"
+  },
+  "metadata/tokenizer.json": {
+   "size": 19990371,
+   "sha256": "7b6b3e0e8caa705198c91d4925d545bb4067e72aa46ada04c6e3bb71ae498919"
+  },
+  "metadata/tokenizer_config.json": {
+   "size": 14734,
+   "sha256": "4f313e67319dabead27d1ff3a6d494f1b79421d73788417a5e598149e0e643ec"
+  },
+  "target/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00001-of-00002.gguf": {
+   "size": 55063448064,
+   "sha256": "40f369eca301ec6ea318dbb671b3132c26a2f0b89aa5458a7051b33215ee296c"
+  },
+  "target/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00002-of-00002.gguf": {
+   "size": 28800138432,
+   "sha256": "316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113"
+  }
+ },
+ "preparation": {
+  "kernel_family": "sm70-paged-owner-q8-compact-v1",
+  "graph_family": "uncaptured",
+  "collective_family": "tp8-allgather-v1",
+  "graph_budget_bytes": 0,
+  "trial": true
+ }
+}

@@ -1,0 +1,7 @@
+from pathlib import Path
+import json,subprocess
+p=Path('/Warehouse/TensorFold-portable-audit-20261026/startup-prelude-integration-20261027')
+c=json.loads((p/"start.json").read_text())
+with (p/"controls.log").open("w") as f:r=subprocess.run(c["argv"],stdout=f,stderr=subprocess.STDOUT,cwd=c["cwd"])
+(p/"exit.json").write_text(json.dumps({"exit_code":r.returncode})+"\n")
+raise SystemExit(r.returncode)

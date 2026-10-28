@@ -1,0 +1,14 @@
+{
+  "schema": "tensorfold.concurrent-profile-analysis-hold-v1",
+  "sources": {
+    "analyze_traces.py": "780c7d40cc90b4226212d4e1e0dcccaebeaad01e9c4148beaa15b790bda58df1",
+    "analyze_decode.py": "43dfcc7c6b548f8a30b9f2cbeeac775ce12c72077f5ad315d8e6ed3a0821fa13",
+    "analyze_concurrent.py": "989e8bf2a6c2ef46c95b63c4575f9af326853908537b0fbb0085fd224658cc5b",
+    "test_concurrent_analysis.py": "0f5e1a871d0920207829ed40852f4d8e0a38dde9585883bd89f228aa00904a8e"
+  },
+  "controls": "4syntheticactualderive/analyzefunctionchecksPASS; clockhullcontainedinall8actualgenerateCPUlabels, invalidwindow/refusedguards/hash/translationfailure; CPUlabelmirrorexcluded/graphmanynodeorigins/no-kernelgaps",
+  "bounds": "2CPUworkersniceonlyaftercontrollerterminal0+all8retired/source/CUPTI28, rawhashall8streamsamepass; borrowedStream1MiBcharacterchunks/16MiBcharcarry(max4xUTF8); fixed4Mkernel/8Mcorrelation/200Klabels/512KiBperrankreport; noTorchGPUimports",
+  "window": "Frozenfastcohortmonotonicbegin/end mapsviahullall8beforeafterUnix/monotonicanchorintervals;rejectobservedhull>10ms andrejectnotcontainedinall8actualgeneratecalls. Corestartupper/endouterlower,expandedhullretained; sampledclockstabilityassumptionexplicit, notzeroerror",
+  "new_reports": "CPUprojectinclusiveANDinnermostexclusiveperthread labels separated; API/kernelorigincorrelations graphLaunchvplain/unattributed; no-traced-kernelintervalgapsincludingboundaries; NCCLwaitnotusefulcomputeutil; leadercohortbatchhistdeltasaftercheapbringup throughdrain notexclusivemeasured10s",
+  "actual_new_capture": "LIVEunderRoot; noactualCPUanalysisrun yet"
+}

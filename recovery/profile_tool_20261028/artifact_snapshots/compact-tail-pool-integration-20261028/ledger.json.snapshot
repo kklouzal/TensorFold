@@ -1,0 +1,18 @@
+{
+  "schema": "tail-pool-integration-ledger-v1",
+  "state": "LOCALcomposition/CPUverificationinprogress; targetverificationBLOCKED_BY_V100_BTRFS_READONLY",
+  "Root_authority": "Rootexplicitfreeze: no remoteuploads/writes/preflights/containers/analysis ormetadata untilrecovery. Rootread-onlydiagnosis; no repair/remount byauthor.",
+  "target_blocker": "Rootreport /dev/sda2 writeIO1285/readIO49/corruption1435; wholeBTRFSrootRO. TailNUMAall6 failedbeforecontainer/image-before.stdout withEROFS; P3UNRUN, notregression. Parentowns exactstorageevidence/recovery.",
+  "retained_evidence": {
+    "TAIL": "d3a/c141/HOLDdc400 +actual68597strict2PASS3.61s, fixtureeeb168; TailNUMA122d/452079 stagefrozenunrun",
+    "POOL": "37518/ed328/HOLD1f1d +actual84930strict45PASS4.13s; localarchivea684c819,auditc88ffd02",
+    "NUMA_reference": "f11/APP4b0 all6 32.9/45.5/76.1/112.1/127.3/129.9, userrequiredbindingretained; repeated/broadqualitynotclaimed"
+  },
+  "scope": "Onlylocalnewcanonical composition; exactqualifiedTail/Poolmethods, no newmath/reuse/globalallocation/kernels. Heldparentworktrees/stagesunmodified.",
+  "remaining": [
+    "Finishnormal727FDc79/integratedaffectedCPU/47fixturecollection+sourceD13",
+    "GPU47+combinedNUMAf11all6/QA/full24capacity awaitRootstorage/accessrecovery; Tail-onlyP3separatereference remainsUNRUN",
+    "Futuretooladaptermustbindcombinedtwo-methodproof/newRuntimeHOLDseparatelyfrom8021rowauthority; doNOTreuseTail-onlywholemodule-exceptTail proof/helper",
+    "Ownershipmovement/prepaid/borrow candidates recorded unselected; no codebeforeactualcombinedcostandRootpriority"
+  ]
+}

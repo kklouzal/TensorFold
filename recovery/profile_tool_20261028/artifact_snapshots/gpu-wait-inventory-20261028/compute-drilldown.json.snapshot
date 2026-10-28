@@ -1,0 +1,190 @@
+{
+  "schema": "tensorfold.compute-drilldown-register-v1",
+  "inventory_sha256": "c3ad4b83c36fbf68278e3e97153dc19e75218badc58f94bdd581755206dfa730",
+  "active_entries": [
+    "C11",
+    "C12"
+  ],
+  "priority": "Userpipelineinventorycomplete\u2192onebigsource: canonicalper-rowFP32MoErouter dispatch",
+  "base": "7de2259b/86cb; source-dense-owner-batch-prelude-trial; rows32/TP8/Q8/24; reducedFP16True/accumFalse",
+  "why_canonical": "moe.router independent_rows=True loopsRowFP32GEMV; sourcecomment actualMchanges FP32 GEMM reduction andcanmove selectedsoftmaxweight overFP16boundary. Native_logitspreparedcustomcodeonlyenabledcoupledoptimized profile; privateBatchkeepsFalse. DisableddoesnotitselfproveallsupportedbatchedAPIsinferior.",
+  "candidates": [
+    {
+      "candidate": "CUDA12.9.2cublasSgemvBatched/sharedreadonlyA pointerarray",
+      "disposition": "selectedforboundedoperatorprototype; APIadmissible,exactnumericcontractUNPROVEN untilRootV100zero-toleranceoracles",
+      "reason": "devicepointerarraysupportsuniformindependentGEMV; onlyYnonoverlaprequired, noWeightreplication; pointerAeachaliasesreadonlyweight. SourceNoTF32Guard/currentTorchhandle/hostpointermode+constructionstream checked."
+    },
+    {
+      "candidate": "SgemvStridedBatched strideA0",
+      "disposition": "constraint-ruled-out",
+      "reason": "Official12.9.2offsetsmustnotzero. Cannotborrow newer/undocumentedbroadcast orreplicateweights toforcepositiveAstride."
+    },
+    {
+      "candidate": "full-RFP32GEMM/torchmatmul",
+      "disposition": "blockedexactcanonicalcontract",
+      "reason": "Ownedcurrentcommentdocuments Mdependentreduction; exactnear-tie/weightboundary proofabsent; do notwaive0tol."
+    },
+    {
+      "candidate": "existingcustomserial_logits",
+      "disposition": "retainedseparatecandidate/oracle, notnewfirstimplementation",
+      "reason": "Alreadyavailablebutprivateprofiledisabled; no globaloptimizedflagbecauseenablesunrelatedfamily/attention/paddedpaths."
+    },
+    {
+      "candidate": "parallelSGEMVstreams",
+      "disposition": "deferreduntilbatchedAPIexactresult; crediblelibraryalternative butstillRhostsubmissions/newstreamlifetimes",
+      "reason": "Vendorperformanceadviceconditional; no claiminferiorwithoutmeasurement."
+    }
+  ],
+  "vendor_contract": {
+    "source": "https://docs.nvidia.com/cuda/archive/12.9.2/cublas/index.html#cublas-t-gemvbatched",
+    "strided": "https://docs.nvidia.com/cuda/archive/12.9.2/cublas/index.html#cublas-t-gemvstridedbatched",
+    "facts": "Pointer arraysliveondevice;Acolmajor dimensionsm=2560,n=513,lda2560,transposeT; scalaralpha1/beta0host; Xstep1/Ystep1;disjointY; use16bytealignedpointees;Yrowstride516keepsalignment. No bitwiseequivalenceorperformanceguarantee assumed."
+  },
+  "implementation_checkpoint": "Privateunusedrouter_blas.cpp/.py preparedoperator only; no productionselector/globalflagschanged. Modelintegration/actualallranksettings+host/GPUadmission deferred untilnumericadmissibility, avoidingcodedinvalidfastpath.",
+  "resources": {
+    "per_plan_GPU_capacity32": 394496,
+    "host_per_plan": 16384,
+    "owns": "F32input/outputpadded+3pointerarrays; originalweightstoragealiasretained,nocopy; coldpointeruploadblocking/sourcebytesretire; input/outcopyonconstructionstream",
+    "full_model_todo": "Reuseper-roleinput/outputwithregisteredrouterweightpointerarrays insteadofper-layerweightreplication; fundallplansbeforeadmit+24floor; sourceconsensus explicitprivatefeatureonly. No defaultdispatchchangebeforeoracles."
+  },
+  "gates": {
+    "CPU": "normalwheel/12controls/APIcompilecurrentlyrunning; noresultassumed",
+    "GPU": "Rootexclusiveonly;28exactR1/2/3/8/16/24/32random/cancellation/near-tie/signedzero bit+stableTopKweightoraclesauthoredUNRUN; correcttargetflagsassertednotmutated",
+    "P3": "afterexactGPU+integration,firstall6quickcurrentquality320; no provisionalkeepunlessallrequiredNnonregression; repeated/broadqualificationdeferred peruser"
+  },
+  "held_other_work": "Dense991factual32PASSwrongmathREGIONrecorded;HC43eWIPfrozen; no changesnow",
+  "provenance": {
+    "worktree": "/Warehouse/TensorFold-wt/v100-router-cublas-batched-20261028",
+    "runtime_policy_diff": "NONE; nativeflag/math code unchanged exceptnewunusedmodule sources",
+    "source_priorities": "NoGPU/profiling/remoteheavy byagent"
+  },
+  "router_actual_and_model_successor_20261028": {
+    "historical_strict_operator": {
+      "actual_root_exec": 9840,
+      "exit": 1,
+      "pass": 10,
+      "fail": 18,
+      "picks_and_rounded_weight_bits": "all28exact",
+      "numeric_characterization": "router-cublas-batched-20261028/actual-3dee/numeric-characterization.json SHA5c9a82895b2a5e68899878c9334afc792974a0c472795c597255767ebc59449e"
+    },
+    "disposition": "private explicit different numerical implementation authorized for investigation; notqualified; unknownworstcase quality",
+    "model_successor": "/Warehouse/TensorFold-portable-audit-20261026/router-cublas-model-20261028/source-hold.json",
+    "model_checks": "266CPU/Ruff/CPPcompile+import/normal720FDc79; actualsharedGPU/model/all6quality pendingRoot",
+    "model_resources": {
+      "GPU_per_rank": 801024,
+      "host_global": 7471104
+    },
+    "source_profile": "source-batch-router-blas-trial",
+    "current_reference": "7de2259b/86cb Ns30.8/22.8/37.3/56.2/73.0/73.3; same4pass2historicalqualityfail"
+  },
+  "router_corrective_successor_20261028": {
+    "parent_model_attempt": "fee8Root76978Docker1startupPLEkeywordfailure; no all6data",
+    "successor": "/Warehouse/TensorFold-portable-audit-20261026/router-cublas-model-wiring-20261028/source-hold.json",
+    "source": "f0a3bfd5/APPf7213e8d",
+    "fix": "restoreunrelatedPLEASTexact7de andwire actualGGUFrouterprepared;512allocationcharge814592/raw801024",
+    "checks": "270CPU/Ruff/CPPcompile+import/normal720FDc79; historicalshared3PASS0.29sec unchangedCPP, no newtargetmodelresults",
+    "pending": "D13/Rootnewfullmodelquality/all6; no approximationacceptance"
+  },
+  "router_gdn_startup3_actual_composite": {
+    "source": "146f8a81/APP7c0a",
+    "Root_exec": 97046,
+    "rates": [
+      31.1,
+      25.8,
+      43.7,
+      71.0,
+      102.7,
+      103.8
+    ],
+    "scope": "singleFASTv2development provisional, noqualityorrepeatabilityqualification",
+    "evidence": "router-gdn-integration-20261028/actual-first-all6-7c0a/comparison-vs-f721-GDN.json",
+    "quality": "55prefixes+6fullanswers exactf721/GDN; same4pass2histfail; strict18operatorfail retained",
+    "resource_proof": "all8actual24native262144Q8/row32 andfactorychecks;3hashretired currentprocessauthorities",
+    "cycle": "Dockerstart\u2192readyartifactpublication245.506vs325.092s;proxyonly",
+    "D17": "crediblepointerbatchedcandidate retainedprivateprovisional; changedbottlenecknextRootqueue, no globaloptimalityclaim"
+  },
+  "current_7c0_N24_profile": {
+    "capture_Root": 19391,
+    "analysis_Root": 90033,
+    "source": "APP7c0 unchanged/tool eb7179",
+    "evidence": "router-gdn-n24-profile-20261028/actual-findings.json and.md",
+    "all8guards": "source/CUPTI28/clock12258ns/raw12.36GB/native24/retirementPASS",
+    "scope": "conservative9.999987742score,instrumented58.8TPS notP3",
+    "rank0_CPU_exclusive_seconds": {
+      "compute_decode": 4.47639,
+      "round": 1.216268,
+      "descriptor_stage": 0.87453,
+      "mtp": 0.697144,
+      "experts": 0.685185,
+      "mailbox_exchange": 0.259939,
+      "mailbox_retire": 0.042486,
+      "PLE_decode": 0.033499
+    },
+    "rank0_GPU_seconds": {
+      "nonNCCL_sum": 2.415849,
+      "NCCL_sum_wait_inclusive": 4.632634,
+      "no_traced_kernel": 2.951506
+    },
+    "current_candidates": "MoE/compute graph+heldHC queue; descriptor/fence catalogues requireownershipproof; mailbox.302s lowerthancompute; PLE.133stage/.0335CPUdecode lowprioritysteadydecode only",
+    "changed_bottleneck_candidate": "leading4expertGPUkernels1.291660s/53.5%nonNCCLsum supportfutureWMMA80reassessment afterCPUgraph/HC; old431CPUheavyP3 rejectionnotcurrentproof; noactualretest/gainprediction",
+    "limitations": "CPUinclusive/exclusive wallnotbusy, operatorfamilyaggregates mayoverlapnested, no CUDAmemcpydurationtable or GPUutilization/avoidable-time claim"
+  },
+  "WMMA_current_reopened_outcome": {
+    "source": "e188/4899",
+    "Root_session": 98679,
+    "safety": "6PASS3.81s",
+    "rates": [
+      28.9,
+      25.8,
+      44.4,
+      69.7,
+      98.6,
+      99.7
+    ],
+    "ref7c0": [
+      31.1,
+      25.8,
+      43.7,
+      71.0,
+      102.7,
+      103.8
+    ],
+    "disposition": "NOTSELECTEDfirstscreen requiredtierregressions; no currentrepeat/globalinferiorityclaim",
+    "quality": "sixfulltasksIDs/textsame4pass2histfail;54/55shorterprefixexact,N1firstdifference194characterizationonly",
+    "audit": "router-gdn-wmma80-20261028/actual-first-all6-4899/comparison-vs-146f-7c0a.json"
+  },
+  "generic_shared_fusion_successor": {
+    "assessment": "shared-fusion-current-assessment-20261028/assessment.json",
+    "source": "42f5/APP7604 isolated146f",
+    "scope": "existingpacked_blocks2w math; actualIQgenericprojection,sharedinsidepackedkernels; noWMMA/no2warpclaim",
+    "evidence": "332CPU+SM70compile normal721FDc79; noGPUrun yet",
+    "pending": "D13/Root6safety+all6/taskcomparison; noquality/performanceclaim"
+  },
+  "generic_shared_fusion_actual_firstscreen": {
+    "source": "42f5/APP7604",
+    "Root": 68618,
+    "safety": "6PASS3.92s,5empiricalerrorrecords",
+    "rates": [
+      32.1,
+      29.7,
+      51.1,
+      78.5,
+      105.6,
+      107.6
+    ],
+    "reference7c0": [
+      31.1,
+      25.8,
+      43.7,
+      71.0,
+      102.7,
+      103.8
+    ],
+    "disposition": "allNfirstscreenobservedgain,strongprivateprovisional; no repeatability/broadqualityclaim",
+    "quality": "sixfulltext+IDs exact4pass2histfail,54/55prefixesexactshorter,N1divergence194characterizationonly",
+    "resource": "all8native24/materialized/row32/F16target-F32MTP/defaultnativeallocator/settledgraphbudget/codewarmguard/3hashretirement pass",
+    "D13": "closedfff395ae,stale3captionadditivelycorrectedoutsideheldpayload",
+    "evidence": "generic-shared-fusion-current-20261028/actual-first-all6-7604/comparison-vs-146f7c0.json",
+    "remaining": "rootchangedbottleneckcandidates andlateracceptance,userdeferredrepeats; no globalefficiencyoptimalityclaim"
+  }
+}

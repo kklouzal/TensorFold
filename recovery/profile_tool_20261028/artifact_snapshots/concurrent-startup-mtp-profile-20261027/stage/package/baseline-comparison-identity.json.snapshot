@@ -1,0 +1,49 @@
+{
+  "baseline_candidate": {
+    "wheel_sha256": "6d340a473aeb85a3cfd373d48d5f2ac8882dbdaefee9c58b40f696440beca8f7",
+    "source_hold_sha256": "75e65dda8d97b2c23901b5d0dee33e4f0089a6a5ace158d65adef6690bb57cc0",
+    "tool_sha256": "562fc6df8fd5eb2a11223200ffd7d923cb35fbe276315e92e25c6171fd37d6f5",
+    "tool_dependencies": {
+      "tools/v100_backend_probe.py": "562fc6df8fd5eb2a11223200ffd7d923cb35fbe276315e92e25c6171fd37d6f5",
+      "tools/finite_concurrency.py": "39e77fde13ef4d0a4ef59b8e531bc32b072096d714190ef3fc7993e5eb8cbffe",
+      "tools/finite_quality.py": "c498bd046e78c34bfc7db16c7decd43ec182151b24b3e09da282b9de0dac77a3",
+      "tools/benchmark_output.py": "ce7c0a0cdf80842dc67021ddc938ae32a2c8df39dfd4f36e5f48e72149484cfa",
+      "tools/prepare_owner_trial_manifest.py": "cd90a33ff81c60cffc1f180f0a756312cec2d06b4a29d4322cf622d7ca3b2741"
+    },
+    "execution_manifest_sha256": "95336693957314d74ba50328679d2b9a37552cb3e11a891b7a4a1900503e5673",
+    "source_profile": "source-owner-pieces-trial",
+    "session_ceiling": 24,
+    "recovery_commit": "266ff97681194f026116bfc516a4728b06da23a1",
+    "triton_cache_root": "/cache/triton-owner-full8-v1",
+    "qualification": "PRIVATEcandidate7afeownerpieces+exactcommonFAST/protocol; no85/full6gridquality/performancequalification from thissource orsinglepilot"
+  },
+  "baseline_helper_hashes": {
+    "finite_concurrency.py": "39e77fde13ef4d0a4ef59b8e531bc32b072096d714190ef3fc7993e5eb8cbffe",
+    "finite_quality.py": "c498bd046e78c34bfc7db16c7decd43ec182151b24b3e09da282b9de0dac77a3",
+    "benchmark_output.py": "ce7c0a0cdf80842dc67021ddc938ae32a2c8df39dfd4f36e5f48e72149484cfa"
+  },
+  "source_baseline": "/home/kklouzal/tensorfold-v100-qualification-20261026/perf85-owner-pieces-fast24-20261027",
+  "required_before_launch": "D13+combined69guardadversarial+TP8guardwithstaticmaps pass",
+  "same_protocol": "fast-grid-v1; sixNs1,2,4,8,16,24; 30sready10svalidwindow512cap expectedcancel+drain; same six complete qualityprompts afterscreens",
+  "direct_parent_candidate": {
+    "wheel_sha256": "997e4c08df3fcb87c03f143d1d9a3ed91695a4a46dd1b3f3dd84e91b6ed8a465",
+    "source_hold_sha256": "0d518e88c2dbc0eb4360b6ee8f3d3f54ead7315e4ad70ac4985dd3e1431d957e",
+    "tool_sha256": "a519396f55d3902dfb2bd300768f91f149e0c3b0d74ad6af0fcf7d7add6ea100",
+    "tool_dependencies": {
+      "tools/v100_backend_probe.py": "a519396f55d3902dfb2bd300768f91f149e0c3b0d74ad6af0fcf7d7add6ea100",
+      "tools/finite_concurrency.py": "39e77fde13ef4d0a4ef59b8e531bc32b072096d714190ef3fc7993e5eb8cbffe",
+      "tools/finite_quality.py": "c498bd046e78c34bfc7db16c7decd43ec182151b24b3e09da282b9de0dac77a3",
+      "tools/benchmark_output.py": "ce7c0a0cdf80842dc67021ddc938ae32a2c8df39dfd4f36e5f48e72149484cfa",
+      "tools/prepare_owner_trial_manifest.py": "cd90a33ff81c60cffc1f180f0a756312cec2d06b4a29d4322cf622d7ca3b2741"
+    },
+    "execution_manifest_sha256": "95336693957314d74ba50328679d2b9a37552cb3e11a891b7a4a1900503e5673",
+    "source_profile": "source-owner-target-greedy-trial",
+    "session_ceiling": 24,
+    "recovery_commit": "5ff2be14b5f5efe0c265654769dd39750b45a2ca",
+    "triton_cache_root": "/cache/triton-owner-full8-v1",
+    "qualification": "PRIVATE combinedtarget candidate. GPUoracle+D13 required beforelaunch; all6samefastprotocol/quality prompts; noselectionfromstage"
+  },
+  "direct_parent_source": "/home/kklouzal/tensorfold-v100-qualification-20261026/perf85-owner-target-funded-fast24-20261027",
+  "direct_parent_performance": "Root early997escreen10.5N1 vs6d34010.8; one10swindowuncertain, no winner/equivalence; retainboth references",
+  "primary_named_reference": "/home/kklouzal/tensorfold-v100-qualification-20261026/perf85-owner-pieces-fast24-20261027"
+}

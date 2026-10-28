@@ -1,0 +1,2 @@
+# Rootafteractualterminalonly; thisfilewasnotexecuted.
+ssh -i /home/kklouzal/.ssh/tensorfold_v100_ed25519 -o BatchMode=yes kklouzal@71.94.200.200 'sudo -n env PYTHONDONTWRITEBYTECODE=1 taskset -c 0,1 nice -n 19 python3 /home/kklouzal/tensorfold-v100-qualification-20261026/profile-router-gdn-7c0a-n24-20261028/analysis-tools/analyze_concurrent.py > /home/kklouzal/tensorfold-v100-qualification-20261026/profile-router-gdn-7c0a-n24-20261028/analysis-cpu.stdout 2> /home/kklouzal/tensorfold-v100-qualification-20261026/profile-router-gdn-7c0a-n24-20261028/analysis-cpu.stderr'

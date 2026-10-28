@@ -1,0 +1,8 @@
+{
+  "namespace_single_line_inverse_recovers_157_exact_source": true,
+  "original_proof_reused": "/Warehouse/TensorFold-portable-audit-20261026/compact-pool-preparation-20261028/structural-source-proof.json",
+  "original_proof_sha256": "63ef5cfbbbaeabc62d6726def456954fa1e0c95631a5d06e2530fdfc39066e7c",
+  "CPU": "69PASS4.16s +oneknownbaselineASTtestexplicitlydeselected (sameoldnormal4b0 failure/disposition preserved); includesnewsubclasscollisioncontrol",
+  "package": "Normal727canonical+installed/FDc79 verified;45GPUcases exactstage dependencies collection pending",
+  "oracle_sha256": "e6e92c435b1ee6bbaccf23cf26bd8aebd87bd89ab33d153acbb599234e27cdad"
+}

@@ -1,0 +1,53 @@
+{
+  "schema": "tensorfold.d13-cpu-parent-rescan-review-v1",
+  "at": "2026-10-28T16:46:49.079966+00:00",
+  "reviewer": "/root/cleanup_review",
+  "status": "BOUNDED_READONLY_RANK0_RESCAN_SOURCE_ACQUISITION_FIX_AND_HELD_STAGE_REVIEW_CLOSED",
+  "authority": {
+    "source": "ea563863386e472818e73a726dd925a5c766f3a5",
+    "HOLD": "34f02a8d68061137297d1b65e0aecf08fe0fb86055786b6b2192b3d05053b7da",
+    "tool": "61465b23b26db6eb4b7cf2edc0fc0d5cd3f2335c6ca81ea03e787bddc0a6cb7c",
+    "APP": "4b0ea6b51047f93b2b973ed5a467d8c279b94f6d85c683c4258a712ff6edd99f",
+    "parser": "780c7d40cc90b4226212d4e1e0dcccaebeaad01e9c4148beaa15b790bda58df1"
+  },
+  "scope_X1": "Single current4b0 rank0 historical-trace CPU parent rescan only; reuse closed parser/phase helpers and current86b capture evidence; no APP edit/build/GPU/raw scan by reviewer. Two owned tool/test files and direct acquisition/cleanup/metadata/attribution/resource contracts.",
+  "findings": [
+    {
+      "rules": [
+        "C6",
+        "M0",
+        "Q0"
+      ],
+      "finding": "Predecessor7e3ba main opened Stream before scan allocated its close journal/tables outside try/finally. Setup exhaustion could bypass owned close.",
+      "remediation": "ea563 prepares all setup and Stream object/fileNone slot before open, then exact trusted Stream.__init__ under owned try/finally. Partial constructor-after-open failure closes as well. Actual setup-MemoryError/no-open and constructor-after-open/closed-file controls passed.",
+      "disposition": "CLOSED; predecessor remains immutable, no retrospective failure-contract claim."
+    }
+  ],
+  "checked": {
+    "identity": "Canonical2source and7evidence hashes match HOLD; srcdiffempty against86b. Tar4files and recorded hashes exact; remote smallstage command exit0 verified currentAPP/parserhash/freshv2 output paths without scanningraw.",
+    "resource": "Own process AS cap <=8GiB and never raises inherited cap; one nice19 CPU0 process. Existing6GiB reader planning allowance plus2GiB bounded tables:1Mevents/200kranges/8192names<=512chars/16kgroups/2MiB accepted report. Source-count/layout estimates are not universal cross-version RSS proofs; hard AS refusal and observed maxRSS are explicit.",
+    "attribution": "Every selected intersecting CPU/API event assigned once by nearest/deepest project on sameTID at clipped eventstart; inclusive wall/count/max can nest/overlap and must not be summed into CPUbusy or residual. GPU kernels ignored; no causality/utilization/model-speed claim.",
+    "capture_guards": "Only current4b0 count24 terminal0/all8 profile+engine retired/sourceverified/CUPTI28; closed window/core/clock hull/base/rawSHA/size/ino/mtime checked. Full hash computed during one rank0 sequentialpass; outputfresh x and bounded report; no raw mutation.",
+    "failure_cleanup": "Read/parse+close and outputwrite+close preserve primary through existing owned raise_failures; no None secondary. All setup-beforeopen/partialconstructor paths now owned. No unrelated cleanup or speculative source changes."
+  },
+  "evidence": {
+    "source-hold.json": "34f02a8d68061137297d1b65e0aecf08fe0fb86055786b6b2192b3d05053b7da",
+    "CPU-command.json": "8e7162108f691cb0624150ba5dd31f5ed5e71f9c88f2f8eef232a059ccaae2d2",
+    "CPU-exit.json": "80b556b0e16ff6f5b252769df7cead26c2f81f0e7555f80139ac38c3ab458e83",
+    "CPU.log": "0b196b4e8f345bee5a04803db252f50a970ed581b6e323ca8e2643f86d26bdbd",
+    "host314-command.json": "c8a3095207bfd0bcb9c1fc3c4d9e75c374c39fcb6df3d6e49b4093a276d85cf7",
+    "host314-exit.json": "deb5e2d9de14c8a8d0ef50efc9ac1c3d159a0fa9ca230cec9208fc37eeb846b6",
+    "host314.log": "a145c9bf6617819590a8f8e379e09e30c53fcd25e4e6c312e6732fb838307b13",
+    "resource-proof.json": "966578c6b04b5c3ee948cdb2d8810403d827e20c4a7ad06145ea2252cd2e039f",
+    "stage/command.json": "d565c1893aa9a5c484c99c2aa31b4458c45bed3a60cc5360a43c092eccbc91ec",
+    "stage/exit.json": "73ca213c6ff8e9a80d1e5e3d9187065b37a1617889295f359e2306da88d504ef",
+    "stage/stage.log": "c270531fb31d02ae9befe1796feb782fe762123683002375e72b34c8c820affe",
+    "next-command.sh": "50aebe3bc2bdbddc3baffed537d1d4bf4d2345f530edd00402071bb371756064"
+  },
+  "checks": "10SDK3.12 CPU controls/Ruff/help and10host3.14.4 controls with actual4b0 normalwholewheel zipimport; reviewer readonly source/hash/tar/evidence checks only. No duplicate tests or remote analysis.",
+  "limits": [
+    "Root controls CPU lease and execution; actual scan success, statistics and resource observations are separate and not inferred.",
+    "One selected rank0 raw trace only, not all8 CPU-parent coverage or whole pipeline attribution.",
+    "No GPU/APP/math/performance/quality/service qualification."
+  ]
+}

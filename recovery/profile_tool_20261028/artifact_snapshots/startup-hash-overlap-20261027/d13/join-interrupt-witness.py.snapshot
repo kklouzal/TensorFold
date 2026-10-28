@@ -1,0 +1,79 @@
+"""Real CPython3.12 Thread/signal cut on the maintained Capture owner.
+
+Only the new pthread resource-query boundary is replaced by a successful
+value so the existing SDK can exercise the live Python implementation.
+No model, Torch, CUDA, remote operation or private threading-state mutation.
+"""
+import hashlib
+import importlib.util
+import json
+from pathlib import Path
+import signal
+import sys
+import threading
+import time
+from types import SimpleNamespace
+
+source = Path('/source/src/tensorfold/families/qwen4_exp/cuda/startup_content.py')
+spec = importlib.util.spec_from_file_location('reviewed_startup_content', source)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+from tensorfold import _fd_owner
+
+_fd_owner._current_thread_stack_layout = lambda: (8 << 20, 4096)
+entered, release, operation_finished = threading.Event(), threading.Event(), threading.Event()
+
+def operation(cancelled):
+    entered.set()
+    try:
+        release.wait()
+        if cancelled():
+            raise module.CancelledError('owned delayed read returned after cancellation')
+        return object()
+    finally:
+        operation_finished.set()
+
+capture = module.StartupContentCapture(SimpleNamespace(guard_bytes=4096), operation)
+old_handler = signal.getsignal(signal.SIGALRM)
+record = {'python': sys.version, 'source_sha256': hashlib.sha256(source.read_bytes()).hexdigest(),
+          'scope': __doc__, 'stack_query_boundary': 'successful value substituted; no native-query claim'}
+
+def interrupted(_signum, _frame):
+    raise KeyboardInterrupt('actual POSIX signal interrupted content result join')
+
+try:
+    capture.start()
+    if not entered.wait(3):
+        raise RuntimeError('worker never entered operation')
+    signal.signal(signal.SIGALRM, interrupted)
+    signal.setitimer(signal.ITIMER_REAL, .05)
+    try:
+        capture.result()
+    except KeyboardInterrupt as error:
+        record['original_primary_type'] = type(error).__name__
+    else:
+        raise RuntimeError('join unexpectedly completed before the worker release')
+    signal.setitimer(signal.ITIMER_REAL, 0)
+    record['thread_claims_alive_after_interrupted_join'] = capture.thread.is_alive()
+    record['operation_actually_finished_before_close'] = operation_finished.is_set()
+    capture.close()
+    record['capture_closed_after_close'] = capture.closed
+    record['operation_actually_finished_after_close'] = operation_finished.is_set()
+    record['capture_finished_ns_after_close'] = capture.finished_ns
+finally:
+    signal.setitimer(signal.ITIMER_REAL, 0)
+    signal.signal(signal.SIGALRM, old_handler)
+    release.set()
+    if not operation_finished.wait(3):
+        raise RuntimeError('actual worker failed to retire during witness cleanup')
+    until = time.monotonic() + 3
+    while capture.finished_ns is None and time.monotonic() < until:
+        time.sleep(.001)
+    if capture.finished_ns is None:
+        raise RuntimeError('Capture finally did not complete')
+    record['actual_worker_finally_retired_after_explicit_release'] = True
+
+Path('/evidence/join-interrupt-witness-result.json').write_text(json.dumps(record, indent=2) + '\n')
+print(json.dumps(record), flush=True)
+if not (record['capture_closed_after_close'] and not record['operation_actually_finished_after_close']):
+    raise RuntimeError('expected premature-retirement witness not reproduced')

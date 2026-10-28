@@ -1,0 +1,23 @@
+from pathlib import Path
+import json
+import pytest
+import xml.etree.ElementTree as ET
+
+
+def main():
+    from tensorfold.cuda.sm70 import router_blas
+    router_blas.extension()
+    argv=['-s','-c','/dev/null','-o','pythonpath=', '-p','no:cacheprovider','-vv',
+          '--junitxml=/probe/router-shared.xml','/qualification/tests/test_sm70_router_blas.py',
+          '-k','model_shared_role']
+    code=pytest.main(argv)
+    Path('/probe/router-shared-exit.json').write_text(json.dumps({'exit_code':int(code),'argv':argv,
+        'scope':'3shared-storage/weight-selection/caller-output controls; historical28strictbitfailures preserved; no numeric-quality acceptance'})+'\n')
+    if code: raise SystemExit(code)
+    cases=ET.parse('/probe/router-shared.xml').getroot().findall('.//testcase')
+    if len(cases)!=3 or any(case.find('skipped') is not None for case in cases):
+        raise RuntimeError('three actual SM70 shared-workspace controls/no skips required')
+
+
+if __name__=='__main__':
+    main()

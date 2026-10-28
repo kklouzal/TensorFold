@@ -1,0 +1,64 @@
+"""Root-authorized post-terminal metadata only. Never fetch/parse raw traces here."""
+import argparse
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tarfile
+import time
+
+ROOT = '/home/kklouzal/tensorfold-v100-qualification-20261026/profile-descriptor-4b0e-n24-20261028'
+REMOTE = r'''
+from pathlib import Path
+import json,stat,sys,tarfile
+root=Path(sys.argv[1]);run=root/'results/run'
+state=json.loads((root/'controller-progress.json').read_text())
+if state['status']!='terminal' or state['docker_state']['Running'] or state['docker_state']['ExitCode']!=0:
+ raise RuntimeError('normal capture terminal0 required; preserve failed packet separately')
+traces=[]
+for rank in range(8):
+ p=json.loads((run/f'rank-{rank}-profile.json').read_text());f=json.loads((run/f'rank-{rank}-final.json').read_text())
+ if not p['complete'] or not f['complete'] or not p['engine_transport_retired']:raise RuntimeError('all8 capture/final/retirement required')
+ for boundary in ('before','after'):
+  if p['source_'+boundary]['status']!='verified-source-software' or p['cupti_'+boundary]['API']!=28:raise RuntimeError('all8 source/CUPTI28 required')
+ trace=run/f'rank-{rank}-trace.json'
+ if trace.stat().st_size!=p['trace']['bytes'] or p['trace']['bytes']<=0:raise RuntimeError('raw trace positive size/receipt differs')
+ traces.append({'rank':rank,**p['trace'],'sha_status':'recorded capture SHA; independent full-byte SHA verification belongs to closed analysis'})
+paths=[]
+for p in sorted(root.iterdir()):
+ if p.is_file() and p.suffix in ('.json','.stdout','.stderr','.log','.py','.sh'):paths.append((p,Path('controller')/p.name))
+for p in sorted((root/'results').rglob('*')):
+ if p.is_file() and p.name not in {f'rank-{rank}-trace.json' for rank in range(8)}:paths.append((p,Path('capture')/p.relative_to(root/'results')))
+if len(paths)>2048:raise RuntimeError('bounded metadata file count exceeded')
+if sum(p.stat().st_size for p,_ in paths)>512<<20:raise RuntimeError('metadata exceeds512MiB; retain and ask Root for explicit successor, do not truncate')
+for p,_ in paths:
+ if not stat.S_ISREG(p.lstat().st_mode):raise RuntimeError('metadata must be regular files')
+print(json.dumps({'root':str(root),'files':len(paths),'trace_receipts':traces,'all8_guards':True,'raw_traces_fetched':False}),file=sys.stderr,flush=True)
+with tarfile.open(fileobj=sys.stdout.buffer,mode='w|') as archive:
+ for p,name in paths:archive.add(p,arcname=str(name),recursive=False)
+'''
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--root-terminal-grant',action='store_true',required=True)
+    args=parser.parse_args()
+    if not args.root_terminal_grant:raise ValueError('Root grant required')
+    out=Path(__file__).parent/'actual-capture'
+    out.mkdir(exist_ok=False)
+    argv=['ssh','-i','/home/kklouzal/.ssh/tensorfold_v100_ed25519','-o','BatchMode=yes','-o','ConnectTimeout=20','kklouzal@71.94.200.200','sudo','-n','python3','-',ROOT]
+    (out/'archive-command.json').write_text(json.dumps({'argv':argv,'cwd':str(Path.cwd()),'stdin':REMOTE,'started_ns':time.time_ns(),'root_terminal_grant':True},indent=2)+'\n')
+    with (out/'metadata.tar').open('wb') as stdout,(out/'archive.stderr').open('wb') as stderr:
+        result=subprocess.run(argv,input=REMOTE.encode(),stdout=stdout,stderr=stderr)
+    receipt={'exit_code':result.returncode,'finished_ns':time.time_ns(),'raw_trace_fetch':False}
+    with (out/'metadata.tar').open('rb') as source:receipt['tar_sha256']=hashlib.file_digest(source,'sha256').hexdigest()
+    (out/'archive-receipt.json').write_text(json.dumps(receipt,indent=2)+'\n')
+    if result.returncode:raise RuntimeError('metadata archive failed; partial tar/stderr retained')
+    destination=out/'metadata';destination.mkdir()
+    with tarfile.open(out/'metadata.tar') as archive:
+        for member in archive.getmembers():
+            if not member.isfile() or member.name.startswith('/') or '..' in Path(member.name).parts:raise ValueError('unsafe metadata entry')
+        archive.extractall(destination,filter='data')
+    print(json.dumps(receipt))
+
+if __name__=='__main__':main()

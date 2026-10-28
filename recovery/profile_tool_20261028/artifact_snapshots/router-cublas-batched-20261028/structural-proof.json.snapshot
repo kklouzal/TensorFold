@@ -1,0 +1,12 @@
+{
+  "base": "7de2259b",
+  "production_byteexact": {
+    "src/tensorfold/cuda/moe.py": true,
+    "src/tensorfold/cuda/sm70/execution_policy.py": true,
+    "src/tensorfold/cuda/sm70/routing_native.py": true,
+    "src/tensorfold/cuda/sm70/routing.cu": true,
+    "src/tensorfold/families/qwen4_exp/cuda/engine.py": true
+  },
+  "CPU_API_signature_compile": "PASSsameSDK include/linklibcublas; notnumerics",
+  "candidate": "onlycuBLASlibraryAPIadapter, notnewmathkernel"
+}

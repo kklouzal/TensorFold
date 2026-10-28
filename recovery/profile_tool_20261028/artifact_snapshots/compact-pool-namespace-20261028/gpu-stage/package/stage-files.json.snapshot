@@ -1,0 +1,62 @@
+{
+  "bootstrap.sh": {
+    "bytes": 722,
+    "sha256": "2dc779d6e477db23cf8572077217a96f0a254b8cb3afb4849cfe1f5e4678e208"
+  },
+  "verify_stage.py": {
+    "bytes": 395,
+    "sha256": "d7f0cb312c1d23227a556452119cda5fea602e43f7e90e7a33348b847973aa8a"
+  },
+  "verify_installed.py": {
+    "bytes": 2747,
+    "sha256": "19e02db8b119b62dcdb27455313841b0f0a79183140437b3ac893077a8bbf470"
+  },
+  "protected-files.json": {
+    "bytes": 1052,
+    "sha256": "291d7d19e5b2134691d6016859b9bc5d6c95a3d005ae22ca02600a9bcf5847f9"
+  },
+  "source-hold.json": {
+    "bytes": 5987,
+    "sha256": "1f1d66d37bee91e9c71a9df94d407413dddca3af24a1fb50a68cd4dd0d17156b"
+  },
+  "wheel-provenance.json": {
+    "bytes": 127746,
+    "sha256": "1baad3481a2c24d2e420a2e6a66628a41ace0b12543ac4b847f56e7de7e6e166"
+  },
+  "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl": {
+    "bytes": 3191759,
+    "sha256": "ed3283ac32cb39659d64b4ad39c9019b52fc6d6fcda7d6465ffbbfdbcf55c385"
+  },
+  "fixture-source-hold.json": {
+    "bytes": 756,
+    "sha256": "26a465eb24a46cfa297a7abc96f1a625a97522d0c49cc042497fd56a989efab7"
+  },
+  "candidate.json": {
+    "bytes": 406,
+    "sha256": "f8eb951ce1624b0eaf866087b9f1f197d181aaa189cc7f1a50b3470bd5ed5ebe"
+  },
+  "run_controls.py": {
+    "bytes": 938,
+    "sha256": "11b88168fed321f9a4855af7577ef2ba740f22e863d0133e8ff54f69462d0bb8"
+  },
+  "launch-command.json": {
+    "bytes": 1241,
+    "sha256": "4ef788c0fd0c73acd2235e1408d0bc4dc90c1622fce724c596791734a1ee58fc"
+  },
+  "launch-command.sh": {
+    "bytes": 1013,
+    "sha256": "98409b1196941f98dba56f52c4fda9955674bc978f00c83c70bf923bc8a954ab"
+  },
+  "tests/compact_pool_reference.py": {
+    "bytes": 2295,
+    "sha256": "e6e92c435b1ee6bbaccf23cf26bd8aebd87bd89ab33d153acbb599234e27cdad"
+  },
+  "tests/test_compact_pool_preparation.py": {
+    "bytes": 9060,
+    "sha256": "3f9c5798b08e9f3c41e7b68f3d9a7711dc316308f4722e23f8eeb45c7da041b6"
+  },
+  "tests/cuda/test_sm70_compact_pool_preparation.py": {
+    "bytes": 2366,
+    "sha256": "4ae7efd092253479b62016633dea19e2e6121f8f2679dd3b1a5ffeea97a52a1f"
+  }
+}

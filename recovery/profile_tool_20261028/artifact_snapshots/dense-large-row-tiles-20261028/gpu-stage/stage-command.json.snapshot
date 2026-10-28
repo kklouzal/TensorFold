@@ -1,0 +1,30 @@
+[
+  {
+    "argv": [
+      "scp",
+      "-i",
+      "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+      "-o",
+      "BatchMode=yes",
+      "/Warehouse/TensorFold-portable-audit-20261026/dense-large-row-tiles-20261028/gpu-stage/payload.tar",
+      "kklouzal@71.94.200.200:/home/kklouzal/tensorfold-v100-qualification-20261026/dense-large-tiles-991f-controls-20261028.stage.tar"
+    ],
+    "exit_code": 0,
+    "stdout": "",
+    "stderr": ""
+  },
+  {
+    "argv": [
+      "ssh",
+      "-i",
+      "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+      "-o",
+      "BatchMode=yes",
+      "kklouzal@71.94.200.200",
+      "python3 -c 'from pathlib import Path\nimport sys,json,hashlib,tarfile,ast,subprocess\np,upload,want=Path(sys.argv[1]),Path(sys.argv[2]),sys.argv[3]\nsha=lambda f:hashlib.sha256(f.read_bytes()).hexdigest()\nassert not p.exists() and sha(upload)==want\np.mkdir()\nwith tarfile.open(upload)as a:\n for m in a.getmembers():assert m.isfile() and not m.name.startswith(\"/\") and \"..\" not in Path(m.name).parts\n a.extractall(p,filter=\"data\")\nfor n,row in json.loads((p/\"stage-files.json\").read_text()).items():assert(p/n).stat().st_size==row[\"bytes\"] and sha(p/n)==row[\"sha256\"],n\nc=json.loads((p/\"candidate.json\").read_text());w=json.loads((p/\"wheel-provenance.json\").read_text());f=json.loads((p/\"fixture-source-hold.json\").read_text())\nassert c[\"wheel_sha256\"]==sha(p/\"tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl\")==w[\"wheel\"][\"sha256\"]\nassert c[\"source_hold_sha256\"]==sha(p/\"source-hold.json\") and c[\"fixture_source_hold_sha256\"]==sha(p/\"fixture-source-hold.json\")\nassert len(w[\"source_files\"])==718 and w[\"compiled_extensions\"][0][\"sha256\"]==\"c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d\"\nfor row in f[\"paths\"]:assert sha(p/row[\"path\"])==row[\"sha256\"]\nfor path in p.rglob(\"*.py\"):ast.parse(path.read_text())\nfor name in (\"bootstrap.sh\",\"launch-command.sh\"):subprocess.run([\"bash\",\"-n\",str(p/name)],check=True)\nrunner=ast.parse((p/\"run_controls.py\").read_text());assert any(isinstance(n,ast.If)and isinstance(n.test,ast.Compare)and isinstance(n.test.left,ast.Name)and n.test.left.id==\"__name__\"for n in runner.body)\nassert \"prepare_before_tensor_work\" in(p/\"run_controls.py\").read_text() and \"len(cases)!=32\"in(p/\"run_controls.py\").read_text()\n(p/\"evidence\").mkdir()\nr={\"status\":\"STAGED EXACT; NOT EXECUTED\",\"destination\":str(p),\"files\":len(json.loads((p/\"stage-files.json\").read_text())),\"APP\":c[\"wheel_sha256\"],\"HOLD\":c[\"source_hold_sha256\"],\"fixture_HOLD\":c[\"fixture_source_hold_sha256\"],\"normal_source_files\":718,\"FD\":\"c79cfce4\",\"GPU_cases\":32,\"launch_command\":[\"bash\",str(p/\"launch-command.sh\")],\"required_before_launch\":\"RootexclusiveGPUlease+onlyPortainer;D13sourceassessment;actualno skips/32GPUoracles/SDKbeforeafter required; noP3claim\"}\n(p/\"stage-ready.json\").write_text(json.dumps(r,indent=2)+\"\\n\");print(json.dumps(r))' /home/kklouzal/tensorfold-v100-qualification-20261026/dense-large-tiles-991f-controls-20261028 /home/kklouzal/tensorfold-v100-qualification-20261026/dense-large-tiles-991f-controls-20261028.stage.tar a5eef12f61797325cc4c98a83ce816941b0817c02c1db4eef8bf0e876336f9ce"
+    ],
+    "exit_code": 0,
+    "stdout": "{\"status\": \"STAGED EXACT; NOT EXECUTED\", \"destination\": \"/home/kklouzal/tensorfold-v100-qualification-20261026/dense-large-tiles-991f-controls-20261028\", \"files\": 15, \"APP\": \"991fd09081a9f3029e25ac67f02c10477f07a0f65ad210f24d953799e9388737\", \"HOLD\": \"989e7a47e2be511d037bfe1c1657e72f436eaa33e2a489ac8457990b2e0a3fe1\", \"fixture_HOLD\": \"45050a96d329c7edd6e045463f17cd26213aa7e0c4564addb398eedc6a9266b4\", \"normal_source_files\": 718, \"FD\": \"c79cfce4\", \"GPU_cases\": 32, \"launch_command\": [\"bash\", \"/home/kklouzal/tensorfold-v100-qualification-20261026/dense-large-tiles-991f-controls-20261028/launch-command.sh\"], \"required_before_launch\": \"RootexclusiveGPUlease+onlyPortainer;D13sourceassessment;actualno skips/32GPUoracles/SDKbeforeafter required; noP3claim\"}\n",
+    "stderr": ""
+  }
+]

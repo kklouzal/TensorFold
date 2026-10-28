@@ -1,0 +1,14 @@
+{
+  "schema": "profile-tool-emergency-pause-checkpoint-v1",
+  "created_UTC": "2026-10-28T18:13:53.281710+00:00",
+  "authority": "User explicitly paused goal; STOP development/tests/allV100access; checkpoint+push recovery only.",
+  "source_status": "42ownedworktrees CLEAN. CombinedTail+Pool committed9d4a4c25; localprepause124PASS3.58/normal727FDc79/47collect. GPU47/NUMAall6 UNRUN; combinedD13pending. Tail-onlyall6 UNRUN beforecontainerEROFS.",
+  "active_jobs": "Allownedlocaltest/build sessions had already retired atpause verification. No newtests/development/V100access afterpause.",
+  "reuse_state": "Pool borrowedviews/prepaidworkspaces are plans only, NOTimplemented/selected; preserveassessment.",
+  "artifact_snapshots": "Inert .snapshot files preserve previouslyuntrackedownanalysis/launch/collector/proof/reuseWIP. They are recovery records, not active source/tests; originalcanonicalbranches/paths are listed. No modelweights/wheels/rawtraces/privatekeys/captureduserrequests included. Root owns full durable evidence archive.",
+  "snapshot_count": 1156,
+  "snapshot_bytes": 15498347,
+  "missing_named_roots": [],
+  "remote": "origin https://github.com/kklouzal/TensorFold.git; recoveryrefs only, noforce, do not merge into release/working reference.",
+  "remaining": "Resume only with explicituserinstruction; V100filesystemhealth/access and allGPU/modelacceptance remain unresolved."
+}

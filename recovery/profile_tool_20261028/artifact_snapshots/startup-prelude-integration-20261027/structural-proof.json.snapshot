@@ -1,0 +1,19 @@
+{
+  "base_runtime_all_other_files_byte_exact_710c": 715,
+  "explicit_startup_changed_runtime_surfaces": [
+    "tensorfold/_fd_owner.c",
+    "tensorfold/engine/model_identity.py",
+    "tensorfold/families/qwen4_exp/cuda/engine.py",
+    "tensorfold/families/qwen4_exp/cuda/execution_identity.py",
+    "tensorfold/families/qwen4_exp/cuda/startup_content.py"
+  ],
+  "closed7779_runtime_helpers_byte_exact": {
+    "tensorfold/_fd_owner.c": true,
+    "tensorfold/families/qwen4_exp/cuda/execution_identity.py": true,
+    "tensorfold/engine/model_identity.py": true
+  },
+  "closed7779_worker_only_change": "explicitPRELUDEeligibilitytupleaddition; removeoneexactstring=>byteidentical",
+  "new_FD_source_exact_closed7779": true,
+  "engine_merge": "Preserved710cPRELUDEfunding/24floor/sourceposition/coordinateview callpaths; additiveclosedstartupplan/admission/ownedstart/reuse/retirement/_same_settings only",
+  "kernel_math_and_MTP_and_coordinate_owner_bytes": "exact710c (includedunchangedproof)"
+}

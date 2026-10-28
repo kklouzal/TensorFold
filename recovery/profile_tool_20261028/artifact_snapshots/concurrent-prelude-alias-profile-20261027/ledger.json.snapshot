@@ -1,0 +1,10 @@
+{
+  "objective": "ReprofilechangednativepreludebottleneckN8afteraliasfixedruntimeactual53/all6/quality/countervalid",
+  "source": "8f1f904d/HOLD73cebb/APP32246 exact",
+  "implemented": "Protectedtool67a10N8capture/clockanchors/CUPTI28/batchobserver+basepreludeeligibility/counter; srcdiffempty; nodevicemathchanges",
+  "verified": "146CPU4.99snormal32246/Ruff/pip/help; stageexact9789c689; protectedanalysis6513stagedunchanged",
+  "GPU": "UNRUN Rootexclusivelease; stageonly",
+  "status": "AWAIT_ROOT_RUNTIME_QUALIFICATION_AND_D13_PROFILE_BINDING",
+  "old_failure": "902fstagewithdrawnunexecuted; warmupcoordinateversionguardfailurepreservedbyRoot; no profilersourcefaultinferred",
+  "next": "Rootactual53+all6/quality/countervalid\u2192N8profile\u2192terminalall8audit+boundedCPUanalysisreuses6513; noinstrumentedTPSgainclaim"
+}

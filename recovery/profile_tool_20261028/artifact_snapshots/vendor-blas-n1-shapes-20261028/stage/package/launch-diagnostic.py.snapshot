@@ -1,0 +1,67 @@
+import datetime
+import hashlib
+import json
+import pathlib
+import subprocess
+import time
+OUT = pathlib.Path('/home/kklouzal/tensorfold-v100-qualification-20261026/vendor-blas-fbaa-n1-shapes-20261028')
+ROOT = OUT.parent
+candidate = json.loads((OUT / 'candidate.json').read_text())
+IMAGE = 'sha256:96f6961708d064a9d2f9e73d4df43ce8a5695c1499f16943b670c21fd971e15e'
+NAME = 'tf-vendor-blas-fbaa-shapes'
+
+def now():
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+def write(name, value):
+    (OUT / name).write_text(json.dumps(value, indent=2, sort_keys=True) + '\n')
+
+def run(argv, label):
+    with (OUT / (label + '.stdout')).open('w') as stdout, (OUT / (label + '.stderr')).open('w') as stderr:
+        r = subprocess.run(argv, stdout=stdout, stderr=stderr)
+    write(label + '.command.json', {'argv': argv, 'exit_code': r.returncode, 'at': now()})
+    if r.returncode:
+        raise RuntimeError(label + ' failed')
+    return (OUT / (label + '.stdout')).read_text()
+
+def docker(*args):
+    return ['sudo', '-n', 'docker', *args]
+expected = json.loads((OUT / 'expected-image-content.json').read_text())
+raw = (OUT / 'expected-oci-manifest.json').read_bytes()
+if hashlib.sha256(raw).hexdigest() != IMAGE.removeprefix('sha256:'):
+    raise RuntimeError('normative manifest differs')
+actual = json.loads(run(docker('image', 'inspect', IMAGE), 'image-before'))[0]
+for key in ('Id', 'Descriptor', 'RootFS', 'Os', 'Architecture'):
+    if actual[key] != expected[key]:
+        raise RuntimeError('normative image identity differs: ' + key)
+config = hashlib.sha256(json.dumps(actual['Config'], sort_keys=True, separators=(',', ':')).encode()).hexdigest()
+if config != expected['config_sha256']:
+    raise RuntimeError('image Config differs')
+containers = run(docker('ps', '--format', '{{.Names}}'), 'containers-before').splitlines()
+if containers != ['portainer']:
+    raise RuntimeError('unexpected live container; coordinate Root GPU owner')
+portainer = run(docker('inspect', '--format', '{{.Id}} {{.Image}} {{json .Mounts}} {{json .HostConfig.RestartPolicy}}', 'portainer'), 'portainer-before')
+run(['nvidia-smi', '--query-gpu=index,uuid,name,driver_version,memory.used,pstate,power.limit,ecc.mode.current,clocks.current.graphics,clocks.current.memory', '--format=csv'], 'gpu-before')
+argv = docker('run', '--detach', '--name', NAME, '--runtime', 'nvidia', '--gpus', 'device=0', '--network', 'none', '--ipc', 'host', '--cpus', '4', '--memory', '12g', '--memory-swap', '12g', '--pids-limit', '4096', '--ulimit', 'memlock=-1:-1', '--ulimit', 'stack=67108864', '--ulimit', 'core=0')
+for key,value in {'CUDA_MODULE_LOADING':'LAZY','PYTHONUNBUFFERED':'1','PYTHONDONTWRITEBYTECODE':'1','OMP_NUM_THREADS':'1','MKL_NUM_THREADS':'1','OPENBLAS_NUM_THREADS':'1','MAX_JOBS':'2'}.items():
+    argv += ['-e',key+'='+value]
+argv += ['--mount','type=bind,src='+str(OUT)+',dst=/qualification,readonly','--mount','type=bind,src='+str(OUT/'results')+',dst=/probe','--entrypoint','/bin/bash',IMAGE,'/qualification/bootstrap.sh']
+cid = run(argv, 'container-launch').strip()
+state = {'at': now(), 'container': NAME, 'container_id': cid, 'argv': argv, 'status': 'started-private-finite', 'wheel_sha256': candidate['wheel_sha256'], 'source_hold_sha256': candidate['source_hold_sha256'], 'tool_sha256': candidate['tool_sha256'], 'qualification': 'VendorBLASshape microdiagnostic/no modelP3orqualityclaim'}
+write('controller-progress.json', state)
+print(json.dumps(state), flush=True)
+while True:
+    observation = json.loads(run(docker('inspect', '--format', '{{json .State}}', cid), 'state-current'))
+    state.update(at=now(), docker_state=observation)
+    write('controller-progress.json', state)
+    if not observation['Running']:
+        break
+    time.sleep(10)
+run(docker('logs', '--timestamps', cid), 'full-run')
+run(['nvidia-smi', '--query-gpu=index,uuid,memory.used,utilization.gpu,power.draw,temperature.gpu', '--format=csv'], 'gpu-after')
+after = run(docker('inspect', '--format', '{{.Id}} {{.Image}} {{json .Mounts}} {{json .HostConfig.RestartPolicy}}', 'portainer'), 'portainer-after')
+if after != portainer:
+    raise RuntimeError('Portainer preservation differs')
+state.update(status='terminal', finished_utc=now(), portainer_preserved=True)
+write('controller-progress.json', state)
+print(json.dumps(state), flush=True)

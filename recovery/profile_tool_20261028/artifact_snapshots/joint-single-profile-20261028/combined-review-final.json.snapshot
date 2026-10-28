@@ -1,0 +1,57 @@
+{
+  "schema": "task-wide-combined-D13-profile-port-review-v1",
+  "at": "2026-10-28T14:15:51.915625+00:00",
+  "reviewer": "/root/cleanup_review",
+  "scope": "N1 diagnostic port on exactverifiedd5eb/fbaa, preserved8d9worker/coldledgers/factory/resource/primaryerror paths andnewtransparentCPUlabels; closedeb7179/4c75capture-reader proofs reused. ThisisnotHC4d2bprofile substitution.",
+  "source": {
+    "commit": "b6369c36131c6432dc82fa7e058be65daaa92dc1",
+    "HOLD_sha256": "95527c1a0a58112c15ebc0a01cd2ed09b8d62ef5d36ab186b0d7e2791c917d9c",
+    "runtime_commit": "d5ebfce578dc8a1e3c59bdd27f3dd1558c14043f",
+    "APP_sha256": "fbaabca3ba2a7594c8712e0824733da035f3a3db63f454c520ecfa337010ee0d",
+    "runtime_src_diff": [],
+    "held_source_paths_verified": 8,
+    "held_check_files_verified": 8,
+    "normal_canonical_files": 726,
+    "FD_sha256": "c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d"
+  },
+  "stage": {
+    "payload_files_verified": 18,
+    "manifest_sha256": "2bde25ce38788be435b460cd7acbe261f0e187a93ccd8322a2c5d1101aa22712",
+    "controller_sha256": "800d3818aa14df90700618e5736806736394e3ab28ee00025076920b48975e34",
+    "wheel_matches": true,
+    "status": "Root/author18entryhash verification reported; localheldpayloadhashes verified. Root23026alreadyrunning; noGPU/remote byreviewer."
+  },
+  "disposition": "N1_DIAGNOSTIC_TOOL_PORT_AND_HELD_STAGE_REVIEW_CLOSED; NO_REMAINING_CONCRETE_SOURCE_FINDINGS_IN_SCOPE",
+  "proof_reuse": {
+    "nine_protected_helpers_AST_exacteb7179": [
+      "finish_failures",
+      "protected_cupti_identity",
+      "observed_call",
+      "observed_phase_call",
+      "trace_summary",
+      "mapping_snapshot",
+      "profile_clock_anchor",
+      "concurrent_observation_snapshot",
+      "RankCapture"
+    ],
+    "independently_AST_compared": true,
+    "reader_byteexact4c75": "57800bcb181ff0f3510ef2caf76cfe9b54f985b7aca27c67588c38f37f4da68b",
+    "observer_byteexact4c75": "9480e96af0ff0368d628b0f35ff01b657d703760f726ce8bd9970b392c8d5d76",
+    "original_body_worker": "Current8d9eMoE145/Candidate64coldexports andall8factory/follower/independentcounter/funding checks retained; noAPPbuild/math change."
+  },
+  "contracts_verified": [
+    "Explicit profileconcurrency1 requiresFASTv2/2048, one10sdecode/30ready/cancel-draincohort; quality/serial/repeats refused. Actualreservednative24windows/fullcontext/Q8/TP8/MTP2.7 retained. Ordinaryall6 remainsdefaultwhenflagabsent; diagnostic metadata never claimsall6/P3/quality completion.",
+    "Newlabels wrapexistingforward.finish/candidates/candidates_local,TargetGreedy gather/finish,MoE/Candidate replay/localpacket/cataloguerun andexistingboundforward. Actualmethodfunctionswrappedonce, importedfunctionaliases pointtooriginalcallables, staticmethoddescriptors/restoration kept. Sameobserved_call preservesoriginalresult/operationprimary andcleanup failures; noStoreproxy orinnerCPUgraph-replay work fabricated.",
+    "Observerplan fixed<=128bindings/failurejournal134, exactownedobserver module andprotectedcapture/mapping/clock/retirement paths unchanged. CapturestartsafterModelwarm, finishesafterEngineclose; all8actualanchors/sourceguards/rawhashes/drain/retirementstillrequired.",
+    "Actualcaller prepaysworld*(6GiBreader+128KiBobserver)=48GiB+1MiB beforefinalize/logicalsubmit atopbatch/GDNcontrols andallgraphfutureterms. Normal report bounds/64countermetadata/coldledgers preserved. NativeKineto buffers areseparate320GiBdiagnosticcgroup workload, peakunqualified; readerbudget isnotvendorbuffer/quota/universalRSSproof.",
+    "Readeralgorithm/close/primaryownership exactclosed4c75, no newparsealgorithm. Metadata sourceidentity fullnormal726/FD verified; inheritedpostall6coverage helper removedonlyfromdiagnosticpayload. No app/vendor/driver mutation."
+  ],
+  "verification": "236CPU6.41s/Ruff/help plusnormal726installedsourcefullverification; exactargv/cwd/exits/loghashesbound. Initialobserverplanfixtureownership failure retained thenfreshownerfixture isolation, no guard weakening. Actualcallerboundary test observesfull48GiB+1MiB charge; actualclasslabelbinding tests andnineASTcomparisons inspected.",
+  "cleanup": "No newverifieddeadcode or unjustifiedduplication in necessarydiagnosticport. No inheritedmethodoverride, no newprofilinglibrary orkernel math. No reviewer sourceedits/tests/GPU.",
+  "actual_and_limits": "Root23026capture outcome pending. Source isverifiedfbaa, notnewerHC4d2b. ReportedzeroHCreplaysforN1/2/4/8doesnotestablishwhole-revisionperformance/sourceequivalence; anycrossrevision inference mustremainexplicit. No profilerTPS/utilization/all6/quality acceptance.",
+  "pending": [
+    "Actualall8protectedcapture/rawSHA/clock/core/N1graphdispatch/drain/retirementproof",
+    "Afterterminalonly bounded2niceCPUanalysis andworkerretirement; noP3overlap",
+    "No nativeKinetopeak orservicequalification claim"
+  ]
+}

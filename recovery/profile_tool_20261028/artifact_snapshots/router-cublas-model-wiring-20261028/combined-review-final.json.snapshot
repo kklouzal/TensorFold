@@ -1,0 +1,68 @@
+{
+  "schema": "tensorfold.combined-d13-router-implementation-stage-review-v1",
+  "at": "2026-10-28T08:07:41.943084+00:00",
+  "reviewer": "/root/cleanup_review",
+  "commit": "f0a3bfd535f039315591d8b2f1cdba8d348f03c1",
+  "HOLD_sha256": "0930b670aee0e414146eb790cb3adefe557011a8ff6040caecb54f022e733d93",
+  "APP_sha256": "f7213e8d82109d4de3fd20c0a87e0150c3e56866360448d8585c55203f4e378a",
+  "status": "SCOPED IMPLEMENTATION/WIRING/OWNERSHIP/RESOURCE/STAGE REVIEW CLOSED FOR EXPLICIT PRIVATE NUMERIC CANDIDATE; numerical equivalence/requiredquality/selection remain separate",
+  "scope": "C11/C12 privatecuBLASpointerbatchedrouter newprofile; canonicalBuffermodelproducer+actualmoe/router/nativeABI/rolebudgets/caches/eligibility/defaultfallbacks andcaller tests, \u22643tasklinkedhops; no reviewerGPU/duplicatebroadchecks",
+  "native_contract": [
+    "SelectedCUDA12.9.2SM70/64bitpointers. RowmajorFP32[513,2560] treatedcolumnmajor[K,E] withOP_T reproducesmathematicalrowGEMV. Devicepointer tables own readonlyrepeatedA, preallocatedF32X, outputYstride516;16bytealignment preserved. Hostalpha1/beta0 withactualHOSTpointermode; currentTorchBLAShandle/samestream checked; no rawstream/pointermodeglobalsetter.",
+    "NoTF32Guard isscopedstandardlibrary selection; requiredFP16reducedprecisionTrue/accumFalse unchanged. FP16\u2192F32 copyexact, resultcopied todisjointcallerFP32contiguousoutput; weightstorage stronglyretainedandaddress/geometrychecked, scratchprivate/sameconstructionstream/serialactor.",
+    "RolePlans own49per-weightA tables across48target+1MTP andsharedX/Y+2pointertablesPERrole; cachedbytransientobjectidentitywhileownersretained. Noper-tokenpointerupload/cachegrowth; boundedcallcounterssaturate. No cross-modelpersistentaddress identity."
+  ],
+  "findings_dispositions": [
+    {
+      "id": "router-wrong-caller",
+      "rules": [
+        "R0",
+        "T3",
+        "Q0"
+      ],
+      "finding": "Withdrawnfee8 passedpreparedkeyword toPLEgate whileintendedmoe.routercall remainedunwired; actualstartupTypeError/noP3result preserved.",
+      "disposition": "Correctedf0a3 restores entirePLE_pre_moeAST exact7de andputs prepared ONLYonGGUFmoe_block realmoe.router call. Independentlychecked both. Actualsignature/evaluationcontrol exercises realmoe.router toPrepared boundary andsignatureboundnextGPUselect; no testoracle weakened."
+    },
+    {
+      "id": "router-rounded-device",
+      "rules": [
+        "M1",
+        "V1"
+      ],
+      "finding": "Oldraw801024B/rank omitted512Bgranule charges for53tables of256B.",
+      "disposition": "Correctedrole_bytes rounds each allocation;814592B/rank charged BEFORE Engineadmit, rawpayload separatelyreported801024. Target48/MTP1 exactprofile geometry, host7471104Bglobal includesowners/headers/temp/metadata; nogenericspareborrow/capacitycut. Onefocusedforecastassertion retained."
+    },
+    {
+      "id": "router-prefill-membership",
+      "rules": [
+        "R0",
+        "Q0"
+      ],
+      "finding": "Old9011candidate omittedprivateprofile literal inMulti._pieces scheduling list.",
+      "disposition": "Corrected30c3 exactprofileliteral+2actualmethodcases, retainedf0a3; old9011withdrawnunexecuted. Prefillremainsoriginalnumericroute."
+    }
+  ],
+  "integration": [
+    "Explicit source-batch-router-blas-trial requiresTP8/adaptive24/row32/stockMTP2confidence.7/text beforematerialization; defaultprivateBatch/otherprofiles remainoriginal. Distinctcacheprefix/Stateepoch andworkerprofileintent prevent accidentalbaselinequalification.",
+    "Onlyeagercanonicaldecode+MTP Buffers createplans. Prefill andgraph-only eager=False buffers retaincanonicalrouter; originalN1/capture specialization retained. Originalstable route/FP32softmax/FP16roundedweights/tiecode remainsafterlogits; originalGGUF/Dense/attention/GDN/status/targetMTPmath untouched.",
+    "No extraGPUtable replicatedmatrix: oneA pointertable perweight andsharedworkspace; count/bounds/alias/grad/stream andweightpreconditions validated throughprivateownedpreparedAPI. Caller guaranteesreadonlyweights/pointees throughqueuedlibrarywork; ordinaryPyTorchstream/allocator lifetimes apply."
+  ],
+  "numeric_evidence_and_limits": {
+    "authority": "Root authorized investigating a distinct FP32vendorimplementation; no precisiondrop orfalsebitidentity claim. If bit-identicalcanonicalrouterlogits are required, THIScandidateisnotqualified underthatcontract.",
+    "original28": "Root actual28 hadsameexpertIDs+roundedweightsallcases but18strictlogitbit failures. Strict28 functions andactualfailurearrays/logs retained; notrounding/tolerance-relaxed orreportedallbitwisePASS.",
+    "shared3": "Actualfee8pre-modelsharedworkspacecontrols compare againstsameindependentvendorPlan, notcanonicalGEMV; preserveownership/mathconsistency only. CPP unchanged byf0a3wiring/budgetfix; no duplicatednumericgate.",
+    "quality": "Empiricalroutingagreement onfinitecases doesNOT proveuniversalrouting/logit/outputquality equivalence, history/stability/determinism. Currentprivategraph/prefill/eager dispatchesmayhave differentFP32rounding; newprofile explicitlyunqualified. Root/userown numericcontract/quality acceptancebeforeselection, notinferredfromP3."
+  },
+  "binding": {
+    "heldsourcepaths": 20,
+    "source_clean": true,
+    "PLE_and_MoE": "baselinePLEAST andcorrectpreparedroutercall independentlyverified",
+    "stage": "18manifestedpayload rows +stage-files manifest=19files, hashes/sizes/currentHOLD checked; correcteduniqueoutputstage only",
+    "controller_sha256": "c5044c28d6a19dc2e05db7154aff25daa1033bb50b32fc69753eed7c089a738b",
+    "authorchecks": "270CPU7.18s/Ruff/pip/help/CPPcompile/import/normal720FDc79/package and31collection; failednamespace/withdrawn9011/failedfee8 preserved; no reviewerretest/GPU"
+  },
+  "pending": [
+    "Root45641 actualall6current-source/full24materialization/nativeusage/status/IDs/drain/quality andtier24>16>8>4>2>1 assessment",
+    "NoSUPERIOR/equivalence/deploy/servicequalification/85or600completion claim; anyhardnumericcontractconflict requires explicitauthority ratherthanconvenienceexception."
+  ]
+}

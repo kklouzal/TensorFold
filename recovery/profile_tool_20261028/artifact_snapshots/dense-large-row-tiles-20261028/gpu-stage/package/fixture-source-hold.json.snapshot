@@ -1,0 +1,14 @@
+{
+  "commit": "c517964eb7bebc3543274dc7be7ab920788384d5",
+  "paths": [
+    {
+      "path": "tests/cuda/test_sm70_dense_residency.py",
+      "sha256": "0f6eb82ef6ef4b4dc940adf55669090b7af0f4312aa1574e8a055348bf3acd0c"
+    },
+    {
+      "path": "tests/cuda/test_sm70_large_dense_tiles.py",
+      "sha256": "a262a31247c14e9d261a17d1c25d4721c91ae04aacb0b0b4efac08dd11556ef6"
+    }
+  ],
+  "collection": "32actualtargetCUDAcasescollectedCPU;UNRUNhardware; no skipsaccepted"
+}

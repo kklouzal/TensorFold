@@ -1,0 +1,22 @@
+from pathlib import Path
+import sys,json,hashlib,tarfile,ast,subprocess
+p,upload,want=Path(sys.argv[1]),Path(sys.argv[2]),sys.argv[3]
+sha=lambda f:hashlib.sha256(f.read_bytes()).hexdigest()
+assert not p.exists() and sha(upload)==want
+p.mkdir()
+with tarfile.open(upload)as a:
+ for m in a.getmembers():assert m.isfile() and not m.name.startswith("/") and ".." not in Path(m.name).parts
+ a.extractall(p,filter="data")
+for n,row in json.loads((p/"stage-files.json").read_text()).items():assert(p/n).stat().st_size==row["bytes"] and sha(p/n)==row["sha256"],n
+c=json.loads((p/"candidate.json").read_text());w=json.loads((p/"wheel-provenance.json").read_text());f=json.loads((p/"fixture-source-hold.json").read_text())
+assert c["wheel_sha256"]==sha(p/"tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl")==w["wheel"]["sha256"]
+assert c["source_hold_sha256"]==sha(p/"source-hold.json") and c["fixture_source_hold_sha256"]==sha(p/"fixture-source-hold.json")
+assert len(w["source_files"])==718 and w["compiled_extensions"][0]["sha256"]=="c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d"
+for row in f["paths"]:assert sha(p/row["path"])==row["sha256"]
+for path in p.rglob("*.py"):ast.parse(path.read_text())
+for name in ("bootstrap.sh","launch-command.sh"):subprocess.run(["bash","-n",str(p/name)],check=True)
+runner=ast.parse((p/"run_controls.py").read_text());assert any(isinstance(n,ast.If)and isinstance(n.test,ast.Compare)and isinstance(n.test.left,ast.Name)and n.test.left.id=="__name__"for n in runner.body)
+assert "prepare_before_tensor_work" in(p/"run_controls.py").read_text() and "len(cases)!=32"in(p/"run_controls.py").read_text()
+(p/"evidence").mkdir()
+r={"status":"STAGED EXACT; NOT EXECUTED","destination":str(p),"files":len(json.loads((p/"stage-files.json").read_text())),"APP":c["wheel_sha256"],"HOLD":c["source_hold_sha256"],"fixture_HOLD":c["fixture_source_hold_sha256"],"normal_source_files":718,"FD":"c79cfce4","GPU_cases":32,"launch_command":["bash",str(p/"launch-command.sh")],"required_before_launch":"RootexclusiveGPUlease+onlyPortainer;D13sourceassessment;actualno skips/32GPUoracles/SDKbeforeafter required; noP3claim"}
+(p/"stage-ready.json").write_text(json.dumps(r,indent=2)+"\n");print(json.dumps(r))

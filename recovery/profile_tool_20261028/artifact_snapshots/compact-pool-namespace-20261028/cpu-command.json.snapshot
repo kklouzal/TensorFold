@@ -1,0 +1,31 @@
+{
+  "argv": [
+    "docker",
+    "run",
+    "--rm",
+    "--network",
+    "none",
+    "--cpus",
+    "2",
+    "--memory",
+    "8g",
+    "--ulimit",
+    "stack=67108864",
+    "-e",
+    "PYTHONDONTWRITEBYTECODE=1",
+    "-e",
+    "CUDA_VISIBLE_DEVICES=",
+    "--mount",
+    "type=bind,src=/Warehouse/TensorFold-wt/v100-compact-pool-namespace-20261028,dst=/source,readonly",
+    "--mount",
+    "type=bind,src=/Warehouse/TensorFold-portable-audit-20261026/compact-pool-namespace-20261028,dst=/evidence",
+    "--entrypoint",
+    "/bin/bash",
+    "sha256:30fda46a4c40422e055e0615a8186fc1c39678be9c8c9761885fc0cb77c28993",
+    "-c",
+    "set -euo pipefail\nmkdir /attention-source\ntar --exclude=.git --exclude=.ruff_cache --exclude=__pycache__ -C /source -cf - . | tar -C /attention-source -xf -\npython /evidence/protected.py before\ntrap 'python /evidence/protected.py after' EXIT\npython -m pip wheel --no-build-isolation --no-deps /attention-source --wheel-dir /evidence/wheels\npython -m pip install --no-index --no-deps --force-reinstall --no-compile /evidence/wheels/*.whl\npython -m pip check\npython -m pytest -c /dev/null -o 'pythonpath=/source/tests /source' -p no:cacheprovider -q /source/tests/test_compact_pool_preparation.py /source/tests/test_compact_indexer.py /source/tests/test_sm70_owner_batch_prelude.py -k 'not actual_engine_pre_admission_batch_packet_and_counter_funding'\npython /evidence/verify-wheel.py\npython -m pytest -c /dev/null -o 'pythonpath=/source/tests /source' -p no:cacheprovider --collect-only -q /source/tests/cuda/test_sm70_compact_pool_preparation.py\npython -m ruff check --no-cache /source/src/tensorfold/families/qwen4_exp/cuda/compact_indexer.py /source/tests/compact_pool_reference.py /source/tests/test_compact_pool_preparation.py /source/tests/cuda/test_sm70_compact_pool_preparation.py\n"
+  ],
+  "cwd": "/home/kklouzal",
+  "scope": "normal wholewheel /attention-source, affected CPU controls; noGPU",
+  "started_ns": 1793209554744871309
+}

@@ -1,0 +1,32 @@
+from pathlib import Path
+import json,hashlib,sys,tarfile,ast,subprocess
+dest,upload,want=Path(sys.argv[1]),Path(sys.argv[2]),sys.argv[3]
+assert not dest.exists()
+sha=lambda p:hashlib.sha256(p.read_bytes()).hexdigest()
+assert sha(upload)==want
+tmp=Path(str(dest)+'.upload');assert not tmp.exists();tmp.mkdir()
+with tarfile.open(upload)as a:
+ for member in a.getmembers():assert member.isfile() and not member.name.startswith('/') and '..' not in Path(member.name).parts
+ a.extractall(tmp,filter='data')
+for name,row in json.loads((tmp/'stage-files.json').read_text()).items():
+ p=tmp/name;assert p.stat().st_size==row['bytes'] and sha(p)==row['sha256'],name
+c=json.loads((tmp/'candidate.json').read_text());m=json.loads((tmp/'wheel-provenance.json').read_text());b=json.loads((tmp/'baseline-comparison-identity.json').read_text())
+tool=(tmp/'tools/v100_backend_probe.py').read_text()
+assert 'FOLLOWER_RECEIPT_BYTES = 256 << 10' in tool and 'SUPERVISOR_RECEIPT_BYTES = 64 << 10' in tool
+assert c['funding']=={'follower_bytes':262144,'global_receipt_bytes':2424832}
+assert len(m['source_files'])==717 and m['compiled_extensions'][0]['sha256']=='c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d'
+assert sha(tmp/'source-hold.json')==c['source_hold_sha256']
+assert sha(tmp/'tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl')==c['wheel_sha256']==m['wheel']['sha256']
+assert sha(tmp/'execution-manifest.json')==c['execution_manifest_sha256']=='95336693957314d74ba50328679d2b9a37552cb3e11a891b7a4a1900503e5673'
+for name,want in c['tool_dependencies'].items():assert sha(tmp/name)==want
+for name,want in b['baseline_helper_hashes'].items():assert sha(tmp/'tools'/name)==want
+for p in list((tmp/'tools').glob('*.py'))+[tmp/'launch-finite.py',tmp/'verify_installed.py']:ast.parse(p.read_text())
+subprocess.run(['bash','-n',str(tmp/'bootstrap-finite.sh')],check=True)
+s=(tmp/'launch-finite.py').read_text()
+for literal in ['source-owner-target-prelude-trial','--concurrency-grid','--fast-grid','--quality-spotchecks',"'--tokens','512'","'--session-ceiling','24'","'--repetitions','1'",'--execution-profile-manifest','--triton-cache-root','--overlap-content-capture']:assert literal in s,literal
+assert 'TENSORFOLD_MULTI_GRAPH_MIB' not in s
+assert 'unset TENSORFOLD_MULTI_GRAPH_MIB' in (tmp/'bootstrap-finite.sh').read_text()
+(tmp/'results').mkdir();tmp.rename(dest)
+record={'status':'STAGED EXACT; NOT EXECUTED','out':str(dest),'candidate':c,'source_files':717,'baseline_helper_equality':True,'results_empty':not any((dest/'results').iterdir()),'controller_sha256':sha(dest/'launch-finite.py'),'launch_command':['python3',str(dest/'launch-finite.py')],'required_before_launch':'D13+actual53newwholewheelpositiveMTPcounter; compare3224andfa6eallNquality/nativecounter'}
+(dest/'stage-ready.json').write_text(json.dumps(record,indent=2)+'\n')
+print(json.dumps(record))

@@ -1,0 +1,11 @@
+from pathlib import Path
+import json,pytest
+
+def main():
+    args=['-s','-c','/dev/null','-o','pythonpath=/qualification/tests /qualification/tests/cuda /qualification','-p','no:cacheprovider','-x','-vv','--junitxml=/evidence/native-prelude.xml','/qualification/tests/cuda/test_sm70_fused_family.py::test_prep_exact_torch_stored_bytes_across_prefill_and_decode_reduction_shapes','/qualification/tests/cuda/test_sm70_owner_prelude.py','/qualification/tests/cuda/test_sm70_owner_piece_graphs_tp8.py::test_v100_tp8_native_owner_exact_pieces_match_native_eager_frames_and_commits[bound-prelude]']
+    code=pytest.main(args)
+    Path('/evidence/pytest-exit.json').write_text(json.dumps({'exit_code':int(code),'argv':args,'scope':'53oldmath/frameoffset/fault/realboundTP8oracles; nofullmodelquality/performance'})+'\n')
+    raise SystemExit(code)
+
+if __name__ == "__main__":
+    main()

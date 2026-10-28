@@ -1,0 +1,21 @@
+{
+  "objective": "Diagnoseactualconcurrencyscalingat8first, optional16; all8GPUranksinstrumented; noall6performancecomparisonclaim",
+  "source": "67a10e57/HOLDf64d/84a8APPunchanged",
+  "protocol": "N8onecohortafter2tokenNotebookbringup,30sready10sdecode,expectedcancel+provennative/Future/permitdrain; outputcap512EOSunchanged",
+  "required_evidence": [
+    "all8positiveCPU+CUDA/sourcebeforeafter/CUPTI28/engineretired",
+    "fixedbatchhistsactualroundlive,readyN,selectedN,selectedR,computeN/R,ownerR",
+    "CPUlabelsactualownerprepare/expert/NCCL/selection/round",
+    "fastcasecorrelatedall8decodewindow/cancellationdrain/rawtokenprogress",
+    "graphvsplainlaunchcorrelation, NCCLwait/gaps, hostphaseoverlapuncertainty"
+  ],
+  "resource_contract": "256Kfollowers/2424832globalreceipts*25;1MiBglobalfixedobservercontrolfundedbeforelogicalsubmit,allocatedpostwarmcapturestartwithoutcredit; Kineto nativebuffers separate boundeddiagnosticworkloadunder320GiBcontainer/notproductioncapacityqualification",
+  "checks": {
+    "base145": "PASS4.90s/Ruff/pip/help",
+    "finalmodule5": "PASS1.68s/Ruff/primaryfailure+label/timer/argallocfaults",
+    "srcdiff": "empty vs870f/84a8"
+  },
+  "GPU": "RootactualN8captureterminal0/full8source+retirementPASS; instrumentednotperformance/qualityqualification",
+  "next": "Rootfullnativepreludeall6unprofiledtest now; optionalN16sameprotecteddiagnosticafterchangedbottleneck",
+  "analysis": "D13closed6513; actualall8hashstreamterminal0; compact/findingsarchived; noCPUprocessesremaining"
+}

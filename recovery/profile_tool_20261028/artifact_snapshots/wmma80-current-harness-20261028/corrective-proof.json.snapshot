@@ -1,0 +1,13 @@
+{
+  "APPdiff_vs1db": [
+    "src/tensorfold/cuda/sm70/execution_policy.py"
+  ],
+  "native_source_equal1db": {
+    "src/tensorfold/cuda/sm70/gguf_ops.cpp": "3c2c8300ddf7ca736cc1052069b43aae35b551d10918b55cdf86d4c06e649c77",
+    "src/tensorfold/cuda/sm70/gguf_ops.cu": "f50db57db640cdb32aefc210ee49f8a3ae39beac3a25a9b36d5d1b0e9783e902",
+    "src/tensorfold/cuda/sm70/gguf_ops.py": "f20ce5a1e78006c8d44b2ef90d31ebaa98c1bb2f2958678806c824089fd058cb"
+  },
+  "reason": "constructorcountAPIadds1; nativePackedBankextent512meansrawsharedID512, oldpubliccount514expected513, causingreferenceNaNs. Correctarg512producespubliccount513/shared512. Productionmaterializeralreadypassesrouted512.",
+  "finite_error_assertions": "unchangederror_record andold42oracles retained; newbankasserttotal513 added",
+  "warnings": "5identicalrecord_property/xunit2incompatibility; allfivepreserved, fixedthroughsupportedlegacyJUnit, no CUDA/mathwarning"
+}

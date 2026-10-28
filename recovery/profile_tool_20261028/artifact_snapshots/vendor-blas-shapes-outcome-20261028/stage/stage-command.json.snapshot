@@ -1,0 +1,26 @@
+{
+  "copy": [
+    "scp",
+    "-i",
+    "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+    "-o",
+    "BatchMode=yes",
+    "/Warehouse/TensorFold-portable-audit-20261026/vendor-blas-shapes-outcome-20261028/stage/payload.tar",
+    "kklouzal@71.94.200.200:/home/kklouzal/tensorfold-v100-qualification-20261026/vendor-blas-fbaa-shapes-outcome-20261028.tar"
+  ],
+  "verify": [
+    "ssh",
+    "-i",
+    "/home/kklouzal/.ssh/tensorfold_v100_ed25519",
+    "-o",
+    "BatchMode=yes",
+    "kklouzal@71.94.200.200",
+    "python3",
+    "-",
+    "/home/kklouzal/tensorfold-v100-qualification-20261026/vendor-blas-fbaa-shapes-outcome-20261028",
+    "/home/kklouzal/tensorfold-v100-qualification-20261026/vendor-blas-fbaa-shapes-outcome-20261028.tar",
+    "7b93321c7afc0800d262da7bea33fc537cd35663daef4fd77d30eb0a775c7e9d"
+  ],
+  "stdin_source": "/Warehouse/TensorFold-portable-audit-20261026/vendor-blas-shapes-outcome-20261028/stage/remote-verifier.py",
+  "noGPU": true
+}

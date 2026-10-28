@@ -1,0 +1,42 @@
+{
+  "base": "146f/7c0a verifiedreference",
+  "task": "toolonlyN24TorchCUPTI28 profile; a89currentworker retained",
+  "scope": "sameTP8/Q8/24/row32/Router/GDN/startup3, no APPdiff",
+  "capture_helpers": "reusedclosed4c75;128observerbindings/134failurejournal;CPUuser_annotation;6GiB/rankreaderfuturefund",
+  "P3": "instrumenteddiagnosticonly noall6/quality/repeatabilitycredit",
+  "status": "Root90033analysisTERMINALexit0/all8-summarycomplete; localboundedinterpretationcomplete",
+  "pending": [
+    "Rootchangedbottleneckcandidateactualall6 comparison",
+    "No P3/quality/repeatability/utilizationcredit frominstrumentedprofile"
+  ],
+  "source": "eb7179abb8826a30f952c6d0759b268f75242984 frozen",
+  "HOLD": "37af705d56ab599e8c0d51df085777ffb24a30c1056a57f38ea946e5273e8ab9",
+  "controls": "223main+focused5/4PASS/Ruff/normal721FDc79, exactcommands/logs retained",
+  "analysis_stage": "exactclosed6513scripts staged; Rootonly2niceCPUafteractualterminal0/all8proof/initialonlyPortainer; noauthoranalysis",
+  "Root_capture_report": {
+    "all8_profile_complete": true,
+    "all8_final_complete": true,
+    "all8_engine_transport_retired": true,
+    "rank_failures": 0,
+    "raw_traces": 8,
+    "raw_bytes_total": 12362878308,
+    "scope": "Rootauthoritative terminal audit; raw/summaries notyetlocallyinterpreted"
+  },
+  "Root_analysis": {
+    "session": 90033,
+    "CPU_cores": [
+      0,
+      1
+    ],
+    "nice": 19,
+    "workers": 2,
+    "task_allowance_GiB": 16,
+    "P3_overlap": "forbiddenuntilworkersretire"
+  },
+  "D13": {
+    "receipt": "combined-review-final.json",
+    "sha256": "3b7a4289587e6ddc4edfe2aea53ee9ee52a0ff9709678d6ead2a647c9b1b142f",
+    "scope": "source/stageclosed; actualcapture/analysisindependent"
+  },
+  "analysis": "actual-findings.json/.md bindcurrentdecodecore/countercohortscopes/source/CUPTI/clock/rawhash/native24"
+}

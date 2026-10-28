@@ -1,0 +1,24 @@
+{
+  "runtime_sha256": "b5c78eb23e5d4c5111a707506a8afb5623cef81c0dd6412c70c1376786560f3a",
+  "row_policy_sha256": "8021154e213e1383b2a26290d14cb4d5318dfb0c80eee7cb003e3f9fc5e2979d",
+  "APP": "4b0ea6b51047f93b2b973ed5a467d8c279b94f6d85c683c4258a712ff6edd99f",
+  "rows": [
+    4,
+    5,
+    6,
+    8,
+    9,
+    10,
+    11,
+    17,
+    18,
+    19,
+    20,
+    21,
+    22,
+    30,
+    31,
+    32
+  ],
+  "scope": "runtime identity and inherited row authority remain distinct"
+}

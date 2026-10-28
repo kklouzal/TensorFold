@@ -1,0 +1,11 @@
+{
+  "commit": "490a49c2013f29b9551eec5d573da7c5fa852b63",
+  "paths": [
+    {
+      "path": "tests/cuda/test_sm70_router_blas.py",
+      "sha256": "5da9002e18672fa584e35f115a953c660cb636ad88028d3b706fcbf18c82fd27"
+    }
+  ],
+  "collected": 28,
+  "GPU": "UNRUN;bitfailuresretainednoapprox"
+}

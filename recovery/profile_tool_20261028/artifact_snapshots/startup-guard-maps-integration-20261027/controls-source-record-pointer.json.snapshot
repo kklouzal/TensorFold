@@ -1,0 +1,19 @@
+{
+  "schema": "tensorfold.controls-start-record-pointer-v1",
+  "disclosure": "HOLD controls.start_sha256 is the successful final-controls-command.json, not the earlier wheel-build start.json. No savedrecordrecreated; bothoriginalrecordsretained.",
+  "successful_record": {
+    "path": "final-controls-command.json",
+    "sha256": "fe359ca4b38a854a9b8dcd1916fd6f3b6f3523108717ff0592d68da324c17e38",
+    "exit_record": "controls-final-exit.json",
+    "log": "controls-final.log",
+    "checks": 480,
+    "actual_session": 27747
+  },
+  "earlier_build_record": {
+    "path": "start.json",
+    "sha256": "bc6b70b3308794744909852b184da34d545e6ea50f916c4d4bcbafb8b45ccd4e",
+    "scope": "Buildsamefinalownedruntimewheel thenfirstallocationfaultfixtureattempt;479pass1fixturefaultnotfired; retainedcontrols.log. Onlytestfaultinjectionchangedbeforereusingsamewheelandfinal480gate; runtimebytesunchanged."
+  },
+  "frozen_hold_sha256": "8c4e23435a89ed99fc7ef7ba2d1b28d1bc48fee116bba76097f97b4589386768",
+  "provenance_sha256": "c825d9a9f02873cd1f9cb3bdd60529ae08e30764b01131b94c49d529d017c48c"
+}

@@ -1,0 +1,21 @@
+{
+  "schema": "descriptor-current-N24-stage-ready-companion-v1",
+  "status": "READY_FOR_ROOT_AFTER_D13",
+  "CPU": "234PASS11.95/Ruff/pip/help; actual b5c7 and8021 authority parser exercised; no skips",
+  "stage_preflight": "actual stagebootstrap policyblock executed on normal4b0 installed727FDc79 under SDK CPU only; exit0; exactAPP/runtime/rowauthority rows16 printed",
+  "stage": "22manifest payloadfiles remotehashverified; fresh writable results directory; noGPUexecuted",
+  "artifacts": {
+    "source-hold.json": "03d05466149f3a13ee175d55943352d315b396d3499d1dc347433f36c43804cb",
+    "structural-proof.json": "2a51c6a84f8cca4047dae97d18aba08c1f2735efecb3c1211d30adae0e989019",
+    "CPU-command.json": "98101e5b12c6b621faa9fa5dda26ffa7b261ca230be4f17f24fcff75898f56b4",
+    "CPU-exit.json": "88715a7772ace92e39306dd134c93ad804cbbd210066313acfb153c1d1cf906b",
+    "CPU.log": "f243f386d3896c701148de48aae30e9f0bb2ef30ab3568cf724fddbf8ded7b67",
+    "stage-preflight-command.json": "baf987902b1505b13b522cce528b9fb51c687e619aeb89393af398e75f6facb1",
+    "stage-preflight-exit.json": "4ba825b3c9e9aebb7efacedd3d80591cf9778965b5a370a435ee996bad55d4c4",
+    "stage-preflight.log": "3aa15bc7ee0eb39b3f1daad55e55257eb3549efe71e66427188bf6bf2d9f61c7",
+    "profile-row-policy-preflight.json": "23a6073ce9932ba2c0bf6d9c1753666ead5f07dcddb0ffbe554a02a17ed8e461",
+    "stage/stage-ready.json": "7a55e199a1d095db988aabebfd457187c1f7491207c3ad20a3cc761ca8112428",
+    "stage/package/launch-finite.py": "a42d33e1aeff44c1b9bd8c665fa3e6ff4211f53d9de339dc4857c3724a2f3038",
+    "stage/package/bootstrap-finite.sh": "d40b078c3be0c7389844f78cdfeacb90654af3e2fbf9097a0568533b277711db"
+  }
+}
