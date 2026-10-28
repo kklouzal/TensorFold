@@ -60,7 +60,8 @@ def test_private_numeric_epoch_is_distinct_and_fixed_roles_are_funded_before_adm
                  and "ROUTER_BLAS_TRIAL" in ast.unparse(n.test)
                  and any(isinstance(q, ast.Name) and q.id == "router_roles" for q in ast.walk(n)))
     options = {"device_workspace_bytes": 0, "host_workspace_bytes": 0}
-    scope = dict(self=NS(sm70_profile=rb.PROFILE), ROUTER_BLAS_TRIAL=rb.PROFILE, SHARED_FUSION_TRIAL=prefix_policy.SHARED_FUSION_PROFILE, options=options, tp=8, mtp=True)
+    scope = dict(self=NS(sm70_profile=rb.PROFILE), ROUTER_BLAS_TRIAL=rb.PROFILE, SHARED_FUSION_TRIAL=prefix_policy.SHARED_FUSION_PROFILE,
+                 HC_SMALLROW_VENDOR_TRIAL=prefix_policy.HC_SMALLROW_VENDOR_PROFILE, options=options, tp=8, mtp=True)
     exec(compile(ast.Module(body=[block], type_ignores=[]), str(source), "exec"), scope)
     assert options == {"device_workspace_bytes": 814592, "host_workspace_bytes": 7471104}
     admission = next(n for n in ast.walk(initialize) if isinstance(n, ast.Assign)

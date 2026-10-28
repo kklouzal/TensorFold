@@ -982,9 +982,9 @@ class FlashNextEngine:
             sm70_prefill_bytes = _sm70_prefill_gdn_bytes(text, tp, rows0)
             options["device_workspace_bytes"] = options.get("device_workspace_bytes", 0) + sm70_prefill_bytes
             target_greedy_bytes = None
-            from tensorfold.cuda.sm70.execution_policy import TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL
+            from tensorfold.cuda.sm70.execution_policy import TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, HC_SMALLROW_VENDOR_TRIAL
 
-            if self.sm70_profile in (TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
+            if self.sm70_profile in (TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, HC_SMALLROW_VENDOR_TRIAL):
                 from .target_greedy import workspace_bytes
 
                 target_greedy_bytes = workspace_bytes(int(text["vocab_size"]))
@@ -996,12 +996,12 @@ class FlashNextEngine:
                     target_greedy_bytes, feedback_status, plain_status))
                 options["device_workspace_bytes"] += target_greedy_bytes[0]
                 options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + tp * target_greedy_bytes[1]
-            if self.sm70_profile in (OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
+            if self.sm70_profile in (OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, HC_SMALLROW_VENDOR_TRIAL):
                 # One dedicated initialized immutable int32 control per model;
                 # bound its allocator granule and retained/transient view metadata.
                 options["device_workspace_bytes"] += 512
                 options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + tp * (512 + 32 * 248 + 8192 + 8192)
-            if self.sm70_profile in (OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
+            if self.sm70_profile in (OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, HC_SMALLROW_VENDOR_TRIAL):
                 from .batch_prelude import workspace_bytes as batch_workspace
 
                 batch_rows = execution_rows if execution_rows is not None else 32 if adaptive_sessions else streams * each
@@ -1013,7 +1013,7 @@ class FlashNextEngine:
                     batch_host += host_bytes
                 options["device_workspace_bytes"] += batch_device
                 options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + tp * batch_host
-            if self.sm70_profile in (ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
+            if self.sm70_profile in (ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, HC_SMALLROW_VENDOR_TRIAL):
                 from tensorfold.cuda.sm70.router_blas import role_bytes
 
                 # Only eager canonical decode/MTP Buffers own these fixed roles.
@@ -1037,12 +1037,16 @@ class FlashNextEngine:
                 # all device capture allocations remain paid once by RoundGraphs.
                 options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + (
                     tp * candidate_regions_funding()["future_host_bytes_per_rank"])
-            if self.sm70_profile == SHARED_FUSION_TRIAL:
+            if self.sm70_profile in (SHARED_FUSION_TRIAL, HC_SMALLROW_VENDOR_TRIAL):
                 from tensorfold.cuda.sm70.gguf_ops import shared_fusion_workspace_bytes
 
                 fusion_device, fusion_host = shared_fusion_workspace_bytes()
                 options["device_workspace_bytes"] += fusion_device
                 options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + tp * fusion_host
+            if self.sm70_profile == HC_SMALLROW_VENDOR_TRIAL:
+                from .hc_smallrow_vendor import HOST_ALLOWANCE
+
+                options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + tp * HOST_ALLOWANCE
             import os
             if os.environ.get("TENSORFOLD_SM70_GDN_STATE_BATCH") == "1":
                 from .gdn_state_batch import workspace_bytes as gdn_batch_workspace
@@ -1265,7 +1269,7 @@ class FlashNextEngine:
                                    **({"preallocated_device_bytes": nvfp4_preallocated
                                        + (owner_preparation.committed_bytes() or 0 if owner_preparation is not None else 0)}
                                       if owner_preparation is not None or nvfp4_source else {}))
-        if getattr(self, "sm70_profile", None) == "source-router-gdn-shared-fusion-trial":
+        if getattr(self, "sm70_profile", None) in ("source-router-gdn-shared-fusion-trial", "source-router-gdn-fusion-hc-smallrow-vendor-trial"):
             self.capacity_plan["shared_fusion_experiment"] = {"device_operating_bytes_per_rank": fusion_device,
                 "global_host_bytes": tp * fusion_host, "maximum_rows": 32, "maximum_slots": 33,
                 "activation_payload_max_bytes": 168960, "actual_top11_payload_max_bytes": 56320,
@@ -1288,9 +1292,9 @@ class FlashNextEngine:
             self.capacity_plan["sm70_weight_plan"] = self._sm70_weight_plan
         if adaptive_sessions:
             streams = self.capacity_plan["session_capacity"]["resident_capacity"]
-            from tensorfold.cuda.sm70.execution_policy import OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL
+            from tensorfold.cuda.sm70.execution_policy import OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, HC_SMALLROW_VENDOR_TRIAL
 
-            if self.sm70_profile in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL) and streams < 24:
+            if self.sm70_profile in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, HC_SMALLROW_VENDOR_TRIAL) and streams < 24:
                 raise ValueError("source-owner-pieces-trial must preserve at least24 complete INT8 context windows")
             resident_windows = streams
             self.streams = self.kv_full_windows = streams
@@ -1525,6 +1529,8 @@ class FlashNextEngine:
             from tensorfold.cuda.sm70.execution_policy import prepare_weights
 
             prepare_weights(w, graph_contract=unique_graph_contract)
+            if self.sm70_profile == "source-router-gdn-fusion-hc-smallrow-vendor-trial":
+                self.capacity_plan["hc_smallrow_vendor"] = dict(w.meta["hc_smallrow_vendor"])
         if self.comm is not None:
             from tensorfold.cuda.comm import agree_eos
 
@@ -2179,9 +2185,9 @@ class FlashNextEngine:
             from .dspark_context_graphs import _ENABLED as context_enabled
 
             expert_policy = [GGUFExperts.implementation, GGUFExperts.packed_rows, GGUFConcat.implementation]
-            from .prefix_policy import OWNER_TARGET_DENSE_PROFILE, OWNER_BATCH_PRELUDE_PROFILE, ROUTER_BLAS_PROFILE, SHARED_FUSION_PROFILE
+            from .prefix_policy import OWNER_TARGET_DENSE_PROFILE, OWNER_BATCH_PRELUDE_PROFILE, ROUTER_BLAS_PROFILE, SHARED_FUSION_PROFILE, HC_SMALLROW_VENDOR_PROFILE
 
-            if getattr(self, "sm70_profile", None) in (OWNER_TARGET_DENSE_PROFILE, OWNER_BATCH_PRELUDE_PROFILE, ROUTER_BLAS_PROFILE, SHARED_FUSION_PROFILE):
+            if getattr(self, "sm70_profile", None) in (OWNER_TARGET_DENSE_PROFILE, OWNER_BATCH_PRELUDE_PROFILE, ROUTER_BLAS_PROFILE, SHARED_FUSION_PROFILE, HC_SMALLROW_VENDOR_PROFILE):
                 expert_policy.append(GGUFDense.implementation)
             expert_policy.append(["private-moe-regions", getattr(self, "_moe_region_graphs_requested", False)])
             expert_policy.append(["private-hc-moe-regions", getattr(self, "_hc_moe_region_graphs_requested", False)])

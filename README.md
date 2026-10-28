@@ -1,5 +1,18 @@
 # TensorFold fork
 
+The private `source-router-gdn-fusion-hc-smallrow-vendor-trial` keeps the current
+Router/GDN/shared-fusion and graph composition but changes only HC down,
+inject and up GEMMs at logical rows1–3 to their original ATen vendor operation
+at that row count. Down and inject stay separate; weights are the original
+FP16 tensors. Prefill, higher rows and generic/alias/autograd cases retain
+their original matrix owners. The distinct profile has its own State/prefix
+epoch and adds256KiB/rank of host operating allowance before admission, with
+no extra weight or persistent GPU workspace. Select it only with explicit
+`--hc-smallrow-vendor-trial` plus the existing private fusion/router/GDN flags.
+It is an unqualified numerical candidate: prior shape diagnostics motivate
+investigation but establish no model-quality or throughput gain. Actual
+component, capture, capacity and all-six model checks remain pending.
+
 A separate unqualified hot-row candidate uses one HC/MoE private pool for
 exact rows4,5,6,8,9,10,11,17–22,30–32 (768 target graph keys). The private
 `TENSORFOLD_SM70_HC_MOE_SHARED_POOL=1` requires the selected fused HC/MoE

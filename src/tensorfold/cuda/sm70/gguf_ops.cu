@@ -872,6 +872,71 @@ void gguf_concat32(const at::Tensor& x, const std::vector<at::Tensor>& weights, 
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
+void gguf_hc_smallrow(const at::Tensor& x, const std::vector<at::Tensor>& weights, at::Tensor output) {
+    TORCH_CHECK(x.is_cuda() && x.layout() == at::kStrided && x.scalar_type() == at::kHalf
+                && x.dim() == 2 && x.size(0) >= 1 && x.size(0) <= 3 && x.is_contiguous()
+                && !x.is_neg() && !x.is_conj() && !x.requires_grad(), "HC small-row input requires1..3 contiguous FP16 CUDA rows");
+    const auto device = x.device();
+    const auto* prop = at::cuda::getDeviceProperties(x.get_device());
+    TORCH_CHECK(prop->major == 7 && prop->minor == 0, "HC small-row provider requires SM70");
+    TORCH_CHECK(weights.size() == 1 || weights.size() == 2, "HC small-row requires original HC parts");
+    ConcatSources sources{};
+    sources.count = int(weights.size());
+    int total = 0;
+    for (size_t part = 0; part < weights.size(); ++part) {
+        const auto& weight = weights[part];
+        TORCH_CHECK(weight.layout() == at::kStrided && !weight.is_neg() && !weight.is_conj() && !weight.requires_grad(),
+                    "HC small-row weights require ordinary dense storage");
+        operand(weight, at::kHalf, device, "HC small-row weight");
+        TORCH_CHECK(weight.dim() == 2 && weight.size(1) == x.size(1)
+                    && weight.size(0) > 0 && weight.size(0) <= 10240, "HC small-row weight geometry disagrees");
+        sources.starts[part] = total;
+        total += int(weight.size(0));
+    }
+    sources.starts[weights.size()] = total;
+    const bool down = x.size(1) == 10240 && weights[0].size(0) == 320
+        && (weights.size() == 1 || weights[1].size(0) == 4);
+    const bool up = weights.size() == 1 && x.size(1) == 320 && weights[0].size(0) == 10240;
+    TORCH_CHECK(down || up, "HC small-row accepts only original down/inject/up geometries");
+    TORCH_CHECK(output.device() == device && output.layout() == at::kStrided && output.dim() == 2
+                && output.size(0) == x.size(0) && output.size(1) == total && output.is_contiguous()
+                && output.scalar_type() == (down ? at::kFloat : at::kHalf)
+                && !output.is_neg() && !output.is_conj() && !output.requires_grad(), "HC small-row output geometry/dtype disagrees");
+    TORCH_CHECK(!tensorfold::overlaps(output, x), "HC small-row output overlaps input");
+    for (const auto& weight : weights)
+        TORCH_CHECK(!tensorfold::overlaps(output, weight), "HC small-row output overlaps weight");
+    c10::cuda::CUDAGuard guard(device);
+    std::vector<at::Tensor> values;
+    values.reserve(weights.size());
+    for (size_t part = 0; part < weights.size(); ++part) {
+        // A deliberately different vendor M dispatch, with the original
+        // separate part GEMMs and output dtypes. Publish only after all parts.
+        values.push_back(down ? at::mm(x, weights[part].t(), at::kFloat) : at::mm(x, weights[part].t()));
+        sources.data[part] = values.back().data_ptr();
+    }
+    const int rows = int(x.size(0)), blocks = (rows * total + 255) / 256;
+    auto stream = at::cuda::getCurrentCUDAStream();
+    if (weights.size() == 2)
+        concat_copy32<true><<<blocks, 256, 0, stream>>>(sources, output.data_ptr(), rows, total, output.stride(0));
+    else if (down)
+        dense_copy32<true, true><<<blocks, 256, 0, stream>>>(sources.data[0], output.data_ptr(), rows, total, output.stride(0));
+    else
+        dense_copy32<false, false><<<blocks, 256, 0, stream>>>(sources.data[0], output.data_ptr(), rows, total, output.stride(0));
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+int gguf_prepare_hc_smallrow() {
+    int device = 0;
+    C10_CUDA_CHECK(cudaGetDevice(&device));
+    const auto* prop = at::cuda::getDeviceProperties(device);
+    TORCH_CHECK(prop->major == 7 && prop->minor == 0, "HC small-row residency requires SM70");
+    cudaFuncAttributes attributes;
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, concat_copy32<true>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, dense_copy32<true, true>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, dense_copy32<false, false>));
+    return 3;
+}
+
 namespace {
 constexpr int WMMA_M = 32, WMMA_N = 64, WMMA_K = 64, WMMA_THREADS = 128;
 constexpr int WMMA_SHARED = (WMMA_M + WMMA_N) * WMMA_K * sizeof(__half);

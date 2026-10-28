@@ -263,16 +263,18 @@ def test_router_profile_explicitly_composes_sealed_gdn_flag(policy, monkeypatch)
 
 
 
-def test_shared_fusion_changes_only_experts_in_current_composition(policy, monkeypatch):
+@pytest.mark.parametrize('private_profile', ("source-router-gdn-shared-fusion-trial", "source-router-gdn-fusion-hc-smallrow-vendor-trial"))
+def test_shared_fusion_changes_only_experts_in_current_composition(policy, monkeypatch, private_profile):
     from tensorfold.cuda.sm70 import router_blas
     prepared = []
-    monkeypatch.setenv(policy.module.PROFILE_ENV, policy.module.SHARED_FUSION_TRIAL)
+    monkeypatch.setenv(policy.module.PROFILE_ENV, private_profile)
     monkeypatch.setenv("TENSORFOLD_SM70_GDN_STATE_BATCH", "1")
     monkeypatch.setattr(policy.module, "_prepare_family_trial", lambda *a, **kw: prepared.append(kw) or {})
     monkeypatch.setattr(router_blas, "extension", lambda: object())
-    assert policy.module.configure(text(), tp=8, torch=torch) == policy.module.SHARED_FUSION_TRIAL
+    assert policy.module.configure(text(), tp=8, torch=torch) == private_profile
     assert prepared[0]["shared_fusion"] and prepared[0]["owner_batch"] and prepared[0]["dense"]
     assert policy.weights.GGUFExperts.implementation == "packed_blocks2w"
     assert policy.weights.GGUFDense.implementation == policy.weights.GGUFConcat.implementation == "native32"
     assert policy.family._NATIVE_FAMILY and not policy.family._NATIVE_ATTENTION
     assert not policy.routing._NATIVE_LOGITS and not policy.padded._ENABLED
+    assert prepared[0].get('hc_smallrow', False) == (private_profile == policy.module.HC_SMALLROW_VENDOR_TRIAL)

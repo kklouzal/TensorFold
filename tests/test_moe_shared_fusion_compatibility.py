@@ -49,11 +49,12 @@ def test_fusion_eager_credit_and_capture_host_allowance_are_distinct():
               isinstance(n.test,ast.Call) and isinstance(n.test.func,ast.Name) and n.test.func.id=='getattr' and
               len(n.test.args)>1 and isinstance(n.test.args[1],ast.Constant) and n.test.args[1].value=='_moe_region_graphs_requested')
     fusion=next(n for n in ast.walk(init) if isinstance(n,ast.If) and isinstance(n.test,ast.Compare) and
-                any(isinstance(v,ast.Name) and v.id=='SHARED_FUSION_TRIAL' for v in n.test.comparators) and
+                any(isinstance(v,ast.Name) and v.id=='SHARED_FUSION_TRIAL' for v in ast.walk(n.test)) and
                 any(isinstance(v,ast.ImportFrom) and v.module=='tensorfold.cuda.sm70.gguf_ops' for v in n.body))
     options={'device_workspace_bytes':19,'host_workspace_bytes':137}
     scope={'self':N(_moe_region_graphs_requested=True,sm70_profile=SHARED_FUSION_TRIAL),
-           'SHARED_FUSION_TRIAL':SHARED_FUSION_TRIAL,'tp':8,'options':options,
+           'SHARED_FUSION_TRIAL':SHARED_FUSION_TRIAL,
+           'HC_SMALLROW_VENDOR_TRIAL':'source-router-gdn-fusion-hc-smallrow-vendor-trial','tp':8,'options':options,
            '__package__':'tensorfold.families.qwen4_exp.cuda'}
     exec(compile(ast.fix_missing_locations(ast.Module(body=[host,fusion],type_ignores=[])),'combined-funding','exec'),scope)
     assert options['device_workspace_bytes']==19+(2<<20)  # Existing ordinary eager credit, not capture arena.

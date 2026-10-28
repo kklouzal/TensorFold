@@ -1569,7 +1569,7 @@ class MultiDecoder:
                                                      "source-packed-trial", "source-packed-graphs-trial",
                                                      "source-owner-pieces-trial", "source-target-greedy-trial",
                                                      "source-owner-target-greedy-trial", "source-owner-target-guard-trial",
-                                                     "source-owner-target-prelude-trial", "source-owner-target-dense-trial", "source-dense-owner-batch-prelude-trial", "source-batch-router-blas-trial", "source-router-gdn-shared-fusion-trial"))
+                                                     "source-owner-target-prelude-trial", "source-owner-target-dense-trial", "source-dense-owner-batch-prelude-trial", "source-batch-router-blas-trial", "source-router-gdn-shared-fusion-trial", "source-router-gdn-fusion-hc-smallrow-vendor-trial"))
         for s in self._order():
             start = self.fills[s.sid][2]
             n = min(len(s.prompt) - start, room)

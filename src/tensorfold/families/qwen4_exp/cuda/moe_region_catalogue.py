@@ -42,12 +42,12 @@ def requested_hc(profile):
 
 
 def requested_shared(profile):
-    from tensorfold.cuda.sm70.execution_policy import SHARED_FUSION_TRIAL
+    from tensorfold.cuda.sm70.execution_policy import SHARED_FUSION_TRIAL, HC_SMALLROW_VENDOR_TRIAL
 
     value = os.environ.get(SHARED_ENV, '0')
     if value not in ('0', '1'):
         raise ValueError('private HC/MoE shared-pool choice must be0 or1')
-    if value == '1' and (profile != SHARED_FUSION_TRIAL or not requested_hc(profile)):
+    if value == '1' and (profile not in (SHARED_FUSION_TRIAL, HC_SMALLROW_VENDOR_TRIAL) or not requested_hc(profile)):
         raise ValueError('private shared HC/MoE pool requires its selected fused HC catalogue')
     return value == '1'
 
@@ -154,9 +154,9 @@ class Catalogue:
         self.hc = self.weights.meta.get('sm70_hc_moe_region_graphs_trial') is True
         self.independent = self.weights.meta.get('sm70_hc_moe_shared_pool_trial') is True
         if self.independent:
-            from tensorfold.cuda.sm70.execution_policy import SHARED_FUSION_TRIAL
+            from tensorfold.cuda.sm70.execution_policy import SHARED_FUSION_TRIAL, HC_SMALLROW_VENDOR_TRIAL
 
-            if not self.hc or self.weights.meta.get('sm70_profile') != SHARED_FUSION_TRIAL:
+            if not self.hc or self.weights.meta.get('sm70_profile') not in (SHARED_FUSION_TRIAL, HC_SMALLROW_VENDOR_TRIAL):
                 raise ValueError('shared HC/MoE graph owner lacks its sealed explicit admission')
         self.row_keys = HOT_ROWS if self.independent else ROWS
         self.pending_hc = None

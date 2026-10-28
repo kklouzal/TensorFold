@@ -19,10 +19,12 @@ def test_private_epoch_and_temporary_operating_credit_are_explicit_before_admit(
     source = Path(__file__).parents[1] / "src/tensorfold/families/qwen4_exp/cuda/engine.py"
     tree = ast.parse(source.read_text())
     block = next(n for n in ast.walk(tree) if isinstance(n, ast.If)
-                 and ast.unparse(n.test) == "self.sm70_profile == SHARED_FUSION_TRIAL")
+                 and any(isinstance(v, ast.ImportFrom) and v.module == 'tensorfold.cuda.sm70.gguf_ops'
+                         and any(a.name == 'shared_fusion_workspace_bytes' for a in v.names) for v in n.body))
     options = {"device_workspace_bytes": 0, "host_workspace_bytes": 0}
     scope = dict(self=NS(sm70_profile=prefix_policy.SHARED_FUSION_PROFILE),
-                 SHARED_FUSION_TRIAL=prefix_policy.SHARED_FUSION_PROFILE, options=options, tp=8)
+                 SHARED_FUSION_TRIAL=prefix_policy.SHARED_FUSION_PROFILE,
+                 HC_SMALLROW_VENDOR_TRIAL=prefix_policy.HC_SMALLROW_VENDOR_PROFILE, options=options, tp=8)
     exec(compile(ast.Module(body=[block], type_ignores=[]), str(source), "exec"), scope)
     assert options == {"device_workspace_bytes": 2 << 20, "host_workspace_bytes": 8 * (64 << 10)}
     admission = next(n for n in ast.walk(tree) if isinstance(n, ast.Assign)

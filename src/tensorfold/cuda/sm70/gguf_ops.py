@@ -107,6 +107,12 @@ def concat32(x, weights, out):
     return out
 
 
+def hc_smallrow(x, weights, out):
+    """Private logical-M vendor dispatch, restricted to original HC operands."""
+    extension().hc_smallrow(x, tuple(weights), out)
+    return out
+
+
 def dense_wmma(x, weight, out):
     """Optional fixed-partition Volta WMMA provider; separate math qualification required."""
     extension().dense_wmma(x, weight, out)
