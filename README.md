@@ -19,7 +19,9 @@ lane oracle encountered FP16 overflow from the deliberately full-range wire
 fixture. That fixture and failure are preserved. A separate finite projection
 corpus now uses the same unmodified pinned GGML C oracle with bounded scale
 metadata, retaining strict bitwise comparisons. CPU fixture controls pass; the
-549-case GPU rerun remains pending. APP/native math is unchanged.
+549-case GPU rerun remains pending. APP/native math is unchanged. The generator
+uses a separate default path for finite mode; `--dry-run` reports the selected
+path without modifying either corpus.
 
 Canonical MTP text refresh/proposal frames now use the existing actual text
 coordinate producer when no explicit coordinates or deferred boundary are

@@ -39,3 +39,8 @@ Projection controls assert this input/coefficient domain and retain strict
 bitwise comparisons. The full-range FP32 corpus intentionally contains scales
 such as65504 that overflow after FP16 coefficient conversion; it cannot serve
 as a finite FP16 dot-product oracle without changing that contract.
+
+The generator selects the full-range path by default and the separate projection
+path when `--finite-projections` is present. `--output` overrides either path.
+Use `--dry-run` to inspect this choice without reading references, compiling or
+writing either corpus. Reference hashes are validated during actual generation.

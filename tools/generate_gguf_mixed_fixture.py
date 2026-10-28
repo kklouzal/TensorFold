@@ -131,11 +131,21 @@ def main():
     parser.add_argument("--quants", required=True, type=Path)
     parser.add_argument("--common", required=True, type=Path)
     parser.add_argument("--output", type=Path,
-                        default=Path(__file__).resolve().parents[1] / "tests/fixtures/gguf_mixed_ggml.npz")
+                        help="override the mode-specific fixture path; finite mode never defaults to the full-range corpus")
     parser.add_argument("--finite-projections", action="store_true",
                         help="separate finite FP16 projection fixture; default retains full-range FP32 wire controls")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="print the selected output and mode without reading sources, compiling or writing files")
     args = parser.parse_args()
-    generate(args.quants, args.common, args.output, finite_projections=args.finite_projections)
+    output = args.output
+    if output is None:
+        name = "gguf_mixed_projection_ggml.npz" if args.finite_projections else "gguf_mixed_ggml.npz"
+        output = Path(__file__).resolve().parents[1] / "tests/fixtures" / name
+    if args.dry_run:
+        print(json.dumps({"output": str(output), "finite_projections": args.finite_projections,
+                          "scope": "plan only; source hashes/compiler are checked during generation"}))
+        return
+    generate(args.quants, args.common, output, finite_projections=args.finite_projections)
 
 
 if __name__ == "__main__":
