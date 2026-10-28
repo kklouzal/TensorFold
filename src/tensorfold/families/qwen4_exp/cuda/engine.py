@@ -980,6 +980,13 @@ class FlashNextEngine:
                     batch_host += host_bytes
                 options["device_workspace_bytes"] += batch_device
                 options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + tp * batch_host
+            import os
+            if os.environ.get("TENSORFOLD_SM70_GDN_STATE_BATCH") == "1":
+                from .gdn_state_batch import workspace_bytes as gdn_batch_workspace
+
+                gdn_device, gdn_host = gdn_batch_workspace(sum(kind == "linear_attention" for kind in text["layer_types"]))
+                options["device_workspace_bytes"] += gdn_device
+                options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + tp * gdn_host
             status_device = status_host = 0
             if tp > 1 and concurrent and not adaptive_sessions:
                 from .kv_status import workspace_bytes

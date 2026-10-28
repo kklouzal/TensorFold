@@ -140,6 +140,7 @@ class Buffers:
             self.sid = torch.zeros((rows,), dtype=torch.int32, device=dev)
             self.conv_ptr = torch.zeros((1,), dtype=torch.int64, device=dev)
             self.pos_blk = torch.zeros((1,), dtype=torch.int32, device=dev)
+        self.gdn_state_batch = None  # Only the admitted concurrent target actor may own one.
         self.gout = row_tensor("gout", (rows, c.nv * gdn_mod.DV), dtype=bf)
         self.gxs = torch.empty((rows, c.nv * gdn_mod.DV // 32), dtype=f32, device=dev)
         self.attn_o = torch.empty((rows, c.heads, c.head_dim), dtype=bf, device=dev)

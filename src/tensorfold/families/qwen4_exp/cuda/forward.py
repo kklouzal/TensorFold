@@ -176,6 +176,11 @@ def gdn_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int
     if tables is not None and b.h.dtype != torch.float16:
         gdn_multi.block(g, li, tables, b.proj[li, :R], c.eps, b.gout[:R], b.gxs[:R], c.nk)
         return _out_proj(w, b, b.gout[:R], g.out, b.gxs[:R], R)
+    batch = b.gdn_state_batch
+    if batch is not None and batch.submit(li, b.proj[li, :R], g.conv, g.a_log if g.a_neg is None else g.a_neg,
+                                          g.dt_bias, g.norm, c.eps, b.gout[:R], b.gxs[:R],
+                                          negative_decay=g.a_neg is not None):
+        return _out_proj(w, b, b.gout[:R], g.out, b.gxs[:R], R)
     for st, a0, a1 in segs:
         cur = st.cur[li]
         gdn_mod.chain(b.proj[li, a0:a1], st.conv[li], g.conv, st.rec[cur, li], g.a_log, g.dt_bias, g.norm, c.eps,
@@ -667,6 +672,8 @@ def _stage(w: Weights, b: Buffers, windows: Sequence[tuple[State, Sequence[int]]
                     _stage_rows(w, b, p, ids, at)
     b.staged.record()
     b.ple_late = rows or None
+    if b.gdn_state_batch is not None:
+        b.gdn_state_batch.bind(segs)
     return segs
 
 

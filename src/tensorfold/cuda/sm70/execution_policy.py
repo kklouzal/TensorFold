@@ -229,6 +229,10 @@ def _prepare_family_trial(text, tp, torch, *, packed=False, target_greedy=False,
         from .greedy_native import extension as greedy_extension
 
         greedy_extension()  # Component compilation is not numerical/model qualification.
+    if os.environ.get("TENSORFOLD_SM70_GDN_STATE_BATCH") == "1":
+        from .gdn_native import extension as gdn_extension
+
+        gdn_extension().prepare_batch()  # Both decay variants resident before capacity baseline.
     after = _family_software()  # Explicitly issue after native-library warmup.
     _same_family_software(before, after)
     return after
@@ -250,6 +254,9 @@ def configure(text, *, tp, torch, record_graph_inputs=None):
                        OWNER_GRAPH_TRIAL, TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL):
         raise ValueError(f"{PROFILE_ENV} must be reference, optimized, {FAMILY_TRIAL}, {FAMILY_PREFIX_TRIAL}, "
                          f"{PACKED_TRIAL}, {PACKED_GRAPH_TRIAL}, {OWNER_GRAPH_TRIAL}, {TARGET_GREEDY_TRIAL}, {OWNER_TARGET_GREEDY_TRIAL}, {OWNER_TARGET_GUARD_TRIAL} or {OWNER_TARGET_PRELUDE_TRIAL}, {OWNER_TARGET_DENSE_TRIAL}, {OWNER_BATCH_PRELUDE_TRIAL}")
+    batch_gdn = os.environ.get("TENSORFOLD_SM70_GDN_STATE_BATCH")
+    if batch_gdn is not None and (batch_gdn != "1" or profile != OWNER_BATCH_PRELUDE_TRIAL):
+        raise ValueError("private GDN State batch requires1 and source-dense-owner-batch-prelude-trial")
     if record_graph_inputs is not None and not callable(record_graph_inputs):
         raise ValueError("NCCL graph input journal must be callable")
     graph_policy = graph_inputs() if tp > 1 else None
@@ -379,6 +386,7 @@ def prepare_weights(w, *, graph_contract=None):
             w.meta["sm70_owner_prelude_submitted_mtp_frames"] = 0
             w.meta["sm70_owner_prelude_mtp_counter_overflowed"] = False
     if _SELECTED == OWNER_BATCH_PRELUDE_TRIAL:
+        w.meta["sm70_gdn_state_batch_trial"] = os.environ.get("TENSORFOLD_SM70_GDN_STATE_BATCH") == "1"
         w.meta["sm70_owner_batch_prelude_trial"] = True
         w.meta["sm70_owner_prelude_submitted_batches"] = 0
         w.meta["sm70_owner_prelude_submitted_mtp_batches"] = 0

@@ -128,6 +128,12 @@ class MultiDecoder:
         # rounds beside a filling prompt size its pass so decoding keeps ``share`` of the pass's time (0: whole passes)
         self.share, self.round_s, self.row_s = share, None, None
         self.buf = Buffers(w, rows, capacity, moe_prefill=True)
+        if w.meta.get("sm70_gdn_state_batch_trial") is True:
+            from .gdn_state_batch import GDNStateBatch
+
+            owner = object.__new__(GDNStateBatch)
+            self.buf.gdn_state_batch = owner  # Retain partial construction before allocations.
+            owner.__init__(sum(layer.linear for layer in w.layers), w.device)
         self.mbuf = Buffers(w, rows, capacity, owner_role="mtp") if w.mtp is not None else None
         self.speculation = MethodGeometry("mtp" if self.mbuf is not None else
                                           "dspark" if getattr(w, "dspark", None) is not None else
@@ -2101,6 +2107,8 @@ class MultiDecoder:
                 self.controller.work_observations.incomplete(primary)
             raise
         finally:
+            if self.buf.gdn_state_batch is not None:
+                self.buf.gdn_state_batch.seal()  # Partial failures retain every accepted chain borrower.
             self.buf.gdn_tables = self.buf.attn_step = None
         target_result = None
         if self.w.comm is not None:
@@ -2170,6 +2178,10 @@ class MultiDecoder:
             for s, (_, tokens), (path, _end) in zip(live, windows, paths):
                 if dflash is None or not s.owed:
                     self.controller.work_observations.verification(len(tokens) - 1, max(0, len(path) - 1))
+        if self.buf.gdn_state_batch is not None:
+            # Sampling/target.finish has consumed this frame; the single event
+            # independently proves all native State readers retired before drop.
+            self.buf.gdn_state_batch.retire()
         proposed = [[tokens[r] for r in path[1:]] + [end]
                     for (_, tokens), (path, end) in zip(windows, paths)]
         if dflash is None:
