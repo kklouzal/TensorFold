@@ -119,7 +119,7 @@ class Catalogue:
         self.weights, self.buffers = self.dec.w, self.dec.buf
         self.layers = tuple(self.weights.layers)
         self.regions, self.pools, self.measured = {}, {}, []
-        self.capture_router = self.bindings = self.done = None
+        self.capture_router = self.bindings = None
         self.ready = self.closed = self.retiring = self.active = False
         self.failure = None
         self.notified = False
@@ -190,9 +190,6 @@ class Catalogue:
                 self.buffers.mixed[:32].zero_()
             on_stream(torch.cuda, self.parent.side, prepare_role)
             self.parent.side.synchronize()
-            self.done = torch.cuda.Event()
-            self.done.record(torch.cuda.current_stream(self.weights.device))
-            self.done.synchronize()  # Native handle residency before publication/admission.
             self.role_and_warm_bytes = self._account(before, ['capture-role-and-initial-residency'])
             for rows in ROWS:
                 self.pools[rows] = torch.cuda.graph_pool_handle()
@@ -281,7 +278,6 @@ class Catalogue:
                 if primary is None:
                     if self.cursor != len(self.layers):
                         raise RuntimeError('MoE graph forward did not consume its full ordered layer cycle')
-                    self.done.record(torch.cuda.current_stream(self.weights.device))
                     if self.frames < MAX_COUNT and self.row_frames[self.rows] < MAX_COUNT:
                         self.frames += 1
                         self.row_frames[self.rows] += 1
@@ -317,7 +313,7 @@ class Catalogue:
             if pools is not None:
                 pools.clear()
             # Every graph reset precedes shared pointer-table/storage release.
-            self.capture_router = self.bindings = self.done = None
+            self.capture_router = self.bindings = None
             self.closed = True
         except BaseException as error:
             self._poison(error)
@@ -326,7 +322,10 @@ class Catalogue:
             if lock is not None:
                 lock.release()
 
-    def record(self):
+    def record(self, *, detail=False):
+        row_charges = {row: sum(item['charged_bytes'] for item in self.measured
+                               if len(item['key']) > 2 and item['key'][1] == 'target' and item['key'][2] == row)
+                       for row in ROWS}
         return {'enabled': True, 'rows': ROWS, 'graphs': len(self.regions), 'frames': None if self.counter_overflowed else self.frames,
                 'replays': None if self.counter_overflowed else self.hits,
                 'row_frames': None if self.counter_overflowed else dict(self.row_frames), 'funding': self.plan,
@@ -336,4 +335,6 @@ class Catalogue:
                 'host_before': self.host_before, 'host_after': self.host_after,
                 'host_preflight': self.host_preflight, 'host_final': self.host_final,
                 'host_observation': 'boundary RSS and HWM deltas, not universal vendor/transient bound; historical HWM can mask smaller temporary peaks',
-                'ready': self.ready, 'closed': self.closed, 'capture_measurements': self.measured}
+                'ready': self.ready, 'closed': self.closed,
+                'capture_measurements': self.measured if detail else {
+                    'count': len(self.measured), 'target_charge_by_exact_rows': row_charges}}

@@ -545,6 +545,46 @@ def _owned_attributes(value):
         return {}
     return result if type(result) is dict else {}
 
+def write_moe_capture_ledger(engine, output, rank):
+    """One bounded cold evidence file; never duplicate145 phase rows in replies."""
+    decoder = _owned_attributes(engine).get("multi")
+    owner = _owned_attributes(_owned_attributes(decoder).get("graphs"))
+    catalogue = owner.get("moe_regions")
+    fields = _owned_attributes(catalogue)
+    if catalogue is None:
+        return None
+    measurements = fields.get("measured")
+    if fields.get("ready") is not True or type(measurements) is not list or len(measurements) != 145:
+        raise ValueError("required complete145-phase MoE capture ledger is unavailable")
+    payload = {"schema": "tensorfold.cold-moe-capture-ledger-v1", "rank": rank,
+               "funding": fields.get("plan"), "capture_phases": measurements,
+               "private_pools": owner.get("private_pool_records"),
+               "host_before": fields.get("host_before"), "host_after": fields.get("host_after"),
+               "scope": "coldpreparation only; baselinecanonical buffers/weights alreadyfunded; newGPUphasecharges usemax physical/general/owned deltas, never sum overlappingviews"}
+    encoded = (json.dumps(payload, indent=1, allow_nan=False) + "\n").encode("ascii")
+    if len(encoded) > 1 << 20:
+        raise ValueError("cold MoE capture ledger exceeds its inclusive graph-host allowance slice")
+    path = Path(output) / f"rank-{rank}-moe-capture-ledger.json"
+    primary = None
+    file = path.open("xb")
+    try:
+        if file.write(encoded) != len(encoded):
+            raise OSError("short cold MoE capture ledger write")
+    except BaseException as error:
+        primary = error
+    try:
+        file.close()
+    except BaseException as error:
+        if primary is not None:
+            raise primary from error
+        raise
+    if primary is not None:
+        raise primary
+    catalogue._host_gate()  # Include the bounded cold diagnostic buffer in the observed operating gate.
+    return {"path": str(path), "bytes": len(encoded), "sha256": hashlib.sha256(encoded).hexdigest(),
+            "phase_records": len(measurements), "scope": "cold rankevidence; graphhostallowance, not256KiB replypayload"}
+
+
 def graph_execution_snapshot(engine):
     """Bounded host counters, not a device-completion or timing instrument."""
     decoder = _owned_attributes(engine).get("multi")
@@ -1037,6 +1077,7 @@ def worker(args):
             report["gdn_state_batch"] = check_gdn_batch_engine(engine)
         if getattr(engine, "sm70_profile", None) == ROUTER_BLAS_TRIAL:
             report["router_blas"] = check_router_blas_engine(engine)
+        report["moe_capture_ledger"] = write_moe_capture_ledger(engine, args.out, args.rank)
         report["capacity_plan"] = engine.capacity_plan
         report["graph_execution"] = {"before_requests": graph_execution_snapshot(engine),
             "after_requests": None, "delta": None,

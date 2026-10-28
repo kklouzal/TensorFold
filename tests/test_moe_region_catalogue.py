@@ -38,7 +38,6 @@ def owner(monkeypatch):
     cat.stream_id=7
     monkeypatch.setattr(module.torch.cuda,'current_stream',lambda device:N(cuda_stream=7))
     monkeypatch.setattr(module.torch.cuda,'synchronize',lambda device:log.append('global-fence'))
-    cat.done=N(record=lambda stream:log.append('frame-done'))
     cat.capture_router=object()
     for rows in module.ROWS:
         for layer in w.layers:
@@ -109,7 +108,7 @@ def test_exact_row_cycle_and_other_rows_eager(owner):
     assert cat.frames==4 and cat.hits==192
     assert cat.row_frames=={30:1,31:1,32:2}
     assert log[:48]==[(32,i) for i in range(48)]
-    assert log[48]=='frame-done'
+    assert log[48]==(30,0)
 
 
 def test_partial_or_reordered_cycle_poison_and_no_fallback(owner):
@@ -151,19 +150,6 @@ def test_binding_failure_notifies_after_lease_release_preserving_primary(owner):
         cat.begin(w,b,32)
     assert caught.value is cat.failure and caught.value.__cause__ is secondary
     assert not cat.active and not log
-
-
-def test_completion_marker_failure_poison_retains_all_owners(owner):
-    cat,w,b,_=owner
-    marker_error=OSError('done-marker')
-    cat.done.record=lambda stream: (_ for _ in ()).throw(marker_error)
-    cat.begin(w,b,32)
-    for layer in w.layers:
-        cat.run(layer,b,32)
-    with pytest.raises(OSError) as caught:
-        cat.finish()
-    assert caught.value is marker_error and cat.failure is marker_error
-    assert cat.capture_router is not None and cat.bindings is not None and not cat.active
 
 
 def test_close_fences_before_graph_reset_and_shared_release(owner):
