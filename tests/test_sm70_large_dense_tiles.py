@@ -171,3 +171,16 @@ def test_actual_engine_host_term_covers_fixed72_and_adaptive_default32(adaptive,
         "session_ceiling":24 if adaptive else None,"host_capacity":{},"self":NS(sm70_profile=PROFILE)}
     exec(compile(ast.Module(body=[envelope,block],type_ignores=[]),str(source),"exec"),env)
     assert env["host_capacity"]["host_workspace_bytes"]==expected
+
+
+def test_actual_buffer_factory_selects_only_large_private_decode_fp16(monkeypatch):
+    marker=object()
+    calls=[]
+    monkeypatch.setattr(prepared,"TiledLinears",lambda w,rows:calls.append(rows)or marker)
+    w=NS(meta={"sm70_profile":PROFILE,"execution_provider":"sm70"},device=NS(type="cuda"))
+    assert prepared.create(w,64,prefill=False,dtype=torch.float16)is marker and calls==[64]
+    assert prepared.create(w,32,prefill=False,dtype=torch.float16)is None
+    assert prepared.create(w,64,prefill=True,dtype=torch.float16)is None
+    assert prepared.create(w,64,prefill=False,dtype=torch.bfloat16)is None
+    w.meta["sm70_profile"]="reference"
+    assert prepared.create(w,64,prefill=False,dtype=torch.float16)is None
