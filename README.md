@@ -2025,3 +2025,14 @@ backend workers and ordinary externally supervised TP8 serving ranks; see
 [worker setup and evidence limits](deploy/v100/worker-affinity.md). Actual
 all-eight helper-affinity, resource, quality and six-tier throughput checks remain
 pending; no deployment or performance qualification is claimed by this source.
+
+The private FASTv2 probe also has an opt-in `--cpu-counters` diagnostic for a
+required GPU-local all-six run. It streams twelve bounded CPU-counter snapshots
+around cohort calls, outside their measured cores; it does not measure exact
+10-second core CPU utilization. It adds an explicitly admitted 31,260,672-byte
+global host-control allowance for bounded output/page cache, transient reader
+state and small descriptors. It does not change math, affinity, CPU quota,
+measurement polling or normal receipt limits. Counter-enabled screens must be
+identified when compared. Local fake-proc/cgroup and exact staged checks remain
+separate from target execution, which is unrun and currently blocked by the
+qualification host's read-only storage incident.

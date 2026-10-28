@@ -1,0 +1,181 @@
+{
+  "schema": "tensorfold.gpu-local-worker-affinity-plan-v1",
+  "status": "Root approved required whole-GPU-local socket grouping; implementation authorized, actual experiment Root-only and unrun",
+  "source_reference": "c928/APP4b0e; selected actual backend tool52323707; no live affinity evidence from terminal export",
+  "inputs": {
+    "worker-affinity-source-assessment.json": "fc4e4c442ffe9b8159b7aab1f21da1558b78a3baff4449b201298e17a5ab8230",
+    "worker-affinity-host-topology.json": "ed344545a1dc32bc8c0c8a7b06e6a5f6f7d7379f9215d7d2c106ef02359105d7",
+    "worker-affinity-live-profile-export.json": "22a54c3812582d50d95718e6c9c8e395cdd8db6318ffa73852c8f83f47a75b1d"
+  },
+  "source_manifest": {
+    "/Warehouse/TensorFold-wt/v100-descriptor-host-words-20261028/src/tensorfold/cuda/expert_launch.py": "7e54e574858336e209322ab9aa20ac991a1fc9788ed035e0e903272c6756ae9a",
+    "/Warehouse/TensorFold-wt/v100-descriptor-host-words-20261028/src/tensorfold/cuda/numa_memory.py": "006aceac186ae15755a5919d272fd805f4eff4cbd490e4ee342427974e78a1f9",
+    "/Warehouse/TensorFold-wt/v100-descriptor-host-words-20261028/src/tensorfold/families/qwen4_exp/cuda/engine.py": "344087804912f3d0f9e913f0a7945b0a251e26e23f76bc05a6ca5e3b2c83847b",
+    "/Warehouse/TensorFold-wt/v100-descriptor-host-words-20261028/src/tensorfold/cli.py": "d753b68e732f5a3be85882b5d51b6970c2297924d5602740ad6ea0191974160a",
+    "/Warehouse/TensorFold-wt/v100-descriptor-host-words-20261028/src/tensorfold/__init__.py": "fdc3b9c9e54fd20a7aca02113787d82cd8ac28cb10e5142225c718c2d4e6288e",
+    "/Warehouse/TensorFold-wt/v100-descriptor-host-words-20261028/src/tensorfold/cuda/__init__.py": "c836dd0526b132b0186e20eda993055a1b6855e163ddb18f3fed8ca21c9d4578",
+    "/Warehouse/TensorFold-wt/v100-descriptor-host-words-20261028/src/tensorfold/cuda/cohort.py": "b326582f1a741f67e154bb7615d390abfb7911c56dbeae64c89d864b4e7e904f",
+    "/Warehouse/TensorFold-wt/v100-descriptor-host-words-20261028/src/tensorfold/families/qwen4_exp/host_table.py": "dd0b3c2c7cedfa7e439a97c6e7e67e0a1b31d374e5cf56428320557576e85ae4",
+    "/Warehouse/TensorFold-wt/v100-descriptor-host-words-20261028/src/tensorfold/families/qwen4_exp/read_ahead.py": "82ecfab54c313f412af62efdeeb64bb4a5b8a97f0b26a31528fff6c7e052c924",
+    "/Warehouse/TensorFold-portable-audit-20261026/descriptor-host-words-20261028/fast-stage/package/tools/v100_backend_probe.py": "52323707e466851557e8a39d04825818e22fe06d81b8fe626a2e435987b8f16e",
+    "/Warehouse/TensorFold-portable-audit-20261026/descriptor-host-words-20261028/fast-stage/package/tools/finite_concurrency.py": "d009cf94050754115fdb0295b39aaa787904b09478464aeb772d8782b97eb86b"
+  },
+  "scope_hops": 3,
+  "required_configuration": {
+    "GPU0_3_node0_cpus": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      38,
+      39,
+      40,
+      41,
+      42,
+      43,
+      44,
+      45,
+      46,
+      47
+    ],
+    "GPU4_7_node1_cpus": [
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      48,
+      49,
+      50,
+      51,
+      52,
+      53,
+      54,
+      55,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+    ],
+    "policy": "each rank shares full GPU-local socket CPU mask intersected with its inherited allowed CPUs; do not assume disjoint cores or alter32CPU cgroup quota",
+    "selection": "required by user regardless P3; performance evidence still records every tier/regression/uncertainty"
+  },
+  "safe_initialization": {
+    "point": "owned pure-stdlib child exec bootstrap before importing backend probe or ordinary CLI, before model/CUDA/runtime helper creation and large model allocation",
+    "discovery": "Resolve exactly one visible GPU from nvidia-smi index/UUID/PCI; match immutable policy UUID+PCI; read PCI numa_node and node cpulist/online CPUs; compare held topology and nonempty inherited allowed intersection; verify actual mask and topology again before exec",
+    "ownership": "os.sched_setaffinity(0,...) applies only to child main thread; exec preserves supervised PID/SID and inherited failureFD; new threads inherit initial mask but third-party changes must be sampled/validated; parent/Portainer/supervisor masks untouched",
+    "failure": "mismatch/ambiguous GPU/changed topology/empty mask/set failure/receipt failure/exec failure must fail bounded cohort before decode, propagate primary and existing failure notification; no preexec_fn, retry fallback, hot retargeting or global settings"
+  },
+  "actual_affinity_samples": [
+    {
+      "where": "bootstrap before/after bind and after exec before worker imports",
+      "purpose": "bind exact process/nativeTID/PID/SID, GPUUUID/PCI/node/cpulist, inherited/selected/actual masks and source-policy hash; prove Torch not loaded before binding"
+    },
+    {
+      "where": "all8 workers after cuda_engine constructor, before rank-ready publication/follow/run_leader",
+      "source": "v100_backend_probe.worker1090-1142; Engine.cuda.set_device550; scheduler.start1856; NCCL/PLE/hash workers already constructed",
+      "purpose": "enumerate actual /proc/self/task TIDs/masks with vanished-TID races recorded; every still-live bind-mode TID must stay within selected intersection; kernel/runtime affinity changes are observed, not assumed"
+    },
+    {
+      "where": "rank0 immediately after finite.owned_pool materializes24 caller threads, before run_fast_grid readiness/warmup/cohorts; all follower post-engine census retained",
+      "source": "v100_backend_probe1012,finite_concurrency.owned_pool200-242",
+      "purpose": "cover scheduler/NCCL/PLE and actual finite caller pool before measurement, without adding sampling to100Hz measured loop; optional post-grid/final snapshot covers later lazy helpers and closure"
+    }
+  ],
+  "CPU_and_memory_contract": {
+    "preserved": [
+      "same32CPU Docker quota/no added cpuset restriction to parent",
+      "all local16physical/32SMT logical CPUs shared per4GPU group (subject to actual allowed intersection)",
+      "OMP/MKL/OpenBLAS/etc thread1 unchanged",
+      "NCCL helper/progress env unchanged and actualTIDs checked",
+      "PLE read-ahead1, startup content3, prefetch bounded pools and finite callers24 remain original",
+      "no kernel/model/State/TP/collective/graph/pool/capacity policy changes"
+    ],
+    "distinction": "CPU affinity is per-thread scheduling eligibility; it does not bind/migrate pages, alter memory policy, lock RAM or change automaticNUMAbalancing1. Existing shared file/page-cache/PLE pages may reside on either node; firsttouch and kernel balancing may affect placement incidentally, so no retroactive/local-pages claim. No guarantee that all time is locked absent cgroup enforcement; reject observed thread escapes rather than claim universal library behavior."
+  },
+  "A_B_protocol": {
+    "A": "same new owned bootstrap/probe and exact telemetry, observe-reference mode only; no setaffinity; controlled unbound baseline, not shipping fallback",
+    "B": "same APP4b0e/sourceHOLD b5c7/rowauthority8021/image/model/caches/capacity/math/tools except explicit bind mode, required whole-local masks",
+    "order": "Root owns exclusive lease. First B all6 versus actual4b0 prior screen is provisional; paired fresh-process A/B with alternating order and declared repeats needed for performance ranking, no cherry-pick. Same readiness30s/window10s/FASTv2 tokens2048/quality six cases/ascending tiers1,2,4,8,16,24 each process; retain all cold startup/hash/capture costs and tails",
+    "objective": "24>16>8>4>2>1 aggregate committed throughput; original quality and complete24Q8 windows hard, no arbitrary gain threshold. Binding remains required even if first-screen gain absent; disclose regional effects.",
+    "gates": [
+      "GPUUUID/PCI/NUMA/masks and all-TID proofs",
+      "all8 normal727FDc79, original model/content hashes and runtime source binding",
+      "769HCphases/768keys+64candidate, exactallrow counters, native full24 floor and host/pool funding",
+      "zero requesterrors, completecohortdrains, all6QA exact and55currentreferenceprefixes",
+      "existing original failed postchecker receipt preserved; use corrected separate8021 rowpolicy binding",
+      "soleD13 source/CPUfault/actualbinding review; Root alone launches, no remoteheavy work by author"
+    ]
+  },
+  "two_processes_per_GPU": {
+    "status": "Two separate credible candidates; neither implemented by socket binding. No gain or constraint impossibility claimed.",
+    "A_two_GPU_executing_processes": {
+      "meaning": "Two CUDA-executing processes/contexts per physicalGPU, one original shared weight allocation per TP shard, single distributed target and authoritative combined24Q8 State pool; each forward remains logicalTP8, never blindly world16.",
+      "possible_protocols": [
+        "One logical8-rank communicator owned by designated perGPU transport process; secondary GPU executor uses owned CUDAIPC storage/events and a bounded ordered command/collective proxy; native communicator handles themselves are process-private, not shared pointers.",
+        "Two coordinated executor lanes each with world8 communicator/rankR, sharing the same original8 weight-shard allocations and single global request/State/slot authority; assign each request/frame to one lane, order all crosslane shared-State/device reuse explicitly. This is an alternative to a proxy, not permission to duplicate models."
+      ],
+      "source_barriers": [
+        "Current worker constructs exactly one cuda_engine; current Engine constructs process-owned weights/State/graphs/comm. Spawning a second current worker would allocate another set, violating the no-full-copy requirement. A sharing adapter is required, not more launch loops.",
+        "Every imported CUDA allocation must retain original exporting owner until ALL imported uses/captures/remote kernels retire. Pointer values/context handles may differ; current per-process canonical storage signatures/catalogue bindings cannot be copied as authority.",
+        "State generation/commit/RNG/stop/KV status and PLE/preparation outcomes need one owner; globalperGPU device scheduling must serialize interfering writes while permitting only proved independent frames. Whole24Q8 funding cannot become24 perexecutor.",
+        "NCCL participation/order/error containment must remain consistent per logicalTP8 lane; no two processes enqueue unpredictably into a process-private communicator. Transport proxy or extra world8 lane costs and interlane progress require proof."
+      ],
+      "capability_and_resource_gates": [
+        "Pinned04cf Torch CUDAIPC ownership/producerdeath/capture/eventinteroperability and CUDA12.9.2 context/mapping support need authoritative source and minimal actual oracle; no assertion current APIs suffice.",
+        "Additional contexts, allocator/library handles, scratch, graphpools/import mappings and hostmetadata must be prepaid and actualmaterialized24 floor retained; no duplicate weight/fullKV copies or assumed freeIPC/context pool.",
+        "Separate processes may contend/time-slice rather than overlap GPU execution. CurrentMPS is not established; do not add/enableMPS as part of NUMA binding. Any MPS-specific alternative needs separate explicit region/capability/resource approval.",
+        "Bounded IPC/credits/deadlines, executorloss/producerdeath, ambiguous completion/poison, remote graph/State lease retirement, lifecycle cancellation and coordinatedwholeTP shutdown."
+      ],
+      "disposition": "credible but blocked pending new architecture/admissibility/source-capability/resource proof; NOT ruledout just by complexity, and NOT replaced by CPUhelper candidate"
+    },
+    "B_CPU_preparation_helper": {
+      "meaning": "One existing CUDA/GPUowner perGPU plus one bounded GPU-local CPU helper process for selected preparation/tokenizer/CPU work; helper does not execute CUDA or load full target.",
+      "barriers": [
+        "Independent serialization/FD/sharedRAM handoff and resultcredit/lifetime/failure proof",
+        "State/CUDA authority stays originalGPUowner, no raw Python/Tensor pointer borrowing",
+        "GIL/launch starvation must be attributed to movable CPU work; startup/IPC/contextswitch/cancellation costs must be included"
+      ],
+      "disposition": "distinct credible source candidate, also unimplemented; cannot count B as fulfillment/proof of A"
+    },
+    "shared_experiment_protocol": "For each candidate independently, preserve one target weights, combinedfull24Q8, exactmath/quality/State/collective semantics; strict ownership/error/resource oracle before any integrated all6 matchedA/B24>16>8>4>2>1/tails/startup; Root owns GPU. No duplicate fulltarget or blind world16 allowed."
+  },
+  "remaining": [
+    "implement canonical standalone shared production/finite bootstrap and source-linked diagnostics",
+    "focused CPU boundary/fault/inheritance/PID/FD/status controls, exact package/HOLD and D13",
+    "Root all6 actual launch; actual helper affinity and performance unmeasured"
+  ]
+}

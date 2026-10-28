@@ -1,0 +1,53 @@
+{
+  "scope": "User-authorized emergency read-only source/plan snapshots; not editable implementation mirrors",
+  "files": [
+    {
+      "backup": "worker-affinity-plan.json",
+      "original_path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/worker-affinity-plan.json",
+      "bytes": 13270,
+      "sha256": "c307100f8a7c9424835263c02ce5b58b2745029fa0c59d716d3713b86ba951ba"
+    },
+    {
+      "backup": "worker-cpu-placement-followup-plan.json",
+      "original_path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/worker-cpu-placement-followup-plan.json",
+      "bytes": 21903,
+      "sha256": "a3ab6dd532371f46a63bf89d7ab29e2ea8a264fc46d7ad699e3accec4b3ab6a2"
+    },
+    {
+      "backup": "worker-cpu-counter-collection-plan.json",
+      "original_path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/worker-cpu-counter-collection-plan.json",
+      "bytes": 8852,
+      "sha256": "71e21d8448fdc08d5294f1645e78ddcd57c852562a543c4cdb8f38f17f89a2a6"
+    },
+    {
+      "backup": "owner-transport-drilldown-reconciliation.json",
+      "original_path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/owner-transport-drilldown-reconciliation.json",
+      "bytes": 513089,
+      "sha256": "e9d20b050226f82d75f77577abb6d3ab4b35c87072e18d4ae0399f29d9b4c37a"
+    },
+    {
+      "backup": "service-drilldown.json",
+      "original_path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/service-drilldown.json",
+      "bytes": 73822,
+      "sha256": "29160f5b057a316cde5b96911b0f08355a2b833604771d5a8f248975c31e632a"
+    },
+    {
+      "backup": "startup-io-drilldown.json",
+      "original_path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/startup-io-drilldown.json",
+      "bytes": 206739,
+      "sha256": "d1c6f7be939653d148413c0e634a88b77f5e5b7bc8bd0f0ef2f1fdf85464d16c"
+    },
+    {
+      "backup": "hc-readout-drilldown.json",
+      "original_path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/hc-readout-drilldown.json",
+      "bytes": 16072,
+      "sha256": "3f82c840e763393ced9c8a1c9fcad975f094cd22213ae20fec7cd1091cc9e1f7"
+    },
+    {
+      "backup": "build-owner-transport-reconciliation.py",
+      "original_path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/build-owner-transport-reconciliation.py",
+      "bytes": 45541,
+      "sha256": "0f3f1ef8956d6d02df6745b4f46cc3c559a9383ec62bf5ebe0693dc6fe1094dd"
+    }
+  ]
+}

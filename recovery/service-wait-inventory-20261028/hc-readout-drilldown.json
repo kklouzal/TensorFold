@@ -1,0 +1,308 @@
+{
+  "schema": "tensorfold-hc-readout-source-drilldown-v1",
+  "status": "SOURCE_ASSESSED_FUTURE_CANDIDATE_NO_IMPLEMENTATION",
+  "source_commit": "146f8a818d11ea69ca5b9cbd0f3d1f90067896ac",
+  "source_worktree": "/Warehouse/TensorFold-wt/v100-router-gdn-integration-20261028",
+  "scope": "Actual selected HC _readout_plain/_down_act/GGUFConcat.partials under private146f Router+GDN profile; possible future extension of pure MoE graph boundary. No changes to grouped_finish current coherent integration.",
+  "measured_context": {
+    "source": "/Warehouse/TensorFold-portable-audit-20261026/router-gdn-n24-profile-20261028/actual-analysis/rank-0-decode.json",
+    "sha256": "e7d83381733ed572e24271b5a7f45992269e08a4c9913378bb40e18b13343102",
+    "rank": 0,
+    "window": "concurrent24-instrumented/decode_core",
+    "core_seconds": 9.9999877421875,
+    "target_compute_labels": {
+      "name": "tensorfold/body/concurrent/compute_decode",
+      "name_truncated": false,
+      "count": 24,
+      "inclusive_us": 6947135.575683594,
+      "maximum_us": 330740.533203125
+    },
+    "target_compute_exclusive_thread_wall": {
+      "name": "tensorfold/body/concurrent/compute_decode | tid=579",
+      "name_truncated": false,
+      "count": 7038,
+      "inclusive_us": 4476390.2119140625,
+      "maximum_us": 32083.98388671875
+    },
+    "aten_mm": {
+      "name": "aten::mm",
+      "name_truncated": false,
+      "count": 16952,
+      "inclusive_us": 619975.2500000028,
+      "maximum_us": 3489.013
+    },
+    "interpretation": [
+      "4.4763902119140625s is exclusive project-labelled thread wall, not measured CPU busy time or avoidable time.",
+      "16952aten::mm spans multiple target/MTP/projection/expert families; do not assign them all to HC.",
+      "No direct saved labels/stacks/shapes identify _readout_plain/_down_act/hc_block/GGUFConcat.partials. profile_tool confirms exact HC count/time and target-vsMTP attribution cannot be recovered from this capture.",
+      "24targetcompute ranges and47MTP ranges include clipped boundaries; do not multiply them by complete-forward structural counts. choose_gathered70 is not a target-forward count.",
+      "The instrumented capture reports58.8aggregateTPS and is not the uninstrumented103.8reference; no profiling overhead or gain is inferred."
+    ]
+  },
+  "selected_dispatch": {
+    "profile": "source-batch-router-blas-trial",
+    "family_native": true,
+    "private_attention": false,
+    "padded_linears": false,
+    "GGUFConcat_implementation": "native32",
+    "GGUFDense_implementation": "native32",
+    "target_dtype": "FP16",
+    "recurrent_dtype": "FP32",
+    "tp": 8,
+    "row_region": "decode R<=32; future current MoE catalogue exactR30/31/32",
+    "evidence": [
+      "execution_policy.configure304-309 selects nativeConcat/nativeDense and keeps padded_linears disabled outsideoptimized",
+      "GGUF loader constructs Weights with x3 defaultNone; comm installed forTP8",
+      "GGUFHC.down is2part ConcatPlan for injected layerHCs; mixer hasone dense down; up isdense"
+    ],
+    "current_partial_storage": "_down_act chooses an FP16b.dn/b.dn_mix outview but selected decodepartials doesnotreceive it. GGUFConcat.matmul_native32(outNone,f32True) allocates FP32[R,324]; mixer allocatesFP32[R,320], thenunsqueeze is aview. R<32 nativepad/originalGEMMresults/copy remain; R32directmm_out specialcase doesnoteliminate owned FP32partialoutput. No pool/memory saving is inferred."
+  },
+  "actual_call_chain": [
+    {
+      "surface": "forward.hc_block68-80",
+      "steps": "original HC writeback (mode3 after TP output gather, mode0 at entry) -> _readout -> _readout_plain; selectedGGUF doesnotuse b16 or qmm-only fused prefill route"
+    },
+    {
+      "surface": "forward._readout_plain109-126",
+      "steps": "hc_plans check -> hc_normed unless already normed -> _down_act -> _mm(up) -> hc_mix"
+    },
+    {
+      "surface": "forward._down_act129-148",
+      "steps": "selected decode nonqmm, prefillFalse, paddedNone -> hc.down.partials -> GGUFConcat.matmul(f32True). Result[1,R,324] -> originalhc_reduce_act -> FP16 act/inject. Mixer down usesGGUFDense.partials[1,R,320]."
+    },
+    {
+      "surface": "gguf_weights.GGUFConcat304-305/271-278",
+      "steps": "partials is eagerPython entry, unsqueezes one FP32slice. native32 eligibleR<=32 invokesnative concat32; its originalpart loop remains in C++, not Python matmul_reference loop."
+    },
+    {
+      "surface": "sm70/gguf_ops.cu799-877",
+      "steps": "Shared exactM32 input preparation, then two original ATenmm/mm_out calls for HCdown320 andinject4 withK10240. R32/alignment permits direct out specialcase; otherwise originalcontiguous temporaryresults+copy. No fusion of two GEMMs."
+    },
+    {
+      "surface": "GGUFDense/mm and gguf_ops.cu720-772",
+      "steps": "HCup retains originaloneM32ATenFP16GEMM; finalmixer down oneFP32GEMM. Native staging reduces Python/tensor staging work, not GEMM count."
+    }
+  ],
+  "structural_complete_frame_counts": {
+    "scope": "Per ONE completed full eager target/MTP forward, per rank, selected decodeR<=32. Independent of offeredN/State segment count within same batched frame. Not measured tracecounts; prefill and modelgraph replays have different host dispatch.",
+    "target": {
+      "layers": 48,
+      "injected_HCs_per_layer": 2,
+      "injected_HC_readouts": 96,
+      "final_noninject_mixer_readouts": 1,
+      "total_readouts": 97,
+      "down_act_entries": 97,
+      "GGUFConcat_partials_entries": 96,
+      "GGUFDense_mixer_partials_entries": 1,
+      "up_projection_entries": 97,
+      "original_down_inject_GEMMs": 193,
+      "original_up_GEMMs": 97,
+      "total_HC_GEMMs": 290,
+      "HC_readout_step_launches": {
+        "norm_calls": 97,
+        "activation_or_reduce_act_calls": 97,
+        "mix_calls": 97
+      },
+      "writeback_note": "96hc_block writebacks +finalwriteback; selectedPLElayer hasoneadditionalpendingwriteback beforePLE when pending exists. Do not confuse writebacks with readouts/projection counts."
+    },
+    "stock_MTP": {
+      "layers": 1,
+      "injected_HCs": 2,
+      "noninject_final_mixer_HCs": 1,
+      "total_readouts": 3,
+      "down_act_entries": 3,
+      "GGUFConcat_partials_entries": 2,
+      "GGUFDense_mixer_partials_entries": 1,
+      "up_projection_entries": 3,
+      "original_down_inject_GEMMs": 5,
+      "original_up_GEMMs": 3,
+      "total_HC_GEMMs": 8,
+      "note": "MTP fusion input projections and attention/output/head are additional non-HC GEMMs. Same count perrefresh/proposal/conditioningforward that actuallyexecutes thisbody; do not multiply byspeculativedepth without actual invocationcounts."
+    },
+    "source": [
+      "gguf_weights.hc628-634; layers685-705; finalmixer705",
+      "gguf_mtp_weights.hc128-134; layer164-170",
+      "forward._pre_moe536-563; compute753-759; finish581-595",
+      "mtp.mtp_compute186-187"
+    ]
+  },
+  "hc_plans_route": {
+    "enabled_current": false,
+    "admissible_as_is": false,
+    "independent_constraints": [
+      {
+        "source": "hc_plans.enroll124",
+        "reason": "Immediate return when w.comm isnotNone: currentTP8 is excluded."
+      },
+      {
+        "source": "hc_plans.enroll124; weight_types.Weights243",
+        "reason": "Requires w.x3 EXL3scratch; GGUF leavesx3None."
+      },
+      {
+        "source": "hc_plans.enroll139-141",
+        "reason": "Requires EXL3 F16 down/up sharingw.x3; currentGGUFConcat/GGUFDense do not satisfy types or sc/part storage."
+      },
+      {
+        "source": "hc_plans._F16Plan.prepare31/enroll132; pinnedrequirements38",
+        "reason": "Reviewed exactTriton3.9.0_F16argumentABI is required; selectedSDKtargetpinsTriton3.8.0. No feature/version inference or pin change authorized."
+      }
+    ],
+    "row_count_gate": "b.rows32 and2*32*97=6208 fit the8192launch-plan count guard; that is not the blocking constraint. These are compiled launchplans, not CUDA graphpool counts/bytes.",
+    "implementation_contract": "UsesoriginalEXL3_f16_mm fixedviews, retainsdynamicCompiledKernelhooks and fallsback forlateJIT pre_run_hooks; it is not an existingGGUF/TP nativeATen HCplan. Simply loosening enrollment would violate storage/backend/ABI contracts.",
+    "disposition": "Existing route constraint-ruled-out for146f; a future GGUF-specific plan/capture requires a distinct proof, not a switch toggle."
+  },
+  "coordination": {
+    "owner": "/root/grouped_finish",
+    "confirmed_current_boundary": "forward.moe_block after _pre_moe has producedb.mixed; originaldecodeFP32router/select/GGUF routed+sharedexperts, beforemoe_partial/_gatherNCCL. AllHC/GDN/attention/PLE remain outside and eager. ExactR30/31/32/fixed48layerorder/separateRcatalogues; currentbindingcoversMoEonly, noState refs.",
+    "author_edits": false,
+    "do_not_expand_current_integration": true
+  },
+  "future_candidate": {
+    "name": "Extend only MLP-HC tail upstream of the current pure MoE graph",
+    "status": "FUTURE_CANDIDATE_REQUIRES_SOURCE_BINDING_NUMERICAL_AND_PROFILE_PROOF",
+    "entry": "forward._pre_moe after gdn_block/attn_block returns (mode3,branch=g_branch) from_out_proj/_gather; immediately beforehc_block(layer.mlp_hc...)",
+    "body": "Originalhc_writeback(mode3,inj_a,branch), norm, two originalFP32down/injectGEMMs, originalactivation/inject, originalupGEMM, mix, then existingrouter/select/routed+sharedMoEbody. No mathfusion/reordering.",
+    "exit": "Beforeexistingglue.moe_partial andnew_gather/NCCL; preservethose originaloperations and collectiveorder.",
+    "per_complete_target_frame": "Adds48MLPHC blocks/144originalHC GEMMs to capture boundary; those GPU GEMMs/kernels still execute. Potentially avoids their repeated hostdispatch/wrapperloops on replay; no savedtime or graphpoolclaim.",
+    "in_scope_state": "TheseHCoperations touchmodel/Buffer scratch and HCweights, not recurrent/KV State directly. GDN/attention State mutation and originalpriorNCCL stayoutside. ActualState/descriptor/position authority and commit/error handling remain with originalcaller.",
+    "out_of_scope": "Do not capture all_pre_moe: it crossesPLE gather/conv/history, GDN/attentionState operations and_out_proj/NCCL. AttnHCandfinalmixer are separate futurepurecuts with distinctmode/input bindings, not an automatic expansion here.",
+    "binding_obligations": [
+      "Pin exactHCdown/inject/up/scale tensors, layer/role/R/world8/mode3/eps/streams4/low320, selectednativeDense/Concat/family/prefillFalse flags and permittedhook semantics.",
+      "Bindb.h,pss,g_branch,inj_a,inj_m,normed,xs_normed,act,xs_act,up,mixed,xs_mixed and exactFP32partials/internalcaptureallocations with allmetadata/alias/storage/version/lifetime. ExistingFP16b.dn/b.dn_mix cannotreplaceoriginalFP32partialpacket. PriorMoEinjection andcurrentbranch mustrefer tocorrectgeneration, notstaleperRviews.",
+      "Replay on the original consumer stream after the priorNCCL producer dependency. A Store acknowledgment or CPUreturn alone isnot CUDAcompletion; a differentstream needs an explicit equivalent producerwait.",
+      "Strong graph scratch/weights survive every replay and graph close; State reset/slotreuse/model/profile replacement drain remains outsidecapture and mustinvalidateappropriately.",
+      "Preflight rejection maykeep existingeagerpath beforeeffects; uncertain replay afterinplaceHCwriteback mustnot fall back and applybranch twice. Preserveprimary/cleanup failureandpoison policy.",
+      "Initialize validfiniteHCinputs forstartupcapture; restoreworkingbuffers, preserveadmission/funding andall24fullwindowcommitments. No claim currentgraphpool has freecapacity or that extension iszero-memory."
+    ]
+  },
+  "required_validation_and_profile": [
+    "Targeted authorized laterlabels forhc_block/_readout_plain/_down_act/Concat.partials/nativeDense/Concat dispatch, separated target/MTP/prefill andactualR; collect enoughcallcounts tohandleclippedboundaryframes. Savedrawtrace lacks this attribution; no rescan can inventit.",
+    "Separate inclusive nested CPUwall, exclusive threadwall, runtimeAPI enqueue, GPU GEMM/kernel time and waiting. Do not sum nestedlabels or treat4.476sexclusive asfullyavoidable.",
+    "Exact sameM32,N,K,strides/outputdtype, separate2part ordering, mode3rank-order sum, FP16rounding/SiLU/injection/mix andallintermediate/outputbits compared with original for everyselectedR/layer, includingadversefinite/alias/errorcases.",
+    "ActualTP8 previousNCCL\u2192graph\u2192nextNCCL execution/cancellation/close/profile/slotreuse proof, preservedState authority andnativeGDN/Router/countercoverage; currentN1 BoundGraphs unchanged.",
+    "Only after a coherent futurecomponent closes, Root owns matchedall6runtime/quality/prefix/capacity comparison againstcurrentreference. No implementation or newcapture authorized by this report."
+  ],
+  "source_manifest": [
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+      "sha256": "f6f783ac252f4e802a69f78fbbd4421d3e2a8a0f49dc00e8ac824560d14cef99",
+      "line_extent": [
+        1,
+        1085
+      ]
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+      "sha256": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd",
+      "line_extent": [
+        1,
+        1045
+      ]
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/gguf_mtp_weights.py",
+      "sha256": "946b2442a9e917a22169749c329e824f570c8d1b76a7a89dfb0be2b4b76aff56",
+      "line_extent": [
+        1,
+        246
+      ]
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/hc_plans.py",
+      "sha256": "8704c54f256c02a53c57f9c0c08fd0a03847606aff6224439000f1c360f2f5eb",
+      "line_extent": [
+        1,
+        142
+      ]
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/weight_types.py",
+      "sha256": "59c0053e64421d40f56ada35bde877b988bd50b2ea8fe57105106844e1bc1325",
+      "line_extent": [
+        1,
+        442
+      ]
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/state.py",
+      "sha256": "b4b15e6952544d32bfda5665bf16b7fb1bf3532feca983900329ebcab4a3e36e",
+      "line_extent": [
+        1,
+        1274
+      ]
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/multi.py",
+      "sha256": "8fa35205fdf8e9a2a499006c11b038af2f59b4233f4e4d21fb0931269ca2f20f",
+      "line_extent": [
+        1,
+        2689
+      ]
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/decode.py",
+      "sha256": "f87ad6cd93ef1da614a56fe2a923e638551071cc8ed1ac3241e1c36db35b9b77",
+      "line_extent": [
+        1,
+        643
+      ]
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/mtp.py",
+      "sha256": "178f2e4cf2ebaacb77bd1190d77c9800b3532c4d772aa329eb217d1e1657a9f7",
+      "line_extent": [
+        1,
+        239
+      ]
+    },
+    {
+      "path": "src/tensorfold/families/qwen4_exp/cuda/glue.py",
+      "sha256": "4fc186e44e36fb61eeb4d93dfe61666306fbdb7d4fb05b1a714e06e621b45890",
+      "line_extent": [
+        1,
+        721
+      ]
+    },
+    {
+      "path": "src/tensorfold/cuda/sm70/execution_policy.py",
+      "sha256": "6527bcd1befdb943da685815561f27b6f1ff94f5676cd66ba4aeb8df3784b0c5",
+      "line_extent": [
+        1,
+        411
+      ]
+    },
+    {
+      "path": "src/tensorfold/cuda/sm70/gguf_ops.py",
+      "sha256": "1784bac928dbb74cdc0b5f3758150831f761ae407a211c09400528dc9c314304",
+      "line_extent": [
+        1,
+        113
+      ]
+    },
+    {
+      "path": "src/tensorfold/cuda/sm70/gguf_ops.cu",
+      "sha256": "567c190116c4f3871bac617ed14ef8c7a553ce2929251abc0c0286788843067d",
+      "line_extent": [
+        1,
+        1202
+      ]
+    },
+    {
+      "path": "deploy/v100/requirements-source-runtime-offline-amd64.lock",
+      "sha256": "3f17ef6b757eadb2820e6044044603d6b5cbf227484de9a47f97ef5a22d0b1a4",
+      "line_extent": [
+        1,
+        42
+      ]
+    }
+  ],
+  "execution": {
+    "source_edits": false,
+    "tests": false,
+    "GPU": false,
+    "remote": false,
+    "new_profiling": false,
+    "graph_capture_or_pool_queries": false,
+    "artifact_only": true
+  }
+}

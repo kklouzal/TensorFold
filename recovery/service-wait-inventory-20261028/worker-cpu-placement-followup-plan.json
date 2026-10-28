@@ -1,0 +1,800 @@
+{
+  "schema": "tensorfold.cpu-placement-followup-plan-v1",
+  "current_reference": "requiredNUMAf11b/205b, runtimeAPP4b0e/c928; Root-retained provisional32.9/45.5/76.1/112.1/127.3/129.9",
+  "status": "read-only assessment; no affinity/code/GPU/remoteanalysis changes",
+  "provenance": {
+    "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/worker-affinity-host-topology.json": "ed344545a1dc32bc8c0c8a7b06e6a5f6f7d7379f9215d7d2c106ef02359105d7",
+    "/Warehouse/TensorFold-portable-audit-20261026/gpu-local-affinity-20261028/checkpoint.json": "f5883faacfa247d940f3a6cfdd0b6e847386a78928d3b19d881a38a8b31ced41",
+    "/Warehouse/TensorFold-portable-audit-20261026/gpu-local-affinity-20261028/live-thread-census.json": "548e40fe8f8b76ff7b8ccbd861e459074211939a2262fa976efc1c0a11e26ed1",
+    "/Warehouse/TensorFold-portable-audit-20261026/gpu-local-affinity-20261028/live-bootstrap-identities.json": "6a970c8e5af55e42e5af53b18f232dc630c587683f02d1443495c6663dc3c890",
+    "/Warehouse/TensorFold-portable-audit-20261026/gpu-local-affinity-20261028/actual-first-all6-bind-4b0e/affinity-audit.json": "8a1ef22aa399436b0c4219440102ebc70b1fc736ee88a914c9c06bb46887515f",
+    "/Warehouse/TensorFold-portable-audit-20261026/gpu-local-affinity-20261028/actual-first-all6-bind-4b0e/independent-audit.json": "9a2353b03e9bb4416d5ba5a0a51f8a0fcee1f15c40e43e2662ac54000b663f11",
+    "/Warehouse/TensorFold-portable-audit-20261026/gpu-local-affinity-20261028/actual-first-all6-bind-4b0e/archive/controller-progress.json": "86ae3c3a73affa10ca9e5185478d87a0e1c6d6f3884f4effe7d1a01f32f7b2fc",
+    "/Warehouse/TensorFold-portable-audit-20261026/gpu-local-affinity-20261028/actual-first-all6-bind-4b0e/run/launch.json": "1af873c2de48f2a92bab2a489cf546053f47d1e5816a2efb527d72baba92af60"
+  },
+  "actual_facts": {
+    "host": "2NUMA sockets each16physical cores/32SMT logicalCPU,64logical total; sibling pairs derived from heldlscpu CORE/SOCKET/NODE, not assumed portable numbering",
+    "container_requested_CPU_quota": "32",
+    "container_requested_memory": "320g",
+    "container_PID_limit": "4096",
+    "container_cpuset_option_present": false,
+    "supervisor_allowed_CPUs": [
+      0,
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11,
+      12,
+      13,
+      14,
+      15,
+      16,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      23,
+      24,
+      25,
+      26,
+      27,
+      28,
+      29,
+      30,
+      31,
+      32,
+      33,
+      34,
+      35,
+      36,
+      37,
+      38,
+      39,
+      40,
+      41,
+      42,
+      43,
+      44,
+      45,
+      46,
+      47,
+      48,
+      49,
+      50,
+      51,
+      52,
+      53,
+      54,
+      55,
+      56,
+      57,
+      58,
+      59,
+      60,
+      61,
+      62,
+      63
+    ],
+    "workers": [
+      {
+        "rank": 0,
+        "selected_cpus": "0-15,32-47",
+        "phase_censuses": {
+          "bootstrap": {
+            "live_threads": 1,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          },
+          "worker_affinity_before_backend": {
+            "live_threads": 1,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          },
+          "worker_affinity_after_engine": {
+            "live_threads": 9,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          },
+          "before_cohorts_after_24caller_pool": {
+            "live_threads": 33,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          }
+        }
+      },
+      {
+        "rank": 1,
+        "selected_cpus": "0-15,32-47",
+        "phase_censuses": {
+          "bootstrap": {
+            "live_threads": 1,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          },
+          "worker_affinity_before_backend": {
+            "live_threads": 1,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          },
+          "worker_affinity_after_engine": {
+            "live_threads": 7,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          },
+          "after_requests": {
+            "live_threads": 7,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          }
+        }
+      },
+      {
+        "rank": 2,
+        "selected_cpus": "0-15,32-47",
+        "phase_censuses": {
+          "bootstrap": {
+            "live_threads": 1,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          },
+          "worker_affinity_before_backend": {
+            "live_threads": 1,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          },
+          "worker_affinity_after_engine": {
+            "live_threads": 7,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          },
+          "after_requests": {
+            "live_threads": 7,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          }
+        }
+      },
+      {
+        "rank": 3,
+        "selected_cpus": "0-15,32-47",
+        "phase_censuses": {
+          "bootstrap": {
+            "live_threads": 1,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          },
+          "worker_affinity_before_backend": {
+            "live_threads": 1,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          },
+          "worker_affinity_after_engine": {
+            "live_threads": 7,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          },
+          "after_requests": {
+            "live_threads": 7,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          }
+        }
+      },
+      {
+        "rank": 4,
+        "selected_cpus": "16-31,48-63",
+        "phase_censuses": {
+          "bootstrap": {
+            "live_threads": 1,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          },
+          "worker_affinity_before_backend": {
+            "live_threads": 1,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          },
+          "worker_affinity_after_engine": {
+            "live_threads": 7,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          },
+          "after_requests": {
+            "live_threads": 7,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          }
+        }
+      },
+      {
+        "rank": 5,
+        "selected_cpus": "16-31,48-63",
+        "phase_censuses": {
+          "bootstrap": {
+            "live_threads": 1,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          },
+          "worker_affinity_before_backend": {
+            "live_threads": 1,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          },
+          "worker_affinity_after_engine": {
+            "live_threads": 7,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          },
+          "after_requests": {
+            "live_threads": 7,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          }
+        }
+      },
+      {
+        "rank": 6,
+        "selected_cpus": "16-31,48-63",
+        "phase_censuses": {
+          "bootstrap": {
+            "live_threads": 1,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          },
+          "worker_affinity_before_backend": {
+            "live_threads": 1,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          },
+          "worker_affinity_after_engine": {
+            "live_threads": 7,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          },
+          "after_requests": {
+            "live_threads": 7,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          }
+        }
+      },
+      {
+        "rank": 7,
+        "selected_cpus": "16-31,48-63",
+        "phase_censuses": {
+          "bootstrap": {
+            "live_threads": 1,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          },
+          "worker_affinity_before_backend": {
+            "live_threads": 1,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          },
+          "worker_affinity_after_engine": {
+            "live_threads": 7,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          },
+          "after_requests": {
+            "live_threads": 7,
+            "retired_before_read": 0,
+            "all_live_masks_within_selected": true
+          }
+        }
+      }
+    ],
+    "thread_names": "rank0postengine6python+1CUDA/runtime+1CUDAevent+1TCPStore=9; followers5python+1CUDA/runtime+1CUDAevent=7; rank0precohort30python+3named=33. Kernelcomm python does not identify GILactor/PLE/NCCL role or prove threadbusy."
+  },
+  "evidence_gaps": {
+    "CPU_time": "No utime/stime, perTIDCPUclock/schedstat, or perCPUbusy samples in the archived binding receipts/cohortfiles. processstart_ticks is identity, not CPU consumption.",
+    "CPU_throttling": "No CPUcgroupcpu.stat usage/user/system/nrperiods/nrthrottled/throttled_usec snapshot. Memorycgroup_remaining/limit/current fields prove RAM authority only. Docker --cpus32 establishes configured quota intent, not observedcpu.max/throttle counters or CPU saturation.",
+    "interpretation": "Threadcounts/CPUeligibility/projectexclusivewall/NCCLwait/no-kernel gaps cannot rank optimalcorebudgets. Prior4b0profile wall is olderunbound configuration and contains deferredwaits; no numerical CPUutilization inferred."
+  },
+  "candidate_policies": {
+    "disjoint_4_physical_plus_SMT": {
+      "ranks": [
+        {
+          "rank": 0,
+          "node": 0,
+          "physical_core_keys": [
+            [
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              1
+            ],
+            [
+              0,
+              0,
+              2
+            ],
+            [
+              0,
+              0,
+              3
+            ]
+          ],
+          "logical_cpus": [
+            0,
+            1,
+            2,
+            3,
+            32,
+            33,
+            34,
+            35
+          ]
+        },
+        {
+          "rank": 1,
+          "node": 0,
+          "physical_core_keys": [
+            [
+              0,
+              0,
+              4
+            ],
+            [
+              0,
+              0,
+              5
+            ],
+            [
+              0,
+              0,
+              6
+            ],
+            [
+              0,
+              0,
+              7
+            ]
+          ],
+          "logical_cpus": [
+            4,
+            5,
+            6,
+            7,
+            36,
+            37,
+            38,
+            39
+          ]
+        },
+        {
+          "rank": 2,
+          "node": 0,
+          "physical_core_keys": [
+            [
+              0,
+              0,
+              8
+            ],
+            [
+              0,
+              0,
+              9
+            ],
+            [
+              0,
+              0,
+              10
+            ],
+            [
+              0,
+              0,
+              11
+            ]
+          ],
+          "logical_cpus": [
+            8,
+            9,
+            10,
+            11,
+            40,
+            41,
+            42,
+            43
+          ]
+        },
+        {
+          "rank": 3,
+          "node": 0,
+          "physical_core_keys": [
+            [
+              0,
+              0,
+              12
+            ],
+            [
+              0,
+              0,
+              13
+            ],
+            [
+              0,
+              0,
+              14
+            ],
+            [
+              0,
+              0,
+              15
+            ]
+          ],
+          "logical_cpus": [
+            12,
+            13,
+            14,
+            15,
+            44,
+            45,
+            46,
+            47
+          ]
+        },
+        {
+          "rank": 4,
+          "node": 1,
+          "physical_core_keys": [
+            [
+              1,
+              1,
+              16
+            ],
+            [
+              1,
+              1,
+              17
+            ],
+            [
+              1,
+              1,
+              18
+            ],
+            [
+              1,
+              1,
+              19
+            ]
+          ],
+          "logical_cpus": [
+            16,
+            17,
+            18,
+            19,
+            48,
+            49,
+            50,
+            51
+          ]
+        },
+        {
+          "rank": 5,
+          "node": 1,
+          "physical_core_keys": [
+            [
+              1,
+              1,
+              20
+            ],
+            [
+              1,
+              1,
+              21
+            ],
+            [
+              1,
+              1,
+              22
+            ],
+            [
+              1,
+              1,
+              23
+            ]
+          ],
+          "logical_cpus": [
+            20,
+            21,
+            22,
+            23,
+            52,
+            53,
+            54,
+            55
+          ]
+        },
+        {
+          "rank": 6,
+          "node": 1,
+          "physical_core_keys": [
+            [
+              1,
+              1,
+              24
+            ],
+            [
+              1,
+              1,
+              25
+            ],
+            [
+              1,
+              1,
+              26
+            ],
+            [
+              1,
+              1,
+              27
+            ]
+          ],
+          "logical_cpus": [
+            24,
+            25,
+            26,
+            27,
+            56,
+            57,
+            58,
+            59
+          ]
+        },
+        {
+          "rank": 7,
+          "node": 1,
+          "physical_core_keys": [
+            [
+              1,
+              1,
+              28
+            ],
+            [
+              1,
+              1,
+              29
+            ],
+            [
+              1,
+              1,
+              30
+            ],
+            [
+              1,
+              1,
+              31
+            ]
+          ],
+          "logical_cpus": [
+            28,
+            29,
+            30,
+            31,
+            60,
+            61,
+            62,
+            63
+          ]
+        }
+      ],
+      "meaning": "Representative deterministic budget, not chosen optimal core IDs. Disjoint among worker masks only; parent/OS can still run there.",
+      "disposition": "credible source policy candidate; blocked selection until CPUcounter/progress/endtoend evidence, no implementation authorized in this plan"
+    },
+    "disjoint_2_physical_plus_SMT": {
+      "ranks": [
+        {
+          "rank": 0,
+          "node": 0,
+          "physical_core_keys": [
+            [
+              0,
+              0,
+              0
+            ],
+            [
+              0,
+              0,
+              1
+            ]
+          ],
+          "logical_cpus": [
+            0,
+            1,
+            32,
+            33
+          ]
+        },
+        {
+          "rank": 1,
+          "node": 0,
+          "physical_core_keys": [
+            [
+              0,
+              0,
+              2
+            ],
+            [
+              0,
+              0,
+              3
+            ]
+          ],
+          "logical_cpus": [
+            2,
+            3,
+            34,
+            35
+          ]
+        },
+        {
+          "rank": 2,
+          "node": 0,
+          "physical_core_keys": [
+            [
+              0,
+              0,
+              4
+            ],
+            [
+              0,
+              0,
+              5
+            ]
+          ],
+          "logical_cpus": [
+            4,
+            5,
+            36,
+            37
+          ]
+        },
+        {
+          "rank": 3,
+          "node": 0,
+          "physical_core_keys": [
+            [
+              0,
+              0,
+              6
+            ],
+            [
+              0,
+              0,
+              7
+            ]
+          ],
+          "logical_cpus": [
+            6,
+            7,
+            38,
+            39
+          ]
+        },
+        {
+          "rank": 4,
+          "node": 1,
+          "physical_core_keys": [
+            [
+              1,
+              1,
+              16
+            ],
+            [
+              1,
+              1,
+              17
+            ]
+          ],
+          "logical_cpus": [
+            16,
+            17,
+            48,
+            49
+          ]
+        },
+        {
+          "rank": 5,
+          "node": 1,
+          "physical_core_keys": [
+            [
+              1,
+              1,
+              18
+            ],
+            [
+              1,
+              1,
+              19
+            ]
+          ],
+          "logical_cpus": [
+            18,
+            19,
+            50,
+            51
+          ]
+        },
+        {
+          "rank": 6,
+          "node": 1,
+          "physical_core_keys": [
+            [
+              1,
+              1,
+              20
+            ],
+            [
+              1,
+              1,
+              21
+            ]
+          ],
+          "logical_cpus": [
+            20,
+            21,
+            52,
+            53
+          ]
+        },
+        {
+          "rank": 7,
+          "node": 1,
+          "physical_core_keys": [
+            [
+              1,
+              1,
+              22
+            ],
+            [
+              1,
+              1,
+              23
+            ]
+          ],
+          "logical_cpus": [
+            22,
+            23,
+            54,
+            55
+          ]
+        }
+      ],
+      "meaning": "Representative deterministic budget, not chosen optimal core IDs. Disjoint among worker masks only; parent/OS can still run there.",
+      "disposition": "credible source policy candidate; blocked selection until CPUcounter/progress/endtoend evidence, no implementation authorized in this plan"
+    }
+  },
+  "whole_socket_reference": {
+    "disposition": "REQUIRED currently retained verifiedconfiguration; all4ranks share eachlocal socket allowance; alternative budgets must remain GPUlocal",
+    "benefit_contract": "maximumlocal scheduling freedom for NCCLprogress/driver/PLE/readers/hash/callers; no dedicatedcore/exclusiveCPU reservation claimed"
+  },
+  "budget_admissibility": {
+    "all": "Resolve GPUUUID/PCI/node and actualphysicalcore+SMTsiblings from authoritative topology; validate requestedbudget is subset of local/inheritedallowed/online CPUs, no sibling split across workers for a disjointphysicalcore design; keepactualnode_cpulist distinct from requestedbudgetfield. Current whole-socketpolicy must not be misrepresented as a smallerlocal topology.",
+    "progress": "Same8logicalTP ranks, State/collective/stream/error order and full24Q8. KeepBLAS/OMP1, NCCLenv, PLE/read-ahead1, startuphash3, compilerlimits, actor/callers24, parent/Portainer/supervisor masks and32CPUquota. MoreTIDs than eligibleCPUs is not itself a deadlock or proofadequacy; positive progress/readiness/tail/exhaustion/cancel/cleanup tests required.",
+    "vendor_helpers": "NCCL/runtime may set helpermasks; current mask guard must reject any escape from explicitbudget instead of silently widening it. Actualall8afterengine/precohort/final identity/masks required again only for a changedbudget. No NCCL_NTHREADS/GPUkernel knob substitution or undocumentedaffinityoverride.",
+    "scope": "No globalcpuset/sysctl/memorypolicy/IRQ/priority changes, no page migration. Firsttouch/sharedpage effects remain recorded limitations."
+  },
+  "selection_plan": {
+    "next": "First collect minimalcumulativeCPU/throttle evidence on nextalreadyplannedall6 with outsidecore boundaries; prioritize other agents existingCPUworkelimination, not an extra restart for merecounts.",
+    "then": "Use actualperrank/TIDCPU deltas, cgroupthrottle, startup costs and completion/tail facts to decide which2/4physicalbudget is worth a firstall6. Currentthreadasymmetry suggests considering leaderdifferentbudget only afterCPUtime attribution; no arbitrarywinner from33vs7 counts.",
+    "protocol": "Same requiredlocality/APP/math/Q8+24/resource/caseorder/QA/currentprefixes/counters, matchedinstrumentation; compareall6lex24>16>8>4>2>1. Preserve all firstscreen results and uncertainty; repeats/per-region checks before superiority, no lose-requiredlocality fallback."
+  },
+  "two_processes_per_GPU": "Reuse worker-affinity-plan.json explicit A(twoCUDAexecutors sharingoriginalweightallocations viaownedIPC/State/globaldevice+NCCL leases, no world16/fullcopies) and B(oneCUDAowner+CPUprephelper). Neither is replaced by core-budget testing. Currentsecondcuda_engine would duplicate processownedweights/State/graphs, so notadmissible as-is; sharing/progress/context/resource proofs remain concrete blockers. No implementation until admissibleplan and otherobviousCPUwork elimination.",
+  "role_specific_thread_pinning": "Separate candidate, currently blocked by reliable ownedrole/lifetime hooks. Currentkernelcomm python is ambiguous; do not pin numericTIDs by guess or mutate whilemeasurementactive.",
+  "next_artifact": "worker-cpu-counter-collection-plan.json"
+}

@@ -169,6 +169,8 @@ def arguments(argv=None):
                         help="after the unchanged concurrency grid, run six fixed independent answer/format checks with320-token allowances; requires grid and --tokens>=320")
     parser.add_argument("--thinking", action="store_true", help="pass enable_thinking=True to the unchanged target template")
     parser.add_argument("--serial-reference", action="store_true", help="also run a separately labeled draft=False reply with MTP loaded")
+    parser.add_argument("--cpu-counters", action="store_true",
+                        help="diagnostic:12streamedCPU snapshots outsideFASTv2 cores; wholecohortCPU, not core-only; hostcontrol reservation reported")
     parser.add_argument("--worker-affinity", choices=("gpu-local", "observe-reference"),
                         help="explicit GPU-local whole-socket child exec, or controlled unbound reference; no memory-policy changes")
     parser.add_argument("--worker-affinity-policy", type=Path)
@@ -279,6 +281,8 @@ def arguments(argv=None):
             parser.error("worker affinity requires explicit mode, policy and SHA256")
         args.worker_affinity_policy = regular_file(args.worker_affinity_policy)
         affinity_module().policy(args.worker_affinity_policy, args.worker_affinity_policy_sha)
+    if args.cpu_counters and (not args.fast_grid or args.fast_grid_protocol != "fast-grid-v2" or args.worker_affinity != "gpu-local"):
+        parser.error("CPUcounterdiagnostic requiresFASTv2 and requiredGPU-localworkerbinding")
     args.out = args.out.expanduser().absolute()
     return args
 
@@ -872,7 +876,7 @@ def run_quality_spotchecks(engine, tokenizer, args, report, limit, prepared, qua
 
 
 
-def run_fast_grid(engine, tokenizer, args, report, limit, pool, prepared, finite, vocab):
+def run_fast_grid(engine, tokenizer, args, report, limit, pool, prepared, finite, vocab, *, cpu_counters=None):
     """Screen all six offered Ns; independent answer quality stays separate."""
     from tensorfold.engine.exact_sampling import Sampling
     from tensorfold.cuda.cohort import notify_failure
@@ -941,11 +945,34 @@ def run_fast_grid(engine, tokenizer, args, report, limit, pool, prepared, finite
                 if not gdn_evidence["passed"]:
                     result["passed"] = False
                     result["screen"]["measurement_valid"] = False
+            result["diagnostic_cpu_counters_enabled"] = cpu_counters is not None
             write_report(args.out / f"fast-mtp-target-n{count:02d}.json", result,
                          allowance=finite.MAXIMUM * MAX_RECEIPT_BYTES)
-        summary = finite.run_screen_case(pool, count=count, maximum_tokens=args.tokens, vocab=vocab,
-            limit=limit, invoke=invoke, observe=observe, write=write_case, timeout=args.timeout_seconds,
-            failure_notify=notify_failure, protocol=getattr(args, "fast_grid_protocol", "fast-grid-v1"))
+        case_primary, case_failure = None, [None]
+        case_cause = case_context = None
+        case_suppressed = False
+        if cpu_counters is not None:
+            cpu_case = {"N": count, "before": cpu_counters.capture(count, "before")}
+            report["diagnostic_cpu_counters"]["cases"].append(cpu_case)
+        try:
+            summary = finite.run_screen_case(pool, count=count, maximum_tokens=args.tokens, vocab=vocab,
+                limit=limit, invoke=invoke, observe=observe, write=write_case, timeout=args.timeout_seconds,
+                failure_notify=notify_failure, protocol=getattr(args, "fast_grid_protocol", "fast-grid-v1"))
+        except BaseException as error:
+            case_primary = error
+            case_cause = BaseException.__cause__.__get__(error)
+            case_context = BaseException.__context__.__get__(error)
+            case_suppressed = BaseException.__suppress_context__.__get__(error)
+        if cpu_counters is not None:
+            try:
+                cpu_case["after"] = cpu_counters.capture(count, "after")
+            except BaseException as error:
+                case_failure[0] = error
+        if case_primary is not None:
+            BaseException.__cause__.__set__(case_primary, case_cause)
+            BaseException.__context__.__set__(case_primary, case_context)
+            BaseException.__suppress_context__.__set__(case_primary, case_suppressed)
+        finish_failures(case_primary, case_failure)
         report["fast_screen"]["completed_cohorts"] += 1
         report["fast_screen"]["invalid_measurements"] += not summary["passed"]
         report["fast_screen"]["last_case"] = summary
@@ -1004,10 +1031,11 @@ def run_concurrency_leader(engine, tokenizer, args, report):
         control_payload_bytes=finite.control_payload_bytes(args.tokens) + quality_control
             + (finite.screen_control_payload_bytes(args.tokens) if getattr(args, "fast_grid", False) else 0)
             + (BATCH_EVIDENCE_CONTROL_BYTES if engine.sm70_profile in (OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL) else 0)
-            + (GDN_EVIDENCE_CONTROL_BYTES if getattr(args, "gdn_state_batch_trial", False) else 0))
+            + (GDN_EVIDENCE_CONTROL_BYTES if getattr(args, "gdn_state_batch_trial", False) else 0)
+            + (cpu_counter_module().reserved_bytes(MAX_RECEIPT_BYTES) if getattr(args, "cpu_counters", False) else 0))
 
-    limit, pool = RequestLimit(finite.MAXIMUM), None
-    primary, failures = None, [None, None]
+    limit, pool, counters = RequestLimit(finite.MAXIMUM), None, None
+    primary, failures = None, [None, None, None]
     report["concurrency"] = {"grid": finite.GRID, "caller": caller.__dict__,
         "prompts": [receipt for _, _, receipt in prepared], "completed_cases": 0,
         "schedule": "fixed ascending N, bringup then sustained, MTP then optional serial, repeated; simultaneous burst barrier",
@@ -1018,6 +1046,13 @@ def run_concurrency_leader(engine, tokenizer, args, report):
         report["host_admission"] = finalize_backend_resources(engine.retention_catalog,
             tokenizer=tokenizer, scheduler=engine.scheduler, request_limit=limit, caller=caller)
         write_report(args.out / "admitted.json", report, allowance=LEADER_RECEIPT_BYTES)
+        if getattr(args, "cpu_counters", False):
+            counters = cpu_counter_module().Collector(args.out, phase_bytes=MAX_RECEIPT_BYTES,
+                bootstrap_sha=digest(Path(__file__).with_name("gpu_local_worker.py")))
+            report["diagnostic_cpu_counters"] = {"enabled": True, "cases": [],
+                "reserved_global_host_bytes": cpu_counter_module().reserved_bytes(MAX_RECEIPT_BYTES),
+                "scope": "wholecohortCPU endpoints outside10s cores; not shipping/uninstrumented P3",
+                "phase_bytes_limit": MAX_RECEIPT_BYTES, "phases_limit": 12}
         engine.scheduler.configure_requests(limit)
         pool = finite.owned_pool(min(30, args.timeout_seconds))
         report["worker_affinity_before_cohorts"] = worker_affinity(args)
@@ -1042,7 +1077,8 @@ def run_concurrency_leader(engine, tokenizer, args, report):
 
         invalid_screens = 0
         if getattr(args, "fast_grid", False):
-            invalid_screens = run_fast_grid(engine, tokenizer, args, report, limit, pool, prepared, finite, vocab)
+            invalid_screens = run_fast_grid(engine, tokenizer, args, report, limit, pool, prepared, finite, vocab,
+                **({"cpu_counters": counters} if counters is not None else {}))
         else:
             for iteration in range(1, args.repetitions + 1):
                 for label, tokens, prompt in prepared:
@@ -1099,7 +1135,20 @@ def run_concurrency_leader(engine, tokenizer, args, report):
             limit.close()
         except BaseException as error:
             failures[1] = error
+        if counters is not None:
+            try:
+                counters.close()
+            except BaseException as error:
+                failures[2] = error
     finish_failures(primary, failures)
+
+
+def cpu_counter_module():
+    if __package__:
+        from . import cpu_counters
+    else:
+        import cpu_counters
+    return cpu_counters
 
 
 def affinity_module():
@@ -1357,6 +1406,8 @@ def launch(args, argv):
                 environment["TRITON_CACHE_DIR"] = str(args.triton_cache_root / f"rank-{rank}")
             environments.append(environment)
         receipt["supervisor_cpu_affinity"] = sorted(os.sched_getaffinity(0))
+        if getattr(args, "cpu_counters", False):
+            receipt["diagnostic_cpu_counter_preflight"] = cpu_counter_module().preflight()
         receipt["commands"] = commands
         write_report(args.out / "launch.json", receipt, allowance=SUPERVISOR_RECEIPT_BYTES)
         for index, signum in enumerate(signums):

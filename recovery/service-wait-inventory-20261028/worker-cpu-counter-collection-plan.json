@@ -1,0 +1,60 @@
+{
+  "schema": "tensorfold.worker-cpu-counter-collection-plan-v1",
+  "status": "PLAN ONLY awaiting Root/foreground coordination; no source edit/collector/run performed",
+  "purpose": "Collect actual CPU consumption/throttling on NEXT alreadyplannedall6, no extra model restart, no mathematical or NUMA-policy change",
+  "source_reference": {
+    "required_baseline": "NUMAf11b/205b/APP4b0e129.9N24, all8actualUUID/localmask/resource auditPASS",
+    "probe": {
+      "path": "/Warehouse/TensorFold-wt/v100-gpu-local-affinity-20261028/tools/v100_backend_probe.py",
+      "sha256": "3bd12a9d329b46c49c1bc9fb07fb4fa2475038616f94ff405d5d50f689ff6f7d"
+    },
+    "finite_helper": {
+      "path": "/Warehouse/TensorFold-wt/v100-gpu-local-affinity-20261028/tools/finite_concurrency.py",
+      "sha256": "d009cf94050754115fdb0295b39aaa787904b09478464aeb772d8782b97eb86b"
+    },
+    "actual_CPU_evidence_gap": "Existingarchivedmask/TID/parent/quota facts have NO CPUusage/throttling counters; counts and projectwall are not CPUbusy."
+  },
+  "preferred_minimal_collection": {
+    "mechanism": "Opt-in purestdlib counterreader called synchronously by leader coordinator at two explicit cohort boundaries; stream bounded JSONL to separate evidencefiles, do not retain fullsample maps during modelwork. No new persistent process/thread/executor, no observer poll inside measuredcore, noGPU/NVML/perf/tool install.",
+    "before": "run_fast_grid: immediately before finite.run_screen_case for eachcount, after priorcase+drain hasreturned. Snapshot mustfinishbefore invocation.",
+    "after": "Immediately after run_screen_case returns or raises, before nextcase. Existing implementation freezes end then cancels/drains everyFuture/permit/backendowner before returning; CPUafter mayinclude reportserialization but neverexecute within its completed10score. Preserve primary and collectionfailures using preallocatedcleanup slot/transport; retain beforedata even on partialfailure.",
+    "source_proof": "v100_backend_probe.run_fast_grid countloop/write_case; finite_concurrency.run_screen_case begin/end/cancel/drain. No edits inside run_screen_case, callback,100Hz observe loop, graph/math/State paths.",
+    "alignment_checks": "Eachwholecollection and eachread has monotonicstart/end brackets. Postterminal require before_collection_end <= screen.begin_monotonic_ns <= screen.end_monotonic_ns <= after_collection_start forvalidcase; allcollection intervals mustnotintersect ANY sixmeasuredcore windows. Invalid/partialcase retained, neverinventendpoints orsuccess-onlyfilter.",
+    "what_deltas_mean": "Bracketed wholecohort CPU (setup/readiness+10sdecode+cancel/drain/reporting), NOT exactCPUbusyinside10score. A core-only attribution would require separate authorized instrumentation; do not reinterpret these endpoints.",
+    "timing_and_instrumentation": "Outsidecore work stillchanges startup/intercase pacing and mayaffectcaches/clocks; flagdiagnostic, recordreader elapsed. Do notassertsameinstrumentationP3equivalencevsold129.9 screen. Reuse sameflag/source for latercontrolledcandidate comparisons; no arbitraryoverhead subtraction."
+  },
+  "required_counters": {
+    "cgroup_v2": {
+      "read": "Resolve /proc/self/cgroup againstactualcgroup2mount; retain path/mount/inode/procs and cpu.max before/after. Read cpu.stat usage_usec,user_usec,system_usec,nr_periods,nr_throttled,throttled_usec.",
+      "units": "usage/user/system/throttled usemicroseconds; nr_periods/nr_throttled arecounts; cpu.max quota+periodusemicroseconds or literalmax. Docker --cpus32 is configuredintent, not substitute foractualrawcpu.max.",
+      "scope": "Whole modelcontainercgroup includes8ranks+supervisor and anycompiler/helper descendants; parent/perrank/TID counters overlap this total and mustnotbeaddedtoit. Othercontainerwork/unattributedresiduals retained.",
+      "validation": "Sameboot,cgroupmount/inode/identity; countersmonotone. Reset/decrease/groupchange isexplicit invaliddelta, neverclamped. MissingCPUv2/providerfield isexplicit unavailable/preflightblocker for that metric, notzero."
+    },
+    "per_process_and_TID": {
+      "identity": "Read8actualbootstrapreceipts(UUIDpolicy/selectedmasks alreadyverified) forprocessPID+start_ticks andsupervisorparentPID. Pinprocdirs/readstatbeforeandafter; whereusefulread-onlypidfdforprocessleaders, noTIDpidfdfeatureassumed. EveryCPUrecordbindspid/tid/start_ticks; neverredirectreusednumericIDs. Vanished/retired/replaced/newlyobservedTIDs recordedexplicitly.",
+      "stat": "/proc/PID/stat forprocessgroup and /proc/PID/task/TID/stat forTIDs: rawutime,stime inSC_CLK_TCK ticks; starttimefield22 identity; do notuse start_ticks asCPUtime oraddguesttimeagain. Record actualSC_CLK_TCK, notassumed100.",
+      "schedstat": "/proc/PID/task/TID/schedstat: rawruntime_ns,runqueue_wait_ns,timeslice_count, withreadbrackets. Read existingkernel.sched_schedstats/availability readonly; disabled/allzero provider isnot evidencezeroqueuewait. Do notenable sysctl orinstallperf.",
+      "delta_coverage": "Compute perTID deltaonlywhensamevalidatedidentityappears atbothendpoints. New/vanishedthread CPUcannotbeassumedzero; processgroup/cgroup cumulative counters cover differentbroaderdomains. Reportcoverage/unattributedCPU explicitly. Kernelcomm python doesnotdistinguishactor/NCCL/PLE/callerrole; optionalsourceownedroleids maybelabeledonlywherepublicstableauthorityalreadyexists."
+    }
+  },
+  "raw_clock_provenance": {
+    "clock": "Samecoordinator LinuxCLOCK_MONOTONIC namespaceas screen.*_monotonic_ns; retain readerPID/TID, supervisorPID,start_ticks,boot_id,UTCforhumancontext,clock_getres andSC_CLK_TCK. Ifexternalhostreader used, prove timens/clockrelation ratherthanassume UTC/monotonic equality.",
+    "read_brackets": "Before/after monotonicns perproc/cgroupread andwholephase. Sequential8rank samplingisnotatomic; retain bounds/collectionlatency. Throttledtime/runqueuewait arenot additive removableseconds orGPUidle."
+  },
+  "bounded_resource_contract": {
+    "workload_bound": "Exactly12scheduledphases for6cases (before+after); failurephases separatelyrecorded, no backgroundpolling. Readonlycounters, unchangedaffinity/userrequiredwholeGPUlocalmasks, sameNCCL/PLE/BLAS/workers/parent/quota.",
+    "identity_bound": "Atmost9knownmodel/supervisorprocesses and4096totalTIDs fromexistingcontainerPIDlimit; actuallastbaselinepostpool83process/TIDmembers includingparent. Rejectoverbound ratherthantruncate.",
+    "bytes": "Boundeachproc/cgroupfile read (proposal4KiBstat,smallfixedschedstat/cpu.stat limitswithoverflowerror), streamcompactrawselectedfieldrows withschema/unitsonce; capeachphasebyexistingMAX_RECEIPT_BYTES=2424832 serializedbytes, atmost29097984bytes for12phases plusboundedcommand/header. Preservecollector128MiBtotalarchivegate; do notsilentlyraiseit.",
+    "live_memory": "OneboundedTIDlist+oneprocrow+fixedFDowners/streambuffer, not12mapsorfullrawhistorystore. SerializedcapdoesNOTprovePython/RSSbytes. ExactSDKpreflight mustverify boundedtransientoperatorcost withinexistingexplicitdiagnostichost/controlallowance (or stateconcretebudgetblocker), no borrowofgraph/vendorpeak/VRAMcredit.",
+    "failure": "Allopenedproc/outputhandles independentlyretired; nativeprimarycause/context retained onread/write/close/notificationfailure. Missing/vanishedTIDexpectedstatusdoesnoteraseotherfailedreads. No reset/writes to counters orglobalsettings; no signals/affinitymutation."
+  },
+  "no_source_change_external_alternative": {
+    "assessment": "NOT currentlyproved toprovideknownoutsidecoreboundariesforall6. Existing caseJSON appearsaftercohortdrain, but coordinator maystartnextcaseimmediately; inotify/pollwake+synchronousproc reads canlandinside next10score. Timingscanfalsifyposthocbutcannotguaranteecompleteoutsidecorecoverage. No SIGSTOP/ptrace/pause tricks orclaimedalignmentfromfilenamealone.",
+    "possible_if": "OnlystageindependentlightRootcollector ifanexistingauthoritativepause/handshakeboundarycanbeproved withoutchangingmeasurement/lifecycle; otherwise prefer twothinexplicitoptincalls in separate tool-onlycheckpoint."
+  },
+  "coordination_and_gates": {
+    "foreground": "Do notmodifyheldCache.tail/Cache.poolruntimepacket orsharedsource. Rootassignstoolowner; coordinateexistingforegroundauthor beforeapplyingthinprobehooks. CPUmath candidatesproceedindependently; thisisdiagnosticmetadataonly.",
+    "beforeGPU": "Rootapproveconcreteplan; implementcoherentthinreaderthenfocusedCPUfakeproc+cgroupfixture/fault/identity/clock/schema/bounds tests; exactselectedinstalled/stageimports/help,APPandNUMA+rowauthoritybindings; soleD13. Reuseold128sourcecontrolswhereAST/bytesunaffected.",
+    "next_run": "AttachonlytoNEXTplannedall6 underRootexclusiveGPU/remotelease; noextramodelrestart orauthorremote/GPU. Preserveall6case/QA/prefix/native24/resourcechecks andfailureevidence."
+  }
+}

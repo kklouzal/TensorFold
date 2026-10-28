@@ -1,0 +1,1108 @@
+{
+  "schema": "tensorfold.service-drilldown-v1",
+  "status": "ALL52_SOURCE_ASSESSED_NO_NEW_IMPLEMENTATION_OR_MEASUREMENT_IN_THIS_ARTIFACT",
+  "partition_inventory_sha256": "ac394001a38085d17a76d14ac5d25d6d5f9b8b6b8013a4675604e657f76b969c",
+  "source_baseline": "7de2259b1a402542b91fde9e906a9ebb07f4c949",
+  "source_pinning": "Reuse33sourcefileSHA/extent entries from service-inventory.json; no broad rediscovery; targeted caller reads only.",
+  "current_provisional_base_for_next_candidate": "f6a0d02113716c75408fac2dc5e991b6380c43b3; service source equality must be checked before next isolated edit. Do not carry T60 selfwait.",
+  "current_region": "TP8V100; finiteFASTv2backend ScreenTokens/callerthreads; native262144Q8K/VFP32rec;24resident/row32/MTPmax2conf.7; noHTTPdeployed.",
+  "evidence_policy": "Every service ID gets source-assessed disposition, required purpose, bounded reduction and explicit proof/profile blocker. No per-entry timing, measured gain, global impossibility, or support removal is inferred. Inactive current REGION is not dead code.",
+  "t60_disposition_context": {
+    "source": "Root provided current task steering",
+    "status": "notselected after actualall6 noN24gain; source D13closed/pushed",
+    "reported_N1_N2_N4_N8_N16_N24": [
+      31.1,
+      22.8,
+      36,
+      56.2,
+      73,
+      70.6
+    ],
+    "scope": "T60ownWAITcandidateonly; not service per-entry measurements and not newGDNcurrentbaseline. No further T60 code carried."
+  },
+  "entries": [
+    {
+      "id": "SVC-01",
+      "function": "App.__init__",
+      "source_ref": {
+        "path": "src/tensorfold/cuda/server.py",
+        "line": 136,
+        "line_end": 226
+      },
+      "call_chain": "service startup -> App",
+      "current_finite_applicability": "HTTP/App path bypassed by current finite backend screen; not a current steady decode cost.",
+      "required_wait_or_work_purpose": "Tokenizer/template/config/context/quota binding must finish before accepting endpoint requests.",
+      "bounded_reduction_assessment": "Reuse immutable tokenizer/template metadata already admitted by engine; prepare independent host metadata before publication.",
+      "admissibility_blocker_or_needed_profile": "Only endpoint startup/profile latency REGION could justify; do not conflate separate finite tokenizer preparation with App.__init__.",
+      "outcome": "INACTIVE_CURRENT_FINITE_REGION",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-02",
+      "function": "App._prepare",
+      "source_ref": {
+        "path": "src/tensorfold/cuda/server.py",
+        "line": 408,
+        "line_end": 512
+      },
+      "call_chain": "HTTP -> App.run/prepare -> _prepare",
+      "current_finite_applicability": "HTTP/App path bypassed by current finite backend screen; not a current steady decode cost.",
+      "required_wait_or_work_purpose": "Validate request fields and render/tokenize exact requested tools/thinking/template before generation.",
+      "bounded_reduction_assessment": "Existing segment cache already removes old-message native tokenization; further exact rendering/token-ID reuse is plausible.",
+      "admissibility_blocker_or_needed_profile": "Need representative long-history request preparation profile, exact tokenizer/template/cache-key invariants and concurrent GIL attribution.",
+      "outcome": "INACTIVE_CURRENT_FINITE_REGION",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-03",
+      "function": "SegmentEncoder.encode",
+      "source_ref": {
+        "path": "src/tensorfold/server/segments.py",
+        "line": 49,
+        "line_end": 70
+      },
+      "call_chain": "App._prepare -> segments.encode",
+      "current_finite_applicability": "HTTP/App path bypassed by current finite backend screen; not a current steady decode cost.",
+      "required_wait_or_work_purpose": "LRU ownership and exact split-token boundary; assemble full prompt from immutable segments.",
+      "bounded_reduction_assessment": "Cache-hit Python string split/hash and array-to-list expansion remain; bounded immutable prepared prompt reuse could avoid whole-history assembly.",
+      "admissibility_blocker_or_needed_profile": "No generic token-list aliasing: caller prompt mutation and principal/template identity must be proved. Need cold/warm long-history service data.",
+      "outcome": "INACTIVE_CURRENT_FINITE_REGION",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-04",
+      "function": "Grammars.for_model/compile",
+      "source_ref": {
+        "path": "src/tensorfold/engine/grammar.py",
+        "line": 178,
+        "line_end": 234
+      },
+      "call_chain": "App._prepare -> _grammars -> compiler/compile",
+      "current_finite_applicability": "HTTP/App path bypassed by current finite backend screen; not a current steady decode cost.",
+      "required_wait_or_work_purpose": "Bound grammar source, use actual model vocabulary/stop IDs, serialize compiler access.",
+      "bounded_reduction_assessment": "Prebuild/cache immutable validated compiler/grammars; do not repeatedly construct tokenizer wrappers.",
+      "admissibility_blocker_or_needed_profile": "Retained structured-output refusal/capability and compiler-version contract determine admissibility; compilation may release GIL internally. Need structured service traces, not greedy finite screen.",
+      "outcome": "INACTIVE_CURRENT_FINITE_REGION",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-05",
+      "function": "App._strict_calls",
+      "source_ref": {
+        "path": "src/tensorfold/cuda/server.py",
+        "line": 514,
+        "line_end": 568
+      },
+      "call_chain": "_prepare -> _strict_calls",
+      "current_finite_applicability": "HTTP/App path bypassed by current finite backend screen; not a current steady decode cost.",
+      "required_wait_or_work_purpose": "Discover supported strict markup and enforce strict schema/tool choice.",
+      "bounded_reduction_assessment": "Support probe is already cached; cache immutable plan/schema portions if identical tool contracts recur.",
+      "admissibility_blocker_or_needed_profile": "Tool specs/options are request-specific and bounded; preserving full strict/false/null/partial-call behavior is mandatory. No selected finite App strict work.",
+      "outcome": "INACTIVE_CURRENT_FINITE_REGION",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-06",
+      "function": "RequestLimit",
+      "source_ref": {
+        "path": "src/tensorfold/server/request_limits.py",
+        "line": 92,
+        "line_end": 413
+      },
+      "call_chain": "App.run wrapper -> request -> Scheduler.submit borrow/publish -> release",
+      "current_finite_applicability": "Current finite scheduler/CPU delivery path; source establishes reachability, not measured critical-path duration. RequestLimit is configured by finalize_backend_resources and explicit logical caller scopes.",
+      "required_wait_or_work_purpose": "Count/principal/input/backend owners must survive callback and GPU retirement; overcapacity refuses, it does not wait.",
+      "bounded_reduction_assessment": "Avoid redundant prune/scans on known live owners, while retaining necessary scope locks; prepare finite stable identity before repeated subruns.",
+      "admissibility_blocker_or_needed_profile": "Need admission/retirement profile showing relevant contention, not lock existence. Scope and backend credit aliasing, interruption rollback and per-principal limits must remain exact.",
+      "outcome": "CURRENT_ADMISSION_BOUNDARY_UNMEASURED",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-07",
+      "function": "Scheduler.submit publication",
+      "source_ref": {
+        "path": "src/tensorfold/cuda/scheduler.py",
+        "line": 558,
+        "line_end": 674
+      },
+      "call_chain": "Engine.generate -> Scheduler.submit -> Waiting.publish",
+      "current_finite_applicability": "Current finite scheduler/CPU delivery path; source establishes reachability, not measured critical-path duration. Primarily submit/admission, not every output token.",
+      "required_wait_or_work_purpose": "Validate externally owned bounded prompt and count; allocate fresh cancellation/Stream/mailbox ownership and atomically register accepted work.",
+      "bounded_reduction_assessment": "Pre-admitted immutable finite prompts may permit avoiding repeated tuple/list materialization or repeated stable domain scans.",
+      "admissibility_blocker_or_needed_profile": "Prompt IDs are caller-owned mutable lists and can cross operation boundaries; no hoisting without an immutable ownership contract and current startup/arrival evidence.",
+      "outcome": "CURRENT_ADMISSION_BOUNDARY_UNMEASURED",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-08",
+      "function": "Waiting.publish/requests/get_control",
+      "source_ref": {
+        "path": "src/tensorfold/cuda/scheduler.py",
+        "line": 143,
+        "line_end": 216
+      },
+      "call_chain": "submit -> Waiting; actor -> Waiting.requests/get_control",
+      "current_finite_applicability": "Current finite scheduler/CPU delivery path; source establishes reachability, not measured critical-path duration.",
+      "required_wait_or_work_purpose": "Snapshot lock supplies a coherent bounded view; wait predicate/revision/notification prevents lost wake and observes deadlines.",
+      "bounded_reduction_assessment": "One include_reserved snapshot at _run_fifo1337 serves only shutdown claims while normal decode never consumes it; guard the actual snapshot+consumer under one shutdown predicate. Additional snapshot reuse is a separate candidate.",
+      "admissibility_blocker_or_needed_profile": "Before implementation prove requests216-220 has only lock+tuple construction, find all _stopping writers/thread ownership, and keep check+snapshot+any in one branch. Queue revision alone is insufficient cache key because activate changes phase without revision bump. No gain inferred.",
+      "outcome": "SOURCE_PROVEN_UNUSED_NORMAL_DECODE_SNAPSHOT",
+      "candidate_priority": 1,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null,
+      "candidate_end_to_end_followup": {
+        "candidate": "SVC-C01",
+        "source_commit": "dc6fd0caa04af4e2ff9a2d600a8c0deed90b5329",
+        "artifact": "../fifo-snapshot-combined-20261028/selection.json",
+        "disposition": "NOT_SELECTED_FROM_FIRST_SCREEN",
+        "whole_candidate_N24_tps": 100.8,
+        "reference_N24_tps": 103.8,
+        "scope": "end-to-end candidate screen only; no isolated per-site timing, repeatable inferiority or global impossibility claim",
+        "source_work_elimination": "still structurally proven; did not establish useful measured gain in first screen",
+        "reference_retained": "146f8a81/APP7c0a",
+        "no_more_runs": "Rootdirect no edits or repeats yet"
+      }
+    },
+    {
+      "id": "SVC-09",
+      "function": "Scheduler._admit_fifo",
+      "source_ref": {
+        "path": "src/tensorfold/cuda/scheduler.py",
+        "line": 803,
+        "line_end": 902
+      },
+      "call_chain": "_run_fifo -> _admit_fifo -> stage_request/prepare_request/request_blocked_reason/admit",
+      "current_finite_applicability": "Current finite scheduler/CPU delivery path; source establishes reachability, not measured critical-path duration. Admission scanning executes each FIFO round, even when waiting set is empty.",
+      "required_wait_or_work_purpose": "Oldest eligible ownership, explicit media/restore/output readiness and strict capacity/timeout/cancellation semantics.",
+      "bounded_reduction_assessment": "Avoid repeated immutable field checks and skip eligibility work for proven unchanged wait reasons; existing empty waiting tuple already avoids per-stream admit body.",
+      "admissibility_blocker_or_needed_profile": "Input readiness, client/output credit, retention completion and concurrent arrivals can change without simple queue revision; need complete invalidation/wake proof plus admission-heavy/highN profile.",
+      "outcome": "CURRENT_REQUIRED_POLICY_WITH_CANDIDATES",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-10",
+      "function": "_production_plan/_suspend_blocked",
+      "source_ref": {
+        "path": "src/tensorfold/cuda/scheduler.py",
+        "line": 1016,
+        "line_end": 1095
+      },
+      "call_chain": "_round_requests -> input_readiness -> _production_plan -> OutputMailbox.reserve",
+      "current_finite_applicability": "Current finite scheduler/CPU delivery path; source establishes reachability, not measured critical-path duration. Production reservations execute before selected GPU output windows.",
+      "required_wait_or_work_purpose": "Reserve full legal MTP emission width before work; callback-inflight bytes remain charged; all blocked clients can intentionally halt GPU production.",
+      "bounded_reduction_assessment": "Reduce credit bookkeeping/lock traffic or combine production planning with a valid active-stream snapshot; larger credit/batched callback policy only within same explicit memory/latency contract.",
+      "admissibility_blocker_or_needed_profile": "Need current output-blocked counts and reservation/callback duration; no evidence current finite ScreenTokens reaches output limit. Cannot release credit on dequeue, omit legal-width reservation or weaken fairness/exhaustion.",
+      "outcome": "CURRENT_REQUIRED_POLICY_WITH_CANDIDATES",
+      "candidate_priority": 4,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-11",
+      "function": "OutputMailbox.reserve/available/put",
+      "source_ref": {
+        "path": "src/tensorfold/cuda/output_mailbox.py",
+        "line": 39,
+        "line_end": 130
+      },
+      "call_chain": "actor stream.emit/on_fill -> mailbox",
+      "current_finite_applicability": "Current finite scheduler/CPU delivery path; source establishes reachability, not measured critical-path duration. Per emission plus per-round reservations; producer does not block for consumer.",
+      "required_wait_or_work_purpose": "Lock serializes token/progress/terminal publication; fresh list transfer and separate terminal cell prevent stranded completion.",
+      "bounded_reduction_assessment": "Notification on transition from no consumable item to consumable item may avoid redundant Condition.notify while consumer already owns backlog; fixed token chunks can be batched if exact accounting/timing permits.",
+      "admissibility_blocker_or_needed_profile": "Need proof covering empty-list, progress-after-token ordering, terminal publication, delayed get and fault-after-publication; thread scheduling/GIL profile must show benefit. Existing API block argument is not a blocking queue path.",
+      "outcome": "CURRENT_REQUIRED_POLICY_WITH_CANDIDATES",
+      "candidate_priority": 5,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-12",
+      "function": "OutputMailbox.get/complete_delivery",
+      "source_ref": {
+        "path": "src/tensorfold/cuda/output_mailbox.py",
+        "line": 132,
+        "line_end": 175
+      },
+      "call_chain": "Scheduler.submit caller -> box.get -> emit -> complete_delivery",
+      "current_finite_applicability": "Current finite scheduler/CPU delivery path; source establishes reachability, not measured critical-path duration.",
+      "required_wait_or_work_purpose": "Consumer waits for actual data; complete_delivery holds output credit until callback returns and wakes actor after persistent credit change.",
+      "bounded_reduction_assessment": "Avoid queue wake when returned credit cannot change any blocked production/readmission predicate, using mailbox-owned need-wake state rather than guessed actor idle flag.",
+      "admissibility_blocker_or_needed_profile": "Must cover both reserve and available failures, concurrent reserve/complete interleavings, consumer-inflight ownership, delayed condition wait and retry-notification failures. Current Waiting.wake already coalesces marker but still locks/notifies. Need wake/callback profile first.",
+      "outcome": "CURRENT_REQUIRED_POLICY_WITH_CANDIDATES",
+      "candidate_priority": 3,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-13",
+      "function": "Scheduler.submit delivery loop/_request_cancel",
+      "source_ref": {
+        "path": "src/tensorfold/cuda/scheduler.py",
+        "line": 675,
+        "line_end": 704
+      },
+      "call_chain": "box.get -> caller emit/progress -> complete_delivery/cancel",
+      "current_finite_applicability": "Current finite scheduler/CPU delivery path; source establishes reachability, not measured critical-path duration. ScreenTokens callback on caller thread; no App detokenization/network writer.",
+      "required_wait_or_work_purpose": "Drain mailbox, propagate explicit stop and progress, keep caller callback errors from losing worker retirement; 15s empty callback maintains service cancellation/keepalive.",
+      "bounded_reduction_assessment": "Reduce unnecessary empty ticks for explicit non-network caller capability; amortize callback scheduling/notification while retaining exact native and timestamp evidence.",
+      "admissibility_blocker_or_needed_profile": "Current ten-second fast decode window normally cannot by itself trigger a 15s no-token tick; readiness phase can. Callback IDs/timestamps/stop_observed must not weaken; full queue-stop/drain contract remains. Profile actual callback/GIL time.",
+      "outcome": "CURRENT_DELIVERY_UNMEASURED",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-14",
+      "function": "App.run/on_tokens/visible",
+      "source_ref": {
+        "path": "src/tensorfold/cuda/server.py",
+        "line": 734,
+        "line_end": 862
+      },
+      "call_chain": "Scheduler caller callback -> App.on_tokens -> emit",
+      "current_finite_applicability": "HTTP/App path bypassed by current finite backend screen; not a current steady decode cost.",
+      "required_wait_or_work_purpose": "Incremental visible output and stop/tool/thinking handling preserves exact API stream.",
+      "bounded_reduction_assessment": "Avoid repeated full visible-string parsing by exact incremental parsers or share final decoded suffixes.",
+      "admissibility_blocker_or_needed_profile": "Need streaming service histories including Unicode/partial stop/tool markup and current GIL profile; finite callback bypasses this body.",
+      "outcome": "INACTIVE_CURRENT_FINITE_REGION",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-15",
+      "function": "Handler.write/emit/show_progress",
+      "source_ref": {
+        "path": "src/tensorfold/cuda/http.py",
+        "line": 205,
+        "line_end": 316
+      },
+      "call_chain": "App.on_tokens -> HTTP emit -> json.dumps/encode -> wfile.write/flush",
+      "current_finite_applicability": "HTTP/App path bypassed by current finite backend screen; not a current steady decode cost.",
+      "required_wait_or_work_purpose": "Write ordered SSE events and retain downstream backpressure; write+flush is not receipt.",
+      "bounded_reduction_assessment": "Bounded staged delivery or frame coalescing can reduce syscall/serialization cost while preserving latency and memory limits.",
+      "admissibility_blocker_or_needed_profile": "Must measure slow/fast clients, all-clients-blocked behavior, disconnect and cancellation; moving to another queue cannot make output unbounded or report success before required delivery lifetime.",
+      "outcome": "INACTIVE_CURRENT_FINITE_REGION",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-16",
+      "function": "App.run finalization",
+      "source_ref": {
+        "path": "src/tensorfold/cuda/server.py",
+        "line": 954,
+        "line_end": 1068
+      },
+      "call_chain": "generate_gated -> decode_presentation/tool parse -> stats/logprobs -> return",
+      "current_finite_applicability": "HTTP/App path bypassed by current finite backend screen; not a current steady decode cost.",
+      "required_wait_or_work_purpose": "Final complete raw/output/tool/logprob/usage evidence and logs must match partial stream and actual termination.",
+      "bounded_reduction_assessment": "Reuse exact incremental decode/parse state rather than full-output rescans.",
+      "admissibility_blocker_or_needed_profile": "Current finite text decode/receipts are separate tools code and are not App.finalization; no service finalization timing, partial/error/history oracle required.",
+      "outcome": "INACTIVE_CURRENT_FINITE_REGION",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-17",
+      "function": "Turns.take/give/Yield",
+      "source_ref": {
+        "path": "src/tensorfold/cuda/turns.py",
+        "line": 13,
+        "line_end": 58
+      },
+      "call_chain": "App.run concurrent=False -> Turns.take",
+      "current_finite_applicability": "Selected concurrent CUDA backend bypasses Turns.take and Yield replay.",
+      "required_wait_or_work_purpose": "Single-engine alternative must serialize exclusive work and preserve foreground priority/cancellation.",
+      "bounded_reduction_assessment": "No selected-region action. In serial-only REGION, shorter wake/cancellation mechanics or preserved-context yield might reduce replay cost.",
+      "admissibility_blocker_or_needed_profile": "Would be a different engine capability/region; cannot remove alternative supported serial behavior based on inactivity here.",
+      "outcome": "INACTIVE_CURRENT_FINITE_REGION",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-18",
+      "function": "Scheduler._run_fifo/_run_legacy",
+      "source_ref": {
+        "path": "src/tensorfold/cuda/scheduler.py",
+        "line": 1323,
+        "line_end": 1412
+      },
+      "call_chain": "worker -> run policy -> get_control/Waiting.get",
+      "current_finite_applicability": "Current finite scheduler/CPU delivery path; source establishes reachability, not measured critical-path duration.",
+      "required_wait_or_work_purpose": "FIFO actor sleeps only after no round/retention progress; runnable rounds continue; stop/deadline/wake predicates are necessary.",
+      "bounded_reduction_assessment": "Normal decode can omit shutdown-only claim snapshot while preserving full idle predicate path. Do not remove condition waiting; it prevents CPU spin.",
+      "admissibility_blocker_or_needed_profile": "Same SVC08 source proof and all concurrent stop/late-arrival/readiness/error tests. Future snapshot fusion must preserve waiting variable used by retention needs_slot and stop/drain.",
+      "outcome": "SOURCE_PROVEN_UNUSED_NORMAL_DECODE_SNAPSHOT",
+      "candidate_priority": 1,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null,
+      "candidate_end_to_end_followup": {
+        "candidate": "SVC-C01",
+        "source_commit": "dc6fd0caa04af4e2ff9a2d600a8c0deed90b5329",
+        "artifact": "../fifo-snapshot-combined-20261028/selection.json",
+        "disposition": "NOT_SELECTED_FROM_FIRST_SCREEN",
+        "whole_candidate_N24_tps": 100.8,
+        "reference_N24_tps": 103.8,
+        "scope": "end-to-end candidate screen only; no isolated per-site timing, repeatable inferiority or global impossibility claim",
+        "source_work_elimination": "still structurally proven; did not establish useful measured gain in first screen",
+        "reference_retained": "146f8a81/APP7c0a",
+        "no_more_runs": "Rootdirect no edits or repeats yet"
+      }
+    },
+    {
+      "id": "SVC-19",
+      "function": "Scheduler.start/close",
+      "source_ref": {
+        "path": "src/tensorfold/cuda/scheduler.py",
+        "line": 491,
+        "line_end": 556
+      },
+      "call_chain": "startup/Engine.close -> scheduler start/close",
+      "current_finite_applicability": "Current finite Engine/Scheduler startup and drain boundaries; not per-round steady decode.",
+      "required_wait_or_work_purpose": "Start must publish worker entry; close must reject newcomers and wait for actual worker lease then join.",
+      "bounded_reduction_assessment": "Overlap only demonstrably independent host startup preparation; avoid repeated already-completed close bookkeeping if source shows redundant calls.",
+      "admissibility_blocker_or_needed_profile": "Cancellation/Thread.join status cannot substitute actual callback/actor completion. Need separate startup/drain tail evidence before performance claim.",
+      "outcome": "CURRENT_LIFECYCLE_REQUIRED",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-20",
+      "function": "Scheduler._loop failure cleanup",
+      "source_ref": {
+        "path": "src/tensorfold/cuda/scheduler.py",
+        "line": 1124,
+        "line_end": 1235
+      },
+      "call_chain": "worker -> _loop -> decoder.drop/terminal/retire",
+      "current_finite_applicability": "Current reachable error path, and routine retirement owner logic; expensive failure cleanup conditional.",
+      "required_wait_or_work_purpose": "Accepted callers must receive terminal outcome and actual backend/error owner retirement; uncertain resource failures remain retained.",
+      "bounded_reduction_assessment": "Reduce duplicated bounded traceback/terminal bookkeeping only after preserving original primary and cleanup failures.",
+      "admissibility_blocker_or_needed_profile": "No proof the failure body is current decode bottleneck. Fault-injection/recovery correctness dominates; no swallowed errors, fake completion or weakened diagnosis.",
+      "outcome": "CURRENT_FAILURE_REQUIRED",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-21",
+      "function": "request_runtime/request_execution_manifest",
+      "source_ref": {
+        "path": "src/tensorfold/cuda/scheduler.py",
+        "line": 409,
+        "line_end": 447
+      },
+      "call_chain": "runtime HTTP -> scheduler -> pending control",
+      "current_finite_applicability": "Conditional lifecycle/control/retention path; existence in source is not evidence it executed in measured decode. No live HTTP control requests in current finite screen.",
+      "required_wait_or_work_purpose": "State lock validates endpoint/model state and publishes control before wake; manifest path is bounded and actor-owned.",
+      "bounded_reduction_assessment": "Prepare immutable validated evidence off actor and publish a bounded transaction.",
+      "admissibility_blocker_or_needed_profile": "TOCTOU source identity and conflicting close/profile requests must remain checked; need actual control-latency workload, not no-control decode.",
+      "outcome": "CONDITIONAL_CONTROL_NO_ACTIVE_REQUEST",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-22",
+      "function": "Scheduler._execution_boundary",
+      "source_ref": {
+        "path": "src/tensorfold/cuda/scheduler.py",
+        "line": 1240,
+        "line_end": 1267
+      },
+      "call_chain": "_run_fifo/_legacy -> boundary -> profiles/controller/manifest installer",
+      "current_finite_applicability": "Current finite scheduler/CPU delivery path; source establishes reachability, not measured critical-path duration. Controller boundary dispatch/checks execute, expensive pending manifest/profile transitions are conditional.",
+      "required_wait_or_work_purpose": "Apply controller/control changes only at a serialized execution boundary, preserve all retained slots and startup bindings.",
+      "bounded_reduction_assessment": "Fast no-pending branches may avoid redundant host metadata snapshots; expensive manifest hashing/loading can be prepared off actor under immutable identity.",
+      "admissibility_blocker_or_needed_profile": "Controller math/manifest internals belong root/owner transport entries. Need branch incidence and profile before changing any boundary; do not equate no pending control with no mandatory controller work.",
+      "outcome": "CURRENT_BOUNDARY_CHECK_CONDITIONAL_EXPENSIVE_BRANCH",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-23",
+      "function": "ProfileGate",
+      "source_ref": {
+        "path": "src/tensorfold/cuda/profile_binding.py",
+        "line": 136,
+        "line_end": 318
+      },
+      "call_chain": "AppProfiles/Engine wrapper -> gate.scope/register/retire/drain",
+      "current_finite_applicability": "Conditional lifecycle/control/retention path; existence in source is not evidence it executed in measured decode. Serving-profile gate enabled only for configured structural profiles; finite screen does not exercise HTTP borrower scopes.",
+      "required_wait_or_work_purpose": "Keep actual lexical/prepared leases alive across model drain; refuse new scopes while draining rather than capacity-wait.",
+      "bounded_reduction_assessment": "Reduce weak-ref prune/record allocation when no borrower changes.",
+      "admissibility_blocker_or_needed_profile": "Exact lease-finalizer/interrupt/reset semantics and lock ordering required; no evidence enabled gates cost timed finite decode.",
+      "outcome": "CONDITIONAL_PROFILE_REGION",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-24",
+      "function": "AppProfiles._wrap_prepare/_wrap_run",
+      "source_ref": {
+        "path": "src/tensorfold/cuda/profile_app.py",
+        "line": 53,
+        "line_end": 126
+      },
+      "call_chain": "bound HTTP/App -> scope -> RequestLimit -> prepared profile lease",
+      "current_finite_applicability": "HTTP/App path bypassed by current finite backend screen; not a current steady decode cost. Structural AppProfiles additionally requires configured profiles.",
+      "required_wait_or_work_purpose": "Prepared request ownership prevents simultaneous consume and old tokenizer/model use after replacement.",
+      "bounded_reduction_assessment": "Bounded immutable prepared request reuse or simpler explicit close path may reduce weak-finalizer overhead.",
+      "admissibility_blocker_or_needed_profile": "Prepared reuse must preserve exact epoch/model/principal lifetime and finite quotas; inactive App preparation cannot explain current backend timeline.",
+      "outcome": "INACTIVE_CURRENT_FINITE_REGION",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-25",
+      "function": "ServingProfiles.request",
+      "source_ref": {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/serving_runtime.py",
+        "line": 65,
+        "line_end": 98
+      },
+      "call_chain": "runtime admin -> serving profile request -> prepare",
+      "current_finite_applicability": "Conditional lifecycle/control/retention path; existence in source is not evidence it executed in measured decode. Admin profile request; no such operation offered by finite screen.",
+      "required_wait_or_work_purpose": "Full artifact/options hashing must precede publication; preparation overlap is refused, not waited.",
+      "bounded_reduction_assessment": "Reuse content-addressed immutable verified artifact metadata and prepare outside actor.",
+      "admissibility_blocker_or_needed_profile": "Already explicitly outside actor lock; further gains need host resource contention or profile arrival timing. Changed source must still invalidate.",
+      "outcome": "CONDITIONAL_PROFILE_REGION",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-26",
+      "function": "ServingProfiles._boundary",
+      "source_ref": {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/serving_runtime.py",
+        "line": 389,
+        "line_end": 430
+      },
+      "call_chain": "Scheduler._execution_boundary -> profile boundary",
+      "current_finite_applicability": "Conditional lifecycle/control/retention path; existence in source is not evidence it executed in measured decode.",
+      "required_wait_or_work_purpose": "No new model until borrowers, queued/running jobs and protected retained states actually drain.",
+      "bounded_reduction_assessment": "Preflight more independent host-only steps before drain, leave publication/retirement on actor.",
+      "admissibility_blocker_or_needed_profile": "Do not evict sole protected state or accept new borrowers to shorten drain; loaded target budget/recovery outcome and all-rank error agreement required.",
+      "outcome": "CONDITIONAL_PROFILE_REGION",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-27",
+      "function": "ServingProfiles._retire/replace",
+      "source_ref": {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/serving_runtime.py",
+        "line": 248,
+        "line_end": 369
+      },
+      "call_chain": "boundary -> replace -> _retire/_initialize/AppProfiles.stage",
+      "current_finite_applicability": "Conditional lifecycle/control/retention path; existence in source is not evidence it executed in measured decode.",
+      "required_wait_or_work_purpose": "Device fence, startup read drain, resource close, model reinitialize and all-rank votes prevent old native borrowers surviving replacement.",
+      "bounded_reduction_assessment": "Reuse already-proved retired scopes or overlap independent host checks; remove no fences without complete stream/native ownership proof.",
+      "admissibility_blocker_or_needed_profile": "Unmeasured structural replacement latency REGION; source synchronizes explicitly, but none is per-token finite decode. Future overlap must fit peak two-generation memory and failure containment.",
+      "outcome": "CONDITIONAL_PROFILE_REQUIRED_FENCE",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-28",
+      "function": "ServingProfiles.error_outcome",
+      "source_ref": {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/serving_runtime.py",
+        "line": 108,
+        "line_end": 177
+      },
+      "call_chain": "scheduler request failure -> certified state retirement -> error_outcome",
+      "current_finite_applicability": "Conditional lifecycle/control/retention path; existence in source is not evidence it executed in measured decode. Profile-enabled error outcome only.",
+      "required_wait_or_work_purpose": "Fence actual device owners before detaching delivered exception frames so old model cannot be retained across replacement.",
+      "bounded_reduction_assessment": "Reuse independently certified existing fence only if it covers all states/native drafter work, avoiding duplicate fence.",
+      "admissibility_blocker_or_needed_profile": "No such complete fence proof supplied and error path unmeasured. Preserve original errors, unknown owners and fatal poison; normal decode gain cannot be claimed.",
+      "outcome": "CONDITIONAL_ERROR_REQUIRED_FENCE",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-29",
+      "function": "RetentionCatalog._install_transfer",
+      "source_ref": {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/retained_catalog.py",
+        "line": 600,
+        "line_end": 625
+      },
+      "call_chain": "decoder suspend/claim_resume -> catalog transfer publication",
+      "current_finite_applicability": "Conditional lifecycle/control/retention path; existence in source is not evidence it executed in measured decode. Catalog exists as finite resource owner; save/restore transfer admission is conditional, not established by full-resident N24 alone.",
+      "required_wait_or_work_purpose": "Reserve complete future bytes and exclusive source/destination state before installing transfer and waking worker.",
+      "bounded_reduction_assessment": "Reuse bounded metadata snapshots and avoid repeat inventory work for immutable handle generations.",
+      "admissibility_blocker_or_needed_profile": "Need actual transfer incidence/high-churn profile, exact generation and capacity lifetime; no transfer cannot justify deleting required transfer ownership.",
+      "outcome": "CONDITIONAL_RETENTION_REQUIRED",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-30",
+      "function": "RetentionCatalog.progress",
+      "source_ref": {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/retained_catalog.py",
+        "line": 1691,
+        "line_end": 1767
+      },
+      "call_chain": "scheduler.retention_boundary -> catalog.progress",
+      "current_finite_applicability": "Conditional lifecycle/control/retention path; existence in source is not evidence it executed in measured decode. TP.retention_boundary280 returns immediately if catalog.policy is None; only enabled policy enters actor progress.",
+      "required_wait_or_work_purpose": "Device operation event must complete before host reuse/publication; idle fence can delay fresh arrival but actor never waits Store worker IO.",
+      "bounded_reduction_assessment": "Use bounded double-buffer/pipelined chunk staging and event-driven completion to avoid idle host fences if arrival profile justifies.",
+      "admissibility_blocker_or_needed_profile": "Additional pinned buffers/future promises/arrival tails/cancellation need explicit funding and same copy order proof. Event.query is readiness, not tensor readback; no measurement of current fences.",
+      "outcome": "CONDITIONAL_RETENTION_REQUIRED_FENCE",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-31",
+      "function": "RetentionCatalog._actor",
+      "source_ref": {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/retained_catalog.py",
+        "line": 1823,
+        "line_end": 1841
+      },
+      "call_chain": "retention CPU worker -> _actor -> notify -> actor.progress",
+      "current_finite_applicability": "Conditional lifecycle/control/retention path; existence in source is not evidence it executed in measured decode.",
+      "required_wait_or_work_purpose": "Worker must wait for actor-issued CUDA work actual completion before CPU source read or staging-buffer reuse.",
+      "bounded_reduction_assessment": "Pipeline multiple chunks with explicit distinct admitted buffers and per-chunk ownership.",
+      "admissibility_blocker_or_needed_profile": "Single issued actor-call invariant, one ordinary chunk budget and no device work on worker are current contract. Need a separately funded bounded design and transfer profile; cannot simply drop completed.wait.",
+      "outcome": "CONDITIONAL_RETENTION_REQUIRED",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-32",
+      "function": "RetentionCatalog._serve",
+      "source_ref": {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/retained_catalog.py",
+        "line": 1871,
+        "line_end": 1915
+      },
+      "call_chain": "retention worker -> pending queue -> save/restore",
+      "current_finite_applicability": "Conditional lifecycle/control/retention path; existence in source is not evidence it executed in measured decode.",
+      "required_wait_or_work_purpose": "One serial worker wait_for pending/close/failure prevents spin and bounds transfer concurrency; retired outcome wakes actor.",
+      "bounded_reduction_assessment": "Coalesce pending transfer notifications or batch independent metadata CPU work.",
+      "admissibility_blocker_or_needed_profile": "Must preserve no-starvation/failure terminal order and complete future-byte reservation; no evidence idle worker condition wait starves finite GPU.",
+      "outcome": "CONDITIONAL_RETENTION_REQUIRED",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-33",
+      "function": "_copy_source/_save/_manifest",
+      "source_ref": {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/retained_catalog.py",
+        "line": 1935,
+        "line_end": 2050
+      },
+      "call_chain": "suspend -> worker save -> _actor(copy) -> RAM builder -> cohort manifest",
+      "current_finite_applicability": "Conditional lifecycle/control/retention path; existence in source is not evidence it executed in measured decode.",
+      "required_wait_or_work_purpose": "D2H event must finish before CPU RAM copy/hash; publish complete checksummed all-rank generation before releasing old keys.",
+      "bounded_reduction_assessment": "Reuse unchanged immutable history components (already implemented), improve per-chunk materialization/pipeline only for remaining changed parts.",
+      "admissibility_blocker_or_needed_profile": "Need measured transfer sizes/reuse/chunk distributions; exact immutable bytes/integrity/durable-vs-RAM distinction and all-rank ack lifetime remain. GPU math/profile delegate covers copy-native internals.",
+      "outcome": "CONDITIONAL_RETENTION_REQUIRED",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-34",
+      "function": "RetentionCatalog._restore",
+      "source_ref": {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/retained_catalog.py",
+        "line": 2051,
+        "line_end": 2131
+      },
+      "call_chain": "claim_resume -> worker restore -> RAM/Store -> _actor H2D/commit",
+      "current_finite_applicability": "Conditional lifecycle/control/retention path; existence in source is not evidence it executed in measured decode.",
+      "required_wait_or_work_purpose": "Verify all source objects before writes, bound chunk lifetime through CPU/DMA/peer ACK, all-rank commit target generation.",
+      "bounded_reduction_assessment": "Reduce copies by direct bounded owned-buffer read or reuse existing immutable object checksum proof where trust lifetime permits.",
+      "admissibility_blocker_or_needed_profile": "Corruption/trust-boundary and source version cannot be weakened; peer Store backpressure and onechunk budget must survive. No selected full-resident transfer timing; retain prewrite independent oracle.",
+      "outcome": "CONDITIONAL_RETENTION_REQUIRED",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-35",
+      "function": "RamReader/RamBuilder/RamObjects",
+      "source_ref": {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/ram_backing.py",
+        "line": 29,
+        "line_end": 320
+      },
+      "call_chain": "catalog save/restore -> bounded RAM object store",
+      "current_finite_applicability": "Conditional lifecycle/control/retention path; existence in source is not evidence it executed in measured decode.",
+      "required_wait_or_work_purpose": "Immutable RAM objects enforce capacity/readers/reference integrity; whole-object validation detects source corruption.",
+      "bounded_reduction_assessment": "Avoid duplicate verify/hash only when immutable ownership and prior trustworthy checksum validation persist across the complete read; reduce per-read bytes copies with lifetime-bound views.",
+      "admissibility_blocker_or_needed_profile": "Ordinary bytes reader currently transfers ownership; view replacement could retain entire large object or invalidate source on release. Need full memory and corruption/cancellation proof plus RAM-transfer workload.",
+      "outcome": "CONDITIONAL_RETENTION_REQUIRED",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-36",
+      "function": "settle_ready",
+      "source_ref": {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/retained_catalog.py",
+        "line": 1640,
+        "line_end": 1690
+      },
+      "call_chain": "retention actor boundary -> completed_transfers -> settle_ready",
+      "current_finite_applicability": "Conditional lifecycle/control/retention path; existence in source is not evidence it executed in measured decode.",
+      "required_wait_or_work_purpose": "All-rank common completion/generation agreement must precede retained publication; local event completion is insufficient.",
+      "bounded_reduction_assessment": "Skip empty publication work only if all ranks have an agreed persistent empty predicate; coalesce completed generations in one vote.",
+      "admissibility_blocker_or_needed_profile": "A local no-completion observation cannot justify skipping a peer rendezvous. Exact protocol/fault/order proof plus per-boundary transport timing required; crosslink T60 generic retained phase.",
+      "outcome": "CONDITIONAL_RETENTION_REQUIRED_COHORT",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-37",
+      "function": "WakeRelay.fence/notify/_receive/close",
+      "source_ref": {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/retention_wake.py",
+        "line": 115,
+        "line_end": 311
+      },
+      "call_chain": "retention worker -> relay -> leader Waiting.wake",
+      "current_finite_applicability": "Conditional lifecycle/control/retention path; existence in source is not evidence it executed in measured decode.",
+      "required_wait_or_work_purpose": "Persistent doorbell predicate + independent receiver connection prevents lost wake; peer senders retire before leader queue release.",
+      "bounded_reduction_assessment": "Send/wake only on newly required readiness; fixed doorbell already coalesces outstanding notification.",
+      "admissibility_blocker_or_needed_profile": "Retry-after-publication/DELETE races and shutdown fence must retain proof; no sender drop based on guessed actor state. Need worker notification rates/blocked consumer evidence.",
+      "outcome": "CONDITIONAL_RETENTION_REQUIRED",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-38",
+      "function": "RetainedHost.capture/detach/attach/close",
+      "source_ref": {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/retained_host.py",
+        "line": 98,
+        "line_end": 196
+      },
+      "call_chain": "decoder suspension -> CPU continuation ownership -> restore attach",
+      "current_finite_applicability": "Conditional lifecycle/control/retention path; existence in source is not evidence it executed in measured decode.",
+      "required_wait_or_work_purpose": "Original CPU matcher/sampler/output/delivery owners must reconnect to exactly restored State frontier without replay or duplicate sample/output.",
+      "bounded_reduction_assessment": "Omit repeated immutable identity checks only where same captured generation/ownership remains proved; reuse prior grammar staging retirement proof if valid.",
+      "admissibility_blocker_or_needed_profile": "Delivery liveness/cancellation can change while suspended; grammar device event lifetime cannot be inferred from CPU identity. Required device-retirement waits crosslink decoding D63-D65.",
+      "outcome": "CONDITIONAL_RETENTION_REQUIRED",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-39",
+      "function": "begin_shutdown/shutdown_progress/expiry",
+      "source_ref": {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/retained_catalog.py",
+        "line": 1778,
+        "line_end": 1821
+      },
+      "call_chain": "_run_fifo -> retention_boundary/retention_deadline",
+      "current_finite_applicability": "Current drain/expiry hook is reachable; actual retained TTL/worker shutdown work conditional on enabled policy and handles.",
+      "required_wait_or_work_purpose": "Deadlines trigger expiry; protected claims/readers/transfer resources must drain before catalog close.",
+      "bounded_reduction_assessment": "Avoid requesting/serializing expiry metadata when policy None (existing TP wrapper already early returns); coalesce expired-handle scans with existing boundary snapshot.",
+      "admissibility_blocker_or_needed_profile": "No weakening TTL or protected state lifetime. Need exact policy/caller context and shutdown/failure evidence, separate from steady full-resident decode.",
+      "outcome": "CURRENT_LIFECYCLE_CONDITIONAL_RETENTION",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-40",
+      "function": "ThreadWork.launch/drain",
+      "source_ref": {
+        "path": "src/tensorfold/thread_work.py",
+        "line": 45,
+        "line_end": 104
+      },
+      "call_chain": "retained catalog/wake initialization and close -> ThreadWork",
+      "current_finite_applicability": "Conditional lifecycle/control/retention path; existence in source is not evidence it executed in measured decode. ThreadWork owners exist only for configured workers; cold lifecycle, not per-token joins.",
+      "required_wait_or_work_purpose": "Actual callback retired Event then join proves resources no longer used, including interrupted CPython join cases.",
+      "bounded_reduction_assessment": "Avoid redundant completed joins only if same owner positively retired and native thread outcome already settled.",
+      "admissibility_blocker_or_needed_profile": "Timeout/cancelled/not-alive does not prove native resource retirement. Existing conservative explicit callback completion cannot be removed for apparent speed.",
+      "outcome": "CONDITIONAL_LIFECYCLE_REQUIRED",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-41",
+      "function": "Server connection gate/threads/close",
+      "source_ref": {
+        "path": "src/tensorfold/server/http.py",
+        "line": 72,
+        "line_end": 348
+      },
+      "call_chain": "CUDA serve -> shared Server.serve_forever/process_request",
+      "current_finite_applicability": "HTTP/App path bypassed by current finite backend screen; not a current steady decode cost.",
+      "required_wait_or_work_purpose": "Bound accepted sockets/native handler owners; at capacity do not accept more; shutdown interrupts IO and joins actual owners.",
+      "bounded_reduction_assessment": "Persistent bounded worker pool or quicker eligible reaping could reduce connection bootstrap cost.",
+      "admissibility_blocker_or_needed_profile": "Only service connection churn/slow-client REGION; preserve no-selfjoin/native lease/socket cleanup exceptions and no duplicate socket closes.",
+      "outcome": "INACTIVE_CURRENT_FINITE_REGION",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-42",
+      "function": "read/_chunked/discard",
+      "source_ref": {
+        "path": "src/tensorfold/server/request_body.py",
+        "line": 50,
+        "line_end": 148
+      },
+      "call_chain": "CUDA Handler -> read_body/discard",
+      "current_finite_applicability": "HTTP/App path bypassed by current finite backend screen; not a current steady decode cost.",
+      "required_wait_or_work_purpose": "Read exactly bounded untrusted fixed/chunked frame, preserve parser boundaries/keepalive and close on truncation.",
+      "bounded_reduction_assessment": "Avoid unnecessary body copies or discard work under explicit safe connection-close policy if authorized semantics permit.",
+      "admissibility_blocker_or_needed_profile": "Need service client/framing/deadline workload; limits/UTF8/JSON framing cannot be weakened. Network read waits are not actor GPU fences.",
+      "outcome": "INACTIVE_CURRENT_FINITE_REGION",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-43",
+      "function": "Wire/_run_chat/post/_complete",
+      "source_ref": {
+        "path": "src/tensorfold/server/responses.py",
+        "line": 253,
+        "line_end": 460
+      },
+      "call_chain": "Responses HTTP -> translate -> inner CUDA chat handler -> Wire -> event writer",
+      "current_finite_applicability": "HTTP/App path bypassed by current finite backend screen; not a current steady decode cost.",
+      "required_wait_or_work_purpose": "Responses translation/event accumulation/stored record ownership preserve same connection and exact API result/order.",
+      "bounded_reduction_assessment": "Direct internal prepared-call interface could avoid JSON serialize/parse through inner chat handler and Wire SSE reparse.",
+      "admissibility_blocker_or_needed_profile": "Needs complete cross-API errors/auth/model/profile/request limits and partial streaming/durable operation proof. Higher maintenance/interop scope; no finite decode effect.",
+      "outcome": "INACTIVE_CURRENT_FINITE_REGION",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-44",
+      "function": "anthropic.post",
+      "source_ref": {
+        "path": "src/tensorfold/server/anthropic.py",
+        "line": 20,
+        "line_end": 63
+      },
+      "call_chain": "Messages -> translate -> Responses._run_chat -> CUDA handler",
+      "current_finite_applicability": "HTTP/App path bypassed by current finite backend screen; not a current steady decode cost.",
+      "required_wait_or_work_purpose": "Anthropic translation must preserve messages/tool/thinking and response event/error semantics over same connection.",
+      "bounded_reduction_assessment": "Share proven native prepared-call boundary with Responses rather than repeated synthetic HTTP/JSON adaptation.",
+      "admissibility_blocker_or_needed_profile": "Different caller schemas/partial calls/error mapping are required; no public behavior change authorized. Need real request profile and independent API oracles.",
+      "outcome": "INACTIVE_CURRENT_FINITE_REGION",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-45",
+      "function": "ApiRecords.__init__",
+      "source_ref": {
+        "path": "src/tensorfold/server/api_records.py",
+        "line": 116,
+        "line_end": 169
+      },
+      "call_chain": "configured durable logical API startup -> store",
+      "current_finite_applicability": "HTTP/App path bypassed by current finite backend screen; not a current steady decode cost. Durable logical API store configured startup only.",
+      "required_wait_or_work_purpose": "Private exclusive database identity/schema and SQLite FULL journaling establish required durable records.",
+      "bounded_reduction_assessment": "Initialize and verify store once; reuse already owned connection/metadata; no arbitrary durability downgrade.",
+      "admissibility_blocker_or_needed_profile": "flock LOCK_NB and SQLite timeout0 refuse overlap/busy, not unbounded busy-waits. Need durable service startup I/O evidence; not current backend loop.",
+      "outcome": "INACTIVE_CURRENT_FINITE_REGION",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-46",
+      "function": "ApiRecords transactions/history/_Operation",
+      "source_ref": {
+        "path": "src/tensorfold/server/api_records.py",
+        "line": 225,
+        "line_end": 922
+      },
+      "call_chain": "Responses/Conversations -> operation/history/commit/close -> SQLite",
+      "current_finite_applicability": "HTTP/App path bypassed by current finite backend screen; not a current steady decode cost. Durable Responses/Conversations and history admin only.",
+      "required_wait_or_work_purpose": "Atomic generation/history publication and listener ordering preserve exact failed/successful records with crash durability.",
+      "bounded_reduction_assessment": "Avoid repeated JSON encode/decode/materialized history or combine redundant transactions within same operation ownership.",
+      "admissibility_blocker_or_needed_profile": "No weaker FULL journal/checksum/expiry snapshot, no batching across independently committed operations without semantic authority. Need service DB latency/lock contention and crash-fault proof.",
+      "outcome": "INACTIVE_CURRENT_FINITE_REGION",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-47",
+      "function": "Store/store_for",
+      "source_ref": {
+        "path": "src/tensorfold/server/responses.py",
+        "line": 67,
+        "line_end": 176
+      },
+      "call_chain": "Responses service without durable store -> bounded in-memory Store",
+      "current_finite_applicability": "HTTP/App path bypassed by current finite backend screen; not a current steady decode cost.",
+      "required_wait_or_work_purpose": "Bounded principal-isolated in-memory response history requires caller copy isolation and deterministic cache/eviction.",
+      "bounded_reduction_assessment": "Use immutable record sharing to avoid repeated deep copies where public API cannot mutate retained authority.",
+      "admissibility_blocker_or_needed_profile": "Actual mutation/aliasing/principal/reference lifetime needs proof and long-chain history cost measurement; memory cache is not durable.",
+      "outcome": "INACTIVE_CURRENT_FINITE_REGION",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-48",
+      "function": "Authentication.refresh/match_identity",
+      "source_ref": {
+        "path": "src/tensorfold/server/authentication.py",
+        "line": 87,
+        "line_end": 208
+      },
+      "call_chain": "auth_http.parse_request -> auth.refresh/match_identity",
+      "current_finite_applicability": "HTTP/App path bypassed by current finite backend screen; not a current steady decode cost.",
+      "required_wait_or_work_purpose": "Resolve authenticated stable principal against current key snapshot and fail closed on bad reload/cleanup.",
+      "bounded_reduction_assessment": "Precompute immutable authentication snapshots outside handler while retaining required reload freshness and fail-closed behavior.",
+      "admissibility_blocker_or_needed_profile": "Key rotation, file identity, metric label reuse and per-principal history/quotas are security contract; need protected-service profile. No secret logging or security bypass.",
+      "outcome": "INACTIVE_CURRENT_FINITE_REGION",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-49",
+      "function": "Metrics reading/add/counters_now",
+      "source_ref": {
+        "path": "src/tensorfold/server/metrics.py",
+        "line": 82,
+        "line_end": 170
+      },
+      "call_chain": "App.health.running/HTTP reply -> counters; /stats/metrics -> snapshot",
+      "current_finite_applicability": "Service Metrics/health histograms bypassed by finite Engine.generate, but finite observer calls shared Scheduler.queue_record every .01s; explicit crosslink below.",
+      "required_wait_or_work_purpose": "Required counter/measurement snapshots stay bounded/advisory; no device readback in copied host counters.",
+      "bounded_reduction_assessment": "FAST observe already holds include_reserved entries, then queue_record builds waiting-row dictionaries/ages and takes2more snapshots although only outcomes+charged bytes are used; a minimal counter reading or safe reuse can eliminate unused diagnostic materialization.",
+      "admissibility_blocker_or_needed_profile": "Need coherent-enough documented snapshot contract under concurrent arrivals/retirement, exact timeline/capacity/stop/native-output evidence and unchanged metric meaning/funding. Do not reduce observer sensitivity or hide invalid screens. Instrumentation delegate/root owns tool changes.",
+      "outcome": "SOURCE_PROVEN_UNUSED_FAST_OBSERVER_DIAGNOSTICS",
+      "candidate_priority": 2,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-50",
+      "function": "stack dump/rearm plus synchronous diagnostics",
+      "source_ref": {
+        "path": "src/tensorfold/server/stacks.py",
+        "line": 15,
+        "line_end": 60
+      },
+      "call_chain": "signal/HTTP Rearming -> faulthandler; App.print_done; HTTP errors",
+      "current_finite_applicability": "HTTP/App path bypassed by current finite backend screen; not a current steady decode cost. Backend tool/profiler diagnostics are separate entries owned by diagnostics partition.",
+      "required_wait_or_work_purpose": "Preserve bounded error/stall stack evidence; synchronous sink can block host/GIL when actually used.",
+      "bounded_reduction_assessment": "Async bounded sink or rate-limited structured diagnostics may remove critical host writes while keeping required failure ordering/visibility.",
+      "admissibility_blocker_or_needed_profile": "Current finite backend does not call App.print_done/HTTP access logging; cannot assign these costs to its timings. Need actual enabled logging/sink pressure profile; no silent loss of required errors.",
+      "outcome": "INACTIVE_CURRENT_FINITE_REGION",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-51",
+      "function": "capture_media",
+      "source_ref": {
+        "path": "src/tensorfold/server/api_record_media.py",
+        "line": 29,
+        "line_end": 100
+      },
+      "call_chain": "durable response operation.capture_media -> frontend sources",
+      "current_finite_applicability": "Inactive selected V100 text-only finite backend; conditional supported durable service media input.",
+      "required_wait_or_work_purpose": "Capture exact bounded source bytes/snapshot before original media source lifetime ends.",
+      "bounded_reduction_assessment": "Reuse immutable admitted source buffers or avoid duplicate base64/conversion copies under full owner lifetime.",
+      "admissibility_blocker_or_needed_profile": "Separate supported media REGION/device implementation inventory and original-quality/ownership/limit proof needed; no text fallback or raw media loss.",
+      "outcome": "INACTIVE_CURRENT_FINITE_REGION",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    },
+    {
+      "id": "SVC-52",
+      "function": "catalog resource initialization",
+      "source_ref": {
+        "path": "src/tensorfold/families/qwen4_exp/cuda/retained_catalog.py",
+        "line": 341,
+        "line_end": 387
+      },
+      "call_chain": "engine retention initialization -> resources -> worker launch",
+      "current_finite_applicability": "Current finite catalog resource/accounting initialization; pinned buffer/worker/Store clone only when RAM retention tier actually configured.",
+      "required_wait_or_work_purpose": "Fund future bytes/object/control promises before admission and retain partial construction owners on failure.",
+      "bounded_reduction_assessment": "Allocate only capabilities actually selected (existing RAM-tier branch already does so); reuse admitted fixed buffer for all legal transfers.",
+      "admissibility_blocker_or_needed_profile": "No speculative pooling/allocator replacement without actual startup allocation/warm-state evidence; full24nativecontext and host/pinned budgets cannot shrink to ease startup.",
+      "outcome": "CURRENT_STARTUP_CONDITIONAL_RETENTION",
+      "candidate_priority": null,
+      "evidence_kind": "source_assessed_no_per_entry_timing_or_gain",
+      "measurement": null
+    }
+  ],
+  "ranked_current_candidates": [
+    {
+      "rank": 1,
+      "id": "SVC-C01",
+      "entry_refs": [
+        "SVC-08",
+        "SVC-18"
+      ],
+      "title": "Eliminate unused include_reserved shutdown snapshot during normal FIFO decode",
+      "source_evidence": [
+        "cuda/scheduler.py1337-1343:claims consumed only self._stopping and any; _all_revision unused",
+        "cuda/scheduler.py216-220:requests only acquires queue mutex and constructs bounded tuple",
+        "cuda/scheduler.py1323-1370:waiting snapshot still feeds retention/stop; do not move/delete that one"
+      ],
+      "status": "NOT_SELECTED_FROM_FIRST_SCREEN_OF_COMBINED_SUCCESSOR",
+      "expected_work_elimination": "One queue-lock acquisition, one full admitted-claims scan/tuple per nonstopping FIFO actor iteration; no latency/TPS estimate.",
+      "critical_admissibility": "One stopping predicate must guard actual snapshot and consumer together; audit all writers/thread contract and failure/drain before edit. Preserve all queue notifications and supported legacy path.",
+      "followup": {
+        "candidate": "SVC-C01",
+        "source_commit": "dc6fd0caa04af4e2ff9a2d600a8c0deed90b5329",
+        "artifact": "../fifo-snapshot-combined-20261028/selection.json",
+        "disposition": "NOT_SELECTED_FROM_FIRST_SCREEN",
+        "whole_candidate_N24_tps": 100.8,
+        "reference_N24_tps": 103.8,
+        "scope": "end-to-end candidate screen only; no isolated per-site timing, repeatable inferiority or global impossibility claim",
+        "source_work_elimination": "still structurally proven; did not establish useful measured gain in first screen",
+        "reference_retained": "146f8a81/APP7c0a",
+        "no_more_runs": "Rootdirect no edits or repeats yet"
+      }
+    },
+    {
+      "rank": 2,
+      "id": "SVC-C02",
+      "entry_refs": [
+        "SVC-08",
+        "SVC-49"
+      ],
+      "title": "DIAGNOSTIC overhead: avoid full queue_record materialization when FAST observer consumes only two counters",
+      "source_evidence": [
+        "tools/v100_backend_probe.py692-712:observe has live entries; reads record[outcomes]/record[charged_live_input_bytes] only",
+        "cuda/scheduler.py714-747:queue_record builds waiting-row diagnostics and takes2snapshots",
+        "tools/finite_concurrency.py22/614:poll .01s"
+      ],
+      "status": "DIAGNOSTIC_OVERHEAD_QUEUED_READONLY_NOT_SHIPPING_DECODE_GAIN",
+      "expected_work_elimination": "Unused waiting diagnostic dictionaries/timestamps + potential duplicate queue snapshots per observation; source work proven unused by this caller, not measured bottleneck.",
+      "critical_admissibility": "Do not cache on revision alone: activate phase changes without revision. Preserve exact measurement/native output/cancellation evidence, bounded host resource accounting and documented snapshot consistency; root/diagnostics owner scope. Future study must apply SAME tool change to baseline and candidate, preserve100Hz/allN lifecycle/fairness/identity coverage and explicit budget; no weaker measurement/success-only data.",
+      "cross_references": [
+        "diagnostics:D01",
+        "diagnostics:D02",
+        "diagnostics:D04",
+        "diagnostics:D05",
+        "diagnostics:D06",
+        "diagnostics:D08"
+      ],
+      "restriction": "DIAGNOSTIC overhead only, not shippingdecodegain; future controlledstudy must use SAMEtoolchange for bothconfigurations, preserve100Hz/allN lifecycle/fairness/identitycoverage/budget andF1sensitivity; rootcommonFASTtools remainbyteexactnow."
+    },
+    {
+      "rank": 3,
+      "id": "SVC-C03",
+      "entry_refs": [
+        "SVC-11",
+        "SVC-12",
+        "SVC-13"
+      ],
+      "title": "Wake GPU actor on output-credit eligibility transitions rather than every completed callback",
+      "source_evidence": [
+        "output_mailbox.py68-78 complete_delivery always wake for bounded production",
+        "scheduler.py277-298 _control alreadycoalesces marker but still locks/notifies",
+        "scheduler.py836/1072 available/reserve can block different phases"
+      ],
+      "status": "HYPOTHESIS_BLOCKED_ON_LOST_WAKE_OWNERSHIP_PROOF_AND_INCIDENCE",
+      "critical_admissibility": "Need mailbox-owned persistent need-wake predicate covering available and reserve, interrupted publication/retry, actor wait races, suspended readmission and full-width MTP credit. No invented idle flag or early credit return.",
+      "required_measurement": "Current callback duration/wake count/blocked-output incidence and per-rank submission starvation; finite ScreenTokens is bounded host ID/timestamp work, no network IO."
+    },
+    {
+      "rank": 4,
+      "id": "SVC-C04",
+      "entry_refs": [
+        "SVC-09",
+        "SVC-10"
+      ],
+      "title": "Reuse active/waiting queue views only across proven mutation-free actor segments",
+      "status": "HYPOTHESIS_BLOCKED_ON_COMPLETE_INVALIDATION_PROOF",
+      "critical_admissibility": "Queue phase writes and callback-driven readiness can change without revision; preserve each independent observation boundary and FIFO capacity ordering. No broad cached queue model."
+    },
+    {
+      "rank": 5,
+      "id": "SVC-C05",
+      "entry_refs": [
+        "SVC-11",
+        "SVC-14",
+        "SVC-15"
+      ],
+      "title": "Bounded callback/frame notification batching",
+      "status": "CURRENT_CALLBACK_CANDIDATE_CONDITIONAL_NETWORK_EXTENSION",
+      "critical_admissibility": "Do not change recorded finite token timestamps/chunk semantics, output-credit window, stop prefix, terminal/progress order or streamed latency. Sourcecallbackbatching cannot be called gain before exact metadata/timing and service-region evidence."
+    }
+  ],
+  "source_assessment_summary": {
+    "required_active_controls": "RequestLimit/FIFO/production-credit/actual callbackretirement and actor idle/start/close are correctness/lifetime policy; the wait or lock itself is not proof of removable stall.",
+    "inactive_current_areas": "HTTPApp/tokenizer/grammar/SSE/auth/DB/alternate API/service scrape/media/profile transitions cannot explain backend-only steady decoder without actual reachability. Conditional paths remain required supported behavior.",
+    "existing_eliminations_already_present": [
+      "SegmentEncoder encode_batch occurs outside cachelock and supportprobe cached",
+      "Mailbox producerput doesnotwaitforconsumer; terminalcell reserved/progress coalesced",
+      "RequestLimit/FIFObytes/ProfileGate refuse capacity/drain instead of waiting",
+      "Queuewake marker coalesced already; repeatednotify intentionally retries uncertainpublication",
+      "_queue_state706-711 avoids replace/time sampling when status unchanged",
+      "TPretention_boundary280-284 alreadyreturns immediately policyNone; RAM buffers/worker onlyselectedtier"
+    ]
+  },
+  "remaining_proof_work": [
+    "SVC-C01 isolated minimal sourceimplementation proof and focusedcurrentSDKCPUcontrols after all52artifact; sole combinedD13; actualall6 onlyRoot.",
+    "Other ranked candidates remain read-only until targeted owner/proof/profile evidence; no global candidate selection.",
+    "Vendorinternals remain adoptedcontractboundary scope, not new upstream audits."
+  ],
+  "execution": {
+    "source_edits_this_drilldown": false,
+    "project_tests_this_drilldown": false,
+    "GPU": false,
+    "remote": false,
+    "new_profiling": false,
+    "artifact_only": true
+  }
+}
