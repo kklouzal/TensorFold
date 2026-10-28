@@ -43,7 +43,11 @@ def test_cross_stream_tail_retires_all_inputs_and_snapshot_commit_preserves_byte
     expected=indexed_tail(entry,length)
     entry._mark()  # Seeded external inputs are now issued on this source stream.
     side=torch.cuda.Stream()
-    actual=on_stream(torch.cuda,side,lambda:entry.tail(length))
+    result_slot=[None]  # on_stream owns stream/error propagation, not a return value.
+    def read_tail():
+        result_slot[0]=entry.tail(length)
+    on_stream(torch.cuda,side,read_tail)
+    actual=result_slot[0]
     entry.wait_native_reuse()  # Original stream joins the side's recorded reader.
     for a,b in zip(actual,expected,strict=True):
         exact(a,b)

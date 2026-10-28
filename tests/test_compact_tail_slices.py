@@ -154,3 +154,17 @@ def test_negative_view_metadata_keeps_original_indexed_path():
                                            entry.span.raw,entry.span.coordinates,entry.span.start,length)
     for a,b in zip(entry.tail(length),indexed_tail(entry,length),strict=True):
         exact(a,b)
+
+
+def test_actual_on_stream_uses_owned_result_slot_not_helper_return():
+    from tensorfold.families.qwen4_exp.cuda.capture_lifetime import on_stream
+    source,side=object(),object()
+    selected=[source]
+    cuda=N(current_stream=lambda:selected[0],set_stream=lambda stream:selected.__setitem__(0,stream))
+    slot=[None]
+    expected=(object(),object())
+    def read():
+        assert selected[0] is side
+        slot[0]=expected
+    assert on_stream(cuda,side,read) is None
+    assert slot[0] is expected and selected[0] is source
