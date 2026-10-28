@@ -24,10 +24,10 @@ def validate_region(weights, layer, buffers, rows):
         raise ValueError("MoE graph region needs an exact row count in1..32")
     if buffers.prefill or buffers.mixed.dtype != torch.float16 or not buffers.mixed.is_cuda:
         raise ValueError("MoE graph region requires canonical FP16 CUDA decode buffers")
-    from tensorfold.cuda.sm70.execution_policy import SHARED_FUSION_TRIAL
+    from tensorfold.cuda.sm70.execution_policy import SHARED_FUSION_TRIAL, DP4A_TRIAL
 
     profile = getattr(weights, "meta", {}).get("sm70_profile")
-    expected = "packed_blocks2w" if profile == SHARED_FUSION_TRIAL else "packed_exact"
+    expected = "packed_blocks2w" if profile in (SHARED_FUSION_TRIAL, DP4A_TRIAL) else "packed_exact"
     expert = layer.moe.experts
     if (getattr(expert, "kernel", None) != "gguf"
             or expert.implementation != expected or expert.packed_rows < rows
@@ -80,15 +80,25 @@ class MoERegion:
             elif not any(weight is self.layer.moe.router for weight in self.capture_router.owners):
                 raise ValueError("shared capture router does not own this exact layer weight")
             self.local_buffers = SimpleNamespace(prefill=self.buffers.prefill,
-                mixed=self.buffers.mixed, moe=self.buffers.moe, router_blas=self.capture_router)
+                mixed=self.buffers.mixed, moe=self.buffers.moe, router_blas=self.capture_router,
+                dp4a_target=(None if getattr(self.weights, "meta", {}).get("dp4a_target_owner") is None else self.weights.meta["dp4a_target_owner"].capture))
         self._body()
 
     def _on_side(self, operation):
-        on_stream(torch.cuda, self.side, operation)
+        numeric = getattr(self.weights, "meta", {}).get("dp4a_target_owner")
+        if numeric is None:
+            return on_stream(torch.cuda, self.side, operation)
+        def borrowed():
+            with numeric.borrow(numeric.capture_parent):
+                operation()
+        return on_stream(torch.cuda, self.side, borrowed)
 
     def _capture(self):
         secondary = [None]  # No outcome allocation after accepted capture_begin.
         self.graph.capture_begin(pool=self.pool, capture_error_mode="thread_local")
+        numeric = getattr(self.weights, "meta", {}).get("dp4a_target_owner")
+        if numeric is not None:
+            numeric.capturing = True
         primary = None
         try:
             self._body()
@@ -98,6 +108,8 @@ class MoERegion:
             self.graph.capture_end()  # Exactly once after an accepted begin.
         except BaseException as error:
             secondary[0] = error
+        if numeric is not None:
+            numeric.capturing = False
         if secondary[0] is not None:
             raise_failures(primary, secondary)
         if primary is not None:
@@ -129,6 +141,10 @@ class MoERegion:
         if not self.prepared or self.closed or self.retiring or self.failure is not None:
             raise RuntimeError("MoE region is not an admitted prepared component") from self.failure
         try:
+            numeric = getattr(self.weights, "meta", {}).get("dp4a_target_owner")
+            if numeric is not None:
+                numeric.check_alive()
+                numeric.pending = True
             # Component boundary validation. A later actor may hoist this only
             # with a proved immutable canonical-buffer lifetime contract.
             current = region_tensors(self.buffers)
@@ -143,6 +159,9 @@ class MoERegion:
             else:
                 self.counter_overflowed = True
         except BaseException as error:
+            numeric = getattr(self.weights, "meta", {}).get("dp4a_target_owner")
+            if numeric is not None and numeric.failure is None:
+                numeric.failure = error
             self.failure = error
             raise
 

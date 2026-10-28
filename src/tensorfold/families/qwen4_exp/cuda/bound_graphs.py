@@ -350,9 +350,9 @@ class BoundStateGraphs:
             # Their GPU projections and State-owned convolution are captured.
             if b.ple_late is not None:
                 stage_late(self.dec.w, b)
-            from .prefix_policy import OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_TARGET_DENSE_PROFILE, OWNER_BATCH_PRELUDE_PROFILE, ROUTER_BLAS_PROFILE, SHARED_FUSION_PROFILE
+            from .prefix_policy import OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_TARGET_DENSE_PROFILE, OWNER_BATCH_PRELUDE_PROFILE, ROUTER_BLAS_PROFILE, SHARED_FUSION_PROFILE, DP4A_PROFILE
 
-            compact_target = self.dec.w.meta.get("sm70_profile") in (OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_TARGET_DENSE_PROFILE, OWNER_BATCH_PRELUDE_PROFILE, ROUTER_BLAS_PROFILE, SHARED_FUSION_PROFILE)
+            compact_target = self.dec.w.meta.get("sm70_profile") in (OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_TARGET_DENSE_PROFILE, OWNER_BATCH_PRELUDE_PROFILE, ROUTER_BLAS_PROFILE, SHARED_FUSION_PROFILE, DP4A_PROFILE)
             run = partial(compute, self.dec.w, bound, b, context=context, check=False,
                           **({"gather_candidates": False} if compact_target else {}))
         else:
@@ -400,7 +400,9 @@ class BoundStateGraphs:
             # the serialized coordinator preserves that frontier through run().
             _kv_begin(segs)  # Surface an existing poisoned transfer before submitting a new stream dependency.
             owner.side.wait_stream(torch.cuda.current_stream(self.dec.w.device))
-            with torch.cuda.stream(owner.side):
+            from contextlib import nullcontext
+            numeric = self.dec.w.meta.get("dp4a_target_owner") if kind == "verify" else None
+            with torch.cuda.stream(owner.side), (nullcontext() if numeric is None else numeric.borrow(owner)):
                 b.attn_o.zero_()
                 b.split = lambda _insert: None
                 try:
@@ -445,9 +447,15 @@ class BoundStateGraphs:
                                  "bound_hits": self.hits, "bound_misses": self.misses}
 
     def forward(self, kind, segs, *, mtp_positions=None, device_tokens=None):
+        numeric = self.dec.w.meta.get("dp4a_target_owner")
+        if kind == "verify" and numeric is not None:
+            numeric.validate_frame()
+            numeric.pending = True
         try:
             return self._forward(kind, segs, mtp_positions=mtp_positions, device_tokens=device_tokens)
         except BaseException as error:
+            if numeric is not None and numeric.pending and numeric.failure is None:
+                numeric.failure = error
             self.owner.retain_failure(error)
             self.dec._failed_graphs, self.dec._memory_error = self.owner, error
             raise
@@ -535,6 +543,10 @@ class BoundStateGraphs:
         else:
             for graph in pieces.graphs:
                 profile_replay(graph, self.dec.w.comm)
+        if kind == "verify":
+            numeric = self.dec.w.meta.get("dp4a_target_owner")
+            if numeric is not None:
+                numeric.count_graph()
         if archive:
             history_runtime.submitted(bound, prefill=b.prefill, mtp=kind == "mtp")
         # Match RoundGraphs' ordinary contract: status remains pending for the
@@ -548,10 +560,10 @@ class BoundStateGraphs:
             torch.index_select(b.proj, 1, index, out=source.proj[:, :n])
             torch.index_select(b.ple_nrow, 0, index, out=source.ple_nrow[:n])
             torch.index_select(b.logits, 0, index, out=source.logits[:n])
-            from .prefix_policy import OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_TARGET_DENSE_PROFILE, OWNER_BATCH_PRELUDE_PROFILE, ROUTER_BLAS_PROFILE, SHARED_FUSION_PROFILE
+            from .prefix_policy import OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_TARGET_DENSE_PROFILE, OWNER_BATCH_PRELUDE_PROFILE, ROUTER_BLAS_PROFILE, SHARED_FUSION_PROFILE, DP4A_PROFILE
 
             if (self.dec.w.comm is not None
-                    and self.dec.w.meta.get("sm70_profile") not in (OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_TARGET_DENSE_PROFILE, OWNER_BATCH_PRELUDE_PROFILE, ROUTER_BLAS_PROFILE, SHARED_FUSION_PROFILE)):
+                    and self.dec.w.meta.get("sm70_profile") not in (OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_TARGET_DENSE_PROFILE, OWNER_BATCH_PRELUDE_PROFILE, ROUTER_BLAS_PROFILE, SHARED_FUSION_PROFILE, DP4A_PROFILE)):
                 packet = 2 * CAND + 1
                 world, physical = self.dec.w.comm.world, len(lanes) * width
                 gathered = b.cand_all[:world * physical * packet].view(world, physical, packet)

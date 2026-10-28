@@ -349,9 +349,9 @@ def _native_frame_prepare(projection, state, layer, weights, buffers, start, sto
 
 def prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
     """Prepare one bounded frame; only owners publish persistent rows."""
-    from .prefix_policy import OWNER_TARGET_PRELUDE_PROFILE, OWNER_TARGET_DENSE_PROFILE, OWNER_BATCH_PRELUDE_PROFILE, ROUTER_BLAS_PROFILE, SHARED_FUSION_PROFILE
+    from .prefix_policy import OWNER_TARGET_PRELUDE_PROFILE, OWNER_TARGET_DENSE_PROFILE, OWNER_BATCH_PRELUDE_PROFILE, ROUTER_BLAS_PROFILE, SHARED_FUSION_PROFILE, DP4A_PROFILE
 
-    if (weights.meta.get("sm70_profile") in (OWNER_TARGET_PRELUDE_PROFILE, OWNER_TARGET_DENSE_PROFILE, OWNER_BATCH_PRELUDE_PROFILE, ROUTER_BLAS_PROFILE, SHARED_FUSION_PROFILE)
+    if (weights.meta.get("sm70_profile") in (OWNER_TARGET_PRELUDE_PROFILE, OWNER_TARGET_DENSE_PROFILE, OWNER_BATCH_PRELUDE_PROFILE, ROUTER_BLAS_PROFILE, SHARED_FUSION_PROFILE, DP4A_PROFILE)
             and _native_frame_prepare(projection, state, layer, weights, buffers, start, stop, mtp=mtp)):
         return
     c, a = weights.cfg, layer.attn

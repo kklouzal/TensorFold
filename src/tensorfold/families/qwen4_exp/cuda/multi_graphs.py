@@ -124,6 +124,9 @@ class RoundGraphs:
         self.allocator_backend = torch.cuda.memory.get_allocator_backend()
         self.pool = torch.cuda.graph_pool_handle()
         self.side = torch.cuda.Stream()
+        numeric = dec.w.meta.get("dp4a_target_owner")
+        if numeric is not None:
+            numeric.bind_capture(self)
         self.verify: dict[tuple[bool, int, int, int], Pieces] = {}    # (PDL, streams, rows, DeltaNet parity)
         self.mtp: dict[tuple[bool, int, int], Pieces] = {}             # (PDL, streams, rows)
         self.bytes = 0                                   # the kept keys' measured memory (each >= 0): within budget
@@ -218,6 +221,7 @@ class RoundGraphs:
         """``run()`` captured in pieces, one ending at each ``b.split`` insert. Only a begun capture is ended, once;
         a failure inside ``run`` stays the raised error, with a failed end of its open capture attached."""
 
+        numeric = self.dec.w.meta.get("dp4a_target_owner") if getattr(b, "dp4a_target", None) is not None else None
         pieces = Pieces()
         pending = getattr(self, "pending", None)
         if pending is None:
@@ -230,9 +234,15 @@ class RoundGraphs:
             open_graph.append(graph)
             pieces.graphs.append(graph)
             graph.capture_begin(pool=self.pool, capture_error_mode="thread_local")
+            if numeric is not None:
+                numeric.capturing = True
 
         def end() -> None:
-            open_graph.pop().capture_end()               # popped first: a failed end is never retried
+            try:
+                open_graph.pop().capture_end()  # popped first: failed end is never retried
+            finally:
+                if numeric is not None:
+                    numeric.capturing = False
 
         def insert_piece(insert) -> None:
             end()
@@ -241,7 +251,8 @@ class RoundGraphs:
 
         b.split = insert_piece if split else None
         try:
-            with torch.cuda.stream(self.side):
+            from contextlib import nullcontext
+            with torch.cuda.stream(self.side), (nullcontext() if numeric is None else numeric.borrow(self)):
                 begin()
                 try:
                     pieces.out = run()

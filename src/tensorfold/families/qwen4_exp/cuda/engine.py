@@ -977,9 +977,9 @@ class FlashNextEngine:
             sm70_prefill_bytes = _sm70_prefill_gdn_bytes(text, tp, rows0)
             options["device_workspace_bytes"] = options.get("device_workspace_bytes", 0) + sm70_prefill_bytes
             target_greedy_bytes = None
-            from tensorfold.cuda.sm70.execution_policy import TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL
+            from tensorfold.cuda.sm70.execution_policy import TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL
 
-            if self.sm70_profile in (TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
+            if self.sm70_profile in (TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL):
                 from .target_greedy import workspace_bytes
 
                 target_greedy_bytes = workspace_bytes(int(text["vocab_size"]))
@@ -991,12 +991,12 @@ class FlashNextEngine:
                     target_greedy_bytes, feedback_status, plain_status))
                 options["device_workspace_bytes"] += target_greedy_bytes[0]
                 options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + tp * target_greedy_bytes[1]
-            if self.sm70_profile in (OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
+            if self.sm70_profile in (OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL):
                 # One dedicated initialized immutable int32 control per model;
                 # bound its allocator granule and retained/transient view metadata.
                 options["device_workspace_bytes"] += 512
                 options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + tp * (512 + 32 * 248 + 8192 + 8192)
-            if self.sm70_profile in (OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
+            if self.sm70_profile in (OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL):
                 from .batch_prelude import workspace_bytes as batch_workspace
 
                 batch_rows = execution_rows if execution_rows is not None else 32 if adaptive_sessions else streams * each
@@ -1008,7 +1008,7 @@ class FlashNextEngine:
                     batch_host += host_bytes
                 options["device_workspace_bytes"] += batch_device
                 options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + tp * batch_host
-            if self.sm70_profile in (ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
+            if self.sm70_profile in (ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL):
                 from tensorfold.cuda.sm70.router_blas import role_bytes
 
                 # Only eager canonical decode/MTP Buffers own these fixed roles.
@@ -1032,7 +1032,13 @@ class FlashNextEngine:
                 # all device capture allocations remain paid once by RoundGraphs.
                 options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + (
                     tp * candidate_regions_funding()["future_host_bytes_per_rank"])
-            if self.sm70_profile == SHARED_FUSION_TRIAL:
+            if self.sm70_profile == DP4A_TRIAL:
+                from .dp4a_target import funding as dp4a_funding
+                numeric_funding = dp4a_funding()
+                options["device_workspace_bytes"] += (numeric_funding["roles_device_bytes"]
+                                                       + numeric_funding["status_device_delta_bytes"])
+                options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + tp * numeric_funding["host_commitment_bytes"]
+            if self.sm70_profile in (SHARED_FUSION_TRIAL, DP4A_TRIAL):
                 from tensorfold.cuda.sm70.gguf_ops import shared_fusion_workspace_bytes
 
                 fusion_device, fusion_host = shared_fusion_workspace_bytes()
@@ -1260,11 +1266,16 @@ class FlashNextEngine:
                                    **({"preallocated_device_bytes": nvfp4_preallocated
                                        + (owner_preparation.committed_bytes() or 0 if owner_preparation is not None else 0)}
                                       if owner_preparation is not None or nvfp4_source else {}))
-        if getattr(self, "sm70_profile", None) == "source-router-gdn-shared-fusion-trial":
+        if getattr(self, "sm70_profile", None) in ("source-router-gdn-shared-fusion-trial", "source-router-gdn-hc-moe-dp4a-target-trial"):
             self.capacity_plan["shared_fusion_experiment"] = {"device_operating_bytes_per_rank": fusion_device,
                 "global_host_bytes": tp * fusion_host, "maximum_rows": 32, "maximum_slots": 33,
                 "activation_payload_max_bytes": 168960, "actual_top11_payload_max_bytes": 56320,
                 "numeric_policy": "unqualified-generic-packed-shared-fusion"}
+        if getattr(self, "sm70_profile", None) == "source-router-gdn-hc-moe-dp4a-target-trial":
+            from .dp4a_target import funding as dp4a_funding
+            self.capacity_plan["dp4a_target"] = {"funding": dp4a_funding(),
+                "global_host_commitment_bytes": tp * dp4a_funding()["host_commitment_bytes"],
+                "scope": "private unqualified target numerical profile; actual native24 admission required"}
         if retention_header is not None:
             self.capacity_plan["retention_header"] = retention_header.record()
             self.capacity_plan["retention_store"] = {"use_libuv": self._store_use_libuv,
@@ -1283,9 +1294,9 @@ class FlashNextEngine:
             self.capacity_plan["sm70_weight_plan"] = self._sm70_weight_plan
         if adaptive_sessions:
             streams = self.capacity_plan["session_capacity"]["resident_capacity"]
-            from tensorfold.cuda.sm70.execution_policy import OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL
+            from tensorfold.cuda.sm70.execution_policy import OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL
 
-            if self.sm70_profile in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL) and streams < 24:
+            if self.sm70_profile in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL) and streams < 24:
                 raise ValueError("source-owner-pieces-trial must preserve at least24 complete INT8 context windows")
             resident_windows = streams
             self.streams = self.kv_full_windows = streams
@@ -2089,6 +2100,8 @@ class FlashNextEngine:
                         "nccl_graph_policy": (None if getattr(self, "_nccl_graph_inputs", None) is None else
                                               self._nccl_graph_inputs["effective"]),
                         "family_manifest": getattr(self, "_sm70_weight_manifest_identity", None),
+                        **({"expert_numerical_policy": weights.meta["sm70_dp4a_target_trial"]}
+                           if weights.meta.get("sm70_dp4a_target_trial") is not None else {}),
                         "torch": str(torch.__version__), "torch_git": torch.version.git_version,
                         "cuda": torch.version.cuda, "authority": authority,
                         "prompt_fp8": prompt_precision.fp8(), "local_vision_owner": getattr(self, "vision", None) is not None,
@@ -2173,9 +2186,9 @@ class FlashNextEngine:
             from .dspark_context_graphs import _ENABLED as context_enabled
 
             expert_policy = [GGUFExperts.implementation, GGUFExperts.packed_rows, GGUFConcat.implementation]
-            from .prefix_policy import OWNER_TARGET_DENSE_PROFILE, OWNER_BATCH_PRELUDE_PROFILE, ROUTER_BLAS_PROFILE, SHARED_FUSION_PROFILE
+            from .prefix_policy import OWNER_TARGET_DENSE_PROFILE, OWNER_BATCH_PRELUDE_PROFILE, ROUTER_BLAS_PROFILE, SHARED_FUSION_PROFILE, DP4A_PROFILE
 
-            if getattr(self, "sm70_profile", None) in (OWNER_TARGET_DENSE_PROFILE, OWNER_BATCH_PRELUDE_PROFILE, ROUTER_BLAS_PROFILE, SHARED_FUSION_PROFILE):
+            if getattr(self, "sm70_profile", None) in (OWNER_TARGET_DENSE_PROFILE, OWNER_BATCH_PRELUDE_PROFILE, ROUTER_BLAS_PROFILE, SHARED_FUSION_PROFILE, DP4A_PROFILE):
                 expert_policy.append(GGUFDense.implementation)
             expert_policy.append(["private-moe-regions", getattr(self, "_moe_region_graphs_requested", False)])
             expert_policy.append(["private-hc-moe-regions", getattr(self, "_hc_moe_region_graphs_requested", False)])
@@ -2672,6 +2685,9 @@ class FlashNextEngine:
         if weights is not None:
             import torch
             torch.cuda.synchronize(weights.device)
+            numeric = weights.meta.get("dp4a_target_owner")
+            if numeric is not None:
+                numeric.close()
             target = weights.meta.get("target_greedy_owner")
             if target is not None:
                 target.retire_after_fence(fenced=True)

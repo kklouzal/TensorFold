@@ -128,6 +128,14 @@ class MultiDecoder:
         self.converged, self.prefill_rows = converges(w), prefill_rows
         # rounds beside a filling prompt size its pass so decoding keeps ``share`` of the pass's time (0: whole passes)
         self.share, self.round_s, self.row_s = share, None, None
+        if w.meta.get("sm70_dp4a_target_trial") is not None:
+            from .dp4a_target import Owner
+            if (slots != 24 or rows != 32 or depth != 2 or not graphs
+                    or kv_pair is None or kv_pair.key.bits != 8 or kv_pair.value.bits != 8):
+                raise ValueError("DP4A target requires native24/row32/stockMTP2 and current graph composition")
+            numeric = object.__new__(Owner)
+            w.meta["dp4a_target_owner"] = numeric  # Retain partial startup before allocations.
+            numeric.__init__(w)
         self.buf = Buffers(w, rows, capacity, moe_prefill=True)
         if w.meta.get("sm70_gdn_state_batch_trial") is True:
             from .gdn_state_batch import GDNStateBatch
@@ -159,7 +167,10 @@ class MultiDecoder:
         if w.comm is not None and w.meta.get("execution_provider") == "sm70":
             from .kv_status import KVStatusCohort
 
-            self.kv_cohort = KVStatusCohort(slots, w.comm, w.device, candidate_rows=rows if w.meta.get("sm70_target_greedy_trial") is not None else 0)
+            self.kv_cohort = KVStatusCohort(slots, w.comm, w.device, candidate_rows=rows if w.meta.get("sm70_target_greedy_trial") is not None else 0,
+                                            numeric=w.meta.get("dp4a_target_owner"))
+            if w.meta.get("dp4a_target_owner") is not None:
+                w.meta["dp4a_target_owner"].cohort = self.kv_cohort
         if w.meta.get("sm70_target_greedy_trial") is not None:
             from .target_greedy import TargetGreedy
 
@@ -1569,7 +1580,7 @@ class MultiDecoder:
                                                      "source-packed-trial", "source-packed-graphs-trial",
                                                      "source-owner-pieces-trial", "source-target-greedy-trial",
                                                      "source-owner-target-greedy-trial", "source-owner-target-guard-trial",
-                                                     "source-owner-target-prelude-trial", "source-owner-target-dense-trial", "source-dense-owner-batch-prelude-trial", "source-batch-router-blas-trial", "source-router-gdn-shared-fusion-trial"))
+                                                     "source-owner-target-prelude-trial", "source-owner-target-dense-trial", "source-dense-owner-batch-prelude-trial", "source-batch-router-blas-trial", "source-router-gdn-shared-fusion-trial", "source-router-gdn-hc-moe-dp4a-target-trial"))
         for s in self._order():
             start = self.fills[s.sid][2]
             n = min(len(s.prompt) - start, room)
@@ -1969,6 +1980,9 @@ class MultiDecoder:
         except BaseException as error:
             outcome = type(error).__name__
             primary = error
+            numeric = self.w.meta.get("dp4a_target_owner")
+            if numeric is not None and numeric.pending and numeric.failure is None:
+                numeric.failure = error
         errors = []
         try:
             self.controller.work_observations.publish()
@@ -2082,6 +2096,10 @@ class MultiDecoder:
         self.buf.gdn_tables = tables
         self.buf.attn_step = (None if half else attn_multi.Step(
             self.w, segs, mtp=False, tables=self.step_tables, rotor_lookup=self.buf.rotor_lookup))
+        numeric = self.w.meta.get("dp4a_target_owner")
+        if numeric is not None:
+            numeric.validate_frame()
+            numeric.pending = True
         target = self.w.meta.get("target_greedy_owner")
         if target is not None and not target.eligible(self, live, pieces=pieces, grammars=grammars, dflash=dflash):
             target = None

@@ -1,5 +1,16 @@
 # TensorFold fork
 
+The private `source-router-gdn-hc-moe-dp4a-target-trial` profile investigates
+Q8-32/FP32-scale activations and retained18/22 gate/up plus20 down weights for
+target decode only. It changes activation precision, coefficient rounding and
+reduction order; unsupported/shared/MTP paths retain the selected generic/shared-fusion contract. Separate main and
+capture scratch costs825,344 device bytes per rank, with additional status and
+host funding before the24-slot floor. A monotonic all-rank numeric veto rides
+the existing TP status packet and fence before State/token/prefix authority.
+Exceptional floats are contained only in a fatal poisoned frame; no retry or
+repair is permitted. Model enrollment, capacity, task quality and performance
+remain unqualified pending the affected integrated controls. Defaults are unchanged.
+
 The isolated HC/MoE successor extends the existing target exactR30/31/32
 catalogue upstream only to the MLP-HC mode3 cut after its preceding collective.
 `TENSORFOLD_SM70_HC_MOE_REGION_GRAPHS=1` requires the existing private MoE

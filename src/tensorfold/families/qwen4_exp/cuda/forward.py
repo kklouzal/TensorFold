@@ -440,12 +440,18 @@ def moe_block(layer: LayerW, w: Weights, b: Buffers, R: int, *, _local_only: boo
         regions = getattr(b, "moe_region_graphs", None)
         graphed = regions is not None and regions.run(layer, b, R)
         if not graphed:
+            numeric_role = getattr(b, "dp4a_target", None)
+            if numeric_role is not None:
+                numeric_role.input(b.mixed[:R])
             moe_mod.router(b.mixed[:R], m.router, buf.logits[:R], independent_rows=not b.prefill, prepared=getattr(b, "router_blas", None))
             moe_mod.select_rows(buf.logits[:R], buf, w.cfg.top_k, w.cfg.experts)
             execute = m.experts.forward
             if b.prefill:
                 execute = getattr(m.experts, "forward_prefill", execute)
-            execute(b.mixed[:R], buf.pick[:R], out=buf.y[:R])
+            if numeric_role is None:
+                execute(b.mixed[:R], buf.pick[:R], out=buf.y[:R])
+            else:
+                numeric_role.run(m.experts, b.mixed[:R], buf.pick[:R], buf.y[:R])
         if _local_only:
             return None  # Private pure-region capture excludes partial reduction and collectives.
         if w.comm is None:
@@ -589,6 +595,9 @@ def finish(w: Weights, mixer: HC, b: Buffers, R: int, pending, logits: bool = Tr
     c = w.cfg
     b.streams[:R].copy_(b.h[:R])
     _writeback(b.streams, b, R, c, pending)
+    numeric_role = getattr(b, "dp4a_target", None)
+    if numeric_role is not None:
+        numeric_role.terminal(b.streams[:R])
     if b.prefill:
         if len(ends) > 1:
             at = torch.tensor(list(ends), dtype=torch.long, device=b.pss.device)
@@ -602,9 +611,13 @@ def finish(w: Weights, mixer: HC, b: Buffers, R: int, pending, logits: bool = Tr
         _readout(mixer, b, rows, R, c.eps, c.streams, c.low, None)
     else:
         _readout(mixer, b, b.streams, R, c.eps, c.streams, c.low, None)
+    if numeric_role is not None:
+        numeric_role.terminal(b.mixed[:R])
     if not logits:
         return None
     out = _mm(b.mixed[:R], w.head, b.xs_mixed[:R], b.logits[:R], b)
+    if numeric_role is not None:
+        numeric_role.terminal(out)
     if gather_candidates and w.comm is not None and getattr(w, "dflash2", None) is None:
         if target_greedy is None:
             candidates(w, b, out, R, offset=int(w.meta["vocab_offset"]))
@@ -823,6 +836,15 @@ def _kv_check(segs: Sequence[Seg], *, comm=None, workspace=None) -> None:
     states = [st for st, _, _ in segs if st.kv_status is not None]
     if not states or (states[0].kv_status.is_cuda and torch.cuda.is_current_stream_capturing()):
         return
+    numeric = {id(owner): owner for st in states
+               if (owner := getattr(st, "_expert_numeric_owner", None)) is not None}
+    if numeric:
+        if len(numeric) != 1 or any(getattr(st, "_expert_numeric_owner", None) is not next(iter(numeric.values())) for st in states):
+            raise ValueError("numeric frame must use one original all-rank owner")
+        owner = next(iter(numeric.values()))
+        if owner.cohort is None or comm is not None and comm is not owner.comm:
+            raise ValueError("numeric status requires the original admitted TP cohort")
+        workspace, comm = owner.cohort, owner.comm
     if workspace is not None:
         return workspace.check(states, comm=comm)
     first = None

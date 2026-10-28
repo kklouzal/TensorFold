@@ -14,6 +14,7 @@ from tensorfold.families.qwen4_exp.cuda.prefix_policy import (
     OWNER_BATCH_PRELUDE_PROFILE as OWNER_BATCH_PRELUDE_TRIAL,
     ROUTER_BLAS_PROFILE as ROUTER_BLAS_TRIAL,
     SHARED_FUSION_PROFILE as SHARED_FUSION_TRIAL,
+    DP4A_PROFILE as DP4A_TRIAL,
 )
 
 PROFILE_ENV = "TENSORFOLD_SM70_PROFILE"
@@ -259,11 +260,15 @@ def configure(text, *, tp, torch, record_graph_inputs=None):
     global _SELECTED, _FAMILY_SOFTWARE
     profile = os.environ.get(PROFILE_ENV, "reference")
     if profile not in ("reference", "optimized", FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL, PACKED_GRAPH_TRIAL,
-                       OWNER_GRAPH_TRIAL, TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
+                       OWNER_GRAPH_TRIAL, TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL):
         raise ValueError(f"{PROFILE_ENV} must be reference, optimized, {FAMILY_TRIAL}, {FAMILY_PREFIX_TRIAL}, "
                          f"{PACKED_TRIAL}, {PACKED_GRAPH_TRIAL}, {OWNER_GRAPH_TRIAL}, {TARGET_GREEDY_TRIAL}, {OWNER_TARGET_GREEDY_TRIAL}, {OWNER_TARGET_GUARD_TRIAL} or {OWNER_TARGET_PRELUDE_TRIAL}, {OWNER_TARGET_DENSE_TRIAL}, {OWNER_BATCH_PRELUDE_TRIAL}, {ROUTER_BLAS_TRIAL}")
+    if profile == DP4A_TRIAL and any(os.environ.get(key) != "1" for key in (
+            "TENSORFOLD_SM70_GDN_STATE_BATCH", "TENSORFOLD_SM70_MOE_REGION_GRAPHS", "TENSORFOLD_SM70_HC_MOE_REGION_GRAPHS",
+            "TENSORFOLD_SM70_CANDIDATE_REGION_GRAPHS")):
+        raise ValueError("DP4A target retains the current GDN/HC/MoE graph composition")
     batch_gdn = os.environ.get("TENSORFOLD_SM70_GDN_STATE_BATCH")
-    if batch_gdn is not None and (batch_gdn != "1" or profile not in (OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL)):
+    if batch_gdn is not None and (batch_gdn != "1" or profile not in (OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL)):
         raise ValueError("private GDN State batch requires1 and explicit Batch or Router profile")
 
     if record_graph_inputs is not None and not callable(record_graph_inputs):
@@ -287,27 +292,30 @@ def configure(text, *, tp, torch, record_graph_inputs=None):
                       and all(identity.get(key) == value for key, value in REQUIRED_IDENTITY.items()))
         if not compatible:
             raise ValueError("optimized SM70 profile requires the qualified TP8 Flash Next geometry and pinned Volta foundation")
-    family_trial = profile in (FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL, PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL)
-    packed_trial = profile in (PACKED_TRIAL, PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL)
+    family_trial = profile in (FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL, PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL)
+    packed_trial = profile in (PACKED_TRIAL, PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL)
     family_software = (_prepare_family_trial(text, tp, torch, packed=packed_trial,
-                                             target_greedy=profile in (TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL),
-                                             native_guard=profile in (OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL),
-                                             owner_prelude=profile in (OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL),
-                                             dense=profile in (OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL),
-                                             owner_batch=profile in (OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL),
-                                             **({"shared_fusion": True} if profile == SHARED_FUSION_TRIAL else {}))
+                                             target_greedy=profile in (TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL),
+                                             native_guard=profile in (OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL),
+                                             owner_prelude=profile in (OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL),
+                                             dense=profile in (OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL),
+                                             owner_batch=profile in (OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL),
+                                             **({"shared_fusion": True} if profile in (SHARED_FUSION_TRIAL, DP4A_TRIAL) else {}))
                        if family_trial else None)
-    if profile in (ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
+    if profile in (ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL):
         from .router_blas import extension
 
         extension()  # Compile/load before physical admission; no model allocation.
+    if profile == DP4A_TRIAL:
+        from .dp4a_experts import extension as dp4a_extension
+        dp4a_extension().prepare()
     family_ops._NATIVE_FAMILY = enabled or family_trial
     family_ops._NATIVE_ATTENTION = enabled
     routing_native._NATIVE_LOGITS = padded_linears._ENABLED = enabled
-    gguf_weights.GGUFExperts.implementation = ("packed_blocks2w" if profile == SHARED_FUSION_TRIAL else
+    gguf_weights.GGUFExperts.implementation = ("packed_blocks2w" if profile in (SHARED_FUSION_TRIAL, DP4A_TRIAL) else
         "packed_exact" if enabled or packed_trial else "reference")
     gguf_weights.GGUFConcat.implementation = "native32" if enabled or packed_trial else "reference"
-    gguf_weights.GGUFDense.implementation = "native32" if profile in (OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL) else "reference"
+    gguf_weights.GGUFDense.implementation = "native32" if profile in (OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL) else "reference"
     gguf_prefill.WORKSPACE_BUDGET_BYTES = (1 << 30) if enabled else None
     dspark_proposal_graphs._ENABLED = dspark_context_graphs._ENABLED = enabled
     _FAMILY_SOFTWARE = family_software
@@ -318,7 +326,7 @@ def configure(text, *, tp, torch, record_graph_inputs=None):
 def unique_graph_request(profile, *, method, depth, kv_pair, unique_history, indexer_history, graphs, concurrent, vision,
                          owner_preparation=None):
     """Issue the N1 capture contract only from the real pre-load method request."""
-    if profile not in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
+    if profile not in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL):
         return None
     if (method != "mtp" or type(depth) is not int or depth != 2 or unique_history is not True
             or indexer_history != "gpu" or graphs is not True or concurrent is not True or vision
@@ -326,7 +334,7 @@ def unique_graph_request(profile, *, method, depth, kv_pair, unique_history, ind
         raise ValueError("source-packed-graphs-trial requires concurrent unique GPU histories, INT8 KV, stock MTP depth2 and graphs")
     from tensorfold.families.qwen4_exp.cuda.multi_graphs import UNIQUE_CAPTURE_CONTRACT
 
-    if profile in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
+    if profile in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL):
         from tensorfold.families.qwen4_exp.cuda.multi_graphs import UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT
         from tensorfold.families.qwen4_exp.cuda.owner_execution import KERNEL_FAMILY, UNCAPTURED, FULL_COLLECTIVE
 
@@ -343,7 +351,7 @@ def unique_graph_request(profile, *, method, depth, kv_pair, unique_history, ind
 
 def prepare_weights(w, *, graph_contract=None):
     """Mark native owners only after the same profile was admitted on every rank."""
-    if _SELECTED in (FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL, PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
+    if _SELECTED in (FAMILY_TRIAL, FAMILY_PREFIX_TRIAL, PACKED_TRIAL, PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL):
         import torch
 
         _family_runtime(torch)
@@ -363,33 +371,33 @@ def prepare_weights(w, *, graph_contract=None):
         w.meta["sm70_family_trial"] = {"qualification": "unqualified-candidate", "software": software,
             "attention": "reference", "graphs": "eager",
             "prefix_reuse": "int8-greedy-text-trial" if _SELECTED in (
-                FAMILY_PREFIX_TRIAL, PACKED_TRIAL, PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL) else "cold"}
-        if _SELECTED in (PACKED_TRIAL, PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
+                FAMILY_PREFIX_TRIAL, PACKED_TRIAL, PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL) else "cold"}
+        if _SELECTED in (PACKED_TRIAL, PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL):
             w.meta["sm70_family_trial"].update(experts="packed_exact", concat="native32")
-        if _SELECTED in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
+        if _SELECTED in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL):
             from tensorfold.families.qwen4_exp.cuda.multi_graphs import (
                 UNIQUE_CAPTURE_CONTRACT, UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT,
             )
 
-            expected = UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT if _SELECTED in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL) else UNIQUE_CAPTURE_CONTRACT
+            expected = UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT if _SELECTED in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL) else UNIQUE_CAPTURE_CONTRACT
             if (graph_contract != expected or w.meta.get("history_layout") != "unique"
                     or w.mtp is None or w.mtp.layer.linear):
                 raise ValueError("loaded graph trial requires its issued depth2 contract and unique stock attention MTP")
-            if _SELECTED in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL) and set(w.meta.get("owner_workspaces", {})) != {"decode", "mtp", "prefill"}:
+            if _SELECTED in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL) and set(w.meta.get("owner_workspaces", {})) != {"decode", "mtp", "prefill"}:
                 raise ValueError("loaded owner-piece trial requires its canonical prepared role workspaces")
             w.meta.update(capture_ready=True, unique_capture_contract=expected)
             w.meta["sm70_family_trial"]["graphs"] = expected
-            if _SELECTED in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
+            if _SELECTED in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL):
                 w.meta["sm70_family_trial"]["attention"] = "prepared-native-owner-eager-trial"
-        if _SELECTED in (TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
+        if _SELECTED in (TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL):
             from tensorfold.families.qwen4_exp.cuda.target_greedy import POLICY
 
             w.meta["sm70_target_greedy_trial"] = {"policy": POLICY, "qualification": "unqualified-candidate",
                                                 "mtp_confidence": "original-fp32-lse-numpy-fp64"}
             w.meta["target_greedy_owner"] = None
-        if _SELECTED in (OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
+        if _SELECTED in (OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL):
             w.meta["sm70_native_guard_trial"] = True
-        if _SELECTED in (OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
+        if _SELECTED in (OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL):
             from tensorfold.families.qwen4_exp.cuda.history_owner import _native_prelude_binding
 
             if not _native_prelude_binding(getattr(w, "positions", None)):
@@ -400,7 +408,7 @@ def prepare_weights(w, *, graph_contract=None):
             w.meta["sm70_owner_prelude_submitted_frames"] = 0  # Serialized actor diagnostic, not device timing.
             w.meta["sm70_owner_prelude_submitted_mtp_frames"] = 0
             w.meta["sm70_owner_prelude_mtp_counter_overflowed"] = False
-    if _SELECTED in (OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
+    if _SELECTED in (OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL):
         w.meta["sm70_gdn_state_batch_trial"] = os.environ.get("TENSORFOLD_SM70_GDN_STATE_BATCH") == "1"
 
         w.meta["sm70_owner_batch_prelude_trial"] = True
@@ -408,14 +416,17 @@ def prepare_weights(w, *, graph_contract=None):
         w.meta["sm70_owner_prelude_submitted_mtp_batches"] = 0
         w.meta["sm70_owner_prelude_batch_counter_overflowed"] = False
         w.meta["sm70_owner_prelude_max_batch_segments"] = 0
-    if _SELECTED in (OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
+    if _SELECTED in (OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL):
         w.meta["sm70_family_trial"].update(dense="native32", dense_math="original-fixed-m32-aten-v1")
-    if _SELECTED in (ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
+    if _SELECTED in (ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL):
         w.meta["sm70_router_blas_trial"] = {"numeric_implementation": "cublas-pointer-batched-fp32-v1",
             "qualification": "unqualified-experimental-numerics", "coverage": "eager-decode-mtp-only"}
-    if _SELECTED == SHARED_FUSION_TRIAL:
+    if _SELECTED in (SHARED_FUSION_TRIAL, DP4A_TRIAL):
         w.meta["sm70_family_trial"].update(experts="packed_blocks2w",
             numerical_policy="router-cublas-generic-packed-shared-fusion-v1")
+    if _SELECTED == DP4A_TRIAL:
+        from tensorfold.families.qwen4_exp.cuda.dp4a_target import POLICY
+        w.meta["sm70_dp4a_target_trial"] = POLICY
     w.meta["sm70_profile"] = _SELECTED
     if _SELECTED == "optimized":
         from .attention_qualification import metadata_prepare

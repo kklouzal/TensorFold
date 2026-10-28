@@ -105,7 +105,7 @@ class Bindings:
         return (id(w.cfg), w.cfg.experts, w.cfg.top_k,
                 tuple(id(layer) for layer in w.layers), w.meta.get('sm70_profile'),
                 w.meta.get('execution_provider'), w.meta.get('sm70_moe_region_graphs_trial'),
-                w.meta.get('sm70_hc_moe_region_graphs_trial'),
+                w.meta.get('sm70_hc_moe_region_graphs_trial'), w.meta.get('sm70_dp4a_target_trial'),
                 w.meta.get('sm70_family_trial', {}).get('numerical_policy'),
                 w.meta.get('sm70_family_trial', {}).get('experts'),
                 GGUFDense.implementation, GGUFExperts.implementation, GGUFConcat.implementation,
@@ -242,6 +242,11 @@ class Catalogue:
                         region.replay()  # Materialize graph/runtime resources cold, noState orRNG mutation.
                     self._account(before, ['target', rows, layer.index])
             self.bindings.validate()
+            numeric = self.weights.meta.get("dp4a_target_owner")
+            if numeric is not None:
+                # All captures/replays are now ordered on the serving stream.
+                # The existing cold preparation phase owns this matched check.
+                numeric.cohort.check(tuple(self.dec.free), comm=numeric.comm)
             self._host_gate()
             self.host_final = admit_host_commitment(int(self.weights.meta.get('world', 1)) * HOST_ALLOWANCE)
             self.ready = True
@@ -339,6 +344,9 @@ class Catalogue:
                 if primary is None:
                     if self.cursor != len(self.layers) or self.pending_hc is not None:
                         raise RuntimeError('MoE graph forward did not consume its full ordered layer cycle')
+                    numeric = getattr(self.weights, "meta", {}).get("dp4a_target_owner")
+                    if numeric is not None:
+                        numeric.count_graph()
                     if self.frames < MAX_COUNT and self.row_frames[self.rows] < MAX_COUNT:
                         self.frames += 1
                         self.row_frames[self.rows] += 1

@@ -130,6 +130,14 @@ class Buffers:
         from tensorfold.cuda.sm70.router_blas import create_role
 
         self.router_blas = create_role(w, rows, prefill=prefill, role=owner_role, eager=batch_prelude)
+        numeric = w.meta.get("dp4a_target_owner")
+        self.dp4a_target = (None if numeric is None or prefill or owner_role == "mtp" else
+                            numeric.main if batch_prelude else numeric.capture)
+        if self.dp4a_target is not None:
+            self.dp4a_target.bind_output(self.moe.y)
+            # Catalogue capture uses canonical target data with its separate role.
+            if self.dp4a_target is numeric.main:
+                numeric.capture.bind_output(self.moe.y)
         self.moe_region_graphs = None  # Published only after its bounded cold catalogue is admitted.
         self.candidate_region_graphs = None
         # DeltaNet projections and outputs and attention outputs; ``commit`` reads the projections' conv channels
@@ -261,6 +269,8 @@ class State:
         self.media_inputs_enabled = w.meta.get("media_inputs_enabled", False)
         if type(self.media_inputs_enabled) is not bool:
             raise ValueError("media input capability must be an admitted explicit boolean")
+        if w.meta.get("dp4a_target_owner") is not None:
+            self._expert_numeric_owner = w.meta["dp4a_target_owner"]
         self.media_profile_identity = self.media_identity = None
         self.media_input_span = self.mtp_boundary = None
         physical_limit = int(capacity if limit is None else limit)
@@ -477,6 +487,9 @@ class State:
     def kv_begin(self) -> None:
         """Mark GPU writes unchecked; never clear a previous numeric failure."""
 
+        numeric = getattr(self, "_expert_numeric_owner", None)
+        if numeric is not None:
+            numeric.check_alive()
         error = (getattr(self, "_history_error", None) or
                  (self._kv_error if self._kv_error is not None else self._resize_error))
         if error is not None:
@@ -498,6 +511,9 @@ class State:
         cannot be cleared by reset. CUDA/runtime failures propagate unchanged.
         """
 
+        numeric = getattr(self, "_expert_numeric_owner", None)
+        if numeric is not None:
+            numeric.assert_exposure()
         error = (getattr(self, "_history_error", None) or
                  (self._kv_error if self._kv_error is not None else self._resize_error))
         if error is not None:
@@ -906,6 +922,9 @@ class State:
     def reset(self, w: Weights, *, new_sequence: bool = True) -> None:
         """An empty sequence in the same buffers (captured graphs keep pointing at them)."""
 
+        numeric = getattr(self, "_expert_numeric_owner", None)
+        if numeric is not None:
+            numeric.assert_exposure()
         if type(new_sequence) is not bool:
             raise ValueError("reset admission generation policy must be explicit boolean")
         try:

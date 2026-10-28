@@ -134,6 +134,8 @@ def arguments(argv=None):
                         help="opt-in persistent cache root: each child inherits TRITON_CACHE_DIR=ROOT/rank-N before startup; Triton retains its source/platform/configuration keys")
     parser.add_argument("--packed-shared-fusion-trial", action="store_true",
                         help="privategenericpacked/shared-fusion math; matchingepoch/currentRouter/GDN/24 required; no two-warp claim forIQtypes")
+    parser.add_argument("--dp4a-target-trial", action="store_true",
+                        help="private target-only Q8_32/rawGGUF DP4A numerical profile; same current Router/GDN/HC/MoE/24 composition and fatal all-rank status required")
     parser.add_argument("--router-blas-trial", action="store_true",
                         help="explicit experimental pointer-batched FP32 router; requires matching numeric profile, native Dense/batch and resident24")
     parser.add_argument("--owner-batch-prelude-trial", action="store_true",
@@ -214,18 +216,18 @@ def arguments(argv=None):
     # its unset default. Recording intent must not select a different profile.
     args.requested_sm70_profile = os.environ.get(PROFILE_ENV)
     if args.native_dense_trial:
-        from tensorfold.cuda.sm70.execution_policy import OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL
+        from tensorfold.cuda.sm70.execution_policy import OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL
 
-        if args.requested_sm70_profile not in (OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL) or args.session_ceiling != 24:
+        if args.requested_sm70_profile not in (OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL) or args.session_ceiling != 24:
             parser.error("--native-dense-trial requires explicit source-owner-target-dense-trial and --session-ceiling24")
     if args.owner_batch_prelude_trial:
-        from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL
+        from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL
 
-        if args.requested_sm70_profile not in (OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL) or not args.native_dense_trial or args.session_ceiling != 24:
+        if args.requested_sm70_profile not in (OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL) or not args.native_dense_trial or args.session_ceiling != 24:
             parser.error("--owner-batch-prelude-trial requires matching source-dense-owner-batch-prelude-trial, --native-dense-trial and --session-ceiling24")
-    from tensorfold.cuda.sm70.execution_policy import ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL
+    from tensorfold.cuda.sm70.execution_policy import ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL
 
-    if args.router_blas_trial != (args.requested_sm70_profile in (ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL)):
+    if args.router_blas_trial != (args.requested_sm70_profile in (ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL)):
         parser.error("--router-blas-trial and explicit source-batch-router-blas-trial must agree")
     if args.router_blas_trial and (not args.owner_batch_prelude_trial or not args.native_dense_trial or args.session_ceiling != 24):
         parser.error("router trial requires native Dense, owner batch prelude and session-ceiling24")
@@ -238,10 +240,15 @@ def arguments(argv=None):
     elif gdn_flag is not None:
         parser.error("private GDN environment requires explicit --gdn-state-batch-trial intent")
 
-    if args.packed_shared_fusion_trial != (args.requested_sm70_profile == SHARED_FUSION_TRIAL):
+    if args.packed_shared_fusion_trial != (args.requested_sm70_profile in (SHARED_FUSION_TRIAL, DP4A_TRIAL)):
         parser.error("--packed-shared-fusion-trial and matchingnumericprofile must agree")
     if args.packed_shared_fusion_trial and (not args.router_blas_trial or not args.gdn_state_batch_trial):
         parser.error("shared fusion retains currentRouter/GDN/Dense/24 composition")
+    if args.dp4a_target_trial != (args.requested_sm70_profile == DP4A_TRIAL):
+        parser.error("--dp4a-target-trial and its explicit numerical profile must agree")
+    if args.dp4a_target_trial and (not args.router_blas_trial or not args.gdn_state_batch_trial
+                                  or not args.fast_grid or not args.quality_spotchecks):
+        parser.error("DP4A target retains current Router/GDN/FASTv2/quality/native24 composition")
     if args.expect_prefix_reuse:
         from tensorfold.families.qwen4_exp.cuda.prefix_policy import state_epoch
 
@@ -363,14 +370,14 @@ def record_execution_profile(engine, report, *, requested):
         "roles": roles}
     if requested is not None and requested != engine.sm70_profile:
         raise ValueError("requested SM70 profile differs from the actual constructor selection")
-    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL
+    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL
 
-    if engine.sm70_profile in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
+    if engine.sm70_profile in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL):
         from tensorfold.families.qwen4_exp.cuda.multi_graphs import (
             UNIQUE_CAPTURE_CONTRACT, UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT,
         )
 
-        contract = (UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT if engine.sm70_profile in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL)
+        contract = (UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT if engine.sm70_profile in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL)
                     else UNIQUE_CAPTURE_CONTRACT)
 
         decoder = engine.multi
@@ -649,6 +656,17 @@ def graph_execution_snapshot(engine):
             raise ValueError("router batched diagnostic counter overflowed")
         if type(calls) is int and 0 <= calls <= (1 << 63) - 1:
             counters["router_blas." + label + ".calls"] = calls
+    numeric = metadata.get("dp4a_target_owner") if type(metadata) is dict else None
+    if numeric is not None:
+        if numeric.graph_counter_overflowed:
+            raise ValueError("DP4A graph diagnostic counter overflowed")
+        counters["dp4a.graph_submitted_hot_layer_calls"] = numeric.graph_submitted_hot_layer_calls
+        for label in ("main", "capture"):
+            role = getattr(numeric, label)
+            if role.counter_overflowed:
+                raise ValueError("DP4A diagnostic counter overflowed")
+            counters["dp4a." + label + ".python_submissions"] = role.calls
+            counters["dp4a." + label + ".exact_fallback_submissions"] = role.exact_calls
     keys = {name: len(fields[name]) for name in ("verify", "mtp") if type(fields.get(name)) is dict}
     result = {"counters": counters, "captured_keys": keys}
     if mtp_overflowed:
@@ -672,9 +690,9 @@ BATCH_EVIDENCE_CONTROL_BYTES = 8192  # Fixed host-only receipt fields, bounded i
 
 def batch_preparation_evidence(profile, count, before, after):
     """Qualify actual cohort dispatch after drain; never infer missing counts as zero."""
-    from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL
+    from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL
 
-    if profile not in (OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
+    if profile not in (OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL):
         return None
     result = {"passed": False, "available": False, "cohort_N": count,
               "scope": "submitted native batches during readiness/decode/cancel/drain; not device timing"}
@@ -762,8 +780,39 @@ def check_router_blas_engine(engine):
             "global_host_charge": charged_host, "scope": "eager target/MTP only; graph/prefill canonical; experimental numeric implementation"}
 
 
+def dp4a_target_evidence(before, after):
+    keys = ("dp4a.main.python_submissions", "dp4a.graph_submitted_hot_layer_calls")
+    left = {} if before is None else before.get("counters", {})
+    right = {} if after is None else after.get("counters", {})
+    valid = all(type(left.get(key)) is int and type(right.get(key)) is int
+                and 0 <= left[key] <= right[key] for key in keys)
+    delta = sum(right[key] - left[key] for key in keys) if valid else None
+    return {"passed": valid and delta > 0, "submitted_hot_layer_calls": delta,
+            "scope": "direct eager plus source-bound complete graph-cycle submissions; excludes cold capture Python calls; not hardware counters"}
+
+
+def check_dp4a_target_engine(engine):
+    from tensorfold.families.qwen4_exp.cuda.dp4a_target import PROFILE, POLICY, funding
+    if engine.sm70_profile != PROFILE or engine.execution_rows != 32:
+        raise ValueError("DP4A target needs its explicit row32 private profile")
+    owner = engine.w.meta.get("dp4a_target_owner")
+    if owner is None or not owner.ready or owner.weights is not engine.w or owner.cohort is not engine.multi.kv_cohort:
+        raise ValueError("DP4A target owner/cohort differs from the actual worker factory")
+    owner.assert_exposure()
+    if engine.capacity_plan.get("dp4a_target", {}).get("funding") != funding():
+        raise ValueError("DP4A target prefloor commitment differs from actual owner")
+    if (engine.multi.buf.dp4a_target is not owner.main or engine.multi.mbuf.dp4a_target is not None
+            or engine.multi.pbuf.dp4a_target is not None or owner.main.qx.data_ptr() == owner.capture.qx.data_ptr()
+            or owner.cohort.numeric is not owner or owner.cohort.numeric_words != 2):
+        raise ValueError("DP4A main/capture/exact-role separation differs")
+    return {"policy": POLICY, "funding": funding(), "process_growth_observed_bytes": owner.host_observed_bytes,
+            "eligible_target_layers": [index for index, ready in enumerate(owner.eligible_mask) if ready],
+            "metadata": owner.metadata_receipt,
+            "scope": "target-only; model/task-quality/native24/performance remain separately gated"}
+
+
 def check_shared_fusion_engine(engine):
-    from tensorfold.cuda.sm70.execution_policy import SHARED_FUSION_TRIAL
+    from tensorfold.cuda.sm70.execution_policy import SHARED_FUSION_TRIAL, DP4A_TRIAL
     from tensorfold.cuda.sm70.gguf_ops import shared_fusion_workspace_bytes
     from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFExperts
     import torch
@@ -771,7 +820,7 @@ def check_shared_fusion_engine(engine):
     banks = [layer.moe.experts for layer in engine.w.layers] + [engine.w.mtp.layer.moe.experts]
     device, host = shared_fusion_workspace_bytes()
     plan = engine.capacity_plan.get("shared_fusion_experiment", {})
-    if (engine.sm70_profile != SHARED_FUSION_TRIAL or engine.execution_rows != 32 or len(banks) != 49
+    if (engine.sm70_profile not in (SHARED_FUSION_TRIAL, DP4A_TRIAL) or engine.execution_rows != 32 or len(banks) != 49
             or any(type(bank) is not GGUFExperts or bank.implementation != "packed_blocks2w"
                    or (bank.count, bank.width, bank.dims) != (513, 80, 2560) for bank in banks)
             or engine.multi.buf.moe.y.dtype != torch.float16 or engine.multi.mbuf.moe.y.dtype != torch.float32
@@ -904,6 +953,12 @@ def run_fast_grid(engine, tokenizer, args, report, limit, pool, prepared, finite
                 if not gdn_evidence["passed"]:
                     result["passed"] = False
                     result["screen"]["measurement_valid"] = False
+            if getattr(args, "dp4a_target_trial", False):
+                numeric_evidence = dp4a_target_evidence(graph_before, graph_after)
+                result["dp4a_target"] = numeric_evidence
+                if not numeric_evidence["passed"]:
+                    result["passed"] = False
+                    result["screen"]["measurement_valid"] = False
             write_report(args.out / f"fast-mtp-target-n{count:02d}.json", result,
                          allowance=finite.MAXIMUM * MAX_RECEIPT_BYTES)
         summary = finite.run_screen_case(pool, count=count, maximum_tokens=args.tokens, vocab=vocab,
@@ -924,7 +979,7 @@ def run_concurrency_leader(engine, tokenizer, args, report):
     from tensorfold.families.qwen4_exp.cuda.retention_resources import FiniteBackendCaller, finalize_backend_resources
     from tensorfold.server.request_limits import RequestLimit
     from tensorfold.token_metadata import decode_presentation, tokenizer_vocab_size
-    from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL
+    from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL
 
     finite = concurrency_module()
     prepared = []
@@ -966,7 +1021,7 @@ def run_concurrency_leader(engine, tokenizer, args, report):
         max_concurrent_requests=finite.MAXIMUM, worker_stack_bytes=finite.STACK_BYTES,
         control_payload_bytes=finite.control_payload_bytes(args.tokens) + quality_control
             + (finite.screen_control_payload_bytes(args.tokens) if getattr(args, "fast_grid", False) else 0)
-            + (BATCH_EVIDENCE_CONTROL_BYTES if engine.sm70_profile in (OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL) else 0)
+            + (BATCH_EVIDENCE_CONTROL_BYTES if engine.sm70_profile in (OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL) else 0)
             + (GDN_EVIDENCE_CONTROL_BYTES if getattr(args, "gdn_state_batch_trial", False) else 0))
 
     limit, pool = RequestLimit(finite.MAXIMUM), None
@@ -1065,7 +1120,7 @@ def worker(args):
     from tensorfold.cuda import precision, prompt_precision
     from tensorfold.cuda.cohort import FAILURE_FD_ENV, notify_failure
     from tensorfold.families.qwen4_exp import cuda_engine
-    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL
+    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL
     from tensorfold.serve_options import drafter_metadata_source
     from tensorfold.token_metadata import load_tokenizer, tokenizer_identity
 
@@ -1094,15 +1149,17 @@ def worker(args):
             context=CONTEXT, context_explicit=True,
             parallel=getattr(args, "session_ceiling", None) or "auto", kv_full_windows="auto",
             kv_dtype="int8", indexer_history="gpu", max_waiting_input_bytes=waiting_input_credit(args),
-            output_queue_tokens=args.tokens, graphs=args.requested_sm70_profile in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL),
+            output_queue_tokens=args.tokens, graphs=args.requested_sm70_profile in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL),
             **({"execution_profile_manifest": args.execution_profile_manifest}
                if getattr(args, "execution_profile_manifest", None) is not None else {}))
         record_execution_profile(engine, report, requested=args.requested_sm70_profile)
         if getattr(args, "gdn_state_batch_trial", False):
             check_engine(engine, session_ceiling=24, require_scheduler=args.rank == 0)
             report["gdn_state_batch"] = check_gdn_batch_engine(engine)
-        if getattr(engine, "sm70_profile", None) in (ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
+        if getattr(engine, "sm70_profile", None) in (ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL, DP4A_TRIAL):
             report["router_blas"] = check_router_blas_engine(engine)
+        if getattr(args, "dp4a_target_trial", False):
+            report["dp4a_target"] = check_dp4a_target_engine(engine)
         report["moe_capture_ledger"] = write_moe_capture_ledger(engine, args.out, args.rank)
         if getattr(args, "packed_shared_fusion_trial", False):
             report["shared_fusion"] = check_shared_fusion_engine(engine)

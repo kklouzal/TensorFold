@@ -40,7 +40,7 @@ def prepare(weight, *, capacity=MAX_ROWS):
 
 
 PROFILE = "source-batch-router-blas-trial"
-PROFILES = (PROFILE, "source-router-gdn-shared-fusion-trial")
+PROFILES = (PROFILE, "source-router-gdn-shared-fusion-trial", "source-router-gdn-hc-moe-dp4a-target-trial")
 MAX_WEIGHTS = 48
 HOST_BASE_BYTES = 64 << 10
 
