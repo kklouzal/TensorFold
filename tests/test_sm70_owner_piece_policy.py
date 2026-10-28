@@ -42,11 +42,12 @@ def test_new_profile_requires_issued_native_owner_and_grants_only_exact_nonatten
                             NS(prepare_value_guard=lambda: source.calls.append("guard-code"),
                                prepare_owner_prelude=lambda: source.calls.append("prelude-code")))
     monkeypatch.setattr(greedy_native, "extension", lambda: None)
-    monkeypatch.setattr(gguf_ops, "extension", lambda: None)
+    monkeypatch.setattr(gguf_ops, "extension", lambda: NS(prepare_dense32=lambda: source.calls.append("dense-code")))
     assert module.configure(source.text, tp=8, torch=family.torch) == selected
     assert family.selectors(source.policy) == (True, False, False, False, False, False,
                                               "packed_exact", "native32", None)
     assert source.policy.weights.GGUFDense.implementation == ("native32" if dense else "reference")
+    assert ("dense-code" in source.calls) is dense
     weights = family.weights(source)
     if prelude:
         weights.device = "cpu"

@@ -1,5 +1,13 @@
 # TensorFold fork
 
+The Dense residency successor explicitly materializes the existing pad/copy
+kernel code with CUDA function-attribute queries before initial physical-memory
+admission, including under CUDA lazy loading. It allocates no target tensors
+or persistent slabs and launches no kernels during preparation. The old `7051`
+wheel remains an unexecuted historical candidate with residency verification
+pending. Successor compile/link/import, lazy GPU preparation, exact Dense/TP8 and
+all-six model checks remain pending.
+
 The private `source-owner-target-dense-trial` composes the current native target/MTP
 prelude and startup overlap with the existing exact fixed-M32 ATen Dense staging
 helper. Select it explicitly with `TENSORFOLD_SM70_PROFILE` in the finite V100

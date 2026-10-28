@@ -1183,3 +1183,20 @@ void gguf_experts_exact(const at::Tensor& x, const at::Tensor& picks,
                       down, down_kind, down_offset, shared_gate, shared_up, shared_down,
                       output, false, true, true, true);
 }
+
+int gguf_prepare_dense32() {
+    // CUDA 12.9 lazy loading: attributes materialize selected kernel code
+    // before the physical-free/admission baseline, without launching work or
+    // allocating model tensors. Retain every dense32 output-dtype variant.
+    int device = 0;
+    C10_CUDA_CHECK(cudaGetDevice(&device));
+    const auto* prop = at::cuda::getDeviceProperties(device);
+    TORCH_CHECK(prop->major == 7 && prop->minor == 0,
+                "dense32 residency preparation requires SM70");
+    cudaFuncAttributes attributes;
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, dense_pad32));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, dense_copy32<true, true>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, dense_copy32<true, false>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, dense_copy32<false, false>));
+    return 4;
+}

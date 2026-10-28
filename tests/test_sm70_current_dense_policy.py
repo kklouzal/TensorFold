@@ -11,6 +11,7 @@ from tensorfold.engine.exact_sampling import Sampling  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda import prefix_policy  # noqa: E402
 from tensorfold.families.qwen4_exp.kv_formats import get_pair  # noqa: E402
 
+policy, source = family.policy, family.source
 PROFILE = prefix_policy.OWNER_TARGET_DENSE_PROFILE
 
 def test_cache_epoch_is_distinct_and_only_existing_greedy_int8_text_domain_is_borrowed():
@@ -93,3 +94,36 @@ def test_new_tp8_oracle_installs_actual_target_dense_and_preserves_stock_mtp_own
     assert actual.target[0].weight is weight
     assert actual.mtp[0] is stock
     assert actual.target[0] is actual.target[1] is actual.mtp[1]
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_dense_kernel_preparation_precedes_selector_publication_and_propagates_failure(source, monkeypatch, failure):
+    from tensorfold.cuda.sm70 import gguf_ops, greedy_native, family_native
+
+    module = source.module
+    monkeypatch.setenv(module.PROFILE_ENV, PROFILE)
+    before = family.selectors(source.policy), source.policy.weights.GGUFDense.implementation, module._SELECTED
+    monkeypatch.setattr(family_native, "extension", lambda: source.calls.append("family") or NS(
+        prepare_value_guard=lambda: source.calls.append("guard"),
+        prepare_owner_prelude=lambda: source.calls.append("prelude")))
+
+    def prepare():
+        assert (family.selectors(source.policy), source.policy.weights.GGUFDense.implementation,
+                module._SELECTED) == before
+        source.calls.append("dense-residency")
+        if failure:
+            raise RuntimeError("dense function residency failed")
+        return 4
+
+    monkeypatch.setattr(gguf_ops, "extension", lambda: source.calls.append("gguf") or NS(prepare_dense32=prepare))
+    monkeypatch.setattr(greedy_native, "extension", lambda: source.calls.append("greedy"))
+    if failure:
+        with pytest.raises(RuntimeError, match="dense function residency failed"):
+            module.configure(source.text, tp=8, torch=family.torch)
+        assert (family.selectors(source.policy), source.policy.weights.GGUFDense.implementation,
+                module._SELECTED) == before
+        assert source.calls == ["audit", "family", "guard", "prelude", "gguf", "dense-residency"]
+    else:
+        assert module.configure(source.text, tp=8, torch=family.torch) == PROFILE
+        assert source.calls == ["audit", "family", "guard", "prelude", "gguf", "dense-residency", "greedy", "audit"]
+        assert source.policy.weights.GGUFDense.implementation == "native32"
