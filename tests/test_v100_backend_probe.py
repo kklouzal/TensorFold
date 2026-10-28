@@ -1236,7 +1236,8 @@ def test_unconfigured_rank_cache_preserves_inherited_environment(tmp_path, monke
 
 @pytest.mark.parametrize("profile", ["source-owner-pieces-trial", "source-owner-target-prelude-trial",
                                     "source-owner-gateup-independent-trial"])
-def test_owner_piece_tool_intent_and_manifest_reach_real_factory_with_24_native_windows(tmp_path, monkeypatch, profile):
+@pytest.mark.parametrize("output_tokens", [512, 2048])
+def test_owner_piece_tool_intent_and_manifest_reach_real_factory_with_24_native_windows(tmp_path, monkeypatch, profile, output_tokens):
     import json
     from tensorfold import hub, serve_options
     from tensorfold.cuda.cohort import FAILURE_FD_ENV
@@ -1247,8 +1248,10 @@ def test_owner_piece_tool_intent_and_manifest_reach_real_factory_with_24_native_
     monkeypatch.setenv("TENSORFOLD_SM70_PROFILE", profile)
     manifest = tmp_path / "execution.json"
     manifest.write_text(json.dumps({"schema": "tensorfold.execution-profile-manifest", "version": 1, "artifacts": {}}))
+    protocol = "fast-grid-v2" if output_tokens == 2048 else "fast-grid-v1"
     args = probe.arguments(cli(tmp_path) + ["--session-ceiling", "24", "--execution-profile-manifest", str(manifest),
-        "--concurrency-grid", "--fast-grid", "--quality-spotchecks", "--tokens", "512"])
+        "--concurrency-grid", "--fast-grid", "--quality-spotchecks", "--tokens", str(output_tokens),
+        "--fast-grid-protocol", protocol])
     args.rank = 1
     args.out.mkdir()
     draft = tmp_path / "draft-config"
@@ -1284,7 +1287,9 @@ def test_owner_piece_tool_intent_and_manifest_reach_real_factory_with_24_native_
         262144, 8, 2, .7, "int8")
     assert options["max_waiting_input_bytes"] == probe.waiting_input_credit(args)
     assert args.requested_sm70_profile == profile
-    assert args.fast_grid and args.quality_spotchecks and args.tokens == 512
+    assert options["output_queue_tokens"] == output_tokens
+    assert args.fast_grid and args.quality_spotchecks and args.tokens == output_tokens
+    assert args.fast_grid_protocol == protocol
     assert probe.MAX_RECEIPT_BYTES == 2424832
 
 
