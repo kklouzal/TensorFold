@@ -437,12 +437,15 @@ def moe_block(layer: LayerW, w: Weights, b: Buffers, R: int, *, _local_only: boo
     m = layer.moe
     if getattr(m.experts, "kernel", "qmm") in ("gguf", "sm70_dense"):
         buf = b.moe
-        moe_mod.router(b.mixed[:R], m.router, buf.logits[:R], independent_rows=not b.prefill, prepared=getattr(b, "router_blas", None))
-        moe_mod.select_rows(buf.logits[:R], buf, w.cfg.top_k, w.cfg.experts)
-        execute = m.experts.forward
-        if b.prefill:
-            execute = getattr(m.experts, "forward_prefill", execute)
-        execute(b.mixed[:R], buf.pick[:R], out=buf.y[:R])
+        regions = getattr(b, "moe_region_graphs", None)
+        graphed = regions is not None and regions.run(layer, b, R)
+        if not graphed:
+            moe_mod.router(b.mixed[:R], m.router, buf.logits[:R], independent_rows=not b.prefill, prepared=getattr(b, "router_blas", None))
+            moe_mod.select_rows(buf.logits[:R], buf, w.cfg.top_k, w.cfg.experts)
+            execute = m.experts.forward
+            if b.prefill:
+                execute = getattr(m.experts, "forward_prefill", execute)
+            execute(b.mixed[:R], buf.pick[:R], out=buf.y[:R])
         if _local_only:
             return None  # Private pure-region capture excludes partial reduction and collectives.
         if w.comm is None:

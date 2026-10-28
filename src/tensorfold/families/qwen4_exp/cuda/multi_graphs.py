@@ -115,9 +115,12 @@ class Pieces:
 class RoundGraphs:
     """A ``MultiDecoder``'s captured verify forwards and MTP steps (``capture`` at its warm-up, before any request)."""
 
-    def __init__(self, dec, budget: int, *, spare=None) -> None:
+    def __init__(self, dec, budget: int, *, spare=None, future_bytes=0) -> None:
         self.dec, self.budget = dec, int(budget)
-        self.spare = spare                              # live bytes after required future service, preparation only
+        self.spare = spare                              # physical live after future service; preparation only
+        self.future_bytes = int(future_bytes)
+        if self.future_bytes < 0:
+            raise ValueError("graph future service obligation cannot be negative")
         self.allocator_backend = torch.cuda.memory.get_allocator_backend()
         self.pool = torch.cuda.graph_pool_handle()
         self.side = torch.cuda.Stream()
@@ -137,6 +140,7 @@ class RoundGraphs:
         self.failure_frames = None
         self.pending = []
         self.bound = None
+        self.moe_regions = self.candidate_regions = None
         if dec.w.meta.get("execution_provider") == "sm70":
             from .bound_graphs import BoundStateGraphs
 
@@ -323,8 +327,23 @@ class RoundGraphs:
                                                         self.failure_cause, self.failure_context)
         if self.allocator_backend == "native":
             try:
-                segments = torch.cuda.memory_snapshot(mempool_id=self.pool, include_traces=False)
-                self.private_spare_bytes = private_pool_spare(segments, self.pool, self.dec.w.device.index or 0)
+                pools = [("n1", self.pool)]
+                for name, prefix in (("moe_regions", "moe-target-r"), ("candidate_regions", "candidate-")):
+                    catalogue = getattr(self, name, None)
+                    mapping = None if catalogue is None else getattr(catalogue, "pools", None)
+                    if mapping is not None:
+                        pools.extend((prefix + str(key), pool) for key, pool in mapping.items())
+                if len({tuple(pool) for _label, pool in pools}) != len(pools):
+                    raise ValueError("graph families must own disjoint allocator pools")
+                spare = []
+                for label, pool in pools:
+                    segments = torch.cuda.memory_snapshot(mempool_id=pool, include_traces=False)
+                    inactive = private_pool_spare(segments, pool, self.dec.w.device.index or 0)
+                    spare.append({"family": label, "private_spare_bytes": inactive,
+                                  "private_reserved_bytes": sum(row["total_size"] for row in segments),
+                                  "private_active_bytes": sum(row["allocated_size"] for row in segments)})
+                self.private_spare_bytes = sum(row["private_spare_bytes"] for row in spare)
+                self.private_pool_records = spare
             except (AttributeError, TypeError, ValueError) as error:
                 raise MemoryError("captured-round private allocator storage cannot be accounted for") from error
         self.allocator_record = {"backend": self.allocator_backend,
@@ -333,6 +352,43 @@ class RoundGraphs:
                                  "reserved_bytes": int(torch.cuda.memory_reserved()),
                                  "allocated_bytes": int(torch.cuda.memory_allocated()),
                                  "private_pool_spare_bytes": self.private_spare_bytes}
+
+    def capture_observation(self):
+        """Quiescent capacity authority, excluding inactive bytes in EVERY owned pool."""
+        torch.cuda.synchronize(self.dec.w.device)
+        self._account_pool()
+        private = getattr(self, "private_pool_records", ())
+        reserved = sum(row["private_reserved_bytes"] for row in private)
+        active = sum(row["private_active_bytes"] for row in private)
+        allocated = int(torch.cuda.memory_allocated())
+        if allocated < active:
+            raise MemoryError("graph private active bytes exceed the quiescent allocator observation")
+        return {"physical_free_bytes": free_bytes(),
+                "general_available_bytes": service_live_bytes(self)(),
+                "private_reserved_bytes": reserved, "private_active_bytes": active,
+                "unavailable_owned_bytes": allocated + reserved - active,
+                "private_spare_bytes_excluded": self.private_spare_bytes}
+
+    def charge_capture(self, before, label):
+        """One disjoint new capture phase; never also charge its tensors as workspace."""
+        after = self.capture_observation()
+        physical = before["physical_free_bytes"] - after["physical_free_bytes"]
+        general = before["general_available_bytes"] - after["general_available_bytes"]
+        owned = after["unavailable_owned_bytes"] - before["unavailable_owned_bytes"]
+        charged = max(0, physical, general, owned)
+        self.bytes += charged
+        self.room_bytes += charged
+        remaining = after["general_available_bytes"] - self.future_bytes
+        row = {"key": label, "physical_delta_bytes_raw": physical,
+               "general_available_delta_bytes_raw": general,
+               "unavailable_owned_delta_bytes_raw": owned, "charged_bytes": charged,
+               "private_reserved_bytes": after["private_reserved_bytes"],
+               "private_active_bytes": after["private_active_bytes"],
+               "private_spare_bytes_excluded": self.private_spare_bytes,
+               "service_spare_after_private_exclusion": remaining}
+        if self.bytes > self.budget or remaining is not None and remaining < 0:
+            raise MemoryError("pure graphs cannot retain the admitted native24 windows and service memory")
+        return row
 
     def _has_room(self) -> bool:
         if self.spare is not None and self.spare() <= 0:
@@ -343,6 +399,14 @@ class RoundGraphs:
     def _keys(self, states) -> None:
         if getattr(self, "bound", None) is not None:
             self.bound.warm(states)
+            if self.dec.w.meta.get("sm70_moe_region_graphs_trial") is True:
+                from .moe_region_catalogue import Catalogue
+
+                regions = object.__new__(Catalogue)
+                self.moe_regions = regions  # Own partial construction/captures before allocations.
+                regions.__init__(self)
+                regions.prepare()
+                self.dec.buf.moe_region_graphs = regions
             return
         dec = self.dec
         slots, width, launch = len(states), dec.depth + 1, dec.pdl
@@ -418,7 +482,9 @@ class RoundGraphs:
                 "rejected": self.rejected,
                 "allocator": self.allocator_record,
                 "pieces": sum(len(p.graphs) for p in (*self.verify.values(), *self.mtp.values())),
-                "keys": self.measured}
+                "keys": self.measured,
+                "private_pools": getattr(self, "private_pool_records", None),
+                "moe_regions": None if self.moe_regions is None else self.moe_regions.record()}
 
     def invalidate_state(self, state):
         if getattr(self, "bound", None) is not None:
@@ -427,6 +493,9 @@ class RoundGraphs:
     def close(self):
         """After replay admission closes, fence and retire graphs before borrowed native owners."""
         torch.cuda.synchronize(self.dec.w.device)
+        if self.moe_regions is not None:
+            self.moe_regions.close()
+            self.dec.buf.moe_region_graphs = None
         if getattr(self.dec.w, "dspark", None) is not None:
             # A failed capture can retain graphs outside the bound catalogue.
             # Retire those borrowers before bound.close releases tap anchors.

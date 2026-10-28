@@ -11,6 +11,7 @@ from types import SimpleNamespace
 import torch
 
 from tensorfold.cleanup import raise_failures
+from .capture_lifetime import on_stream
 
 
 def region_tensors(buffers):
@@ -43,13 +44,15 @@ class MoERegion:
     catalogue may share one pool per exactR only if every layer replays in its
     capture order, no partial failed cycle is reused, and consumers retire.
     """
-    def __init__(self, weights, layer, buffers, rows):
+    def __init__(self, weights, layer, buffers, rows, *, side=None, pool=None, capture_router=None):
         self.weights, self.layer, self.buffers, self.rows = weights, layer, buffers, rows
-        self.graph = self.side = None
-        self.capture_router = self.local_buffers = None
+        self.graph = None
+        self.side, self.pool = side, pool
+        self.capture_router, self.local_buffers = capture_router, None
         self.failure = None
         self.prepared = self.closed = self.retiring = False
         self.hits = 0
+        self.counter_overflowed = False
         self.replay_stream = None
         self.tensors = ()
         validate_region(weights, layer, buffers, rows)
@@ -67,31 +70,21 @@ class MoERegion:
 
             # Capture must not borrow the main-stream role. Publish the partial
             # side-stream owner before its constructor can allocate/submit.
-            self.capture_router = object.__new__(RolePlans)
-            self.capture_router.__init__((self.layer.moe.router,), 32)
+            if self.capture_router is None:
+                self.capture_router = object.__new__(RolePlans)
+                self.capture_router.__init__((self.layer.moe.router,), 32)
+            elif not any(weight is self.layer.moe.router for weight in self.capture_router.owners):
+                raise ValueError("shared capture router does not own this exact layer weight")
             self.local_buffers = SimpleNamespace(prefill=self.buffers.prefill,
                 mixed=self.buffers.mixed, moe=self.buffers.moe, router_blas=self.capture_router)
         self._body()
 
     def _on_side(self, operation):
-        secondary = [None]  # Reserve before stream entry or owned operation.
-        primary = None
-        try:
-            with torch.cuda.stream(self.side):
-                try:
-                    operation()
-                except BaseException as error:
-                    primary = error
-        except BaseException as error:
-            secondary[0] = error
-        if secondary[0] is not None:
-            raise_failures(primary, secondary)
-        if primary is not None:
-            raise primary
+        on_stream(torch.cuda, self.side, operation)
 
     def _capture(self):
         secondary = [None]  # No outcome allocation after accepted capture_begin.
-        self.graph.capture_begin(capture_error_mode="thread_local")
+        self.graph.capture_begin(pool=self.pool, capture_error_mode="thread_local")
         primary = None
         try:
             self._body()
@@ -115,7 +108,8 @@ class MoERegion:
         current = torch.cuda.current_stream(device)
         self.replay_stream = current.cuda_stream
         try:
-            self.side = torch.cuda.Stream(device=device)
+            if self.side is None:
+                self.side = torch.cuda.Stream(device=device)
             self.side.wait_stream(current)
             self._on_side(self._warm)  # Exact kernels/modules and dedicated capture role.
             self.side.synchronize()
@@ -139,10 +133,11 @@ class MoERegion:
             stream = torch.cuda.current_stream(self.buffers.mixed.device)
             if stream.cuda_stream != self.replay_stream:
                 raise RuntimeError("MoE region replay requires its original serialized stream")
-            if self.hits == (1 << 63) - 1:
-                raise OverflowError("MoE graph replay counter exhausted")
             self.graph.replay()
-            self.hits += 1
+            if self.hits < (1 << 63) - 1:
+                self.hits += 1
+            else:
+                self.counter_overflowed = True
         except BaseException as error:
             self.failure = error
             raise
@@ -155,13 +150,23 @@ class MoERegion:
         self.retiring = True  # Refuse replay even if fence/reset leaves retirement uncertain.
         try:
             torch.cuda.synchronize(self.buffers.mixed.device)
-            if self.graph is not None:
-                self.graph.reset()
         except BaseException as error:
             if self.failure is None:
                 self.failure = error
             raise
-        self.graph = self.side = None
+        try:
+            self._release_fenced()
+        except BaseException as error:
+            if self.failure is None:
+                self.failure = error
+            raise
+
+    def _release_fenced(self):
+        """Catalogue-only: caller already positively fenced and closed replay admission."""
+        self.retiring = True
+        if self.graph is not None:
+            self.graph.reset()
+        self.graph = self.side = self.pool = None
         # A graph may retain captured pointer-table/scratch addresses. Release
         # these external owners only after positive fence AND graph reset.
         self.capture_router = self.local_buffers = None
@@ -170,5 +175,5 @@ class MoERegion:
 
     def record(self):
         return {"rows": self.rows, "layer": self.layer.index, "prepared": self.prepared,
-                "closed": self.closed, "retiring": self.retiring, "replays": self.hits,
+                "closed": self.closed, "retiring": self.retiring, "replays": None if self.counter_overflowed else self.hits,
                 "scope": "private component only; no integrated performance/capacity qualification"}

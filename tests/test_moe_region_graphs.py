@@ -120,13 +120,13 @@ def test_uncertain_fence_keeps_graph_owner(setup):
         region.replay()
 
 
-def test_exhausted_counter_refuses_before_gpu_submission(setup):
+def test_exhausted_diagnostic_counter_preserves_gpu_work(setup):
     region,_,_,_,log=setup
     region.prepare()
     region.hits=(1<<63)-1
-    with pytest.raises(OverflowError):
-        region.replay()
-    assert 'replay' not in log
+    region.replay()
+    assert 'replay' in log and region.hits==(1<<63)-1
+    assert region.counter_overflowed and region.record()['replays'] is None
 
 
 def test_stream_restore_failure_preserves_owned_operation_primary(setup):

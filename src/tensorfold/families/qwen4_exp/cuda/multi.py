@@ -28,6 +28,7 @@ from tensorfold.cuda.streams import Stream, accept, mark_error_state_retired, pr
 from tensorfold.engine.exact_sampling import MARGIN, choose_rows
 from tensorfold.engine.grammar import GrammarError
 
+from .capture_lifetime import finish_forward_frontiers
 from ..cuda import CONFIDENCE, DEPTH
 from . import attn_multi, gdn_multi, image_rows, media_requests, multi_graphs, prefixes
 from .decode import (
@@ -946,9 +947,14 @@ class MultiDecoder:
             raise RuntimeError("graphs are captured on idle slots, before any request")
         if self.graphs is not None or self._failed_graphs is not None:
             raise RuntimeError("captured-round pools are immutable until this decoder retires")
+        moe_required = self.w.meta.get("sm70_moe_region_graphs_trial") is True
         if self.graph_record["reason"] is not None:
+            if moe_required:
+                raise ValueError("requested MoE graph catalogue is not capturable: " + str(self.graph_record["reason"]))
             return
         if getattr(self.w, "meta", {}).get("execution_provider") == "sm70" and not self._prepare_graph_floor():
+            if moe_required:
+                raise MemoryError("requested MoE graphs cannot retain their24-slot floor")
             return
         multi_graphs.prepare_capture()
         slots = len(self.free)
@@ -1012,6 +1018,8 @@ class MultiDecoder:
         if getattr(self.w, "meta", {}).get("execution_provider") == "sm70":
             resolution.update(floor_tokens=self.graph_floor, floor_extra_bytes=self.graph_floor_extra_bytes)
         if not self.graph_budget:
+            if moe_required:
+                raise MemoryError("requested MoE graphs have no budget after required native24 service")
             if getattr(self, "graph_floor_extra_bytes", 0):
                 released = self.graph_floor_extra_bytes
                 self.graph_floor, self.graph_floor_extra_bytes = FIRST, 0
@@ -1023,7 +1031,8 @@ class MultiDecoder:
             self.graph_record = {"captured": False, "reason": "automatic graph budget has no room after required service",
                                  "budget_bytes": 0, **resolution}
             return
-        graphs = multi_graphs.RoundGraphs(self, self.graph_budget, spare=lambda: live() - future["future_bytes"])
+        graphs = multi_graphs.RoundGraphs(self, self.graph_budget, spare=lambda: live() - future["future_bytes"],
+                                         future_bytes=future["future_bytes"])
         cleanup_errors = [None]  # preserve a capture primary even if failure accounting/publication also fails
         try:
             graphs.capture(prepared=True)  # no allocations into the graph pool since prepare_capture above
@@ -2076,7 +2085,18 @@ class MultiDecoder:
         if target is not None and not target.eligible(self, live, pieces=pieces, grammars=grammars, dflash=dflash):
             target = None
         gdn_primary = None
+        moe_owner = getattr(self.buf, "moe_region_graphs", None)
+        moe_active = False
+        frontier_journal = gdn_finish = moe_finish = observer_finish = None
+        if moe_owner is not None:
+            # Allocate/bind every outcome frontier BEFORE forward submission.
+            gdn_finish = None if self.buf.gdn_state_batch is None else self.buf.gdn_state_batch.finish
+            moe_finish = moe_owner.finish
+            observer_finish = None if self.controller is None else self.controller.work_observations.incomplete
+            frontier_journal = ([None, None, None], [None], [None, None], [None, None, None])
         try:
+            if not pieces and moe_owner is not None:
+                moe_active = moe_owner.begin(self.w, self.buf, segs[-1][2])
             if pieces:                                 # the window and the pass: each layer's experts once for both
                 from .media_mtp import target_inputs
 
@@ -2105,12 +2125,16 @@ class MultiDecoder:
                         replay_rows=sum(n for stream, _, n in pieces if stream.carry is not None))
         except BaseException as primary:
             gdn_primary = primary
-            if self.controller is not None:
+            if frontier_journal is None and self.controller is not None:
                 self.controller.work_observations.incomplete(primary)
             raise
         finally:
             try:
-                if self.buf.gdn_state_batch is not None:
+                if frontier_journal is not None:
+                    finish_forward_frontiers(gdn_primary,
+                        observer_finish if gdn_primary is not None else None,
+                        gdn_finish, moe_finish if moe_active else None, frontier_journal)
+                elif self.buf.gdn_state_batch is not None:
                     self.buf.gdn_state_batch.finish(gdn_primary)
             finally:
                 self.buf.gdn_tables = self.buf.attn_step = None

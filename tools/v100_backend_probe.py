@@ -555,6 +555,11 @@ def graph_execution_snapshot(engine):
     if owner is None and submitted is None:
         return None
     counters = {}
+    moe_regions = _owned_attributes(fields.get("moe_regions"))
+    for name in ("frames", "hits"):
+        value = moe_regions.get(name)
+        if not moe_regions.get("counter_overflowed", False) and type(value) is int and 0 <= value <= (1 << 63) - 1:
+            counters["moe_regions." + name] = value
     if type(submitted) is int and 0 <= submitted <= (1 << 63) - 1:
         counters["gdn.batch_submitted_layers"] = submitted
     names = ("hits", "misses", "lane_declines", "verify_hits", "mtp_hits",

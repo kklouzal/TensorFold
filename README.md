@@ -1934,3 +1934,16 @@ storage and MTP FP32 MoE output storage, with decode routing in each case.
 Capture-stream restoration and partial-plan failure controls pass on CPU;
 actual batched-eager versus captured bits and Engine graph/host admission remain
 pending. No serving profile enables this component yet.
+
+The private `TENSORFOLD_SM70_MOE_REGION_GRAPHS=1` experiment requires the existing
+TP8 batched-router/MTP2/native-Q8 profile and its 24-window floor. It prepares
+pure target MoE graphs for exact compact row counts30,31 and32; other rows,
+prefill, MTP, State work, attention, PLE, partial reductions and NCCL retain
+their canonical execution. Each row count has a separate fixed-layer-order
+pool. Existing N1 graphs remain separate. New GPU resources are debited once
+from the aggregate graph budget; all private inactive bytes are excluded from
+reusable allocator room. An inclusive 1 GiB per rank host operating allowance is
+carried into admission and checked with host/cgroup observations; it is not a
+vendor worst-case memory claim. Whole-frame storage/profile validation and
+failure retirement are mandatory. Focused CPU checks pass; the144-graph GPU
+oracle, actual Engine capacity/quality and all-six performance remain pending.
