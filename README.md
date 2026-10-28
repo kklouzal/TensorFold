@@ -1,5 +1,12 @@
 # TensorFold fork
 
+The private native-owner graph candidate can use the guarded public-Torch
+N1 diagnostic (`--profile-concurrency 1 --fast-grid-protocol fast-grid-v2
+--tokens 2048`). It retains all eight rank traces, per-role native graph replay
+and eager-call counters, and CPU observer labels. Instrumented timings are
+diagnostic evidence; matched uninstrumented six-concurrency checks remain
+required before selecting this candidate.
+
 The private `source-owner-attention-graphs-trial` candidate combines the current
 native prelude and N1 nonattention pieces with the existing bounded full-TP8
 owner-attention graphs. Its separate manifest explicitly requests
