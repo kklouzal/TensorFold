@@ -167,3 +167,56 @@ def test_actual_timing_owner_releases_only_after_positive_fence_and_reset():
     owner.retire(target)
     assert owner.retired and variant.timing_owner is None and not owner.graphs
     assert events == ["created", "fence", "reset"]
+
+
+def test_actual_timed_retirement_preparation_memoryerror_preserves_roots(monkeypatch):
+    primary, allocation = RuntimeError("body"), MemoryError("retirement preparation")
+    cause, context = ValueError("native cause"), OSError("native context")
+    primary.__cause__, primary.__context__ = cause, context
+    target, _events = fake_timing_cuda()
+    class Operation:
+        def __init__(self):
+            self.calls = 0
+        def call(self):
+            self.calls += 1
+            if self.calls > 1:
+                raise primary
+    def failed_retire(owner, _torch):
+        assert owner.graphs and owner.context
+        raise allocation
+    monkeypatch.setattr(d.TimingOwner, "retire", failed_retire)
+    operation = Operation()
+    with pytest.raises(RuntimeError) as caught:
+        d.timed(target, [operation])
+    assert caught.value is primary
+    from tests.test_v100_backend_probe import retained_failure
+    assert all(retained_failure(primary, error) for error in (allocation, cause, context))
+    owner = operation.timing_owner
+    assert owner is not None and owner.graphs and owner.context and not owner.retired
+    assert owner.failures[4] is allocation
+
+
+def test_actual_outcome_compaction_memoryerror_retains_native_roots():
+    primary, secondary = RuntimeError("body"), OSError("cleanup")
+    cause, context = ValueError("native cause"), LookupError("native context")
+    primary.__cause__, primary.__context__ = cause, context
+    allocation = MemoryError("compact journal")
+    class Journal:
+        calls = 0
+        def __iter__(self):
+            self.calls += 1
+            if self.calls > 1:
+                raise allocation
+            return iter([secondary])
+    journal = Journal()
+    with pytest.raises(RuntimeError) as caught:
+        d.timing_outcome(primary, journal)
+    assert caught.value is primary and primary.__cause__ is allocation
+    frames = []
+    traceback = primary.__traceback__
+    while traceback is not None:
+        frames.append(traceback.tb_frame.f_locals)
+        traceback = traceback.tb_next
+    retained = next(frame for frame in frames if frame.get("failures") is journal)
+    assert retained["native_cause"] is cause and retained["native_context"] is context
+    assert retained["outcome_primary"] is primary

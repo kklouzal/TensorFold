@@ -110,12 +110,19 @@ def timing_outcome(primary, failures):
         if primary is not None:
             raise primary
         return
+    outcome_primary = primary if primary is not None else first
+    native_cause = BaseException.__cause__.__get__(outcome_primary)
+    native_context = BaseException.__context__.__get__(outcome_primary)
     try:
         actual = [failure for failure in failures if failure is not None]
     except BaseException as allocation:
-        if primary is not None:
-            raise primary from allocation
-        raise first from allocation
+        # Native roots and the fixed journal remain traceback-owned even when
+        # preparing the compact diagnostic list cannot allocate.
+        if native_cause is outcome_primary:
+            native_cause = None
+        if native_context is outcome_primary:
+            native_context = None
+        raise outcome_primary from allocation
     raise_failures(primary, actual)
 
 
@@ -125,7 +132,7 @@ class TimingOwner:
         if not 1 <= len(variants) <= 2:
             raise ValueError("one/two bounded weight owners required")
         self.variants, self.graphs, self.context = variants, [], None
-        self.failures = [None] * 4  # Capture exit, fence and two graph resets.
+        self.failures = [None] * 5  # Capture exit, fence, two resets, retirement preparation.
         self.retired = False
         self.capture_context_uncertain = False
         for variant in variants:
@@ -204,11 +211,28 @@ def timed(torch, variants):
                 "scope": "GPU stream elapsed includes graph work and possible CPU enqueue starvation; not isolated kernel-only time"}
     except BaseException as error:
         primary = error
-    owner.retire(torch)
+    native_cause = BaseException.__cause__.__get__(primary) if primary is not None else None
+    native_context = BaseException.__context__.__get__(primary) if primary is not None else None
+    try:
+        owner.retire(torch)
+    except BaseException as retirement:
+        owner.failures[4] = retirement
+        owner.retired = False  # This frame retains owner/pointees on uncertainty.
     # An exit fault used as primary need not also become its own secondary.
     if owner.failures[0] is primary:
         owner.failures[0] = None
-    timing_outcome(primary, owner.failures)
+    try:
+        timing_outcome(primary, owner.failures)
+    except BaseException as outcome:
+        if primary is None or outcome is primary:
+            raise
+        # Preserve the named primary/native roots and owner if preparing an
+        # outcome fails before the primary-preserving transport is entered.
+        if native_cause is primary:
+            native_cause = None
+        if native_context is primary:
+            native_context = None
+        raise primary from outcome
     return result
 
 
