@@ -1,5 +1,12 @@
 # TensorFold fork
 
+The separate HC follow-up extends only the named stock-MTP `fc_h` projection
+to its physical `logical_rows * HC_streams` envelope. Its input/output width
+must match the model hidden width and expanded rows must contain whole HC
+groups. Other weights retain the logical row limit. M32 scratch and the HC
+partial arrays retain their existing allocations; default32-buffer creation
+is unchanged. New96/128/256-row numerical checks remain pending on V100.
+
 The private Dense large-row candidate uses prepaid, stream-owned M32 scratch
 for eligible64/72-row Dense/Concat projections. Each part retains the original
 fixed-M32 ATen operation, and tile outputs are written into their final owner

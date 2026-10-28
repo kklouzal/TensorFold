@@ -178,6 +178,13 @@ class TiledLinears:
         self.submitted_calls = self.submitted_rows = 0
         self.counter_overflowed = False
         self.dense_type, self.concat_type = GGUFDense, GGUFConcat
+        # Only stock MTP's named fc_h consumes n*HC physical rows. Other
+        # projections retain the logical Buffer envelope, even at same widths.
+        projection = getattr(getattr(w, "mtp", None), "fc_h", None)
+        self.hc_projection = (projection if type(projection) is GGUFDense
+                              and projection.k == w.cfg.hidden and projection.n == w.cfg.hidden else None)
+        self.hc_streams = w.cfg.streams
+        self.hc_hidden = w.cfg.hidden
         self.maximum_input, self.maximum_output = large_limits(w.cfg, rows, w.head.n, int(w.meta.get("world", 1)))
         self.stream = torch.cuda.current_stream(self.device) if self.device.type == "cuda" else None
         self.input_owner, self.input_storage = self._aligned(ROWS * self.maximum_input, torch.float16)
@@ -207,9 +214,16 @@ class TiledLinears:
             return matrix.parts
         return None
 
+    def _hc_rows_allowed(self, rows, matrix):
+        return (matrix is self.hc_projection and self.hc_projection is not None
+                and ROWS < rows <= self.rows * self.hc_streams and rows % self.hc_streams == 0
+                and matrix.k == self.hc_hidden and matrix.n == self.hc_hidden)
+
     def matmul(self, x, matrix, out):
         # Small-row projections preserve the existing Dense/Concat bodies.
-        if type(x) is not torch.Tensor or x.ndim != 2 or not ROWS < x.shape[0] <= self.rows:
+        if type(x) is not torch.Tensor or x.ndim != 2 or not ROWS < x.shape[0]:
+            return None
+        if x.shape[0] > self.rows and not self._hc_rows_allowed(x.shape[0], matrix):
             return None
         parts = self._parts(matrix)
         if (parts is None or type(out) is not torch.Tensor or x.layout != torch.strided
