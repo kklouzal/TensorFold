@@ -1,5 +1,12 @@
 # TensorFold fork
 
+The private `router_blas` operator experiment evaluates CUDA12.9 cuBLAS
+SgemvBatched with shared read-only weight pointers and disjoint preallocated
+vector/output staging. It does not enable the existing native-logits or other
+optimized flags, and no model path is selected. Exact canonical per-row FP32
+logits, stable routing and near-tie behavior require actual V100 zero-tolerance
+oracles before model integration or any throughput claim.
+
 The combined Dense/batched-prelude wheel `86cb036d` passed 81 integrated GPU
 controls, including real Dense weights, two target attention layers and eight
 96-token sessions. All eight ranks recorded 329 batches, including 109 MTP
