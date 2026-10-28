@@ -1,5 +1,15 @@
 # TensorFold fork
 
+The private `source-owner-target-dense-trial` composes the current native target/MTP
+prelude and startup overlap with the existing exact fixed-M32 ATen Dense staging
+helper. Select it explicitly with `TENSORFOLD_SM70_PROFILE` in the finite V100
+probe (`--native-dense-trial --session-ceiling 24`); it has a distinct State/prefix/worker epoch and retains the 24-window
+admission floor. Generic layouts, output aliases, autograd and errors retain
+the reference wrapper. No kernel, recurrent-state precision, Q8 K/V context,
+MTP confidence or quality setting changes. Normal wholewheel CPU, native Dense,
+real-bound TP8 state/frame/MTP and all-six throughput/quality checks are pending;
+this private candidate is unqualified and claims no performance gain.
+
 Canonical MTP text refresh/proposal frames now use the existing actual text
 coordinate producer when no explicit coordinates or deferred boundary are
 present. It preserves hidden/cache positions at `mtp_len`, independent of next

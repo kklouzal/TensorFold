@@ -1308,3 +1308,25 @@ def test_overlap_flag_requires_manifest_and_each_child_inherits_before_start(tmp
         probe.arguments(raw+["--rank","1"])
     monkeypatch.setenv("TENSORFOLD_STARTUP_CONTENT_OVERLAP","1")
     assert probe.arguments(raw+["--rank","1"]).overlap_content_capture
+
+
+@pytest.mark.parametrize("profile,ceiling,valid", [
+    (None, None, False), ("source-owner-target-prelude-trial", 24, False),
+    ("source-owner-target-dense-trial", None, False),
+    ("source-owner-target-dense-trial", 24, True)])
+def test_private_native_dense_flag_requires_explicit_matching_profile_and_funded_region(
+        tmp_path, monkeypatch, profile, ceiling, valid):
+    if profile is None:
+        monkeypatch.delenv("TENSORFOLD_SM70_PROFILE", raising=False)
+    else:
+        monkeypatch.setenv("TENSORFOLD_SM70_PROFILE", profile)
+    argv = [*cli(tmp_path), "--native-dense-trial"]
+    if ceiling is not None:
+        argv.extend(["--session-ceiling", str(ceiling)])
+    if valid:
+        args = probe.arguments(argv)
+        assert args.native_dense_trial and args.requested_sm70_profile == profile
+    else:
+        with pytest.raises(SystemExit):
+            probe.arguments(argv)
+    assert not (tmp_path / "results").exists()

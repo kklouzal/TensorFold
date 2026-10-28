@@ -29,7 +29,7 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
     from tensorfold.families.qwen4_exp.cuda.multi_graphs import RoundGraphs, UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT
     from tensorfold.families.qwen4_exp.cuda.owner_execution import KERNEL_FAMILY, FULL_COLLECTIVE, UNCAPTURED
     from tensorfold.families.qwen4_exp.cuda.owner_preparation import OwnerPreparation
-    from tensorfold.families.qwen4_exp.cuda.prefix_policy import OWNER_GRAPH_PROFILE, OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE
+    from tensorfold.families.qwen4_exp.cuda.prefix_policy import OWNER_GRAPH_PROFILE, OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_TARGET_DENSE_PROFILE
     from tensorfold.families.qwen4_exp.kv_formats import get_pair
     from test_sm70_unique_piece_graphs_tp8 import _equal, _committed
 
@@ -71,7 +71,7 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
         phase("communicator/open")
         comm.open(rank, 8, "127.0.0.1", port, timeout_s=90, key="tf_native_owner_exact_pieces")
         base = _weights_with_stock_mtp_protocol(head_dim=256)
-        if target_greedy == "bound-prelude":
+        if target_greedy in ("bound-prelude", "bound-dense"):
             from dataclasses import replace
 
             # A real model has repeated attention layers sharing the issued
@@ -88,7 +88,7 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
             history_layout="unique", indexer_history="gpu", attention_degree=1,
             capture_ready=True, unique_capture_contract=UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT,
             sm70_profile=OWNER_GRAPH_PROFILE)
-        if target_greedy == "bound-prelude":
+        if target_greedy in ("bound-prelude", "bound-dense"):
             from tensorfold.families.qwen4_exp.position_profile import (
                 resolve_position_profile, prepare_position_vectors, bind_position_profile,
             )
@@ -118,12 +118,12 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
             if compact_target:
                 from tensorfold.families.qwen4_exp.cuda.target_greedy import POLICY
 
-                weights.meta.update(sm70_profile=OWNER_TARGET_PRELUDE_PROFILE if compact_target in ("prelude", "bound-prelude") else
+                weights.meta.update(sm70_profile=OWNER_TARGET_DENSE_PROFILE if compact_target == "bound-dense" else OWNER_TARGET_PRELUDE_PROFILE if compact_target in ("prelude", "bound-prelude", "bound-dense") else
                     OWNER_TARGET_GUARD_PROFILE if compact_target == "guard" else OWNER_TARGET_GREEDY_PROFILE,
                     sm70_target_greedy_trial={"policy": POLICY}, target_greedy_owner=None)
-                if compact_target in ("guard", "prelude", "bound-prelude"):
+                if compact_target in ("guard", "prelude", "bound-prelude", "bound-dense"):
                     weights.meta["sm70_native_guard_trial"] = True
-                if compact_target in ("prelude", "bound-prelude"):
+                if compact_target in ("prelude", "bound-prelude", "bound-dense"):
                     weights.meta["sm70_owner_prelude_zero"] = torch.zeros(1, dtype=torch.int32, device=weights.device)
                     weights.meta["sm70_owner_prelude_submitted_frames"] = 0
                     weights.meta["sm70_owner_prelude_submitted_mtp_frames"] = 0
@@ -159,6 +159,26 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
         eager_weights, eager, eager_preparation = decoder(True)
         combined_weights, combined, combined_preparation = decoder(True, compact_target=target_greedy)
         eager_preparation.adopt(eager_weights, eager)
+        from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense
+        from tensorfold.cuda.sm70 import gguf_ops
+
+        native_calls = [0]
+        ordinary_dense32 = gguf_ops.dense32
+
+        def counted_dense32(*args, **kwargs):
+            native_calls[0] += 1
+            return ordinary_dense32(*args, **kwargs)
+
+        if target_greedy == "bound-dense":
+            gguf_ops.dense32 = counted_dense32
+
+        def select_dense(weights):
+            # Fixture owners share immutable weights; switch only the dispatch
+            # around serialized calls, leaving eager controls on reference math.
+            GGUFDense.implementation = ("native32" if target_greedy == "bound-dense"
+                                       and weights is combined_weights else "reference")
+
+        select_dense(combined_weights)
         phase("capture/reference-before-adoption")
         graphs = RoundGraphs(combined, 1 << 30)
         graphs.capture()
@@ -181,6 +201,7 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
 
         prompt = ([4, 17, 3, 99, 33, 2, 7, 5, 6] * 15)[:129]
         for weights, dec in ((torch_weights, torch_decoder), (eager_weights, eager), (combined_weights, combined)):
+            select_dense(weights)
             prefill(_slot(weights, dec.free[0], dec.buf, dec.mbuf, dec.pbuf, 260, 8), prompt, None)
         for rows, kept in ((1, 1), (2, 1), (3, 2)):
             phase(f"verify/rows={rows}/kept={kept}")
@@ -188,10 +209,13 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
             target = eager.free[0]
             actual_state = combined.free[0]
             reference_state = torch_decoder.free[0]
+            select_dense(eager_weights)
             expected = compute(eager_weights, stage(eager_weights, eager.buf, [(target, tokens)]), eager.buf).clone()
+            select_dense(combined_weights)
             actual = graphs.verify_forward(stage(combined_weights, combined.buf, [(actual_state, tokens)], late=True))
             _equal(actual, expected)
             _equal(combined.buf.streams[:rows], eager.buf.streams[:rows])
+            select_dense(torch_weights)
             reference = compute(torch_weights,
                 stage(torch_weights, torch_decoder.buf, [(reference_state, tokens)]), torch_decoder.buf).clone()
             assert torch.isfinite(reference).all() and torch.isfinite(expected).all()
@@ -212,7 +236,10 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
             eager.admit(expected)
             combined.admit(actual)
             for iteration in range(128):
-                expected_done, actual_done = eager.round(), combined.round()
+                select_dense(eager_weights)
+                expected_done = eager.round()
+                select_dense(combined_weights)
+                actual_done = combined.round()
                 assert expected.error is actual.error is None
                 assert (actual.out, actual.drafts, actual.done) == (expected.out, expected.drafts, expected.done)
                 _committed(actual.st, expected.st)
@@ -227,8 +254,11 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
             if repetition:
                 assert actual.cached > 0
             phase(f"request/completed/repetition={repetition}")
+        if target_greedy == "bound-dense":
+            assert native_calls[0] > 0
+            print(json.dumps({"rank": rank, "dense_native_submissions": native_calls[0]}), flush=True)
         assert graphs.bound.hits > 0
-        if target_greedy in ("prelude", "bound-prelude"):
+        if target_greedy in ("prelude", "bound-prelude", "bound-dense"):
             assert combined_weights.meta["sm70_owner_prelude_submitted_frames"] > 0
             assert combined_weights.meta["sm70_owner_prelude_submitted_mtp_frames"] > 0
             assert combined_weights.meta["sm70_owner_prelude_zero"].tolist() == [0]
@@ -295,7 +325,7 @@ def _retire_fixture_context(context, directory, primary=None):
         BaseException.__context__.__set__(primary, secondary)
         raise primary
 
-@pytest.mark.parametrize("target_greedy", [False, True, "guard", "prelude", "bound-prelude"])
+@pytest.mark.parametrize("target_greedy", [False, True, "guard", "prelude", "bound-prelude", "bound-dense"])
 def test_v100_tp8_native_owner_exact_pieces_match_native_eager_frames_and_commits(target_greedy):
     if torch.cuda.device_count() < 8 or any(torch.cuda.get_device_capability(rank) != (7, 0) for rank in range(8)):
         pytest.skip("requires eight real SM70 GPUs and the supported source foundation")

@@ -128,6 +128,8 @@ def arguments(argv=None):
     parser.add_argument("--out", type=Path, required=True, help="new private result directory")
     parser.add_argument("--triton-cache-root", type=Path,
                         help="opt-in persistent cache root: each child inherits TRITON_CACHE_DIR=ROOT/rank-N before startup; Triton retains its source/platform/configuration keys")
+    parser.add_argument("--native-dense-trial", action="store_true",
+                        help="private exact native32 Dense composition with native target/MTP prelude; requires explicit matching SM70 profile and session ceiling24; unqualified")
     parser.add_argument("--overlap-content-capture", action="store_true",
                         help="private TP8 owner MTP diagnostic: enable funded one-worker fresh artifact hashing during startup; inherited by all ranks before imports; default serial hashing")
     parser.add_argument("--gpus", default="0,1,2,3,4,5,6,7")
@@ -191,6 +193,11 @@ def arguments(argv=None):
     # The existing constructor owns supported values, runtime qualification and
     # its unset default. Recording intent must not select a different profile.
     args.requested_sm70_profile = os.environ.get(PROFILE_ENV)
+    if args.native_dense_trial:
+        from tensorfold.cuda.sm70.execution_policy import OWNER_TARGET_DENSE_TRIAL
+
+        if args.requested_sm70_profile != OWNER_TARGET_DENSE_TRIAL or args.session_ceiling != 24:
+            parser.error("--native-dense-trial requires explicit source-owner-target-dense-trial and --session-ceiling24")
     if args.expect_prefix_reuse:
         from tensorfold.families.qwen4_exp.cuda.prefix_policy import state_epoch
 
@@ -308,14 +315,14 @@ def record_execution_profile(engine, report, *, requested):
         "roles": roles}
     if requested is not None and requested != engine.sm70_profile:
         raise ValueError("requested SM70 profile differs from the actual constructor selection")
-    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL
+    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL
 
-    if engine.sm70_profile in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL):
+    if engine.sm70_profile in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL):
         from tensorfold.families.qwen4_exp.cuda.multi_graphs import (
             UNIQUE_CAPTURE_CONTRACT, UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT,
         )
 
-        contract = (UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT if engine.sm70_profile in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL)
+        contract = (UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT if engine.sm70_profile in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL)
                     else UNIQUE_CAPTURE_CONTRACT)
 
         decoder = engine.multi
@@ -814,7 +821,7 @@ def worker(args):
     from tensorfold.cuda import precision, prompt_precision
     from tensorfold.cuda.cohort import FAILURE_FD_ENV, notify_failure
     from tensorfold.families.qwen4_exp import cuda_engine
-    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL
+    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL
     from tensorfold.serve_options import drafter_metadata_source
     from tensorfold.token_metadata import load_tokenizer, tokenizer_identity
 
@@ -843,7 +850,7 @@ def worker(args):
             context=CONTEXT, context_explicit=True,
             parallel=getattr(args, "session_ceiling", None) or "auto", kv_full_windows="auto",
             kv_dtype="int8", indexer_history="gpu", max_waiting_input_bytes=waiting_input_credit(args),
-            output_queue_tokens=args.tokens, graphs=args.requested_sm70_profile in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL),
+            output_queue_tokens=args.tokens, graphs=args.requested_sm70_profile in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL),
             **({"execution_profile_manifest": args.execution_profile_manifest}
                if getattr(args, "execution_profile_manifest", None) is not None else {}))
         record_execution_profile(engine, report, requested=args.requested_sm70_profile)

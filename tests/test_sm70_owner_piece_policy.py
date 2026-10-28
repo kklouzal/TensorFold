@@ -32,10 +32,10 @@ def request(module, **changes):
     return module.unique_graph_request(module.OWNER_GRAPH_TRIAL, **args)
 
 
-@pytest.mark.parametrize("target,guard,prelude", [(False, False, False), (True, False, False), (True, True, False), (True, True, True)])
-def test_new_profile_requires_issued_native_owner_and_grants_only_exact_nonattention_pieces(source, monkeypatch, target, guard, prelude):
+@pytest.mark.parametrize("target,guard,prelude,dense", [(False, False, False, False), (True, False, False, False), (True, True, False, False), (True, True, True, False), (True, True, True, True)])
+def test_new_profile_requires_issued_native_owner_and_grants_only_exact_nonattention_pieces(source, monkeypatch, target, guard, prelude, dense):
     module = source.module
-    selected = module.OWNER_TARGET_PRELUDE_TRIAL if prelude else module.OWNER_TARGET_GUARD_TRIAL if guard else module.OWNER_TARGET_GREEDY_TRIAL if target else module.OWNER_GRAPH_TRIAL
+    selected = module.OWNER_TARGET_DENSE_TRIAL if dense else module.OWNER_TARGET_PRELUDE_TRIAL if prelude else module.OWNER_TARGET_GUARD_TRIAL if guard else module.OWNER_TARGET_GREEDY_TRIAL if target else module.OWNER_GRAPH_TRIAL
     monkeypatch.setenv(module.PROFILE_ENV, selected)
     if guard:
         monkeypatch.setattr(family_native, "extension", lambda: source.calls.append("extension") or
@@ -46,6 +46,7 @@ def test_new_profile_requires_issued_native_owner_and_grants_only_exact_nonatten
     assert module.configure(source.text, tp=8, torch=family.torch) == selected
     assert family.selectors(source.policy) == (True, False, False, False, False, False,
                                               "packed_exact", "native32", None)
+    assert source.policy.weights.GGUFDense.implementation == ("native32" if dense else "reference")
     weights = family.weights(source)
     if prelude:
         weights.device = "cpu"
@@ -61,6 +62,9 @@ def test_new_profile_requires_issued_native_owner_and_grants_only_exact_nonatten
     assert weights.meta.get("sm70_native_guard_trial", False) is guard
     if guard:
         assert source.calls[:3] == ["audit", "extension", "guard-code"]
+    if dense:
+        assert weights.meta["sm70_family_trial"]["dense_math"] == "original-fixed-m32-aten-v1"
+        assert weights.meta["sm70_family_trial"]["dense"] == "native32"
     assert weights.meta["capture_ready"] is True
     assert weights.meta["unique_capture_contract"] == contract
     assert weights.meta["sm70_family_trial"]["attention"] == "prepared-native-owner-eager-trial"
@@ -95,6 +99,9 @@ def test_combined_prefix_epoch_cannot_borrow_old_graph_or_eager_state_before_mut
 
 
 @pytest.mark.parametrize("profile,slots,refused", [
+    (prefix_policy.OWNER_TARGET_DENSE_PROFILE, 23, True),
+    (prefix_policy.OWNER_TARGET_DENSE_PROFILE, 24, False),
+    (prefix_policy.OWNER_TARGET_DENSE_PROFILE, 26, False),
     (prefix_policy.OWNER_TARGET_PRELUDE_PROFILE, 23, True),
     (prefix_policy.OWNER_TARGET_PRELUDE_PROFILE, 24, False),
     (prefix_policy.OWNER_TARGET_PRELUDE_PROFILE, 26, False),
