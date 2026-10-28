@@ -338,8 +338,9 @@ __global__ void __launch_bounds__(TILE_WARPS * 32) fused_up_kernel(const uint8_t
     const int* items, int item_count, int pairs, uint8_t* down_codes, uint8_t* down_scales, int n, int k, int slices,
     const int* counts, const int* members, int slots, int code_rows) {
     // One m16 tile a warp (WM 1): with both projections' accumulators, 2-tile warps cost occupancy (measured
-    // 2.02 -> 2.68 ms for a 4096-row Qwen layer on sm_120), unlike down_kernel.
-    constexpr int WM = 1, WGN = TILE_WARPS * WM / MT, SPW = 8 / WGN;
+    // 2.02 -> 2.68 ms for a 4096-row Qwen layer on sm_120), unlike down_kernel. A shared input (COMMON) holds one set
+    // of A fragments for both projections (AP 1): fewer registers, the same operands.
+    constexpr int WM = 1, WGN = TILE_WARPS * WM / MT, SPW = 8 / WGN, AP = COMMON ? 1 : 2;
     static_assert(MT % WM == 0 && (MT / WM) * WGN == TILE_WARPS && 8 % WGN == 0, "staged A4 warp layout");
     static_assert(SPW % 2 == 0, "a warp owns whole 16-column down blocks");
     __shared__ __align__(16) uint8_t stage[STAGES][2][BTILE];
@@ -399,24 +400,23 @@ __global__ void __launch_bounds__(TILE_WARPS * 32) fused_up_kernel(const uint8_t
     // As down_kernel: SINGLE accumulates into the totals; A fragments are prefetched one group ahead.
     float total[2][WM][SPW][4] = {}, part[2][WM][SPW][4];
     float (&acc)[2][WM][SPW][4] = *(SINGLE ? &total : &part);
-    const auto load_a = [&](int kg, uint32_t (&a)[2][WM][4], uint32_t (&sa)[2][WM]) {
+    const auto load_a = [&](int kg, uint32_t (&a)[AP][WM][4], uint32_t (&sa)[AP][WM]) {
 #pragma unroll
-        for (int p = 0; p < 2; ++p) {
-            const int64_t code_projection = COMMON ? 0 : p;
+        for (int p = 0; p < AP; ++p) {
 #pragma unroll
             for (int i = 0; i < WM; ++i) {
-                const int64_t a0at = (code_projection * code_count + input0[i]) * (k / 2) + kg * 32 + t * 4;
-                const int64_t a1at = (code_projection * code_count + input1[i]) * (k / 2) + kg * 32 + t * 4;
+                const int64_t a0at = (p * code_count + input0[i]) * (k / 2) + kg * 32 + t * 4;
+                const int64_t a1at = (p * code_count + input1[i]) * (k / 2) + kg * 32 + t * 4;
                 a[p][i][0] = valid0[i] ? *reinterpret_cast<const uint32_t*>(codes + a0at) : 0u;
                 a[p][i][1] = valid1[i] ? *reinterpret_cast<const uint32_t*>(codes + a1at) : 0u;
                 a[p][i][2] = valid0[i] ? *reinterpret_cast<const uint32_t*>(codes + a0at + 16) : 0u;
                 a[p][i][3] = valid1[i] ? *reinterpret_cast<const uint32_t*>(codes + a1at + 16) : 0u;
                 sa[p][i] = scale_valid[i] ? *reinterpret_cast<const uint32_t*>(
-                    scales + (code_projection * code_count + scale_row[i]) * (k / 16) + kg * 4) : 0u;
+                    scales + (p * code_count + scale_row[i]) * (k / 16) + kg * 4) : 0u;
             }
         }
     };
-    uint32_t a[2][WM][4] = {}, sa[2][WM] = {};
+    uint32_t a[AP][WM][4] = {}, sa[AP][WM] = {};
     if (live) load_a(0, a, sa);
 #pragma unroll
     for (int s = 0; s < STAGES - 1; ++s) {
@@ -440,22 +440,23 @@ __global__ void __launch_bounds__(TILE_WARPS * 32) fused_up_kernel(const uint8_t
             }
         }
         if (live) {
-            uint32_t next[2][WM][4] = {}, next_sa[2][WM] = {};
+            uint32_t next[AP][WM][4] = {}, next_sa[AP][WM] = {};
             if (kg + 1 < kg_count) load_a(kg + 1, next, next_sa);
 #pragma unroll
             for (int p = 0; p < 2; ++p) {
                 const uint8_t* staged = stage[kg % STAGES][p];
+                const int ap = COMMON ? 0 : p;
 #pragma unroll
                 for (int j = 0; j < SPW; ++j) {
                     const int s = sub0 + j;
                     const uint2 b = reinterpret_cast<const uint2*>(staged)[s * 32 + lane];
                     const uint32_t sb = reinterpret_cast<const uint32_t*>(staged + 2048)[s * 8 + g];
 #pragma unroll
-                    for (int i = 0; i < WM; ++i) mma4::mma_fp4(acc[p][i][j], a[p][i], b.x, b.y, sa[p][i], sb);
+                    for (int i = 0; i < WM; ++i) mma4::mma_fp4(acc[p][i][j], a[ap][i], b.x, b.y, sa[ap][i], sb);
                 }
             }
 #pragma unroll
-            for (int p = 0; p < 2; ++p)
+            for (int p = 0; p < AP; ++p)
 #pragma unroll
                 for (int i = 0; i < WM; ++i) {
 #pragma unroll
