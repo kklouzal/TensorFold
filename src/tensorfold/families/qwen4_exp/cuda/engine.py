@@ -771,7 +771,8 @@ class FlashNextEngine:
                 from tensorfold.cuda.sm70.attention_native import workspace_bytes
 
                 main_rows = row_envelope(count) if concurrent else max(8, each)
-                padded_bytes = (1 + int(mtp)) * padded_linears.workspace_bytes_from_text(text, main_rows, tp)
+                padded_bytes = (1 + int(mtp)) * padded_linears.workspace_bytes_from_text(
+                    text, main_rows, tp, large_profile=self.sm70_profile)
                 native_attention = (family_ops._NATIVE_FAMILY and family_ops._NATIVE_ATTENTION
                                     and history_placement is None)
                 if not native_attention and not padded_bytes and history_placement is None:
@@ -1177,6 +1178,15 @@ class FlashNextEngine:
                 media_resources["shared_host_payload_bound"])
             host_capacity["host_extra_staging"] = host_capacity.get("host_extra_staging", 0) + (
                 media_resources["vision_loading_host_payload_bound"])
+        if sm70:
+            from . import padded_linears
+
+            large_row_bound = execution_rows if execution_rows is not None else 32
+            if session_ceiling is not None:
+                large_row_bound = min(large_row_bound, session_ceiling * each)
+            dense_tile_host = tp * (1 + int(mtp)) * padded_linears.host_workspace_bytes(
+                large_row_bound, self.sm70_profile)
+            host_capacity["host_workspace_bytes"] = host_capacity.get("host_workspace_bytes", 0) + dense_tile_host
         from .startup_content import prepare as prepare_startup_content
 
         self._startup_content_plan = prepare_startup_content(self, manifest if execution_profile_manifest is not None else None)

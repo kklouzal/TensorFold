@@ -88,3 +88,15 @@ def test_existing_geometry_and_owner_buckets_fund_larger_rows_at_same24windows()
         sizes.append(geometry.needed(262144))
         assert row_buckets(rows)[-1]==rows and max(row_buckets(rows))==rows
     assert sizes[0]<sizes[1]<sizes[2]
+
+
+def test_snapshot_exposes_existing_role_owned_tile_submissions_without_device_reads():
+    owner=NS(verify={},mtp={},bound=NS())
+    target=NS(submitted_calls=5,submitted_rows=320,counter_overflowed=False)
+    mtp=NS(submitted_calls=2,submitted_rows=96,counter_overflowed=False)
+    engine=NS(multi=NS(graphs=owner,w=NS(meta={}),buf=NS(padded_linears=target),mbuf=NS(padded_linears=mtp)))
+    counters=probe.graph_execution_snapshot(engine)["counters"]
+    assert counters["dense_tiles.target.submitted_calls"]==5
+    assert counters["dense_tiles.mtp.submitted_rows"]==96
+    mtp.counter_overflowed=True
+    assert "dense_tiles.mtp.submitted_rows" not in probe.graph_execution_snapshot(engine)["counters"]

@@ -556,6 +556,15 @@ def graph_execution_snapshot(engine):
         counters["owner.prelude_mtp_submitted_frames"] = mtp_prelude
         if type(prelude) is int and prelude >= mtp_prelude:
             counters["owner.prelude_target_submitted_frames"] = prelude - mtp_prelude
+    for role, name in (("target", "buf"), ("mtp", "mbuf")):
+        buffers = _owned_attributes(_owned_attributes(decoder).get(name))
+        tiles = _owned_attributes(buffers.get("padded_linears"))
+        if tiles.get("counter_overflowed", False):
+            continue
+        for name in ("submitted_calls", "submitted_rows"):
+            value = tiles.get(name)
+            if type(value) is int and 0 <= value <= (1 << 63) - 1:
+                counters["dense_tiles." + role + "." + name] = value
     if target is not None:
         from tensorfold.families.qwen4_exp.cuda.target_greedy import TargetGreedy
 

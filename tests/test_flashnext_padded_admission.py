@@ -12,26 +12,27 @@ from tensorfold.cuda.sm70 import attention_native
 from tensorfold.families.qwen4_exp.cuda import padded_linears
 
 
-def geometry_wrapper(monkeypatch, streams, each, mtp, native):
+def geometry_wrapper(monkeypatch, streams, each, mtp, native, *, rows=None, profile="reference"):
     source = Path(__file__).parents[1] / "src/tensorfold/families/qwen4_exp/cuda/engine.py"
     tree = ast.parse(source.read_text())
-    node = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "gguf_geometry"
+    node = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "sm70_geometry"
                 and any(isinstance(c, ast.Name) and c.id == "padded_bytes" for c in ast.walk(n)))
     monkeypatch.setattr(family_ops, "_NATIVE_FAMILY", native)
     monkeypatch.setattr(family_ops, "_NATIVE_ATTENTION", native)
     calls = []
     monkeypatch.setattr(padded_linears, "workspace_bytes_from_text",
-                        lambda text, rows, world: calls.append((text, rows, world)) or 127)
+                        lambda text, rows, world, **kwargs: calls.append((text, rows, world)) or 127)
     monkeypatch.setattr(attention_native, "workspace_bytes", lambda rows, heads, dim, cap: rows*cap)
     base = Geometry(lambda cap: cap*10, 123, 7)
     observed = []
     env = {"__package__": "tensorfold.families.qwen4_exp.cuda", "target_geometry":
            lambda text, count: observed.append(text) or base, "tp": 8, "streams": streams,
            "each": each, "mtp": mtp, "rows0": 2048, "head_dim": 256,
-           "concurrent": streams > 1, "row_envelope": lambda count: count * each,
-           "history_placement": None}
+           "self": SimpleNamespace(sm70_profile=profile), "concurrent": streams > 1,
+           "row_envelope": lambda count: count * each if rows is None else min(count * each, rows),
+           "history_placement": None, "owner_preparation": None}
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(source), "exec"), env)
-    return env["gguf_geometry"], base, calls, observed
+    return env["sm70_geometry"], base, calls, observed
 
 
 @pytest.mark.parametrize("streams,each,mtp,native", [
@@ -52,7 +53,7 @@ def test_prepared_owners_are_charged_once_per_execution_buffer(monkeypatch, stre
 
 def test_disabled_prepared_and_native_policy_retains_original_geometry(monkeypatch):
     wrapper, base, _calls, _observed = geometry_wrapper(monkeypatch, 6, 3, True, False)
-    monkeypatch.setattr(padded_linears, "workspace_bytes_from_text", lambda *args: 0)
+    monkeypatch.setattr(padded_linears, "workspace_bytes_from_text", lambda *args, **kwargs: 0)
     assert wrapper({"num_attention_heads": 24, "num_key_value_heads": 2}) is base
 
 
@@ -72,3 +73,18 @@ def test_padded_policy_is_in_the_existing_rank_settings_digest():
     assert before == [True, False, False, False] and after == [True, False, True, False]
     policy["routing_native"]._NATIVE_LOGITS = True
     assert eval(compile(expression, str(source), "eval"), policy) == [True, False, True, True]
+
+
+def test_actual_large_row_engine_geometry_funds_target_and_mtp_owned_tiles(monkeypatch):
+    from tests.test_sm70_padded_linears import metadata
+    original = padded_linears.workspace_bytes_from_text
+    profile = "source-dense-owner-batch-prelude-trial"
+    wrapper, base, _calls, _observed = geometry_wrapper(monkeypatch, 24, 3, True, False,
+                                                       rows=64, profile=profile)
+    monkeypatch.setattr(padded_linears, "workspace_bytes_from_text", original)
+    text = metadata()
+    result = wrapper(text)
+    charge = 2 * original(text, 64, 8, large_profile=profile)
+    assert charge > 0
+    assert result.bytes_at(262144) == base.bytes_at(262144) + charge
+    assert result.reserve == base.reserve and result.minimum_slots == base.minimum_slots

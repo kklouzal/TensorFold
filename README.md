@@ -1,5 +1,13 @@
 # TensorFold fork
 
+The private Dense large-row candidate uses prepaid, stream-owned M32 scratch
+for eligible64/72-row Dense/Concat projections. Each part retains the original
+fixed-M32 ATen operation, and tile outputs are written into their final owner
+before scratch reuse. Existing small-row, reference, autograd and unsupported
+layout routes remain unchanged; packed-expert dispatch is a separate candidate.
+Additional scratch is charged before24-window admission. Source/CPU checks and
+SM70 exact-oracle plus integrated development results are still pending.
+
 A private Dense probe can explicitly select `--execution-rows 64` or `72`
 with `--native-dense-trial --owner-batch-prelude-trial --session-ceiling 24 --fast-grid
 --concurrency-grid --fast-grid-protocol fast-grid-v2 --tokens 2048
