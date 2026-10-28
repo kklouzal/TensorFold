@@ -508,14 +508,14 @@ def test_actual_batch_profile_without_optional_intent_is_still_funded():
     import ast
     import inspect
     import textwrap
-    from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL
+    from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, WMMA80_TRIAL
 
     function = ast.parse(textwrap.dedent(inspect.getsource(probe.run_concurrency_leader))).body[0]
     funding = next(node for node in ast.walk(function) if isinstance(node, ast.IfExp)
                    and isinstance(node.body, ast.Name) and node.body.id == "BATCH_EVIDENCE_CONTROL_BYTES")
     expression = compile(ast.Expression(body=funding), "actual_batch_receipt_funding", "eval")
     namespace = dict(BATCH_EVIDENCE_CONTROL_BYTES=probe.BATCH_EVIDENCE_CONTROL_BYTES,
-                     OWNER_BATCH_PRELUDE_TRIAL=OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL=ROUTER_BLAS_TRIAL,
+                     OWNER_BATCH_PRELUDE_TRIAL=OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL=ROUTER_BLAS_TRIAL, WMMA80_TRIAL=WMMA80_TRIAL,
                      args=NS(owner_batch_prelude_trial=False), engine=NS(sm70_profile=OWNER_BATCH_PRELUDE_TRIAL))
     assert eval(expression, namespace) == 8192
     namespace['engine'].sm70_profile = ROUTER_BLAS_TRIAL

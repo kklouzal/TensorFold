@@ -111,3 +111,31 @@ def dense_wmma(x, weight, out):
     """Optional fixed-partition Volta WMMA provider; separate math qualification required."""
     extension().dense_wmma(x, weight, out)
     return out
+
+
+def experts_wmma80(x, picks, gate, up, down, shared, out):
+    """Approximate K80 routed math: FP16 operands/activation and FP32 WMMA sums.
+
+    This is a distinct candidate, not the exact BMM reduction contract. Shared
+    slots are initialized zero for the owning family's original Dense overwrite.
+    """
+    extension().experts_wmma80(x, picks, gate.data, gate.ggml_type, gate.column_offset,
+        up.data, up.ggml_type, up.column_offset, down.data, down.ggml_type, down.column_offset,
+        *(part.weight for part in shared), out)
+    return out
+
+
+WMMA80_OPERATING_DEVICE_BYTES = 22 << 20
+WMMA80_HOST_BYTES = 64 << 10
+
+
+def wmma80_workspace_bytes():
+    """Private bounded temporaries, including native allocator operating room.
+
+    At32rows/33slots, partials+activation hold5,575,680 bytes. The selected
+    native allocator can require one20MiB large segment and one2MiB small
+    segment. Keep this complete charge through the engine; captured pool
+    commitments remain separately measured by the existing graph owner.
+    No decoded weights are retained or duplicated.
+    """
+    return WMMA80_OPERATING_DEVICE_BYTES, WMMA80_HOST_BYTES

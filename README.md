@@ -1,5 +1,21 @@
 # TensorFold fork
 
+The private `source-router-gdn-wmma80-trial` reopens the preserved expert-only
+WMMA80 candidate on the current Router/GDN/three-file-startup base. It retains
+FP16 operands/activation, with a distinct FP32 WMMA/split8 reduction policy and
+State/prefix epoch. Current Dense32, router, recurrent-state precision, Q8 K/V,
+prefill, MTP confidence and default selectors remain. A fixed22MiB/rank native
+allocator operating allowance and64KiB/rank host credit precede admission;
+all37 WMMA kernel variants are materialized before the physical baseline.
+This private region requires the current default native CUDA allocator, with
+no allocator environment overrides. Existing settled graph commitments remain
+additional. The old42 controls include20 WMMA error-report cases,20 comparison
+cases and two safety/capture controls; they do not impose a numerical tolerance.
+Known old512-token output divergence after87 common tokens is preserved.
+Current INT32/513-slot/top11 safety/capture,24-window physical admission and
+all-six performance with the unchanged six quality tasks remain pending.
+No nonmaterial-quality, speed or release acceptance is claimed.
+
 The private router/GDN/startup composition retains the explicit experimental
 router numerical epoch and adds the existing sealed FP16 State-batched GDN
 implementation with `--gdn-state-batch-trial` and private environment value1.
