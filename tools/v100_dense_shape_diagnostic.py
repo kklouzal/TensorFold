@@ -42,9 +42,10 @@ def shapes(rows):
 
 
 def payload_bound(g):
-    # Two rotating weights, two inputs/outputs, baseline result, pad/result
+    # Two retained rotating weights plus one construction temporary, two
+    # inputs/outputs, baseline result, pad/result
     # buffers and four unrolled graph results. Library/allocator slack separate.
-    return 2 * g.n * g.k * 2 + 16 * (32 * g.k * 2 + 32 * g.n * 4) + (64 << 20)
+    return 3 * g.n * g.k * 2 + 16 * (32 * g.k * 2 + 32 * g.n * 4) + (64 << 20)
 
 
 def write(path, value):
@@ -97,36 +98,118 @@ class Variant:
         return product[:self.x.shape[0]]
 
 
+def timing_outcome(primary, failures):
+    """Transport only actual failures; compaction cannot discard the primary."""
+    from tensorfold.cleanup import raise_failures
+    first = None
+    for failure in failures:
+        if failure is not None:
+            first = failure
+            break
+    if first is None:
+        if primary is not None:
+            raise primary
+        return
+    try:
+        actual = [failure for failure in failures if failure is not None]
+    except BaseException as allocation:
+        if primary is not None:
+            raise primary from allocation
+        raise first from allocation
+    raise_failures(primary, actual)
+
+
+class TimingOwner:
+    """Bounded graph owner retained on the input owners if retirement is unknown."""
+    def __init__(self, variants):
+        if not 1 <= len(variants) <= 2:
+            raise ValueError("one/two bounded weight owners required")
+        self.variants, self.graphs, self.context = variants, [], None
+        self.failures = [None] * 4  # Capture exit, fence and two graph resets.
+        self.retired = False
+        self.capture_context_uncertain = False
+        for variant in variants:
+            variant.timing_owner = self
+
+    def retire(self, torch):
+        try:
+            torch.cuda.synchronize()
+        except BaseException as error:
+            self.failures[1] = error
+            return  # Keep graph, context and pointees attached to variants.
+        for index, graph in enumerate(self.graphs):
+            try:
+                graph.reset()
+            except BaseException as error:
+                self.failures[2 + index] = error
+        if (self.capture_context_uncertain or self.failures[0] is not None
+                or self.failures[1] is not None or self.failures[2] is not None or self.failures[3] is not None):
+            return
+        self.retired = True
+        self.graphs.clear()
+        self.context = None
+        for variant in self.variants:
+            variant.timing_owner = None
+
+
 def timed(torch, variants):
-    graphs = []
-    for variant in variants:
-        variant.call()
+    owner = TimingOwner(variants)
+    primary, result = None, None
+    try:
+        for variant in variants:
+            variant.call()
+            torch.cuda.synchronize()
+            graph = torch.cuda.CUDAGraph()
+            owner.graphs.append(graph)  # Own before context can accept capture.
+            context = owner.context = torch.cuda.graph(graph)
+            entered, body_error = False, None
+            try:
+                owner.capture_context_uncertain = True
+                context.__enter__()
+                entered = True
+                for _ in range(UNROLL):
+                    variant.call()
+            except BaseException as error:
+                body_error = error
+            finally:
+                if entered:
+                    try:
+                        context.__exit__(None, None, None)
+                        owner.capture_context_uncertain = False
+                    except BaseException as error:
+                        owner.failures[0] = error
+            if body_error is not None:
+                raise body_error
+            if owner.failures[0] is not None:
+                raise owner.failures[0]
+        for graph in owner.graphs:
+            graph.replay()
         torch.cuda.synchronize()
-        graph = torch.cuda.CUDAGraph()
-        with torch.cuda.graph(graph):
-            for _ in range(UNROLL):
-                variant.call()
-        graphs.append(graph)
-    for graph in graphs:
-        graph.replay()
-    torch.cuda.synchronize()
-    cpu, gpu = [], []
-    for _ in range(SAMPLES):
-        start, stop = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
-        start.record()
-        before = time.perf_counter_ns()
-        for index in range(REPLAYS):
-            graphs[index % len(graphs)].replay()
-        elapsed = time.perf_counter_ns() - before
-        stop.record()
-        stop.synchronize()
-        cpu.append(elapsed / (REPLAYS * UNROLL))
-        gpu.append(start.elapsed_time(stop) * 1e6 / (REPLAYS * UNROLL))
-    return {"graph_cpu_enqueue_ns_per_projection": cpu,
-            "graph_gpu_stream_ns_per_projection": gpu,
-            "cpu_median_ns": statistics.median(cpu), "gpu_median_ns": statistics.median(gpu),
-            "samples": SAMPLES, "replays": REPLAYS, "unrolled_operations_per_graph": UNROLL,
-            "scope": "GPU stream elapsed includes graph work and possible CPU enqueue starvation; not isolated kernel-only time"}
+        cpu, gpu = [], []
+        for _ in range(SAMPLES):
+            start, stop = torch.cuda.Event(enable_timing=True), torch.cuda.Event(enable_timing=True)
+            start.record()
+            before = time.perf_counter_ns()
+            for index in range(REPLAYS):
+                owner.graphs[index % len(owner.graphs)].replay()
+            elapsed = time.perf_counter_ns() - before
+            stop.record()
+            stop.synchronize()
+            cpu.append(elapsed / (REPLAYS * UNROLL))
+            gpu.append(start.elapsed_time(stop) * 1e6 / (REPLAYS * UNROLL))
+        result = {"graph_cpu_enqueue_ns_per_projection": cpu,
+                "graph_gpu_stream_ns_per_projection": gpu,
+                "cpu_median_ns": statistics.median(cpu), "gpu_median_ns": statistics.median(gpu),
+                "samples": SAMPLES, "replays": REPLAYS, "unrolled_operations_per_graph": UNROLL,
+                "scope": "GPU stream elapsed includes graph work and possible CPU enqueue starvation; not isolated kernel-only time"}
+    except BaseException as error:
+        primary = error
+    owner.retire(torch)
+    # An exit fault used as primary need not also become its own secondary.
+    if owner.failures[0] is primary:
+        owner.failures[0] = None
+    timing_outcome(primary, owner.failures)
+    return result
 
 
 def run(args):

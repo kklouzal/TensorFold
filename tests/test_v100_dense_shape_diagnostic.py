@@ -87,3 +87,83 @@ def test_actual_handler_keeps_primary_and_actual_diagnostic_write_failure(tmp_pa
     assert caught.value is primary
     from tests.test_v100_backend_probe import retained_failure
     assert retained_failure(primary, diagnostic)
+
+
+def fake_timing_cuda(*, exit_failure=None, fence_failure=None, reset_failure=None):
+    from types import SimpleNamespace
+    events = []
+    class Graph:
+        def __init__(self):
+            events.append("created")
+        def reset(self):
+            events.append("reset")
+            if reset_failure is not None:
+                raise reset_failure
+    class Context:
+        def __enter__(self):
+            events.append("enter")
+        def __exit__(self, *_args):
+            events.append("exit")
+            if exit_failure is not None:
+                raise exit_failure
+    def synchronize():
+        events.append("fence")
+        if fence_failure is not None and "enter" in events:
+            raise fence_failure
+    cuda = SimpleNamespace(CUDAGraph=Graph, graph=lambda _graph: Context(), synchronize=synchronize)
+    return SimpleNamespace(cuda=cuda), events
+
+
+def test_actual_timed_body_primary_survives_context_exit_failure():
+    primary, cleanup = RuntimeError("body"), OSError("capture exit")
+    target, events = fake_timing_cuda(exit_failure=cleanup)
+    class Operation:
+        def __init__(self):
+            self.calls = 0
+        def call(self):
+            self.calls += 1
+            if self.calls > 1:
+                assert self.timing_owner.graphs  # Published before accepted capture.
+                raise primary
+    operation = Operation()
+    with pytest.raises(RuntimeError) as caught:
+        d.timed(target, [operation])
+    assert caught.value is primary
+    from tests.test_v100_backend_probe import retained_failure
+    assert retained_failure(primary, cleanup)
+    assert "fence" in events and "reset" in events
+    assert operation.timing_owner is not None and not operation.timing_owner.retired
+
+
+@pytest.mark.parametrize("cut", ["fence", "reset"])
+def test_actual_timed_retains_owner_on_uncertain_retirement(cut):
+    primary, fault = RuntimeError("body"), OSError(cut)
+    target, events = fake_timing_cuda(fence_failure=fault if cut == "fence" else None,
+                                      reset_failure=fault if cut == "reset" else None)
+    class Operation:
+        def __init__(self):
+            self.calls = 0
+        def call(self):
+            self.calls += 1
+            if self.calls > 1:
+                raise primary
+    operation = Operation()
+    with pytest.raises(RuntimeError) as caught:
+        d.timed(target, [operation])
+    assert caught.value is primary
+    from tests.test_v100_backend_probe import retained_failure
+    assert retained_failure(primary, fault)
+    owner = operation.timing_owner
+    assert owner is not None and owner.graphs and owner.context and not owner.retired
+    assert ("reset" in events) == (cut == "reset")
+
+
+def test_actual_timing_owner_releases_only_after_positive_fence_and_reset():
+    from types import SimpleNamespace
+    target, events = fake_timing_cuda()
+    variant = SimpleNamespace()
+    owner = d.TimingOwner([variant])
+    owner.graphs.append(target.cuda.CUDAGraph())
+    owner.retire(target)
+    assert owner.retired and variant.timing_owner is None and not owner.graphs
+    assert events == ["created", "fence", "reset"]
