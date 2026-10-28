@@ -352,6 +352,50 @@ def record_execution_profile(engine, report, *, requested):
         report["unique_graph_trial"] = {"contract": contract,
             "verify_keys": len(decoder.graphs.verify), "mtp_keys": len(decoder.graphs.mtp),
             "admission": engine.capacity_plan["multi_graphs"]}
+    receipt = large_row_expert_model_receipt(engine)
+    if receipt is not None:
+        report["large_row_expert_model"] = receipt
+
+
+def large_row_expert_model_receipt(engine):
+    """Observe actual loaded target-bank geometry before finite caller admission.
+
+    This reads tensor metadata only. It is neither a full-bank numerical test
+    nor a replacement for physical admission or the strict component oracle.
+    """
+    from tensorfold.cuda.sm70.execution_policy import OWNER_EXPERT72_TRIAL
+    from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFExperts
+
+    if engine.sm70_profile != OWNER_EXPERT72_TRIAL:
+        return None
+    if (engine.execution_rows != 64
+            or engine.capacity_plan.get("execution_envelope", {}).get("target_rows") != 64):
+        raise ValueError("expert72 development screen requires actual funded row64 geometry")
+    layers = engine.w.layers
+    if len(layers) != 48:
+        raise ValueError("expert72 model receipt requires all48 target banks")
+    encodings = set()
+    for layer in layers:
+        bank = layer.moe.experts
+        if (not isinstance(bank, GGUFExperts) or (bank.count, bank.width, bank.dims, bank.packed_rows)
+                != (513, 80, 2560, 72) or bank.implementation != "packed_exact"):
+            raise ValueError("expert72 target bank differs from full512-routed+shared/cap72 contract")
+        for packed, rows, columns in ((bank.gate, 512 * 80, 2560), (bank.up, 512 * 80, 2560),
+                                      (bank.down, 512 * 2560, 80)):
+            if (packed.n != rows or packed.k != columns or packed.data.shape[0] != rows
+                    or not packed.data.is_cuda):
+                raise ValueError("expert72 packed bank extents/residency differ from actual full count")
+        encodings.add((bank.gate.ggml_type, bank.up.ggml_type, bank.down.ggml_type))
+    summary = engine.w.meta.get("sm70_family_trial", {}).get("expert_code")
+    if not isinstance(summary, list) or len(summary) != 6 or summary[0] != 22:
+        raise ValueError("expert72 selected code preparation receipt missing")
+    return {"target_banks": len(layers), "routed_experts": 512, "total_including_shared": 513,
+            "native_count_argument": 512, "shared_id": 512, "execution_rows": 64,
+            "expert_native_cap": 72, "local_width": 80, "hidden": 2560,
+            "gate_up_rows_per_bank": 512 * 80, "down_rows_per_bank": 512 * 2560,
+            "encoding_triples": sorted(encodings), "selected_code_summary": summary,
+            "scope": "loaded-model metadata before finite caller admission; first10 component oracle remains subset evidence",
+            "count_dispatch": "runtime validity/shared/addressing argument; no count-specific kernel specialization"}
 
 
 def prepared_prompt(engine, tokenizer, args):

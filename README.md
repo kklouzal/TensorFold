@@ -7,8 +7,11 @@ selected K80 expert code variants before admission and funds its bounded host
 summary. R64/R72 activation scratch is112640/126720 bytes inside the existing
 32MiB decode workspace term; buffers remain funded by the explicit row budget.
 The24 full262144 Q8 K/V floor, MTP2/.7, all six Ns and existing quality checks
-remain hard requirements. Strict large-row controls and the first quick screen
-are pending; no capacity, quality or performance gain is claimed.
+remain hard requirements. The original exact kernels passed43 actual target controls on a genuine10-expert subset; no full512-bank
+numerical qualification is inferred. The all-six tool now records all48 loaded
+target banks at count513, their extents/residency and actual row64/cap72 before
+finite caller admission. The quick screen and full-model capacity/quality remain
+pending; no performance gain is claimed.
 
 A private Dense probe can explicitly select `--execution-rows 64` or `72`
 with `--native-dense-trial --owner-batch-prelude-trial --session-ceiling 24 --fast-grid
