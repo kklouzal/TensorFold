@@ -1,5 +1,12 @@
 # TensorFold fork
 
+The private finite tool accepts `--mtp-drafts 1` for a single FAST v2 comparison
+with quality spot checks; the default remains two proposals. Both modes retain
+the same pinned Q8 MTP companion, target verifier, confidence, context and KV
+formats. The existing method geometry and all-rank policy carry the actual
+proposal limit into resource admission and receipts. Depth one can fit more
+sequences in R32, but its acceptance, output and speed require measurement.
+
 The private Dense and Dense/batched-prelude profiles are integrated here with
 bounded three-worker startup hashing. The Dense/batched component has separate
 81-test GPU evidence; the startup component has separate full-model identity

@@ -46,6 +46,17 @@ def test_default_arguments_preserve_native_profile_without_override_flags(tmp_pa
     assert not hasattr(args, "context") and not hasattr(args, "precision") and not hasattr(args, "position_profile_manifest")
     assert (probe.CONTEXT, probe.WORLD, probe.DEPTH, probe.CONFIDENCE, probe.INPUT_CREDIT) == (
         262144, 8, 2, .7, 16 << 20)
+    assert args.mtp_drafts == 2
+
+
+def test_one_mtp_draft_requires_v2_quality_before_output_creation(tmp_path):
+    raw = cli(tmp_path) + ["--mtp-drafts", "1"]
+    with pytest.raises(SystemExit):
+        probe.arguments(raw)
+    args = probe.arguments(raw + ["--concurrency-grid", "--fast-grid", "--fast-grid-protocol", "fast-grid-v2",
+                                  "--tokens", "2048", "--quality-spotchecks"])
+    assert args.mtp_drafts == 1 and args.tokens == 2048
+    assert not args.out.exists()
 
 
 @pytest.mark.parametrize("extra", [
@@ -919,6 +930,19 @@ def finite_engine_capacity(*, ceiling=None, resident=26, materialized=True, comm
         scheduler=SimpleNamespace(_request_limit=None), retention_catalog=object())
 
 
+def test_actual_mtp_depth_is_checked_before_host_admission(monkeypatch):
+    engine = finite_engine_capacity(ceiling=24, resident=24)
+    args = SimpleNamespace(session_ceiling=24, mtp_drafts=1)
+    with pytest.raises(ValueError, match="declared native"):
+        probe.run_leader(engine, None, args, {})
+    assert engine.scheduler._request_limit is None
+    engine.depth = 1
+    probe.check_engine(engine, session_ceiling=24, mtp_drafts=1)
+    from tensorfold.families.qwen4_exp.cuda.speculation import MethodGeometry
+    method = MethodGeometry("mtp", 1)
+    assert method.target_rows(1) == 2 and method.stock_mtp_cache_layers == 1
+
+
 def test_all_eight_ready_reports_fit_the_funded_slices_and_overflow_remains_a_failure(tmp_path):
     import json
 
@@ -1232,7 +1256,8 @@ def test_unconfigured_rank_cache_preserves_inherited_environment(tmp_path, monke
 
 
 
-def test_owner_piece_tool_intent_and_manifest_reach_real_factory_with_24_native_windows(tmp_path, monkeypatch):
+@pytest.mark.parametrize("drafts", [1, 2])
+def test_owner_piece_tool_intent_and_manifest_reach_real_factory_with_24_native_windows(tmp_path, monkeypatch, drafts):
     import json
     from tensorfold import hub, serve_options
     from tensorfold.cuda.cohort import FAILURE_FD_ENV
@@ -1243,8 +1268,10 @@ def test_owner_piece_tool_intent_and_manifest_reach_real_factory_with_24_native_
     monkeypatch.setenv("TENSORFOLD_SM70_PROFILE", "source-owner-pieces-trial")
     manifest = tmp_path / "execution.json"
     manifest.write_text(json.dumps({"schema": "tensorfold.execution-profile-manifest", "version": 1, "artifacts": {}}))
+    tokens = 2048 if drafts == 1 else 512
+    extra = ["--fast-grid-protocol", "fast-grid-v2", "--mtp-drafts", "1"] if drafts == 1 else []
     args = probe.arguments(cli(tmp_path) + ["--session-ceiling", "24", "--execution-profile-manifest", str(manifest),
-        "--concurrency-grid", "--fast-grid", "--quality-spotchecks", "--tokens", "512"])
+        "--concurrency-grid", "--fast-grid", "--quality-spotchecks", "--tokens", str(tokens)] + extra)
     args.rank = 1
     args.out.mkdir()
     draft = tmp_path / "draft-config"
@@ -1276,9 +1303,9 @@ def test_owner_piece_tool_intent_and_manifest_reach_real_factory_with_24_native_
     assert options["graphs"] is True and options["execution_profile_manifest"] == manifest
     assert options["adaptive_sessions"] is True and options["session_ceiling"] == options["streams"] == 24
     assert (options["max_len"], options["tp"], options["depth"], options["confidence"], options["kv_dtype"]) == (
-        262144, 8, 2, .7, "int8")
+        262144, 8, drafts, .7, "int8")
     assert options["max_waiting_input_bytes"] == probe.waiting_input_credit(args)
-    assert args.fast_grid and args.quality_spotchecks and args.tokens == 512
+    assert args.fast_grid and args.quality_spotchecks and args.tokens == tokens
     assert probe.MAX_RECEIPT_BYTES == 2424832
 
 
