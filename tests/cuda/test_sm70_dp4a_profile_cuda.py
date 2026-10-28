@@ -231,6 +231,20 @@ def test_analytic_zero_silu_and_cpp_alignment_refusals():
     status = torch.zeros(1, dtype=torch.int32, device="cuda")
     with pytest.raises(RuntimeError, match="alignment"):
         module.quantize(x, q, 0, status)
+    # Valid aligned native geometry, but status aliases an immutable source.
+    # Nonfinite weight scale would atomicOr that source if dispatch were reached.
+    packed = torch.zeros((1, 3, 36), dtype=torch.uint8, device="cuda")
+    weight = torch.zeros((1, 54), dtype=torch.uint8, device="cuda")
+    weight[0, 1] = 124  # FP16 +Inf scale, no float-to-int conversion in this test.
+    integers = torch.empty(3, dtype=torch.int32, device="cuda")
+    terms = torch.empty(3, dtype=torch.float32, device="cuda")
+    saved_q, saved_weight = packed.clone(), weight.clone()
+    for source in (packed, weight):
+        alias = source.view(-1)[:4].view(torch.int32)
+        with pytest.raises(RuntimeError, match="debug status must not alias source"):
+            module.debug(packed, weight, 20, integers, terms, alias)
+        exact(packed, saved_q)
+        exact(weight, saved_weight)
 
 
 @pytest.mark.parametrize("columns,prefix,bit", [(2560, 0, 1), (80, 16, 4)])

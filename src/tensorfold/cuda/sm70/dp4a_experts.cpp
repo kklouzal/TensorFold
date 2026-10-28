@@ -66,6 +66,7 @@ void debug(const at::Tensor& q,const at::Tensor& weight,int64_t kind,at::Tensor 
         || (kind==20 && q.size(1)==3 && weight.sizes()==at::IntArrayRef({1,54}))),"debug single-row format geometry");
     TORCH_CHECK(integers.sizes()==at::IntArrayRef({q.size(1)}) && values.sizes()==integers.sizes(),"debug output shapes");
     tensorfold::check_disjoint(integers,{&q,&weight,&values,&status},"debug integer alias");tensorfold::check_disjoint(values,{&q,&weight,&status},"debug float alias");
+    tensorfold::check_disjoint(status,{&q,&weight},"debug status must not alias source");
     c10::cuda::CUDAGuard guard(device);tf_dp4a_debug(q,weight,kind,integers,values,status);
 }
 PYBIND11_MODULE(TORCH_EXTENSION_NAME,m) { m.def("quantize",&quantize);m.def("project",&project);m.def("activate",&activate);m.def("mask",&mask);m.def("debug",&debug); }

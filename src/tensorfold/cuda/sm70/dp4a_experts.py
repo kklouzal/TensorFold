@@ -67,7 +67,7 @@ class Prototype:
             raise ValueError("standalone prototype needs fixed contiguous FP16/INT32 expert geometry")
         if any(torch._C._overlaps(out, value) for value in (x, picks, bank.gate.data, bank.up.data, bank.down.data, *(part.weight for part in bank.shared))):
             raise ValueError("prototype output must be disjoint from inputs/weights")
-        if any(t.requires_grad for t in (x, out)):
+        if any(t.requires_grad for t in (x, out, *(part.weight for part in bank.shared))):
             raise ValueError("standalone prototype is inference-only")
         self.bank, self.x, self.picks, self.out = bank, x, picks, out
         self.device = x.device

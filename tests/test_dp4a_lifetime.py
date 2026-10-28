@@ -270,3 +270,11 @@ def test_replay_failure_poison_blocks_owner_run(monkeypatch):
         owner.run()
     borrower.close()
     owner.close()
+
+
+def test_constructor_rejects_initial_grad_enabled_shared_weight(monkeypatch):
+    owner, _log, _stream, _backend = setup(monkeypatch)
+    owner.bank.shared[1].weight.requires_grad_(True)
+    with pytest.raises(ValueError, match="inference-only"):
+        module.Prototype(owner.bank, owner.x, owner.picks, owner.out)
+    owner.close()
