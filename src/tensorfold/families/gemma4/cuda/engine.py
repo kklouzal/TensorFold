@@ -82,6 +82,7 @@ class Gemma4Engine:
     stream."""
 
     tp = 1
+    graphs = None          # text decode/verify CUDA graph runner (None: every forward eager)
 
     def __init__(self, model_dir: Path, *, drafter: str = "", drafter_bits: int = 16,
                  depth: int | None = None, context: int | None = None,
@@ -145,6 +146,12 @@ class Gemma4Engine:
         # The single request lane's caches are allocated once for the admitted context.
         self._state = self.target.make_state(self.context_window, rows=forward_rows)
         self._draft = self.head.make_state() if self.head is not None else None
+        from .graphs import Graphs
+        # Text decode/verify rounds replay CUDA graphs over the engine-lifetime state; prefill stays eager. Every
+        # row count's smallest-grid graph is captured now (before the load event below orders serving after it),
+        # so no request pays a capture.
+        self.graphs = Graphs(self.target, self._state, max_rows=self.max_rows)
+        self.graphs.prepare(taps=(False, True) if self.head is not None else (False,))
         # Absent from a tokenizer: only whole-prompt checkpoints are kept.
         self._turn = load_tokenizer(model_dir).token_to_id(TURN_MARKER)
         self._prefix = None
@@ -360,8 +367,10 @@ class Gemma4Engine:
                     window = constraint.window(inputs, [-1, *range(len(inputs) - 1)])
                     inputs = window.tokens
                 position = state.position
-                result = self.target.forward(inputs, state, output_taps=active_drafts,
-                                             trusted_tokens=True)
+                if self.graphs is not None:
+                    result = self.graphs.forward(inputs, state, output_taps=active_drafts)
+                else:
+                    result = self.target.forward(inputs, state, output_taps=active_drafts, trusted_tokens=True)
                 logits = result.logits
                 if constraint is not None:
                     constraint.mask(logits, window)

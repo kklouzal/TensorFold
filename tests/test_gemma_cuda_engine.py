@@ -390,3 +390,23 @@ def test_turn_boundary_is_the_last_marker_past_the_cached_prefix_outside_visual_
     assert engine._turn_boundary(prompt, 0, ((6, 10),)) == 0    # never inside a bidirectional visual block
     assert engine._turn_boundary(prompt, 0, ((2, 8),)) == 8     # a block may end at the boundary
     assert engine._turn_boundary([2, 5, 5], 0, ()) == 0
+
+
+def test_graph_runner_serves_decode_rounds_and_prefill_stays_eager(monkeypatch):
+    engine = _engine(monkeypatch)
+    calls = []
+
+    class Graphs:
+        def forward(self, tokens, state, *, output_taps):
+            calls.append((list(tokens), state.position, output_taps))
+            return engine.target.forward(tokens, state)
+
+    engine.graphs = Graphs()
+    got = []
+    engine.generate(list(range(1, 12)), 24, None, lambda t: got.extend(t) and None, stop_eos=False)
+    reference = _engine(monkeypatch)
+    want = []
+    reference.generate(list(range(1, 12)), 24, None, lambda t: want.extend(t) and None, stop_eos=False)
+    assert got == want and calls
+    # Every replayed round starts at a committed decode position and carries the first token plus drafts.
+    assert all(position >= 11 and 1 <= len(tokens) <= engine.max_rows and taps for tokens, position, taps in calls)
