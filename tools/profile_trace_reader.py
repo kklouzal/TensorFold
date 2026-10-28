@@ -48,6 +48,9 @@ class Stream:
             try:
                 value, end = self.decoder.raw_decode(self.buffer, self.position)
                 if end == len(self.buffer) and not self.eof:
+                    # The same value is decoded again after lookahead. Retire
+                    # this default-JSON graph before retaining another buffer.
+                    del value
                     self.more()
                     continue
                 self.position = end

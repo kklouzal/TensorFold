@@ -465,7 +465,7 @@ def test_profile_observer_payload_is_funded_globally_before_any_request(tmp_path
     seen=[]
     error=RuntimeError("stop at real host admission, before requests")
     def finalize(_catalog,*,caller,**_kwargs):
-        expected=finite.control_payload_bytes(512)+finite.screen_control_payload_bytes(512)+8*((128<<10)+(2<<30))
+        expected=finite.control_payload_bytes(512)+finite.screen_control_payload_bytes(512)+8*((128<<10)+(6<<30))
         assert caller.control_payload_bytes==expected
         assert caller.max_concurrent_requests==24 and caller.max_receipt_bytes==60620800
         seen.append(caller)

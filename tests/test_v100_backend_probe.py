@@ -1607,3 +1607,48 @@ def test_streaming_summary_preserves_parser_primary_with_real_file_close_failure
     with pytest.raises(ValueError) as failure:
         probe.trace_summary(path,0)
     assert failure.value is not secondary and retained_failure(failure.value,secondary)
+
+
+@pytest.mark.parametrize("expected", [{}, {"name": "λ🌦", "args": [1, 2, 3]}])
+def test_stream_reader_retires_boundary_value_before_lookahead(tmp_path, monkeypatch, expected):
+    import hashlib
+    import inspect
+    from tools import profile_trace_reader
+
+    text = json.dumps(expected, ensure_ascii=False)
+    path = tmp_path / "boundary.json"
+    path.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(profile_trace_reader, "CHUNK", len(text))
+    stream = profile_trace_reader.Stream(path)
+    original_more, observed = stream.more, []
+
+    def more():
+        caller = inspect.currentframe().f_back
+        if caller.f_code is profile_trace_reader.Stream.value.__code__:
+            assert "value" not in caller.f_locals
+            observed.append(True)
+        original_more()
+
+    monkeypatch.setattr(stream, "more", more)
+    try:
+        assert stream.value() == expected
+        assert observed == [True]
+        assert stream.digest.hexdigest() == hashlib.sha256(text.encode("utf-8")).hexdigest()
+    finally:
+        stream.file.close()
+
+
+def test_reader_character_envelope_uses_selected_python_object_layouts():
+    import sys
+
+    # This checks the layout premises of the owned reader's character credit,
+    # not JSON's decoding algorithm. The source proof also covers table growth.
+    for count in (0, 1, 2, 5, 6, 10, 32, 1000):
+        array = json.loads("[" + ",".join("0" for _ in range(count)) + "]")
+        mapping = json.loads("{" + ",".join(json.dumps("λ" + str(i)) + ":0"
+                                             for i in range(count)) + "}")
+        assert sys.getsizeof(array) <= 64 * (count + 1)
+        assert sys.getsizeof(mapping) <= 64 * (2 * count + 1)
+    for text in ("", "x", "λ", "🌦", "🌦" * 4096):
+        assert sys.getsizeof(json.loads(json.dumps(text))) <= 64 * (len(text) + 2)
+    assert probe.PROFILE_READER_BYTES_PER_RANK == 6 << 30

@@ -6,7 +6,7 @@ cohort across all eight ranks, preserving eager batching and per-role counters.
 Decode row histograms cover the depth-two72-row envelope; owner preparation
 also retains exact prefill sizes through256rows. Post-retirement summary
 parsing streams complete traces within8GiB/8M-event/4M-kernel bounds per rank;
-16GiB aggregate host allowance funds reader temporaries before admission. Kineto
+48GiB aggregate host allowance funds reader temporaries before admission. Kineto
 native buffers remain runtime-managed under the existing320GiB container cap;
 actual N24 capture headroom is unqualified until verified on hardware. This
 diagnostic provides no all6 performance or quality qualification.
