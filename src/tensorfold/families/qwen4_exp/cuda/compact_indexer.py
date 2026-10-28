@@ -644,7 +644,7 @@ class Cache:
         if first == end:
             return
         with self.reading((self.protected, self.protected_coordinates, span.raw, span.coordinates), span=span) as reader:
-            sliced = self._pool_slices_supported(span)
+            sliced = Cache._pool_slices_supported(self, span)
             if sliced:
                 # A complete group starts at a multiple of RATIO. Only its
                 # first prefix can predate this span; all later rows are new.

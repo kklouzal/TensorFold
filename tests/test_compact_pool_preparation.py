@@ -206,3 +206,20 @@ def test_subclass_misdeclared_nonempty_span_keeps_original_empty_index_error():
         candidate.pool(out, w, f, 1e-6, (11, 11, 10), 1.0)
     with pytest.raises(type(new.value)):
         indexed_pool(reference, expected, w, f, 1e-6, (11, 11, 10), 1.0)
+
+
+@torch.no_grad()
+def test_subclass_coincidental_helper_override_cannot_preempt_original_pool():
+    class GenericCache(Cache):
+        def _pool_slices_supported(self, _span):
+            raise AssertionError("unrelated subclass helper must not dispatch")
+
+    candidate, out, w, f = make_case(1, 7)
+    reference, expected, _, _ = make_case(1, 7)
+    candidate.__class__ = GenericCache
+    reference.__class__ = GenericCache
+    assert not Cache._pool_slices_supported(candidate, candidate.span)
+    candidate.pool(out, w, f, 1e-6, (11, 11, 10), 1.0)
+    indexed_pool(reference, expected, w, f, 1e-6, (11, 11, 10), 1.0)
+    assert_bits(out, expected)
+    assert torch.equal(candidate.status, reference.status)
