@@ -1,5 +1,14 @@
 # TensorFold fork
 
+The guarded compact-tail candidate replaces only the nonempty ordinary
+count1–3 reconstruction with at most two contiguous copy pieces per output.
+It preserves the original indexed path for empty, mismatched, generic,
+subclass, autograd, lazy-negative/conjugate and out-of-int64 domains, including
+eager error behavior. Fresh output allocation and all span/generation/read
+leases, clone/zero branches and publication/retirement remain. No pool, RMS,
+rotary, native kernel or numerical contract changes. CPU controls pass; actual
+SM70 payload/stream/publication and NUMA-bound all-six results remain pending.
+
 A separate unqualified hot-row candidate uses one HC/MoE private pool for
 exact rows4,5,6,8,9,10,11,17–22,30–32 (768 target graph keys). The private
 `TENSORFOLD_SM70_HC_MOE_SHARED_POOL=1` requires the selected fused HC/MoE

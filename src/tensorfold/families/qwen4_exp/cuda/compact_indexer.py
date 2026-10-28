@@ -575,6 +575,31 @@ class Cache:
         self.base, self.proposal_count = self.n, 0
         self.base_expected = expected
 
+    def _tail_slices_supported(self, protected, protected_coordinates, raw, coordinates, start, length):
+        """Prove the ordinary typed domain; retain indexed generic/error behavior."""
+        if (type(self) is not Cache or type(start) is not int or not 0 <= start <= length <= (1 << 63) - 1
+                or type(self.raw) is not torch.Tensor or type(self.coordinates) is not torch.Tensor
+                or type(protected) is not torch.Tensor or type(protected_coordinates) is not torch.Tensor
+                or type(raw) is not torch.Tensor or type(coordinates) is not torch.Tensor):
+            return False
+        count = len(raw)
+        if count == 0 or length - start > count:
+            return False
+        device = self.raw.device
+        if device.type not in ("cpu", "cuda"):
+            return False
+        for tensor, shape, dtype in (
+                (self.raw, (RATIO, self.dim), torch.float16),
+                (self.coordinates, (RATIO, 3), torch.int64),
+                (protected, (RATIO, self.dim), torch.float16),
+                (protected_coordinates, (RATIO, 3), torch.int64),
+                (raw, (count, self.dim), torch.float16),
+                (coordinates, (count, 3), torch.int64)):
+            if (tensor.layout != torch.strided or tensor.shape != shape or tensor.dtype != dtype
+                    or tensor.device != device or tensor.requires_grad or tensor.is_neg() or tensor.is_conj()):
+                return False
+        return True
+
     def tail(self, length):
         if type(length) is not int or not 0 <= length <= self.capacity:
             raise ValueError("compact tail length must fit the selected cache")
@@ -601,13 +626,28 @@ class Cache:
         result, coords = torch.zeros_like(self.raw), torch.zeros_like(self.coordinates)
         if count:
             with self.reading((protected, protected_coordinates, raw, coordinates), span=active_span):
-                positions = torch.arange(length - count, length, device=self.raw.device, dtype=torch.int64)
-                old = positions < start
-                source = (positions - start).clamp(0, max(0, len(raw) - 1))
-                values = torch.where(old[:, None], protected.index_select(0, positions % RATIO), raw.index_select(0, source))
-                axes = torch.where(old[:, None], protected_coordinates.index_select(0, positions % RATIO), coordinates.index_select(0, source))
-                result.index_copy_(0, positions % RATIO, values)
-                coords.index_copy_(0, positions % RATIO, axes)
+                if Cache._tail_slices_supported(self, protected, protected_coordinates, raw, coordinates, start, length):
+                    # length-count is RATIO-aligned, so destination ring slots
+                    # are exactly[0:count]. Source choice has one monotone cut.
+                    first = length - count
+                    old_count = min(count, max(0, start - first))
+                    if old_count:
+                        result[:old_count].copy_(protected[:old_count])
+                        coords[:old_count].copy_(protected_coordinates[:old_count])
+                    if old_count < count:
+                        at = first + old_count - start
+                        result[old_count:count].copy_(raw[at:at + count - old_count])
+                        coords[old_count:count].copy_(coordinates[at:at + count - old_count])
+                else:
+                    # Original eager BOTH-branch indexing remains authoritative
+                    # for empty/mismatched/generic/autograd and int64 domains.
+                    positions = torch.arange(length - count, length, device=self.raw.device, dtype=torch.int64)
+                    old = positions < start
+                    source = (positions - start).clamp(0, max(0, len(raw) - 1))
+                    values = torch.where(old[:, None], protected.index_select(0, positions % RATIO), raw.index_select(0, source))
+                    axes = torch.where(old[:, None], protected_coordinates.index_select(0, positions % RATIO), coordinates.index_select(0, source))
+                    result.index_copy_(0, positions % RATIO, values)
+                    coords.index_copy_(0, positions % RATIO, axes)
         return result, coords
 
     def pool(self, pooled, weight, inv_freq, eps, sections, scale):
