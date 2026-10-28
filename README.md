@@ -1,16 +1,20 @@
 # TensorFold fork
 
-The private `source-owner-target-dense-trial` combines the native target/MTP
-prelude with fixed-M32 Dense staging. Its separately verified Dense component
-and the three-worker startup implementation are now integrated here. Use
-`--native-dense-trial --session-ceiling 24` with the explicit profile; three
-startup workers additionally require `--overlap-content-capture
---startup-content-workers 3`. The one-worker default, target/MTP math, confidence,
-Q8 K/V, FP32 recurrent state and 24-window admission floor remain unchanged.
-Generic layouts, output aliases, autograd and errors retain the reference path.
-The combined build requires its own startup/admission and all-six development
-screen before any integrated performance claim. Full quality, stability and
-design qualification remain open; historical component failures are preserved.
+The private Dense and Dense/batched-prelude profiles are integrated here with
+bounded three-worker startup hashing. The Dense/batched component has separate
+81-test GPU evidence; the startup component has separate full-model identity
+and six-tier development-screen evidence. This combined build requires its own
+startup/admission and six-tier screen before an integrated performance claim.
+For batched preludes use the matching explicit profile and
+`--owner-batch-prelude-trial --native-dense-trial --session-ceiling 24`.
+Three startup workers additionally require `--overlap-content-capture
+--startup-content-workers 3`. Defaults, target/MTP math, confidence, Q8 K/V,
+FP32 recurrent state and the 24-window admission floor remain unchanged.
+Original per-segment casts, coordinate-version guards, cache transactions and
+native completion remain. Batch coverage diagnostics retain their funded
+8192-byte caller allowance. Full quality, stability and design qualification
+remain open, with historical failure evidence preserved.
+
 
 The private startup overlap can explicitly select `--startup-content-workers 3`
 (or `TENSORFOLD_STARTUP_CONTENT_WORKERS=3` with overlap enabled). Three bounded

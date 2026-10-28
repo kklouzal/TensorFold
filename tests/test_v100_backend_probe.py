@@ -1358,3 +1358,24 @@ def test_three_startup_workers_are_explicit_and_inherited_consistently(tmp_path,
         probe.arguments(raw+["--rank","1"])
     monkeypatch.setenv("TENSORFOLD_STARTUP_CONTENT_WORKERS","3")
     assert probe.arguments(raw+["--rank","1"]).startup_content_workers==3
+
+
+@pytest.mark.parametrize("profile,dense,ceiling,valid", [
+    ("source-owner-target-dense-trial", True, 24, False),
+    ("source-dense-owner-batch-prelude-trial", False, 24, False),
+    ("source-dense-owner-batch-prelude-trial", True, None, False),
+    ("source-dense-owner-batch-prelude-trial", True, 24, True)])
+def test_explicit_batch_prelude_intent_requires_composed_profile_and_funded_dense_region(
+        tmp_path, monkeypatch, profile, dense, ceiling, valid):
+    monkeypatch.setenv("TENSORFOLD_SM70_PROFILE", profile)
+    argv = [*cli(tmp_path), "--owner-batch-prelude-trial"]
+    if dense:
+        argv.append("--native-dense-trial")
+    if ceiling is not None:
+        argv.extend(["--session-ceiling", str(ceiling)])
+    if valid:
+        assert probe.arguments(argv).owner_batch_prelude_trial
+    else:
+        with pytest.raises(SystemExit):
+            probe.arguments(argv)
+    assert not (tmp_path / "results").exists()

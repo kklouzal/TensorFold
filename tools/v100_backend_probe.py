@@ -66,6 +66,7 @@ SOURCE_FILES = (
     "tensorfold/cuda/sm70/paged_attention.py",
     "tensorfold/engine/model_identity.py",
     "tensorfold/families/qwen4_exp/cuda/target_greedy.py",
+    "tensorfold/families/qwen4_exp/cuda/batch_prelude.py",
     "tensorfold/families/qwen4_exp/cuda/kv_status.py",
     "tensorfold/families/qwen4_exp/cuda/forward.py",
     "tensorfold/cuda/sm70/greedy_native.py", "tensorfold/cuda/sm70/greedy_bindings.cpp",
@@ -128,6 +129,8 @@ def arguments(argv=None):
     parser.add_argument("--out", type=Path, required=True, help="new private result directory")
     parser.add_argument("--triton-cache-root", type=Path,
                         help="opt-in persistent cache root: each child inherits TRITON_CACHE_DIR=ROOT/rank-N before startup; Triton retains its source/platform/configuration keys")
+    parser.add_argument("--owner-batch-prelude-trial", action="store_true",
+                        help="private exact multi-State native prelude composed with selected Dense; explicit matching profile and native-Dense intent required; unqualified")
     parser.add_argument("--native-dense-trial", action="store_true",
                         help="private exact native32 Dense composition with native target/MTP prelude; requires explicit matching SM70 profile and session ceiling24; unqualified")
     parser.add_argument("--overlap-content-capture", action="store_true",
@@ -202,10 +205,15 @@ def arguments(argv=None):
     # its unset default. Recording intent must not select a different profile.
     args.requested_sm70_profile = os.environ.get(PROFILE_ENV)
     if args.native_dense_trial:
-        from tensorfold.cuda.sm70.execution_policy import OWNER_TARGET_DENSE_TRIAL
+        from tensorfold.cuda.sm70.execution_policy import OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL
 
-        if args.requested_sm70_profile != OWNER_TARGET_DENSE_TRIAL or args.session_ceiling != 24:
+        if args.requested_sm70_profile not in (OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL) or args.session_ceiling != 24:
             parser.error("--native-dense-trial requires explicit source-owner-target-dense-trial and --session-ceiling24")
+    if args.owner_batch_prelude_trial:
+        from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL
+
+        if args.requested_sm70_profile != OWNER_BATCH_PRELUDE_TRIAL or not args.native_dense_trial or args.session_ceiling != 24:
+            parser.error("--owner-batch-prelude-trial requires matching source-dense-owner-batch-prelude-trial, --native-dense-trial and --session-ceiling24")
     if args.expect_prefix_reuse:
         from tensorfold.families.qwen4_exp.cuda.prefix_policy import state_epoch
 
@@ -327,14 +335,14 @@ def record_execution_profile(engine, report, *, requested):
         "roles": roles}
     if requested is not None and requested != engine.sm70_profile:
         raise ValueError("requested SM70 profile differs from the actual constructor selection")
-    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL
+    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL
 
-    if engine.sm70_profile in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL):
+    if engine.sm70_profile in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL):
         from tensorfold.families.qwen4_exp.cuda.multi_graphs import (
             UNIQUE_CAPTURE_CONTRACT, UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT,
         )
 
-        contract = (UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT if engine.sm70_profile in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL)
+        contract = (UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT if engine.sm70_profile in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL)
                     else UNIQUE_CAPTURE_CONTRACT)
 
         decoder = engine.multi
@@ -550,6 +558,14 @@ def graph_execution_snapshot(engine):
             value = object.__getattribute__(target, "completed")
             if type(value) is int and value >= 0:
                 counters["target.completed"] = value
+    for field, label in (("sm70_owner_prelude_submitted_batches", "owner.prelude_submitted_batches"),
+                         ("sm70_owner_prelude_submitted_mtp_batches", "owner.prelude_submitted_mtp_batches"),
+                         ("sm70_owner_prelude_max_batch_segments", "owner.prelude_max_batch_segments")):
+        value = metadata.get(field) if type(metadata) is dict else None
+        if type(value) is int and value >= 0:
+            counters[label] = value
+    if type(metadata) is dict and metadata.get("sm70_owner_prelude_batch_counter_overflowed"):
+        raise ValueError("batch native preparation diagnostic counter overflowed")
     keys = {name: len(fields[name]) for name in ("verify", "mtp") if type(fields.get(name)) is dict}
     result = {"counters": counters, "captured_keys": keys}
     if mtp_overflowed:
@@ -566,6 +582,37 @@ def graph_execution_delta(before, after):
         return None
     return {name: value - before["counters"][name] for name, value in after["counters"].items()
             if name in before["counters"]}
+
+
+BATCH_EVIDENCE_CONTROL_BYTES = 8192  # Fixed host-only receipt fields, bounded int63 counters and reason literals.
+
+
+def batch_preparation_evidence(profile, count, before, after):
+    """Qualify actual cohort dispatch after drain; never infer missing counts as zero."""
+    from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL
+
+    if profile != OWNER_BATCH_PRELUDE_TRIAL:
+        return None
+    result = {"passed": False, "available": False, "cohort_N": count,
+              "scope": "submitted native batches during readiness/decode/cancel/drain; not device timing"}
+    fields = ("owner.prelude_submitted_batches", "owner.prelude_submitted_mtp_batches")
+    snapshots = (before, after)
+    if any(type(snapshot) is not dict or type(snapshot.get("counters")) is not dict
+           or any(type(snapshot["counters"].get(field)) is not int
+                  or not 0 <= snapshot["counters"][field] <= (1 << 63) - 1 for field in fields)
+           for snapshot in snapshots):
+        result["reason"] = "required batch counters unavailable or invalid"
+        return result
+    total, mtp = (after["counters"][field] - before["counters"][field] for field in fields)
+    if any(snapshot["counters"][fields[1]] > snapshot["counters"][fields[0]] for snapshot in snapshots) or not 0 <= mtp <= total:
+        result["reason"] = "batch role counters regressed or exceeded total"
+        return result
+    result.update(available=True, total_batches=total, target_batches=total - mtp, mtp_batches=mtp)
+    result["passed"] = (total == 0 if count == 1 else total - mtp > 0 and mtp > 0)
+    if not result["passed"]:
+        result["reason"] = ("N1 must retain scalar preparation" if count == 1
+                            else "multi-State cohort requires actual target and MTP native batches")
+    return result
 
 def concurrency_module():
     if __package__:
@@ -676,6 +723,12 @@ def run_fast_grid(engine, tokenizer, args, report, limit, pool, prepared, finite
                 graph_execution={"before_requests": graph_before, "after_requests": graph_after,
                     "delta": graph_execution_delta(graph_before, graph_after),
                     "scope": "this screen cohort including readiness and measured decode/cancel/drain; excludesconstructor/cheapbringup/otherNs/quality; countersnotdevicetiming"})
+            evidence = batch_preparation_evidence(engine.sm70_profile, count, graph_before, graph_after)
+            if evidence is not None:
+                result["batch_native_preparation"] = evidence
+                if not evidence["passed"]:
+                    result["passed"] = False
+                    result["screen"]["measurement_valid"] = False
             write_report(args.out / f"fast-mtp-target-n{count:02d}.json", result,
                          allowance=finite.MAXIMUM * MAX_RECEIPT_BYTES)
         summary = finite.run_screen_case(pool, count=count, maximum_tokens=args.tokens, vocab=vocab,
@@ -696,6 +749,7 @@ def run_concurrency_leader(engine, tokenizer, args, report):
     from tensorfold.families.qwen4_exp.cuda.retention_resources import FiniteBackendCaller, finalize_backend_resources
     from tensorfold.server.request_limits import RequestLimit
     from tensorfold.token_metadata import decode_presentation, tokenizer_vocab_size
+    from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL
 
     finite = concurrency_module()
     prepared = []
@@ -736,7 +790,8 @@ def run_concurrency_leader(engine, tokenizer, args, report):
         max_receipt_bytes=(finite.MAXIMUM + 1) * MAX_RECEIPT_BYTES,
         max_concurrent_requests=finite.MAXIMUM, worker_stack_bytes=finite.STACK_BYTES,
         control_payload_bytes=finite.control_payload_bytes(args.tokens) + quality_control
-            + (finite.screen_control_payload_bytes(args.tokens) if getattr(args, "fast_grid", False) else 0))
+            + (finite.screen_control_payload_bytes(args.tokens) if getattr(args, "fast_grid", False) else 0)
+            + (BATCH_EVIDENCE_CONTROL_BYTES if engine.sm70_profile == OWNER_BATCH_PRELUDE_TRIAL else 0))
     limit, pool = RequestLimit(finite.MAXIMUM), None
     primary, failures = None, [None, None]
     report["concurrency"] = {"grid": finite.GRID, "caller": caller.__dict__,
@@ -833,7 +888,7 @@ def worker(args):
     from tensorfold.cuda import precision, prompt_precision
     from tensorfold.cuda.cohort import FAILURE_FD_ENV, notify_failure
     from tensorfold.families.qwen4_exp import cuda_engine
-    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL
+    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL
     from tensorfold.serve_options import drafter_metadata_source
     from tensorfold.token_metadata import load_tokenizer, tokenizer_identity
 
@@ -862,7 +917,7 @@ def worker(args):
             context=CONTEXT, context_explicit=True,
             parallel=getattr(args, "session_ceiling", None) or "auto", kv_full_windows="auto",
             kv_dtype="int8", indexer_history="gpu", max_waiting_input_bytes=waiting_input_credit(args),
-            output_queue_tokens=args.tokens, graphs=args.requested_sm70_profile in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL),
+            output_queue_tokens=args.tokens, graphs=args.requested_sm70_profile in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL),
             **({"execution_profile_manifest": args.execution_profile_manifest}
                if getattr(args, "execution_profile_manifest", None) is not None else {}))
         record_execution_profile(engine, report, requested=args.requested_sm70_profile)

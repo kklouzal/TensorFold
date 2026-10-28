@@ -337,17 +337,13 @@ __device__ __forceinline__ void quantized_store(float value, int8_t* out, __half
     if (!lane) scales[(base + col) / 32] = __float2half_rn(stored);
 }
 
-__global__ void prep_kernel(const __half* p, const void* position, bool pos_long, const float* qw,
-                            const float* kw, const float* iw, const float* freq, __half* queries,
-                            void* kc, void* vc, __half* iq, __half* ikc, __half* ks, __half* vs,
-                            int* status, const int* delta, const int* live, int qheads, int kvheads,
-                            int dim, int index_heads, int index_dim, int kbits, int vbits, int layer,
-                            int rotary_half, int capacity, int rows, float eps, float rope_scale, bool independent_rows) {
-    __shared__ float shared[512], normalized[256];
-    const int units = qheads + 2 * kvheads + index_heads + 1;
-    const int unit = blockIdx.x % units, row = blockIdx.x / units, col = threadIdx.x;
-    const int64_t cache_row = position_value(position, pos_long) + row;
-    if (cache_row < 0 || cache_row >= capacity) return;
+__device__ __forceinline__ void prep_unit(const __half* p, const float* qw, const float* kw,
+    const float* iw, const float* freq, __half* queries, void* kc, void* vc, __half* iq, __half* ikc,
+    __half* ks, __half* vs, int* status, const int* live, int qheads, int kvheads, int dim,
+    int index_heads, int index_dim, int kbits, int vbits, int layer, int rotary_half, int rows,
+    float eps, float rope_scale, bool independent_rows, int unit, int row, int64_t cache_row,
+    int64_t coordinate_row, float* shared, float* normalized) {
+    const int units = qheads + 2 * kvheads + index_heads + 1, col = threadIdx.x;
     int kind, head, width, start, flag;
     if (unit < qheads) { kind = 0; head = unit; width = dim; start = head * 2 * dim; flag = 1; }
     else if (unit < qheads + kvheads) { kind = 1; head = unit - qheads; width = dim; start = 2 * qheads * dim + head * dim; flag = 2; }
@@ -371,7 +367,7 @@ __global__ void prep_kernel(const __half* p, const void* position, bool pos_long
         value = normalized[col];
         if (col < 2 * rotary_half) {
             const int pair = col % rotary_half;
-            float angle = float(cache_row + (delta ? *delta : 0)) * freq[pair];
+            float angle = float(coordinate_row) * freq[pair];
             float sine = sinf(angle), cosine = cosf(angle);
             sine *= rope_scale; cosine *= rope_scale;
             float cross = normalized[col < rotary_half ? col + rotary_half : col - rotary_half];
@@ -393,6 +389,54 @@ __global__ void prep_kernel(const __half* p, const void* position, bool pos_long
         else static_cast<__half*>(vc)[base + col] = __float2half_rn(value);
     } else if (kind == 3) iq[(int64_t(row) * index_heads + head) * index_dim + col] = __float2half_rn(value);
     else ikc[cache_row * index_dim + col] = __float2half_rn(value);
+}
+
+__global__ void prep_kernel(const __half* p, const void* position, bool pos_long, const float* qw,
+                            const float* kw, const float* iw, const float* freq, __half* queries,
+                            void* kc, void* vc, __half* iq, __half* ikc, __half* ks, __half* vs,
+                            int* status, const int* delta, const int* live, int qheads, int kvheads,
+                            int dim, int index_heads, int index_dim, int kbits, int vbits, int layer,
+                            int rotary_half, int capacity, int rows, float eps, float rope_scale, bool independent_rows) {
+    __shared__ float shared[512], normalized[256];
+    const int units = qheads + 2 * kvheads + index_heads + 1;
+    const int unit = blockIdx.x % units, row = blockIdx.x / units;
+    const int64_t cache_row = position_value(position, pos_long) + row;
+    if (cache_row < 0 || cache_row >= capacity) return;
+    prep_unit(p, qw, kw, iw, freq, queries, kc, vc, iq, ikc, ks, vs, status, live,
+        qheads, kvheads, dim, index_heads, index_dim, kbits, vbits, layer, rotary_half, rows,
+        eps, rope_scale, independent_rows, unit, row, cache_row,
+        cache_row + (delta ? *delta : 0), shared, normalized);
+}
+
+// Descriptors are actor-owned rows [State position pointer, State status pointer,
+// segment first, segment count]. Python validates canonical State ownership and
+// retention before upload; this entry never accepts external pointer records.
+__global__ void prep_batch_kernel(const __half* p, const int64_t* descriptor,
+    const float* qw, const float* kw, const float* iw, const float* freq, __half* q,
+    int8_t* key, int8_t* value, __half* iq, __half* raw_index, __half* ks, __half* vs,
+    int total_rows, int layer, int rotary_half, float eps, float rope_scale, bool independent_rows) {
+    __shared__ float shared[512], normalized[256];
+    constexpr int qheads = 3, kvheads = 1, dim = 256, index_heads = 4, index_dim = 128;
+    constexpr int units = qheads + 2 * kvheads + index_heads + 1;
+    const int row = blockIdx.x / units, unit = blockIdx.x % units;
+    const int64_t* record = descriptor + int64_t(row) * 4;
+    const auto* position = reinterpret_cast<const int*>(record[0]);
+    auto* status = reinterpret_cast<int*>(record[1]);
+    const int64_t first = record[2], count = record[3];
+    if (!position || !status || first < 0 || count <= 0 || first > row
+            || count > int64_t(total_rows) - first || row >= first + count) {
+        asm volatile("trap;");
+        return;
+    }
+    const int64_t coordinate = int64_t(*position) + row - first;
+    if (coordinate < 0 || coordinate >= 262144) {
+        if (!threadIdx.x) { atomicOr(status, 16); atomicCAS(status + 1, -2, layer); }
+        return;
+    }
+    // Every segment retains the scalar producer's row-dependent Torch tree.
+    prep_unit(p, qw, kw, iw, freq, q, key, value, iq, raw_index, ks, vs, status, nullptr,
+        qheads, kvheads, dim, index_heads, index_dim, 8, 8, layer, rotary_half, int(count),
+        eps, rope_scale, independent_rows, unit, row, row, coordinate, shared, normalized);
 }
 
 // Keep the qualified raw/INT8 prep_kernel above intact. This separate Q4
@@ -924,5 +968,22 @@ int family_prepare_value_guard_cuda() {
 int family_prepare_owner_prelude_cuda() {
     cudaFuncAttributes attributes;
     C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, prep_kernel));
+    return 1;
+}
+
+void family_owner_prep_batch_cuda(const T& p, const T& descriptor, const T& qw, const T& kw,
+    const T& iw, const T& frequency, T& q, T& key, T& value, T& iq, T& raw_index, T& ks, T& vs,
+    int layer, float eps, float rope_scale, bool independent_rows) {
+    if (p.size(0)) prep_batch_kernel<<<p.size(0) * 10, THREADS, 0, at::cuda::getCurrentCUDAStream()>>>(
+        ptr<__half>(p), ptr<int64_t>(descriptor), ptr<float>(qw), ptr<float>(kw), ptr<float>(iw),
+        ptr<float>(frequency), ptr<__half>(q), ptr<int8_t>(key), ptr<int8_t>(value),
+        ptr<__half>(iq), ptr<__half>(raw_index), ptr<__half>(ks), ptr<__half>(vs),
+        p.size(0), layer, frequency.numel(), eps, rope_scale, independent_rows);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+int family_prepare_owner_batch_cuda() {
+    cudaFuncAttributes attributes;
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, prep_batch_kernel));
     return 1;
 }

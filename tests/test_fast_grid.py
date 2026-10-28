@@ -420,3 +420,104 @@ def test_v2_observation_refuses_wrong_protocol_cap_before_any_worker():
     with pytest.raises(ValueError,match="bounds"):
         finite.run_screen_case(None,count=1,maximum_tokens=512,vocab=3,limit=None,
             invoke=None,observe=None,write=None,timeout=1,protocol=finite.FAST_V2)
+
+
+@pytest.mark.parametrize("count,total,mtp,valid", [
+    (1, 0, 0, True), (1, 1, 0, False), (1, 1, 1, False),
+    (2, 2, 1, True), (2, 1, 1, False), (2, 1, 0, False),
+    (4, 20, 7, True), (8, 30, 12, True), (16, 40, 15, True), (24, 50, 19, True)])
+def test_batch_cohort_requires_scalar_n1_and_actual_target_plus_mtp_batches(count, total, mtp, valid):
+    from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL
+
+    before = {"counters": {"owner.prelude_submitted_batches": 100, "owner.prelude_submitted_mtp_batches": 30}}
+    after = {"counters": {"owner.prelude_submitted_batches": 100 + total,
+                          "owner.prelude_submitted_mtp_batches": 30 + mtp}}
+    evidence = probe.batch_preparation_evidence(OWNER_BATCH_PRELUDE_TRIAL, count, before, after)
+    assert evidence["available"] and evidence["passed"] is valid
+    assert evidence["target_batches"] == total - mtp and evidence["mtp_batches"] == mtp
+    assert probe.batch_preparation_evidence("source-owner-target-dense-trial", count, None, None) is None
+
+
+@pytest.mark.parametrize("case", ["missing", "boolean", "overflow", "regression", "roles"])
+def test_batch_cohort_never_invents_zero_or_hides_invalid_counters(case):
+    from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL
+
+    before = {"counters": {"owner.prelude_submitted_batches": 100, "owner.prelude_submitted_mtp_batches": 30}}
+    after = {"counters": {"owner.prelude_submitted_batches": 120, "owner.prelude_submitted_mtp_batches": 35}}
+    if case == "missing":
+        after["counters"].pop("owner.prelude_submitted_batches")
+    elif case == "boolean":
+        after["counters"]["owner.prelude_submitted_mtp_batches"] = True
+    elif case == "overflow":
+        after["counters"]["owner.prelude_submitted_batches"] = 1 << 63
+    elif case == "regression":
+        after["counters"]["owner.prelude_submitted_batches"] = 90
+    else:
+        after["counters"]["owner.prelude_submitted_mtp_batches"] = 121
+    assert not probe.batch_preparation_evidence(OWNER_BATCH_PRELUDE_TRIAL, 2, before, after)["passed"]
+
+
+def test_failed_batch_coverage_invalidates_only_that_cohort_and_preserves_all_six_receipts(tmp_path, monkeypatch):
+    from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL
+
+    monkeypatch.setenv("TENSORFOLD_SM70_PROFILE", OWNER_BATCH_PRELUDE_TRIAL)
+    args = probe.arguments(cli(tmp_path) + ['--concurrency-grid', '--fast-grid', '--tokens', '2048',
+        '--fast-grid-protocol', 'fast-grid-v2', '--native-dense-trial', '--owner-batch-prelude-trial',
+        '--session-ceiling', '24'])
+    engine, receipts = NS(sm70_profile=OWNER_BATCH_PRELUDE_TRIAL), []
+    counter = {"total": 100, "mtp": 30}
+    monkeypatch.setattr(probe, 'generate_reply', lambda *_a, result, **_kw: result.update(
+        stats={}, token_ids=[1, 2], first_committed_token_elapsed_ns=1))
+    monkeypatch.setattr(probe, 'graph_execution_snapshot', lambda _engine: {"counters": {
+        "owner.prelude_submitted_batches": counter["total"],
+        "owner.prelude_submitted_mtp_batches": counter["mtp"]}})
+
+    def case(_pool, *, count, write, **_kwargs):
+        if count > 1:
+            counter["total"] += 2
+            counter["mtp"] += int(count != 2)  # Deliberately exercise missing actual MTP batches at N2.
+        row = {'offered': count, 'passed': True, 'screen': {'measurement_valid': True}}
+        write(row)
+        return {'offered': count, 'passed': row['passed']}
+
+    monkeypatch.setattr(finite, 'run_screen_case', case)
+    monkeypatch.setattr(probe, 'write_report', lambda path, value, **_: receipts.append((path.name, value.copy())))
+    report = {'concurrency': {'completed_cases': 0}}
+    assert probe.run_fast_grid(engine, object(), args, report, RequestLimit(24), object(),
+        [('sustained', [1], {'rendered': 'Notebook'})], finite, 3) == 1
+    cases = [row for name, row in receipts if name.startswith('fast-mtp')]
+    assert len(cases) == 6 and report['fast_screen']['all_required_N_attempted']
+    assert [row['passed'] for row in cases] == [True, False, True, True, True, True]
+    assert not cases[1]['screen']['measurement_valid']
+    assert all('batch_native_preparation' in row for row in cases)
+
+
+def test_fixed_batch_evidence_fields_fit_pre_admitted_control_budget():
+    import sys
+    from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL
+
+    limit = (1 << 63) - 1
+    before = {"counters": {"owner.prelude_submitted_batches": 0, "owner.prelude_submitted_mtp_batches": 0}}
+    after = {"counters": {"owner.prelude_submitted_batches": limit, "owner.prelude_submitted_mtp_batches": limit - 1}}
+    evidence = probe.batch_preparation_evidence(OWNER_BATCH_PRELUDE_TRIAL, 24, before, after)
+    size = sys.getsizeof(evidence) + sum(sys.getsizeof(key) + sys.getsizeof(value) for key, value in evidence.items())
+    assert size < probe.BATCH_EVIDENCE_CONTROL_BYTES
+
+
+def test_actual_batch_profile_without_optional_intent_is_still_funded():
+    import ast
+    import inspect
+    import textwrap
+    from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL
+
+    function = ast.parse(textwrap.dedent(inspect.getsource(probe.run_concurrency_leader))).body[0]
+    funding = next(node for node in ast.walk(function) if isinstance(node, ast.IfExp)
+                   and isinstance(node.body, ast.Name) and node.body.id == "BATCH_EVIDENCE_CONTROL_BYTES")
+    expression = compile(ast.Expression(body=funding), "actual_batch_receipt_funding", "eval")
+    namespace = dict(BATCH_EVIDENCE_CONTROL_BYTES=probe.BATCH_EVIDENCE_CONTROL_BYTES,
+                     OWNER_BATCH_PRELUDE_TRIAL=OWNER_BATCH_PRELUDE_TRIAL,
+                     args=NS(owner_batch_prelude_trial=False), engine=NS(sm70_profile=OWNER_BATCH_PRELUDE_TRIAL))
+    assert eval(expression, namespace) == 8192
+    namespace['args'].owner_batch_prelude_trial = True
+    namespace['engine'].sm70_profile = "source-owner-target-dense-trial"
+    assert eval(expression, namespace) == 0
