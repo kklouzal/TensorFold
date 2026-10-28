@@ -64,3 +64,31 @@ def test_worker_handshake_seals_actual_dense_selection_and_keeps_old_profile_pac
     stale.append(native_digest)
     with pytest.raises(RuntimeError, match="different settings"):
         agree(engine, proxy, None)
+
+
+def test_new_tp8_oracle_installs_actual_target_dense_and_preserves_stock_mtp_owner():
+    import ast
+    from dataclasses import dataclass, fields, is_dataclass, replace
+    from pathlib import Path
+    from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense
+    from tensorfold.families.qwen4_exp.cuda.sm70_mtp_weights import Dense
+
+    tree = ast.parse((Path(__file__).parent / "cuda/test_sm70_owner_piece_graphs_tp8.py").read_text())
+    function = next(node for node in ast.walk(tree)
+                    if isinstance(node, ast.FunctionDef) and node.name == "actual_target_dense")
+    namespace = dict(torch=family.torch, GGUFDense=GGUFDense,
+                     fields=fields, is_dataclass=is_dataclass, replace=replace)
+    exec(compile(ast.Module(body=[function], type_ignores=[]), "actual_tp8_dense_fixture", "exec"), namespace)
+
+    @dataclass
+    class Fixture:
+        target: object
+        mtp: object
+
+    weight = family.torch.ones((4, 8), dtype=family.torch.float16)
+    target = NS(kernel="gguf", weight=weight)
+    stock = Dense(weight)
+    actual = namespace["actual_target_dense"](Fixture([target], (stock,)))
+    assert isinstance(actual.target[0], GGUFDense)
+    assert actual.target[0].weight is weight
+    assert actual.mtp[0] is stock
