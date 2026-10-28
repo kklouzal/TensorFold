@@ -7,6 +7,13 @@ SYS_ADMIN-only container; exported reports are imported in CPU mode for raw
 CSV parsing and exact replay-output checks. This grants no model or throughput
 qualification.
 
+A private `tools.ncu_experts_actual` diagnostic stages actual layer0 TP8 expert
+banks with all512 routed experts resident and synthetic uniform topK10 routing
+at R1/R8/R32. It bounds profiling to gate/up and exact down, checks bitwise
+outputs against the original bank, and preserves raw counters and units. CPU
+contract checks pass; actual expert-counter replay remains pending and grants
+no model or throughput qualification.
+
 Canonical MTP text refresh/proposal frames now use the existing actual text
 coordinate producer when no explicit coordinates or deferred boundary are
 present. It preserves hidden/cache positions at `mtp_len`, independent of next
