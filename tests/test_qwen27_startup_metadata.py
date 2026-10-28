@@ -319,6 +319,29 @@ def test_loaded_subclass_prepares_requests_without_running_base_loader(serving, 
         owner.close()
 
 
+@pytest.mark.parametrize("streams", [1, 3])
+def test_decode_layout_is_prepared_before_serving_calibration(serving, monkeypatch, streams):
+    from tensorfold.families.qwen3_5.cuda import forward
+
+    fixture = serving
+    prepare = forward.prepare_decode
+
+    def selected(w):
+        assert not fixture.decoders and not fixture.actors
+        prepare(w)
+        assert w.decode_sums is True  # this fixture's ordinary, non-native layout
+        fixture.events.append("decode_layout")
+
+    monkeypatch.setattr(forward, "prepare_decode", selected)
+    fixture.owner.__init__(fixture.directory, None, streams=streams)
+    try:
+        assert fixture.events.index("load") < fixture.events.index("decode_layout") < fixture.events.index("resume")
+        if streams > 1:
+            assert fixture.events.index("decode_layout") < fixture.events.index("calibrate")
+    finally:
+        fixture.owner.close()
+
+
 @pytest.mark.parametrize("stage,close_failure", [("calibrate", False), ("start", False), ("start", True)])
 def test_actual_serving_setup_keeps_startup_failure_and_actor_retirement(serving, stage, close_failure):
     fixture, owner = serving, serving.owner

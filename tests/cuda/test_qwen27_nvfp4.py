@@ -20,7 +20,7 @@ if not torch.cuda.is_available():
 
 from tensorfold.cuda.nvfp4.linear import Fp4Linear, Fp8Linear
 from tensorfold.families.qwen3_5.cuda.dflash2 import _sub_parts
-from tensorfold.families.qwen3_5.cuda.forward import State, commit, tree_forward
+from tensorfold.families.qwen3_5.cuda.forward import State, commit, multi_tree_forward, prepare_decode, tree_forward
 from tensorfold.families.qwen3_5.cuda.nvfp4_load import Plain8
 from tensorfold.families.qwen3_5.cuda.weights import GDN, Config, Layer, Plain, Weights
 
@@ -68,6 +68,30 @@ def _model(kind: str = "full") -> Weights:
                     rope_theta=10000000.0, eos=(0,))
     embed = Plain((torch.randn(256, 128, generator=gen) * 0.5).to(torch.bfloat16).cuda())
     return Weights(config, embed, [layer], norm, _fp4(256, 128, gen), torch.ones(16, device="cuda"), quant="nvfp4")
+
+
+@pytest.mark.parametrize("kind", MODELS)
+def test_prepared_native_decode_retains_single_multi_logits_hidden_and_committed_state(kind):
+    w = _model(kind)
+    ids, parents = [7, 8, 9, 10], [-1, 0, 0, 1]
+    tokens = torch.tensor(ids, device="cuda", dtype=torch.int32)
+    baseline_state, prepared_state = State(w), State(w)
+    wanted, wanted_records, wanted_hidden = tree_forward(w, tokens, parents, baseline_state, hidden=True)
+    baseline_streams = [(ids, parents, State(w)), ([13], [-1], State(w))]
+    expected_multi = multi_tree_forward(w, baseline_streams, hidden=True)
+    prepare_decode(w)
+    assert w.decode_sums is False
+    got, records, hidden = tree_forward(w, tokens, parents, prepared_state, hidden=True)
+    actual_multi = multi_tree_forward(w, [(ids, parents, State(w)), ([13], [-1], State(w))], hidden=True)
+    for actual, expected in ((got, wanted), (hidden, wanted_hidden), (actual_multi[0], expected_multi[0]),
+                              (actual_multi[2], expected_multi[2])):
+        assert torch.equal(actual.view(torch.int16), expected.view(torch.int16))
+    assert actual_multi[3] == expected_multi[3]
+    commit(baseline_state, wanted_records, [0, 1, 3])
+    commit(prepared_state, records, [0, 1, 3])
+    assert baseline_state.pos == prepared_state.pos == 3
+    assert torch.equal(baseline_state.rec[0], prepared_state.rec[0])
+    assert torch.equal(baseline_state.conv[0], prepared_state.conv[0])
 
 
 @pytest.mark.parametrize("kind", MODELS)

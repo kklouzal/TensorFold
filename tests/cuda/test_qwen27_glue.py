@@ -67,3 +67,45 @@ def test_gdn_pre_matches_torch():
     gr = torch.exp(-torch.exp(alog) * torch.nn.functional.softplus(a.float() + dtb))
     assert torch.allclose(g, gr, rtol=1e-5, atol=1e-6)
     assert torch.allclose(beta, torch.sigmoid(b.float()), atol=1e-6)
+
+
+@pytest.mark.parametrize("rows", [1, 9])
+@pytest.mark.parametrize("residual", [False, True])
+def test_optional_sums_preserve_complete_activation_bits_and_graph_replay(rows, residual):
+    generator = torch.Generator(device=dev).manual_seed(61023)
+
+    def random(*shape):
+        return torch.randn(shape, generator=generator, device=dev).bfloat16()
+
+    x, r, w = random(rows, 5120), random(rows, 5120) if residual else None, random(5120)
+    gate, up = random(rows, 17408), random(rows, 17408)
+    yr, z, norm = random(rows, 48, 128), random(rows, 48, 128), random(128)
+    out, qg = random(rows, 24, 256), random(rows, 24 * 512)
+
+    def run(sums):
+        h, y, xs = glue.add_rmsnorm(x, r, w, 1e-6, sums=sums)
+        activated, ax = glue.swiglu(gate, up, sums=sums)
+        normalized, nx = glue.gated_norm(yr, z, norm, 1e-6, sums=sums)
+        gated, gx = glue.gate_mul(out, qg, heads=24, head_dim=256, sums=sums)
+        if sums:
+            assert all(value is not None for value in (xs, ax, nx, gx))
+        else:
+            assert xs is ax is nx is gx is None
+        return h, y, activated, normalized, gated
+
+    wanted = run(True)
+    got = run(False)
+    for actual, expected in zip(got, wanted):
+        assert torch.equal(actual.view(torch.int16), expected.view(torch.int16))
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        replayed = run(False)
+    for scale in (0.5, -1.0):
+        x.mul_(scale)
+        gate.mul_(scale)
+        yr.mul_(scale)
+        out.mul_(scale)
+        wanted = run(True)
+        graph.replay()
+        for actual, expected in zip(replayed, wanted):
+            assert torch.equal(actual.view(torch.int16), expected.view(torch.int16))

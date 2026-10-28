@@ -228,8 +228,11 @@ class Qwen27Engine:
         from tensorfold.cuda.capacity import config
         from tensorfold.cuda.geometry import live_kv
 
+        from .forward import prepare_decode
+
         torch, tp, rank, allow_copy = self.torch, self.tp, self.rank, self.allow_copy
         many = streams > 1
+        prepare_decode(self.w)
         torch.cuda.empty_cache()
         from tensorfold.cuda.markers import resume_points
         from tensorfold.cuda.streams import PrefixCache

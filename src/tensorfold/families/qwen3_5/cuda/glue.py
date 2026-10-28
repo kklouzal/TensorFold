@@ -1,4 +1,4 @@
-"""Each kernel reads only its row and writes fp32 group sums from its stored bf16 values, preserving row bits independently of the window."""
+"""Row-local BF16 glue, with optional FP32 group sums for affine consumers."""
 
 from __future__ import annotations
 
@@ -8,7 +8,8 @@ import triton.language as tl
 
 
 @triton.jit
-def _add_rmsnorm(X, R, W, H, Y, XS, eps, D: tl.constexpr, BLOCK: tl.constexpr, HAS_R: tl.constexpr):
+def _add_rmsnorm(X, R, W, H, Y, XS, eps, D: tl.constexpr, BLOCK: tl.constexpr, HAS_R: tl.constexpr,
+                 SUMS: tl.constexpr):
     row = tl.program_id(0)
     offs = tl.arange(0, BLOCK)
     ok = offs < D
@@ -23,20 +24,21 @@ def _add_rmsnorm(X, R, W, H, Y, XS, eps, D: tl.constexpr, BLOCK: tl.constexpr, H
     w = tl.load(W + offs, mask=ok, other=0.0).to(tl.float32)
     y = (x * inv * w).to(tl.bfloat16)
     tl.store(Y + row * D + offs, y, mask=ok)
-    yg = tl.reshape(y.to(tl.float32), (BLOCK // 64, 64))
-    g = tl.arange(0, BLOCK // 64)
-    tl.store(XS + row * (D // 64) + g, tl.sum(yg, axis=1), mask=g < D // 64)
+    if SUMS:
+        yg = tl.reshape(y.to(tl.float32), (BLOCK // 64, 64))
+        g = tl.arange(0, BLOCK // 64)
+        tl.store(XS + row * (D // 64) + g, tl.sum(yg, axis=1), mask=g < D // 64)
 
 
-def add_rmsnorm(x: torch.Tensor, r: torch.Tensor | None, w: torch.Tensor, eps: float):
-    """h = x + r (bf16), y = rmsnorm(h) * w (bf16), xs = y's 64-group sums. Returns (h, y, xs)."""
+def add_rmsnorm(x: torch.Tensor, r: torch.Tensor | None, w: torch.Tensor, eps: float, *, sums: bool = True):
+    """Return (residual, normed, group sums); ``sums=False`` returns None for unused sums."""
 
     rows, d = x.shape
     h = torch.empty_like(x) if r is not None else x
     y = torch.empty_like(x)
-    xs = torch.empty((rows, d // 64), dtype=torch.float32, device=x.device)
-    _add_rmsnorm[(rows,)](x, r if r is not None else x, w, h, y, xs, eps, D=d,
-                          BLOCK=triton.next_power_of_2(d), HAS_R=r is not None, num_warps=8)
+    xs = torch.empty((rows, d // 64), dtype=torch.float32, device=x.device) if sums else None
+    _add_rmsnorm[(rows,)](x, r if r is not None else x, w, h, y, xs if sums else y, eps, D=d,
+                          BLOCK=triton.next_power_of_2(d), HAS_R=r is not None, SUMS=sums, num_warps=8)
     return h, y, xs
 
 
@@ -103,7 +105,7 @@ def gdn_pre(qkv: torch.Tensor, conv_state: torch.Tensor, conv_w: torch.Tensor, w
 
 
 @triton.jit
-def _gated_norm(Yr, Z, W, OUT, XS, eps, VH: tl.constexpr, DV: tl.constexpr):
+def _gated_norm(Yr, Z, W, OUT, XS, eps, VH: tl.constexpr, DV: tl.constexpr, SUMS: tl.constexpr):
     row = tl.program_id(0)
     h = tl.program_id(1)
     offs = (row * VH + h) * DV + tl.arange(0, DV)
@@ -113,22 +115,23 @@ def _gated_norm(Yr, Z, W, OUT, XS, eps, VH: tl.constexpr, DV: tl.constexpr):
     yn = y * (1.0 / tl.sqrt(tl.sum(y * y, axis=0) / DV + eps)) * w
     out = (z * tl.sigmoid(z) * yn).to(tl.bfloat16)
     tl.store(OUT + offs, out)
-    og = tl.reshape(out.to(tl.float32), (DV // 64, 64))
-    tl.store(XS + row * (VH * DV // 64) + h * (DV // 64) + tl.arange(0, DV // 64), tl.sum(og, axis=1))
+    if SUMS:
+        og = tl.reshape(out.to(tl.float32), (DV // 64, 64))
+        tl.store(XS + row * (VH * DV // 64) + h * (DV // 64) + tl.arange(0, DV // 64), tl.sum(og, axis=1))
 
 
-def gated_norm(y: torch.Tensor, z: torch.Tensor, w: torch.Tensor, eps: float):
-    """y, z (W, VH, DV) bf16 -> silu(z) * rmsnorm(y) * w as (W, VH*DV) bf16, plus its group sums."""
+def gated_norm(y: torch.Tensor, z: torch.Tensor, w: torch.Tensor, eps: float, *, sums: bool = True):
+    """Return gated BF16 rows and their group sums, or None when ``sums=False``."""
 
     W, vh, dv = y.shape
     out = torch.empty((W, vh * dv), dtype=torch.bfloat16, device=y.device)
-    xs = torch.empty((W, vh * dv // 64), dtype=torch.float32, device=y.device)
-    _gated_norm[(W, vh)](y, z, w, out, xs, eps, VH=vh, DV=dv, num_warps=1)
+    xs = torch.empty((W, vh * dv // 64), dtype=torch.float32, device=y.device) if sums else None
+    _gated_norm[(W, vh)](y, z, w, out, xs if sums else out, eps, VH=vh, DV=dv, SUMS=sums, num_warps=1)
     return out, xs
 
 
 @triton.jit
-def _swiglu(GATE, UP, OUT, XS, N: tl.constexpr, BLOCK: tl.constexpr):
+def _swiglu(GATE, UP, OUT, XS, N: tl.constexpr, BLOCK: tl.constexpr, SUMS: tl.constexpr):
     row = tl.program_id(0)
     blk = tl.program_id(1)
     offs = blk * BLOCK + tl.arange(0, BLOCK)
@@ -137,17 +140,20 @@ def _swiglu(GATE, UP, OUT, XS, N: tl.constexpr, BLOCK: tl.constexpr):
     u = tl.load(UP + row * N + offs, mask=ok, other=0.0).to(tl.float32)
     a = (g * tl.sigmoid(g) * u).to(tl.bfloat16)
     tl.store(OUT + row * N + offs, a, mask=ok)
-    ag = tl.reshape(a.to(tl.float32), (BLOCK // 64, 64))
-    gi = blk * (BLOCK // 64) + tl.arange(0, BLOCK // 64)
-    tl.store(XS + row * (N // 64) + gi, tl.sum(ag, axis=1), mask=gi < N // 64)
+    if SUMS:
+        ag = tl.reshape(a.to(tl.float32), (BLOCK // 64, 64))
+        gi = blk * (BLOCK // 64) + tl.arange(0, BLOCK // 64)
+        tl.store(XS + row * (N // 64) + gi, tl.sum(ag, axis=1), mask=gi < N // 64)
 
 
-def swiglu(gate: torch.Tensor, up: torch.Tensor):
+def swiglu(gate: torch.Tensor, up: torch.Tensor, *, sums: bool = True):
+    """Return BF16 SwiGLU rows and optional 64-group sums, preserving the same activation arithmetic."""
     W, n = gate.shape
     out = torch.empty_like(gate)
-    xs = torch.empty((W, n // 64), dtype=torch.float32, device=gate.device)
+    xs = torch.empty((W, n // 64), dtype=torch.float32, device=gate.device) if sums else None
     block = 1024
-    _swiglu[(W, triton.cdiv(n, block))](gate, up, out, xs, N=n, BLOCK=block, num_warps=4)
+    _swiglu[(W, triton.cdiv(n, block))](gate, up, out, xs if sums else out, N=n, BLOCK=block,
+                                     SUMS=sums, num_warps=4)
     return out, xs
 
 
@@ -217,7 +223,7 @@ def attn_prep(qg: torch.Tensor, k: torch.Tensor, q_norm: torch.Tensor, k_norm: t
 
 
 @triton.jit
-def _gate_mul(O, QG, OUT, XS, H: tl.constexpr, D: tl.constexpr):
+def _gate_mul(O, QG, OUT, XS, H: tl.constexpr, D: tl.constexpr, SUMS: tl.constexpr):
     row = tl.program_id(0)
     h = tl.program_id(1)
     d = tl.arange(0, D)
@@ -225,17 +231,18 @@ def _gate_mul(O, QG, OUT, XS, H: tl.constexpr, D: tl.constexpr):
     g = tl.load(QG + (row * H + h) * 2 * D + D + d).to(tl.float32)
     out = (o * tl.sigmoid(g)).to(tl.bfloat16)
     tl.store(OUT + (row * H + h) * D + d, out)
-    og = tl.reshape(out.to(tl.float32), (D // 64, 64))
-    tl.store(XS + row * (H * D // 64) + h * (D // 64) + tl.arange(0, D // 64), tl.sum(og, axis=1))
+    if SUMS:
+        og = tl.reshape(out.to(tl.float32), (D // 64, 64))
+        tl.store(XS + row * (H * D // 64) + h * (D // 64) + tl.arange(0, D // 64), tl.sum(og, axis=1))
 
 
-def gate_mul(o: torch.Tensor, qg: torch.Tensor, *, heads: int, head_dim: int):
-    """Attention output (W, H, D) times sigmoid(gate) from the [q | gate] rows -> (W, H*D) bf16 and group sums."""
+def gate_mul(o: torch.Tensor, qg: torch.Tensor, *, heads: int, head_dim: int, sums: bool = True):
+    """Return BF16 attention-gated rows and group sums, or None when ``sums=False``."""
 
     W = o.shape[0]
     out = torch.empty((W, heads * head_dim), dtype=torch.bfloat16, device=o.device)
-    xs = torch.empty((W, heads * head_dim // 64), dtype=torch.float32, device=o.device)
-    _gate_mul[(W, heads)](o, qg, out, xs, H=heads, D=head_dim, num_warps=2)
+    xs = torch.empty((W, heads * head_dim // 64), dtype=torch.float32, device=o.device) if sums else None
+    _gate_mul[(W, heads)](o, qg, out, xs if sums else out, H=heads, D=head_dim, SUMS=sums, num_warps=2)
     return out, xs
 
 

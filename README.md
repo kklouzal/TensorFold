@@ -1,5 +1,14 @@
 # TensorFold fork
 
+**Qwen native decode candidate (2026-10-23):** serving preparation can omit
+unused affine group sums from the Qwen3.8 dense and Qwen3.6 CT NVFP4 target
+glue. Active affine or mixed projections and unprepared forwards keep the
+original sum-producing path. The BF16 activation expressions and sampling
+policy are unchanged. Source/native bit checks, installed ARM64 execution,
+complete model quality and comparative decode timing remain pending;
+[scope and required checks](docs/optimization-validation.md#qwen-native-decode-group-sums)
+separate this candidate from qualified runtime results.
+
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.
 Source `ed24272a` passed 100 source CPU checks and 100 fresh installed ARM64

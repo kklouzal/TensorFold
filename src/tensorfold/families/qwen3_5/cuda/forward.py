@@ -19,6 +19,32 @@ from .qmm_fast import matmul, matmul_group
 from .weights import Plain, QLinear, Weights
 
 
+def prepare_decode(w: Weights) -> None:
+    """Bind sum production to the serving layout before calibration/capture.
+
+    Native checkpoint projections ignore affine group sums. Mixed layouts keep
+    the original producers. Serving owns a fixed weight layout through replay;
+    replacing/repreparing that layout must repeat this choice before capture.
+    Direct, unprepared forwards retain the original sum-producing default.
+    """
+    sums = True
+    if getattr(w, "quant", None) == "nvfp4":
+        consumers = [w.head]
+        for layer in w.layers:
+            if layer.linear:
+                g = layer.gdn
+                consumers.extend((g.qkv, g.zba) if g.zba is not None else (g.qkv, g.z, g.b, g.a))
+                consumers.append(g.out)
+            else:
+                a = layer.attn
+                consumers.extend((a.q, a.kv) if a.kv is not None else (a.q, a.k, a.v))
+                consumers.append(a.o)
+            if layer.moe is None:
+                consumers.extend((layer.gate, layer.up, layer.down))
+        sums = any(isinstance(q, QLinear) for q in consumers)
+    w.decode_sums = sums
+
+
 def _mm(x: torch.Tensor, w: QLinear, xs: torch.Tensor | None = None) -> torch.Tensor:
     if not isinstance(w, QLinear):
         return w(x)                                        # an EXL3 pack's weights run their own row-invariant kernels
@@ -54,14 +80,14 @@ def _row_mm(x: torch.Tensor, w: QLinear, tp: bool,
     return gather_rank_partials(row_partial(x, w, xs=xs if w.layout == "tiled" else None))
 
 
-def _mlp(layer, h: torch.Tensor, xs: torch.Tensor, tp: bool) -> torch.Tensor:
+def _mlp(layer, h: torch.Tensor, xs: torch.Tensor | None, tp: bool, sums: bool = True) -> torch.Tensor:
     """A layer's MLP on its normed rows: routed experts with the shared expert, or the dense SwiGLU."""
 
     if layer.moe is not None:
         if tp:
             raise ValueError("routed experts run on one GPU")
         return moe.run(h, layer.moe)
-    act, act_xs = glue.swiglu(*_mm_group(h, [layer.gate, layer.up], xs))
+    act, act_xs = glue.swiglu(*_mm_group(h, [layer.gate, layer.up], xs), sums=sums)
     return _row_mm(act, layer.down, tp, act_xs)
 
 
@@ -243,6 +269,7 @@ def tree_forward(w: Weights, tokens: torch.Tensor, parents: Sequence[int], st: S
     """Return uncommitted node logits and layer data for topologically sorted parents, with each node seeing only its ancestors and committed prefix."""
 
     c = w.config
+    sums = getattr(w, "decode_sums", True)
     tap_layers = w.draft_taps if capture_taps else ()
     try:
         parents = [index(p) if not isinstance(p, bool) else -2 for p in parents]
@@ -278,7 +305,7 @@ def tree_forward(w: Weights, tokens: torch.Tensor, parents: Sequence[int], st: S
     record: list[Record] = []
     taps: list[torch.Tensor] = []
     for i, layer in enumerate(w.layers):
-        x, h, xs = glue.add_rmsnorm(x, pending, layer.input_norm, c.eps)
+        x, h, xs = glue.add_rmsnorm(x, pending, layer.input_norm, c.eps, sums=sums)
         if layer.linear:
             gdn = layer.gdn
             if gdn.zba is not None:
@@ -294,7 +321,7 @@ def tree_forward(w: Weights, tokens: torch.Tensor, parents: Sequence[int], st: S
                                               gdn.A_log, gdn.dt_bias, kh=c.k_heads,
                                               vh=c.v_heads, dk=c.dk)
             yr = deltanet.tree(q, k, v, g, beta, plan, state=st.rec[i])
-            out, out_xs = glue.gated_norm(yr, z, gdn.norm, c.eps)
+            out, out_xs = glue.gated_norm(yr, z, gdn.norm, c.eps, sums=sums)
             r = _row_mm(out, gdn.out, tp, out_xs)
             record.append(GDNRecord(q, k, v, g, beta, qkv))
         else:
@@ -311,18 +338,18 @@ def tree_forward(w: Weights, tokens: torch.Tensor, parents: Sequence[int], st: S
                                     w.inv_freq, c.eps, heads=c.heads, kv_heads=c.kv_heads,
                                     head_dim=c.head_dim, amplitude=c.rope_scale)
             out = tree_attention.attention(q, key, value, aoffs[i], aplan, origin=origin, scale=c.head_dim ** -0.5)
-            gated, out_xs = glue.gate_mul(out, qg, heads=c.heads, head_dim=c.head_dim)
+            gated, out_xs = glue.gate_mul(out, qg, heads=c.heads, head_dim=c.head_dim, sums=sums)
             r = _row_mm(gated, attn.o, tp, out_xs)
             record.append(AttentionRecord(key, value))
-        x, h, xs = glue.add_rmsnorm(x, r, layer.post_norm, c.eps)
-        pending = _mlp(layer, h, xs, tp)
+        x, h, xs = glue.add_rmsnorm(x, r, layer.post_norm, c.eps, sums=sums)
+        pending = _mlp(layer, h, xs, tp, sums)
         if capture_taps and i in tap_layers:
             taps.append((x.float() + pending.float()).to(torch.bfloat16))
     if not finish:
         if pending is None:
             raise ValueError("pipeline stage must contain at least one layer")
         return (x, pending), record
-    _, h, xs = glue.add_rmsnorm(x, pending, w.norm, c.eps)
+    _, h, xs = glue.add_rmsnorm(x, pending, w.norm, c.eps, sums=sums)
     logits = _mm(h, w.head, xs) if full_logits else h
     if capture_taps:
         return logits, record, torch.cat(taps, dim=-1)
@@ -338,6 +365,7 @@ def multi_tree_forward(w: Weights, streams: Sequence[tuple[Sequence[int], Sequen
     """Several streams' windows in one forward, each row with the bits of its stream's own ``tree_forward`` (``hidden``: the rows' final normed states third)."""
 
     c = w.config
+    sums = getattr(w, "decode_sums", True)
     tap_layers = w.draft_taps if capture_taps else ()
     device = w.norm.device
     keep = c.conv_kernel - 1
@@ -386,7 +414,7 @@ def multi_tree_forward(w: Weights, streams: Sequence[tuple[Sequence[int], Sequen
     record: list[Record] = []
     taps: list[torch.Tensor] = []
     for i, layer in enumerate(w.layers):
-        x, h, xs = glue.add_rmsnorm(x, pending, layer.input_norm, c.eps)
+        x, h, xs = glue.add_rmsnorm(x, pending, layer.input_norm, c.eps, sums=sums)
         if layer.linear:
             gdn = layer.gdn
             if gdn.zba is not None:
@@ -402,7 +430,7 @@ def multi_tree_forward(w: Weights, streams: Sequence[tuple[Sequence[int], Sequen
             q, k, v, g, beta = glue.gdn_pre(qkv, conv, gdn.conv, windows_t, a, b, gdn.A_log, gdn.dt_bias,
                                             kh=c.k_heads, vh=c.v_heads, dk=c.dk, stream_ids=sid_t, nkeep=keep)
             yr = deltanet.tree(q, k, v, g, beta, plan, table=tables[i])
-            out, out_xs = glue.gated_norm(yr, z, gdn.norm, c.eps)
+            out, out_xs = glue.gated_norm(yr, z, gdn.norm, c.eps, sums=sums)
             r = _row_mm(out, gdn.out, tp, out_xs)
             record.append(GDNRecord(q, k, v, g, beta, qkv))
         else:
@@ -419,14 +447,14 @@ def multi_tree_forward(w: Weights, streams: Sequence[tuple[Sequence[int], Sequen
                                     w.inv_freq, c.eps, heads=c.heads, kv_heads=c.kv_heads,
                                     head_dim=c.head_dim, amplitude=c.rope_scale)
             out = tree_attention.attention(q, key, value, aoffs[i], aplan, origin=origin, scale=c.head_dim ** -0.5)
-            gated, out_xs = glue.gate_mul(out, qg, heads=c.heads, head_dim=c.head_dim)
+            gated, out_xs = glue.gate_mul(out, qg, heads=c.heads, head_dim=c.head_dim, sums=sums)
             r = _row_mm(gated, attn.o, tp, out_xs)
             record.append(AttentionRecord(key, value))
-        x, h, xs = glue.add_rmsnorm(x, r, layer.post_norm, c.eps)
-        pending = _mlp(layer, h, xs, tp)
+        x, h, xs = glue.add_rmsnorm(x, r, layer.post_norm, c.eps, sums=sums)
+        pending = _mlp(layer, h, xs, tp, sums)
         if capture_taps and i in tap_layers:
             taps.append((x.float() + pending.float()).to(torch.bfloat16))
-    _, h, xs = glue.add_rmsnorm(x, pending, w.norm, c.eps)
+    _, h, xs = glue.add_rmsnorm(x, pending, w.norm, c.eps, sums=sums)
     logits = _mm(h, w.head, xs) if full_logits else h
     if capture_taps:
         return logits, record, torch.cat(taps, dim=-1), starts

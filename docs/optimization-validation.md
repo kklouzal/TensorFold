@@ -871,3 +871,35 @@ Linux native file composition does not qualify Apple execution. Record unavailab
 hardware gates explicitly; source controls and substituted runtimes are not
 runtime passes. Retain rejected candidates and failed controls with their exact
 inputs until final reconciliation establishes which evidence remains applicable.
+## Qwen native decode group sums
+
+The 2026-10-23 source candidate binds the Qwen target's group-sum policy once
+at existing serving preparation, after loading/layout preparation and before
+concurrent calibration or graph capture. For native checkpoints, the actual
+active head, GDN, attention and dense MLP projections determine whether any
+consumer is affine `QLinear`. A mixed layout retains the original sums;
+unprepared forwards and other formats also retain them. MoE execution owns its
+internal preparation independently and does not consume these target sums.
+Weight/layout replacement must repeat serving preparation before capturing or
+publishing the replacement's request state; existing captures retain their
+fixed weight bindings.
+
+Four Triton glue variants omit only the unused 64-group reduction/store and
+its FP32 output allocation. Their BF16 activation expressions, launch grids
+and warp counts are retained. This is a source work-elimination argument,
+not compiled bit identity or a measured speed/resource result. No decode
+synchronization, sampling, target arithmetic, precision or native scalar
+calibration policy changes in this candidate. Prefill and drafter callers
+keep the default sum-producing glue calls.
+
+Selection/repreparation and constructor ordering checks, exact complete glue
+outputs with graph replay, and native single/multi-forward logits, hidden
+states and committed-state comparisons are authored but unrun. Pinned CPU
+checks, target compilation and native exact-bit execution on SM120 and SM121,
+installed-image provenance, complete greedy/sampled model quality, and
+same-region end-to-end decode/request timing remain required. Component or
+older loading profiles do not establish a current decode gain. The separate
+device-wait candidate still requires stream, telemetry, callback-failure and
+buffer-lifetime analysis; startup scalar-preparation history is not decode
+performance evidence.
+
