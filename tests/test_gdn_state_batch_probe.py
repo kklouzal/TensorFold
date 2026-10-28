@@ -119,3 +119,52 @@ def test_actual_worker_preserves_factory_mtp_rows_and_floor(tmp_path, monkeypatc
     finally:
         os.close(write_fd)
         os.close(read_fd)
+
+
+def test_actual_successful_follower_factory_passes_floor_checks_before_follow(tmp_path, monkeypatch):
+    from tensorfold import hub, serve_options
+    from tensorfold.cuda.cohort import FAILURE_FD_ENV
+    from tensorfold.families import qwen4_exp
+
+    value = engine()
+    value.tp, value.depth, value.confidence = 8, 2, .7
+    value.context_window, value.indexer_history = 262144, "gpu"
+    value.kv_pair = NS(key_dtype="int8", value_dtype="int8")
+    value.scheduler, value.retention_catalog = None, object()
+    value.w.mtp = object()
+    value.w.meta.update(execution_provider="sm70", execution_dtype="float16",
+                        full=NS(hidden=2560,layers=48,vocab=248320))
+    value.capacity_plan.update(session_capacity={"context_tokens":262144,"configured_ceiling":24,
+        "resident_capacity":24,"full_context_commitments":24}, kv_full_windows={"materialized":True})
+    value.multi.w = value.w
+    value.multi.buf.gdn_state_batch.submitted = 0
+    calls = []
+    primary = ValueError("stopped after successful follower admission")
+    def follow():
+        calls.append("follow")
+        raise primary
+    value.follow, value.close = follow, lambda: calls.append("close")
+    def construct(*_args, **_kwargs):
+        calls.append("construct")
+        return value
+    monkeypatch.setattr(probe, "installed_identity", lambda _wheel: {})
+    monkeypatch.setattr(probe, "record_execution_profile", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(hub, "resolve", lambda *_args, **_kwargs: tmp_path)
+    monkeypatch.setattr(serve_options, "drafter_metadata_source", lambda _source: tmp_path)
+    monkeypatch.setattr(qwen4_exp, "cuda_engine", construct)
+    read_fd, write_fd = os.pipe()
+    monkeypatch.setenv(FAILURE_FD_ENV, str(write_fd))
+    args = NS(rank=1,wheel=tmp_path,model=tmp_path,mtp=tmp_path,master_port=29607,tokens=2048,
+        out=tmp_path,requested_sm70_profile=PROFILE,repetitions=1,native_dense_trial=True,
+        owner_batch_prelude_trial=True,gdn_state_batch_trial=True,session_ceiling=24)
+    try:
+        with pytest.raises(ValueError) as failure:
+            probe.worker(args)
+        assert failure.value is primary
+        assert calls == ["construct", "follow", "close"]
+        with pytest.raises(ValueError, match="loaded engine"):
+            probe.check_engine(value, session_ceiling=24)
+        probe.check_engine(value, session_ceiling=24, require_scheduler=False)
+    finally:
+        os.close(write_fd)
+        os.close(read_fd)

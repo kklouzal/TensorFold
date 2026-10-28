@@ -375,14 +375,14 @@ def prepared_prompt(engine, tokenizer, args):
                     "rendered": rendered, "token_ids": tokens}
 
 
-def check_engine(engine, *, session_ceiling=None):
+def check_engine(engine, *, session_ceiling=None, require_scheduler=True):
     """Refuse a changed execution profile before host finalization/admission."""
     plan = engine.capacity_plan
     solved, full = plan["session_capacity"], plan["kv_full_windows"]
     if (engine.tp != WORLD or engine.depth != DEPTH or engine.confidence != CONFIDENCE
             or engine.context_window != CONTEXT or engine.indexer_history != "gpu"
             or engine.kv_pair.key_dtype != "int8" or engine.kv_pair.value_dtype != "int8"
-            or engine.w.mtp is None or engine.scheduler is None or engine.retention_catalog is None
+            or engine.w.mtp is None or (require_scheduler and engine.scheduler is None) or engine.retention_catalog is None
             or engine.w.meta.get("execution_provider") != "sm70"
             or engine.w.meta.get("execution_dtype") != "float16"
             or (engine.w.meta["full"].hidden, engine.w.meta["full"].layers, engine.w.meta["full"].vocab)
@@ -392,7 +392,7 @@ def check_engine(engine, *, session_ceiling=None):
             or solved["full_context_commitments"] != solved["resident_capacity"]
             or not full["materialized"]):
         raise ValueError("loaded engine differs from native262144/INT8/TP8/auto/Q8-MTP2 profile")
-    if engine.scheduler._request_limit is not None:
+    if require_scheduler and engine.scheduler._request_limit is not None:
         raise ValueError("finite backend host admission must precede logical request publication")
 
 
@@ -978,7 +978,7 @@ def worker(args):
                if getattr(args, "execution_profile_manifest", None) is not None else {}))
         record_execution_profile(engine, report, requested=args.requested_sm70_profile)
         if getattr(args, "gdn_state_batch_trial", False):
-            check_engine(engine, session_ceiling=24)
+            check_engine(engine, session_ceiling=24, require_scheduler=args.rank == 0)
             report["gdn_state_batch"] = check_gdn_batch_engine(engine)
         report["capacity_plan"] = engine.capacity_plan
         report["graph_execution"] = {"before_requests": graph_execution_snapshot(engine),
