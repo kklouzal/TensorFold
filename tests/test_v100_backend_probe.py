@@ -1,0 +1,562 @@
+"""Finite caller/argument/retirement controls; no model, GPU or replaced host gate."""
+from pathlib import Path
+import os
+import signal
+import time
+from types import SimpleNamespace
+
+import pytest
+
+from tools import v100_backend_probe as probe
+from tensorfold.server.request_limits import RequestLimit
+
+
+def cli(tmp_path):
+    files = {}
+    for name in ("model", "mtp", "wheel", "source-hold"):
+        path = tmp_path / name
+        path.write_bytes(b"argument fixture only; never used as a model")
+        files[name] = path
+    return [item for name, path in files.items() for item in ("--" + name, str(path))] + [
+        "--image-identity", "sha256:" + "a" * 64, "--out", str(tmp_path / "results")]
+
+
+def test_default_arguments_preserve_native_profile_without_override_flags(tmp_path, monkeypatch):
+    monkeypatch.delenv("TENSORFOLD_SM70_PROFILE", raising=False)
+    args = probe.arguments(cli(tmp_path))
+    assert args.tokens == 128 and args.prompt == probe.DEFAULT_PROMPT and not args.serial_reference
+    assert args.devices == [str(index) for index in range(8)]
+    assert args.requested_sm70_profile is None and "TENSORFOLD_SM70_PROFILE" not in os.environ
+    assert not hasattr(args, "context") and not hasattr(args, "precision") and not hasattr(args, "position_profile_manifest")
+    assert (probe.CONTEXT, probe.WORLD, probe.DEPTH, probe.CONFIDENCE, probe.INPUT_CREDIT) == (
+        262144, 8, 2, .7, 16 << 20)
+
+
+@pytest.mark.parametrize("extra", [
+    ["--tokens", "0"], ["--tokens", "513"], ["--prompt", ""], ["--prompt", "\U0001f308" * 1025],
+    ["--gpus", "0,1,2,3,4,5,6,6"], ["--gpus", "0,1,2,3,4,5,6"],
+    ["--timeout-seconds", "nan"], ["--timeout-seconds", "inf"], ["--timeout-seconds", "0"],
+    ["--master-port", "0"], ["--rank", "8"], ["--base-commit", "dirty"],
+    ["--image-identity", "not-an-image"], ["--context", "4096"], ["--no-drafts"],
+    ["--precision", "full"], ["--vram-experts", "1"], ["--position-profile-manifest", "override.json"],
+])
+def test_invalid_or_contract_changing_arguments_refuse_before_worker_admission(tmp_path, extra):
+    with pytest.raises(SystemExit):
+        probe.arguments([*cli(tmp_path), *extra])
+    assert not (tmp_path / "results").exists()
+
+
+def test_missing_input_refuses_before_result_directory_or_model_acquisition(tmp_path):
+    args = cli(tmp_path)
+    Path(args[1]).unlink()
+    with pytest.raises(FileNotFoundError):
+        probe.arguments(args)
+    assert not (tmp_path / "results").exists()
+
+
+def test_callback_bounds_validate_before_retaining_and_close_is_terminal():
+    callback = probe.TokenCollector(3, 10)
+    assert callback([]) is False
+    assert callback.first_nonempty_monotonic_ns is None
+    assert callback([0, 9]) is False
+    first = callback.first_nonempty_monotonic_ns
+    for malformed in ([1, 2], [True], [-1], [10], [1.0], (1,)):
+        with pytest.raises(ValueError, match="finite output/token"):
+            callback(malformed)
+        assert callback.ids == [0, 9]
+        assert callback.first_nonempty_monotonic_ns == first
+    callback([1])
+    assert callback.ids == [0, 9, 1]
+    callback.close()
+    callback.close()
+    with pytest.raises(RuntimeError, match="after retirement"):
+        callback([])
+    assert callback.first_nonempty_monotonic_ns == first
+
+
+def test_first_nonempty_callback_timestamp_is_once_and_invalid_chunks_do_not_start_it():
+    callback = probe.TokenCollector(2, 10)
+    with pytest.raises(ValueError):
+        callback([10])
+    assert callback.first_nonempty_monotonic_ns is None
+    before = time.monotonic_ns()
+    callback([])
+    callback([1])
+    first = callback.first_nonempty_monotonic_ns
+    assert before <= first <= time.monotonic_ns()
+    callback([])
+    callback([2])
+    assert callback.first_nonempty_monotonic_ns == first
+
+
+class Generation:
+    """Only the execution boundary is substituted; RequestLimit is the real owner."""
+
+    def __init__(self, limit, *, failure=None, chunk=None):
+        self.limit, self.failure, self.chunk, self.callback = limit, failure, chunk, None
+        self.calls = []
+
+    def generate(self, prompt, count, sampling, callback, *, draft, stop_eos):
+        assert self.limit.used == 1
+        assert prompt == [0] and count == 3 and stop_eos
+        assert sampling.temperature == 0 and sampling.seed == 17
+        self.callback = callback
+        self.calls.append(draft)
+        callback([1] if self.chunk is None else self.chunk)
+        if self.failure is not None:
+            raise self.failure
+        return {"generated_tokens": len(callback.ids)}
+
+
+@pytest.fixture
+def tokenizer():
+    from tokenizers import Tokenizer, models
+    return Tokenizer(models.WordLevel({"prompt": 0, "answer": 1}, unk_token="prompt"))
+
+
+@pytest.fixture
+def nvtx_markers(monkeypatch):
+    pytest.importorskip("torch")
+    from torch.cuda import nvtx
+
+    events = []
+    monkeypatch.setattr(nvtx, "range_push", lambda label: events.append(("push", label)))
+    monkeypatch.setattr(nvtx, "range_pop", lambda: events.append(("pop", None)))
+    return SimpleNamespace(api=nvtx, events=events)
+
+
+def test_real_logical_owner_covers_generation_and_decode_then_retires(tokenizer, nvtx_markers):
+    limit = RequestLimit(1)
+    engine = Generation(limit)
+    result = probe.generate_reply(engine, tokenizer, [0], count=3, draft=True, limit=limit, result={})
+    assert result["text"] == "answer" and result["token_ids"] == [1]
+    assert result["label"] == "mtp-target" and result["draft"] is True
+    assert 0 <= result["first_committed_token_elapsed_ns"] <= result["elapsed_ns"]
+    assert engine.calls == [True] and limit.used == 0 and engine.callback.closed
+    with pytest.raises(RuntimeError, match="after retirement"):
+        engine.callback([1])
+    reference = probe.generate_reply(engine, tokenizer, [0], count=3, draft=False, limit=limit, result={})
+    assert reference["label"] == "serial-reference" and reference["draft"] is False
+    assert engine.calls == [True, False] and limit.used == 0
+    assert nvtx_markers.events == [("push", "tensorfold/mtp-target"), ("pop", None),
+                                   ("push", "tensorfold/serial-reference"), ("pop", None)]
+
+
+def test_generation_failure_preserved_with_retired_owner_and_callback(tokenizer, nvtx_markers):
+    limit = RequestLimit(1)
+    primary = ValueError("original generation failure")
+    engine = Generation(limit, failure=primary)
+    result = {}
+    with pytest.raises(ValueError) as caught:
+        probe.generate_reply(engine, tokenizer, [0], count=3, draft=True, limit=limit, result=result)
+    assert caught.value is primary and limit.used == 0 and engine.callback.closed
+    assert engine.callback.ids == result["token_ids"] == [1] and result["complete"] is False
+
+
+def test_output_overrun_refuses_without_partial_append_and_retires(tokenizer, nvtx_markers):
+    limit = RequestLimit(1)
+    engine = Generation(limit, chunk=[1] * 4)
+    with pytest.raises(ValueError, match="finite output/token"):
+        probe.generate_reply(engine, tokenizer, [0], count=3, draft=True, limit=limit, result={})
+    assert engine.callback.ids == [] and engine.callback.closed and limit.used == 0
+
+
+def test_receipt_limit_refuses_retained_payload_and_retires(tokenizer, nvtx_markers):
+    class OversizedReceipt(Generation):
+        def generate(self, *args, **kwargs):
+            result = super().generate(*args, **kwargs)
+            result["oversized"] = "x" * probe.MAX_RECEIPT_BYTES
+            return result
+
+    limit = RequestLimit(1)
+    engine = OversizedReceipt(limit)
+    with pytest.raises(ValueError, match="receipt bound"):
+        probe.generate_reply(engine, tokenizer, [0], count=3, draft=True, limit=limit, result={})
+    assert engine.callback.closed and limit.used == 0
+
+
+def test_changed_template_refuses_before_encoding_or_generation():
+    class WrongTemplate:
+        def provenance(self):
+            return {"sha256": "0" * 64}
+
+        def render(self, *_args, **_kwargs):
+            pytest.fail("changed template was rendered")
+
+    args = SimpleNamespace(prompt=probe.DEFAULT_PROMPT, thinking=False)
+    with pytest.raises(ValueError, match="unchanged pinned SC117"):
+        probe.prepared_prompt(SimpleNamespace(chat_template=WrongTemplate()), None, args)
+
+
+def test_aggregate_report_budget_includes_every_rank_and_supervisor(tmp_path):
+    assert (probe.LEADER_RECEIPT_BYTES + 7 * probe.FOLLOWER_RECEIPT_BYTES
+            + probe.SUPERVISOR_RECEIPT_BYTES) == probe.MAX_RECEIPT_BYTES
+    path = tmp_path / "report.json"
+    value = {"complete": False, "failure": "original failure", "raw_ids": [1, 2]}
+    probe.write_report(path, value, allowance=512)
+    import json
+    assert json.loads(path.read_text()) == value
+    with pytest.raises(ValueError, match="complete overflow evidence saved"):
+        probe.write_report(path, value, allowance=1)
+    assert json.loads(path.with_suffix(".overflow.json").read_text()) == value
+    assert json.loads(path.read_text()) == value
+
+
+def test_report_budget_counts_ascii_escaped_unicode_wire_bytes(tmp_path):
+    path = tmp_path / "unicode.json"
+    value = {"text": "\U0001f308" * 10}
+    with pytest.raises(ValueError, match="report slice exceeded"):
+        probe.write_report(path, value, allowance=100)
+    assert not path.exists() and path.with_suffix(".overflow.json").exists()
+
+
+def rendering_fault(monkeypatch, kind):
+    diagnostic = MemoryError("diagnostic rendering failed")
+
+    class Primary(ValueError):
+        def __str__(self):
+            raise diagnostic
+
+    if kind == "message":
+        return Primary(), diagnostic
+
+    def failed_traceback():
+        raise diagnostic
+
+    monkeypatch.setattr(probe.traceback, "format_exc", failed_traceback)
+    return ValueError("original operation failed"), diagnostic
+
+
+def retained_failure(error, target):
+    pending, seen = [error], set()
+    while pending:
+        current = pending.pop()
+        if current is target:
+            return True
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        pending.extend(getattr(current, "exceptions", ()))
+        pending.extend((current.__cause__, current.__context__))
+    return False
+
+
+@pytest.mark.parametrize("kind", ["message", "traceback"])
+def test_worker_rendering_fault_preserves_primary_and_unconditionally_closes_engine(tmp_path, monkeypatch, kind):
+    from tensorfold import hub
+    from tensorfold.cuda.cohort import FAILURE_FD_ENV
+    from tensorfold.families import qwen4_exp
+    from tensorfold import serve_options
+
+    primary, diagnostic = rendering_fault(monkeypatch, kind)
+    events = []
+
+    class OwnedEngine:
+        capacity_plan = {}
+        sm70_profile = "reference"
+
+        def follow(self):
+            events.append("follow")
+            raise primary
+
+        def close(self):
+            events.append("close")
+
+    # Only external model/import boundaries are substituted. The real worker's
+    # report, failure transport and an actual borrowed pipe run unchanged.
+    monkeypatch.setattr(probe, "installed_identity", lambda _wheel: {})
+    monkeypatch.setattr(hub, "resolve", lambda *_args, **_kw: tmp_path)
+    monkeypatch.setattr(serve_options, "drafter_metadata_source", lambda _source: tmp_path)
+    monkeypatch.setattr(qwen4_exp, "cuda_engine", lambda *_args, **_kw: OwnedEngine())
+    read_fd, write_fd = os.pipe()
+    monkeypatch.setenv(FAILURE_FD_ENV, str(write_fd))
+    args = SimpleNamespace(rank=1, wheel=tmp_path, model=tmp_path, mtp=tmp_path,
+                           master_port=29607, tokens=128, out=tmp_path, requested_sm70_profile=None)
+    try:
+        with pytest.raises(ValueError) as caught:
+            probe.worker(args)
+        assert caught.value is primary and events == ["follow", "close"]
+        assert retained_failure(primary, diagnostic)
+    finally:
+        os.close(write_fd)
+        os.close(read_fd)
+
+
+@pytest.mark.parametrize("kind", ["message", "traceback"])
+def test_launcher_rendering_fault_preserves_primary_restores_handlers_and_closes_pipes(tmp_path, monkeypatch, kind):
+    from tensorfold.cuda import expert_launch
+
+    args = probe.arguments(cli(tmp_path))
+    primary, diagnostic = rendering_fault(monkeypatch, kind)
+    handlers = {signum: signal.getsignal(signum) for signum in (signal.SIGINT, signal.SIGTERM)}
+    descriptors = []
+    actual_pipe = os.pipe2
+
+    def owned_pipe(flags):
+        pair = actual_pipe(flags)
+        descriptors.extend(pair)
+        return pair
+
+    def failed_supervision(*_args, **_kwargs):
+        for signum, handler in handlers.items():
+            assert signal.getsignal(signum) is not handler
+        raise primary
+
+    monkeypatch.setattr(probe, "installed_identity", lambda _wheel: {})
+    monkeypatch.setattr(probe.os, "pipe2", owned_pipe)
+    monkeypatch.setattr(expert_launch, "supervise", failed_supervision)
+    with pytest.raises(ValueError) as caught:
+        probe.launch(args, [])
+    assert caught.value is primary and retained_failure(primary, diagnostic)
+    for signum, handler in handlers.items():
+        assert signal.getsignal(signum) is handler
+    assert len(descriptors) == 2
+    for descriptor in descriptors:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+
+
+def test_launcher_retirement_allocates_no_new_enumeration_after_supervision(tmp_path, monkeypatch):
+    from tensorfold.cuda import expert_launch
+
+    args = probe.arguments(cli(tmp_path))
+    primary = ValueError("original supervision failure")
+    retired = False
+    descriptors = []
+    actual_pipe = os.pipe2
+    handlers = {signum: signal.getsignal(signum) for signum in (signal.SIGINT, signal.SIGTERM)}
+
+    def owned_pipe(flags):
+        pair = actual_pipe(flags)
+        descriptors.extend(pair)
+        return pair
+
+    def prepared_enumeration(*args, **kwargs):
+        if retired:
+            raise MemoryError("cleanup iteration allocation must not occur")
+        return enumerate(*args, **kwargs)
+
+    def failed_supervision(*_args, **_kwargs):
+        nonlocal retired
+        retired = True
+        raise primary
+
+    monkeypatch.setattr(probe, "installed_identity", lambda _wheel: {})
+    monkeypatch.setattr(probe, "enumerate", prepared_enumeration, raising=False)
+    monkeypatch.setattr(probe.os, "pipe2", owned_pipe)
+    monkeypatch.setattr(expert_launch, "supervise", failed_supervision)
+    with pytest.raises(ValueError) as caught:
+        probe.launch(args, [])
+    assert caught.value is primary
+    for signum, handler in handlers.items():
+        assert signal.getsignal(signum) is handler
+    for descriptor in descriptors:
+        with pytest.raises(OSError):
+            os.fstat(descriptor)
+
+
+def test_fatal_notification_is_latched_and_allows_bounded_report_retirement(tmp_path, monkeypatch):
+    import json
+    from tensorfold.cuda import expert_launch
+
+    args = probe.arguments(cli(tmp_path))
+    now = [100.0]
+    monkeypatch.setattr(probe.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(probe, "installed_identity", lambda _wheel: {})
+
+    def fatal_supervision(_commands, _environments, *, failure_probe, pass_fds, grace):
+        assert grace == 30
+        os.write(pass_fds[0], b"F")
+        assert failure_probe() is False
+        first = json.loads((args.out / "fatal-notification.json").read_text())
+        assert first["fatal_notification"]["bytes_observed"] == 1
+        now[0] += probe.FATAL_REPORT_GRACE_SECONDS - .5
+        assert failure_probe() is False
+        os.write(pass_fds[0], b"F")
+        assert failure_probe() is False  # A later byte must not reset the deadline.
+        now[0] += .5
+        assert failure_probe() is True
+        return 1
+
+    monkeypatch.setattr(expert_launch, "supervise", fatal_supervision)
+    assert probe.launch(args, []) == 1
+    final = json.loads((args.out / "launch-final.json").read_text())
+    assert final["complete"] is False and final["timed_out"] is False
+    assert final["fatal_notification"]["bytes_observed"] == 2
+    assert final["fatal_notification"]["first_elapsed_s"] == 0
+
+
+@pytest.mark.parametrize("interruption", ["stop", "deadline"])
+def test_stop_and_process_deadline_override_fatal_report_grace(tmp_path, monkeypatch, interruption):
+    import json
+    from tensorfold.cuda import expert_launch
+
+    args = probe.arguments(cli(tmp_path))
+    args.timeout_seconds = 1
+    now = [100.0]
+    monkeypatch.setattr(probe.time, "monotonic", lambda: now[0])
+    monkeypatch.setattr(probe, "installed_identity", lambda _wheel: {})
+
+    def interrupted_supervision(_commands, _environments, *, failure_probe, pass_fds, **_kwargs):
+        os.write(pass_fds[0], b"F")
+        assert failure_probe() is False
+        if interruption == "stop":
+            signal.getsignal(signal.SIGTERM)(signal.SIGTERM, None)
+        else:
+            now[0] += 1
+        assert failure_probe() is True
+        return 1
+
+    monkeypatch.setattr(expert_launch, "supervise", interrupted_supervision)
+    assert probe.launch(args, []) == 1
+    final = json.loads((args.out / "launch-final.json").read_text())
+    assert final["complete"] is False
+    assert final["stopped"] is (interruption == "stop")
+    assert final["timed_out"] is (interruption == "deadline")
+
+
+def test_final_fatal_byte_cannot_be_reported_as_success(tmp_path, monkeypatch):
+    import json
+    from tensorfold.cuda import expert_launch
+
+    args = probe.arguments(cli(tmp_path))
+    monkeypatch.setattr(probe, "installed_identity", lambda _wheel: {})
+
+    def late_notification(_commands, _environments, *, pass_fds, **_kwargs):
+        os.write(pass_fds[0], b"FF")
+        return 0
+
+    monkeypatch.setattr(expert_launch, "supervise", late_notification)
+    assert probe.launch(args, []) == 1
+    final = json.loads((args.out / "launch-final.json").read_text())
+    assert final["exit_code"] == 1 and final["complete"] is False
+    assert final["fatal_notification"]["bytes_observed"] == 2
+
+
+def test_unset_profile_uses_actual_reference_constructor_policy_and_records_native_flags(tmp_path, monkeypatch):
+    from tensorfold.cuda.sm70 import execution_policy, family_ops, routing_native
+    from tensorfold.families.qwen4_exp.cuda import (
+        dspark_context_graphs, dspark_proposal_graphs, gguf_prefill, gguf_weights, padded_linears,
+    )
+
+    # Use the actual supported reference selection without querying CUDA or
+    # altering qualification. Restore every process-fixed policy owner afterward.
+    for owner, name in (
+        (execution_policy, "_SELECTED"), (family_ops, "_NATIVE_FAMILY"),
+        (family_ops, "_NATIVE_ATTENTION"), (routing_native, "_NATIVE_LOGITS"),
+        (padded_linears, "_ENABLED"), (gguf_weights.GGUFExperts, "implementation"),
+        (gguf_weights.GGUFConcat, "implementation"), (gguf_prefill, "WORKSPACE_BUDGET_BYTES"),
+        (dspark_context_graphs, "_ENABLED"), (dspark_proposal_graphs, "_ENABLED"),
+    ):
+        monkeypatch.setattr(owner, name, getattr(owner, name))
+    monkeypatch.delenv(execution_policy.PROFILE_ENV, raising=False)
+    args = probe.arguments(cli(tmp_path))
+    selected = execution_policy.configure({}, tp=1, torch=None)
+    assert selected == "reference"
+    record = {}
+    probe.record_execution_profile(SimpleNamespace(sm70_profile=selected), record,
+                                   requested=args.requested_sm70_profile)
+    assert record == {
+        "requested_sm70_profile": None, "sm70_profile": "reference",
+        "native_flags": {"family": False, "private_attention": False, "routing": False,
+            "padded": False, "gguf_dense_implementation": gguf_weights.GGUFDense.implementation,
+            "gguf_concat_implementation": "reference", "gguf_experts_implementation": "reference",
+            "gguf_experts_packed_rows": gguf_weights.GGUFExperts.packed_rows},
+    }
+    assert execution_policy.PROFILE_ENV not in os.environ
+
+
+def test_execution_record_reads_exact_flags_and_rejects_requested_actual_mismatch(monkeypatch):
+    from tensorfold.cuda.sm70 import family_ops
+    from tensorfold.families.qwen4_exp.cuda import gguf_weights
+
+    monkeypatch.setattr(family_ops, "_NATIVE_ATTENTION", True)
+    monkeypatch.setattr(gguf_weights.GGUFDense, "implementation", "native32")
+    record = {}
+    with pytest.raises(ValueError, match="actual constructor selection"):
+        probe.record_execution_profile(SimpleNamespace(sm70_profile="reference"), record, requested="optimized")
+    assert record["sm70_profile"] == "reference" and record["requested_sm70_profile"] == "optimized"
+    assert record["native_flags"]["private_attention"] is True
+    assert record["native_flags"]["gguf_dense_implementation"] == "native32"
+    assert family_ops._NATIVE_ATTENTION is True and gguf_weights.GGUFDense.implementation == "native32"
+
+
+def test_requested_profile_validation_is_deferred_to_existing_constructor(tmp_path, monkeypatch):
+    monkeypatch.setenv("TENSORFOLD_SM70_PROFILE", "constructor-must-refuse-this")
+    args = probe.arguments(cli(tmp_path))
+    assert args.requested_sm70_profile == "constructor-must-refuse-this"
+    assert os.environ["TENSORFOLD_SM70_PROFILE"] == "constructor-must-refuse-this"
+
+
+def test_nvtx_push_failure_prevents_generation_and_retires_collector_owner(tokenizer, nvtx_markers, monkeypatch):
+    primary = RuntimeError("NVTX initialization failed")
+    limit = RequestLimit(1)
+    engine = Generation(limit)
+    closed = []
+    actual_close = probe.TokenCollector.close
+
+    def failed_push(_label):
+        assert limit.used == 1
+        raise primary
+
+    def close_collector(collector):
+        actual_close(collector)
+        closed.append(collector)
+
+    monkeypatch.setattr(nvtx_markers.api, "range_push", failed_push)
+    monkeypatch.setattr(probe.TokenCollector, "close", close_collector)
+    with pytest.raises(RuntimeError) as caught:
+        probe.generate_reply(engine, tokenizer, [0], count=3, draft=True, limit=limit, result={})
+    assert caught.value is primary and engine.calls == [] and limit.used == 0
+    assert len(closed) == 1 and closed[0].closed and nvtx_markers.events == []
+
+
+def test_nvtx_pop_failure_preserves_generation_primary_and_all_retirement(tokenizer, nvtx_markers, monkeypatch):
+    primary = ValueError("generation failed")
+    cleanup = RuntimeError("NVTX pop failed")
+    limit = RequestLimit(1)
+    engine = Generation(limit, failure=primary)
+
+    def failed_pop():
+        nvtx_markers.events.append(("pop", None))
+        raise cleanup
+
+    monkeypatch.setattr(nvtx_markers.api, "range_pop", failed_pop)
+    with pytest.raises(ValueError) as caught:
+        probe.generate_reply(engine, tokenizer, [0], count=3, draft=True, limit=limit, result={})
+    assert caught.value is primary and retained_failure(primary, cleanup)
+    assert limit.used == 0 and engine.callback.closed
+    assert nvtx_markers.events == [("push", "tensorfold/mtp-target"), ("pop", None)]
+
+
+def test_nvtx_pop_failure_after_success_is_reported_and_retires(tokenizer, nvtx_markers, monkeypatch):
+    cleanup = RuntimeError("NVTX pop failed")
+    limit = RequestLimit(1)
+    engine = Generation(limit)
+
+    def failed_pop():
+        raise cleanup
+
+    monkeypatch.setattr(nvtx_markers.api, "range_pop", failed_pop)
+    with pytest.raises(RuntimeError) as caught:
+        probe.generate_reply(engine, tokenizer, [0], count=3, draft=True, limit=limit, result={})
+    assert caught.value is cleanup and engine.callback.closed and limit.used == 0
+
+
+def test_nvtx_range_includes_final_decode_failure_and_unwinds(tokenizer, nvtx_markers, monkeypatch):
+    from tensorfold import token_metadata
+
+    primary = ValueError("final decode failed")
+    limit = RequestLimit(1)
+    engine = Generation(limit)
+
+    def failed_decode(_tokenizer, ids):
+        assert ids == [1] and limit.used == 1
+        assert nvtx_markers.events == [("push", "tensorfold/mtp-target")]
+        raise primary
+
+    monkeypatch.setattr(token_metadata, "decode_presentation", failed_decode)
+    with pytest.raises(ValueError) as caught:
+        probe.generate_reply(engine, tokenizer, [0], count=3, draft=True, limit=limit, result={})
+    assert caught.value is primary and engine.callback.closed and limit.used == 0
+    assert nvtx_markers.events == [("push", "tensorfold/mtp-target"), ("pop", None)]
