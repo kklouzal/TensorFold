@@ -1982,289 +1982,293 @@ class MultiDecoder:
     def _round(self) -> list[Stream]:
         """One round over the live streams, with the next prompt pass in the same forward while prompts fill."""
 
-        error = getattr(self, "_memory_error", None)
-        if error is not None:
-            raise error
-        plan = self._execution_plan
-        self._execution_plan = None
-        if self.controller is not None and plan is None:
-            plan = self.freeze_execution()
-            self.controller.accept(plan)
-            self.apply_execution_family()
-        self._migrate_boundary(None if plan is None else plan["migration"])
-        pdl.ON = self.pdl                                # this decoder's launch policy (one process global)
-        cancelled = []
-        if getattr(self.w, "dflash2", None) is not None:
-            for s in self.streams.values():
-                if not s.done and s.cancel is not None and s.cancel.is_set():
-                    # Checked reconstruction emits no fresh token callback.
-                    # Observe cancellation at the same quiescent boundary so
-                    # a long owed prefix cannot defer request retirement.
-                    s.done, s.finished = True, time.perf_counter()
-                    cancelled.append(s)
-        ended = cancelled + self._make_room()          # all issued work from the previous round has resolved
-        live = [s for s in self.streams.values() if self._runnable(s)]
-        if self.filling and (not live or not self.converged):
-            ended += self._fill()                      # passes alone; a prompt that ends here joins this round
+        gathered = None
+        try:
+            error = getattr(self, "_memory_error", None)
+            if error is not None:
+                raise error
+            plan = self._execution_plan
+            self._execution_plan = None
+            if self.controller is not None and plan is None:
+                plan = self.freeze_execution()
+                self.controller.accept(plan)
+                self.apply_execution_family()
+            self._migrate_boundary(None if plan is None else plan["migration"])
+            pdl.ON = self.pdl                                # this decoder's launch policy (one process global)
+            cancelled = []
+            if getattr(self.w, "dflash2", None) is not None:
+                for s in self.streams.values():
+                    if not s.done and s.cancel is not None and s.cancel.is_set():
+                        # Checked reconstruction emits no fresh token callback.
+                        # Observe cancellation at the same quiescent boundary so
+                        # a long owed prefix cannot defer request retirement.
+                        s.done, s.finished = True, time.perf_counter()
+                        cancelled.append(s)
+            ended = cancelled + self._make_room()          # all issued work from the previous round has resolved
             live = [s for s in self.streams.values() if self._runnable(s)]
-        if not live:
-            return ended
-        dflash = getattr(self.w, "dflash2", None)
-        packets = None
-        draft_started = time.perf_counter() if dflash is not None else None
-        if dflash is not None:
-            # A ChainPacket owns draws from this operation's frozen settings.
-            # Nothing from a prior round may be shortened after those draws.
-            live, packets = self._dflash_proposals(live, plan)
-        elif self.controller is not None:
-            for s in live:
-                del s.drafts[plan["proposal_limit"]:]
-        grammars, failed = {}, []
-        for s in live:                                   # a grammar cuts the drafts no accepted path can hold
-            if s.constraint is not None and not (dflash is not None and s.owed):
-                tokens = [s.out[-1]] + list(s.drafts)
-                try:
-                    grammars[s.sid] = s.constraint.window(tokens, list(range(-1, len(tokens) - 1)))
-                except GrammarError as exc:              # this request ends with its error, the others go on
-                    s.error, s.done = exc, True
-                    self.held.pop(s.sid, None)
-                    failed.append(s)
-                    continue
-                s.drafts = grammars[s.sid].tokens[1:]
-        live = [s for s in live if not s.done]
-        if not live:
-            return failed + ended
-        if self.controller is not None and dflash is None:
-            selected = self.controller.select([(s.sid, 1 + len(s.drafts)) for s in live], plan)
-            by_id = {s.sid: s for s in live}
-            # Older BF16 backends defer recurrent commits in shared scratch.
-            # Retire every unselected borrower before another round reuses it.
-            for s in live:
-                if s.sid not in selected:
-                    self._flush(s)
-            live = [by_id[sid] for sid in selected]
+            if self.filling and (not live or not self.converged):
+                ended += self._fill()                      # passes alone; a prompt that ends here joins this round
+                live = [s for s in self.streams.values() if self._runnable(s)]
+            if not live:
+                return ended
+            dflash = getattr(self.w, "dflash2", None)
+            packets = None
+            draft_started = time.perf_counter() if dflash is not None else None
+            if dflash is not None:
+                # A ChainPacket owns draws from this operation's frozen settings.
+                # Nothing from a prior round may be shortened after those draws.
+                live, packets = self._dflash_proposals(live, plan)
+            elif self.controller is not None:
+                for s in live:
+                    del s.drafts[plan["proposal_limit"]:]
+            grammars, failed = {}, []
+            for s in live:                                   # a grammar cuts the drafts no accepted path can hold
+                if s.constraint is not None and not (dflash is not None and s.owed):
+                    tokens = [s.out[-1]] + list(s.drafts)
+                    try:
+                        grammars[s.sid] = s.constraint.window(tokens, list(range(-1, len(tokens) - 1)))
+                    except GrammarError as exc:              # this request ends with its error, the others go on
+                        s.error, s.done = exc, True
+                        self.held.pop(s.sid, None)
+                        failed.append(s)
+                        continue
+                    s.drafts = grammars[s.sid].tokens[1:]
+            live = [s for s in live if not s.done]
             if not live:
                 return failed + ended
-        active_count = len(plan["order"]) if plan is not None else len(live)
-        self.buf.rotor_lookup = self._rotor_lookup(live[0], len(live))
-        self.pbuf.rotor_lookup = False  # any overlapping prompt invalidates the exclusive-request Region
-        t0 = time.perf_counter() if draft_started is None else draft_started
-        def prepare_decode():
-            windows = [(s.st, [s.out[-1]] + list(s.drafts)) for s in live]
-            # N-gram rows are read behind the target layers before their layer.
-            return windows, stage(self.w, self.buf, windows, late=True)
+            if self.controller is not None and dflash is None:
+                selected = self.controller.select([(s.sid, 1 + len(s.drafts)) for s in live], plan)
+                by_id = {s.sid: s for s in live}
+                # Older BF16 backends defer recurrent commits in shared scratch.
+                # Retire every unselected borrower before another round reuses it.
+                for s in live:
+                    if s.sid not in selected:
+                        self._flush(s)
+                live = [by_id[sid] for sid in selected]
+                if not live:
+                    return failed + ended
+            active_count = len(plan["order"]) if plan is not None else len(live)
+            self.buf.rotor_lookup = self._rotor_lookup(live[0], len(live))
+            self.pbuf.rotor_lookup = False  # any overlapping prompt invalidates the exclusive-request Region
+            t0 = time.perf_counter() if draft_started is None else draft_started
+            def prepare_decode():
+                windows = [(s.st, [s.out[-1]] + list(s.drafts)) for s in live]
+                # N-gram rows are read behind the target layers before their layer.
+                return windows, stage(self.w, self.buf, windows, late=True)
 
-        context = getattr(self.buf, "input_preparation_context", None)
-        windows, segs = prepare_decode() if context is None else context.prepare("decode-window", prepare_decode)
-        # a pass shares the round's forward only where their experts share a launch; else _fill ran it between rounds
-        pieces, psegs = (self._pieces(self._pass_rows()) if self.filling and self.converged else []), None
-        marks = self._output_marks([*live, *(s for s, _, _ in pieces)]) if self.controller is not None else None
-        cuts, pwindows, pends = [], None, None
-        if pieces:
-            self._note_passed(pieces)
+            context = getattr(self.buf, "input_preparation_context", None)
+            windows, segs = prepare_decode() if context is None else context.prepare("decode-window", prepare_decode)
+            # a pass shares the round's forward only where their experts share a launch; else _fill ran it between rounds
+            pieces, psegs = (self._pieces(self._pass_rows()) if self.filling and self.converged else []), None
+            marks = self._output_marks([*live, *(s for s, _, _ in pieces)]) if self.controller is not None else None
+            cuts, pwindows, pends = [], None, None
+            if pieces:
+                self._note_passed(pieces)
+                try:
+                    context = getattr(self.pbuf, "input_preparation_context", None)
+
+                    def operation():
+                        return self._prepare_pass(pieces)
+
+                    pwindows, psegs, pends, cuts = operation() if context is None else context.prepare("mixed-prefill-window", operation)
+                except Exception as exc:                     # noqa: BLE001  (the pass's requests fail, the round goes on)
+                    if getattr(self.pbuf, "input_preparation_context", None) is not None:
+                        from .input_preparation import reject_prepared
+
+                        reject_prepared(self.pbuf, exc)
+                    ended += self._failed(pieces, exc)
+                    pieces = []
+            held = [self.held.pop(s.sid, []) for s in live]
+            half = self.buf.h.dtype == torch.float16
+            tables = None if half else gdn_multi.Tables(self.gdn, segs, held, static=self.round_tables)
+            self.buf.gdn_tables = tables
+            self.buf.attn_step = (None if half else attn_multi.Step(
+                self.w, segs, mtp=False, tables=self.step_tables, rotor_lookup=self.buf.rotor_lookup))
+            target = self.w.meta.get("target_greedy_owner")
+            if target is not None and not target.eligible(self, live, pieces=pieces, grammars=grammars, dflash=dflash):
+                target = None
             try:
-                context = getattr(self.pbuf, "input_preparation_context", None)
+                if pieces:                                 # the window and the pass: each layer's experts once for both
+                    from .media_mtp import target_inputs
 
-                def operation():
-                    return self._prepare_pass(pieces)
-
-                pwindows, psegs, pends, cuts = operation() if context is None else context.prepare("mixed-prefill-window", operation)
-            except Exception as exc:                     # noqa: BLE001  (the pass's requests fail, the round goes on)
-                if getattr(self.pbuf, "input_preparation_context", None) is not None:
-                    from .input_preparation import reject_prepared
-
-                    reject_prepared(self.pbuf, exc)
-                ended += self._failed(pieces, exc)
-                pieces = []
-        held = [self.held.pop(s.sid, []) for s in live]
-        half = self.buf.h.dtype == torch.float16
-        tables = None if half else gdn_multi.Tables(self.gdn, segs, held, static=self.round_tables)
-        self.buf.gdn_tables = tables
-        self.buf.attn_step = (None if half else attn_multi.Step(
-            self.w, segs, mtp=False, tables=self.step_tables, rotor_lookup=self.buf.rotor_lookup))
-        target = self.w.meta.get("target_greedy_owner")
-        if target is not None and not target.eligible(self, live, pieces=pieces, grammars=grammars, dflash=dflash):
-            target = None
-        try:
-            if pieces:                                 # the window and the pass: each layer's experts once for both
-                from .media_mtp import target_inputs
-
-                with target_inputs(self.w, self.pbuf, pwindows, psegs) as merged:
-                    logits, heads = compute_mixed(self.w, segs, self.buf, psegs, self.pbuf, ends=pends, cuts=cuts,
-                                                  **({"prefill_embeddings": merged} if merged is not None else {}))
-                heads = heads[:len(pends)].clone() if pends else None
-            else:                                      # a captured forward when one serves this round, else eager
-                # The compact-target graph head has no old top32 packet. Ineligible
-                # requests use the ordinary eager producer, preserving that packet.
-                allow_graph = self.w.meta.get("target_greedy_owner") is None or target is not None
-                logits = self.graphs.verify_forward(segs) if self.graphs is not None and allow_graph else None
-                if logits is not None and target is not None:
-                    target.gather(logits, segs[-1][2])
-                if logits is None:
-                    if target is None:
-                        logits = compute(self.w, segs, self.buf, check=False)
-                    else:
-                        logits = compute(self.w, segs, self.buf, check=False, target_greedy=target)
-            if self.controller is not None:
-                self.controller.work_observations.target(segs, replay_rows=sum(
-                    end - begin for s, (_state, begin, end) in zip(live, segs) if dflash is not None and s.owed))
-                if pieces:
-                    self.controller.work_observations.target(
-                        psegs, prefill=True,
-                        replay_rows=sum(n for stream, _, n in pieces if stream.carry is not None))
-        except BaseException as primary:
-            if self.controller is not None:
-                self.controller.work_observations.incomplete(primary)
-            raise
-        finally:
-            self.buf.gdn_tables = self.buf.attn_step = None
-        target_result, gathered = None, None
-        if self.w.comm is not None:
-            if target is not None:
-                target_result = target.finish(self, segs, live[0], logits)
-            elif (dflash is None and not pieces and not grammars
-                    and self._coalesced_candidates([stream.sampling for stream in live])):
-                gathered = self.kv_cohort.read_candidates([state for state, _, _ in segs],
-                    self.buf.cand_all, logits.shape[0], comm=self.w.comm)
-            else:
-                _kv_check(segs, comm=self.w.comm, workspace=getattr(self, "kv_cohort", None))
-        lasts = self._absorb(pieces, psegs, cuts) if pieces else None
-        starts = [a0 for _, a0, _ in segs] + [segs[-1][2]]
-        positions = [[st.pos + 1 + r for r in range(a1 - a0)] for st, a0, a1 in segs]
-        samplings = [s.sampling for s in live]
-        # one host wait for the packets and the frame's status words, latched before any score is used; a failure
-        # before that wait reports a failed frame first, as a check right after the forward would
-        words = KVWords(segs, self.kv_host)
-        try:
-            for s, (_, a0, a1) in zip(live, segs):
-                if s.sid in grammars:
-                    s.constraint.mask(logits[a0:a1], grammars[s.sid], self.w.meta.get("vocab_offset", 0))
-            launched = (launch_streams(logits, starts, positions, samplings)
-                        if self.w.comm is None and dflash is None else None)
-        except BaseException:
-            words.settle()
-            raise
-        if dflash is not None:
-            from .dflash2_verify import verify_batch
-            from tensorfold.cuda.sampling import sample_rows
-
-            words.settle()
-            paths, sampled = [], []
-            for s, (state, begin, end), positions0 in zip(live, segs, positions):
-                if s.owed:
-                    # These outputs already belong to the canonical transcript.
-                    # Consume the pending canonical input, force its known next
-                    # token, and let Stream.take check it without re-emission.
-                    path, terminal = [0], s.owed[0]
-                    rows = [terminal]
-                elif not s.draft:
-                    rows = (sample_rows(logits[begin:end], positions0, s.sampling) if self.w.comm is None else
-                            tp_sample_rows(self.w, logits[begin:end], positions0, s.sampling, plan=self._sample_plan))
-                    path, terminal = [0], rows[0]
+                    with target_inputs(self.w, self.pbuf, pwindows, psegs) as merged:
+                        logits, heads = compute_mixed(self.w, segs, self.buf, psegs, self.pbuf, ends=pends, cuts=cuts,
+                                                      **({"prefill_embeddings": merged} if merged is not None else {}))
+                    heads = heads[:len(pends)].clone() if pends else None
+                else:                                      # a captured forward when one serves this round, else eager
+                    # The compact-target graph head has no old top32 packet. Ineligible
+                    # requests use the ordinary eager producer, preserving that packet.
+                    allow_graph = self.w.meta.get("target_greedy_owner") is None or target is not None
+                    logits = self.graphs.verify_forward(segs) if self.graphs is not None and allow_graph else None
+                    if logits is not None and target is not None:
+                        target.gather(logits, segs[-1][2])
+                    if logits is None:
+                        if target is None:
+                            logits = compute(self.w, segs, self.buf, check=False)
+                        else:
+                            logits = compute(self.w, segs, self.buf, check=False, target_greedy=target)
+                if self.controller is not None:
+                    self.controller.work_observations.target(segs, replay_rows=sum(
+                        end - begin for s, (_state, begin, end) in zip(live, segs) if dflash is not None and s.owed))
+                    if pieces:
+                        self.controller.work_observations.target(
+                            psegs, prefill=True,
+                            replay_rows=sum(n for stream, _, n in pieces if stream.carry is not None))
+            except BaseException as primary:
+                if self.controller is not None:
+                    self.controller.work_observations.incomplete(primary)
+                raise
+            finally:
+                self.buf.gdn_tables = self.buf.attn_step = None
+            target_result, gathered = None, None
+            if self.w.comm is not None:
+                if target is not None:
+                    target_result = target.finish(self, segs, live[0], logits)
+                elif (dflash is None and not pieces and not grammars
+                        and self._coalesced_candidates([stream.sampling for stream in live])):
+                    gathered = self.kv_cohort.read_candidates([state for state, _, _ in segs],
+                        self.buf.cand_all, logits.shape[0], comm=self.w.comm)
                 else:
-                    row = verify_batch(self.w, logits[begin:end], [(state, 0, end - begin)], [packets[s.sid]],
-                        [s.sampling], [s.count - len(s.out)], [self._ends(s)], plan=self._sample_plan)[0]
-                    path, terminal, rows = list(row.path), row.terminal, list(row.outputs)
-                paths.append((path, terminal))
-                sampled.append(rows)
-        elif self.w.comm is None:
-            sampled = collect_streams(launched, words)
-        else:
-            words.settle()
-            if target_result is not None:
-                paths, chosen = target_result
-                paths, sampled = [paths], [chosen]
-            elif (not grammars and self.w.meta.get("execution_provider") == "sm70"
-                    and all(sampling == samplings[0] for sampling in samplings) and _gathered_fits(samplings[0])):
-                try:
-                    chosen = choose_gathered(self.w, self.buf.cand_all, logits.shape[0],
-                        [position for group in positions for position in group], samplings[0],
-                        logits=logits, plan=self._sample_plan, gathered=gathered)
-                finally:
-                    gathered = None  # Retire the sole owned packet before MTP may reuse the arena/allowance.
-                sampled = [chosen[a0:a1] for a0, a1 in zip(starts, starts[1:])]
+                    _kv_check(segs, comm=self.w.comm, workspace=getattr(self, "kv_cohort", None))
+            lasts = self._absorb(pieces, psegs, cuts) if pieces else None
+            starts = [a0 for _, a0, _ in segs] + [segs[-1][2]]
+            positions = [[st.pos + 1 + r for r in range(a1 - a0)] for st, a0, a1 in segs]
+            samplings = [s.sampling for s in live]
+            # one host wait for the packets and the frame's status words, latched before any score is used; a failure
+            # before that wait reports a failed frame first, as a check right after the forward would
+            words = KVWords(segs, self.kv_host)
+            try:
+                for s, (_, a0, a1) in zip(live, segs):
+                    if s.sid in grammars:
+                        s.constraint.mask(logits[a0:a1], grammars[s.sid], self.w.meta.get("vocab_offset", 0))
+                launched = (launch_streams(logits, starts, positions, samplings)
+                            if self.w.comm is None and dflash is None else None)
+            except BaseException:
+                words.settle()
+                raise
+            if dflash is not None:
+                from .dflash2_verify import verify_batch
+                from tensorfold.cuda.sampling import sample_rows
+
+                words.settle()
+                paths, sampled = [], []
+                for s, (state, begin, end), positions0 in zip(live, segs, positions):
+                    if s.owed:
+                        # These outputs already belong to the canonical transcript.
+                        # Consume the pending canonical input, force its known next
+                        # token, and let Stream.take check it without re-emission.
+                        path, terminal = [0], s.owed[0]
+                        rows = [terminal]
+                    elif not s.draft:
+                        rows = (sample_rows(logits[begin:end], positions0, s.sampling) if self.w.comm is None else
+                                tp_sample_rows(self.w, logits[begin:end], positions0, s.sampling, plan=self._sample_plan))
+                        path, terminal = [0], rows[0]
+                    else:
+                        row = verify_batch(self.w, logits[begin:end], [(state, 0, end - begin)], [packets[s.sid]],
+                            [s.sampling], [s.count - len(s.out)], [self._ends(s)], plan=self._sample_plan)[0]
+                        path, terminal, rows = list(row.path), row.terminal, list(row.outputs)
+                    paths.append((path, terminal))
+                    sampled.append(rows)
+            elif self.w.comm is None:
+                sampled = collect_streams(launched, words)
             else:
-                sampled = [tp_sample_rows(self.w, logits[a0:a1], pos, sampling, plan=self._sample_plan)
-                           for a0, a1, pos, sampling in zip(starts, starts[1:], positions, samplings)]
-        if dflash is None and target_result is None:
-            paths = [accept(tokens, list(range(-1, len(tokens) - 1)), rows, s.count - len(s.out), self._ends(s))
-                     for s, (_, tokens), rows in zip(live, windows, sampled)]
-        if self.controller is not None:
-            for s, (_, tokens), (path, _end) in zip(live, windows, paths):
-                if dflash is None or not s.owed:
-                    self.controller.work_observations.verification(len(tokens) - 1, max(0, len(path) - 1))
-        proposed = [[tokens[r] for r in path[1:]] + [end]
-                    for (_, tokens), (path, end) in zip(windows, paths)]
-        if dflash is None:
-            boundaries = self._prefix_limits(live, proposed)
-        else:
-            fresh = [(s, new) for s, new in zip(live, proposed) if not s.owed]
-            decisions = iter(self._prefix_limits([s for s, _ in fresh], [new for _, new in fresh]))
-            boundaries = [(1, False) if s.owed else next(decisions) for s in live]
-        paths = [(path[:count], new[count - 1] if count else end)
-                 for (path, end), new, (count, _stop) in zip(paths, proposed, boundaries)]
-        for s, (_, tokens), (_, a0, _), (path, end), pos in zip(live, windows, segs, paths, positions):
-            if s.probabilities is not None and path and not (dflash is not None and s.owed):
-                capture(logits, [tokens[r] for r in path[1:]] + [end], [pos[r] for r in path],
-                        s.probabilities, rows=[a0 + r for r in path])
-        if not half:
-            for s, rows in zip(live, gdn_multi.keep(tables, [len(path) for path, _ in paths])):
-                self.held[s.sid] = rows                  # the next round's trees fold these rows in first
-        kept = []
-        for s, (_, tokens), (st, a0, a1), rows, (path, end), (count, terminal), new in zip(
-                live, windows, segs, sampled, paths, boundaries, proposed):
-            if path:
-                commit(self.w, st, self.buf, a1 - a0, len(path), at=a0, states=False,
-                       **({"commit_dflash": False} if dflash is not None else {}))
+                words.settle()
+                if target_result is not None:
+                    paths, chosen = target_result
+                    paths, sampled = [paths], [chosen]
+                elif (not grammars and self.w.meta.get("execution_provider") == "sm70"
+                        and all(sampling == samplings[0] for sampling in samplings) and _gathered_fits(samplings[0])):
+                    try:
+                        chosen = choose_gathered(self.w, self.buf.cand_all, logits.shape[0],
+                            [position for group in positions for position in group], samplings[0],
+                            logits=logits, plan=self._sample_plan, gathered=gathered)
+                    finally:
+                        gathered = None  # Retire the sole owned packet before MTP may reuse the arena/allowance.
+                    sampled = [chosen[a0:a1] for a0, a1 in zip(starts, starts[1:])]
+                else:
+                    sampled = [tp_sample_rows(self.w, logits[a0:a1], pos, sampling, plan=self._sample_plan)
+                               for a0, a1, pos, sampling in zip(starts, starts[1:], positions, samplings)]
+            if dflash is None and target_result is None:
+                paths = [accept(tokens, list(range(-1, len(tokens) - 1)), rows, s.count - len(s.out), self._ends(s))
+                         for s, (_, tokens), rows in zip(live, windows, sampled)]
+            if self.controller is not None:
+                for s, (_, tokens), (path, _end) in zip(live, windows, paths):
+                    if dflash is None or not s.owed:
+                        self.controller.work_observations.verification(len(tokens) - 1, max(0, len(path) - 1))
+            proposed = [[tokens[r] for r in path[1:]] + [end]
+                        for (_, tokens), (path, end) in zip(windows, paths)]
+            if dflash is None:
+                boundaries = self._prefix_limits(live, proposed)
             else:
-                st.discard_target_tentative()
-            s.committed.extend(tokens[:len(path)])
-            s.counted(len(tokens))
-            new = new[:count]
-            if s.constraint is not None:
-                try:
-                    s.constraint.advance(new)
-                except GrammarError as exc:
-                    s.error = exc
-            last = terminal or s.error is not None or len(s.out) + len(new) >= s.count or end in self._ends(s)
-            kept.append((s, a0, rows[:len(path)], new, last))
-        if dflash is not None:
-            # Resolve every accepted target/feature prefix before publishing
-            # any output, including a warm zero-proposal operation.
-            self._commit_dflash([(s.st, len(path)) for s, (path, _end) in zip(live, paths) if path],
-                zero_proposal_rows=sum(len(path) for s, (path, _end) in zip(live, paths)
-                                       if s.draft and not s.owed and not packets[s.sid].chain.tokens))
-            for s in live:
-                s.drafts = []
-        else:
-            self._draft_all([(s, a0, keep) for s, a0, keep, _, last in kept if keep and s.draft and not last],
-                            {s.sid: fresh for s, _, _, fresh, last in kept
-                             if getattr(s, "copies", None) is not None and not last})
-        for (s, _, _, new, _), (_count, terminal) in zip(kept, boundaries):
-            if s.error is not None:
-                s.done = True
-                continue
-            if new:
-                self._take(s, new)
-            if terminal:
-                s.done, s.finished = True, time.perf_counter()
-        spent = time.perf_counter() - t0
-        for s, a0, keep, _new, _last in kept:
-            if s.done:
-                self._capture_retained(s, frame=self.buf, row=a0 + len(keep) - 1 if keep else None)
-        self._timed(spent, sum(n for _, _, n in pieces))
-        if pieces:                                     # prompts that ended in this round's pass join the next
-            ended += self._joined(pieces, heads, lasts, spent / len(pieces))
-        if self.controller is not None:
-            self.controller.observe(active=active_count, scheduled=len(live), target_rows=segs[-1][2],
-                                    prefill_tokens=sum(n for _, _, n in pieces),
-                                    committed_tokens=self._useful_outputs(marks),
-                                    max_history_tokens=max(s.st.pos for s in live),
-                                    elapsed_s=time.perf_counter() - t0)
-        done = [s for s in live if s.done]
-        for s in done:                                   # a finished stream's state is never read again
-            self.held.pop(s.sid, None)
-        return failed + done + ended
+                fresh = [(s, new) for s, new in zip(live, proposed) if not s.owed]
+                decisions = iter(self._prefix_limits([s for s, _ in fresh], [new for _, new in fresh]))
+                boundaries = [(1, False) if s.owed else next(decisions) for s in live]
+            paths = [(path[:count], new[count - 1] if count else end)
+                     for (path, end), new, (count, _stop) in zip(paths, proposed, boundaries)]
+            for s, (_, tokens), (_, a0, _), (path, end), pos in zip(live, windows, segs, paths, positions):
+                if s.probabilities is not None and path and not (dflash is not None and s.owed):
+                    capture(logits, [tokens[r] for r in path[1:]] + [end], [pos[r] for r in path],
+                            s.probabilities, rows=[a0 + r for r in path])
+            if not half:
+                for s, rows in zip(live, gdn_multi.keep(tables, [len(path) for path, _ in paths])):
+                    self.held[s.sid] = rows                  # the next round's trees fold these rows in first
+            kept = []
+            for s, (_, tokens), (st, a0, a1), rows, (path, end), (count, terminal), new in zip(
+                    live, windows, segs, sampled, paths, boundaries, proposed):
+                if path:
+                    commit(self.w, st, self.buf, a1 - a0, len(path), at=a0, states=False,
+                           **({"commit_dflash": False} if dflash is not None else {}))
+                else:
+                    st.discard_target_tentative()
+                s.committed.extend(tokens[:len(path)])
+                s.counted(len(tokens))
+                new = new[:count]
+                if s.constraint is not None:
+                    try:
+                        s.constraint.advance(new)
+                    except GrammarError as exc:
+                        s.error = exc
+                last = terminal or s.error is not None or len(s.out) + len(new) >= s.count or end in self._ends(s)
+                kept.append((s, a0, rows[:len(path)], new, last))
+            if dflash is not None:
+                # Resolve every accepted target/feature prefix before publishing
+                # any output, including a warm zero-proposal operation.
+                self._commit_dflash([(s.st, len(path)) for s, (path, _end) in zip(live, paths) if path],
+                    zero_proposal_rows=sum(len(path) for s, (path, _end) in zip(live, paths)
+                                           if s.draft and not s.owed and not packets[s.sid].chain.tokens))
+                for s in live:
+                    s.drafts = []
+            else:
+                self._draft_all([(s, a0, keep) for s, a0, keep, _, last in kept if keep and s.draft and not last],
+                                {s.sid: fresh for s, _, _, fresh, last in kept
+                                 if getattr(s, "copies", None) is not None and not last})
+            for (s, _, _, new, _), (_count, terminal) in zip(kept, boundaries):
+                if s.error is not None:
+                    s.done = True
+                    continue
+                if new:
+                    self._take(s, new)
+                if terminal:
+                    s.done, s.finished = True, time.perf_counter()
+            spent = time.perf_counter() - t0
+            for s, a0, keep, _new, _last in kept:
+                if s.done:
+                    self._capture_retained(s, frame=self.buf, row=a0 + len(keep) - 1 if keep else None)
+            self._timed(spent, sum(n for _, _, n in pieces))
+            if pieces:                                     # prompts that ended in this round's pass join the next
+                ended += self._joined(pieces, heads, lasts, spent / len(pieces))
+            if self.controller is not None:
+                self.controller.observe(active=active_count, scheduled=len(live), target_rows=segs[-1][2],
+                                        prefill_tokens=sum(n for _, _, n in pieces),
+                                        committed_tokens=self._useful_outputs(marks),
+                                        max_history_tokens=max(s.st.pos for s in live),
+                                        elapsed_s=time.perf_counter() - t0)
+            done = [s for s in live if s.done]
+            for s in done:                                   # a finished stream's state is never read again
+                self.held.pop(s.sid, None)
+            return failed + done + ended
+        finally:
+            gathered = None  # Release the owned packet even when the operation/error is retained.
 
     def _dflash_proposals(self, live, plan):
         """Choose useful rows before any selector/RNG work in this operation.
@@ -2344,139 +2348,143 @@ class MultiDecoder:
         A stream whose context repeats earlier text drafts that continuation instead of an MTP row. A step's codec
         status words are read back in the next draft readback (``KVWords``); its MTP entries count once they are."""
 
-        provider = getattr(self.w, "dspark", None)
-        if provider is not None:
-            for s, _at, keep in streams:
-                s.drafts = []
-                count = self._proposal_count(s, s.count - len(s.out) - len(keep))
-                if count <= 0:
-                    continue
-                if new and s.sid in new and getattr(s, "copies", None) is not None:
-                    before = len(s.context)
-                    try:
-                        s.context.extend(new[s.sid])
-                        s.drafts = s.copies.propose(s.context, max(count, COPY_MATCH))[:count]
-                    finally:
-                        del s.context[before:]
-                    if s.drafts:
-                        continue
-                e = _slot(self.w, s.st, self.buf, None, self.pbuf, self.capacity, self.prefill_rows,
-                          logical_context=getattr(self, "logical_context", None))
-                s.drafts = provider.draft(e, int(keep[-1]), count, s.sampling, self.confidence)
-            return
-
-        bound = getattr(getattr(self, "graphs", None), "bound", None)
-        handoff = getattr(bound, "greedy", None)
-        room = {s.sid: self._proposal_count(s, s.count - len(s.out) - len(keep)) for s, _, keep in streams}
-        if (handoff is not None and self._proposal_limit() == self.depth
-                and all(count == self.depth for count in room.values()) and handoff.try_draft(streams, new)):
-            return
-
-        for s, _, _ in streams:
-            s.drafts = []
-        # A zero-proposal step still maintains the selected MTP capability.
-        # Otherwise resuming proposals would read stale conditioning history.
-        todo = [(s, a0, keep) for s, a0, keep in streams if self.mbuf is not None]
-        if not todo:
-            return
-        def prepare_refresh():
-            for s, _, _ in todo:
-                st = s.st
-                if st.mtp_drafted:
-                    st.set_mtp_len(st.mtp_len - st.mtp_drafted)
-                    st.mtp_drafted = 0
-            windows = [(s.st, keep, self.buf.streams[a0:a0 + len(keep)]) for s, a0, keep in todo]
-            return mtp_stage(self.mbuf, windows)
-
-        context = getattr(self.mbuf, "input_preparation_context", None)
-        segs = prepare_refresh() if context is None else context.prepare("mtp-refresh-window", prepare_refresh)
-        proposing = any(room[s.sid] > 0 for s, _, _ in todo)
-        coalesced = (proposing and not self.copy and all(room[s.sid] > 0 for s, _, _ in todo)
-                     and self._coalesced_candidates([stream.sampling for stream, _, _ in todo]))
         gathered = None
-        if coalesced:
-            logits, gathered = self._mtp(segs, candidates=True)
-        else:
-            logits = self._mtp(segs) if proposing else self._mtp(segs, logits=False)
-        if self.controller is not None:
-            self.controller.work_observations.mtp(
-                segs, role="refresh", zero_proposal_rows=sum(len(keep) for stream, _, keep in todo
-                                                            if room[stream.sid] == 0))
-
-        def absorbed():                                  # the absorb's entries, once its status words are valid
-            for (s, _, keep), (st, a0, a1) in zip(todo, segs):
-                st.set_mtp_len(st.mtp_len + len(keep))
-
-        words = KVWords(segs, self.kv_host, absorbed)    # its status words join the first draft's readback
-        active = [(s, a1 - 1) for (s, _, _), (_, _, a1) in zip(todo, segs)]
-        taking = [index for index, (s, _) in enumerate(active) if room[s.sid] > 0]
-        if not taking:
-            words.settle()
-            return
-        if len(taking) != len(active):
-            logits = logits[taking]
-            active = [active[index] for index in taking]
-        if not active:
-            words.settle()
-            return
-        if new:
-            try:                                         # a failure here still reports a failed absorb first
-                for s, _ in active:
-                    if s.sid in new and getattr(s, "copies", None) is not None:
-                        s.context.extend(new[s.sid])
-                        s.drafts = s.copies.propose(s.context, max(room[s.sid], COPY_MATCH))[:room[s.sid]]
-                        del s.context[len(s.context) - len(new[s.sid]):]
-                keep_rows = [i for i, (s, _) in enumerate(active) if not s.drafts]
-                if len(keep_rows) != len(active):
-                    logits = logits[keep_rows]
-                active = [active[i] for i in keep_rows]
-            except BaseException:
-                words.settle()
-                raise
-            if not active:                               # every stream copies: no draft readback checks the absorb
-                words.settle()
+        try:
+            provider = getattr(self.w, "dspark", None)
+            if provider is not None:
+                for s, _at, keep in streams:
+                    s.drafts = []
+                    count = self._proposal_count(s, s.count - len(s.out) - len(keep))
+                    if count <= 0:
+                        continue
+                    if new and s.sid in new and getattr(s, "copies", None) is not None:
+                        before = len(s.context)
+                        try:
+                            s.context.extend(new[s.sid])
+                            s.drafts = s.copies.propose(s.context, max(count, COPY_MATCH))[:count]
+                        finally:
+                            del s.context[before:]
+                        if s.drafts:
+                            continue
+                    e = _slot(self.w, s.st, self.buf, None, self.pbuf, self.capacity, self.prefill_rows,
+                              logical_context=getattr(self, "logical_context", None))
+                    s.drafts = provider.draft(e, int(keep[-1]), count, s.sampling, self.confidence)
                 return
-        for j in range(self._proposal_limit()):
-            try:
-                positions = [s.st.pos + 1 + j for s, _ in active]
-                samplings = [s.sampling for s, _ in active]
-                if gathered is None:
-                    picks = self._picks(logits, positions, samplings, words)
-                else:
-                    picks = self._picks(logits, positions, samplings, words, gathered=gathered)
-            finally:
-                gathered = None  # No candidate payload overlaps the next MTP readback.
-            nxt = []
-            for (s, row), (d, p) in zip(active, picks):
-                low = self.confidence > 0 and p < self.confidence
-                if low and j > 0:
-                    continue
-                s.drafts.append(d)
-                if not low and j + 1 < room[s.sid]:
-                    nxt.append((s, row, d))
-            if not nxt:
+
+            bound = getattr(getattr(self, "graphs", None), "bound", None)
+            handoff = getattr(bound, "greedy", None)
+            room = {s.sid: self._proposal_count(s, s.count - len(s.out) - len(keep)) for s, _, keep in streams}
+            if (handoff is not None and self._proposal_limit() == self.depth
+                    and all(count == self.depth for count in room.values()) and handoff.try_draft(streams, new)):
                 return
-            for stream, _, _ in nxt:
-                stream.st.begin_mtp_proposals()
-            def prepare_proposal():
-                windows = [(s.st, [d], self.mbuf.streams[row:row + 1]) for s, row, d in nxt]
+
+            for s, _, _ in streams:
+                s.drafts = []
+            # A zero-proposal step still maintains the selected MTP capability.
+            # Otherwise resuming proposals would read stale conditioning history.
+            todo = [(s, a0, keep) for s, a0, keep in streams if self.mbuf is not None]
+            if not todo:
+                return
+            def prepare_refresh():
+                for s, _, _ in todo:
+                    st = s.st
+                    if st.mtp_drafted:
+                        st.set_mtp_len(st.mtp_len - st.mtp_drafted)
+                        st.mtp_drafted = 0
+                windows = [(s.st, keep, self.buf.streams[a0:a0 + len(keep)]) for s, a0, keep in todo]
                 return mtp_stage(self.mbuf, windows)
 
-            segs = prepare_proposal() if context is None else context.prepare("mtp-proposal-window", prepare_proposal)
-            if self._coalesced_candidates([stream.sampling for stream, _, _ in nxt]):
+            context = getattr(self.mbuf, "input_preparation_context", None)
+            segs = prepare_refresh() if context is None else context.prepare("mtp-refresh-window", prepare_refresh)
+            proposing = any(room[s.sid] > 0 for s, _, _ in todo)
+            coalesced = (proposing and not self.copy and all(room[s.sid] > 0 for s, _, _ in todo)
+                         and self._coalesced_candidates([stream.sampling for stream, _, _ in todo]))
+            gathered = None
+            if coalesced:
                 logits, gathered = self._mtp(segs, candidates=True)
             else:
-                logits = self._mtp(segs)
+                logits = self._mtp(segs) if proposing else self._mtp(segs, logits=False)
             if self.controller is not None:
-                self.controller.work_observations.mtp(segs, role="proposal")
+                self.controller.work_observations.mtp(
+                    segs, role="refresh", zero_proposal_rows=sum(len(keep) for stream, _, keep in todo
+                                                                if room[stream.sid] == 0))
 
-            def chained(nxt=nxt):                        # the step's entries, once its status words are valid
-                for s, _, _ in nxt:
-                    s.st.set_mtp_len(s.st.mtp_len + 1)
-                    s.st.mtp_drafted += 1
+            def absorbed():                                  # the absorb's entries, once its status words are valid
+                for (s, _, keep), (st, a0, a1) in zip(todo, segs):
+                    st.set_mtp_len(st.mtp_len + len(keep))
 
-            words = KVWords(segs, self.kv_host, chained)  # the next pick's readback checks them (a step has one)
-            active = [(s, a0) for (s, _, _), (_, a0, _) in zip(nxt, segs)]
+            words = KVWords(segs, self.kv_host, absorbed)    # its status words join the first draft's readback
+            active = [(s, a1 - 1) for (s, _, _), (_, _, a1) in zip(todo, segs)]
+            taking = [index for index, (s, _) in enumerate(active) if room[s.sid] > 0]
+            if not taking:
+                words.settle()
+                return
+            if len(taking) != len(active):
+                logits = logits[taking]
+                active = [active[index] for index in taking]
+            if not active:
+                words.settle()
+                return
+            if new:
+                try:                                         # a failure here still reports a failed absorb first
+                    for s, _ in active:
+                        if s.sid in new and getattr(s, "copies", None) is not None:
+                            s.context.extend(new[s.sid])
+                            s.drafts = s.copies.propose(s.context, max(room[s.sid], COPY_MATCH))[:room[s.sid]]
+                            del s.context[len(s.context) - len(new[s.sid]):]
+                    keep_rows = [i for i, (s, _) in enumerate(active) if not s.drafts]
+                    if len(keep_rows) != len(active):
+                        logits = logits[keep_rows]
+                    active = [active[i] for i in keep_rows]
+                except BaseException:
+                    words.settle()
+                    raise
+                if not active:                               # every stream copies: no draft readback checks the absorb
+                    words.settle()
+                    return
+            for j in range(self._proposal_limit()):
+                try:
+                    positions = [s.st.pos + 1 + j for s, _ in active]
+                    samplings = [s.sampling for s, _ in active]
+                    if gathered is None:
+                        picks = self._picks(logits, positions, samplings, words)
+                    else:
+                        picks = self._picks(logits, positions, samplings, words, gathered=gathered)
+                finally:
+                    gathered = None  # No candidate payload overlaps the next MTP readback.
+                nxt = []
+                for (s, row), (d, p) in zip(active, picks):
+                    low = self.confidence > 0 and p < self.confidence
+                    if low and j > 0:
+                        continue
+                    s.drafts.append(d)
+                    if not low and j + 1 < room[s.sid]:
+                        nxt.append((s, row, d))
+                if not nxt:
+                    return
+                for stream, _, _ in nxt:
+                    stream.st.begin_mtp_proposals()
+                def prepare_proposal():
+                    windows = [(s.st, [d], self.mbuf.streams[row:row + 1]) for s, row, d in nxt]
+                    return mtp_stage(self.mbuf, windows)
+
+                segs = prepare_proposal() if context is None else context.prepare("mtp-proposal-window", prepare_proposal)
+                if self._coalesced_candidates([stream.sampling for stream, _, _ in nxt]):
+                    logits, gathered = self._mtp(segs, candidates=True)
+                else:
+                    logits = self._mtp(segs)
+                if self.controller is not None:
+                    self.controller.work_observations.mtp(segs, role="proposal")
+
+                def chained(nxt=nxt):                        # the step's entries, once its status words are valid
+                    for s, _, _ in nxt:
+                        s.st.set_mtp_len(s.st.mtp_len + 1)
+                        s.st.mtp_drafted += 1
+
+                words = KVWords(segs, self.kv_host, chained)  # the next pick's readback checks them (a step has one)
+                active = [(s, a0) for (s, _, _), (_, a0, _) in zip(nxt, segs)]
+        finally:
+            gathered = None  # Release the owned packet even when the operation/error is retained.
 
     def _mtp(self, segs: list, *, logits: bool = True, next_inputs: torch.Tensor | None = None,
              candidates: bool = False) -> torch.Tensor | tuple[torch.Tensor, np.ndarray | None] | None:
@@ -2513,6 +2521,7 @@ class MultiDecoder:
                 self.controller.work_observations.incomplete(primary)
             raise
         finally:
+            gathered = None
             self.mbuf.attn_step = None
 
     def _picks(self, logits: torch.Tensor, positions: list[int], samplings: list,
@@ -2527,96 +2536,99 @@ class MultiDecoder:
         """
 
         try:
-            if len(samplings) != len(positions):
-                raise ValueError("one draft policy and absolute position per source row required")
-            validate_rows(logits, positions, None)
-            for i, sampling in enumerate(samplings):
-                validate_policy(positions[i:i + 1], sampling)
-            if self._draft_map is not None:
-                self._draft_map.ids(logits.shape[1])
-        except BaseException:
-            words.settle()
-            raise
-        if not positions:
-            words.settle()
-            return []
-        if self.w.comm is not None:
-            words.settle()
-            if (self.w.meta.get("execution_provider") == "sm70"
-                    and logits.data_ptr() == self.mbuf.logits.data_ptr()
-                    and all(sampling == samplings[0] for sampling in samplings) and _gathered_fits(samplings[0])):
-                chosen, probabilities = choose_gathered(
-                    self.w, self.mbuf.cand_all, len(positions), positions, samplings[0], with_prob=True,
-                    logits=logits, plan=self._draft_plan, gathered=gathered)
-                return list(zip(chosen, probabilities))
-            picks = []
-            for row, (position, sampling) in enumerate(zip(positions, samplings)):
-                tokens, probabilities = tp_sample_rows(
-                    self.w, logits[row:row + 1], [position], sampling, with_prob=True, plan=self._draft_plan,
-                    offset=int(self.w.meta["vocab_offset"]), id_map=self.w.draft_ids)
-                picks.append((tokens[0], probabilities[0]))
-            return picks
-        try:                                             # a failure before the words' check settles them first
-            row = logits.float()
-            # Greedy proposals only consume the original maximum and log-sum-exp.
-            # k=0 retains their common read-back offsets without unused top-k work.
-            k, candidates = 0, []
-            if not all(s is None or s.temperature <= 0 for s in samplings):
-                k = max([int(s.top_k) + MARGIN for s in samplings
-                         if s is not None and s.temperature > 0 and s.top_k] or [1])
-                k = min(k, row.shape[1])
-                vals, idx = torch.topk(row, k, dim=-1, sorted=False)
-                candidates = [vals.contiguous().view(torch.int32).to(torch.int64), idx]
-            top, col = row.max(dim=-1, keepdim=True)
-            lse = torch.logsumexp(row, dim=-1, keepdim=True)
-            got = torch.cat([*candidates, top.view(torch.int32).to(torch.int64), col,
-                             lse.view(torch.int32).to(torch.int64)], dim=1)
-            words.queue()
-            got = got.to("cpu", non_blocking=True)
-            torch.cuda.current_stream(logits.device).synchronize()
-        except BaseException:
-            words.settle()
-            raise
-        words.check()
-        got = got.numpy()
-        normalizers = got[:, 2 * k + 2].astype(np.int32).view(np.float32)
-        if not np.isfinite(normalizers).all():
-            raise ValueError("FP32 draft confidence normalization is nonfinite")
-        out = []
-        for i, (pos, smp) in enumerate(zip(positions, samplings)):
-            g = got[i]
-            lse_i = float(normalizers[i])
-            if smp is None or smp.temperature <= 0:
-                c = int(g[2 * k + 1])
-                out.append((int(self.draft_host[c]) if self.draft_host is not None else c,
-                            float(np.exp(float(g[2 * k:2 * k + 1].astype(np.int32).view(np.float32)[0]) - lse_i))))
-                continue
-            values = g[:k].astype(np.int32).view(np.float32)
-            cols = g[k:2 * k]
-            ids = self.draft_host[cols] if self.draft_host is not None else cols
-            complete = None
-            complete_ids = self.draft_host
+            try:
+                if len(samplings) != len(positions):
+                    raise ValueError("one draft policy and absolute position per source row required")
+                validate_rows(logits, positions, None)
+                for i, sampling in enumerate(samplings):
+                    validate_policy(positions[i:i + 1], sampling)
+                if self._draft_map is not None:
+                    self._draft_map.ids(logits.shape[1])
+            except BaseException:
+                words.settle()
+                raise
+            if not positions:
+                words.settle()
+                return []
+            if self.w.comm is not None:
+                words.settle()
+                if (self.w.meta.get("execution_provider") == "sm70"
+                        and logits.data_ptr() == self.mbuf.logits.data_ptr()
+                        and all(sampling == samplings[0] for sampling in samplings) and _gathered_fits(samplings[0])):
+                    chosen, probabilities = choose_gathered(
+                        self.w, self.mbuf.cand_all, len(positions), positions, samplings[0], with_prob=True,
+                        logits=logits, plan=self._draft_plan, gathered=gathered)
+                    return list(zip(chosen, probabilities))
+                picks = []
+                for row, (position, sampling) in enumerate(zip(positions, samplings)):
+                    tokens, probabilities = tp_sample_rows(
+                        self.w, logits[row:row + 1], [position], sampling, with_prob=True, plan=self._draft_plan,
+                        offset=int(self.w.meta["vocab_offset"]), id_map=self.w.draft_ids)
+                    picks.append((tokens[0], probabilities[0]))
+                return picks
+            try:                                             # a failure before the words' check settles them first
+                row = logits.float()
+                # Greedy proposals only consume the original maximum and log-sum-exp.
+                # k=0 retains their common read-back offsets without unused top-k work.
+                k, candidates = 0, []
+                if not all(s is None or s.temperature <= 0 for s in samplings):
+                    k = max([int(s.top_k) + MARGIN for s in samplings
+                             if s is not None and s.temperature > 0 and s.top_k] or [1])
+                    k = min(k, row.shape[1])
+                    vals, idx = torch.topk(row, k, dim=-1, sorted=False)
+                    candidates = [vals.contiguous().view(torch.int32).to(torch.int64), idx]
+                top, col = row.max(dim=-1, keepdim=True)
+                lse = torch.logsumexp(row, dim=-1, keepdim=True)
+                got = torch.cat([*candidates, top.view(torch.int32).to(torch.int64), col,
+                                 lse.view(torch.int32).to(torch.int64)], dim=1)
+                words.queue()
+                got = got.to("cpu", non_blocking=True)
+                torch.cuda.current_stream(logits.device).synchronize()
+            except BaseException:
+                words.settle()
+                raise
+            words.check()
+            got = got.numpy()
+            normalizers = got[:, 2 * k + 2].astype(np.int32).view(np.float32)
+            if not np.isfinite(normalizers).all():
+                raise ValueError("FP32 draft confidence normalization is nonfinite")
+            out = []
+            for i, (pos, smp) in enumerate(zip(positions, samplings)):
+                g = got[i]
+                lse_i = float(normalizers[i])
+                if smp is None or smp.temperature <= 0:
+                    c = int(g[2 * k + 1])
+                    out.append((int(self.draft_host[c]) if self.draft_host is not None else c,
+                                float(np.exp(float(g[2 * k:2 * k + 1].astype(np.int32).view(np.float32)[0]) - lse_i))))
+                    continue
+                values = g[:k].astype(np.int32).view(np.float32)
+                cols = g[k:2 * k]
+                ids = self.draft_host[cols] if self.draft_host is not None else cols
+                complete = None
+                complete_ids = self.draft_host
 
-            def full_row(_):
-                nonlocal complete, complete_ids
-                if complete is None:
-                    complete = row[i].cpu().numpy()
-                    if complete_ids is None:
-                        complete_ids = np.arange(row.shape[1], dtype=np.int64)
-                return complete, complete_ids
+                def full_row(_):
+                    nonlocal complete, complete_ids
+                    if complete is None:
+                        complete = row[i].cpu().numpy()
+                        if complete_ids is None:
+                            complete_ids = np.arange(row.shape[1], dtype=np.int64)
+                    return complete, complete_ids
 
-            if smp.top_k:
-                tok = repaired_choose(values[None], ids[None], [pos], smp, row.shape[1], full_row)[0]
-            else:
-                full_values, full_ids = full_row(0)
-                tok = choose_rows(full_values[None], full_ids[None], np.asarray([pos], dtype=np.uint64), smp)[0]
-            hit = np.nonzero(ids == tok)[0]
-            value = values[hit[0]] if len(hit) else complete[int(np.nonzero(complete_ids == tok)[0][0])]
-            probability = float(np.exp(float(value) - lse_i))
-            if not np.isfinite(probability):
-                raise ValueError("FP32 draft confidence produced a nonfinite probability")
-            out.append((int(tok), probability))
-        return out
+                if smp.top_k:
+                    tok = repaired_choose(values[None], ids[None], [pos], smp, row.shape[1], full_row)[0]
+                else:
+                    full_values, full_ids = full_row(0)
+                    tok = choose_rows(full_values[None], full_ids[None], np.asarray([pos], dtype=np.uint64), smp)[0]
+                hit = np.nonzero(ids == tok)[0]
+                value = values[hit[0]] if len(hit) else complete[int(np.nonzero(complete_ids == tok)[0][0])]
+                probability = float(np.exp(float(value) - lse_i))
+                if not np.isfinite(probability):
+                    raise ValueError("FP32 draft confidence produced a nonfinite probability")
+                out.append((int(tok), probability))
+            return out
+        finally:
+            gathered = None  # Release the owned packet even when the operation/error is retained.
 
     def finish(self, done: list[Stream]) -> None:
         """Retire each request; only bounded derived prompt prefixes can keep its slot's bytes."""

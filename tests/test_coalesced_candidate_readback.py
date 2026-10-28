@@ -116,3 +116,28 @@ def test_only_actual_multi_state_homogeneous_greedy_cohorts_use_coalescing(sampl
     assert decoder._coalesced_candidates(samplings) is enabled
     decoder.w.meta.clear()
     assert not decoder._coalesced_candidates(samplings)
+
+
+@pytest.mark.parametrize("field", ["score", "normalizer"])
+def test_retained_chooser_failure_traceback_releases_owned_candidate_packet(monkeypatch, field):
+    import weakref
+
+    owner, comm, states, device, _ = prepared()
+    device[0, 0, 0 if field == "score" else -1] = float("nan")
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda _self: True))
+    reference = []
+    weights, plan = NS(meta={"world": 2}), NS(widths=(CAND, CAND), graph_ids_safe=True)
+
+    def attempt():
+        packet = owner.read_candidates(states, device, 3, comm=comm)
+        reference.append(weakref.ref(packet))
+        try:
+            choose_gathered(weights, device, 3, [1,2,3], Sampling(17, 0), plan=plan, gathered=packet)
+        finally:
+            packet = None
+
+    with pytest.raises(ValueError) as retained:
+        attempt()
+    assert retained.value.__traceback__ is not None
+    assert reference[0]() is None
+    owner.host.fill_(17)  # A retained error no longer holds an escaped packet across arena reuse.

@@ -79,81 +79,85 @@ def choose_gathered(w: Weights, cand_all: torch.Tensor, R: int, positions: Seque
     prove omitted token IDs and therefore requires its original source.
     """
 
-    world, width = int(w.meta["world"]), 2 * CAND + 1
-    if (type(R) is not int or R < 0 or len(positions) != R
-            or not isinstance(cand_all, torch.Tensor) or cand_all.dtype != torch.float32
-            or not cand_all.is_cuda or not cand_all.is_contiguous() or cand_all.numel() < world * R * width):
-        raise ValueError("complete CUDA candidate packet and one absolute position per row required")
-    validate_policy(positions, sampling)
-    if logits is not None:
-        validate_rows(logits, positions, sampling)
-        if logits.shape[0] != R:
-            raise ValueError("gathered packet and original source must have the same rows")
-        if plan is not None:
-            plan.check_model(w, logits)
-    if R == 0:
-        return ([], []) if with_prob else []
-    # Graph token words are int32. A startup owner proves this range across
-    # every rank; larger signed64 identities must use the original source
-    # before the lossy graph token words are interpreted.
-    need_source = not _gathered_fits(sampling) or (plan is not None and not plan.graph_ids_safe)
-    if need_source:
-        if logits is None:
-            raise ValueError("gathered policy or token-ID range requires the complete original logits")
-        return tp_sample_rows(w, logits, positions, sampling, with_prob=with_prob, plan=plan,
-                              offset=int(w.meta.get("vocab_offset", 0)))
-    if gathered is None:
-        g = cand_all[:world * R * width].view(world, R, width).cpu().numpy()
-    else:
-        # Internal callers supply only the owned, status-checked snapshot from
-        # KVStatusCohort; generic callers retain their original device readback.
-        if (type(gathered) is not np.ndarray or gathered.dtype != np.float32
-                or gathered.shape != (world, R, width) or not gathered.flags.c_contiguous
-                or not gathered.flags.owndata):
-            raise ValueError("gathered candidate snapshot must own its complete FP32 packet")
-        g = gathered
-    values = g[:, :, :CAND].astype(np.float32)
-    tokens = np.ascontiguousarray(g[:, :, CAND:2 * CAND]).view(np.int32).astype(np.int64)
-    _validate_gathered_padding(values, tokens, plan)
-    valid_scores(values, require_finite=False)
-    norms = g[:, :, 2 * CAND]
-    if np.isnan(norms).any() or np.isposinf(norms).any():
-        raise ValueError("a rank's complete sampling scores contain NaN or positive infinity")
-    if not np.isfinite(norms).any(axis=0).all():
-        raise ValueError("a complete vocabulary row needs at least one finite score")
-    greedy = sampling is None or sampling.temperature <= 0
-    need_source = False
-    k = 1 if greedy else int(sampling.top_k)
-    if not need_source:
-        for row in range(R):
-            v = values[:, row].reshape(-1)
-            cutoff = np.partition(v, len(v) - k)[len(v) - k]
-            for rank in range(world):
-                shard_complete = plan is not None and int(plan.widths[rank]) <= CAND
-                edge = values[rank, row].min()
-                if not shard_complete and np.isfinite(edge) and edge >= cutoff:
-                    need_source = True
+    try:
+        world, width = int(w.meta["world"]), 2 * CAND + 1
+        if (type(R) is not int or R < 0 or len(positions) != R
+                or not isinstance(cand_all, torch.Tensor) or cand_all.dtype != torch.float32
+                or not cand_all.is_cuda or not cand_all.is_contiguous() or cand_all.numel() < world * R * width):
+            raise ValueError("complete CUDA candidate packet and one absolute position per row required")
+        validate_policy(positions, sampling)
+        if logits is not None:
+            validate_rows(logits, positions, sampling)
+            if logits.shape[0] != R:
+                raise ValueError("gathered packet and original source must have the same rows")
+            if plan is not None:
+                plan.check_model(w, logits)
+        if R == 0:
+            return ([], []) if with_prob else []
+        # Graph token words are int32. A startup owner proves this range across
+        # every rank; larger signed64 identities must use the original source
+        # before the lossy graph token words are interpreted.
+        need_source = not _gathered_fits(sampling) or (plan is not None and not plan.graph_ids_safe)
+        if need_source:
+            if logits is None:
+                raise ValueError("gathered policy or token-ID range requires the complete original logits")
+            return tp_sample_rows(w, logits, positions, sampling, with_prob=with_prob, plan=plan,
+                                  offset=int(w.meta.get("vocab_offset", 0)))
+        if gathered is None:
+            g = cand_all[:world * R * width].view(world, R, width).cpu().numpy()
+        else:
+            # Internal callers supply only the owned, status-checked snapshot from
+            # KVStatusCohort; generic callers retain their original device readback.
+            if (type(gathered) is not np.ndarray or gathered.dtype != np.float32
+                    or gathered.shape != (world, R, width) or not gathered.flags.c_contiguous
+                    or not gathered.flags.owndata):
+                raise ValueError("gathered candidate snapshot must own its complete FP32 packet")
+            g = gathered
+        values = g[:, :, :CAND].astype(np.float32)
+        tokens = np.ascontiguousarray(g[:, :, CAND:2 * CAND]).view(np.int32).astype(np.int64)
+        _validate_gathered_padding(values, tokens, plan)
+        valid_scores(values, require_finite=False)
+        norms = g[:, :, 2 * CAND]
+        if np.isnan(norms).any() or np.isposinf(norms).any():
+            raise ValueError("a rank's complete sampling scores contain NaN or positive infinity")
+        if not np.isfinite(norms).any(axis=0).all():
+            raise ValueError("a complete vocabulary row needs at least one finite score")
+        greedy = sampling is None or sampling.temperature <= 0
+        need_source = False
+        k = 1 if greedy else int(sampling.top_k)
+        if not need_source:
+            for row in range(R):
+                v = values[:, row].reshape(-1)
+                cutoff = np.partition(v, len(v) - k)[len(v) - k]
+                for rank in range(world):
+                    shard_complete = plan is not None and int(plan.widths[rank]) <= CAND
+                    edge = values[rank, row].min()
+                    if not shard_complete and np.isfinite(edge) and edge >= cutoff:
+                        need_source = True
+                        break
+                if need_source:
                     break
-            if need_source:
-                break
-    if need_source:
-        if logits is None:
-            raise ValueError("ambiguous gathered cutoff requires the complete original logits")
-        return tp_sample_rows(w, logits, positions, sampling, with_prob=with_prob, plan=plan,
-                              offset=int(w.meta.get("vocab_offset", 0)))
-    chosen = _tp_choose(values, tokens, positions, sampling)
-    if not with_prob:
-        return chosen
-    lse = norms.astype(np.float64)
-    top = lse.max(axis=0)
-    total = top + np.log(np.exp(lse - top).sum(axis=0))
-    probs = []
-    for row, token in enumerate(chosen):
-        hit = np.nonzero(tokens[:, row].reshape(-1) == token)[0]
-        if not len(hit):
-            raise ValueError("selected gathered token is absent from its exact score packet")
-        probs.append(float(np.exp(float(values[:, row].reshape(-1)[hit[0]]) - total[row])))
-    return chosen, probs
+        if need_source:
+            if logits is None:
+                raise ValueError("ambiguous gathered cutoff requires the complete original logits")
+            return tp_sample_rows(w, logits, positions, sampling, with_prob=with_prob, plan=plan,
+                                  offset=int(w.meta.get("vocab_offset", 0)))
+        chosen = _tp_choose(values, tokens, positions, sampling)
+        if not with_prob:
+            return chosen
+        lse = norms.astype(np.float64)
+        top = lse.max(axis=0)
+        total = top + np.log(np.exp(lse - top).sum(axis=0))
+        probs = []
+        for row, token in enumerate(chosen):
+            hit = np.nonzero(tokens[:, row].reshape(-1) == token)[0]
+            if not len(hit):
+                raise ValueError("selected gathered token is absent from its exact score packet")
+            probs.append(float(np.exp(float(values[:, row].reshape(-1)[hit[0]]) - total[row])))
+        return chosen, probs
+    finally:
+        if gathered is not None:
+            g = norms = gathered = None  # A retained failure traceback cannot retain the escaped packet.
 
 
 def _gathered_fits(sampling: Sampling | None) -> bool:
