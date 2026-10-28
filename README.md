@@ -1,5 +1,13 @@
 # TensorFold fork
 
+Input-preparation mailbox publishers now use their successful native ADD reply
+as proof of their own readiness, consumption or final acknowledgment threshold.
+They still publish every latch, preserve peer waits and retain the existing
+key deletion and failure-containment protocol. Targeted installed checks passed
+154 CPU cases and two subtests, including actual eight-rank native Store controls
+for both backends. GPU semantics, quality and all-six throughput checks remain
+pending; no performance gain is established.
+
 The combined Dense/batched-prelude wheel `86cb036d` passed 81 integrated GPU
 controls, including real Dense weights, two target attention layers and eight
 96-token sessions. All eight ranks recorded 329 batches, including 109 MTP

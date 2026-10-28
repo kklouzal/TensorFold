@@ -276,12 +276,13 @@ def test_batch_outcomes_use_one_read_and_preserve_containment(monkeypatch, bad):
         assert notifications and all(c.cohort._execution_manifest_uncertain for c in contexts)
 
 
-def test_actual_native_eight_rank_batch_preparation_retires_all_keys():
+@pytest.mark.parametrize("use_libuv", [False, True])
+def test_actual_native_eight_rank_batch_preparation_retires_all_keys(use_libuv):
     torch = pytest.importorskip("torch")
     from datetime import timedelta
 
     server = torch.distributed.TCPStore("127.0.0.1", 0, 8, True, timedelta(seconds=10),
-                                        wait_for_workers=False, use_libuv=False)
+                                        wait_for_workers=False, use_libuv=use_libuv)
     contexts = [InputPreparationContext(NS(positions=object(),
         comm=NS(rank=r, world=8, store=server.clone()),
         meta={"rank": r, "world": 8, "coordinate_profile_identity": "c" * 64})) for r in range(8)]
@@ -370,6 +371,53 @@ def test_reusable_mailbox_bounds_keys_and_delete_work_across_model_lifetimes():
         assert not store.values
     assert len(store.deletions) == 3 * (16 * 4 + 8)
     assert store.maximum_keys <= 8 + 5
+
+
+@pytest.mark.parametrize("world", [2, 8])
+@pytest.mark.parametrize("last_ack", [0, 1])
+def test_threshold_publisher_needs_no_own_latch_read(world, last_ack):
+    """ADD replies prove local thresholds; peer latch reads still protect reuse."""
+    from threading import local
+
+    caller = local()
+    class KnownThreshold(MailboxStore):
+        def __init__(self):
+            super().__init__()
+            self.publishers, self.waits = {}, []
+        def set(self, key, value):
+            with self.condition:
+                super().set(key, value)
+                if key.rsplit("/", 1)[-1] in ("ready", "consumed", "ack"):
+                    self.publishers[key] = caller.rank
+        def add(self, key, increment):
+            with self.condition:
+                if int(self.values.get(key, "0")) >= 2 * world and caller.rank == last_ack:
+                    assert self.condition.wait_for(
+                        lambda: int(self.values[key]) == 3 * world - 1, timeout=5)
+                return super().add(key, increment)
+        def wait(self, keys, timeout):
+            with self.condition:
+                # A writer's successful ADD reply proves this threshold even
+                # before other ranks have received their native replies.
+                assert self.publishers.get(keys[0]) != caller.rank
+                self.waits.append(keys[0].rsplit("/", 1)[-1])
+            return super().wait(keys, timeout)
+
+    store = KnownThreshold()
+    contexts = mailbox_contexts(store, world)
+    def work(rank):
+        caller.rank = rank
+        return contexts[rank].prepare("known-threshold", lambda: rank)
+    with ThreadPoolExecutor(max_workers=world) as pool:
+        assert list(pool.map(work, range(world))) == list(range(world))
+    assert store.waits.count("ready") == world - 1
+    assert store.waits.count("consumed") == world - 1
+    assert store.waits.count("ack") == int(last_ack != 0)
+    assert len(store.values) == world
+    assert len(store.deletions) == 4
+    for context in contexts:
+        context.close()
+    assert not store.values
 
 
 def test_delayed_consumed_wait_cannot_be_deleted_before_its_reader_finishes():

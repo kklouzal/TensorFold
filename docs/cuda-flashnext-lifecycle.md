@@ -30,3 +30,13 @@ request work makes this policy sticky. Abort precedes device fencing; ordinary
 communicator retirement fences before destroy. A native destroy/abort whose
 completion is unknown is not retried. Source fixtures do not qualify two-GPU
 NCCL, model output, or performance; those require their actual runtime gates.
+
+The input-preparation mailbox owns one persistent outcome slot per rank. Native
+ADD replies order each rank's prior SET and prove the returned epoch counter.
+The last arrival and last validated consumer publish their readiness and
+consumption latches for peers, while using that counter proof locally. Rank zero
+also needs no final latch read when its own acknowledgment completes the count.
+Every other required latch read remains, including the acknowledgment protecting
+a delayed consumption wait from key deletion. These are CPU protocol proofs;
+they establish no CUDA copy, stream or kernel completion. Fatal or uncertain
+epochs remain poisoned and cannot be reused.

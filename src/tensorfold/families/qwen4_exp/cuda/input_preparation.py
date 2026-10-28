@@ -75,7 +75,10 @@ class _PreparationMailbox:
             raise RuntimeError("input preparation arrival counter left its epoch")
         if arrived == world:
             self.store.set(ready, "1")
-        self.store.wait([ready], timedelta(seconds=3600))
+        else:
+            # This ADD's reply already proves every prior outcome SET was
+            # processed. The publisher still leaves the latch for its peers.
+            self.store.wait([ready], timedelta(seconds=3600))
         values = self.read_many(self.slots)
         try:
             if len(values) != world:
@@ -106,7 +109,9 @@ class _PreparationMailbox:
             raise RuntimeError("input preparation consumer counter left its epoch")
         if retired == 2 * world:
             self.store.set(consumed, "1")
-        self.store.wait([consumed], timedelta(seconds=3600))
+        else:
+            # The last consumer already knows all outcome readers retired.
+            self.store.wait([consumed], timedelta(seconds=3600))
         seen = self.add(counter, 1)
         if type(seen) is not int or not 2 * world < seen <= 3 * world:
             raise RuntimeError("input preparation latch acknowledgment left its epoch")
@@ -115,7 +120,8 @@ class _PreparationMailbox:
         # The final latch has only one reader. Its publication proves every
         # other latch read is complete, including a delayed WAIT submission.
         if self.context.cohort.rank == 0:
-            self.store.wait([ack], timedelta(seconds=3600))
+            if seen != 3 * world:
+                self.store.wait([ack], timedelta(seconds=3600))
             finish(tuple(lambda key=key: self.store.delete_key(key) for key in (counter, ready, consumed, ack)))
         self.active = None
 
