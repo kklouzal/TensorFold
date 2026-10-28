@@ -1,5 +1,16 @@
 # TensorFold fork
 
+The private `--profile-concurrency24` diagnostic reuses the verified146f/7c0a
+Router/GDN/three-file-startup application unchanged. All eight ranks record
+Torch04cf CPU+CUDA activity through protected CUPTI API28 after model startup,
+using one30-second-readiness/10-second decode cohort and explicit cancellation
+and retirement. No shapes, stacks or memory tracing are enabled. CPU labels
+include the current eager router and State-batched GDN calls. The tool prepays
+the existing128KiB observer and6GiB reader allowance per rank; native Kineto
+buffers remain separate diagnostic instrumentation under the320GiB container
+cap. Instrumented timing earns no performance or quality qualification, and
+the ordinary all-six protocol remains available unchanged.
+
 The private router/GDN/startup composition retains the explicit experimental
 router numerical epoch and adds the existing sealed FP16 State-batched GDN
 implementation with `--gdn-state-batch-trial` and private environment value1.

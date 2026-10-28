@@ -1,6 +1,7 @@
 """Finite caller/argument/retirement controls; no model, GPU or replaced host gate."""
 from pathlib import Path
 import hashlib
+import io
 import json
 import os
 import signal
@@ -1392,3 +1393,335 @@ def test_router_numeric_profile_and_explicit_tool_intent_must_agree(tmp_path, mo
     monkeypatch.setenv("TENSORFOLD_SM70_PROFILE", "source-dense-owner-batch-prelude-trial")
     with pytest.raises(SystemExit):
         probe.arguments(base + ["--router-blas-trial"])
+
+
+def test_trace_summary_requires_actual_cuda_and_cpu_preparation_events(tmp_path):
+    import json
+    events = [{"ph": "X", "cat": "kernel", "name": "realKernel", "dur": 3, "args": {"device": 0}},
+              {"ph": "X", "cat": "cuda_runtime", "name": "cudaLaunchKernel", "dur": 4},
+              {"ph": "X", "cat": "user_annotation", "name": "tensorfold/cpu/input-prepare", "dur": 17, "tid": 42}]
+    path = tmp_path / "trace.json"
+    path.write_text(json.dumps({"traceEvents": events}))
+    summary = probe.trace_summary(path, 2)
+    assert summary["kernel_count"] == summary["cuda_runtime_count"] == 1
+    assert summary["cpu_labels"]["tensorfold/cpu/input-prepare"] == {"count": 1, "inclusive_us": 17.0}
+    for missing in (0, 1, 2):
+        path.write_text(json.dumps({"traceEvents": [event for i, event in enumerate(events) if i != missing]}))
+        with pytest.raises(ValueError, match="no legacy timings fallback"):
+            probe.trace_summary(path, 2)
+    path.write_text(json.dumps({"traceEvents": [{"ph": "X", "cat": "cuda_event", "name": "CUDA_Event", "dur": 12}]}))
+    with pytest.raises(ValueError, match="real CUDA"):
+        probe.trace_summary(path, 2)
+
+
+def test_trace_summary_keeps_mirrored_gpu_ranges_out_of_cpu_labels_and_admission(tmp_path):
+    events = [
+        {"ph": "X", "cat": "kernel", "name": "realKernel", "dur": 3, "args": {"device": 0}},
+        {"ph": "X", "cat": "cuda_runtime", "name": "cudaLaunchKernel", "dur": 4},
+        {"ph": "X", "cat": "user_annotation", "name": "tensorfold/cpu/input-prepare", "dur": 17, "tid": 42},
+        {"ph": "X", "cat": "user_annotation", "name": "tensorfold/body/target", "dur": 50, "tid": 42},
+        {"ph": "X", "cat": "gpu_user_annotation", "name": "tensorfold/cpu/input-prepare", "dur": 170, "tid": 7},
+        {"ph": "X", "cat": "gpu_user_annotation", "name": "tensorfold/body/target", "dur": 500, "tid": 7},
+    ]
+    path = tmp_path / "mirrored-trace.json"
+    path.write_text(json.dumps({"traceEvents": events}))
+    summary = probe.trace_summary(path, 0)
+    assert summary["cpu_label_thread_count"] == 1
+    assert summary["cpu_labels"] == {
+        "tensorfold/cpu/input-prepare": {"count": 1, "inclusive_us": 17.0},
+        "tensorfold/body/target": {"count": 1, "inclusive_us": 50.0},
+    }
+    assert (summary["kernel_count"], summary["cuda_runtime_count"], summary["kernel_duration_us_sum"]) == (1, 1, 3.0)
+    path.write_text(json.dumps({"traceEvents": [row for row in events
+        if not (row["cat"] == "user_annotation" and row["name"] == "tensorfold/cpu/input-prepare")]}))
+    with pytest.raises(ValueError, match="actual CPU preparation labels"):
+        probe.trace_summary(path, 0)
+
+
+def test_observational_label_preserves_arguments_results_and_primary_failure():
+    events = []
+    primary, cleanup = ValueError("original operation"), RuntimeError("label exit")
+
+    class Label:
+        def __enter__(self):
+            events.append("enter")
+
+        def __exit__(self, *_args):
+            events.append("exit")
+            if len(events) > 3:
+                raise cleanup
+
+    def operation(value, *, add):
+        assert events[-1] == "enter"
+        return value + add
+
+    wrapped = probe.observed_call(operation, "fixed", lambda _: Label())
+    assert wrapped(7, add=3) == 10
+
+    def failed():
+        raise primary
+
+    with pytest.raises(ValueError) as caught:
+        probe.observed_call(failed, "fixed", lambda _: Label())()
+    assert caught.value is primary and retained_failure(primary, cleanup)
+    assert events == ["enter", "exit", "enter", "exit"]
+
+
+def test_capture_finish_stops_exports_restores_and_audits_even_stop_failure(tmp_path, monkeypatch):
+    from tensorfold.cuda.sm70 import software_binding
+    events = []
+    primary = RuntimeError("profiler stop failed")
+    owner = SimpleNamespace(operation="instrumented")
+    args = SimpleNamespace(rank=1, out=tmp_path)
+    capture = probe.RankCapture(args)
+    monkeypatch.setattr(probe,"concurrent_observation_snapshot",lambda:{"test_observations":True})
+    capture.bindings = [(owner, "operation", "original")]
+
+    class Profiler:
+        def stop(self):
+            events.append("stop")
+            raise primary
+
+        def export_chrome_trace(self, path):
+            events.append("export")
+            Path(path).write_text("{}")
+
+    capture.owner = Profiler()
+    monkeypatch.setattr(probe, "trace_summary", lambda *_: {"kernel_count": 1})
+    monkeypatch.setattr(probe, "protected_cupti_identity", lambda: {"API": 28})
+    monkeypatch.setattr(software_binding, "issue_source_binding", lambda **_: events.append("audit") or object())
+    monkeypatch.setattr(software_binding, "verify_source_binding", lambda _: {"verified": True})
+    with pytest.raises(RuntimeError) as caught:
+        capture.finish(retired=True)
+    assert caught.value is primary and owner.operation == "original"
+    assert events == ["stop", "export", "audit"]
+    assert (tmp_path / "rank-1-profile.json").exists() and capture.record["complete"] is False
+
+
+def maps_fixture(monkeypatch, raw):
+    original = Path.open
+    monkeypatch.setattr(Path, "open", lambda path, *args, **kwargs:
+        io.BytesIO(raw) if str(path) == "/proc/self/maps" else original(path, *args, **kwargs))
+
+
+def test_mapping_snapshot_retains_deleted_paths_permissions_and_complete_raw(tmp_path, monkeypatch):
+    raw = (b"1000-2000 rw-s 00000000 00:01 15 /dev/shm/nccl-example (deleted)\n"
+           b"2000-3000 r-xp 00001000 08:01 17 /tmp/removed.so (deleted)\n"
+           b"3000-4000 rw-p 00000000 00:00 0\n")
+    maps_fixture(monkeypatch, raw)
+    result = probe.mapping_snapshot(tmp_path, 3, "before")
+    summary = json.loads(Path(result["summary_path"]).read_text())
+    assert Path(result["raw"]["path"]).read_bytes() == raw
+    assert result["raw"]["complete"] and result["deleted_count"] == 2
+    assert result["raw"]["sha256"] == hashlib.sha256(raw).hexdigest()
+    deleted = summary["deleted_examples"]
+    assert [(row["path_prefix"], row["permissions"], row["classification"]) for row in deleted] == [
+        ("/dev/shm/nccl-example (deleted)", "rw-s", "deleted-shared-file"),
+        ("/tmp/removed.so (deleted)", "r-xp", "deleted-executable-file")]
+    assert deleted[0]["offset"] == "00000000" and deleted[0]["inode"] == "15"
+
+
+def test_mapping_snapshot_overflow_is_explicit_retained_and_fatal(tmp_path, monkeypatch):
+    maps_fixture(monkeypatch, b"x" * 65)
+    monkeypatch.setattr(probe, "MAPPING_SNAPSHOT_BYTES", 64)
+    with pytest.raises(ValueError, match="explicitly incomplete prefix"):
+        probe.mapping_snapshot(tmp_path, 0, "after")
+    summary = json.loads((tmp_path / "rank-0-maps-after.json").read_text())
+    assert (tmp_path / "rank-0-maps-after.txt").read_bytes() == b"x" * 64
+    assert summary["raw"]["complete"] is False and summary["raw"]["limit_bytes"] == 64
+
+
+def test_mapping_snapshot_example_omission_and_path_prefix_are_explicit(tmp_path, monkeypatch):
+    raw = b"".join((f"1000-2000 rw-s 00000000 00:01 {index+1} /dev/shm/" +
+                    "long" * 80 + " (deleted)\n").encode() for index in range(10))
+    maps_fixture(monkeypatch, raw)
+    result = probe.mapping_snapshot(tmp_path, 0, "before")
+    summary = json.loads(Path(result["summary_path"]).read_text())
+    assert result["deleted_count"] == 10 and summary["deleted_examples_omitted"] == 2
+    assert len(summary["deleted_examples"]) == 8 and summary["deleted_examples"][0]["path_truncated"]
+    assert Path(result["raw"]["path"]).read_bytes() == raw
+
+
+def test_capture_start_saves_maps_before_guard_refusal_and_never_starts_profiler(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    from tensorfold.cuda.sm70 import software_binding
+    primary = ValueError("source guard refusal")
+    for name in ("LD_PRELOAD", "CUDA_INJECTION64_PATH", "CUPTI_INJECTION64_PATH",
+                 "NVTX_INJECTION64_PATH", "NSYS_CUPTI_LIBRARY_PATH"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(torch.profiler, "supported_activities", lambda: {torch.profiler.ProfilerActivity.CUDA})
+    monkeypatch.setattr(torch.autograd, "kineto_available", lambda: True)
+    monkeypatch.setattr(probe, "protected_cupti_identity", lambda: {"API": 28})
+    def refused(**_):
+        assert (tmp_path / "rank-0-maps-before.txt").exists()
+        raise primary
+    monkeypatch.setattr(software_binding, "issue_source_binding", refused)
+    monkeypatch.setattr(torch.profiler, "profile", lambda **_: pytest.fail("profiler started after source refusal"))
+    capture = probe.RankCapture(SimpleNamespace(rank=0, out=tmp_path))
+    with pytest.raises(ValueError) as caught:
+        capture.start()
+    assert caught.value is primary and capture.owner is None and not capture.bindings
+
+
+def test_capture_mapping_diagnostic_failure_still_runs_retirement_source_guard(tmp_path, monkeypatch):
+    from tensorfold.cuda.sm70 import software_binding
+    diagnostic = OSError("mapping diagnostic failed")
+    primary = ValueError("source guard refusal")
+    capture = probe.RankCapture(SimpleNamespace(rank=0, out=tmp_path))
+    monkeypatch.setattr(probe,"concurrent_observation_snapshot",lambda:{"test_observations":True})
+    def failed_snapshot(*_):
+        raise diagnostic
+    def refused(**_):
+        raise primary
+    monkeypatch.setattr(probe, "mapping_snapshot", failed_snapshot)
+    monkeypatch.setattr(probe, "protected_cupti_identity", lambda: {"API": 28})
+    monkeypatch.setattr(software_binding, "issue_source_binding", refused)
+    with pytest.raises(ValueError) as caught:
+        capture.finish(retired=True)
+    assert caught.value is primary and retained_failure(primary, diagnostic)
+    assert not capture.record["complete"] and (tmp_path / "rank-0-profile.json").exists()
+
+
+def test_native_descriptor_labels_preserve_static_call_binding_and_restore(monkeypatch):
+    from contextlib import nullcontext
+    from tensorfold.families.qwen4_exp.cuda import history_owner, compact_indexer
+    from tools import concurrent_observers
+    monkeypatch.setattr(concurrent_observers,"_owner",None)
+    calls=[]
+    original_storage=staticmethod(lambda state:calls.append(("storage",state)) or ("tensors",))
+    original_signature=staticmethod(lambda tensors:calls.append(("signature",tensors)) or ("signature",))
+    monkeypatch.setattr(history_owner.OwnerBuffers,"_state_storage",original_storage)
+    monkeypatch.setattr(history_owner.OwnerBuffers,"_storage_signature",original_signature)
+    labels=[]
+    plan=probe.project_observers(lambda label:labels.append(label) or nullcontext())
+    names={"_state_storage","_storage_signature","stage_native_descriptors"}
+    targeted=[row for row in plan if row[0] is history_owner.OwnerBuffers and row[1] in names]
+    assert len(targeted)==3
+    assert any(owner is compact_indexer and name=="_validate_frame" for owner,name,_original,_wrapper in plan)
+    for owner,name,original,wrapper in targeted:
+        monkeypatch.setattr(owner,name,wrapper)
+    borrowed=object.__new__(history_owner.OwnerBuffers)
+    state=object()
+    assert borrowed._state_storage(state)==("tensors",)
+    assert borrowed._storage_signature(("tensors",))==("signature",)
+    assert calls==[("storage",state),("signature",("tensors",))]
+    for owner,name,original,_wrapper in targeted:
+        setattr(owner,name,original)
+    assert vars(history_owner.OwnerBuffers)["_state_storage"] is original_storage
+    assert vars(history_owner.OwnerBuffers)["_storage_signature"] is original_signature
+    assert "tensorfold/cpu/native-state-storage" in labels
+    assert "tensorfold/cpu/native-storage-signature" in labels
+
+
+def test_actual_normal_installed_wholewheel_audit_has_no_foreign_profile_leaf():
+    wheel=os.environ.get("TENSORFOLD_TEST_INSTALLED_WHEEL")
+    if wheel is None:
+        pytest.skip("normal wholewheel artifact supplied by the target CPU gate")
+    record=probe.installed_identity(Path(wheel))
+    assert "site-packages" in Path(record["package"]).parts
+    assert set(record["affected_files"])==set(probe.SOURCE_FILES)
+    assert "tensorfold/families/qwen4_exp/cuda/history_owner.py" in record["affected_files"]
+    assert "tensorfold/families/qwen4_exp/cuda/descriptor_upload.py" not in record["affected_files"]
+
+
+def test_streaming_summary_parses_fragmented_unicode_and_closes_on_truncation(tmp_path, monkeypatch):
+    from tools import profile_trace_reader
+    original = profile_trace_reader.Stream
+    streams = []
+    def track(path):
+        stream = original(path)
+        streams.append(stream)
+        return stream
+    monkeypatch.setattr(profile_trace_reader, "CHUNK", 7)
+    monkeypatch.setattr(profile_trace_reader, "Stream", track)
+    events = [{"ph":"X","cat":"kernel","name":"K","dur":3,"args":{"device":0}},
+              {"ph":"X","cat":"cuda_runtime","name":"cudaLaunchKernel","dur":4},
+              {"ph":"X","cat":"user_annotation","name":"tensorfold/cpu/input-prepare","dur":17,"tid":42}]
+    path = tmp_path / "trace.json"
+    path.write_text(json.dumps({"metadata":"雪"*50,"traceEvents":events},ensure_ascii=False),encoding="utf-8")
+    result = probe.trace_summary(path, 0)
+    assert result["kernel_count"] == 1 and result["cuda_runtime_count"] == 1
+    assert streams[-1].file.closed and streams[-1].digest.hexdigest() == hashlib.sha256(path.read_bytes()).hexdigest()
+    path.write_text(path.read_text(encoding="utf-8")[:-1],encoding="utf-8")
+    with pytest.raises(ValueError):
+        probe.trace_summary(path,0)
+    assert streams[-1].file.closed
+
+
+def test_streaming_summary_refuses_oversized_raw_before_open(tmp_path, monkeypatch):
+    from tools import profile_trace_reader
+    path = tmp_path / "huge.json"
+    with path.open("wb") as stream:
+        stream.truncate((8<<30)+1)
+    monkeypatch.setattr(profile_trace_reader,"Stream",lambda _path:pytest.fail("oversized raw opened"))
+    with pytest.raises(ValueError,match="8GiB"):
+        probe.trace_summary(path,0)
+
+
+def test_streaming_summary_preserves_parser_primary_with_real_file_close_failure(tmp_path, monkeypatch):
+    from tools import profile_trace_reader
+    original = profile_trace_reader.Stream
+    secondary = OSError("actual read-owner close diagnostic")
+    class FileWithCloseFailure:
+        def __init__(self, file):
+            self.file = file
+        def read(self, count):
+            return self.file.read(count)
+        def close(self):
+            self.file.close()
+            raise secondary
+    def track(path):
+        stream = original(path)
+        stream.file = FileWithCloseFailure(stream.file)
+        return stream
+    monkeypatch.setattr(profile_trace_reader, "Stream", track)
+    path = tmp_path / "broken.json"
+    path.write_text('{"traceEvents":[',encoding="utf-8")
+    with pytest.raises(ValueError) as failure:
+        probe.trace_summary(path,0)
+    assert failure.value is not secondary and retained_failure(failure.value,secondary)
+
+
+@pytest.mark.parametrize("expected", [{}, {"name": "λ🌦", "args": [1, 2, 3]}])
+def test_stream_reader_retires_boundary_value_before_lookahead(tmp_path, monkeypatch, expected):
+    import hashlib
+    import inspect
+    from tools import profile_trace_reader
+
+    text = json.dumps(expected, ensure_ascii=False)
+    path = tmp_path / "boundary.json"
+    path.write_text(text, encoding="utf-8")
+    monkeypatch.setattr(profile_trace_reader, "CHUNK", len(text))
+    stream = profile_trace_reader.Stream(path)
+    original_more, observed = stream.more, []
+
+    def more():
+        caller = inspect.currentframe().f_back
+        if caller.f_code is profile_trace_reader.Stream.value.__code__:
+            assert "value" not in caller.f_locals
+            observed.append(True)
+        original_more()
+
+    monkeypatch.setattr(stream, "more", more)
+    try:
+        assert stream.value() == expected
+        assert observed == [True]
+        assert stream.digest.hexdigest() == hashlib.sha256(text.encode("utf-8")).hexdigest()
+    finally:
+        stream.file.close()
+
+
+def test_reader_character_envelope_uses_selected_python_object_layouts():
+    import sys
+
+    # This checks the layout premises of the owned reader's character credit,
+    # not JSON's decoding algorithm. The source proof also covers table growth.
+    for count in (0, 1, 2, 5, 6, 10, 32, 1000):
+        array = json.loads("[" + ",".join("0" for _ in range(count)) + "]")
+        mapping = json.loads("{" + ",".join(json.dumps("λ" + str(i)) + ":0"
+                                             for i in range(count)) + "}")
+        assert sys.getsizeof(array) <= 64 * (count + 1)
+        assert sys.getsizeof(mapping) <= 64 * (2 * count + 1)
+    for text in ("", "x", "λ", "🌦", "🌦" * 4096):
+        assert sys.getsizeof(json.loads(json.dumps(text))) <= 64 * (len(text) + 2)
+    assert probe.PROFILE_READER_BYTES_PER_RANK == 6 << 30
