@@ -249,3 +249,76 @@ def test_group_outcome_compaction_allocation_keeps_original_refs():
     while frame is not None and frame.tb_frame.f_code is not startup._raise_slots.__code__:
         frame=frame.tb_next
     assert frame is not None and frame.tb_frame.f_locals["fourth"] is secondary
+
+
+def retained_failure(error,target):
+    seen=set()
+    pending=[error]
+    while pending:
+        current=pending.pop()
+        if current is target:
+            return True
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        for value in (BaseException.__cause__.__get__(current),BaseException.__context__.__get__(current)):
+            if value is not None:
+                pending.append(value)
+        if isinstance(current,BaseExceptionGroup):
+            pending.extend(current.exceptions)
+    return False
+
+
+@pytest.mark.parametrize("kind",["finish","wait","transport"])
+def test_cancelled_sibling_diagnostic_is_not_lost_behind_genuine_partition_error(tmp_path,monkeypatch,kind):
+    import inspect
+    import sys
+    files,_before,_expected=inputs(tmp_path)
+    barrier=threading.Barrier(3)
+    primary=ValueError("genuine failed partition")
+    secondary=MemoryError("cancelled sibling diagnostic/transport")
+    def wait(cancelled):
+        barrier.wait(3)
+        while not cancelled():
+            time.sleep(.001)
+        raise CancelledError("sibling cancelled")
+    def failed(_cancelled):
+        barrier.wait(3)
+        raise primary
+    capture=startup.StartupContentGroup(group_plan(files),[wait,wait,failed],[("a",),("b",),("c",)])
+    original_clock=startup.time.monotonic_ns
+    calls=[]
+    def clock():
+        if threading.current_thread() is capture.captures[0].thread:
+            calls.append(True)
+            if len(calls)==2:
+                raise secondary
+        return original_clock()
+    if kind=="finish":
+        monkeypatch.setattr(startup.time,"monotonic_ns",clock)
+    elif kind=="wait":
+        capture.captures[0].wait_errors[0]=secondary
+    source,first=inspect.getsourcelines(startup.StartupContentCapture._raise_outcome)
+    line=first+next(index for index,text in enumerate(source) if "errors = [error" in text)
+    fired=[]
+    def trace(frame,event,_arg):
+        if (kind=="transport" and event=="line" and frame.f_code is startup.StartupContentCapture._raise_outcome.__code__
+                and frame.f_lineno==line and frame.f_locals["self"] is capture.captures[0]):
+            fired.append(True)
+            raise secondary
+        return trace
+    capture.start()
+    previous=sys.gettrace()
+    try:
+        if kind=="transport":
+            sys.settrace(trace)
+        with pytest.raises(ValueError) as caught:
+            capture.authorities()
+    finally:
+        sys.settrace(previous)
+        capture.close()
+    assert caught.value is primary and retained_failure(primary,secondary)
+    assert capture.captures[0].cancel_observed and capture.captures[0].error_observed
+    assert capture.closed
+    if kind=="transport":
+        assert fired==[True]

@@ -244,6 +244,34 @@ def _raise_slots(primary, slots, extra=()):
     raise_failures(primary, errors)
 
 
+def _expected_cancel(error, capture):
+    return error is capture.error and isinstance(error, CancelledError) and capture.cancel_observed
+
+
+def _pure_expected_cancel(error, capture):
+    return (_expected_cancel(error, capture)
+            and capture.finish_errors[0] is None and capture.wait_errors[0] is None
+            and BaseException.__cause__.__get__(error) is None
+            and BaseException.__context__.__get__(error) is None)
+
+
+def _primary_group_result(errors, captures):
+    first, second, third = errors
+    # Preserve a genuine partition/parent failure ahead of sibling cancellation
+    # carrying an independently reported diagnostic/transport secondary.
+    if first is not None and not _expected_cancel(first, captures[0]):
+        return first
+    if second is not None and not _expected_cancel(second, captures[1]):
+        return second
+    if third is not None and not _expected_cancel(third, captures[2]):
+        return third
+    if first is not None:
+        return first
+    if second is not None:
+        return second
+    return third
+
+
 class StartupContentGroup:
     """Exactly three pre-owned Captures; no executor or chunk-hash combination."""
     def __init__(self, plan, operations, partitions):
@@ -304,14 +332,10 @@ class StartupContentGroup:
                 # Sibling cancellations are expected only when their own
                 # Capture observed its cancellation. Genuine hash/interrupt/
                 # finalizer failures remain independently reportable.
-                if not (isinstance(error, CancelledError) and capture.cancel_observed):
+                if not _pure_expected_cancel(error, capture):
                     self.result_errors[index] = error
                 self._cancel_all()
-        primary = None
-        for error in self.result_errors:
-            if error is not None:
-                primary = error
-                break
+        primary = _primary_group_result(self.result_errors, self.captures)
         self.cancel_errors_observed = True
         _raise_slots(primary, self.result_errors, self.cancel_errors)
         for value in self.values:
