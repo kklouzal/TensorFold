@@ -169,6 +169,10 @@ def arguments(argv=None):
                         help="after the unchanged concurrency grid, run six fixed independent answer/format checks with320-token allowances; requires grid and --tokens>=320")
     parser.add_argument("--thinking", action="store_true", help="pass enable_thinking=True to the unchanged target template")
     parser.add_argument("--serial-reference", action="store_true", help="also run a separately labeled draft=False reply with MTP loaded")
+    parser.add_argument("--worker-affinity", choices=("gpu-local", "observe-reference"),
+                        help="explicit GPU-local whole-socket child exec, or controlled unbound reference; no memory-policy changes")
+    parser.add_argument("--worker-affinity-policy", type=Path)
+    parser.add_argument("--worker-affinity-policy-sha")
     parser.add_argument("--rank", type=int, help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if not re.fullmatch(r"sha256:[0-9a-f]{64}", args.image_identity):
@@ -269,6 +273,12 @@ def arguments(argv=None):
             parser.error("worker startup content overlap must be inherited from the launcher")
         if args.rank is not None and os.environ.get("TENSORFOLD_STARTUP_CONTENT_WORKERS", "1") != str(args.startup_content_workers):
             parser.error("worker content hash worker budget must match inherited startup environment")
+    affinity = (args.worker_affinity, args.worker_affinity_policy, args.worker_affinity_policy_sha)
+    if any(value is not None for value in affinity):
+        if any(value is None for value in affinity) or not re.fullmatch(r"[0-9a-f]{64}", args.worker_affinity_policy_sha or ""):
+            parser.error("worker affinity requires explicit mode, policy and SHA256")
+        args.worker_affinity_policy = regular_file(args.worker_affinity_policy)
+        affinity_module().policy(args.worker_affinity_policy, args.worker_affinity_policy_sha)
     args.out = args.out.expanduser().absolute()
     return args
 
@@ -553,25 +563,36 @@ def _owned_attributes(value):
     return result if type(result) is dict else {}
 
 def write_moe_capture_ledger(engine, output, rank):
-    """One bounded cold evidence file; never duplicate145 phase rows in replies."""
+    return _write_region_capture_ledger(engine, output, rank, family="moe", phases=None)
+
+
+def write_candidate_capture_ledger(engine, output, rank):
+    return _write_region_capture_ledger(engine, output, rank, family="candidate", phases=64)
+
+
+def _write_region_capture_ledger(engine, output, rank, *, family, phases):
+    """One bounded cold evidence file per disjoint catalogue, outside replies."""
     decoder = _owned_attributes(engine).get("multi")
     owner = _owned_attributes(_owned_attributes(decoder).get("graphs"))
-    catalogue = owner.get("moe_regions")
+    catalogue = owner.get(family + "_regions")
     fields = _owned_attributes(catalogue)
     if catalogue is None:
         return None
+    if phases is None:
+        from tensorfold.families.qwen4_exp.cuda.moe_region_catalogue import funding
+        phases = funding(independent=fields.get("independent") is True)["maximum_graphs"] + 1
     measurements = fields.get("measured")
-    if fields.get("ready") is not True or type(measurements) is not list or len(measurements) != 145:
-        raise ValueError("required complete145-phase MoE capture ledger is unavailable")
-    payload = {"schema": "tensorfold.cold-moe-capture-ledger-v1", "rank": rank,
+    if fields.get("ready") is not True or type(measurements) is not list or len(measurements) != phases:
+        raise ValueError(f"required complete{phases}-phase {family} capture ledger is unavailable")
+    payload = {"schema": f"tensorfold.cold-{family}-capture-ledger-v1", "rank": rank,
                "funding": fields.get("plan"), "capture_phases": measurements,
                "private_pools": owner.get("private_pool_records"),
                "host_before": fields.get("host_before"), "host_after": fields.get("host_after"),
                "scope": "coldpreparation only; baselinecanonical buffers/weights alreadyfunded; newGPUphasecharges usemax physical/general/owned deltas, never sum overlappingviews"}
     encoded = (json.dumps(payload, indent=1, allow_nan=False) + "\n").encode("ascii")
     if len(encoded) > 1 << 20:
-        raise ValueError("cold MoE capture ledger exceeds its inclusive graph-host allowance slice")
-    path = Path(output) / f"rank-{rank}-moe-capture-ledger.json"
+        raise ValueError("cold region capture ledger exceeds its inclusive graph-host allowance slice")
+    path = Path(output) / f"rank-{rank}-{family}-capture-ledger.json"
     primary = None
     close_failures = [None]  # Reserve before acquiring the output stream.
     file = path.open("xb")
@@ -605,6 +626,22 @@ def graph_execution_snapshot(engine):
         value = moe_regions.get(name)
         if not moe_regions.get("counter_overflowed", False) and type(value) is int and 0 <= value <= (1 << 63) - 1:
             counters["moe_regions." + name] = value
+    row_frames = moe_regions.get("row_frames")
+    if not moe_regions.get("counter_overflowed", False) and type(row_frames) is dict:
+        for rows in range(1, 33):
+            value = row_frames.get(rows)
+            if type(value) is int and 0 <= value <= (1 << 63) - 1:
+                counters["moe_regions.rows_" + str(rows) + "_frames"] = value
+    candidate = _owned_attributes(fields.get("candidate_regions"))
+    frames = candidate.get("frame_counts")
+    if not candidate.get("counter_overflowed", False) and type(frames) is dict:
+        for role in ("target", "mtp"):
+            counts = frames.get(role)
+            if type(counts) is dict:
+                for rows in range(1, 33):
+                    value = counts.get(rows)
+                    if type(value) is int and 0 <= value <= (1 << 63) - 1:
+                        counters[f"candidate_regions.{role}.rows_{rows}"] = value
     if type(submitted) is int and 0 <= submitted <= (1 << 63) - 1:
         counters["gdn.batch_submitted_layers"] = submitted
     names = ("hits", "misses", "lane_declines", "verify_hits", "mtp_hits",
@@ -759,7 +796,7 @@ def check_router_blas_engine(engine):
         raise ValueError("actual router role funding is missing before logical admission")
     return {"enabled": True, "target_weights": 48, "mtp_weights": 1, "target_rows": 32,
             "device_charge_per_rank": charged_device, "raw_device_payload_per_rank": 801024,
-            "global_host_charge": charged_host, "scope": "eager target/MTP only; graph/prefill canonical; experimental numeric implementation"}
+            "global_host_charge": charged_host, "scope": "ordinary target/MTP owner charges; captured MoE uses separately accounted capture roles; N1/prefill retain their own policy"}
 
 
 def check_shared_fusion_engine(engine):
@@ -983,6 +1020,11 @@ def run_concurrency_leader(engine, tokenizer, args, report):
         write_report(args.out / "admitted.json", report, allowance=LEADER_RECEIPT_BYTES)
         engine.scheduler.configure_requests(limit)
         pool = finite.owned_pool(min(30, args.timeout_seconds))
+        report["worker_affinity_before_cohorts"] = worker_affinity(args)
+        if report["worker_affinity_before_cohorts"] is not None:
+            write_report(args.out / "rank-0-affinity-before-cohorts.json",
+                         report["worker_affinity_before_cohorts"], allowance=FOLLOWER_RECEIPT_BYTES)
+            write_report(args.out / "admitted.json", report, allowance=LEADER_RECEIPT_BYTES)
         vocab = tokenizer_vocab_size(tokenizer)
 
         def observe():
@@ -1060,7 +1102,41 @@ def run_concurrency_leader(engine, tokenizer, args, report):
     finish_failures(primary, failures)
 
 
+def affinity_module():
+    if __package__:
+        from . import gpu_local_worker
+    else:
+        import gpu_local_worker
+    return gpu_local_worker
+
+
+def worker_affinity(args):
+    if getattr(args, "worker_affinity", None) is None:
+        return None
+    return affinity_module().sample(args.out / f"rank-{args.rank}-affinity-bootstrap.json", rank=args.rank,
+                  policy_sha=args.worker_affinity_policy_sha,
+                  mode="bind" if args.worker_affinity == "gpu-local" else "observe-reference")
+
+
 def worker(args):
+    affinity_notification_failures = [None]
+    try:
+        affinity_before_imports = worker_affinity(args)
+    except BaseException as primary:
+        cause = BaseException.__cause__.__get__(primary)
+        context = BaseException.__context__.__get__(primary)
+        suppressed = BaseException.__suppress_context__.__get__(primary)
+        try:
+            from tensorfold.cuda.cohort import notify_failure
+            notify_failure()
+        except BaseException as secondary:
+            affinity_notification_failures[0] = secondary
+        BaseException.__cause__.__set__(primary, cause)
+        BaseException.__context__.__set__(primary, context)
+        BaseException.__suppress_context__.__set__(primary, suppressed)
+        if affinity_notification_failures[0] is not None:
+            raise_failures(primary, affinity_notification_failures)
+        raise
     from tensorfold import hub
     from tensorfold.cuda import precision, prompt_precision
     from tensorfold.cuda.cohort import FAILURE_FD_ENV, notify_failure
@@ -1082,6 +1158,7 @@ def worker(args):
     engine, primary, failures = None, None, [None] * 4
     allowance = FOLLOWER_RECEIPT_BYTES if args.rank else LEADER_RECEIPT_BYTES
     try:
+        report["worker_affinity_before_backend"] = affinity_before_imports
         report["installed"] = installed_identity(args.wheel)
         report["execution_profile_manifest"] = getattr(args, "execution_manifest_identity", None)
         model = hub.resolve(str(args.model), download=False)
@@ -1097,6 +1174,14 @@ def worker(args):
             output_queue_tokens=args.tokens, graphs=args.requested_sm70_profile in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL),
             **({"execution_profile_manifest": args.execution_profile_manifest}
                if getattr(args, "execution_profile_manifest", None) is not None else {}))
+        report["worker_affinity_after_engine"] = worker_affinity(args)
+        if report["worker_affinity_after_engine"] is not None:
+            import torch
+            actual_uuid = str(torch.cuda.get_device_properties(engine.w.device).uuid)
+            actual_uuid = actual_uuid if actual_uuid.startswith("GPU-") else "GPU-" + actual_uuid
+            if actual_uuid.lower() != report["worker_affinity_after_engine"]["gpu"]["gpu_uuid"].lower():
+                raise RuntimeError("actual CUDA logical0 differs from the held GPU-local UUID")
+            report["worker_affinity_after_engine"]["actual_cuda_uuid"] = actual_uuid
         record_execution_profile(engine, report, requested=args.requested_sm70_profile)
         if getattr(args, "gdn_state_batch_trial", False):
             check_engine(engine, session_ceiling=24, require_scheduler=args.rank == 0)
@@ -1104,6 +1189,7 @@ def worker(args):
         if getattr(engine, "sm70_profile", None) in (ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
             report["router_blas"] = check_router_blas_engine(engine)
         report["moe_capture_ledger"] = write_moe_capture_ledger(engine, args.out, args.rank)
+        report["candidate_capture_ledger"] = write_candidate_capture_ledger(engine, args.out, args.rank)
         if getattr(args, "packed_shared_fusion_trial", False):
             report["shared_fusion"] = check_shared_fusion_engine(engine)
         report["capacity_plan"] = engine.capacity_plan
@@ -1117,6 +1203,7 @@ def worker(args):
             tokenizer = load_tokenizer(model)
             report["tokenizer_identity"] = tokenizer_identity(tokenizer)
             run_leader(engine, tokenizer, args, report)
+        report["worker_affinity_after_requests"] = worker_affinity(args)
         execution = report["graph_execution"]
         execution["after_requests"] = graph_execution_snapshot(engine)
         execution["delta"] = graph_execution_delta(execution["before_requests"], execution["after_requests"])
@@ -1252,7 +1339,14 @@ def launch(args, argv):
         # diagnostic construction failure must reach both independent closes.
         read_fd, write_fd = os.pipe2(os.O_CLOEXEC | os.O_NONBLOCK)
         for rank in rank_order:
-            commands.append([sys.executable, str(Path(__file__).resolve()), *argv, "--rank", str(rank)])
+            command = [sys.executable, str(Path(__file__).resolve()), *argv, "--rank", str(rank)]
+            if getattr(args, "worker_affinity", None) is not None:
+                command = [sys.executable, str(Path(__file__).with_name("gpu_local_worker.py")),
+                    "--rank", str(rank), "--policy", str(args.worker_affinity_policy),
+                    "--policy-sha", args.worker_affinity_policy_sha,
+                    "--mode", "bind" if args.worker_affinity == "gpu-local" else "observe-reference",
+                    "--receipt", str(args.out / f"rank-{rank}-affinity-bootstrap.json"), "--", *command]
+            commands.append(command)
             environment = dict(os.environ, CUDA_VISIBLE_DEVICES=args.devices[rank],
                                **{FAILURE_FD_ENV: str(write_fd)})
             if getattr(args, "overlap_content_capture", False):
@@ -1262,6 +1356,7 @@ def launch(args, argv):
             if args.triton_cache_root is not None:
                 environment["TRITON_CACHE_DIR"] = str(args.triton_cache_root / f"rank-{rank}")
             environments.append(environment)
+        receipt["supervisor_cpu_affinity"] = sorted(os.sched_getaffinity(0))
         receipt["commands"] = commands
         write_report(args.out / "launch.json", receipt, allowance=SUPERVISOR_RECEIPT_BYTES)
         for index, signum in enumerate(signums):
