@@ -598,6 +598,12 @@ def graph_execution_snapshot(engine):
         value = moe_regions.get(name)
         if not moe_regions.get("counter_overflowed", False) and type(value) is int and 0 <= value <= (1 << 63) - 1:
             counters["moe_regions." + name] = value
+    row_frames = moe_regions.get("row_frames")
+    if not moe_regions.get("counter_overflowed", False) and type(row_frames) is dict:
+        for rows in (30, 31, 32):
+            value = row_frames.get(rows)
+            if type(value) is int and 0 <= value <= (1 << 63) - 1:
+                counters["moe_regions.rows_" + str(rows) + "_frames"] = value
     if type(submitted) is int and 0 <= submitted <= (1 << 63) - 1:
         counters["gdn.batch_submitted_layers"] = submitted
     names = ("hits", "misses", "lane_declines", "verify_hits", "mtp_hits",
