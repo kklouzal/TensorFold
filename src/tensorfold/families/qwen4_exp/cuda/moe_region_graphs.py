@@ -24,9 +24,13 @@ def validate_region(weights, layer, buffers, rows):
         raise ValueError("MoE graph region needs an exact row count in1..32")
     if buffers.prefill or buffers.mixed.dtype != torch.float16 or not buffers.mixed.is_cuda:
         raise ValueError("MoE graph region requires canonical FP16 CUDA decode buffers")
+    from tensorfold.cuda.sm70.execution_policy import SHARED_FUSION_TRIAL
+
+    profile = getattr(weights, "meta", {}).get("sm70_profile")
+    expected = "packed_blocks2w" if profile == SHARED_FUSION_TRIAL else "packed_exact"
     expert = layer.moe.experts
     if (getattr(expert, "kernel", None) != "gguf"
-            or expert.implementation != "packed_exact" or expert.packed_rows < rows
+            or expert.implementation != expected or expert.packed_rows < rows
             or expert.count != 513 or expert.dims != 2560 or expert.width not in (80, 160)
             or weights.cfg.experts != 512 or weights.cfg.top_k != 10):
         raise ValueError("MoE graph region requires the qualified actual513-router/11-selected-slot GGUF bank")

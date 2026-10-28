@@ -9,7 +9,7 @@ import threading
 import torch
 
 from tensorfold.cleanup import raise_failures
-from tensorfold.cuda.sm70.router_blas import PROFILE, RolePlans, role_bytes
+from tensorfold.cuda.sm70.router_blas import PROFILE as PROFILE, PROFILES, RolePlans, role_bytes
 from .moe_region_graphs import MoERegion, validate_region
 from .capture_lifetime import host_memory as _host_memory, on_stream
 
@@ -24,7 +24,7 @@ def requested(profile):
     value = os.environ.get(ENV, '0')
     if value not in ('0', '1'):
         raise ValueError('private MoE graph choice must be0 or1')
-    if value == '1' and profile != PROFILE:
+    if value == '1' and profile not in PROFILES:
         raise ValueError('private MoE regions require the admitted batched-router profile')
     return value == '1'
 
@@ -95,6 +95,8 @@ class Bindings:
         return (id(w.cfg), w.cfg.experts, w.cfg.top_k,
                 tuple(id(layer) for layer in w.layers), w.meta.get('sm70_profile'),
                 w.meta.get('execution_provider'), w.meta.get('sm70_moe_region_graphs_trial'),
+                w.meta.get('sm70_family_trial', {}).get('numerical_policy'),
+                w.meta.get('sm70_family_trial', {}).get('experts'),
                 GGUFDense.implementation, GGUFExperts.implementation, GGUFConcat.implementation,
                 family_ops._NATIVE_FAMILY, routing_native._NATIVE_LOGITS, pdl.ON)
 
@@ -164,7 +166,7 @@ class Catalogue:
             raise ValueError('private MoE pools require the qualified native allocator accounting')
         if getattr(self.weights, 'dspark', None) is not None or getattr(self.weights, 'dflash2', None) is not None:
             raise ValueError('MoE graph catalogue requires the stock MTP execution contract')
-        if self.weights.meta.get('sm70_profile') != PROFILE or self.buffers.router_blas is None:
+        if self.weights.meta.get('sm70_profile') not in PROFILES or self.buffers.router_blas is None:
             raise ValueError('MoE capture requires the selected eager batched-router role')
         if self.buffers.prefill or self.buffers.rows != 32:
             raise ValueError('MoE capture requires canonical target decode row32 buffers')
@@ -326,7 +328,8 @@ class Catalogue:
         row_charges = {row: sum(item['charged_bytes'] for item in self.measured
                                if len(item['key']) > 2 and item['key'][1] == 'target' and item['key'][2] == row)
                        for row in ROWS}
-        return {'enabled': True, 'rows': ROWS, 'graphs': len(self.regions), 'frames': None if self.counter_overflowed else self.frames,
+        return {'enabled': True, 'numeric_profile': self.weights.meta.get('sm70_profile'),
+                'graph_contract': 'pure-moe-target-exactR-ordered-pools-v1', 'rows': ROWS, 'graphs': len(self.regions), 'frames': None if self.counter_overflowed else self.frames,
                 'replays': None if self.counter_overflowed else self.hits,
                 'row_frames': None if self.counter_overflowed else dict(self.row_frames), 'funding': self.plan,
                 'capture_role_and_initial_residency_charge_bytes': self.role_and_warm_bytes,

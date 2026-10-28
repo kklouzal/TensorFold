@@ -1961,3 +1961,12 @@ carried into admission and checked with host/cgroup observations; it is not a
 vendor worst-case memory claim. Whole-frame storage/profile validation and
 failure retirement are mandatory. Focused CPU checks pass; the144-graph GPU
 oracle, actual Engine capacity/quality and all-six performance remain pending.
+
+The private MoE catalogue can also compose with the distinct shared-fusion
+numeric profile. That profile keeps its own prefix/State epoch and selects
+`packed_blocks2w`; the original router profile still requires `packed_exact`.
+Capture retains the selected profile's arithmetic, dedicated router plans and
+ordered pools. The ordinary2MiB fused-provider workspace credit remains for
+eager/MTP execution; newly captured activation storage is separately debited
+inside the graph budget. The strict selected-IQ fused-eager versus captured
+oracle and combined all-six capacity/quality/performance remain pending.
