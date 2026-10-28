@@ -1332,6 +1332,34 @@ def test_private_native_dense_flag_requires_explicit_matching_profile_and_funded
     assert not (tmp_path / "results").exists()
 
 
+def test_three_startup_workers_are_explicit_and_inherited_consistently(tmp_path,monkeypatch):
+    from tensorfold.cuda import expert_launch
+    monkeypatch.delenv("TENSORFOLD_STARTUP_CONTENT_OVERLAP",raising=False)
+    monkeypatch.delenv("TENSORFOLD_STARTUP_CONTENT_WORKERS",raising=False)
+    manifest=tmp_path/"execution.json"
+    manifest.write_text(json.dumps({"schema":"tensorfold.execution-profile-manifest","version":1,"artifacts":{}}))
+    with pytest.raises(SystemExit):
+        probe.arguments(cli(tmp_path)+["--startup-content-workers","3"])
+    raw=cli(tmp_path)+["--execution-profile-manifest",str(manifest),"--overlap-content-capture","--startup-content-workers","3"]
+    args=probe.arguments(raw)
+    observed=[]
+    def supervise(commands,environments,**_kwargs):
+        for command,environment in zip(commands,environments,strict=True):
+            assert environment["TENSORFOLD_STARTUP_CONTENT_WORKERS"]=="3"
+            assert environment["TENSORFOLD_STARTUP_CONTENT_OVERLAP"]=="1"
+            assert "--startup-content-workers" in command
+            observed.append(True)
+        return 0
+    monkeypatch.setattr(probe,"installed_identity",lambda _wheel:{})
+    monkeypatch.setattr(expert_launch,"supervise",supervise)
+    assert probe.launch(args,raw)==0 and len(observed)==8
+    monkeypatch.setenv("TENSORFOLD_STARTUP_CONTENT_OVERLAP","1")
+    with pytest.raises(SystemExit):
+        probe.arguments(raw+["--rank","1"])
+    monkeypatch.setenv("TENSORFOLD_STARTUP_CONTENT_WORKERS","3")
+    assert probe.arguments(raw+["--rank","1"]).startup_content_workers==3
+
+
 @pytest.mark.parametrize("profile,dense,ceiling,valid", [
     ("source-owner-target-dense-trial", True, 24, False),
     ("source-dense-owner-batch-prelude-trial", False, 24, False),
