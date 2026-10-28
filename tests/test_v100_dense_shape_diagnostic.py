@@ -43,3 +43,47 @@ def test_report_bound_and_units_are_not_unbounded(tmp_path, monkeypatch):
     monkeypatch.setattr(d, "REPORT_LIMIT", 4)
     with pytest.raises(ValueError, match="envelope"):
         d.write(path, {"too_large": True})
+
+
+
+def execute_actual_failure_handler(primary, args, report, writer):
+    import ast
+    import inspect
+    import textwrap
+    from tensorfold.cleanup import raise_failures
+
+    tree = ast.parse(textwrap.dedent(inspect.getsource(d.run)))
+    actual = next(node for node in ast.walk(tree) if isinstance(node, ast.Try)
+                  and any(isinstance(handler.name, str) and handler.name == "error" for handler in node.handlers))
+    control = ast.Try(body=[ast.Raise(exc=ast.Name(id="primary", ctx=ast.Load()), cause=None)],
+                      handlers=actual.handlers, orelse=[], finalbody=[])
+    module = ast.fix_missing_locations(ast.Module(body=[control], type_ignores=[]))
+    scope = dict(primary=primary, args=args, report=report, write=writer,
+                 diagnostic_failures=[None], raise_failures=raise_failures)
+    exec(compile(module, "actual_run_failure_handler", "exec"), scope)
+
+
+def test_actual_handler_retains_primary_after_successful_failure_report(tmp_path):
+    from types import SimpleNamespace
+    primary = RuntimeError("original GPU operation failure")
+    cause, context = ValueError("original explicit cause"), OSError("original implicit context")
+    primary.__cause__, primary.__context__, primary.__suppress_context__ = cause, context, True
+    report = {}
+    with pytest.raises(RuntimeError) as caught:
+        execute_actual_failure_handler(primary, SimpleNamespace(out=tmp_path), report, d.write)
+    assert caught.value is primary
+    assert primary.__cause__ is cause and primary.__context__ is context and primary.__suppress_context__
+    assert not any("NoneType" in note for note in getattr(primary, "__notes__", ()))
+    assert json.loads((tmp_path / "failure.json").read_text())["failure"]["message"] == str(primary)
+
+
+def test_actual_handler_keeps_primary_and_actual_diagnostic_write_failure(tmp_path):
+    from types import SimpleNamespace
+    primary, diagnostic = RuntimeError("original operation"), OSError("failure report write")
+    def failed_write(_path, _value):
+        raise diagnostic
+    with pytest.raises(RuntimeError) as caught:
+        execute_actual_failure_handler(primary, SimpleNamespace(out=tmp_path), {}, failed_write)
+    assert caught.value is primary
+    from tests.test_v100_backend_probe import retained_failure
+    assert retained_failure(primary, diagnostic)

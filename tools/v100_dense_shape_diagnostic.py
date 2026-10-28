@@ -208,6 +208,8 @@ def run(args):
             write(args.out / "failure.json", report)
         except BaseException as diagnostic:
             diagnostic_failures[0] = diagnostic
+        if diagnostic_failures[0] is None:
+            raise  # Preserve the primary without inventing a None secondary.
         raise_failures(error, diagnostic_failures)
     write(args.out / "result.json", report)
 
