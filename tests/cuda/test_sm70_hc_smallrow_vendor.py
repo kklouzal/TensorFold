@@ -23,6 +23,8 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_
 def test_direct_vendor_bits_original_weight_alias_and_capture_replay(monkeypatch, rows, role):
     assert torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction is True
     assert torch.backends.cuda.matmul.allow_fp16_accumulation is False
+    assert str(torch.backends.cuda.preferred_blas_library()) == '_BlasBackend.Cublas'
+    assert os.environ.get('CUBLAS_WORKSPACE_CONFIG') is None
     assert gguf_ops.extension().prepare_hc_smallrow() == 3
     monkeypatch.setattr(GGUFDense, 'implementation', 'native32')
     monkeypatch.setattr(GGUFConcat, 'implementation', 'native32')
