@@ -43,7 +43,12 @@ def parse_preparation(value):
 
 
 class OwnerPreparation:
-    def __init__(self, specification, *, role_rows, manifest_sha256):
+    def __init__(self, specification, *, role_rows, manifest_sha256, frame_rows=None):
+        if frame_rows is not None and (type(frame_rows) is not int or frame_rows < 1):
+            raise ValueError("frame packet row envelope requires a positive integer")
+        self.frame_rows = frame_rows
+        self.frame_admission = None
+        self.frame_layers = {}
         self.specification = parse_preparation(specification)
         if self.specification is None or not isinstance(role_rows, dict) or not {"decode", "prefill"} <= role_rows.keys():
             raise ValueError("native preparation requires the actual decode and prefill envelopes")
@@ -94,6 +99,14 @@ class OwnerPreparation:
                     "head_dim": text.get("head_dim") or text["hidden_size"] // text["num_attention_heads"],
                     "index_budget": text.get("indexer_budget", 2048),
                     "index_ratio": text.get("indexer_compress_ratio", 4)}
+        if self.frame_rows is not None:
+            from tensorfold.cuda.geometry import layer_counts
+            from .frame_descriptors import envelope
+
+            self.frame_layers = {"decode": layer_counts(text)[1], **({"mtp": 1} if "mtp" in self.role_rows else {})}
+            contract["frame_descriptors"] = {role: envelope(layers, self.frame_rows, min(self.role_rows[role], 256),
+                                                                       bucket_count=len(self.buckets[role]))
+                for role, layers in self.frame_layers.items()}
         import json
 
         contract = json.loads(canonical_runtime_json(contract, max_bytes=4 << 20))
@@ -108,6 +121,11 @@ class OwnerPreparation:
             peers = self._phase(engine, "contract", prepared_contract)
             if any(peer != peers[0] for peer in peers):
                 raise ValueError("native owner preparation differs across TP8 ranks")
+            if self.frame_rows is not None:
+                from tensorfold.cuda.capacity import admit_host_commitment
+
+                self.frame_admission = admit_host_commitment(engine.tp * sum(
+                    row["host_commitment_bytes"] for row in contract["frame_descriptors"].values()))
             torch.cuda.synchronize(device)
             torch.cuda.empty_cache()
             self.before = self._memory(torch, device)
@@ -148,6 +166,12 @@ class OwnerPreparation:
                         rank=engine.rank, device=device, comm=engine.comm,
                         register=lambda owner: self.workspaces.__setitem__(role, owner))
                     owner.prepare_native(pair=pair, page_tokens=page_tokens, buckets=self.buckets[role])
+                    if role in self.frame_layers:
+                        from .frame_descriptors import FrameDescriptors
+
+                        packet = object.__new__(FrameDescriptors)
+                        owner.descriptor_frames = packet  # Retain partial async ownership before construction.
+                        packet.__init__(owner, self.frame_layers[role], self.frame_rows, mtp=role == "mtp")
                     owner.configure_native_transport(self.specification["collective_family"],
                                                      self.head_comm or engine.comm)
                     return owner.allocation_record()
@@ -251,6 +275,9 @@ class OwnerPreparation:
             if buffers.history_owner is not self.workspaces[role]:
                 raise RuntimeError("serving buffers did not adopt their preallocated owner workspace")
             buffers.owner_graphs = self.graphs.get(role)
+            packet = getattr(buffers.history_owner, "descriptor_frames", None)
+            if packet is not None:
+                packet.bind(weights, buffers)
         # Every owner frame is bounded by its adopted workspace, even when a
         # larger model batch is split into several such attention operations.
         graph_rows = decoder.buf.rows if self.graphs else 0
@@ -297,6 +324,8 @@ class OwnerPreparation:
         return {"specification": {name: deepcopy(value) for name, value in self.specification.items() if name != "trial"},
                 "source_foundation_headers": deepcopy(self.source_foundation),
                 "roles": dict(self.role_rows),
+                **({"frame_descriptor_rows": self.frame_rows, "frame_descriptor_layers": dict(self.frame_layers)}
+                   if self.frame_rows is not None else {}),
                 "row_buckets": {role: list(rows) for role, rows in self.buckets.items()},
                 "allocations": deepcopy(self.allocations),
                 "allocator_accounting": "exclude-proved-private-spare; physical-only-when-unavailable"}

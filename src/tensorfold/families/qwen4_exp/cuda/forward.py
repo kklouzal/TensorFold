@@ -720,6 +720,17 @@ def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True,
     from .compact_indexer import validate_target_indexer_frame
 
     validate_target_indexer_frame(b, segs)
+    packet = getattr(getattr(b, "history_owner", None), "descriptor_frames", None)
+    options = dict(logits=logits, context=context, ends=ends, cuts=cuts, features=features, check=check,
+                   input_embeddings=input_embeddings, target_greedy=target_greedy, gather_candidates=gather_candidates)
+    if packet is not None and packet.eligible(b, segs):
+        with packet.frame(segs, b):
+            return _compute_prepared(w, segs, b, R, **options)
+    return _compute_prepared(w, segs, b, R, **options)
+
+
+def _compute_prepared(w, segs, b, R, *, logits, context, ends, cuts, features, check,
+                      input_embeddings, target_greedy, gather_candidates):
     runtime = getattr(w, "dspark", None)
     dflash2 = getattr(w, "dflash2", None)
     if runtime is not None and dflash2 is not None:
@@ -1022,6 +1033,7 @@ def commit(w: Weights, st: State, b: Buffers, R: int, keep: int, at: int = 0, st
     commit_many; it must resolve that lease before reusing buffers or proposing.
     """
 
+    st._descriptor_frame_barrier()
     try:
         st.kv_check()
         if b.h.dtype == torch.float16:

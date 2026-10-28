@@ -164,6 +164,15 @@ def mtp_compute(w: Weights, segs: Sequence, b: Buffers, *, last_only: bool = Tru
 
         validate_mtp_indexer_frame(b, segs)
 
+    packet = getattr(getattr(b, "history_owner", None), "descriptor_frames", None)
+    options = dict(last_only=last_only, logits=logits, context=context, check=check, next_inputs=next_inputs)
+    if packet is not None and packet.eligible(b, segs):
+        with packet.frame(segs, b):
+            return _mtp_compute_prepared(w, segs, b, n, c, **options)
+    return _mtp_compute_prepared(w, segs, b, n, c, **options)
+
+
+def _mtp_compute_prepared(w, segs, b, n, c, *, last_only, logits, context, check, next_inputs):
     archive = getattr(w, "meta", {}).get("indexer_history") == "ram"
     if archive:
         history_runtime.begin(segs, prefill=b.prefill, mtp=True)

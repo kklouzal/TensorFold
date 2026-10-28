@@ -32,10 +32,10 @@ def request(module, **changes):
     return module.unique_graph_request(module.OWNER_GRAPH_TRIAL, **args)
 
 
-@pytest.mark.parametrize("target,guard,prelude", [(False, False, False), (True, False, False), (True, True, False), (True, True, True)])
+@pytest.mark.parametrize("target,guard,prelude", [(False, False, False), (True, False, False), (True, True, False), (True, True, True), (True, True, "frame")])
 def test_new_profile_requires_issued_native_owner_and_grants_only_exact_nonattention_pieces(source, monkeypatch, target, guard, prelude):
     module = source.module
-    selected = module.OWNER_TARGET_PRELUDE_TRIAL if prelude else module.OWNER_TARGET_GUARD_TRIAL if guard else module.OWNER_TARGET_GREEDY_TRIAL if target else module.OWNER_GRAPH_TRIAL
+    selected = module.OWNER_FRAME_DESCRIPTORS_TRIAL if prelude == "frame" else module.OWNER_TARGET_PRELUDE_TRIAL if prelude else module.OWNER_TARGET_GUARD_TRIAL if guard else module.OWNER_TARGET_GREEDY_TRIAL if target else module.OWNER_GRAPH_TRIAL
     monkeypatch.setenv(module.PROFILE_ENV, selected)
     if guard:
         monkeypatch.setattr(family_native, "extension", lambda: source.calls.append("extension") or
@@ -52,10 +52,19 @@ def test_new_profile_requires_issued_native_owner_and_grants_only_exact_nonatten
         monkeypatch.setattr(family.torch.cuda, "current_stream", lambda *a: NS(synchronize=lambda: None))
     weights.meta.update(history_layout="unique", owner_workspaces={role: object() for role in ("decode", "mtp", "prefill")})
     weights.mtp = NS(layer=NS(linear=False))
+    if prelude == "frame":
+        weights.layers = [NS(linear=False)]
+        owners = {role: NS() for role in ("decode", "mtp", "prefill")}
+        for role in ("decode", "mtp"):
+            owners[role].descriptor_frames = NS(owner=owners[role], prepared=True, closed=False, error=None,
+                device=object(), host=object(), mtp=role == "mtp", layout={"layers": 1})
+        weights.meta["owner_workspaces"] = owners
     contract = module.unique_graph_request(selected, method="mtp", depth=2, kv_pair=get_pair("int8"),
         unique_history=True, indexer_history="gpu", graphs=True, concurrent=True, vision=False,
         owner_preparation=specification())
     assert contract == UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT
+    if prelude == "frame":
+        assert prefix_policy.state_epoch(selected) != prefix_policy.OWNER_TARGET_PRELUDE_STATE
     module.prepare_weights(weights, graph_contract=contract)
     assert ("sm70_target_greedy_trial" in weights.meta) is target
     assert weights.meta.get("sm70_native_guard_trial", False) is guard
@@ -95,6 +104,9 @@ def test_combined_prefix_epoch_cannot_borrow_old_graph_or_eager_state_before_mut
 
 
 @pytest.mark.parametrize("profile,slots,refused", [
+    (prefix_policy.OWNER_FRAME_DESCRIPTORS_PROFILE, 23, True),
+    (prefix_policy.OWNER_FRAME_DESCRIPTORS_PROFILE, 24, False),
+    (prefix_policy.OWNER_FRAME_DESCRIPTORS_PROFILE, 26, False),
     (prefix_policy.OWNER_TARGET_PRELUDE_PROFILE, 23, True),
     (prefix_policy.OWNER_TARGET_PRELUDE_PROFILE, 24, False),
     (prefix_policy.OWNER_TARGET_PRELUDE_PROFILE, 26, False),

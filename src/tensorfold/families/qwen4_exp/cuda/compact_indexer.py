@@ -131,6 +131,9 @@ def _revoke_frame(buffers, prefix):
 
 
 def _stage_frame(buffers, segments, coordinates, *, mtp, scalar_text_recipe=False):
+    packet = getattr(getattr(buffers, "history_owner", None), "descriptor_frames", None)
+    if packet is not None and packet.active and buffers is packet.buffers:
+        raise RuntimeError("coordinate restaging cannot overtake its active descriptor frame")
     from .position_coordinates import CoordinateTransfer, IssuedCoordinates, _signature, copy_coordinate_batch
 
     _profile_context(buffers, segments)

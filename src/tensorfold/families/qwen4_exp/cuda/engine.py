@@ -636,8 +636,13 @@ class FlashNextEngine:
                 bound = min(bound, session_ceiling * each)
             roles = {"decode": min(bound, ATT_ROWS),
                      **({"mtp": min(bound, ATT_ROWS)} if mtp else {}), "prefill": min(rows0, ATT_ROWS)}
+            from .prefix_policy import OWNER_FRAME_DESCRIPTORS_PROFILE
+
+            frame_rows = (execution_rows if execution_rows is not None else 32 if adaptive_sessions
+                          else streams * each if concurrent else max(8, each))
             owner_preparation = OwnerPreparation(owner_specification, role_rows=roles,
-                                                  manifest_sha256=preparation_manifest_sha)
+                manifest_sha256=preparation_manifest_sha,
+                **({"frame_rows": frame_rows} if self.sm70_profile == OWNER_FRAME_DESCRIPTORS_PROFILE else {}))
             self._owner_preparation = owner_preparation
             owner_preparation.prepare(self, text, self.kv_pair, page_tokens=history_placement.page_tokens,
                                       device=torch.device("cuda", torch.cuda.current_device()))
@@ -949,9 +954,9 @@ class FlashNextEngine:
             sm70_prefill_bytes = _sm70_prefill_gdn_bytes(text, tp, rows0)
             options["device_workspace_bytes"] = options.get("device_workspace_bytes", 0) + sm70_prefill_bytes
             target_greedy_bytes = None
-            from tensorfold.cuda.sm70.execution_policy import TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL
+            from tensorfold.cuda.sm70.execution_policy import TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_FRAME_DESCRIPTORS_TRIAL
 
-            if self.sm70_profile in (TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL):
+            if self.sm70_profile in (TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_FRAME_DESCRIPTORS_TRIAL):
                 from .target_greedy import workspace_bytes
 
                 target_greedy_bytes = workspace_bytes(int(text["vocab_size"]))
@@ -963,7 +968,7 @@ class FlashNextEngine:
                     target_greedy_bytes, feedback_status, plain_status))
                 options["device_workspace_bytes"] += target_greedy_bytes[0]
                 options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + tp * target_greedy_bytes[1]
-            if self.sm70_profile == OWNER_TARGET_PRELUDE_TRIAL:
+            if self.sm70_profile in (OWNER_TARGET_PRELUDE_TRIAL, OWNER_FRAME_DESCRIPTORS_TRIAL):
                 # One dedicated initialized immutable int32 control per model;
                 # bound its allocator granule and retained/transient view metadata.
                 options["device_workspace_bytes"] += 512
@@ -1200,9 +1205,9 @@ class FlashNextEngine:
             self.capacity_plan["sm70_weight_plan"] = self._sm70_weight_plan
         if adaptive_sessions:
             streams = self.capacity_plan["session_capacity"]["resident_capacity"]
-            from tensorfold.cuda.sm70.execution_policy import OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL
+            from tensorfold.cuda.sm70.execution_policy import OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_FRAME_DESCRIPTORS_TRIAL
 
-            if self.sm70_profile in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL) and streams < 24:
+            if self.sm70_profile in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_FRAME_DESCRIPTORS_TRIAL) and streams < 24:
                 raise ValueError("source-owner-pieces-trial must preserve at least24 complete INT8 context windows")
             resident_windows = streams
             self.streams = self.kv_full_windows = streams

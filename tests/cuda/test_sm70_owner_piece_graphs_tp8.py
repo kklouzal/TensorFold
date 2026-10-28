@@ -29,10 +29,13 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
     from tensorfold.families.qwen4_exp.cuda.multi_graphs import RoundGraphs, UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT
     from tensorfold.families.qwen4_exp.cuda.owner_execution import KERNEL_FAMILY, FULL_COLLECTIVE, UNCAPTURED
     from tensorfold.families.qwen4_exp.cuda.owner_preparation import OwnerPreparation
-    from tensorfold.families.qwen4_exp.cuda.prefix_policy import OWNER_GRAPH_PROFILE, OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE
+    from tensorfold.families.qwen4_exp.cuda.prefix_policy import OWNER_GRAPH_PROFILE, OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_FRAME_DESCRIPTORS_PROFILE
     from tensorfold.families.qwen4_exp.kv_formats import get_pair
     from test_sm70_unique_piece_graphs_tp8 import _equal, _committed
 
+    frame_packets = target_greedy == "frame-prelude"
+    if frame_packets:
+        target_greedy = "bound-prelude"
     torch.set_num_threads(1)
     torch.cuda.set_device(rank)
     from test_flashnext_sm70_mtp import _weights_with_stock_mtp_protocol
@@ -109,6 +112,8 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
         text = {"hidden_size": base.cfg.hidden, "num_attention_heads": 24, "num_key_value_heads": 2,
                 "head_dim": 256, "indexer_budget": base.cfg.index_budget,
                 "indexer_compress_ratio": base.cfg.index_ratio}
+        if frame_packets:
+            text["layer_types"] = ["linear_attention" if layer.linear else "full_attention" for layer in base.layers]
         spec = dict(kernel_family=KERNEL_FAMILY, graph_family=UNCAPTURED,
                     collective_family=FULL_COLLECTIVE, graph_budget_bytes=0, trial=True)
 
@@ -118,7 +123,7 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
             if compact_target:
                 from tensorfold.families.qwen4_exp.cuda.target_greedy import POLICY
 
-                weights.meta.update(sm70_profile=OWNER_TARGET_PRELUDE_PROFILE if compact_target in ("prelude", "bound-prelude") else
+                weights.meta.update(sm70_profile=OWNER_FRAME_DESCRIPTORS_PROFILE if frame_packets else OWNER_TARGET_PRELUDE_PROFILE if compact_target in ("prelude", "bound-prelude") else
                     OWNER_TARGET_GUARD_PROFILE if compact_target == "guard" else OWNER_TARGET_GREEDY_PROFILE,
                     sm70_target_greedy_trial={"policy": POLICY}, target_greedy_owner=None)
                 if compact_target in ("guard", "prelude", "bound-prelude"):
@@ -143,14 +148,17 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
                 assert context is weights.meta["input_preparation_context"]
             preparation = None
             if native:
-                preparation = OwnerPreparation(spec, role_rows={"decode": 3, "mtp": 3, "prefill": 8},
-                    manifest_sha256=hashlib.sha256(json.dumps(text, sort_keys=True).encode()).hexdigest())
+                preparation = OwnerPreparation(spec,
+                    role_rows={"decode": 32 if frame_packets else 3, "mtp": 32 if frame_packets else 3, "prefill": 8},
+                    manifest_sha256=hashlib.sha256(json.dumps(text, sort_keys=True).encode()).hexdigest(),
+                    **({"frame_rows": 32} if frame_packets and compact_target else {}))
                 preparations.append(preparation)
                 engine = NS(comm=comm, rank=rank, tp=8, multi=None, _calls=0)
                 preparation.prepare(engine, text, get_pair("int8"), page_tokens=128, device=base.device)
                 weights.meta["owner_workspaces"] = preparation.workspaces
-            result = MultiDecoder(weights, slots=1, capacity=260, logical_context=257, depth=2,
-                confidence=.7, prefill_rows=8, kv_dtype="int8", graphs=False, keep=1, full_windows=1)
+            result = MultiDecoder(weights, slots=24 if frame_packets else 1, capacity=260, logical_context=257, depth=2,
+                confidence=.7, prefill_rows=8, kv_dtype="int8", graphs=False, keep=1, full_windows=24 if frame_packets else 1,
+                **({"execution_rows": 32} if frame_packets else {}))
             if compact_target:
                 target_owners.append(weights.meta["target_greedy_owner"])
             return weights, result, preparation
@@ -227,6 +235,29 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
             if repetition:
                 assert actual.cached > 0
             phase(f"request/completed/repetition={repetition}")
+        if frame_packets:
+            # Real original-State batches execute the ordinary eager forward;
+            # only descriptor transport differs. Count1/8/24 spans stay within
+            # the actual32-row Engine envelope, without scheduler shortcuts.
+            for participants in (1, 8, 24):
+                phase(f"bulk-frame/original-states={participants}")
+                for weights, dec in ((eager_weights, eager), (combined_weights, combined)):
+                    for state in dec.free[:participants]:
+                        state.reset(weights)
+                windows_expected = [(state, [11]) for state in eager.free[:participants]]
+                windows_actual = [(state, [11]) for state in combined.free[:participants]]
+                expected = compute(eager_weights, stage(eager_weights, eager.buf, windows_expected), eager.buf).clone()
+                actual = compute(combined_weights, stage(combined_weights, combined.buf, windows_actual), combined.buf).clone()
+                _equal(actual, expected)
+                for at, (left, right) in enumerate(zip(combined.free[:participants], eager.free[:participants])):
+                    commit(combined_weights, left, combined.buf, 1, 1, at=at)
+                    commit(eager_weights, right, eager.buf, 1, 1, at=at)
+                    _committed(left, right)
+            for role in ("decode", "mtp"):
+                packet = combined_preparation.workspaces[role].descriptor_frames
+                assert packet.submitted > 0 and packet.error is None and not packet.active
+                assert packet.copied_layers >= packet.submitted
+                assert packet.layout["frame_rows"] == 32
         assert graphs.bound.hits > 0
         if target_greedy in ("prelude", "bound-prelude"):
             assert combined_weights.meta["sm70_owner_prelude_submitted_frames"] > 0
@@ -295,7 +326,7 @@ def _retire_fixture_context(context, directory, primary=None):
         BaseException.__context__.__set__(primary, secondary)
         raise primary
 
-@pytest.mark.parametrize("target_greedy", [False, True, "guard", "prelude", "bound-prelude"])
+@pytest.mark.parametrize("target_greedy", [False, True, "guard", "prelude", "bound-prelude", "frame-prelude"])
 def test_v100_tp8_native_owner_exact_pieces_match_native_eager_frames_and_commits(target_greedy):
     if torch.cuda.device_count() < 8 or any(torch.cuda.get_device_capability(rank) != (7, 0) for rank in range(8)):
         pytest.skip("requires eight real SM70 GPUs and the supported source foundation")

@@ -34,7 +34,7 @@ def test_native_pthread_stack_queries_use_real_typed_attributes_without_global_c
             _thread_stack_layout(bad)
 
 
-@pytest.mark.parametrize("profile", ["source-owner-pieces-trial", "source-owner-target-greedy-trial", "source-owner-target-guard-trial", "source-owner-target-prelude-trial"])
+@pytest.mark.parametrize("profile", ["source-owner-pieces-trial", "source-owner-target-greedy-trial", "source-owner-target-guard-trial", "source-owner-target-prelude-trial", "source-owner-frame-descriptors-trial"])
 def test_default_is_serial_and_enabled_mode_refuses_wrong_scope(tmp_path, monkeypatch, profile):
     monkeypatch.delenv(startup.ENV, raising=False)
     assert startup.prepare(object(), None) is None

@@ -571,7 +571,14 @@ class State:
         elif "dflash2" in snap:
             raise ValueError("DFlash2 snapshot cannot be restored into another speculative profile")
 
+    def _descriptor_frame_barrier(self):
+        for reader in self.history_native_readers:
+            wait = getattr(reader, "wait_descriptor_frame", None)
+            if wait is not None:
+                wait(self)
+
     def set_pos(self, pos: int) -> None:
+        self._descriptor_frame_barrier()
         self.kv_check()
         if type(pos) is not int or not 0 <= pos <= min(self.capacity, self.logical_context):
             raise ValueError("target position exceeds the State's logical context")
@@ -585,6 +592,7 @@ class State:
 
     def discard_target_tentative(self) -> None:
         """Resolve rejected/uncommitted rows without advancing any target state."""
+        self._descriptor_frame_barrier()
         primary = None
         try:
             self.kv_check()
@@ -722,6 +730,7 @@ class State:
     def ensure(self, rows: int, step: int = 8192) -> int:
         """Grow every context cache to hold ``rows`` rows (a ``step`` at a time, at most ``limit``); returns the new bytes."""
 
+        self._descriptor_frame_barrier()
         self.kv_check()
         rows = int(rows)
         if rows <= self.capacity:
@@ -733,6 +742,7 @@ class State:
     def resize(self, rows: int) -> int:
         """Reallocate the context caches at ``rows`` rows, keeping every committed row; returns the bytes it added."""
 
+        self._descriptor_frame_barrier()
         self.kv_check()
         rows = int(rows)
         if not 0 < rows <= self.limit:
@@ -858,6 +868,7 @@ class State:
         generation = self.slot_generation
         if type(generation) is not int or not 0 <= generation < 2**63 - 1:
             raise RuntimeError("history slot generation is invalid or exhausted; retire the slot without reuse")
+        self._descriptor_frame_barrier()  # Refuse an active CPU producer before publication can poison state.
         try:
             for reader in tuple(self.history_native_readers):
                 reader.wait_native_reuse()
@@ -903,6 +914,8 @@ class State:
                     raise self._kv_error if self._kv_error is not None else self._resize_error
                 if self._history_error is not None:
                     raise self._history_error
+            if not new_sequence:
+                self._descriptor_frame_barrier()
             if getattr(self, "media_input_span", None) is not None:
                 self.retire_media_input_span(cancelled=True)
             self.mtp_boundary = None
@@ -1010,6 +1023,7 @@ class State:
                 "ownership_generation": self.history_generation}
 
     def begin_history_migration(self, degree: int, *, overlap_bytes: int | None = None) -> None:
+        self._descriptor_frame_barrier()
         from .history_owner import begin_migration
 
         begin_migration(self, degree, overlap_bytes=overlap_bytes)
@@ -1020,6 +1034,7 @@ class State:
         return migrate_next_bundle(self)
 
     def set_rope_delta(self, delta: int) -> None:
+        self._descriptor_frame_barrier()
         self.rope_delta = int(delta)
         self.rope_delta_dev.fill_(int(delta))
 
@@ -1041,6 +1056,7 @@ class State:
     def clone(self) -> "State":
         """An independent copy (tests and A/B checks)."""
 
+        self._descriptor_frame_barrier()
         self.kv_check()
         if getattr(self, "dflash2", None) is not None:
             self.dflash2.check()  # a whole-model clone needs a resolved target frame
@@ -1100,6 +1116,7 @@ class State:
         return other
 
     def set_mtp_len(self, n: int) -> None:
+        self._descriptor_frame_barrier()
         self.kv_check()
         if type(n) is not int or not 0 <= n <= min(self.capacity, self.logical_context):
             raise ValueError("MTP position exceeds the State's logical context")
@@ -1193,6 +1210,7 @@ class State:
     def snapshot(self) -> dict:
         """The committed state outside the cache rows; ``restore`` needs the cache rows below ``pos`` still in place."""
 
+        self._descriptor_frame_barrier()
         metadata = self.kv_snapshot_metadata()
         p = self.cur[0] if self.cur else 0
         if any(c != p for c in self.cur):
@@ -1211,6 +1229,7 @@ class State:
                 **({"dflash2": self.dflash2_runtime.snapshot(self)} if getattr(self, "dflash2_runtime", None) is not None else {})}
 
     def restore(self, snap: dict) -> None:
+        self._descriptor_frame_barrier()
         self.kv_validate_snapshot(snap)
         lengths = [snap["pos"]] * len(self.kc) + ([snap["mtp_len"]] if hasattr(self, "mtp_kc") else [])
         if getattr(self, "dspark_runtime", None) is not None:

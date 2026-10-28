@@ -348,9 +348,9 @@ class BoundStateGraphs:
             # Their GPU projections and State-owned convolution are captured.
             if b.ple_late is not None:
                 stage_late(self.dec.w, b)
-            from .prefix_policy import OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE
+            from .prefix_policy import OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_FRAME_DESCRIPTORS_PROFILE
 
-            compact_target = self.dec.w.meta.get("sm70_profile") in (OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE)
+            compact_target = self.dec.w.meta.get("sm70_profile") in (OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_FRAME_DESCRIPTORS_PROFILE)
             run = partial(compute, self.dec.w, bound, b, context=context, check=False,
                           **({"gather_candidates": False} if compact_target else {}))
         else:
@@ -519,6 +519,14 @@ class BoundStateGraphs:
             self._account(previous)
         else:
             self.hits += 1
+        packet = getattr(source.history_owner, "descriptor_frames", None) if self.native_owner else None
+        args = (kind, segs, source, lanes, b, bound, rows, index, segment_indices, pieces, runtime, width)
+        if packet is not None and packet.eligible(source, segs):
+            with packet.frame(segs, source):
+                return self._replay_ready(*args)
+        return self._replay_ready(*args)
+
+    def _replay_ready(self, kind, segs, source, lanes, b, bound, rows, index, segment_indices, pieces, runtime, width):
         archive = getattr(self.dec.w, "meta", {}).get("indexer_history") == "ram"
         if archive:
             # Bound views carry provisional MTP positions and logical counts;
@@ -546,10 +554,10 @@ class BoundStateGraphs:
             torch.index_select(b.proj, 1, index, out=source.proj[:, :n])
             torch.index_select(b.ple_nrow, 0, index, out=source.ple_nrow[:n])
             torch.index_select(b.logits, 0, index, out=source.logits[:n])
-            from .prefix_policy import OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE
+            from .prefix_policy import OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_FRAME_DESCRIPTORS_PROFILE
 
             if (self.dec.w.comm is not None
-                    and self.dec.w.meta.get("sm70_profile") not in (OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE)):
+                    and self.dec.w.meta.get("sm70_profile") not in (OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_FRAME_DESCRIPTORS_PROFILE)):
                 packet = 2 * CAND + 1
                 world, physical = self.dec.w.comm.world, len(lanes) * width
                 gathered = b.cand_all[:world * physical * packet].view(world, physical, packet)

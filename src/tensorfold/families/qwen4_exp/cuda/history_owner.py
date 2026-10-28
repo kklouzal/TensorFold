@@ -341,9 +341,9 @@ def _native_frame_prepare(projection, state, layer, weights, buffers, start, sto
 
 def prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
     """Prepare one bounded frame; only owners publish persistent rows."""
-    from .prefix_policy import OWNER_TARGET_PRELUDE_PROFILE
+    from .prefix_policy import OWNER_TARGET_PRELUDE_PROFILE, OWNER_FRAME_DESCRIPTORS_PROFILE
 
-    if (weights.meta.get("sm70_profile") == OWNER_TARGET_PRELUDE_PROFILE
+    if (weights.meta.get("sm70_profile") in (OWNER_TARGET_PRELUDE_PROFILE, OWNER_FRAME_DESCRIPTORS_PROFILE)
             and _native_frame_prepare(projection, state, layer, weights, buffers, start, stop, mtp=mtp)):
         return
     c, a = weights.cfg, layer.attn
@@ -529,6 +529,8 @@ class OwnerBuffers:
         self.native_states, self.native_owners, self.native_pair, self.native_buckets = None, (), None, ()
         self.descriptors = self.descriptors_host = self.global_stats = self.lane_rows = self.native_layer = None
         self.descriptor_upload = self.native_done = None
+        self._descriptor_stream = None
+        self.descriptor_frames = None
         self._upload_pending = self._native_pending = self._base_ready = self._construction_started = False
         self.native_comm = self.native_collective = None
         self._native_transport_configured = False
@@ -596,15 +598,16 @@ class OwnerBuffers:
         receipt does not credit unused allocator or CUDA graph-pool reservation.
         """
         native = self.native_record()
-        extras = sum(native[name] for name in ("descriptor_bytes", "global_statistics_bytes",
+        extras = (sum(native[name] for name in ("descriptor_bytes", "global_statistics_bytes",
                                                "lane_control_bytes", "layer_control_bytes"))
+                  + native.get("frame_packet_device_bytes", 0))
         return {"rows": self.rows, "prefill": self.prefill, "heads": self.heads,
                 "head_dim": self.head_dim, "index_width": self.idw,
                 "rank": self.rank, "device": str(self.device), "complete": self._base_ready,
                 "device_tensor_bytes": self.nbytes,
                 "communication_tensor_bytes": self.nbytes - extras,
-                "native_tensor_bytes": extras, "host_staging_bytes": native["host_descriptor_bytes"],
-                "pinned_host_staging_bytes": native["pinned_descriptor_bytes"],
+                "native_tensor_bytes": extras, "host_staging_bytes": native["host_descriptor_bytes"] + native.get("frame_packet_host_bytes", 0),
+                "pinned_host_staging_bytes": native["pinned_descriptor_bytes"] + native.get("frame_packet_pinned_bytes", 0),
                 "collective_family": native["collective_family"], "attention_members": native["attention_members"],
                 "qualification": "construction extents; not physical allocator or execution qualification"}
 
@@ -732,7 +735,7 @@ class OwnerBuffers:
         if self._native_pending:
             torch.cuda.current_stream(self.queries.device).wait_event(self.native_done)
 
-    def stage_native_descriptors(self, segments, layer, base, count, *, mtp=False, bucket_rows=None):
+    def _native_descriptor_spans(self, segments, layer, base, count, *, mtp=False, bucket_rows=None, frame=None):
         if self.descriptors is None or self.native_states is None:
             raise RuntimeError("native State catalogue is not prepared")
         bucket = count if bucket_rows is None else bucket_rows
@@ -750,13 +753,12 @@ class OwnerBuffers:
                 continue
             if begin != cursor:
                 raise ValueError("native descriptor lanes have a gap or overlap")
-            registered = self.native_states.get(id(state))
-            current = self._state_storage(state)
-            if registered is None or registered[0] is not state or registered[1] != self._storage_signature(current):
-                raise RuntimeError("native descriptor points outside its retained canonical storage catalogue")
-            if (type(state.slot_generation) is not int or type(state.history_generation) is not int
-                    or not 0 <= state.slot_generation <= 2**63 - 1 or not 0 <= state.history_generation <= 2**63 - 1):
-                raise OverflowError("native descriptor generation exceeds signed int64")
+            if frame is None:
+                self._validate_native_state(state)
+            elif frame is self.descriptor_frames and frame.active:
+                frame._check_state(state)
+            else:
+                raise RuntimeError("native descriptor validation lease is not owned by this workspace")
             if mtp and not hasattr(state, "mtp_kc"):
                 raise ValueError("native MTP descriptors require the selected resident MTP cache")
             ai = state.history_placement.target_layers if mtp else state.att_index[layer.index]
@@ -768,6 +770,32 @@ class OwnerBuffers:
             cursor = end
         if cursor != base + count:
             raise ValueError("native descriptor lanes do not cover the live execution prefix")
+        return spans
+
+    def _validate_native_state(self, state):
+        registered = None if self.native_states is None else self.native_states.get(id(state))
+        current = self._state_storage(state)
+        if registered is None or registered[0] is not state or registered[1] != self._storage_signature(current):
+            raise RuntimeError("native descriptor points outside its retained canonical storage catalogue")
+        if (type(state.slot_generation) is not int or type(state.history_generation) is not int
+                or not 0 <= state.slot_generation <= 2**63 - 1 or not 0 <= state.history_generation <= 2**63 - 1):
+            raise OverflowError("native descriptor generation exceeds signed int64")
+
+    @staticmethod
+    def _native_descriptor_words(state, cache, position, live, relative, index_owner):
+        return (cache.k.data_ptr(), cache.v.data_ptr(), cache.ks.data_ptr(), cache.vs.data_ptr(),
+                cache.page_offsets.data_ptr(), state.history_generations.data_ptr(), state.kv_status.data_ptr(),
+                position.data_ptr(), live, state.slot_generation, state.history_generation,
+                state.capacity, cache.capacity, cache.page_offsets.numel(), relative, index_owner)
+
+    def stage_native_descriptors(self, segments, layer, base, count, *, mtp=False, bucket_rows=None):
+        bucket = count if bucket_rows is None else bucket_rows
+        frame = self.descriptor_frames
+        if frame is not None and frame.error is not None:
+            raise RuntimeError("failed descriptor frame requires model retirement") from frame.error
+        if frame is not None and frame.active:
+            return frame.stage(segments, layer, base, count, mtp=mtp, bucket=bucket)
+        spans = self._native_descriptor_spans(segments, layer, base, count, mtp=mtp, bucket_rows=bucket)
         if self._upload_pending:
             self.descriptor_upload.synchronize()  # Retire only host DMA, not the complete model iteration.
         self.wait_native_reuse()
@@ -779,14 +807,13 @@ class OwnerBuffers:
             self.lane_rows[lane].fill_(last - first)
             live_pointer = self.lane_rows.data_ptr() + lane * self.lane_rows.element_size()
             for row in range(begin, end):
-                words = (cache.k.data_ptr(), cache.v.data_ptr(), cache.ks.data_ptr(), cache.vs.data_ptr(),
-                         cache.page_offsets.data_ptr(), state.history_generations.data_ptr(), state.kv_status.data_ptr(),
-                         position.data_ptr(), live_pointer, state.slot_generation, state.history_generation,
-                         state.capacity, cache.capacity, cache.page_offsets.numel(), row - first, index_owner)
+                words = self._native_descriptor_words(state, cache, position, live_pointer, row - first, index_owner)
                 host[row - base].copy_(torch.tensor(words, dtype=torch.int64))
         self.descriptors[:bucket].copy_(host, non_blocking=self.queries.is_cuda)
         if self.descriptor_upload is not None:
-            self.descriptor_upload.record(torch.cuda.current_stream(self.queries.device))
+            stream = torch.cuda.current_stream(self.queries.device)
+            self.descriptor_upload.record(stream)
+            self._descriptor_stream = stream.cuda_stream
             self._upload_pending = True
 
     def native_views(self, rows):
@@ -817,6 +844,8 @@ class OwnerBuffers:
         return next(bucket for bucket in self.native_buckets if actual_rows <= bucket)
 
     def clear_native_inputs(self, rows):
+        if self.descriptor_frames is not None and self.descriptor_frames.active:
+            raise RuntimeError("canonical inputs cannot clear during an active descriptor frame")
         self.wait_native_reuse()
         views = self.native_views(rows)
         for name in ("q_all", "selected_all", "row_table"):
@@ -825,7 +854,9 @@ class OwnerBuffers:
         self.lane_rows[:rows].zero_()
         self.native_layer.zero_()
         if self.descriptor_upload is not None:
-            self.descriptor_upload.record(torch.cuda.current_stream(self.queries.device))
+            stream = torch.cuda.current_stream(self.queries.device)
+            self.descriptor_upload.record(stream)
+            self._descriptor_stream = stream.cuda_stream
             self._upload_pending = True
 
     def wait_native_inputs(self):
@@ -923,9 +954,13 @@ class OwnerBuffers:
 
     def retire_native(self):
         """Caller stops graph replays first; storage remains owned if a fence fails."""
+        if self.descriptor_frames is not None and self.descriptor_frames.active:
+            raise RuntimeError("native owner cannot retire an active descriptor frame")
         device_owned = any(isinstance(value, torch.Tensor) and value.is_cuda for value in vars(self).values())
         if device_owned:
             torch.cuda.synchronize(self.device)
+        if self.descriptor_frames is not None:
+            self.descriptor_frames.retire(fenced=device_owned)
         if self.descriptors is not None:
             self.descriptors.zero_()
             if self.lane_rows is not None:
@@ -948,6 +983,9 @@ class OwnerBuffers:
         if self.closed:
             return
         self.retire_native()
+        if self.descriptor_frames is not None:
+            self.descriptor_frames.close(fenced=True)
+            self.descriptor_frames = None
         self.queries = self.selection = self.selections = self.partial = self.partials = self.position = None
         self.descriptors = self.descriptors_host = self.global_stats = self.lane_rows = self.native_layer = None
         self.descriptor_upload = self.native_done = None
@@ -955,7 +993,11 @@ class OwnerBuffers:
         self.closed, self._base_ready = True, False
 
     def native_record(self):
-        return {"prepared": self.descriptors is not None,
+        packet = self.descriptor_frames
+        return {**({"frame_descriptors": packet.record(), "frame_packet_device_bytes": packet.nbytes,
+                    "frame_packet_host_bytes": 0 if packet.host is None else packet.host.nbytes,
+                    "frame_packet_pinned_bytes": packet.host.nbytes if packet.host is not None and packet.host.is_pinned() else 0}
+                   if packet is not None else {}), "prepared": self.descriptors is not None,
                 "collective_family": self.native_collective,
                 "attention_members": list(range(self.rank // 4 * 4, self.rank // 4 * 4 + 4))
                                      if self.native_comm is not None and self.native_comm.world == 4 else list(range(8)),
@@ -972,8 +1014,9 @@ class OwnerBuffers:
 
     @property
     def nbytes(self):
-        return sum(value.nbytes for name, value in vars(self).items()
-                   if isinstance(value, torch.Tensor) and name != "descriptors_host")
+        return (sum(value.nbytes for name, value in vars(self).items()
+                    if isinstance(value, torch.Tensor) and name != "descriptors_host")
+                + (0 if self.descriptor_frames is None else self.descriptor_frames.nbytes))
 
 
 def attention_layer(layer, weights, segments, buffers, total_rows, *, mtp=False):
