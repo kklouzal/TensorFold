@@ -6,6 +6,7 @@ import torch
 
 from gguf_fixture import blocks
 from tensorfold.cuda import moe
+from tensorfold.cuda.sm70 import family_ops,routing_native
 from tensorfold.families.qwen4_exp.cuda.forward import moe_block
 from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense,GGUFExperts,GGUFPacked
 from tensorfold.families.qwen4_exp.cuda.moe_region_graphs import MoERegion
@@ -27,6 +28,9 @@ def test_actual513_router_11slots_r32_pure_region_replay_preserves_original_bits
     torch.manual_seed(814)
     shared=[GGUFDense(torch.randn(shape,device='cuda',dtype=torch.float16)*.01)
             for shape in ((width,dims),(width,dims),(dims,width))]
+    # Match the frozen batch/GDN execution policy; keep the old rowwise router.
+    assert routing_native._NATIVE_LOGITS is False
+    monkeypatch.setattr(family_ops,'_NATIVE_FAMILY',True)
     monkeypatch.setattr(GGUFExperts,'implementation','packed_exact')
     monkeypatch.setattr(GGUFDense,'implementation','native32')
     bank=GGUFExperts(*packed,shared,count=experts,width=width,dims=dims)
