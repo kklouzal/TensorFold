@@ -1043,6 +1043,11 @@ class FlashNextEngine:
                 fusion_device, fusion_host = shared_fusion_workspace_bytes()
                 options["device_workspace_bytes"] += fusion_device
                 options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + tp * fusion_host
+            if owner_preparation is not None and owner_preparation.specification.get("storage_bindings", False):
+                from .owner_preparation import storage_binding_host_bytes
+
+                options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + (
+                    tp * storage_binding_host_bytes(owner_preparation.specification, owner_preparation.role_rows))
             import os
             if os.environ.get("TENSORFOLD_SM70_GDN_STATE_BATCH") == "1":
                 from .gdn_state_batch import workspace_bytes as gdn_batch_workspace

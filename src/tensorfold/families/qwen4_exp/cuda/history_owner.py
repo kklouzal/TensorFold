@@ -535,6 +535,7 @@ class OwnerBuffers:
         self.rows = self.heads = self.head_dim = self.idw = self.rank = self.device = self.prefill = self.comm = None
         self.queries = self.selection = self.selections = self.partial = self.partials = self.position = None
         self.native_states, self.native_owners, self.native_pair, self.native_buckets = None, (), None, ()
+        self.native_storage_factory = self.native_storage_bindings = None
         self.descriptors = self.descriptors_host = self.global_stats = self.lane_rows = self.native_layer = None
         self.descriptor_host_words = None
         self.descriptor_upload = self.native_done = None
@@ -617,7 +618,7 @@ class OwnerBuffers:
                 "collective_family": native["collective_family"], "attention_members": native["attention_members"],
                 "qualification": "construction extents; not physical allocator or execution qualification"}
 
-    def prepare_native(self, states=None, *, pair=None, page_tokens=128, buckets=None):
+    def prepare_native(self, states=None, *, pair=None, page_tokens=128, buckets=None, storage_bindings=None):
         """Prepare fixed pointer tables before capture/admission; never select a kernel.
 
         A header-only caller may supply ``pair`` and no States. Zero descriptor
@@ -626,6 +627,12 @@ class OwnerBuffers:
         """
         if not self._base_ready or self.closed:
             raise RuntimeError("native preparation requires a complete open owner workspace")
+        if storage_bindings is None:
+            storage_bindings = self.native_storage_factory is not None
+        if type(storage_bindings) is not bool:
+            raise TypeError("native storage bindings choice must be boolean")
+        if self.native_pair is not None and storage_bindings != (self.native_storage_factory is not None):
+            raise ValueError("prepared native storage validation cannot change during serving")
         from tensorfold.cuda.sm70.paged_attention import DESCRIPTOR_WORDS
         from tensorfold.cuda.sm70.paged_attention_descriptor import ABI_VERSION, WORD_BYTES, FIELDS
         from .owner_execution import row_buckets
@@ -674,10 +681,14 @@ class OwnerBuffers:
         self.native_pair = pair
         self.native_page_tokens = page_tokens
         self.native_buckets = prepared_buckets
-        if self.queries.is_cuda:
+        if self.queries.is_cuda or storage_bindings:
             from tensorfold.cuda.sm70.paged_attention import extension
 
-            extension()  # Compilation/module initialization is outside native_run/capture.
+            module = extension()  # Compilation/module initialization is outside native_run/capture.
+            if storage_bindings:
+                if module.storage_bindings_host_bytes_per_state != 16 * 1024:
+                    raise ValueError("native storage binding host ABI differs from its prepaid allowance")
+                self.native_storage_factory = module.storage_bindings
         if states is not None:
             self.bind_native_states(states)
 
@@ -703,7 +714,10 @@ class OwnerBuffers:
         """
         if self.descriptors is None:
             raise RuntimeError("prepare native owner tables before binding State storage")
+        if self.native_storage_factory is not None and (type(states) not in (tuple, list) or len(states) > 24):
+            raise ValueError("native storage metadata needs its bounded canonical State sequence")
         catalogue, owners = {}, []
+        bindings = {} if self.native_storage_factory is not None else None
         for state in states:
             if (id(state) in catalogue or state.history_placement is None or state.kv_pair != self.native_pair
                     or state.history_placement.page_tokens != self.native_page_tokens):
@@ -733,10 +747,13 @@ class OwnerBuffers:
                             or not payload.is_contiguous() or not scales.is_contiguous()):
                         raise ValueError("native packed cache tensors differ from their admitted physical row schema")
             catalogue[id(state)] = (state, self._storage_signature(tensors))
+            if bindings is not None:
+                bindings[id(state)] = self.native_storage_factory(tensors)
             owners.extend((state, *tensors))
         if self.native_states and self.native_states != catalogue:
             raise RuntimeError("native State storage changed; retire its borrowers before rebinding")
         self.native_states, self.native_owners = catalogue, tuple(owners)
+        self.native_storage_bindings = bindings
         for state, _ in catalogue.values():
             state.history_native_readers.add(self)
 
@@ -764,7 +781,13 @@ class OwnerBuffers:
                 raise ValueError("native descriptor lanes have a gap or overlap")
             registered = self.native_states.get(id(state))
             current = self._state_storage(state)
-            if registered is None or registered[0] is not state or registered[1] != self._storage_signature(current):
+            matches = None
+            if registered is not None and registered[0] is state and self.native_storage_bindings is not None:
+                binding = self.native_storage_bindings[id(state)]
+                if binding is not None:
+                    matches = binding.matches(current)
+            if (registered is None or registered[0] is not state
+                    or (registered[1] != self._storage_signature(current) if matches is None else not matches)):
                 raise RuntimeError("native descriptor points outside its retained canonical storage catalogue")
             if (type(state.slot_generation) is not int or type(state.history_generation) is not int
                     or not 0 <= state.slot_generation <= 2**63 - 1 or not 0 <= state.history_generation <= 2**63 - 1):
@@ -948,6 +971,7 @@ class OwnerBuffers:
             for state, _ in self.native_states.values():
                 state.history_native_readers.discard(self)
         self.native_states, self.native_owners = None, ()
+        self.native_storage_bindings = None  # Original Storage anchors outlive every accepted reader/fence.
         self._upload_pending = self._native_pending = False
 
     def close(self):
@@ -968,7 +992,13 @@ class OwnerBuffers:
         self.closed, self._base_ready = True, False
 
     def native_record(self):
+        bindings = self.native_storage_bindings
+        native = () if bindings is None else tuple(binding for binding in bindings.values() if binding is not None)
         return {"prepared": self.descriptors is not None,
+                "storage_metadata": {"enabled": self.native_storage_factory is not None,
+                    "bound_states": 0 if bindings is None else len(bindings), "native_states": len(native),
+                    "checks": None if any(binding.overflowed for binding in native) else sum(binding.checks for binding in native),
+                    "scope": "host metadata attempts, not GPU timing or decoded values"},
                 "collective_family": self.native_collective,
                 "attention_members": list(range(self.rank // 4 * 4, self.rank // 4 * 4 + 4))
                                      if self.native_comm is not None and self.native_comm.world == 4 else list(range(8)),

@@ -14,6 +14,16 @@ from .owner_execution import FULL_COLLECTIVE, HEAD_COLLECTIVE, GRAPH_FAMILY, KER
 
 _ROLES = frozenset({"decode", "mtp", "prefill"})
 _CHANNEL = "tensorfold/owner-preparation/v1"
+STORAGE_BINDING_STATES = 24
+STORAGE_BINDING_HOST_BYTES_PER_STATE = 16 * 1024
+
+
+def storage_binding_host_bytes(specification, role_rows):
+    """Only canonical decode/MTP owners use the optional host comparator."""
+    if not specification.get("storage_bindings", False):
+        return 0
+    return (STORAGE_BINDING_STATES * STORAGE_BINDING_HOST_BYTES_PER_STATE
+            * sum(role in role_rows for role in ("decode", "mtp")))
 
 
 def parse_preparation(value):
@@ -21,7 +31,8 @@ def parse_preparation(value):
         return None
     required = {"kernel_family", "graph_family", "graph_budget_bytes", "trial"}
     if (not isinstance(value, dict) or not required <= value.keys()
-            or set(value).difference(required | {"row_buckets", "collective_family"})
+            or set(value).difference(required | {"row_buckets", "collective_family", "storage_bindings"})
+            or type(value.get("storage_bindings", False)) is not bool
             or value.get("collective_family", FULL_COLLECTIVE) not in (FULL_COLLECTIVE, HEAD_COLLECTIVE)
             or value["kernel_family"] != KERNEL_FAMILY
             or value["graph_family"] not in (UNCAPTURED, GRAPH_FAMILY)
@@ -36,10 +47,13 @@ def parse_preparation(value):
         if not isinstance(rows, list) or not rows:
             raise ValueError("a native execution role requires a nonempty bounded bucket list")
         row_buckets(rows[-1], rows)
-    return {"kernel_family": value["kernel_family"], "graph_family": value["graph_family"],
+    result = {"kernel_family": value["kernel_family"], "graph_family": value["graph_family"],
             "graph_budget_bytes": value["graph_budget_bytes"], "trial": value["trial"],
             "collective_family": value.get("collective_family", FULL_COLLECTIVE),
             "row_buckets": deepcopy(buckets)}
+    if "storage_bindings" in value:
+        result["storage_bindings"] = value["storage_bindings"]
+    return result
 
 
 class OwnerPreparation:
@@ -147,7 +161,9 @@ class OwnerPreparation:
                         idw=contract["index_budget"] + contract["index_ratio"], world=engine.tp,
                         rank=engine.rank, device=device, comm=engine.comm,
                         register=lambda owner: self.workspaces.__setitem__(role, owner))
-                    owner.prepare_native(pair=pair, page_tokens=page_tokens, buckets=self.buckets[role])
+                    owner.prepare_native(pair=pair, page_tokens=page_tokens, buckets=self.buckets[role],
+                        **({"storage_bindings": True} if self.specification.get("storage_bindings")
+                           and role in ("decode", "mtp") else {}))
                     owner.configure_native_transport(self.specification["collective_family"],
                                                      self.head_comm or engine.comm)
                     return owner.allocation_record()

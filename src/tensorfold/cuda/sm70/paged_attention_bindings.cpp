@@ -6,6 +6,9 @@
 #include <cmath>
 #include <limits>
 #include <cstdint>
+#include <array>
+#include <memory>
+#include <torch/csrc/autograd/python_variable.h>
 #include "paged_attention_descriptor.cuh"
 
 using T = at::Tensor;
@@ -17,6 +20,88 @@ void sm70_paged_merge_values_cuda(const T&, const T&, T&, int, const T&, int);
 
 namespace {
 constexpr int WORLD = 8, HEADS = 12, DIM = 256, WORDS = tf_sm70_paged::WORD_COUNT;
+constexpr size_t STORAGE_TENSORS = 69, STORAGE_HOST_BYTES = 16384;
+
+struct StorageRecord {
+    c10::Storage owner;
+    const void* data = nullptr;
+    std::array<int64_t, 3> sizes{}, strides{};
+    int64_t dimensions = 0, offset = 0;
+    size_t bytes = 0;
+    at::ScalarType dtype = at::ScalarType::Undefined;
+    c10::Device device{c10::DeviceType::CPU};
+};
+
+bool storage_supported(const pybind11::tuple& tensors) {
+    if (tensors.size() > STORAGE_TENSORS) return false;
+    for (auto object : tensors) {
+        // Preserve the original Python method/exception path for subclasses.
+        if (Py_TYPE(object.ptr()) != reinterpret_cast<PyTypeObject*>(THPVariableClass)) return false;
+        const auto& tensor = THPVariable_Unpack(object.ptr());
+        if (tensor.layout() != at::kStrided || tensor.is_nested() || tensor.dim() > 3) return false;
+    }
+    return true;
+}
+
+class StorageBindings {
+    std::array<StorageRecord, STORAGE_TENSORS> records_;
+    size_t count_;
+    uint64_t checks_ = 0;
+    bool overflowed_ = false;
+public:
+    explicit StorageBindings(const pybind11::tuple& tensors) : count_(tensors.size()) {
+        TORCH_CHECK(storage_supported(tensors), "storage bindings need at most69 plain strided tensors");
+        for (size_t index = 0; index < count_; ++index) {
+            const auto& tensor = THPVariable_Unpack(tensors[index].ptr());
+            auto& record = records_[index];
+            record.data = tensor.data_ptr();
+            record.dimensions = tensor.dim();
+            for (int64_t axis = 0; axis < record.dimensions; ++axis) {
+                record.sizes[axis] = tensor.size(axis);
+                record.strides[axis] = tensor.stride(axis);
+            }
+            record.dtype = tensor.scalar_type();
+            record.device = tensor.device();
+            record.owner = tensor.storage();  // Retain the original allocation across Tensor.set_.
+            record.offset = tensor.storage_offset();
+            record.bytes = record.owner.nbytes();
+        }
+    }
+
+    pybind11::object matches(const pybind11::tuple& tensors) {
+        if (checks_ < uint64_t(std::numeric_limits<int64_t>::max())) ++checks_;
+        else overflowed_ = true;
+        if (!storage_supported(tensors)) return pybind11::none();
+        // Do not early-out on a mismatch and suppress a later metadata error.
+        bool same = tensors.size() == count_;
+        for (size_t index = 0; index < tensors.size(); ++index) {
+            const auto& tensor = THPVariable_Unpack(tensors[index].ptr());
+            const auto* data = tensor.data_ptr();
+            const auto dimensions = tensor.dim();
+            const auto sizes = tensor.sizes();
+            const auto dtype = tensor.scalar_type();
+            const auto device = tensor.device();
+            const auto storage = tensor.storage();
+            const auto offset = tensor.storage_offset();
+            const auto strides = tensor.strides();
+            const auto bytes = storage.nbytes();
+            if (index >= count_) { same = false; continue; }
+            const auto& record = records_[index];
+            same &= data == record.data && dimensions == record.dimensions
+                && dtype == record.dtype && device == record.device
+                && storage.unsafeGetStorageImpl() == record.owner.unsafeGetStorageImpl()
+                && offset == record.offset && bytes == record.bytes;
+            for (int64_t axis = 0; axis < dimensions; ++axis)
+                same &= axis < record.dimensions && sizes[axis] == record.sizes[axis]
+                    && strides[axis] == record.strides[axis];
+        }
+        return pybind11::bool_(same);
+    }
+    uint64_t checks() const { return checks_; }
+    bool overflowed() const { return overflowed_; }
+};
+static_assert(sizeof(StorageBindings) <= STORAGE_HOST_BYTES - 4096,
+              "storage binding object exceeds its per-State host allowance");
 
 void check(const T& value, const T& owner, at::ScalarType dtype, const char* name) {
     TORCH_CHECK(value.is_cuda() && value.device() == owner.device() && value.scalar_type() == dtype
@@ -153,6 +238,15 @@ void merge_values(const T& gathered, const T& table, T output, int rank, int pag
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
+    pybind11::class_<StorageBindings>(module, "StorageBindings")
+        .def("matches", &StorageBindings::matches)
+        .def_property_readonly("checks", &StorageBindings::checks)
+        .def_property_readonly("overflowed", &StorageBindings::overflowed);
+    module.def("storage_bindings", [](const pybind11::tuple& tensors) -> pybind11::object {
+        if (!storage_supported(tensors)) return pybind11::none();
+        return pybind11::cast(std::make_unique<StorageBindings>(tensors));
+    });
+    module.attr("storage_bindings_host_bytes_per_state") = STORAGE_HOST_BYTES;
     module.attr("descriptor_abi") = tf_sm70_paged::ABI_VERSION;
     module.attr("descriptor_words") = int(tf_sm70_paged::WORD_COUNT);
     module.attr("descriptor_schema_id") = tf_sm70_paged::SCHEMA_ID;

@@ -1,5 +1,17 @@
 # TensorFold fork
 
+The private native-owner preparation option `"storage_bindings": true` replaces
+Python storage-signature construction with the existing paged-attention
+provider's host comparator at the same per-State/per-layer boundary. State
+collection, generation/range checks and DMA/native-reader fences stay in place.
+It retains original Storage owners and checks pointer, shape, dtype/device,
+strides, offset and storage extent; unsupported Tensor subclasses use the
+original Python predicate. It uses no GPU values, kernels or readbacks. The
+bounded decode/MTP catalogues reserve16KiB per State, at most24 States per role,
+before admission; prefill keeps its original path. This CPU candidate is
+unqualified pending targeted lifetime/mutation checks and required-NUMA model
+measurements. No physical CUDA allocation saving or throughput gain is claimed.
+
 A separate unqualified hot-row candidate uses one HC/MoE private pool for
 exact rows4,5,6,8,9,10,11,17–22,30–32 (768 target graph keys). The private
 `TENSORFOLD_SM70_HC_MOE_SHARED_POOL=1` requires the selected fused HC/MoE
