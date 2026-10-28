@@ -213,7 +213,7 @@ def _prepare_family_trial(text, tp, torch, *, packed=False, target_greedy=False,
     _family_runtime(torch)
     if wmma80 and (torch.cuda.memory.get_allocator_backend() != "native"
             or any(os.environ.get(name) is not None for name in (
-                "PYTORCH_ALLOC_CONF", "PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_NO_CUDA_MEMORY_CACHING"))):
+                "PYTORCH_ALLOC_CONF", "PYTORCH_CUDA_ALLOC_CONF", "PYTORCH_HIP_ALLOC_CONF", "PYTORCH_NO_CUDA_MEMORY_CACHING"))):
         raise ValueError("WMMA80 operating credit requires the current default native CUDA allocator")
     before = _family_software()
     from .family_native import extension

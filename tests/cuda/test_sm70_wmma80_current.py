@@ -47,7 +47,9 @@ def bank(gate_kind, down_kind, offset=48):
               for shape in ((width, hidden), (width, hidden), (hidden, width))]
     for value in shared:
         value.implementation = "native32"
-    return GGUFExperts(*packed, shared, count=513, width=width, dims=hidden)
+    value = GGUFExperts(*packed, shared, count=experts, width=width, dims=hidden)
+    assert value.count == experts + 1 == 513
+    return value
 
 
 @pytest.mark.parametrize("kinds", [(18, 20), (21, 42), (22, 20), (23, 42), (8, 8)])

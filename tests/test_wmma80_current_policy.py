@@ -45,3 +45,23 @@ def test_explicit_private_flag_and_current_all6_quality_intents_must_agree(tmp_p
     monkeypatch.setenv("TENSORFOLD_SM70_PROFILE", router_blas.PROFILE)
     with pytest.raises(SystemExit):
         probe.arguments(raw + ["--wmma80-trial"])
+
+
+
+def test_actual_expert_constructor_count_is_routed_not_total_slots():
+    from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFExperts
+    bank = GGUFExperts(object(), object(), object(), (), count=512, width=80, dims=2560)
+    assert bank.count == 513 and bank.count - 1 == 512
+
+
+def test_cuda_private_credit_rejects_hip_allocator_alias_before_warm(monkeypatch):
+    from tensorfold.cuda.sm70 import execution_policy as policy
+    metadata = dict(policy._FAMILY_GEOMETRY, dtype="float16", mamba_ssm_dtype="float32", output_gate_type="sigmoid")
+    monkeypatch.setattr(policy, "_family_runtime", lambda _torch: None)
+    monkeypatch.setenv("PYTORCH_HIP_ALLOC_CONF", "large_segment_size_mb:40")
+    def forbidden():
+        pytest.fail("nondefault allocator reached software/native preparation")
+    monkeypatch.setattr(policy, "_family_software", forbidden)
+    target = NS(cuda=NS(memory=NS(get_allocator_backend=lambda: "native")))
+    with pytest.raises(ValueError, match="default native CUDA allocator"):
+        policy._prepare_family_trial(metadata, 8, target, packed=True, wmma80=True)
