@@ -133,6 +133,8 @@ def arguments(argv=None):
                         help="private exact multi-State native prelude composed with selected Dense; explicit matching profile and native-Dense intent required; unqualified")
     parser.add_argument("--native-dense-trial", action="store_true",
                         help="private exact native32 Dense composition with native target/MTP prelude; requires explicit matching SM70 profile and session ceiling24; unqualified")
+    parser.add_argument("--execution-rows", type=int, choices=(32,64,72), default=32,
+                        help="private Dense execution budget: default32;64/72 use existing funded geometry at24sessions and require native-dense-trial/FASTv2/quality; no implied gain")
     parser.add_argument("--overlap-content-capture", action="store_true",
                         help="private TP8 owner MTP diagnostic: enable funded one-worker fresh artifact hashing during startup; inherited by all ranks before imports; default serial hashing")
     parser.add_argument("--gpus", default="0,1,2,3,4,5,6,7")
@@ -179,6 +181,9 @@ def arguments(argv=None):
         parser.error("--fast-grid requires --concurrency-grid, protocol-outputcap320or512(v1)/2048(v2), --repetitions1 and MTPonly")
     if args.quality_spotchecks and (not args.concurrency_grid or args.tokens < 320):
         parser.error("--quality-spotchecks requires --concurrency-grid and --tokens>=320 for the declared caller funding")
+    if args.execution_rows != 32 and not (args.native_dense_trial and args.session_ceiling == 24
+            and args.fast_grid and args.fast_grid_protocol == "fast-grid-v2" and args.quality_spotchecks):
+        parser.error("execution rows64/72 require native-dense-trial/session-ceiling24/FASTv2/quality")
     if args.expect_prefix_reuse and args.repetitions < 2:
         parser.error("--expect-prefix-reuse requires at least2 repetitions")
     if (not 1 <= args.master_port <= 65535 or not math.isfinite(args.timeout_seconds)
@@ -365,7 +370,7 @@ def prepared_prompt(engine, tokenizer, args):
                     "rendered": rendered, "token_ids": tokens}
 
 
-def check_engine(engine, *, session_ceiling=None):
+def check_engine(engine, *, session_ceiling=None, execution_rows=None):
     """Refuse a changed execution profile before host finalization/admission."""
     plan = engine.capacity_plan
     solved, full = plan["session_capacity"], plan["kv_full_windows"]
@@ -382,6 +387,9 @@ def check_engine(engine, *, session_ceiling=None):
             or solved["full_context_commitments"] != solved["resident_capacity"]
             or not full["materialized"]):
         raise ValueError("loaded engine differs from native262144/INT8/TP8/auto/Q8-MTP2 profile")
+    if execution_rows is not None and (engine.execution_rows != execution_rows
+            or plan.get("execution_envelope", {}).get("target_rows") != execution_rows):
+        raise ValueError("actual execution row budget differs from the declared Dense experiment")
     if engine.scheduler._request_limit is not None:
         raise ValueError("finite backend host admission must precede logical request publication")
 
@@ -472,7 +480,10 @@ def run_leader(engine, tokenizer, args, report):
     )
     from tensorfold.server.request_limits import RequestLimit
 
-    if getattr(args, "session_ceiling", None) is None:
+    if getattr(args, "native_dense_trial", False):
+        check_engine(engine, session_ceiling=getattr(args, "session_ceiling", None),
+                     execution_rows=getattr(args, "execution_rows", 32))
+    elif getattr(args, "session_ceiling", None) is None:
         check_engine(engine)
     else:
         check_engine(engine, session_ceiling=args.session_ceiling)
@@ -774,7 +785,7 @@ def run_concurrency_leader(engine, tokenizer, args, report):
             "model_identity": {"model_path": str(args.model), "mtp_path": str(args.mtp),
                 "prepared_model_dir": report.get("prepared_model_dir"), "profile": engine.sm70_profile,
                 "context": CONTEXT, "tp": WORLD, "kv_dtype": "int8", "mtp_drafts": DEPTH,
-                "mtp_confidence": CONFIDENCE, "thinking": args.thinking,
+                "mtp_confidence": CONFIDENCE, "execution_rows": getattr(engine, "execution_rows", None), "thinking": args.thinking,
                 "sampling": {"seed": 17, "temperature": 0, "top_k": 0, "top_p": 1},
                 "tokenizer_identity": report["tokenizer_identity"], "native_flags": report["native_flags"],
                 "wheel_sha256": digest(args.wheel), "source_hold_sha256": digest(args.source_hold)},
@@ -912,6 +923,7 @@ def worker(args):
             parallel=getattr(args, "session_ceiling", None) or "auto", kv_full_windows="auto",
             kv_dtype="int8", indexer_history="gpu", max_waiting_input_bytes=waiting_input_credit(args),
             output_queue_tokens=args.tokens, graphs=args.requested_sm70_profile in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL),
+            **({"execution_rows": args.execution_rows} if getattr(args, "execution_rows", 32) != 32 else {}),
             **({"execution_profile_manifest": args.execution_profile_manifest}
                if getattr(args, "execution_profile_manifest", None) is not None else {}))
         record_execution_profile(engine, report, requested=args.requested_sm70_profile)
@@ -993,7 +1005,7 @@ def launch(args, argv):
         "concurrency_helper_sha256": digest(concurrency_module().__file__) if args.concurrency_grid else None,
         "installed": installed_identity(args.wheel),
         "execution_profile_manifest": getattr(args, "execution_manifest_identity", None),
-        "settings": {"context": CONTEXT, "tp": WORLD, "depth": DEPTH, "confidence": CONFIDENCE,
+        "settings": {"context": CONTEXT, "tp": WORLD, "depth": DEPTH, "confidence": CONFIDENCE, "execution_rows": getattr(args, "execution_rows", 32),
             "kv_dtype": "int8", "parallel": getattr(args, "session_ceiling", None) or "auto",
             "session_ceiling": getattr(args, "session_ceiling", None), "kv_full_windows": "auto", "indexer_history": "gpu",
             "max_waiting_input_bytes": waiting_input_credit(args),

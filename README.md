@@ -1,5 +1,22 @@
 # TensorFold fork
 
+A private Dense probe can explicitly select `--execution-rows 64` or `72`
+with `--native-dense-trial --owner-batch-prelude-trial --session-ceiling 24 --fast-grid
+--concurrency-grid --fast-grid-protocol fast-grid-v2 --tokens 2048
+--quality-spotchecks`. The default32-row construction stays unchanged. Larger
+row envelopes use the existing allocator, owner preparation and admission
+formulas; they must retain24full262144-token Q8 windows or refuse before
+requests. Rows above32 use existing Dense reference operations where required.
+This tool-only experiment changes no model tensors or source defaults, MTP depth/confidence
+or verifier/EOS policy. Short all6 screens provide provisional development
+evidence; fixed-length repeats and broader quality remain later acceptance gates.
+
+The unchanged Dense residency wheel `4efee794` passed the corrected real-bound
+Dense TP8 integration gate with every existing assertion and native counter.
+Together with the prior 108 passes, this closes the scoped component controls.
+The wheel already admits `source-owner-target-dense-trial` for funded startup
+content overlap; an actual Engine-type CPU preflight confirms that eligibility.
+
 The combined Dense/batched-prelude wheel `86cb036d` passed 81 integrated GPU
 controls, including real Dense weights, two target attention layers and eight
 96-token sessions. All eight ranks recorded 329 batches, including 109 MTP
