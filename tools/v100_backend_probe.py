@@ -786,7 +786,7 @@ def check_router_blas_engine(engine):
         raise ValueError("actual router role funding is missing before logical admission")
     return {"enabled": True, "target_weights": 48, "mtp_weights": 1, "target_rows": 32,
             "device_charge_per_rank": charged_device, "raw_device_payload_per_rank": 801024,
-            "global_host_charge": charged_host, "scope": "eager target/MTP only; graph/prefill canonical; experimental numeric implementation"}
+            "global_host_charge": charged_host, "scope": "ordinary target/MTP owner charges; captured MoE uses separately accounted capture roles; N1/prefill retain their own policy"}
 
 
 def check_shared_fusion_engine(engine):
