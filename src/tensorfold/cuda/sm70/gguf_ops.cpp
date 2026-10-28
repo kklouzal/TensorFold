@@ -27,6 +27,8 @@ void gguf_dense32(const at::Tensor&, const at::Tensor&, at::Tensor, bool);
 void gguf_dense_wmma(const at::Tensor&, const at::Tensor&, at::Tensor);
 void gguf_concat32(const at::Tensor&, const std::vector<at::Tensor>&, at::Tensor);
 
+int gguf_prepare_shared_fusion();
+
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("decode", &gguf_decode);
     m.def("experts", &gguf_experts);
@@ -37,6 +39,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     // expert over initialized zero shared slots after this call.
     m.def("experts_exact", &gguf_experts_exact);
     m.def("prepare_dense32", &gguf_prepare_dense32);
+    m.def("prepare_shared_fusion", &gguf_prepare_shared_fusion);
     m.def("dense32", &gguf_dense32);
     m.def("dense_wmma", &gguf_dense_wmma);
     m.def("concat32", &gguf_concat32);

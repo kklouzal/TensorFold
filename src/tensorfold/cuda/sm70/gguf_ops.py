@@ -111,3 +111,15 @@ def dense_wmma(x, weight, out):
     """Optional fixed-partition Volta WMMA provider; separate math qualification required."""
     extension().dense_wmma(x, weight, out)
     return out
+
+
+
+def shared_fusion_workspace_bytes():
+    """Retain one default-native2MiB small-segment operating credit per rank.
+
+    Existing unsplit packed code allocates only its FP16 activation:
+    at most32*33*80*2=168960 bytes (actual top11=56320); no split partials,
+    decoded weight copies or persistent bank replication. Captured-pool
+    commitments remain separately settled by the existing graph owner.
+    """
+    return 2 << 20, 64 << 10

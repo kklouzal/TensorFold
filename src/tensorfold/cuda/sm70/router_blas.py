@@ -40,6 +40,7 @@ def prepare(weight, *, capacity=MAX_ROWS):
 
 
 PROFILE = "source-batch-router-blas-trial"
+PROFILES = (PROFILE, "source-router-gdn-shared-fusion-trial")
 MAX_WEIGHTS = 48
 HOST_BASE_BYTES = 64 << 10
 
@@ -109,7 +110,7 @@ class RolePlans:
 
 def create_role(w, rows, *, prefill, role, eager=True):
     """Graph-only buffers and prefill keep their original numerical route."""
-    if not eager or prefill or w.meta.get("sm70_profile") != PROFILE:
+    if not eager or prefill or w.meta.get("sm70_profile") not in PROFILES:
         return None
     if type(rows) is not int or not 1 <= rows <= MAX_ROWS:
         raise ValueError("private router requires the admitted row32 envelope")

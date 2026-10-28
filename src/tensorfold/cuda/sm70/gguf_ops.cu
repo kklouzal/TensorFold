@@ -1200,3 +1200,32 @@ int gguf_prepare_dense32() {
     C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, dense_copy32<false, false>));
     return 4;
 }
+
+int gguf_prepare_shared_fusion() {
+    // Materialize existing generic/shared-fusion variants before admission.
+    // No kernel math, launch, model tensor or decoder representation changes.
+    int device = 0;
+    C10_CUDA_CHECK(cudaGetDevice(&device));
+    const auto* prop = at::cuda::getDeviceProperties(device);
+    TORCH_CHECK(prop->major == 7 && prop->minor == 0, "shared fusion residency requires SM70");
+    cudaFuncAttributes attributes;
+    #define QUERY_G(I, K) C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, expert_gate_up<I, K, K, 1, false>))
+    #define QUERY_GATES(I) \
+        QUERY_G(I, 8); QUERY_G(I, 12); QUERY_G(I, 13); QUERY_G(I, 18); \
+        QUERY_G(I, 21); QUERY_G(I, 22); QUERY_G(I, 23); QUERY_G(I, -1)
+    QUERY_GATES(int32_t); QUERY_GATES(int64_t);
+    #undef QUERY_GATES
+    #undef QUERY_G
+    #define QUERY_B(I, G, U) C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, expert_gate_up_blocks2w<I, G, U, false>))
+    #define QUERY_BLOCKS(I) QUERY_B(I, 12, 12); QUERY_B(I, 13, 13); QUERY_B(I, 12, 13); QUERY_B(I, 13, 12)
+    QUERY_BLOCKS(int32_t); QUERY_BLOCKS(int64_t);
+    #undef QUERY_BLOCKS
+    #undef QUERY_B
+    #define QUERY_D(I, F, K) C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, expert_down<I, F, K>))
+    QUERY_D(int32_t, true, 7); QUERY_D(int32_t, false, 7);
+    QUERY_D(int64_t, true, 7); QUERY_D(int64_t, false, 7);
+    QUERY_D(int32_t, true, -1); QUERY_D(int32_t, false, -1);
+    QUERY_D(int64_t, true, -1); QUERY_D(int64_t, false, -1);
+    #undef QUERY_D
+    return 32;
+}
