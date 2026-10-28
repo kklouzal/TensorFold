@@ -407,6 +407,15 @@ class RoundGraphs:
                 regions.__init__(self)
                 regions.prepare()
                 self.dec.buf.moe_region_graphs = regions
+            if self.dec.w.meta.get("sm70_candidate_region_graphs_trial") is True:
+                from .candidate_region_catalogue import Catalogue
+
+                regions = object.__new__(Catalogue)
+                self.candidate_regions = regions  # Retain partial acquisition before capture.
+                regions.__init__(self)
+                regions.prepare()
+                self.dec.buf.candidate_region_graphs = regions
+                self.dec.mbuf.candidate_region_graphs = regions
             return
         dec = self.dec
         slots, width, launch = len(states), dec.depth + 1, dec.pdl
@@ -484,7 +493,8 @@ class RoundGraphs:
                 "pieces": sum(len(p.graphs) for p in (*self.verify.values(), *self.mtp.values())),
                 "keys": self.measured,
                 "private_pools": getattr(self, "private_pool_records", None),
-                "moe_regions": None if self.moe_regions is None else self.moe_regions.record()}
+                "moe_regions": None if self.moe_regions is None else self.moe_regions.record(),
+                "candidate_regions": None if self.candidate_regions is None else self.candidate_regions.record()}
 
     def invalidate_state(self, state):
         if getattr(self, "bound", None) is not None:
@@ -493,6 +503,10 @@ class RoundGraphs:
     def close(self):
         """After replay admission closes, fence and retire graphs before borrowed native owners."""
         torch.cuda.synchronize(self.dec.w.device)
+        if self.candidate_regions is not None:
+            self.candidate_regions.close()
+            self.dec.buf.candidate_region_graphs = None
+            self.dec.mbuf.candidate_region_graphs = None
         if self.moe_regions is not None:
             self.moe_regions.close()
             self.dec.buf.moe_region_graphs = None

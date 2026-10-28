@@ -614,7 +614,11 @@ def candidates(w: Weights, b: Buffers, logits: torch.Tensor, R: int, *, id_map: 
                offset: int = 0) -> None:
     """Gather each rank's top CAND values, global ids as int32 bits and log-sum-exp into b.cand_all [world, R, 2 CAND + 1] inside the step graph, avoiding a sampling collective."""
 
-    c = candidates_local(w, b, logits, R, id_map=id_map, offset=offset)
+    regions = getattr(b, "candidate_region_graphs", None)
+    if regions is not None and regions.local_packet(w, b, logits, R, id_map, offset):
+        c = b.cand[:R]
+    else:
+        c = candidates_local(w, b, logits, R, id_map=id_map, offset=offset)
     w.comm.all_gather(c, b.cand_all[:b.world * R * (2 * CAND + 1)])
 
 

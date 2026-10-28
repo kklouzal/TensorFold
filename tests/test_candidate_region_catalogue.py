@@ -16,6 +16,7 @@ def setup(monkeypatch):
                            graph_pool_handle=lambda: (0, 9),
                            is_current_stream_capturing=lambda: False)
     monkeypatch.setattr(module, 'torch', SimpleNamespace(cuda=cuda,
+        Tensor=torch.Tensor, strided=torch.strided,
         are_deterministic_algorithms_enabled=lambda: False, is_autocast_enabled=lambda device: False))
     monkeypatch.setattr(module, 'host_memory', lambda: {'VmRSS': 100, 'VmHWM': 100})
     monkeypatch.setattr(capacity, 'admit_host_commitment', lambda n: log.append(('host', n)) or {'admitted': True})
@@ -27,13 +28,15 @@ def setup(monkeypatch):
 
     def buffer():
         return SimpleNamespace(prefill=False, rows=32, logits=torch.zeros(32, 64),
+                               cand=torch.empty(32, 65),
                                input_preparation_context=SimpleNamespace(fail=failed.append))
 
     dec = SimpleNamespace(w=weights, streams=[], filling=False, kept=[], free=[object() for _ in range(24)],
                           round_tables=SimpleNamespace(slots=24), buf=buffer(), mbuf=buffer())
     parent = SimpleNamespace(dec=dec, allocator_backend='native', side=stream, admitted=False,
                              capture_observation=lambda: len(log),
-                             charge_capture=lambda before, label: log.append(('charge', label)))
+                             charge_capture=lambda before, label: log.append(('charge', label)) or
+                             {'key': label, 'charged_bytes': 7})
 
     class Region:
         def __init__(self, weights, buffers, logits, rows, *, id_map, offset, side, pool):
@@ -62,6 +65,9 @@ def test_exact64_graphs_share_only_candidate_pool_and_charge_before_publication(
     assert owner.ready and len(owner.regions) == 64
     assert {region.pool for region in owner.regions.values()} == {(0, 9)}
     assert len([item for item in log if isinstance(item, tuple) and item[0] == 'charge']) == 64
+    assert len(owner.measured) == 64
+    assert owner.record()['capture_accounted_phase_count'] == 64
+    assert owner.record()['capture_charged_bytes'] == 64 * 7
     assert log[0] == ('host', 8 * module.HOST_ALLOWANCE)
     assert log[-1] == ('host', 8 * module.HOST_ALLOWANCE)
     with pytest.raises(RuntimeError, match='physical admission'):
@@ -124,7 +130,66 @@ def test_private_intent_and_profile_are_explicit(monkeypatch):
     monkeypatch.setenv(module.ENV, '1')
     with pytest.raises(ValueError, match='profile'):
         module.requested('other')
-    assert module.requested(module.PROFILE)
+    assert all(module.requested(profile) for profile in module.PROFILES)
     monkeypatch.setenv(module.ENV, '2')
     with pytest.raises(ValueError, match='0 or1'):
         module.requested(module.PROFILE)
+
+
+@pytest.mark.parametrize('profile', module.PROFILES)
+def test_joint_profile_and_fresh_target_mtp_views_are_eligible(setup, profile):
+    owner, parent, _, _, _ = setup
+    parent.dec.w.meta['sm70_profile'] = profile
+    parent.dec.w.draft_head = SimpleNamespace(n=19)
+    parent.dec.w.draft_ids = torch.arange(19)
+    owner.prepare()
+    parent.admitted = True
+    target = parent.dec.buf.logits[:3]
+    mtp = parent.dec.mbuf.logits.view(-1)[:3 * 19].view(3, 19)
+    assert target is not owner.regions['target', 3].logits
+    assert mtp is not owner.regions['mtp', 3].logits
+    assert owner.local_packet(parent.dec.w, parent.dec.buf, target, 3, None, 0)
+    assert owner.local_packet(parent.dec.w, parent.dec.mbuf, mtp, 3, parent.dec.w.draft_ids, 0)
+
+
+@pytest.mark.parametrize('argument', ['foreign-logits', 'stride', 'dtype', 'offset', 'map', 'foreign-weights'])
+def test_ineligible_helper_argument_keeps_original_path(setup, argument):
+    owner, parent, _, _, failed = setup
+    owner.prepare()
+    parent.admitted = True
+    weights, logits, offset, mapping = parent.dec.w, parent.dec.buf.logits[:3], 0, None
+    if argument == 'foreign-logits':
+        logits = logits.clone()
+    elif argument == 'stride':
+        logits = logits[:, ::2]
+    elif argument == 'dtype':
+        logits = logits.half()
+    elif argument == 'offset':
+        offset = 1
+    elif argument == 'map':
+        mapping = torch.arange(64)
+    else:
+        weights = object()
+    assert not owner.local_packet(weights, parent.dec.buf, logits, 3, mapping, offset)
+    assert owner.failure is None and not failed and not owner.lock.locked()
+    assert owner.frame_counts['target'][3] == 0
+
+
+@pytest.mark.parametrize('invalidated', ['input-rebind', 'input-layout', 'packet', 'width'])
+def test_admitted_role_invalidation_is_fatal_even_for_ineligible_argument(setup, invalidated):
+    owner, parent, _, _, failed = setup
+    owner.prepare()
+    parent.admitted = True
+    unsupported = parent.dec.buf.logits[:3].clone()
+    if invalidated == 'input-rebind':
+        parent.dec.buf.logits = parent.dec.buf.logits.clone()
+    elif invalidated == 'input-layout':
+        parent.dec.buf.logits = parent.dec.buf.logits.view(16, 128)
+    elif invalidated == 'packet':
+        parent.dec.buf.cand = parent.dec.buf.cand.clone()
+    else:
+        parent.dec.w.head.n = 63
+    with pytest.raises(RuntimeError, match='original role') as caught:
+        owner.local_packet(parent.dec.w, parent.dec.buf, unsupported, 3, None, 0)
+    assert owner.failure is caught.value and failed == [caught.value]
+    assert parent.dec._memory_error is caught.value and not owner.lock.locked()

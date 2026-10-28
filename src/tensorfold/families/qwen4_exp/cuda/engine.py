@@ -192,6 +192,13 @@ class FlashNextEngine:
             self._moe_region_graphs_requested = moe_regions_requested(os.environ.get("TENSORFOLD_SM70_PROFILE", "reference"))
             if self._moe_region_graphs_requested and not sm70:
                 raise ValueError("private MoE regions require the native SM70 GGUF provider")
+        self._candidate_region_graphs_requested = False
+        if "TENSORFOLD_SM70_CANDIDATE_REGION_GRAPHS" in os.environ:
+            from .candidate_region_catalogue import requested as candidate_regions_requested
+
+            self._candidate_region_graphs_requested = candidate_regions_requested(os.environ.get("TENSORFOLD_SM70_PROFILE", "reference"))
+            if self._candidate_region_graphs_requested and not sm70:
+                raise ValueError("private candidate regions require the native SM70 GGUF provider")
         if source_is_gguf and nvfp4_source:
             raise ValueError("family_manifest requires its declared NVFP4 source, independently of GGUF")
         if nvfp4_source and (vision or execution_profile_manifest is not None):
@@ -1013,6 +1020,13 @@ class FlashNextEngine:
                 # it includes capture-role host and all controlled graph metadata.
                 options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + (
                     tp * moe_regions_funding()["future_host_bytes_per_rank"])
+            if getattr(self, "_candidate_region_graphs_requested", False):
+                from .candidate_region_catalogue import funding as candidate_regions_funding
+
+                # Independent candidate metadata/library operating allowance;
+                # all device capture allocations remain paid once by RoundGraphs.
+                options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + (
+                    tp * candidate_regions_funding()["future_host_bytes_per_rank"])
             if self.sm70_profile == SHARED_FUSION_TRIAL:
                 from tensorfold.cuda.sm70.gguf_ops import shared_fusion_workspace_bytes
 
@@ -1454,6 +1468,7 @@ class FlashNextEngine:
         if owner_preparation is not None:
             w.meta["owner_workspaces"] = owner_preparation.workspaces
         w.meta["sm70_moe_region_graphs_trial"] = getattr(self, "_moe_region_graphs_requested", False)
+        w.meta["sm70_candidate_region_graphs_trial"] = getattr(self, "_candidate_region_graphs_requested", False)
         if self._indexer_history_session is not None:
             w.meta.update(indexer_history="ram", indexer_history_session=self._indexer_history_session)
         if expert_session is not None:
@@ -2157,6 +2172,7 @@ class FlashNextEngine:
             if getattr(self, "sm70_profile", None) in (OWNER_TARGET_DENSE_PROFILE, OWNER_BATCH_PRELUDE_PROFILE, ROUTER_BLAS_PROFILE, SHARED_FUSION_PROFILE):
                 expert_policy.append(GGUFDense.implementation)
             expert_policy.append(["private-moe-regions", getattr(self, "_moe_region_graphs_requested", False)])
+            expert_policy.append(["private-candidate-regions", getattr(self, "_candidate_region_graphs_requested", False)])
             proposal_policy = bool(proposal_enabled)
             context_policy = bool(context_enabled)
             attention_policy = getattr(self, "_sm70_attention_identity", None)

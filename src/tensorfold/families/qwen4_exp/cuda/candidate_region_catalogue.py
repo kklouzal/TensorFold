@@ -11,7 +11,7 @@ import threading
 import torch
 
 from tensorfold.cleanup import raise_failures
-from tensorfold.cuda.sm70.router_blas import PROFILE
+from tensorfold.cuda.sm70.router_blas import PROFILE as PROFILE, PROFILES
 
 from .candidate_region_graphs import CandidateRegion, _binding
 from .capture_lifetime import host_memory
@@ -26,7 +26,7 @@ def requested(profile):
     value = os.environ.get(ENV, '0')
     if value not in ('0', '1'):
         raise ValueError('private candidate graph choice must be0 or1')
-    if value == '1' and profile != PROFILE:
+    if value == '1' and profile not in PROFILES:
         raise ValueError('private candidate graphs require the admitted batched-router profile')
     return value == '1'
 
@@ -44,11 +44,13 @@ class Catalogue:
         self.parent, self.dec = parent, parent.dec
         self.weights = self.dec.w
         self.regions, self.pools = {}, {}
+        self.measured = []  # At most one cold accounting record per finite key.
         self.ready = self.closed = self.retiring = False
         self.failure = None
         self.lock = threading.Lock()
         self.notification, self.notified = [None], False
         self.roles = {}
+        self.role_bindings = {}
         self.frame_counts = {role: {rows: 0 for rows in ROWS} for role in ('target', 'mtp')}
         self.counter_overflowed = False
         self.plan = funding()
@@ -71,6 +73,15 @@ class Catalogue:
                for index, (now, old) in enumerate(zip(current, self.policy))):
             raise RuntimeError('candidate graph profile or original model binding changed')
 
+    def _check_role_binding(self, role):
+        buffers, width, mapping = self.roles[role]
+        head = self.weights.head if role == 'target' or self.weights.draft_head is None else self.weights.draft_head
+        original_logits, original_packet, logits_binding, packet_binding, map_binding = self.role_bindings[role]
+        if (head.n != width or buffers.logits is not original_logits or buffers.cand is not original_packet
+                or _binding(buffers.logits) != logits_binding or _binding(buffers.cand) != packet_binding
+                or mapping is not None and _binding(mapping) != map_binding):
+            raise RuntimeError('candidate graph original role storage or layout changed')
+
     def _host_gate(self):
         now = host_memory()
         self.host_after = now
@@ -89,7 +100,7 @@ class Catalogue:
         if (dec.streams or dec.filling or dec.kept or len(dec.free) != dec.round_tables.slots
                 or len(dec.free) < 24 or self.parent.allocator_backend != 'native'):
             raise RuntimeError('candidate preparation requires quiescent24-slot native-allocator ownership')
-        if (w.meta.get('sm70_profile') != PROFILE or w.meta.get('execution_provider') != 'sm70'
+        if (w.meta.get('sm70_profile') not in PROFILES or w.meta.get('execution_provider') != 'sm70'
                 or w.meta.get('execution_dtype') != 'float16' or w.meta.get('history_layout') != 'unique'
                 or w.meta.get('sm70_candidate_region_graphs_trial') is not True
                 or w.comm is None or w.comm.world != 8 or w.mtp is None or dec.mbuf is None
@@ -106,6 +117,8 @@ class Catalogue:
                 if buffers.prefill or buffers.rows != 32 or buffers.input_preparation_context is None:
                     raise ValueError('candidate catalogue requires canonical row32 decode buffer roles')
                 self.roles[role] = buffers, width, mapping
+                self.role_bindings[role] = (buffers.logits, buffers.cand, _binding(buffers.logits),
+                                           _binding(buffers.cand), None if mapping is None else _binding(mapping))
             torch.cuda.synchronize(w.device)  # Prior warmup/head/collective consumers positively retired.
             # Every cold capture row is valid and fully initialized. Actual
             # forwards overwrite the complete exact-R prefix before replay.
@@ -122,7 +135,7 @@ class Catalogue:
                                     side=self.parent.side, pool=self.pools['candidate-finish'])
                     region.prepare()
                     region.replay()  # Materialize runtime resources cold; no State/sampling/RNG effects.
-                    self.parent.charge_capture(before, ['candidate', role, rows])
+                    self.measured.append(self.parent.charge_capture(before, ['candidate', role, rows]))
                     self._host_gate()
             self._check_policy()
             self.host_final = admit_host_commitment(8 * HOST_ALLOWANCE)
@@ -150,8 +163,8 @@ class Catalogue:
 
     def local_packet(self, weights, buffers, logits, rows, id_map, offset):
         role = next((name for name, (original, _, _) in self.roles.items() if buffers is original), None)
-        if role is None or rows not in ROWS:
-            return False  # Prefill/other Buffers and unsupported rows retain original local math.
+        if role is None:
+            return False  # Prefill/other Buffers retain original local math.
         if not self.ready or self.closed or self.retiring or self.failure is not None:
             raise RuntimeError('candidate graph catalogue is not reusable') from self.failure
         if torch.cuda.is_current_stream_capturing():
@@ -163,11 +176,21 @@ class Catalogue:
         failure = None
         try:
             self._check_policy()
+            self._check_role_binding(role)
+            if type(rows) is not int or rows not in ROWS:
+                return False
             region = self.regions[role, rows]
-            if weights is not self.weights or id_map is not region.id_map or offset != self.offset:
-                raise ValueError('candidate packet lost its original role or vocabulary map')
+            if (weights is not self.weights or id_map is not region.id_map
+                    or type(offset) is not int or offset != self.offset):
+                return False
+            # Fresh target/MTP views of the exact prefix are equivalent. Other
+            # supported helper arguments/layouts retain original local math;
+            # original admitted role invalidation above is always fatal.
+            if (type(logits) is not torch.Tensor or logits.layout != torch.strided
+                    or logits.dtype != region.logits.dtype or logits.device != region.logits.device):
+                return False
             if _binding(logits) != _binding(region.logits):
-                raise ValueError('candidate packet input differs from its exact original head prefix')
+                return False
             region.replay()  # Same original stream; lock release does not promise GPU completion.
             if self.frame_counts[role][rows] < MAX_COUNT:
                 self.frame_counts[role][rows] += 1
@@ -195,6 +218,7 @@ class Catalogue:
             self.regions.clear()
             self.pools.clear()
             self.roles.clear()
+            self.role_bindings.clear()
             self.closed = True
         except BaseException as error:
             self._poison(error)
@@ -206,6 +230,10 @@ class Catalogue:
         return {'enabled': True, 'rows': ROWS, 'roles': tuple(self.roles), 'graphs': len(self.regions),
                 'frames': None if self.counter_overflowed else {role: dict(counts) for role, counts in self.frame_counts.items()},
                 'funding': self.plan, 'ready': self.ready, 'closed': self.closed,
+                'capture_phase_count': len(self.measured),
+                'capture_accounted_phase_count': sum(row is not None for row in self.measured),
+                'capture_charged_bytes': (sum(row['charged_bytes'] for row in self.measured)
+                                          if all(row is not None for row in self.measured) else None),
                 'host_retained_growth_bytes_observed': self.host_retained_growth,
                 'host_peak_growth_bytes_observed': self.host_peak_growth,
                 'host_observation': 'boundary RSS/HWM deltas; historical HWM can mask smaller temporary peaks'}

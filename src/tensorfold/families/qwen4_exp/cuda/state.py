@@ -131,6 +131,7 @@ class Buffers:
 
         self.router_blas = create_role(w, rows, prefill=prefill, role=owner_role, eager=batch_prelude)
         self.moe_region_graphs = None  # Published only after its bounded cold catalogue is admitted.
+        self.candidate_region_graphs = None
         # DeltaNet projections and outputs and attention outputs; ``commit`` reads the projections' conv channels
         lin = 1 if prefill else sum(1 for layer in w.layers if layer.linear)     # a prompt chunk commits each layer
         self.proj = row_tensor("proj", (lin, rows, gdn_mod.widths(c.nk, c.nv)[1]), dtype=bf, zero=True)

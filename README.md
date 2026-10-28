@@ -15,16 +15,22 @@ current safety/capture and all-six task comparisons remain pending. No new
 kernel algorithm, weight replication, requantization or numeric tolerance.
 The private `CandidateRegion` component captures the original per-row FP32
 candidate clone/top32/ID-cast/logsumexp packet construction. NCCL, codec-status
-validation and sampling remain outside. It is not enrolled in serving and has
-no CLI flag or performance claim. CPU lifecycle and actual SM70 packet-bit
-oracles are required before catalogue funding and model integration.
+validation and sampling remain outside. It has no public CLI or performance claim. Its original packet math has actual
+SM70 component coverage; the isolated enrollment below remains unqualified.
 The earlier component wheel `3ef89234` passed four exact-packet controls on an
 actual V100 in2.18s: target/shared-MTP shard width31040 plus separate odd/pruned
 generic cases. This successor adds a private target/MTP exactR1..32 catalogue
 leaf with one independent-inference shared pool and an additive1GiB/rank host
 operating allowance. It requires the integrating RoundGraphs owner to fund all
-GPU pool/driver allocations before admission. Engine enrollment and actual
-catalogue/model checks remain pending; no capacity or performance gain is claimed.
+GPU pool/driver allocations before admission. This successor privately enrolls the canonical target/MTP Buffers when
+`TENSORFOLD_SM70_CANDIDATE_REGION_GRAPHS=1`, on the declared Router or
+shared-fusion profile. Unsupported argument views use the original local math;
+invalidated admitted storage/profile bindings fail. Fresh equivalent prefix
+wrappers are accepted; nested N1 capture keeps its original body. Final NCCL,
+MTP draft filtering and target grammar ordering remain unchanged. Candidate
+pools and the additive host allowance are paid before the native24 Q8 floor is
+admitted. The earlier64-key component passed on SM70; this Engine integration,
+capacity, output quality and performance remain pending.
 
 The private router/GDN/startup composition retains the explicit experimental
 router numerical epoch and adds the existing sealed FP16 State-batched GDN

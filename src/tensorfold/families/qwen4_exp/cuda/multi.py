@@ -947,14 +947,15 @@ class MultiDecoder:
             raise RuntimeError("graphs are captured on idle slots, before any request")
         if self.graphs is not None or self._failed_graphs is not None:
             raise RuntimeError("captured-round pools are immutable until this decoder retires")
-        moe_required = self.w.meta.get("sm70_moe_region_graphs_trial") is True
+        moe_required = (self.w.meta.get("sm70_moe_region_graphs_trial") is True
+                        or self.w.meta.get("sm70_candidate_region_graphs_trial") is True)
         if self.graph_record["reason"] is not None:
             if moe_required:
-                raise ValueError("requested MoE graph catalogue is not capturable: " + str(self.graph_record["reason"]))
+                raise ValueError("requested pure-region graph catalogue is not capturable: " + str(self.graph_record["reason"]))
             return
         if getattr(self.w, "meta", {}).get("execution_provider") == "sm70" and not self._prepare_graph_floor():
             if moe_required:
-                raise MemoryError("requested MoE graphs cannot retain their24-slot floor")
+                raise MemoryError("requested pure-region graphs cannot retain their24-slot floor")
             return
         multi_graphs.prepare_capture()
         slots = len(self.free)
@@ -1019,7 +1020,7 @@ class MultiDecoder:
             resolution.update(floor_tokens=self.graph_floor, floor_extra_bytes=self.graph_floor_extra_bytes)
         if not self.graph_budget:
             if moe_required:
-                raise MemoryError("requested MoE graphs have no budget after required native24 service")
+                raise MemoryError("requested pure-region graphs have no budget after required native24 service")
             if getattr(self, "graph_floor_extra_bytes", 0):
                 released = self.graph_floor_extra_bytes
                 self.graph_floor, self.graph_floor_extra_bytes = FIRST, 0
