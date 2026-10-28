@@ -127,6 +127,9 @@ class Buffers:
         # the experts' prefill arithmetic for decode windows too (``moe_prefill``): their rows can share a pass's launch
         self.moe = moe_mod.MoEBuffers(rows, _MoECfg(c), dev, prefill=prefill if moe_prefill is None else moe_prefill,
                                       tile=grouped.PREFILL_TILE if prefill else (8 if bf == torch.float16 else grouped.window_tile(dev)))
+        from tensorfold.cuda.sm70.router_blas import create_role
+
+        self.router_blas = create_role(w, rows, prefill=prefill, role=owner_role, eager=batch_prelude)
         # DeltaNet projections and outputs and attention outputs; ``commit`` reads the projections' conv channels
         lin = 1 if prefill else sum(1 for layer in w.layers if layer.linear)     # a prompt chunk commits each layer
         self.proj = row_tensor("proj", (lin, rows, gdn_mod.widths(c.nk, c.nv)[1]), dtype=bf, zero=True)

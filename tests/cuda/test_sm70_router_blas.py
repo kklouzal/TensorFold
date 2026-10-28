@@ -72,3 +72,24 @@ def test_pointer_batched_api_matches_row_canonical_bits_and_stable_route(rows,ca
     (directory/"result.json").write_text(json.dumps(facts,indent=2)+"\n")
     # All three strict guards remain; diagnostic output never repairs a pass.
     assert equal and same_picks and same_weights
+
+
+@pytest.mark.parametrize("rows", [1, 3, 32])
+def test_model_shared_role_preserves_independent_plan_results_and_caller_output(rows):
+    """Only sharing/ownership changes; the historical row-logit oracle stays strict."""
+    _family_runtime(torch)
+    torch.manual_seed(12000 + rows)
+    weights = [torch.randn((513, 2560), device="cuda", dtype=torch.float32) * .01 for _ in range(2)]
+    x = torch.randn((rows, 2560), device="cuda").half()
+    role = router_blas.RolePlans(weights, 32)
+    outputs = [torch.empty((rows, 513), device="cuda", dtype=torch.float32) for _ in weights]
+    references = [torch.empty_like(value) for value in outputs]
+    for weight, output in zip(weights, references):
+        router_blas.prepare(weight, capacity=32).run(x, output)
+    for index in (0, 1, 0):
+        role.run(weights[index], x, outputs[index])
+        torch.cuda.synchronize()
+        assert torch.equal(outputs[index].view(torch.int32), references[index].view(torch.int32))
+    # A subsequent other-weight call must not overwrite an earlier caller's out.
+    assert torch.equal(outputs[1].view(torch.int32), references[1].view(torch.int32))
+    assert role.calls == 3 and not role.overflowed

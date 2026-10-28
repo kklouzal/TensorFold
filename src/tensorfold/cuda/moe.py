@@ -86,7 +86,7 @@ def route_select(logits: torch.Tensor, expert_scale: torch.Tensor, picks: torch.
 
 
 def router(x: torch.Tensor, rows: torch.Tensor, out: torch.Tensor | None = None, *,
-           independent_rows: bool = False) -> torch.Tensor:
+           independent_rows: bool = False, prepared=None) -> torch.Tensor:
     """Rows/router weights to FP32 logits; FP16 decode can preserve serial GEMV arithmetic."""
 
     m, d = x.shape
@@ -96,6 +96,8 @@ def router(x: torch.Tensor, rows: torch.Tensor, out: torch.Tensor | None = None,
     if x.dtype == torch.float16:
         if rows.device != x.device or rows.ndim != 2 or rows.shape[1] != d:
             raise ValueError("FP16 router rows must share the input device and width")
+        if independent_rows and prepared is not None:
+            return prepared.run(rows, x, out)
         if independent_rows:
             from .sm70 import routing_native
 

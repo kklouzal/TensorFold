@@ -1351,3 +1351,16 @@ def test_explicit_batch_prelude_intent_requires_composed_profile_and_funded_dens
         with pytest.raises(SystemExit):
             probe.arguments(argv)
     assert not (tmp_path / "results").exists()
+
+
+def test_router_numeric_profile_and_explicit_tool_intent_must_agree(tmp_path, monkeypatch):
+    from tensorfold.cuda.sm70.router_blas import PROFILE
+    monkeypatch.setenv("TENSORFOLD_SM70_PROFILE", PROFILE)
+    base = cli(tmp_path) + ["--native-dense-trial", "--owner-batch-prelude-trial", "--session-ceiling", "24"]
+    with pytest.raises(SystemExit):
+        probe.arguments(base)
+    args = probe.arguments(base + ["--router-blas-trial"])
+    assert args.router_blas_trial and args.requested_sm70_profile == PROFILE
+    monkeypatch.setenv("TENSORFOLD_SM70_PROFILE", "source-dense-owner-batch-prelude-trial")
+    with pytest.raises(SystemExit):
+        probe.arguments(base + ["--router-blas-trial"])

@@ -193,7 +193,7 @@ def prepare(engine, manifest):
             or engine.tp != 8 or engine.method_geometry.method != "mtp"
             or getattr(engine, "media_profile", None) is not None
             or engine.sm70_profile not in ("source-owner-pieces-trial", "source-owner-target-greedy-trial",
-                                          "source-owner-target-guard-trial", "source-owner-target-prelude-trial", "source-owner-target-dense-trial", "source-dense-owner-batch-prelude-trial")):
+                                          "source-owner-target-guard-trial", "source-owner-target-prelude-trial", "source-owner-target-dense-trial", "source-dense-owner-batch-prelude-trial", "source-batch-router-blas-trial")):
         raise ValueError("startup content overlap requires an explicit private TP8 owner MTP manifest")
     files = getattr(engine, "_execution_preload", {}).get("capture_files")
     if type(files) is not dict:

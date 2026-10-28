@@ -388,7 +388,7 @@ def ple_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int
         _mm(b.ple_emb[:R], p.value, b.xs_ple[:R], b.ple_vals[:R], b)
     glue.ple_gate(b.ple_keys[:R], b.ple_vals[:R], b.h[:R], p.norm_key, p.norm_query, b.ple_gated[:R],
                   b.ple_pss[:R], c.eps, c.streams, valid_rows=getattr(b, "graph_rows", None),
-                  independent_rows=not b.prefill)
+                  independent_rows=not b.prefill, prepared=getattr(b, "router_blas", None))
     if b.split is not None:                           # a captured forward: each stream's tail runs between pieces
         b.split(("ple_conv", layer))
     else:

@@ -8,6 +8,7 @@
 #include <cstring>
 #include <vector>
 #include <optional>
+#include <memory>
 
 namespace {
 constexpr int K = 2560, E = 513, Y_STRIDE = 516, MAX_ROWS = 32;
@@ -36,7 +37,7 @@ class RouterPlan {
     }
 
 public:
-    RouterPlan(const at::Tensor& weight, int rows)
+    RouterPlan(const at::Tensor& weight, int rows, std::shared_ptr<RouterPlan> shared = nullptr)
         : weight_(weight), rows_(rows), weight_address_(0) {
         TORCH_CHECK(weight.is_cuda() && weight.layout() == at::kStrided
                     && weight.scalar_type() == at::kFloat && weight.dim() == 2
@@ -51,13 +52,20 @@ public:
         TORCH_CHECK(properties->major == 7 && properties->minor == 0, "private router batch requires SM70");
         stream_ = at::cuda::getCurrentCUDAStream(weight.get_device());
         weight_storage_ = weight.view_as(weight);  // Retain original storage if caller later rebinds weight_.
-        input_ = at::empty({rows_, K}, weight.options());
-        output_ = at::empty({rows_, Y_STRIDE}, weight.options());
-        TORCH_CHECK(reinterpret_cast<uintptr_t>(input_.data_ptr()) % 16 == 0
-                    && reinterpret_cast<uintptr_t>(output_.data_ptr()) % 16 == 0, "router vector alignment");
+        if (shared) {
+            TORCH_CHECK(shared->rows_ == rows_ && shared->weight_.device() == weight.device()
+                        && shared->stream_ == stream_, "router shared workspace geometry/stream differs");
+            input_ = shared->input_; output_ = shared->output_;
+            x_ = shared->x_; y_ = shared->y_;
+        } else {
+            input_ = at::empty({rows_, K}, weight.options());
+            output_ = at::empty({rows_, Y_STRIDE}, weight.options());
+            TORCH_CHECK(reinterpret_cast<uintptr_t>(input_.data_ptr()) % 16 == 0
+                        && reinterpret_cast<uintptr_t>(output_.data_ptr()) % 16 == 0, "router vector alignment");
+            x_ = pointers(input_, rows_, K, false);
+            y_ = pointers(output_, rows_, Y_STRIDE, false);
+        }
         a_ = pointers(weight_, rows_, 0, true);
-        x_ = pointers(input_, rows_, K, false);
-        y_ = pointers(output_, rows_, Y_STRIDE, false);
         at::NoTF32Guard no_tf32;
         (void)at::cuda::getCurrentCUDABlasHandle();
     }
@@ -106,8 +114,9 @@ public:
 } // namespace
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, module) {
-    pybind11::class_<RouterPlan>(module, "RouterPlan")
-        .def(pybind11::init<const at::Tensor&, int>())
+    pybind11::class_<RouterPlan, std::shared_ptr<RouterPlan>>(module, "RouterPlan")
+        .def(pybind11::init<const at::Tensor&, int, std::shared_ptr<RouterPlan>>(),
+             pybind11::arg("weight"), pybind11::arg("rows"), pybind11::arg("shared") = nullptr)
         .def("run", &RouterPlan::run)
         .def("gpu_bytes", &RouterPlan::gpu_bytes);
 }

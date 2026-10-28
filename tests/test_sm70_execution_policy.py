@@ -231,3 +231,20 @@ def test_single_rank_without_nccl_does_not_validate_unused_nccl_inputs(policy, m
     records = []
     assert policy.module.configure(text(), tp=1, torch=torch, record_graph_inputs=records.append) == "reference"
     assert records == [None]
+
+
+def test_router_trial_keeps_batch_dense_policy_and_unrelated_selectors_disabled(policy, monkeypatch):
+    from tensorfold.cuda.sm70 import router_blas
+    prepared = []
+    monkeypatch.setattr(policy.module, "_prepare_family_trial", lambda *args, **kw: prepared.append(kw) or {})
+    monkeypatch.setattr(router_blas, "extension", lambda: object())
+    monkeypatch.setenv(policy.module.PROFILE_ENV, router_blas.PROFILE)
+    assert policy.module.configure(text(), tp=8, torch=torch) == router_blas.PROFILE
+    assert prepared == [dict(packed=True, target_greedy=True, native_guard=True,
+                             owner_prelude=True, dense=True, owner_batch=True)]
+    assert policy.family._NATIVE_FAMILY
+    assert not policy.family._NATIVE_ATTENTION
+    assert not policy.routing._NATIVE_LOGITS and not policy.padded._ENABLED
+    assert not policy.proposal._ENABLED and not policy.context._ENABLED
+    assert policy.weights.GGUFExperts.implementation == "packed_exact"
+    assert policy.weights.GGUFDense.implementation == policy.weights.GGUFConcat.implementation == "native32"

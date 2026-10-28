@@ -1,11 +1,18 @@
 # TensorFold fork
 
-The private `router_blas` operator experiment evaluates CUDA12.9 cuBLAS
-SgemvBatched with shared read-only weight pointers and disjoint preallocated
-vector/output staging. It does not enable the existing native-logits or other
-optimized flags, and no model path is selected. Exact canonical per-row FP32
-logits, stable routing and near-tie behavior require actual V100 zero-tolerance
-oracles before model integration or any throughput claim.
+The private `source-batch-router-blas-trial` is an unqualified numerical
+experiment: eager decode/MTP routing uses shared-pointer cuBLAS SgemvBatched,
+with prepaid per-role FP32 staging and per-weight pointer tables. Prefill and
+existing graph-only Buffers retain canonical per-row GEMV. Default profiles,
+math flags, MTP confidence and Q8 K/V are unchanged; the new profile has its own
+State/cache epoch. Select it only with the private finite-tool
+`--router-blas-trial --native-dense-trial --owner-batch-prelude-trial
+--session-ceiling 24`. The actual 28-case V100 operator diagnostic retained
+18 strict FP32-logit-bit failures; all 28 selected expert IDs and rounded route
+weights matched. Maximum observed absolute error was 2.08e-6; this empirical
+sample is not a worst-case bound or model-quality guarantee. Actual paired
+model output/quality and all-six throughput gates remain pending. Existing
+strict oracles are preserved; no speed or quality acceptance is claimed.
 
 The combined Dense/batched-prelude wheel `86cb036d` passed 81 integrated GPU
 controls, including real Dense weights, two target attention layers and eight
