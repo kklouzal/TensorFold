@@ -1024,6 +1024,7 @@ def run_concurrency_leader(engine, tokenizer, args, report):
         if report["worker_affinity_before_cohorts"] is not None:
             write_report(args.out / "rank-0-affinity-before-cohorts.json",
                          report["worker_affinity_before_cohorts"], allowance=FOLLOWER_RECEIPT_BYTES)
+            write_report(args.out / "admitted.json", report, allowance=LEADER_RECEIPT_BYTES)
         vocab = tokenizer_vocab_size(tokenizer)
 
         def observe():
@@ -1118,14 +1119,23 @@ def worker_affinity(args):
 
 
 def worker(args):
+    affinity_notification_failures = [None]
     try:
         affinity_before_imports = worker_affinity(args)
     except BaseException as primary:
+        cause = BaseException.__cause__.__get__(primary)
+        context = BaseException.__context__.__get__(primary)
+        suppressed = BaseException.__suppress_context__.__get__(primary)
         try:
             from tensorfold.cuda.cohort import notify_failure
             notify_failure()
         except BaseException as secondary:
-            raise primary from secondary
+            affinity_notification_failures[0] = secondary
+        BaseException.__cause__.__set__(primary, cause)
+        BaseException.__context__.__set__(primary, context)
+        BaseException.__suppress_context__.__set__(primary, suppressed)
+        if affinity_notification_failures[0] is not None:
+            raise_failures(primary, affinity_notification_failures)
         raise
     from tensorfold import hub
     from tensorfold.cuda import precision, prompt_precision
@@ -1165,6 +1175,13 @@ def worker(args):
             **({"execution_profile_manifest": args.execution_profile_manifest}
                if getattr(args, "execution_profile_manifest", None) is not None else {}))
         report["worker_affinity_after_engine"] = worker_affinity(args)
+        if report["worker_affinity_after_engine"] is not None:
+            import torch
+            actual_uuid = str(torch.cuda.get_device_properties(engine.w.device).uuid)
+            actual_uuid = actual_uuid if actual_uuid.startswith("GPU-") else "GPU-" + actual_uuid
+            if actual_uuid.lower() != report["worker_affinity_after_engine"]["gpu"]["gpu_uuid"].lower():
+                raise RuntimeError("actual CUDA logical0 differs from the held GPU-local UUID")
+            report["worker_affinity_after_engine"]["actual_cuda_uuid"] = actual_uuid
         record_execution_profile(engine, report, requested=args.requested_sm70_profile)
         if getattr(args, "gdn_state_batch_trial", False):
             check_engine(engine, session_ceiling=24, require_scheduler=args.rank == 0)

@@ -7,7 +7,10 @@ GPU0–3 on CPUs `0-15,32-47` and GPU4–7 on `16-31,48-63`. The bootstrap resol
 GPU UUID/PCI identity and verifies the live PCI NUMA node and node CPU list
 against the SHA256-held policy before selecting their intersection with the
 child's inherited CPU allowance. An empty intersection or changed topology fails
-startup. Parent/supervisor affinity and the container's CPU quota are unchanged.
+startup. Before exec it replaces numeric input visibility with the resolved full
+GPU UUID, so CUDA logical0 cannot depend on a different numeric device order.
+The finite post-engine census also checks Torch's actual GPU UUID. Input numeric
+selectors remain recorded as provenance. Parent/supervisor affinity and the container's CPU quota are unchanged.
 
 Use the owned `tools/gpu_local_worker.py` as the child entrypoint, before loading
 TensorFold, Torch, CUDA, the model, or worker helper threads. An ordinary external

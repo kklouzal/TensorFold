@@ -53,7 +53,7 @@ def prepared(tmp_path, monkeypatch):
 
 
 @pytest.mark.parametrize('mode', ['bind', 'observe-reference'])
-def test_exec_carries_exact_mode_identity_and_argv(prepared, mode):
+def test_exec_carries_exact_mode_identity_and_argv(prepared, mode, monkeypatch):
     args, _, _, _, _, calls = prepared
     args.mode = mode
     identity = worker.process_identity()
@@ -63,6 +63,9 @@ def test_exec_carries_exact_mode_identity_and_argv(prepared, mode):
     assert receipt['identity'] == identity and not receipt['torch_loaded_before_bind']
     assert receipt['actual_cpus'] == ('0-1' if mode == 'bind' else '0-3')
     assert calls[-1][0:2] == (sys.executable, [sys.executable, 'literal space;data'])
+    assert receipt['input_cuda_visible_devices'] == '0'
+    assert calls[-1][2]['CUDA_VISIBLE_DEVICES'] == receipt['exec_cuda_visible_devices'] == receipt['gpu']['gpu_uuid']
+    monkeypatch.setenv('CUDA_VISIBLE_DEVICES', receipt['exec_cuda_visible_devices'])
     assert len(calls) == (2 if mode == 'bind' else 1)
     assert worker.sample(args.receipt, rank=0, policy_sha=args.policy_sha, mode=mode)['mode'] == mode
 
@@ -142,13 +145,14 @@ def test_retired_thread_census_and_escape(prepared, monkeypatch):
         worker.thread_snapshot({0, 1})
 
 
-def test_changed_mode_or_process_receipt_is_rejected(prepared):
+def test_changed_mode_or_process_receipt_is_rejected(prepared, monkeypatch):
     args, _, _, _, _, _ = prepared
     with pytest.raises(Executed):
         worker.execute(args)
     with pytest.raises(RuntimeError, match='identity changed'):
         worker.sample(args.receipt, rank=0, policy_sha=args.policy_sha, mode='observe-reference')
     data = json.loads(args.receipt.read_text())
+    monkeypatch.setenv('CUDA_VISIBLE_DEVICES', data['exec_cuda_visible_devices'])
     data['identity']['start_ticks'] += 1
     args.receipt.write_text(json.dumps(data))
     with pytest.raises(RuntimeError, match='identity changed'):
@@ -170,7 +174,7 @@ def test_actual_child_exec_keeps_pid_failure_fd_exit_status_and_thread_mask(tmp_
     target = ("import json,os,threading,pathlib; rows=[]; "
               "t=threading.Thread(target=lambda:rows.append(sorted(os.sched_getaffinity(0)))); "
               "t.start();t.join(); "
-              f"pathlib.Path({str(result)!r}).write_text(json.dumps({{'pid':os.getpid(),'mask':sorted(os.sched_getaffinity(0)),'thread':rows,'session':os.getsid(0)}})); "
+              f"pathlib.Path({str(result)!r}).write_text(json.dumps({{'pid':os.getpid(),'mask':sorted(os.sched_getaffinity(0)),'thread':rows,'session':os.getsid(0),'visible':os.environ['CUDA_VISIBLE_DEVICES']}})); "
               f"os.write({write_fd},b'F'); raise SystemExit(7)")
     bootstrap = f'''
 import json,os,sys
@@ -191,7 +195,7 @@ w.execute(NS(policy={str(policy)!r},policy_sha={digest!r},rank=0,mode='bind',rec
         assert child.wait(timeout=30) == 7
         assert os.read(read_fd, 2) == b'F'
         actual = json.loads(result.read_text())
-        assert actual == {'pid': child.pid, 'mask': [cpu], 'thread': [[cpu]], 'session': child.pid}
+        assert actual == {'pid': child.pid, 'mask': [cpu], 'thread': [[cpu]], 'session': child.pid, 'visible': document['ranks'][0]['gpu_uuid']}
         assert json.loads(probe.read_text())['identity']['pid'] == child.pid
         assert os.sched_getaffinity(0) == parent_mask
     finally:
@@ -228,6 +232,8 @@ def test_notification_failure_does_not_replace_exec_primary(prepared, monkeypatc
 
     args, _, _, _, _, _ = prepared
     primary, secondary = OSError('controlled exec failure'), OSError('controlled notification failure')
+    prior = ValueError('prior native root')
+    primary.__cause__ = prior
     def fail_exec(*_args):
         raise primary
     def fail_notify():
@@ -241,7 +247,48 @@ def test_notification_failure_does_not_replace_exec_primary(prepared, monkeypatc
         with pytest.raises(OSError) as caught:
             worker.main(['--policy', str(args.policy), '--policy-sha', args.policy_sha,
                          '--rank', '0', '--receipt', str(args.receipt), '--', sys.executable])
-        assert caught.value is primary and primary.__cause__ is secondary
+        assert caught.value is primary
+        group = primary.__cause__
+        assert isinstance(group, BaseExceptionGroup) and prior in group.exceptions and secondary in group.exceptions
     finally:
         os.close(write_fd)
         os.close(read_fd)
+
+
+@pytest.mark.parametrize('operation', ['read', 'write'])
+def test_file_io_preserves_operation_primary_native_root_and_close_failure(monkeypatch, operation):
+    primary, prior, cleanup = OSError('primary IO failure'), ValueError('prior IO root'), OSError('close failure')
+    primary.__cause__ = prior
+    calls = []
+    class File:
+        def read(self, _limit):
+            calls.append('read')
+            raise primary
+        def write(self, _raw):
+            calls.append('write')
+            raise primary
+        def close(self):
+            calls.append('close')
+            raise cleanup
+    monkeypatch.setattr(worker.Path, 'open', lambda *_args: File())
+    with pytest.raises(OSError) as caught:
+        if operation == 'read':
+            worker.file_operation('unused', 'rb', lambda f: f.read(4))
+        else:
+            worker.write_receipt('unused', {'evidence': True})
+    assert caught.value is primary and calls == [operation, 'close']
+    assert isinstance(primary.__cause__, BaseExceptionGroup)
+    assert prior in primary.__cause__.exceptions and cleanup in primary.__cause__.exceptions
+
+
+def test_short_receipt_write_is_failed_and_closed(monkeypatch):
+    calls = []
+    class File:
+        def write(self, raw):
+            return len(raw) - 1
+        def close(self):
+            calls.append('close')
+    monkeypatch.setattr(worker.Path, 'open', lambda *_args: File())
+    with pytest.raises(OSError, match='short worker affinity'):
+        worker.write_receipt('unused', {'evidence': True})
+    assert calls == ['close']
