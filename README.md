@@ -3,7 +3,8 @@
 An explicit private `source-owner-gateup-independent-trial` candidate retains
 the native owner prelude and original expert coefficient/FP32 dot arithmetic,
 while assigning independent gate/up dots to two warps per output. A16-byte CTA
-shared join replaces no persistent tensor workspace; selected int32 function
+shared array (32 bytes static shared memory in the compiled SM70 object)
+replaces no persistent tensor workspace; selected int32 function
 attributes are loaded before the physical admission baseline, and the profile
 has its own State epoch and original24-window native Q8 floor. The default
 remains unchanged. CPU policy controls, normal wholewheel source proof and

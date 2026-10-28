@@ -397,7 +397,9 @@ existing owner prelude, native24-window Q8 floor and capture/factory contracts.
 Only eligible packed expert gate/up scheduling changes: two independent dots
 use separate warps, each retaining the original FP16 coefficient boundary,
 FP32 FMA sequence and shuffle tree. A16-byte CTA shared join retains the original
-SwiGLU and FP16 activation boundary; all CTA warps participate even for skipped
+SwiGLU and FP16 activation boundary. The compiled SM70 object reports32 bytes
+of static shared memory, including its allocation layout. All CTA warps
+participate even for skipped
 shared slots, invalid IDs and inactive output tiles. The exact down projection
 and independent original BMM controls remain unchanged.
 
