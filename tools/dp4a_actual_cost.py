@@ -108,6 +108,7 @@ def actual_case(bank, rows):
     errors = [None] * 5  # All retirement outcomes precede accepted work.
     owners = [None, None]  # Packed owner first, then DP owner; retained on uncertain retirement.
     native_roots = [None, None, False]  # Retained by this frame if outcome compaction itself exhausts.
+    cleanup_native_roots = [[None, None, False] for _ in range(5)]
     owner = packed = dp_graph = packed_graph = None
     primary, result = None, None
     original = torch.cuda.current_stream()
@@ -193,6 +194,9 @@ def actual_case(bank, rows):
                 graph.close()
             except BaseException as error:
                 errors[index] = error
+                cleanup_native_roots[index][0] = BaseException.__cause__.__get__(error)
+                cleanup_native_roots[index][1] = BaseException.__context__.__get__(error)
+                cleanup_native_roots[index][2] = BaseException.__suppress_context__.__get__(error)
     for index in (0, 1):
         value = owners[index]
         if value is not None and getattr(value, 'stream', None) is not None:
@@ -200,10 +204,16 @@ def actual_case(bank, rows):
                 value.close()
             except BaseException as error:
                 errors[index + 2] = error
+                cleanup_native_roots[index + 2][0] = BaseException.__cause__.__get__(error)
+                cleanup_native_roots[index + 2][1] = BaseException.__context__.__get__(error)
+                cleanup_native_roots[index + 2][2] = BaseException.__suppress_context__.__get__(error)
     try:
         torch.cuda.set_stream(original)
     except BaseException as error:
         errors[4] = error
+        cleanup_native_roots[4][0] = BaseException.__cause__.__get__(error)
+        cleanup_native_roots[4][1] = BaseException.__context__.__get__(error)
+        cleanup_native_roots[4][2] = BaseException.__suppress_context__.__get__(error)
     # native_roots and owners remain traceback-owned even if the borrowed
     # outcome helper cannot compact its fixed slots and replaces the cause.
     finish_failures(primary, errors)

@@ -92,6 +92,7 @@ def test_actual_cleanup_observes_published_graph_and_preserves_original_with_clo
     cleanup=body[-5:-1]
     assert [type(n) for n in cleanup]==[ast.For,ast.For,ast.Try,ast.Expr]
     scope={'owners':owners,'errors':errors,'primary':primary,'original':'original',
+           'cleanup_native_roots':[[None,None,False] for _ in range(5)],
            'torch':N(cuda=N(set_stream=lambda value:log.append(value))),
            'finish_failures':tool.finish_failures}
     with pytest.raises(RuntimeError) as caught:
@@ -130,3 +131,38 @@ def test_actual_case_compaction_exhaustion_retains_preexisting_native_roots(monk
     assert frame is not None
     roots=frame.tb_frame.f_locals['native_roots']
     assert roots[0] is cause and roots[1] is context and roots[2] is True
+
+
+def test_actual_cleanup_only_compaction_exhaustion_retains_first_cleanup_native_roots():
+    primary=RuntimeError('first cleanup')
+    cause,context=ValueError('cleanup explicit cause'),LookupError('cleanup native context')
+    primary.__cause__=cause
+    primary.__context__=context
+    primary.__suppress_context__=True
+    class Graph:
+        def close(self):
+            raise primary
+    class Owner:
+        graph_owner=Graph()
+        stream=object()
+        def close(self):
+            raise RuntimeError('dependent owner remains borrowed')
+    class Exhausted:
+        def __init__(self):
+            self.first=True
+            self.values=(primary,)
+        def __iter__(self):
+            if self.first:
+                self.first=False
+                raise MemoryError('outcome compaction')
+            return iter(self.values)
+    real_finish=tool.finish_failures
+    roots=[[None,None,False] for _ in range(5)]
+    scope={'owners':[Owner(),None],'errors':[None]*5,'primary':None,'original':'original',
+           'cleanup_native_roots':roots,'torch':N(cuda=N(set_stream=lambda value:None)),
+           'finish_failures':lambda error,slots:real_finish(error,Exhausted())}
+    body=ast.parse(inspect.getsource(tool.actual_case)).body[0].body
+    with pytest.raises(RuntimeError) as caught:
+        exec(compile(ast.fix_missing_locations(ast.Module(body=body[-5:-1],type_ignores=[])),'actual cleanup-only outcome','exec'),scope)
+    assert caught.value is primary and isinstance(primary.__cause__,MemoryError)
+    assert roots[0][0] is cause and roots[0][1] is context and roots[0][2] is True
