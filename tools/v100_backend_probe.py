@@ -53,7 +53,7 @@ PROTECTED_CUPTI = Path("/usr/local/cuda-12.9/targets/x86_64-linux/lib/libcupti.s
 PROTECTED_CUPTI_SHA = "2fdab19dc3fccdd4b2f5eba137aabefc68e685f6497bb38eea649866c5672a2a"
 MAPPING_SNAPSHOT_BYTES = 16 << 20
 CONCURRENT_OBSERVER_BYTES_PER_RANK = 128 << 10
-PROFILE_READER_BYTES_PER_RANK = 1 << 30
+PROFILE_READER_BYTES_PER_RANK = 2 << 30
 SOURCE_FILES = (
     "tensorfold/__init__.py", "tensorfold/families/qwen4_exp/__init__.py",
     "tensorfold/families/qwen4_exp/cuda/engine.py",

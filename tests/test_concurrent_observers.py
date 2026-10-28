@@ -153,4 +153,14 @@ def test_actual_full24_depth2_row_histograms_keep_48_to72_distinct():
     for name in ("round_live", "ready_segments", "selected_segments", "selected_rows",
                  "compute_rows", "compute_segments", "owner_rows"):
         getattr(owner, name)[:] = [diagnostic._LIMIT] * len(getattr(owner, name))
-    assert len(json.dumps(owner.snapshot()).encode()) < 8192
+    assert len(json.dumps(owner.snapshot()).encode()) < 16384
+
+
+def test_owner_rows_retain_actual_prefill256_separately_from_decode_geometry():
+    owner = diagnostic._Counters()
+    owner.bucket(owner.owner_rows, 72)
+    owner.bucket(owner.owner_rows, 256)
+    owner.bucket(owner.owner_rows, 257)
+    assert owner.owner_rows[72] == owner.owner_rows[256] == owner.owner_rows[257] == 1
+    assert not owner.overflowed and len(owner.owner_rows) == 258
+    assert len(owner.compute_rows) == 74 and len(owner.selected_rows) == 74

@@ -22,7 +22,7 @@ class _Counters:
         self.selected_rows = [0] * 74
         self.compute_rows = [0] * 74
         self.compute_segments = [0] * 26
-        self.owner_rows = [0] * 74
+        self.owner_rows = [0] * 258
         self.overflowed = False
 
     def add(self, values, index, amount=1):
@@ -43,7 +43,7 @@ class _Counters:
                 **{name: list(getattr(self, name)) for name in (
                     "round_live", "ready_segments", "selected_segments", "selected_rows",
                     "compute_rows", "compute_segments", "owner_rows")},
-                "histogram_contract": "segments0..24+25overflow; rows0..72+73overflow; prefill counted separately",
+                "histogram_contract": "segments0..24+25overflow; selected/compute rows0..72+73overflow; owner rows0..256+257overflow including prefill; prefill compute counted separately",
                 "bounded_state": "7 fixed histograms, 12 int64 accumulators, one overflow latch; no retained inputs"}
 
 
