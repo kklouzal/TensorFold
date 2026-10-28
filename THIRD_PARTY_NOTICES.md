@@ -158,3 +158,14 @@ The multimodal rotary and image-feature integration is adapted from MiaAI-Lab's
 [Flash Next vision patch 0008](https://github.com/MiaAI-Lab/Qwen3.8-Flash-Next-Single-DGX-Spark-TensorFold/blob/a3aa89835022c55ca8e55008c37785954834e04f/patches/0008-flash-next-vision.patch),
 MIT License, Copyright (c) 2026 MiaAI-Lab. The license is included in `LICENSES/MiaAI-Lab-MIT.txt`.
 The port preserves the v0.5 CUDA execution APIs and adds an offline EXL3 vision adapter.
+
+## Standalone SM70 DP4A expert prototype
+
+`tensorfold.cuda.sm70.dp4a_experts` adapts GGML sign/grid unpacking and signed
+DP4A dot structure from llama.cpp revision
+`b3fa69955ea81c3b60e77e3c1e2224c4a826ffb9`,
+`ggml/src/ggml-cuda/vecdotq.cuh` and `common.cuh` (GGML MIT, Copyright2023–2026
+the ggml authors; [license](LICENSES/GGML-MIT.txt)). It reuses the existing
+attributed codebooks, changes activation metadata to FP32 scale, preserves
+fractional odd-scale numerators and adds crop-aligned zero padding. This is a
+separate numerical prototype; it is not selected by a model backend.

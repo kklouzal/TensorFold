@@ -1,5 +1,12 @@
 # TensorFold fork
 
+A standalone SM70 DP4A experiment uses private Q8-32 activations with FP32
+scales and retained IQ3_XXS/IQ2_S gate/up plus cropped IQ4_NL down weights.
+It changes activation precision, the current coefficient FP16-rounding boundary
+and reduction order. It has no Engine/model enrollment; kernel, status/lifetime
+and later model-quality/resource gates remain pending. Existing defaults and
+shared/unsupported/MTP exact paths are retained.
+
 The private router/GDN/startup composition retains the explicit experimental
 router numerical epoch and adds the existing sealed FP16 State-batched GDN
 implementation with `--gdn-state-batch-trial` and private environment value1.
