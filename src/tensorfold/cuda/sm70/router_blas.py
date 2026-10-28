@@ -75,6 +75,13 @@ class RolePlans:
     Weight objects and original storages stay retained through graph retirement.
     Prefill stays canonical. This explicit private numeric implementation has
     different FP32 logit bits; model quality is unqualified, not assumed equal.
+
+    A graph owner may exclusively borrow a dedicated capture-stream role:
+    ``run`` still executes only on that construction stream while recording.
+    Its captured kernels may then replay on the graph owner's ordered stream,
+    retaining this role's tensors until positive graph retirement. No host run
+    may concurrently reuse that borrowed scratch; ordinary eager roles are not
+    transferred to graph capture.
     """
 
     def __init__(self, weights, rows):

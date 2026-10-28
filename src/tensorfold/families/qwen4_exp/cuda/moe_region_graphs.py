@@ -6,6 +6,8 @@ weight bindings until close. Replay is serialized on its original CUDA stream.
 """
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import torch
 
 from tensorfold.cleanup import raise_failures
@@ -44,6 +46,7 @@ class MoERegion:
     def __init__(self, weights, layer, buffers, rows):
         self.weights, self.layer, self.buffers, self.rows = weights, layer, buffers, rows
         self.graph = self.side = None
+        self.capture_router = self.local_buffers = None
         self.failure = None
         self.prepared = self.closed = False
         self.hits = 0
@@ -55,37 +58,69 @@ class MoERegion:
     def _body(self):
         from .forward import moe_block
 
-        moe_block(self.layer, self.weights, self.buffers, self.rows, _local_only=True)
+        buffers = self.buffers if self.local_buffers is None else self.local_buffers
+        moe_block(self.layer, self.weights, buffers, self.rows, _local_only=True)
+
+    def _warm(self):
+        if getattr(self.buffers, "router_blas", None) is not None:
+            from tensorfold.cuda.sm70.router_blas import RolePlans
+
+            # Capture must not borrow the main-stream role. Publish the partial
+            # side-stream owner before its constructor can allocate/submit.
+            self.capture_router = object.__new__(RolePlans)
+            self.capture_router.__init__((self.layer.moe.router,), 32)
+            self.local_buffers = SimpleNamespace(prefill=self.buffers.prefill,
+                mixed=self.buffers.mixed, moe=self.buffers.moe, router_blas=self.capture_router)
+        self._body()
+
+    def _on_side(self, operation):
+        secondary = [None]  # Reserve before stream entry or owned operation.
+        primary = None
+        try:
+            with torch.cuda.stream(self.side):
+                try:
+                    operation()
+                except BaseException as error:
+                    primary = error
+        except BaseException as error:
+            secondary[0] = error
+        if secondary[0] is not None:
+            raise_failures(primary, secondary)
+        if primary is not None:
+            raise primary
+
+    def _capture(self):
+        secondary = [None]  # No outcome allocation after accepted capture_begin.
+        self.graph.capture_begin(capture_error_mode="thread_local")
+        primary = None
+        try:
+            self._body()
+        except BaseException as error:
+            primary = error
+        try:
+            self.graph.capture_end()  # Exactly once after an accepted begin.
+        except BaseException as error:
+            secondary[0] = error
+        if secondary[0] is not None:
+            raise_failures(primary, secondary)
+        if primary is not None:
+            raise primary
 
     def prepare(self):
         if self.prepared or self.graph is not None or self.closed or self.failure is not None:
             raise RuntimeError("MoE graph component cannot be prepared twice or after failure")
         if torch.cuda.is_current_stream_capturing():
             raise RuntimeError("MoE region preparation requires process-wide capture quiescence")
-        secondary = [None]  # Allocate outcome storage before any capture can begin.
         device = self.buffers.mixed.device
         current = torch.cuda.current_stream(device)
         self.replay_stream = current.cuda_stream
         try:
             self.side = torch.cuda.Stream(device=device)
             self.side.wait_stream(current)
-            with torch.cuda.stream(self.side):
-                self._body()  # Materialize exact row kernels and required modules before capture.
+            self._on_side(self._warm)  # Exact kernels/modules and dedicated capture role.
             self.side.synchronize()
             self.graph = torch.cuda.CUDAGraph()  # Publish ownership before accepted capture.
-            with torch.cuda.stream(self.side):
-                self.graph.capture_begin(capture_error_mode="thread_local")
-                primary = None
-                try:
-                    self._body()
-                except BaseException as error:
-                    primary = error
-                try:
-                    self.graph.capture_end()  # Exactly once after an accepted begin, even on body failure.
-                except BaseException as error:
-                    secondary[0] = error
-                if primary is not None or secondary[0] is not None:
-                    raise_failures(primary, secondary)
+            self._on_side(self._capture)
             current.wait_stream(self.side)
             self.prepared = True
         except BaseException as error:
@@ -121,6 +156,9 @@ class MoERegion:
         if self.graph is not None:
             self.graph.reset()
         self.graph = self.side = None
+        # A graph may retain captured pointer-table/scratch addresses. Release
+        # these external owners only after positive fence AND graph reset.
+        self.capture_router = self.local_buffers = None
         self.tensors = ()
         self.closed = True
 

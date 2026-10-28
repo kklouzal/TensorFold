@@ -7,6 +7,7 @@ import torch
 from gguf_fixture import blocks
 from tensorfold.cuda import moe
 from tensorfold.cuda.sm70 import family_ops,routing_native
+from tensorfold.cuda.sm70.router_blas import RolePlans
 from tensorfold.families.qwen4_exp.cuda.forward import moe_block
 from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense,GGUFExperts,GGUFPacked
 from tensorfold.families.qwen4_exp.cuda.moe_region_graphs import MoERegion
@@ -15,8 +16,9 @@ pytestmark=pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_de
                             reason='actual SM70 capture component')
 
 
+@pytest.mark.parametrize("role", ("target", "mtp"))
 @torch.inference_mode()
-def test_actual513_router_11slots_r32_pure_region_replay_preserves_original_bits(monkeypatch):
+def test_actual513_router_11slots_r32_pure_region_replay_preserves_original_bits(monkeypatch,role):
     # Owned synthetic packed bank; independent native arithmetic controls remain
     # unchanged. This oracle isolates capture/replay/input/route ownership.
     rows,dims,width,experts=32,2560,80,512
@@ -41,14 +43,20 @@ def test_actual513_router_11slots_r32_pure_region_replay_preserves_original_bits
     layer=SimpleNamespace(index=0,moe=SimpleNamespace(experts=bank,
                           router=torch.randn((experts+1,dims),device='cuda',dtype=torch.float32)*.01))
     buffers=SimpleNamespace(prefill=False,mixed=torch.randn((rows,dims),device='cuda',dtype=torch.float16)*.03,
-                            moe=moe.MoEBuffers(rows,cfg,'cuda',prefill=False))
+                            moe=moe.MoEBuffers(rows,cfg,'cuda',prefill=role=='target'))
+    buffers.router_blas=RolePlans((layer.moe.router,),32)
     assert layer.moe.router.shape==(513,2560)
     assert buffers.moe.pick.shape==(32,11) and buffers.moe.y.shape==(32,11,2560)
+    assert buffers.moe.y.dtype==(torch.float16 if role=='target' else torch.float32)
+    assert buffers.prefill is False  # Both retain decode router/kernel math.
     buffers.mixed[0].zero_()  # Exact router ties must retain lower-id ordering.
     region=MoERegion(weights,layer,buffers,rows)
     primary=None
     try:
         region.prepare()
+        assert region.capture_router is not buffers.router_blas
+        assert region.capture_router.owners[0] is layer.moe.router
+        assert region.capture_router.calls==2  # Eager warm and captured host submission.
         for scale in (1.0,-.5,.125):
             buffers.mixed.mul_(scale)
             moe_block(layer,weights,buffers,rows)
@@ -58,7 +66,8 @@ def test_actual513_router_11slots_r32_pure_region_replay_preserves_original_bits
             torch.cuda.synchronize()
             for actual,reference in zip((buffers.moe.logits,buffers.moe.pick,buffers.moe.wts,buffers.moe.y),expected):
                 torch.testing.assert_close(actual.view(torch.uint8),reference.view(torch.uint8),rtol=0,atol=0)
-        assert region.hits==3
+        assert region.hits==3 and buffers.router_blas.calls==3
+        assert region.capture_router.calls==2  # Replay uses captured kernels, not a main-plan fallback.
     except BaseException as error:
         primary=error
     try:
@@ -69,4 +78,4 @@ def test_actual513_router_11slots_r32_pure_region_replay_preserves_original_bits
         raise
     if primary is not None:
         raise primary
-    assert region.closed
+    assert region.closed and region.capture_router is None

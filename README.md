@@ -1926,3 +1926,11 @@ slots including the shared expert. CPU capture/failure/retirement controls pass;
 actual SM70 graph/eager bits, Engine integration, physical graph/host admission
 and full-grid performance remain unqualified. Serving profiles do not enable
 this component.
+
+The private router/GDN graph component prepares a separate pointer-batched
+router role on its capture stream; the ordinary eager role and its arithmetic
+remain intact. Its new32-row oracle checks both actual target FP16 MoE output
+storage and MTP FP32 MoE output storage, with decode routing in each case.
+Capture-stream restoration and partial-plan failure controls pass on CPU;
+actual batched-eager versus captured bits and Engine graph/host admission remain
+pending. No serving profile enables this component yet.

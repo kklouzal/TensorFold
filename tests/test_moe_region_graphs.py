@@ -125,3 +125,106 @@ def test_exhausted_counter_refuses_before_gpu_submission(setup):
     with pytest.raises(OverflowError):
         region.replay()
     assert 'replay' not in log
+
+
+def test_stream_restore_failure_preserves_owned_operation_primary(setup):
+    region,_,cuda,_,log=setup
+    primary,secondary=ValueError('warm-body'),OSError('stream-restore')
+    class RestoreFailure:
+        def __enter__(self):
+            return None
+        def __exit__(self,*args):
+            raise secondary
+    cuda.stream=lambda side: RestoreFailure()
+    region._body=lambda: (_ for _ in ()).throw(primary)
+    with pytest.raises(ValueError) as caught:
+        region.prepare()
+    assert caught.value is primary and caught.value.__cause__ is secondary
+    assert region.failure is primary and region.graph is None and 'begin' not in log
+
+
+def test_capture_router_is_dedicated_and_retired_after_graph(setup,monkeypatch):
+    from tensorfold.cuda.sm70 import router_blas
+    region,_,_,_,_=setup
+    main=object()
+    weight=object()
+    region.buffers.router_blas=main
+    region.layer.moe.router=weight
+    class PreparedCapture:
+        def __init__(self,weights,rows):
+            self.owners=tuple(weights)
+            self.rows=rows
+    monkeypatch.setattr(router_blas,'RolePlans',PreparedCapture)
+    seen=[]
+    region._body=lambda: seen.append(region.local_buffers.router_blas)
+    region.prepare()
+    assert region.capture_router is not main
+    assert region.capture_router.owners==(weight,) and region.capture_router.rows==32
+    assert seen==[region.capture_router,region.capture_router]
+    assert region.local_buffers.mixed is region.buffers.mixed
+    assert region.local_buffers.moe is region.buffers.moe
+    region.close()
+    assert region.capture_router is None and region.local_buffers is None
+
+
+def test_capture_router_constructor_failure_retains_partial_owner(setup,monkeypatch):
+    from tensorfold.cuda.sm70 import router_blas
+    region,_,_,_,log=setup
+    region.buffers.router_blas=object()
+    region.layer.moe.router=object()
+    primary=MemoryError('capture-plan')
+    class PartialCapture:
+        def __init__(self,weights,rows):
+            self.owners=tuple(weights)
+            raise primary
+    monkeypatch.setattr(router_blas,'RolePlans',PartialCapture)
+    with pytest.raises(MemoryError) as caught:
+        region.prepare()
+    assert caught.value is primary and region.failure is primary
+    assert region.capture_router is not None and 'begin' not in log
+    region.close()
+    assert region.capture_router is None
+
+
+def test_body_only_failure_does_not_transport_a_none_secondary(setup):
+    region,_,_,_,log=setup
+    primary=ValueError('capture-body-only')
+    calls=0
+    def body():
+        nonlocal calls
+        calls+=1
+        if calls==2:
+            raise primary
+    region._body=body
+    with pytest.raises(ValueError) as caught:
+        region.prepare()
+    assert caught.value is primary and caught.value.__cause__ is None
+    assert region.failure is primary and log.count('end')==1
+
+
+def test_body_end_and_stream_restore_failures_keep_all_named_outcomes(setup):
+    region,graph,cuda,_,_=setup
+    primary,end_error,restore_error=ValueError('capture'),OSError('end'),RuntimeError('restore')
+    enters=0
+    class Context:
+        def __enter__(self):
+            nonlocal enters
+            enters+=1
+        def __exit__(self,*args):
+            if enters==2:
+                raise restore_error
+    cuda.stream=lambda side: Context()
+    calls=0
+    def body():
+        nonlocal calls
+        calls+=1
+        if calls==2:
+            raise primary
+    region._body=body
+    graph.capture_end=lambda: (_ for _ in ()).throw(end_error)
+    with pytest.raises(ValueError) as caught:
+        region.prepare()
+    def leaves(error):
+        return sum((leaves(item) for item in error.exceptions),[]) if isinstance(error,BaseExceptionGroup) else [error]
+    assert caught.value is primary
+    assert end_error in leaves(primary.__cause__) and restore_error in leaves(primary.__cause__)
