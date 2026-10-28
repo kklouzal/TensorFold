@@ -7,6 +7,7 @@ escapes to an owner State. No State, attention, NCCL, Engine, native24 capacity
 or shipping pool accounting is qualified by this oracle.
 """
 import json
+import time
 from types import SimpleNamespace as NS
 
 import pytest
@@ -31,6 +32,15 @@ LAYERS = 48
 # with the last capture group; it never assumes all192 captures replay in order.
 CYCLES = ((32, 1.0), (5, -.5), (19, 0.0), (9, .125),
           (5, 1.0), (32, 0.0), (9, -.5), (19, .125))
+
+
+def _pool_observation(pool):
+    # Pinned04cf supports a pool filter and disabling trace materialization.
+    # Retain only a fixed-size summary, never the segment/block snapshot.
+    segments = torch.cuda.memory_snapshot(mempool_id=pool, include_traces=False)
+    return {'segments': len(segments), 'total_size': sum(row['total_size'] for row in segments),
+            'allocated_size': sum(row['allocated_size'] for row in segments),
+            'scope': 'observed private-pool reservation/live payload; not accounting or admission proof'}
 
 
 @pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_device_capability() != (7, 0),
@@ -143,6 +153,9 @@ def test_one_hc_moe_pool_preserves_iq18_20_exact_rows_across_ordered_cycles(monk
             branch.copy_(branches[index, :, :rows] * scale)
             return branch
 
+        torch.cuda.synchronize(owner.device)
+        memory_before_capture = torch.cuda.mem_get_info(owner.device)
+        capture_begin_ns = time.monotonic_ns()
         for row_index, rows in enumerate(ROWS):
             for layer in layers:
                 index = row_index * LAYERS + layer.index
@@ -159,9 +172,17 @@ def test_one_hc_moe_pool_preserves_iq18_20_exact_rows_across_ordered_cycles(monk
                 assert {tuple(pool) for pool in region.graph.pools()} == {pool_id}
                 assert region.local_buffers.router_blas is owner.capture_router
                 assert region.local_buffers.mixed is b.mixed and region.local_buffers.moe is b.moe
+        torch.cuda.synchronize(owner.device)
+        capture_end_ns = time.monotonic_ns()
+        pool_after_capture = _pool_observation(owner.pool)
+        memory_after_capture = torch.cuda.mem_get_info(owner.device)
+        # In this observed pure component, no private temporary Tensor remains
+        # application-live; reserved bytes remain owned by the captured graphs.
+        assert pool_after_capture['allocated_size'] == 0
         assert owner.capture_router.calls == 2 * len(owner.regions)
         assert len(owner.regions) == 192 and all(owner.initialized)
         replay_count = 0
+        runtime_begin_ns = time.monotonic_ns()
         for rows, scale in CYCLES:
             # Each complete cycle retains real layer order. R groups are
             # independent and can be selected in a different capture order.
@@ -192,12 +213,26 @@ def test_one_hc_moe_pool_preserves_iq18_20_exact_rows_across_ordered_cycles(monk
                 # No per-key outputs survive to the following graph. These
                 # ordinary eager clones are never put in the pool/owner state.
                 del initial, expected
+        torch.cuda.synchronize(owner.device)
+        runtime_end_ns = time.monotonic_ns()
+        pool_after_runtime = _pool_observation(owner.pool)
+        memory_after_runtime = torch.cuda.mem_get_info(owner.device)
+        assert pool_after_runtime['allocated_size'] == 0
         assert replay_count == len(CYCLES) * LAYERS == 384
         assert all(region.hits == 2 for region in owner.regions)
         assert b.router_blas.calls == replay_count and owner.capture_router.calls == 384
         _family_runtime(torch)
         assert value.implementation == 'packed_blocks2w'
         diagnostic = {'graphs': 192, 'actual_pool': pool_id, 'pool_count': 1,
+                      'capture_preparation_host_elapsed_ns': capture_end_ns - capture_begin_ns,
+                      'runtime_oracle_host_elapsed_ns': runtime_end_ns - runtime_begin_ns,
+                      'timing_scope': 'monotonic host wall; capture includes constructor/warm/capture/driver checks; runtime includes eager references, clones, synchronization, validation and any lazy graph instantiation; NOT shipping throughput',
+                      'private_pool_after_capture': pool_after_capture,
+                      'private_pool_after_runtime': pool_after_runtime,
+                      'raw_mem_get_info': {'before_capture': memory_before_capture,
+                                           'after_capture': memory_after_capture,
+                                           'after_runtime': memory_after_runtime,
+                                           'units': 'free,total bytes; raw observations, no accounting/admission claim'},
                       'captured_R': list(ROWS), 'runtime_R': [row for row, _scale in CYCLES],
                       'complete_ordered_cycles': len(CYCLES), 'replays': replay_count,
                       'distinct_router_weights': 48, 'distinct_HC_weights': 48,
