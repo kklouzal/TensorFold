@@ -181,7 +181,7 @@ class BoundStateGraphs:
                 rows, segments = min(rows, UNIQUE_CAPTURE_MAX_ROWS), 1
             result = self.buffers[kind] = Buffers(self.dec.w, rows, self.dec.capacity,
                                                  moe_prefill=source.moe.plan.prefill,
-                                                 owner_role="mtp" if kind == "mtp" else None)
+                                                 owner_role="mtp" if kind == "mtp" else None, batch_prelude=False)
             if self.native_owner:
                 role = "mtp" if kind == "mtp" else "decode"
                 if (self.dec.w.meta.get("owner_workspaces", {}).get(role) is not source.history_owner
@@ -520,11 +520,10 @@ class BoundStateGraphs:
         else:
             self.hits += 1
         packet = getattr(source.history_owner, "descriptor_frames", None) if self.native_owner else None
-        args = (kind, segs, source, lanes, b, bound, rows, index, segment_indices, pieces, runtime, width)
         if packet is not None and packet.eligible(source, segs):
             with packet.frame(segs, source):
-                return self._replay_ready(*args)
-        return self._replay_ready(*args)
+                return self._replay_ready(kind, segs, source, lanes, b, bound, rows, index, segment_indices, pieces, runtime, width)
+        return self._replay_ready(kind, segs, source, lanes, b, bound, rows, index, segment_indices, pieces, runtime, width)
 
     def _replay_ready(self, kind, segs, source, lanes, b, bound, rows, index, segment_indices, pieces, runtime, width):
         archive = getattr(self.dec.w, "meta", {}).get("indexer_history") == "ram"

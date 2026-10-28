@@ -537,7 +537,7 @@ def graph_execution_snapshot(engine):
         packet = _owned_attributes(history).get("descriptor_frames")
         fields_packet = _owned_attributes(packet)
         if not fields_packet.get("counter_overflowed", False):
-            for name in ("submitted", "copied_layers"):
+            for name in ("submitted", "copied_layers", "borrowed_preludes"):
                 value = fields_packet.get(name)
                 if type(value) is int and 0 <= value <= (1 << 63) - 1:
                     counters["descriptor_frames." + role + "." + name] = value

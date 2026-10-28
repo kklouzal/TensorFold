@@ -48,6 +48,7 @@ class OwnerPreparation:
             raise ValueError("frame packet row envelope requires a positive integer")
         self.frame_rows = frame_rows
         self.frame_admission = None
+        self.frame_future_host_bytes = 0
         self.frame_layers = {}
         self.specification = parse_preparation(specification)
         if self.specification is None or not isinstance(role_rows, dict) or not {"decode", "prefill"} <= role_rows.keys():
@@ -124,8 +125,9 @@ class OwnerPreparation:
             if self.frame_rows is not None:
                 from tensorfold.cuda.capacity import admit_host_commitment
 
-                self.frame_admission = admit_host_commitment(engine.tp * sum(
-                    row["host_commitment_bytes"] for row in contract["frame_descriptors"].values()))
+                self.frame_future_host_bytes = engine.tp * sum(
+                    row["host_commitment_bytes"] for row in contract["frame_descriptors"].values())
+                self.frame_admission = admit_host_commitment(self.frame_future_host_bytes)
             torch.cuda.synchronize(device)
             torch.cuda.empty_cache()
             self.before = self._memory(torch, device)
@@ -344,6 +346,9 @@ class OwnerPreparation:
                 "graphs": {role: graph.record() for role, graph in self.graphs.items()},
                 "qualification_trial": self.specification["trial"],
                 "included_in_physical_free_baseline": True, "future_owner_persistent_bytes": 0,
+                **({"future_frame_host_bytes_global": self.frame_future_host_bytes,
+                    "frame_host_accounting": "complete future obligation; no credit for materialized packet"}
+                   if self.frame_rows is not None else {}),
                 "qualification": "UNQUALIFIED: source-built foundation and real SM70 model/quality/performance gates required"}
 
     def close(self):

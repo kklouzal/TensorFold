@@ -973,6 +973,19 @@ class FlashNextEngine:
                 # bound its allocator granule and retained/transient view metadata.
                 options["device_workspace_bytes"] += 512
                 options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + tp * (512 + 32 * 248 + 8192 + 8192)
+            if self.sm70_profile == OWNER_FRAME_DESCRIPTORS_TRIAL:
+                from .batch_prelude import workspace_bytes as batch_workspace
+
+                batch_rows = execution_rows if execution_rows is not None else 32 if adaptive_sessions else streams * each
+                role_rows = [batch_rows, rows0 + batch_rows] + ([batch_rows] if mtp else [])
+                batch_device, batch_host = 0, 16384 + 8192  # One-time private native/owner module type metadata.
+                for count in role_rows:
+                    device_bytes, host_bytes = batch_workspace(count)
+                    batch_device += device_bytes
+                    batch_host += host_bytes
+                options["device_workspace_bytes"] += batch_device
+                options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + tp * batch_host
+
             status_device = status_host = 0
             if tp > 1 and concurrent and not adaptive_sessions:
                 from .kv_status import workspace_bytes
@@ -1175,6 +1188,12 @@ class FlashNextEngine:
         self._startup_content_plan = prepare_startup_content(self, manifest if execution_profile_manifest is not None else None)
         if self._startup_content_plan is not None:
             host_capacity["host_extra_staging"] = host_capacity.get("host_extra_staging", 0) + self._startup_content_plan.host_bytes
+        if owner_preparation is not None and owner_preparation.frame_rows is not None:
+            # The early physical preflight is not an OS reservation. Retain the
+            # COMPLETE global obligation at authoritative host admission too;
+            # no credit for already materialized packet/view bytes is required.
+            host_capacity["host_workspace_bytes"] = (host_capacity.get("host_workspace_bytes", 0)
+                                                       + owner_preparation.frame_future_host_bytes)
         self.capacity_plan = admit(model_dir, max_len, context_explicit, torch,
                                    capacity_geometry(geometry, model_dir, vision and not media_requested, rank, workspace),
                                    weight_rule,
@@ -2087,11 +2106,15 @@ class FlashNextEngine:
         if getattr(self, "execution_provider", "cuda") == "sm70":
             from tensorfold.cuda.sm70 import family_ops, routing_native
             from . import padded_linears
-            from .gguf_weights import GGUFExperts, GGUFConcat
+            from .gguf_weights import GGUFDense, GGUFExperts, GGUFConcat
             from .dspark_proposal_graphs import _ENABLED as proposal_enabled
             from .dspark_context_graphs import _ENABLED as context_enabled
 
             expert_policy = [GGUFExperts.implementation, GGUFExperts.packed_rows, GGUFConcat.implementation]
+            from .prefix_policy import OWNER_FRAME_DESCRIPTORS_PROFILE
+
+            if getattr(self, "sm70_profile", None) == OWNER_FRAME_DESCRIPTORS_PROFILE:
+                expert_policy.append(GGUFDense.implementation)
             proposal_policy = bool(proposal_enabled)
             context_policy = bool(context_enabled)
             attention_policy = getattr(self, "_sm70_attention_identity", None)

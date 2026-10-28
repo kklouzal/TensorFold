@@ -11,9 +11,13 @@ capacity admission; the profile refuses fewer than24 native Q8 windows. Frame
 leases protect original State generations, storage and issued coordinate rows
 through submission and retirement. This candidate remains unqualified pending
 CPU/lifecycle controls, real TP8/component execution and all six concurrency
-performance/quality checks. The selected Dense4efe wrapper and lazy kernel preparation are reused exactly;
-their interaction with the new transport still requires target testing and a
-matched performance comparison. No gain is claimed here.
+performance/quality checks. The selected Dense/batched-prelude kernels and current three-worker startup
+implementation are reused. The layer-invariant batch position/status/span table
+borrows the same once-frame packet while its original eligibility, projection
+and cache-publication operations stay unchanged. The complete future host
+obligation also survives final admission; the early preflight is not a memory
+reservation. Target tests and a matched throughput comparison remain required;
+no gain is claimed here.
 
 Finite operational screens can explicitly select `--fast-grid-protocol fast-grid-v2
 --tokens 2048` with the existing fast-grid arguments. The2048-cell output budget

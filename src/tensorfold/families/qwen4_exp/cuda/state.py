@@ -36,7 +36,8 @@ class Buffers:
     """Scratch for windows of up to ``rows`` rows, sliced [:R] for smaller ones; ``prefill`` for prompt chunks."""
 
     def __init__(self, w: Weights, rows: int, capacity: int, *, prefill: bool = False,
-                 moe_prefill: bool | None = None, owner_role: str | None = None) -> None:
+                 moe_prefill: bool | None = None, owner_role: str | None = None,
+                 batch_prelude: bool = True) -> None:
         c = w.cfg
         dev = w.device
         from .history_placement import for_weights
@@ -116,6 +117,12 @@ class Buffers:
                                          dev, budget=c.index_budget, ratio=c.index_ratio, dtype=bf,
                                          selection_only=placement is not None)
         self.gated = row_tensor("gated", (rows, c.heads * c.head_dim), dtype=bf)
+        if batch_prelude and w.meta.get("sm70_owner_batch_prelude_trial") is True:
+            from .batch_prelude import BatchPrelude
+
+            owner = object.__new__(BatchPrelude)
+            self.owner_batch_prelude = owner
+            owner.__init__(rows, dev)
         self.xs_gated = torch.empty((rows, c.heads * c.head_dim // 32), dtype=f32, device=dev)
         # the experts' prefill arithmetic for decode windows too (``moe_prefill``): their rows can share a pass's launch
         self.moe = moe_mod.MoEBuffers(rows, _MoECfg(c), dev, prefill=prefill if moe_prefill is None else moe_prefill,

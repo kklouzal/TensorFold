@@ -190,6 +190,17 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
                 phase("input-profile/" + context.identity)
                 input_contexts.append(context)
                 assert context is weights.meta["input_preparation_context"]
+            if frame_packets and native:
+                weights.meta.update(sm70_owner_batch_prelude_trial=True,
+                    sm70_owner_prelude_submitted_batches=0, sm70_owner_prelude_submitted_mtp_batches=0,
+                    sm70_owner_prelude_batch_counter_overflowed=False, sm70_owner_prelude_max_batch_segments=0)
+                if not compact_target:
+                    # The reference uses the selected scalar/batched prelude
+                    # math with its original per-layer descriptor uploads.
+                    weights.meta.update(sm70_profile=OWNER_TARGET_PRELUDE_PROFILE, sm70_native_guard_trial=True,
+                        sm70_owner_prelude_zero=torch.zeros(1, dtype=torch.int32, device=weights.device),
+                        sm70_owner_prelude_submitted_frames=0, sm70_owner_prelude_submitted_mtp_frames=0,
+                        sm70_owner_prelude_mtp_counter_overflowed=False)
             preparation = None
             if native:
                 preparation = OwnerPreparation(spec,
@@ -307,10 +318,23 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
                     commit(combined_weights, left, combined.buf, 1, 1, at=at)
                     commit(eager_weights, right, eager.buf, 1, 1, at=at)
                     _committed(left, right)
+                from tensorfold.families.qwen4_exp.cuda.mtp import mtp_stage, mtp_compute
+                expected_windows = [(state, [12], eager.buf.streams[at:at + 1])
+                                    for at, state in enumerate(eager.free[:participants])]
+                actual_windows = [(state, [12], combined.buf.streams[at:at + 1])
+                                  for at, state in enumerate(combined.free[:participants])]
+                expected_mtp = mtp_compute(eager_weights, mtp_stage(eager.mbuf, expected_windows), eager.mbuf).clone()
+                actual_mtp = mtp_compute(combined_weights, mtp_stage(combined.mbuf, actual_windows), combined.mbuf).clone()
+                _equal(actual_mtp, expected_mtp)
+                for left, right in zip(combined.free[:participants], eager.free[:participants]):
+                    left.set_mtp_len(left.mtp_len + 1)
+                    right.set_mtp_len(right.mtp_len + 1)
+                    _committed(left, right)
             assert dense_counter[0] > 0
             for role in ("decode", "mtp"):
                 packet = combined_preparation.workspaces[role].descriptor_frames
-                assert packet.submitted > 0 and packet.error is None and not packet.active
+                assert packet.submitted > 0 and packet.borrowed_preludes > 0 and packet.error is None and not packet.active
+                assert not getattr(combined.buf if role == "decode" else combined.mbuf, "owner_batch_prelude").pending
                 assert packet.copied_layers >= packet.submitted
                 assert packet.layout["frame_rows"] == 32
         assert graphs.bound.hits > 0

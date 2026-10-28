@@ -219,7 +219,7 @@ def test_private_buffer_extent_reuse_and_retirement_preserve_original_full_windo
     monkeypatch.setattr(family_ops, "_NATIVE_FAMILY", False)
     monkeypatch.setattr(family_ops, "_NATIVE_ATTENTION", False)
     private = graph._buffer(kind)
-    assert allocations == [(rows, 262147, {"moe_prefill": True, "owner_role": "mtp" if kind == "mtp" else None})]
+    assert allocations == [(rows, 262147, {"moe_prefill": True, "owner_role": "mtp" if kind == "mtp" else None, "batch_prelude": False})]
     assert private is graph._buffer(kind) and len(allocations) == 1
     if unique:
         assert graph.row_maps[kind][0] is graph.segment_maps[kind][0] is None

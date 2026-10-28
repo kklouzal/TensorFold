@@ -40,7 +40,8 @@ def test_new_profile_requires_issued_native_owner_and_grants_only_exact_nonatten
     if guard:
         monkeypatch.setattr(family_native, "extension", lambda: source.calls.append("extension") or
                             NS(prepare_value_guard=lambda: source.calls.append("guard-code"),
-                               prepare_owner_prelude=lambda: source.calls.append("prelude-code")))
+                               prepare_owner_prelude=lambda: source.calls.append("prelude-code"),
+                               prepare_owner_batch=lambda: source.calls.append("batch-code")))
     monkeypatch.setattr(greedy_native, "extension", lambda: None)
     monkeypatch.setattr(gguf_ops, "extension", lambda: NS(prepare_dense32=lambda: source.calls.append("dense-code")))
     assert module.configure(source.text, tp=8, torch=family.torch) == selected

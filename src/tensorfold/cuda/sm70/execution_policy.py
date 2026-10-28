@@ -196,7 +196,7 @@ def _family_software():
     return record
 
 
-def _prepare_family_trial(text, tp, torch, *, packed=False, target_greedy=False, native_guard=False, owner_prelude=False, dense=False):
+def _prepare_family_trial(text, tp, torch, *, packed=False, target_greedy=False, native_guard=False, owner_prelude=False, dense=False, owner_batch=False):
     # This trial changes no weight/KV representation, persistent workspace,
     # graph allowance or capacity rule. Native module residency precedes the
     # existing physical-free/admission baseline and weight loading.
@@ -215,6 +215,8 @@ def _prepare_family_trial(text, tp, torch, *, packed=False, target_greedy=False,
         module.prepare_value_guard()  # CUDA code residency precedes initial admission.
     if owner_prelude:
         module.prepare_owner_prelude()
+    if owner_batch:
+        module.prepare_owner_batch()
     if packed:
         from .gguf_ops import extension as gguf_extension
 
@@ -273,7 +275,8 @@ def configure(text, *, tp, torch, record_graph_inputs=None):
                                              target_greedy=profile in (TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_FRAME_DESCRIPTORS_TRIAL),
                                              native_guard=profile in (OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_FRAME_DESCRIPTORS_TRIAL),
                                              owner_prelude=profile in (OWNER_TARGET_PRELUDE_TRIAL, OWNER_FRAME_DESCRIPTORS_TRIAL),
-                                             dense=profile == OWNER_FRAME_DESCRIPTORS_TRIAL)
+                                             dense=profile == OWNER_FRAME_DESCRIPTORS_TRIAL,
+                                             owner_batch=profile == OWNER_FRAME_DESCRIPTORS_TRIAL)
                        if family_trial else None)
     family_ops._NATIVE_FAMILY = enabled or family_trial
     family_ops._NATIVE_ATTENTION = enabled
@@ -384,6 +387,13 @@ def prepare_weights(w, *, graph_contract=None):
             w.meta["sm70_owner_prelude_mtp_counter_overflowed"] = False
     if _SELECTED == OWNER_FRAME_DESCRIPTORS_TRIAL:
         w.meta["sm70_family_trial"].update(dense="native32", dense_math="original-fixed-m32-aten-v1")
+    if _SELECTED == OWNER_FRAME_DESCRIPTORS_TRIAL:
+        w.meta["sm70_owner_batch_prelude_trial"] = True
+        w.meta["sm70_owner_prelude_submitted_batches"] = 0
+        w.meta["sm70_owner_prelude_submitted_mtp_batches"] = 0
+        w.meta["sm70_owner_prelude_batch_counter_overflowed"] = False
+        w.meta["sm70_owner_prelude_max_batch_segments"] = 0
+
     w.meta["sm70_profile"] = _SELECTED
     if _SELECTED == "optimized":
         from .attention_qualification import metadata_prepare

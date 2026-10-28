@@ -721,12 +721,14 @@ def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True,
 
     validate_target_indexer_frame(b, segs)
     packet = getattr(getattr(b, "history_owner", None), "descriptor_frames", None)
-    options = dict(logits=logits, context=context, ends=ends, cuts=cuts, features=features, check=check,
-                   input_embeddings=input_embeddings, target_greedy=target_greedy, gather_candidates=gather_candidates)
     if packet is not None and packet.eligible(b, segs):
         with packet.frame(segs, b):
-            return _compute_prepared(w, segs, b, R, **options)
-    return _compute_prepared(w, segs, b, R, **options)
+            return _compute_prepared(w, segs, b, R, logits=logits, context=context, ends=ends, cuts=cuts,
+                features=features, check=check, input_embeddings=input_embeddings,
+                target_greedy=target_greedy, gather_candidates=gather_candidates)
+    return _compute_prepared(w, segs, b, R, logits=logits, context=context, ends=ends, cuts=cuts,
+        features=features, check=check, input_embeddings=input_embeddings,
+        target_greedy=target_greedy, gather_candidates=gather_candidates)
 
 
 def _compute_prepared(w, segs, b, R, *, logits, context, ends, cuts, features, check,

@@ -22,15 +22,16 @@ def envelope(layers, frame_rows, owner_rows, *, bucket_count=None):
         raise ValueError("frame descriptor bucket count differs from its bounded catalogue")
     chunks = (frame_rows + owner_rows - 1) // owner_rows
     stride = (owner_rows * 132 + 4 + 7) // 8 * 8
-    payload = layers * chunks * stride
+    batch_payload = frame_rows * 4 * 8
+    payload = batch_payload + layers * chunks * stride
     if payload > 2**63 - 1:
         raise OverflowError("frame descriptor payload exceeds signed64")
     # Fixed Python/NumPy/Tensor view catalogues, frame records and bounded weak
     # reader registrations. Actual native event/allocator residency is warmed
     # and included in the later physical baseline, never credited as free.
-    metadata = 16384 + layers * chunks * (8192 + bucket_count * 4096) + 2048 * frame_rows
+    metadata = 16384 + layers * chunks * (8192 + bucket_count * 4096) + 8192 * frame_rows
     return {"layers": layers, "frame_rows": frame_rows, "owner_rows": owner_rows,
-            "chunks": chunks, "bucket_count": bucket_count, "stride": stride, "payload_bytes": payload,
+            "chunks": chunks, "bucket_count": bucket_count, "stride": stride, "payload_bytes": payload, "batch_descriptor_bytes": batch_payload,
             "host_metadata_bytes_bound": metadata, "host_commitment_bytes": payload + metadata}
 
 
@@ -39,24 +40,30 @@ class FrameDescriptors:
     def __init__(self, owner, layers, frame_rows, *, mtp):
         self.owner, self.mtp = owner, mtp
         self.layout = self.host = self.device = self.numpy = None
-        self.host_views = self.device_views = self.uploads = self.registered = None
+        self.host_views = self.device_views = self.uploads = self.registered = self.batch_views = None
+        self.batch_host = self.batch_device = None
         self.layer_ids, self.layers, self.buffers = (), (), None
         self.states, self.records, self.segment_rows, self.source_frame = (), None, (), None
         self.active = self.pending_upload = self.pending_done = False
         self.error = self.upload = self.done = self.upload_stream = self.done_stream = None
         self.closed = self.counter_overflowed = self.prepared = False
         self.cursor = self.chunks = self.rows = 0
-        self.submitted = self.copied_layers = 0
+        self.submitted = self.copied_layers = self.borrowed_preludes = 0
         self.layout = envelope(layers, frame_rows, owner.rows, bucket_count=len(owner.native_buckets))
-        self.host_views, self.device_views, self.uploads, self.registered = {}, {}, {}, {}
+        self.host_views, self.device_views, self.uploads, self.registered, self.batch_views = {}, {}, {}, {}, {}
         n = self.layout["payload_bytes"]
         self.host = torch.zeros(n, dtype=torch.uint8, pin_memory=owner.queries.is_cuda)
         self.device = torch.empty(n, dtype=torch.uint8, device=owner.queries.device)
         self.numpy = self.host.numpy()
         stride, b = self.layout["stride"], owner.rows
+        prefix = self.layout["batch_descriptor_bytes"]
+        self.batch_host = self.numpy[:prefix].view(np.int64).reshape(frame_rows, 4)
+        self.batch_device = self.device[:prefix].view(torch.int64).view(frame_rows, 4)
+        for rows in range(1, frame_rows + 1):
+            self.batch_views[rows] = self.batch_device[:rows]
         for chunk in range(self.layout["chunks"]):
             for ordinal in range(layers):
-                at = (chunk * layers + ordinal) * stride
+                at = prefix + (chunk * layers + ordinal) * stride
                 raw = self.numpy[at:at + stride]
                 self.host_views[ordinal, chunk] = (raw[:b * 128].view(np.int64).reshape(b, 16),
                     raw[b * 128:b * 132].view(np.int32), raw[b * 132:b * 132 + 4].view(np.int32))
@@ -66,7 +73,7 @@ class FrameDescriptors:
                 for bucket in owner.native_buckets:
                     self.device_views[ordinal, chunk, bucket] = (d[:bucket], lanes[:bucket], layer)
         for chunks in range(1, self.layout["chunks"] + 1):
-            end = chunks * layers * stride
+            end = prefix + chunks * layers * stride
             self.uploads[chunks] = (self.host[:end], self.device[:end])
         if owner.queries.is_cuda:
             self.upload, self.done = torch.cuda.Event(), torch.cuda.Event()
@@ -172,6 +179,9 @@ class FrameDescriptors:
             self.cursor = 0
             self.active = True
             self.host.zero_()
+            for state, first, last in segments:
+                position = state.mtp_pos if self.mtp else state.pos_dev
+                self.batch_host[first:last] = (position.data_ptr(), state.kv_status.data_ptr(), first, last - first)
             for ordinal, layer in enumerate(self.layers):
                 for chunk in range(self.chunks):
                     base, count = chunk * self.owner.rows, min(self.owner.rows, rows - chunk * self.owner.rows)
@@ -227,6 +237,27 @@ class FrameDescriptors:
             raise secondary[0]
         self.states, self.records, self.segment_rows, self.source_frame = (), None, (), None
 
+    def borrow_prelude(self, buffers, segments, total_rows, *, mtp):
+        """Borrow immutable position/status/span rows until the complete frame retires."""
+        if not self.active or self.error is not None or buffers is not self.buffers or mtp is not self.mtp:
+            raise RuntimeError("batch prelude lacks its canonical active descriptor frame")
+        current = buffers.mtp_indexer_frame if mtp else buffers.target_indexer_frame
+        if current is not self.source_frame or total_rows != self.rows or len(segments) != len(self.segment_rows):
+            raise RuntimeError("batch prelude changed its issued frame or bounded row layout")
+        for (state, first, last), (prior, a0, a1) in zip(segments, self.segment_rows):
+            if state is not prior or first != a0 or last != a1:
+                raise RuntimeError("batch prelude changed its original State row spans")
+            self._check_state(state)
+        if self.upload is not None:
+            stream = torch.cuda.current_stream(self.owner.queries.device)
+            if stream.cuda_stream != self.upload_stream:
+                stream.wait_event(self.upload)
+        if self.borrowed_preludes < (1 << 63) - 1:
+            self.borrowed_preludes += 1
+        else:
+            self.counter_overflowed = True
+        return self.batch_views[total_rows]
+
     def stage(self, segments, layer, base, count, *, mtp, bucket):
         if not self.active or self.error is not None or mtp is not self.mtp:
             raise RuntimeError("canonical cut lacks its active descriptor frame")
@@ -280,13 +311,14 @@ class FrameDescriptors:
     def close(self, *, fenced):
         self.retire(fenced=fenced)
         self.closed, self.prepared = True, False
-        for views in (self.host_views, self.device_views, self.uploads):
+        for views in (self.host_views, self.device_views, self.uploads, self.batch_views):
             if views is not None:
                 views.clear()
-        self.host = self.device = self.numpy = self.upload = self.done = None
+        self.host = self.device = self.numpy = self.batch_host = self.batch_device = self.upload = self.done = None
         self.buffers, self.layers, self.layer_ids = None, (), ()
 
     def record(self):
         return {**(self.layout or {}), "submitted_frames": None if self.counter_overflowed else self.submitted,
                 "copied_layer_chunks": None if self.counter_overflowed else self.copied_layers,
+                "borrowed_preludes": None if self.counter_overflowed else self.borrowed_preludes,
                 "prepared": self.prepared, "active": self.active, "poisoned": self.error is not None}

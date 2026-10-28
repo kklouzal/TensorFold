@@ -106,7 +106,7 @@ def test_metadata_envelope_scales_with_actual_accepted_bucket_catalogue():
     small = envelope(12, 72, 32, bucket_count=6)
     many = envelope(12, 72, 32, bucket_count=32)
     assert small["chunks"] == many["chunks"] == 3
-    assert small["payload_bytes"] == many["payload_bytes"] == 12 * 3 * 4232
+    assert small["payload_bytes"] == many["payload_bytes"] == 72 * 32 + 12 * 3 * 4232
     assert many["host_metadata_bytes_bound"] > small["host_metadata_bytes_bound"]
     assert many["host_commitment_bytes"] == many["payload_bytes"] + many["host_metadata_bytes_bound"]
 
@@ -212,7 +212,128 @@ def test_actual_preparation_funds_complete_global_packets_before_any_role_alloca
     expected = 8 * sum(envelope(layers, 8, 4, bucket_count=3)["host_commitment_bytes"] for layers in (2, 1))
     assert events[0] == ("fund", expected)
     assert [event[0] for event in events] == ["fund", "allocate", "allocate", "allocate"]
-    assert prepared_owner.workspaces["decode"].descriptor_frames.layout["payload_bytes"] == 2144
-    assert prepared_owner.workspaces["mtp"].descriptor_frames.layout["payload_bytes"] == 1072
+    assert prepared_owner.workspaces["decode"].descriptor_frames.layout["payload_bytes"] == 2400
+    assert prepared_owner.workspaces["mtp"].descriptor_frames.layout["payload_bytes"] == 1328
     assert prepared_owner.workspaces["prefill"].descriptor_frames is None
     prepared_owner.close()
+
+
+@pytest.mark.parametrize("count", [1, 8, 24])
+@pytest.mark.parametrize("mtp", [False, True])
+def test_once_frame_borrowed_prelude_rows_match_original_layer_invariant_table(count, mtp):
+    weights, states, owner, packet, buffers, segments = prepared(count, owner_rows=8, mtp=mtp)
+    layers = (weights.mtp.layer,) if mtp else weights.layers
+    with packet.frame(segments, buffers):
+        first_pointer = None
+        for layer in layers:
+            actual = packet.borrow_prelude(buffers, segments, buffers.rows, mtp=mtp)
+            if first_pointer is None:
+                first_pointer = actual.data_ptr()
+            assert actual.data_ptr() == first_pointer
+            expected = torch.empty((buffers.rows, 4), dtype=torch.int64)
+            for state, first, last in segments:
+                expected[first:last] = torch.tensor(((state.mtp_pos if mtp else state.pos_dev).data_ptr(),
+                    state.kv_status.data_ptr(), first, last - first), dtype=torch.int64)
+            assert torch.equal(actual, expected)
+            for base in range(0, buffers.rows, owner.rows):
+                kept = min(owner.rows, buffers.rows - base)
+                owner.stage_native_descriptors(segments, layer, base, kept, mtp=mtp, bucket_rows=owner.native_bucket(kept))
+    assert packet.borrowed_preludes == len(layers) and packet.submitted == 1
+    with pytest.raises(RuntimeError, match="active descriptor frame"):
+        packet.borrow_prelude(buffers, segments, buffers.rows, mtp=mtp)
+    owner.close()
+
+
+@pytest.mark.parametrize("count", [8, 24])
+@pytest.mark.parametrize("mtp", [False, True])
+def test_actual_batch_submit_borrows_packet_without_touching_legacy_dma_owner(monkeypatch, count, mtp):
+    from tensorfold.families.qwen4_exp.cuda.batch_prelude import BatchPrelude
+    from tensorfold.families.qwen4_exp.cuda import history_owner, compact_indexer
+    from tensorfold.cuda.sm70 import family_native
+    weights, states, owner, packet, buffers, segments = prepared(count, owner_rows=8, mtp=mtp)
+    position = NS(inv_freq=torch.ones(1), sections=(1, 1, 1), amplitude=1.0)
+    weights.positions = NS(target=position, mtp=position)
+    weights.cfg.eps = 1e-6
+    weights.meta.update(sm70_owner_prelude_submitted_batches=0, sm70_owner_prelude_submitted_mtp_batches=0,
+                        sm70_owner_prelude_batch_counter_overflowed=False, sm70_owner_prelude_max_batch_segments=0)
+    buffers.target_indexer_position = buffers.mtp_indexer_position = position
+    buffers.pa = torch.zeros((buffers.rows, 2688), dtype=torch.float16)
+    buffers.gated = torch.zeros((buffers.rows, 768), dtype=torch.float16)
+    buffers.q = torch.empty((buffers.rows, 3, 256), dtype=torch.float16)
+    buffers.iq = torch.empty((buffers.rows, 4, 128), dtype=torch.float16)
+    monkeypatch.setattr(history_owner, "_native_prelude_position", lambda value: value is position)
+    monkeypatch.setattr(compact_indexer, "_scalar_text_frame", lambda frame: True)
+    published = []
+    monkeypatch.setattr(history_owner, "_publish_native_frame", lambda state, layer, w, b, first, last, *args, **kw:
+                        published.append((state, first, last)))
+    controls = []
+    def native(projection, descriptor, *args):
+        assert descriptor is packet.batch_views[buffers.rows]
+        controls.append(descriptor.clone())
+    monkeypatch.setattr(family_native, "extension", lambda: NS(owner_prep_batch=native))
+    batch = object.__new__(BatchPrelude)
+    batch.rows, batch.pending, batch.error = buffers.rows, True, None
+    batch.descriptor = torch.full((buffers.rows, 4), 91, dtype=torch.int64)
+    batch.host = torch.full_like(batch.descriptor, 92)
+    batch.view = batch.host.numpy()
+    class ForbiddenDMA:
+        def synchronize(self):
+            pytest.fail("borrowed packet waited on legacy per-layer DMA")
+        def record(self, stream):
+            pytest.fail("borrowed packet recorded legacy per-layer upload")
+    batch.upload = ForbiddenDMA()
+    with packet.frame(segments, buffers):
+        for layer in packet.layers:
+            layer.attn = NS(q_scale=torch.ones(256), k_scale=torch.ones(256), iq_scale=torch.ones(128))
+            assert batch.submit(weights, buffers, layer, segments, buffers.rows, mtp=mtp)
+            for base in range(0, buffers.rows, owner.rows):
+                kept = min(owner.rows, buffers.rows - base)
+                owner.stage_native_descriptors(segments, layer, base, kept, mtp=mtp, bucket_rows=owner.native_bucket(kept))
+    assert len(controls) == len(packet.layers) and len(published) == count * len(packet.layers)
+    assert packet.borrowed_preludes == len(packet.layers) and packet.submitted == 1
+    assert bool((batch.descriptor == 91).all()) and bool((batch.host == 92).all()) and batch.pending
+    assert all(torch.equal(value, controls[0]) for value in controls)
+    owner.close()
+
+
+@pytest.mark.parametrize("slots,refused", [(23, True), (24, False)])
+def test_actual_engine_final_admission_receives_future_frame_host_obligation_before_floor_publication(slots, refused):
+    import ast
+    import inspect
+    import textwrap
+    from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
+    from tensorfold.families.qwen4_exp.cuda.prefix_policy import OWNER_FRAME_DESCRIPTORS_PROFILE
+    method = ast.parse(textwrap.dedent(inspect.getsource(FlashNextEngine._initialize))).body[0]
+    future = next(node for node in method.body if isinstance(node, ast.If)
+        and any(isinstance(child, ast.Attribute) and child.attr == "frame_future_host_bytes" for child in ast.walk(node)))
+    admitted = next(node for node in method.body if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call)
+        and isinstance(node.value.func, ast.Name) and node.value.func.id == "admit")
+    floor = next(node for node in method.body if isinstance(node, ast.If) and isinstance(node.test, ast.Name)
+        and node.test.id == "adaptive_sessions" and any(isinstance(child, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "streams" for target in child.targets) for child in node.body))
+    publication = next(at for at, node in enumerate(floor.body) if isinstance(node, ast.Assign)
+        and any(isinstance(target, ast.Name) and target.id == "resident_windows" for target in node.targets))
+    assert future.lineno < admitted.lineno < floor.lineno
+    calls = []
+    def actual_admit(*args, **kwargs):
+        calls.append(kwargs)
+        return {"session_capacity": {"resident_capacity": slots}}
+    engine = NS(sm70_profile=OWNER_FRAME_DESCRIPTORS_PROFILE, streams="prior", kv_full_windows="prior")
+    owner = NS(frame_rows=32, frame_future_host_bytes=123456, committed_bytes=lambda: 77)
+    space = dict(self=engine, model_dir="fixture", max_len=262147, context_explicit=True,
+        torch=NS(), geometry=object(), vision=False, media_requested=False, rank=0, workspace=0,
+        weight_rule=object(), tp=8, sm70=True, adaptive_sessions=True, gather=None, exl3=False,
+        automatic_capacity={}, numeric_capacity={}, rope_capacity={}, host_capacity={"host_workspace_bytes": 19},
+        adaptive_capacity={}, nvfp4_source=False, nvfp4_preallocated=0, owner_preparation=owner,
+        capacity_geometry=lambda *args: "geometry", admit=actual_admit, resident_windows="prior")
+    code = compile(ast.Module(body=[future, admitted, *floor.body[:publication + 2]], type_ignores=[]),
+                   inspect.getfile(FlashNextEngine), "exec")
+    if refused:
+        with pytest.raises(ValueError, match="at least24"):
+            exec(code, space)
+        assert engine.streams == engine.kv_full_windows == space["resident_windows"] == "prior"
+    else:
+        exec(code, space)
+        assert engine.streams == engine.kv_full_windows == space["resident_windows"] == 24
+    assert len(calls) == 1 and calls[0]["host_workspace_bytes"] == 19 + 123456
+    assert calls[0]["preallocated_device_bytes"] == 77
