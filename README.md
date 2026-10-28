@@ -13,6 +13,11 @@ operating credit and64KiB/rank host metadata;32 existing code variants are
 materialized before the physical baseline. Quality/performance are unqualified;
 current safety/capture and all-six task comparisons remain pending. No new
 kernel algorithm, weight replication, requantization or numeric tolerance.
+The private `CandidateRegion` component captures the original per-row FP32
+candidate clone/top32/ID-cast/logsumexp packet construction. NCCL, codec-status
+validation and sampling remain outside. It is not enrolled in serving and has
+no CLI flag or performance claim. CPU lifecycle and actual SM70 packet-bit
+oracles are required before catalogue funding and model integration.
 
 The private router/GDN/startup composition retains the explicit experimental
 router numerical epoch and adds the existing sealed FP16 State-batched GDN

@@ -614,6 +614,14 @@ def candidates(w: Weights, b: Buffers, logits: torch.Tensor, R: int, *, id_map: 
                offset: int = 0) -> None:
     """Gather each rank's top CAND values, global ids as int32 bits and log-sum-exp into b.cand_all [world, R, 2 CAND + 1] inside the step graph, avoiding a sampling collective."""
 
+    c = candidates_local(w, b, logits, R, id_map=id_map, offset=offset)
+    w.comm.all_gather(c, b.cand_all[:b.world * R * (2 * CAND + 1)])
+
+
+def candidates_local(w: Weights, b: Buffers, logits: torch.Tensor, R: int, *,
+                     id_map: torch.Tensor | None = None, offset: int = 0) -> torch.Tensor:
+    """Original local candidate packet math; no collective or host readback."""
+
     lf = logits.float()
     kept = min(CAND, lf.shape[-1])
     c = b.cand[:R]
@@ -632,7 +640,7 @@ def candidates(w: Weights, b: Buffers, logits: torch.Tensor, R: int, *, id_map: 
             c[row:end, kept:CAND] = -float("inf")
             c[row:end, CAND + kept:2 * CAND].view(torch.int32).fill_(-1)
         c[row:end, 2 * CAND:] = torch.logsumexp(scores, dim=-1, keepdim=True)
-    w.comm.all_gather(c, b.cand_all[:b.world * R * (2 * CAND + 1)])
+    return c
 
 
 def stage(w: Weights, b: Buffers, windows: Sequence[tuple[State, Sequence[int]]], *, late: bool = False) -> list[Seg]:
