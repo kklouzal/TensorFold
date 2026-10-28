@@ -103,16 +103,15 @@ change can be verified.
 
 **Qwen MoE CT NVFP4 qualification (2026-10-17):** the original `AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4` export now runs with RAM-backed experts and its separate DFlash v1 model on the 16 GB RTX PRO 2000 Blackwell. Installed source `099eb4d0` completed serial/drafted identity, strict tools/JSON, streaming, cancellation and four concurrent 512-token replies. The eight-row BF16 draft profile reached about **37 tok/s** in the balanced single-request comparison; four concurrent requests completed at **57.70 aggregate client tok/s** in a separate profile. [Conditions, immutable images and limits](docs/qwen36-ct-nvfp4-validation.md) retain the numerical contracts and conditional performance analysis. Existing affine native-MTP execution keeps its own arithmetic and defaults.
 
-A separate native CT bank-loading candidate batches owned calibration and
-block-scale reads, streams bounded code chunks, and packs directly into final
-CPU authority. The current alternative retains bulk I/O and uses the existing
-checked direct pack for one projection at a time; it remains under comparison
-with indexed bank packing. It preserves original error order and native arithmetic.
-The isolated candidate retains the accepted runtime's kernels and other loading
-paths. Focused AMD64 checkout gates passed **88 CPU and seven native checks**
-on the pinned October 17 Torch build and SM 120; resource admission,
-installed/ARM64 and full-model performance qualification remain pending.
-[Candidate contract and validation scope](docs/nvfp4-loading-validation.md#native-ct-bank-loading-candidate--qualification-pending).
+The per-projection native CT bank-loading alternative is rejected from current
+promotion. It passed **88 CPU and seven native checkout checks**, but a complete
+Qwen3.6 resident-bank comparison on AMD64/SM 120 favored indexed bank packing:
+mean transaction time was **8.308784 s versus 1.100875 s**, with identical complete
+authority bytes and native control outputs. The fixed 24-position comparison
+and its uncertainty are recorded in the [loading validation scope](docs/nvfp4-loading-validation.md#native-ct-bank-loading-alternative--locally-rejected).
+This historical branch remains separate from production. The indexed candidate's
+resource admission, installed/ARM64 and full-model qualification remain pending;
+this result establishes no gain over the accepted runtime.
 
 Weight-only ModelOpt NVFP4 host-authority loading packs original routed payload on CUDA and
 completes its CPU transfer before publication. Scalar conversion stays on CPU;

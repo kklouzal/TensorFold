@@ -16,7 +16,7 @@ RotorQuant replaces the sole actual Triton-JIT chained range comparison with `CO
 
 Outside a managed foundation, NCCL library resolution honors `TF_NCCL_LIB` first, then the active interpreter's NVIDIA namespace package, Torch's bundle, and system discovery. The managed foundation binds its selected physical NCCL provider and refuses a conflicting override. A broken selected override or environment library fails explicitly. The loaded library remains owned through native communicator retirement. POSIX rendezvous sets `SO_REUSEADDR` before binding to reuse retired sessions while preserving active-listener exclusivity; it does not enable `SO_REUSEPORT`. Older sessions created without reuse may still need their kernel timeout. The collective/numerical/retirement bodies are unchanged by these discovery and bind edits.
 
-## Native CT bank loading candidate — qualification pending
+## Native CT bank loading alternative — locally rejected
 
 Native A4 loading can read a bank's validated F32 calibration fields into one
 owned CPU vector, prepare the unchanged FP32 factors, and read an eligible
@@ -25,9 +25,8 @@ lexical source order maps explicitly to the requested local expert order.
 Each projection uses the existing checked CPU direct pack into its final row,
 preserving its integer word prefix and unsigned SF tail, including strided
 host-authority cells. Bulk source owners remain shared through a bounded code
-chunk; no bank-axis index Tensor is created. This alternative is compared with
-the separate indexed-bank implementation; neither lower record counts nor
-fewer calls alone establish a performance result. Other supported topologies
+chunk; no bank-axis index Tensor is created. This historical alternative was
+compared with the separate indexed-bank implementation. Other supported topologies
 retain the projection-ordered path with direct packing into final CPU rows.
 
 Only explicit calibration-invalid results select ordered validation. Unexpected
@@ -55,11 +54,30 @@ strided authority with real single-cell eviction, and file-owner metadata.
 These are checkout functional results; they do not certify an installed
 package, ARM64 execution, total fixed-record admission or full-checkpoint loading.
 
-Resource admission, installed/ARM64 gates and paired full-model startup/request
-performance and quality qualification remain pending. The indexed-bank source's
-earlier checks and checks of broader development compositions keep their own
-identities. No performance gain or additional supported-model/hardware
-qualification is claimed.
+The complete-bank comparison used the actual Qwen3.6 layer-zero checkpoint bank
+with all 256 routed experts and its shared expert, resident publication to the
+RTX PRO 2000 Blackwell, the same pinned AMD64 runtime, eight Torch threads and
+one inter-op thread. Four warmups preceded 24 measured positions in six mirrored
+ABBA/BAAB blocks. Both initial and final complete authority-byte and native-output
+controls passed. The transaction metric included bank reads, packing, synchronous
+device publication and resource retirement; checkpoint metadata/context setup
+was outside that metric. This is a local bank comparison, not full CLI startup.
+
+Per-projection packing (B, private source `1c2045b2`) averaged **8.308784291 s**;
+indexed bank packing (A, frozen `dcfc` composition) averaged **1.100875102 s**.
+The mean paired B−A difference was **+7.207909188 s**, with a predeclared pointwise
+95% paired-block bootstrap interval of **[+6.088634295, +7.843450525] s**;
+all six block differences were positive. The fixed-seed analysis retained every
+completed position. Six blocks do not establish universal distribution, tail or
+confirmatory coverage. The earlier 120-second attempt timed out and remains a
+separate failed diagnostic; its partial positions were excluded from this
+complete-cohort analysis.
+
+B is rejected from current promotion and retained as a historical reference;
+its functional results remain valid within their stated scope. A's total resource
+admission, installed/ARM64 gates and paired full-model startup/request performance
+and quality qualification remain pending. This result establishes no A-versus-
+accepted-runtime gain or additional supported-model/hardware qualification.
 
 ## Historical ABB67 artifacts — audited and affected gates closed
 
