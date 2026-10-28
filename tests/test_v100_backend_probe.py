@@ -1,7 +1,12 @@
 """Finite caller/argument/retirement controls; no model, GPU or replaced host gate."""
 from pathlib import Path
+import hashlib
+import io
+import json
 import os
 import signal
+import subprocess
+import sys
 import time
 import weakref
 from types import SimpleNamespace
@@ -27,6 +32,7 @@ def test_default_arguments_preserve_native_profile_without_override_flags(tmp_pa
     args = probe.arguments(cli(tmp_path))
     assert args.tokens == 128 and args.prompt == probe.DEFAULT_PROMPT and not args.serial_reference
     assert args.repetitions == 1 and args.instrumented_departure_grace_seconds is None
+    assert args.triton_cache_root is None
     assert args.devices == [str(index) for index in range(8)]
     assert args.requested_sm70_profile is None and "TENSORFOLD_SM70_PROFILE" not in os.environ
     assert not hasattr(args, "context") and not hasattr(args, "precision") and not hasattr(args, "position_profile_manifest")
@@ -495,6 +501,205 @@ def test_requested_profile_validation_is_deferred_to_existing_constructor(tmp_pa
     assert os.environ["TENSORFOLD_SM70_PROFILE"] == "constructor-must-refuse-this"
 
 
+@pytest.mark.parametrize("extra", [[], ["--serial-reference", "--repetitions", "2"],
+    ["--serial-reference", "--tokens", "64"], ["--serial-reference", "--thinking"],
+    ["--serial-reference", "--prompt", "other"]])
+def test_capture_requires_one_fixed_short_pair_before_launch(tmp_path, extra):
+    with pytest.raises(SystemExit):
+        probe.arguments(cli(tmp_path) + ["--profile-generation", *extra])
+
+
+def test_capture_mode_is_optional_and_exact_fixed_pair_is_accepted(tmp_path):
+    assert not probe.arguments(cli(tmp_path)).profile_generation
+    args = probe.arguments(cli(tmp_path) + ["--profile-generation", "--serial-reference"])
+    assert args.profile_generation and args.repetitions == 1 and args.tokens == 128
+
+
+def test_trace_summary_requires_actual_cuda_and_cpu_preparation_events(tmp_path):
+    import json
+    events = [{"ph": "X", "cat": "kernel", "name": "realKernel", "dur": 3, "args": {"device": 0}},
+              {"ph": "X", "cat": "cuda_runtime", "name": "cudaLaunchKernel", "dur": 4},
+              {"ph": "X", "cat": "user_annotation", "name": "tensorfold/cpu/input-prepare", "dur": 17, "tid": 42}]
+    path = tmp_path / "trace.json"
+    path.write_text(json.dumps({"traceEvents": events}))
+    summary = probe.trace_summary(path, 2)
+    assert summary["kernel_count"] == summary["cuda_runtime_count"] == 1
+    assert summary["cpu_labels"]["tensorfold/cpu/input-prepare"] == {"count": 1, "inclusive_us": 17.0}
+    for missing in (0, 1, 2):
+        path.write_text(json.dumps({"traceEvents": [event for i, event in enumerate(events) if i != missing]}))
+        with pytest.raises(ValueError, match="no legacy timings fallback"):
+            probe.trace_summary(path, 2)
+    path.write_text(json.dumps({"traceEvents": [{"ph": "X", "cat": "cuda_event", "name": "CUDA_Event", "dur": 12}]}))
+    with pytest.raises(ValueError, match="real CUDA"):
+        probe.trace_summary(path, 2)
+
+
+def test_trace_summary_keeps_mirrored_gpu_ranges_out_of_cpu_labels_and_admission(tmp_path):
+    events = [
+        {"ph": "X", "cat": "kernel", "name": "realKernel", "dur": 3, "args": {"device": 0}},
+        {"ph": "X", "cat": "cuda_runtime", "name": "cudaLaunchKernel", "dur": 4},
+        {"ph": "X", "cat": "user_annotation", "name": "tensorfold/cpu/input-prepare", "dur": 17, "tid": 42},
+        {"ph": "X", "cat": "user_annotation", "name": "tensorfold/body/target", "dur": 50, "tid": 42},
+        {"ph": "X", "cat": "gpu_user_annotation", "name": "tensorfold/cpu/input-prepare", "dur": 170, "tid": 7},
+        {"ph": "X", "cat": "gpu_user_annotation", "name": "tensorfold/body/target", "dur": 500, "tid": 7},
+    ]
+    path = tmp_path / "mirrored-trace.json"
+    path.write_text(json.dumps({"traceEvents": events}))
+    summary = probe.trace_summary(path, 0)
+    assert summary["cpu_label_thread_count"] == 1
+    assert summary["cpu_labels"] == {
+        "tensorfold/cpu/input-prepare": {"count": 1, "inclusive_us": 17.0},
+        "tensorfold/body/target": {"count": 1, "inclusive_us": 50.0},
+    }
+    assert (summary["kernel_count"], summary["cuda_runtime_count"], summary["kernel_duration_us_sum"]) == (1, 1, 3.0)
+    path.write_text(json.dumps({"traceEvents": [row for row in events
+        if not (row["cat"] == "user_annotation" and row["name"] == "tensorfold/cpu/input-prepare")]}))
+    with pytest.raises(ValueError, match="actual CPU preparation labels"):
+        probe.trace_summary(path, 0)
+
+
+def test_observational_label_preserves_arguments_results_and_primary_failure():
+    events = []
+    primary, cleanup = ValueError("original operation"), RuntimeError("label exit")
+
+    class Label:
+        def __enter__(self):
+            events.append("enter")
+
+        def __exit__(self, *_args):
+            events.append("exit")
+            if len(events) > 3:
+                raise cleanup
+
+    def operation(value, *, add):
+        assert events[-1] == "enter"
+        return value + add
+
+    wrapped = probe.observed_call(operation, "fixed", lambda _: Label())
+    assert wrapped(7, add=3) == 10
+
+    def failed():
+        raise primary
+
+    with pytest.raises(ValueError) as caught:
+        probe.observed_call(failed, "fixed", lambda _: Label())()
+    assert caught.value is primary and retained_failure(primary, cleanup)
+    assert events == ["enter", "exit", "enter", "exit"]
+
+
+def test_capture_finish_stops_exports_restores_and_audits_even_stop_failure(tmp_path, monkeypatch):
+    from tensorfold.cuda.sm70 import software_binding
+    events = []
+    primary = RuntimeError("profiler stop failed")
+    owner = SimpleNamespace(operation="instrumented")
+    args = SimpleNamespace(rank=1, out=tmp_path)
+    capture = probe.RankCapture(args)
+    capture.bindings = [(owner, "operation", "original")]
+
+    class Profiler:
+        def stop(self):
+            events.append("stop")
+            raise primary
+
+        def export_chrome_trace(self, path):
+            events.append("export")
+            Path(path).write_text("{}")
+
+    capture.owner = Profiler()
+    monkeypatch.setattr(probe, "trace_summary", lambda *_: {"kernel_count": 1})
+    monkeypatch.setattr(probe, "protected_cupti_identity", lambda: {"API": 28})
+    monkeypatch.setattr(software_binding, "issue_source_binding", lambda **_: events.append("audit") or object())
+    monkeypatch.setattr(software_binding, "verify_source_binding", lambda _: {"verified": True})
+    with pytest.raises(RuntimeError) as caught:
+        capture.finish(retired=True)
+    assert caught.value is primary and owner.operation == "original"
+    assert events == ["stop", "export", "audit"]
+    assert (tmp_path / "rank-1-profile.json").exists() and capture.record["complete"] is False
+
+
+def maps_fixture(monkeypatch, raw):
+    original = Path.open
+    monkeypatch.setattr(Path, "open", lambda path, *args, **kwargs:
+        io.BytesIO(raw) if str(path) == "/proc/self/maps" else original(path, *args, **kwargs))
+
+
+def test_mapping_snapshot_retains_deleted_paths_permissions_and_complete_raw(tmp_path, monkeypatch):
+    raw = (b"1000-2000 rw-s 00000000 00:01 15 /dev/shm/nccl-example (deleted)\n"
+           b"2000-3000 r-xp 00001000 08:01 17 /tmp/removed.so (deleted)\n"
+           b"3000-4000 rw-p 00000000 00:00 0\n")
+    maps_fixture(monkeypatch, raw)
+    result = probe.mapping_snapshot(tmp_path, 3, "before")
+    summary = json.loads(Path(result["summary_path"]).read_text())
+    assert Path(result["raw"]["path"]).read_bytes() == raw
+    assert result["raw"]["complete"] and result["deleted_count"] == 2
+    assert result["raw"]["sha256"] == hashlib.sha256(raw).hexdigest()
+    deleted = summary["deleted_examples"]
+    assert [(row["path_prefix"], row["permissions"], row["classification"]) for row in deleted] == [
+        ("/dev/shm/nccl-example (deleted)", "rw-s", "deleted-shared-file"),
+        ("/tmp/removed.so (deleted)", "r-xp", "deleted-executable-file")]
+    assert deleted[0]["offset"] == "00000000" and deleted[0]["inode"] == "15"
+
+
+def test_mapping_snapshot_overflow_is_explicit_retained_and_fatal(tmp_path, monkeypatch):
+    maps_fixture(monkeypatch, b"x" * 65)
+    monkeypatch.setattr(probe, "MAPPING_SNAPSHOT_BYTES", 64)
+    with pytest.raises(ValueError, match="explicitly incomplete prefix"):
+        probe.mapping_snapshot(tmp_path, 0, "after")
+    summary = json.loads((tmp_path / "rank-0-maps-after.json").read_text())
+    assert (tmp_path / "rank-0-maps-after.txt").read_bytes() == b"x" * 64
+    assert summary["raw"]["complete"] is False and summary["raw"]["limit_bytes"] == 64
+
+
+def test_mapping_snapshot_example_omission_and_path_prefix_are_explicit(tmp_path, monkeypatch):
+    raw = b"".join((f"1000-2000 rw-s 00000000 00:01 {index+1} /dev/shm/" +
+                    "long" * 80 + " (deleted)\n").encode() for index in range(10))
+    maps_fixture(monkeypatch, raw)
+    result = probe.mapping_snapshot(tmp_path, 0, "before")
+    summary = json.loads(Path(result["summary_path"]).read_text())
+    assert result["deleted_count"] == 10 and summary["deleted_examples_omitted"] == 2
+    assert len(summary["deleted_examples"]) == 8 and summary["deleted_examples"][0]["path_truncated"]
+    assert Path(result["raw"]["path"]).read_bytes() == raw
+
+
+def test_capture_start_saves_maps_before_guard_refusal_and_never_starts_profiler(tmp_path, monkeypatch):
+    torch = pytest.importorskip("torch")
+    from tensorfold.cuda.sm70 import software_binding
+    primary = ValueError("source guard refusal")
+    for name in ("LD_PRELOAD", "CUDA_INJECTION64_PATH", "CUPTI_INJECTION64_PATH",
+                 "NVTX_INJECTION64_PATH", "NSYS_CUPTI_LIBRARY_PATH"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(torch.profiler, "supported_activities", lambda: {torch.profiler.ProfilerActivity.CUDA})
+    monkeypatch.setattr(torch.autograd, "kineto_available", lambda: True)
+    monkeypatch.setattr(probe, "protected_cupti_identity", lambda: {"API": 28})
+    def refused(**_):
+        assert (tmp_path / "rank-0-maps-before.txt").exists()
+        raise primary
+    monkeypatch.setattr(software_binding, "issue_source_binding", refused)
+    monkeypatch.setattr(torch.profiler, "profile", lambda **_: pytest.fail("profiler started after source refusal"))
+    capture = probe.RankCapture(SimpleNamespace(rank=0, out=tmp_path))
+    with pytest.raises(ValueError) as caught:
+        capture.start()
+    assert caught.value is primary and capture.owner is None and not capture.bindings
+
+
+def test_capture_mapping_diagnostic_failure_still_runs_retirement_source_guard(tmp_path, monkeypatch):
+    from tensorfold.cuda.sm70 import software_binding
+    diagnostic = OSError("mapping diagnostic failed")
+    primary = ValueError("source guard refusal")
+    capture = probe.RankCapture(SimpleNamespace(rank=0, out=tmp_path))
+    def failed_snapshot(*_):
+        raise diagnostic
+    def refused(**_):
+        raise primary
+    monkeypatch.setattr(probe, "mapping_snapshot", failed_snapshot)
+    monkeypatch.setattr(probe, "protected_cupti_identity", lambda: {"API": 28})
+    monkeypatch.setattr(software_binding, "issue_source_binding", refused)
+    with pytest.raises(ValueError) as caught:
+        capture.finish(retired=True)
+    assert caught.value is primary and retained_failure(primary, diagnostic)
+    assert not capture.record["complete"] and (tmp_path / "rank-0-profile.json").exists()
+
+
 def test_nvtx_push_failure_prevents_generation_and_retires_collector_owner(tokenizer, nvtx_markers, monkeypatch):
     primary = RuntimeError("NVTX initialization failed")
     limit = RequestLimit(1)
@@ -715,6 +920,71 @@ def test_legacy_installed_supervisor_keeps_default_call_without_new_keywords(tmp
     assert probe.launch(args, []) == 0 and calls == [(8, 30)]
     record = json.loads((args.out / "launch-final.json").read_text())
     assert record["supervision"]["available"] is False
+
+
+def test_rank_cache_root_is_inherited_distinct_and_resumable_before_worker_start(tmp_path, monkeypatch):
+    from tensorfold.cuda import expert_launch
+
+    root = tmp_path / "persistent-cache"
+    raw = cli(tmp_path) + ["--triton-cache-root", str(root)]
+    args = probe.arguments(raw)
+    monkeypatch.setenv("TRITON_CACHE_DIR", "parent-shared-cache")
+    seen = []
+    def observe(commands, environments, **_kwargs):
+        for command, environment in zip(commands, environments, strict=True):
+            rank = int(command[-1])
+            expected = str(root / f"rank-{rank}")
+            assert environment["TRITON_CACHE_DIR"] == expected
+            assert environment["CUDA_VISIBLE_DEVICES"] == str(rank)
+            assert command[2:-2] == raw
+            seen.append(expected)
+        assert os.environ["TRITON_CACHE_DIR"] == "parent-shared-cache"
+        return 0
+    monkeypatch.setattr(probe, "installed_identity", lambda _wheel: {})
+    monkeypatch.setattr(expert_launch, "supervise", observe)
+    assert probe.launch(args, raw) == 0 and len(set(seen)) == 8
+    record = json.loads((args.out / "launch-final.json").read_text())
+    assert record["settings"]["triton_cache_root"] == str(root)
+    assert not root.exists()  # Cache creation/content keys remain Triton's responsibility.
+
+
+def test_worker_cache_control_requires_matching_environment_at_argument_boundary(tmp_path, monkeypatch):
+    root = tmp_path / "persistent-cache"
+    raw = cli(tmp_path) + ["--triton-cache-root", str(root), "--rank", "3"]
+    monkeypatch.delenv("TRITON_CACHE_DIR", raising=False)
+    with pytest.raises(SystemExit):
+        probe.arguments(raw)
+    monkeypatch.setenv("TRITON_CACHE_DIR", str(root / "rank-2"))
+    with pytest.raises(SystemExit):
+        probe.arguments(raw)
+    monkeypatch.setenv("TRITON_CACHE_DIR", str(root / "rank-3"))
+    args = probe.arguments(raw)
+    assert args.rank == 3 and args.triton_cache_root == root
+
+
+def test_worker_cache_arguments_validate_in_fresh_process_before_triton_import(tmp_path):
+    root = tmp_path / "persistent-cache"
+    raw = cli(tmp_path) + ["--triton-cache-root", str(root), "--rank", "3"]
+    code = ("import os,sys; from tools.v100_backend_probe import arguments; "
+            "args=arguments(sys.argv[1:]); "
+            "assert 'triton' not in sys.modules and 'torch' not in sys.modules; "
+            "assert os.environ['TRITON_CACHE_DIR']==str(args.triton_cache_root/'rank-3')")
+    result = subprocess.run([sys.executable, "-c", code, *raw],
+        env=dict(os.environ, TRITON_CACHE_DIR=str(root / "rank-3")), capture_output=True, text=True)
+    assert result.returncode == 0, result.stdout + result.stderr
+
+
+def test_unconfigured_rank_cache_preserves_inherited_environment(tmp_path, monkeypatch):
+    from tensorfold.cuda import expert_launch
+
+    args = probe.arguments(cli(tmp_path))
+    monkeypatch.setenv("TRITON_CACHE_DIR", "existing-owner-cache")
+    def observe(_commands, environments, **_kwargs):
+        assert all(environment["TRITON_CACHE_DIR"] == "existing-owner-cache" for environment in environments)
+        return 0
+    monkeypatch.setattr(probe, "installed_identity", lambda _wheel: {})
+    monkeypatch.setattr(expert_launch, "supervise", observe)
+    assert probe.launch(args, []) == 0
 
 
 def test_requested_departure_override_requires_installed_capability_before_launch(tmp_path, monkeypatch):

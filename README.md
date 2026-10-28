@@ -1571,6 +1571,34 @@ filenames. Repeated runs write unique iteration files and retain only the
 current reply pair. Cache state is preserved; each reply's existing cached-token
 statistics distinguish cold and reused prompts for subsequent analysis.
 
+`--profile-generation --serial-reference` selects a diagnostic on the pinned
+Torch `04cf2557`/CUDA 12.9.2 stack: one default, nonthinking short prompt, a
+128-token output allowance and one MTP/serial pair. Each rank starts one public
+Torch CPU/CUDA profiler after model warmup and exports its trace after owned
+engine/transport retirement. CPU profiling includes existing worker threads;
+shape, memory and stack recording stay disabled. Required evidence includes
+actual CUDA kernel/runtime events and CPU preparation labels, plus the protected
+CUPTI and source bindings before and after capture. Bounded raw mapping snapshots
+precede both source guards; overflow fails explicitly. This capture includes
+generation and retirement, and establishes no serving or performance qualification.
+CPU label totals include only CPU `user_annotation` records; mirrored
+`gpu_user_annotation` ranges remain available in the raw trace.
+
+For cache isolation, pass `--triton-cache-root ROOT` under one exclusive rank
+cohort. Before starting workers, the launcher assigns each rank
+`TRITON_CACHE_DIR=ROOT/rank-N`; workers refuse a mismatched inherited setting.
+Triton retains its source/platform/configuration keys inside each persistent
+directory. A private run on the source-built eight-V100 stack exposed a deleted
+mapped Triton 3.8 `cuda_utils` executable. The pinned shared-cache writer can
+replace the common pathname while another rank still maps its previous inode.
+Per-rank directories address that publication mechanism without a library patch
+or a source-guard exception. The older generic profiling failure recorded no
+pathname, so its connection remains an inference. The tool's 81 normal-installed
+CPU checks and pinned cache-consumer controls pass. A private eight-rank capture
+with isolated caches passed both source guards and recorded positive CUDA
+kernel/runtime events and CPU preparation labels on every rank. The unconfigured cache
+selection and model math, context, MTP and admission contracts remain unchanged.
+
 Adaptive startup drains the synthetic warmup request through every bounded
 prefill pass and its decode before publishing FIFO admission. Its temporary
 prompt/order owners retire before that policy transition; warmup errors stop
