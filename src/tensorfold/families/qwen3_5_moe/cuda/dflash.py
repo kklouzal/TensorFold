@@ -25,7 +25,7 @@ from tensorfold.families.qwen3_5.cuda.forward import _mm
 from tensorfold.families.qwen3_5.cuda.glue import embedding
 from tensorfold.families.qwen3_5.cuda.weights import Plain
 
-from ..dflash_metadata import KINDS, checked_headers, positive
+from ..dflash_metadata import KINDS, checked_headers, floating_head, positive
 
 
 def _norm(x, weight, eps):
@@ -83,8 +83,8 @@ class DFlash:
                 raise primary from transport
         else:
             reader.close()
-        if bits in KINDS:                   # proposals read a requantized head (the target's own if it is that kind)
-            self.target_head = Head(self.target_head, KINDS[bits])
+        if bits in KINDS and floating_head(self.target_head):    # proposals read a requantized copy of a BF16 head;
+            self.target_head = Head(self.target_head, KINDS[bits])  # a head stored quantized is borrowed as it is
         self.inv_freq = cfg.rope.inverse_frequencies(torch).to(self.device)
         self._context = (None,) * cfg.layers, (None,) * cfg.layers, 0, 0
 

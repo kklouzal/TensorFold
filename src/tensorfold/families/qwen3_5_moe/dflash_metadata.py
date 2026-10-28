@@ -121,9 +121,17 @@ def checked_headers(directory):
 KINDS = {8: "fp8", 4: "nvfp4"}     # proposal-only requantized drafters (``tensorfold.cuda.requant`` kinds) by bits
 
 
-def draft_weights(directory, *, bits=16):
+def floating_head(head) -> bool:
+    """Whether a target head stores floating weights (a requantized draft copies it; a quantized one is borrowed)."""
+
+    weight = getattr(head, "weight", None)
+    return weight is not None and weight.is_floating_point()
+
+
+def draft_weights(directory, *, bits=16, private_head=True):
     """One projection is read/converted at a time; target embedding is borrowed, the head too unless FP8 (8) or NVFP4
-    (4) copies it privately (counted here: proposals only, the target keeps its BF16 head)."""
+    (4) copies it privately (counted here: proposals only, the target keeps its own head). ``private_head``: whether
+    that copy is made, i.e. the target head is floating (``floating_head``; a quantized head is borrowed)."""
     from tensorfold.cuda.capacity import Weights
     from tensorfold.cuda.requant import resident_bytes, staging_bytes
 
@@ -141,7 +149,7 @@ def draft_weights(directory, *, bits=16):
         else:
             resident += count * 2
             staging = max(staging, count * 2)
-    if kind is not None:                # the head copy is built from the target's resident BF16 head
+    if kind is not None and private_head:   # the head copy is built from the target's resident BF16 head
         resident += resident_bytes(kind, cfg.vocab, cfg.hidden)
         staging = max(staging, staging_bytes(kind, cfg.vocab, cfg.hidden))
     return Weights(resident, staging, 0)

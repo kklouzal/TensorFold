@@ -234,7 +234,7 @@ def test_actual_startup_wires_pool_admission_draft_and_shared_serving(startup, b
         assert (directory, context, explicit, provider) == (state.target, 64, True, torch)
         assert target_geometry is runtime.geometry and admission["draft_geometry"] is draft_runtime
         assert admission["draft_weights"].func is dflash_metadata.draft_weights
-        assert admission["draft_weights"].keywords == {"bits": 4}
+        assert admission["draft_weights"].keywords == {"bits": 4, "private_head": True}   # a BF16 target head
         assert admission["draft_dir"] == state.draft_dir
         assert state.drafts == [(state.draft_dir, engine.w, {"context_limit": 64, "block": 8, "bits": 4})]
         assert state.loads[0][1]["expert_factory"].keywords["cache"] is engine.expert_cache
