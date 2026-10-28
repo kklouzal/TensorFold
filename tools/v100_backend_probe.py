@@ -372,6 +372,7 @@ def trace_summary(path, rank):
     path = Path(path)
     if path.stat().st_size > 8 << 30:
         raise ValueError("complete raw trace exceeds explicit8GiB/rank diagnostic analysis bound")
+    primary, summary_failures = None, [None]
     stream = Stream(path)
     class DiscardMetadata:
         # Header values are fully parsed/validated but not retained by a summary.
@@ -409,8 +410,14 @@ def trace_summary(path, rank):
                 value["count"] += 1
                 value["inclusive_us"] += duration
                 cpu_tids.add(row.get("tid"))
+    except BaseException as error:
+        primary = error
     finally:
-        stream.file.close()
+        try:
+            stream.file.close()
+        except BaseException as error:
+            summary_failures[0] = error
+    finish_failures(primary, summary_failures)
     result = {"rank": rank, "kernel_count": kernels, "cuda_runtime_count": runtime,
         "kernel_duration_us_sum": kernel_us, "cpu_labels": labels, "cpu_label_thread_count": len(cpu_tids),
         "scope": "post-warm generation plus owned retirement; CPU labels inclusive/nested, no utilization/throughput inference"}

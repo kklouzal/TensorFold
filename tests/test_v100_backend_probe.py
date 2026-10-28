@@ -1583,3 +1583,27 @@ def test_dense_optin_requires_actual_dense_profile_and_ceiling24(tmp_path, monke
         probe.arguments(cli(tmp_path)+["--native-dense-trial"])
     actual = probe.arguments(cli(tmp_path)+["--native-dense-trial","--session-ceiling","24"])
     assert actual.native_dense_trial and actual.requested_sm70_profile=="source-owner-target-dense-trial"
+
+
+def test_streaming_summary_preserves_parser_primary_with_real_file_close_failure(tmp_path, monkeypatch):
+    from tools import profile_trace_reader
+    original = profile_trace_reader.Stream
+    secondary = OSError("actual read-owner close diagnostic")
+    class FileWithCloseFailure:
+        def __init__(self, file):
+            self.file = file
+        def read(self, count):
+            return self.file.read(count)
+        def close(self):
+            self.file.close()
+            raise secondary
+    def track(path):
+        stream = original(path)
+        stream.file = FileWithCloseFailure(stream.file)
+        return stream
+    monkeypatch.setattr(profile_trace_reader, "Stream", track)
+    path = tmp_path / "broken.json"
+    path.write_text('{"traceEvents":[',encoding="utf-8")
+    with pytest.raises(ValueError) as failure:
+        probe.trace_summary(path,0)
+    assert failure.value is not secondary and retained_failure(failure.value,secondary)
