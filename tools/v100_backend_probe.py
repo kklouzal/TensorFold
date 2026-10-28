@@ -688,6 +688,30 @@ def check_gdn_batch_engine(engine):
             "pointees": "actual original State FP32rec/F16conv/replayscratch; weak static cache/strong current frame"}
 
 
+def check_router_blas_engine(engine):
+    """Read actual prepared owners and prepaid charges on every rank before submit."""
+    from tensorfold.cuda.sm70.router_blas import PROFILE, RolePlans, role_bytes, role_payload_bytes
+
+    if engine.sm70_profile != PROFILE or engine.execution_rows != 32:
+        raise ValueError("actual router factory differs from private row32 profile")
+    roles = (("target", engine.multi.buf.router_blas, 48), ("mtp", engine.multi.mbuf.router_blas, 1))
+    for _name, owner, count in roles:
+        device, host = role_bytes(32, count)
+        if (type(owner) is not RolePlans or len(owner.owners) != count or len(owner.plans) != count
+                or set(owner.plans) != {id(weight) for weight in owner.owners}
+                or owner.gpu_bytes != device or owner.host_bytes != host
+                or owner.gpu_payload_bytes != role_payload_bytes(32, count) or owner.overflowed):
+            raise ValueError("actual router role ownership/resources differ from admitted plan")
+    charged_device = sum(role_bytes(32, count)[0] for _, _, count in roles)
+    charged_host = WORLD * sum(role_bytes(32, count)[1] for _, _, count in roles)
+    if (engine.capacity_plan.get("device_workspace_bytes_estimate", 0) < charged_device
+            or engine.capacity_plan.get("host_workspace_bytes_estimate", 0) < charged_host):
+        raise ValueError("actual router role funding is missing before logical admission")
+    return {"enabled": True, "target_weights": 48, "mtp_weights": 1, "target_rows": 32,
+            "device_charge_per_rank": charged_device, "raw_device_payload_per_rank": 801024,
+            "global_host_charge": charged_host, "scope": "eager target/MTP only; graph/prefill canonical; experimental numeric implementation"}
+
+
 def concurrency_module():
     if __package__:
         from . import finite_concurrency
@@ -1006,6 +1030,8 @@ def worker(args):
         if getattr(args, "gdn_state_batch_trial", False):
             check_engine(engine, session_ceiling=24, require_scheduler=args.rank == 0)
             report["gdn_state_batch"] = check_gdn_batch_engine(engine)
+        if getattr(engine, "sm70_profile", None) == ROUTER_BLAS_TRIAL:
+            report["router_blas"] = check_router_blas_engine(engine)
         report["capacity_plan"] = engine.capacity_plan
         report["graph_execution"] = {"before_requests": graph_execution_snapshot(engine),
             "after_requests": None, "delta": None,

@@ -1,5 +1,18 @@
 # TensorFold fork
 
+The private router/GDN/startup composition retains the explicit experimental
+router numerical epoch and adds the existing sealed FP16 State-batched GDN
+implementation with `--gdn-state-batch-trial` and private environment value1.
+The optional `--startup-content-workers 3` hashes disjoint whole files using
+three owned retirement-latched workers, with226,504,704 global host bytes;
+default one-worker startup and default model math remain unchanged. Router
+staging and GDN catalogue/counter budgets are additive before admission. The
+individual router quick screen reached30.7/25.8/42.9/67.3/95.8/92.6 TPS at
+N1/2/4/8/16/24, including one fewer N1 committed token than its30.8 baseline.
+All55 request prefixes and six quality answers matched both named references.
+These single-screen observations do not qualify the combined design, broad
+quality or repeated performance; actual integrated all-six checks are pending.
+
 The private `source-batch-router-blas-trial` is an unqualified numerical
 experiment: eager decode/MTP routing uses shared-pointer cuBLAS SgemvBatched,
 with prepaid per-role FP32 staging and per-weight pointer tables. Prefill and

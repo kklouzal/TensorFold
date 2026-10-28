@@ -135,3 +135,26 @@ def test_actual_moe_forward_reaches_real_router_prepared_boundary(monkeypatch):
     assert calls[0][2].data_ptr() == logits.data_ptr()
     assert rb.role_payload_bytes(32, 48) + rb.role_payload_bytes(32, 1) == 801024
     assert sum(rb.role_bytes(32, n)[0] for n in (48, 1)) == 814592
+
+
+
+def test_actual_router_factory_resource_preflight_on_each_rank():
+    from tools import v100_backend_probe as probe
+
+    def role(count):
+        owner = object.__new__(rb.RolePlans)
+        owner.owners = tuple(object() for _ in range(count))
+        owner.plans = {id(weight): object() for weight in owner.owners}
+        owner.gpu_bytes, owner.host_bytes = rb.role_bytes(32, count)
+        owner.gpu_payload_bytes = rb.role_payload_bytes(32, count)
+        owner.overflowed = False
+        return owner
+    engine = NS(sm70_profile=rb.PROFILE, execution_rows=32,
+        multi=NS(buf=NS(router_blas=role(48)), mbuf=NS(router_blas=role(1))),
+        capacity_plan={"device_workspace_bytes_estimate": 814592, "host_workspace_bytes_estimate": 7471104})
+    result = probe.check_router_blas_engine(engine)
+    assert result["device_charge_per_rank"] == 814592
+    assert result["raw_device_payload_per_rank"] == 801024
+    engine.capacity_plan["device_workspace_bytes_estimate"] -= 1
+    with pytest.raises(ValueError, match="funding"):
+        probe.check_router_blas_engine(engine)

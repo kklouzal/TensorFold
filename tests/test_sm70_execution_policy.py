@@ -248,3 +248,15 @@ def test_router_trial_keeps_batch_dense_policy_and_unrelated_selectors_disabled(
     assert not policy.proposal._ENABLED and not policy.context._ENABLED
     assert policy.weights.GGUFExperts.implementation == "packed_exact"
     assert policy.weights.GGUFDense.implementation == policy.weights.GGUFConcat.implementation == "native32"
+
+
+
+def test_router_profile_explicitly_composes_sealed_gdn_flag(policy, monkeypatch):
+    from tensorfold.cuda.sm70 import router_blas
+    monkeypatch.setenv(policy.module.PROFILE_ENV, router_blas.PROFILE)
+    monkeypatch.setenv("TENSORFOLD_SM70_GDN_STATE_BATCH", "1")
+    monkeypatch.setattr(policy.module, "_prepare_family_trial", lambda *args, **kw: {})
+    monkeypatch.setattr(router_blas, "extension", lambda: object())
+    assert policy.module.configure(text(), tp=8, torch=torch) == router_blas.PROFILE
+    assert policy.family._NATIVE_FAMILY and not policy.family._NATIVE_ATTENTION
+    assert not policy.routing._NATIVE_LOGITS and not policy.padded._ENABLED
