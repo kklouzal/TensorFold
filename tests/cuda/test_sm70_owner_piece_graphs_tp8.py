@@ -81,6 +81,30 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
             base.cfg.layers += 1
             base.cfg.layer_types = [*base.cfg.layer_types, "attention"]
             base.mtp = replace(base.mtp, layer=replace(base.mtp.layer, index=base.cfg.layers))
+        if target_greedy == "bound-dense":
+            from dataclasses import fields, is_dataclass, replace
+            from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense
+
+            def actual_target_dense(value):
+                # Only this new case replaces synthetic target Linear adapters
+                # with the actual owned wrapper on both sides of the oracle.
+                # Stock MTP Dense/DenseExperts retain their distinct semantics.
+                if (getattr(value, "kernel", None) == "gguf"
+                        and isinstance(getattr(value, "weight", None), torch.Tensor)
+                        and value.weight.ndim == 2):
+                    return GGUFDense(value.weight)
+                if is_dataclass(value):
+                    return replace(value, **{item.name: actual_target_dense(getattr(value, item.name))
+                                             for item in fields(value) if item.init})
+                if isinstance(value, list):
+                    return [actual_target_dense(item) for item in value]
+                if isinstance(value, tuple):
+                    return tuple(actual_target_dense(item) for item in value)
+                return value
+
+            base = actual_target_dense(base)
+            assert isinstance(base.head, GGUFDense)
+            assert isinstance(base.layers[1].attn.proj, GGUFDense)
         width = base.cfg.vocab // 8
         base.head.weight = base.head.weight[rank * width:(rank + 1) * width].contiguous()
         base.head.n, base.comm = width, comm
