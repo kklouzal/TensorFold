@@ -135,6 +135,8 @@ def arguments(argv=None):
                         help="explicit experimental pointer-batched FP32 router; requires matching numeric profile, native Dense/batch and resident24")
     parser.add_argument("--owner-batch-prelude-trial", action="store_true",
                         help="private exact multi-State native prelude composed with selected Dense; explicit matching profile and native-Dense intent required; unqualified")
+    parser.add_argument("--gdn-state-batch-trial", action="store_true",
+                        help="private exact FP16 nv6 State-batch screen; requires explicit matching APP environment and batch/Dense/24 intent")
     parser.add_argument("--native-dense-trial", action="store_true",
                         help="private exact native32 Dense composition with native target/MTP prelude; requires explicit matching SM70 profile and session ceiling24; unqualified")
     parser.add_argument("--overlap-content-capture", action="store_true",
@@ -222,6 +224,15 @@ def arguments(argv=None):
         parser.error("--router-blas-trial and explicit source-batch-router-blas-trial must agree")
     if args.router_blas_trial and (not args.owner_batch_prelude_trial or not args.native_dense_trial or args.session_ceiling != 24):
         parser.error("router trial requires native Dense, owner batch prelude and session-ceiling24")
+    gdn_flag = os.environ.get("TENSORFOLD_SM70_GDN_STATE_BATCH")
+    if args.gdn_state_batch_trial:
+        if gdn_flag != "1" or not args.owner_batch_prelude_trial or not args.fast_grid or not args.quality_spotchecks:
+            parser.error("--gdn-state-batch-trial requires private env1, batch/Dense/24, FASTv2 and unchanged quality checks")
+        if args.fast_grid_protocol != "fast-grid-v2":
+            parser.error("GDN State batch first screen requires closed FASTv2/2048")
+    elif gdn_flag is not None:
+        parser.error("private GDN environment requires explicit --gdn-state-batch-trial intent")
+
     if args.expect_prefix_reuse:
         from tensorfold.families.qwen4_exp.cuda.prefix_policy import state_epoch
 
@@ -375,14 +386,14 @@ def prepared_prompt(engine, tokenizer, args):
                     "rendered": rendered, "token_ids": tokens}
 
 
-def check_engine(engine, *, session_ceiling=None):
+def check_engine(engine, *, session_ceiling=None, require_scheduler=True):
     """Refuse a changed execution profile before host finalization/admission."""
     plan = engine.capacity_plan
     solved, full = plan["session_capacity"], plan["kv_full_windows"]
     if (engine.tp != WORLD or engine.depth != DEPTH or engine.confidence != CONFIDENCE
             or engine.context_window != CONTEXT or engine.indexer_history != "gpu"
             or engine.kv_pair.key_dtype != "int8" or engine.kv_pair.value_dtype != "int8"
-            or engine.w.mtp is None or engine.scheduler is None or engine.retention_catalog is None
+            or engine.w.mtp is None or (require_scheduler and engine.scheduler is None) or engine.retention_catalog is None
             or engine.w.meta.get("execution_provider") != "sm70"
             or engine.w.meta.get("execution_dtype") != "float16"
             or (engine.w.meta["full"].hidden, engine.w.meta["full"].layers, engine.w.meta["full"].vocab)
@@ -392,7 +403,7 @@ def check_engine(engine, *, session_ceiling=None):
             or solved["full_context_commitments"] != solved["resident_capacity"]
             or not full["materialized"]):
         raise ValueError("loaded engine differs from native262144/INT8/TP8/auto/Q8-MTP2 profile")
-    if engine.scheduler._request_limit is not None:
+    if require_scheduler and engine.scheduler._request_limit is not None:
         raise ValueError("finite backend host admission must precede logical request publication")
 
 
@@ -532,10 +543,14 @@ def graph_execution_snapshot(engine):
     """Bounded host counters, not a device-completion or timing instrument."""
     decoder = _owned_attributes(engine).get("multi")
     owner = _owned_attributes(decoder).get("graphs")
-    if owner is None:
-        return None
     fields = _owned_attributes(owner)
+    batch = _owned_attributes(_owned_attributes(decoder).get("buf")).get("gdn_state_batch")
+    submitted = _owned_attributes(batch).get("submitted")
+    if owner is None and submitted is None:
+        return None
     counters = {}
+    if type(submitted) is int and 0 <= submitted <= (1 << 63) - 1:
+        counters["gdn.batch_submitted_layers"] = submitted
     names = ("hits", "misses", "lane_declines", "verify_hits", "mtp_hits",
              "eager_declines", "verify_misses", "mtp_misses")
     for role, values in (("owner", fields), ("bound", _owned_attributes(fields.get("bound")))):
@@ -625,6 +640,47 @@ def batch_preparation_evidence(profile, count, before, after):
         result["reason"] = ("N1 must retain scalar preparation" if count == 1
                             else "multi-State cohort requires actual target and MTP native batches")
     return result
+
+GDN_EVIDENCE_CONTROL_BYTES = 8192
+
+
+def gdn_batch_evidence(count, before, after):
+    """Exact host submission counter evidence, never device timing or CUDA completion."""
+    field = "gdn.batch_submitted_layers"
+    result = {"passed": False, "available": False, "cohort_N": count,
+              "scope": "target-layer batch submissions during this readiness/decode/cancel/drain cohort; not device time"}
+    if any(type(snapshot) is not dict or type(snapshot.get("counters")) is not dict
+           or type(snapshot["counters"].get(field)) is not int
+           or not 0 <= snapshot["counters"][field] <= (1 << 63) - 1 for snapshot in (before, after)):
+        result["reason"] = "required GDN submission counter unavailable or invalid"
+        return result
+    delta = after["counters"][field] - before["counters"][field]
+    result.update(available=True, submitted_layers=delta)
+    result["passed"] = delta == 0 if count == 1 else delta > 0
+    if not result["passed"]:
+        result["reason"] = "N1 must remain original; multi-State cohort must actually submit batch GDN"
+    return result
+
+
+def check_gdn_batch_engine(engine):
+    """Check actual factory result/funding before any finite logical caller admission."""
+    from tensorfold.families.qwen4_exp.cuda.gdn_state_batch import GDNStateBatch, workspace_bytes
+
+    decoder = engine.multi
+    owner = decoder.buf.gdn_state_batch
+    host_bytes = workspace_bytes(36)[1]
+    if (engine.w.meta.get("sm70_gdn_state_batch_trial") is not True or type(owner) is not GDNStateBatch
+            or engine.execution_rows != 32 or engine.capacity_plan.get("execution_envelope", {}).get("target_rows") != 32
+            or owner.layers != 36 or owner.host.shape != (36, 24, 10) or owner.frame.shape != (24, 4)
+            or owner.host.device.type != "cpu" or owner.frame.device.type != "cpu"
+            or engine.w.cfg.nk != 2 or engine.w.cfg.nv != 6
+            or engine.capacity_plan.get("host_workspace_bytes_estimate", 0) < 8 * host_bytes):
+        raise ValueError("actual GDN batch factory/funding differs from row32/native24 FP16nv6 contract")
+    return {"enabled": True, "layers": 36, "max_states": 24, "target_rows": 32,
+            "extra_device_bytes": 0, "funded_global_host_bytes": 8 * host_bytes,
+            "dispatch": "privateFP16nv6; N1/prefill/longchains/modelgraph original",
+            "pointees": "actual original State FP32rec/F16conv/replayscratch; weak static cache/strong current frame"}
+
 
 def concurrency_module():
     if __package__:
@@ -741,6 +797,12 @@ def run_fast_grid(engine, tokenizer, args, report, limit, pool, prepared, finite
                 if not evidence["passed"]:
                     result["passed"] = False
                     result["screen"]["measurement_valid"] = False
+            if getattr(args, "gdn_state_batch_trial", False):
+                gdn_evidence = gdn_batch_evidence(count, graph_before, graph_after)
+                result["gdn_state_batch"] = gdn_evidence
+                if not gdn_evidence["passed"]:
+                    result["passed"] = False
+                    result["screen"]["measurement_valid"] = False
             write_report(args.out / f"fast-mtp-target-n{count:02d}.json", result,
                          allowance=finite.MAXIMUM * MAX_RECEIPT_BYTES)
         summary = finite.run_screen_case(pool, count=count, maximum_tokens=args.tokens, vocab=vocab,
@@ -803,7 +865,9 @@ def run_concurrency_leader(engine, tokenizer, args, report):
         max_concurrent_requests=finite.MAXIMUM, worker_stack_bytes=finite.STACK_BYTES,
         control_payload_bytes=finite.control_payload_bytes(args.tokens) + quality_control
             + (finite.screen_control_payload_bytes(args.tokens) if getattr(args, "fast_grid", False) else 0)
-            + (BATCH_EVIDENCE_CONTROL_BYTES if engine.sm70_profile in (OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL) else 0))
+            + (BATCH_EVIDENCE_CONTROL_BYTES if engine.sm70_profile in (OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL) else 0)
+            + (GDN_EVIDENCE_CONTROL_BYTES if getattr(args, "gdn_state_batch_trial", False) else 0))
+
     limit, pool = RequestLimit(finite.MAXIMUM), None
     primary, failures = None, [None, None]
     report["concurrency"] = {"grid": finite.GRID, "caller": caller.__dict__,
@@ -933,6 +997,9 @@ def worker(args):
             **({"execution_profile_manifest": args.execution_profile_manifest}
                if getattr(args, "execution_profile_manifest", None) is not None else {}))
         record_execution_profile(engine, report, requested=args.requested_sm70_profile)
+        if getattr(args, "gdn_state_batch_trial", False):
+            check_engine(engine, session_ceiling=24, require_scheduler=args.rank == 0)
+            report["gdn_state_batch"] = check_gdn_batch_engine(engine)
         report["capacity_plan"] = engine.capacity_plan
         report["graph_execution"] = {"before_requests": graph_execution_snapshot(engine),
             "after_requests": None, "delta": None,

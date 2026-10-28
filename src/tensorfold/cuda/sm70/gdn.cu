@@ -51,7 +51,7 @@ __device__ __forceinline__ void update(float (&s)[4][4], const float (&kk)[4], c
 }
 
 template <int NK, int NV, bool NegativeDecay>
-__global__ void __launch_bounds__(1024) chain_kernel(
+__device__ __forceinline__ void chain_body(
         const __half* __restrict__ P, const __half* __restrict__ cs,
         const __half* __restrict__ cw, const float* __restrict__ state_in,
         const float* __restrict__ decay_parameter, const float* __restrict__ dt_bias,
@@ -163,6 +163,37 @@ __global__ void __launch_bounds__(1024) chain_kernel(
     }
 }
 
+template <int NK, int NV, bool NegativeDecay>
+__global__ void __launch_bounds__(1024) chain_kernel(
+        const __half* P, const __half* cs, const __half* cw, const float* state_in,
+        const float* decay_parameter, const float* dt_bias, const __half* norm_w, float eps, int rows,
+        __half* out, float* xs, float* state_out, float* k_save, __half* v_save, float* g_save,
+        float* b_save, const int* keep_rows) {
+    chain_body<NK, NV, NegativeDecay>(P, cs, cw, state_in, decay_parameter, dt_bias, norm_w, eps,
+        rows, out, xs, state_out, k_save, v_save, g_save, b_save, keep_rows);
+}
+
+// One independent State chain per grid.y. The descriptor is owned and validated
+// by the serialized frame owner; no host address is dereferenced by the CPU.
+struct BatchArguments { int64_t values[24 * 10]; };
+static_assert(sizeof(BatchArguments) + 8 * sizeof(void*) + 32 < 4096, "Volta kernel parameter budget");
+
+template <bool NegativeDecay>
+__global__ void __launch_bounds__(1024) batch_kernel(
+        const __half* P, const __half* cw, const float* decay_parameter, const float* dt_bias,
+        const __half* norm_w, float eps, __half* out, float* xs, const BatchArguments arguments) {
+    constexpr int NV = 6, NK = 2, PW = 2 * NK * DK + 2 * NV * DV + 2 * NV;
+    const int64_t* item = arguments.values + blockIdx.y * 10;
+    const int first = int(item[8]), rows = int(item[9]);
+    chain_body<NK, NV, NegativeDecay>(P + size_t(first) * PW,
+        reinterpret_cast<const __half*>(item[0]), cw, reinterpret_cast<const float*>(item[1]),
+        decay_parameter, dt_bias, norm_w, eps, rows, out + size_t(first) * NV * DV,
+        xs + size_t(first) * NV * 4, reinterpret_cast<float*>(item[2]),
+        reinterpret_cast<float*>(item[3]), reinterpret_cast<__half*>(item[4]),
+        reinterpret_cast<float*>(item[5]), reinterpret_cast<float*>(item[6]),
+        reinterpret_cast<const int*>(item[7]));
+}
+
 template <int NK, int NV>
 __global__ void __launch_bounds__(1024) replay_kernel(
         const float* __restrict__ state_in, const float* __restrict__ k_save,
@@ -245,5 +276,33 @@ void sm70_gdn_replay_cuda(const at::Tensor& state_in, const at::Tensor& k_save, 
             ptr<float>(state_in), ptr<float>(k_save), ptr<__half>(v_save), ptr<float>(g_save),
             ptr<float>(b_save), (int)rows, ptr<float>(state_out));
     else TORCH_CHECK(false, "gdn replay: 48, 24, 12 or 6 value heads");
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}
+
+
+void sm70_gdn_prepare_batch_cuda() {
+    cudaFuncAttributes attributes;
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, batch_kernel<true>));
+    C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, batch_kernel<false>));
+}
+
+void sm70_gdn_batch_cuda(const at::Tensor& projection, const at::Tensor& weight,
+        const at::Tensor& decay, const at::Tensor& bias, const at::Tensor& norm,
+        double eps, at::Tensor output, at::Tensor sums, const at::Tensor& table, const at::Tensor& frame,
+        int64_t layer, int64_t states, bool negative_decay) {
+    auto stream = at::cuda::getCurrentCUDAStream();
+    const int64_t* catalogue = table.data_ptr<int64_t>() + layer * 24 * 10;
+    const int64_t* slots = frame.data_ptr<int64_t>();
+    BatchArguments arguments{};
+    for (int state = 0; state < states; ++state)
+        for (int column = 0; column < 10; ++column)
+            arguments.values[state * 10 + column] = catalogue[slots[state * 4] * 10 + column];
+    auto launch = [&](auto negative) {
+        constexpr bool direct = decltype(negative)::value;
+        batch_kernel<direct><<<dim3(6, states), 1024, 0, stream>>>(
+            ptr<__half>(projection), ptr<__half>(weight), ptr<float>(decay), ptr<float>(bias),
+            ptr<__half>(norm), float(eps), ptr<__half>(output), ptr<float>(sums), arguments);
+    };
+    if (negative_decay) launch(std::true_type{}); else launch(std::false_type{});
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
