@@ -11,6 +11,26 @@ Installed ARM and integrated performance qualification remain pending; no gain
 or new default is claimed.
 [Prototype contract and pending checks](docs/gemma-moe-up-validation.md).
 
+The private `tools/gemma4_cuda_moe_bench.py` component runner has been authored
+for two authenticated original banks with explicitly synthetic inputs. It
+retains all six configurations and the public reference over fixed locality,
+row and eager/graph cells. Its first SDK CPU workflow collected 28 cases:
+27 passed and one publisher cleanup fixture failed because it mocked the old
+unlink boundary. The fixture now targets the qualified publisher's actual
+`os.unlink` call. A fresh pinned SDK CPU run then passed all 28 cases with no
+skips (8 publisher and 20 component controls); both actual reviews closed.
+The fresh small CUDA workflow then passed all 8 cases with no skips on local
+SM12.0: the public entry, all six private configurations and stale-output
+detection, including graph replay. Both actual reviews closed; the current
+five changed Python files passed the scoped lint checks. These functional
+results do not qualify real-bank timings. Required input and
+resource bindings, graph policy and test commands are in the
+[component diagnostic contract](docs/gemma-moe-up-validation.md#bounded-component-diagnostic-real-bank-run-pending).
+Its graph/stream/inference boundaries retain a body failure alongside an exit
+failure using the existing library context protocol. The required managed
+toolchain-state read owner separately passed 13 host CPU checks; that result
+does not independently qualify the component workflow or real-bank diagnostic.
+
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.
 Source `ed24272a` passed 100 source CPU checks and 100 fresh installed ARM64

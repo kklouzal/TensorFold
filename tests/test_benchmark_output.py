@@ -2,10 +2,10 @@
 import importlib.util
 import json
 import os
-from pathlib import Path
 import stat
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -105,6 +105,10 @@ class Output(unittest.TestCase):
             def fdopen(*args, **kwargs):
                 stream = real_open(*args, **kwargs)
                 class Owner:
+                    @property
+                    def closed(self):
+                        return stream.closed
+
                     def close(self):
                         stream.close()
                         raise secondary
@@ -139,12 +143,12 @@ class Output(unittest.TestCase):
             path = Path(directory) / 'report.json'
             path.write_text('previous')
             primary, cleanup = OSError('replace failed'), PermissionError('owned unlink failed')
-            original = Path.unlink
-            def unlink(temporary):
-                if temporary.name.endswith('.tmp'):
+            original = output.os.unlink
+            def unlink(temporary, *args, **kwargs):
+                if Path(temporary).name.endswith('.tmp'):
                     raise cleanup
-                return original(temporary)
-            with patch.object(output.os, 'replace', side_effect=primary), patch.object(Path, 'unlink', unlink), \
+                return original(temporary, *args, **kwargs)
+            with patch.object(output.os, 'replace', side_effect=primary), patch.object(output.os, 'unlink', unlink), \
                     self.assertRaises(OSError) as caught:
                 output.write_json(path, {'report': 17})
             self.assertIs(caught.exception, primary)
