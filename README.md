@@ -51,7 +51,7 @@ profile epoch and pre-admission control/header funding retain the 24-window
 contract. Numerical, quality and six-concurrency performance gates are pending.
 
 
-The finite diagnostic opt-in `--profile-concurrency 8` or `16` captures exactly
+The finite diagnostic opt-in `--profile-concurrency 1`, `8` or `16` captures exactly
 one instrumented cohort with the pinned public all-thread Torch CPU/CUDA
 profiler. It retains the existing30-second readiness bound,10-second decode
 window and expected cancellation/drain proof, plus a two-token Notebook bringup.
@@ -59,7 +59,11 @@ It requires the ordinary fast-grid arguments with512 output cells and refuses
 quality/serial/repetition combinations. CPU labels cover batching, owner
 preparation, experts and collectives; shapes/stacks/memory capture stay disabled.
 The diagnostic is separate from the unchanged all-six performance comparison;
-its timings cannot establish throughput gains or quality. Protected CUPTI28
+its timings cannot establish throughput gains or quality. Single-request
+profiling requires explicit fast-grid-v2/2048 output cells so a full10-second
+window can cover the85-token/s target. Graph capture alone is not replay proof;
+the diagnostic retains actual before/after graph hit and decline counters,
+while trace kernels correlate to cudaGraphLaunch separately from ordinary launches. Protected CUPTI28
 and before/after source/retirement guards remain required on all eight ranks.
 The diagnostic also labels native descriptor staging, canonical State storage
 inventory/signatures and indexer-frame validation; static method binding and

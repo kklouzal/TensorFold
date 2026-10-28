@@ -159,8 +159,8 @@ def arguments(argv=None):
                         help="explicit protocol: v1 uses320/512outputcells; v2 funds2048cells for full10s >85tokens/s screens; sameprompts/window/EOS/quality")
     parser.add_argument("--quality-spotchecks", action="store_true",
                         help="after the unchanged concurrency grid, run six fixed independent answer/format checks with320-token allowances; requires grid and --tokens>=320")
-    parser.add_argument("--profile-concurrency", type=int, choices=(8,16),
-                        help="instrumented diagnostic: exactlyone8or16-request cohort,30sreadiness/10sdecode/cancel+drain; requires --concurrency-grid --fast-grid --tokens512; no quality/serial/repeats; notall6performancecomparison")
+    parser.add_argument("--profile-concurrency", type=int, choices=(1,8,16),
+                        help="instrumented diagnostic: exactlyone1/8/16-request cohort,30sreadiness/10sdecode/cancel+drain; requires --concurrency-grid --fast-grid --tokens512; no quality/serial/repeats; notall6performancecomparison")
     parser.add_argument("--thinking", action="store_true", help="pass enable_thinking=True to the unchanged target template")
     parser.add_argument("--serial-reference", action="store_true", help="also run a separately labeled draft=False reply with MTP loaded")
     parser.add_argument("--rank", type=int, help=argparse.SUPPRESS)
@@ -184,9 +184,11 @@ def arguments(argv=None):
         parser.error("--fast-grid requires --concurrency-grid, protocol-outputcap320or512(v1)/2048(v2), --repetitions1 and MTPonly")
     if args.quality_spotchecks and (not args.concurrency_grid or args.tokens < 320):
         parser.error("--quality-spotchecks requires --concurrency-grid and --tokens>=320 for the declared caller funding")
-    if args.profile_concurrency is not None and (not args.fast_grid or args.tokens != 512 or args.quality_spotchecks
+    if args.profile_concurrency is not None and (not args.fast_grid or args.tokens not in (512,2048) or args.quality_spotchecks
             or args.serial_reference or args.repetitions != 1):
-        parser.error("--profile-concurrency requires --concurrency-grid --fast-grid --tokens512, noquality/serial/repeats")
+        parser.error("--profile-concurrency requires fast-grid/512(v1)or2048(v2), noquality/serial/repeats")
+    if args.profile_concurrency == 1 and (args.fast_grid_protocol != "fast-grid-v2" or args.tokens != 2048):
+        parser.error("--profile-concurrency1 requires explicit fast-grid-v2/2048 for full10s >85tokens/s diagnostics")
     if args.expect_prefix_reuse and args.repetitions < 2:
         parser.error("--expect-prefix-reuse requires at least2 repetitions")
     if (not 1 <= args.master_port <= 65535 or not math.isfinite(args.timeout_seconds)
@@ -308,6 +310,7 @@ def project_observers(record_function):
     from tensorfold.families.qwen4_exp.cuda.state import State
     from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFExperts
     from tensorfold.families.qwen4_exp.cuda.history_owner import OwnerBuffers
+    from tensorfold.families.qwen4_exp.cuda.bound_graphs import BoundStateGraphs
     from tensorfold.cuda.comm import NCCL
 
     functions = [(execution_identity._phase, "tensorfold/cpu/phase"),
@@ -329,7 +332,8 @@ def project_observers(record_function):
                               (FlashNextEngine, "generate", "tensorfold/host/generate"),
                               (GGUFExperts, "forward", "tensorfold/body/experts"),
                               (NCCL, "all_gather", "tensorfold/body/collective-allgather"),
-                              (OwnerBuffers, "stage_native_descriptors", "tensorfold/cpu/native-descriptor-stage")]:
+                              (OwnerBuffers, "stage_native_descriptors", "tensorfold/cpu/native-descriptor-stage"),
+                              (BoundStateGraphs, "forward", "tensorfold/body/bound-pieces")]:
         original = getattr(owner, name)
         plan.append((owner, name, original, observed_call(original, label, record_function)))
     # These are staticmethods. Preserve their original descriptors on both

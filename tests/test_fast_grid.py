@@ -421,9 +421,10 @@ def test_v2_observation_refuses_wrong_protocol_cap_before_any_worker():
         finite.run_screen_case(None,count=1,maximum_tokens=512,vocab=3,limit=None,
             invoke=None,observe=None,write=None,timeout=1,protocol=finite.FAST_V2)
 
-@pytest.mark.parametrize("count", [8,16])
+@pytest.mark.parametrize("count", [1,8,16])
 def test_profile_concurrency_is_one_instrumented_cohort_without_all6_credit(tmp_path, monkeypatch, count):
-    args=probe.arguments(cli(tmp_path)+["--concurrency-grid","--fast-grid","--tokens","512","--profile-concurrency",str(count)])
+    extra=(["--tokens","2048","--fast-grid-protocol",finite.FAST_V2] if count==1 else ["--tokens","512"])
+    args=probe.arguments(cli(tmp_path)+["--concurrency-grid","--fast-grid",*extra,"--profile-concurrency",str(count)])
     monkeypatch.setattr(probe,"concurrent_observation_snapshot",lambda:{"test_observations":True})
     events=[]
     engine=NS(sm70_profile="source-owner-target-guard-trial")
@@ -447,7 +448,7 @@ def test_profile_concurrency_is_one_instrumented_cohort_without_all6_credit(tmp_
 
 
 @pytest.mark.parametrize("extra", [
-    ["--profile-concurrency","1"],
+    ["--profile-concurrency","2"],
     ["--profile-concurrency","8"],
     ["--concurrency-grid","--fast-grid","--tokens","512","--profile-concurrency","8","--quality-spotchecks"],
     ["--concurrency-grid","--fast-grid","--tokens","512","--profile-concurrency","16","--serial-reference"],
@@ -464,7 +465,7 @@ def test_profile_observer_payload_is_funded_globally_before_any_request(tmp_path
     seen=[]
     error=RuntimeError("stop at real host admission, before requests")
     def finalize(_catalog,*,caller,**_kwargs):
-        expected=finite.control_payload_bytes(512)+finite.screen_control_payload_bytes()+8*(128<<10)
+        expected=finite.control_payload_bytes(512)+finite.screen_control_payload_bytes(512)+8*(128<<10)
         assert caller.control_payload_bytes==expected
         assert caller.max_concurrent_requests==24 and caller.max_receipt_bytes==60620800
         seen.append(caller)
@@ -474,3 +475,18 @@ def test_profile_observer_payload_is_funded_globally_before_any_request(tmp_path
     with pytest.raises(RuntimeError) as caught:
         probe.run_concurrency_leader(engine,object(),args,{})
     assert caught.value is error and len(seen)==1
+
+
+def test_single_profile_requires_v2_and_exposes_real_graph_hit_delta(tmp_path):
+    with pytest.raises(SystemExit):
+        probe.arguments(cli(tmp_path)+["--concurrency-grid","--fast-grid","--tokens","512","--profile-concurrency","1"])
+    args=probe.arguments(cli(tmp_path)+["--concurrency-grid","--fast-grid","--tokens","2048",
+        "--fast-grid-protocol",finite.FAST_V2,"--profile-concurrency","1"])
+    assert args.profile_concurrency==1 and args.fast_grid_protocol==finite.FAST_V2
+    bound=NS(hits=7,misses=0,lane_declines=0)
+    engine=NS(multi=NS(graphs=NS(bound=bound,verify={},mtp={})),w=NS(meta={}))
+    before=probe.graph_execution_snapshot(engine)
+    bound.hits+=12
+    after=probe.graph_execution_snapshot(engine)
+    assert probe.graph_execution_delta(before,after)["bound.hits"]==12
+    assert before["counters"]["bound.hits"]==7 and after["counters"]["bound.hits"]==19
