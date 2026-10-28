@@ -224,6 +224,7 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
         phase("capture/reference-before-adoption")
         graphs = RoundGraphs(combined, 1 << 30)
         graphs.capture()
+        capture_native_calls = native_calls[0]
         combined.graphs = graphs
         assert {key[1] for key in graphs.verify} == {1, 2, 3}
         assert {key[1] for key in graphs.mtp} == {1, 2, 3}
@@ -297,8 +298,10 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
                 assert actual.cached > 0
             phase(f"request/completed/repetition={repetition}")
         if target_greedy == "bound-dense":
-            assert native_calls[0] > 0
-            print(json.dumps({"rank": rank, "dense_native_submissions": native_calls[0]}), flush=True)
+            assert capture_native_calls > 0 and native_calls[0] > capture_native_calls
+            print(json.dumps({"rank": rank, "dense_native_submissions": native_calls[0],
+                              "dense_native_capture_submissions": capture_native_calls,
+                              "dense_native_after_capture_submissions": native_calls[0] - capture_native_calls}), flush=True)
         assert graphs.bound.hits > 0
         if target_greedy in ("prelude", "bound-prelude", "bound-dense"):
             assert combined_weights.meta["sm70_owner_prelude_submitted_frames"] > 0
