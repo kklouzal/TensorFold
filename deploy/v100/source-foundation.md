@@ -387,3 +387,22 @@ between bounded reads and joins the worker before releasing engine owners.
 A blocked filesystem read retains its existing I/O completion contract.
 The unset default retains serial content hashing. CPU controls and an actual
 V100 startup/quality/performance comparison are separate gates.
+
+
+## Private original expert cap72
+
+`source-dense-owner-expert72-trial` inherits the selected batch-native prelude
+and Dense implementation while selecting the original exact expert kernels up
+to72 rows. It changes no CUDA numerical body and does not select independent
+warps or Dense tiling. The profile has its own State epoch and resets to the
+original32-row expert cap for other profiles. The ordinary Dense cap remains32.
+
+Before physical admission,22 original int32 K80 gate/up/down code variants are
+queried for attributes, including K-quant aligned and generic paths and both
+output dtypes. The fixed summary adds8192 host bytes per rank. Activation
+scratch at topK10+shared is112640 bytes at R64 and126720 bytes at R72, within the
+existing32MiB decode workspace. Caller output buffers use the existing funded
+execution-row plan. Driver/graph-managed costs and24 full-window capacity still
+need actual target verification; no allocation/performance equivalence is
+inferred from source formulas alone. The row64/72 development tool retains all
+six Ns, full262144 native Q8 K/V, MTP2 confidence0.7 and existing quality checks.

@@ -122,19 +122,21 @@ def test_batch_publication_retains_current_role_counts_and_bounded_batch_diagnos
     assert weights.meta["sm70_owner_prelude_max_batch_segments"] == 2
 
 
-def test_actual_engine_pre_admission_batch_packet_and_counter_funding():
+@pytest.mark.parametrize("expert72", [False, True])
+def test_actual_engine_pre_admission_batch_packet_and_counter_funding(expert72):
     import ast
     import inspect
     import textwrap
     from types import SimpleNamespace as NS
     from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
-    from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL
+    from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL, OWNER_EXPERT72_TRIAL
 
     method = ast.parse(textwrap.dedent(inspect.getsource(FlashNextEngine._initialize))).body[0]
     block = next(n for n in ast.walk(method) if isinstance(n, ast.If)
-                 and ast.unparse(n.test) == "self.sm70_profile == OWNER_BATCH_PRELUDE_TRIAL")
+                 and any(isinstance(child, ast.ImportFrom) and child.module == "batch_prelude" for child in n.body))
     namespace = dict(__name__=FlashNextEngine.__module__, __package__="tensorfold.families.qwen4_exp.cuda",
-        self=NS(sm70_profile=OWNER_BATCH_PRELUDE_TRIAL), OWNER_BATCH_PRELUDE_TRIAL=OWNER_BATCH_PRELUDE_TRIAL,
+        self=NS(sm70_profile=OWNER_EXPERT72_TRIAL if expert72 else OWNER_BATCH_PRELUDE_TRIAL),
+        OWNER_BATCH_PRELUDE_TRIAL=OWNER_BATCH_PRELUDE_TRIAL, OWNER_EXPERT72_TRIAL=OWNER_EXPERT72_TRIAL,
         execution_rows=None, adaptive_sessions=True, streams=24, each=3, rows0=256, mtp=True, tp=8,
         options={"device_workspace_bytes": 0, "host_workspace_bytes": 0})
     exec(compile(ast.Module(body=[block], type_ignores=[]), "actual_engine_batch_funding", "exec"), namespace)

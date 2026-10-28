@@ -12,10 +12,11 @@ def options(tmp_path, rows):
         "--quality-spotchecks","--execution-rows",str(rows)]
 
 
-def test_explicit_rows_require_bounded_batch_profile_and_default32_is_preserved(tmp_path,monkeypatch):
+@pytest.mark.parametrize("profile",["source-dense-owner-batch-prelude-trial","source-dense-owner-expert72-trial"])
+def test_explicit_rows_require_bounded_batch_profile_and_default32_is_preserved(tmp_path,monkeypatch,profile):
     from tensorfold.cuda.sm70.execution_policy import PROFILE_ENV
     assert probe.arguments(cli(tmp_path)).execution_rows==32
-    monkeypatch.setenv(PROFILE_ENV,"source-dense-owner-batch-prelude-trial")
+    monkeypatch.setenv(PROFILE_ENV,profile)
     for rows in (32,64,72):
         assert probe.arguments(options(tmp_path,rows)).execution_rows==rows
     for rows in (0,31,33,63,73,96):
@@ -26,7 +27,8 @@ def test_explicit_rows_require_bounded_batch_profile_and_default32_is_preserved(
 
 
 @pytest.mark.parametrize("rows",[32,64,72])
-def test_actual_worker_forwards_only_row_override_preserving_baseline_factory(tmp_path,monkeypatch,rows):
+@pytest.mark.parametrize("profile",["source-dense-owner-batch-prelude-trial","source-dense-owner-expert72-trial"])
+def test_actual_worker_forwards_only_row_override_preserving_baseline_factory(tmp_path,monkeypatch,rows,profile):
     from tensorfold import hub,serve_options
     from tensorfold.cuda.cohort import FAILURE_FD_ENV
     from tensorfold.families import qwen4_exp
@@ -42,7 +44,7 @@ def test_actual_worker_forwards_only_row_override_preserving_baseline_factory(tm
     read_fd,write_fd=os.pipe()
     monkeypatch.setenv(FAILURE_FD_ENV,str(write_fd))
     args=NS(rank=1,wheel=tmp_path,model=tmp_path,mtp=tmp_path,master_port=29607,tokens=2048,
-        out=tmp_path,requested_sm70_profile="source-dense-owner-batch-prelude-trial",repetitions=1,
+        out=tmp_path,requested_sm70_profile=profile,repetitions=1,
         execution_rows=rows,native_dense_trial=True,owner_batch_prelude_trial=True,session_ceiling=24)
     try:
         with pytest.raises(ValueError)as failure:

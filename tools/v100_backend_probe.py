@@ -208,14 +208,14 @@ def arguments(argv=None):
     # its unset default. Recording intent must not select a different profile.
     args.requested_sm70_profile = os.environ.get(PROFILE_ENV)
     if args.native_dense_trial:
-        from tensorfold.cuda.sm70.execution_policy import OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL
+        from tensorfold.cuda.sm70.execution_policy import OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, OWNER_EXPERT72_TRIAL
 
-        if args.requested_sm70_profile not in (OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL) or args.session_ceiling != 24:
+        if args.requested_sm70_profile not in (OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, OWNER_EXPERT72_TRIAL) or args.session_ceiling != 24:
             parser.error("--native-dense-trial requires explicit source-owner-target-dense-trial and --session-ceiling24")
     if args.owner_batch_prelude_trial:
-        from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL
+        from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL, OWNER_EXPERT72_TRIAL
 
-        if args.requested_sm70_profile != OWNER_BATCH_PRELUDE_TRIAL or not args.native_dense_trial or args.session_ceiling != 24:
+        if args.requested_sm70_profile not in (OWNER_BATCH_PRELUDE_TRIAL, OWNER_EXPERT72_TRIAL) or not args.native_dense_trial or args.session_ceiling != 24:
             parser.error("--owner-batch-prelude-trial requires matching source-dense-owner-batch-prelude-trial, --native-dense-trial and --session-ceiling24")
     if args.expect_prefix_reuse:
         from tensorfold.families.qwen4_exp.cuda.prefix_policy import state_epoch
@@ -334,14 +334,14 @@ def record_execution_profile(engine, report, *, requested):
         "roles": roles}
     if requested is not None and requested != engine.sm70_profile:
         raise ValueError("requested SM70 profile differs from the actual constructor selection")
-    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL
+    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, OWNER_EXPERT72_TRIAL
 
-    if engine.sm70_profile in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL):
+    if engine.sm70_profile in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, OWNER_EXPERT72_TRIAL):
         from tensorfold.families.qwen4_exp.cuda.multi_graphs import (
             UNIQUE_CAPTURE_CONTRACT, UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT,
         )
 
-        contract = (UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT if engine.sm70_profile in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL)
+        contract = (UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT if engine.sm70_profile in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, OWNER_EXPERT72_TRIAL)
                     else UNIQUE_CAPTURE_CONTRACT)
 
         decoder = engine.multi
@@ -594,9 +594,9 @@ BATCH_EVIDENCE_CONTROL_BYTES = 8192  # Fixed host-only receipt fields, bounded i
 
 def batch_preparation_evidence(profile, count, before, after):
     """Qualify actual cohort dispatch after drain; never infer missing counts as zero."""
-    from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL
+    from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL, OWNER_EXPERT72_TRIAL
 
-    if profile != OWNER_BATCH_PRELUDE_TRIAL:
+    if profile not in (OWNER_BATCH_PRELUDE_TRIAL, OWNER_EXPERT72_TRIAL):
         return None
     result = {"passed": False, "available": False, "cohort_N": count,
               "scope": "submitted native batches during readiness/decode/cancel/drain; not device timing"}
@@ -754,7 +754,7 @@ def run_concurrency_leader(engine, tokenizer, args, report):
     from tensorfold.families.qwen4_exp.cuda.retention_resources import FiniteBackendCaller, finalize_backend_resources
     from tensorfold.server.request_limits import RequestLimit
     from tensorfold.token_metadata import decode_presentation, tokenizer_vocab_size
-    from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL
+    from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL, OWNER_EXPERT72_TRIAL
 
     finite = concurrency_module()
     prepared = []
@@ -796,7 +796,7 @@ def run_concurrency_leader(engine, tokenizer, args, report):
         max_concurrent_requests=finite.MAXIMUM, worker_stack_bytes=finite.STACK_BYTES,
         control_payload_bytes=finite.control_payload_bytes(args.tokens) + quality_control
             + (finite.screen_control_payload_bytes(args.tokens) if getattr(args, "fast_grid", False) else 0)
-            + (BATCH_EVIDENCE_CONTROL_BYTES if engine.sm70_profile == OWNER_BATCH_PRELUDE_TRIAL else 0))
+            + (BATCH_EVIDENCE_CONTROL_BYTES if engine.sm70_profile in (OWNER_BATCH_PRELUDE_TRIAL, OWNER_EXPERT72_TRIAL) else 0))
     limit, pool = RequestLimit(finite.MAXIMUM), None
     primary, failures = None, [None, None]
     report["concurrency"] = {"grid": finite.GRID, "caller": caller.__dict__,
@@ -893,7 +893,7 @@ def worker(args):
     from tensorfold.cuda import precision, prompt_precision
     from tensorfold.cuda.cohort import FAILURE_FD_ENV, notify_failure
     from tensorfold.families.qwen4_exp import cuda_engine
-    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL
+    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, OWNER_EXPERT72_TRIAL
     from tensorfold.serve_options import drafter_metadata_source
     from tensorfold.token_metadata import load_tokenizer, tokenizer_identity
 
@@ -922,7 +922,7 @@ def worker(args):
             context=CONTEXT, context_explicit=True,
             parallel=getattr(args, "session_ceiling", None) or "auto", kv_full_windows="auto",
             kv_dtype="int8", indexer_history="gpu", max_waiting_input_bytes=waiting_input_credit(args),
-            output_queue_tokens=args.tokens, graphs=args.requested_sm70_profile in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL),
+            output_queue_tokens=args.tokens, graphs=args.requested_sm70_profile in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, OWNER_EXPERT72_TRIAL),
             **({"execution_rows": args.execution_rows} if getattr(args, "execution_rows", 32) != 32 else {}),
             **({"execution_profile_manifest": args.execution_profile_manifest}
                if getattr(args, "execution_profile_manifest", None) is not None else {}))

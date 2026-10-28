@@ -13,7 +13,7 @@ def policy(monkeypatch, tmp_path):
     for owner,name in [(policy,"_SELECTED"),(policy,"_FAMILY_SOFTWARE"),(family_ops,"_NATIVE_FAMILY"),(family_ops,"_NATIVE_ATTENTION"),
                        (routing_native,"_NATIVE_LOGITS"),(padded_linears,"_ENABLED"),
                        (dspark_context_graphs,"_ENABLED"),(dspark_proposal_graphs,"_ENABLED"),
-                       (gguf_prefill,"WORKSPACE_BUDGET_BYTES"),(gguf_weights.GGUFExperts,"implementation"),
+                       (gguf_prefill,"WORKSPACE_BUDGET_BYTES"),(gguf_weights.GGUFExperts,"implementation"),(gguf_weights.GGUFExperts,"packed_rows"),
                        (gguf_weights.GGUFConcat,"implementation"),(gguf_weights.GGUFDense,"implementation")]:
         monkeypatch.setattr(owner,name,getattr(owner,name))
     monkeypatch.setattr(qualification,"runtime_identity",lambda device:dict(qualification.REQUIRED_IDENTITY))

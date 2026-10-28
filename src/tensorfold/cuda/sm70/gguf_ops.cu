@@ -1200,3 +1200,40 @@ int gguf_prepare_dense32() {
     C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, dense_copy32<false, false>));
     return 4;
 }
+
+// Materialize the existing exact K80 kernels before capacity admission. The
+// row count is a launch-grid dimension, not a different numerical algorithm.
+std::vector<int64_t> gguf_prepare_experts_exact72() {
+    int device = 0;
+    C10_CUDA_CHECK(cudaGetDevice(&device));
+    const auto* prop = at::cuda::getDeviceProperties(device);
+    TORCH_CHECK(prop->major == 7 && prop->minor == 0, "large-row exact experts require SM70");
+    TORCH_CHECK(prop->maxGridSize[1] >= 72 * 11, "exact expert row72 grid exceeds device capacity");
+    // Count/max-registers/max-local/max-shared/min-thread-cap/binary-version.
+    std::vector<int64_t> result{0, 0, 0, 0, 1024, 70};
+    auto inspect = [&](auto function) {
+        cudaFuncAttributes attributes;
+        C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, function));
+        TORCH_CHECK(attributes.maxThreadsPerBlock >= EXPERT_WARPS * 32 && attributes.binaryVersion == 70,
+                    "exact expert code differs from the required SM70 launch contract");
+        ++result[0];
+        result[1] = std::max(result[1], int64_t(attributes.numRegs));
+        result[2] = std::max(result[2], int64_t(attributes.localSizeBytes));
+        result[3] = std::max(result[3], int64_t(attributes.sharedSizeBytes));
+        result[4] = std::min(result[4], int64_t(attributes.maxThreadsPerBlock));
+    };
+    #define PREPARE_GATE(KIND) inspect(expert_gate_up<int32_t, KIND, KIND, 1, true>)
+    PREPARE_GATE(8); PREPARE_GATE(12); PREPARE_GATE(13); PREPARE_GATE(18);
+    PREPARE_GATE(21); PREPARE_GATE(22); PREPARE_GATE(23); PREPARE_GATE(-1);
+    #undef PREPARE_GATE
+    inspect(expert_gate_up_blocks2w<int32_t, 12, 12, true>);
+    inspect(expert_gate_up_blocks2w<int32_t, 12, 13, true>);
+    inspect(expert_gate_up_blocks2w<int32_t, 13, 12, true>);
+    inspect(expert_gate_up_blocks2w<int32_t, 13, 13, true>);
+    #define PREPARE_DOWN(KIND) \
+        inspect(expert_down80_exact<int32_t, true, KIND>); \
+        inspect(expert_down80_exact<int32_t, false, KIND>)
+    PREPARE_DOWN(7); PREPARE_DOWN(8); PREPARE_DOWN(20); PREPARE_DOWN(42); PREPARE_DOWN(-1);
+    #undef PREPARE_DOWN
+    return result;
+}

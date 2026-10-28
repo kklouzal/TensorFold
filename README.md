@@ -1,5 +1,15 @@
 # TensorFold fork
 
+The private `source-dense-owner-expert72-trial` extends only the original exact
+expert dispatch to72 decode rows on the selected batch/Dense runtime. It retains
+the old CUDA numerical kernels, Dense cap32 and all defaults, preloads the22
+selected K80 expert code variants before admission and funds its bounded host
+summary. R64/R72 activation scratch is112640/126720 bytes inside the existing
+32MiB decode workspace term; buffers remain funded by the explicit row budget.
+The24 full262144 Q8 K/V floor, MTP2/.7, all six Ns and existing quality checks
+remain hard requirements. Strict large-row controls and the first quick screen
+are pending; no capacity, quality or performance gain is claimed.
+
 A private Dense probe can explicitly select `--execution-rows 64` or `72`
 with `--native-dense-trial --owner-batch-prelude-trial --session-ceiling 24 --fast-grid
 --concurrency-grid --fast-grid-protocol fast-grid-v2 --tokens 2048
