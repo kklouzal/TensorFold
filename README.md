@@ -1,5 +1,17 @@
 # TensorFold fork
 
+The private Dense residency wheel `4efee794` completed 55 independent native
+Dense/prepared controls on the pinned eight-V100 runtime, then stopped at an
+optional legacy six-lane fixture with `MethodGeometry(none, 2)`. That fixture
+forces native private attention and padded linears; the current Dense profile
+keeps both disabled. Its four parameter cases are explicitly outside the
+current retry scope and are not reported as passed. Historical evidence already
+records the same invalid no-MTP fixture and a separate baseline padded-attention
+MTP discrepancy. The retry retains every passing Dense/prepared control and
+requires current native-prelude and real-bound Dense TP8 frame/state/MTP oracles
+with their original assertions and native counters. Full-model quality and
+all-six throughput qualification remain pending.
+
 The Dense residency successor explicitly materializes the existing pad/copy
 kernel code with CUDA function-attribute queries before initial physical-memory
 admission, including under CUDA lazy loading. It allocates no target tensors
