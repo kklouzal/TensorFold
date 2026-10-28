@@ -10,6 +10,8 @@ import weakref
 
 import torch
 
+from tensorfold.cleanup import raise_failures
+
 MAX_STATES = 24
 COLUMNS = 10
 ENV = "TENSORFOLD_SM70_GDN_STATE_BATCH"
@@ -40,6 +42,7 @@ class GDNStateBatch:
         self.pending = self.active = self.used = False
         self.count = self.rows = self.submitted = 0
         self.error = None
+        self.finish_errors = [None]  # One preallocated cold failure outcome; covered by owner metadata funding.
 
     def _stream(self):
         stream = torch.cuda.current_stream(self.device)
@@ -69,6 +72,22 @@ class GDNStateBatch:
             except BaseException as error:
                 self.error = error
                 raise
+
+    def finish(self, primary=None):
+        """Seal accepted work without replacing a target failure or its roots."""
+        cause = None if primary is None else BaseException.__cause__.__get__(primary)
+        context = None if primary is None else BaseException.__context__.__get__(primary)
+        suppress = False if primary is None else BaseException.__suppress_context__.__get__(primary)
+        try:
+            self.seal()
+        except BaseException as failure:
+            if primary is None:
+                raise
+            self.finish_errors[0] = failure
+            BaseException.__cause__.__set__(primary, cause)
+            BaseException.__context__.__set__(primary, context)
+            BaseException.__suppress_context__.__set__(primary, suppress)
+            raise_failures(primary, self.finish_errors)
 
     def bind(self, segments):
         if self.error is not None:

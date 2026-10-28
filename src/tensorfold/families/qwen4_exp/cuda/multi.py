@@ -2075,6 +2075,7 @@ class MultiDecoder:
         target = self.w.meta.get("target_greedy_owner")
         if target is not None and not target.eligible(self, live, pieces=pieces, grammars=grammars, dflash=dflash):
             target = None
+        gdn_primary = None
         try:
             if pieces:                                 # the window and the pass: each layer's experts once for both
                 from .media_mtp import target_inputs
@@ -2103,13 +2104,16 @@ class MultiDecoder:
                         psegs, prefill=True,
                         replay_rows=sum(n for stream, _, n in pieces if stream.carry is not None))
         except BaseException as primary:
+            gdn_primary = primary
             if self.controller is not None:
                 self.controller.work_observations.incomplete(primary)
             raise
         finally:
-            if self.buf.gdn_state_batch is not None:
-                self.buf.gdn_state_batch.seal()  # Partial failures retain every accepted chain borrower.
-            self.buf.gdn_tables = self.buf.attn_step = None
+            try:
+                if self.buf.gdn_state_batch is not None:
+                    self.buf.gdn_state_batch.finish(gdn_primary)
+            finally:
+                self.buf.gdn_tables = self.buf.attn_step = None
         target_result = None
         if self.w.comm is not None:
             if target is not None:
