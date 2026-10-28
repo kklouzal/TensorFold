@@ -421,3 +421,21 @@ def test_actual_factory_and_engine_startup_gate_leave_followers_legacy_until_boo
         for thread in threads:
             thread.join(6)
     assert not errors and all(not thread.is_alive() for thread in threads) and not store.data
+
+
+def test_v2_2048_output_wire_geometry_and_closed_boundaries_keep_native_context():
+    selected=FiniteTPContract(context=262144,vocab=248320,inputs=4096,outputs=2048,requests=24,depth=2)
+    assert FiniteTPContract.from_record(selected.record())==selected
+    assert selected.cpu_tokens==6150 and selected.context==262144 and selected.requests==24
+    body=command()
+    body["stream"]["count"]=body["stream"]["output_capacity"]=2048
+    selected.validate_command(body)
+    encoded=json.dumps(body,ensure_ascii=True).encode()
+    assert len(encoded)<selected.command_bytes
+    assert selected.loads(encoded)==body
+    for field in ("count","output_capacity"):
+        bad=json.loads(json.dumps(body))
+        bad["stream"][field]=2049
+        with pytest.raises(ValueError,match="native range"):
+            selected.validate_command(bad)
+    assert selected.ack_bytes<rank_protocol.MAX_MESSAGE_BYTES

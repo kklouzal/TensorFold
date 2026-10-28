@@ -34,7 +34,7 @@ def test_native_pthread_stack_queries_use_real_typed_attributes_without_global_c
             _thread_stack_layout(bad)
 
 
-@pytest.mark.parametrize("profile", ["source-owner-pieces-trial", "source-owner-target-greedy-trial", "source-owner-target-guard-trial", "source-owner-target-prelude-trial"])
+@pytest.mark.parametrize("profile", ["source-owner-pieces-trial", "source-owner-target-greedy-trial", "source-owner-target-guard-trial", "source-owner-target-prelude-trial", "source-owner-target-dense-trial"])
 def test_default_is_serial_and_enabled_mode_refuses_wrong_scope(tmp_path, monkeypatch, profile):
     monkeypatch.delenv(startup.ENV, raising=False)
     assert startup.prepare(object(), None) is None
@@ -331,3 +331,24 @@ def test_outcome_argument_preparation_failure_keeps_original_hash_primary(monkey
         sys.settrace(old)
         capture.close()
     assert capture.closed and capture.operation_retired.is_set()
+
+
+
+def test_actual_engine_dense_profile_funds_existing_startup_capture_without_eligibility_patch(tmp_path, monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
+    from tensorfold.families.qwen4_exp.cuda.speculation import MethodGeometry
+    from tensorfold.families.qwen4_exp.cuda.prefix_policy import OWNER_TARGET_DENSE_PROFILE
+
+    # Use the actual engine type and method contract at its pre-load boundary;
+    # no constructor/weights/GPU work is performed by this CPU admission control.
+    engine = FlashNextEngine.__new__(FlashNextEngine)
+    engine._profile_build = None
+    engine.tp = 8
+    engine.method_geometry = MethodGeometry("mtp", 2)
+    engine.media_profile = None
+    engine.sm70_profile = OWNER_TARGET_DENSE_PROFILE
+    engine._execution_preload = {"capture_files": {"target/model": tmp_path / "model"}}
+    monkeypatch.setenv(startup.ENV, "1")
+    admitted = startup.prepare(engine, {})
+    assert admitted.host_bytes == startup.STACK_LIMIT + admitted.guard_bytes + startup.HASH_WORKING_BYTES
+    assert admitted.files == engine._execution_preload["capture_files"]

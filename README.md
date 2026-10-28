@@ -1,5 +1,16 @@
 # TensorFold fork
 
+The unchanged Dense residency wheel `4efee794` passed the corrected real-bound
+Dense TP8 integration gate with every existing assertion and native counter.
+Together with the prior 108 passes, this closes the scoped component controls.
+The wheel already admits `source-owner-target-dense-trial` for funded startup
+content overlap; an actual Engine-type CPU preflight confirms that eligibility.
+The private comparison tool now composes the closed FAST v2 protocol from
+`bebf7cbc`, explicitly funding a 2048-token output cap for every N=1/2/4/8/16/24
+window with the same 30-second readiness and 10-second decode windows and six
+quality spot checks as the current `5635` baseline. The application package is
+unchanged. Full-model throughput, quality and performance selection remain open.
+
 The valid-scope `4efee794` retry passed all 55 Dense/prepared and 53 current
 prelude controls, then stopped before the new Dense TP8 numerical oracle at a
 fixture embedding-identity assertion. The fixture converter now preserves
