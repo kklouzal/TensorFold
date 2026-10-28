@@ -29,10 +29,13 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
     from tensorfold.families.qwen4_exp.cuda.multi_graphs import RoundGraphs, UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT
     from tensorfold.families.qwen4_exp.cuda.owner_execution import KERNEL_FAMILY, FULL_COLLECTIVE, UNCAPTURED
     from tensorfold.families.qwen4_exp.cuda.owner_preparation import OwnerPreparation
-    from tensorfold.families.qwen4_exp.cuda.prefix_policy import OWNER_GRAPH_PROFILE, OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE
+    from tensorfold.families.qwen4_exp.cuda.prefix_policy import OWNER_GRAPH_PROFILE, OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_ATTENTION_GRAPHS_PROFILE
     from tensorfold.families.qwen4_exp.kv_formats import get_pair
     from test_sm70_unique_piece_graphs_tp8 import _equal, _committed
 
+    captured_attention = target_greedy == "captured-prelude"
+    if captured_attention:
+        target_greedy = "bound-prelude"
     torch.set_num_threads(1)
     torch.cuda.set_device(rank)
     from test_flashnext_sm70_mtp import _weights_with_stock_mtp_protocol
@@ -118,7 +121,7 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
             if compact_target:
                 from tensorfold.families.qwen4_exp.cuda.target_greedy import POLICY
 
-                weights.meta.update(sm70_profile=OWNER_TARGET_PRELUDE_PROFILE if compact_target in ("prelude", "bound-prelude") else
+                weights.meta.update(sm70_profile=OWNER_ATTENTION_GRAPHS_PROFILE if captured_attention else OWNER_TARGET_PRELUDE_PROFILE if compact_target in ("prelude", "bound-prelude") else
                     OWNER_TARGET_GUARD_PROFILE if compact_target == "guard" else OWNER_TARGET_GREEDY_PROFILE,
                     sm70_target_greedy_trial={"policy": POLICY}, target_greedy_owner=None)
                 if compact_target in ("guard", "prelude", "bound-prelude"):
@@ -143,12 +146,20 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
                 assert context is weights.meta["input_preparation_context"]
             preparation = None
             if native:
-                preparation = OwnerPreparation(spec, role_rows={"decode": 3, "mtp": 3, "prefill": 8},
+                prepared_spec = dict(spec)
+                if captured_attention and compact_target:
+                    from tensorfold.families.qwen4_exp.cuda.owner_execution import GRAPH_FAMILY
+                    prepared_spec.update(graph_family=GRAPH_FAMILY, graph_budget_bytes=512 << 20)
+                    from tensorfold.families.qwen4_exp.cuda.multi_graphs import UNIQUE_NATIVE_OWNER_GRAPH_CAPTURE_CONTRACT
+                    weights.meta["unique_capture_contract"] = UNIQUE_NATIVE_OWNER_GRAPH_CAPTURE_CONTRACT
+                preparation = OwnerPreparation(prepared_spec, role_rows={"decode": 3, "mtp": 3, "prefill": 8},
                     manifest_sha256=hashlib.sha256(json.dumps(text, sort_keys=True).encode()).hexdigest())
                 preparations.append(preparation)
                 engine = NS(comm=comm, rank=rank, tp=8, multi=None, _calls=0)
                 preparation.prepare(engine, text, get_pair("int8"), page_tokens=128, device=base.device)
                 weights.meta["owner_workspaces"] = preparation.workspaces
+                if preparation.graphs:
+                    weights.meta["owner_attention_graphs"] = preparation.graphs
             result = MultiDecoder(weights, slots=1, capacity=260, logical_context=257, depth=2,
                 confidence=.7, prefill_rows=8, kv_dtype="int8", graphs=False, keep=1, full_windows=1)
             if compact_target:
@@ -227,11 +238,32 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
             if repetition:
                 assert actual.cached > 0
             phase(f"request/completed/repetition={repetition}")
+        if captured_attention:
+            # Real pending prompt cancellation retires a captured prefill and
+            # returns the same fixed State owner for later reuse. Decode-time
+            # FIFO cancellation remains the full-model caller's separate gate.
+            expected = Stream([41, 42, 43, 44] * 40, 12, stop_eos=False)
+            actual = Stream(list(expected.prompt), 12, stop_eos=False)
+            for dec, stream in ((eager, expected), (combined, actual)):
+                dec.admit(stream)
+                assert not dec.round() and stream in dec.filling
+            _committed(actual.st, expected.st)
+            assert actual.st.history_generations.cpu().tolist() == [actual.st.slot_generation, actual.st.history_generation]
+            for dec, stream in ((eager, expected), (combined, actual)):
+                assert dec.cancel([stream]) == [stream]
+                assert stream.done and stream.error is None
+                dec.finish([stream])
+                assert not dec.streams and len(dec.free) == 1
+            phase("request/cancelled-pending-prompt-and-retired")
         assert graphs.bound.hits > 0
         if target_greedy in ("prelude", "bound-prelude"):
             assert combined_weights.meta["sm70_owner_prelude_submitted_frames"] > 0
             assert combined_weights.meta["sm70_owner_prelude_submitted_mtp_frames"] > 0
             assert combined_weights.meta["sm70_owner_prelude_zero"].tolist() == [0]
+            if captured_attention:
+                assert set(combined_preparation.graphs) == {"decode", "mtp", "prefill"}
+                assert all(graph.prepared and graph.hits > 0 for graph in combined_preparation.graphs.values())
+                assert combined_preparation.graph_physical_bytes <= 512 << 20
         if target_greedy:
             assert combined_weights.meta["target_greedy_owner"].completed > 0
         comm.ready("owner-piece-oracles-complete", every=1, timeout=60)
@@ -295,7 +327,7 @@ def _retire_fixture_context(context, directory, primary=None):
         BaseException.__context__.__set__(primary, secondary)
         raise primary
 
-@pytest.mark.parametrize("target_greedy", [False, True, "guard", "prelude", "bound-prelude"])
+@pytest.mark.parametrize("target_greedy", [False, True, "guard", "prelude", "bound-prelude", "captured-prelude"])
 def test_v100_tp8_native_owner_exact_pieces_match_native_eager_frames_and_commits(target_greedy):
     if torch.cuda.device_count() < 8 or any(torch.cuda.get_device_capability(rank) != (7, 0) for rank in range(8)):
         pytest.skip("requires eight real SM70 GPUs and the supported source foundation")

@@ -72,3 +72,24 @@ def test_changed_input_after_hashing_refuses_before_publication(inputs, monkeypa
     with pytest.raises(ValueError, match="changed during"):
         prepare.create(target, draft / "mtp.gguf", output)
     assert not output.exists()
+
+
+@pytest.mark.torch
+def test_explicit_graph_manifest_keeps_real_artifact_census_and_full8(inputs):
+    target, draft, output = inputs
+    document = prepare.create(target, draft / "mtp.gguf", output, graph_budget_bytes=512 << 20)
+    assert document["preparation"] == {"kernel_family": "sm70-paged-owner-q8-compact-v1",
+        "graph_family": "owner-attention-v1", "collective_family": "tp8-allgather-v1",
+        "graph_budget_bytes": 512 << 20, "trial": True}
+    assert document["artifacts"]
+    assert not any(name in document for name in ("evidence", "correctness", "performance"))
+    selected = prepare.SimpleNamespace(model_dir=target, mtp_model_dir=draft,
+                                       method_geometry=prepare.SimpleNamespace(method="mtp"))
+    assert prepare.execution_identity.begin_execution_manifest(selected, output) == document
+
+
+@pytest.mark.parametrize("bad", [-1, True, 1.5])
+def test_invalid_graph_allowance_refuses_before_input_or_output_access(tmp_path, bad):
+    with pytest.raises(ValueError, match="nonnegative integer"):
+        prepare.create(tmp_path / "absent-target", tmp_path / "absent-draft", tmp_path / "out", graph_budget_bytes=bad)
+    assert not (tmp_path / "out").exists()

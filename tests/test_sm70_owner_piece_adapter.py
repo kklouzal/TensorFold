@@ -104,3 +104,31 @@ def test_other_cohorts_decline_before_extra_native_or_private_staging_work():
     assert graph._forward("verify", [(object(), 0, 1), (object(), 1, 2)]) is None
     graph.dec.live = lambda: 2
     assert graph._forward("verify", [(object(), 0, 1)]) is None
+
+
+@pytest.mark.parametrize("kind", ["verify", "mtp"])
+def test_captured_owner_cut_checks_actual_manager_and_original_frame_before_mutation(monkeypatch, kind):
+    from tensorfold.families.qwen4_exp.cuda import compact_indexer
+    from tensorfold.families.qwen4_exp.cuda.owner_execution import GRAPH_FAMILY
+    state = NS(pos=17, mtp_len=13, capacity=262147, image_positions=None)
+    owner = NS(native_collective=FULL_COLLECTIVE, native_states={id(state): state},
+               wait_native_reuse=lambda: pytest.fail("invalid frame reached reuse"))
+    manager = NS(workspace=owner, prepared=True, closed=False, failure=None)
+    source = NS(rows=32, rotor_lookup=False, owner_kernel_family=KERNEL_FAMILY,
+                owner_graph_family=GRAPH_FAMILY, owner_graphs=manager, history_owner=owner)
+    graph = object.__new__(bound_graphs.BoundStateGraphs)
+    graph.closed, graph.unique, graph.native_owner, graph.captured_owner = False, True, True, True
+    graph.dec = NS(depth=2, w=NS(), buf=source, mbuf=source, live=lambda: 1)
+    graph._prepare = lambda *a, **k: pytest.fail("invalid frame reached capture")
+    primary = ValueError("issued frame changed")
+    def validate(buffers, segments):
+        assert buffers is source and segments[0][0] is state
+        raise primary
+    monkeypatch.setattr(compact_indexer, "validate_target_indexer_frame", validate)
+    monkeypatch.setattr(compact_indexer, "validate_mtp_indexer_frame", validate)
+    with pytest.raises(ValueError) as caught:
+        graph._forward(kind, [(state, 0, 2)])
+    assert caught.value is primary
+    manager.workspace = object()
+    with pytest.raises(ValueError, match="prepared canonical full8"):
+        graph._forward(kind, [(state, 0, 2)])

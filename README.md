@@ -1,5 +1,30 @@
 # TensorFold fork
 
+The private `source-owner-attention-graphs-trial` candidate combines the current
+native prelude and N1 nonattention pieces with the existing bounded full-TP8
+owner-attention graphs. Its separate manifest explicitly requests
+`owner-attention-v1` and a positive aggregate per-rank graph allowance;
+`prepare_owner_trial_manifest.py --native-graph-budget-mib 512` prepares that
+candidate declaration from real loader inputs. Native attention uses the same
+four kernels and two internal collectives; query/selection transfers, indexer,
+PLE, state transactions and MTP confidence stay on their existing paths.
+All role captures settle before initial capacity admission; native and N1 graph
+pools are both charged, and fewer than24 Q8 windows refuses this profile.
+This candidate remains unqualified pending actual component, full-model,
+quality and matched six-concurrency performance checks. Existing defaults and
+eager trial manifests retain their behavior.
+
+Finite operational screens can explicitly select `--fast-grid-protocol fast-grid-v2
+--tokens 2048` with the existing fast-grid arguments. The2048-cell output budget
+allows a full10-second observation above85tokens/s, while v1 keeps its320/512-cell
+contract and default selection. Prompts,30-second readiness,10-second target
+window, EOS, MTP settings, all six concurrency levels, cancellation/drain and
+the six independent320-token quality checks retain their existing behavior.
+V2 funds larger callback/timing/native-ID/report/decode owners through the same
+physical host admission; it changes no model math, KV format or24-window GPU
+capacity. A cap/EOS-shortened observation remains explicitly short, including
+v1; version and duration remain part of every performance receipt.
+
 Canonical MTP text refresh/proposal frames now use the existing actual text
 coordinate producer when no explicit coordinates or deferred boundary are
 present. It preserves hidden/cache positions at `mtp_len`, independent of next

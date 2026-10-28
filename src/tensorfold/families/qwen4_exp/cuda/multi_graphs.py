@@ -42,6 +42,7 @@ from .service_memory import failure_frame_values, private_pool_spare
 MIB = 1 << 20
 UNIQUE_CAPTURE_CONTRACT = "sm70-unique-n1-exact-pieces-v1"
 UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT = "sm70-unique-n1-native-owner-eager-pieces-v1"
+UNIQUE_NATIVE_OWNER_GRAPH_CAPTURE_CONTRACT = "sm70-unique-n1-native-owner-captured-pieces-v1"
 UNIQUE_CAPTURE_MAX_ROWS = 3
 
 
@@ -86,7 +87,7 @@ def capturable(w) -> str | None:
 
     if (w.meta.get("history_layout") == "unique"
             and w.meta.get("unique_capture_contract") not in (UNIQUE_CAPTURE_CONTRACT,
-                                                              UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT)):
+                                                              UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT, UNIQUE_NATIVE_OWNER_GRAPH_CAPTURE_CONTRACT)):
         return "unique history owner execution has no qualified padded capture contract"
     if w.comm is not None and w.meta.get("execution_provider") != "sm70":
         return "tensor-parallel ranks"

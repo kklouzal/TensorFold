@@ -1553,7 +1553,7 @@ class MultiDecoder:
                                                      "source-packed-trial", "source-packed-graphs-trial",
                                                      "source-owner-pieces-trial", "source-target-greedy-trial",
                                                      "source-owner-target-greedy-trial", "source-owner-target-guard-trial",
-                                                     "source-owner-target-prelude-trial"))
+                                                     "source-owner-target-prelude-trial", "source-owner-attention-graphs-trial"))
         for s in self._order():
             start = self.fills[s.sid][2]
             n = min(len(s.prompt) - start, room)

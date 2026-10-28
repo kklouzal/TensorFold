@@ -1308,3 +1308,18 @@ def test_overlap_flag_requires_manifest_and_each_child_inherits_before_start(tmp
         probe.arguments(raw+["--rank","1"])
     monkeypatch.setenv("TENSORFOLD_STARTUP_CONTENT_OVERLAP","1")
     assert probe.arguments(raw+["--rank","1"]).overlap_content_capture
+
+
+def test_native_attention_snapshot_uses_existing_fixed_role_counters_without_device_calls():
+    from types import SimpleNamespace as NS
+    from tools import v100_backend_probe as probe
+    attention = {role: NS(hits=index + 1, eager_calls=0) for index, role in enumerate(("decode", "mtp", "prefill"))}
+    owner = NS(verify={}, mtp={}, bound=NS())
+    engine = NS(multi=NS(graphs=owner, w=NS(meta={"owner_attention_graphs": attention})))
+    actual = probe.graph_execution_snapshot(engine)["counters"]
+    assert {key: value for key, value in actual.items() if key.startswith("native_attention.")} == {
+        "native_attention.decode.hits": 1, "native_attention.decode.eager_calls": 0,
+        "native_attention.mtp.hits": 2, "native_attention.mtp.eager_calls": 0,
+        "native_attention.prefill.hits": 3, "native_attention.prefill.eager_calls": 0}
+    attention["mtp"].hits = 1 << 63
+    assert "native_attention.mtp.hits" not in probe.graph_execution_snapshot(engine)["counters"]

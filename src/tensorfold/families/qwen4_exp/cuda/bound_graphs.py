@@ -78,14 +78,15 @@ class BoundStateGraphs:
     def __init__(self, owner):
         self.owner, self.dec = owner, owner.dec
         self.unique = self.dec.w.meta.get("history_layout") == "unique"
-        self.native_owner = False
+        self.native_owner = self.captured_owner = False
         if self.unique:
-            from .multi_graphs import UNIQUE_CAPTURE_CONTRACT, UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT
+            from .multi_graphs import UNIQUE_CAPTURE_CONTRACT, UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT, UNIQUE_NATIVE_OWNER_GRAPH_CAPTURE_CONTRACT
 
             contract = self.dec.w.meta.get("unique_capture_contract")
-            if contract not in (UNIQUE_CAPTURE_CONTRACT, UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT):
+            if contract not in (UNIQUE_CAPTURE_CONTRACT, UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT, UNIQUE_NATIVE_OWNER_GRAPH_CAPTURE_CONTRACT):
                 raise ValueError("unique graph owners require the exact N1 piecewise capture contract")
-            self.native_owner = contract == UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT
+            self.native_owner = contract in (UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT, UNIQUE_NATIVE_OWNER_GRAPH_CAPTURE_CONTRACT)
+            self.captured_owner = contract == UNIQUE_NATIVE_OWNER_GRAPH_CAPTURE_CONTRACT
         self.states = tuple(self.dec.free)
         self.indices = {id(state): index for index, state in enumerate(self.states)}
         self.lanes = {}
@@ -348,9 +349,9 @@ class BoundStateGraphs:
             # Their GPU projections and State-owned convolution are captured.
             if b.ple_late is not None:
                 stage_late(self.dec.w, b)
-            from .prefix_policy import OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE
+            from .prefix_policy import OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_ATTENTION_GRAPHS_PROFILE
 
-            compact_target = self.dec.w.meta.get("sm70_profile") in (OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE)
+            compact_target = self.dec.w.meta.get("sm70_profile") in (OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_ATTENTION_GRAPHS_PROFILE)
             run = partial(compute, self.dec.w, bound, b, context=context, check=False,
                           **({"gather_candidates": False} if compact_target else {}))
         else:
@@ -473,11 +474,22 @@ class BoundStateGraphs:
         if any(position + width > state.capacity for (state, _, _), position in zip(segs, positions)):
             return None
         if self.native_owner:
-            from .owner_execution import KERNEL_FAMILY, REFERENCE_KERNEL, UNCAPTURED, FULL_COLLECTIVE
+            from .owner_execution import KERNEL_FAMILY, REFERENCE_KERNEL, UNCAPTURED, GRAPH_FAMILY, FULL_COLLECTIVE
             from .compact_indexer import validate_target_indexer_frame, validate_mtp_indexer_frame
 
             attention = source.history_owner
-            if (source.owner_kernel_family not in (REFERENCE_KERNEL, KERNEL_FAMILY)
+            if getattr(self, "captured_owner", False):
+                manager = source.owner_graphs
+                reference_setup = (source.owner_kernel_family == REFERENCE_KERNEL
+                    and source.owner_graph_family == UNCAPTURED and manager is None
+                    and attention.native_states is None)
+                captured_setup = (source.owner_kernel_family == KERNEL_FAMILY
+                    and source.owner_graph_family == GRAPH_FAMILY and manager is not None
+                    and manager.workspace is attention and manager.prepared
+                    and not manager.closed and manager.failure is None)
+                if not (reference_setup or captured_setup) or attention.native_collective != FULL_COLLECTIVE:
+                    raise ValueError("captured owner pieces require their prepared canonical full8 attention graphs")
+            elif (source.owner_kernel_family not in (REFERENCE_KERNEL, KERNEL_FAMILY)
                     or source.owner_graph_family != UNCAPTURED or source.owner_graphs is not None
                     or attention.native_collective != FULL_COLLECTIVE):
                 raise ValueError("owner-piece graphs require canonical eager full8 attention")
@@ -546,10 +558,10 @@ class BoundStateGraphs:
             torch.index_select(b.proj, 1, index, out=source.proj[:, :n])
             torch.index_select(b.ple_nrow, 0, index, out=source.ple_nrow[:n])
             torch.index_select(b.logits, 0, index, out=source.logits[:n])
-            from .prefix_policy import OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE
+            from .prefix_policy import OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_ATTENTION_GRAPHS_PROFILE
 
             if (self.dec.w.comm is not None
-                    and self.dec.w.meta.get("sm70_profile") not in (OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE)):
+                    and self.dec.w.meta.get("sm70_profile") not in (OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_ATTENTION_GRAPHS_PROFILE)):
                 packet = 2 * CAND + 1
                 world, physical = self.dec.w.comm.world, len(lanes) * width
                 gathered = b.cand_all[:world * physical * packet].view(world, physical, packet)

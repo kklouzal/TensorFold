@@ -32,10 +32,10 @@ def request(module, **changes):
     return module.unique_graph_request(module.OWNER_GRAPH_TRIAL, **args)
 
 
-@pytest.mark.parametrize("target,guard,prelude", [(False, False, False), (True, False, False), (True, True, False), (True, True, True)])
+@pytest.mark.parametrize("target,guard,prelude", [(False, False, False), (True, False, False), (True, True, False), (True, True, True), (True, True, "captured")])
 def test_new_profile_requires_issued_native_owner_and_grants_only_exact_nonattention_pieces(source, monkeypatch, target, guard, prelude):
     module = source.module
-    selected = module.OWNER_TARGET_PRELUDE_TRIAL if prelude else module.OWNER_TARGET_GUARD_TRIAL if guard else module.OWNER_TARGET_GREEDY_TRIAL if target else module.OWNER_GRAPH_TRIAL
+    selected = module.OWNER_ATTENTION_GRAPHS_TRIAL if prelude == "captured" else module.OWNER_TARGET_PRELUDE_TRIAL if prelude else module.OWNER_TARGET_GUARD_TRIAL if guard else module.OWNER_TARGET_GREEDY_TRIAL if target else module.OWNER_GRAPH_TRIAL
     monkeypatch.setenv(module.PROFILE_ENV, selected)
     if guard:
         monkeypatch.setattr(family_native, "extension", lambda: source.calls.append("extension") or
@@ -52,10 +52,20 @@ def test_new_profile_requires_issued_native_owner_and_grants_only_exact_nonatten
         monkeypatch.setattr(family.torch.cuda, "current_stream", lambda *a: NS(synchronize=lambda: None))
     weights.meta.update(history_layout="unique", owner_workspaces={role: object() for role in ("decode", "mtp", "prefill")})
     weights.mtp = NS(layer=NS(linear=False))
+    preparation = specification()
+    if prelude == "captured":
+        from tensorfold.families.qwen4_exp.cuda.owner_execution import GRAPH_FAMILY
+        preparation.update(graph_family=GRAPH_FAMILY, graph_budget_bytes=512 << 20)
+        weights.meta["owner_attention_graphs"] = {role: NS(prepared=True, closed=False, failure=None, workspace=workspace)
+            for role, workspace in weights.meta["owner_workspaces"].items()}
     contract = module.unique_graph_request(selected, method="mtp", depth=2, kv_pair=get_pair("int8"),
         unique_history=True, indexer_history="gpu", graphs=True, concurrent=True, vision=False,
-        owner_preparation=specification())
-    assert contract == UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT
+        owner_preparation=preparation)
+    from tensorfold.families.qwen4_exp.cuda.multi_graphs import UNIQUE_NATIVE_OWNER_GRAPH_CAPTURE_CONTRACT
+    expected = UNIQUE_NATIVE_OWNER_GRAPH_CAPTURE_CONTRACT if prelude == "captured" else UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT
+    assert contract == expected
+    if prelude == "captured":
+        assert prefix_policy.state_epoch(selected) != prefix_policy.OWNER_TARGET_PRELUDE_STATE
     module.prepare_weights(weights, graph_contract=contract)
     assert ("sm70_target_greedy_trial" in weights.meta) is target
     assert weights.meta.get("sm70_native_guard_trial", False) is guard
@@ -63,7 +73,8 @@ def test_new_profile_requires_issued_native_owner_and_grants_only_exact_nonatten
         assert source.calls[:3] == ["audit", "extension", "guard-code"]
     assert weights.meta["capture_ready"] is True
     assert weights.meta["unique_capture_contract"] == contract
-    assert weights.meta["sm70_family_trial"]["attention"] == "prepared-native-owner-eager-trial"
+    assert weights.meta["sm70_family_trial"]["attention"] == ("prepared-native-owner-captured-trial"
+        if prelude == "captured" else "prepared-native-owner-eager-trial")
     assert not any(weights.meta.get(name) for name in (
         "device_greedy_mtp_ready", "device_greedy_native_ready", "attention_qualification"))
 
@@ -141,3 +152,15 @@ def test_actual_engine_resident_floor_refuses_before_window_publication_or_weigh
     else:
         exec(code, namespace)
         assert namespace["resident_windows"] == engine.streams == engine.kv_full_windows == slots
+
+
+@pytest.mark.parametrize("change", [{"graph_family": UNCAPTURED, "graph_budget_bytes": 0},
+    {"graph_budget_bytes": 0}, {"graph_budget_bytes": True}, {"collective_family": "head4-allgather-v1"},
+    {"trial": False}])
+def test_captured_owner_profile_requires_explicit_matching_full8_graph_preparation(source, change):
+    from tensorfold.families.qwen4_exp.cuda.owner_execution import GRAPH_FAMILY
+    owner = {**specification(), "graph_family": GRAPH_FAMILY, "graph_budget_bytes": 512 << 20, **change}
+    with pytest.raises(ValueError, match="captured full8"):
+        source.module.unique_graph_request(source.module.OWNER_ATTENTION_GRAPHS_TRIAL,
+            method="mtp", depth=2, kv_pair=get_pair("int8"), unique_history=True,
+            indexer_history="gpu", graphs=True, concurrent=True, vision=False, owner_preparation=owner)
