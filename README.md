@@ -1,5 +1,16 @@
 # TensorFold fork
 
+The combined Dense/batched-prelude wheel `86cb036d` passed 81 integrated GPU
+controls, including real Dense weights, two target attention layers and eight
+96-token sessions. All eight ranks recorded 329 batches, including 109 MTP
+batches, with eight maximum segments. The finite FAST v2 tool now requires
+zero batch deltas for N1 and positive target/MTP batch deltas for every N>1
+cohort, recording missing coverage as an invalid development measurement while
+retaining all six receipts. Its bounded host evidence fields receive 8192 bytes
+of caller funding. The application package is unchanged. A quick single all-six
+2048-cap screen and existing quality spot checks remain pending; performance
+and release qualification are not established.
+
 The private `source-dense-owner-batch-prelude-trial` composes selected exact
 Dense staging and the current canonical target/MTP text producers with the
 existing batched native owner-prelude candidate. Only multi-State frames upload

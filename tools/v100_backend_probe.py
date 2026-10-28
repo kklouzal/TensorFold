@@ -577,6 +577,37 @@ def graph_execution_delta(before, after):
     return {name: value - before["counters"][name] for name, value in after["counters"].items()
             if name in before["counters"]}
 
+
+BATCH_EVIDENCE_CONTROL_BYTES = 8192  # Fixed host-only receipt fields, bounded int63 counters and reason literals.
+
+
+def batch_preparation_evidence(profile, count, before, after):
+    """Qualify actual cohort dispatch after drain; never infer missing counts as zero."""
+    from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL
+
+    if profile != OWNER_BATCH_PRELUDE_TRIAL:
+        return None
+    result = {"passed": False, "available": False, "cohort_N": count,
+              "scope": "submitted native batches during readiness/decode/cancel/drain; not device timing"}
+    fields = ("owner.prelude_submitted_batches", "owner.prelude_submitted_mtp_batches")
+    snapshots = (before, after)
+    if any(type(snapshot) is not dict or type(snapshot.get("counters")) is not dict
+           or any(type(snapshot["counters"].get(field)) is not int
+                  or not 0 <= snapshot["counters"][field] <= (1 << 63) - 1 for field in fields)
+           for snapshot in snapshots):
+        result["reason"] = "required batch counters unavailable or invalid"
+        return result
+    total, mtp = (after["counters"][field] - before["counters"][field] for field in fields)
+    if any(snapshot["counters"][fields[1]] > snapshot["counters"][fields[0]] for snapshot in snapshots) or not 0 <= mtp <= total:
+        result["reason"] = "batch role counters regressed or exceeded total"
+        return result
+    result.update(available=True, total_batches=total, target_batches=total - mtp, mtp_batches=mtp)
+    result["passed"] = (total == 0 if count == 1 else total - mtp > 0 and mtp > 0)
+    if not result["passed"]:
+        result["reason"] = ("N1 must retain scalar preparation" if count == 1
+                            else "multi-State cohort requires actual target and MTP native batches")
+    return result
+
 def concurrency_module():
     if __package__:
         from . import finite_concurrency
@@ -686,6 +717,12 @@ def run_fast_grid(engine, tokenizer, args, report, limit, pool, prepared, finite
                 graph_execution={"before_requests": graph_before, "after_requests": graph_after,
                     "delta": graph_execution_delta(graph_before, graph_after),
                     "scope": "this screen cohort including readiness and measured decode/cancel/drain; excludesconstructor/cheapbringup/otherNs/quality; countersnotdevicetiming"})
+            evidence = batch_preparation_evidence(engine.sm70_profile, count, graph_before, graph_after)
+            if evidence is not None:
+                result["batch_native_preparation"] = evidence
+                if not evidence["passed"]:
+                    result["passed"] = False
+                    result["screen"]["measurement_valid"] = False
             write_report(args.out / f"fast-mtp-target-n{count:02d}.json", result,
                          allowance=finite.MAXIMUM * MAX_RECEIPT_BYTES)
         summary = finite.run_screen_case(pool, count=count, maximum_tokens=args.tokens, vocab=vocab,
@@ -706,6 +743,7 @@ def run_concurrency_leader(engine, tokenizer, args, report):
     from tensorfold.families.qwen4_exp.cuda.retention_resources import FiniteBackendCaller, finalize_backend_resources
     from tensorfold.server.request_limits import RequestLimit
     from tensorfold.token_metadata import decode_presentation, tokenizer_vocab_size
+    from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL
 
     finite = concurrency_module()
     prepared = []
@@ -746,7 +784,8 @@ def run_concurrency_leader(engine, tokenizer, args, report):
         max_receipt_bytes=(finite.MAXIMUM + 1) * MAX_RECEIPT_BYTES,
         max_concurrent_requests=finite.MAXIMUM, worker_stack_bytes=finite.STACK_BYTES,
         control_payload_bytes=finite.control_payload_bytes(args.tokens) + quality_control
-            + (finite.screen_control_payload_bytes(args.tokens) if getattr(args, "fast_grid", False) else 0))
+            + (finite.screen_control_payload_bytes(args.tokens) if getattr(args, "fast_grid", False) else 0)
+            + (BATCH_EVIDENCE_CONTROL_BYTES if engine.sm70_profile == OWNER_BATCH_PRELUDE_TRIAL else 0))
     limit, pool = RequestLimit(finite.MAXIMUM), None
     primary, failures = None, [None, None]
     report["concurrency"] = {"grid": finite.GRID, "caller": caller.__dict__,
