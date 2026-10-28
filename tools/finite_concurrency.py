@@ -30,6 +30,12 @@ SUSTAINED_PROMPT = (
 )
 
 
+MAX_V1_OUTPUT_TOKENS = 512
+MAX_V2_OUTPUT_TOKENS = 2048
+FAST_V1 = "fast-grid-v1"
+FAST_V2 = "fast-grid-v2"
+
+
 def control_payload_bytes(tokens):
     """Selected CPython payload bound for fixed timing/control cells, not RSS.
 
@@ -41,8 +47,8 @@ def control_payload_bytes(tokens):
     per-slot allowance (4096 scalar/entry cells). Worker C stacks are separate.
     Report objects/encoding/decoded text are funded by the ordinary caller terms.
     """
-    if type(tokens) is not int or not 1 <= tokens <= 512:
-        raise ValueError("finite timing token bound must be1..512")
+    if type(tokens) is not int or not 1 <= tokens <= MAX_V2_OUTPUT_TOKENS:
+        raise ValueError("finite timing token bound must be1..2048")
     cells = TIMELINE_EVENTS * (2 + 2 * MAXIMUM) + MAXIMUM * 4096
     return MAXIMUM * (2 * sys.getsizeof(array('Q', [0]) * tokens)) + 256 * cells
 
@@ -57,8 +63,9 @@ def input_credit(context):
 
 class TimedTokens:
     """One worker owns IDs and fixed-size chunk cells until its Future retires."""
-    def __init__(self, maximum, vocab, abort):
-        if type(maximum) is not int or not 1 <= maximum <= 512 or type(vocab) is not int or vocab <= 0:
+    def __init__(self, maximum, vocab, abort, *, maximum_bound=MAX_V1_OUTPUT_TOKENS):
+        if (maximum_bound not in (MAX_V1_OUTPUT_TOKENS, MAX_V2_OUTPUT_TOKENS)
+                or type(maximum) is not int or not 1 <= maximum <= maximum_bound or type(vocab) is not int or vocab <= 0):
             raise ValueError("invalid finite token collector domain")
         self.maximum, self.vocab, self.abort = maximum, vocab, abort
         self.ids = []
@@ -407,8 +414,8 @@ FAST_DECODE_SECONDS = 10.0
 
 class ScreenTokens(TimedTokens):
     """Publish first delivery once; distinguish observed stop from natural EOS."""
-    def __init__(self, maximum, vocab, stop):
-        super().__init__(maximum, vocab, stop)
+    def __init__(self, maximum, vocab, stop, *, maximum_bound=MAX_V1_OUTPUT_TOKENS):
+        super().__init__(maximum, vocab, stop, maximum_bound=maximum_bound)
         self.first_ready = threading.Event()
         self.stop_observed = False
         self.native_stream = None
@@ -462,17 +469,23 @@ class ScreenTokens(TimedTokens):
         return stop
 
 
-def screen_control_payload_bytes():
+def screen_control_payload_bytes(maximum_tokens=MAX_V1_OUTPUT_TOKENS):
     # Additional Event/Condition/lock/deque/flags, one owned Stream reference
-    # and up to two512-pointer snapshots per worker, plus coordinator cells.
+    # and up to two maximum_tokens-pointer snapshots per worker, plus coordinator cells.
     # These fit64 selected-runtime256-byte cells per worker; timing/IDs from
     # callback delivery and all report graphs have their existing terms.
-    return (MAXIMUM * 64 + 64) * 256
+    if type(maximum_tokens) is not int or not 1 <= maximum_tokens <= MAX_V2_OUTPUT_TOKENS:
+        raise ValueError("screen token bound must be1..2048")
+    # Keepv1fundingexact. Explicitv2paysadditionalworstcase two simultaneous
+    # native/callback ID pointer snapshots, beyondv1existing512-pointer role.
+    pointer = sys.getsizeof([None]) - sys.getsizeof([])
+    return ((MAXIMUM * 64 + 64) * 256
+            + MAXIMUM * 2 * max(0, maximum_tokens - MAX_V1_OUTPUT_TOKENS) * pointer)
 
 
 def run_screen_case(pool, *, count, maximum_tokens, vocab, limit, invoke, observe, write,
                     timeout, readiness_seconds=FAST_READY_SECONDS, decode_seconds=FAST_DECODE_SECONDS,
-                    failure_notify=None):
+                    failure_notify=None, protocol=FAST_V1):
     """Bounded time-window screen; partial output never becomes a full reply.
 
     This is a distinct operational protocol. The full run_case remains intact.
@@ -480,18 +493,20 @@ def run_screen_case(pool, *, count, maximum_tokens, vocab, limit, invoke, observ
     measurement interval. Worker callbacks/progress acknowledge that request;
     every Future/real permit/backend claim retires before the next cohort.
     """
-    if (count not in GRID or type(maximum_tokens) is not int or maximum_tokens not in (320, 512)
+    allowed = (320, MAX_V1_OUTPUT_TOKENS) if protocol == FAST_V1 else (MAX_V2_OUTPUT_TOKENS,) if protocol == FAST_V2 else ()
+    if (count not in GRID or type(maximum_tokens) is not int or maximum_tokens not in allowed
             or any(type(value) not in (int, float) or not math.isfinite(value) or not 0 < value <= threading.TIMEOUT_MAX
                    for value in (timeout, readiness_seconds, decode_seconds))):
         raise ValueError("invalid fast screen bounds")
     stop, failed, barrier = threading.Event(), threading.Event(), threading.Barrier(count + 1)
-    collectors = [ScreenTokens(maximum_tokens, vocab, stop) for _ in range(count)]
+    collectors = [ScreenTokens(maximum_tokens, vocab, stop,
+        maximum_bound=MAX_V2_OUTPUT_TOKENS if protocol == FAST_V2 else MAX_V1_OUTPUT_TOKENS) for _ in range(count)]
     rows = [{"request": index, "complete": False, "backend_retired": False,
              "intentional_cancelled": False, "quality_assessed": False} for index in range(count)]
     errors, drains, futures = [None] * count, [None] * count, [None] * count
     notification_errors = [None] * (count + 1)
     timeline, intervals, previous, active_interval = [], [], None, None
-    screen = {"protocol": "fast-grid-v1", "target_decode_seconds": decode_seconds,
+    screen = {"protocol": protocol, "target_decode_seconds": decode_seconds,
         "readiness_cap_seconds": readiness_seconds, "maximum_output_tokens": maximum_tokens,
         "begin_monotonic_ns": None, "end_monotonic_ns": None,
         "cancel_requested_monotonic_ns": None, "stop_reason": None,

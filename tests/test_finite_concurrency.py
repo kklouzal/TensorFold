@@ -215,7 +215,7 @@ def test_pool_prestarts_exact_bounded_workers_restores_stack_and_retires(monkeyp
 
 def test_control_bound_is_declared_and_scales_with_fixed_timestamp_cells():
     assert finite.control_payload_bytes(512) > finite.control_payload_bytes(256) > 0
-    for tokens in (0, 513, True):
+    for tokens in (0, 2049, True):
         with pytest.raises(ValueError):
             finite.control_payload_bytes(tokens)
 
