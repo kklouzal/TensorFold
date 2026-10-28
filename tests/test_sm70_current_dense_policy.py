@@ -67,33 +67,64 @@ def test_worker_handshake_seals_actual_dense_selection_and_keeps_old_profile_pac
         agree(engine, proxy, None)
 
 
-def test_new_tp8_oracle_installs_actual_target_dense_and_preserves_stock_mtp_owner():
+def test_new_tp8_oracle_preserves_actual_toy_embedding_and_stock_mtp_aliases(monkeypatch):
     import ast
-    from dataclasses import dataclass, fields, is_dataclass, replace
+    from dataclasses import fields, is_dataclass, replace
     from pathlib import Path
+    import sys
+    from types import ModuleType
+    import numpy as np
+    from tensorfold.families.qwen4_exp.cuda import gdn
     from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense
-    from tensorfold.families.qwen4_exp.cuda.sm70_mtp_weights import Dense
+    from tensorfold.families.qwen4_exp.cuda.sm70_mtp_weights import Dense, DenseExperts
 
-    tree = ast.parse((Path(__file__).parent / "cuda/test_sm70_owner_piece_graphs_tp8.py").read_text())
-    function = next(node for node in ast.walk(tree)
-                    if isinstance(node, ast.FunctionDef) and node.name == "actual_target_dense")
-    namespace = dict(torch=family.torch, GGUFDense=GGUFDense, converted={},
-                     fields=fields, is_dataclass=is_dataclass, replace=replace)
-    exec(compile(ast.Module(body=[function], type_ignores=[]), "actual_tp8_dense_fixture", "exec"), namespace)
+    fixture_directory = Path(__file__).parent / "cuda"
 
-    @dataclass
-    class Fixture:
-        target: object
-        mtp: object
+    def actual_function(path, name, namespace):
+        tree = ast.parse(path.read_text())
+        function = next(node for node in ast.walk(tree)
+                        if isinstance(node, ast.FunctionDef) and node.name == name)
+        exec(compile(ast.Module(body=[function], type_ignores=[]), str(path), "exec"), namespace)
+        return namespace[name]
 
-    weight = family.torch.ones((4, 8), dtype=family.torch.float16)
-    target = NS(kernel="gguf", weight=weight)
-    stock = Dense(weight)
-    actual = namespace["actual_target_dense"](Fixture([target, target], (stock, target)))
-    assert isinstance(actual.target[0], GGUFDense)
-    assert actual.target[0].weight is weight
-    assert actual.mtp[0] is stock
-    assert actual.target[0] is actual.target[1] is actual.mtp[1]
+    class CpuAllocation:
+        # Run the exact fixture construction bodies; only route their explicit
+        # CUDA allocation requests to CPU. No forward math or GPU claim occurs.
+        def __getattr__(self, name):
+            operation = getattr(family.torch, name)
+            if name not in ("randn", "ones", "zeros", "tensor"):
+                return operation
+
+            def allocate(*args, **kwargs):
+                kwargs["device"] = "cpu"
+                return operation(*args, **kwargs)
+
+            return allocate
+
+    cpu = CpuAllocation()
+    small = actual_function(fixture_directory / "test_flashnext_sm70_family.py", "_small_weights",
+                            dict(torch=cpu, gdn=gdn, np=np))
+    module = ModuleType("test_flashnext_sm70_family")
+    module._small_weights = small
+    monkeypatch.setitem(sys.modules, module.__name__, module)
+    stock = actual_function(fixture_directory / "test_flashnext_sm70_mtp.py", "_weights_with_stock_mtp_protocol",
+                            dict(torch=cpu, Dense=Dense, DenseExperts=DenseExperts, replace=replace))
+    original = stock(head_dim=256)
+    original.layers.append(replace(original.layers[1], index=original.cfg.layers))
+    assert isinstance(original.embed, tuple) and len(original.embed) == 1
+    assert hasattr(original.embed[0], "lookup")
+    converter = actual_function(fixture_directory / "test_sm70_owner_piece_graphs_tp8.py", "actual_target_dense",
+                                dict(torch=family.torch, GGUFDense=GGUFDense, converted={},
+                                     fields=fields, is_dataclass=is_dataclass, replace=replace))
+    actual = converter(original)
+    assert actual.embed is original.embed
+    assert actual.cfg is original.cfg
+    assert actual.mtp.fc_e is original.mtp.fc_e and actual.mtp.fc_h is original.mtp.fc_h
+    assert actual.head.weight is original.head.weight
+    assert isinstance(actual.head, GGUFDense)
+    assert actual.layers[1].attn.proj is actual.layers[2].attn.proj
+    unchanged_list = [original.embed, original.mtp.fc_e]
+    assert converter(unchanged_list) is unchanged_list
 
 
 @pytest.mark.parametrize("failure", [False, True])

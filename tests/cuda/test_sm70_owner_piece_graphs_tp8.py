@@ -99,12 +99,16 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
                         and value.weight.ndim == 2):
                     result = GGUFDense(value.weight)
                 elif is_dataclass(value):
-                    result = replace(value, **{item.name: actual_target_dense(getattr(value, item.name))
-                                               for item in fields(value) if item.init})
+                    children = {item.name: actual_target_dense(getattr(value, item.name))
+                                for item in fields(value) if item.init}
+                    result = (value if all(child is getattr(value, name) for name, child in children.items())
+                              else replace(value, **children))
                 elif isinstance(value, list):
-                    result = [actual_target_dense(item) for item in value]
+                    children = [actual_target_dense(item) for item in value]
+                    result = value if all(child is old for child, old in zip(children, value)) else children
                 elif isinstance(value, tuple):
-                    result = tuple(actual_target_dense(item) for item in value)
+                    children = tuple(actual_target_dense(item) for item in value)
+                    result = value if all(child is old for child, old in zip(children, value)) else children
                 else:
                     return value
                 converted[id(value)] = result

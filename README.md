@@ -1,5 +1,14 @@
 # TensorFold fork
 
+The valid-scope `4efee794` retry passed all 55 Dense/prepared and 53 current
+prelude controls, then stopped before the new Dense TP8 numerical oracle at a
+fixture embedding-identity assertion. The fixture converter now preserves
+unchanged tuple/list/dataclass objects while memoizing converted owners; the
+original identity, state, numerical and native-counter assertions remain. Five
+CPU policy/fixture tests passed using the actual toy model and stock-MTP
+construction bodies. The application wheel is unchanged; the corrected Dense
+TP8 integration gate remains unrun.
+
 The private Dense residency wheel `4efee794` completed 55 independent native
 Dense/prepared controls on the pinned eight-V100 runtime, then stopped at an
 optional legacy six-lane fixture with `MethodGeometry(none, 2)`. That fixture
