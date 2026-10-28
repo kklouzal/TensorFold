@@ -1,5 +1,15 @@
 # TensorFold fork
 
+A private Dense N24 diagnostic can explicitly select `--profile-concurrency 24`
+with FASTv2/2048 and the matching Dense trial. It captures one real24-request
+cohort across all eight ranks, preserving eager batching and per-role counters.
+CPU row histograms cover the depth-two72-row envelope. Post-retirement summary
+parsing streams complete traces within8GiB/8M-event/4M-kernel bounds per rank;
+8GiB aggregate host allowance funds reader temporaries before admission. Kineto
+native buffers remain runtime-managed under the existing320GiB container cap;
+actual N24 capture headroom is unqualified until verified on hardware. This
+diagnostic provides no all6 performance or quality qualification.
+
 The unchanged Dense residency wheel `4efee794` passed the corrected real-bound
 Dense TP8 integration gate with every existing assertion and native counter.
 Together with the prior 108 passes, this closes the scoped component controls.
