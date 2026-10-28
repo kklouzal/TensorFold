@@ -9,16 +9,17 @@ GB10 Compose profile selects `--drafter-bits 8`; the general CLI default remains
 `16`, required for the original affine checkpoint's quantized head.
 [Conditions, tradeoffs and raw receipt](docs/optimization-validation.md#gemma-fp8-provider-preparation-2026-10-23).
 
-**Prepared FP8 maximum-packet candidate:** this isolated source adds G2's
-complete-row maximum/index token packet to the selected preparation above.
-Runtime `9e075c42` and tests `bfb97ea8` passed **99 CPU checks**, including all
-seven constructor cases, with **26 declared CUDA-only skips** in pinned SDK
-`509b4135` with Torch `9026ad48` and CUDA hidden. Combined native, ARM,
-complete-model and P3 gates remain **UNRUN**. Eight Ruff findings match the
-unchanged G2 import-header baseline; no overall Ruff-clean result is claimed.
-The parent gain above establishes no G2 or combined-source gain.
-[Validation scope](docs/optimization-validation.md#gemma-prepared-fp8-maximum-packet)
-keeps the sources and remaining gates separate.
+**Prepared FP8 maximum-packet experiment:** corrected G2 source `de6ba2678e3c`
+passed its installed ARM CPU/native and complete four-request quality checks,
+then completed an independent 24-process comparison against corrected prepared
+FP8 reference `437e61e5829f`. The cached-decode primary was **inconclusive**:
+G2/F8R ratio **0.989963**, pointwise 95% interval **[0.926721, 1.057521]**,
+with two of six positive block effects. Two short uncached decode cells had
+positive pointwise intervals; they do not establish the declared primary gain.
+G2 is not promoted, equivalent or established inferior. Corrected prepared FP8
+remains the selected reference. Earlier source CPU and baseline Ruff records
+retain their original scopes. [Methods, all eight cells and validation](docs/optimization-validation.md#gemma-prepared-fp8-maximum-packet).
+
 
 Gemma CUDA prompt-progress frames count cached tokens in `processed`, matching
 the documented `cache <= processed <= total` contract during warm prompt reuse.

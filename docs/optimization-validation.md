@@ -1057,7 +1057,7 @@ result is claimed.
 
 ## Gemma prepared FP8 maximum packet
 
-This isolated source combines the G2 maximum-packet parent `5978bbe46dc3`
+The initial isolated source combined the G2 maximum-packet parent `5978bbe46dc3`
 with the constructor preparation from `16b4c0870416`. The G2 engine routing,
 token packet, complete-row refusal, public proposal and sampled/history paths
 remain unchanged. The only runtime addition to G2 is the terminal bits8
@@ -1089,7 +1089,7 @@ SM121 cases. The preparation parent's selected GB10 gain, startup cost and
 [its own qualification section](#gemma-fp8-provider-preparation-2026-10-23).
 Those results do not qualify the G2 maximum packet or this combined source.
 
-The combined runtime `9e075c42` with tests `bfb97ea8` passed **99 source CPU
+The initial combined runtime `9e075c42` with tests `bfb97ea8` passed **99 source CPU
 cases**, with **26 declared CUDA-only skips**, from 125 collected cases across
 the whole maintained engine and companion modules. All seven new constructor
 coordination cases passed. The authenticated `c143438a` result used the pinned
@@ -1099,8 +1099,70 @@ command metadata and its explicit hash erratum remain preserved. Eight Ruff
 findings match the unchanged G2 import-header baseline; this is not an overall
 Ruff-clean result or a new lint run.
 
-Combined native execution, immutable ARM build and installed provenance,
-complete-model quality, resource checks and independent same-region P3 evidence
-remain **UNRUN** and are required before selection. Parent runs are not
-combined-source passes. No combined speed, timing equivalence, additive gain or
-G2 gain is claimed.
+### Corrected G2 comparison (2026-10-24)
+
+The current experiment used corrected candidate source `de6ba2678e3c` and
+corrected prepared-FP8 reference `437e61e5829f`; both include the managed native
+build-state correction `9f89e26b`. Candidate runtime `sha256:d863033da59108b15150ec41e44e300715d5f1988ca45d1d99b06f7455aebb1e`
+and reference runtime `sha256:f7848629645fd98686c427348daf99b3c46b66ec84374f38735411a3c7d08cf8`
+each passed their own direct installed-source audits and full 564-file package
+inventory. Candidate installed CPU collection was 138 cases: 112 passed and
+26 explicit off-target CUDA cases skipped; all 57 installed native cases passed.
+Reference installed CPU25 and native6 passed without skips. Both ordinary
+four-request quality runs passed all 256 target token IDs, prompt/cache identity,
+all five selected own-FP8 counters, prepared-provider checks, source/thread
+bindings and owned retirement. These per-image results are distinct from the
+earlier local source CPU snapshot above.
+
+The independent fixed comparison completed all 24 fresh model processes and
+6,144 token IDs in six mirrored whole blocks: `[F8R,G2,G2,F8R]` and
+`[G2,F8R,F8R,G2]`, repeated three times. Each arm had six compiler-cold and six
+compiler-warm processes, using 12 new arm/block caches with authenticated cold
+dependencies. Both used GB10/SM121, pinned Torch `ef46daf1` and CUDA13.4, bits8,
+rows5, BF16 target KV, context262144,10+10 Torch threads, CPUs `5-9,15-19`,
+VBoost0 and the 16GiB host reserve. Each process retained the same four complete
+64-token greedy workloads with prompt-cache counts0/48/0/8451 and all five exact
+own-FP8 counters. No earlier pilot, quality, profile, depth or failed-AS timings
+entered the estimates.
+
+The predeclared primary gives equal log weight to short/history cached64
+throughput across compiler-cold/warm states. It uses64 divided by unrounded
+settled-generation wall time. Uncached cells use the remaining63 tokens over
+`settled_wall_s-first_s`, retaining the source-proved first one-token callback
+and final settlement. Six paired whole blocks are the sampling units; requests
+and processes are not independent replicates. Startup, TTFT and whole prepared
+request cost remain lower lexicographic evidence, not invented separate SLAs.
+
+The primary G2/F8R ratio was **0.9899629941**, with pointwise 95% interval
+**[0.9267209022, 1.0575209077]** and **2/6** positive block effects. It failed
+the declared strict primary gain rule. All eight required decode cells remain:
+
+| Workload / request cache / compiler state | G2/F8R ratio | Pointwise 95% interval | Positive blocks | Result |
+| --- | ---: | --- | ---: | --- |
+| Short / uncached / compiler-cold | 1.015792 | [1.011626, 1.019974] | 6/6 | positive pointwise interval |
+| Short / uncached / compiler-warm | 1.020668 | [1.003231, 1.038409] | 5/6 | positive pointwise interval |
+| Short / full cache / compiler-cold | 0.999403 | [0.993177, 1.005668] | 3/6 | uncertain |
+| Short / full cache / compiler-warm | 1.004092 | [0.980279, 1.028484] | 3/6 | uncertain |
+| History / uncached / compiler-cold | 0.997828 | [0.990232, 1.005483] | 2/6 | uncertain |
+| History / uncached / compiler-warm | 0.953315 | [0.763490, 1.190337] | 3/6 | uncertain |
+| History / full cache / compiler-cold | 1.002778 | [0.990559, 1.015148] | 4/6 | uncertain |
+| History / full cache / compiler-warm | 0.954457 | [0.745979, 1.221199] | 2/6 | uncertain |
+
+The two positive short-uncached intervals correspond to +1.579166% for compiler
+cold and +2.066836% for compiler warm. The primary's six-positive-sign rule is
+not an additional per-cell rule: the second cell has five positive signs and
+its positive pointwise interval is retained. These are pointwise intervals,
+not simultaneous 95% family bands or a replacement primary endpoint. Six other
+required cells remain uncertain; no adverse-region upper-bound veto fired.
+No non-significant result establishes equivalence, no required loss is proved
+absent, and the scalar point estimate is not an established inferiority result.
+
+The frozen result is **INCONCLUSIVE_VERIFICATION_BLOCKED**. G2 is not promoted;
+corrected prepared FP8 reference `437e61e5829f` remains selected. No runs were
+excluded, replaced, pooled or extended, and no endpoint, weight, threshold or
+method was fitted after observing results. Complete manifest `e0243fe3` and
+frozen analysis `4ed5d6a7` retain the full values, secondary costs, assumptions,
+source/input identities and owned outcomes. Both actual review pairs closed.
+Any further verification needs its own prospective authority; this completed
+experiment establishes no global G2 gain, equivalence or inferiority.
+

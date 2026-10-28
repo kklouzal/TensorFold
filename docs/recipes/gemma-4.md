@@ -19,15 +19,18 @@ eight required decode cells and 14.97% longer startup. The original affine
 checkpoint with its quantized tied head still requires bits 16; earlier images
 and measurements retain their separate scope.
 
-The isolated prepared maximum-packet candidate retains G2's tokens-only
-maximum/ID packet and the existing public confidence, sampled and penalized
-contracts. Combined runtime `9e075c42` and tests `bfb97ea8` passed 99 source CPU
-checks, including all seven constructor cases, with 26 declared CUDA-only skips
-under pinned SDK `509b4135`, Torch `9026ad48` and CUDA hidden. Combined native,
-ARM, complete-model and P3 qualification remain **UNRUN**. The parent result
-above establishes no G2 or combined-source gain. The
-[validation scope](../optimization-validation.md#gemma-prepared-fp8-maximum-packet)
-records the distinct sources, baseline Ruff findings and remaining gates.
+The prepared maximum-packet G2 experiment preserves the existing public
+confidence, sampled and penalized contracts. Corrected source `de6ba2678e3c`
+passed its source-specific installed and four-request quality gates, but the
+independent 24-process comparison with corrected prepared FP8 `437e61e5829f`
+was **inconclusive**: the cached-decode G2/F8R ratio was 0.989963, with pointwise
+95% interval [0.926721, 1.057521] and two of six positive block effects. Two
+short uncached cells retained positive pointwise intervals; no declared-primary
+gain, equivalence or inferiority follows. G2 is not promoted and the selected
+prepared FP8 policy above stays unchanged. [All cells, conditions and historical
+source checks](../optimization-validation.md#gemma-prepared-fp8-maximum-packet)
+remain separately scoped.
+
 
 For a local complete mixed4/6 snapshot and matching companion:
 
