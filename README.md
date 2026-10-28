@@ -1,54 +1,38 @@
 # TensorFold fork
 
-The unchanged Dense residency wheel `4efee794` passed the corrected real-bound
-Dense TP8 integration gate with every existing assertion and native counter.
-Together with the prior 108 passes, this closes the scoped component controls.
-The wheel already admits `source-owner-target-dense-trial` for funded startup
-content overlap; an actual Engine-type CPU preflight confirms that eligibility.
-The private comparison tool now composes the closed FAST v2 protocol from
-`bebf7cbc`, explicitly funding a 2048-token output cap for every N=1/2/4/8/16/24
-window with the same 30-second readiness and 10-second decode windows and six
-quality spot checks as the current `5635` baseline. The application package is
-unchanged. Full-model throughput, quality and performance selection remain open.
+The private `source-owner-target-dense-trial` combines the native target/MTP
+prelude with fixed-M32 Dense staging. Its separately verified Dense component
+and the three-worker startup implementation are now integrated here. Use
+`--native-dense-trial --session-ceiling 24` with the explicit profile; three
+startup workers additionally require `--overlap-content-capture
+--startup-content-workers 3`. The one-worker default, target/MTP math, confidence,
+Q8 K/V, FP32 recurrent state and 24-window admission floor remain unchanged.
+Generic layouts, output aliases, autograd and errors retain the reference path.
+The combined build requires its own startup/admission and all-six development
+screen before any integrated performance claim. Full quality, stability and
+design qualification remain open; historical component failures are preserved.
 
-The valid-scope `4efee794` retry passed all 55 Dense/prepared and 53 current
-prelude controls, then stopped before the new Dense TP8 numerical oracle at a
-fixture embedding-identity assertion. The fixture converter now preserves
-unchanged tuple/list/dataclass objects while memoizing converted owners; the
-original identity, state, numerical and native-counter assertions remain. Five
-CPU policy/fixture tests passed using the actual toy model and stock-MTP
-construction bodies. The application wheel is unchanged; the corrected Dense
-TP8 integration gate remains unrun.
+The private startup overlap can explicitly select `--startup-content-workers 3`
+(or `TENSORFOLD_STARTUP_CONTENT_WORKERS=3` with overlap enabled). Three bounded
+owned Captures hash deterministic disjoint partitions of whole files, each
+using the original SHA256 and current-process authority checks. No chunk digests
+are combined. The default remains one worker. All three stack/guard/working
+allowances are funded globally before start; failures cancel siblings and
+every accepted file borrower retires under its own completion latch. Partition
+receipts use JSON arrays for the existing strict all-rank identity schema. Input
+immutability, byte/stat verification, MTP quality and24-window capacity remain
+required. Actual startup benefit and all-six throughput require measurement.
 
-The private Dense residency wheel `4efee794` completed 55 independent native
-Dense/prepared controls on the pinned eight-V100 runtime, then stopped at an
-optional legacy six-lane fixture with `MethodGeometry(none, 2)`. That fixture
-forces native private attention and padded linears; the current Dense profile
-keeps both disabled. Its four parameter cases are explicitly outside the
-current retry scope and are not reported as passed. Historical evidence already
-records the same invalid no-MTP fixture and a separate baseline padded-attention
-MTP discrepancy. The retry retains every passing Dense/prepared control and
-requires current native-prelude and real-bound Dense TP8 frame/state/MTP oracles
-with their original assertions and native counters. Full-model quality and
-all-six throughput qualification remain pending.
-
-The Dense residency successor explicitly materializes the existing pad/copy
-kernel code with CUDA function-attribute queries before initial physical-memory
-admission, including under CUDA lazy loading. It allocates no target tensors
-or persistent slabs and launches no kernels during preparation. The old `7051`
-wheel remains an unexecuted historical candidate with residency verification
-pending. Successor compile/link/import, lazy GPU preparation, exact Dense/TP8 and
-all-six model checks remain pending.
-
-The private `source-owner-target-dense-trial` composes the current native target/MTP
-prelude and startup overlap with the existing exact fixed-M32 ATen Dense staging
-helper. Select it explicitly with `TENSORFOLD_SM70_PROFILE` in the finite V100
-probe (`--native-dense-trial --session-ceiling 24`); it has a distinct State/prefix/worker epoch and retains the 24-window
-admission floor. Generic layouts, output aliases, autograd and errors retain
-the reference wrapper. No kernel, recurrent-state precision, Q8 K/V context,
-MTP confidence or quality setting changes. Normal wholewheel CPU, native Dense,
-real-bound TP8 state/frame/MTP and all-six throughput/quality checks are pending;
-this private candidate is unqualified and claims no performance gain.
+Finite operational screens can explicitly select `--fast-grid-protocol fast-grid-v2
+--tokens 2048` with the existing fast-grid arguments. The2048-cell output budget
+allows a full10-second observation above85tokens/s, while v1 keeps its320/512-cell
+contract and default selection. Prompts,30-second readiness,10-second target
+window, EOS, MTP settings, all six concurrency levels, cancellation/drain and
+the six independent320-token quality checks retain their existing behavior.
+V2 funds larger callback/timing/native-ID/report/decode owners through the same
+physical host admission; it changes no model math, KV format or24-window GPU
+capacity. A cap/EOS-shortened observation remains explicitly short, including
+v1; version and duration remain part of every performance receipt.
 
 Canonical MTP text refresh/proposal frames now use the existing actual text
 coordinate producer when no explicit coordinates or deferred boundary are

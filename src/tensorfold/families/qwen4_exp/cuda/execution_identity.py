@@ -1055,7 +1055,7 @@ def _bind_execution_manifest(engine, manifest_path, *, rebind, channel, manifest
         overlap = getattr(engine, "_startup_content_capture", None)
         if rebind or pairing is not None or overlap is not None:
             prior = (engine._execution_input_authorities if rebind else
-                     (overlap.result(),) if overlap is not None else (pairing.authority,))
+                     overlap.authorities() if overlap is not None else (pairing.authority,))
             if rebind and (not prior or prior[0] is not engine._execution_input_authority):
                 raise ValueError("current-process execution input authority was replaced")
             authorities, contents, read, reused = _capture_reusing(capture_files, union, expected, prior)
