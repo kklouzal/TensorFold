@@ -100,3 +100,33 @@ def test_actual_cleanup_observes_published_graph_and_preserves_original_with_clo
     assert log==['packed graph','dp graph','packed owner','dp owner','original']
     assert errors[0] is close_error and errors[2] is not None
     assert owners[0].graph_owner is not None  # No release after uncertain reset.
+
+
+def test_actual_case_compaction_exhaustion_retains_preexisting_native_roots(monkeypatch):
+    primary=RuntimeError('case operation')
+    cause,context=ValueError('prior explicit root'),LookupError('prior native context')
+    primary.__cause__=cause
+    primary.__context__=context
+    primary.__suppress_context__=True
+    original=object()
+    side=N(wait_stream=lambda stream:None)
+    monkeypatch.setattr(tool.torch.cuda,'current_stream',lambda:original)
+    monkeypatch.setattr(tool.torch.cuda,'Stream',lambda:side)
+    def select(stream):
+        if stream is side:
+            raise primary
+    monkeypatch.setattr(tool.torch.cuda,'set_stream',select)
+    real_finish=tool.finish_failures
+    class Exhausted:
+        def __iter__(self):
+            raise MemoryError('outcome compaction')
+    monkeypatch.setattr(tool,'finish_failures',lambda error,slots:real_finish(error,Exhausted()))
+    with pytest.raises(RuntimeError) as caught:
+        tool.actual_case(N(),1)
+    assert caught.value is primary and isinstance(primary.__cause__,MemoryError)
+    frame=primary.__traceback__
+    while frame is not None and frame.tb_frame.f_code.co_name!='actual_case':
+        frame=frame.tb_next
+    assert frame is not None
+    roots=frame.tb_frame.f_locals['native_roots']
+    assert roots[0] is cause and roots[1] is context and roots[2] is True

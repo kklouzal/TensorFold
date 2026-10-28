@@ -107,6 +107,7 @@ def timed(operation, stream):
 def actual_case(bank, rows):
     errors = [None] * 5  # All retirement outcomes precede accepted work.
     owners = [None, None]  # Packed owner first, then DP owner; retained on uncertain retirement.
+    native_roots = [None, None, False]  # Retained by this frame if outcome compaction itself exhausts.
     owner = packed = dp_graph = packed_graph = None
     primary, result = None, None
     original = torch.cuda.current_stream()
@@ -178,6 +179,9 @@ def actual_case(bank, rows):
                   'scope': 'routed-only includesquantize/project/activate/down/finalmask; no sharedassembly; changednumericprofile/errornotqualityacceptance'}
     except BaseException as error:
         primary = error
+        native_roots[0] = BaseException.__cause__.__get__(error)
+        native_roots[1] = BaseException.__context__.__get__(error)
+        native_roots[2] = BaseException.__suppress_context__.__get__(error)
     # Observe the published borrower even if prepare raised before capture()
     # returned. Graph.close retains uncertain owners; owner.close then refuses
     # dependent release while that borrower remains.
@@ -200,8 +204,19 @@ def actual_case(bank, rows):
         torch.cuda.set_stream(original)
     except BaseException as error:
         errors[4] = error
+    # native_roots and owners remain traceback-owned even if the borrowed
+    # outcome helper cannot compact its fixed slots and replaces the cause.
     finish_failures(primary, errors)
     return result
+
+
+def resource_observation():
+    from tensorfold.cuda.capacity import host_memory_snapshot
+    return {'cuda_free_total_bytes': list(torch.cuda.mem_get_info()),
+            'torch_allocated_bytes': torch.cuda.memory_allocated(),
+            'torch_reserved_bytes': torch.cuda.memory_reserved(),
+            'torch_peak_allocated_bytes_so_far': torch.cuda.max_memory_allocated(),
+            'host_advisory': host_memory_snapshot()}
 
 
 @torch.inference_mode()
@@ -213,6 +228,7 @@ def main():
     args = parser.parse_args()
     _family_runtime(torch)  # Observe pinned flags; no precision setters.
     torch.set_num_threads(1)
+    resources_before_loader = resource_observation()
     loader = fixture(args.source)
     loader.MODEL = args.model
     bank, spans = loader.make(0, 8)
@@ -224,6 +240,10 @@ def main():
             or bank.down.ggml_type != 20 or bank.down.column_offset != 16 or bank.count != 513):
         raise ValueError('actual retained bank is outside declared18/22+20/crop16 diagnostic',
                          (bank.gate.ggml_type, bank.up.ggml_type, bank.down.ggml_type, bank.down.column_offset, bank.count))
+    resources_after_loader = resource_observation()
+    bank_bytes = sum(t.numel() * t.element_size() for t in
+                     (bank.gate.data, bank.up.data, bank.down.data, *(part.weight for part in bank.shared)))
+    down_raw_bytes = 512 * 2560 * loader.checkpoint().tensors['blk.0.ffn_down_exps.weight'].row_bytes
     cases = [actual_case(bank, rows) for rows in ROWS]
     for tensor, record in zip((bank.gate, bank.up, bank.down), retained, strict=True):
         if digest(tensor.data) != record['retained_sha256']:
@@ -233,6 +253,11 @@ def main():
     report = {'schema': 'tensorfold.dp4a-actual-routed-cost-v1', 'application_enrollment': False,
               'source_spans': retained, 'native_module': module.__file__,
               'native_module_sha256': hashlib.sha256(Path(module.__file__).read_bytes()).hexdigest(),
+              'resource_observations': {'before_loader': resources_before_loader,
+                'after_loader': resources_after_loader, 'after_cases': resource_observation(),
+                'retained_bank_tensor_bytes': bank_bytes, 'loader_down_raw_bytes': down_raw_bytes,
+                'loader_down_concatenation_arrays_bytes': 2 * down_raw_bytes,
+                'scope': 'tensor extents and observed Torch/CUDA/host-cgroup remainder; loader concatenation excludes runtime/cache overhead; no reservation, physical peak bound or Engine admission claim'},
               'rows': list(ROWS), 'samples': SAMPLES, 'replays': REPLAYS, 'unroll': UNROLL, 'warmup': WARMUP,
               'input_policy': 'seededactual512bank/rank3shardof8/fixedwarmdata/noL2flush/nohostclockchanges',
               'timing_scope': 'CUDAeventtimeline includesenqueuegaps; graphmodeprevalidatesimmutablebindings thenusesrawGraphreplay; noCPUstatusread/resetinsidebatches',
