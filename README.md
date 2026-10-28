@@ -3,7 +3,8 @@
 The private `source-batch-router-blas-trial` is an unqualified numerical
 experiment: eager decode/MTP routing uses shared-pointer cuBLAS SgemvBatched,
 with prepaid per-role FP32 staging and per-weight pointer tables. Prefill and
-existing graph-only Buffers retain canonical per-row GEMV. Default profiles,
+existing graph-only Buffers retain canonical per-row GEMV. Pointer-table
+allocations receive the existing512-byte per-allocation admission charge. Default profiles,
 math flags, MTP confidence and Q8 K/V are unchanged; the new profile has its own
 State/cache epoch. Select it only with the private finite-tool
 `--router-blas-trial --native-dense-trial --owner-batch-prelude-trial

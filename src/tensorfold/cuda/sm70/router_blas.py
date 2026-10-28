@@ -55,8 +55,18 @@ def role_bytes(rows, weights):
     workspace_bytes(rows)
     if type(weights) is not int or not 1 <= weights <= MAX_WEIGHTS:
         raise ValueError("router role must own1..48 weights")
-    return (rows * ((HIDDEN + OUTPUT_STRIDE) * 4 + (weights + 2) * 8),
+    def rounded(size):
+        return ((size + 511) // 512) * 512
+    return (rounded(rows * HIDDEN * 4) + rounded(rows * OUTPUT_STRIDE * 4)
+            + (weights + 2) * rounded(rows * 8),
             HOST_BASE_BYTES + weights * HOST_BYTES_PER_PLAN)
+
+
+def role_payload_bytes(rows, weights):
+    """Raw tensor payload; admission separately charges each512-byte granule."""
+    role_bytes(rows, weights)
+    return rows * ((HIDDEN + OUTPUT_STRIDE) * 4 + (weights + 2) * 8)
+
 
 
 class RolePlans:
@@ -72,6 +82,7 @@ class RolePlans:
         self.plans = {}
         self.owners = tuple(weights)
         self.gpu_bytes, self.host_bytes = gpu, host
+        self.gpu_payload_bytes = role_payload_bytes(rows, len(weights))
         self.calls = 0
         self.overflowed = False
         shared = None

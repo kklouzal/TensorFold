@@ -388,7 +388,7 @@ def ple_block(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int
         _mm(b.ple_emb[:R], p.value, b.xs_ple[:R], b.ple_vals[:R], b)
     glue.ple_gate(b.ple_keys[:R], b.ple_vals[:R], b.h[:R], p.norm_key, p.norm_query, b.ple_gated[:R],
                   b.ple_pss[:R], c.eps, c.streams, valid_rows=getattr(b, "graph_rows", None),
-                  independent_rows=not b.prefill, prepared=getattr(b, "router_blas", None))
+                  independent_rows=not b.prefill)
     if b.split is not None:                           # a captured forward: each stream's tail runs between pieces
         b.split(("ple_conv", layer))
     else:
@@ -432,7 +432,7 @@ def moe_block(layer: LayerW, w: Weights, b: Buffers, R: int) -> tuple:
     m = layer.moe
     if getattr(m.experts, "kernel", "qmm") in ("gguf", "sm70_dense"):
         buf = b.moe
-        moe_mod.router(b.mixed[:R], m.router, buf.logits[:R], independent_rows=not b.prefill)
+        moe_mod.router(b.mixed[:R], m.router, buf.logits[:R], independent_rows=not b.prefill, prepared=getattr(b, "router_blas", None))
         moe_mod.select_rows(buf.logits[:R], buf, w.cfg.top_k, w.cfg.experts)
         execute = m.experts.forward
         if b.prefill:

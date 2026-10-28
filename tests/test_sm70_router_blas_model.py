@@ -51,8 +51,8 @@ def test_actual_role_creation_excludes_prefill_and_graph_stream_buffers(monkeypa
 def test_private_numeric_epoch_is_distinct_and_fixed_roles_are_funded_before_admit():
     assert prefix_policy.identity(rb.PROFILE) != prefix_policy.identity(prefix_policy.OWNER_BATCH_PRELUDE_PROFILE)
     assert prefix_policy.state_epoch(rb.PROFILE) != prefix_policy.state_epoch(prefix_policy.OWNER_BATCH_PRELUDE_PROFILE)
-    assert rb.role_bytes(32, 48) == (406528, 851968)
-    assert rb.role_bytes(32, 1) == (394496, 81920)
+    assert rb.role_bytes(32, 48) == (419328, 851968)
+    assert rb.role_bytes(32, 1) == (395264, 81920)
     source = Path(__file__).parents[1] / "src/tensorfold/families/qwen4_exp/cuda/engine.py"
     tree = ast.parse(source.read_text())
     initialize = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_initialize")
@@ -61,7 +61,7 @@ def test_private_numeric_epoch_is_distinct_and_fixed_roles_are_funded_before_adm
     options = {"device_workspace_bytes": 0, "host_workspace_bytes": 0}
     scope = dict(self=NS(sm70_profile=rb.PROFILE), ROUTER_BLAS_TRIAL=rb.PROFILE, options=options, tp=8, mtp=True)
     exec(compile(ast.Module(body=[block], type_ignores=[]), str(source), "exec"), scope)
-    assert options == {"device_workspace_bytes": 801024, "host_workspace_bytes": 7471104}
+    assert options == {"device_workspace_bytes": 814592, "host_workspace_bytes": 7471104}
     admission = next(n for n in ast.walk(initialize) if isinstance(n, ast.Assign)
                      and any(isinstance(t, ast.Attribute) and t.attr == "capacity_plan" for t in n.targets)
                      and isinstance(n.value, ast.Call) and isinstance(n.value.func, ast.Name) and n.value.func.id == "admit")
@@ -80,3 +80,58 @@ def test_actual_prefill_pieces_preserve_independent_prompt_math(profile):
     decoder._pass_rows = lambda: 32
     decoder._points = lambda *_args: []
     assert decoder._pieces() == [(streams[0], 0, 3)]
+
+
+def test_actual_ple_gate_call_binds_original_real_callee_signature():
+    import inspect
+    import textwrap
+    import torch
+    from tensorfold.families.qwen4_exp.cuda import forward, glue
+
+    body = ast.parse(textwrap.dedent(inspect.getsource(forward.ple_block)))
+    call = next(n for n in ast.walk(body) if isinstance(n, ast.Call)
+                and isinstance(n.func, ast.Attribute) and n.func.attr == "ple_gate")
+    signature = inspect.signature(glue.ple_gate)
+    tensor = torch.empty((3, 4))
+    buffers = NS(ple_keys=tensor, ple_vals=tensor, h=tensor, ple_gated=tensor,
+                 ple_pss=tensor, prefill=False, router_blas=object())
+    bound = eval(compile(ast.Expression(call), "actual_forward_ple_call", "eval"),
+                 dict(glue=NS(ple_gate=lambda *a, **kw: signature.bind(*a, **kw)),
+                      b=buffers, p=NS(norm_key=tensor, norm_query=tensor),
+                      c=NS(eps=1e-6, streams=4), R=3))
+    assert bound.arguments["independent_rows"] is True
+    assert "prepared" not in bound.arguments
+
+
+def test_actual_moe_forward_reaches_real_router_prepared_boundary(monkeypatch):
+    import inspect
+    import torch
+    from tensorfold.families.qwen4_exp.cuda import forward
+    from tensorfold.cuda import moe
+
+    calls = []
+    class SelectedBoundaryReached(Exception):
+        pass
+    class Prepared:
+        def run(self, weight, value, out):
+            calls.append((weight, value, out))
+            out.fill_(7)
+            return out
+    select_signature = inspect.signature(moe.select_rows)
+    def stop_at_selected_boundary(*args, **kwargs):
+        bound = select_signature.bind(*args, **kwargs)
+        assert torch.equal(bound.arguments["logits"], torch.full((2, 513), 7.))
+        raise SelectedBoundaryReached
+    monkeypatch.setattr(moe, "select_rows", stop_at_selected_boundary)
+    weight = torch.zeros((513, 2560), dtype=torch.float32)
+    mixed = torch.zeros((2, 2560), dtype=torch.float16)
+    logits = torch.empty((2, 513), dtype=torch.float32)
+    layer = NS(moe=NS(router=weight, experts=NS(kernel="gguf")))
+    buffers = NS(mixed=mixed, moe=NS(logits=logits), prefill=False, router_blas=Prepared())
+    with pytest.raises(SelectedBoundaryReached):
+        forward.moe_block(layer, NS(cfg=NS(top_k=10, experts=512)), buffers, 2)
+    assert len(calls) == 1 and calls[0][0] is weight
+    assert calls[0][1].data_ptr() == mixed.data_ptr()
+    assert calls[0][2].data_ptr() == logits.data_ptr()
+    assert rb.role_payload_bytes(32, 48) + rb.role_payload_bytes(32, 1) == 801024
+    assert sum(rb.role_bytes(32, n)[0] for n in (48, 1)) == 814592
