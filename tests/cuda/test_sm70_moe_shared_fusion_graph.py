@@ -7,7 +7,7 @@ import torch
 from test_sm70_shared_fusion_current import bank
 from tensorfold.cuda import moe
 from tensorfold.cuda.sm70 import family_ops, routing_native
-from tensorfold.cuda.sm70.execution_policy import SHARED_FUSION_TRIAL
+from tensorfold.cuda.sm70.execution_policy import SHARED_FUSION_TRIAL, _family_runtime
 from tensorfold.cuda.sm70.router_blas import RolePlans
 from tensorfold.families.qwen4_exp.cuda.forward import moe_block
 from tensorfold.families.qwen4_exp.cuda.moe_region_graphs import MoERegion
@@ -28,6 +28,7 @@ def current_bank():
 @pytest.mark.parametrize('rows', (30, 31, 32))
 @torch.inference_mode()
 def test_selected_fusion_capture_is_bitwise_fused_eager_and_preserves_tails(monkeypatch, current_bank, role, rows):
+    _family_runtime(torch)  # Observe selected True-reduction/False-accum policy; never set it.
     monkeypatch.setattr(family_ops, '_NATIVE_FAMILY', True)
     assert routing_native._NATIVE_LOGITS is False
     cfg = SimpleNamespace(experts=512, top_k=10, num_experts=512, num_experts_per_tok=10,
@@ -77,3 +78,4 @@ def test_selected_fusion_capture_is_bitwise_fused_eager_and_preserves_tails(monk
         raise_failures(primary, close_failures)
     if primary is not None:
         raise primary
+    _family_runtime(torch)  # Policy still identical after capture/replay/retirement.
