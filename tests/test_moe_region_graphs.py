@@ -116,6 +116,8 @@ def test_uncertain_fence_keeps_graph_owner(setup):
     with pytest.raises(OSError,match='fence'):
         region.close()
     assert region.graph is graph and not region.closed and region.tensors
+    with pytest.raises(RuntimeError,match='not an admitted'):
+        region.replay()
 
 
 def test_exhausted_counter_refuses_before_gpu_submission(setup):
@@ -228,3 +230,17 @@ def test_body_end_and_stream_restore_failures_keep_all_named_outcomes(setup):
         return sum((leaves(item) for item in error.exceptions),[]) if isinstance(error,BaseExceptionGroup) else [error]
     assert caught.value is primary
     assert end_error in leaves(primary.__cause__) and restore_error in leaves(primary.__cause__)
+
+
+def test_failed_graph_reset_cannot_reopen_replay(setup):
+    region,graph,_,_,log=setup
+    region.prepare()
+    error=OSError('graph-reset')
+    graph.reset=lambda: (_ for _ in ()).throw(error)
+    with pytest.raises(OSError) as caught:
+        region.close()
+    assert caught.value is error and region.failure is error
+    assert region.retiring and not region.closed and region.graph is graph
+    with pytest.raises(RuntimeError,match='not an admitted'):
+        region.replay()
+    assert 'replay' not in log

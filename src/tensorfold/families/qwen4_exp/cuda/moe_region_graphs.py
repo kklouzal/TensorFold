@@ -48,7 +48,7 @@ class MoERegion:
         self.graph = self.side = None
         self.capture_router = self.local_buffers = None
         self.failure = None
-        self.prepared = self.closed = False
+        self.prepared = self.closed = self.retiring = False
         self.hits = 0
         self.replay_stream = None
         self.tensors = ()
@@ -107,7 +107,7 @@ class MoERegion:
             raise primary
 
     def prepare(self):
-        if self.prepared or self.graph is not None or self.closed or self.failure is not None:
+        if self.prepared or self.graph is not None or self.closed or self.retiring or self.failure is not None:
             raise RuntimeError("MoE graph component cannot be prepared twice or after failure")
         if torch.cuda.is_current_stream_capturing():
             raise RuntimeError("MoE region preparation requires process-wide capture quiescence")
@@ -128,7 +128,7 @@ class MoERegion:
             raise
 
     def replay(self):
-        if not self.prepared or self.closed or self.failure is not None:
+        if not self.prepared or self.closed or self.retiring or self.failure is not None:
             raise RuntimeError("MoE region is not an admitted prepared component") from self.failure
         try:
             # Component boundary validation. A later actor may hoist this only
@@ -152,9 +152,15 @@ class MoERegion:
             return
         # Do not clear references on uncertain retirement. Caller cleanup must
         # preserve a previously propagated primary if this fence/reset fails.
-        torch.cuda.synchronize(self.buffers.mixed.device)
-        if self.graph is not None:
-            self.graph.reset()
+        self.retiring = True  # Refuse replay even if fence/reset leaves retirement uncertain.
+        try:
+            torch.cuda.synchronize(self.buffers.mixed.device)
+            if self.graph is not None:
+                self.graph.reset()
+        except BaseException as error:
+            if self.failure is None:
+                self.failure = error
+            raise
         self.graph = self.side = None
         # A graph may retain captured pointer-table/scratch addresses. Release
         # these external owners only after positive fence AND graph reset.
@@ -164,5 +170,5 @@ class MoERegion:
 
     def record(self):
         return {"rows": self.rows, "layer": self.layer.index, "prepared": self.prepared,
-                "closed": self.closed, "replays": self.hits,
+                "closed": self.closed, "retiring": self.retiring, "replays": self.hits,
                 "scope": "private component only; no integrated performance/capacity qualification"}
