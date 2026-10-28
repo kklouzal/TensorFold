@@ -152,7 +152,7 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
                     prepared_spec.update(graph_family=GRAPH_FAMILY, graph_budget_bytes=512 << 20)
                     from tensorfold.families.qwen4_exp.cuda.multi_graphs import UNIQUE_NATIVE_OWNER_GRAPH_CAPTURE_CONTRACT
                     weights.meta["unique_capture_contract"] = UNIQUE_NATIVE_OWNER_GRAPH_CAPTURE_CONTRACT
-                preparation = OwnerPreparation(prepared_spec, role_rows={"decode": 3, "mtp": 3, "prefill": 8},
+                preparation = OwnerPreparation(prepared_spec, role_rows={"decode": 4 if captured_attention else 3, "mtp": 4 if captured_attention else 3, "prefill": 8},
                     manifest_sha256=hashlib.sha256(json.dumps(text, sort_keys=True).encode()).hexdigest())
                 preparations.append(preparation)
                 engine = NS(comm=comm, rank=rank, tp=8, multi=None, _calls=0)
@@ -161,7 +161,8 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
                 if preparation.graphs:
                     weights.meta["owner_attention_graphs"] = preparation.graphs
             result = MultiDecoder(weights, slots=1, capacity=260, logical_context=257, depth=2,
-                confidence=.7, prefill_rows=8, kv_dtype="int8", graphs=False, keep=1, full_windows=1)
+                confidence=.7, prefill_rows=8, kv_dtype="int8", graphs=False, keep=1, full_windows=1,
+                **({"execution_rows": 4} if captured_attention else {}))
             if compact_target:
                 target_owners.append(weights.meta["target_greedy_owner"])
             return weights, result, preparation
@@ -264,6 +265,8 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
                 assert set(combined_preparation.graphs) == {"decode", "mtp", "prefill"}
                 assert all(graph.prepared and graph.hits > 0 for graph in combined_preparation.graphs.values())
                 assert combined_preparation.graph_physical_bytes <= 512 << 20
+                assert combined.buf.history_owner.native_buckets == (1, 2, 4)
+                assert combined_preparation.graphs["decode"].hits > 0
         if target_greedy:
             assert combined_weights.meta["target_greedy_owner"].completed > 0
         comm.ready("owner-piece-oracles-complete", every=1, timeout=60)
