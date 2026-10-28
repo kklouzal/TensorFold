@@ -1,0 +1,59 @@
+{
+  "schema": "tensorfold.combined-d13-readonly-analyzer-sidecar-v1",
+  "at": "2026-10-28T08:14:38.926410+00:00",
+  "reviewer": "/root/cleanup_review",
+  "status": "SCOPED HISTORICAL-ARCHIVE ANALYSIS REVIEW CLOSED WITH VERSIONED LIMITS; not currentmodel/P3causalproof",
+  "inputs": "closedhistorical4efeN24/all8summary8833db81efa323d3a40ec63fc038cf0c6475d483033a3e2d983a746ed4773793 and fullrawSHA/bytes; no newcapture/GPU/replay",
+  "versions": {
+    "initial_staged": "f33dc702 was superseded beforelaunch by dd55actor-bound/correlation-retention fix",
+    "actual_all8": "dd55be33d837b78a1d2e44235455ac63a3e8864d221e23a0f4ed23200e650930 completedRootall8 successfully; heldinputnormal path only",
+    "reviewed_successor_owner_analyzer": "0c567e1616e0c5d84ae5efd853279b5f69cc4ba5e647631d27acd3e197efdf03",
+    "reviewed_rank4_analyzer": "9997ea6f5dc652f893f5dc6ab7cbb1214e5a14356008160222f12b9a78e17aef",
+    "reader": "57800bcb181ff0f3510ef2caf76cfe9b54f985b7aca27c67588c38f37f4da68b exactclosed4c75 reused"
+  },
+  "findings_dispositions": [
+    {
+      "id": "selected-retention",
+      "rules": [
+        "M1",
+        "C2"
+      ],
+      "disposition": "Beforelaunch dd55 boundsPID/TID int/string\u2264128chars anddropsunused arbitrarymemcpy correlation object; fixedselectedcounts/refusal retained; no silenttruncation."
+    },
+    {
+      "id": "preloop-fileownership",
+      "rules": [
+        "M0",
+        "C6"
+      ],
+      "finding": "dd55 openedStream beforefalliblelist/dict/windowsetup, outsidecloseguard.",
+      "disposition": "Successor0c567 movesallfalliblesetup beforeStream acquisition; callback nowinside read_trace ownershiptry. Directmissingwindow/noopen andparse+closeprimary controls PASS; dd55successfulresult notretroactivelyclaimedfixedfailurecontract."
+    },
+    {
+      "id": "clipped-label-ties",
+      "rules": [
+        "F2",
+        "O1",
+        "C2"
+      ],
+      "finding": "dd55 used clippedlabelduration, so nestedlabelscrossingcore couldtie andouterlabel winlexically; no guaranteeddeepestoriginalannotation.",
+      "disposition": "SuccessorretainsoriginalCPUlabelbounds andselectsbyoriginalduration/actualAPIstart; nestedcross-core controlPASS. Existingdd55peerlabelobservations explicitlyretainoldclippedlabelcaveat, no causalupgrade."
+    }
+  ],
+  "arithmetic_and_coverage": [
+    "Kernelintervals includeALLwindowoverlaps and areclippedbeforeunion. Coverage prefix/bisect computesmeasure ofunion inwait/gap, math is subset ofallkernelunion; NCCL-only=all\u2212math, no-kernel=duration\u2212all. No doublecounting overlappingkernels orallranktimeaswall.",
+    "CPUproject association requires exactuser_annotation andtensorfold/cpu|body|host prefix, samepid/tid actor, originalactiveinterval; wait/queryduration classifiedseparately. Non-NCCLkernel ismathproxy, notprovenusefulcriticalwork; no-kernel maycontainDMA/memset/untracedwork.",
+    "Rank4successor subtractscopy/memsetUNIONfromkernelgaps, exclusiveCPUoperator/project/API peractorusesminimumoriginalspan andexplicitlexicalties; reportstop32gapcoverageonly andpreserves truncation/count indicators fornearbyenqueue records.",
+    "Peerobservations usearchivedclosedrawidentities andretainallhashes; they aretemporallyoverlappingCPUwaits, not reconstructedpeerGPUorcollectivecausality."
+  ],
+  "resource_execution": [
+    "Original2niceCPU0/1workers allowed16GiBtask (reader6+selected2 each), explicitcountcaps/8GiBraw andfullhash refuseoverflow; runtimeRSS/nativeeffects notuniversalrequested-object bound. Rootobserved398GBfree/onlyPortainer andseparateP3lease beforelaunch.",
+    "Rank4successorone niceCPUworker proposed16GiBtask, additionalCPUops/APIs/countsbounded; no repeatedrawanalysisreviewrun byreviewer. Input isclosedhash-pinnedarchive, notarbitraryvendorJSON orproductionendpoint.",
+    "Root92382 rank4successoractualexit0 reported,9syntheticcontrols reused; all8dd55analysisactualcompleted separately. No GPU/model/profiler launchedbyreviewer."
+  ],
+  "interpretation_limits": [
+    "ActualFrame1d83borrow/cut counters are separate readiness+decode+drain counts, not core-onlycost attribution. Old4efe trace cannot causallyexplain currentFrame/GDN/routerP3changes.",
+    "Largest32gaps cover6.307percent asauthorreported; no extrapolationofthosecauses toallgaps orhardwareidle.",
+    "Any futuregeneral-input/expandedcount API requiresrevalidatingselected-object/output-envelope andschema; currenthistoricalarchiveadmission isnotuniversalarbitraryJSON/RSSguarantee."
+  ]
+}

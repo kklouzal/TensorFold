@@ -1,0 +1,72 @@
+{
+  "schema": "tensorfold.d13-finite-backend-source-final",
+  "version": 1,
+  "reviewer": "/root/cleanup_review",
+  "recorded_utc": "2026-10-27T07:27:26.524396+00:00",
+  "status": "closed-scoped-packaged-source-and-CPU-controls; actual-target-admission-and-model-pending",
+  "worktree": "/Warehouse/TensorFold-wt/v100-portable-audit-20261026",
+  "scope": "FiniteBackendCaller and shared real model/native/JSON/RPC resource path through actual Scheduler/RequestLimit/decoder/physical-admission consumers, <=3 relationship hops. Root-owned runner cleanup is a distinct open two-path scope. HTTP/design proof remains open.",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/finite-backend/final/source-hold.json",
+    "sha256": "a435d52018133177b72f3447481faeb12d7e77918dcd9cb965af20c3c7d06a83"
+  },
+  "execution": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/finite-backend/final/execution.json",
+    "sha256": "85a9f238f5f06f086958b8e61aac2cf45c28c076ee346d006b09d691200813d3"
+  },
+  "source_sha256": "836ac86eb7a1280a4c3b886650b1d8cc38f76cc2e48c8b4ebdd3813124701268",
+  "wheel": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/finite-final-wheels/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3099326,
+    "sha256": "f17b5d8c5b1e79df6e8938d1245f98b8c3df2641ed11293bf993ca5d151c2c66"
+  },
+  "independent_whole_wheel_source_match": 715,
+  "fd_extension": {
+    "path": "tensorfold/_fd_owner.abi3.so",
+    "bytes": 37952,
+    "sha256": "4a0625bdf0a494437058e0ddbc62f04d7092c8cc64178e24fc17d669d2abd984"
+  },
+  "contracts": [
+    "Completed bounded input preprocessing precedes one synchronous finite caller admission; no HTTP, logical API Store, media or matcher route is introduced or assigned zero HTTP limits.",
+    "Exact Scheduler and RequestLimit owners, no prior submit/live owner, one logical request maximum, actual decoder State/weights identity and positive finite source/output/report bounds are checked before physical admission.",
+    "Native logical context, physical guards, actual selected N, header/native highwater and global-once prepaids remain real authorities. No context clamp or resource-guarantee waiver.",
+    "Shared full-context generation, callback/result IDs, decoded text/native decode, prepared source, report graph/encoding and generic malformed/error journals remain funded.",
+    "Actual bound TP capability permits only guarded builtin-number FIFO child domain. Selected JSON policy captures exact parser/runtime/header/code artifacts; selected ByteLevel/Rust policy remains distinct and content-bound.",
+    "Source G45 use preserves separate fixed Stats/controller record tables and generic churn/map/memo bounds. Corrected decoded-document term is160+8B; parser/number/error/open-container/resize/frame roles remain separate.",
+    "Physical admission returns before envelope publication; Scheduler request configuration and backend submission occur afterward in the separate runner."
+  ],
+  "findings": [
+    {
+      "id": "D13-finite-redundant-output-check",
+      "rules": [
+        "D13",
+        "V1",
+        "P5"
+      ],
+      "status": "selected-and-remediated",
+      "proof": "Positive typed input/output bounds make max_input_tokens+max_output_tokens<=context imply max_output_tokens<=context. Removed only the redundant second predicate; refusal and numerical totals unchanged."
+    }
+  ],
+  "structural_proof": "Entire current retention_resources AST equals tested a4f83a77 module after exactly removing the new single-owner guard and restoring the redundant output predicate. No other numerical/schema/algorithm delta in successor.",
+  "verification": {
+    "normal_installed": 182,
+    "seconds": 6.37,
+    "exit": 0,
+    "ruff_exit": 0,
+    "pipcheck": "passed",
+    "scope": "New current f17b wheel; overlaps prior167 and23, not added. No reviewer duplicate suite."
+  },
+  "offline_projection": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/finite-backend/offline-proxy.json",
+    "sha256": "421f36b5c12e4646992892e6fdbb99e3d0fb38f3dc2ab0f763e0deb7cf159d34",
+    "global_host_commitment_bytes": 194878228692,
+    "materialized_owned_bytes": 0,
+    "status": "Historical numeric proxy structurally reused only for RequestLimit1. Includes conservative old34880693053-byte baseline; actual current host/N/physical admission remains fresh and unrun in this review. No measuredRSS or target-fit claim."
+  },
+  "separate_open_items": [
+    "Root/backend_probe_path runner C6 fixes and focused final binding, including retained diagnostic primary and fixed signal/FD retirement. See d13-cleanup-witness.json and d13-cleanup-iterator-witness.json; no packaged resource byte changes required.",
+    "Full HTTP/design REGION resource proof, preclaim/frontend/metadata/Store obligations are outside this separate caller closure.",
+    "Actual target host/cgroup admission, native/kernel/allocator/RSS/deadline/NUMA behavior, model/math/quality/performance and deployment remain Root qualification work."
+  ],
+  "reviewer_actions": "Source/caller/test read, independent hashes/wheel/AST proofs, local noGPU/no-subprocess witnesses only. No source/Git/remote edits."
+}

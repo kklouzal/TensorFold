@@ -1,0 +1,140 @@
+{
+  "schema": "tensorfold.portable-audit-policy-d13-final",
+  "version": 1,
+  "status": "closed_bounded_source_review_image_and_target_verification_pending",
+  "base": "d24aff99eee861d2fed19848e97ec5472171984e",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/source-hold.json",
+    "bytes": 2752,
+    "sha256": "edcc5cefa42d73ab25c34a6cf3aee1874f6443bc4cd5d472a8a76f17a1537e62"
+  },
+  "held_paths": {
+    "README.md": {
+      "bytes": 155301,
+      "sha256": "8563b015aaf79965b433f7122915d7f9fb81904a65c485ab837cd91519f5786e"
+    },
+    "deploy/v100/Dockerfile.audit-policy": {
+      "bytes": 1642,
+      "sha256": "ae8073a4698de81b944a9c0d8ea4c1595f65568e625956aae8909eb5481b9016"
+    },
+    "deploy/v100/audit-policy-build-host-v1.json": {
+      "bytes": 3387,
+      "sha256": "5ccebed711e4ff4a891887b60f67aeb0b894b3438aac7db978adf1ab15a8c43a"
+    },
+    "deploy/v100/source-foundation.md": {
+      "bytes": 23374,
+      "sha256": "1a433466ecd9357dc0237e1f66874c86bf039e7a81a60b39b51f181ae8224b15"
+    },
+    "deploy/v100/source_foundation.py": {
+      "bytes": 69996,
+      "sha256": "9f0b7d3c5829e334cf368176852ec0566c85da8f992360bd4b88c9accbedbc70"
+    },
+    "src/tensorfold/cuda/sm70/foundation_headers.py": {
+      "bytes": 11322,
+      "sha256": "5c12e0f06cfc57255448615f7a6775d946ae1e77bb6920371ad5a62639ce53ea"
+    },
+    "src/tensorfold/cuda/sm70/media_software_binding.py": {
+      "bytes": 13040,
+      "sha256": "0291cb9695c031f6e00d9435ad2bc21a78b1b9f183f2aa3dbdda122448a0011b"
+    },
+    "tests/test_sm70_foundation_headers.py": {
+      "bytes": 13339,
+      "sha256": "16825c270dc93210c976053722178743360e61be4aee898a09a21bfd584dcb74"
+    },
+    "tests/test_sm70_media_software_binding.py": {
+      "bytes": 15732,
+      "sha256": "65d07eddf7f18ac6403af58b28a579d393c4356afb92c80bbba0c4f102779e1a"
+    },
+    "tests/test_v100_runtime_policy.py": {
+      "bytes": 9513,
+      "sha256": "328210a02fe269149e76b1bebef7e06fc8e4bad32e8a83f1513bf9a84338fea5"
+    },
+    "tests/test_v100_source_install.py": {
+      "bytes": 16741,
+      "sha256": "a32ec398ddd609de776266c5292df590dddab84f4d3f099106504d9ee8f24e80"
+    }
+  },
+  "scope": "Portable Torch build/host projection and explicit immutable policy rebind; generator/policy/docs/tests; direct selected-header and combined-media authority consumers <=3 relationship hops. No broad framework or unrelated cleanup audit.",
+  "source_review": [
+    "Pinned Torch04cf Version.cpp and CUDAHooks.cpp justify runtime CPU capability and conditional CUDA/cuDNN display; all other configuration/compiler/complete Build settings lines retained. Full CUDAConfig.h and exact NVCC flags independently sealed.",
+    "All3 actual target raw-config identities independently matched projection; fresh host text and every retained static line exactly match recorded source/original configuration. This is projection evidence, not a target audit pass.",
+    "Explicit constructor authenticates exact declared old manifests, original full configuration hash, original build receipt/producer and complete original artifact inventory before deriving install manifestv2. Production audit rejects v1; process-audit API remainsv1.",
+    "Shared installed-artifact verifier extracted from the original audit loop, preserving canonical-path/duplicate/byte checks; no duplicate trust algorithm.",
+    "SelectedHeaders requires exact manifestv2 and policy, retaining complete include/flags/inventory/mutation checks; no blanket multi-version bypass.",
+    "Combined media admission accepts either actual current producer equality or exact current/original producer metadata plus one sealed original history entry. Immutable media build remains unchanged; source authority retains/verifies original bytes.",
+    "Generated recipe applies one held, hash-verified owned application wheel and explicit policy rebind after original source/media construction. Old producer/original manifests archived; no framework/media recompilation or v1 runtime fallback.",
+    "Original two source-build recipe assertions remain; new policy-recipe checks follow its distinct offline byte-auth/history/application-wheel/rebind contract."
+  ],
+  "findings": [
+    {
+      "id": "D13-V2-HEADER",
+      "status": "remediated",
+      "original_witness": "/Warehouse/TensorFold-portable-audit-20261026/d13-v2-header-witness.json",
+      "disposition": "strictv2/policy reader plus3 legacy/unknown/missing-policy refusal controls; old trust checks retained"
+    },
+    {
+      "id": "D13-V2-RECIPE-TEST",
+      "status": "remediated",
+      "historical_log": "/Warehouse/TensorFold-portable-audit-20261026/unit-controls-final.log",
+      "disposition": "source-only recipe assumptions restricted to original2 recipes; distinct policy-recipe assertions added; original failure retained"
+    },
+    {
+      "id": "D14-MEDIA-PRODUCER-RELATION",
+      "status": "coordinated_consumer_delta_read_clean",
+      "disposition": "original/current role link authenticated through sealed source history;7 refusal controls and original media-build preservation/mutation control read; distinct D14 closes its own finding"
+    }
+  ],
+  "evidence": {
+    "installed_component_tests": {
+      "passed": 125,
+      "seconds": 4.02,
+      "log_sha256": "3be99d289bca773b5a5d7f08a9e32be3a08ca287c111b011b2b7a0847c41c13e"
+    },
+    "installed_component_log": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/installed-unit-controls-held.log",
+      "bytes": 1133,
+      "sha256": "3be99d289bca773b5a5d7f08a9e32be3a08ca287c111b011b2b7a0847c41c13e"
+    },
+    "ruff_log": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/ruff-held.log",
+      "bytes": 19,
+      "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+    },
+    "projection": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/actual-config-projection.json",
+      "bytes": 11054,
+      "sha256": "aa1aebf70c6e9159a7cc308977bfc36ce5596eafb039673c960bd66860fda077"
+    },
+    "wheel": {
+      "artifact": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+      "bytes": 3086068,
+      "sha256": "805246a27273b16948d984ecf0072fe71705ecad605b02a1e952eb8810718e60"
+    },
+    "packaged_source_records_independently_compared_to_current_source": 714,
+    "zip_source_and_extension_records_independently_compared": 715,
+    "all11_held_paths_match": true,
+    "no_new_pytest_or_build_by_reviewer": true
+  },
+  "application_inventory": "Two application source files changed;714 packaged source records verified. Do not call this unchanged707 source or inherit old full183 qualification.",
+  "candidates": [
+    {
+      "candidate": "reuse v1 manifest silently / weaken static fullconfig comparison / force AVX2",
+      "disposition": "constraint-ruled-out; explicitv2 construction preserves static bytes and fresh host observations"
+    },
+    {
+      "candidate": "duplicate installed-artifact trust verifier",
+      "disposition": "equivalent-P5-resolved by shared helper extraction"
+    },
+    {
+      "candidate": "rebuild framework/media solely to change audit policy",
+      "disposition": "unnecessary for selected immutable byte-preserving rebind; original artifacts authenticated and retained"
+    }
+  ],
+  "open_gates": [
+    "Immutable policy app/source/media image build and installed audit/actual combined issue+verify",
+    "Actual target source/combined audit must pass before GPU math; target hash projection alone is insufficient",
+    "Canonical integration and final affected installed verification on new source inventory",
+    "Actual V100/device/model/quality/capacity/allocator/RSS/NUMA/deadline/compiler6111901/P3/P4 qualification"
+  ],
+  "reviewer_changes": "Durable review artifacts and diagnostic witness only; no source/Git/remote-service changes."
+}

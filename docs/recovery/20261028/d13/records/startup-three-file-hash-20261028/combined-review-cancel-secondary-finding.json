@@ -1,0 +1,11 @@
+{
+  "at": "2026-10-28T00:27:17.941774+00:00",
+  "status": "VERIFIED C5/C6 finding; soleauthorremediationrunning",
+  "source": "dac6bbad/e1fe5a59/d817e2c2",
+  "scope": "NewStartupContentGroup.authorities anddirectunchangedSingleCapture.result/_raise_outcome/close errorcontract",
+  "finding": "Group suppresses caughtCancelledError solelyon capture.cancel_observed, evenwhen Capture.result hasattached a genuine finish/wait/compactionallocation failure. Actual result sets error_observedTruebeforethrow; laterclose thereforedoesnotreportthatsecondaryagain.",
+  "required": "Suppressonlypureexpectedcancellation; preserve genuineworker/parentprimary and anyindependentfinish/wait/transportfailure. Slot-onlytestinsufficientifcompactionallocationbecomesnativecausewithslotsNone.",
+  "author_current_plan": "_expected_cancelidentity+observed and_pure_expected_cancelslots/nativecause/context predicate; firstgenuinenonexpectedpartition/parenterrorwins, expectedcancelcarryingsecondaryretained. ActualGroupregressions forfinish/wait/compaction fault; SingleCapturebodyunchanged.",
+  "other_read_findings": "Nootherconcreteissue fromcurrentread: fixed3owners/journalsbeforestart; deterministicdisjointwholefilepartition; threeindependentcurrentprocessModelIdentityauthorities; no globalmutablereceiptregistry; 3*globalstack+guard+8MiBprepaidbeforestart; partialstart/interruptownedlatches/unchangedstats/expectedguards retained.",
+  "remaining": "Awaitexactsuccessorsource/HOLD/normalCPUcontrols andrebuiltstages; oldsource/stagesretainedhistoricalunexecuted. NoGPUbyreviewer."
+}

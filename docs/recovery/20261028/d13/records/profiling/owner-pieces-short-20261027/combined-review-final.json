@@ -1,0 +1,116 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T20:56:34.513829+00:00",
+  "status": "CLOSED scoped source cleanup and compliance; short instrumented capture source ready",
+  "reviewer": "/root/cleanup_review",
+  "policy": {
+    "path": "/home/kklouzal/AGENTS.md",
+    "sha256": "f34b7836eb0703ccef0d85953d3dcd1a8fca092faaeff8815195c0c0126c435e",
+    "mode": "one combined reviewer; no mandatory second audit"
+  },
+  "workspace": "/Warehouse/TensorFold-wt/v100-fast-profiler-20261027",
+  "commit": "2557f88c598086bcb0cbd9a458458e0acb694b8d",
+  "base": "266ff97681194f026116bfc516a4728b06da23a1",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/owner-pieces-short-20261027/source-hold.json",
+    "sha256": "8454970d3fdae9d27e922819a9aeaa6692bf478ff4db7c923b0e86d4a0a7e604"
+  },
+  "source_paths": {
+    "README.md": "24603eae0948c8c145bdfce363b039fc53c0a0173f3a1471ad0643d23134053a",
+    "tools/v100_backend_probe.py": "abdac38878eb0d3255961d789f99980b6e98cf7b39c721faf0d67583c01ebec3",
+    "tests/test_v100_backend_probe.py": "d73589118cc69384adc11505de14ec14f75d458dfb74a50365f6cb4a9325c139"
+  },
+  "runtime_wheel": "6d340a473aeb85a3cfd373d48d5f2ac8882dbdaefee9c58b40f696440beca8f7",
+  "runtime_source_unchanged": true,
+  "scope": [
+    "Only README, diagnostic tool and its tests since266ff",
+    "Reused corrected public all-thread RankCapture/CUPTI28/maps/CPU-label implementation",
+    "One post-constructor <=32-token MTP generation plus owned engine/transport retirement",
+    "Actual fixed24 context262144/int8/TP8/MTP2/.7/native owner manifest9533 unchanged"
+  ],
+  "proofs": {
+    "six_reused_helpers_whole_AST_equal_25b6": [
+      "protected_cupti_identity",
+      "observed_call",
+      "project_observers",
+      "trace_summary",
+      "mapping_snapshot",
+      "RankCapture"
+    ],
+    "existing_function_changes_only": [
+      "arguments",
+      "worker",
+      "launch"
+    ],
+    "runtime_src_diff_from266ff_empty": true,
+    "final_duplicate_removal": "Independently inverted only second identical constant assignment to restore entire0645 tool bytes; no intervening access or expression side effect",
+    "worker_lifecycle": "Capture owner registered before start; outer primary/fatal notification preserved; engine close precedes capture stop/export; partial setup bindings restored; independent failures aggregated with original primary",
+    "capture_contract": "Pinned04cf/CUDA12.9, all-thread trace-only; no shapes/stacks/memory; protected live CUPTI28 plus source before/after; no legacy timing fallback",
+    "data_telemetry": "Raw maps bounded16MiB with explicit incomplete refusal; raw trace retained; CPU summaries only actual user_annotation, not mirrored gpu labels; inclusive/nested times not utilization or throughput",
+    "default_behavior": "No profiler object/module patching when opt-in absent; original finite graph/profile/RequestLimit/timing/math remains; full/grid/serial/repeated workloads rejected only when profiling requested"
+  },
+  "findings": [
+    {
+      "rules": [
+        "D13",
+        "P5",
+        "S0"
+      ],
+      "finding": "Port introduced a redundant identical TARGET_TEMPLATE_SHA module assignment",
+      "disposition": "Resolved by sole owner in2557f88c; structural exact one-line deletion, Ruff/help pass, old0645 HOLD retained"
+    },
+    {
+      "rules": [
+        "X4",
+        "X6"
+      ],
+      "finding": "Initial HOLD named138PASS/log hash without full successful invocation provenance",
+      "disposition": "Resolved additively by controls-provenance.json, exact argv/cwd/explicit environment/resource limits/exit0/session disclosed retrospective; no invented rerun"
+    }
+  ],
+  "checks": {
+    "normal_installed_tool_controls": "138 passed6.37s on normal6d340 runtime; full raw log bound",
+    "Ruff_pip_help": "PASS; final one-line successor Ruff/help separately PASS",
+    "no_duplicate_suite_or_build_or_GPU_by_reviewer": true
+  },
+  "cleanup_disposition": "Reviewed ownership and error paths introduce no verified remaining dead path, unjustified duplicate model or necessary safe simplification. Required profiler specialization/oracles/history retained.",
+  "pending": [
+    "Root actual all8 current native-owner short CPU/CUDA capture/source/CUPTI acceptance",
+    "Trace graph-launch/plain-launch correlation and unattributed graph-node analysis belong to separate postprocessor scope",
+    "No throughput/quality qualification from instrumented trace; all6 regional objectives85/600/no-regression and model quality remain independent"
+  ],
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/owner-pieces-short-20261027/source-hold-0645-preserved.json",
+      "sha256": "fde3b76fa4fd0b68d56d3445079a2b777456f92b8df4d1fd7cf39c76010903d2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/owner-pieces-short-20261027/structural-proof.json",
+      "sha256": "b1f6e17f625461e24920296cf28b29af3acaeeb9713d352c8099f14a36efd7fe"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/owner-pieces-short-20261027/controls-provenance.json",
+      "sha256": "1f600fc9a358cc9edfbd7f8137af332b801dfa855f54411077b62bac49c2a69e"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/owner-pieces-short-20261027/controls-final.log",
+      "sha256": "6b24400808aab44f6f7495553878e23d8837943328873914597a94bbb104946b"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/owner-pieces-short-20261027/duplicate-removal-proof.json",
+      "sha256": "2b0ff84e7563d1f0f85745c26cc8bdfc84e3a7bf5e6377b5b12ba0034cb145b0"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/owner-pieces-short-20261027/duplicate-removal-controls.log",
+      "sha256": "f3dac822a543c8bfb0916c918874ee6a787e06c1ee85c5add0b18538d1680860"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/owner-pieces-short-20261027/stage-ready.json",
+      "sha256": "baa2bc6f99ea138ee9f04c4d4d8f5c78112d153dc308c98a3cf9333c868a4990"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/owner-pieces-short-20261027/launch-finite.py",
+      "sha256": "c50d4a2dbc48dce4e80a6499fe0a8394bcce697ce6d8e41f7c4b72e9ab06ea9e"
+    }
+  ]
+}

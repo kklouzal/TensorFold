@@ -1,0 +1,36 @@
+{
+  "schema": "tensorfold.d13-runner-profile-report-final",
+  "version": 1,
+  "reviewer": "/root/cleanup_review",
+  "recorded_utc": "2026-10-27T08:50:46.611330+00:00",
+  "status": "closed-bounded-evidence-only-source-and-CPU-controls",
+  "hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/backend-probe/runner-profile-report-source-hold.json",
+    "sha256": "aa5dcf629b3595e6adc1af39655122043f70868220baa23399ef5967d80661a8"
+  },
+  "source": {
+    "tools/v100_backend_probe.py": "64bea4f988829ca7d9e756301fddf2687bf79e89283244928b57831a2b2461c6",
+    "tests/test_v100_backend_probe.py": "16c007a58adb94ef0de70ffe528c78979d72af993618f9e29187265e7634dfdd"
+  },
+  "scope": "Only runner argument profile-intent handling, new actual execution selector record, worker record placement and focused controls; direct constructor configure/family/linear selector contracts <=3 hops. No package, math, profile-eligibility/default or target/model/remote/Git mutation.",
+  "findings": [],
+  "contracts": [
+    "Unset environment remains unset; arguments record raw intent without selecting or requiring optimized mode. The existing execution_policy.configure preserves defaultreference and exact optimized qualification guard. Invalid intent is still rejected by that constructor.",
+    "After engine acquisition, actual engine.sm70_profile and family/private-attention/routing/padded/linear/expert selectors are captured before follow/generation. Explicit mismatch raises with actual snapshot retained, inside existing unconditional engine retirement lifetime.",
+    "Snapshot fields read raw class/module selectors; source does not enable flags or claim every data/shape path uses a native kernel. Those functions retain existing row/dtype/format dispatch.",
+    "Existing fixed four signal/FD retirements and first-fatal/report/deadline/final-nonzero policy remain unchanged and covered by prior controls."
+  ],
+  "verification": {
+    "focused_CPU_cases": 41,
+    "seconds": 2.46,
+    "exit": 0,
+    "ruff_exit": 0,
+    "scope": "Actual supported reference configure without CUDA query; tests restore process selectors. Model/process boundaries doubled only. Prior38 overlap; no summed total or reviewer rerun."
+  },
+  "history": "Actual earlier8110 execution with unset profile remains reference. This evidence correction does not relabel that execution as optimized or discard its immutable source/result.",
+  "remaining": [
+    "Actual Root target trace and kernel dispatch measurements using the corrected runner.",
+    "HTTP/model/quality/capacity/P3 and complete design gates remain separately owned."
+  ],
+  "reviewer_actions": "Read/hash verification and artifact only; no shared source/test/Git/GPU/remote writes."
+}

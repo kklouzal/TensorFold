@@ -1,0 +1,135 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T21:39:10.802191+00:00",
+  "status": "CLOSED exact four-path guard+staticmaps integration; ready Root combined70GPUoracle",
+  "reviewer": "/root/cleanup_review",
+  "commit": "49db616b90ebdd2afeff5d60d2ce38556cde34f4",
+  "base": "815f4ef9c130dceb720874430aa45f34181cff63",
+  "workspace": "/Warehouse/TensorFold-wt/v100-owner-target-guard-maps-20261027",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-maps-integration-20261027/source-hold.json",
+    "sha256": "e0e1d290a0471695c775f6452766d928b86f857be90b699636558c6c93ba2e86"
+  },
+  "wheel": {
+    "path": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "sha256": "84a8618aa1752683a643697d3ad732cc47137910302dd374736594eee9e8901e",
+    "bytes": 3130096
+  },
+  "scope": "Reuse closed standaloneguard815f/11521 and staticmaps cff7/7bd38. Exactly README, bound_graphs and two mapfixture files differ815f. No additional numerical/provider re-audit.",
+  "proofs": {
+    "actual_changed_runtime_methods": "Only _buffer/_maps whole ASTs differ815f, independently exactly equal closedcff7; both changed maptest files byte-exactcff7",
+    "unchanged": "Every other guard/history_prepare/profile/epoch/MTP/target/native/tool/benchmark/quality/actual69+TP8guard oracle byte remains815f. Same profileepoch is valid because identity-map representation changes neither State numerical/storage contract nor graph data meaning.",
+    "intersections": "Maps remain read-only identity/[0] under unchanged one-lane/exactwidth planner; initialization event records explicitdeviceproducer and every consumer waits without host mirror. Guard q/iq/gated scratch does not overlap maps; existing actorstream/prior-native-reader joins, allpeer status checks, unknown-submission poison and model/device fence retain required ordering. Removed CPUwait served mutable pinned map-upload reuse, not a new correctness dependency for immutable maps.",
+    "resources": "No extra GPUdataworkspace or higherbudget. Same24fullnativeQ8/FP32state and pre-admission guardcode residency, exact funded256KiB leaf/globalgrid60,620,800 preserved. No zero-host/RSS or complete-prelude-allocation-free claim."
+  },
+  "checks": {
+    "current_held_paths": 21,
+    "held_evidence_hashes": 20,
+    "normal_installed_CPU": "889PASS+2subtests26.91s/Ruff/pip/help; all716package sources+FD4a independently equal currentwheel",
+    "local_component_stage_files": 20,
+    "guarded_main_runner": "Same standalone guard runner/fixtures; source immutable. Root owns combined numericalGPU execution.",
+    "no_duplicate_suite_or_build_GPU_by_reviewer": true
+  },
+  "cleanup_disposition": "No verified remaining dead path, unjustified duplicate authority or necessary safe simplification in the exact merge. Staticmap specialization removes unnecessary mutable mirrors under proven invariant; generic maps and independent guard/native/State/oracles retained.",
+  "findings": [],
+  "pending": [
+    "Root current84a69adversarialguard+TP8guard combined70oracle",
+    "Currentwholemodel/quality/actualfull24capacity and matchedall6 beforeselection",
+    "StrictN1>85/N24aggregate>600/no regionalregression; standalonecomponentpass and operation elimination do not establish gain or equivalence"
+  ],
+  "history": "Root reports standaloneguard70PASS53.94s and mapsTP8PASS19.27s; retained as separate component evidence, not combinedresult.",
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/final-command.json",
+      "sha256": "de9a00f404f3915126f660d89aac59312d5d2e55c0383edea7f19e4ff7e5220f"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/final/controls.log",
+      "sha256": "808fa9fb59d88bc18768617d3b1cd5a04739f815226025baf91321a0ee6b24db"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/final/exit.json",
+      "sha256": "81868a6e94ffc0178bf833deb1c9013d9fab4ee95ddb876a5e8ec4f1d26376d2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/final-package-command.json",
+      "sha256": "79b7dfd03a75ad44c57ae1a8109e46f082d3e688287d6ebaeed62da5b4830164"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/final-package.log",
+      "sha256": "e21f0e5980ca263e840f8ceef928becfff62cdace1115788249c21a6208bf9ba"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/final-package-exit.json",
+      "sha256": "81868a6e94ffc0178bf833deb1c9013d9fab4ee95ddb876a5e8ec4f1d26376d2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/wheel-provenance.json",
+      "sha256": "e6c503bc889c823536fd94f40f1dcbf4630d0d0024ceecd7a502813921ee03d7"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/compile/command.json",
+      "sha256": "c189718bed2698e5fb1db49365eead337441b0d5bfe7920bc923dbb09763ce72"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/compile/compile.log",
+      "sha256": "c74a575303eec8523c4536df5e276cd8fc22d46085692c420d5f76b31d3dc1d4"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/compile/compile-result.json",
+      "sha256": "48745b4570ce4c8b801df18e02b749ef6081cf8bd224321ec504e6136cd8b908"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/compile/exit.json",
+      "sha256": "5df71b75c73cdfb505a6bc6ba38f1b7d08c88df1da4096ec299aae1b893e8fae"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/structural-proof.json",
+      "sha256": "a799841e3beee93af90723c98a6bfa130d711e9f67355ce16d424a032fe86ce6"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-maps-integration-20261027/command.json",
+      "sha256": "62a4f1d39928cf83900b2de2d95374b10349b81836917c7866db41370a678027"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-maps-integration-20261027/controls.log",
+      "sha256": "98720a7930c0554f8a4a724014e0b03b295642de6d551c0363c5e528693850b3"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-maps-integration-20261027/exit.json",
+      "sha256": "81868a6e94ffc0178bf833deb1c9013d9fab4ee95ddb876a5e8ec4f1d26376d2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-maps-integration-20261027/package-command.json",
+      "sha256": "143a76e740b43b27ca13e7e87dc0110ed7d2ea36c2b2ea853af5fea18d82671a"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-maps-integration-20261027/package.log",
+      "sha256": "3be168a924b9537b93ccd586ed5bcbc65761e971fcdf7532a1d8bd43c9222892"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-maps-integration-20261027/package-exit.json",
+      "sha256": "81868a6e94ffc0178bf833deb1c9013d9fab4ee95ddb876a5e8ec4f1d26376d2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-maps-integration-20261027/wheel-provenance.json",
+      "sha256": "ae26d02c8cb581d571096b721c3123ed4f0767784b0e840a3b638e34ed870ea3"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-maps-integration-20261027/structural-proof.json",
+      "sha256": "8f14e20e784a55c452a78389b79019b3bf508f8ab3a8eec2e5f85143efb5c9fa"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-maps-integration-20261027/gpu-stage/stage-receipt.json",
+      "sha256": "54baf7eef1130e430fde95f3c078cba16000db56f5cc3ff27270fe030149664b"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-maps-integration-20261027/fast-stage/stage-ready.json",
+      "sha256": "5f2a4a9b732e79396cec6fe80a1b7fffdc1ea96e18818e9ad839ed641552f5a6"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-maps-integration-20261027/gpu-stage/package/run_controls.py",
+      "sha256": "b095ede4354622f3eddb377a36577bb790efeb8b8ef5e0d5874097ddab352778"
+    }
+  ]
+}

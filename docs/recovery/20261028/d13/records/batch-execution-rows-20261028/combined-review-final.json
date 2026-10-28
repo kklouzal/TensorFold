@@ -1,0 +1,42 @@
+{
+  "schema": "tensorfold.combined-d13-review-v1",
+  "at": "2026-10-28T03:27:56.665496+00:00",
+  "status": "CLOSED narrowexecution-rowtool+64/72stages; actualP3pending",
+  "scope": "Threechangedtool/test/docpaths+directexistingEngine.row_envelope/geometry/Ownerbuckets/consensus/admission consumerswithin3hops; reuse75ef/da9App86cb, noruntime/source/libraryrewrite",
+  "commit": "60980af6dca5f5b33b761f978265f8c93843648b",
+  "hold_sha256": "297ee45091f8f81075a5e065b5fe27ca7c89de067f1881a4e5a5aa962bef5801",
+  "runtime": "86cb/7de718source+FDc79byteunchanged",
+  "stages": [
+    {
+      "folder": "stage64",
+      "files": 20,
+      "manifest_sha256": "82b52639d5c818293f17479afd3f5ab34770de53e4366a5cd870174db05ae7ca",
+      "ready_sha256": "01598f37468749597de82ba612285aa3dfe78fbf948a3d75480ece90af8c623e"
+    },
+    {
+      "folder": "stage72",
+      "files": 20,
+      "manifest_sha256": "4d9c8034076e37114167c9d7c863a10579a43c330bc7ed5494fc08b63242971b",
+      "ready_sha256": "f5bd03aa8697b4e081ea1e44d1777e9e5df5cfa375125e6a4cd035bb4f4308cc"
+    }
+  ],
+  "assessment": [
+    "Default32omitsfactoryexecution_rowskwargandkeepsoriginalNone\u2192adaptive32path; explicit64/72requiresmatchingDenseintent/session24/FASTv2+same6quality. SourceexistingEngineAPIacceptsthesebounds, allrankpolicyincludesrequestedrows; actualconcurrentrow_envelopemin(slots*3,request) becomes64/72at24slots.",
+    "Engineexecution_rowsandcapacity.execution_envelope.target_rowsexactrequestandresident/fullcommitment24checkedbeforeFiniteCalleradmission/publication. Geometry/session/OwnerPreparation/nativebucket/status/prelude/staticarenas alreadyparameterizedbyactualrowbudget; largerworkspacepaidbeforeadmission, fixednative262144Q8/FP32State/depth2/.7unchanged.",
+    "R>32Denseusesexistingreferencegenericroute, notclaimedallnative/identicalfloatingdispatch orfaster. Batchproof/actualprofile8192fundandnativecountersunchanged; no quality/EOS/measurementtimer/nativeID/draincodechanged.",
+    "No verifieddead/unjustifiedduplication; newrowargument/check_engineparameterhasrealpreallocation+readinesscontractpurpose. Latesttier24>16>8>4>2>1permitsacceptablelower-tiertradeoffswithallregressionsreported, notquality/capacitycuts."
+  ],
+  "evidence": {
+    "CPU": "8narrowactualfactory/CLI/actualrow-floor/realgeometry+bucketcontrols0.67s/Ruff/pip/help; no broadclone",
+    "command_sha256": "43b75e60857f70330c32300c0b63b315a66f2e2b636dfc1b7b12abe199e6def2",
+    "exit_sha256": "e2c7ec7da3cee4e10d6dd65de142c048618bb146044b3dccb229349d84fc6d46",
+    "provenance_sha256": "24e90a1b9717ee2c8aae882b8f0f7520aecc1dafe19eb4fa08492a5df10cd480",
+    "admissibility_sha256": "1bef2565c3105e1e7151d79f1d64b7618e440fc576c10c1ba75d6b6d89e50834",
+    "reviewer": "Read/hash/sourceonly,noGPU/build/repeatedvalidation"
+  },
+  "actual": "Root3543rows64developmentall6alreadyliveonsameimmutablecode; resultunpresumed. Rows72contingentstageunrun.",
+  "remaining": [
+    "Actual64/72livephysical24floor/memory/source/quality/nativeID/drain/batchcounterevidenceandtieredP3vsdevelopmentreference",
+    "Fastiterationfirstallsixonly; repeated/broaderqualificationlater, no85/600/service/SUPERIORclaimfromsourceor8CPU"
+  ]
+}

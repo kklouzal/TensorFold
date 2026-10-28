@@ -1,0 +1,24 @@
+{
+  "schema": "tensorfold.combined-d13-concrete-finding-v1",
+  "at": "2026-10-28T04:06:33.916671+00:00",
+  "reviewer": "/root/cleanup_review",
+  "source": "149e52a28a3297b7c98383a5576083b2743c23ed and current Batch+FramePackets successor",
+  "rules": [
+    "M1",
+    "V1",
+    "X5",
+    "Q0",
+    "D13"
+  ],
+  "finding": "Early per-packet host preflight does not persist the future per-frame metadata obligation into final authoritative Engine admission.",
+  "evidence": [
+    "capacity.admit_host_commitment doc explicitly states it neither multiplies rank-local estimates nor reserves OS memory; function only returns observation/receipt.",
+    "OwnerPreparation.prepare checks global packet host commitment before role allocation and stores self.frame_admission.",
+    "Engine final admit transfers preallocated GPU bytes, but no frame future metadata term into host_capacity; frame_admission was not consumed elsewhere.",
+    "Per-frame records/ID sets/spans/reader-registry growth are not all materialized as owned startup allocations; prior free-memory check is insufficient for future cumulative commitment."
+  ],
+  "required_remediation": "Keep early pre-allocation check; carry conservative GLOBAL frame host obligation into final host_capacity.host_workspace_bytes before authoritative Engine.admit. Whole packet host_commitment without credit is a safe conservative option. Preserve24 floor and refuse if required budget cannot fit.",
+  "focused_verification": "actual affected Engine/final-admit forwarding control checks term survives into final host commitment and mandatory24 floor/refusal; no duplicate broad CPU suite or GPU reviewer work.",
+  "status": "AUTHOR AND ROOT NOTIFIED; OPEN until held successor and focused proof. Old149/59 GPU numerics remain immutable private prototype, no production admission/performance qualification.",
+  "distinction": "No actual OOM, bad pointer or security failure observed; this is a source-level complete-commitment gap. Metadata requested-object derivation and runtime-managed/RSS/native event residency remain separate."
+}

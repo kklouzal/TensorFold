@@ -1,0 +1,73 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T22:39:31.824654+00:00",
+  "status": "CLOSED prelude all6fast stage immutable binding; Root exclusive modellaunch only",
+  "reviewer": "/root/cleanup_review",
+  "source_commit": "734960f4c279a92c7ce008439763fde34003c827",
+  "candidate": {
+    "wheel_sha256": "902f943dc809263c6605abe4e522d4a9960ea8d84b8edc79410068c1f6ff0de5",
+    "source_hold_sha256": "db97d5e4785add9459d9beb00eb303361b72fdaffacf9cca8f3ad2761cc3def8",
+    "tool_sha256": "bd2b7a745ce52c92304bc764bb8271dc4e1dfc0ba8a4925f8b623e7ff14ed949",
+    "tool_dependencies": {
+      "tools/v100_backend_probe.py": "bd2b7a745ce52c92304bc764bb8271dc4e1dfc0ba8a4925f8b623e7ff14ed949",
+      "tools/finite_concurrency.py": "39e77fde13ef4d0a4ef59b8e531bc32b072096d714190ef3fc7993e5eb8cbffe",
+      "tools/finite_quality.py": "c498bd046e78c34bfc7db16c7decd43ec182151b24b3e09da282b9de0dac77a3",
+      "tools/benchmark_output.py": "ce7c0a0cdf80842dc67021ddc938ae32a2c8df39dfd4f36e5f48e72149484cfa",
+      "tools/prepare_owner_trial_manifest.py": "cd90a33ff81c60cffc1f180f0a756312cec2d06b4a29d4322cf622d7ca3b2741"
+    },
+    "execution_manifest_sha256": "95336693957314d74ba50328679d2b9a37552cb3e11a891b7a4a1900503e5673",
+    "source_profile": "source-owner-target-prelude-trial",
+    "session_ceiling": 24,
+    "recovery_commit": "734960f4c279a92c7ce008439763fde34003c827",
+    "triton_cache_root": "/cache/triton-owner-full8-v1",
+    "qualification": "PRIVATE902f nativeboundscalartextprelude; actualsharedprimary53GPUcomponentPASSbyRoot, D13sourcecf6e+fixturee23f closure retained; matchedall6quality/throughput unrun.",
+    "funding": {
+      "follower_bytes": 262144,
+      "global_receipt_bytes": 2424832
+    }
+  },
+  "stage_files_verified": 17,
+  "controller_sha256": "3987d41b82627485f108a4cdb0fbe344d9277e5678ca3da96cf868584ddbf224",
+  "scope": "Metadata/controllerpublicationonly sinceclosed734960/db97fixture and875cf/902fruntime. No APP/library/model/math/quality/window/cancellation/drain change.",
+  "structural_delta": "Directdiffagainstoldsharedsourcefastcontroller: only remoteoutputdirectory,containername andupdated734960 checkpointliteral differ. Same512cap/30sready/10swindow/sixN/independentquality/funding/nativeowner+positionmanifest/cache24floor.",
+  "actual_component_evidence": "LocalRootarchive/log/Dockerstate0 +53testXML independentlychecked. Passed23.12s includes oldmath/offset/fault andactualsharedboundTP8prelude_counter>0. Thisclosespreviousfixtureverificationgap only, not fullmodel/quality/performance.",
+  "history": "OldranktempidentityStorewait stoppedexperiment retainednotpass; oldunexecutedstageswithdrawn. Latestsharedsourceownerpositivejoinandprimaryguards reviewed separatelye23f.",
+  "pending": [
+    "Rootactualunprofiledall6+independentquality/full24nativecontext and85/600/no regionalregression",
+    "Pending batchedmultiStateprototype isseparateuntilheld; no source/performanceclaimfromfuturework"
+  ],
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/fast-stage-shared-primary/stage-ready.json",
+      "sha256": "6bad6d589d123a324c4b8973c07ecec7b7bc2ad456da86739c449c8d7f6eab52"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/fast-stage-shared-primary/stage.stdout",
+      "sha256": "57e52f46c83315e851199aa3b9c1929e7e75044967e85058d35ff3fe86ee8766"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/fast-stage-shared-primary/package/stage-files.json",
+      "sha256": "d8d596a21f9987a624a2ec8e87fc372650b8c7937bd11856b35908fb79a965ed"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/actual-shared-primary-902f/docker-state.json",
+      "sha256": "8b820bb7cffc4393279e9b6f92912bc8702445a12c2cc093b716180e3bafe865"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/actual-shared-primary-902f/full-run.log",
+      "sha256": "ca2143580887b1adc29b1b2fd3fe6cce2a0d2e916e3a269646fca8dc45122b21"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/actual-shared-primary-902f/packet.tar.gz",
+      "sha256": "7fc4b403c56c7f5098f6de3e8dcae2d2c64436575b5f3256910533076c792810"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/combined-review-final.json",
+      "sha256": "cf6e73e0cf33a6b52448e3fb686071492c7b6410416189eb66eb9f543e437587"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/combined-review-shared-fixture-final.json",
+      "sha256": "e23f8bcd2c71f61ba63b33b06620533fe119a2c78a5f7c076b2c8ead33dc701a"
+    }
+  ]
+}

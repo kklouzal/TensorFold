@@ -1,0 +1,83 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T23:10:31.741903+00:00",
+  "status": "CLOSED README-only first3224all6screen evidence scope",
+  "reviewer": "/root/cleanup_review",
+  "docs_commit": "ff95df40a6f835ae042df2acf2c528804545374b",
+  "runtime": "710c/3224/fc5e, source/tests/tools diffempty",
+  "verified": {
+    "packet_sha256": "1a769426772ca1e254c020b9327f9536bbec7d78690e227252d5906f3081357f",
+    "raw_six_windows": [
+      {
+        "N": 1,
+        "tps": 26.6,
+        "ready_ns": 194368430
+      },
+      {
+        "N": 2,
+        "tps": 18.7,
+        "ready_ns": 419255158
+      },
+      {
+        "N": 4,
+        "tps": 29.3,
+        "ready_ns": 1175324365
+      },
+      {
+        "N": 8,
+        "tps": 39.4,
+        "ready_ns": 3110855987
+      },
+      {
+        "N": 16,
+        "tps": 46.9,
+        "ready_ns": 8353462932
+      },
+      {
+        "N": 24,
+        "tps": 47.8,
+        "ready_ns": 14285030265
+      }
+    ],
+    "quality_matches_named84a_reference": [
+      {
+        "case": "math",
+        "passed": false
+      },
+      {
+        "case": "retrieval",
+        "passed": true
+      },
+      {
+        "case": "logic",
+        "passed": true
+      },
+      {
+        "case": "instruction",
+        "passed": true
+      },
+      {
+        "case": "json",
+        "passed": true
+      },
+      {
+        "case": "code-output",
+        "passed": false
+      }
+    ],
+    "quality_passes": 4
+  },
+  "interpretation": "Preciselyfirstscreenobservations inwarmprefix/lowhistorygreedyTP8MTPregion; all6ratewindowvalid,24readiness~14.285s. Reference49db/84a hasonlyfivevalidrates; no fabricated24baselinecomparison. Allsixcompleteanswerssamebuttwofailuresretained. Repeat/uncertainty/fullhistory/broadquality/85/600/releaseopen. No gainclaimfromprofilediagnostics/sourceworkcounts.",
+  "cleanup_disposition": "No stale/conflictingnewclaim found; source/image/model/quant/context/method/cache/workload/reference/rawidentity andlimitations explicit. Doc-only requiresnobuild/test/GPU rerun.",
+  "pending": "Rootrepeatall6/changed-bottleneckprofileandcompletequality/capacity/goals; currentonepassnotglobalSUPERIORselection.",
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-coordinate-alias-20261027/actual-fast-first/root-comparison-vs-84a8.json",
+      "sha256": "1eb6771bb167f28fc13aa79b0fa859d924c2d97bc0e6bdc89f329572073379fd"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-maps-integration-20261027/actual-fast-first/root-comparison.json",
+      "sha256": "93db660c431b9da480037f18fd8721b846992b3639a5158c75ca0be248cecad3"
+    }
+  ]
+}

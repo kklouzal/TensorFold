@@ -1,0 +1,97 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T22:50:04.854441+00:00",
+  "status": "CLOSED coordinate-alias rootfix source; ready Rootcurrent53multilayerregression, not fullmodel/performance qualification",
+  "reviewer": "/root/cleanup_review",
+  "commit": "710c9b6a3b91072d1d15a8356cfe91464cd1419b",
+  "workspace": "/Warehouse/TensorFold-wt/v100-owner-prelude-coordinate-alias-20261027",
+  "base": "734960f4c279a92c7ce008439763fde34003c827",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-coordinate-alias-20261027/source-hold.json",
+    "sha256": "fc5e9976e0338bfa1dfae76d28c90515095df124e8c71fcbb9346bed249cf915"
+  },
+  "wheel": {
+    "path": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "sha256": "32246b49a07dbc3b22ee6ff31c8745a1368fb3e203a0071ecddaa32b00bcf882",
+    "bytes": 3132853
+  },
+  "scope": "Four paths since734960: existingnativeframecoordinatepublication ownership andactualtwoattentionlayer/CPUregression/docs. Reuse allunchanged902fnative/role/recipe/context/funding proofs.",
+  "finding": {
+    "rules": [
+      "M0",
+      "C1",
+      "V1",
+      "P0",
+      "Q0"
+    ],
+    "actual_failure": "Root902ffullmodelwarmup legitimatelyfailed compactframe.signature versionguard before requests/performance. Equal reconstructedcoordinate values were copiedinto mutation-tracked sharedStaging.coordinates. A singleattentionlayer fixture didnotrevalidate thatframe onnextlayer.",
+    "root": "Nativepublication coordinate_rows reconstructed at each ownerappend; CompactIndexer.Cache.begin copies axes unlessptr/stride equal. Thatwrites issuedframestorage andincrements_version. Originalordinarypreparationborrows explicit[start:stop], so no hiddenwrite occurs.",
+    "fix": "_native_frame_coordinates borrowscurrentissuedtargetorMTPslice; reconstruct onlywhennoexplicitframe. CompactIndexer/CoordinateProof/validation/state-generation/typedrole/sourceguards unchanged.",
+    "review_miss": "Priorcleanup/compliance review checked copyretirement but missed issuedcoordinateversion reuse acrossmultipleattentionlayers; addendum0b4a reopened runtime/readiness. Thisreceiptclosesfixsource, notoldfullmodelresult."
+  },
+  "proofs": {
+    "native": "family.cu/family_bindings byteexact902f; no math/compiler/operatorchange. Existing24TorchRMSexact+24offset+4fault oracles retained.",
+    "guard": "compact_indexer.py byteexact902f; no signature/version/provenance checks weakened. Actualborrowreturns identical ptr/stride for relevantStaging.axes, so Cache.begin follows existingno-copy path. By sameper-layer invariant, allfollowingattentionlayers preserveframeversion; mutationequalvaluesnegative staysrequired.",
+    "lifetime": "Existingownedissuedcoordinatearena/reading/eventscope outlives append/pool before role reuse. No newowner/storage or earlyrelease. RawIK/cache/state generation/partialcommit/proposalprotocol unchanged. TargetandMTP roles both covered.",
+    "fallback": "ExplicitNone follows originalcoordinate_rows builder at same actualState/device/startpos. Custom/media/extended coordinatepaths andscalartextproducereligibility unchanged.",
+    "fixture": "Realsharedparentprofile/actualcontextlifetime maintained. Secondtargetattentionlayer appended with distinctlayerindex, cfg.layers/layer_types andMTPindex adjusted coherently; allthreecomparisondecoders shareexactnewgeometry andindependentState caches. Existing19GPUassertionASTs/multiplicities retained.",
+    "resources": "No addeddevice/hostpayload orcapacityraise; oneview replaces needlesscoordinateconstruction/copy. Existing24native262144/Q8/FP32state/16640hostprelude/globalreceipt funding unchanged. Correctnessfixneednotbeatinvalid902fmodelbaseline; no runtimegaininferredfromsource."
+  },
+  "checks": {
+    "current_held_paths": 18,
+    "evidence_current_hashes": 8,
+    "wholewheel": "All716currentcanonicalsource +FD4a independentlyequal final3224ZIP",
+    "normalinstalled": "1061CPU+2subtests18.69s/Ruff/pip/help, actualCache.begin twice ononeissuedframe bothtarget/MTP; cloned-equal-negativeincreasesversionandrequiredguardrefuses",
+    "stage_files": 22,
+    "guarded_spawn_runner": true,
+    "reviewer": "Noduplicatebuild/broadsuite/GPU/remoteDocker; currentbyte/AST/provenance bindingonly"
+  },
+  "cleanup_disposition": "Newsmallhelper names an actualmutation-ownership policy andsupportsindependentregression, justifiedS0. Originalordinary/native/provenance pathsremainrequired. No verifiedremainingdeadpath/unjustifiedduplicatealgorithm or necessarysafesimplification inrootfix.",
+  "pending": [
+    "Rootcurrent3224actual53includingtwoattentionTP8correctedregression",
+    "ActualfullSC117multilayerwarmup/modeloutput/quality andall6performance afterfix",
+    "85/600/full24nearfullhistory/no regionalregression remainunmet or unqualified, old902fstartupfailure preserved"
+  ],
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-coordinate-alias-20261027/command.json",
+      "sha256": "23c86cc180e92ee7af9262716d737be469ef893371e55eff60c1078f9a5b1a6a"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-coordinate-alias-20261027/controls.log",
+      "sha256": "1b83b9dc5ffb7efba3b0e2440192570bbc9840f2fa0df8df083ef16dfa18f607"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-coordinate-alias-20261027/exit.json",
+      "sha256": "81868a6e94ffc0178bf833deb1c9013d9fab4ee95ddb876a5e8ec4f1d26376d2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-coordinate-alias-20261027/package-command.json",
+      "sha256": "cee2af70994911fa2d2e2b139b2a62bb316baace8723dc883669e1791c69e0c1"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-coordinate-alias-20261027/package.log",
+      "sha256": "7d4931fff9d99b1b790fbf54997b68798aa9708789221a4a5ffd8dea61cea354"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-coordinate-alias-20261027/package-exit.json",
+      "sha256": "81868a6e94ffc0178bf833deb1c9013d9fab4ee95ddb876a5e8ec4f1d26376d2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-coordinate-alias-20261027/wheel-provenance.json",
+      "sha256": "14bf92b3ba6592c86056be186320fe1c286fcc87a5f95606fcf836c492083fac"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-coordinate-alias-20261027/structural-proof.json",
+      "sha256": "8ea50195dfcbde3654134d8c1d48b60f7739ae242207309eb4eec20617717441"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-coordinate-alias-20261027/gpu-stage/stage-receipt.json",
+      "sha256": "1a9ff2ca11de097ec9bb9f2af681aa7992c2a1485f5ab0896457f4d4b31206ed"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/combined-review-runtime-frame-reopened.json",
+      "sha256": "0b4a253ad3123a47fdd075b52e6dd74bcfd8d3fcf12e133f010f82446631408c"
+    }
+  ]
+}

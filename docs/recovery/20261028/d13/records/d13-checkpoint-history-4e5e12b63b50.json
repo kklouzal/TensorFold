@@ -1,0 +1,472 @@
+{
+  "at": "2026-10-28T08:18:00.182378+00:00",
+  "reviewer": "/root/cleanup_review",
+  "mode": "ONE task-wide combinedD13 postinventory drilldowns; source/caller/resource/lifetime/error review and exactstage binding. RootonlyGPU. No duplicatebroadtests; no newreviewerpairs.",
+  "policy": "/home/kklouzal/AGENTS.md f34b7836",
+  "closed_current_chain": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/combined-review-final.json",
+      "sha256": "90454640dcc41c054012b047ac1e4607fe4a02e93bd64f7751e27b1ea5a240af"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/owner-pieces-short-20261027/combined-review-final.json",
+      "sha256": "1c94cf4ea2ead39f793a014cace06655c2cbc37e45c8fc56aef39d39d8824e17"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/owner-pieces-short-20261027/analysis-tools/combined-review-final.json",
+      "sha256": "5e39b2ff69ca77d225407e6d8f1e5cc2cbfcdc18edfda07ce526f75ea5b21718"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/owner-pieces-short-20261027/analysis-tools/combined-review-failed-publication-final.json",
+      "sha256": "b6e53a5c1169c9cd03a6db6b3564056983c23b19c84937d382d8251f007abb9a"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/owner-pieces-short-20261027/combined-review-funded-receipts-final.json",
+      "sha256": "686565778926b5815694f00b4a81fa28751963ebd37584475778ed2ed8dd57ef"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/owner-pieces-short-20261027/combined-review-rank0-parents-final.json",
+      "sha256": "2966593b4f63e2d7a82c2b05b95e7c49c940b2be1a27c8808453f198e3d17460"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-greedy-integration-20261027/combined-review-final.json",
+      "sha256": "8a35100de0ceda6e81439a50e9fc793891b7c0b315a2d1c072eaaab79c0478a6"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-greedy-integration-20261027/gpu-stage-main-guard/combined-review-final.json",
+      "sha256": "60d6826fca4bd8a6e5aa1cf217c3e3c66983af5f6ddd455cfb5d451169291b85"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-grouped-integration-20261027/combined-review-final.json",
+      "sha256": "7418f2045c20c5665fbf10bfd5d255a41e9ab11456504c5d37fc996d3e5ed973"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-funded-fast-20261027/combined-review-final.json",
+      "sha256": "08b9f57caf178ee041182715719169b7ffc841a27a3d0a0d75c4ca42c7db7787"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-grouped-funded-fast-20261027/combined-review-final.json",
+      "sha256": "1c47b79b37dcaed40dbbc3ddb785c5267a3979dd43921bea481f5266cac94d51"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/unique-static-maps-20261027/combined-review-final.json",
+      "sha256": "7bd38d1986809ef951b71f7fe9e525ae097361e7c148e3c03986cef7fd175bc8"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/unique-static-maps-20261027/fast-stage/combined-review-final.json",
+      "sha256": "da4b80c304a0677f074fa09fdbf3970ecfdee2019e91693045573ba1c89bfff4"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/combined-review-final.json",
+      "sha256": "11521efb947336533708a564935797e69fcfbe98d9cd9d881c770636a8a92382"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-maps-integration-20261027/combined-review-final.json",
+      "sha256": "12a51ddb0f0526839fabde64e779cb0f862f81fb207c20ee3b9c7be5342f57c1"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-maps-integration-20261027/combined-review-docs-repeat2-final.json",
+      "sha256": "88fa957b342534d0f41da9b507aa4055ed6d6776b8270651d07ad6d065ac58b4"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-content-overlap-20261027/combined-review-final.json",
+      "sha256": "96aeadebab070ea26cc74022821b60bec6ccda12589af24603546e1d26a0a527"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-guard-maps-integration-20261027/combined-review-final.json",
+      "sha256": "14950bd108eb2a2cd13c6978754f4abd222a0deca7dfbcc70cc9802aad4c25b5"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/combined-review-final.json",
+      "sha256": "cf6e73e0cf33a6b52448e3fb686071492c7b6410416189eb66eb9f543e437587"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/combined-review-shared-fixture-final.json",
+      "sha256": "e23f8bcd2c71f61ba63b33b06620533fe119a2c78a5f7c076b2c8ead33dc701a"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/combined-review-context-identity-reopened.json",
+      "sha256": "955dc000c4274b2d3c295e3b185ae893d8dfed01c1357a21f99e5c69bff2b7ef"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-maps-integration-20261027/combined-review-repeat2-docs-final.json",
+      "sha256": "1d09775cbea899a5a972e92baf8819dc345605452507d03c63a1a5cf01e190eb"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/combined-review-final.json",
+      "sha256": "d49e56b75554e1044a494341dbd6303b927188fbe5508fbfa660c72226635d8d"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-profile-20261027/analysis-tools/combined-review-final.json",
+      "sha256": "32fa58fda61da06ca09b3c2af0cd53ae840a25b9821dd4ca463af23e387e3265"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/fast-stage-shared-primary/combined-review-final.json",
+      "sha256": "75a9412cb3a933858e67f486220466d514f5dc7fb35fd56bbce99a5b29e4cda8"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-coordinate-alias-20261027/combined-review-final.json",
+      "sha256": "477598ec82522f24c6381de423758ab54f474981aec4abd324c345bff1c7ef97"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-coordinate-alias-20261027/fast-stage/combined-review-final.json",
+      "sha256": "aad16caf4e16ce0154f9894a87600443500f2eaa3671a1e9c059677c8eca4197"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/combined-review-runtime-frame-reopened.json",
+      "sha256": "0b4a253ad3123a47fdd075b52e6dd74bcfd8d3fcf12e133f010f82446631408c"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-prelude-alias-profile-20261027/combined-review-final.json",
+      "sha256": "fd616ff8d9d880159e6a4ad055e2415ea185052bbc0bb94e336980ce7cd48e1a"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-prelude-integration-20261027/combined-review-final.json",
+      "sha256": "81bebccc6a5e71ca4fffbff1a5a253cca57d4b654ea266b4d9b6160a6121a628"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-prelude-integration-20261027/combined-review-stage-final.json",
+      "sha256": "650c30b3e797d536745568fff959d3d53e5570aafe4b529b541101f33dbae857"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/combined-review-final.json",
+      "sha256": "82fde1a93aeaa6a268bac66e8d1b86d890c058c734afc560c54d862fbf2edbb7"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-coordinate-alias-20261027/combined-review-first-all6-docs-final.json",
+      "sha256": "f20a6eb04ef0c84175565702a8e5e5b9388b36de00a65bfe9f860c339386bfb0"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-mtp-text-20261027/combined-review-final.json",
+      "sha256": "ae3b7dba4a219fbf07dc24c7dbea15739583f6217151c50bf3fabdc3d7521109"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-mtp-prelude-integration-20261027/combined-review-final.json",
+      "sha256": "92e8609dfcf534a00ba6715f1989ea4cc2400d26a05142702538ef963ab017e3"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-mtp-prelude-integration-20261027/combined-review-fast-stage-final.json",
+      "sha256": "58c5b3f1eb88d7b9cd55629cfac730205ed462ae075c838430cb1f690775dc3d"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-mtp-prelude-integration-20261027/combined-review-first-all6-docs-final.json",
+      "sha256": "3b1fe709cb5e0f1f6f5ba13d0b5631621381cb9d85a39e7d574583c58a8017ab"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-startup-mtp-profile-20261027/combined-review-final.json",
+      "sha256": "c9b61f4c85ffc17a7a754109193c123bef935c50fd157e852c548d2f1dc42953"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/fast-grid-v2-20261027/combined-review-final.json",
+      "sha256": "829a395c9ae394b00f970335f648a7b0d61d89cbace8f824cbad3e299d14c85b"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/ncu-component-20261027/combined-review-success-path-reopened.json",
+      "sha256": "5851d5ec16a0d88dba74ff13a180b9065f855b3495f2d0b731e93c01f8c2fcf7"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/ncu-component-20261027/combined-review-fixed-slot-final.json",
+      "sha256": "2443a6db16f9cbf16032b33216451750847b4c7ca0a3a44e2b83dc7517e5a89c"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/ncu-component-20261027/combined-review-success-final.json",
+      "sha256": "671a6ef549fa546d3f886c96be74c50d9848f2348fe5eeb7ae5ca69eab305cc6"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/ncu-operator-20261027/combined-review-final.json",
+      "sha256": "0d5c7110ba773f7da3b90ca5abefbd89d73be1b9589a6188c257096fbe9d1105"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/ncu-operator-int32-20261028/combined-review-final.json",
+      "sha256": "981502c6407ad8f82bd128fa302c5cd9a2d03b692a9da3d7c679381874315cd3"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-descriptor-ring-20261027/combined-review-final.json",
+      "sha256": "3d3b1196036b4c42e969ca8ec50e8820592a1d3f3e6cd628edf920a76bee21fe"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/current-dense-residency-20261028/combined-review-final.json",
+      "sha256": "a9c5f6bb66254cff5da85dc639f895a13c82ddd09905e0581b3ba9754502145a"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/current-dense-residency-20261028/combined-review-cow-and-fastv2-final.json",
+      "sha256": "ce36cc0d8d0a6d5e87feee91c433144ac75046e6096e17fdee23f91d6f2e74ca"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/current-dense-residency-20261028/controlled-repeat1/combined-review-final.json",
+      "sha256": "48b0060d1de5bdb10d415a96acea7095eb7772c9a2811b51b7b17f9bae24f797"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-three-file-hash-20261028/combined-review-final.json",
+      "sha256": "ae4f346298772b6362dc388edf1a58b85a97cca3718d8b5b897af64e8be4f301"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-three-file-hash-20261028/combined-review-current-stage-final.json",
+      "sha256": "d9d21830c91f7bbf0e8597db8c0c9668a12ec1f1f206868e9c9f097f62f78a32"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-three-file-hash-20261028/combined-review-stage-actual-correction.json",
+      "sha256": "70ec2383a0b0d72f6d649e7b766d74dce62593307cd56fe288e697c8cb3d2b80"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/best-single-profile-20261028/combined-review-final.json",
+      "sha256": "7ab30c2d916ffdcc2834f82469194428597882827b5ada48cd6b1fab4dedd9c0"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-attention-graphs-integration-20261028/combined-review-final.json",
+      "sha256": "9989fee3281f0dcaa4ff28eb002648f3b0554dc4d9a4cd615a27f39105b3ed31"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-attention-single-final-profile-20261028/combined-review-final.json",
+      "sha256": "89090f8b8ec62b8760468a283d03ee2f4c878cbc5b6c5b8c06a15d8068fac5e6"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/exact-gateup-independent-20261028/combined-review-component-and-adapter-open.json",
+      "sha256": "32062de87dc6908397cd29fd494117bf4034e7a482e9ad21a62554c7395cd260"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/exact-gateup-independent-20261028/combined-review-probe-adapter-final.json",
+      "sha256": "289ae49fcedd814679d68a80681f6fa103b9a3444fc8d4c406e0b815055a12b8"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/exact-gateup-independent-20261028/fastv2-2048/combined-review-final.json",
+      "sha256": "8cdb1d9be376a9b6a0b65a047e8b46e63b0ae44d476ca398cc9240f3c8c55fa5"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/mtp-confidence-zero-20261028/combined-review-final.json",
+      "sha256": "c7cace8ba0eb2628e6d1d145a9abf6d702cb9182dab7d33f703f36883e56f8a0"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/exact-gateup-independent-20261028/finite-fixture-remediation/combined-review-final.json",
+      "sha256": "cf0a36e9c3fec2c94b5aae6cf9bcc62ebfc8d6885928e345582d64ff95e03fc9"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-three-file-hash-20261028/combined-review-runtime-receipt-reopened.json",
+      "sha256": "89a0b63eaba5f50298ab99ca7c0a6d869750d22b6e2f71538c17bdd337158ece"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-three-file-hash-20261028/receipt-json-fix/combined-review-final.json",
+      "sha256": "3100e9ef2583821c2fa56720ec40a0b42d6a609b7bd6393e87649ba017d310b0"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/dense-batch-prelude-integration-20261028/combined-review-final.json",
+      "sha256": "da9dae225c23a8decc9b8404d6a4c61754269ebad08eeb66c135902ec0309148"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/dense-batch-prelude-integration-20261028/fullmodel-fastv2/combined-review-final.json",
+      "sha256": "75ef5098114b296557378acb98f2ba0a2605bacd59896069ee2d87251ec8f69a"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/batch-execution-rows-20261028/combined-review-final.json",
+      "sha256": "4331b3bfc2d66ed838ea8374e004fc494f25c38bfe1ea88965029e20d86d5987"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/dense-n24-profile-closefix-20261028/combined-review-reader-final.json",
+      "sha256": "f8aaa82592e6a553cf3a36e31e823c774566181c6cd4b77c6c8e6ba92704450c"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/dense-independent-20261028/combined-review-final.json",
+      "sha256": "08f8f0467f6ac68a5d93000da416fd294fff83ce911d885eea05258b30f9d47d"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/dense-three-file-startup-20261028/with-batch/combined-review-final.json",
+      "sha256": "b277f3825b47e9aac6611b301875728dec7f58105beb65a219ab965859bd6433"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/batch-frame-packets-integration-20261028/combined-review-final.json",
+      "sha256": "f2a5967a83542242b7eef62103560a44f697ca6035aa9addf97afe0858c7a28c"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/batch-frame-packets-integration-20261028/combined-review-component-stage-final.json",
+      "sha256": "4f3b2bd72d9a81860973629f55ca5668b1cb5df27fe79d6df7d4ed26c3fd6728"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/batch-frame-packets-integration-20261028/combined-review-tool-startup3-final.json",
+      "sha256": "af9c3e172579a7596ffd1afa3b223633fc7ce571030eea4ef37a2b2dcd775e57"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/batch-expert72-20261028/combined-review-final.json",
+      "sha256": "4195a43d81bb7d76ffbb905cce423f977ca9ce8c976c64d274182b73d68793a6"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/input-mailbox-selfwait-20261028/combined-review-final.json",
+      "sha256": "746d7f2962ec9b3477a83dac8ecd8218fb86c5bfa5a38cd73b7624da2e1b9718"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/gdn-state-batch-20261028/seal-fix/follower-tool/combined-review-final.json",
+      "sha256": "689881ae02fb9ef446ca3bc96d2cceda12d7f89f3f35d37ffee89f2e4b901a1b"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/coalesced-candidate-readback-20261028/combined-review-resumed-final.json",
+      "sha256": "190ef80a4a5e6045edf0e8c0595e6fcc403cebc52055cf8a1fbaafe3a4a421b6"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/router-cublas-model-wiring-20261028/combined-review-final.json",
+      "sha256": "7a72b797052fe69644be720318d178279b90c955466384cdcffe14dfdfe741c7"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/gpu-wait-inventory-20261028/owner-drilldown/combined-review-sidecar.json",
+      "sha256": "dab7b9a93b05482af4b6e6a5c4f73543b35b70b1d7fe228e884758bff56bece2"
+    }
+  ],
+  "queued_WIP": [
+    {
+      "scope": "Dense991f targetflags fixture2a1c",
+      "status": "actual32PASS0.79Root718FDprepost withcorrectTrue/False; oldwrong-region32preserved. Fixture/HOLD/stagebinding andoriginalDenseTile implementation finalsource review stillpending ifselection/progressionrequested; nofalseunrun/GPUfailure claim."
+    },
+    {
+      "scope": "GDN+startup3 composition2a053c55/APPffe36/HOLD0b816cb4",
+      "status": "55CPU+normal719FD; only2startupPythonfiles exact694vsf6, GDN/C6/native unchanged. Pendingtinyreuse review; intendedRouter+GDNcomposeownerprofile_tool willhandle newprofile startupallowlist, no duplicate standalone model."
+    },
+    {
+      "scope": "MoEregiongraphs c8c85445 component",
+      "status": "newpureMoE R32componentfromf6;7CPU/gpu-oracleunrun andwholewheel/HOLDpending. NoEngine/catalogueintegration orperformanceclaim; scope3hops math/ownership/capture/outcome/budget whenheld."
+    },
+    {
+      "scope": "FIFO shutdown snapshot",
+      "status": "serviceauthor minimaloneif_stopping snapshotreuse vsf6; CPUrunning/HOLDpending. Need actualclaims property sideeffects/stoppingwriters/consumer+sourcebinding, no speculativecleanup."
+    }
+  ],
+  "open_verified_findings": [
+    {
+      "scope": "MTP1tool3055/privateE9",
+      "status": "constraint-ruled-outunchangedprivateDepth2guard; witness16bb. Broaderdepth1 requiresseparatecontract/source, no defaultweakening."
+    },
+    {
+      "scope": "Router numericcandidate",
+      "status": "18canonicalFP32logit-bit failures retained; finite28routing/roundedweight agreement not universalnumeric/qualityequivalence. NewprivatevendorFP32profile source/wiring/resources reviewclosed, Root/usercontract/qualitydecision separate; nobit-identicalcontract qualification."
+    }
+  ],
+  "actual_results_Root_reports_only": {
+    "BatchDense86cb_row32": [
+      30.8,
+      22.8,
+      37.3,
+      56.2,
+      73.0,
+      73.3
+    ],
+    "row64_notselected": [
+      30.6,
+      23.9,
+      36.7,
+      57.7,
+      21.0,
+      23.1
+    ],
+    "MTP0_notselected": [
+      30.1,
+      20.9,
+      33.8,
+      50.0,
+      55.4,
+      54.8
+    ],
+    "Frame149e_component": "59PASS26.83exit0 perauthor relayingRoot; reviewer has not launchedGPU or inferredmodelgain",
+    "quality": "fixedsix cases samefourpass/twohistoricalfail; no broadquality certification",
+    "Frame1d83_component": "59PASS25.27Root86447exit0normal719FD; firstall6Root80511LIVEaslastreported",
+    "Expert72_component": "43PASS4.25Root62995exit0; genuine10subsetscope; noP3",
+    "Dense991f_component_wrong_region": {
+      "Root_session": 27920,
+      "passed": 32,
+      "seconds": 1.07,
+      "exit_code": 0,
+      "normal": "718+FDc79",
+      "region": "fixture reducedprecisionreductionFalse vsselectedTrue",
+      "credit": "wrong-REGION positive only, targetnumericproof pending; noGPUfailure/no modelP3claim"
+    },
+    "GDN90f_all6": [
+      30.8,
+      23.3,
+      37.3,
+      59.2,
+      78.4,
+      75.7
+    ],
+    "T60_e92c_notselected": [
+      31.1,
+      22.8,
+      36.0,
+      56.2,
+      73.0,
+      70.6
+    ],
+    "Coalesced_a451_notselected": [
+      30.7,
+      22.8,
+      36.7,
+      57.7,
+      73.0,
+      73.3
+    ],
+    "Router_f721": "Root45641LIVEaftercorrectedsource/nooutcomeinvented",
+    "Router_fee8": "actualstartupTypeError ple_gate(prepared), noP3requests",
+    "Dense991f_targetTrueFalse": "actual32PASS0.79/exit0 normal718FD; oldFalse reference preserved"
+  },
+  "resolved_this_segment": [
+    {
+      "scope": "GDNsealprimary",
+      "status": "fixed936finish fixedslot/priorcauseroot+Multi nestedfinally;37CPU; only2PythonAPPdiffvsactual50c8ab; followerSchedulerNone toolfixedf6/19CPU,22filebinding; source6898closed"
+    },
+    {
+      "scope": "Routerwiring/resource",
+      "status": "fee8PLEwrongkwstartupfailpreserved; f0a3actualmoe.routerprepared andbaselinePLEAST plusperallocation512charge814592/raw801024; source7a72closedlimitedprivateFP32candidate; no priorbitfailure suppressed"
+    },
+    {
+      "scope": "Coalescedreadback",
+      "status": "statusbeforeownedcopy;1fencebothpacked/split;56Btuplefunded;callerhelderrorfinallyscopes andASTsameFP32/FP64/RNG;1857heldpaths+29/21stages/oldtools exact;190eclosed. ActualGPU2PASS40.67+all6no24gain NOTSELECTED"
+    },
+    {
+      "scope": "T60selfWAIT",
+      "status": "exact04cfnativeordering/threshold+peer/delete/protocolproof;154+2CPU; source746dclosed. All6samehistoricalquality butN24lower70.6vs73.3;NOTSELECTED"
+    },
+    {
+      "scope": "ownerCPUanalyzer",
+      "status": "dd55parsepositiveRootall8 preserved, C6pre-loopStreamandclippedlabel issues fixedsuccessor0c567; rank4actualexit0;dab7sidecarclosedtemporal/historicalscope, top32only6.307%;no currentcriticalpathcausalityproof"
+    }
+  ],
+  "limits": "No GPU/remoteDocker/large-trace rerun or duplicate broad suite by reviewer; no selection/gain/equivalence/global completion claims. Historical receipts preserve their prior source frames.",
+  "current_release_summary": "Inventorycomplete8357/Rootreceipt7cc88. GDN90f/f6source+follower stage CLOSED6898; actual50GPU andall6valid30.8/23.3/37.3/59.2/78.4/75.7 same4/6quality, Rootprovisionalretain (>86cb N24). T60closed746d/all6noendtoendwin NOTSELECTED. Coalesceda451closed190e/GPU2positive/all6no24gain NOTSELECTED. Routerfee8failedPLEstartup; correctedf0a3/f721reviewclosed7a72 withhardnumericqualificationlimits; Root45641liveaslastreported, noP3acceptance. Goals85/600/servicequalification remainunfinished.",
+  "current_objective_priority": {
+    "ordering": "24 >16 >8 >4 >2 >1",
+    "authority": "Root authoritativeget_goal/latest directuser",
+    "tradeoffs": "Higher-tier gains may offset acceptable lower-tier losses, Root owns acceptance. Report every region and uncertainty; no invented margin.",
+    "hard_constraints": [
+      "24full native Q8 windows",
+      "262144logical/262147physical",
+      "FP32 recurrence",
+      "requiredquality/P0-P2"
+    ],
+    "iteration": "quick all6 screen now, repeated long validation later; no duplicate suites",
+    "targets_unfinished": [
+      "N1>85TPS",
+      "N24aggregate>600TPS"
+    ]
+  },
+  "previous_checkpoint_sha256": "885517c8d6c30d1027a64d14cdcbaedc95b985dba519541337813fb9fe441713",
+  "scope_change_X1": {
+    "authority": "latest Root direct task relaying NEWUSER complete GPU wait inventory before more optimization",
+    "scope": "ALL reachable V100 pipeline wait sites and actual caller graph, including required vs candidate, source vs measured, callbacks/allocator/profiler instrumentation",
+    "reason": "explicit all-pipeline coverage expansion beyond previous candidate3-hop default, to avoid wait-category/phase/caller omissions",
+    "partitions": {
+      "profile_tool": "compute/Dense/MoE/GDN/attention/indexer implicit operations",
+      "ncu_operator_stage": "transport/NCCL/Store/CPU scheduling",
+      "grouped_finish": "owners/descriptors/graphs/State leases/retirement",
+      "dense_current_candidate": "decode/MTP/status/sampling/output",
+      "Root": "startup/loading/JIT/weights/PLE/tokenization/admission/service/lifecycle/backpressure/integration"
+    },
+    "reviewer": "coverage and cross-partition/source-reference review, no repeated full scans or code cleanup; coverage-review.json once schema/directory available"
+  },
+  "inventory_coverage": {
+    "state": "COVERAGE_COMPLETE_FOR_DECLARED_SCOPE, Root publication/completion receipt pending",
+    "review": "gpu-wait-inventory-20261028/coverage-review.json",
+    "sha256": "8357e33581df36388fae451a78597d37f2befab2184f506e5f49bd5eb0323a01",
+    "master_snapshot_sha256": "7a223bf7c430c915318a5a6a1be34472bdafef7db2f3632b57691db49e652a1c",
+    "groups": 362,
+    "primary_source_refs": 691,
+    "partitions": 8,
+    "validation": "requiredfields/realfunctions/allcurrentpartitionhashes/uniqueIDs/missing0/errors0; all known source/caller/classification refinements closed",
+    "scope": "selected7de/86cbV100TP8nativeQ8/MTP2text plus supportedconditionalservice/lifecycle/control/diagnostics gates; no vendorinstruction/model/platform/media-kernel completeness or timing superiority claim",
+    "actions": "No source edits/newGPU/profiles/tests/builds; independent reference/caller/inventory metadata review only; no optimization approval"
+  }
+}

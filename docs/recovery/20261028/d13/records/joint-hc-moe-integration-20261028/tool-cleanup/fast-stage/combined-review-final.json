@@ -1,0 +1,58 @@
+{
+  "schema": "task-wide-combined-D13-adapter-review-v1",
+  "at": "2026-10-28T14:00:26.798175+00:00",
+  "reviewer": "/root/cleanup_review",
+  "scope": "HCall6adapter and one redundant-predicate cleanup only; reusecea1a550 runtime/727source/component andd656 candidateadapter. No primitive/runtime/math/P3rerun byreviewer.",
+  "source": {
+    "tool_commit": "723a023a1f279d7cb5b7666acf528d126d78a271",
+    "tool_HOLD_sha256": "0110636fb3d3a634975873a21c04cc065def7444d005930fca52ea12940857f3",
+    "runtime_commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+    "runtime_HOLD_sha256": "af80254a017d9c92724fe767ae0ccb469f85313b7800c92b72c9950d84c44983",
+    "APP_sha256": "4d2ba426c999ed07e27e4040dc2d8bac8949d49fa1dcf357154963d3ae97bc62",
+    "runtime_src_diff": [],
+    "changed_tool_paths_verified": 2,
+    "evidence_files_verified": 4,
+    "unchanged_parent_paths": {
+      "tests/test_moe_capture_ledger.py": true,
+      "tests/test_moe_screen_coverage.py": true,
+      "tools/v100_backend_probe.py": true
+    },
+    "probe_sha256": "7eb31a1b28f7aacb011086399658caf8ce9565f1d91253e2ed32e335d93b09b8",
+    "controller_sha256": "d9a1daf6dd6547515803bd95ea95fbe7d7bb8f3b8478a69e245717da3d9c474c"
+  },
+  "stage": {
+    "payload_files_verified": 21,
+    "manifest_sha256": "50d616f672ac54b9f37d39cb4c8f54392aa36d916421f62e0b096b0ae7aee517",
+    "payload_tar_sha256": "f0e12cb5ed2a08c93bf5860b6d57c2302b0123b90cf375ff52fcb7806e2b954b",
+    "tar_content_exactlocal": true,
+    "runtimeHOLD_matches": true,
+    "status": "Root/author reports21remotehashes verified; Root67915running. Reviewer localreadonlybinding only; old022b/6eef packetpreserved."
+  },
+  "disposition": "FINAL_HC_ALL6_ADAPTER_AND_HELD_STAGE_REVIEW_CLOSED; NO_REMAINING_CONCRETE_FINDINGS_IN_SCOPE",
+  "contracts_verified": [
+    "Sameprobe7eb3 asclosedcandidateadapter: realboundedMoErow/candidate64 counters, separate145+64coldexports, existingfixed-slot/priorcause writer andfundedreplybounds unchanged. No new wrappercount invented torepresentHC.",
+    "ExplicitHCENV1 +post --hc-moe requireuniqueMLP-HC-mode3graphcontract andfunding.boundary seal ineachrankready andrawMoEledger. BothRouterandFusionprofiles gated. Fusionactualbackend/output/numericprofile stillchecked, independentcandidate/MTP/GDN/nativeowner coverage andfull48cycle arithmetic retained.",
+    "ColdterminalCPUchecker only, underauthorizedsudo forroot0600files; nohotIO, Storeproxy, GPU/readback orconcurrentP3analysis. Controlleronlyoperationalpath/basecommit/HCconfig changes; sameall6FASTv2/2048/quality/drain/EOS/native24/fullcontext/Q8/MTP2.7/startup3 protocol.",
+    "FortrustedplainJSONsnapshots, dominatingifhc alreadychecks sameimmutablefundingseal. RemovingonlyduplicateFusionpredicate preserves acceptance/errors andgraphcontract withoutweakerRoutercoverage. No application orGPUmath bytechanged."
+  ],
+  "findings": [
+    {
+      "id": "HC-REDUNDANT-SEAL-PREDICATE",
+      "rules": [
+        "D13",
+        "V1",
+        "S0"
+      ],
+      "status": "CLOSED_REMOVED_IN723a",
+      "fix": "DuplicateFusion funding predicate deleted; globalHCseal andprofilegraphcontract testsretained. Exactone-line diffplus125installedcontrols/Ruff proveaffectedcoldbehavior; no new numerical/performanceequivalence inferred."
+    }
+  ],
+  "verification": "125normalinstalledPASS3.56s/Ruff; exactcommand/cwd/log/exit andstructuralproofhashbound. Parent125HCseal controls includeoldpureMoErefusal, missingfundingrefusal, newHCacceptanceforbothprofiles. ExistingAPP727/FDc79 andsourcecea1a550 reused.",
+  "actuals": "Rootreports78457selected-profileQ4_K/type12TP8component1PASS13.58s/all8x18replays78externalcollectives/727FDprepost. Scope remainsQ4_K, notcurrentIQgeneric proof. Root67915currentIQfullall6inprogress; nooutcomeinferred.",
+  "pending_acceptance": [
+    "ActualcurrentIQall8capturedHC/issuedcycle/64candidatecoverage/coldledger/pool/futurehost16GiB/native24audit",
+    "Actualtiers/requiredquality/fulltask/prefix/nativeID/drainandretirementaudit",
+    "No broadquality/repeatability/serviceclaim fromfirstscreen"
+  ],
+  "cleanup": "Necessarychecker/profiledispatch retained; verifiedduplicate removedwithoutchanginghigher-prioritycontracts. No further sourcefindings; no reviewer sourceedits/GPU/tests."
+}

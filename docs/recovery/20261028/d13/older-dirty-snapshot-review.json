@@ -1,0 +1,882 @@
+{
+  "schema": "emergency-D13-older-dirty-snapshot-review-v1",
+  "at": "2026-10-28T18:15:18.884095+00:00",
+  "source_manifest": "/Warehouse/TensorFold-emergency-20261028/wip-snapshots.json",
+  "source_manifest_sha256": "9706af98df576b31a6ec6cdb75d513a3cb2471e299077812380787b817f1936e",
+  "scope": "Local current changed/untracked path bytes and modes compared directly to Git recovery tree blobs. No tests/development/V100 access, no originalworktree/index/branch mutations. Root owns push/complete recovery manifest.",
+  "snapshots": [
+    {
+      "worktree": "/Warehouse/TensorFold-wt/c-gemma4",
+      "commit": "9bfe40ea89282cc918a0413c6f6ad386571e6d0e",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/c-gemma4",
+      "paths": [
+        {
+          "path": "tests/cuda/test_gemma_cuda_graphs.py",
+          "tree_mode": "100644",
+          "tree_blob": "636c5e6c2d75dc19f788ff192053a5ba14dfa540",
+          "current_mode": "100644",
+          "current_blob": "636c5e6c2d75dc19f788ff192053a5ba14dfa540",
+          "exact": true
+        },
+        {
+          "path": "src/tensorfold/families/gemma4/cuda/engine.py",
+          "tree_mode": "100644",
+          "tree_blob": "e5d986d31a040edaf1ec08bd9c00e4d9d7be6ec2",
+          "current_mode": "100644",
+          "current_blob": "e5d986d31a040edaf1ec08bd9c00e4d9d7be6ec2",
+          "exact": true
+        },
+        {
+          "path": "tests/test_gemma_cuda_engine.py",
+          "tree_mode": "100644",
+          "tree_blob": "a4a1245c74cabef5affbfc40467456f4ca273396",
+          "current_mode": "100644",
+          "current_blob": "a4a1245c74cabef5affbfc40467456f4ca273396",
+          "exact": true
+        }
+      ],
+      "exact": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/c-moe-dedupe",
+      "commit": "22c529ca309332e9ce3faa5e6bcb467ecd45a43d",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/c-moe-dedupe",
+      "paths": [
+        {
+          "path": "src/tensorfold/cuda/nvfp4/experts_a4.cu",
+          "tree_mode": "100644",
+          "tree_blob": "843efbf409b38b42d033b3827acb38f7fee15868",
+          "current_mode": "100644",
+          "current_blob": "843efbf409b38b42d033b3827acb38f7fee15868",
+          "exact": true
+        },
+        {
+          "path": "src/tensorfold/cuda/nvfp4/grouped_a4.py",
+          "tree_mode": "100644",
+          "tree_blob": "4c36ce58931dde24036b00b55247fff32f2ead72",
+          "current_mode": "100644",
+          "current_blob": "4c36ce58931dde24036b00b55247fff32f2ead72",
+          "exact": true
+        }
+      ],
+      "exact": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/c-moe-graphmem",
+      "commit": "57480faa9cc9ab96f8bdc329db2239aa299df78e",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/c-moe-graphmem",
+      "paths": [
+        {
+          "path": "src/tensorfold/families/qwen3_5_moe/cuda/chain_graphs.py",
+          "tree_mode": "100644",
+          "tree_blob": "b721fea38e99db32d8021281e0fb4f57294e6c9a",
+          "current_mode": "100644",
+          "current_blob": "b721fea38e99db32d8021281e0fb4f57294e6c9a",
+          "exact": true
+        },
+        {
+          "path": "tests/cuda/test_qwen_moe_chain_graphs.py",
+          "tree_mode": "100644",
+          "tree_blob": "ad16b3e1da6ec7ded601a9f7df3c0997181a71a8",
+          "current_mode": "100644",
+          "current_blob": "ad16b3e1da6ec7ded601a9f7df3c0997181a71a8",
+          "exact": true
+        }
+      ],
+      "exact": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/c-qwen36-yarn",
+      "commit": "2e223651655f140408bdfc0498ab7e72d5a9901b",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/c-qwen36-yarn",
+      "paths": [
+        {
+          "path": "tests/cuda/test_qwen36_yarn.py",
+          "tree_mode": "100644",
+          "tree_blob": "4ab9b3aaee422bd743ad544e04cb844df2ca8d5b",
+          "current_mode": "100644",
+          "current_blob": "4ab9b3aaee422bd743ad544e04cb844df2ca8d5b",
+          "exact": true
+        },
+        {
+          "path": "README.md",
+          "tree_mode": "100644",
+          "tree_blob": "7b5a3aa24381f7bbfd0cb6fd36304852692bc082",
+          "current_mode": "100644",
+          "current_blob": "7b5a3aa24381f7bbfd0cb6fd36304852692bc082",
+          "exact": true
+        },
+        {
+          "path": "docs/recipes/qwen3.6-moe.md",
+          "tree_mode": "100644",
+          "tree_blob": "c4c0f4d6bd1da37237fb883ac8e678c7e429b422",
+          "current_mode": "100644",
+          "current_blob": "c4c0f4d6bd1da37237fb883ac8e678c7e429b422",
+          "exact": true
+        },
+        {
+          "path": "src/tensorfold/families/qwen3_5_moe/__init__.py",
+          "tree_mode": "100644",
+          "tree_blob": "a08c8a20c954381920c945e10e7f2ca6c2389ab6",
+          "current_mode": "100644",
+          "current_blob": "a08c8a20c954381920c945e10e7f2ca6c2389ab6",
+          "exact": true
+        },
+        {
+          "path": "src/tensorfold/families/qwen3_5_moe/cuda/engine.py",
+          "tree_mode": "100644",
+          "tree_blob": "fd3fcc01f96eeee8fd9c03ba84a163e85e3fa324",
+          "current_mode": "100644",
+          "current_blob": "fd3fcc01f96eeee8fd9c03ba84a163e85e3fa324",
+          "exact": true
+        },
+        {
+          "path": "src/tensorfold/families/qwen3_5_moe/cuda/nvfp4_engine.py",
+          "tree_mode": "100644",
+          "tree_blob": "7889aa888fd7a3f39df58209b1e46083acf31a0c",
+          "current_mode": "100644",
+          "current_blob": "7889aa888fd7a3f39df58209b1e46083acf31a0c",
+          "exact": true
+        },
+        {
+          "path": "src/tensorfold/families/qwen3_5_moe/cuda/nvfp4_load.py",
+          "tree_mode": "100644",
+          "tree_blob": "54570704a76868ddcf90e53a30f85c144563b623",
+          "current_mode": "100644",
+          "current_blob": "54570704a76868ddcf90e53a30f85c144563b623",
+          "exact": true
+        },
+        {
+          "path": "src/tensorfold/families/qwen3_5_moe/cuda/weights.py",
+          "tree_mode": "100644",
+          "tree_blob": "099a257682d35cdefaba78f0dfa581cbd0f2f7b3",
+          "current_mode": "100644",
+          "current_blob": "099a257682d35cdefaba78f0dfa581cbd0f2f7b3",
+          "exact": true
+        },
+        {
+          "path": "tests/test_qwen35_yarn.py",
+          "tree_mode": "100644",
+          "tree_blob": "a4f8da3faebf6dd50f32af508e97f7e0b2e1fa97",
+          "current_mode": "100644",
+          "current_blob": "a4f8da3faebf6dd50f32af508e97f7e0b2e1fa97",
+          "exact": true
+        },
+        {
+          "path": "tests/test_qwen36_nvfp4_load_controls.py",
+          "tree_mode": "100644",
+          "tree_blob": "4a73c214fd2579986ba260de61fcada6e69ab0e8",
+          "current_mode": "100644",
+          "current_blob": "4a73c214fd2579986ba260de61fcada6e69ab0e8",
+          "exact": true
+        },
+        {
+          "path": "tests/test_qwen36_yarn_wiring.py",
+          "tree_mode": "100644",
+          "tree_blob": "aebb2208148c96d145a072049708a35a2f3cc12e",
+          "current_mode": "100644",
+          "current_blob": "aebb2208148c96d145a072049708a35a2f3cc12e",
+          "exact": true
+        },
+        {
+          "path": "tests/test_qwen_nvfp4_startup.py",
+          "tree_mode": "100644",
+          "tree_blob": "29b1ca5cbe8326f3c9e8761223e5f62021edc19f",
+          "current_mode": "100644",
+          "current_blob": "29b1ca5cbe8326f3c9e8761223e5f62021edc19f",
+          "exact": true
+        }
+      ],
+      "exact": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/c-qwen38-vocab",
+      "commit": "00012409c7cf85f7e10f4961785a1a6674f3da7c",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/c-qwen38-vocab",
+      "paths": [
+        {
+          "path": "tests/cuda/test_qwen27_draft_vocab.py",
+          "tree_mode": "100644",
+          "tree_blob": "7371e124c6b5a867ff46249f9b3636c369a06502",
+          "current_mode": "100644",
+          "current_blob": "7371e124c6b5a867ff46249f9b3636c369a06502",
+          "exact": true
+        },
+        {
+          "path": "src/tensorfold/families/qwen3_5/cuda/affine_memory.py",
+          "tree_mode": "100644",
+          "tree_blob": "d8ee63c8b01042143272e0c1fbbfbd9ba7387289",
+          "current_mode": "100644",
+          "current_blob": "d8ee63c8b01042143272e0c1fbbfbd9ba7387289",
+          "exact": true
+        },
+        {
+          "path": "src/tensorfold/families/qwen3_5/cuda/dflash2.py",
+          "tree_mode": "100644",
+          "tree_blob": "a0c0514fd75d87c0ab376a3102bc84d588776121",
+          "current_mode": "100644",
+          "current_blob": "a0c0514fd75d87c0ab376a3102bc84d588776121",
+          "exact": true
+        },
+        {
+          "path": "src/tensorfold/families/qwen3_5/cuda/draft_tree.py",
+          "tree_mode": "100644",
+          "tree_blob": "716ef70828f3eb51ab0cdd8419f14bb40cc5fc86",
+          "current_mode": "100644",
+          "current_blob": "716ef70828f3eb51ab0cdd8419f14bb40cc5fc86",
+          "exact": true
+        },
+        {
+          "path": "src/tensorfold/families/qwen3_5/cuda/engine.py",
+          "tree_mode": "100644",
+          "tree_blob": "e56a38a33444c64299e34dd3a0b088a6f412c7cf",
+          "current_mode": "100644",
+          "current_blob": "e56a38a33444c64299e34dd3a0b088a6f412c7cf",
+          "exact": true
+        },
+        {
+          "path": "src/tensorfold/families/qwen3_5/cuda/exl3_load.py",
+          "tree_mode": "100644",
+          "tree_blob": "49d87c073f550e52b1461cb5f5119c33a416859b",
+          "current_mode": "100644",
+          "current_blob": "49d87c073f550e52b1461cb5f5119c33a416859b",
+          "exact": true
+        },
+        {
+          "path": "tests/cuda_27b_headers.py",
+          "tree_mode": "100644",
+          "tree_blob": "fb97aa6c1fd7ba79435264ada67e41325214a3bc",
+          "current_mode": "100644",
+          "current_blob": "fb97aa6c1fd7ba79435264ada67e41325214a3bc",
+          "exact": true
+        },
+        {
+          "path": "tests/test_cuda_memory_plan.py",
+          "tree_mode": "100644",
+          "tree_blob": "f1dc4ece2fe84f5bb87e6f77e20cb9c66f5c1b6c",
+          "current_mode": "100644",
+          "current_blob": "f1dc4ece2fe84f5bb87e6f77e20cb9c66f5c1b6c",
+          "exact": true
+        }
+      ],
+      "exact": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/c-sampling",
+      "commit": "a4f67fcd11d05fd93b9adaf015d231f424612bca",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/c-sampling",
+      "paths": [
+        {
+          "path": "src/tensorfold/cuda/requant.py",
+          "tree_mode": "100644",
+          "tree_blob": "c8a0211b9c2f922d066615703cc3c464f28a4a42",
+          "current_mode": "100644",
+          "current_blob": "c8a0211b9c2f922d066615703cc3c464f28a4a42",
+          "exact": true
+        },
+        {
+          "path": "src/tensorfold/families/qwen3_5_moe/cuda/dflash.py",
+          "tree_mode": "100644",
+          "tree_blob": "efc228af2bee8b1f290c3a2c22ee73af50ffc16f",
+          "current_mode": "100644",
+          "current_blob": "efc228af2bee8b1f290c3a2c22ee73af50ffc16f",
+          "exact": true
+        },
+        {
+          "path": "src/tensorfold/families/qwen3_5_moe/cuda/nvfp4_engine.py",
+          "tree_mode": "100644",
+          "tree_blob": "cdb28d3a08f55b5e9d2c850ddabe45b61a253a0e",
+          "current_mode": "100644",
+          "current_blob": "cdb28d3a08f55b5e9d2c850ddabe45b61a253a0e",
+          "exact": true
+        },
+        {
+          "path": "src/tensorfold/families/qwen3_5_moe/dflash_metadata.py",
+          "tree_mode": "100644",
+          "tree_blob": "5027935f08c6aeae802264a344eeda2c99769111",
+          "current_mode": "100644",
+          "current_blob": "5027935f08c6aeae802264a344eeda2c99769111",
+          "exact": true
+        },
+        {
+          "path": "tests/cuda/test_qwen36_dflash.py",
+          "tree_mode": "100644",
+          "tree_blob": "7086721392d4dc20443dc594e53e9f096495587f",
+          "current_mode": "100644",
+          "current_blob": "7086721392d4dc20443dc594e53e9f096495587f",
+          "exact": true
+        },
+        {
+          "path": "tests/cuda/test_requant_cuda.py",
+          "tree_mode": "100644",
+          "tree_blob": "ad71aa1ff3d8d91bae69a8af736d208bade775c2",
+          "current_mode": "100644",
+          "current_blob": "ad71aa1ff3d8d91bae69a8af736d208bade775c2",
+          "exact": true
+        },
+        {
+          "path": "tests/test_qwen_nvfp4_startup.py",
+          "tree_mode": "100644",
+          "tree_blob": "c1aa9b4aa00bf733a40964fcd8b8e8225be8e1f7",
+          "current_mode": "100644",
+          "current_blob": "c1aa9b4aa00bf733a40964fcd8b8e8225be8e1f7",
+          "exact": true
+        },
+        {
+          "path": "tests/test_requant.py",
+          "tree_mode": "100644",
+          "tree_blob": "268d4ebe98a1b40687577d4864e6ff173298a6d7",
+          "current_mode": "100644",
+          "current_blob": "268d4ebe98a1b40687577d4864e6ff173298a6d7",
+          "exact": true
+        }
+      ],
+      "exact": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/idea1",
+      "commit": "c5e5e22fae719c1b6320ba2b3844f586c48ea5fe",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/idea1",
+      "paths": [
+        {
+          "path": "IDEA1-NOTES.md",
+          "tree_mode": "100644",
+          "tree_blob": "0bd936299637c998f811cbecd6fe63537cb62ac8",
+          "current_mode": "100644",
+          "current_blob": "0bd936299637c998f811cbecd6fe63537cb62ac8",
+          "exact": true
+        }
+      ],
+      "exact": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/idea2",
+      "commit": "1b3c902520b6776c0a8f56c1981c154acac99ef9",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/idea2",
+      "paths": [
+        {
+          "path": "IDEA2-NOTES.md",
+          "tree_mode": "100644",
+          "tree_blob": "b27f1550060dbe0ebeee4804bcaff0afeba8634f",
+          "current_mode": "100644",
+          "current_blob": "b27f1550060dbe0ebeee4804bcaff0afeba8634f",
+          "exact": true
+        }
+      ],
+      "exact": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/idea3",
+      "commit": "3ea8239cc7f093e5740861bac7d54334061b351e",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/idea3",
+      "paths": [
+        {
+          "path": "IDEA3-NOTES.md",
+          "tree_mode": "100644",
+          "tree_blob": "4a0b0174540ab18682f9a5799ede1c8a6016baff",
+          "current_mode": "100644",
+          "current_blob": "4a0b0174540ab18682f9a5799ede1c8a6016baff",
+          "exact": true
+        }
+      ],
+      "exact": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/idea3b",
+      "commit": "724a92fca125d9bc0f36cc17a3e31bbd97a447e1",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/idea3b",
+      "paths": [
+        {
+          "path": "IDEA3B-NOTES.md",
+          "tree_mode": "100644",
+          "tree_blob": "9c4cea0ea2dddb996060b257afe3c6b26b6b5024",
+          "current_mode": "100644",
+          "current_blob": "9c4cea0ea2dddb996060b257afe3c6b26b6b5024",
+          "exact": true
+        }
+      ],
+      "exact": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-decode-flash-20261022",
+      "commit": "8207ebc57e24491900b2b48e461cd46d12767889",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/perf-decode-flash-20261022",
+      "paths": [
+        {
+          "path": "tests/cuda/test_flashnext_hc_mix_optional_sums.py",
+          "tree_mode": "100644",
+          "tree_blob": "477be6caf7a8e78eb0b966e221ef32a24cb4e78c",
+          "current_mode": "100644",
+          "current_blob": "477be6caf7a8e78eb0b966e221ef32a24cb4e78c",
+          "exact": true
+        },
+        {
+          "path": "tests/test_flashnext_modelopt_mlp_xs_control.py",
+          "tree_mode": "100644",
+          "tree_blob": "933866915dcf1cfcc8376c061375041ed3200775",
+          "current_mode": "100644",
+          "current_blob": "933866915dcf1cfcc8376c061375041ed3200775",
+          "exact": true
+        },
+        {
+          "path": "README.md",
+          "tree_mode": "100644",
+          "tree_blob": "bebf2685ba6d79ef30922e1144ad438e8ed0cd95",
+          "current_mode": "100644",
+          "current_blob": "bebf2685ba6d79ef30922e1144ad438e8ed0cd95",
+          "exact": true
+        },
+        {
+          "path": "docs/recipes/qwen3.8-flash-next.md",
+          "tree_mode": "100644",
+          "tree_blob": "31714e8cb606e1759a0ecdc193a3a04e5b565ec0",
+          "current_mode": "100644",
+          "current_blob": "31714e8cb606e1759a0ecdc193a3a04e5b565ec0",
+          "exact": true
+        },
+        {
+          "path": "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+          "tree_mode": "100644",
+          "tree_blob": "ce7dbafdba48c712f96314ae6b31b7a3d3ff1afd",
+          "current_mode": "100644",
+          "current_blob": "ce7dbafdba48c712f96314ae6b31b7a3d3ff1afd",
+          "exact": true
+        },
+        {
+          "path": "src/tensorfold/families/qwen4_exp/cuda/glue.py",
+          "tree_mode": "100644",
+          "tree_blob": "a84547270e1e090eb7e235e68474fe123b68154b",
+          "current_mode": "100644",
+          "current_blob": "a84547270e1e090eb7e235e68474fe123b68154b",
+          "exact": true
+        },
+        {
+          "path": "src/tensorfold/families/qwen4_exp/cuda/state.py",
+          "tree_mode": "100644",
+          "tree_blob": "a28a6a33e5d038ee347a05e74cfcd2644fc61442",
+          "current_mode": "100644",
+          "current_blob": "a28a6a33e5d038ee347a05e74cfcd2644fc61442",
+          "exact": true
+        }
+      ],
+      "exact": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-decode-gemma-fp8-maxfinite-20261023",
+      "commit": "e5fb76bf7fd8d8f47b9e0c30398d4c9f7d56cfdc",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/perf-decode-gemma-fp8-maxfinite-20261023",
+      "paths": [],
+      "exact": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-decode-gemma-moe-up-20261023",
+      "commit": "5e9fe05f68ceec02fb0b2b643cb7ca3d38c0f8c2",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/perf-decode-gemma-moe-up-20261023",
+      "paths": [
+        {
+          "path": "tests/cuda/test_gemma4_cuda_moe_bench.py",
+          "tree_mode": "100644",
+          "tree_blob": "525ea9fb640edfddc05ec9bc5b120d1f0c1d057d",
+          "current_mode": "100644",
+          "current_blob": "525ea9fb640edfddc05ec9bc5b120d1f0c1d057d",
+          "exact": true
+        },
+        {
+          "path": "tests/test_gemma4_cuda_moe_bench.py",
+          "tree_mode": "100644",
+          "tree_blob": "7c4d4f2c2c8e2e5d20489709a8f136f5ae923d38",
+          "current_mode": "100644",
+          "current_blob": "7c4d4f2c2c8e2e5d20489709a8f136f5ae923d38",
+          "exact": true
+        },
+        {
+          "path": "tools/gemma4_cuda_moe_bench.py",
+          "tree_mode": "100644",
+          "tree_blob": "1684d7c7a141359f1f72857c1426558b72e789bd",
+          "current_mode": "100644",
+          "current_blob": "1684d7c7a141359f1f72857c1426558b72e789bd",
+          "exact": true
+        },
+        {
+          "path": "README.md",
+          "tree_mode": "100644",
+          "tree_blob": "a411236ac9d6b6e28c9e0769defc37abbb3322c1",
+          "current_mode": "100644",
+          "current_blob": "a411236ac9d6b6e28c9e0769defc37abbb3322c1",
+          "exact": true
+        },
+        {
+          "path": "docs/gemma-moe-up-validation.md",
+          "tree_mode": "100644",
+          "tree_blob": "3020b46bdff5ad4ab7b76b6df9e1a1c0a4314d46",
+          "current_mode": "100644",
+          "current_blob": "3020b46bdff5ad4ab7b76b6df9e1a1c0a4314d46",
+          "exact": true
+        },
+        {
+          "path": "src/tensorfold/cuda/build.py",
+          "tree_mode": "100644",
+          "tree_blob": "19d1a61c4846b3b9fa7f9cf133fa75098d9972fb",
+          "current_mode": "100644",
+          "current_blob": "19d1a61c4846b3b9fa7f9cf133fa75098d9972fb",
+          "exact": true
+        },
+        {
+          "path": "tests/test_benchmark_output.py",
+          "tree_mode": "100644",
+          "tree_blob": "a760d9f68f8c313310c3dca2124fffb221d358ad",
+          "current_mode": "100644",
+          "current_blob": "a760d9f68f8c313310c3dca2124fffb221d358ad",
+          "exact": true
+        },
+        {
+          "path": "tests/test_cuda_build.py",
+          "tree_mode": "100644",
+          "tree_blob": "04eb7163ae7af59fbc65e2d63d3419d24b1d8ac9",
+          "current_mode": "100644",
+          "current_blob": "04eb7163ae7af59fbc65e2d63d3419d24b1d8ac9",
+          "exact": true
+        },
+        {
+          "path": "tools/benchmark_output.py",
+          "tree_mode": "100644",
+          "tree_blob": "f5d161640ed487e6bb27ad186c6da5fdb0e5756d",
+          "current_mode": "100644",
+          "current_blob": "f5d161640ed487e6bb27ad186c6da5fdb0e5756d",
+          "exact": true
+        }
+      ],
+      "exact": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-decode-qwen-20261022",
+      "commit": "16589c54e41f62233db04f6397fc0bf8c1e3431d",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/perf-decode-qwen-20261022",
+      "paths": [
+        {
+          "path": "tests/test_qwen27_decode_sums.py",
+          "tree_mode": "100644",
+          "tree_blob": "9d6c7b8561f5da14ebf733641fe0010bbe9b2c78",
+          "current_mode": "100644",
+          "current_blob": "9d6c7b8561f5da14ebf733641fe0010bbe9b2c78",
+          "exact": true
+        },
+        {
+          "path": "README.md",
+          "tree_mode": "100644",
+          "tree_blob": "c67487636b2feeb5ba81c083477ef0774671d0f6",
+          "current_mode": "100644",
+          "current_blob": "c67487636b2feeb5ba81c083477ef0774671d0f6",
+          "exact": true
+        },
+        {
+          "path": "docs/optimization-validation.md",
+          "tree_mode": "100644",
+          "tree_blob": "9376e2a1317d7d8ced2ec7cdccd83e18fd996e9b",
+          "current_mode": "100644",
+          "current_blob": "9376e2a1317d7d8ced2ec7cdccd83e18fd996e9b",
+          "exact": true
+        },
+        {
+          "path": "src/tensorfold/families/qwen3_5/cuda/engine.py",
+          "tree_mode": "100644",
+          "tree_blob": "35b3fde1634562a2824bfcc44d8f523f748fc5a5",
+          "current_mode": "100644",
+          "current_blob": "35b3fde1634562a2824bfcc44d8f523f748fc5a5",
+          "exact": true
+        },
+        {
+          "path": "src/tensorfold/families/qwen3_5/cuda/forward.py",
+          "tree_mode": "100644",
+          "tree_blob": "a8f7cd53f2da05473b4f386aa53a7aac9238016f",
+          "current_mode": "100644",
+          "current_blob": "a8f7cd53f2da05473b4f386aa53a7aac9238016f",
+          "exact": true
+        },
+        {
+          "path": "src/tensorfold/families/qwen3_5/cuda/glue.py",
+          "tree_mode": "100644",
+          "tree_blob": "4745644af6ac63bba13f008a96cf982cfce63edc",
+          "current_mode": "100644",
+          "current_blob": "4745644af6ac63bba13f008a96cf982cfce63edc",
+          "exact": true
+        },
+        {
+          "path": "tests/cuda/test_qwen27_glue.py",
+          "tree_mode": "100644",
+          "tree_blob": "bcd3f8317d50578d2647605028888c7d63f21b0e",
+          "current_mode": "100644",
+          "current_blob": "bcd3f8317d50578d2647605028888c7d63f21b0e",
+          "exact": true
+        },
+        {
+          "path": "tests/cuda/test_qwen27_nvfp4.py",
+          "tree_mode": "100644",
+          "tree_blob": "225512c45311125bf71b72e5d07594a28902e076",
+          "current_mode": "100644",
+          "current_blob": "225512c45311125bf71b72e5d07594a28902e076",
+          "exact": true
+        },
+        {
+          "path": "tests/test_qwen27_startup_metadata.py",
+          "tree_mode": "100644",
+          "tree_blob": "9ff8da2fc0fad2fc9b03b8e58791b3131a984ae4",
+          "current_mode": "100644",
+          "current_blob": "9ff8da2fc0fad2fc9b03b8e58791b3131a984ae4",
+          "exact": true
+        }
+      ],
+      "exact": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-qwen-bulk-projection-20261022",
+      "commit": "4301b17506e0933637bf33f7736544f5bcc95f57",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/perf-qwen-bulk-projection-20261022",
+      "paths": [
+        {
+          "path": "README.md",
+          "tree_mode": "100644",
+          "tree_blob": "c39ec20865e33d49771c926356ec53f00fba262a",
+          "current_mode": "100644",
+          "current_blob": "c39ec20865e33d49771c926356ec53f00fba262a",
+          "exact": true
+        },
+        {
+          "path": "docs/nvfp4-loading-validation.md",
+          "tree_mode": "100644",
+          "tree_blob": "08e0a6eb1f7b3b6578a2f1d6d09ebfef7ad5f0ee",
+          "current_mode": "100644",
+          "current_blob": "08e0a6eb1f7b3b6578a2f1d6d09ebfef7ad5f0ee",
+          "exact": true
+        }
+      ],
+      "exact": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-family-prefix-20261027",
+      "commit": "44e7753820c014c4bc9af903847407b5ed8bf683",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/v100-family-prefix-20261027",
+      "paths": [
+        {
+          "path": "tools/v100_backend_probe.py",
+          "tree_mode": "100644",
+          "tree_blob": "a504d2b9d606deada5550396d421a252a0dc5dc2",
+          "current_mode": "100644",
+          "current_blob": "a504d2b9d606deada5550396d421a252a0dc5dc2",
+          "exact": true
+        }
+      ],
+      "exact": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-family-trial-20261027",
+      "commit": "829b5845d4047accbfa0246aa1dbcc64d3b7f2b4",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/v100-family-trial-20261027",
+      "paths": [
+        {
+          "path": "tests/cuda/test_sm70_gguf_concat.py",
+          "tree_mode": "100644",
+          "tree_blob": "6f10563dea6f2d87120b376ca3ee5c0dbae7db72",
+          "current_mode": "100644",
+          "current_blob": "6f10563dea6f2d87120b376ca3ee5c0dbae7db72",
+          "exact": true
+        },
+        {
+          "path": "tests/cuda/test_sm70_gguf_exact_actual.py",
+          "tree_mode": "100644",
+          "tree_blob": "4f7a59e3af2bc777d9eb6541471d5bda036a65a5",
+          "current_mode": "100644",
+          "current_blob": "4f7a59e3af2bc777d9eb6541471d5bda036a65a5",
+          "exact": true
+        }
+      ],
+      "exact": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-fast-tokenizer-20261027",
+      "commit": "ad6079d4e7bbef68c6c6f9dd56d397a9b63e8a24",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/v100-fast-tokenizer-20261027",
+      "paths": [
+        {
+          "path": "README.md",
+          "tree_mode": "100644",
+          "tree_blob": "2698b9aed509ee8eb3795c04e60150f45f8e01c7",
+          "current_mode": "100644",
+          "current_blob": "2698b9aed509ee8eb3795c04e60150f45f8e01c7",
+          "exact": true
+        },
+        {
+          "path": "src/tensorfold/cuda/server.py",
+          "tree_mode": "100644",
+          "tree_blob": "d13e9f67875bfe441cdb51b2ff7bfcd73383eaaf",
+          "current_mode": "100644",
+          "current_blob": "d13e9f67875bfe441cdb51b2ff7bfcd73383eaaf",
+          "exact": true
+        },
+        {
+          "path": "src/tensorfold/families/qwen4_exp/cuda/tokenizer_encode_payload.py",
+          "tree_mode": "100644",
+          "tree_blob": "c2ac40f6161c2c35aef405455f2448ac8b71764c",
+          "current_mode": "100644",
+          "current_blob": "c2ac40f6161c2c35aef405455f2448ac8b71764c",
+          "exact": true
+        },
+        {
+          "path": "src/tensorfold/server/segments.py",
+          "tree_mode": "100644",
+          "tree_blob": "eafd06fd6cef615526e56c8490a34498577fb252",
+          "current_mode": "100644",
+          "current_blob": "eafd06fd6cef615526e56c8490a34498577fb252",
+          "exact": true
+        },
+        {
+          "path": "tests/test_segment_encoder.py",
+          "tree_mode": "100644",
+          "tree_blob": "d1df7ba8779174a906b0c1c30a60d69786ba0833",
+          "current_mode": "100644",
+          "current_blob": "d1df7ba8779174a906b0c1c30a60d69786ba0833",
+          "exact": true
+        },
+        {
+          "path": "tests/test_tokenizer_encode_payload.py",
+          "tree_mode": "100644",
+          "tree_blob": "b6f1b422e8d0a2ac5d77d78dea09e3cbd2f94358",
+          "current_mode": "100644",
+          "current_blob": "b6f1b422e8d0a2ac5d77d78dea09e3cbd2f94358",
+          "exact": true
+        }
+      ],
+      "exact": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-finite-quality-20261027",
+      "commit": "eb3511e3c7f37e551573f79a18d31cc691c77997",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/v100-finite-quality-20261027",
+      "paths": [
+        {
+          "path": "tests/test_finite_quality.py",
+          "tree_mode": "100644",
+          "tree_blob": "67a30d54b4826910bb7344c2e59d64a3c8a577c8",
+          "current_mode": "100644",
+          "current_blob": "67a30d54b4826910bb7344c2e59d64a3c8a577c8",
+          "exact": true
+        },
+        {
+          "path": "tools/finite_quality.py",
+          "tree_mode": "100644",
+          "tree_blob": "50ee5753ed95b881616b32cac65c99f94d8dc05c",
+          "current_mode": "100644",
+          "current_blob": "50ee5753ed95b881616b32cac65c99f94d8dc05c",
+          "exact": true
+        },
+        {
+          "path": "README.md",
+          "tree_mode": "100644",
+          "tree_blob": "69742ae69cb9e78c59e191cb458bc98fdce26c7c",
+          "current_mode": "100644",
+          "current_blob": "69742ae69cb9e78c59e191cb458bc98fdce26c7c",
+          "exact": true
+        },
+        {
+          "path": "tools/v100_backend_probe.py",
+          "tree_mode": "100644",
+          "tree_blob": "9413f077a3fdc5671f7c383fe4ecf93837ab91ef",
+          "current_mode": "100644",
+          "current_blob": "9413f077a3fdc5671f7c383fe4ecf93837ab91ef",
+          "exact": true
+        }
+      ],
+      "exact": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-fixture-diagnostics-20261027",
+      "commit": "80dbb1026eef329878ed035b4fbfdff2222b2d12",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/v100-owner-fixture-diagnostics-20261027",
+      "paths": [
+        {
+          "path": "tests/test_sm70_owner_graph_diagnostics.py",
+          "tree_mode": "100644",
+          "tree_blob": "5ebe287d8c384efed6e7daa87c4632cc2b2e4d26",
+          "current_mode": "100644",
+          "current_blob": "5ebe287d8c384efed6e7daa87c4632cc2b2e4d26",
+          "exact": true
+        },
+        {
+          "path": "tests/cuda/test_sm70_owner_graphs.py",
+          "tree_mode": "100644",
+          "tree_blob": "51e7bc7ff48fb52523e28ab4b075eb0272d3f14d",
+          "current_mode": "100644",
+          "current_blob": "51e7bc7ff48fb52523e28ab4b075eb0272d3f14d",
+          "exact": true
+        }
+      ],
+      "exact": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-portable-audit-20261026",
+      "commit": "4af5f5dd022a60823d8eb54c80607fa191b61f58",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/v100-portable-audit-20261026",
+      "paths": [
+        {
+          "path": "tests/test_v100_backend_probe.py",
+          "tree_mode": "100644",
+          "tree_blob": "b660e6eca65a974d983b186ba53b7d6981415342",
+          "current_mode": "100644",
+          "current_blob": "b660e6eca65a974d983b186ba53b7d6981415342",
+          "exact": true
+        },
+        {
+          "path": "tools/v100_backend_probe.py",
+          "tree_mode": "100644",
+          "tree_blob": "a98639e31419feb3c3c9de7cd21c8c64cda11110",
+          "current_mode": "100644",
+          "current_blob": "a98639e31419feb3c3c9de7cd21c8c64cda11110",
+          "exact": true
+        },
+        {
+          "path": "tests/cuda/test_sm70_unique_history.py",
+          "tree_mode": "100644",
+          "tree_blob": "a3b53989bf8be3047c7e55d36c35ab64ea01e6f2",
+          "current_mode": "100644",
+          "current_blob": "a3b53989bf8be3047c7e55d36c35ab64ea01e6f2",
+          "exact": true
+        }
+      ],
+      "exact": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-profiler-capture-20261027",
+      "commit": "2c2db60341130fa2c6dda07b4a927a65c55ec9c8",
+      "recovery_ref": "refs/heads/emergency/20261028/wip/v100-profiler-capture-20261027",
+      "paths": [
+        {
+          "path": "README.md",
+          "tree_mode": "100644",
+          "tree_blob": "7ef9dc620b4ef36afbacf372697798b27cab860d",
+          "current_mode": "100644",
+          "current_blob": "7ef9dc620b4ef36afbacf372697798b27cab860d",
+          "exact": true
+        },
+        {
+          "path": "tests/test_v100_backend_probe.py",
+          "tree_mode": "100644",
+          "tree_blob": "b955b57deb1dbed600cb951112f7aa8a28764b19",
+          "current_mode": "100644",
+          "current_blob": "b955b57deb1dbed600cb951112f7aa8a28764b19",
+          "exact": true
+        },
+        {
+          "path": "tools/v100_backend_probe.py",
+          "tree_mode": "100644",
+          "tree_blob": "b1bf72c653a8d5d3c487249ba784ab6dba1fdd6b",
+          "current_mode": "100644",
+          "current_blob": "b1bf72c653a8d5d3c487249ba784ab6dba1fdd6b",
+          "exact": true
+        }
+      ],
+      "exact": true
+    }
+  ],
+  "errors": [],
+  "complete": true
+}

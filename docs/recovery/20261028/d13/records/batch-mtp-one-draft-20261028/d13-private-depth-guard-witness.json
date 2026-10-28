@@ -1,0 +1,18 @@
+{
+  "exception_type": "ValueError",
+  "message": "source-packed-graphs-trial requires concurrent unique GPU histories, INT8 KV, stock MTP depth2 and graphs",
+  "source_sha256": "27a8eabfd9917eaee648a329499a8b75c55c3850d2b0f1bd728729275415b11c",
+  "function": "actual maintained unique_graph_request AST executed unchanged",
+  "configuration": {
+    "profile": "source-dense-owner-batch-prelude-trial",
+    "method": "mtp",
+    "depth": 1,
+    "int8": true,
+    "unique": true,
+    "graphs": true,
+    "concurrent": true,
+    "vision": false
+  },
+  "result": "REJECTS BEFORE configure/ownerprep/admission",
+  "noGPU": true
+}

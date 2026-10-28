@@ -1,0 +1,169 @@
+{
+  "schema": "tensorfold.d13-logical-physical-context-final",
+  "version": 1,
+  "status": "closed_bounded_eleven_path_source_and_fixture_delta",
+  "base": "e3abd47a843ffc8cd7af9ace894e974e2ce4e024",
+  "reviewed_commit": "64e3ed7f4db98b7ca7d78a7acb2bf1b331acdece",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/logical-context/final/source-hold-integration.json",
+    "bytes": 2915,
+    "sha256": "d0a7a6120d359887da01132b7e8c152bfcc01b7a40165624792ac09ca3c566db"
+  },
+  "paths": {
+    "README.md": {
+      "bytes": 156283,
+      "sha256": "281342df4c9b4c8232c00dbf80fd2dca945732bf0f6665edda10eeb6467a1ea9"
+    },
+    "src/tensorfold/families/qwen4_exp/cuda/decode.py": {
+      "bytes": 32954,
+      "sha256": "f87ad6cd93ef1da614a56fe2a923e638551071cc8ed1ac3241e1c36db35b9b77"
+    },
+    "src/tensorfold/families/qwen4_exp/cuda/engine.py": {
+      "bytes": 176094,
+      "sha256": "a21741d295ad7f45ad23f9bc3a80c5a473059395719a51c00db3ad551033f0a0"
+    },
+    "src/tensorfold/families/qwen4_exp/cuda/multi.py": {
+      "bytes": 147315,
+      "sha256": "392e86d55d5a45104b1d173e31a07c3aa8cfbc59c49b7036a06dce19290316c5"
+    },
+    "src/tensorfold/families/qwen4_exp/cuda/state.py": {
+      "bytes": 72696,
+      "sha256": "f830eb7c96a9f79397612f606baae341a10523c6152e7923ba094eb85dddc197"
+    },
+    "src/tensorfold/families/qwen4_exp/cuda/state_retention.py": {
+      "bytes": 34192,
+      "sha256": "0bc2169fa9d138fd784b8088013995e2068df7979718ea8e590d675ad40365f2"
+    },
+    "tests/test_flashnext_prefix_copy.py": {
+      "bytes": 3447,
+      "sha256": "5c6ff7bcc0f28cd4f86443ba89a22a14c0e556a7c7f46e564a7150672dff1257"
+    },
+    "tests/test_logical_context_storage.py": {
+      "bytes": 6066,
+      "sha256": "faa5208a103549ef24aa7f60078b857004539ee1c2971113577a01f6629e3a1b"
+    },
+    "tests/test_resident_window_materialization.py": {
+      "bytes": 7961,
+      "sha256": "e4a0a41127ed2202e0d029bb4702f4941f1410ff2123ff548a90b132f363ae80"
+    },
+    "tests/test_position_startup.py": {
+      "bytes": 11769,
+      "sha256": "8720bd426c20e5f3a641b4a7da12447291d880cded2fba944d096db334e57e75"
+    },
+    "tests/test_serving_profile_transitions.py": {
+      "bytes": 24855,
+      "sha256": "543a14a74ff01dca5dab774ff0fa3d5d37db7e9c76e234d24b33ea7f36dc2e19"
+    }
+  },
+  "scope": "Five APP files carrying logical context through MainEngine/Multi/serial/State+retention, README, newlogical controls and four necessary fixture adaptations; related cloning/resizing/recovery/request/profile callers <=3hops. No broad project/native audit.",
+  "source_read": [
+    "Planner context_window is authoritative logical lifetime; physical cache_slots/max_len still allocate/charge all method guard rows. MainEngine passes logical context before State construction instead of assigning Multi.logical_context after allocation; _limit uses admitted logical room, with legacy no-plan arithmetic preserved.",
+    "State validates positive explicit logical extent within physical limit and target/MTP positional domains before State tensor allocation. Physical capacity/limit/cache_bytes/allocation geometry remain unchanged; default legacyState without new argument retains physical allowance and originalKVidentity.",
+    "Explicit logical context joins KVidentity to prevent sharing across different admitted lifetimes. Clone copies scalar limits; serialtwin forwards; resize/failed-resize recovery retain physical limit and logical lifetime rather than widening or truncating either.",
+    "Setters, snapshot/restore/indexer metadata and prefix boundaries refuse semantic frontiers beyond min(physical capacity,logical extent). Physical guard rows do not create extra valid target or MTP positions.",
+    "Retention source and prewrite restore gates validate raw mtp_len, not raw-minus-drafted; forgedraw129/drafted1 againstlogical128 refuses. Retention physical resource/geometry/projection roles otherwise unchanged.",
+    "Multi and existing_slot adapters preserve logical argument across actual shared/serial owners; no new cache/history/state registry, numerical kernel, codec, model algorithm or memory equation introduced."
+  ],
+  "fixture_review": [
+    "Raw prefix fixture bypassing State.__init__ supplies its actual existing logical allowance; old prefix assertions unchanged.",
+    "Resident allocation AST projection supplies explicit262144 logical arg for262148physical rows; original row/limit/max_rows and byte/count/reservation oracles retained and forwarded logical value now additionally asserted.",
+    "Position-startup and serving-transition syntheticplans now include the real admitted context_window, preserving their original protocol/profile assertions; production does not add a fallback for incomplete fake plans.",
+    "New optionalTorch test checks prerequisite before backend imports; exactlogical262144/physical+3 allocation+charging, invalidlogical/MTPdomain preallocation refusal, clone/twin, physical resize/recovery, snapshot/prefix/retention and variable3/4/9guard-count planner behavior covered."
+  ],
+  "candidates": [
+    {
+      "candidate": "shrink physicalcache to logicalwindow",
+      "disposition": "constraint-ruled-out; discards promised methodguard storage/resources"
+    },
+    {
+      "candidate": "extend logicaldomain by physicalguard count",
+      "disposition": "constraint-ruled-out; unauthorized context/position extension"
+    },
+    {
+      "candidate": "derive context from a fixedguard count despite actual plan",
+      "disposition": "constraint-ruled-out; testedvariableguardcounts require authoritative planner field"
+    },
+    {
+      "candidate": "late assignment plus constructorlogical plumbing",
+      "disposition": "equivalent-P5-resolved; removed obsolete late assignment and use one constructor value"
+    }
+  ],
+  "evidence": {
+    "owner158_execution": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/logical-context/final/execution.json",
+      "bytes": 6716,
+      "sha256": "29eb3afbfa8f1875d2f15d5928ff5f9c66dbab3f0121d498cab358e3a3495d5b"
+    },
+    "owner158_log": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/logical-context/final/installed-controls.log",
+      "bytes": 605,
+      "sha256": "95fe216720c571d9bbfbb5e85cc465d204cd1f4419567f23c008520cae4966c0"
+    },
+    "ruff_log": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/logical-context/final/ruff.log",
+      "bytes": 19,
+      "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+    },
+    "fixture_execution": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/logical-context/final/integration-execution.json",
+      "bytes": 1570,
+      "sha256": "2d84a9cee7d7893cf6f339d9ad00f740c2e09f88263f95eef09936c6dfe1a354"
+    },
+    "fixture_ruff": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/logical-context/final/ruff-integration.log",
+      "bytes": 19,
+      "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+    },
+    "original_gate_result_with72_fixture_failures": {
+      "path": "/Warehouse/TensorFold-wt/v100-adaptive-sc117-runtime-20261025/task-artifacts/logical-context-gate/result.json",
+      "bytes": 1243,
+      "sha256": "98ea230e84b512f3aa65e07ce71b4a6615e6ee57b31d713e22eae52832e83fa8"
+    },
+    "state1177_log": {
+      "path": "/Warehouse/TensorFold-wt/v100-adaptive-sc117-runtime-20261025/task-artifacts/logical-context-gate/state-storage.log",
+      "bytes": 1483,
+      "sha256": "72687727b1ebe816a3e51b9f79d838b1e66cccee289e0953a3ed1b08aeb5d49b"
+    },
+    "corrected_caller_result": {
+      "path": "/Warehouse/TensorFold-wt/v100-adaptive-sc117-runtime-20261025/task-artifacts/logical-context-gate/caller-integration-result.json",
+      "bytes": 495,
+      "sha256": "e0665b96903fc44fa6a44a14046970efff50a9e5bd55bccda314a13095798154"
+    },
+    "corrected_caller_log": {
+      "path": "/Warehouse/TensorFold-wt/v100-adaptive-sc117-runtime-20261025/task-artifacts/logical-context-gate/caller-integration.log",
+      "bytes": 442,
+      "sha256": "778646a8fa0fcbbe9ff33944428b842a51e37f998186d7cb81fd63be08fa8995"
+    },
+    "caller_command": {
+      "path": "/Warehouse/TensorFold-wt/v100-adaptive-sc117-runtime-20261025/task-artifacts/logical-context-gate/caller-integration-command.json",
+      "bytes": 4056,
+      "sha256": "1844f543d19705ef13442610b66aa037d260ca9d10a4d09cd4b04d7af9e0ad5c"
+    },
+    "wheel_provenance": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/logical-context/final/wheel-provenance.json",
+      "bytes": 125127,
+      "sha256": "67ff161253f171daf0c37d11d231aa3858d7f49111cbe8704d2f0534b10d0360"
+    }
+  },
+  "verification": {
+    "all11_current_paths_match_d0a7": true,
+    "all714_currentAPP_sources_match_b983_wheel": true,
+    "all715_zip_source_and_FD_records_match": true,
+    "newwheel_sha256": "b9839482497319cb19b7b284e92a123499d97c85b6d16dc9dbcc15e052f54285",
+    "FD4a06_byte_identical_to96f": true,
+    "owner9module158pass_10_63s_Ruff0": true,
+    "independent_storage1177pass_32_24s": true,
+    "corrected_caller8module231pass_21_85s": true,
+    "counts_overlap_not_summed": true,
+    "715package707code46protected_stable_gate_proofs_retained": true,
+    "actual_packaged_image": "sha256:a19233f2b66ce42527bc2c6d81eab11d671195aefeccfcf7cc002036055f6d31",
+    "saved_Config_equal_and_all71_base_layers_retained": true,
+    "no_reviewer_tests_build_or_source_Git_mutation": true
+  },
+  "findings": "No remaining verified D13 finding; coordinated raw-MTP issue remediated by native owner and separately D14 reviewed.",
+  "limits": [
+    "This closes held source/affected CPU+installed caller contracts, not actual target/model execution.",
+    "Root owns actual target retry, physical allocation/native/compiler/model/output/numerical/quality/P3/P4/service qualification.",
+    "No full187 rerun/relabel or inference of oldnew artifact/performance equivalence; old failure72 preserved and correctedfixtures independently justified."
+  ]
+}

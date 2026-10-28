@@ -1,0 +1,59 @@
+{
+  "schema": "tensorfold.d13-http-history-entry-release-final",
+  "version": 1,
+  "reviewer": "/root/cleanup_review",
+  "recorded_utc": "2026-10-27T08:41:47.020503+00:00",
+  "status": "closed-bounded-source-and-CPU-controls",
+  "hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/http-bridge-entry-release/source-hold.json",
+    "sha256": "858b46af9af112df2a6e870a07a4d524121c36f02f0d1d82c46ef3d28449fa4d"
+  },
+  "paths": {
+    "src/tensorfold/server/responses.py": {
+      "bytes": 25217,
+      "sha256": "72b7535780bdce87b0a95d152ddc388845df09836b510ad74ca292367af8f525"
+    },
+    "tests/test_responses_api.py": {
+      "bytes": 33055,
+      "sha256": "2af573edce85c03d34391afac71dc3fe3115ba479490dcc75b9a3dca5d401ed1"
+    },
+    "README.md": {
+      "bytes": 157829,
+      "sha256": "d81868e08a48d14847f783e63a56835fef87d0793191d026226dc0a3567a8904"
+    }
+  },
+  "wheel": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/http-bridge-entry-release/wheels/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3099907,
+    "sha256": "c37e91fe20a489f572245001e51684be085b20a30b3eb964d613cc50b48a067e"
+  },
+  "finding": {
+    "id": "D13-incidental-history-whole-entry-pin",
+    "rules": [
+      "D13",
+      "M0",
+      "P5"
+    ],
+    "status": "selected-and-remediated",
+    "witness": "../http-bridge-d13/entry-pin-witness.py and entry-pin-witness.log (actual log name; hold prior_witness shorthand entry-pin.log is metadata-only typo)",
+    "proof": "Successful initial rid:str is non-None, so traversal always binds entry before reaching clone. Chain retains every needed message list after lock release. Dropping the dead Entry local preserves all returned graph/alias/isolation/error semantics while removing unrelated echoed response storage from the normal clone phase. Early traversal error frames still require generic source ownership."
+  },
+  "independent_proofs": [
+    "Entire responses module AST after removing only del entry equals pinned34c5328d base.",
+    "Entire maintained test module AST after removing only added meaningful weakref/eviction regression equals base. No old assertions weakened.",
+    "All715 wheel source/data bytes and exactFD4a06 match current source; held source/execution/log hashes match."
+  ],
+  "checks": {
+    "normal_installed_Responses": 53,
+    "seconds": 1.43,
+    "ruff": 0,
+    "pipcheck": 0
+  },
+  "README": "Only two explanatory lines in existing cache paragraph; no new status/hardware/API/performance qualification claim.",
+  "separate_open_gates": [
+    "Encoded bridge size/source/memo/one-shot encoder phases and full HTTP admission remain read-only proof work.",
+    "History-only typing requires explicit static no-media/no-profile/uncorrupted-cache condition; arbitrary echoes and error/GET old generations retain generic bounds.",
+    "Immutable8110 actual target and model/performance gates remain Root-owned."
+  ],
+  "reviewer_actions": "Read/hash/AST/wheel verification only; no source/test/Git/remote/GPU mutation or duplicate suite."
+}

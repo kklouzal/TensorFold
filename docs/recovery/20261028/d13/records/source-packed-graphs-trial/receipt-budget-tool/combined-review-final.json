@@ -1,0 +1,103 @@
+{
+  "status": "bounded combined TOOL-only source review CLOSED; actual new run/model/quality and six-grid P3 remain OPEN",
+  "hold_sha256": "df961495f6fceac3373d2778910d3f0e99e3f3e6311448c3b95a448b9678d3db",
+  "source": {
+    "tools/v100_backend_probe.py": "62916e7229ccc2de5022eec095258c9796472b67ca4f084716dc88d3fb90df95",
+    "tests/test_v100_backend_probe.py": "d12fa6386fcea7035a34f7b9eaf47270df3948130384aa67aafca5fba97eb9cc",
+    "README.md": "e929dac5763240e65479d5a97e4b260ae39aaa83abeb2d70a477740718a0d9f9"
+  },
+  "same_application_wheel": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/source-packed-graphs-trial/graph-intent-final/wheels/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3110896,
+    "sha256": "326f8fe950bb199e507c3ce2d76a8bca0f84a8eaf9d62be4c867cea7fbdfac7e"
+  },
+  "verification": "93normalinstalledsame326ftoolcontrolsPASS4.10s/Ruff/pip0/standalonehelp0",
+  "evidence_hashes_matched": {
+    "start.json": "c3f08061574cb97f6315932af7aa8c1c775d3032176b2d0069bf915572288459",
+    "exit.json": "1e3468a913aba62abf55cb5486e6b718ec02d293e18d8b8278b33c700a132934",
+    "controls.log": "a2c31a64e264ac1890f59616c50d12287963d78b716634585bead3519d3f8505"
+  },
+  "unchanged_prior_function_AST": {
+    "tools/v100_backend_probe.py": {
+      "digest": true,
+      "finish_failures": true,
+      "regular_file": true,
+      "arguments": true,
+      "installed_identity": true,
+      "record_execution_profile": true,
+      "prepared_prompt": true,
+      "check_engine": true,
+      "generate_reply": true,
+      "repeat_replies": true,
+      "run_leader": true,
+      "graph_failure_resources": true,
+      "main": true
+    },
+    "tests/test_v100_backend_probe.py": {
+      "cli": true,
+      "test_default_arguments_preserve_native_profile_without_override_flags": true,
+      "test_invalid_or_contract_changing_arguments_refuse_before_worker_admission": true,
+      "test_missing_input_refuses_before_result_directory_or_model_acquisition": true,
+      "test_callback_bounds_validate_before_retaining_and_close_is_terminal": true,
+      "test_first_nonempty_callback_timestamp_is_once_and_invalid_chunks_do_not_start_it": true,
+      "tokenizer": true,
+      "nvtx_markers": true,
+      "test_real_logical_owner_covers_generation_and_decode_then_retires": true,
+      "test_generation_failure_preserved_with_retired_owner_and_callback": true,
+      "test_output_overrun_refuses_without_partial_append_and_retires": true,
+      "test_receipt_limit_refuses_retained_payload_and_retires": true,
+      "test_changed_template_refuses_before_encoding_or_generation": true,
+      "test_aggregate_report_budget_includes_every_rank_and_supervisor": true,
+      "test_report_budget_counts_ascii_escaped_unicode_wire_bytes": true,
+      "rendering_fault": true,
+      "retained_failure": true,
+      "test_worker_rendering_fault_preserves_primary_and_unconditionally_closes_engine": true,
+      "test_launcher_rendering_fault_preserves_primary_restores_handlers_and_closes_pipes": true,
+      "test_launcher_retirement_allocates_no_new_enumeration_after_supervision": true,
+      "test_fatal_notification_is_latched_and_allows_bounded_report_retirement": true,
+      "test_stop_and_process_deadline_override_fatal_report_grace": true,
+      "test_final_fatal_byte_cannot_be_reported_as_success": true,
+      "test_unset_profile_uses_actual_reference_constructor_policy_and_records_native_flags": true,
+      "test_execution_record_reads_exact_flags_and_rejects_requested_actual_mismatch": true,
+      "test_requested_profile_validation_is_deferred_to_existing_constructor": true,
+      "test_nvtx_push_failure_prevents_generation_and_retires_collector_owner": true,
+      "test_nvtx_pop_failure_preserves_generation_primary_and_all_retirement": true,
+      "test_nvtx_pop_failure_after_success_is_reported_and_retires": true,
+      "test_nvtx_range_includes_final_decode_failure_and_unwinds": true,
+      "test_repetitions_use_one_engine_owner_and_release_previous_reply_pair": true,
+      "test_default_repetition_keeps_existing_reply_filenames": true,
+      "test_prefix_expectation_requires_explicit_profile_and_repeated_case": true,
+      "test_prefix_expectation_accepts_each_explicit_distinct_packed_epoch": true,
+      "test_worker_requests_graphs_only_for_explicit_graph_profile": true,
+      "test_graph_trial_record_requires_actual_admitted_owner_and_reports_its_budget": true,
+      "resource_error": true,
+      "test_graph_resource_snapshot_reads_existing_scalars_without_device_queries_or_properties": true,
+      "test_graph_resource_snapshot_preserves_missing_values_and_future_service_counts": true,
+      "test_graph_resource_snapshot_has_a_fixed_frame_bound_and_does_not_retain_frame_objects": true,
+      "test_resource_diagnostic_failure_preserves_the_constructor_primary_and_cleanup": true,
+      "test_private_prefix_adapter_preserves_raw_result_before_check_failure": true,
+      "test_private_prefix_adapter_refuses_foreign_state_before_host_or_request_publication": true,
+      "test_later_iteration_failure_preserves_prior_outputs_partial_ids_and_original_error": true,
+      "test_legacy_installed_supervisor_keeps_default_call_without_new_keywords": true,
+      "test_requested_departure_override_requires_installed_capability_before_launch": true,
+      "test_instrumented_departure_and_exit_record_map_to_rank_order": true,
+      "test_session_ceiling_parser_reaches_supported_factory_without_changing_native_profile": true,
+      "finite_engine_capacity": true,
+      "test_selected_capacity_receipt_requires_materialized_full_window_commitments": true
+    }
+  },
+  "findings": [],
+  "dispositions": {
+    "receipts": "Authoritative slice constants derive one global1507328B=512KiB+7*128KiB+64KiB ceiling, forwarded by the existing actual FiniteBackendCaller before logical work. Eight90k controls exercise the former failure; overflow still refuses and preserves separate evidence.",
+    "failure": "Primary catch latches its existing nonblocking cohort failure pipe before fallible diagnostics or Engine.close. Preallocated secondary slot preserves notification failure; unconditional cleanup and primary/error aggregation retained. Existing supervisor first-fatal30s latch handles containment with no reset, barrier, or new protocol.",
+    "scope_precision": "The new notification covers the protected worker operation primary catch. It is not a claim of pre-notification for a later cleanup-only failure or an exception before that catch. Inherited resource diagnostic runs after constructor rollback attempt and before worker cleanup.",
+    "cleanup": "No verified dead/unjustified duplicate paths or extra framework. Shared notify_failure and prior supervision contract reused; all old tests and unrelated tool functions structurally unchanged. Launch receipt now states actual optional capacity region.",
+    "application": "No APP/wheel/native/kernel/model arithmetic/capacity/admission guard changes; same reviewed326f reused. Larger diagnostic allowance is explicit actual caller funding, not waived validation or success masking."
+  },
+  "historical_actual_disposition": "Rootreported SAME326f graphcapture+physicaladmissionPASSED sixkeys/226492416B within1320279320B and24materialized262147-rowwindows; sevenfollower readyreports89341..89349B exceeded old64KiBtoolallowance, neverenteredfollow, RootstoppedFAILED. This is reportfailure, noTPS/mathverdict; evidence retained byRoot.",
+  "pending": [
+    "actual 24session model output/quality/throughput",
+    "strictN1>85andgrid1/2/4/8/16/24sameNnonmeaningfulregression"
+  ],
+  "reviewer_actions": "Read-only maintained source; no edits, GPU/remote work, duplicate build/test"
+}

@@ -1,0 +1,17 @@
+{
+  "schema": "task-wide-combined-review-reopen-v1",
+  "at": "2026-10-27T22:46:40.061698+00:00",
+  "reviewer": "/root/cleanup_review",
+  "status": "REOPENED runtime902f beforefullmodel: actualmultilayerwarmup frameversion failure",
+  "scope": "Rootactualcompact_indexer frame-signature failure; nativecoordinatepublication helper anddirectCompactIndexer.begin\u22643hops; batchednewsourcepaused",
+  "signal": "Rootactual902fmodel Dockerterminal1 duringwarmup, nojobs/performance; /tmp/tf-902f-model-failure.log. Actual53smallcomponentpass retained, didnotexercise multipleattentionlayers ononeissuedframe.",
+  "source_candidate": "_publish_native_frame reconstructs coordinates instead ofborrowingexistingexplicitframe slice. CompactIndexer.begin skipscoordinatecopyonlyonidenticalptr/stride; newsourceforcescopy_ intoexistingstage.coordinates, incrementsversion, andnextattentionlayerframe.signature check fails. Authornotified toverifyactualclause/version andrestoreexplicitcoordinateborrow, no guardrelaxation.",
+  "review_miss": "Priorreviewfollowed copy/retirementandframevalidation but missedsharedcoordinateversionlifetimeacrossattentionlayers. Sourceclosure cannotbeusedasfullmodelreadiness untilcorrectedcurrentwholewheel+multilayerregression binds.",
+  "history": "Currentfailedfullmodelandallrawlogs preserved. Old53numeric/boundTP8resultvalidonlyitssingleattentionlayer/component scope; no unchangedfullmodelclaim.",
+  "pending": [
+    "Authorverifiedrootcause/minimalactualissuedcoordinatesreuse sourcefix",
+    "Actualmultipleattentionlayer/versionretention regression andfinalheldwholeartifact",
+    "Rootcontrolledsoftware/numerical/fullmodel/quality/all6, noreviewerGPU or broadsourceexpansion"
+  ],
+  "batched_paused": "PendingBatchPrelude.upload.synchronize outsidefailurelatch finding preserved; nofinalHOLD/closure onbatch yet."
+}

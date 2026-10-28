@@ -1,0 +1,7 @@
+{
+  "old_review_sha256": "a104e97e764135fd9ba703fccb6da1c027f09f2c20a5255f5dae6cc32fcd832f",
+  "oldsource": "8ed7/af47/1957 immutable",
+  "successor_review": "/Warehouse/TensorFold-portable-audit-20261026/joint-hc-moe-integration-20261028/combined-review-final.json",
+  "successor_review_sha256": "cea1a550d22ee1687266481523dad5b0bc163e2178bf4d15a054f7a103313175",
+  "C6_postprimary_slot": "remediatedin28ac:selectedsource/reservedbeforechildspawn; oldpositiveRunnotretroactivefailureproof"
+}

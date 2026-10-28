@@ -1,0 +1,89 @@
+{
+  "schema": "tensorfold.d13-attention-app-packaging-final",
+  "version": 1,
+  "status": "closed_bounded_recipe_and_actual_packaging_delta",
+  "scope": "Prior3attention source paths unchanged plus8line Dockerfile.application-wheel; Root-authorized controlled complete-owned-wheel install and Config-preserving immutable commit evidence only. No broader source/runtime audit.",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/attention/source-hold-final.json",
+    "bytes": 2061,
+    "sha256": "4bc0350d0b97edb7d51494ccc0fed51388a8f3c167d5900bade9e5098652e16a"
+  },
+  "source_paths": {
+    "README.md": {
+      "bytes": 155972,
+      "sha256": "e69c765574cfc4b723105337c13e05b4e1e0eb435cf4c4291ee0d617cbf895e8"
+    },
+    "src/tensorfold/cuda/sm70/attention_qualification.py": {
+      "bytes": 3905,
+      "sha256": "ef3982fdc0d761c9c3c6322402191bfa16750a9af3a71a24f629f9f6525c497d"
+    },
+    "tests/test_sm70_attention_qualification.py": {
+      "bytes": 8555,
+      "sha256": "5b39eeb2ffb23e6fca1a14c5063b496e3565611c917c6ba4dab7d2b18ede67ec"
+    },
+    "deploy/v100/Dockerfile.application-wheel": {
+      "bytes": 524,
+      "sha256": "3b96c0d0795a6ca87cdcbbdb6446226eed954aafe83e462da62fe63c085be989"
+    }
+  },
+  "prior_source_review": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/attention/d13-source-final.json",
+    "bytes": 5151,
+    "sha256": "73fea50792d08ffb665039b3d522e3d498b4a01665cc5f92717c4072e8c8ba78"
+  },
+  "recipe": "Owned APP-only lifecycle keeps exact immutable base, copies fixed application_artifacts, verifies application-wheel.sha256, force-reinstalls complete local TensorFold wheel with no-deps/offline network, then pipcheck. The source-policy recipe remains a distinct rebind lifecycle.",
+  "actual_packaging": [
+    "Recorded controlled install uses same exact6fac complete wheel+checksum/no-deps/pipcheck steps on approved6da immutable base, rather than claiming Dockerfile build execution. Root explicitly authorized this local method to avoid redundant base import.",
+    "All4held source hashes and packagingresult hash matched; original3attention paths exactly equal prior cf00 receipt.",
+    "Raw controlled-image-build log shows the one wheel checksumOK and no broken requirements. All1455 Docker diff entries are APP package/metadata/entrypoints/wheel directory or parent directory metadata; zero protected SDK/source/media/native/provider path changes.",
+    "Saved full image Config dictionaries independently compare equal, not merely a Cmd fallback. Base70RootFS layers retained exactly and one new layer added.",
+    "Saved stopped builderinspect confirms exited/RunningFalse/Pid0/OOMKilledFalse; deliberate sleepbuilder stop exit137 is preserved, not a workload or test pass. Container retained for inspection, not a live owner."
+  ],
+  "result": {
+    "base_image": "sha256:6daae245155c890edd24ae9fc3ba699a3009d2ae57ede24ee271f85309cf44bf",
+    "image_id": "sha256:96f6961708d064a9d2f9e73d4df43ce8a5695c1499f16943b670c21fd971e15e",
+    "uncompressed_bytes": 23592149004,
+    "application_wheel_sha256": "6fac343859d26fd04324ecc7a0ba6c32bcde2403fb705eedc186542c014c5bd8",
+    "Config_differences": {},
+    "layers": 71
+  },
+  "evidence": {
+    "build-image.py": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/attention/build-image.py",
+      "bytes": 3533,
+      "sha256": "a52b689c93e5c23560fedf9170b68393d64cb952d00e472eeed169ef001d7c22"
+    },
+    "controlled-image-build.log": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/attention/controlled-image-build.log",
+      "bytes": 135252,
+      "sha256": "cc58f75c4eb516b7d93d7b59cefb6d2a73b123e44dbb91af4a6894b45cbd8847"
+    },
+    "base-image-inspect.json": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/attention/base-image-inspect.json",
+      "bytes": 11777,
+      "sha256": "f7abac142744d7e1e50de1de031c8de2583f1e7ca3ed801dbd522373e6f49eeb"
+    },
+    "image-inspect.json": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/attention/image-inspect.json",
+      "bytes": 11578,
+      "sha256": "4a18463f7c3febcce559e8f7aa60d9a348c822e1d7c4aa395bd9958247a51f47"
+    },
+    "packaging-result.json": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/attention/packaging-result.json",
+      "bytes": 931,
+      "sha256": "e70180d2e3ce652f2a5656517db247127c81b882ef9edbc1f363c6d94beb58ed"
+    },
+    "retired-builder-inspect.json": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/attention/retired-builder-inspect.json",
+      "bytes": 12447,
+      "sha256": "c90d01f0d7af3889b4a66456f4959cd39bab64aab2993deeba6138ac28327fd4"
+    }
+  },
+  "verification_limits": [
+    "Prior66+24/Ruff binds source/wheel component; final image-nativeFD/listener/installed checks remain final_gate-owned and are not invented here",
+    "New wheel/newFDartifact distinct from805; no oldfull187 equivalent/newimage qualification claim",
+    "Actual target/source+combined audit/startup/model/compiler/quality/capacity/performance/deploy gates remain separate"
+  ],
+  "findings": "No new verified finding or reviewer source edit.",
+  "reviewer_actions": "Read-only held byte/Config/layer/retirement/log comparison plus this artifact; no build/test/remote/Git mutations."
+}

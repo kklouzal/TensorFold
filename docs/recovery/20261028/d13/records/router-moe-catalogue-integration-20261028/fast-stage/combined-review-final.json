@@ -1,0 +1,52 @@
+{
+  "schema": "task-wide-combined-D13-adapter-review-v1",
+  "at": "2026-10-28T11:55:35.278770+00:00",
+  "reviewer": "/root/cleanup_review",
+  "runtime_parent": {
+    "source": "f6978a15ca8448ddbbebfaedbf9d11c6b802c3c6",
+    "APP_sha256": "61654b385feae0243eefc6e3d0c8bb840a5f8da3b98f9edec724f7772f531d81",
+    "HOLD_sha256": "0f8d4974e07ca20cc5a7a315ed3105b15242733a510a95623270d74b70086150",
+    "review_sha256": "070dff8108a93b6d9563296856b4afa7e92203b88ab3c722da9ca05d5fd341b8",
+    "scope_clarification_sha256": "d32ac986f7fb2f49ebf962fd01e551a183a3fa8c52dafff82597675dd55e6e74",
+    "src_diff_vs_parent": []
+  },
+  "tool": {
+    "commit": "4db0bc65db11cde26c8414e0b96748f59715b9e9",
+    "HOLD_sha256": "fa334d617a1090820131619b3a606050bad7accdabb8310c597d4b761489ed1c",
+    "source_paths_verified": 4,
+    "evidence_files_verified": 4,
+    "probe_sha256": "f24cf5428909e26e72ef777df2c377aaa13d4ff5ab1c0ed2a8e17364f8047298",
+    "coverage_sha256": "cbcc957b79c3271336864cee9300d5065c3e4c4c31eb05123b0d15e8dd3783b7",
+    "controller_sha256": "9a684b4d237992004685cf926d32056d74dbf20821973c475c1a911f5c0962c6"
+  },
+  "stage": {
+    "payload_files_verified": 21,
+    "manifest_sha256": "ff01ab80965f3fc52ff36ad2f97c41423a65594ea79feccc6112e3ed9b6a3aa8",
+    "payload_tar_sha256": "65152b70c91e731e542987faec9e39b965cbc317e7f5a744189d151528f0bf75",
+    "APP_sha256": "61654b385feae0243eefc6e3d0c8bb840a5f8da3b98f9edec724f7772f531d81",
+    "runtime_HOLD_sha256": "0f8d4974e07ca20cc5a7a315ed3105b15242733a510a95623270d74b70086150",
+    "status": "Local package and tar bytes verified exact; Root/author report remote21files verified and62782 running. Historical stage-ready pre-upload status preserved, no reviewer remote/GPU launch."
+  },
+  "disposition": "INCREMENTAL_TOOL_AND_HELD_ALL6_STAGE_REVIEW_CLOSED; RUNTIME070dSOURCE_CLOSURE_REUSED; NO_REMAINING_CONCRETE_FINDINGS_IN_ADAPTER_SCOPE",
+  "contracts_verified": [
+    "Only APP probe delta is three bounded signed64 exact-row frame counters, read from actual Catalogue.row_frames; omitted on overflow. No counter increment is invented to represent graph work. All packaged runtime src byte-exactf697/APP6165, no native/math change or new numerical rerun required.",
+    "Read-only postcoverage requires actual144 prepared exactR30/31/32 x48layer keys, all8 cold ledger hashes/byte counts and consistent keyspaces. Complete captured-cycle arithmetic requires frames=sum(rowcounts), hits=48*frames; missing captured counters, partial cycles and wrong keyspaces refuse.",
+    "Zero eager target wrapper calls accepted only with actual positive graph replays. N>1 still requires independent eager MTP/GDN and native target/MTP batch evidence; all-grid at least one actual catalogue replay required. Existing source/harness nativeN1 and fullcapacity checks unchanged.",
+    "Postcoverage reads terminal immutable run/cold evidence, writes one coverage-only artifact, never edits raw percase counters or metrics. Its passed flag is not Docker0, quality or performance acceptance. Existing all6 window/drain/EOS/quality/graph defaults and funded reply bounds preserved; cold raw145phase payload remains outside ready replies.",
+    "Controller reuses the existing container/image/model/cache/manifest9533/fullQ8TP8native24/MTP2/.7/row32/startup3/FASTv2/2048/all6 protocol. Adds requested MoE env1, current immutable identities and readonly postcoverage after Docker terminal/log archival. No analysis/P3 overlap or CPU/GPU work launched by reviewer."
+  ],
+  "controller_helper_AST_equal146f": {
+    "now": true,
+    "write": true,
+    "run": true,
+    "docker": true
+  },
+  "CPU": "120PASS3.82s installed6165/Ruff; command/cwd/log/exit bound in toolHOLD. Controls exercise zero eager target backed by144real graph-cycle arithmetic, independent evidence refusal, partial/wrongkey refusal, original eager authority and N1 baseline.",
+  "cleanup": "No verified dead code or unjustified duplication in this necessary separate evidence adapter. Required cold/raw ledger and original eager counters remain independent. No source edits or tests by reviewer.",
+  "actual_scope": "Root84513 actual1441PASS7.25s/world1/proxy/noState/noNCCL/Engine credit is prior bounded component evidence. Current Root62782 actual all8/all6 is separate and running; no result inferred here.",
+  "pending_acceptance": [
+    "Actual all8 native24Q8/capacity/future service/pool/host ledgers, retirement and allrank counter audit",
+    "Actual all6 speed plus task/quality/common-prefix/nativeID comparison",
+    "No full service qualification, broadquality or repeatability claim from one screen"
+  ]
+}

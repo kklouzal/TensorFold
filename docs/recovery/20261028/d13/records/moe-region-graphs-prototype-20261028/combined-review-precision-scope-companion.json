@@ -1,0 +1,16 @@
+{
+  "schema": "tensorfold.combined-d13-component-precision-scope-companion-v1",
+  "at": "2026-10-28T08:42:13.901728+00:00",
+  "reviewer": "/root/cleanup_review",
+  "parent_review_sha256": "9feb1a74f85532c0a09b0d0227fcba6a79e6948ceaa84d0ec3c8d3074b168881",
+  "immutable_component": "b06/c8c8/APP1e6c/HOLD6b993a actualoneGPU PASS5.12",
+  "scope_correction": "Originalfixture usedMoEBuffers(prefill=False), so expertoutputyFP32. This isMTP-style storage, NOTrealcanonicaltargetMulti Buffersthatspecify moe_prefill=True whileBuffers.prefill=False andthereforeFP16y.",
+  "evidence_credit": "Retain oldcapture/eagerFP32output positive aslimitedcomponent proof only; no targetFP16/shippingprecision, selectedbatchedRouter, fullTP8/Engine/catalogue/capacity/performance proof inferred. Originalsource/HOLD/rawdata unchanged.",
+  "successor_requirements": [
+    "UseBOTH actualtarget andMTP buffer constructors/outputdtypes underselected numericalfoundation",
+    "SelectedbatchedRouter requirescapture-side RolePlans whoseconstruction/currentstream andscratch lifetime matchcapture/replay; oldcanonical rowrouter isnot equivalentbylabel",
+    "GuardfixedUNDERLYINGstorage spans/weights, notonlyTensorPythonobjectidentity; holdallcapturedread/writeowners throughconsumerfence/graphreset",
+    "Engine/catalogue integration needsseparatepre-admission aggregatepool/workspace+host accounting, all8order, mutationinserts/partialfailure/retirement and24fullQ8floor evidence"
+  ],
+  "status": "PRECISION/APPLICABILITY CORRECTION RECORDED; oldcomponent remainslimitedreference; successorbc845/numerics+integration review pending"
+}

@@ -1,0 +1,64 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T21:26:41.412415+00:00",
+  "status": "CLOSED bounded one-off rank0 ATen parent diagnostic source and label correction",
+  "reviewer": "/root/cleanup_review",
+  "source": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/owner-pieces-short-20261027/analysis-tools/rank0_parents.py",
+    "sha256": "5687b459e606216af068454d1ebbf215af08607e16e8e7a30480962400bf9564"
+  },
+  "scope": "Task-local one-off CPU rescan of the same completed immutable failed-publication rawrank0trace. No model/Torch/CUDA import, multiprocessing/executor, device inquiry or source mutation. It is not a general profiler service.",
+  "contracts": [
+    "Explicitly FAILED_REPORT_PUBLICATION; old profile remains Docker1",
+    "Same selected trace and decode-window definition from all8 guarded failed-publication analysis are preconditions; rawrank0hash/bytes and mtime rechecked",
+    "Source ATen parent reports are same-thread traced interval/start-containment observations, not Python stacks or proof of which Python source function consumed time",
+    "CPU/API times inclusive; overlapping/nested durations not additive, NCCL includes waiting; no CPU utilization or throughput inference",
+    "Bounded selected CPU/API/kernel retention and top tables, one process; process retired before new Root decode measurement"
+  ],
+  "finding": {
+    "rules": [
+      "O1",
+      "N0",
+      "A0"
+    ],
+    "finding": "Kernel parent table labeled every missing graph id ORDINARY despite missing metadata not proving ordinary launch",
+    "disposition": "Resolved by label-only GRAPH_METADATA_PRESENT/ABSENT telemetry. Entire script source restores original executed bytes by reverting only these two literals; old executed output/source/provenance retained, corrected derived JSON distinct. No rawtrace or GPU rerun required."
+  },
+  "evidence_equivalence": "Only diagnostic label literals changed. Parent interval algorithm, source work/counts, timer readings and all result numerics unchanged; no claim about end-to-end performance equivalence of an optimization.",
+  "actual_execution": {
+    "source_version": "Original pre-label script, exact sourcehash bound",
+    "CPU_seconds": 9.335909942004946,
+    "exit_code": 0,
+    "raw_trace_sha256": "7342cfad952fd9ecf83915c8ff373e2913836da5ca778e0a5b792d023da2a73e",
+    "reviewer_reparsed_large_trace": false
+  },
+  "source_inference": "194 frame-values kernels times source12isfinite predicts2328 vs2337 observed is an explicit source/count hypothesis; missing Python stacks and exact synchronization source attribution remain limitations. This suggests a candidate and does not establish measured source-function time or optimization correctness/gain.",
+  "cleanup_disposition": "No verified remaining dead path, unjustified duplicate model or required simplification in this bounded one-off. Existing shared streaming/aggregation/timeline helpers reused; no second parser or GPU framework introduced.",
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/owner-pieces-short-20261027/rank0-parents-provenance.json",
+      "sha256": "989ae56d7d5b5efa761d414f85b1d1228d1fe0842f24b3ff4629c18ef1385095"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/owner-pieces-short-20261027/rank0-parent-label-correction-proof.json",
+      "sha256": "d81935de52474b66d8fd31ef6dd2925872f6c5502c885d999f7e2a95614487fd"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/owner-pieces-short-20261027/rank-0-parents-label-corrected.json",
+      "sha256": "c7b33d5103a58e5fe004088ef5850d9dd93711947f9e3bcbdb03b822e320e782"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/owner-pieces-short-20261027/actual-failed-records/analysis-failed-publication-v2/rank-0-parents.json",
+      "sha256": "c8affad58f8cc059f8762eec98f35c0f7d86d70237e28e8d2ceed78090d6bf81"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/owner-pieces-short-20261027/actionable-findings.json",
+      "sha256": "ef6f6257fab614940ddddb9ecf947d5f5961307f5f283dbd7ffc526ea87fc6ac"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/owner-pieces-short-20261027/actionable-findings.md",
+      "sha256": "e0b91e2c4060d9d2879a7ac766dcdad783038c568db6988c2aedb120cf93586a"
+    }
+  ],
+  "pending": "Candidate fusion/source attribution and all model/quality/performance gates remain separate Root work; diagnostic source review is not selection."
+}

@@ -1,0 +1,51 @@
+{
+  "schema": "task-wide-combined-D13-adapter-review-v1",
+  "at": "2026-10-28T12:43:50.677347+00:00",
+  "reviewer": "/root/cleanup_review",
+  "scope": "Joint MoE+fusion all6 adapter only; reuse41b902 source/component andd638 pureMoE adapter. No newruntime/native/math audit or reviewerGPU/tests.",
+  "parents": {
+    "source_review_path": "/Warehouse/TensorFold-portable-audit-20261026/moe-shared-fusion-integration-20261028/combined-review-final.json",
+    "source_review_sha256": "41b902c7289fa85c44d71f9e3e6cd2088a4ade92a9a3402a507ea9d6072828e1",
+    "prior_adapter_review_path": "/Warehouse/TensorFold-portable-audit-20261026/router-moe-catalogue-integration-20261028/fast-stage/combined-review-final.json",
+    "prior_adapter_review_sha256": "d638011af1c0e33c6a1a9ee166a71cf1f774eccdd6b6a4864e88bf7b6d0d685f"
+  },
+  "source": {
+    "tool_commit": "654d456e7ebac066f52c2e9a0867d09297455473",
+    "tool_HOLD_sha256": "00214ea330b9aa5ce74befda29f9df7a77d230f66aa915bab0649f27c1fc06eb",
+    "runtime_commit": "073649a963d0d2df5f6b8fbd207de51ad2ab5d64",
+    "runtime_HOLD_sha256": "63e25e339bc7e0393fdf20a563d1bf846834d4ff80a4135dd7fe957a06ebec60",
+    "APP_sha256": "76f496d38f1ebfccbb8ae9e17b86c76a282527ecd6709dcc70656581bde68051",
+    "runtime_src_diff": [],
+    "held_tool_paths_verified": 4,
+    "held_evidence_files_verified": 4,
+    "probe_sha256": "075030d46159f06ac35a51ef7358a8b8499374031f7fc74f4a78637a688db7ff",
+    "coverage_sha256": "a85feb533198565445fb4b6cb696acab23766d32e0801a36d5eadccc3a6685bb",
+    "controller_sha256": "bebc1bcaae5553362e1b37885a4b3fafa2f1e3596e53a790790b610fc1cb2a9f"
+  },
+  "stage": {
+    "payload_files_verified": 21,
+    "manifest_sha256": "db694ead8b0173a3f567b14e60aa7c17d4bc34cf59ddb9dea378c4f67009f648",
+    "payload_tar_sha256": "449654bf0addc7071d1dc42ac23fb60e4d07f29f850aa31a992f82bea5748fcf",
+    "tar_content_exact_local": true,
+    "runtime_HOLD_matches": true,
+    "wheel_matches": true,
+    "status": "Root/author reports21remotefiles verified andRoot65160 actualall6running; reviewer verified heldlocal hashes/tar only. Historical readyuploadpending status unchanged."
+  },
+  "disposition": "ADAPTER_AND_HELD_ALL6_STAGE_REVIEW_CLOSED; RUNTIME41b902_CLOSURE_REUSED; NO_REMAINING_CONCRETE_FINDINGS_IN_ADAPTER_SCOPE",
+  "contracts_verified": [
+    "Probe adds only the same3 bounded exact-row Catalogue frame counters, as closed d638. No synthetic eager call increments; all APP src byte-identical0736/APP76f4.",
+    "count and validate_case function ASTs byte-identical closed pureMoE adapter: actual144-key prepared space, frames=sum(rowframes), hits=48*frames; partialcycles/wrongkeys/missingcaptured counters refuse. Zero eager target accepted only with real graph work; N>1independentMTP/GDN/nativeowner evidence retained.",
+    "New ready validator explicitly seals Fusion profile with actual packed_blocks2w native flag,49loadedbanks/public513/11slots,targetFP16/MTPFP32, graph numeric_profile and ordered-pool contract. Incorrect backend refuses. Existing constructor/requestedprofile/allrank consensus remains authoritative; no spoofed wrapper increments or crossnumeric epoch substitution.",
+    "All8 cold145phase ledger descriptors/size/digests and keyspaces checked after process terminal. Coverage output is diagnostic only and does not rewrite metrics/rawfiles, imply Docker0, or waive quality/capacity/retirement requirements.",
+    "Controller carries same commonFASTv2/2048/all6/30ready10decode/6quality/MTP2/.7/Q8/fullcontext/native24/startup3/cache9533 protocol, explicit FusionCLI/profile and orthogonal MoEflag1. Postcoverage now sudo-n Python only after containerterminal, to read existingroot0600evidence; trusted access authorization explicit. No hostpolicy/cache mutation, newGPU orP3/CPUanalysis overlap introduced."
+  ],
+  "metadata_disposition": {
+    "id": "JOINT-PROOF-CAPTION",
+    "status": "CLOSED_ADDITIVE_CORRECTION",
+    "fact": "structural-proof source_pkg_proof text incorrectly retained f697; actual runtime_commit0736 and actual src comparison alreadycorrect. Outside-payload proof-caption-correction.json fixes caption and preserves held/live files.",
+    "companion_sha256": "b08cce8d9d9a37f0e2683168e3ecb1ba1f419a2e82f4afcd6f477e95af7896e7"
+  },
+  "verification": "121installedCPU3.73s/Ruff, command/cwd/log/exit hash-bound in toolHOLD; includes correct/wrongFusion backend readycontrol plus prior zeroeager/fullcycle and independent evidence controls. Runtime724/FD and actual Root22554 sixcapturePASS4.66 reused, not repeated.",
+  "cleanup": "No verified dead code or unjustified duplicate introduced; same evidence helper extended for actualbackend qualification. Original independent/runtime/eager counters and parent raw evidence retained. No reviewer source changes.",
+  "limits": "Root65160 actual8rank/all6 remainsseparate; source/tool closure grants no capacity/performance/quality result or approximation bound. Must audit all8native24/futurehost/device/pools/coldledgers, independentcounterfamilies, fullquality/token/prefix/nativeID and retirement outcomes before provisional retention. Broadquality/repeats deferred, not passed."
+}

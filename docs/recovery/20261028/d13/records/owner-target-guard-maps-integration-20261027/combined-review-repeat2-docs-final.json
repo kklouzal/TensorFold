@@ -1,0 +1,64 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T22:18:33.674552+00:00",
+  "status": "CLOSED docs-only second-screen observations scope",
+  "reviewer": "/root/cleanup_review",
+  "docs_commit": "0a097d87fe30a7f0dcc6f9840d231c29e84efdcc",
+  "runtime": "49db/84a/e0e source/test/tool bytesunchanged",
+  "raw_repeat_packet_sha256": "3221791a722391455c28c168fd26c9cd2483a7bffe7e6468f943a1ad04887f0f",
+  "raw_named_reference_packet": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-pieces-fast-integration-20261027/actual-fast-first/packet.tar.gz",
+    "sha256": "6b97d79e8867fa9010839e842eec870841fa4d3875b297e2562e2464e3004380",
+    "source": "266ff976",
+    "wheel": "6d340a473aeb85a3cfd373d48d5f2ac8882dbdaefee9c58b40f696440beca8f7",
+    "actual_rates": [
+      {
+        "N": 1,
+        "valid": true,
+        "tps": 10.8
+      },
+      {
+        "N": 2,
+        "valid": true,
+        "tps": 8.0
+      },
+      {
+        "N": 4,
+        "valid": true,
+        "tps": 9.3
+      },
+      {
+        "N": 8,
+        "valid": true,
+        "tps": 9.8
+      },
+      {
+        "N": 16,
+        "valid": true,
+        "tps": 11.4
+      },
+      {
+        "N": 24,
+        "valid": false,
+        "tps": null
+      }
+    ]
+  },
+  "verified": "Raw all6 repeatedreport values/window/drains/peak and sixcompletequalitytexts independently matched comparison and namedbaselinearchive. Firstfive14.0/10.3/11.7/13.3/13.6 identical tofirst10s observations;N24NULLpeak22. Samefourqualitypass/twofailuretexts preserved; candidate semanticExit1 retained.",
+  "interpretation": "Permits precisely scoped repeated measured improvement over namedreference in fivevalid lowhistoryscreen cases. This is not formal global superiority, fullconcurrency support, qualitycertification,85/600budget pass, uncertainty-freeworstcase or nearfullhistoryqualification. N24failedreadiness is nothidden/zeroed; requiredquality failures areexplicit.",
+  "cleanup": "No stale/conflictingnewclaims found afterexplicitreference/workload/source/rawidentity andlimitations updates; no implementationedits/tests needed for docs-onlydelta.",
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-maps-integration-20261027/actual-repeat2/root-repeat-comparison.json",
+      "sha256": "7e5d7273ac036bb45dbf6e0d5e92f161c5b9e6153d703873b5565503a6818005"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-maps-integration-20261027/actual-fast-first/root-comparison.json",
+      "sha256": "93db660c431b9da480037f18fd8721b846992b3639a5158c75ca0be248cecad3"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-maps-integration-20261027/combined-review-docs-repeat2-final.json",
+      "sha256": "88fa957b342534d0f41da9b507aa4055ed6d6776b8270651d07ad6d065ac58b4"
+    }
+  ]
+}

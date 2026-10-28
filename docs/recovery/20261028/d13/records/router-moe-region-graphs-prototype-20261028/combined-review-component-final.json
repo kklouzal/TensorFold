@@ -1,0 +1,35 @@
+{
+  "schema": "tensorfold.combined-d13-selected-router-moe-component-review-v1",
+  "at": "2026-10-28T08:52:22.802822+00:00",
+  "reviewer": "/root/cleanup_review",
+  "source": "800396fa",
+  "HOLD_sha256": "12f4ff692f1f7a66540033108bb58dc9880ebe398062af6e5f69858d5a844f15",
+  "APP": "79796625 normal722+FDc79",
+  "status": "SCOPED COMPONENT SOURCE/CLEANUP/COMPLIANCE AND15-MANIFESTED-FILE STAGE BOUND; Enginecatalogue/capacity/TP8/P3 NOT certified",
+  "reference": "old9feb1a74 component source andebcfb8d8 precision-scope correction reused, plus08cc integratedprofile/f32vendor qualificationlimits",
+  "changes_and_reasoning": [
+    "Newfixturecovers correctactualMoEBuffers constructorsemantics: targetmoe_prefillTrue =>yFP16 whiledecodebuffers.prefillFalse; MTPdefault =>yFP32. Root1e6coldpositive remainsoldrouter/F32only, nottarget-shippingproof. R32/full513router/11slots/dims2560/local80syntheticpackedbank andbytecomparisons retained.",
+    "Main-role preparedRouter cannotcrossitsconstructionstream. Coldsidewarm thereforeconstructs distinctcapture-sideRolePlans overtheSAMEoriginalreadonlyweights, withseparate X/Y/pointerstorage. Partialownerpublishedbeforeconstructor; tinyproxybuffer usescanonicalmixed/moe tensors anddedicatedrouter, no mutation/globaltransfer ofmainplan. CPPoperationalmathunchanged146f.",
+    "Side waitsinputproducer beforewarm; synchronizebeforeacceptedcapture; graphpublishedbeforebegin, fixedoutcome slots beforebegin andendonce onbodyfailure. _on_side preservesoperationprimary throughcontextrestore failure; None-only slots arenottransported. Retiringlatched beforefence/reset sofailedclose cannotreopen replay.",
+    "Strongcapture-router/buffer/weight owners persistthrough positiveglobalfence ANDgraphreset beforeclear. Replay boundstosameoriginalstream andbufferobjects. No State/sampling/partials/NCCL included; originalMoEdefaultbody remainssameexceptprivateexit/signature."
+  ],
+  "binding_precondition_and_correction": {
+    "clarification_sha256": "43e8307d207a6114515cdab0a19f51223a8f84d992c9a465152d847f1f31d4b8",
+    "actual800": "strongrefs+Tensorobjectidentity only; NOcachedunderlyingstorage-span/layout signature. Fixedunderlyingstorageandweights untilclose isexplicitcallerprecondition, andconstantstorage numericfixture obeys it.",
+    "futureEngine": "Mustvalidate/prove canonicalstorage/span/layout/weight/profile lifetime andreject rebind, plusaggregateprivatepool/workspace+hostadmissionbefore24Q8capacity. Componentidentitycheck alone isnotgeneralset_/resizeprotection; nocatalogueclaimnow."
+  },
+  "checks": [
+    "Heldsource/fixturepathhashes and15stagemanifestedrows hashes/sizes matched; selectedrouterCPPbyteequal146f, no newnativecode.",
+    "33normalCPU2.17/Ruff/pip/protected/normal722+FDc79andfailure/stream/end/retirecontrols reused; no reviewerGPU/retest/newprofiling.",
+    "Original7CPU/1e6creferencehistorical failbuildroot retained; current2casesUNRUNaslastreported, requiresRootactualtargetF16+MTPF32 hardwareoracle beforeintegration."
+  ],
+  "numeric_scope": [
+    "Eagercomparison isCURRENTselectedbatchedRouter implementation, notcanonicalrowGEMVbitidentity. Original18logitbit failures/finite28routeagreement limits unchanged; graph testdoesnotrepair/universallyprove newrouterquality.",
+    "Actualinference_mode/nativeFamilyTrue/native32/packed_exact/sourcebaseRouterconfigured, no newmathpolicy setters. SelectedfoundationTrueFP16reduction/Falseaccum remainsrequired; graph/eagerbyteidentity limited tofixedcomponentcases."
+  ],
+  "remaining": [
+    "Rootactual2componentpositive/postnormal/sourceproof; no author/reviewerGPUlaunch",
+    "SeparateEngine/profilecatalogue integration mustfunddedicatedcaptureRouter/sharedpools andpreservecapture/replayorder, dynamicmutation/partialfailure/retire and24fullnativeQ8 windows",
+    "No integratedquality/P3/85/600/servicequalification oruniversalnumeric equivalence claim"
+  ]
+}

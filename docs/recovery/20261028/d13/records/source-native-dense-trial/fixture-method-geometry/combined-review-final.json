@@ -1,0 +1,58 @@
+{
+  "status": "bounded TEST-only fixture source review CLOSED; corrected affected GPU-case retry pending Root",
+  "hold_sha256": "1197f936eead96c7328c1d7b6e9fece3bb886537a9dfffdce183704713842b10",
+  "three_current_paths": [
+    {
+      "path": "tests/cuda/test_flashnext_sm70_bound_graphs.py",
+      "sha256": "3877518348ef4259b404e32012751acb1bc1654a708ed3e114fcd7bb389dc745",
+      "bytes": 20521
+    },
+    {
+      "path": "tests/cuda/test_sm70_gguf_prepared.py",
+      "sha256": "e5df0849a97e0c145820ade46f6018c28340364448a59e613b563acec958caad",
+      "bytes": 8428
+    },
+    {
+      "path": "tests/test_sm70_bound_graph_fixture.py",
+      "sha256": "40984b8b3b3073d0bb07b93c17e333f9d309d60ce161c31013fd8bc49ffd350e",
+      "bytes": 2019
+    }
+  ],
+  "same_application_wheel_sha256": "c896b42b1979d01e8c20ddb70dfcc978349c1141854e0c10b5ec3da49492da12",
+  "runtime715_and_FD4a_unchanged": true,
+  "verification": {
+    "passed": 2,
+    "seconds": 0.27,
+    "Ruff": 0,
+    "pip_check": 0,
+    "source_drift": []
+  },
+  "independent_oracle_preservation": {
+    "tests/cuda/test_flashnext_sm70_bound_graphs.py": {
+      "all_assertion_multiplicities_retained": true,
+      "changed_original_functions_only": [
+        "_qualify_six_lanes"
+      ],
+      "old_asserts": 27
+    },
+    "tests/cuda/test_sm70_gguf_prepared.py": {
+      "all_assertion_multiplicities_retained": true,
+      "changed_original_functions_only": [
+        "test_prepared_bound_six_lane_capture_preserves_valid_rows_state_and_mtp"
+      ],
+      "old_asserts": 9
+    }
+  },
+  "finding": {
+    "rule": "C0/V1/Q0/Q2/X12",
+    "finding": "Original no-MTP CUDA graph fixture supplied depth2, violating actual MethodGeometry(none,2) before capture; original55GPU Dense/prepared passes plus this fixture failure preserved.",
+    "disposition": "Select actual none/depth0/R1 for no-drafter; real stock-MTP/depth2 retains original R1/R3/R2 tuple and partial-prefix checks. Prepared MTP cases execute the target six-lane oracle before unchanged MTP helper, so invalid no-MTP proposal rows are not silently discarded."
+  },
+  "cleanup": "One pure fixture geometry selection shares the real MethodGeometry contract. No fake method flag, runtime guard relaxation, new tolerance, weakened assertion or duplicate matrix oracle; original stock-MTP helpers unchanged.",
+  "scope_limits": [
+    "No APP/kernel/math/resource/quality support change or wheel rebuild",
+    "55 actual prior GPU passes reused as distinct unaffected history; corrected four-case GPU retry not performed by reviewer",
+    "CPU2 verifies fixture planner only; does not prove actual captured GPU behavior or full model performance",
+    "Reviewer no source/Git/GPU/remote changes or duplicate suite"
+  ]
+}

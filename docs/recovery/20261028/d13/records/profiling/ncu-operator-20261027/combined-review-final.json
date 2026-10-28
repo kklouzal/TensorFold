@@ -1,0 +1,72 @@
+{
+  "schema": "tensorfold.combined-d13-review-v1",
+  "at": "2026-10-28T00:18:32.175678+00:00",
+  "status": "CLOSED scoped source+stage review; actual component artifacts checked within stated limits",
+  "scope": "NCUoperator3maintainedpaths, inherited1d566smoke report import/parser anddirectownedfixture/wholewheel/bootstrap/launch consumers within3hops; no generic profiler/provider/library audit",
+  "source_commit": "685198621e0d841b0782e91a9061561fd5815a35",
+  "source_hold_sha256": "bccebd03dea0d70e9eb6c7f27e8625e991b689ea2579544a1ddb401442d42f6d",
+  "package_manifest_sha256": "9e38053d69fdab22932274411c71c1cada2fd5b7faf4e8af753bf5b4bc54d1ae",
+  "files_checked": 19,
+  "APP": "5635/a7b1/717source+FDc79 unchanged; no native kernel/Engine/NCCL changes",
+  "dispositions": [
+    {
+      "rules": [
+        "P0",
+        "N1",
+        "Q3"
+      ],
+      "status": "clean",
+      "proof": "Actual checkpoint layer0 rank3/8 local80-wide slice, explicit loaderMODEL before checkpoint access and count512+shared512, supported512routed residentbank. Independent originalreference output versusexact native uint32 beforeandafter replay. Long/int64 synthetic uniform topK10 inputs are recorded; not productionint32 routing qualification."
+    },
+    {
+      "rules": [
+        "P1",
+        "M0",
+        "U3"
+      ],
+      "status": "clean",
+      "proof": "Filtered gate/up then exactdown fullyoverwrite their own bounded activation/output cells, read stable weights/input/IDs; noState/attention/NCCL. One prewarmed stateless operation, kernelreplay2filteredlaunches eachR1/8/32, clock/cache none. SharedDense work is outside the filtered two-kernel counters; no wholeforward/end-to-end claim."
+    },
+    {
+      "rules": [
+        "C3",
+        "C5",
+        "A0",
+        "O1"
+      ],
+      "status": "clean",
+      "proof": "NCU2025.2.1 pinnedELF and currentnormalwholewheel/protectedclosure checked, reportexport importedCPUreadonly (--csv --page raw). Long/widebaseparser rejectsnonfinite/negative counters, blankIDunitsrow skipped/dataID0 retained. Exactly2distinctIDs with gate/up-before-down kernelnames and positivecycles/duration. Raw units retained; R32durationms normalizedseparately forcomparison, DRAMMbyte values not mislabeledbytes."
+    },
+    {
+      "rules": [
+        "X4",
+        "T2",
+        "Q2"
+      ],
+      "status": "clean source/provenance",
+      "proof": "ExecutednormalCPU23+Ruff andpackageCPU23/fullcwd/env/exit/log metadata reconstructedadditivelywithout reruns; remote19hashverification sourceHOLD bound. Actual firstcap-dropALL cacheDAC failure preserved. Root authorizedretryaddedonlyDAC_OVERRIDE besideSYS_ADMIN, freshoutput/name; no chmod/chowncache/modelsource/hostpolicy mutation."
+    },
+    {
+      "rules": [
+        "D13",
+        "S0",
+        "P5"
+      ],
+      "status": "clean",
+      "proof": "Reuses actual checkpoint fixture loader and supportedsmoke cleanup/import/parser; separate operator command, perkernel parser and explicit immutablepackage serve different boundaries. No verified dead code or unjustified duplicate math/measurement implementation found."
+    }
+  ],
+  "evidence": {
+    "cpu_provenance_sha256": "5079c9e072409a566978fc2387a4e674b6366f9abcc9ca542cb4917262ffb88b",
+    "actual_assessment_sha256": "47642173be68560801f5eb03750df76edf7930267de51fc3c62e91ddce179914",
+    "frozen_array_validation_sha256": "8f1bc4a58c205fb4f5aa18c3eaa4040106cc359d82934884dc030232f4b6ed4b",
+    "frozen_actual_files_checked": 64,
+    "actual": "All3applicationstrictbefore/afteroracles andprofile/importzeroexits observedin frozen artifacts; independentCPUarray validation retained; no reviewerGPU/replay",
+    "prior_NCU": "671a6successhelper preserved;1d566 adds actualsavedreportimport andwideCSV/dataID0 controls afterrealexport console suppression; originalnegative runs retained"
+  },
+  "limitations": [
+    "Hardwarecomponentdiagnostic only, actualweights plus syntheticuniformrouting/int64 IDs; no integratedmodel/P3/quality/superiority claim",
+    "Root actual retry outerargv/exit receipt retained remotely separately from heldlauncher; localarchive binding may be appended without source re-audit",
+    "Separate int32 successor and Dense diagnostic are distinct queued tasks; no inferred transfer of kernel-specialization/performance results"
+  ]
+}

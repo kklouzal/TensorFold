@@ -1,0 +1,109 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T23:19:27.785689+00:00",
+  "status": "CLOSED canonical MTP text-producer source/stage; ready Root53nativeMTPcounterregression, not gain/qualityqualification",
+  "reviewer": "/root/cleanup_review",
+  "commit": "e3ed8297483da2c58cb0c0067c9f5e848d35b6f8",
+  "workspace": "/Warehouse/TensorFold-wt/v100-owner-prelude-mtp-text-20261027",
+  "base": "710c9b6a3b91072d1d15a8356cfe91464cd1419b",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-mtp-text-20261027/source-hold.json",
+    "sha256": "9d734c2941c42ab6bd95c8fdbbf321e6affb6bea29db976d61724fc85d848006"
+  },
+  "wheel": {
+    "path": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "sha256": "6c646570d90f3178705633aa6bcea5c66bb0e625c7cb162d3f1ff2c66d4e0733",
+    "bytes": 3133358
+  },
+  "scope": "Eightheldsource/test/tool/docs paths anddirectMTPwindow/coordinateproducer/frame/nativeposition/cache/lifetime/counter/funding contracts\u22643hops. Reuse710caliasfix/Frame/nativeRole/nativeprep/ModelState reviews.",
+  "proofs": {
+    "coordinates": "Forboundrole andindexer_coordinatesNone andallmtp_boundaryNone, oldloopissuedtext atst.mtp_len+(at-begin), withat=begin. Newactualstage_text_indexer_frame issuesatst.mtp_len directly: sameactualhidden/cacheTHWsequence, no+1. Shiftednext-tokenIDs andHCcopywindows keptseparate, actualCPUcoords7/8and12/13versusIDs41/42and99/100 verify.",
+    "provenance": "Onlyactualcanonicaltextproducer grantsprivateframetype. ExplicitcustomTHW/boundary/mixed/deferredtransfersretainoriginalgenericclass/validation; mediareadywithmissingcoordinateinputs stillrefusesbeforepayloadwrites. NonzeroRopeDelta or media/native-extendedroles stilldeclinenativeprelude underunchangedguard. Markerdoesnotstandinforvaluebounds or roleauthority.",
+    "lifetime": "ExistingHCextent/alias snapshots/ids/last copies/stagedEvent/rollback unchanged. Sameinputpreparationowner/serializedactor andissuedframe generation/mutation guards; nativecachepublicationuses710cexactcoordinatealiashelper, no sharedstorage rewrite.",
+    "numerics": "NativeCUDA/family_bindings/family_ops/Multi.py andcompact_indexer.py bytesexact710c. mtp_compute/_mtp/_picks/_draft_all untouched; only_mtp_stage functionASTchanged inmtp.py. OriginalRMSrowshape/Halfcasts/RoPE/h32/Q8, samplingFP32LSE\u2192NumPyFP64confidence andstock.7 method unchanged. NewlyreachednativeMTP requiresactualGPU/frame/partialcommit/draftquality oracles beforemodel.",
+    "telemetry": "Oneboundedint64MTPframecounter +overflowlatch, serializedactor. Counterstopisexplicitunknown, notwrap/retry; toolomitsMTP/derivedtargetwhenoverflowed. Targetrolederivedfromknownlegacytotal-MTPonlywhenvalid. Reportsarehostsubmissions\u2014notGPUcompletion/TPS orvalidationauthority.",
+    "resource": "Extra8192host/rankinitialmetadatareservebeforeadmission, no newGPUworkspace/Framefields; same24fullnative262144Q8/FP32Statefloor/counterownership. Existingglobalreceipts2,424,832/grid60,620,800 andnoopaquecredit retained.",
+    "default": "Canonicalcoordinatevaluesunchangedforotherboundproviders; unsupported/externalcoordinate/owedboundaryrolesretainordinarypath. No newCUDAlibrary/backends/profilegrants orfallback data reinterpretation."
+  },
+  "cleanup_disposition": "Reuses existingcanonicalproducer/Frameauthority, eliminatingneedlessgenericwindow construction onprovedbranch. Counterupdatehelpercentralizestotal/MTP semantics andoverflowobservability; rolesdistinctfromcompute/provenance. No verifiedremainingdeadpath/unjustifiedduplicatealgorithm or necessarysafesimplification. Sourceworkeliminationandunchangedmathdo notestablishP3equivalence/gain.",
+  "findings": [],
+  "checks": {
+    "source_paths_current": 8,
+    "evidence_current_hashes": 11,
+    "normalinstalled": "1128CPU+2subtests20.66s/Ruff/pip/help; actualproducer/custom/boundary/media/overflowintegrationcontrols",
+    "wholewheel": "All716currentcanonicalsource+FD4a independentlymatch6c64ZIP",
+    "stage_files": 22,
+    "oracles": "AllpreviousGPUassertASTmultiplicitiesretained; twoattentionTP8mustobserveactualMTPnativecounter>0, nottotalcounteralone; same52scalar/multioffset/faultoracles. Guardedspawn/sharedsourcecontextlifetime retained.",
+    "reviewer": "NoGPU/remoteDocker/duplicatebuild/broadsuite"
+  },
+  "candidate_dispositions": [
+    {
+      "candidate": "hotplaintextMTPrefresh/proposalnativeproducer",
+      "state": "implemented, CPUverified; actualGPU/modelP3pending"
+    },
+    {
+      "candidate": "prefilltextcondition_chunks explicitcanonicalwindows",
+      "state": "separatecrediblecandidatepending, notbundled; explicitcallerwindows stillgenericunqualified"
+    },
+    {
+      "candidate": "custom/media/boundaryscalarinference",
+      "state": "constraint-ruled-out; actualcoordinatesprovenancenotprovedbytextmetadata"
+    }
+  ],
+  "pending": [
+    "Rootcurrent6c6453GPUactualMTP/State/cache/prefix/frame/strictnativeparity",
+    "Actualmodelall6quality/performance/changedbottleneck profile beforeselection; old3224/84againsnottransferable",
+    "85single/>600N24/full24nearfullhistory/no regionalregression andbroaderqualityremainopen",
+    "Separateexplicitcanonicalprefillchunks candidate remainsunbundled/undisposedbythisfocusedproof"
+  ],
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-mtp-text-20261027/command.json",
+      "sha256": "bff3242bc4a8ac12fbe102b6960dde899e3b3381f3c8abedf705f47fd205a6bd"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-mtp-text-20261027/controls.log",
+      "sha256": "ee1c040b234c84670664fce8de9b43da6d7356edcafac26bbd31af3e5273860a"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-mtp-text-20261027/exit.json",
+      "sha256": "81868a6e94ffc0178bf833deb1c9013d9fab4ee95ddb876a5e8ec4f1d26376d2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-mtp-text-20261027/final/command.json",
+      "sha256": "0f1aa05ccd9bb22c7cafd5f493329f5f1136e069f1209a02f3b987873d6ec4d1"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-mtp-text-20261027/final/controls.log",
+      "sha256": "4f7edc534b810362d61c8096e469f3013755b22aa391cb395cdecaf3cb017470"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-mtp-text-20261027/final/exit.json",
+      "sha256": "81868a6e94ffc0178bf833deb1c9013d9fab4ee95ddb876a5e8ec4f1d26376d2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-mtp-text-20261027/package-command.json",
+      "sha256": "eb16d866e52476834726ad1d7b525f1bf9b0a92e145fd4fe808c14856f26d3dc"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-mtp-text-20261027/package.log",
+      "sha256": "18845b40b009430d5e06bfed21705e3e9f47936ddd00513156703c004496f9fb"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-mtp-text-20261027/package-exit.json",
+      "sha256": "81868a6e94ffc0178bf833deb1c9013d9fab4ee95ddb876a5e8ec4f1d26376d2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-mtp-text-20261027/wheel-provenance.json",
+      "sha256": "e412f1e651289d146e870411cf31cb006be97081f287ec841fc062194f884539"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-mtp-text-20261027/structural-proof.json",
+      "sha256": "1148aa750c97a01452f9fc1e8d5651deae6383492f9df7b6aad368e043658c99"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-mtp-text-20261027/gpu-stage/stage-receipt.json",
+      "sha256": "f4e776f20c264b4a5929a50d70d8b7a1aed52ced5defec9606606c1474716541"
+    }
+  ]
+}

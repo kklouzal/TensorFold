@@ -1,0 +1,102 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T21:24:59.541561+00:00",
+  "status": "CLOSED static unique-map source cleanup and compliance; ready Root actualTP8 oracle",
+  "reviewer": "/root/cleanup_review",
+  "policy": "One task-wide combined D13, reuse unchanged997e/owner/target/finite proofs",
+  "workspace": "/Warehouse/TensorFold-wt/v100-unique-static-maps-20261027",
+  "commit": "cff7b6b89f90b56f4cfa62211a646329697206be",
+  "base": "5ff2be14b5f5efe0c265654769dd39750b45a2ca",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/unique-static-maps-20261027/source-hold.json",
+    "sha256": "56bdfc7760abfd288b64aa0852c7c3971b8c41c03e4e2985020a34a8810847d1"
+  },
+  "source_paths": {
+    "README.md": "0bc19f73d3b5d78df282d12d5102d44d5b117d18ef2adac80180a18d3fe03e84",
+    "src/tensorfold/families/qwen4_exp/cuda/bound_graphs.py": "1a4da27dedd62ce1125bd19bfe4849aeebb234a1cbfb67c6a54e324a6a3a2bb5",
+    "tools/v100_backend_probe.py": "662d8d0cf3356d70c09a9d119ec54c17879bc6c8306afa1ff6bee15bc521cb07",
+    "tests/test_sm70_unique_piece_graphs.py": "412e06c8506ccd6042da8a3bf280d3040b24024fc7e0d19332a05cdc2270dea0",
+    "tests/test_sm70_owner_piece_adapter.py": "57828760ab1977c4e3e4e420361f017eb605e2ce423b8bec3c1204e0396f52a8",
+    "tests/test_v100_backend_probe.py": "41df7e37f286120f964cdf3280e3e34dd99f982952297ca547776f3456dc39e4",
+    "tests/test_finite_concurrency.py": "a02cbe94d6dbd3bafda57043d5dbf78e354be155489ffea1de7c0a0d8c05d014"
+  },
+  "wheel": "ed1aecf7d315554e197ace06773436e6c3651823c4257dfa1d0c9c6ce7040947",
+  "verified": {
+    "normal_installed_package_source_equal_current": 716,
+    "FD_sha256": "4a0625bdf0a494437058e0ddbc62f04d7092c8cc64178e24fc17d669d2abd984",
+    "source_current_seven_hashes": true,
+    "maps_CPU": "184PASS7.98s; exact finalwheel build/source, Ruff/pip0",
+    "tool_CPU": "235PASS13.82s on finaled1wheel; Ruff/pip/help0; priorwheel235 retained separately",
+    "local_GPUstage_files": 19,
+    "guarded_runner_exact997e_corrected": "0b8e8f9b3490a673a4a8acea3afcb5b397ff55d213e8b8e65c81e21480f50454",
+    "no_duplicate_build_suite_GPU_by_reviewer": true
+  },
+  "structural_proofs": {
+    "actual_changed_runtime_methods_only": [
+      "_buffer",
+      "_maps"
+    ],
+    "plan_invariant": "Unchanged unique _plan permits one compact segment starting0 at exactwidth1..min(depth+1,3). Thus inverse equals range(n) and canonical segment index[0], independent of canonical State-slot index or position. Tests execute actualplanner on bothroles/widths/allslots/repetition.",
+    "consumers": "_prepare uses indices as read-only index_copy input; _forward uses indices/segment_indices as read-only index_select inputs. No map writer except private initialization; tensor views retain immutable storage.",
+    "initialization_visibility": "GPU arange/zeros issued on dec.w.device currentstream; event records that explicitproducerstream after both writes. Each actual consumer stream wait_event joins initialization; no inferred CPU-notification completion or ambientdevice assumption.",
+    "reuse": "Event never re-recorded and maps never uploaded/mutated for unique path. Serialized actor and existing prior-native-reader/frame/capture stream joins retained. State reset/slotreuse changes key/frame but cannot change mapvalues.",
+    "allocation_failure": "Privatebuffer registered before map setup; available map/event owners remain journaled. Production _prepare catches failure, poisons owner/decoder and prevents partial reuse. Close/invalidation retains actual device fence before buffer/maps/events are cleared; failing fence does not silently release owners. No new unfenced storage borrow.",
+    "generic": "Replicated/multilane generic map mutation/upload/event synchronization body unchanged; still required for arbitrary canonical permutations. Event object creation moves before branch allocation but retains same owned failure/retirement protocol.",
+    "resources": "Unique GPU map extents/types unchanged, two pinned mirrors removed. Existing resident allocation accounting/graph budget/source capacity guards retained; no credit from allocator/private pools or RSS claim. Same24 full native contexts/INT8/FP32-state/TP8/MTP.7/candidate schema.",
+    "funding": "Exact closed tool662d8d0c/256KiB follower leaf carried without profilerport; full2,424,832 aggregate and25\u00d760,620,800 caller bound before finalizer/logical submissions. Existing benchmark/quality helpers unchanged."
+  },
+  "finding": {
+    "rules": [
+      "M0",
+      "U1",
+      "U2",
+      "C0"
+    ],
+    "finding": "Implicit Event.record selected ambient current device rather than explicit mapproducerdevice",
+    "disposition": "Resolved by Root with record(torch.cuda.current_stream(dec.w.device)); CPU control asserts exact producerstream received and consumer wait_event; currentwholewheel rebuilt. Earlier8d2 predecessor retained superseded."
+  },
+  "cleanup_disposition": "Selected unique specialization removes unnecessary mutable pinned mirrors and repeatedH2D/CPUwait under a proved constant-map invariant. Generic path and independent numerical/State/capacity/retirement oracles remain required. No further verified dead path or unjustified duplication in affected scope. Structural equality establishes values/dependencies, not end-to-end speed.",
+  "pending": [
+    "Root currented1TP8 exact nativeeager/graph/target output, state and prefix oracle",
+    "Actual model outputs/independent quality, full24capacity and matchedall6 performance",
+    "N1>85/N24aggregate>600/no regional regression; profile309synchronizations is candidate evidence, not measured speed gain"
+  ],
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/unique-static-maps-20261027/controls-provenance.json",
+      "sha256": "7b2215d1521ac853ffd70ca80963e7a5d94e1eb00ff26202ed478d196f25dc3e"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/unique-static-maps-20261027/controls.log",
+      "sha256": "ee6a0e90f366f5a52018274f63d5c9800a8c9e1c928ccac57ff0aa66b80c8439"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/unique-static-maps-20261027/final-wheel-tool-controls.log",
+      "sha256": "26c32edf3230e62d70a80e53eb3cb34a86013325d8eff4afe52bfdf6ed051ded"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/unique-static-maps-20261027/start.json",
+      "sha256": "86848d157b3949fd16d7277a26287e86c138e09d93b76fb11f5bd1f386f3cb86"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/unique-static-maps-20261027/exit.json",
+      "sha256": "c7b165307ae75c7bd0380ed1608dc2e6c0d2304b9e08584db7624a3962b6f5b1"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/unique-static-maps-20261027/wheel-provenance.json",
+      "sha256": "fa9d9e3f0e07e9eed01b1077f43aef52224115ebca74b31554f652ef2e51a90c"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/unique-static-maps-20261027/gpu-stage/stage-receipt.json",
+      "sha256": "92ebdf2da5fc7b1ea31964b37c1e6fbfd1ffb472cd9005277f26f03f60d05b4e"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/unique-static-maps-20261027/gpu-stage/package/run_controls.py",
+      "sha256": "0b8e8f9b3490a673a4a8acea3afcb5b397ff55d213e8b8e65c81e21480f50454"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/unique-static-maps-20261027/ledger.json",
+      "sha256": "e768ff20bfb8152eb88333203601e50932f780c4be22a857353d9367f617c2fa"
+    }
+  ]
+}

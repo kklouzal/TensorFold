@@ -1,0 +1,10 @@
+{
+  "schema": "tensorfold.d13-portable-policy-execution-binding",
+  "version": 1,
+  "source_review_sha256": "fc3d4146ad0af460d39b2a50beeec4dbfd37325dc2060a601f91fd020df3baf4",
+  "source_hold_sha256": "edcc5cefa42d73ab25c34a6cf3aee1874f6443bc4cd5d472a8a76f17a1537e62",
+  "execution_metadata_sha256": "8db0594a7886f2503e8d42cfbac9d724ca7c664a09824ac3533436e525f6a11d",
+  "disposition": "Read exact retrospective successful Docker argv/cwd/resource/environment/log/exit records for held125 +Ruff; independently matched both output log hashes. No rerun, no invented prior invocation, no source/closure artifact mutation.",
+  "no_new_source_findings": true,
+  "unchanged_limits": "Image/current-target source+combined audit and device/model/release gates remain separate."
+}

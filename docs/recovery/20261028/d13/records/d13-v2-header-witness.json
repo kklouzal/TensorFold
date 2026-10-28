@@ -1,0 +1,5 @@
+{
+  "purpose": "Independent existing selected-header consumer refuses new v2 manifest before header inventory; deliberate defect witness, not a passing component test",
+  "actual_exception": "selected foundation needs the protected v1 installation/include receipt",
+  "consumer_sha256": "82c0474855c0bfb29665021e49119ab403540e265b64d8de483a4e9615f24ca5"
+}

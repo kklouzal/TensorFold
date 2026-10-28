@@ -1,0 +1,57 @@
+{
+  "schema": "task-wide-combined-D13-enrollment-review-v1",
+  "at": "2026-10-28T13:17:38.360976+00:00",
+  "reviewer": "/root/cleanup_review",
+  "scope": "Candidate-finish catalogue enrollment on closed jointMoE+fusion; actual prefix/mask/grammar/NCCL/N1 boundaries, pool/futurehost/retirement, tools/rawledgers/counters and exactheldbinding. Actual64key/4component andclosed41b902/8412parent evidence reused; no native/math or closedjoint review restart.",
+  "source": {
+    "commit": "d5ebfce578dc8a1e3c59bdd27f3dd1558c14043f",
+    "HOLD_sha256": "49d5b242bd8fefb3d428b07cb4f697f6cd113bf6290d7b8915a9168165f7f398",
+    "APP_sha256": "fbaabca3ba2a7594c8712e0824733da035f3a3db63f454c520ecfa337010ee0d",
+    "source_paths_verified": 13,
+    "evidence_files_verified": 8,
+    "canonical_packaged_files_verified": 726,
+    "FD_sha256": "c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d",
+    "native_inputs_exact0736": 97,
+    "original_local_candidate_statements_AST_exact0736": true
+  },
+  "tool": {
+    "commit": "8d9eeaae1082645679bb02869b2d622515f4791f",
+    "HOLD_sha256": "7d615661b266fde7c5c78264a0e563f4d3a32913c12cdc029900eba98bf474ea",
+    "source_paths_verified": 5,
+    "evidence_files_verified": 3,
+    "probe_sha256": "7eb31a1b28f7aacb011086399658caf8ce9565f1d91253e2ed32e335d93b09b8",
+    "controller_sha256": "699245445f3454dd1033932c91808d4980ca8837e9da3933fa756fc2995f2dea",
+    "runtime_src_diff": []
+  },
+  "stage": {
+    "payload_files_verified": 21,
+    "manifest_sha256": "afe5e2da75bc100be65e310217acea67d823d6b86cb0c6508d48d39fe8c41f8e",
+    "payload_tar_sha256": "c3392453cfd9cfdb20a2007888df8a610a42f3dc8b28546c23e6e88dc12064dd",
+    "tar_content_exact_local": true,
+    "remote_verification_receipt_sha256": "b494a59448650a13442e292e2072001efa24733fd6323335c5cd97f1561994b5",
+    "remote_status": "Root/author actual21hash verification recorded; reviewer localreadonly only. Root82755 actualall6 separate."
+  },
+  "disposition": "FINAL_ENROLLMENT_SOURCE_AND_ALL6_ADAPTER_HELD_BINDING_REVIEW_CLOSED; NO_REMAINING_CONCRETE_FINDINGS_WITHIN_SCOPE; ACTUAL_ACCEPTANCE_AUDIT_SEPARATE",
+  "contracts_verified": [
+    "Only canonical target/MTP Buffers receive published catalogue after completecold64key prepare. Existing boundN1 warm/capture precedes enrollment; private Buffers retainNone. local_packet explicitly bypasses nested CUDAcapture tooriginalproducer; unsupportedroles/rows/maps/offsets/layouts retain originalmath after actual original-role bindings are checked.",
+    "Fresh equivalent exactprefix views are accepted using fullpointer/storage/span/shape/stride/dtype/device/autograd binding equality. Target fullhead and MTP packedprefix use actualhead.n, original vocabulary map/offset/role. Replaced/rebound original logits/cand storage orwidth/profile/head/map owners are fatal before fallback. OriginalStorage anchors retained untilpositivefence+reset; serializedquiescent actor contract remains.",
+    "MTP draft_filter still masked_fill before candidates; grammar/sampling/verification remains originalafter producer. Original collective stays after localpacket, neverinsideCandidateRegion. F32rowclone/topk/idmap/int32packet/logsumexp statements structurallyexact0736; originalindependent oracles retained.",
+    "Independent candidate-only sharedpool is distinct fromN1/MoE pools. All64graphs have onlyprivate temporary intermediates and externaloriginalpackets, no privateoutputescape/dependence, and cannot replayconcurrently. Sameoriginalservingstream orders reuse/NCCL consumers; metadata lockrelease is not GPUcompletion. Closedactual64keyleaf pool contract reused.",
+    "Engine separately sumsCandidate1GiB/rank withMoE1GiB/rank beforeauthoritativeadmit:16GiBglobal futurehost, no creditforalready-materializedmetadata. ActualCPUfundingforward test retains24nativeQ8floor. AllCandidatepool/driver/capture allocations charged once inexistingRoundGraphs correctedphase+settlement authority; allprivateinactive excluded. ExistingFusioneager2MiB/64KiB andfuture service remain.",
+    "Partialconstruction is parent-owned before prepare; all64completed/accountedphases required. Replayfailure poisons ownerand publishesfatal afterreleasinglock. Retirement closesadmission, requiresno borrower, positivelyfences thenresets allgraphs before clearingroles/storageanchors/pools; Candidateclose precedesothergraph/base-buffer release.",
+    "Generic coldwriter retains fixed-slot close/priorcause behavior, exclusivecreate and1MiB boundperfamily. SeparateMoE145 andCandidate64rawfiles+hashdescriptors preventreply inflation; observedhostgate appliedwhileencodedbufferlive. No hotIO or fabricatedwrapperincrements.",
+    "All64candidate hostcounterbins are bounded/omittedonoverflow. Terminalcoverage requiresall8hashed64-keyledgers andready/accounted-phase/futurehost summaries; N>1 bothactualtarget/MTPreplay totals positive, missingcountersrefuse; N1bypasszeroallowed. OriginalMoE/backend/MTP/GDN/nativeowner checksandfundedrecordlimits retained. Controller change isliteralconfig/candidateenv1 only, sudo postcheck afterterminal."
+  ],
+  "verification": {
+    "source": "56affectednormalinstalledPASS2.60s/Ruff/pip/protected/726FD; exactcommand/cwd/log/exit bound",
+    "tool": "123installedcontrolsPASS3.56s/Ruff including genericwriterprior-root andindependentcandidateledger/coverage tests; srcdiffemptyd5eb",
+    "parent": "Root91559actual64key and81398actual4component reused as bounded primitive/pool proof, not Engine/native24 evidence. Parentjoint76f4 source andactualaudit closed separately."
+  },
+  "cleanup": "No verified deadcode/unjustifiedduplication ornewcontract violation found in enrollment. Local producer extraction preserves originalbody; necessary fallback honors existing helper arguments. Independentoracles andhistoricalfailureevidence retained. No reviewer source edits/GPU/tests.",
+  "actual_status": "Root reports82755 all6 valid/errors0 at31.9/30.4/51.9/81.8/113.1/115.2; author actualcapacity/counter/task/prefix/nativeID/retirement audit inprogress onlocalarchive. Reviewer hasnot independently bound that rawarchive here; no P3/quality acceptance fromsource closure.",
+  "pending_acceptance": [
+    "Actualall8 native24fullQ8/futurehost16GiB/individualpool/privateinactive/coldledger andcounteraudit",
+    "Actualrequiredquality/fulltask/commonprefix/nativeIDs anddrain/retirementaudit",
+    "Broaderquality/repeatability remainsdeferrednotpassed; originalapproximationcontract notexpanded"
+  ]
+}

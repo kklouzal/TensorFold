@@ -1,0 +1,45 @@
+{
+  "schema": "tensorfold.combined-d13-review-v1",
+  "at": "2026-10-28T01:34:13.677329+00:00",
+  "status": "CLOSED boundedN1tool/currentruntime+stagebinding; diagnosticUNRUN",
+  "scope": "Reuseclosed3f460N1/v2/protectedcapture/observer and9989runtime; threefunctionOwnerGraphprofile/reportintegration+recovery/stagechangesonly within3hops",
+  "commit": "dc05c3f890d582a1fc3b7946a38cb8fdfa7850bd",
+  "hold_sha256": "00412ea964de6d830ca4c02aa8ff37e7bd100f7478bfc3dbc8858b7fee3bf6e4",
+  "runtime": "900b/deec48be/ed895717source+FDc79; srcdiffEMPTY",
+  "changed_vs3f460": [
+    "record_execution_profile",
+    "graph_execution_snapshot",
+    "worker"
+  ],
+  "dispositions": [
+    "WorkerrequestgraphsTruefornewprofile; readinessrequiresnewcaptured-native-ownercontractandactualcapturedkeys/admission, oldprofilecontractsretained.",
+    "graph_execution_snapshotadds6knownrolemanagerhits/eager_calls fromowned__dict__ only, exactnativeint0..signed63; missing/unavailableomitted, noGPU/propertyread/nofabricatedzeros. Existingcommoncounterdelta semantics unchanged.",
+    "AllN1/v2window/cancel/nativeIDs/drain, publicprotectedCUPTI28all8/clockanchors/sourcebeforeafter andbounded128bindings/134journal+1MiBglobalobserverfundingunchanged. No native/modelmath/sourceguardchange.",
+    "Recoveredtrackerincludesexactobserver+testbytes; earlieruntrackedstage/HOLDkeptwithdrawn. Currenttoolbyteexact939a; actualnormal900b161CPU/realsourceaudit/Ruff/pip/helpwithsource+commands/exits recorded. No redundantframework or deadpathfound.",
+    "Runtime900ball6regressionexplicitlyNOTSELECTED. ThisONE-N1instrumenteddiagnosticmayinvestigatechangedcosts; noall6/P3/qualityqualificationcredit or inventedPythonattributioninsidecapturedkernels."
+  ],
+  "evidence": {
+    "structural_proof_sha256": "c2ff12c96115fd5eaaa8bb608516413ef40b440c5f60a76785ef6e4b6ead7cc6",
+    "controls_provenance_sha256": "276335c22069aa19f9c1f2b80d9aefad1fe8990a2952f2b84857a44de4272e2b",
+    "stage_files": 18,
+    "stage_ready_sha256": "f8af8eabc3794e8b6d9b4705136945a26b176256c313bab5a74ae5bee2dd1e45",
+    "stage_manifest_sha256": "62da7bb29ad425308a3d9f9a27fc6f936180bc8a09ddfd337897392d4f3ef9f9",
+    "CPU": {
+      "checks": 161,
+      "seconds": 8.07,
+      "exit_code": 0,
+      "log_sha256": "f82e8eb1d9fb8dc173b88557252b95d3fafa9c821dd724209baee4e7e547d027",
+      "normal_wheel": "900bexact",
+      "Ruff": "PASS",
+      "pip": "PASS",
+      "help": "PASS",
+      "actual_installed_identity": "PASSrealnormal900bwholewheel SOURCE_FILES/archive/RECORD"
+    },
+    "reviewer": "Read/hash/ASTonly; noGPU/build/testduplication"
+  },
+  "remaining": [
+    "Rootexclusiveactualall8N1protectedcapture/rawSHA/anchors/positivegraphcounters+kernelcorrelation/retirement",
+    "ActualanalysiswithcorrectN1window/scope, notunprofiledTPS",
+    "85/600/all6nonregression/broadqualitystillopen; regressiveOwnerGraphnotpromoted"
+  ]
+}

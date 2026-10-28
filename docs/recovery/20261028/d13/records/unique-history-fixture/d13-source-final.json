@@ -1,0 +1,70 @@
+{
+  "schema": "tensorfold.d13-unique-history-produced-span-fixture-final",
+  "version": 1,
+  "status": "closed_bounded_one_fixture_source_review",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/unique-history-fixture/source-hold.json",
+    "bytes": 6319,
+    "sha256": "f4e50ccc69a66d8efc0254f79bc83d726af75dc18ed27497992101e0afcf6666"
+  },
+  "fixture": {
+    "path": "/Warehouse/TensorFold-wt/v100-portable-audit-20261026/tests/cuda/test_sm70_unique_history.py",
+    "sha256": "236bad3766954da5dbc96fc4b10c54314d2b2d8c1188f5024406de70b6ecd603",
+    "bytes": 10744
+  },
+  "scope": "Onlytests/cuda/test_sm70_unique_history.py and directState/CompactIndexer/Staging/history-owner producers<=3hops; no runtime/library/guard change or broad model audit.",
+  "review": [
+    "Originaltargetfailure correctly reflects missingcompactraw/pool production, not a runtime defect. KVappend alone cannot authorize State.commit; CPUnegative control retains the exact missing-produced-span refusal.",
+    "Helper uses public Staging.begin,resolve_indexer_coordinates,CompactIndexer.append with actualState generations,Cache.pool with original onescale/inv_freq/eps/rope parameters. Only ownedentries receive spans; no private frontier,proof,epoch or cachecounter writes.",
+    "Initial129zero raw/indexer rows match originalzero-key/query setup. Later129..132other-layer spans allow sharedcommit without replacinglayer0 actualattention-produced span or changingotherlayerKVbyte oracle.",
+    "Manualbuffers declare all coordinate/frame/preparation metadata explicitlyunbound; weights.positions=None and CPUvalidation prove no fabricated boundposition identity or weakened frame/domain guard.",
+    "Original12layer/config/KV/head/rank/group/indexer/rope recipe factored once and independently AST-equal; fullhistory/reference construction andper-layer completeKVbyte oracle unchanged.",
+    "All3originalGPUworker assertions AST-identical, entireoriginalGPUtest wrapper/decorators/timeouts unchanged. No tolerance,skip,comparison,format,resource orrequiredcandidate weakened."
+  ],
+  "verification": {
+    "fixture236bad_and_holdf4e50_match": true,
+    "all5_actual_runtime_dependency_hashes_match_current": true,
+    "original3_worker_assertions_exact": true,
+    "originalGPUwrapper_entire_AST_exact": true,
+    "originalcfg_recipe_entire_AST_exact": true,
+    "CPUactualState_indexer_cases": 16,
+    "formats": 2,
+    "ranks": 8,
+    "seconds": 0.27,
+    "GPUcases_deselected_forCPUcontrol": 2,
+    "Ruff_diffcheck": "passed",
+    "all8referenced_evidence_hashes_match": true,
+    "cpu_exit": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/unique-history-fixture/cpu-exit.json",
+      "bytes": 1332,
+      "sha256": "56385683c26eaa0d1f8a6e254e8bd02ce31138416ef7ac96d1b8231ec8264795"
+    },
+    "cpu_log": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/unique-history-fixture/cpu-controls.log",
+      "bytes": 704,
+      "sha256": "0de62123ba0300a909991b0778bf3cacb891fa32851252f666b0e093297f73cb"
+    },
+    "ruff_exit": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/unique-history-fixture/ruff-exit.json",
+      "bytes": 837,
+      "sha256": "8664161d77f374ddcd2bafcf3513f03b654b0232426b0c8b93d8e09eb6496b9a"
+    },
+    "oracle_proof": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/unique-history-fixture/oracle-preservation.json",
+      "bytes": 2502,
+      "sha256": "5fd699e5e9fbb064b87521d2335de0ad4be091f368c9059418980c2d9fdbae6b"
+    },
+    "original_fixture": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/unique-history-fixture/original-test_sm70_unique_history.py",
+      "bytes": 6750,
+      "sha256": "cd6fe9f317c7794b299b89200ed79018bf02d2c38b85c22173f67ba195b88633"
+    },
+    "no_reviewer_suite_GPU_remote_source_or_Git_actions": true
+  },
+  "findings": "No newverified issue orrevieweredit. Correctedfixture enables requiredexisting component test without modifying its runtimecontract/oracles.",
+  "limits": [
+    "CPUproducer/ownership/source proof only; actualeightV100INT8/RotorQuantattention+migration retry/result independentlyRoot-owned and not inferred.",
+    "Toycomponent is not a full12layer/modeloutput/numerics/quality/performance/capacity qualification.",
+    "OriginalactualGPUnegative remains Rootpreserved history; this reviewdoesnot relabelit aspass or requirea new image/runtime build."
+  ]
+}

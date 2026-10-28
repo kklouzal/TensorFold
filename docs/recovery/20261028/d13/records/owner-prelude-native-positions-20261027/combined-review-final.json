@@ -1,0 +1,235 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T22:22:24.226882+00:00",
+  "status": "CLOSED native prelude +actualnativeposition +scalartextprovenance source; ready Root53 currentbound numericaloracle, not performance selection",
+  "reviewer": "/root/cleanup_review",
+  "policy": "One combinedtaskwideD13; reused oldnativeguard/maps/owner/target/ModelIdentity proofs; no duplicate pair",
+  "workspace": "/Warehouse/TensorFold-wt/v100-owner-prelude-native-positions-20261027",
+  "commit": "875cf5d8142244091bd5ad64836642c11d70fb6a",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/source-hold-scalar-text.json",
+    "sha256": "0831dc022a8e4728d2b0a2722e34c231676fad597279f11f64022fb008a10d0a"
+  },
+  "wheel": {
+    "path": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "sha256": "902f943dc809263c6605abe4e522d4a9960ea8d84b8edc79410068c1f6ff0de5",
+    "bytes": 3132611
+  },
+  "verified": {
+    "current_held_source_paths": 18,
+    "held_evidence": "31/32 currenthashes verified;1stale predecessor wheel-provenance reference explicitlywithdrawn/reboundadditively, notfabricated",
+    "wholepackage": "716currentcanonicalsource +exactFD4a independentlyequal final902fZIP",
+    "normalinstalled": "1053CPU+2subtests30.18s/Ruff/pip/help; prior972 and85contextfix groups separatehistory, notsummed",
+    "native": "family.cu/family_bindings bytes exact631d/21cc. Complete oldfamilyCUDA is byteprefix49db; prep hostABIbody byteexact49db. NewAPIonlyFuncGetAttributes for existingprep_kernel beforeadmission. SM70compilelinkimportCPUrefusal77ddbound; old53GPUprimitive/toyresultnotrealbindingproof.",
+    "stage": "22localfiles/hashpins verified; guardedmainrunner/current53oracles realcontext+boundrole+scalartextpath; RootexclusiveGPU",
+    "no_reviewer_GPU_build_or_duplicate_suite": true
+  },
+  "findings": [
+    {
+      "rules": [
+        "T0",
+        "R0",
+        "Q2"
+      ],
+      "finding": "Originalprelude refused everyBoundPositionProfile although realEngine alwaysresolves/bindsone for selecteduniqueTP8",
+      "disposition": "Resolved by actualBoundPositionProfile/PositionOperands/PositionRole nativealgorithm/default/nativecontextlimits/sections/amplitude capability androleidentity; actualtargetorMTPfrequency/sections/amplitude are passed into prepandpool. Existingmedia/extended/foreignroles declinebeforefastwrites."
+    },
+    {
+      "rules": [
+        "Q0",
+        "X4",
+        "M0"
+      ],
+      "finding": "FirstnewboundTP8fixture omitted actualinputpreparationcontext requiredby realBuffers",
+      "disposition": "Resolved with realinstaller beforeallState/Buffer construction, deterministicpermodelranksharedactivationidentity andactualcomm.store, propergraph/native/target retirement thencontextclosebeforetransport. CPUrealresolve/prepare/bind+contextprepare/close andexistingframecontrols included; oldunlaunchedstagewithdrawn."
+    },
+    {
+      "rules": [
+        "P0",
+        "V1",
+        "C2"
+      ],
+      "finding": "NativePositionRole didnotprove actualissuedTHWcoordinates are scalartext; supportedcustomnonmediawindows couldsilentlyusewrongpositions",
+      "disposition": "Resolved by privateexacttextproducer frame subtype issuedonlywhen stage_text_indexer_frame constructs actualcanonicaltextcoordinates. Normalcustom/transfer windows remainordinaryframe anddeclinefastpath beforewrites; all existingframeprovenance/generation/mutation/sourcevalidators retained. No perrowGPUreadback or empiricalbounds."
+    },
+    {
+      "rules": [
+        "M1",
+        "C0",
+        "P5"
+      ],
+      "finding": "Freshsubclass construction had different splitdictgeometry despite sameobjectfields; initialsizeoforaclefailed16B",
+      "disposition": "Preservednegative. Constructpaidbaseframe thenvalidempty-slots classswitch preservesexactobject/dictfields/keys/size. Exacttwo-known-classvalidators reject arbitrarysubclasses. Added8192host/rank forone-time typemetadata beforeadmission; no free-total-hostclaim."
+    },
+    {
+      "rules": [
+        "X4",
+        "X6"
+      ],
+      "finding": "One common wheel-provenance output wasoverwritten andold3c78hashcarriedinto0831",
+      "disposition": "Additive final-provenance-binding identifiesstaleentry; final902fimmutable stagedprovenance+normalverifier/log and independentZIP/sourceproof bound. Oldmissingmanifest bytes notinvented; historicalstageproofdistinct."
+    }
+  ],
+  "contracts": {
+    "native_math": "Existingkernel retains independentRow/bulkTorchRMS geometry, FP32reductionorder,storedFP16casts,RoPEsin/cos,h32/Q8floor/clamp andstatus/firstlayer semantics. Newcaller usespositionzero forframeaddresses andoriginalStatepos_dev/mtp_pos asabsoluteRoPEdelta; actualcontextdomain<=262144 preventsnumericnarrowingoverflow. Oldhighoffset/faultnativeoraclesretained.",
+    "scratch": "Existinggated payload carved into disjointcontiguousK/Vint8,KS/VSFP16,rawIK atcapacity offsets; q/iqexisting. Actualbounds checkedbeforewrites; noextraGPUframearena. Cache.append andCompactIndexer append/pool/commit protocol unchanged; copiesonsameactorstream retirebeforegated reusedafterattention. Originalrawprojection/gatecolumns untouched.",
+    "coordinates": "Authoritativeframevalidation precedes nativeowner call. Textrecipe+state noimage/noMedia/noRopeDelta withactualboundnative role gives allTHW=absolute scalarposition. Custom/media/extended/foreign/mixed coordinates retainordinaryroute. MTP explicittransferwindows lacking canonicaltextrecipe conservativelyremainordinary, notdiscarded or reinterpreted.",
+    "ownership": "Dedicated initializedimmutablemodelzero survivesallgraph/readers throughmodelCUDAfence, neverState resetfieldborrow; prewarmonlyloads code. Stream/frame/sourcehistoryownership checks andallpeerstatus-beforefeedback retained.",
+    "resource": "Initialadmission pays512GPU/rankzero allocatorgranule and16640host/rank (existingzero+32views+8192modulemarker), no newframepayloadbudget or capacityreduction.24fullnativeQ8K/V/FP32state sameprofilecontracts anddistinctState/prefixepoch.256KiBfollowers/global2,424,832/grid60,620,800 unchanged.",
+    "observability": "Host prelude_submitted_frames provescallswereenqueued inrealmodelpath, notdevicecompletion/committedTPS. Requiredcounter>0 preventssilentwholemodelfallback."
+  },
+  "cleanup_disposition": "Reuses existingnativeprep authority/ABI/oracles ratherthan newkernelmath. Generic/unsupportedcoord andMTPtransferpaths remain required. No verifiedremainingdeadpath/unjustifiedduplicatealgorithm or necessarysafesimplification. Producerprovenance has a distinct contract from coordinatebounds; do not remove it as duplication.",
+  "candidate_dispositions": {
+    "nativeexistingprep": "admissibleprototype undernewenforceddomain; actualcurrentboundGPU/model/gainpending",
+    "direct_bool_frame_marker": "Notdeclaredinferior; extra genericframefield wouldrequireseparatecross-profilefunding/HOTevidence. Currenttype-marker keeps originalfieldgeometry withsmallfundedfixedtypecost. No P3equivalence/superiority claimedforrepresentation.",
+    "generalcustomcoordinatefusion": "Outsideproven scalartextcapability; requiredordinarypathpreserved, notclaimedunsupportedglobally"
+  },
+  "pending": [
+    "Rootcurrent902f53GPUactualboundtextnumerics/context/state/prefix/markeracceptance",
+    "ActualSC117modeloutput/quality/full24capacityandmatchedall6performance/85/600/no-regression",
+    "No old53toy/kernelresult transferredasrealEngineexecutionproof; MTPordinaryfallbackcost visibleinmeasurement",
+    "Allgeneraldesign/allocator/RSS/nearfullhistoryqualification remainsseparate"
+  ],
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-native-prelude-integration-20261027/final-command.json",
+      "sha256": "685a7593bf65a64a554a15cb4e64298de56790cfc704f9939caf93342133ae9c"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-native-prelude-integration-20261027/final/controls.log",
+      "sha256": "2e29f58e465f0f992c19b7f1e2daacfe0dd99afbda2dcc60c298b0835cc10b81"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-native-prelude-integration-20261027/final/exit.json",
+      "sha256": "81868a6e94ffc0178bf833deb1c9013d9fab4ee95ddb876a5e8ec4f1d26376d2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-native-prelude-integration-20261027/package-command.json",
+      "sha256": "e0a83c36d73c546be627b44722ba4174a9821ce45574cd7c0623b497029f1219"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-native-prelude-integration-20261027/package.log",
+      "sha256": "e53639207f4c35e3c8c150b6430b3786919b6223aa6b04074d2f979db36970e1"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-native-prelude-integration-20261027/package-exit.json",
+      "sha256": "81868a6e94ffc0178bf833deb1c9013d9fab4ee95ddb876a5e8ec4f1d26376d2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-native-prelude-integration-20261027/wheel-provenance.json",
+      "sha256": "22f7ee77728cb49f1823cf035b04a6bbf8c3b0da0667411e1ce94c3cbeeca963"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-native-prelude-integration-20261027/compile/command.json",
+      "sha256": "a5a9e741b2c78b4a21cfc6f9b12e163a9650038fc240077e68d9463e3cd2ec9f"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-native-prelude-integration-20261027/compile/compile.log",
+      "sha256": "a7ec5ad8770604d7c7fe5dd4dba8ad3daa67361a17fa58141b029803f4a81d06"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-native-prelude-integration-20261027/compile/compile-result.json",
+      "sha256": "f894c1583d2b99b8b639600205112b7510cec0c06dd781b0393d8db5366ea675"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-native-prelude-integration-20261027/compile/exit.json",
+      "sha256": "741b31cebc08328a3e6be8b11bc2930dc2eee37c453bc301768782919213b82c"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-native-prelude-integration-20261027/structural-proof.json",
+      "sha256": "2f8805904f811a14829bb42b5ead34d3716790b254ccca4c375fde5d68f1327f"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/command.json",
+      "sha256": "6abe1f04adfe40b008097afaa0d9b28d8f68b2f36f6e81cc396c9a17ddafc9a7"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/controls.log",
+      "sha256": "615d016ac3a4eb59011403dec5d6da75954199a22addf3afad4e4d6e884facba"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/exit.json",
+      "sha256": "81868a6e94ffc0178bf833deb1c9013d9fab4ee95ddb876a5e8ec4f1d26376d2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/package-command.json",
+      "sha256": "7204b11505c48f28875a338b097ec6ab15eb1c13dda9a3637a6041bc600bd89d"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/package.log",
+      "sha256": "a4a7a5e75770a90fa0f8c19dbcd9908f3af0128a4d9a4991c71b05de042d21a5"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/package-exit.json",
+      "sha256": "81868a6e94ffc0178bf833deb1c9013d9fab4ee95ddb876a5e8ec4f1d26376d2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/wheel-provenance.json",
+      "sha256": "1aee5df719eff7921e1b0476214801a90f3c7daad5f4c178d2e2e47555f134f4"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/context-fixture/command.json",
+      "sha256": "a4f2fb60e48d230d4c51654bb97bcdcdd3f5f773f92539c9b12c0c8fc77356c2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/context-fixture/controls.log",
+      "sha256": "fbaf5b79fafd7b21c7d2e8801fc444857c49d3b57c30a63df84cd179d4a55a3b"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/context-fixture/exit.json",
+      "sha256": "81868a6e94ffc0178bf833deb1c9013d9fab4ee95ddb876a5e8ec4f1d26376d2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/scalar-text/controls.log",
+      "sha256": "c2486cfa6d920497db20c576b8db86b1f234c2d05e18f0b5bb0d924c434a79e7"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/scalar-text/exit.json",
+      "sha256": "81868a6e94ffc0178bf833deb1c9013d9fab4ee95ddb876a5e8ec4f1d26376d2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/scalar-text-paid/controls.log",
+      "sha256": "f61d8bf6108b1bdfdac45cc4567fb3010b12f89f3bb0408641ee23bd14ad7a47"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/scalar-text-paid/exit.json",
+      "sha256": "56296949d3a02e635b050fd6b4762f0f0b52c23d05b925203095f7daf8e19027"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/scalar-text-final/command.json",
+      "sha256": "0a61fbb8242a8fa7e8be8a908760211d2808e84ec610528b93f97dd110d19d37"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/scalar-text-final/controls.log",
+      "sha256": "3b5f186929444cfd3291a522ca4ef52dbd9922ed2bf4590cf95f48201128940a"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/scalar-text-final/exit.json",
+      "sha256": "81868a6e94ffc0178bf833deb1c9013d9fab4ee95ddb876a5e8ec4f1d26376d2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/scalar-package-command.json",
+      "sha256": "7b7dfb1c99dc2721d5351d4b654219f67a2581dfc759dd80a415fca71c434e19"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/scalar-package.log",
+      "sha256": "0fd413eccb034771db03d9f1fa9b2856b5f87332cd296430df07a45c1b57caed"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/scalar-package-exit.json",
+      "sha256": "81868a6e94ffc0178bf833deb1c9013d9fab4ee95ddb876a5e8ec4f1d26376d2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/final-provenance-binding.json",
+      "sha256": "c8d63bfcfbf02b6a00532d65ded722d3f7decb3177a1658ca5f688192070af89"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/gpu-stage-scalar-text/package/wheel-provenance.json",
+      "sha256": "c6f52a215f7d89042abf9009244a2019ea731f17a1f5241e04ce9f19a1435ab8"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/gpu-stage-scalar-text/stage-receipt.json",
+      "sha256": "9128ecff65c69e89dee4985499ad323e6578c1a9fc1eaabe828154d67dd36986"
+    }
+  ]
+}

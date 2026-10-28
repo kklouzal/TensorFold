@@ -1,0 +1,41 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T21:41:13.181355+00:00",
+  "status": "CLOSED staticmaps fast-stage immutable binding; Root exclusive launch only",
+  "reviewer": "/root/cleanup_review",
+  "candidate": {
+    "wheel_sha256": "ed1aecf7d315554e197ace06773436e6c3651823c4257dfa1d0c9c6ce7040947",
+    "source_hold_sha256": "56bdfc7760abfd288b64aa0852c7c3971b8c41c03e4e2985020a34a8810847d1",
+    "tool_sha256": "662d8d0cf3356d70c09a9d119ec54c17879bc6c8306afa1ff6bee15bc521cb07",
+    "tool_dependencies": {
+      "tools/v100_backend_probe.py": "662d8d0cf3356d70c09a9d119ec54c17879bc6c8306afa1ff6bee15bc521cb07",
+      "tools/finite_concurrency.py": "39e77fde13ef4d0a4ef59b8e531bc32b072096d714190ef3fc7993e5eb8cbffe",
+      "tools/finite_quality.py": "c498bd046e78c34bfc7db16c7decd43ec182151b24b3e09da282b9de0dac77a3",
+      "tools/benchmark_output.py": "ce7c0a0cdf80842dc67021ddc938ae32a2c8df39dfd4f36e5f48e72149484cfa",
+      "tools/prepare_owner_trial_manifest.py": "cd90a33ff81c60cffc1f180f0a756312cec2d06b4a29d4322cf622d7ca3b2741"
+    },
+    "execution_manifest_sha256": "95336693957314d74ba50328679d2b9a37552cb3e11a891b7a4a1900503e5673",
+    "source_profile": "source-owner-target-greedy-trial",
+    "session_ceiling": 24,
+    "recovery_commit": "cff7b6b89f90b56f4cfa62211a646329697206be",
+    "triton_cache_root": "/cache/triton-owner-full8-v1",
+    "qualification": "Staticmaps privatecandidate: source/CPU/D13verified; actualTP8oracle required beforelaunch; sixNperformance/quality pending",
+    "application_commit": "cff7b6b89f90b56f4cfa62211a646329697206be"
+  },
+  "controller_sha256": "0ee6dc043dfd8ec1555b2088eeeabc54a7459638a5741ad5bfd3ecb663e2dec7",
+  "local_files_verified": 18,
+  "source_review": "cff7/56bd/ed1 source closed7bd38; Root reports actualTP8PASS19.27 separately",
+  "controller_delta": "Compared directly with funded997e37171 controller: only unique remote directory/container name and source checkpoint strings changed. No cadence/tokens/window/quality/math/admission changes.",
+  "preconditions": "Same662d funded tool/39e77,c498,ce7 helpers; profile/manifest9533/cache/24floor; controller performs immutable identity and lease checks before Root execution. No GPU launch by reviewer.",
+  "pending": "Actual fast model/all6/quality and strict performance objectives; stage is not execution/equivalence",
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/unique-static-maps-20261027/fast-stage/stage-ready.json",
+      "sha256": "b5d93787b1c74fbadd829f00682396bd35a687cff8af223af6cc99280598b464"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/unique-static-maps-20261027/fast-stage/package/stage-files.json",
+      "sha256": "d98479fcba24197845160e2ac3ed84d72de322a81688fac5a9fce88899fd9516"
+    }
+  ]
+}

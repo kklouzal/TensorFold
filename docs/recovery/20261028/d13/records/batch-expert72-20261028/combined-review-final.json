@@ -1,0 +1,57 @@
+{
+  "schema": "tensorfold.combined-d13-source-stage-review-v1",
+  "at": "2026-10-28T04:21:09.270079+00:00",
+  "reviewer": "/root/cleanup_review",
+  "commit": "b3b5e27eb9218f4f844859e3520c06cea58276d9",
+  "source_hold_sha256": "f42a6cc2219557417e90a8ffdb74010caead5ad71db718bc42072f96afd91376",
+  "wheel_sha256": "846fd2d447827e5c15143a3e65026a8ac808382ba657c8029e6a84e634d2060e",
+  "status": "BOUNDED SOURCE + CORRECTED RUNNER STAGE REVIEW CLOSED; actual43 GPU and model/P3 separately Root-owned",
+  "scope": "existing exact expert implementation selected through cap72 profile; existing kernel code residency and relevant budget/profile/epoch/factory/reporting interfaces, up to3 relationship hops; no new reviewer/remote/GPU/heavy suite",
+  "checks": {
+    "held_source_paths_hash_matched": 18,
+    "wholewheel_hash_matched": true,
+    "existing_numerical_CUDA": "complete60980 gguf_ops.cu byteprefix unchanged; only host attribute preparation appended",
+    "unchanged_runtime": "GGUF weights/dispatch implementation, Dense/padded, BatchPrelude, State, MTP, forward all byte-identical60980",
+    "code_preparation": "22 existing I32 K80 gate/up and exact-down variants; checked SM70 attributes before selector publication, no launch/model tensor allocation; dense4attribute preparation retained",
+    "policy": "explicit source-dense-owner-expert72-trial, distinct epoch/profile seal; packed_rows72 only this profile, default/reset32 preserved; expert policy+Dense/native owner contract and roles included in handshake",
+    "resource": "R72*11*K80*2=126720B activation within existingDECODE32MiB; outputs/plan paid by actual row geometry; extra8192B/rank fixed summary host term before final admission;24 full Q8 floor and recurrence unchanged",
+    "author_evidence": "281CPU plus2 actual funding cases/Ruff/normal718+FDc79/protected/SM70 compile8f8a15c6; GPUless prep refusal is not GPU numerical proof",
+    "corrected_stage_files_hash_size_matched": 20,
+    "current_runner_hold_sha256": "38910378612bad27a1d7d3b0aa4dac514c0f1741890cadfb85e89d65209c5f9e",
+    "current_fixture_hold_sha256": "aa5964538556772cd2dad58f503ee5e57a3b15c080f94c156e041f2876d9c2b0",
+    "current_manifest_sha256": "3f32786786f6831525e6a3b1cca6785af87dd55aae36d3cfbbae02800506286c",
+    "runner": "guardedmain; actual pytest hook signature pytest_runtest_logreport(self,report); require exit0/43call-passes/0skips, explicit preprobe; normalwheel/protected source closure before/after retained",
+    "runner_CPU": "author actual pytest.main+one real CPU item registration/callback count1/skip0 PASS; no repeated numerical GPU tests by reviewer"
+  },
+  "findings_dispositions": [
+    {
+      "rules": [
+        "C3",
+        "T3",
+        "X4",
+        "X12"
+      ],
+      "finding": "Initial runner plugin used an unsupported hook argument name; plugin registration failed before numerical cases.",
+      "disposition": "Corrected runner-only report signature and real registration/callback control; prior f42/3e90 failed stage/log retained unchanged; no numerical pass or test repeat credit invented."
+    },
+    {
+      "rules": [
+        "D13",
+        "S0",
+        "R0"
+      ],
+      "disposition": "No new source safety or unjustified duplication finding in cap/residency integration; existing generic/reference paths, original default cap, current candidate and independent oracles retained."
+    }
+  ],
+  "numerical_scope": [
+    "43 cases: two actual checkpoint10-expert subsets from ordinals0/2, R48/64/72, F16/F32 outputs and I32/I64 picks, real capture/dynamic IDs/shared zero/invalid NaN containment/alias rejection plus fallback96/256.",
+    "This is not a full512-bank memory/performance experiment. Selected shipping MoEBuffers picks are I32; optional I64 component coverage does not claim pre-admitted I64 code residency.",
+    "Valid finite outputs keep strict uint32 independent BMM/native comparisons; invalid IDs keep existing NaN containment without cross-runtime NaN payload assertions."
+  ],
+  "pending": [
+    "Root actual43 strict component pass and post-runtime proof",
+    "actual Engine row geometry/admission/floor24 and complete all6 FASTv2/quality/native-role/drain assessment before selection",
+    "compare against current86cb row32 development reference; N1/highN tradeoffs follow explicit24>16>8>4>2>1 ordering, Root owns acceptance",
+    "no service qualification or85/600 completion claim"
+  ]
+}

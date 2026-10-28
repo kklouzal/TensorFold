@@ -1,0 +1,41 @@
+{
+  "schema": "tensorfold.combined-d13-review-v1",
+  "at": "2026-10-28T02:53:00.728184+00:00",
+  "status": "CLOSED immutableeca6runtime+81source/stage; successorToolWIPexcluded",
+  "scope": "20taskchangedpaths/currentDense/e3edMTP/coordinate/publisher/funding/counter/fixtureintersectionswithin3hops; reuse82fde81native+ce36Denseproofs",
+  "commit": "eca6fb4eccbb0dd9c208939c40cc8e63d2e3b8f5",
+  "hold_sha256": "545f0a8738232636879a14cc35c47886ae5fc8e07fc86d3f9b1fa86c85af780e",
+  "wheel": {
+    "path": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3147974,
+    "sha256": "86cb036dbcd2068f7b86956a8c3968355aa6509862b20e64f9c2a87f61f17500"
+  },
+  "immutable_source_hash_rows": 1856,
+  "excluded_newer_working_drift": [
+    "README.md",
+    "tests/test_fast_grid.py",
+    "tools/v100_backend_probe.py"
+  ],
+  "assessment": [
+    "Nativefamily/bindings+4headersindependentlybyteexact08188/old81GPU; currentGGUF/Densemath/residencyandmtp.pybyteexactf0a/e3ed. Scalarpublicationextractionpreservesappend/indexerpool/commit/tentative/currentcoordinateborrow/rolecounterorder; scalarframe_first0andbatchfirstslicesmatchactualoutputs.",
+    "Onlylen(segments)>1batches; allorderedcompleteState/nativeboundscalartext/Q8/mediaabsent/context eligibilitybeforemutation; unsupportedwholeframedeclinesbeforewrite. PendingDMAwait/allhostfill/copy/eventrecord/kernel/publishinsamepoisontry, uncertaintyretainsowneruntilmodelCUDAfence. CanonicalGPUpathusesoneserializedactorstream, privategraphBuffersdisableunfundedextraBatchowner. ExistingState/nativeDone/statusguards unchanged.",
+    "Beforeinitialadmit3roleforecasts32/32/288payaligned512GPUdescriptor+hostpayload+16KiB/role,16KiBmodule+8KiBboundedcountermetadata; example11264GPU/84992host/rank. Existingprelude/MTPreserveandautofloor24remain. ActualnativeEvent/residency/modelcapacityrequiresownreceipts, notsizeof/RSSassertion.",
+    "Distinctprofile/Stateepoch/Densecohortseal; boundedtotal/MTPbatchoverflowflag/maxsegments\u2264actualrows, truthfulhostsubmissionsnotcompletion. ActualCOWDenseweights,parent-ownedpositioncontext,2attn/stockMTP; scalarDensecontrolvsbatchcandidate, old32assertsretained; N1batchzero then8normal96outputsrequiresMTPpositive/max8/nooverflow/fullState/prefix/transcript/nativeDensecounters.",
+    "Commonpublisher/nativeprimitivepurposejustified; no verifieddead/unjustifiedduplicatemathframework. Latestpriority24>16>8>4>2>1allowsacceptablelower-tiertradeoffs, noquality/floorloss; scalarN1retentionisthedeclaredimplementationratherthaninventedP3constraint."
+  ],
+  "evidence": {
+    "CPU": "1007existingPASS+19focusedPASS2.27/Ruff/pip/normal718+FDc79; fixturecompleteness/importfailurespreserved; no duplicate/summedoverlapclaim",
+    "structural_proof_sha256": "5d97d155240f5aff2f0cf37b9b42fa3875590e701cf69dd9420e93c98d50a2e6",
+    "focused_command_sha256": "db24fc863187f301f781743db767bf124969b1fb77726a343c8482c17edf2857",
+    "focused_exit_sha256": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17",
+    "stage_files": 28,
+    "stage_manifest_sha256": "0db2f9e74cf2d57179857269ffd08bc1eca31f90fa14128aae02b2dd4c6b22e4",
+    "Rootactual": "Current86cb81GPUALLPASS35.91/postnormal718FD reported; newcompositionresultseparatefromold81history.",
+    "reviewer": "Read/hash/sourceonly,noGPU/build/duplicatetests"
+  },
+  "remaining": [
+    "NewerToolREADME/testscoverage-gateincrementneedsownHOLD/8192actual-profilefundingfixandfocusedverification beforemodelhandoff; immutable545fnotrewritten",
+    "Live24window/physicaleventresidency/quality/nativeIDs/drain/all6tieredP3/repeatsvsselectedDense4efe",
+    "No85/600/broadquality/servicequalificationfromsourceor81component"
+  ]
+}

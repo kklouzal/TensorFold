@@ -1,0 +1,42 @@
+{
+  "schema": "task-wide-combined-D13-descriptor-host-review-v1",
+  "at": "2026-10-28T15:56:54.819270+00:00",
+  "reviewer": "/root/cleanup_review",
+  "scope": "OnlycachedNumPyint64hostmirrorview/perrowdescriptorconstruction/lifetime/metadata plusfocusedCPU/source/toolinheritedbinding onf030; no arithmetic/descriptorABI/DMA/wait/collective/static-hoist/ring/frontload change.",
+  "source": {
+    "commit": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+    "HOLD_sha256": "b5c78eb23e5d4c5111a707506a8afb5623cef81c0dd6412c70c1376786560f3a",
+    "APP_sha256": "4b0ea6b51047f93b2b973ed5a467d8c279b94f6d85c683c4258a712ff6edd99f",
+    "source_paths_verified": 2,
+    "evidence_files_verified": 11,
+    "canonical_packaged_files_verified": 727,
+    "FD_sha256": "c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d",
+    "runtime_delta": "history_owner.py only",
+    "inverse_stage_method_AST_exactf030": true
+  },
+  "stage": {
+    "payload_files_verified": 21,
+    "manifest_sha256": "0eccbb67b97c9bab46f9353de984084f2ac27f39bb2d85d3a33d879e636758c9",
+    "controller_sha256": "33f555fc102b84bbf985fa8ea82e3a603984b8932a9fd5f29d83f32916c97a2f",
+    "payload_tar_sha256": "d5bd1ca19844cb2971a52a4e57d1029f5bc84e9820e25ab8eca7db9bd82c63a1",
+    "stage_binding_proof_sha256": "d8887d851fbda23dd2aa9165114696d74eab230c1c9691268ed32e77dce31565",
+    "status": "Root21remotehash/freshresults verified and66262actualall6running; reviewerlocalreadonlybinding only. Controllerpaths/commitidentityonly; inheritedtools/options/env/rowpolicy/math exactf030."
+  },
+  "disposition": "SOURCE_AND_HELD_ALL6_STAGE_REVIEW_CLOSED; NO_REMAINING_CONCRETE_FINDINGS_WITHIN_SCOPE; PRIVATE_ALL6_GO_COMMUNICATED",
+  "contracts_verified": [
+    "ColdTensor.numpy(force=False) onexistingCPUcontiguousint64pinnedmirror createssharedstorageview, no secondpersistentdescriptorpayload. ExactSDKNumPy2.2.6/Torch04cf contract measuredsamepointer/owns_dataFalse;128Bndarray+72BdetachedbaseTensorwrappers observed, notuniversalallocatorbound. CanonicalOwnerPreparationcreatesviewbeforeauthoritativeEngineadmit (675<1256); runtimeoperatingmetadatareserves unchanged, no newcredit.",
+    "All16wordsremainPythoninteger tuple fromsamevalidatedcanonicalState/cache/controlfields. Signed64generationbounds validatedforallspansbeforewait/mutation, including2^63-1; otherboundedshape/capacity/page/rank/offset andvalidtargetpointerwords unchanged. NumPyint64assignment preservesvalidwordbits; no float/unsigned/narrowing conversion. No claimofrowatomicityonunsupportedmalformedassignment failure.",
+    "Descriptorupload.synchronize stillpositivelyretiresoldhostDMA beforeanyhostzero/write; native reusewait stillordersdeviceTable/control reuseonproducingstream. Samehost[:bucket].zero_, lane_rows.zero_/fill_, native_layer fill, perroworder, H2Dcopy, uploadEventrecord/pendingflag. Anyconstructionexception stopsbeforeH2Dpublication. No requiredwait ornewdeviceworkremoved/added.",
+    "Cachedviewreferstoexactoriginalmirror; workspaceisone-shotandhasnointernalmirrorrebind untilclose. Datawriteslegit, storage/layoutstable. ndarraybaseTensorkeepsoriginalstoragealive. closecallsoriginalpositive retire_native first; failurekeepsmirror/view/fullowner, successfulcloseclearsviewafterfence andbothpayloadowners. Originaltensor/fieldreleaseorderofallotherresourcesunchanged.",
+    "IndependentCPUoracleusesoldtorch.tensor/int64rowmaterialization forbits, target/MTP, nonzeroBase/multisegment/lane semantics, padding/zero, view reuse. Invalidstorage/generation/coverage refusesbeforewait/mutation; DMAfailurepreservesbothmirrors/view; failedclose retainsview thenpositiveclose releasesweakrefs. Shippingvalidation notweakened.",
+    "No native math, descriptor generatedschema, pointercatalogue, communication, HostD2H/H2D scheduling orprofile/epoch policychanged. PerrowTorchTensorallocation removed; NumPyinternaltemporary implementation/performance isnotassumedallocationfree. Rootactualall6neededforgain/changedbottleneck assessment."
+  ],
+  "verification": "81affectednormalinstalledPASS7.15/Ruff/pip/protected, normal727FD verifyexit0. ExactCPU/verifycommands/cwd/exits/logs andNumPyviewcontract hashbound. InverseASTreplacingonlynewrowassignmentrecoversexactstage_native_descriptors. NoGPUprimitive/broad128toolrepeatneeded; inheritedbyteexacttoolsverifiedbyhashes.",
+  "cleanup": "Newviewfieldhasrepresentation/retentionpurpose; no deadcode/unjustifiedduplication introduced. Originalindependentroworacle retained. No reviewer sourceedits/tests/GPU/remoteexecution.",
+  "actual_limits": "Root66262all6outcome/auditpending; currentsourcechangesCPUconstructiononly but sourceequivalence isnotP3equivalence. No gain/quality/native24qualification fromCPUbits orviewsharing alone.",
+  "pending": [
+    "Actualall8native24/futurehost/pools/counters/QA/prefix/nativeID/drain/retirementandtiersauditversusf030",
+    "No universalmetadata/RSS/allocator orzeroallocationclaimfrom128+72Bobservations",
+    "Broaderquality/repeatabilitydeferred,notpassed"
+  ]
+}

@@ -1,0 +1,65 @@
+{
+  "schema": "tensorfold.d13-runner-nvtx-final",
+  "version": 1,
+  "reviewer": "/root/cleanup_review",
+  "recorded_utc": "2026-10-27T09:12:49.455687+00:00",
+  "status": "closed-bounded-runtime-wrapper-and-corrected-test-prerequisite",
+  "hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/backend-probe/runner-nvtx-test-prerequisite-source-hold.json",
+    "sha256": "9acc59bab336be994da629a3a80ef56551615f77607335470eb62558e3a7bf29"
+  },
+  "source": {
+    "tools/v100_backend_probe.py": "7e182a843470d79a4ea863c11b1cdb8a6e2a70ccdaefdfec4b734ff22d4aace4",
+    "tests/test_v100_backend_probe.py": "179dc6b848522c7b74827e5b29dd4b54058be3b390da834baee53f112145ee43"
+  },
+  "scope": "Only generate_reply fixed thread NVTX ranges through actual generation/final decode, existing request/collector lifetime and direct pinned API contracts; focused tests. No package/startup/per-token instrumentation, math/dispatch/default/GPU/readback or remote changes.",
+  "contracts": [
+    "Exactly one fixed labelpush tensorfold/mtp-target or tensorfold/serial-reference surrounds generation and final decode inside RequestLimit.request.",
+    "Push exception prevents generation; request lease and collector retire. Guarded pop captures secondary failure and preserves exact generation/decode primary through existing finish_failures.",
+    "Pop-only failure is surfaced, incomplete result stays incomplete, collector and request owner retire.",
+    "Native -2 is ordinary NVTX_NO_PUSH_POP_TRACKING if no implementation pointer is installed; actual no-profiler call observation does not initialize CUDA. Do not reject normal no-tracking or claim actual capture from API completion.",
+    "Missing optional Torch now produces a fixture-local prerequisite skip before backend import; argument-only tests remain runnable. No full missing-Torch module pass is claimed."
+  ],
+  "findings": [
+    {
+      "id": "new-NVTX-fixture-required-optional-Torch",
+      "rules": [
+        "T3",
+        "Q2"
+      ],
+      "status": "fixed-and-verified",
+      "original_test": "567a2742628270d26861f73766c681b25105f9f087630783fe7442a7e1f5f9e5",
+      "proof": "Actual host has no Torch. Old actual fixture raised ModuleNotFoundError; owner current fixture raises pytest skip. Byte-for-byte removal of only fixture-local importorskip exactly recovers all original test source/assertions."
+    }
+  ],
+  "candidates": [
+    {
+      "candidate": "reuse torch.cuda.nvtx.range context manager",
+      "disposition": "constraint-ruled-out",
+      "reason": "Pinned wrapper uses unguarded finally range_pop, so pop failure would replace the exact generation primary. Custom guarded pop fulfills the required C6 propagation contract."
+    },
+    {
+      "candidate": "reject negative depth returns",
+      "disposition": "constraint-ruled-out",
+      "reason": "Would reject normal no-tracking-2 behavior. Actual capture needs Root trace evidence, not invented API validation."
+    }
+  ],
+  "pinned_API_source_sha256": {
+    "torch/cuda/nvtx.py": "88aec7cd93738cbd2ddcd6f10ed8b85ce7d430cfc47ec3c5374ba060f388fd89",
+    "torch/csrc/cuda/shared/nvtx.cpp": "fc199ed6053d288c4a01b717f75b4f743bb14b69b45a69827e991899b51f8b81",
+    "third_party/NVTX/c/include/nvtx3/nvtxDetail/nvtxImplCore.h": "55a2635a46c8770725d062dbd385446a345c28937e3c85b417e5cf9cdbaa1a38",
+    "third_party/NVTX/c/include/nvtx3/nvToolsExt.h": "6d61597ba9462689f422d7196cf8c57a75ba72fea09e970321b5bf54d2326006"
+  },
+  "verification": {
+    "current_SDK_CPU_tests": 45,
+    "seconds": 2.5,
+    "Ruff": "passed",
+    "missing_Torch": "actual fixture prerequisite skip, exit0; no full-module pass claim",
+    "evidence": "Exact owner commands and captured outputs in held packet; no reviewer suite rerun. Existing41/45 overlap, not added."
+  },
+  "remaining": [
+    "Root actual Nsight range/event capture and performance measurements.",
+    "Full HTTP/design/model/quality/capacity/P3 gates remain separate."
+  ],
+  "reviewer_actions": "Read/API/hash/byte-proof verification and earlier actual host prerequisite witness only; artifact only, no maintained source/tests/Git/GPU/remote writes."
+}

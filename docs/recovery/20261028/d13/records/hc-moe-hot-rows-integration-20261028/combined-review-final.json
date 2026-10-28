@@ -1,0 +1,73 @@
+{
+  "schema": "task-wide-combined-D13-pool-row-review-v1",
+  "at": "2026-10-28T15:26:34.754531+00:00",
+  "reviewer": "/root/cleanup_review",
+  "scope": "Hot16 row/pool factory, familyuniqueaccounting, immutablepolicy/counter/exportcoverage andexactsource/tool/all6packet only. ReuseclosedHCsourcecea1a550/adapter3b63409f andindependentpool/math evidence; no native/math/State/N1/candidate audit restart.",
+  "source": {
+    "commit": "f0300ac8166349882a3de5f82687e0bf836eeff5",
+    "HOLD_sha256": "8021154e213e1383b2a26290d14cb4d5318dfb0c80eee7cb003e3f9fc5e2979d",
+    "APP_sha256": "d8511a00e290e7e77385f9f6fa32ee1909febdbe45f23f53495ebc7bf44d745c",
+    "source_paths_verified": 5,
+    "evidence_files_verified": 8,
+    "canonical_packaged_files_verified": 727,
+    "FD_sha256": "c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d",
+    "native97_exact28ac": true,
+    "eleven_affected_parent_modules_byteexact": true,
+    "rows": [
+      4,
+      5,
+      6,
+      8,
+      9,
+      10,
+      11,
+      17,
+      18,
+      19,
+      20,
+      21,
+      22,
+      30,
+      31,
+      32
+    ]
+  },
+  "tool": {
+    "commit": "101f75eed0787145092338004d0138a58715f4d0",
+    "HOLD_sha256": "e725d014bd37dc4c8f440244f3e2de4a31459c8f62a7464ce7bc217b9e9d5f3b",
+    "source_paths_verified": 5,
+    "evidence_files_verified": 3,
+    "probe_sha256": "52323707e466851557e8a39d04825818e22fe06d81b8fe626a2e435987b8f16e",
+    "controller_sha256": "031b28bba3d39a0fd82b35933bf52e2b22e7e68e0a3eafbf4fbaae9e09a48980",
+    "runtime_src_diff": []
+  },
+  "stage": {
+    "payload_files_verified": 21,
+    "manifest_sha256": "3d4f6bedf48891682718292fe07df3bedf2f6f0ca15af51c11d79b7b1b7082d6",
+    "payload_tar_sha256": "74f7946b3ec95b36e05bbe4781e60a66b104b8be19156e0aae992da356c4fb4d",
+    "tar_content_exactlocal": true,
+    "status": "Root/authorverified21remoteentries/freshresults; reviewerlocalreadonlyhash/ZIP/tar/ASTbinding only. GOalreadycommunicatedforprivatefiniteexperiment."
+  },
+  "disposition": "HOT16_SOURCE_POOL_ROW_ACCOUNTING_AND_HELD_ALL6_ADAPTER_REVIEW_CLOSED; NO_REMAINING_CONCRETE_FINDINGS_WITHIN_SCOPE. ACTUALENGINE/P3QUALITYCAPACITYSEPARATE.",
+  "contracts_verified": [
+    "Explicitsharedpooloptin requiresselectedFusionandqualifiedHC+MoEparentflag; sameFusionnumericprofile/backend. Neworthogonalpolicy sealedallrank andinBindings. Exactfixed16rows4,5,6,8,9,10,11,17,18,19,20,21,22,30,31,32;R1..3 andotherrows declinebeforelease, originalN1participationconstraint notweakened. Disabledmodekeepsold3pools/144keys.",
+    "OneactualHCfamilyhandle in pools[shared] ispassedtoall768graphs; notduplicatedperrow. Allapp-controlledgraph-private intermediates dieintheirpurebody; originalexternalHC/MoEoperands/weights/captureRolePlansremainowned. Warmoutsidecapture onfixedside beforeeachkey; noescapingprivateoutputconsumedbyanothergraph. Sameoriginalstream andexclusive48layercycle/issuedHCcut, no partialfailedcyclereuse orconcurrentreplay.",
+    "RoundGraphs newlabel countsHCfamilyonce. ExistingduplicateIDrefusals acrossN1/HC/candidatepoolfamilies preserved; allocatorinactiveexcludedonce andnever creditedasreusable2MiBfromtestobservation. Maxphysical/general/unavailableowned phasecharge+settlement unchanged; future/native24Q8remainauthoritative.",
+    "Same1GiB/rankMoEfuturehost termpassedbeforeauthoritativeadmit, candidateadditional1GiB/rank unchanged. Controlledcataloguebounded768keys/769phases/16rowcounts; runtimehostgateobservednotvendor/transientbound. Allnewdriver/pool resourcesmustfitactualsettledbudget; no headerorCPUproxy substitutesforphysicalEngineadmission.",
+    "Factoryusesactualrow_keys forpreparation/registry/eligibility/counters/summary; fullorderedmode3cut/onceforwardHCModelBindings/stream/poison/retirement inheritedunchanged. Native/forward/HC/State/N1/MTP/candidate modulesbyteidentical28ac. No newmath,projectionhoist or collectivecapture.",
+    "Writerphasecount derivesactualApp funding(independent flag), notsecondrowpolicy. OfflinecheckerSHA-bindsboundedapplicationHOLDrows andrequires768coldkeys/769rawphases/newgraphcontract/poolpolicy,actual16bin48layercycles. Producer scansboundedrows1..32, overflowunavailable; independentcandidate64/MTP/GDN/ownerchecks retained, nofakewrappercounts.",
+    "Controlleronlypaths/basecommit/sharedENV1 andreadonlyheld-policyargumentschange; sameall6FASTv2/2048/quality/EOS/drain/native24/fullcontext/Q8/MTP2.7/startup3protocol. TerminalsudoCPUcoverage, nohotI/O orGPUlaunchbyreviewer."
+  ],
+  "evidence": {
+    "source": "70normalinstalledPASS6.21s/Ruff/pip/protected727FD; actualcoldfactoryCPUproxies verify768keys769phasesonepool, olddisabled3pools, ignoredN1rows, phaseaccountingfamilyuniqueness/crossfamilyaliasfatal.",
+    "tool": "128normalinstalledPASS6.61s/Ruff; old3rowcontrols retainedandheldpolicy/hash/newcounts checkscovered. Initialtoolfixturefailures preserved; finalsourcecontrolsbound.",
+    "pool_oracle": "Rootreports73896testonly1PASS7.52s,192graphs4R5/9/19/32x48distinctrouters+HC,384alternatingcompletecycleIQ18/20exactreplays/tails,oneactualpool;0live/2MiBreservedobservation.",
+    "scope": "Oracleworld1/syntheticTP8shapedbranch/noState/NCCL/Engine/native24/accounting/P3proof. Independentnonconcurrent/no-privateescape clausepinnedTorch04cf usedunderactualstatedconditions; no same-revisionquality claiminferred."
+  },
+  "cleanup": "No newverifieddeadcode/unjustifiedduplication. OldperRmode remainsrequiredsupportedbaseline; newrowpolicy authoritativeonceintheAppHOLD, checkernotparallelpolicyowner. No reviewer sourceedits/tests/GPU/remoteexecution.",
+  "pending": [
+    "Actualall8native24/futurehost16GiB/threefamilyunique-pools/privateinactive/cold769+64ledgers and settledbudgetaudit",
+    "Actualall6runtime16binHCcoverage/quality/fulltask/nativeID/prefix/drain/retirement/performance",
+    "No generalN1R1..3participation,universalvendorallocation,broadquality/repeatability/servicequalification fromthisreview"
+  ]
+}

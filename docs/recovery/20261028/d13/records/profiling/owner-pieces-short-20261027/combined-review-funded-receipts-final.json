@@ -1,0 +1,64 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T21:12:55.382419+00:00",
+  "status": "CLOSED future tool-only funded receipt successor; no retroactive job success",
+  "reviewer": "/root/cleanup_review",
+  "commit": "a4af1a783bcb782743572a3b78d93e3c674daae5",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/owner-pieces-short-20261027/funded-receipt-source-hold.json",
+    "sha256": "78d250ad3c2872de3b82e8f575d0134a7b2b3e1061180e5d75d3f9908cc9d779"
+  },
+  "source_paths": {
+    "README.md": "09c7b9c3c91e5d60fd9f73d4ba5c43b494be0c346b1ee3f2904828329610c458",
+    "tools/v100_backend_probe.py": "62aefaabd8fcdc354490d520dc18b5729be566dbca6ebe5e22ec0b10888d7ba4",
+    "tests/test_v100_backend_probe.py": "65cdc784c606562aaec4ed3354761c97afeb0953ca3165d104eff29cceda9d64"
+  },
+  "runtime_wheel_unchanged": "6d340a473aeb85a3cfd373d48d5f2ac8882dbdaefee9c58b40f696440beca8f7",
+  "scope": "Three tool/test/README paths since2557; no runtime package, model geometry, numerical, capture helper, source/CUPTI guard or sampler change",
+  "source_delta": "Follower cap128KiB\u2192256KiB, matching existing dynamic aggregate formula; comment and README updated, existing allowance/caller assertions adapted, actual larger-than138931B regression added. Overflow still refuses and preserves full evidence.",
+  "funding": {
+    "leader": 524288,
+    "seven_followers_each": 262144,
+    "supervisor": 65536,
+    "aggregate": 2424832,
+    "normal_onecaller_extra": 917504,
+    "existing_grid25_multiplier_total": 60620800,
+    "grid_additional": 22937600,
+    "ordering": "Existing real FiniteBackendCaller receives MAX (or25*MAX for grid) before finalizer/admission/publication. No unproved credit or post-admission guard raise."
+  },
+  "checks": {
+    "normal_installed_tool_controls": "139PASS6.43s, Ruff/help PASS; unchanged normal6d340 runtime",
+    "current_three_source_hashes": true,
+    "full_diff_reviewed": "Only constant/documentation and truthful bound expectations/regression; original capture/lifecycle helpers unchanged",
+    "no_GPU_or_duplicate_suite": "No reviewer build/large analysis/GPU run"
+  },
+  "findings": [
+    {
+      "rules": [
+        "M1",
+        "O1",
+        "A0"
+      ],
+      "finding": "Actual completed follower report138910..138931B exceeded128KiB publication cap; old Docker1 failure preserved",
+      "disposition": "New256KiB cap is accompanied by full global caller funding before admission, not truncation, evidence omission, relaxed source guard or retroactive success."
+    }
+  ],
+  "pending": [
+    "Future actual funded publication unrun; old profile remains FAILED",
+    "Any future baseline/candidate comparison must bind matching tool/funding/instrumentation and actual24capacity; no TPS/model/quality claim"
+  ],
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/owner-pieces-short-20261027/funded-receipt-controls-provenance.json",
+      "sha256": "68f9f828506ded85c521e17e3275bade9ccdbdf4701673a723a09c45be36e5bf"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/owner-pieces-short-20261027/funded-receipt-controls-final.log",
+      "sha256": "97aec9348e8f30de1239aaa96f917c6a1270034fe94f88aa0c520c17055431a6"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/owner-pieces-short-20261027/funded-receipt-source-hold-424f-preserved.json",
+      "sha256": "424f3c67760fbc144f46aa0d277ecbd09f504bc596503018b68269d3c662c517"
+    }
+  ]
+}

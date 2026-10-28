@@ -1,0 +1,58 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T21:56:12.607889+00:00",
+  "status": "CLOSED docs-only first-screen observations and immutable repeat2 stage binding",
+  "reviewer": "/root/cleanup_review",
+  "docs_commit": "870f392dadb02dff74e892573a42f0a271facf8f",
+  "README_sha256": "4838524c53d6ea1fe5a94441bb75b784a2c9dd956dab71047849e27934318107",
+  "runtime_source": "49db616b/84a8618a/HOLDe0e1; src/tests/tools byte diffempty across documentationcommits",
+  "scope": "README99e77/0ad95/870f source/image/workload/reference facts and repeat2 controller literals only; no code/numerical rereview or new tests",
+  "evidence_checks": {
+    "first_raw_packet_sha256": "740f51532bc34757e3bb8e9d6024e5e6e74ae2cbb2648913abe3e06f012fcc0b",
+    "candidate_all6_actualscreen_fields": "Independently matched root-comparison to raw perNreport: firstfive exact10s/14.0,10.3,11.7,13.3,13.6;N24invalidNULLpeak22; allownerdrains true",
+    "quality": "Actual six complete candidate texts/passfields equal Rootcomparison;4pass/2baselinefail retained. Rootcomparison explicitlyrecords same_text_all for namedreference; no broaderqualityclaim",
+    "actual_numerical_controls": "Local immutable Docker stateExit0/log70passed20.71s;716+FD4a normalinstalled/current84a recorded. No reviewerGPUexecution",
+    "repeat2": "Current17localfiles/hashpins verified; controllerdiff only outputdirectory/containername strings, sameAPP/HOLD/tool/helpers/model/quality/windows/admission. Root exclusive alreadyrunning; no sourcechange."
+  },
+  "finding": {
+    "rules": [
+      "D5",
+      "F2",
+      "S0"
+    ],
+    "finding": "Initial prose named only earlierownerpiece runtime without explicit referenceidentity",
+    "disposition": "Resolved in870f: reference266ff976/wheel6d340a47. Notebook/warmed-prefix/greedyMTP2/.7, hardware/context/Q8/ceiling24 and rawpacketidentityexplicit."
+  },
+  "evidence_limits": [
+    "Firstscreen observations are not repeatability/superiority, all6performance or85/600qualification",
+    "N24NULL is retained, not0TPS or hidden case; fullactive nearfullhistorycapacity remains unqualified",
+    "Quality4of6 includes two failures and cannot be described as a quality-pass; rawsemanticExit1 retained",
+    "Inclusiveprofiletimes/sourcecounts are not substituted for end-to-endmeasurements; no percomponentgainattribution"
+  ],
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-maps-integration-20261027/actual-fast-first/root-comparison.json",
+      "sha256": "93db660c431b9da480037f18fd8721b846992b3639a5158c75ca0be248cecad3"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-maps-integration-20261027/actual-controls/docker-state.json",
+      "sha256": "2a25127a10df2e77606c972f61b844a0d9af2d1c8f39069fde78a07bdb222836"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-maps-integration-20261027/actual-controls/full-run.log",
+      "sha256": "ec372788b04bfd2034b8dd09fad57d5aec398e2fb89c8dc0c89993989816dea2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-maps-integration-20261027/repeat2-stage/stage-ready.json",
+      "sha256": "dae241dd18f4e2ba43f8448d9eeb1f544a32c2d9ca17d79594b84c49bf48af9c"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-maps-integration-20261027/repeat2-stage/stage.stdout",
+      "sha256": "8444a2071fa3de449d3db85d36393f23c94ac483c490bee59651ae0d42c5944c"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-maps-integration-20261027/repeat2-stage/package/launch-finite.py",
+      "sha256": "d575d23f2bbcd2dfb5d9dc3887710aa09bbe35dd2f749a4f95bd325eea58443a"
+    }
+  ]
+}

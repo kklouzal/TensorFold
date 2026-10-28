@@ -1,0 +1,107 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T21:15:45.767966+00:00",
+  "status": "CLOSED bounded grouped+owner+target source composition; Root20 GPU component stage source ready, not performance selection",
+  "reviewer": "/root/cleanup_review",
+  "policy": "One combined D13 task-wide reviewer, reuse valid predecessor proofs",
+  "workspace": "/Warehouse/TensorFold-wt/v100-owner-target-grouped-20261027",
+  "commit": "ed058b1e690adbe70be04a0ed99d5d8a09457c88",
+  "base": "5ff2be14b5f5efe0c265654769dd39750b45a2ca",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-grouped-integration-20261027/source-hold.json",
+    "sha256": "58fb41c81692da745c7d80e5b2a8ceb378d6d1e74be72c5dd54a5ccddbb6c365"
+  },
+  "wheel": {
+    "path": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "sha256": "12cd3ecbecb0d6cd493a783b959f646541f86e7b625df462b6090678f391d78a",
+    "bytes": 3132987
+  },
+  "verified": {
+    "current_held_paths": 23,
+    "held_evidence_hashes": 9,
+    "package_source_files_equal_current": 717,
+    "FD_sha256": "4a0625bdf0a494437058e0ddbc62f04d7092c8cc64178e24fc17d669d2abd984",
+    "clean_source": true,
+    "normal_installed_CPU": "860PASS+14subtests23.29s, Ruff/pip/help0; final717 source/FD package proof and21 GPUfixtures collected",
+    "no_GPU_build_or_duplicate_suite_by_reviewer": true
+  },
+  "scope": "Only intersections since5ff2 owner-target and exact379af grouped supplier source within3 relation hops. No numerical/planner re-audit of unchanged suppliers.",
+  "structural_proofs": {
+    "grouped": "All seven provider/header/modern-consumer/GGUF-weight/GPU-oracle source files independently byte-exact379af, including private planner linkage and prepare_grouped nineteen-kernel residency API",
+    "target": "Both native target kernel/binding files exact5ff2; target helper only admits explicit newprofile in sameunique/native-owner graph condition",
+    "MTP": "mtp.py and Multi._mtp/_picks/_draft_all/_round whole ASTs independently exact5ff2. Grouped provider changes produced math only where R4..32 eligible; MTP proposal/confidence logic unchanged, no model-quality conclusion from source equality",
+    "graph": "Newprofile verify head keeps compact target behavior; globalN1/exactwidth1..3/source-frame/alias/reader-join guards inherited. Privategraph rows<=3 decline grouped provider and retain exact old specialization. MTP candidate packet is unchanged",
+    "producer": "forward.moe_block passes the existing actual MoEBuffers only for decode and selected grouped implementation. Prompt route unchanged. Native wrappers enforce original fixed domains/alias/capacity before writes; no new per-bank workspace or host expert count",
+    "warm": "prepare_grouped called before dispatch publication and initialmodeladmission. Actual target+MTP bank scratch warm uses existing canonical buffers only after synthetic request/State retirement, then synchronizes before public capture/use. No State/ticket manufacture",
+    "resources": "Original Plan/activation allocation geometry and counts retained. Target EOS/feedback initialfunding unchanged, newprofile included in same24floor/nativecontext/INT8/current-owner contract. CUDA code residency occurs before physical baseline; no zero-RSS/allocator credit claim",
+    "identity": "Distinct prefix/State/cohort epoch and correct profile membership; no oldprivateattention/router/padded/device-greedy readiness grant",
+    "tool": "Actual newprofile graphsTrue and matching native-owner contract, same FAST/quality helpers and source-manifest24 binding; no throughput budget alteration"
+  },
+  "cleanup_disposition": "One authoritative private integer planner and selected specialized provider remain justified; original small-row/prompt/generic recovery paths and independent native/BMM/Torch/chain oracles retained. No verified remaining dead path, unjustified duplicate model or necessary execution-neutral cleanup found. Different capability membership checks bind distinct startup/materialized/request lifetimes.",
+  "evidence_scope_precision": {
+    "TP8_grouped_fixture": "Existing small _weights_with_stock_mtp_protocol uses DenseExperts and N1 widths<=3. This case proves newprofile owner+target+graph/frame/commit/prefix wiring; it does not execute grouped GGUF R>=4 on eight ranks. Author and Root notified; do not call this full TP8 grouped-MoE arithmetic qualification.",
+    "separate_grouped_18": "Single-device actual512E/K10 and generic32 grouped banks retain independent native/BMM exactness, invalidID/alias/layout/graph/lifetime oracles. Original379af actual18 result is historical; current12cd gate pending.",
+    "required_20_stage": "18 grouped bank cases +one target logical-shard component +one actualTP8 newprofile wiring case. Guarded main runner actual __mp_main__ no-pytest-call proof bound."
+  },
+  "findings": [],
+  "pending": [
+    "Root current12cd twenty GPU component cases",
+    "Actual multi-request R4..32 grouped GGUF integration/transport/model outputs on all8 ranks and independent quality",
+    "Matched all6 regional objective N1>85/N24aggregate>600/no regional regression and24 full native windows",
+    "No gain, P3 equivalence, full-model quality or release-readiness inferred from byte reuse/CPU controls/component counts"
+  ],
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-grouped-integration-20261027/command.json",
+      "sha256": "3f4d3b2cc0d3471d8386f5bede02b0358b8ef0e086566743ea5ff3019255e204"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-grouped-integration-20261027/controls.log",
+      "sha256": "68df308409ed6a0ff0fd928730001461102040946c9a54fa4db5f73c232a1304"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-grouped-integration-20261027/exit.json",
+      "sha256": "81868a6e94ffc0178bf833deb1c9013d9fab4ee95ddb876a5e8ec4f1d26376d2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-grouped-integration-20261027/source-before.json",
+      "sha256": "805b3c0feada71a7a6b2cf0e550790908636b25d57c1f6b03302fd4043f70816"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-grouped-integration-20261027/final-package-command.json",
+      "sha256": "cf9b5d5c471dc541af8b70f9d1527d6628376701fb9639599658a4c43dc7fd56"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-grouped-integration-20261027/final-package.log",
+      "sha256": "866835ca824b609592129c0254ec969b7b22226dcd2f8cfbb326bd2ad3e5acbf"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-grouped-integration-20261027/final-package-exit.json",
+      "sha256": "124fd50cb6d223cdd18fedc166d00af7254199b6e6dedf9be82f71db87af6d01"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-grouped-integration-20261027/wheel-provenance.json",
+      "sha256": "7ea405541dca0a7886a2d58f17beecfe389a95f5b255c0553d245c76c8454e22"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-grouped-integration-20261027/structural-proof.json",
+      "sha256": "0e87b8d902f3bb569e4da0888aa1413db8d38cde9372b93d51feb21069b153ea"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-grouped-integration-20261027/gpu-stage/stage-receipt.json",
+      "sha256": "14903e902f20d867bbf75e7cf79fda0efb819330c3ec85a979dd849ab01f4844"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-grouped-integration-20261027/gpu-stage/guard-control.json",
+      "sha256": "6e01800f4db963807fa532251320cc141173f2d789830d49eca7aab017546498"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-grouped-integration-20261027/gpu-stage/package/run_controls.py",
+      "sha256": "460eecb0f5ec0b8c5fb691bbdd38548147b70974943fe115e0617ecece5f5361"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-grouped-integration-20261027/fast-stage/stage-ready.json",
+      "sha256": "4b8ff9baa9e7863df77a0465a7cab3ae989c8b415c1592ad46b9b518ee116880"
+    }
+  ]
+}

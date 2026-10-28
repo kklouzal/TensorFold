@@ -1,0 +1,69 @@
+{
+  "schema": "tensorfold.combined-d13.unique-graph-active-grid-final-v1",
+  "utc": "2026-10-27T17:43:52.974872+00:00",
+  "reviewer": "cleanup_review",
+  "role": "single taskwide combined cleanup+compliance reviewer",
+  "policy": {
+    "path": "/home/kklouzal/AGENTS.md",
+    "sha256": "f34b7836eb0703ccef0d85953d3dcd1a8fca092faaeff8815195c0c0126c435e"
+  },
+  "status": "CLOSED: bounded active-region guard source clean; resourcefix/modelP3independent",
+  "checkout": "/Warehouse/TensorFold-wt/v100-packed-graphs-active-grid-20261027",
+  "commit": "4c2f0e4d26444541c47ad2eebd5056429165cac8",
+  "base": "af902e61",
+  "hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/source-packed-graphs-trial/active-grid/source-hold.json",
+    "sha256": "c7601b6f4059fa0f8b7cfb96d2957488ac2c459e3e86291dfe2cc5a0a33b5068"
+  },
+  "held_paths": {
+    "src/tensorfold/families/qwen4_exp/cuda/bound_graphs.py": "3ef62a7fff926e8ff0cc8e177663b392c608aa8fd4fbcfd7b9d8daf8e0322a9e",
+    "tests/test_sm70_unique_piece_graphs.py": "8876a948f21878202d888b1201558a7097b1526d5dc61d65468d0af8f1b80d02",
+    "README.md": "3ea654f91229eee86eebb21ba8453252320d89f5d7e8967806492ce1bdffef5b"
+  },
+  "wheel": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/source-packed-graphs-trial/active-grid/wheels/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "sha256": "02be1c4e5771217cb4cf8d65656a6f18c785507bcd5547c931ef7ccbf8a39e9b",
+    "source_files": 715,
+    "all_source_bytes_equal": true,
+    "FD": "4a0625bdf0a494437058e0ddbc62f04d7092c8cc64178e24fc17d669d2abd984"
+  },
+  "CPU": "50normalinstalledPASS3.58s then15targetedACTUALMultiDecoder.live mixedstreams/fillingPASS2.43s (overlapnotsummed);Ruff/pip0",
+  "structural_proof": "Entire bound_graphs module AST returns exactly to af902 baseline after removing only the new unique+dec.live>1 guard; all715 package rows andFD4a independently matched.",
+  "contracts": [
+    "decline uniquegraph optional replay before privatebuffer/plan/staging if actualglobaldecoderlive>1, even oneparticipant MTPsubstep",
+    "startup0 andsinglelive1 remain eligible; actualMultiDecoder.live mixedstreams+filling controls used",
+    "replicated branch never queriesnewpolicy; no State/N/rows32/context/nativecache/reservation/budget change",
+    "ordinary eager computation/validation/status/commit path remains authoritative ondecline; no forcedsingleparticipant or droppedwork",
+    "serialized decodercoordinator preserves active catalogue during eachforward; callerrequest/cancellation doesnotmutate catalogue outsideworker",
+    "guards restrict current N1 qualification region; source gate doesnot prove concurrentP3equivalence"
+  ],
+  "findings": [],
+  "candidate_dispositions": [
+    {
+      "candidate": "globalN>1 opportunistic single-substepgraph",
+      "disposition": "blocked/pending",
+      "reason": "multi-slot/admission/lazycapture/performance qualification notestablished; notdeclaredinferiororrejected"
+    },
+    {
+      "candidate": "globalN1 graphregion guard",
+      "disposition": "selected-for-currentcontract",
+      "reason": "cheapactualCPUownership predicate prevents unqualified concurrentoptionalcapture while retaining existing eager law"
+    }
+  ],
+  "verification": "Owner50 normalcontrols andseparate15 samewheel actualMulti.live cases/Ruff/pip reused; overlapnotsummed. Reviewer hash/AST/ZIPreads only; no tests/build/GPU/remote.",
+  "evidence": {
+    "hold": "/Warehouse/TensorFold-portable-audit-20261026/source-packed-graphs-trial/active-grid/source-hold.json"
+  },
+  "pending": [
+    "Root separateactualgraphresourcebudgetfailurefix/integration",
+    "actualsameN1/2/4/8/16/24 correctness/quality/nonregression",
+    "strictN1>85 committeddecodeTPS objective"
+  ],
+  "not_claimed": [
+    "resourceOOMfixed",
+    "newdevicepass",
+    "eagerP3equivalencefromsource alone",
+    "85TPSorwholecompletion"
+  ],
+  "reviewer_mutations": "ignored combinedreviewreceipt only"
+}

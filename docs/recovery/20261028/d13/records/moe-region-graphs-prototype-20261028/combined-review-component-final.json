@@ -1,0 +1,26 @@
+{
+  "schema": "tensorfold.combined-d13-pure-moe-component-review-v1",
+  "at": "2026-10-28T08:39:00.848278+00:00",
+  "reviewer": "/root/cleanup_review",
+  "commit": "b06cb17997a444ebfb9b11d83e48be1441c9c3f1",
+  "runtime_commit": "c8c85445",
+  "HOLD_sha256": "6b993a7d953fbf9f9ba490dc750e23f5a9afbc49720c21fe95163a0dbce3b3b9",
+  "status": "SCOPED COMPONENT SOURCE/CLEANUP/COMPLIANCE +15-MANIFESTED-FILE STAGE CLOSED; serving/catalogue/capacity integration NOT reviewed/implemented bythisreceipt",
+  "source_reasoning": [
+    "Private _local_onlyTrue exits original GGUFroute/select/packed+shared experts aftery/wts/logits/picksproduction and BEFOREpartialreduction/NCCL. DefaultFalse body independentlyinverseASTexactf6. NonGGUF localrequest rejects; no State/commit/positions/collectives insidecomponent.",
+    "CallerprovidesCUDAquiescence/fixedexternalbufferANDunderlyingstorage/weightbindings untilclose; strongweights/layer/buffers/Tensorreferencesretained. Componentobjectidentitycheck alone isnot generalset_/resize protection, and no generalconcurrentcaller API promise inferred. FutureEngineintegration mustprovefullimmutablebinding/pool/order/budget ownership, notassume currentidentitycheck solvesit.",
+    "ExactR<=32 F16/currentnativepacked topology,513router/11selectedslots/dims2560/localwidth80or160; no privateRouterdifferentnumeric implementation selected. Preparationwarms actualrow onside stream, synchronizes beforecapture, publishesgraph beforeacceptedbegin, reservesoutcomeslot BEFOREbegin and attemptsEndonce onbodyfailure. Failurelatched/ownersretained; closeglobalfence/reset mustsucceed beforeclearingreferences.",
+    "Replayrequiresprepared/notfailed/sameoriginalserializedstream andoriginalexternalbufferobjects; incrementsboundedhits. Datachangesallowed in fixedstorage, not rebinding. Independentgraphpool default; no poolsharing/reorder/cancelcycleoptimization selected."
+  ],
+  "verification": [
+    "6heldsource/fixturepathhashes matched;15stagemanifest rows matchedSHA/size;guardedpytestentry/correctreporthook requires1PASS0skip,normal720FDc79/source/protectedbootstrap retained.",
+    "33authorCPU onidenticalAPPsources +7component lifecycle/faultcontrols/Ruff/pip/protected normalestablishedattention-sourceFDc79; olddifferentbuildroot653a/wheel withdrawnunrun. No duplicateCPU/GPU byreviewer.",
+    "RootactualoneGPU/R32 componentPASS5.12 withinferenceMode/currentselectedFamily/native32/packed_exact andoldrouter_NATIVE_LOGITSFalse. Exactuint8(logits,picks,wts,y) dynamicinput/tie/replaycomparisons passed. This iscapture/eagerimplementation-equivalence evidence for itsfinitecases, notindependent proof everyMoE input/numerics orTP8modelgain."
+  ],
+  "findings_disposition": "No additionalconcrete component safety/numeric/sourcecleanupfinding under documentedfixedbinding/quiescentcaller preconditions. Historicaloracles/candidates andoriginalrouted/defaultpaths preserved.",
+  "remaining": [
+    "No Engine/profilehook or pre-admissiongraphcatalogue/workspace/capacityproof yet. Actualall8capture/replayparticipation/poolaccounting, State/PLE/indexer mutableinserts and24fullQ8floor mustbeverifiedbeforemodelintegration.",
+    "Fulltargetmathpolicy remainsselectedTrue FP16reduction/Falseaccum withno newsetters; no modelqualification fromcomponent.",
+    "No P3/equivalence/superiority/85/600/service claim; Rootauthorizesnextbounded integration aftercomponentevidence."
+  ]
+}

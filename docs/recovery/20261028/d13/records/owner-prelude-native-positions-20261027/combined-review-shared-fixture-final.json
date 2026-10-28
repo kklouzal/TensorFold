@@ -1,0 +1,81 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T22:35:02.386182+00:00",
+  "status": "CLOSED test-only sharedprofilepath/parentlifetime/primary successor; readyRootcurrent53retry",
+  "reviewer": "/root/cleanup_review",
+  "commit": "734960f4c279a92c7ce008439763fde34003c827",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/source-hold-shared-primary.json",
+    "sha256": "db97d5e4785add9459d9beb00eb303361b72fdaffacf9cca8f3ad2761cc3def8"
+  },
+  "runtime_unchanged": "902f/875cf/0831 mathematical/scalartext/runtime source proof remainscf6e; no source/library/wheel rebuild",
+  "delta": "Only two testfiles since875cf; oneparentownedsharednativeconfig passedall8workers, actualresolver/binder/contextbeforeState; samefullnumeric/state/commit/prefix/fastcounteroracles and240sdeadline.",
+  "findings": [
+    {
+      "rules": [
+        "N0",
+        "U1",
+        "Q0",
+        "X4"
+      ],
+      "finding": "Rank-local temporary sourcepaths made resolvedprofiles/contextidentities different; actualall8Storemailboxwait, Rootexplicitstop, noboundTP8qualification",
+      "disposition": "Parentcreatesonesourcepath before spawn andpassesit unchangedall8; deterministicpermodelcontextsuffix usescommonprofileidentity; identitiesprinted. Actual8parallelresolvercontrol samepathagrees/differentpathnegative. Reviewer missedpathcontributioninpriorfixtureread; readinessclaimreopened955dc artifact, actualstopnegativepreserved."
+    },
+    {
+      "rules": [
+        "M0",
+        "U2",
+        "C6"
+      ],
+      "finding": "Timedjoin mayreturn before killedchildretirement, so automaticTemporaryDirectorycleanup couldremovesource whileborrowed",
+      "disposition": "Explicitmkdtempownership/noautofinalizer. Killallpossiblelivechildren, attemptjoin, requireallnotaliveandknownexitcode before rmtree. Unknown/failedstartupretainsdirectory/context with propagatedfailure forprocesscontainment. Testsdirectlyverifyunknownretainsactualpath andterminalremoves."
+    },
+    {
+      "rules": [
+        "C5",
+        "C6"
+      ],
+      "finding": "Coldcleanupoutcomecontainer/diagnosticallocationcouldreplace namedworkerprimarybeforeprimaryhelperentry",
+      "disposition": "Outer namedprimaryguard aroundentirecoldoutcome routine; secondary/preparationallocationcannotreplaceprimaryidentity. Retainedsource/context stay intrace onuncertainty. Actualhelperfaultcontrolchecksoriginalidentity/secondarycontext/sourcepath. No silent successfulcleanup or diagnostic-onlyswallowing."
+    }
+  ],
+  "checks": {
+    "CPU": "91context/frame/layout/identity/lifetime controlsPASS3.76s/Ruff/pip on same902f; prior88/90groupsvalidhistorynotadded",
+    "sourcehashes": "Allcurrentheldpathsverified; exactlytwo testdelta/currentcleancommit",
+    "oracles": "All priorGPUassertionexpressions/multiplicitiesindependentlyretained; old52numericalpasses separatefromnewboundcase",
+    "stage": "22localfilehashpinsverified; guardedspawnrunner; identical902fwheel/FD4a/runtime53oracles",
+    "no_reviewer_GPUbuild_or_duplicate_suite": true
+  },
+  "cleanup_disposition": "No verifiedremainingtasklinkeddeadpath/duplicateauthority/necessarysafesimplification. Sharedsourceowner isnewrequiredfixturelifetime, positivejoinpreservescontract; no runtimeguardweakened or deadlineexpanded.",
+  "pending": [
+    "Rootactual53retrywithall8sharedprofile/contextchannels",
+    "ActualcurrentboundTP8numerics notestablishedbyCPU/pathproof or oldstoppedrun",
+    "Modelquality, all6/85/600/full24/nearfullhistory remainRootgates"
+  ],
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/shared-source-primary/controls.log",
+      "sha256": "4702593011d943f597be1dcf5fe51decead7bccb32fd5455494e51adf3c64b14"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/shared-source-primary/command.json",
+      "sha256": "5e5a53ca0753026a6a13d0fb969ec265faf42264c348adce680c4a18796c0c8d"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/shared-source-primary/exit.json",
+      "sha256": "81868a6e94ffc0178bf833deb1c9013d9fab4ee95ddb876a5e8ec4f1d26376d2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/gpu-stage-shared-primary/stage-receipt.json",
+      "sha256": "4cc243bb1f31e8379ae8b42181cec7f0427be749eccac4077e882123df525702"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/gpu-stage-shared-primary/package/run_controls.py",
+      "sha256": "d9b495765f91b9e3c0f4c3230ca7ec9e5cdcfa4b08e71a3a746be7d0738c5d03"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-native-positions-20261027/combined-review-context-identity-reopened.json",
+      "sha256": "955dc000c4274b2d3c295e3b185ae893d8dfed01c1357a21f99e5c69bff2b7ef"
+    }
+  ]
+}

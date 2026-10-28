@@ -1,0 +1,56 @@
+{
+  "status": "bounded combined TOOL-only source review CLOSED; actual new counter deltas, model/quality and six-grid P3 remain OPEN",
+  "hold_sha256": "1804ea3fd88d587b3dc8f60c4fe07b96a0d087501d1d9f99aa4ab6ee6f74ec48",
+  "source": {
+    "tools/v100_backend_probe.py": "49c9149a7cd55650292b765b8cc4a76f3313c7cb5ce92a4713983bde46e79b04",
+    "tests/test_v100_backend_probe.py": "0565fca3be1112868b8cc46b474c0fa16e7b906ef97268f41dbf468a11c6ef68",
+    "README.md": "527fa4e876658859c8c6d12f5a294218954bb8fadc8f19868c2ddb4704eabf2b"
+  },
+  "same_application_wheel": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/source-packed-graphs-trial/graph-intent-final/wheels/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3110896,
+    "sha256": "326f8fe950bb199e507c3ce2d76a8bca0f84a8eaf9d62be4c867cea7fbdfac7e"
+  },
+  "verification": "97normalinstalledsame326ftoolcontrolsPASS3.98s/Ruff/pip0/standalonehelp0",
+  "evidence_hashes": {
+    "start.json": "d2183e389fe04b44d2c546494da5a4c12d5bf2cec4a0c453d0824f88e9f2f367",
+    "exit.json": "cdbf6bfcbfac27a54df44a7513ca19e5108e1727d1205d98cef4b6f6c1ce8cb4",
+    "controls.log": "409e8a63f3bc197eda0f0b44fe312d7dc9f888f80d73461a6ca8c8348726ed05"
+  },
+  "findings": [],
+  "independent_structural_proofs": {
+    "all_prior_tests_AST_equal": true,
+    "all_other_tool_functions_AST_equal": {
+      "digest": true,
+      "write_report": true,
+      "finish_failures": true,
+      "regular_file": true,
+      "arguments": true,
+      "installed_identity": true,
+      "record_execution_profile": true,
+      "prepared_prompt": true,
+      "check_engine": true,
+      "generate_reply": true,
+      "repeat_replies": true,
+      "run_leader": true,
+      "launch": true,
+      "main": true
+    },
+    "shared_owned_attributes_executable_body_equal": true,
+    "added_helper_docstring": "Only documentation excluded from executable-body comparison; initial strict full-body assertion correctly differed on this docstring and no code was changed.",
+    "failure_diagnostic_AST_equal_after_helper_extraction": true
+  },
+  "dispositions": {
+    "ownership": "Fixed ordinary Engine/multi/graph/bound dictionaries yield only native integer counters and len(native dict) key counts. Stable finite owner; bounded copied scalar records retain no tensors or device/frame owners.",
+    "semantics": "None for absent owner; missing fields absent; delta only common available counters. Captured-key availability separate from host cache-hit/miss counters; no invented zeros, exhaustive eager-path proof or device-completion/timing claim.",
+    "order": "Baseline after constructor warmup and before requests; final after normal complete follow/request sequence and before close. Constructor warmup excluded, every sequence request included. Common concurrency integration must bracket explicit tool warmups/cases or label included work.",
+    "cleanup": "One shared attribute helper consolidates the existing exact executable implementation. Prior budget/early-fatal/primary/cleanup/supervisor/24-slot/native guards and all old assertions retained; no new runtime math/counters/events/protocol.",
+    "evidence": "Current counter recording cannot retrospectively establish old no-counter replay. Prior actual run reported by Root remains separate source history; new actual deltas require next already-required model/comparison."
+  },
+  "historical_actual_report": "Root reports receipt629 runcomplete0/allfourreplies31IDs, MTP6.793/6.833TPS andserial5.379/5.630TPS; oldrunhasnocounterandcannotretroactivelyproveactualreplayuse. No newGPUrunbythisagent.",
+  "pending": [
+    "actual graphcounterdeltas on nextalreadyrequiredmodel/comparison; nooldmodelrerunsolelycounter",
+    "strictN1>85andgrid1/2/4/8/16/24sameNnonmeaningfulregression"
+  ],
+  "reviewer_actions": "No maintained source edits, GPU/remote actions, duplicate build or suite"
+}

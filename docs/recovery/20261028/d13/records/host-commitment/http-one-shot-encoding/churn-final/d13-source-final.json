@@ -1,0 +1,53 @@
+{
+  "schema": "tensorfold.d13-http-one-shot-churn-component-final",
+  "version": 1,
+  "reviewer": "/root/cleanup_review",
+  "recorded_utc": "2026-10-27T10:53:43.373245+00:00",
+  "status": "closed-bounded-one-shot-source-component-and-selected-duplication-cleanup",
+  "hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/http-one-shot-encoding/churn-final/source-hold.json",
+    "sha256": "31652a2cbb87cae71dae7ac88e9409217a8cde279fffd6dcdb938bc388c3adca"
+  },
+  "paths": {
+    "src/tensorfold/families/qwen4_exp/cuda/retention_resources.py": {
+      "bytes": 91827,
+      "sha256": "3c0dbbec8ff9a5d154fee5a2919291c56fff1b5d67435cacea764e0611cfde04"
+    },
+    "tests/test_json_one_shot_payload.py": {
+      "bytes": 2636,
+      "sha256": "95822248e4a8ef07bc1551781d3a33c5108a6e3182019d398316235d429b9be0"
+    }
+  },
+  "wheel": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/http-one-shot-encoding/churn-final/wheels/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3100521,
+    "sha256": "5e9c068d4fab30030198549a87667fc56a798fd64e6720cb29f8899596526914"
+  },
+  "scope": "New C one-shot row/encoder.py capability plus already-read marker/RPC table-equation cleanup only. Prior source read3179ca77 reused. No full HTTP aggregate/admission or whole runtime/RSS claim.",
+  "findings_remaining": [],
+  "candidate": {
+    "id": "D13-duplicate-churn-table-equation",
+    "status": "selected-shared-authority",
+    "implementation": "_churn_dictionary_table(count, entry_bytes) now serves marker general tables, leader RPC maps/Stream metadata and source-record tables. One-shot depth0 remains the empty-map special case.",
+    "proof": "Same selected combined-table calculate_log2_keysize small-size OR/capacity/index-width/header/entry calculation; explicit entry-byte arguments equal prior entry_pointer_count*pointer. Python integer arithmetic is exact; no rounding/range/cap change. Fresh monotone and cache-wrapper equations are untouched. No extra global state/validation/registry, runtime JSON serializer or arithmetic performance claim."
+  },
+  "preserved_contracts": [
+    "C marker depth distinct from Python generator recursion, exact unsorted native containers/no foreign callbacks, general churn old/new storage and one temporary address, ASCII writer/escaped chunk and UTF8 conversion phases.",
+    "Actual captured encoder.py role is mandatory; old policy record cannot grant this new row. Source/result/native runtime/C-stack/allocator/RSS owners remain separate.",
+    "All23 prior RPC returned fields exactly match the recorded baseline140958149829 at the captured inputs; this is current normal-installed output vs historical JSON, not a fresh old-function execution."
+  ],
+  "checks": {
+    "normalinstalled": 71,
+    "seconds": 3.7,
+    "all23priorRPCfields_identical": true,
+    "ruff": 0,
+    "pipcheck": 0
+  },
+  "history": "Predecessorb96d and71 controls remain unchanged. Current component5e9c wheel has exactFD4a and source3c0d; later authorized Segment/encode/frontend source changes are a distinct pending coherent integration, not retrospectively declared tested on this component wheel.",
+  "separate_current_integration": "Native reports integrated96779/180 controls for these same held hunk bytes plus new components; not independently promoted by this component closure.",
+  "remaining": [
+    "PostOOM source retention and final wrapper/source/HTTP aggregate/actual host admission.",
+    "Independent native runtime/library workspace, allocator/C-stack/RSS/kernel/device/performance qualifications."
+  ],
+  "reviewer_actions": "Existing source read and narrow cleanup/hash/wheel binding only; no source/tests/build/GPU/remote/Git mutation or duplicate suite."
+}

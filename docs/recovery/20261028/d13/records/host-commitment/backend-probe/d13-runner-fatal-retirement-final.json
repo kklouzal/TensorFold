@@ -1,0 +1,59 @@
+{
+  "schema": "tensorfold.d13-finite-runner-final",
+  "version": 1,
+  "reviewer": "/root/cleanup_review",
+  "recorded_utc": "2026-10-27T07:52:14.274269+00:00",
+  "status": "closed-scoped-current-runner-source-and-CPU-controls",
+  "hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/backend-probe/runner-fatal-retirement-source-hold.json",
+    "sha256": "8f8f847a1c14db8a8e9188c8a144b7eeff2da563b742fd41fbb421afa0ea72c5"
+  },
+  "source": {
+    "tools/v100_backend_probe.py": "562599a437f30eee44c32c59368aec5c4b35769d624df41fe3d28e44ef1696d5",
+    "tests/test_v100_backend_probe.py": "3a20e1571ecfecba8d3f38656d4e2b6a0bebd022ad48c0be144f011090e09b41"
+  },
+  "scope": "Only finite diagnostic worker/launcher error reporting, independent engine/signal/pipe retirement and Root-authorized bounded first-fatal report policy, plus direct supervise contract and focused tests. No package/host-equation/model/GPU/remote/Git changes.",
+  "findings": [
+    {
+      "id": "D13-runner-diagnostic-before-retirement",
+      "rules": [
+        "C6",
+        "M0",
+        "O0"
+      ],
+      "status": "remediated",
+      "historical_witness": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/finite-backend/d13-cleanup-witness.json",
+      "resolution": "Worker engine.close is in unconditional finally; message/traceback/report creation and final summary are guarded, with preallocated secondary error slots. Launcher diagnostics cannot bypass signal/FD retirement."
+    },
+    {
+      "id": "D13-runner-cleanup-iterator-allocation",
+      "rules": [
+        "C6",
+        "M0",
+        "D13"
+      ],
+      "status": "remediated-in-next-snapshot",
+      "historical_witness": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/finite-backend/d13-cleanup-iterator-witness.json",
+      "resolution": "Exact held6fd constructor failure originally left two owned real pipe FDs open. Current562599 has four explicit guarded retirement operations, without cleanup enumerate/tuple construction; launcher stop/failure closures precede pipe acquisition inside protected try. Current regression refuses any cleanup-time enumerate after supervision."
+    }
+  ],
+  "fatal_policy": [
+    "First observed pipe bytes latch fatal state/time and a bounded notification report; later bytes update observation but do not reset the first deadline.",
+    "Failure probe permits30s of reporting by already-failing owned ranks, then requests containment. Explicit stop/overall monotonic deadline override immediately at the probe.",
+    "Underlying supervise nonzero child exits still trigger its normal owned group retirement; no retry, recovery or return to model work. Its independent30s teardown grace is unchanged. The two phases are not falsely claimed to share one30s wall window.",
+    "Final probe consumes pending bytes after normal supervisor return; any fatal notification/stop/deadline forces nonzero even if child result was0.",
+    "Native cohort poison and original primary/secondary ownership remain unchanged."
+  ],
+  "verification": {
+    "cases": 38,
+    "seconds": 0.7,
+    "exit": 0,
+    "ruff_exit": 0,
+    "provenance": "Exact argv and captured tool outputs in held owner packet. Real local pipes/signals with only model/process boundaries substituted; no broad suite repeated by reviewer."
+  },
+  "history": "Immutable live finite-f17 run used exact6fd tool. This next-snapshot562599 closure does not relabel6fd/33 rendering-only evidence or discard unhit-path numerical evidence. Current source changes are tool/test only.",
+  "separate_open_gates": [
+    "Actual new-tool target execution/report behavior; no target pass implied.",
+    "Finite real physical admission/output/model/math/quality/performance and complete HTTP/design objective remain Root qualification scopes."
+  ]
+}

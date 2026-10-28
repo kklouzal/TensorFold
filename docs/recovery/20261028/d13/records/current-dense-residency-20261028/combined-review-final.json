@@ -1,0 +1,86 @@
+{
+  "schema": "tensorfold.combined-d13-review-v1",
+  "at": "2026-10-28T00:25:16.073725+00:00",
+  "status": "CLOSED scoped currentDense source+GPUstage review; actualGPU/model pending",
+  "scope": "20changedmaintainedpaths froma7b1, prior7459guardedDensewrapper reuse plus currentprofile/realboundfixture/Enginefunding/caller/LAZYresidencyAPI intersections within3hops; no native-math re-audit or repeatedsuites",
+  "commit": "e20bfe2549b3320a2e45322f35a1954ef9c94941",
+  "hold_sha256": "1c887503e4b3de1c5ac33ba6ee5deed163923e998997f1290b2f38ec618f33e7",
+  "wheel": {
+    "path": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3142884,
+    "sha256": "4efee794469bade8b86bf964cca1fd72dd33e98ec4d4228baa5e201747fde2e9"
+  },
+  "stage_ready_sha256": "380a7c13cb9ee9529ad5c70178c3e2f55c258ebf2a0de169da697bada12aca2d",
+  "stage_manifest_sha256": "5a5731515d0884f943630825abdaa6a4c5ca03141ca8183796e84d2cf095cc2a",
+  "stage_files": 27,
+  "dispositions": [
+    {
+      "rules": [
+        "P0",
+        "P1",
+        "C1",
+        "C4",
+        "C5",
+        "N1"
+      ],
+      "status": "clean",
+      "proof": "GGUFDense.matmul/_native32_eligible/matmul_native32/matmul_reference ASTsexactprior7459. OnlypositiveR<=32FP16CUDAinference-compatible tensors/nativeintegerdims+supportedstrides/dtypes useexistingfixedM32helper. Genericlayouts/invalidshapes/aliases/autograd/inference-output-mutation errors routeoriginalreference; rawoutwriteversion advancedonce via supportedincrement_version, existingATenmutationnotdoublecounted. No changedFMA/reduction/dtype/operatorbody."
+    },
+    {
+      "rules": [
+        "T0",
+        "S1",
+        "M1",
+        "C3"
+      ],
+      "status": "clean afterauthorresidencycorrection",
+      "proof": "Newappend-only prepare_dense32 checksactualSM70 and4CUDArtcudaFuncGetAttributes(pad+threecopyvariants) beforeselectorpublication/initialphysicaladmission. No tensor/slab/kernellaunch, oldCUDAfilewholebytesexactprefix andoldCPPinterfacesunchanged. Existingprepared/temporaryslabgeometry unchanged; GPU/allocatorresidencyactualbaseline muststillbeobservedontarget."
+    },
+    {
+      "rules": [
+        "A0",
+        "M3",
+        "Q2"
+      ],
+      "status": "clean",
+      "proof": "Distinctprivateprofile/prefix/Stateepoch, actualGGUFDense.implementation sealedinexisting_same_settings onlynewprofile. Oldprofilepacketanddefaultreference remainunchanged; currentprelude/MTProles/startup/counters/nativeN1graph/floor24/logical262144+Q8/FP32State preserved. Allothermath/State/caches/issuedcoordinate/helperbytes retaincurrentbase."
+    },
+    {
+      "rules": [
+        "Q0",
+        "Q3",
+        "Q4",
+        "X12"
+      ],
+      "status": "clean",
+      "proof": "Currentbound-denseTP8fixture convertsactualtargetLinear adapters torealGGUFDense onbothsides, memoizationpreserveshead/repeatedlayeraliases/tensors/embed/stockMTP. Serializeddispatchkeepsreferencecontrolsreference andcandidateDense native; positivecapturedandpostcaptureactualdense32callsrequired. Oldstate/output/draft/prefix/methodoracles retained. LAZYqueryprobe runsbeforetensorwarm/pytestcollection andspawnmain-guarded. OriginaloptionalPADDEDTrueMTPfailure431 remainsrecorded, privateprofileusesPADDEDFalse; no tolerance/guardweakening."
+    },
+    {
+      "rules": [
+        "D13",
+        "D17",
+        "S0",
+        "P5"
+      ],
+      "status": "clean",
+      "proof": "Guardedwrappers preserve supportedgenericdomains andspecializeonlyrecordedcandidate; no redundant mathimplementation or newpersistentweightmirror. Pre-admissionresidencyAPI has explicitlifecyclepurpose. No verifieddeadorunjustifiedduplication; oldactual55Dense is priorcomponenthistory, notcurrentmodelgain. Currentall6matchedmeasurements/quality/bottleneckneededbeforeselection."
+    }
+  ],
+  "evidence": {
+    "source_binding": "1853 heldhashrowschecked without expanding sourceaudit beyondchangedpaths;27stagedfileshash+size exact",
+    "CPU": "860+11subtests/Ruff/pip/normal717source+FDc79; exactprimary/compilelogs+command/exits bound",
+    "CPU_command_sha256": "b5bc57399552c04d46eadeaa862626d1f1a705b6434546f387d415c9f3ae2849",
+    "CPU_exit_sha256": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17",
+    "compile_command_sha256": "53254f246fd39d758786c81300acadb5925aa61e937957cb7efef1b6e25b7010",
+    "compile_exit_sha256": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17",
+    "structural_proof_sha256": "b80e6250705893be3092f7ff11ca019d583f0de0cb697bcdb78b74c2f623d7d1",
+    "compile_refusal_sha256": "225b322c98488c31a50ad3420cf3b1d6f806543eb554db43e3334e1f7992297b",
+    "compile": "ExplicitSM70compile/link/import DSO0d09; targetdiscoverysuppliedforCPU-onlycompile, actualpreparecorrectlyrefusedinsufficientdriver; noGPUresidencyclaim",
+    "reviewer": "Source/hash/ASTread only; noGPU/build/testduplication"
+  },
+  "remaining": [
+    "RootactualLAZYpre-admissionresidency+55Dense/prepared/53currentprelude+realboundDenseTP8oracles",
+    "Actualfull6modelcorrectness/quality/physicalcapacity/liveadmission andmatchedperformance/repeats",
+    "No85/600/superiority/releasequalification fromCPU/oldcomponent/sourceproof"
+  ]
+}

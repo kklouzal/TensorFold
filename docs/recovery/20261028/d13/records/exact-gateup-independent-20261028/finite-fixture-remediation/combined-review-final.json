@@ -1,0 +1,53 @@
+{
+  "schema": "tensorfold.combined-d13-review-v1",
+  "at": "2026-10-28T02:16:24.406393+00:00",
+  "status": "CLOSED finitefixturepremise+CLIcorrection+29filestage; model/P3qualificationseparate",
+  "scope": "Fivefinitefixture/generator/tests/docpaths andlaterCLI-onlygenerator/outputselectiontests,directpinnedGGMLCsource/strictprojectionoracles within3hops; APP/nativeuntouched",
+  "finite_source": "80f2402d/7990d071",
+  "CLI_source": "a5fd784f/c5604b3b",
+  "APP": "bac5/4883/717source+FDc79 unchanged",
+  "findings": [
+    {
+      "rules": [
+        "N1",
+        "Q3",
+        "X12"
+      ],
+      "finding": "OriginalnewCPUlaneoracleclaimedfiniteHalfproductsbutusedfullFP32wirecorpuswith\u00b165504globalscales; Halfconversionoverflowed, soCPU/GPU NaNpayload/sign differedbeforecandidateevaluation. Original394PASS/1FAIL/155unrun preserved.",
+      "disposition": "Separatefiniteprojectioncorpus generatedbyunmodifiedhashpinnedGGMLC; only2globalHalfscalebytes/blockchanged, quant/sign/local-scalecodebookbytesunchanged. Full25bbcorpusandCPUoverflowreproducerretained. Strictuint32comparisonsnotmasked/tolerated; finiteinput/coeff/partialassertsadded."
+    },
+    {
+      "rules": [
+        "P0",
+        "X6",
+        "X12",
+        "Q0"
+      ],
+      "finding": "NewfiniteCLIflagwithoutoutputdefaultedtolegacyfullcorpuspath, allowingwrongmodeoverwrite.",
+      "disposition": "Mode-specificdefaultnowseparateprojectionfile, legacydefaultunchanged, explicitoverridepreserved. ActualdryrunCLIcontrolsverifybothdefaults/overrideandbothcorpusSHAunchanged;24CPU/Ruff. OnlymainCLIchanged; generateASTunchanged, alreadyfrozennumericalstageunchanged."
+    }
+  ],
+  "domain_proof": [
+    "Performatmaxquantmultipliers4096/1976.25/7905/988.125/4064/2derivedfrompinnedCinteger/grid/localscales, common8192 times|d|<=2^-20 boundscoeff<=2^-7; testchecksallretainedCexpectedvaluesandsamewirecodes. Halfroundingcannotexceedrepresentable2^-7bound.",
+    "FiniteHalfinput|x|<=1 andK2560 implysumabsoluteproducts<=20; FP32FMA/local80step+5shuffle roundingstays<21. Half\u00d7halfproductisexactFP32withthisrange; finiteCPUaddchainpremiseholds. SwiGLUactivation<441 andK80down<276 (existingIQ4NLdownlooser<4500) keepFP16finite. GPUassertionsindependentlycheckdomainandactualpartials.",
+    "ExpectedbitscomefromindependentGGMLCdequantizers+Halfconversion; noTensorFolddecoder/codebookproducesoracle. Productiondecodecomparisonisboundarycheckonly. Defaultfullraw/bitsregenandfinitecorpusCregenweremeasuredexactat80f; laterCLIself-fileprovenancehashcanchange, notmisrepresentedascorrecteddataregeneration."
+  ],
+  "evidence": {
+    "reference_C_and_header_SHA_verified": true,
+    "normal_CPU": "21CPU/Ruff+549collection,24CLIchecks/Ruff; no additionalreviewerruns",
+    "CPU_command_sha256": "a9f787f3850d54cc31c2e2daee45df942a026fec80a2469453ae2672815dbc36",
+    "regeneration_command_sha256": "a8ae03e63c79c474b6fd92e4be86af9bf8221b3f8b6a9323422cb7d845e45451",
+    "regeneration_log_sha256": "4d0f75b1b505ed6fe83e3765bf3671a4a6ecb6e25ac84dc3cd9327345582313c",
+    "CLI_HOLD_sha256": "c5604b3bbbb3e94159baab5df9efc6c10421933b191bdb2d19e7df2fc5dcf95b",
+    "stage_files": 29,
+    "stage_manifest_sha256": "20a98020e30e12da66c3882b3bb5f77fa9c1a593666923ec1bc584bc333e3a21",
+    "root_actual": "Corrected7990/011a29filestageRoot57511 ALL549PASS0skip37.20s/exit0; APPbac5unchanged. Root-ownedactualevidence, no reviewerGPU.",
+    "reviewer": "Read/hash/AST/sourceproofonly,noGPU/Docker/heavyremote/duplicatebaselinechecks"
+  },
+  "cleanup": "Onegenerator/scaleflagreusespinnedreferencealgorithm; separateimmutablefull/finitecorpusrolesjustifiedbydifferentnumericdomains. Originalexceptionalcase/historyretained, no dead/unjustifiedduplicatemathimplementation.",
+  "remaining": [
+    "Actualprivatefullmodel/24windowcapacity/all6quality/concurrentP3andmatchedcurrentDense4efe+historical5635reference;549iscomponentadmissibilityonly",
+    "GenericI32stack64riskandrealruntimeallocationfootprintnotqualifiedbycompileorfinitefixturealone",
+    "No85/600/broadquality/servicequalification; sourcepassdoesnotselectcandidate"
+  ]
+}

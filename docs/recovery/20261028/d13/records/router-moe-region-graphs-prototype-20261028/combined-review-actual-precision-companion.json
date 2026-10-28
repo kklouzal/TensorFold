@@ -1,0 +1,10 @@
+{
+  "schema": "tensorfold.combined-d13-Root-actual-component-precision-companion-v1",
+  "at": "2026-10-28T09:01:05.555871+00:00",
+  "reviewer": "/root/cleanup_review",
+  "source_review_sha256": "7dcd8f7c85a70037aefba7a004fc55609ebdaef69fa6c39c666321b3d7564d3c",
+  "immutable_source": "800396fa/APP79796625/HOLD12f4",
+  "actual": "Root36401exit0 targetFP16+MTPFP32 bothPASS5.77, selectedbatchedRoutercomponent; noGPUbyreviewer",
+  "credit": "Closesfinitecomponentprecisioncases missingold1e6cF32reference. Doesnot establishEngine/catalogue/poolallocation/coldreadiness/storagebinding enforcement/all8modelintegration orP3.",
+  "next": "RootauthorizedboundedEngine R30/31/32 integration, mandatoryD13 beforequalification; no unrelatedscope orduplicatecompletednative/mathreview."
+}

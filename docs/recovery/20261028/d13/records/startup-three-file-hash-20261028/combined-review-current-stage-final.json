@@ -1,0 +1,20 @@
+{
+  "at": "2026-10-28T01:40:26.641219+00:00",
+  "status": "CLOSED metadata-only currenta2a5stagebinding",
+  "source_review": "ae4f346298772b6362dc388edf1a58b85a97cca3718d8b5b897af64e8be4f301",
+  "source": "8840939d/478ad0/a2a591717+FDc79",
+  "stage_files": [
+    {
+      "folder": "gpu-stage",
+      "files": 22,
+      "manifest_sha256": "ecd9e9dc095100df0c30a09a4c100a043ce2248d606c9ad8c940af51e819546b"
+    },
+    {
+      "folder": "fast-stage",
+      "files": 19,
+      "manifest_sha256": "3ab74a0f8cf15b8c3a76650020a64235bbbbe333326bb2c90d6fc441fd522283"
+    }
+  ],
+  "disposition": "Current22component+19FASTfilesexact; guarded53canonicalMTP/preludeoracles retainallasserts. FASTcontrollerexplicitoverlap+startup-content-workers3 beforeall8spawn, v2/2048/full24/context/quality/helpers unchanged; global226504704startupfunding recorded. Originald817stageswithdrawn, no currentGPUexecutioninferred.",
+  "remaining": "Root53component andactualworkers3startup/hash-authority/stack/resource/fullmodel/all6/P3evidence unrun; componentGPUfixturedoesnotexerciseEngineworkers3startup. No freshreview/test/build/GPUgateintroduced."
+}

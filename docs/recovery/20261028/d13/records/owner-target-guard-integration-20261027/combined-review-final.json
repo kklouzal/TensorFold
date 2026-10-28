@@ -1,0 +1,122 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T21:37:19.591736+00:00",
+  "status": "CLOSED bounded nativeguard source cleanup and compliance; actual69guard+TP8 oracle pending",
+  "reviewer": "/root/cleanup_review",
+  "policy": "One task-wide combined D13, prior owner/target/funding proofs reused",
+  "workspace": "/Warehouse/TensorFold-wt/v100-owner-target-guard-20261027",
+  "commit": "815f4ef9c130dceb720874430aa45f34181cff63",
+  "base": "5ff2be14b5f5efe0c265654769dd39750b45a2ca",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/source-hold.json",
+    "sha256": "13f43ce9ba171312b2f64da17da3028f1ff0a722c049dd5746d06762c8d03d51"
+  },
+  "wheel": {
+    "path": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "sha256": "27ceb55ecff30f5608cd6d08f944a6ccf3b5aadbfac17c3d50e78a9f0c65fe0b",
+    "bytes": 3129699
+  },
+  "verified": {
+    "current_held_paths": 19,
+    "held_evidence_hashes": 12,
+    "current_package_source_equal_wheel": 716,
+    "FD_sha256": "4a0625bdf0a494437058e0ddbc62f04d7092c8cc64178e24fc17d669d2abd984",
+    "normal_installed_CPU": "872PASS+2subtests26.59s, Ruff/pip/help passed;72GPUfixtures collection only",
+    "SM70_native_compile": "compile/link/import/actualCPUrefusal PASS, currentnative source hashes bound; DSOab0cbfac/36registers/no spills is not speed evidence",
+    "no_duplicate_suite_build_GPU_by_reviewer": true
+  },
+  "proofs": {
+    "numeric_guard": "Reuses exact existing guarded(): finite and abs<=2^30 retains value, invalid becomes+0, onlylive invalid rows OR faultflags and first-layer CAS. Half roundtrip preserves validhalf bits/signedzero; FP32 output direct. StatusNone remains original input passthrough with no output write. ActualGPUexceptional/subnormal/threshold/firstfault graph oracles remain required.",
+    "native_boundary": "SM70/rank2or3/F16orF32/exactoutput shape/dtype/device, bounded positive inner geometry, disjoint rows/heads, int64addressable extents, status/live schema and read/write/status/live alias relations checked before launch. Kernel row index fits int; validated domain supplies contiguous inner dimension and disjoint actor output.",
+    "buffers": "Existing q/iq and nonoverlapping gated key[0,D),value[D,2D),indexkey[2D,2D+I) slices only. ActualSC117 local3heads*256 gated768 coversrequired640. Raw projection/gate columns unchanged. Separate segment row ranges preserve ownership.",
+    "lifetimes": "RMS/RoPE consumers and subsequent q/iq overwrites occur on same actorstream. Key/value Q8 encode creates its existing payloads before cache use; CompactIndexer.append entry.begin enqueues a copy into independent staging span before later gated overwrite, with existing staging/cache event discipline. No retained indexer cache aliases gated scratch. Existing prior-native-reader joins and wholemodel fence remain.",
+    "IQ_none": "When statusNone guard does not produce supplied IQout, caller explicitly copies prepared IQ; both statusNone/statusPresent actualprepare CPU oracles retained.",
+    "math_unchanged": "Existing RMS/RoPE/h32/Q8rounding/scale guards left in original order; target native bytes and mtp.py exact5ff2; Multi._round/_mtp/_picks/_draft_all ASTs independently exact5ff2. No MTPconfidence.7 or model/context change.",
+    "preparation": "One new kernel residency prepare_value_guard via FuncGetAttributes before selector/model-admission publication; no data/workspace/kernel launch in residency API. NativeCUDA36regs report not a performance claim.",
+    "policy": "Only explicitnewowner-target-guard profile sets nativeguard flag, same issued nativeowner/full8/globalN1 graph profile/INT8 gpuindexer and24floor with distinctState/prefix/cohortepoch. Invalid native submissions propagate; no silent optional fallback.",
+    "resource": "No added GPUdataarena. Existing q/iq/gated payload is reused; wrapper/view metadata and originalRMS/RoPE/h32/Q8 temporary work remain, so no claim of allocation-free whole preparation or zero-host/RSS cost. Same full native262144 context/INT8/FP32state.",
+    "funding": "Closed3b649256KiB receipt leaf integrated; normal2,424,832/global grid60,620,800 before finalizer/logical request submission. Old failure history and genericdefault API preserved."
+  },
+  "cleanup_disposition": "One reused native scalar guard authority and retained original Torch/reference operation support different required routes/oracles. No verified dead code, unjustified duplicate model or necessary safe cleanup identified. Default/reference source now has optional-output dispatch overhead; do not call its HOT performance structurally equivalent or adopt without affected-region evidence.",
+  "findings": [],
+  "pending": [
+    "Root actual69adversarial GPU guard cases and TP8guard frame/output/commit/prefix oracle",
+    "Actual complete model/quality and all6 matchedN1/2/4/8/16/24 measurements before selection",
+    "StrictN1>85/N24aggregate>600/no regional regression/full24 capacity",
+    "Potential fullprelude fusion is a separate candidate, not proven by this guard-only source"
+  ],
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/final-command.json",
+      "sha256": "de9a00f404f3915126f660d89aac59312d5d2e55c0383edea7f19e4ff7e5220f"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/final/controls.log",
+      "sha256": "808fa9fb59d88bc18768617d3b1cd5a04739f815226025baf91321a0ee6b24db"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/final/exit.json",
+      "sha256": "81868a6e94ffc0178bf833deb1c9013d9fab4ee95ddb876a5e8ec4f1d26376d2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/final-package-command.json",
+      "sha256": "79b7dfd03a75ad44c57ae1a8109e46f082d3e688287d6ebaeed62da5b4830164"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/final-package.log",
+      "sha256": "e21f0e5980ca263e840f8ceef928becfff62cdace1115788249c21a6208bf9ba"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/final-package-exit.json",
+      "sha256": "81868a6e94ffc0178bf833deb1c9013d9fab4ee95ddb876a5e8ec4f1d26376d2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/wheel-provenance.json",
+      "sha256": "e6c503bc889c823536fd94f40f1dcbf4630d0d0024ceecd7a502813921ee03d7"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/compile/command.json",
+      "sha256": "c189718bed2698e5fb1db49365eead337441b0d5bfe7920bc923dbb09763ce72"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/compile/compile.log",
+      "sha256": "c74a575303eec8523c4536df5e276cd8fc22d46085692c420d5f76b31d3dc1d4"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/compile/compile-result.json",
+      "sha256": "48745b4570ce4c8b801df18e02b749ef6081cf8bd224321ec504e6136cd8b908"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/compile/exit.json",
+      "sha256": "5df71b75c73cdfb505a6bc6ba38f1b7d08c88df1da4096ec299aae1b893e8fae"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/structural-proof.json",
+      "sha256": "a799841e3beee93af90723c98a6bfa130d711e9f67355ce16d424a032fe86ce6"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/structural-proof.json",
+      "sha256": "a799841e3beee93af90723c98a6bfa130d711e9f67355ce16d424a032fe86ce6"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/compile/command.json",
+      "sha256": "c189718bed2698e5fb1db49365eead337441b0d5bfe7920bc923dbb09763ce72"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/compile/compile-result.json",
+      "sha256": "48745b4570ce4c8b801df18e02b749ef6081cf8bd224321ec504e6136cd8b908"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/compile/compile.log",
+      "sha256": "c74a575303eec8523c4536df5e276cd8fc22d46085692c420d5f76b31d3dc1d4"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/final-command.json",
+      "sha256": "de9a00f404f3915126f660d89aac59312d5d2e55c0383edea7f19e4ff7e5220f"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-guard-integration-20261027/final/controls.log",
+      "sha256": "808fa9fb59d88bc18768617d3b1cd5a04739f815226025baf91321a0ee6b24db"
+    }
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "status": "paused-by-user-priority",
+  "scope": "HTTP/frontend/renderer/bounds/API",
+  "source_writer": "native_sdk_fix",
+  "reason": "Root relayed user priority: 85 single-active committed decode tokens/s with no quality loss before other work",
+  "completed_review_reads": {
+    "encoding-aware-frontend": "source and direct caller read clean; final byte-binding receipt not completed",
+    "reserved-template-core-boundary": "source/test/direct caller read clean; CUDA-qualified docs-only successor notified; final byte-binding receipt not completed"
+  },
+  "frozen_receipts": {
+    "encoding": "c86fd2acb6cddb1147c28f50a2f7df15fec0d8250d0ab2ad2fc1a3ed4fa36269",
+    "reserved_docs": "ae0306f280bf49e4e6cf60a9ca9bb5c6c66cedcceef02670bb425fc6fc8b2e13"
+  },
+  "not_claimed": [
+    "renderer derivation",
+    "full HTTP bound or fit",
+    "final component byte closure"
+  ],
+  "new_work": "Root-owned source-packed-trial D13 in /Warehouse/TensorFold-wt/v100-packed-integration-20261027",
+  "actions": "no source edits or new HTTP runs"
+}

@@ -1,0 +1,18 @@
+{
+  "utc": "2026-10-27T17:19:46.593817+00:00",
+  "authority": "latest direct user replacement relayed by Root; full on-disk file read",
+  "path": "/home/kklouzal/AGENTS.md",
+  "utf8_bytes": 31985,
+  "sha256": "f34b7836eb0703ccef0d85953d3dcd1a8fca092faaeff8815195c0c0126c435e",
+  "role": "one task-wide combined cleanup+compliance reviewer distinct from primary",
+  "override": "D11/D13 latest replace prior separate mandatory D13/D14 pairing. Nonconflicting repository maintenance instructions remain. Earlier rule numbers/receipts retained as dated evidence.",
+  "reuse": "No repeat audits/checks solely for policy change; all valid prior source/proof/gates and final_gate handoff reused. Prior artifact pending mandatory separate D14 is invalidated by this authorized replacement, not a remaining gate.",
+  "technical_rules": "Full new policy read untruncated; P0-P5, X0-X13, C0-C6, M0-M3, U0-U3 etc bind affected work. D14 now evidence-equivalence; F4 cites D6/D14.",
+  "scope": "existing assigned surfaces/callers<=3 relationship hops; no broader audit",
+  "priority": [
+    "concurrency measurement/resource/drain fixes",
+    "empty-owner exact slot funding",
+    "graph activation/active-grid successors"
+  ],
+  "actions": "final_gate ceased separate audits; no new agents/delegation/reviewer pairs spawned"
+}

@@ -1,0 +1,131 @@
+{
+  "schema": "tensorfold.combined-d13-review-v1",
+  "at": "2026-10-28T00:19:45.175197+00:00",
+  "status": "CLOSED currentsource andstages; actualGPU/P3results separate",
+  "scope": "Descriptor ring implementation/directOwnerBuffers/preparation/policy/caller/funding/retirement/tests andcurrentstartup+FASTv2integration within3hops; reuse closednativeprelude/MTP/guard/staticmap/FASTv2/startup proofs; no newmath audit or broadtest rerun",
+  "commit": "8ac214f9c2a164e73c4577ee3f7df5e518326357",
+  "hold_sha256": "7e95497db4e601449c68fcf8b29bc2952d592286091b9b2352230d4ead039c9b",
+  "wheel_sha256": "ba1b6f5e6fb561204d7eb0b0d9ac2d81a5c0f2218bc5c7748247b4de65104cba",
+  "source_paths": {
+    "README.md": "485e2d784402da9edffbb44cd82827b9088bc9e6c2fb0e88eadd52aca8306cde",
+    "src/tensorfold/cuda/sm70/execution_policy.py": "023a782c03f27b5cfb5f696b227de7d92a48a7e419e6002394043e644bdded96",
+    "src/tensorfold/families/qwen4_exp/cuda/bound_graphs.py": "82b468203901888c94da1c982322703b57852e279a0b2673232d964904dde98e",
+    "src/tensorfold/families/qwen4_exp/cuda/descriptor_upload.py": "7adde113e667b1a751f4ddabb3097a737f4972570841f3052951aea4d2497df2",
+    "src/tensorfold/families/qwen4_exp/cuda/engine.py": "bd0cb161ddc7e93ad037b2034c68b2f18e29ee19387d2a311b5816b1dd748104",
+    "src/tensorfold/families/qwen4_exp/cuda/history_owner.py": "b1360a57c9749dcef51a6743b4c0418efedd1210704df63f8fb0b49894324d3b",
+    "src/tensorfold/families/qwen4_exp/cuda/history_placement.py": "4cc88bda481a7412437b94462d40689232fcaa25d4e806bde7683c693d525784",
+    "src/tensorfold/families/qwen4_exp/cuda/multi.py": "249699fd067cbeebde9b092dc3040edc34a6ac42a6c6f1263a2f7644f1c6b2b4",
+    "src/tensorfold/families/qwen4_exp/cuda/owner_preparation.py": "beb842696c8f27e8929cd097db7cb799e7b5ac84d554bd6b6734c91f83d1ed9f",
+    "src/tensorfold/families/qwen4_exp/cuda/prefix_policy.py": "ec0abf6d7dd193046d76b59819ec6d2ed479a10750fe1b787c6f5f49ade4558c",
+    "src/tensorfold/families/qwen4_exp/cuda/startup_content.py": "f5f4b7b5a1c6b879301524473e10b7e2e0d049a61cd254e4aadcefe4d6aa7ea4",
+    "src/tensorfold/families/qwen4_exp/cuda/target_greedy.py": "66c7efd5f099a7c9070c04d683b4315f9edc35928e2ea0ae63f15dfa8ef8d2ef",
+    "tests/cuda/test_descriptor_upload_ring.py": "f07f30833e78d794ebabbaa34c03c1b2b8bae942d74de79571f8e600f4a6b715",
+    "tests/cuda/test_sm70_owner_piece_graphs_tp8.py": "b09f094f735a9e2d4b485a3920d5ee2b50a902aa5e905296145b3ed1c7dcf704",
+    "tests/test_descriptor_upload_ring.py": "dedba2639b5c84866b575f61bd569ae2c9e48dc678ffa5dc2b21f6b25d52bb5b",
+    "tests/test_fast_grid.py": "d4143aa014a1febdb2eaf6965489a0d4f0ca5531c7cb1b332a3ce030789c20a8",
+    "tests/test_finite_backend_resources.py": "f0a4c4ec313cec559394a67b478bb6656ad9c1e69ba9352da72b4cb53f80b225",
+    "tests/test_finite_concurrency.py": "97215b843a57ea0f5dbf2d0449536af5af4b4ad177aab2f8a09cbd86258191c6",
+    "tests/test_finite_tp_contract.py": "c985bc86d9b89dce0652375a9cc50abba82025d37c9dad5908a62ce35fc35c21",
+    "tests/test_sm70_owner_piece_policy.py": "cf108c9b96757b4df2cade8343e8c505995fb8451fdad156b603e4cdc16e0dda",
+    "tests/test_startup_content.py": "32ff28677df52b01a25c42f9f95693c2f7e635a732c12ce0fb2e098ed6f8009e",
+    "tools/finite_concurrency.py": "d009cf94050754115fdb0295b39aaa787904b09478464aeb772d8782b97eb86b",
+    "tools/v100_backend_probe.py": "e135a1e7c3c7670a80e8294193c0693178d42d4195e0e0b11c2f16bbfaf4336d"
+  },
+  "stages": [
+    {
+      "folder": "gpu-stage-startup-v2",
+      "files": 23,
+      "receipt_sha256": "1312943d81d196297d3243b93554eef91a6b99263d05a433269f363cdabbfb32",
+      "manifest_sha256": "96531b405aef1042bd7c8e7b8468756cd5fbb8d878d267c5d0d61020cceb01dc"
+    },
+    {
+      "folder": "fast-stage-v2",
+      "files": 19,
+      "receipt_sha256": "497ad2f0bf9e22718634b34db7609e39995aec63da56d1a436fe474fe7c79868",
+      "manifest_sha256": "764f7e95125491d392a2e5e8767ca1d8e0ac5f582fa9c2903e3b6ed209399c87"
+    }
+  ],
+  "dispositions": [
+    {
+      "rules": [
+        "M0",
+        "U1",
+        "U2",
+        "U3"
+      ],
+      "status": "clean",
+      "proof": "One actor, fixed2/4/8disjointpinnedslabs, oneunchangedGPUdescriptor table. Per-slot pending setbeforeeventrecord; onlycompletedquery oroldest-slotwait permits hostreuse. Existingnative_done wait protects device table/lane/native_layer overwrites andlastnativeoutputcopy. Cross-streamwriter waits latestupload event; same-stream order unchanged. Clear drainsallhostslots thenretainsnative-readerdependence, latestclear-event joins futurecross-streamwrites."
+    },
+    {
+      "rules": [
+        "C6",
+        "M0",
+        "V3"
+      ],
+      "status": "clean",
+      "proof": "Owner publishes DescriptorUploadRing beforefalliblepinned/eventconstruction; partialfields initializedbeforeallocations. Query/sync/record/fill/publish failure latchespoison/retainsallslabs; no ordinaryretry/reuse. Close requires successfuldeviceglobalfence beforeuncertainringdrain andclearingstorage; failedfence retainsowner. AllowningcanonicalState/catalogue/generation/codec checks unchanged."
+    },
+    {
+      "rules": [
+        "M1",
+        "V1",
+        "T0"
+      ],
+      "status": "clean afterrequiredproof",
+      "proof": "Slots validated2/4/8 onlyexplicitprofile, fixedafterprepare andincluded inallrankpreparedcontract. Beforeallocationglobalhostadmit pays TPworld*sum(S*min(rows,256)*128+16384) overroles. Exactselectedruntime metadata proofmax8036B retainedPython+conservativeC++objectextents, doubled16072+120temporarylist fits16384. One-timemodule/type preimported beforehostadmit; Eventhandles warmed/fenced beforephysicalbaseline. This iscontrolledpayload proof, nothardRSS/runtimearena bound; livehost/cgroupadmission andactualallocatorphysicalbaseline stillauthoritative."
+    },
+    {
+      "rules": [
+        "P0",
+        "N1",
+        "C3",
+        "T0"
+      ],
+      "status": "clean",
+      "proof": "NativeCUDA/headers/FDc79 unchanged; descriptorwords/Stateaddresssignatures/owners/cache/indexer/positions/nativeDone contracts retained. Distinctprivateprofile/Stateepoch, nativeownerN1graphs, ordinaryN>1eager, targetgreedy/prelude/MTPscope andfull24Q8windows/logical262144 unchanged. Slotscontractall8mismatch refusesbeforeallocation. Genericprofiles keeponehostslab, no environmentgate widening."
+    },
+    {
+      "rules": [
+        "X5",
+        "Q0",
+        "Q3",
+        "X12"
+      ],
+      "status": "clean",
+      "proof": "1299CPU+2subtests plus341startupallowlist and303toolintegration controls reused withexactlogs/commands/exits. ActualOwnerBuffersCPUconstanttable/statechecks; partialhost/eventfault,poison/retirement tests; realGPU2/4/8cross-stream oracle plusold52math andactualboundtwoattentionTP8 ringfixture. FixprofileissuebeforeStateconstruction, originalassertions/math/deadline preserved; historicalmalformedpredicate/oldstages retained."
+    },
+    {
+      "rules": [
+        "D13",
+        "S0",
+        "P5",
+        "D17"
+      ],
+      "status": "clean",
+      "proof": "Dedicatedleaseowner hasconcreteDMAsynchronization purpose; originalsingle-slotpath retainedforotherprofiles, shareddescriptorconstruction/nativeoperators reused. No verified dead/unjustified duplicatepath. Fourdefaultslotcandidate isnotselectedbycodecomplexity; controlled2/8andall6matchedperformance/changedbottlenecks remainpending."
+    },
+    {
+      "rules": [
+        "X6",
+        "F2",
+        "D14"
+      ],
+      "status": "clean integratedsource",
+      "proof": "StartupAPPdeltaonlynewprofileallowlist, workersemanticbodyunchanged; FASThelpers byteexactclosedbebf7, tools onlysourceidentity/profile/graph-domainextension. Stageargs2048/v2/full24/overlap+samequality/protocol, privategraphcatalogue/max3 unchanged. No equivalence or throughputgain inferredfromCPU/structural/componentchecks."
+    }
+  ],
+  "evidence": {
+    "all_held_source_and_evidence_hashes_checked": true,
+    "metadata_proof_sha256": "a01784e5d2e624606226dbe4afab7e091c5fada3b2ba520d64b9ab29d02a5835",
+    "native_math_proof_sha256": "2244532116cd420f1c3af84675de7ee081241da5e495c5a54ac86b4775ba7252",
+    "package": "718canonicalsource+FDc79/719normalinstalled exactperheldlogs; no sourceoverlay",
+    "compiler_warning": "sizeof-only probe warningaboutunrelatedSDKPerDevicePoolhardwareinterferenceconstant; no adoptedABI/typechanged orlinked; recordeddisposition",
+    "reviewer": "Source/hash/ASTread only, noGPU/build/broadtestduplication"
+  },
+  "actualRootReport": "Currentba1b56GPUallPASS24.15s/Docker0/718FD; componentresultRoot-ownedandseparatefromsourceclosure. Full6Ringv2/P3notpresumed.",
+  "remaining": [
+    "Rootexperimentalall6livehost/deviceadmission,24completeQ8windows,quality/nativeIDs/rolecounters/drains",
+    "MatchedREGIONrepeatsvsnamed5635v2reference, latency/resourcebudgets, allsixNnonregression and85/600objectives",
+    "Dispositioncontrolled2/8alternatives/changedbottlenecks beforeselection; no broadquality/releasequalification"
+  ]
+}

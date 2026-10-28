@@ -1,0 +1,63 @@
+{
+  "schema": "task-wide-combined-D13-composition-review-v1",
+  "at": "2026-10-28T12:33:15.971896+00:00",
+  "reviewer": "/root/cleanup_review",
+  "scope": "Only MoE+generic/shared-fusion integration/profile/epoch/backend/capture-owner/lifetime/funding delta, relevant fixtures and held package. Closed leaf source, native arithmetic, and component evidence reused; no restarted broad audit. Root alone owns GPU.",
+  "closed_parents": {
+    "MoE_runtime070d": "070dff8108a93b6d9563296856b4afa7e92203b88ab3c722da9ca05d5fd341b8",
+    "MoE_adapterd638": "d638011af1c0e33c6a1a9ee166a71cf1f774eccdd6b6a4864e88bf7b6d0d685f",
+    "Fusionfff395": "fff395ae2e12733139ec68baf8e36c520bc2bc5b69cc7e29332d680fa2ef743c"
+  },
+  "source": {
+    "commit": "073649a963d0d2df5f6b8fbd207de51ad2ab5d64",
+    "runtime_commit": "755076c6",
+    "HOLD_sha256": "63e25e339bc7e0393fdf20a563d1bf846834d4ff80a4135dd7fe957a06ebec60",
+    "APP_sha256": "76f496d38f1ebfccbb8ae9e17b86c76a282527ecd6709dcc70656581bde68051",
+    "source_paths_verified": 37,
+    "evidence_files_verified": 7,
+    "canonical_packaged_files_verified": 724,
+    "FD_sha256": "c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d",
+    "native_inputs_exact42f5": 97,
+    "capture_lifetime_multi_graphs_forward_State_exactf697": true,
+    "gguf_native_CUDA_CPP_adapter_exact42f5": true
+  },
+  "stage": {
+    "payload_files_verified": 19,
+    "manifest_sha256": "07c0a29f350df7570bbe686cee307af7249bf2c930612a79daa811cdc0e6d600",
+    "payload_tar_sha256": "f0e71aa8af8b20c249a1dbc14ccf560ebd680479d253f2d3d63a434dc63f90ca",
+    "tar_content_exact_local": true,
+    "sourceHOLD_matches": true,
+    "stage_ready_sha256": "2b74470b201b92899077a9663422569cedce56c8e6ade7a2eec930021d29c91a",
+    "required_gate": "6actualcases/0skip; normal724+FD before and independent postcheck, originalpytest failure precedence. Root/author reports remote19verified and Root22554running; reviewer did no remote launch."
+  },
+  "disposition": "FINAL_COMPOSITION_SOURCE_AND_COMPONENT_STAGE_REVIEW_CLOSED; NO_REMAINING_CONCRETE_SOURCE_FINDINGS_IN_SCOPED_INCREMENT. Actual same-backend graph oracle and all8/all6/quality/capacity selection remain separate.",
+  "contracts_verified": [
+    "Uses existing Fusion numerical profile and State/prefix epoch; original Router profile stays distinct. Graph enable is orthogonal to numerical backend. Catalogue request/prepare accepts only the admitted Router/Fusion profiles; validate_region pairs Fusion with packed_blocks2w and Router with packed_exact, rejecting crossed pairs rather than allowing either globally.",
+    "Bindings additionally seals actual family numerical_policy and experts metadata alongside actual class/instance/layout/storage/profile checks. Record exposes numeric_profile plus the unchanged ordered pure-MoE graph contract. No State/cache/projection/PLE/attention/NCCL work hoisted across the original pure-region boundary; original expert projections remain in captured MoE.",
+    "Capture-side RolePlans lifetime remains dedicated, separate from serving eager role, with original weight/storage owners. Once-forward48-layer ordered lease, distinct exactR pools, partial-cycle poison, released-lease-before-notification, preallocated combined-frontier outcome and positive fence/reset retirement are inherited unchanged.",
+    "Ordinary fused-eager2MiB/rank device plus64KiB/rank host remains prepaid for fallback rows and independent eager MTP; it is not repurposed as private-pool credit. Activation allocated by fused calls during recording becomes private capture-pool storage, measured additionally by existing aggregate phase/settlement budget. Capture role is charged there once; canonical/eager resources not duplicated.",
+    "Inclusive capture host1GiB/rank remains an additional pre-admission future obligation. Combined source Engine test observes device+2MiB, host+8GiB+8x64KiB atop prior terms. All-pool inactive exclusion and corrected general_available-future authority unchanged; native24 fullQ8/future service cannot be lowered. Vendor/transient RSS caveats unchanged.",
+    "All97 native supplier inputs and gguf_ops CUDA/CPP/adapter exact Fusion7604; no new kernel math, bank representation or weight replica. Original Fusion prefill/reference/large-row/N1 defaults, GDN/Router/startup3/Dense/native-owner contracts retained through additive merge.",
+    "Six strict new oracle cases cover IQ18/20 fixture, R30/31/32, actual targetF16/MTPF32 buffers, changed inputs/scales, active packet bytes and untouched tails against selected fused eager. _family_runtime observes pinned04cf/SM70/Cublas/TrueFP16reduction/Falseaccum before/after, no setters. Dedicated capture-side versus eager role and positive counters asserted; original operations and errors preserved."
+  ],
+  "findings": [
+    {
+      "id": "COMPOSITION-MATH-REGION-01",
+      "rules": [
+        "N1",
+        "Q2",
+        "Q4",
+        "X12"
+      ],
+      "status": "CLOSED_BEFORE_FINAL_HOLD",
+      "fact": "Early new fixture lacked an explicit selected math-policy observation. Final fixture-only073649 adds _family_runtime before/after eachcase without policy writes; runtime7550/APPunchanged. Prevents wrong-REGION proof credit; no speculative numeric failure invented."
+    }
+  ],
+  "verification": {
+    "CPU": "87focusedcompatibility/selector/epoch/factory/funding controlsPASS3.02s; normal724+FD/Ruff/pip/protected; sixGPUcases collected. Exact command/cwd/log/exit inHOLD.",
+    "structural": "Native unchanged42f5, forward/State/capture-lifetime/aggregate-accounting unchangedf697, profile/backend pairing and additivefunding controls read. No extra broadCPU/native numerical rerun by reviewer.",
+    "actual_status": "Root22554 is reported running the finite six-case same-backend oracle. No actual pass, full144fused catalogue or fullEngine/eight-rank capacity/performance/quality outcome inferred in this receipt."
+  },
+  "cleanup": "No verified dead code or unjustified duplication introduced in this compatibility layer. Original cleanup remediations, independent numerical oracles, source failures and parent evidence retained. No head catalogue enrolled; no source changes by reviewer.",
+  "limits": "Fusion approximation/quality scope remains the separate parent contract; graph-vs-same-backend equality is the new predicate, not equivalence to original BMM. Single-region fixture is no State/NCCL/Engine/native24/P3 proof. Root must bind subsequent all6adapter and actualcapacity/counters/ledgers/quality before any provisional retention; broadqualification/repeats remain deferred, not passed."
+}

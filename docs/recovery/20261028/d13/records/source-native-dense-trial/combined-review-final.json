@@ -1,0 +1,67 @@
+{
+  "status": "bounded source review CLOSED; actual GPU/model and six-region performance gates remain OPEN",
+  "scope": "Root-assigned ten native-dense files and direct source/worker/prefix/ATen callers within three relationship hops",
+  "hold_sha256": "4fa08c7ef6f2d9eff2b358dfe3fb7f84228872f86acb0d9c6126c78a1becabe1",
+  "source_hashes": {
+    "README.md": "fb67c7b79716264664be1b4bee071ba623ab70e6779490ea2d59b9a0f1f594d9",
+    "src/tensorfold/cuda/sm70/execution_policy.py": "f2e57dc3d54be53e5ba19cdf3010840e47931ee9c73bfcaeb7a34d57c90aec6c",
+    "src/tensorfold/families/qwen4_exp/cuda/engine.py": "0d1c9250038d1b54a9331dd0c53052573da3bb27babedd5f1f81bcfc87339bb9",
+    "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py": "f8a012447b410d2191f0904cbb8fb152ab1e10f84893bbc1fd962f55138d50bd",
+    "src/tensorfold/families/qwen4_exp/cuda/multi.py": "c07c933c79db7d70e379b8d9a8c72db4da9ded9a43c352359c1a4f862e20565f",
+    "src/tensorfold/families/qwen4_exp/cuda/prefix_policy.py": "c3c748aa95d0d61cab640189358ca0b7adc11b19d071b170e826cd958cbb4d73",
+    "tests/test_flashnext_prompt_pass.py": "e2a67920c8354f84757e4b18b504860a9e84e6adba2200b0118d92e13716c04a",
+    "tests/test_sm70_execution_policy.py": "e07f844ab651f2d645f39fb57b5090ac04272a29856186c36ea5cd6fd801d401",
+    "tests/test_sm70_native_dense_dispatch.py": "b3f053a2d7051a0d187110fdb91fbab90059b067841c8052d56b34e285697ac5",
+    "tests/test_sm70_native_dense_trial_policy.py": "b0e165900bf9e40b7ebbb62baa388194a49fea76c063259943253cd73105794a"
+  },
+  "wheel": {
+    "path": "/evidence/verification1/wheels/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "sha256": "c896b42b1979d01e8c20ddb70dfcc978349c1141854e0c10b5ec3da49492da12",
+    "size": 3109478,
+    "local_path": "/Warehouse/TensorFold-portable-audit-20261026/source-native-dense-trial/verification1/wheels/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl"
+  },
+  "independent_base_byte_equal": {
+    "src/tensorfold/cuda/sm70/gguf_ops.cu": true,
+    "src/tensorfold/cuda/sm70/gguf_ops.py": true,
+    "tests/cuda/test_sm70_gguf_dense32.py": true,
+    "tests/cuda/test_sm70_gguf_prepared.py": true,
+    "src/tensorfold/families/qwen4_exp/cuda/state.py": true,
+    "src/tensorfold/families/qwen4_exp/cuda/service_memory.py": true
+  },
+  "independent_base_method_AST_equal": {
+    "matmul_native32": true,
+    "matmul_reference": true,
+    "matmul_prepared": true,
+    "can_matmul_prepared": true
+  },
+  "all_evidence_hashes_matched": true,
+  "findings": [],
+  "dispositions": {
+    "selection": "Explicit source-native-dense-trial only; prepare audits/native module warmup precede selector publication. Prior profiles reset Dense to reference. No source/kernel/math/State capacity/graph or private-attention grants.",
+    "eligibility": "Wrapper declines generic or invalid layouts, aliases, autograd needs, negative/conjugate views and invalid inference-output writes to unchanged reference behavior. Checks have a distinct fallback-safety purpose rather than duplicating an unchanged invariant without purpose.",
+    "numerics": "Existing helper keeps fixed M32 ATen multiplication/output dtype, and original Dense32/prepared CUDA oracles remain byte-identical. New wrapper/control source does not establish actual GPU/model quality.",
+    "ownership": "Output retains original allocation/dtype semantics; successful raw data_ptr writes publish version metadata with selected public increment_version, while native ATen out bumps are not doubled. No new persistent owners/workspaces introduced.",
+    "identity": "Own prefix/State epoch and actual Dense selector appended only to this profile worker agreement; old packets retain old shape. Independent prompt scheduling includes new profile.",
+    "cleanup": "No verified dead path, unjustified duplication, or unnecessary indirection found in the affected source. Valid reference/error routes and independent oracles preserved."
+  },
+  "verification": {
+    "passed": 424,
+    "subtests": 10,
+    "skipped": 1,
+    "seconds": 8.15,
+    "skip": "test_flashnext_gguf_mtp.py optional pinned companion and actual target metadata not supplied; source line463",
+    "no_GPU": true,
+    "Ruff": 0,
+    "pip_check": 0
+  },
+  "required_hardware_checks": [
+    "Existing Dense32/prepared CUDA oracles and new wrapper/caller on exact current image",
+    "Actual model output/quality",
+    "Paired baseline/candidate 1/2/4/8/16/24 decode throughput; strict N1>85, no regression in any N; prefill secondary"
+  ],
+  "limitations": [
+    "No GPU or remote action by reviewer",
+    "No repeated suite/build; exact existing normal installed gate reused",
+    "No superiority, strict85TPS or deployment qualification claim"
+  ]
+}

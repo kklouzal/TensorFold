@@ -1,0 +1,20 @@
+{
+  "schema": "task-wide-combined-review-addendum-v1",
+  "at": "2026-10-27T22:23:48.324993+00:00",
+  "reviewer": "/root/cleanup_review",
+  "scope": "Reopen current53GPUfixture readiness only; runtime875cf/902f native math/scalarrecipe review stays source-scoped",
+  "status": "VERIFICATION BLOCKED fixture identity divergence; Root diagnostic stop retained, no boundTP8 pass",
+  "finding": {
+    "rules": [
+      "N0",
+      "U1",
+      "Q0",
+      "X4"
+    ],
+    "actual_cut": "Each childcreated independentTemporaryDirectory. ResolvedPositionProfile receipt includes source filepaths; therefore ranksharedintended profile/coordinatecontext hash differed. Actualinputpreparationmailboxes waited on differentchannels. Rootobservedall8faulthandlerStorewait throughstage/graphswarm; explicitdockerstop10, not passing/automaticdeadline result.",
+    "review_miss": "Reviewer checked actualcontextinstallation/close and deterministicmodel suffix but missed per-rank resolver input path contribution to profile identity. Currentfixture source closure did not establish numerical readiness.",
+    "owner_remediation": "Authorparentowns one shared temporaryconfig before spawn; passsamepath to all8, retainuntilactualallchildrenjoin/retire. Verifyall8identity before collective mailboxuse, no runtimeguard relaxation. ExactsuccessorHOLDpending."
+  },
+  "evidence_scope": "Rootreports first52numerical/offset/faultcases passed separately; stoppedboundTP8unrun/unqualified. Preserve old53toycontrols and all failure/stop/stacks.",
+  "pending": "Solecombinedreview of sharedparentconfiglifetime and identity successor beforeRootnextfixturestage; concurrentprofilepriority. No extraGPUrun or reviewerpair."
+}

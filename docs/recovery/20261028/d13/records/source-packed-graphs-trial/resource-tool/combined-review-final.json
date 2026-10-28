@@ -1,0 +1,85 @@
+{
+  "schema": "tensorfold.combined-d13.graph-resource-tool-final-v1",
+  "utc": "2026-10-27T17:52:34.131806+00:00",
+  "reviewer": "cleanup_review",
+  "role": "single combinedcleanup+compliance",
+  "policy": {
+    "path": "/home/kklouzal/AGENTS.md",
+    "sha256": "f34b7836eb0703ccef0d85953d3dcd1a8fca092faaeff8815195c0c0126c435e"
+  },
+  "status": "CLOSED: bounded diagnostictool source clean; provenancewording clarified",
+  "checkout": "/Warehouse/TensorFold-wt/v100-graph-resource-report-20261027",
+  "commit": "87cce8a642246f9b4e48d3f6c771ced3ac0c7c9f",
+  "base": "af902e61779643df89bda7abcdafd5b0921e1a53",
+  "hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/source-packed-graphs-trial/resource-tool/source-hold.json",
+    "sha256": "f6868085dc500bd5a048e1de5c7b6a003ad3e3a6d63d5f149cb4b011eb165b82"
+  },
+  "tool_sha256": "ec70fa37ce519a880c3142c411a5a0d5ae6c68b187019413a5405ac5b4551e7d",
+  "test_sha256": "8b1b8d0f52672e3d12134c538dc61cd458c2ae9ceccef6f016f873e2aa613db3",
+  "helper": {
+    "benchmark_output.py": "ce7c0a0cdf80842dc67021ddc938ae32a2c8df39dfd4f36e5f48e72149484cfa"
+  },
+  "wheel": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/source-packed-graphs-trial/graph-intent-final/wheels/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3110896,
+    "sha256": "326f8fe950bb199e507c3ce2d76a8bca0f84a8eaf9d62be4c867cea7fbdfac7e"
+  },
+  "structural_proof": "Whole toolmodule AST recoversaf902 after removing only new boundedhelper and single failure-report assignment. NoAPPsource diff; existingprimary/workercleanup/budget/guards/math unchanged.",
+  "finding": {
+    "rules": [
+      "A0",
+      "D5",
+      "V0"
+    ],
+    "issue": "f686 metadata described preconstructorcleanup snapshot, but workerhandler runsafterconstructor has attemptedrollback; blockedinternalrollbackcanpreventhook and mutableownerattrs mayalreadyreflectretirement",
+    "resolution": "Additiveprovenanceclarificationdfffb5ad narrowsbeforeWORKERcleanup/afterconstructorrollbackattempt. Framelocalbefore/took/allowed originatefailureframe; mutableowner/maps areobservations, not frozeninitial counts. OldHOLDnotrewritten, no code/gate change needed."
+  },
+  "contracts": [
+    "onlybounded64 existingpublictracebackframes; module/methodallowlist and nativeplainobjectdict fields read, no property/CUDA/tensorinspection",
+    "onlyexactint/bool/None and fixedkind strings/counts/whitelistednested scalar maps escape; no tensor/frame/objectgraph or modelinputs inreturnedrecord",
+    "singlehook insideexistingprimary-preserving diagnostictry; failure remainssecondary and unconditionalworkerretirement unchanged",
+    "no source/SDKpatch, unsafeoffset, budgetoverride, retry or runtimepolicychange; missingdata staysmissing",
+    "known trustedapp frame owner types have ordinary instance dicts; unsupported/spoofed Python objects are not expanded into new generic reflection support"
+  ],
+  "verification": "75 normalinstalled toolcases3.80s/Ruff/pip/standalonehelp0 reused; controls coverknown/missingattrs, noProperties,64framebound anddiagnosticfailure preservingprimary. Reviewer source/AST/hash only, no build/test/GPU/remote.",
+  "evidence": {
+    "source-hold.json": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/source-packed-graphs-trial/resource-tool/source-hold.json",
+      "sha256": "f6868085dc500bd5a048e1de5c7b6a003ad3e3a6d63d5f149cb4b011eb165b82"
+    },
+    "provenance-clarification.json": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/source-packed-graphs-trial/resource-tool/provenance-clarification.json",
+      "sha256": "dfffb5adfa6e73db458a5a5f44a7e201cbe13587db85ebed2c4c7b089bbefd8c"
+    },
+    "start.json": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/source-packed-graphs-trial/resource-tool/start.json",
+      "sha256": "2197ce36fdee5c4b55432f9173324384709dca603300f78a5435e3416b0908b0"
+    },
+    "exit.json": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/source-packed-graphs-trial/resource-tool/exit.json",
+      "sha256": "963bc65d2dfd84588c9edbd73284d076ae7d5f4c3de97a3e7063ffbf4a6573ae"
+    },
+    "controls.log": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/source-packed-graphs-trial/resource-tool/controls.log",
+      "sha256": "c9354372807269347fa7c6f181e8dac9e278171e4476f4faa267c272aa980b1f"
+    },
+    "wheel-provenance.json": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/source-packed-graphs-trial/resource-tool/wheel-provenance.json",
+      "sha256": "d4233e085caba8791438ee997ebedc2c3a1c402b87367ade5087d3da01d3c245"
+    }
+  },
+  "findings_remaining": [],
+  "pending": [
+    "Root actualsame326f budgetRCAvalues",
+    "actualgraphresourcefixselection/admission",
+    "strictN1>85/sixgridquality+P3 objective"
+  ],
+  "not_claimed": [
+    "hook executes before constructorinternalrollback",
+    "clearedmap0 means0initialacceptedkeys",
+    "actualRCAmeasurements orresourcefix",
+    "GPU/model/performancepass"
+  ],
+  "reviewer_mutations": "ignored combinedreviewJSONonly"
+}

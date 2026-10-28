@@ -1,0 +1,82 @@
+{
+  "schema": "tensorfold.d13-attention-runtime-identity-final",
+  "version": 1,
+  "status": "closed_bounded_source_adapter_delta",
+  "base": "a39646d16767ba6281b1db94600947c6ecc2ce5e",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/attention/source-hold.json",
+    "bytes": 1474,
+    "sha256": "cf00e22dc6f99074135728e7acb57cf6a7753d768080893b2c425e6020f64454"
+  },
+  "source_paths": {
+    "README.md": {
+      "bytes": 155972,
+      "sha256": "e69c765574cfc4b723105337c13e05b4e1e0eb435cf4c4291ee0d617cbf895e8"
+    },
+    "src/tensorfold/cuda/sm70/attention_qualification.py": {
+      "bytes": 3905,
+      "sha256": "ef3982fdc0d761c9c3c6322402191bfa16750a9af3a71a24f629f9f6525c497d"
+    },
+    "tests/test_sm70_attention_qualification.py": {
+      "bytes": 8555,
+      "sha256": "5b39eeb2ffb23e6fca1a14c5063b496e3565611c917c6ba4dab7d2b18ede67ec"
+    }
+  },
+  "scope": "Only exact-historical-build cuBLAS package query in attention_qualification.runtime_identity, README and unit controls plus actual consumers <=3 hops. No broad native/runtime audit.",
+  "source_review": [
+    "Only exact Torch/version+git+CUDA triple matching the old privatecu126 candidate queries nvidia-cublas-cu12 metadata; missing wheel still raises for that supported legacy role. Other builds omit that inapplicable field rather than inventing a version/provider or catching PackageNotFoundError.",
+    "Actual preferred BLAS backend, FP16 reduction/accumulation flags, workspace environment/size and device SM metadata retained. Existing cache lifetime/decorator and uncached __wrapped__ fresh-profile use retained.",
+    "Whole production module AST outside runtime_identity exactly equals baseline: REQUIRED_IDENTITY, supports, active, metadata_prepare and allows unchanged. supports requires all keys+exact values; optimized admission uses .get and refuses source04cf; reference dispatch remains.",
+    "Engine descriptor only participates in rank policy agreement. Execution identity independently calls __wrapped__, captures actual distributions, source headers and complete mapped native library bytes; source audit independently enforces actualcuBLAS12.9.2/version/provider paths and sealed bytes. Removing an unrelated wheel field does not replace global source/native provenance.",
+    "No new algorithm, numerical transform, backend fallback, fake wheel, exception-swallowing path, mutable registry or duplicate native verifier introduced."
+  ],
+  "tests_review": [
+    "Actual source04cf descriptor avoids forbidden legacy metadata query and stays ineligible through supports/metadata_prepare/allows",
+    "Each old-build discriminator independently gates package lookup; exactlegacy descriptor and one cached wheel lookup preserved",
+    "Absent legacy package still raises",
+    "Noncandidate real math/workspace/device fields including nondefault settings preserved using fresh uncached adapter",
+    "Old qualification/owner tests retained plus execution-policy/profile identity caller controls in installed3-module suite"
+  ],
+  "verification": {
+    "held3paths_match": true,
+    "all714_package_records_match_current_source": true,
+    "whole_wheel_and_all715_source_extension_ZIP_records_match": true,
+    "installed_controls": {
+      "passed": 66,
+      "subtests": 24,
+      "seconds": 3.62,
+      "log_sha256": "8dc1a4b448f3bb513bf292c9250a24953e09638af8cc6111e2fcb96a1d163a98"
+    },
+    "installed_log": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/attention/installed-controls.log",
+      "bytes": 1129,
+      "sha256": "8dc1a4b448f3bb513bf292c9250a24953e09638af8cc6111e2fcb96a1d163a98"
+    },
+    "ruff_log": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/attention/ruff.log",
+      "bytes": 19,
+      "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+    },
+    "application_wheel": {
+      "artifact": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+      "bytes": 3086457,
+      "sha256": "6fac343859d26fd04324ecc7a0ba6c32bcde2403fb705eedc186542c014c5bd8"
+    },
+    "compiled_extension_identity": [
+      {
+        "path": "tensorfold/_fd_owner.abi3.so",
+        "bytes": 37952,
+        "sha256": "4a0625bdf0a494437058e0ddbc62f04d7092c8cc64178e24fc17d669d2abd984"
+      }
+    ],
+    "entire_module_AST_outside_adapter_exact": true,
+    "no_reviewer_suite_or_build_rerun": true
+  },
+  "artifact_boundary": "New application wheel6fac and rebuilt FD-extension artifact have their own exact identities; do not call them byte-identical to old805/full187. UnchangedC source and baseSDK/media/protectedpolicy remain their existing owner evidence; new image/target acceptance still required.",
+  "findings": "No new verified D13 issue or source edit.",
+  "open_gates": [
+    "Immutable successor app/image/source+combined audit and actual target startup on this new wheel",
+    "Actual model/numerical/quality/capacity/performance/compiler/deploy qualification; no legacy or target performance equivalence claimed"
+  ],
+  "reviewer_changes": "Read-only source/callers/tests/AST/wheel/log/hash review and durable artifact; no source/Git/remote/GPU action."
+}

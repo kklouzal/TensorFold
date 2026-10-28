@@ -1,0 +1,22 @@
+{
+  "schema": "tensorfold.combined-d13-stage-binding-v1",
+  "at": "2026-10-28T04:19:39.271596+00:00",
+  "source_review_sha256": "f2a5967a83542242b7eef62103560a44f697ca6035aa9addf97afe0858c7a28c",
+  "commit": "c2de6ac36c80554bc837b4c6633a5caeaa85b632",
+  "hold_sha256": "3438c5c24f96af9ed7c6c9cb4be4af003585c382edb6e9aa776ed0bab4b9a610",
+  "wheel_sha256": "1d83d23dc6ffb1def73486670c0ee096e3d876d44cbcfb3856afc38481a7a5b0",
+  "stage_receipt_sha256": "6c6997bc7a393f2bf2727cbabab6770ae017f8041a4078fd416bf5516c9b5cfc",
+  "status": "SOURCE+59-COMPONENT STAGE BOUND; actual execution Root-owned/unrun as lastreported",
+  "checks": [
+    "24 stage manifest entries independently checked for hash and size",
+    "staged source HOLD and wholewheel match source-reviewed immutablec2de",
+    "maintained59 selection keeps old52math+6real1/8/24metadata/crossstream+currentactualTP8 Frame+Batch positive borrowing counters",
+    "pytest.main only inside main and standard __main__ guard; original assertion/oracle fixtures staged and hashbound",
+    "normal installed source719/FDc79/protected verifier bootstrap retained; no app/runtime/kernel/source edits after hold"
+  ],
+  "limits": [
+    "No GPU reviewer/remote/heavy execution or duplicate CPU suites.",
+    "All6 FAST tool/startup3 adapter successor is separate and pending final held binding.",
+    "Actual59/component, actual24physical admission, native-role/counter/drain/quality/all6 performance remain required before development-reference promotion."
+  ]
+}

@@ -1,0 +1,25 @@
+{
+  "schema": "tensorfold.combined-d13-review-v1",
+  "at": "2026-10-28T00:22:00.732616+00:00",
+  "status": "CLOSED tiny int32 successor source+stage; actualint32counters pending",
+  "commit": "7af9b891cfef4047d2340bb539c7f8c3ac0e65b6",
+  "hold_sha256": "4cc9b8d81123fc997fc855699f5eca9d7addf9d8ae14422e35ab61ca9a510d81",
+  "scope": "Three-file diagnostic-onlydelta fromclosed685198/0d5c; directshippingMoEBuffers.pickdtype relation andsamepackage/replay/oraclecontracts; no repeatednativeaudit",
+  "disposition": "CPU.randpermint64values arecastint32onlyafterallseededdraws;0..512rangeexact,sameinputbytes/IDs/RNGstate+sameuniqueIDcounts. Actualcuda/moe.py pickstoreisint32, so newtemplate matches shippingdtype. Allothercommand/parser/kernelreference/replay/successhelper/math/APP contracts retained. README preservesoldlong-template resultcaveat; no falseperformance-equivalence transfer.",
+  "evidence": {
+    "CPU": "26normalinstalledchecks+Ruff; same3casegeneratorstate/value tests, independentfrozeninput parity retained",
+    "CPU_receipt_sha256": "6c75e31b9d9dcbd85c75ffbf1d38e74db0d23c74acf91262fbe408968a652a68",
+    "parity_sha256": "bc993d6180420362412918c6b7d54e3917df8c82252e9f4c0bfb6337ddcac850",
+    "stage_files": 19,
+    "stage_result_sha256": "711ef656e3773cbc76ddc9a5cbee7fba1837a615c567af51b90aa2fc5997d0ad",
+    "stage_command_sha256": "6b615677ea0e18fbe6e1c36a891c02daed349c9880ee06ef573dbf5b138f343c",
+    "stage_exit_sha256": "4f0f06c896f63e85fd679fb221a60cb253f8ad9dc110c71fcbc3a1f9291b9e55",
+    "APP": "5635/717+FDc79 unchanged",
+    "reviewer": "Read/hash only; noGPU/test/buildduplication"
+  },
+  "cleanup": "Smallsharedsynthetic_idshelperhasexplicitdtype+RNGcontractandtests; no verifieddeadorunjustifiedduplicatepath. Oldint64rawresults retainedindependently.",
+  "remaining": [
+    "Rootactualint32counterreport+strictpre/postoracles/newfreshoutput",
+    "Actualroutingdistribution/fullmodel/P3/qualityqualification not established by component"
+  ]
+}

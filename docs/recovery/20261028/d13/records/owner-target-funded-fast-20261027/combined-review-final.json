@@ -1,0 +1,90 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T21:22:27.515993+00:00",
+  "status": "CLOSED narrow funded997e tool successor and local stage; ready Root funded fast retry",
+  "reviewer": "/root/cleanup_review",
+  "commit": "3b649c72f37a8e2c56692af55b82769f62fc87a6",
+  "application_commit": "5ff2be14b5f5efe0c265654769dd39750b45a2ca",
+  "application_runtime_unchanged": true,
+  "runtime_wheel": "997e4c08df3fcb87c03f143d1d9a3ed91695a4a46dd1b3f3dd84e91b6ed8a465",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-funded-fast-20261027/package/source-hold.json",
+    "sha256": "fcb84ed2f2b5c2487a2b0b44c622ed6dc70934a8e9220e697052ebfb1cb5f5af"
+  },
+  "source_paths": [
+    {
+      "path": "README.md",
+      "sha256": "69425220efa80fc111d8111defc0868ff5034911bbe7bb89036162072e51d6bc",
+      "bytes": 172244
+    },
+    {
+      "path": "tools/v100_backend_probe.py",
+      "sha256": "662d8d0cf3356d70c09a9d119ec54c17879bc6c8306afa1ff6bee15bc521cb07",
+      "bytes": 60857
+    },
+    {
+      "path": "tests/test_v100_backend_probe.py",
+      "sha256": "cf7db6872e1094a165a541545ea4210f0bb667417db9a4e75be66f7530dc4f09",
+      "bytes": 60778
+    },
+    {
+      "path": "tests/test_finite_concurrency.py",
+      "sha256": "a02cbe94d6dbd3bafda57043d5dbf78e354be155489ffea1de7c0a0d8c05d014",
+      "bytes": 22553
+    }
+  ],
+  "scope": "Four tool/test/README paths only. Reuse closed a4af funded receipt leaf and5ff2 application/guardedTP8 proof.",
+  "source_review": "Only follower bound128\u2192256KiB and corresponding documentation/expected-bound assertions/new140kreport regression. Existing finiteConcurrency helper implementation, timing windows, expected cancellation, physical drain, quality tasks, source/identity checks and model/math unchanged. No runtimepackage delta.",
+  "funding": {
+    "global_aggregate": 2424832,
+    "normal_increase": 917504,
+    "grid_existing25_multiplier": 60620800,
+    "grid_increase": 22937600,
+    "ordering": "Actual FiniteBackendCaller receives dynamic bound before finalizer/logical request submission; no claim that early worker-ready metadata is produced after this finalizer."
+  },
+  "checks": {
+    "normal_installed_common_CPU": "235PASS13.98s; raw log retains subsequent readonly Ruff cache error",
+    "Ruff_pip": "Separate --no-cache Ruff and pipcheck PASS, no suite rerun after passing235",
+    "source_current_four_hashes": true,
+    "library_src_diff_empty_5ff2": true,
+    "local_stage_files_verified": 18,
+    "remote_stage": "Root-owned stage.stdout retained, exact18files/emptyresults reported; no reviewer SSH/GPU actions"
+  },
+  "controller": "Compared with prior997e fast controller: only unique remote directory/container name and full source checkpoint argument changed. Same512outputs,sixNscreen,30sready/10swindow,24floor,independent quality, immutable native manifest9533 and per-rank cache setting.",
+  "failure_history": "Original132256Bready-report failure beforejobs remains archived; new larger funded slice is not truncation or a retroactive successful measurement.",
+  "cleanup_disposition": "No verified remaining dead path, unjustified duplication or safe required simplification in tiny delta. Independent measurement and quality oracles retained.",
+  "pending": [
+    "Root funded actualmodel/fastscreen all6 and independent quality",
+    "No CPU result/TP8component result establishes85/600/nonregression or quality completion"
+  ],
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-funded-fast-20261027/controls-verified.log",
+      "sha256": "119dea43fc3851d161c61cf1876f0022f60e19317cce771465df5d5e951fb7a5"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-funded-fast-20261027/lint-pip.log",
+      "sha256": "419de26497cd1e76b5d0f1070e3734f3c0c5d8261d5e5ddeb30807a7a30e340f"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-funded-fast-20261027/stage-identity.json",
+      "sha256": "5f8d63062828753d4bc907222c3f61269cc777edf5f12512092dd7829b09b351"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-funded-fast-20261027/stage.stdout",
+      "sha256": "d766a77aae6a11455d4dce8156990a42929f7d0c9a2beb3459c182d4ed23810a"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-funded-fast-20261027/stage.stderr",
+      "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-funded-fast-20261027/package/launch-finite.py",
+      "sha256": "37171cdddbd41946188cc339042cd907c1b9a01d86fc0f1db1f4dc267089d9e1"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-funded-fast-20261027/failed-original-records.tar.gz",
+      "sha256": "f734c82fb8b85752e2b3f05eb27bf9bea35d9db4312a28ccc64b010f303a6e1d"
+    }
+  ]
+}

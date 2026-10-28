@@ -1,0 +1,43 @@
+{
+  "schema": "tensorfold.combined-d13-review-v1",
+  "at": "2026-10-28T03:40:47.625039+00:00",
+  "status": "CLOSED boundedDense+independentcomposition source/jointstage; P3pending",
+  "scope": "Currentf0aDense+qualified549independent/finitesupplier reuse; only combineddispatch/profile/floor/prewarm/fixture/currentSourceboundarieswithin3hops, no newkernelmathaudit",
+  "commit": "b92c58283e72c9dad528f67ac288ad06e44c1908",
+  "hold_sha256": "dd7600dc408dd0797e81ebfcd2d0b23cecf68c434b2c1e2324af24e1783b47bb",
+  "wheel": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/dense-independent-20261028/canonical-final/wheels/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3145517,
+    "sha256": "824f3c91d56b1604506c24467e5257960fd563152e3f9c1e44e5835d85ca502b"
+  },
+  "assessment": [
+    "IndependentCUDAfileoldwholeprefixexacta5/actual549source, appendsidenticalexistingDense4attributeentrypoint; oldDenseguard/wrapper/prepared/reference mathbodyretained. No newprojection/coeff/down/reduction/FPprecision/cache/State/MTPalgorithm.",
+    "Combinedprofileprepares8selectedI32independentand4Densecodevariantsbeforeselectorpublication/physicalbaseline; failedpreparepreservesoldselectors.8KiB/rankmetadatareceiptfund, existingDense/prelude/floor24Q8/FP32/fullcontext retained. DistinctState/prefixepoch+actualGGUFDensecohortseal, oldprofiles/defaults unchanged.",
+    "ProbeDenseintent/graphrequest/nativeownerreadinessclassifications coherent; defaultRows32and>32genericfallback retained, no allcallsnativeclaim. Rootall6Source/data/parametersmustremainactualmetadata matched; no arbitrarycap/precision change.",
+    "ActualjointTP8fixtureD2560K80usesrankSC117subset3expertsandcurrentCOWDenseweights; DenseeagerbaselineversusnewindependentEagerandnewgraph strictnativeframes/state/transcripts/prefix+capture/postcapturecalls, real2targetattn+stockMTP/positions/context. Existingtoydefault256/lowrank32unchanged; no removedoracles/tolerances.",
+    "Independentrawfull/finitecorpus/original394failand549passhistorypreserved; combinednoqualifiedoldlegacyprivateattention/PADDEDTrue claim. No verifieddead/unjustifiedduplicatepath; twoexistingmathspecializationscomposebehindminimalnewprofile."
+  ],
+  "evidence": {
+    "CPU": {
+      "passed": 1124,
+      "full_log": "cpu-controls.log",
+      "first_wrapper_exit": 2,
+      "exit_note": "1124testsexit0; subsequentoldDense32CPUcollectionhitunavailableGPU, sourceunchangedandretainedactualGPUgate. Continuationexit0collect557/Ruff/sourceproof/protectedclosure.",
+      "continuation": "finish-cpu-command.json/finish-cpu.log",
+      "fixture_geometry_controls": 2,
+      "actualEngine_startup_controls": 3,
+      "no_broad_repeat": true
+    },
+    "proof_sha256": "d95f2e6bbc0209935bf8bbe511e03fb2304faa49566c8e2ac3de0b2ca68ba643",
+    "compile": "ExplicitSM70f6b5b943compile/link/import, GPUless4/8attributeprepare refusals appropriate; sourceFlags/softwarepinned; differentpathFDhistoricalattemptnotselected, canonicalFDc79restored",
+    "stage_files": 31,
+    "stage_manifest_sha256": "ffbe796cb9f2165a9e510a8995f9f700f19738bb3daed11fb2335204ec6e6ffe",
+    "Rootactual": "Joint1455TP8ALLPASS1/21.86s+normal717FD reported, actualall6Root59072running/terminaluninspected, no newP3claimpresumed.",
+    "reviewer": "Read/hash/sourceonly,noGPU/build/repeated1124"
+  },
+  "remaining": [
+    "Actualall6tier24>16>8>4>2>1comparisonvscurrent86cb/Dense, requiredquality/full24capacity/nativeID/drain/source",
+    "GenericI32stack64/nativepeak/capacityuncertaintyretaineduntilactualreceipts; old549componentnotfullmodelproof",
+    "Fastiterationnotservice/85/600/broadquality/SUPERIORqualification; lower-tiertradeoffsreported/Rootdecision"
+  ]
+}

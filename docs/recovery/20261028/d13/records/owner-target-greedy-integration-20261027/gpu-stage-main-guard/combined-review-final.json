@@ -1,0 +1,36 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T21:08:35.966415+00:00",
+  "status": "CLOSED stage-only spawn-import entrypoint correction; ready Root finite TP8 retry",
+  "reviewer": "/root/cleanup_review",
+  "source_commit": "5ff2be14b5f5efe0c265654769dd39750b45a2ca",
+  "runtime_wheel": "997e4c08df3fcb87c03f143d1d9a3ed91695a4a46dd1b3f3dd84e91b6ed8a465",
+  "runner": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-greedy-integration-20261027/gpu-stage-main-guard/package/run_controls.py",
+    "sha256": "0b8e8f9b3490a673a4a8acea3afcb5b397ff55d213e8b8e65c81e21480f50454"
+  },
+  "finding": {
+    "rules": [
+      "C0",
+      "U0",
+      "T3",
+      "X4",
+      "Q2"
+    ],
+    "cut": "Stage ran pytest.main at import time. Spawn child reimported __mp_main__ and recursively entered pytest; Root actual3.97sDocker1 was stage failure, not numerical result. Reviewer had checked byte identities but missed this execution cut.",
+    "remediation": "Sole owner moved exact controller body into main(), invoked only under __name__ == __main__. All original pytest arguments, oracle source, source HOLD, wheel and body AST retained."
+  },
+  "structural_main_body_AST_equal": true,
+  "actual_no_GPU_spawn_import_control": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-greedy-integration-20261027/gpu-stage-main-guard/no-gpu-spawn-control.json",
+    "sha256": "d2a3e6b953d6df04e3830b02f526b3270c3945d13ef9316fa118070783cf84b3",
+    "scope": "runpy __mp_main__ with injected fail-on-call pytest; no invocation/model/extension work"
+  },
+  "scope_recheck": "Current task all8 owner-target fixture uses multiprocessing.spawn and guarded runner. Grouped finite GPU fixture is single-device and has no spawn call, so its top-level pytest runner is not this child-import cut. Historical unguarded failed stage remains immutable. Related CPU ProcessPool entrypoints are being reviewed separately under Root concrete-pattern scope.",
+  "stage_receipt": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-greedy-integration-20261027/gpu-stage-main-guard/stage-receipt.json",
+    "sha256": "984ae0e8f26609a4a2d3a6ba4cc2e322602cb1f76f245539f1ef8cb6189c676b"
+  },
+  "no_runtime_or_oracle_change": true,
+  "pending": "Root actual TP8 retry/numerical/model/quality/P3; source staging and import safety are not numerical success"
+}

@@ -1,0 +1,43 @@
+{
+  "schema": "tensorfold.N24reader-requested-object-envelope-v2",
+  "at": "2026-10-28T03:31:52.197991+00:00",
+  "target": "Pinned64-bitCPython3.12.3/defaultjson.JSONDecoder Cscanner (noobject/object_pairs/parsehooks), normal4efeSDK; instrumentedprivateDenseN24only",
+  "units": "C andQ countUnicodecodepoints, notUTF8bytes; requestedPython/nativeobjectstorage, notuniversalallocatorarena/RSS/nativeKineto guarantee",
+  "C": 16777216,
+  "Q": 1048576,
+  "decoded_value_lifetime": "OwnedStream.value deletesalreadydecodedboundaryvalue beforemore/reparse; actualrealdecoder CHUNK==JSONlength regression assertsnolocalvalueatlookahead andsamevalue+UTF8SHA. AtmostpreviousyieldedJSONtreeandcurrentJSONtree; no3rdduplicate. Headerparsed/discarded.",
+  "character_credit_proof": {
+    "credit_bytes_per_source_character": 64,
+    "arrays": "DefaultCscanner createsexactbuiltinlists byappend. Listallocation56+8*(((n+n//8+6)&~3)) <=64*(n+1) for n>=1; emptylist56<=64. Arraybrackets+commas supply n+1 sourcecharacters.",
+    "objects": "DefaultCscanner createsfreshUnicode-key dicts, onlyinsertion/overwrite, no deletion/churn. Forn=1..5 size184<=64*(2*n+1); largerfreshUnicode tables use16Bentries and<=8Bindex/slot with2/3load anddoubling, boundedby64*(2*n+1). Objectbraces/colons/commas supply2*n+1characters. Duplicateinputpairs addcreditwhileoverwrites do notincreaseentries.",
+    "strings": "CompactUnicodeheader<=80+4*decodedlength, sourceJSONstringlength>=decodedlength+2; <=64sourcecharacters credit. Escapesonlyincreaseinputlength. Allkeys/valuesdefaultbuiltinstrings, no arbitrarydestructors/hooks.",
+    "other_scalars": "Builtinfloat24, bool/None bounded; PyLong requestedlimbs<source-digitlength+header. AtleastoneJSONcharacterperscalar gives64-bytecredit; many-nodegrammar suppliescontainer/stringcreditsseparately.",
+    "memo": "Cscanner memo holdsdecodedkeys alreadychargedtotree plusonefreshUnicode dictionary. Keycount<=inputobjectpaircount; chargeanother64C boundtotheobjectsyntacticcharacters. Memo clearedaftereachraw_decode, notretainedwithpreviousyieldedtree.",
+    "scanner_working": "Another64C conservativecredit coverscurrentdecodedstringwriter/chunkjoin/numericconversion/returntuples/parsertemporaries. Sourcecharacters consumedbyeachtemporaryremainwithinonecurrentvalue; nohooks/cycles/arbitraryPythonpayloads. JSONrecursion restrictedbyselectedinterpreter; extra64MiBstackconservativelyincluded.",
+    "buffers": "16*(C+Q) coversoldbuffer/slice/newconcat/JSONDecodeError.doc overlap andUnicode4-bytekind; one1MiCharread/UTF8encode chunksalsocoveredbyfixedIOterm. Oversizecarrythrows beforeanotherparse, buttemporaryconcatuptoC+Q ischarged.",
+    "layout_validation": "One targetedselectedSDKtest validateslist/dict/Unicodecreditpremisesat0/1/2/5/6/10/32/1000andUCS1/2/4; sourcegrowthargumentcoversbounds, nottestsamplealone."
+  },
+  "terms_bytes": {
+    "previous_decoded_tree": 1073741824,
+    "current_decoded_tree": 1073741824,
+    "current_decoder_key_memo": 1073741824,
+    "current_string_number_parser_working": 1073741824,
+    "unicode_input_slice_concat_error_doc_buffers": 285212672,
+    "native_stack_extra_conservative": 67108864,
+    "summary_tables_and_labels": 8388608,
+    "fixed_IO_decoder_error_chunk_objects": 16777216
+  },
+  "total_requested_envelope_bytes": 4672454656,
+  "funded_bytes_per_rank": 6442450944,
+  "spare_bytes": 1769996288,
+  "global_reader_funding": 51539607552,
+  "admission": "Rootexplicitlyauthorized6GiB/rankfuturediagnosticallowance; FiniteBackendCallercontrolcharges8*(reader+128KiBobserver) beforelogicalpublication. Physicalhostgatemayrefusebutneverreduce24Q8capacity. Model/worker/result/IOreport terms separate.",
+  "old_live_capture": "6ef/5dec immutablewithold2GiBfield; actualall8positivecapture/summarymaybereusedonlywithguards/rawSHA/retirement. No newfailurecontract/genericenvelopeclaimforoldrun.",
+  "native_Kineto": "Runtime-managednativecollection/exportpeakunproven; notfundedbyreader. Existing320GiBcgroupandactualnoOOM/source/CUPTI/clock/retirement remainseparate;8GiBsummaryacceptanceisnotnativeexportquota. NoGPUrerun requiredforCPU-onlyfix.",
+  "authoritative_sources": [
+    "https://raw.githubusercontent.com/python/cpython/v3.12.3/Modules/_json.c",
+    "https://raw.githubusercontent.com/python/cpython/v3.12.3/Objects/listobject.c",
+    "https://raw.githubusercontent.com/python/cpython/v3.12.3/Objects/dictobject.c",
+    "https://raw.githubusercontent.com/python/cpython/v3.12.3/Objects/unicodeobject.c"
+  ]
+}

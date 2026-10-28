@@ -1,0 +1,90 @@
+{
+  "schema": "tensorfold.combined-d13-final-source-review-v1",
+  "at": "2026-10-28T04:15:02.617426+00:00",
+  "reviewer": "/root/cleanup_review",
+  "commit": "c2de6ac36c80554bc837b4c6633a5caeaa85b632",
+  "source_hold_sha256": "3438c5c24f96af9ed7c6c9cb4be4af003585c382edb6e9aa776ed0bab4b9a610",
+  "whole_wheel_sha256": "1d83d23dc6ffb1def73486670c0ee096e3d876d44cbcfb3856afc38481a7a5b0",
+  "status": "SCOPED SOURCE/CLEANUP/COMPLIANCE CLOSED; component/stage/physical24/all6 evidence separately pending",
+  "scope": "new FrameDescriptors whole-frame pointer/control transport and prefix batch descriptor borrow; relevant canonical owner/state/coordinate/fence/resource/caller interfaces at up to3 relationship hops; exact reviewed Dense/Batch/native/startup suppliers reused",
+  "objective": "tier24>16>8>4>2>1; Root owns acceptable lower-tier losses, all regions disclosed;24fullnativeQ8/context/FP32 recurrence/required quality remain hard; quick all6 iteration, no duplicate broad suites",
+  "findings_dispositions": [
+    {
+      "id": "dynamic-bucket-count",
+      "rules": [
+        "M1",
+        "V1"
+      ],
+      "disposition": "Fixed already149: actual bucket_count controls both funded envelope and materialized view catalogue; no arbitrary default9 restriction."
+    },
+    {
+      "id": "metadata-extent",
+      "rules": [
+        "M1",
+        "X3"
+      ],
+      "disposition": "Closed successor: source-derived per-layer/chunk8192+4096*actual_bucket_count, per-row4096 registry/transient plus4096 cached prefix-view=8192/row; raw32B/row prefix separate. Selected04cf SDK conservative full Tensor/native/view extents and held149census reused. Requested controlled extents distinguished from runtime allocator/RSS/native event residency; no universal RSS claim."
+    },
+    {
+      "id": "hot-dispatch",
+      "rules": [
+        "D13",
+        "C1",
+        "S0",
+        "F0"
+      ],
+      "disposition": "Fixed successor: unnecessary per-forward options dictionaries/** expansions and Bound positional tuple removed. Independently checked both explicit bindings and unchanged prepared/replay helper ASTs against149. No P3 equivalence inferred from structure."
+    },
+    {
+      "id": "future-host-obligation",
+      "rules": [
+        "M1",
+        "V1",
+        "X5",
+        "Q0"
+      ],
+      "disposition": "Fixed successor: retain complete GLOBAL packet host obligation and early pre-allocation preflight; add same full obligation without materialized credit into final Engine.host_capacity immediately before authoritative admit. Kept separate from preallocated GPU credit. Exact Engine-call controls verify summed term,23 refusal before stream/window publication,24 acceptance."
+    }
+  ],
+  "independent_source_checks": {
+    "clean_current_commit": true,
+    "source_hold_paths_hash_matched": 38,
+    "held_evidence_files_hash_matched": 17,
+    "packaged_canonical_source": "719 source bytes matched current tree; wholewheel hash matched held source",
+    "native_C_CUDA_headers": "all96 corresponding source files independently byte-identical86cb wheel",
+    "Dense": "exact reviewed4efe wrapper and CUDA suppliers retained",
+    "BatchPrelude_submit": "inverse only descriptor-acquisition and native argument substitution restores exact694b function AST, including all eligibility/numeric/publication/counter/failure clauses; legacy fallback acquisition first5 statements exact",
+    "startup": "reviewed694b three-authority mechanism reused, newFrame private allowlist only; native kernels/State format unchanged",
+    "metadata_and_hot_proof_sha256": {
+      "metadata-envelope-proof.json": "c0c8ab4977d59e985f1988dfd2eb992c41424a8b2520f6444a5b573211e94cdd",
+      "hot-dispatch-inverse-AST-proof.json": "ed91cff721cf93112964170f86b771bd38489985931d5b66a315f36149625970",
+      "batch-submit-inverse-AST-proof.json": "516795637b6266348bf0fe34435306c0eb4dc88430d60598c62316b00169884c",
+      "native-math-supplier-proof.json": "859700d54585e3ea09a9f0e544828b96245c88341df6df9113a6f32e5a1f6962"
+    }
+  },
+  "ownership_reasoning": [
+    "Canonical actor owns complete frame; exact original State/span/issued-frame identity and version/generation/position lease retained. Catalogue validation before frame and cut validation remain; no general concurrent State API guarantee invented.",
+    "Only pointer/control metadata is hoisted. Projection/native preparation/cache append/indexer commit/pool transactions and mandatory status checks remain at original layer/State cuts.",
+    "One pinned H2D packet includes immutable4-word per-row position/status/span prefix. Borrow validates active canonical buffer, source frame, exact row spans and State epochs; cross-stream borrowers join upload.",
+    "Every canonical D2D table/control write joins last upload and native_done as required. Frame done joins final canonical write/native consumer before reuse or State mutation. Unknown submission/record/fence errors poison and retain owners until positive global retirement.",
+    "Partially constructed packet is journalled before fallible allocation; only decode/MTP packets, not unused prefill. Legacy BatchPrelude owner remains for real non-frame/prefill fallback; N1scalar retained.",
+    "State and coordinate mutation guards precede relevant publication; serialized migration/copy ownership contract retained. Graph retirement precedes canonical owners.",
+    "Typed fixed-view catalogue and wrappers have lifetime/synchronization purposes. No verified dead production/oracle path removed merely because not selected."
+  ],
+  "verification": {
+    "author_focused_final": "124 PASS9.98s/Ruff/pip/normal719+FDc79; command/exit/log held and hash-checked",
+    "reused": [
+      "149e1333+2 and preallocation/field/version/retirement controls",
+      "86cb81GPU math/currentDense/MTP and dynamic-batch source review",
+      "694b380CPU startup/current-batch review"
+    ],
+    "reviewer_execution": "read-only Git/AST/ZIP/source/hash checks only; no GPU/remote/heavy duplicate suites or source edits",
+    "old149": "held59GPU numerical prototype remains unchanged; its missing final future-host transfer and unnecessary hot dispatch are superseded only by this source, not retroactively claimed fixed"
+  },
+  "remaining_gates": [
+    "fresh exact component59 stage and Root execution for changed prefix-borrow integration",
+    "actual Engine24fullwindow physical admission and complete six-N quick screen/quality/native counter/drain evidence",
+    "repeat/stability/fullhistory qualification deferred per explicit quick-iteration direction, not silently waived",
+    "compare against current development reference86cb; no selection, superiority, service qualification or85/600 success claim"
+  ]
+}

@@ -1,0 +1,75 @@
+{
+  "schema": "tensorfold.combined-d13-review-v1",
+  "at": "2026-10-28T00:36:16.851402+00:00",
+  "status": "CLOSED BEST5635 N1 toolsource+stage review; actualcapturependingRoot",
+  "scope": "N1selection/BoundGraphhostlabel/closedv2 integration and sourceauditfix onclosed02643; inheritedprotectedcapture/lifecycle/observerhelpers reused within3hops; no APP/math audit",
+  "commit": "3f460a4f8ce83479cc035ca2d7b5d9f4be1b9e8c",
+  "hold_sha256": "cc067d1714a695c885dfc71a740eeebb5b17ae885eec1298728f023dcc8fe883",
+  "APP": "5635/a7b1srcdiffEMPTY/717source+FDc79; Ring-onlyprofileenums/sourceleafabsent",
+  "findings": [
+    {
+      "rules": [
+        "T0",
+        "V1",
+        "X5",
+        "Q0"
+      ],
+      "finding": "Initiale1b0 retainedRing-onlydescriptor_upload.py requiredsourceauditentryabsentfrom5635, so installed_identitywouldfailbeforecapture. Caughtbeforeexecution; originalstagewithdrawn.",
+      "remediation": "3f460 removesonlynonexistentleaf, keepsunconditionalauditofactualrequiredsources/wheel/RECORD. Actualnormal5635wheel integrationtestwithartifactENV runswithoutmocks; CLIhelp512v1/2048v2/N1v2literalfixed."
+    }
+  ],
+  "structural": {
+    "changed_vs02643": [
+      "arguments",
+      "project_observers",
+      "run_fast_grid",
+      "run_concurrency_leader",
+      "launch"
+    ],
+    "unchanged": "Allotherfunction/classASTs includingRankCapture/observed_call/source+protectedchecks/clockanchors/fatalandretirement helpers equalclosed02643; observermodulebyteexact67a10; finitehelperbyteexactclosedbebf7"
+  },
+  "dispositions": [
+    {
+      "rules": [
+        "F1",
+        "F2",
+        "A0"
+      ],
+      "status": "clean",
+      "proof": "ExplicitN1onlywithv2/2048, same30sready/frozen10s/ordinaryEOS/cancel/realdrain; exactlyoneinstrumentedcohortaftercheapbringup, noall6/qualitycomparisoncredit. OldN8/N16optionsretainvalidv1/v2domains. NativeoutputIDsandtrueactivewindowcontracts inherited."
+    },
+    {
+      "rules": [
+        "C5",
+        "C6",
+        "U2",
+        "O1"
+      ],
+      "status": "clean",
+      "proof": "NewBoundStateGraphs.forward ordinarymethodlabelusesexistingguardedobserved_call, preservingprimaryandlabel/timercleanupsecondary. Existingdescriptor/static/framealiaslabelsandstaticmethoddescriptors/restores unchanged. Max128bindings/134failurejournal, perrank128KiB/global1MiBobserverreserve plusv2callback/nativepointerfunding beforeadmission unchanged; noGPUqueries ornewkernelmath."
+    },
+    {
+      "rules": [
+        "F3",
+        "D13",
+        "P5"
+      ],
+      "status": "clean",
+      "proof": "Bound-pieceslabelattributesactualhostreplaycall; doesnotclaimPythonlabelsinsidecapturedkernels. Existingavailablegraphcounterdeltaretainsactualfields, notinventedzeros/devicecompletion. No verifieddead/duplicatedpath; closedversionedv2andreferencecomponentoracles retained. RingN1stagehistoricalunexecuted, notusedasBESTbaseline."
+    }
+  ],
+  "evidence": {
+    "CPU": "160normal5635CPU8.15s/Ruff/pip/help includingREALinstalled_identity/digest/wheel/RECORD integration",
+    "log_sha256": "3f21d7fd6916518c827c00b226563867de48d7d033636b726f35beb023fb0c78",
+    "provenance_sha256": "8245d662ccf4020cf105e95f250fe59ff3b0d5a6f9f20ffd91179eef335378b5",
+    "stage_files": 18,
+    "stage_ready_sha256": "ddabf9daf95f7f9c5b1f27ecd4d2a419fe84b69b212be982ab2f34772065f5c3",
+    "stage_manifest_sha256": "df609e9eece5faba8184ab4886ae368f9eba70226f35fb30561c5eb72b107284",
+    "reviewer": "Read/hash/AST only; noGPU/build/duplicatetests"
+  },
+  "remaining": [
+    "Rootactualall8protectedCUPTI28/source/clockanchors/tracehash/retirement andN1frozenwindow/nativeIDs proof",
+    "Actualgraphlaunchvsplain/countercorrelation fromtrace, noP3numbersfrominstrumentedcapture",
+    "All6unprofilednonregression/quality/repeats/85+600goals remain separate"
+  ]
+}

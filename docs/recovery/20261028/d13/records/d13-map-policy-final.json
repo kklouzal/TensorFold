@@ -1,0 +1,109 @@
+{
+  "schema": "tensorfold.d13-shared-anonymous-map-policy-final",
+  "version": 1,
+  "status": "closed_bounded_source_delta_image_target_verification_separate",
+  "base": "fc5e6dd42f0714dd7fe527ad42b2cc5dd1977449",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/map-policy-source-hold.json",
+    "bytes": 1593,
+    "sha256": "e3c574221a0f6fa3338f10b66311921861c99f2f0fb74cc1a80f905e8975c1cf"
+  },
+  "held_paths": {
+    "README.md": {
+      "bytes": 155668,
+      "sha256": "dc5fb81f5539c205ba3f48e256fbec52ab58e235f7472c3ac85e0c748dd3fd9f"
+    },
+    "deploy/v100/audit-policy-build-host-v1.json": {
+      "bytes": 3435,
+      "sha256": "733a1964ef613a90ed5ce9b7e560865b7bb992c47df9f088a2a06cad20461db8"
+    },
+    "deploy/v100/source-foundation.md": {
+      "bytes": 24020,
+      "sha256": "977e91c6f53a6205d6d8e7cfd5435073d7bd28a0e365b00d70c66a357368be1c"
+    },
+    "deploy/v100/source_foundation.py": {
+      "bytes": 71678,
+      "sha256": "2c94b1e1606603231f2b32dcda8ef042dd016102dcd8fb2220a2e9b76dd89d9b"
+    },
+    "tests/test_v100_runtime_policy.py": {
+      "bytes": 11981,
+      "sha256": "27ff6697cd3a7fd5e2c80a866ff39228353a23adbb62aeff18b64353196a8734"
+    },
+    "tests/test_v100_source_install.py": {
+      "bytes": 16864,
+      "sha256": "526d9778c45f10f18b52990ff773acdab3c7ff66524743f2fa3cf910daa7e00f"
+    }
+  },
+  "scope": "Only source_foundation runtime maps classification, explicit policy input/manifest tag, raw/out-of-band data observation and stable identity projection, affected66 tests and2docs; <=3 relationship hops. No general cleanup or broader runtime/security audit.",
+  "review": [
+    "Exact exception requires path /dev/zero (deleted), rw-s, offset00000000, kernel namespace device00:01, positive decimal inode and positive extent. Everything else ending deleted retains the fatal guard before source/DSO classification.",
+    "Nondeleted canonical-path and driver/software DSO ownership logic retained; no executable/provider/source/unknown deleted fallback.",
+    "One classifier separates driver/software artifact sets from versioned count/byte observations. Native source purpose justifies extraction; no second map registry or payload archive.",
+    "Mutable count/bytes are visible from raw runtime_identity and explicit audit diagnostic sink/CLI; excluded from installed software identity/proof hashes so legitimate data allocation does not stale opaque source/media authority.",
+    "Capture/rebind/audit paths consistently omit volatile data from authority; explicit mapping-policy token required in policy input and new manifest. Original immutable byte/config/producer validation preserved.",
+    "Two docs describe exact supported fingerprint and retain all device/model/compiler/performance gates; no broad deleted-file exemption or qualification claim."
+  ],
+  "assessment": [
+    {
+      "candidate": "accept any shared nonexecutable devzero-deleted map",
+      "disposition": "constraint-ruled-out; earlier prototype narrowed to exact observed permissions/offset/device/inode contract before final HOLD"
+    },
+    {
+      "candidate": "include mutable allocation counts in code authority hash",
+      "disposition": "constraint-ruled-out; legitimate allocation would stale authority; selected explicit data-observation channel remains separate"
+    },
+    {
+      "candidate": "duplicate software-artifact/provider verification",
+      "disposition": "not introduced; existing validation and provenance reused"
+    }
+  ],
+  "verification": {
+    "all6_current_paths_match_hold": true,
+    "unit_log": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/map-policy-unit.log",
+      "bytes": 99,
+      "sha256": "136525c78982b17924f3349dc8c43dfc0503eba429acc237cb920aa620a23e96"
+    },
+    "tests": {
+      "passed": 66,
+      "seconds": 0.68,
+      "log_sha256": "136525c78982b17924f3349dc8c43dfc0503eba429acc237cb920aa620a23e96"
+    },
+    "ruff_log": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/map-policy-ruff.log",
+      "bytes": 19,
+      "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+    },
+    "target_cpu_reproducer": {
+      "path": "/Warehouse/TensorFold-wt/v100-adaptive-sc117-runtime-20261025/task-artifacts/v100-remote/app-f8-first-bringup/anon-map-reproducer.stdout",
+      "bytes": 689,
+      "sha256": "3542b9514e9f0b3cae7e8fed783e57b0300a8b7b95956eb1a0a5b02ed847c176"
+    },
+    "target_native_mapping_observation": {
+      "path": "/Warehouse/TensorFold-wt/v100-adaptive-sc117-runtime-20261025/task-artifacts/v100-remote/app-f8-first-bringup/retired-mapping-finding.json",
+      "bytes": 9922,
+      "sha256": "207c12dba89f7f6dc40a69c95caeef724b9dbe02050e73863f315e8200fb55f7"
+    },
+    "target_observed_fingerprint_rows": 40,
+    "target_observed_bytes": 83886080,
+    "target_all_rows_match_exact_exception": true,
+    "controls_read": [
+      "NativeCPU mmap(-1,MAP_SHARED|MAP_ANONYMOUS,READ|WRITE) creates real kernel fingerprint and closes in finally",
+      "10 source/provider/executable/unknown/private/device/offset/inode refusal cases",
+      "Identity stays exactly equal as data counts change; explicit diagnostic sink receives fresh values"
+    ],
+    "unchanged_APPwheel": {
+      "sha256": "805246a27273b16948d984ecf0072fe71705ecad605b02a1e952eb8810718e60",
+      "matched_source_files": 714
+    },
+    "no_app_source_diff_from_base": true,
+    "reuse_no_new_tests_or_build_by_D13": true
+  },
+  "limitations": [
+    "Source/API proof only; fresh immutable policy image build/current-target source+combined software audit required",
+    "Target original blocker/CPU reproducer history preserved; source fix alone is not device/model readiness",
+    "No Torch/media/application/kernel compilation or numerical/memory equation change in this delta",
+    "Actual device/model/quality/capacity/allocator/RSS/NUMA/compiler6111901/P3/P4/deploy gates remain separately owned"
+  ],
+  "reviewer_changes": "Durable source disposition only; no source/Git/remote/service change or repeat suite."
+}

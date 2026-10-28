@@ -1,0 +1,210 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T20:54:17.866441+00:00",
+  "status": "CLOSED scoped source cleanup and compliance; ready for Root-owned finite GPU oracle, not performance selection",
+  "reviewer": "/root/cleanup_review",
+  "policy": {
+    "path": "/home/kklouzal/AGENTS.md",
+    "sha256": "f34b7836eb0703ccef0d85953d3dcd1a8fca092faaeff8815195c0c0126c435e",
+    "mode": "one combined D13 reviewer; later user policy overrides historical repository reviewer pairing"
+  },
+  "workspace": "/Warehouse/TensorFold-wt/v100-grouped-moe-trial-20261027",
+  "commit": "379af620b224af21f38e3d2ceca8f8f1419bce27",
+  "base": "b379b302b2e6d1fd9aa2756ff7e1301a9d9c1439",
+  "successor_review": "df0feb53..379af620; original sixteen-path grouped math/ownership/workspace review reused",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/source-hold-final.json",
+    "sha256": "f56fea58e9ebf9df1956fdee6cac289d4cc1b3772ef2f8c725fd6e8f3cad3194",
+    "current_paths_verified": 16
+  },
+  "wheel": {
+    "path": "/evidence/verification5/wheels/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "sha256": "5b4fc6f61f731a01109ac1f1a209b228ec4ccb7dd09c58dacfd8e95a17abf956",
+    "size": 3120542,
+    "local_path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/verification5/wheels/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl"
+  },
+  "checks": {
+    "all_716_current_source_files_equal_wheel": true,
+    "FD_sha256": "4a0625bdf0a494437058e0ddbc62f04d7092c8cc64178e24fc17d669d2abd984",
+    "all_29_held_evidence_hashes_current": true,
+    "GPU_stage_local_files_verified": 17,
+    "old317_plus10_subtests_reused": true,
+    "successor28_normal_installed_seconds": 2.87,
+    "Ruff": 0,
+    "pipcheck": 0,
+    "SM70_compile_link_import_CPU_refusal": "PASS, module73ac2db2; no expert_plan dynamic exports",
+    "affected_legacy_SM80_TU_compile": "PASS; no device numerical claim",
+    "optional_Torch": "actual no-Torch collection expected module skip/pytest5 before backend import",
+    "no_duplicate_build_tests_or_GPU_actions": true
+  },
+  "structural_proofs": {
+    "planner_header": "Removing only anonymous namespace wrapper restores df0feb53 header byte-for-byte; algorithm and launch topology retained",
+    "numerical_CUDA": "Current gguf_ops.cu prefix before appended prepare_grouped API equals original numerical source byte-for-byte",
+    "GPU_oracles": "All eight original GPU test/helper function ASTs unchanged; only optional import prerequisite and residency fixture added",
+    "modern_consumer": "Prior whole-source inverse proof retained; current experts.cu unchanged in successor; affected SM80 TU compiled",
+    "resources": "Existing Plan/member/count/activation buffers borrowed, no per-bank arena retained; fixed R4..32, slots<=33, E513, width80; aliases validated before writes; no CPU count read"
+  },
+  "findings": [
+    {
+      "rules": [
+        "C3",
+        "P1",
+        "M3"
+      ],
+      "finding": "Factored planner CUDA host stubs had external DSO linkage",
+      "disposition": "Resolved by anonymous namespace; nm-D verifies no expert_plan exports; original integer algorithm unchanged"
+    },
+    {
+      "rules": [
+        "T3",
+        "Q2"
+      ],
+      "finding": "New optional GPU test imported Torch before established dependency skip",
+      "disposition": "Resolved by importorskip before backend import; actual host optional collection proof bound"
+    },
+    {
+      "rules": [
+        "M1",
+        "S1",
+        "X4"
+      ],
+      "finding": "Actual bank scratch warm occurred after initial admission, so it did not prove pre-baseline kernel code residency",
+      "disposition": "Resolved via selected CUDA12.9 cudaFuncGetAttributes residency API for nineteen actual kernels before policy publication/model admission; scratch warm remains after load with precise wording"
+    }
+  ],
+  "cleanup_disposition": "Single authoritative integer planner retained; selected grouped specialization and independent native/BMM oracles have required roles. No further verified dead path, unjustified duplication or safe execution-neutral simplification identified within scope. No invented cleanup edit.",
+  "source_reference": {
+    "url": "https://docs.nvidia.com/cuda/archive/12.9.1/cuda-c-programming-guide/index.html#lazy-loading",
+    "section": "25.3.2",
+    "applicability": "pinned CUDA12.9 family; cudaFuncGetAttributes requests kernel code residency without executing the kernel. Driver code residency is included before physical baseline, not claimed zero memory."
+  },
+  "pending": [
+    "Root actual SM70 eighteen numerical/resource/graph component cases",
+    "Actual model output/quality and all-six N1/2/4/8/16/24 matched measurements",
+    "Strict N1>85 TPS, N24aggregate>600 and no regional regression",
+    "No claim of P3 equivalence for added dispatch overhead or selection from source structure alone"
+  ],
+  "history": "Original32c7/74dd/sourceproof/failure logs preserved, not overwritten; old source and build receipts historical.",
+  "stage_receipt": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/gpu-stage-final/stage-receipt.json",
+    "sha256": "56e299bd8d6864b837ea0ad424eabfb4c682dee4875954752c66e4ad669e7cfe"
+  },
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/ledger.json",
+      "sha256": "f0ec817ab148f70480a82195f402bf0147aba5c7830a9dd67425463c800f4dc6"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/source-proof.json",
+      "sha256": "bab16c956ebf5f975a30b9464a3994ce73cb80868d504d0f18aba0053cec3a56"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/inputs-v3.json",
+      "sha256": "0081dbc8c6d40e9f40d403bf71d5670389bcded5a8a4c00ee79ceb9a006b2485"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/verification3/command.json",
+      "sha256": "69283a9a415a1be1b004d164ee58ade12b04bb0e3463b5d5da4cdd68400df415"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/verification3/steps.json",
+      "sha256": "c5267b51e58922b6a537bce91c56588d613b03c1fe9ae44da7b6f5414f9ed974"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/verification3/exit.json",
+      "sha256": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/verification3/controls.log",
+      "sha256": "abf4f0c5059e19dcaad7babb8499f7bdf7647a1d1c1ea7fc2fcbb44957c09efb"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/verification3/ruff.log",
+      "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/verification3/pip-check.log",
+      "sha256": "9261363b733079a641c2e4cc9bc46ffa1d8336945a87f807b6cf68847dbc9b09"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/verification3/installed-content-before.json",
+      "sha256": "f24b2a0fac5cc799820964d0a473d62969d95c57c08bce3327362f3c7a53cc72"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/verification3/installed-content-after.json",
+      "sha256": "f24b2a0fac5cc799820964d0a473d62969d95c57c08bce3327362f3c7a53cc72"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/ruff-warm-fixture.json",
+      "sha256": "7c3544bf5f97d74c1957a9c7c11d8bbb5745a86ce90bf760335f48ad561d4ae8"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/compile/start.json",
+      "sha256": "2339d8c2af86bbb3702bf516baf17f5d699c0d6c1bb8916ca03025410a994247"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/compile/exit.json",
+      "sha256": "3b58244f1570176ba1e2732e644fe6e252f0970b468bbd271adc8f7b140c3184"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/compile/compile-component.py",
+      "sha256": "906d81df31f2cceed06fab0efde9abf43681d6d5549a007ac947436d58d92217"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/compile/compile.log",
+      "sha256": "bb4244677df76b45cf99cab23bddc09d7470d778c03f20ffa755b14d37b364c4"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/compile/compile-result.json",
+      "sha256": "babb1a017093a3fbf1cc5e12cd2e184d48446c59efb709380c6e4eb2a11ff9d4"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/compile/resources.json",
+      "sha256": "eb68def31671092c22047213fd649d2a8391ea52cadf6022b63410bc578da9b3"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/verification5/steps.json",
+      "sha256": "965e1594381be054485b010ec6a19568f50120d9f5df0525681a3ea3fc4a6939"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/verification5/exit.json",
+      "sha256": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/verification5/controls.log",
+      "sha256": "2448ec2a4daafb36cf75c49f1b093753935b4f623970aefe0261ce5fcf7e586e"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/verification5/installed-content-before.json",
+      "sha256": "3670fb6556dd04f9aaff69c10e69a6b234c7adc06df54b80790ac1459f4f4d41"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/verification5/installed-content-after.json",
+      "sha256": "3670fb6556dd04f9aaff69c10e69a6b234c7adc06df54b80790ac1459f4f4d41"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/compile-final/compile-result.json",
+      "sha256": "0406653fcc001af8869b6d22bf62de1816c0fd95d701c36acf77f475acdc89b2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/compile-final/exit.json",
+      "sha256": "fdcbce0ab8399fe10eeb658a8fca7da634c307a4fdec54274584cbbf0d46960e"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/compile-final/dynamic-exports.txt",
+      "sha256": "0a52ce62a4c52cf55978edc21e0924ad2ce883b5d1a0b80c0d625c36846b4ff9"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/compile-final/legacy-sm80/result.json",
+      "sha256": "f43d694d7e9f1ec257f1b6fa6917f959782b23021363bba79628d6955830b2de"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/gpu-fixture-final-ruff.json",
+      "sha256": "ee78abe40d9969c2327f535325f44c392755ad65261c3293e10c4555a7501b4a"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/grouped-moe-trial/optional-torch-final.json",
+      "sha256": "66279f6a42e90c78121a905dd5c9d8adcecc1ce7f271b21d971ef79e0d36f5e9"
+    }
+  ]
+}

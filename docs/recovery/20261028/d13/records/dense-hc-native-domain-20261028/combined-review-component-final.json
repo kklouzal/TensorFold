@@ -1,0 +1,32 @@
+{
+  "schema": "tensorfold.combined-d13-hc-mtp-domain-component-review-v1",
+  "at": "2026-10-28T09:07:20.504037+00:00",
+  "reviewer": "/root/cleanup_review",
+  "commit": "e96357ed2ab84d32e705c9288ef9018b7542ea1c",
+  "HOLD_sha256": "b77d4376871490a49cadbf4789611f63a204866daf9172f5cec21b21e5cbb7d5",
+  "APP_sha256": "74b1f123192b8f06a28ad64e94becdd3bd146a4e3bf065516f251045e64a09b5",
+  "status": "BOUNDED SOURCE/CLEANUP/COMPLIANCE +19-MANIFESTED-FILE NUMERIC STAGE CLOSED; currentbestintegration/P3 NOT certified",
+  "scope": "namedstockMTPfc_h physicalHCrows andexistingM32scratchowner/role/Engineforecast/callerABI, \u22643hops; reusecorrecttarget32/c517tiler proof, no broadretest orreviewerGPU",
+  "source_reasoning": [
+    "ForlogicalMTP role<=32 withHCphysical>32, onlyactualGGUFDense native32fc_h objectwithhidden-squaregeometry getsHC-onlyowner. Target/small/prefill/othermatrix/profile/layout/grad/alias/stream paths retainoriginalroute; no blanketDensecap raise.",
+    "Named_hc_rows_allowed requiresphysicalrows>32, \u2264logicalrows*HC, completeHCgroupcount andexactfc_h identity/hiddenK,N. Existinggeneric64/72scratch same; namedfc_h eligibilityalsoextendsphysical256/288 withinitsalready-fundedowner, notarbitraryotherprojection expansion.",
+    "Existingnamedcallerhn.view(n*4,2560) andBuffers.mtp_hs outputallocation alreadyownfullHCphysicalspan. Tileinput/outputscratchstaysconstantM32; no newlogical-to-physical result/partial allocation. Part-outer/tile-inner write/errororder andoriginalATenM32math/validation/source/dtypecasts/versiontracking unchanged.",
+    "Sameconstructionstream serialwriter, prepaid3alignedscratchslabs, finalcaller-ownedoutputcopiedbefore scratchreuse; unsupportedotherstream/layout/autograd/alias fallbackunchanged. HC-onlypartialsdict empty; modelgraphN1smallrows remainoriginal."
+  ],
+  "funding": [
+    "RawM32Hscratch3slabs:32*H*(2+2+4)+3*512=656896B/rank atH2560, perallocationalignmentpaid. Added64KiB/rank hostmetadata viaactualpre-admission roleforecasts. No outputbufferdoublecharge.",
+    "Enginegeometryusesactualrow_envelope(count); additionalMTPdevicecharge onlylogical<=32 domain, largerlogicalowneralreadyfundsgeneraltiler anddoesnotdoublecharge. Finalglobalhost adds tp*mtp_hc_host_bytes beforeadmit; mandatory24Q8floor/context/resourcechecks retained."
+  ],
+  "verification": [
+    "10heldsourcepathhashes and19stagemanifestedSHA/size rows independentlymatched; only3runtimePythonfilesdiffc517.",
+    "AllCUDA/CXX/GGUFDense/Concat/forward/mtp bytesunchangedc517 perheldstructuralproof; M32validation/tilebodyequivalence reused; no libmathflagwrites orprecisioncontract/tolerancechanges.",
+    "47CPU2.97s/Ruff/pip/protected/normal718FDc79/33collection0.59s reused. StrictselectedTrueFP16reduction/Falseaccum observes/asserts beforeafter, old32Falsewrongregionreference remainsnotcreditedtarget.",
+    "33currentGPUcasesUNRUNaslastreported:36partial/96/128/256/288, F16/F32,strides,actualmtpASTcaller,alias/stream/graph/abort; Rootonlylaunch. No duplicated32oracles demanded forunchangedmath."
+  ],
+  "disposition": "No remainingconcrete source/domain/ownership/fundingfinding withinprivatecomponent scope. Generic/default/independentoracles preserved; metadata/domainwrapper hasrealnamedcalling/ownershippurpose, notspeculativecompatibility.",
+  "remaining": [
+    "Rootstrict33actualselected-region/postnormal/sourceproof beforepromotion",
+    "TrackedcompositionontoCURRENTbest146f/7c0a (Router/GDN/startup3) withprofileeligibility/additivebudgets andactualall6/quality/counter/drain/capacity proof; older991f/c517 iscomponentreferenceonly",
+    "Tier24>16>8>4>2>1 Rootdecision; no P3/85/600/servicequalification oruniversalnumericequivalence claim"
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "status": "bounded combined source review CLOSED; actual model/all-rank observation/capture/quality/performance gates remain OPEN",
+  "hold_sha256": "0f86e856a4a8d4c52db508375a1096406bb13fd9d54be526fa092c7943fa099d",
+  "source_hashes": {
+    "src/tensorfold/families/qwen4_exp/cuda/service_memory.py": "d5a7d741a4ed601144caa070b1ad1cea4fbca77a61c218bb341c536d5bafefa1",
+    "src/tensorfold/families/qwen4_exp/cuda/multi.py": "57c5a3ed6fc594ea2b954cdcc47b29cc1b0948fd907820acb2aa919ea7dbf583",
+    "src/tensorfold/families/qwen4_exp/cuda/multi_graphs.py": "d5b0386e8a10c79dd9e96b5658db8b73c92e73fd66d71d4066a2fa71bd48c6b3",
+    "src/tensorfold/families/qwen4_exp/cuda/engine.py": "7e9b45ebf95908daba5a437a5c17266692aac3b177f5bf3444b8668b4b8f98ef",
+    "tests/test_gpu_materialized_graph_credit.py": "1b8350ecd895eae16a751465584d4f3b4d8c47a37f36ea6afc5b43c01f7e604b",
+    "README.md": "abf1e40010da6ec7c6f3f80439bdd9f9e65dcef768359c193890d92d6f4a392e"
+  },
+  "wheel": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/source-packed-graphs-trial/materialized-gpu/wheels/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "sha256": "55f79c1f78e035615a175befb36cee1511f72ddf81ec97f6df218e3035003062",
+    "source_files": 715,
+    "all_source_bytes_equal": true,
+    "FD": "4a0625bdf0a494437058e0ddbc62f04d7092c8cc64178e24fc17d669d2abd984"
+  },
+  "controls": {
+    "start.json": "92575dc83a82bacf896f550da0236b2b7661a97a1d8f8a96189aea3276e45b8e",
+    "exit.json": "a92bc4cd425c70036cd67bd6fadc19fbeb83e24efeaf125f4e67a1f8f4eb9a86",
+    "controls.log": "bfa28ca4c730bf45cc31d4f42fbe17902126bb2695d691d116decfd0ce49a56d",
+    "package-manifest.json": "2396f2d8d5fd289f4f0678fa23be1880c9af90d52e30f4cd8bdefe05c242d81d",
+    "wheel-provenance.json": "cd19453091bbbea00af4731aba866c743f8b94684338cf5aeae59ef6e43839af"
+  },
+  "715_package_rows_and_FD_current_match": true,
+  "scope": "Six affected paths and direct state/history ownership/capture/capacity consumers within three relationship hops; prior graph activation/active-grid proofs reused",
+  "findings": [],
+  "dispositions": {
+    "eligibility": "Automatic exact unique N1 contract, SM70/TP8/full resident GPU windows; before requests every canonical State is idle/free. Fixed cache/indexer capacity/placement/slot/rank plus zero growth/copy and no pending migration checked before materialized allowance. No physical context/N or tensor-validation guard lowered.",
+    "room": "Physical free after existing floor and absolute cap, subtract complete future service; no caching/private graph pool spare credit. All-eight successful integer proof and future equality required; minimum rank room governs capture. Explicit cap now also debits existing external mappings.",
+    "publication": "Original static header remains recorded. Materialized serving envelope and later graph reservation reconcile under the same selected budget; engine digest seals policy version. Failure retains old capture/owner/cleanup behavior.",
+    "cleanup": "Shared future validator factors the previous RAM tail exactly apart from domain-neutral error wording. No verified dead or duplicate production path remains; RAM and unique GPU ownership prerequisites have distinct necessary purposes.",
+    "proof": "Underlying State/OwnedKVCache/CompactIndexer constructors and fixed unique resize contract establish that the checked canonical pool is materialized; no arbitrary forged object or allocator/driver/RSS promise is granted.",
+    "numerics": "No model/kernel/attention/State arithmetic changes. Existing eager and capture numerical/oracle contracts and global-active>1 decline remain."
+  },
+  "independent_shared_RAM_validation_AST_equal_except_error_wording": true,
+  "offline_numbers": {
+    "rank0_initial_live": 4079484928,
+    "future_bytes": 3786833920,
+    "observed_room": 292651008,
+    "selected_budget": 29073342464,
+    "implied_serving_base": 28780691456,
+    "original_static_serving": 28923635136,
+    "capacity_windows": 26,
+    "source": "Root actual326f failure diagnostic; offline arithmetic only, no targetproof transfer"
+  },
+  "verification": "128normalinstalledPASS4.63s/Ruff/pip0; existingRAM+currentGPUproof+activegrid+activation+boundgraph controls",
+  "pending": [
+    "actual model all8 observation/capture/quality",
+    "strictN1>85/sameN1,2,4,8,16,24 comparisons"
+  ],
+  "limitations": [
+    "Offline Root diagnostic arithmetic is not a current all8 target proof",
+    "Actual model capture/quality and same-region1/2/4/8/16/24 performance/85TPS unverified",
+    "No reviewer source edits, GPU/remote action, duplicate build or suite"
+  ]
+}

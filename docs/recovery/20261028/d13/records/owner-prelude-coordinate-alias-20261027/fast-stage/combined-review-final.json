@@ -1,0 +1,60 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T22:50:28.649633+00:00",
+  "status": "CLOSED correctedprelude all6 faststage binding; Rootlaunch only after current53pass",
+  "reviewer": "/root/cleanup_review",
+  "candidate": {
+    "wheel_sha256": "32246b49a07dbc3b22ee6ff31c8745a1368fb3e203a0071ecddaa32b00bcf882",
+    "source_hold_sha256": "fc5e9976e0338bfa1dfae76d28c90515095df124e8c71fcbb9346bed249cf915",
+    "tool_sha256": "bd2b7a745ce52c92304bc764bb8271dc4e1dfc0ba8a4925f8b623e7ff14ed949",
+    "tool_dependencies": {
+      "tools/v100_backend_probe.py": "bd2b7a745ce52c92304bc764bb8271dc4e1dfc0ba8a4925f8b623e7ff14ed949",
+      "tools/finite_concurrency.py": "39e77fde13ef4d0a4ef59b8e531bc32b072096d714190ef3fc7993e5eb8cbffe",
+      "tools/finite_quality.py": "c498bd046e78c34bfc7db16c7decd43ec182151b24b3e09da282b9de0dac77a3",
+      "tools/benchmark_output.py": "ce7c0a0cdf80842dc67021ddc938ae32a2c8df39dfd4f36e5f48e72149484cfa",
+      "tools/prepare_owner_trial_manifest.py": "cd90a33ff81c60cffc1f180f0a756312cec2d06b4a29d4322cf622d7ca3b2741"
+    },
+    "execution_manifest_sha256": "95336693957314d74ba50328679d2b9a37552cb3e11a891b7a4a1900503e5673",
+    "source_profile": "source-owner-target-prelude-trial",
+    "session_ceiling": 24,
+    "recovery_commit": "710c9b6a3b91072d1d15a8356cfe91464cd1419b",
+    "triton_cache_root": "/cache/triton-owner-full8-v1",
+    "qualification": "ROOTFIX3224 preservesissuedcoordinatealiases/mutationproofs. D13+actualtwo-attentionTP8regression53 beforefullmodel. Same6Nfast/qualityfunding; noP3claimfromsource.",
+    "funding": {
+      "follower_bytes": 262144,
+      "global_receipt_bytes": 2424832
+    }
+  },
+  "controller_sha256": "befc7dacf9c130eec3e5be028d78be95fc73650e74f006d6c8af95c838fac931",
+  "local_stage_files_verified": 17,
+  "delta": "Comparedclosedsharedprimary902fcontroller3987: onlyoutputdirectory/containername andupdated710c sourcecheckpointliteral. Candidatepins new3224wheel/fc5eheldsource; unchangedbd2btool/finite39e77/qualityc498/benchmarkce7/native9533manifest/cache256Kreceipts.",
+  "contracts": "Samefullnative262144/Q8/FP32state/TP8MTP2.7/ceiling24,512outputs/30sready/10sdecode/sixN/independentfullquality/finalactualdrain/failurecontainment. Sourcealiasfix reviewed477598, no stale902ffullmodelresult qualified.",
+  "actual_GPU": "Rootreportscurrent53PASS23.96sDocker0/716FD; strictsame-nativeoraclesunchanged, independentTorchdriftreportedmeasurementonly. Doesnotqualifyfullmodel/quality or 85/600.",
+  "pending": "Rootcurrentcorrectedmultilayerwarm/model/quality/all6, no reviewerGPU or duplicatecheck",
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-coordinate-alias-20261027/source-hold.json",
+      "sha256": "fc5e9976e0338bfa1dfae76d28c90515095df124e8c71fcbb9346bed249cf915"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-coordinate-alias-20261027/combined-review-final.json",
+      "sha256": "477598ec82522f24c6381de423758ab54f474981aec4abd324c345bff1c7ef97"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-coordinate-alias-20261027/fast-stage/stage-ready.json",
+      "sha256": "9a2ed92bc3f019bcbc08848de789ce3bea268672ff36aac8df31b3b5a5ff02bb"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-coordinate-alias-20261027/fast-stage/package/stage-files.json",
+      "sha256": "6787a5c8cc3e314f14943f2da12f33ff52951163ca06eeb3c67c633dd266a301"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-coordinate-alias-20261027/fast-stage/package/launch-finite.py",
+      "sha256": "befc7dacf9c130eec3e5be028d78be95fc73650e74f006d6c8af95c838fac931"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-coordinate-alias-20261027/fast-stage/stage.stdout",
+      "sha256": "6dad6d4f39f12837159c710c49b97bcf945e2386a8c892e858c6b1389f213f6d"
+    }
+  ]
+}

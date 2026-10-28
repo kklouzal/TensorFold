@@ -1,0 +1,17 @@
+{
+  "purpose": "Exact original arithmetic-failure scenario replayed after correction; no model/remote action",
+  "python": "3.14.4",
+  "source_sha256": "89aff7541db40a1a58423fb2bfd019c2498ae35ef668cb113e6286dadb13c293",
+  "fault_line": 100,
+  "would_add": [
+    2264,
+    2264
+  ],
+  "would_result": 4528,
+  "both_operands_and_result_non_small_integer": true,
+  "primary_identity_preserved": true,
+  "cache_is_empty": true,
+  "reported_cache_bytes": 0,
+  "get_returns_unaccounted_entry": false,
+  "cache_reusable_after_failure": true
+}

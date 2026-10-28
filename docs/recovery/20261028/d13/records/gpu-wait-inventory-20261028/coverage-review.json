@@ -1,0 +1,163 @@
+{
+  "schema": "tensorfold.gpu-wait-inventory-independent-coverage-review-v1",
+  "at": "2026-10-28T06:06:37.545539+00:00",
+  "reviewer": "/root/cleanup_review",
+  "status": "COVERAGE_COMPLETE_FOR_DECLARED_SCOPE",
+  "authority": "NEWUSER requested complete GPU-wait inventory first; Root assigned single task-wide combinedD13 plus independent readonly coverage review and explicitly expanded scope to selected V100 text pipeline and reachable conditional control/lifecycle/service/diagnostics gates",
+  "scope": {
+    "source_commit": "7de2259b1a402542b91fde9e906a9ebb07f4c949",
+    "runtime_wheel": "86cb036dbcd2068f7b86956a8c3968355aa6509862b20e64f9c2a87f61f17500",
+    "region": "8V100SM70/TP8/native262144/Q8K+V/FP32rec/24resident/row32/stockMTP2confidence.7/PLEhostRAM; finitebackend and supportedconditionalAPI/lifecycle separated",
+    "scope_file_sha256": "712194991f7f9260dff885c9a1427f57b031c51ccfa74eb1dbcd9bf3a37cf063",
+    "not_a_claim": "allTensorFold models/platforms/media implementations or every opaque vendor instruction, exhaustive hardware optimality, current timing attribution, numerical/performance/service qualification"
+  },
+  "reviewed_master": {
+    "path": "inventory.json",
+    "sha256": "7a223bf7c430c915318a5a6a1be34472bdafef7db2f3632b57691db49e652a1c",
+    "status_at_review": "IN_PROGRESS_NOT_COMPLETE",
+    "groups": 362,
+    "unique_primary_refs": 691,
+    "partitions": {
+      "compute": 54,
+      "owner_graphs": 47,
+      "transport": 60,
+      "startup_io": 53,
+      "decoding": 65,
+      "service": 52,
+      "root_control": 2,
+      "diagnostics": 29
+    },
+    "merge_validation_sha256": "a81910e28d867d70d9aa79517bc1ede6003ae62e19435873f6ccbc5cba138c5e",
+    "missing_partitions": [],
+    "reference_errors": [],
+    "duplicate_ids": 0,
+    "required_normalized_fields": "all present; source/function scopes concrete; rawrecords and ALLsource_locations retained; no see-pinned placeholders"
+  },
+  "partition_manifest": [
+    {
+      "partition": "compute",
+      "file": "compute-inventory.json",
+      "sha256": "c3ad4b83c36fbf68278e3e97153dc19e75218badc58f94bdd581755206dfa730",
+      "groups": 54
+    },
+    {
+      "partition": "owner_graphs",
+      "file": "owner-graphs-inventory.json",
+      "sha256": "f49a18ee6a7ae2acf4c8f4a2566a12a763deaf54df0276e08904c7086faece9e",
+      "groups": 47
+    },
+    {
+      "partition": "transport",
+      "file": "transport-inventory.json",
+      "sha256": "878ffbc264f90f3a5541119591fa508ffdc3e8beb3b0684f013d44a73a11956f",
+      "groups": 60
+    },
+    {
+      "partition": "startup_io",
+      "file": "startup-io-inventory.json",
+      "sha256": "a28d156ef3f88886e7c3d7a2470340d871fbfacfea60cf334d7ed543688308d2",
+      "groups": 53
+    },
+    {
+      "partition": "decoding",
+      "file": "decoding-inventory.json",
+      "sha256": "97bf4399236befa5f98d94cbbbcc4c0995b47c161c75f429bb1f733f42fc4f36",
+      "groups": 65
+    },
+    {
+      "partition": "service",
+      "file": "service-inventory.json",
+      "sha256": "ac394001a38085d17a76d14ac5d25d6d5f9b8b6b8013a4675604e657f76b969c",
+      "groups": 52
+    },
+    {
+      "partition": "root_control",
+      "file": "root-control-inventory.json",
+      "sha256": "d055804e4b4fa4f8c2b80ea8f75027790680f52d56d921da0364bf44af230a85",
+      "groups": 2
+    },
+    {
+      "partition": "diagnostics",
+      "file": "diagnostics-inventory.json",
+      "sha256": "83063fdeabdb3a56b20179828c55eebf17471af0cfa6ca6406346cf67b19ba5e",
+      "groups": 29
+    }
+  ],
+  "independent_checks": {
+    "source_and_reference": "Owner26source hashes/current1109IDs+line extents and74historical rows across5revision/path pairs verified; compute35initialhashes+307API/118CUDArefs independently verified, C54newexpertPlan addition checked against actual caller; service33hashes/52groups/520refs verified; transport18initialhashes/59groups/290refs verified then currentT60/321ref merge/actualcallchains reconciled. Reused author/current master hash-line validations for remaining unchanged/expanded references; no duplicate full scans.",
+    "schema_and_integrated_graph": "Checked all362namespacedIDs, requiredRootschema fields, actualfunction/scopedcallchain names, current8partition file hashes, complete source_locations and Rootmerge0errors; read phase/caller/evidence summaries across all partitions.",
+    "normal_and_conditional_coverage": "Startup/file/header/tokenization/JIT/context/lazycode/weight+MTP+PLE/loading/admission+warmup; target/MTP math/routing/GDN/attention/indexer/ownedkernel barriers; CPUmaterialization/status/probability/tie/grammar/commit; NCCL/Store/queues/locks/callback/backpressure; State/prefix/migration/profile/retention/cancel/error/close; finiteharness/CUPTI/NCU/export/CPUanalysis all have grouped sites or explicit applicability/handoffs.",
+    "classification": "CPUblocking completion/rank/IO/lock and request-consumer waits, GPUstream/NCCL/kernel dependencies, asynchronous copies/markers, nonblocking metadata/refusal and CPU submission starvation remain distinct. Allocation/pagefault/lazyload/vendor internals are conditional/opaque, not every-allocation-sync claims.",
+    "measurement": "Historical4efe/f0a all8N24 costs are labelled as historical diagnostic, not current86cb costs or removable-time/utilization. No adding inclusive labels or treating NCCLkernel duration as wiretime; no current-site timing invented.",
+    "actions": "No maintained source edits, code cleanup, newtests/builds, GPU/profiling/model/remote-heavy runs or optimization selection in this coverage phase. Only inventory/evidence metadata and bounded reference/caller checks."
+  },
+  "findings_dispositions": [
+    {
+      "id": "unique-maps",
+      "status": "CLOSED",
+      "evidence": "owner0656 CPUmap event.synchronize explicitly nonunique/reference/inactive selected86cb; owner0655 selectedstaticmaps GPUwait_event kept."
+    },
+    {
+      "id": "StoreCPUclass",
+      "status": "CLOSED",
+      "evidence": "owner0584-586 and0935/937 are CPU-blocking rank-protocol waits, not CUDAcompletion; transportT60 covers outerInputPreparation ready/consumed/ack and conditional retainedphase; nested target/MTP stages do not each create extra exchange."
+    },
+    {
+      "id": "adapter-context-triage",
+      "status": "CLOSED_BY_EXPLICIT_ADJUDICATION",
+      "evidence": "cuda/sm70/compact_indexer.publish51 generations.tolist is CPUreference only: CUDAbranch returns37. data_ptr/numel/is_contiguous/current_stream are metadata/handle context, not GPUvalue fences.65family_ops contexts mapcomputeC08/C25/C26/C41/C43; publication adaptersC27/C28/C34; paged wrapperC29/C35. Rawdiscoverycontext is not measured/currentstall count."
+    },
+    {
+      "id": "coldPlanomission",
+      "status": "CLOSED",
+      "evidence": "computeC54/36thsource adds currentMoEBuffers\u2192cuda.experts.Plan fivezeros;54computeentries/323API/118CUDA index. Runtimegrouped.route/_ext bypassed by selectedGGUF moe_block431-440 explicitly inactive."
+    },
+    {
+      "id": "DirectReadapplicability",
+      "status": "CLOSED",
+      "evidence": "transportT41/T42/T55 corrected to startupS24/S26-S28 actualtargetGGUF CPU-reader route; genericGPUReadAhead/deviceupload conditionalnoncurrent, CURRENT PLE host_table.ReadAhead distinctS40/S44."
+    },
+    {
+      "id": "root-normalization",
+      "status": "CLOSED",
+      "evidence": "Finalmaster has requiredaliases normalized, realASTfunction/scopedcallchain names, allraw/source refs retained, no genericfunction placeholders."
+    },
+    {
+      "id": "service-controller-grammar",
+      "status": "CLOSED",
+      "evidence": "RootCTL01 is AdaptiveController CPUlock/smallmapping, notCUDAfence; CTL02 Scheduler\u2192Multi\u2192Engine\u2192manifestbind linksSVC22/27/36 and startup/T60. SVC38 retainedgrammar staging/retirement mappeddecodingD63-D65; TargetGreedy/graph decline is not whole-request grammar refusal."
+    }
+  ],
+  "conditional_publication_forensics_metatag": {
+    "status": "EXPLICIT_HISTORICAL_CONDITIONAL_DISPOSITION",
+    "source_path": "/Warehouse/TensorFold-portable-audit-20261026/profiling/owner-pieces-short-20261027/analysis-tools/analyze_failed_publication.py",
+    "sha256": "826d3810a865c6a4d49af1908c4bafd8838dfe0b5cc28c95fe81215c4dd14e31",
+    "eligibility": "Earlier explicitly authorized FAILED report-publication-only forensics: exactterminalDocker1/nonOOM, all8captures+engine transportretired/complete, nofailure/cleanupfailure, source/CUPTI28guards, positiveCPU/CUDA, boundedknownfolloweroverflow and primarylogmessage. Separate from current normal strictterminal0 runner; no automatic failure fallback or success upgrade.",
+    "wait_mapping": [
+      "diagnosticsD23/D28 terminal/process/GPUlease check",
+      "diagnosticsD25 guarded2workerCPU ProcessPool",
+      "diagnosticsD24/D27 rawSHA/boundedJSON/fileIO/clockanalysis"
+    ],
+    "classification": "CPUanalysis of immutable failed-publication archive; noGPUlaunch/replay, FAILED retained. Currentnormalanalysis still requires success; historicalfailure workflow does not claim current86cb runtime measurement or qualification."
+  },
+  "qualification_gaps_not_inventory_holes": [
+    {
+      "candidate": "Dense991f/c517",
+      "actual": "Root27920 actually32PASS1.07s/Docker0/718FD in fixture reductionFalse REGION; selectedruntime requiresTrue/FP16accumFalse",
+      "disposition": "EXECUTEDWRONGREGION, no selected-target numericcredit/noGPUfailure/no modelP3; preserve rawsource/stage, correctfixture+target32 only after inventory authorization."
+    },
+    {
+      "candidate": "MTP1tool3055/E9",
+      "disposition": "PrivateDenseBatch graphcontract requiresdepth2; currenttoolonlydepth1 route constraint-ruled-out with actualnoGPUfunction witness. Genericdepth1 support alone is not admissibility."
+    },
+    {
+      "measurement": "Current86cbper-site costs, exactnativeKineto/allocator/RSS peaks, topology/peerprogress and vendorinternal waits remain unmeasured/opaque as explicitly recorded; these are futuredrilldown constraints, not fabricated source coverage."
+    }
+  ],
+  "completion_decision": "No remaining concrete source/caller/classification/cross-partition coverage gap within declared selectedV100text +supportedconditionalcontrol/lifecycle/service/diagnostics scope. Root may mark inventory milestone complete after binding this review and publishing durable inventory; entrydrilldowns/optimization remain NOT_IMPLEMENTATION_APPROVED until separately authorized.",
+  "limits": [
+    "Counts include overlapping caller/callee/context/inactive/diagnostic groups, not measured/removable GPUstall counts.",
+    "UnloadedMLX/GB10/otherprovider/DFlash and optionalmedia-kernel implementations are outside this selectedREGION; conditionalmedia/API rejection/lifecycle gates are represented and no whole-project/media qualification implied.",
+    "No global goal/service/quality85/600 completion or performance superiority inferred. All pendingexperimental stages remain frozen until Root authorization."
+  ]
+}

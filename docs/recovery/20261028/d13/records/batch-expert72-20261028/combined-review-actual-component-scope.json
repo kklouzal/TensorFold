@@ -1,0 +1,14 @@
+{
+  "at": "2026-10-28T04:30:21.467812+00:00",
+  "schema": "tensorfold.d13-Root-reported-actual-component-companion-v1",
+  "component": "43 strict GPU cases",
+  "Root_session": 62995,
+  "passed": 43,
+  "skipped": 0,
+  "seconds": 4.25,
+  "exit_code": 0,
+  "scope": "two genuine10-expert checkpoint subsets; rows48/64/72, notfull512 performance",
+  "source_review_sha256": "4195a43d81bb7d76ffbb905cce423f977ca9ce8c976c64d274182b73d68793a6",
+  "evidence_authority": "Root independently archived/verified actual; reviewer did not runGPU",
+  "limit": "source/stage closure and positive numerical component only, no model/P3/service/85/600 completion claim"
+}

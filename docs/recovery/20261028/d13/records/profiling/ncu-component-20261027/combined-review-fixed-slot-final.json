@@ -1,0 +1,90 @@
+{
+  "schema": "tensorfold.combined-d13-review-v1",
+  "at": "2026-10-27T23:45:14.006322+00:00",
+  "status": "CLOSED scoped source+stage review; hardware result remains separately Root-owned",
+  "scope": "NCU finite counter-smoke tool, tests, README, direct stage scripts/package verification; no APP change or broad provider audit",
+  "policy": {
+    "one_combined_reviewer": true,
+    "applicable_rules": [
+      "D11",
+      "D13",
+      "X3",
+      "X4",
+      "X6",
+      "C5",
+      "C6",
+      "N1",
+      "M0",
+      "T0",
+      "F2",
+      "Q3"
+    ]
+  },
+  "commit": "1ec6e458da470c04e39488b6f98367f3bee1cd9e",
+  "hold_sha256": "efd28e11a010fee42c54c19a0b4619b5207688df9cc506742f4c5334ccbee0dc",
+  "paths": [
+    {
+      "path": "README.md",
+      "sha256": "a24477243515d89b3f990190723de456a5eb511864db166ad5dbd86b2ddb5bdd",
+      "bytes": 177554
+    },
+    {
+      "path": "tools/ncu_counter_smoke.py",
+      "sha256": "911d5e81913e60043f1f2b21694fb37df3e05a1fa3fe62ead0e260461839c004",
+      "bytes": 6829
+    },
+    {
+      "path": "tests/test_ncu_counter_smoke.py",
+      "sha256": "1198dd30e9dcb28defd6714777aa0e60eeada740be600ff8b322865bd3a289d6",
+      "bytes": 3684
+    }
+  ],
+  "stage_ready_sha256": "1602941d8001119ce4895d2ccc9204d20ef01dd6ef2baf9e446d6acfae12363a",
+  "stage_files_checked": [
+    "APP-source-hold.json",
+    "bootstrap.sh",
+    "candidate.json",
+    "launch-minimal.json",
+    "launch-minimal.sh",
+    "launch-sysadmin.json",
+    "launch-sysadmin.sh",
+    "ncu_counter_smoke.py",
+    "protected-files.json",
+    "source-hold.json",
+    "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "verify_installed.py",
+    "verify_stage.py",
+    "wheel-provenance.json"
+  ],
+  "findings": [
+    {
+      "rules": [
+        "C5",
+        "C6"
+      ],
+      "prior": "After operation failure, constructing a secondary tuple before raise_failures could replace the original on allocation failure.",
+      "disposition": "Remediated in1ec6: one secondary slot allocated before profiler.start; stop writes existing slot; same object passed unchanged to supported cleanup transport. Actual caller test verifies slot identity and original operation+stop MemoryError retention."
+    }
+  ],
+  "cleanup": "No verified dead code or unjustified duplication remains. Separate launch/run-smoke boundary, metric parser, and supported error helper have concrete interface/oracle roles. No HOT-equivalence or optimization-selection claim.",
+  "checks": {
+    "normal_installed_CPU": "8 passed1.34s, Ruff; exact logs/argv/exit hashes checked against HOLD",
+    "parser": "Exact installed2025.2.1 flag parser checked by author; no reviewer GPU/rebuild/rerun",
+    "stage": "14 local staged files hash+size checked, source+wheel+protected package verification before/after; remote readiness receipt bound, not independently re-executed by reviewer"
+  },
+  "contracts": [
+    "Single prewarmed4096-element stock FP32 add; all integer arithmetic exactly representable; independent NumPy oracle plus before/after bit identity. Stateless kernel replay overwrites output without mutating read operands.",
+    "One filtered launch, profiler-start disabled until explicit start, clock-control none/cache-control none, no Engine/NCCL/TorchProfiler or source guard mutation.",
+    "Minimalcap-dropALL/networknone image first. SYS_ADMIN-only alternate conditional on actual counter permission denial; no host/security/clock/cache setting mutation.",
+    "PASS requires subprocess0, all3 finite counters, positive duration+SMcycles, report+application oracle artifacts. Legitimate zero DRAM retained. This is diagnostic permission/replay evidence only."
+  ],
+  "authoritative_reference": {
+    "url": "https://developer.nvidia.com/tools-overview/nsight-compute/get-started-2025_2",
+    "verified": "Official versioned2025.2 page lists VoltaGV100, and2025.2Update1 supportsCUDA12.9Update1. Newer unsupported-version claims do not replace pinned version.",
+    "CLI": "Pinned installed help/version/parser records bound in HOLD; archived CLI web URL unavailable."
+  },
+  "remaining": [
+    "Root actual minimal hardware smoke and any permission-denied conditional alternate; no actual result presumed",
+    "No model/throughput/quality qualification from this component"
+  ]
+}

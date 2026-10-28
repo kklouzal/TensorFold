@@ -1,0 +1,18 @@
+{
+  "schema": "tensorfold.combined-d13-source-neutral-retarget-review-v1",
+  "at": "2026-10-28T08:43:50.026709+00:00",
+  "reviewer": "/root/cleanup_review",
+  "commit": "dc6fd0caa04af4e2ff9a2d600a8c0deed90b5329",
+  "HOLD_sha256": "8578974aa67e434b90093c14a809fc91c6bc9ac3154e4f4e271edcea847e96b3",
+  "APP_sha256": "65c9fe87829aca35f50723b2420b6fb865fcdee146b711d69f42e42bd0f4928c",
+  "status": "BOUNDED RETARGET SOURCE/STAGE REVIEW CLOSED; actualP3separateRoot",
+  "reused_review": "FIFO shutdownsnapshot source190c5ae1b6046634089da14ed230df21b88f2a83214928a3e37783b55cabf498; combinedreference08cc204df041629c3367af7c463143b9e4bed708f5a26482724274834edd415f",
+  "checks": [
+    "CandidateScheduler BYTES EXACTd331; baseScheduler BYTESEXACToldbaseline perheldproof; onlyinstalledscheduler.py differsactualRouter/GDN/startup3combined146f/7c0a. NoT60carry.",
+    "787heldsourcepathhashes independentlymatched;20stagemanifestpayload hashes+sizes checked; alltoolsbyteexact146f, currentprofile/counters/startup3/row32/24nativeQ8/MTP2.7/2048v2/quality/EOS unchanged. ControlleronlyfreshOUT/name/recoverycommitidentity metadata.",
+    "48actualaffectedcanonicalSchedulerCPU PASS5.86/Ruff/pin/normal721+FDc79 proof reused; prior108actualstop/error/credit/lastcontrol/lifecycle cases justifiedby identicalold+newSchedulerbytes; no broadduplicatetesting/GPU.",
+    "Singleif_stopping ownsnapshot+consumer, puregettermetadata/lock/tuple andactor-onlystopping proof alreadyclosed; no newsharedwriter/lifetime/resource/cancel/control edge introduced."
+  ],
+  "disposition": "No additionalconcrete retarget source/compliance/cleanupfinding; previouspointedreference andproof apply unchanged. Old5957packet preservedUNRUN andnotaccepted.",
+  "actual_scope": "Root64731 privateall6reportedLAUNCHED. No result/superiority/acceptance invented. Anykeep requiresall6currentnativecounter/status/IDs/drain/quality/capacity andtierdecision; repeat/broadqualificationdeferreduser, notcertified."
+}

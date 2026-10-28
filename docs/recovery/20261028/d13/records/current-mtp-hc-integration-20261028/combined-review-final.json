@@ -1,0 +1,36 @@
+{
+  "schema": "tensorfold.combined-d13-current-hc-source-stage-review-v1",
+  "at": "2026-10-28T09:57:16.083841+00:00",
+  "reviewer": "/root/cleanup_review",
+  "commit": "6434099199a0c3dcd139641e4471c62ec9dba728",
+  "HOLD_sha256": "81dab54a1ca5998bc0636c1ef4a69e4fe22027e37852519b09d8a3ec1c3e3c07",
+  "APP_sha256": "06ca8760f53e55ce379a1118d4443733aab1aea1cd8c8398824a7c86f3e73e01",
+  "reference": "146f8a81/APP7c0a actual103.8N24 Router+GDN+startup3",
+  "status": "SCOPED CURRENT-REFERENCE HC IMPLEMENTATION/CLEANUP/COMPLIANCE AND20-MANIFESTED-FILE STAGE CLOSED; actualP3/retention Root-owned",
+  "scope": "onlyEngineforecast/rolefactory/namedMTPfc_h tiles/realcaller/output/budget/counters; \u22643tasklinkedhops; reuse9f25HCcomponent+actual33/5e91targetpolicy and08cccurrentreference proof",
+  "independent_checks": [
+    "Only3runtimePythonfilesdiff146f:engine,padded_linears,state.5heldsourcepathhashes/currenttreeclean verified;20stagepayloadSHA/size/HOLD matched; normal721FDc79 sourceproof retained.",
+    "Everyexisting146f PaddedLinearsclass/defaultforecast/function AST exceptnecessarycreate signature/dispatch isEXACTbaseline. No genericTiledLinears orlargeDense/Concatadoption. Completevalidation/alias/ordering/cast/nativeM32/version/counter suffix independentlyASTexactqualifiede963. AllCUDA/CXX/GGUFDense/Concat/forward/mtp/Router/GDN/startup3/sampling native/math unchanged.",
+    "RealBuffersfactory nowpassesoptionalowner_role; onlyMTP/nonnullnamedstockfc_h/exactRouterprivateprofile/F16CUDA/notprefill andmaxphysicalHCspan>32 constructsnewowner. CurrentRouterEngine restrictsrow32; helper1..72 isHCdomain/notgeneralrowcap. Other/small/prefill/default routesremainoriginal."
+  ],
+  "ownership_numerics": [
+    "Exactfc_h objectidentity+k/n=hidden selectsnamedprojection, physicalrows>32 and\u2264logicalrows*HC withcompleteHCgroups. Nomatchingotherweight/Concat. Inputhn.view(n*HC,H) andexistingcaller-ownedmtp_hs output span retained; no separatefullphysicalresult/HCpartial allocation.",
+    "MTPHCTiles threeconstantM32slabs reusedonlyserializedconstructionstream; input/output/weightdtype/layout/shape/grad/alias/stream/inference-version checks unchanged. Eachcompletedtile copiedcalleroutput beforereuse. Unsupportedroutesfallbackoriginal; rawmathematics unchanged, no flagwrites/tolerances orprecisionchange.",
+    "No sourcee963 generic64/72eligibility carriedintocurrentreference; constrainedMTPonlyclass isolatesnamedpurpose. Existingrecord/countermaximums/missingoverflow policies retainhonesty."
+  ],
+  "funding": [
+    "Actualgeometryadds MTPdeviceworkspace once whenprofile/logicalHCdomainneedsit, preservingrow_envelope(fixed/adaptive) andexistingtarget/MTPbudgets. ThreealignedM32Hslabs:32*2560*8+3*512=656896B/rank;GPUgranule/paddingspaid.",
+    "Finalhost_workspace adds tp*64KiB beforeauthoritativeadmit, no evictable/materializedcredit or doubletargetallocation. Mandatoryphysical24fullnativeQ8/262144/FP32rec/MTP2.7/row32/floor unchanged.",
+    "Toolbeforecalleractualowner/type/fc_h/span/funding checks+8192Bboundedhostevidence; N16/24positiveHCdeltas required, lowerNsafeoldpath notforced. Coretiming/EOS/quality320/finiteprotocol/sourceguards unchanged."
+  ],
+  "verification": [
+    "10affectedCPU1.67/Ruff/actualfactorydevice+hostfund/readout/721FDc79/protectedclosure reused; no broadrepeat.",
+    "Root35183 originale963HC33PASS0.51/normal718FDprepost/no policywrites; currentM32suffix/rawmath/sourceidentityproof justifies reuse, no duplicatednative33 requested. SelectedmathTrueFP16reduction/Falseaccum remainsunchanged.",
+    "Root65648 actualcurrentall6reportedRUNNING afterprofileandCPUanalysisretirement, noP3contamination; no reviewerGPU/rawanalysis/retest."
+  ],
+  "cleanup_disposition": "No additionalconcrete scopedfinding remains. Newnarrowowner/factory hasrealHCphysicalrow/lifetime/fundingpurpose; justifiedmathduplication preservesqualifiedsource withoutbroadfallback/migration/defaultchanges. Genericoracles andhistoricalFalse-region/oldunselectedartifacts retained.",
+  "pending": [
+    "Rootall6native/status/IDs/drains/quality/capacity/HCactualusage andtier24>16>8>4>2>1 comparisonbeforeprovisionalretain",
+    "Repeat/broadquality/history andanyfullservicequalification deferredexplicitly, notinferred; no85/600/SUPERIOR/globalcompletion claim"
+  ]
+}

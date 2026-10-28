@@ -1,0 +1,10 @@
+{
+  "at": "2026-10-27T23:46:44.657704+00:00",
+  "status": "REOPENED one verified C5 failure-transport contract mismatch",
+  "prior_review": "2443a6db16f9cbf16032b33216451750847b4c7ca0a3a44e2b83dc7517e5a89c",
+  "source": "1ec6e458/911d5e81/HOLDefd28e11",
+  "finding": "profiled_call passed primary=None, secondary=[None] to raise_failures on successful operation+stop. cleanup.raise_failures requires empty errors on success, otherwise selects errors[0] and reads BaseException native cause on None. Actual Root run raises TypeError before post-profile oracle publication. Reviewer missed this direct-helper success precondition.",
+  "remediation": "Sole author adds success predicate before calling supported failure transport and real successful caller regression. Preserve preallocated secondary slot and original error identity/stop-failure transport.",
+  "evidence": "Root actual minimal run separately established ERR_NVGPUCTRPERM; original outputs retained. No kernel/APP/model or permission-success claim.",
+  "remaining": "Await exact successor source+regression/stage; prior kernel replay/oracle/capability/command assessment remains reusable."
+}

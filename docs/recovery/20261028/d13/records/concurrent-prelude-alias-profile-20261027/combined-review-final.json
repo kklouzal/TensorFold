@@ -1,0 +1,81 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T22:51:55.097449+00:00",
+  "status": "CLOSED tool-only concurrentprelude integration; actualcaptureblocked onRootunprofiled3224validation",
+  "reviewer": "/root/cleanup_review",
+  "commit": "8f1f904d7b9b54d415447ad687ee3843bb8c3c80",
+  "base": "710c9b6a3b91072d1d15a8356cfe91464cd1419b",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-prelude-alias-profile-20261027/source-hold.json",
+    "sha256": "73cebb2f5990b5e5643295545cccf94027d080ae58a83a1c4032a00aaabac5ef"
+  },
+  "runtime_wheel": "32246b49a07dbc3b22ee6ff31c8745a1368fb3e203a0071ecddaa32b00bcf882",
+  "runtime_hold_binding": {
+    "runtime_source_hold_sha256": "fc5e9976e0338bfa1dfae76d28c90515095df124e8c71fcbb9346bed249cf915",
+    "runtime_source_hold_path": "/Warehouse/TensorFold-portable-audit-20261026/owner-prelude-coordinate-alias-20261027/source-hold.json",
+    "profile_source_hold_sha256": "73cebb2f5990b5e5643295545cccf94027d080ae58a83a1c4032a00aaabac5ef",
+    "tool_source": "8f1f904d",
+    "runtime_source": "710c9b6a",
+    "runtime_wheel": "32246b49a07dbc3b22ee6ff31c8745a1368fb3e203a0071ecddaa32b00bcf882",
+    "disclosure": "RuntimeHOLDpublishedaftertoolstage; additiveprovenancebindonly/no stage/HOLD/source edits. Actual53+all6quality/counterstillrequired."
+  },
+  "scope": "Minimalmergeofclosed67a/f64dconcurrentinstrumentationwithclosed710c/fc5e/3224coordinatealias runtime. No newprofiler/math/kernel/fixturealgorithmreview orGPU/broadgate.",
+  "structural_proofs": {
+    "source": "Runtime srcdiffempty710c; actualruntime716source+FD4a priorrootfixproofretained, no packagebuildhere.",
+    "observer": "Modulebyteexact67a andsevenprotectedcapture/clock/batchhelpers reused; onlythreeoldtoolfunctions differ67a: record_execution_profile addsactualprelude nativeownercontract, graph_execution_snapshot addsnonnegativehostsubmittedframecounter, worker forwardsgraphsTrue fornewexplicitprofile.",
+    "protocol": "ActualFinite/FAST/qualityhelpersunchanged; protectedCUPTI28/allranksource/retirement, clockanchors/journal134/errorpreservation/globalobserverfunding sameclosedsource. SameoneN8/N16diagnostic30sready/10swindow512capcancel/drain; noall6credit/qualityclaim.",
+    "default": "Originalprofilefactory/prefix/manifest/counterbindings preserved, no defaultmath/backend/routing changes."
+  },
+  "checks": {
+    "current_source6hashes": true,
+    "normalCPU": "146PASS4.99s/Ruff/pip/help on exact3224normalwholewheel; executedargv/cwd/env/exit/log companionbound",
+    "stage": "18localfiles/hashpins/controller9789verified; noGPUlaunchbyreviewer",
+    "no_duplicate_tests_build": "validpriorproofsreused"
+  },
+  "cleanup_disposition": "No verifiedremainingdeadpath/unjustifiedduplicateauthority or necessarysafesimplification inminimalmerge. Actualcounter ishostenqueueobservation, notphysicalcompletion orTPS.",
+  "launch_conditions": [
+    "Rootcurrent3224actual53numerical/state/commit/prefixacceptance (RootalreadyreportsPASS)",
+    "Rootcorrectedunprofiledfullmodel/all6 andquality/counter audit mustfinish beforeinstrumentedcapture asauthorizedworkflow; old902f failedwarmup cannot satisfy",
+    "RootexclusiveGPUlease andimmutablecurrentstageidentity; no automatic/backgroundexecutionfromreview"
+  ],
+  "pending": [
+    "Actual3224warm/model/quality/all6 results andcounterproof",
+    "Anyconcurrentprofilediagnostic requiresunambiguouscurrentruntime/rawtraceidentity; no902fgainclaim",
+    "85/600/full24nearfullhistory/nonregression remainseparate"
+  ],
+  "findings": [],
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-prelude-alias-profile-20261027/source-hold.json",
+      "sha256": "73cebb2f5990b5e5643295545cccf94027d080ae58a83a1c4032a00aaabac5ef"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-prelude-alias-profile-20261027/controls.log",
+      "sha256": "22b370fecf176aeb123d13530f9f753340f7855bb360c69db509548562cf3b3f"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-prelude-alias-profile-20261027/controls-provenance.json",
+      "sha256": "a7255ef6ca712c87cc295158eecf8a1f49f9307a80e527d70e42c6e81144502f"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-prelude-alias-profile-20261027/structural-proof.json",
+      "sha256": "1e072d337b477f091a4f0011c2fa36ad8c66ad1ead2ef38b083be5273d0e41be"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-prelude-alias-profile-20261027/runtime-hold-binding.json",
+      "sha256": "3f5b1cb89265dd1e91d997b6db0e4b10ed012e86a91b9b92c76cf2771128e753"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-prelude-alias-profile-20261027/stage/stage-ready.json",
+      "sha256": "359c193f4736ffe5c9f3a8b02ae1b47ad090b3729c52d6e99fdd123445f0fae5"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-prelude-alias-profile-20261027/stage/package/launch-finite.py",
+      "sha256": "9789c689951aee57add91e6ef6901d63d1e8059e62dd8c10d13440deb89a873c"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/concurrent-prelude-alias-profile-20261027/stage/package/stage-files.json",
+      "sha256": "77f6074e2f7555a617ecf85e86489cb21958d389a7163ad623dba00b76a6b78d"
+    }
+  ]
+}

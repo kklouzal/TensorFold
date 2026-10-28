@@ -1,0 +1,67 @@
+{
+  "schema": "tensorfold.d13-responses-cache-put-final",
+  "version": 1,
+  "status": "closed_bounded_two_file_cache_increment_only",
+  "scope": "Root-owned server/responses.py and tests/test_responses_api.py: streamedexactJSONlength/prequota cloning, oversized replacement ordering, bounded parentchain andMemoryError quota containment. Fullresourcehelper/envelope remains WIP.",
+  "source_hashes": {
+    "src/tensorfold/server/responses.py": "89aff7541db40a1a58423fb2bfd019c2498ae35ef668cb113e6286dadb13c293",
+    "tests/test_responses_api.py": "e20af4aebbdea300a9ab0e29dcc82bba78bd01377f8d7f15f20827826f850ea5"
+  },
+  "review": [
+    "Prospective response+messages encoding is fully traversed using the same defaultASCII JSON representation before cloning; no joinedwire string. ValidownedJSON has stableproducer ownership untilreturn; accepted trees remain deepowned snapshots and clones remain outsidecachelock.",
+    "Oversizednew insertion andexisting-id replacement preserve originalOrderedDict prefixeviction semantics, including suffixsurvival afterold-id position. Principal ownership still checked beforemutation; malformed/cyclic/unserializable prospectiveJSON doesnot mutatecache.",
+    "Original counterallocation defect was real:2264+2264 produces anewnon-small4528PyLong afterpublication. Precomputingacceptedbytecount moves arithmeticbeforeinsert. MemoryErrorguard coversinsertion/counter/normal andoversizedeviction; cacheclear+cachedzero assignment restoresvalidemptycache and reraisesexactprimary.",
+    "SelectedCPython3.12.3 OrderedDict.clear delegates to nonallocatingPyDict_Clear then node/free bookkeeping. Actualcache uses plainOwnedJSON/_Entry/nativekeys withoutfinalizercallbacks; normalmethoddescriptorcall avoidsboundmethod allocation and resetupdatesexistingbytesattribute to cached0. This is scoped to actualownedcache, not arbitrarysubclasses/hooks/finalizers.",
+    "Parent traversalguard bounds anycyclic/repeated chain byexistingcachecardinality underlock; validacyclic traversal includesallentries andclones onlyafterlock.",
+    "No O(cachecount)copy-on-write map stage, new mutableglobal/registry orJSONshadowdecoder introduced. No P3speed/equivalenceclaim for streamingvsCwholeencoder; fullresource/target/performancequalification remains separate."
+  ],
+  "resolved_finding": {
+    "original": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/d13-response-cache-publish-witness.json",
+      "bytes": 443,
+      "sha256": "e96d39d821ec373cdb2bf609054be83ca2f3f82528a4f7ba1905f16deada6ff7"
+    },
+    "contained_replay": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/d13-response-cache-contained-replay.json",
+      "bytes": 536,
+      "sha256": "7a9e2a3627c5594989184701657b4cf7609197643d0e8daa70a9aaf7fe3e969e"
+    },
+    "outcome": "No unaccountedentry; exactMemoryError preserved, cacheempty/bytes0 andsubsequentput/getvalid."
+  },
+  "primary_sources": {
+    "dictclear": "https://raw.githubusercontent.com/python/cpython/v3.12.3/Objects/dictobject.c#L416",
+    "orderedclear": "https://raw.githubusercontent.com/python/cpython/v3.12.3/Objects/odictobject.c#L708",
+    "methodlookup": "https://raw.githubusercontent.com/python/cpython/v3.12.3/Objects/object.c#L1218"
+  },
+  "verification": {
+    "actual_wholewheel": "b25f1b55 diagnostic artifact, not privateadmissioncandidate",
+    "normal_installed_Responses_cases": 52,
+    "seconds": 0.87,
+    "exit_status": 0,
+    "ruff_diffcheck": "passed",
+    "source_before_after_current_match": true,
+    "start": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/responses-put/oom-contained/start.json",
+      "bytes": 1600,
+      "sha256": "85806918479827c9148036263fe333c712de2d90b2dd22448a4f8a92ccf2e2b4"
+    },
+    "exit": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/responses-put/oom-contained/exit.json",
+      "bytes": 1981,
+      "sha256": "f877e63765fdbe63586c1c0dd084c8f76dbebdc79b81e0348a4eaa166084b84e"
+    },
+    "log": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/responses-put/oom-contained/controls.log",
+      "bytes": 1104,
+      "sha256": "e86faff0e89651a2a098f71695240d924295561839734ed4bf1a3d6f24a95729"
+    },
+    "witness_replay_only_no_duplicate_suite": true
+  },
+  "findings": "Reportedcachequota resource-failure finding remediated. No other verified issue in thistwofileincrement.",
+  "limits": [
+    "No finalhostcommitment/admission/sourceenvelope/regionfit closure",
+    "Preclaim/frontend,JSONparser/deepcopy/wrapper/fixedrecord/HTTPerror/nativeallocator/RSS roles stillrequirecompleteownerframe",
+    "Original4/16 anddistinct1/1diagnostic requirements remain separate; no model/deploy/performanceclaim"
+  ],
+  "reviewer_actions": "Source/test/authority/log/hash read +indispensable controlledwitness/replay; no source/Git/GPU/remote mutation."
+}

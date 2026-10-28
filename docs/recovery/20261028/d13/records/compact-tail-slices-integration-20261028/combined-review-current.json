@@ -1,0 +1,63 @@
+{
+  "schema": "tensorfold.d13-compact-tail-current-review-v1",
+  "at": "2026-10-28T17:44:12.452636+00:00",
+  "reviewer": "/root/cleanup_review",
+  "status": "RUNTIME_SOURCE_AND_CPU_REVIEW_CLEAN; COMPONENT_HELPER_RETURN_FIXTURE_FINDING_AND_PACKET_CLEANUP_SUCCESSOR_PENDING",
+  "scope_X1": "Only Cache.tail/_tail_slices_supported and direct Cache.reading/prepare_commit/publish_commit/snapshot/CompactIndexer.commit\u2192State.set_pos/_compact_commit/snapshot/migration handoff contracts, frozenindependentindexedtestreference andnewtests. <=3 taskrelationshiphops; no pool/RMS/nativeformat/defaultpolicy edits or unrelatedcleanup.",
+  "source_sha256": "802f5405fb870a1c81f93f2f7942f94271135e17c90e1716d4293c45dc4dd595",
+  "checked": [
+    "Algebra: count=length%4 in1..3; first=length\u2212count multiple4, destslots0:count; old_count=min(count,max(0,start\u2212first)); protectedprefix0:old_count exact, rawsuffix offsetfirst+old_count\u2212start>=0 and end=length\u2212start<=len(raw).",
+    "Typedfastdomain exactCache/Tensor, matchingCPUorCUDAdevice/shapes/Halfraw/int64coords/nograd/ordinarystrided/no neg/conj, length/start within int64. Empty/malformed/subclass/autograd/int64 domains delegate originaleager BOTHbranch indexing anderrors; no silentcasting or suppressederrors.",
+    "Originalcurrentlengthclone/alignedrollbackzeros/span.check/resolved checks, freshzeros/nonalias, readinglease inputs/waits/eventretirement andStatecommitfailurepoisoning unchanged; no Statepublication beforetailmaterialization.",
+    "Pinned04cf Copy.cu typed directtransport ormemcpy, TensorCompare.cu opaqueScalarTypewhere andIndexing.cu1573 directtypedload/store supportordinaryHalf/int64 bitpreservation; nofloatingarithmetic introduced. Lazyneg/conj rejectedtooriginalpath. This sourceproof is not a measuredGPUqualification.",
+    "New60legalcuts/base/span/strided/count cases usefrozenc928 indexedreference, Halfquiet/signaling/signedNaNpayloads/zeros/subnormals andint64extremes; CPUgenericerrors, subclasscollision andpartialcopy/retirementfaults included.",
+    "No verifieddead/unjustifiedduplication; originalindexedpath is requirederror/genericpath andindependenttestoracle remainsvalid. Newhelperexists toseparateprovedcopydomain fromoriginaleagererrorsemantics."
+  ],
+  "checks": {
+    "normal_command": "6f98a52bac8c0025e4f6553c50f5ccb1c32ec3347d7fd4cfcc244987800c43e6",
+    "normal_log": "e46427776f78b37642308f47b13d101d09924f843d0d97a218909ef3628cd3ca",
+    "normal_exit": {
+      "exit": 0,
+      "finished": 1793208532.4768355
+    },
+    "CPU": "110PASS6.94/Ruff/pip/normal727FD/protected;2CUDAcasescollectedonly; noreviewerCPU/GPUtestduplication"
+  },
+  "remaining": [
+    "Correctedfixture/helperreturncontract+selectedCPUcollection/freshpacketbinding",
+    "Rootactual2GPUcases; firstoldbytecase retainspositivescope, secondlaterassertionsunrun",
+    "RequiredNUMA+explicitTailcurrentAPP/HOLD\u21928021rowauthority all6adapter separate/noP3orqualityapproval"
+  ],
+  "held_runtime": {
+    "source": "d3a68247b0a650cbc67db144ddc36d0c6b7f9403",
+    "APP": "c1418cb4d277a4bbe793574a3eb969ce4931d85f06f02784755ab378b84d7193",
+    "HOLD": "dc400f0548828db6410592240c8c9f7dde8c30efead0bd91fe39dd0942ba5653",
+    "old_payload": "b0f61e75ea7a7031a992060f2ec8c21f176c39a55a4090cde434d6d3ab3e37fa",
+    "local_bindings": "5source+8evidence+20manifestfiles allPASS"
+  },
+  "structural_reviewer_proof": {
+    "whole_module_inverse_AST_to_c928": true,
+    "reference_AST_to_c928_tail_after_entry_self_and_RATIOfour_normalization": true,
+    "other_module_body_and_original_indexed_else_exact": true
+  },
+  "findings": [
+    {
+      "rules": [
+        "C3",
+        "R0",
+        "Q0"
+      ],
+      "finding": "Reviewer missed fixture actual=on_stream(...): helper executescallback butreturnsNone. Root82440 firstextremebits/legalcutscasePASS, secondfixtureNoneType failure; latercrossstream/nativepublish/restoreassertionsUNRUN. Runtime unchanged.",
+      "remediation": "Preallocatedresultslot+zeroargcallbackcapturesentry.tail, consumeafterunchangedon_stream/cacheeventjoin; focusedrealhelpercontractcontrol andfreshstagecollection required. Preserveoldfailure/noGPUmathregressionclaim.",
+      "status": "Authorfixpending."
+    },
+    {
+      "rules": [
+        "D13",
+        "R2"
+      ],
+      "finding": "Old20-fileTailpacket carriedunusedtemplateHC-MoEtest anditsgguf_fixture dependency; no Tailfixture/runner/conftest references either.",
+      "remediation": "Removefromownedfreshpacket/freeze list, preservecanonicalindependentoracles andold20-fileevidence; no runtime/numericalchange orGPUrepeatneededforcleanup.",
+      "status": "Authornotified; combinefixture-successor."
+    }
+  ]
+}

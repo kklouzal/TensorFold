@@ -1,0 +1,66 @@
+{
+  "schema": "tensorfold.d13-warmup-drain-source-final",
+  "version": 1,
+  "reviewer": "/root/cleanup_review",
+  "recorded_utc": "2026-10-27T08:21:58.981522+00:00",
+  "status": "closed-current-EOS-corrected-source-and-scoped-CPU-controls",
+  "hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/warmup-drain/final-eos/source-hold.json",
+    "sha256": "d06d84182c8046ba60d7dcbe7b91d19b3b8d64898e50499eaf3cd2939e6c5775"
+  },
+  "paths": {
+    "src/tensorfold/families/qwen4_exp/cuda/multi.py": {
+      "bytes": 147945,
+      "sha256": "d65be01fb7a794cd50fa123d1348c3f8efbea3d980e70761ff3db7c706dfebba"
+    },
+    "tests/test_flashnext_warmup_lifetime.py": {
+      "bytes": 4888,
+      "sha256": "a80a3a2acf5cf307de150445c80ec62ba7231124cfb6d0903af85134a7aa6d10"
+    },
+    "README.md": {
+      "bytes": 157677,
+      "sha256": "fa9dd9d0eed206b5be6dfad3f360959351540b431aea8fb4b65f69d76fb51ad7"
+    }
+  },
+  "wheel": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/warmup-drain/final-eos/wheels/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3099790,
+    "sha256": "8110d80e596ea616b740a1362242bd68e79c3acab249775a20a444972c22f9ea"
+  },
+  "scope": "Only MultiDecoder.warm lifecycle, actual bounded _fill/_order and existing Engine warm/public-Scheduler transition; new focused CPU controls and appended README paragraph. <=3 source relationship hops.",
+  "findings_dispositions": [
+    {
+      "id": "bounded-prefill-warm-owner-leak",
+      "status": "fixed",
+      "proof": "One round can return with a synthetic fill active under the adaptive controller. Current warm repeatedly rounds to done, checks exact original s.error and no remaining fills/filling ownership before state reset/recycle/capture, removes passed ordering ownership, then resets observations."
+    },
+    {
+      "id": "synthetic-EOS-skips-required-decode",
+      "status": "Root-identified-and-fixed-before-target-handoff",
+      "proof": "Constructor synthetic Stream now sets stop_eos=False. Tests use actual Stream.take with an EOS first sample and require both tokens/decode, rather than the insufficient precursor expectation of one token. Public Stream/EOS defaults and real request policy are unchanged."
+    }
+  ],
+  "structural_proof": "Whole current Multi module AST equals pinned e8cdc8a735d0dd55f7ad836328f66cca50d70402 after replacing only reviewed warm method with its original. Existing README prefix preserved; only warm-status paragraph appended.",
+  "contracts": [
+    "Private synthetic warmup remains unticketed/legacy and completes before public FIFO admission, while early TP/communication ownership is retained. No fabricated tickets/principals/default fallback.",
+    "Raised and returned warmup failures preserve their original identity and cannot publish/reset/recycle an unwarmed state.",
+    "Full context, physical cache/resource promises and all runtime admission/coordinate/span guards unchanged.",
+    "Normal private warmup ends after count2 regardless of EOS; only the synthetic constructor request ignores EOS so required decode/MTP warm path is reached."
+  ],
+  "verification": {
+    "normal_installed": 11,
+    "seconds": 2.05,
+    "ruff": 0,
+    "pipcheck": 0,
+    "source_package_files_independently_matched": 715,
+    "FD_extension_exact_old4a06": true,
+    "source_and_evidence_hashes_match_hold": true,
+    "no_reviewer_duplicate_suite": true
+  },
+  "history": "Precursor f06/f535/11 and distinct FD0dde are preserved historical insufficient EOS-coverage evidence. No target handoff or final D13 closure was granted to that precursor. Final8110 original-build-path wheel restores exact FD4a06/37952. Immutable f17 and current remote evidence are not relabeled.",
+  "remaining_gates": [
+    "Actual Root-owned private whole-wheel target/model/math/output/readiness/quality/P3 qualification.",
+    "Full HTTP/design resource envelope derivation remains separate and open."
+  ],
+  "reviewer_actions": "Source/test/caller/hash/wheel/AST read-only verification and artifact only; no source/Git/GPU/remote edits."
+}

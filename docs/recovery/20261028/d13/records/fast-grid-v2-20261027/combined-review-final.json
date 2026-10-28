@@ -1,0 +1,150 @@
+{
+  "schema": "tensorfold.combined-d13-review-v1",
+  "at": "2026-10-27T23:47:32.025798+00:00",
+  "status": "CLOSED bounded tool-only source review; future v2 physical execution pending",
+  "scope": "Seven held paths and direct finite role/funding/factory/output consumers within3hops; reuse existing FAST lifecycle/measurement/quality/finite-adapter reviews, no broad audit or repeated suite",
+  "policy": {
+    "review": "One combined cleanup+compliance D13; latest user policy overrides historical pair requirement",
+    "rules": [
+      "D13",
+      "D14",
+      "X4",
+      "X6",
+      "T0",
+      "F1",
+      "F2",
+      "C2",
+      "C3",
+      "M1",
+      "U2",
+      "Q0",
+      "Q4"
+    ]
+  },
+  "commit": "bebf7cbc0bf2b4d3b59bf650764e16457accc7f5",
+  "source_hold_sha256": "cea93b46214d7c945320e80b1199708d0181aaf125afe0ab0f738d133456b20a",
+  "source_paths": {
+    "README.md": "b9b8654da4d0c2b63f99a9f23a4587a6463b2ae834da65e0af58d17a8f0b0fec",
+    "tests/test_fast_grid.py": "d4143aa014a1febdb2eaf6965489a0d4f0ca5531c7cb1b332a3ce030789c20a8",
+    "tests/test_finite_backend_resources.py": "f0a4c4ec313cec559394a67b478bb6656ad9c1e69ba9352da72b4cb53f80b225",
+    "tests/test_finite_concurrency.py": "97215b843a57ea0f5dbf2d0449536af5af4b4ad177aab2f8a09cbd86258191c6",
+    "tests/test_finite_tp_contract.py": "c985bc86d9b89dce0652375a9cc50abba82025d37c9dad5908a62ce35fc35c21",
+    "tools/finite_concurrency.py": "d009cf94050754115fdb0295b39aaa787904b09478464aeb772d8782b97eb86b",
+    "tools/v100_backend_probe.py": "67d575462601963c40aef14b1116e45b32ea92c5896872a24c8c70e25a761ca0"
+  },
+  "APP": {
+    "wheel": "5635735f68db932f41cab3da94747e6f6c2f15673c60b71e220ec96c9f9e0314",
+    "src_diff": "EMPTY vs a7b1661f; no model/native math changes"
+  },
+  "structural": {
+    "tools/finite_concurrency.py": {
+      "changed_functions_or_classes": [
+        "control_payload_bytes",
+        "TimedTokens",
+        "ScreenTokens",
+        "screen_control_payload_bytes",
+        "run_screen_case"
+      ],
+      "unchanged_functions_or_classes": [
+        "input_credit",
+        "_distribution",
+        "metrics",
+        "decoding_tickets",
+        "correlated_overlap",
+        "owned_pool",
+        "run_case"
+      ]
+    },
+    "tools/v100_backend_probe.py": {
+      "changed_functions_or_classes": [
+        "arguments",
+        "run_fast_grid",
+        "run_concurrency_leader",
+        "launch"
+      ],
+      "unchanged_functions_or_classes": [
+        "digest",
+        "write_report",
+        "finish_failures",
+        "regular_file",
+        "installed_identity",
+        "TokenCollector",
+        "record_execution_profile",
+        "prepared_prompt",
+        "check_engine",
+        "generate_reply",
+        "repeat_replies",
+        "run_leader",
+        "_owned_attributes",
+        "graph_execution_snapshot",
+        "graph_execution_delta",
+        "concurrency_module",
+        "waiting_input_credit",
+        "run_quality_spotchecks",
+        "worker",
+        "main"
+      ]
+    }
+  },
+  "dispositions": [
+    {
+      "rules": [
+        "T0",
+        "C3",
+        "A0"
+      ],
+      "status": "clean",
+      "proof": "Default CLI v1 permits old320/512; explicit v2 requires fast+concurrency and exactly2048 before preparation. ScreenTokens defaults512, v2 opts2048. Real factory output_queue_tokens=args.tokens; caller and immutable FiniteTPContract enforce outputs2048 on source and receiver, cpu span4096+2048+2*(depth+1)=6150, native262144/full24 capacity unchanged."
+    },
+    {
+      "rules": [
+        "M1",
+        "V3"
+      ],
+      "status": "clean",
+      "proof": "Two uint64 timing arrays scale2048; screen reserve adds24*2*1536*8=589824B native/callback pointercopy allowance; result ID/decode/model CPU roles use actual max_output_tokens. Same real24-caller finalizer derives role and physical host admission before requests. Offline exact old equation225708770615B reproduced; v2 conservative227641472311B below captured330583744512B is a projection, not current live fit/RSS proof."
+    },
+    {
+      "rules": [
+        "F1",
+        "F2",
+        "D14",
+        "U2"
+      ],
+      "status": "clean",
+      "proof": "Same prompts/seed/EOS/MTP, readiness30s, target10s, confirming observation endpoints, callback/native untimed tail retention, complete Future/permit/backend/mailbox drain. Diff changes protocol validation/collector bounds/report identifier only; metrics/run_case and interval/count algorithms retain AST. Cap/EOS-short remains short and protocol-labeled; no runtime-equivalence claim from bridge."
+    },
+    {
+      "rules": [
+        "Q3",
+        "Q4",
+        "X12"
+      ],
+      "status": "clean",
+      "proof": "Six independent quality tasks/max320 untouched. Actual3224 all6 recorded delivery/native histories replayed through512/2048 production collectors with identical full records and window counts266/187/293/394/469/478; max native268, old cap inactive. Boundary negative513 updated to2049 for newly authorized2048 resource capability; default collector rejection and v1 refusal remain explicit."
+    },
+    {
+      "rules": [
+        "S0",
+        "D13",
+        "P5"
+      ],
+      "status": "clean",
+      "proof": "Protocol versions/constants encode different declared output contracts. Parametric existing collectors/resource adapter reused; no duplicate measurement engine, dead path or unjustified new abstraction found. Existing v1 baseline and independent oracles preserved."
+    }
+  ],
+  "evidence": {
+    "controls_provenance_sha256": "5937e38462e1c249337cdd83dd558f1746ce26d462cb71e68e5bac9d5521f248",
+    "tests": "247PASS10.53s in normal5635 installation; combined command exit1 from3 later test-style Ruff errors is retained, not relabeled0",
+    "style": "Semicolon-only edits AST-neutral; scoped final Ruff/help/bridge/budget command exit0; no test rerun required for identical AST",
+    "style_proof_sha256": "8d3b5341b42f7f43b26c1fdc3deb18a4af9fafa5eae0492175d942f1b4ea6b4c",
+    "bridge_sha256": "5ddf25089d124608e59c63f48fe2f6f524fc7576e21a305164259493ee959b7f",
+    "offline_budget_sha256": "0ccc678eed78f1d96b789a0f4d8a6b6e3e1b2f13d3e7c184c5bb90af730e2603",
+    "reviewer_runs": "Read/hash/AST only; no GPU/build/test duplication"
+  },
+  "remaining": [
+    "Fresh v2 staged-source binding if Root requests it",
+    "Actual live physical admission, all8 finite ACK/native IDs/context/floor, all6 full windows/drain and six quality outputs under v2",
+    "No >85/N24>600, broad quality, release or v1/v2 runtime equivalence claim from this review"
+  ]
+}

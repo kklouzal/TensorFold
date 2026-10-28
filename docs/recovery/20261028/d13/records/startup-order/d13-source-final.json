@@ -1,0 +1,81 @@
+{
+  "schema": "tensorfold.d13-startup-public-scheduler-order-final",
+  "version": 1,
+  "status": "closed_bounded_two_path_source_review",
+  "base": "64e3ed7f4db98b7ca7d78a7acb2bf1b331acdece",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-order/source-hold.json",
+    "bytes": 465,
+    "sha256": "ddd585b9332569ca436621172e71621774d3fdac4d301d2bf0ec0a6c7425aaa4"
+  },
+  "paths": {
+    "src/tensorfold/families/qwen4_exp/cuda/engine.py": {
+      "bytes": 176229,
+      "sha256": "6da0849836c4b6983164842fc9b36a1759a5caf56b415dbdda886fd936f5f445"
+    },
+    "tests/test_cuda_scheduler_startup_source.py": {
+      "bytes": 12624,
+      "sha256": "096acbdea04fc80801361507ec2403f62fcb48d4e77cc142a05943a64662cc40"
+    }
+  },
+  "scope": "Only MainEngine startup TP adapter/publicScheduler construction order +actual constructor-source/startup admission tests; related Multi.warm/Scheduler/TPcontrol/rollback/profile callers <=3hops. No broad project review.",
+  "source_review": [
+    "Early TensorParallelDecoder construction and communication/poison/prefix ownership remain before private numerical warmup on all applicable nonmanaged TP ranks. No communication ownership moved past its consumers.",
+    "Public Scheduler construction/configure_admission_policy now occurs after all constructor numerical+vision warm-up statements and before start, onlyconcurrent nonmanaged local/leader roles. Single-device same args preserved; follower remains without public actor and uses existing first-control policy transition. Managed profile path unchanged.",
+    "Synthetic Multi.warm continues using its existing private legacy admission semantics rather than a fabricated public principal/ticket. Real FIFO principal/ticket validation, RequestLimit and policy configuration functions remain unchanged. No admission bypass, flags reset or synthetic authority added.",
+    "Scheduler rollback/start scope retained; if warmup/profile validation fails there is no unneeded public actor/Thread owner, while early TP/decoder owners remain available to existing startup rollback. Actual execution identity binds configured Engine admission options and runtime/library sources independently, not actor existence.",
+    "One constructor Scheduler call now selects TP or direct decoder, removing duplicate early publication branches; no new state machine/worker/global registry/barrier/math/kernel/capacity equation introduced."
+  ],
+  "tests_review": [
+    "Source AST verifies TP adapter before warm and one Scheduler publication after all warm statements before start",
+    "Actual source projection executes FIFO/legacy acrosssingle/TPleader/follower; blocks warmup to prove actor absent and warm semantics unchanged until completion",
+    "Existing public actual Multi FIFO rejects missingprincipal and missingenqueue ticket; no fabricated fields accepted for warmup",
+    "Existing startup rollback, FIFO and TP scheduler controls remain in normalinstalled3-module suite"
+  ],
+  "verification": {
+    "all2held_paths_match": true,
+    "normal_installed_tests": {
+      "passed": 68,
+      "seconds": 4.84,
+      "exit_status": 0,
+      "log": {
+        "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-order/build-tests.log",
+        "bytes": 1083,
+        "sha256": "1b4df31b03262a3753537f57a656e53ee00e653cff76253f92f2615d45e9b8e5"
+      }
+    },
+    "pipcheck": "No broken requirements found",
+    "ruff": {
+      "exit_status": 0,
+      "log": {
+        "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-order/ruff.log",
+        "bytes": 19,
+        "sha256": "82b3e6a6c090a57601d22943bd23fca9218d1031dbe5a7b754092f9a156b4f18"
+      }
+    },
+    "execution": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-order/execution.json",
+      "bytes": 5440,
+      "sha256": "2d7713de71915d1175ed9b1a5ab89ec35bdd7e61c11e426ea08e620b5b5a8598"
+    },
+    "wholewheel": {
+      "artifact": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+      "bytes": 3087011,
+      "sha256": "86a04dee498a2d6d3c1f470f6691143dfaaa6ec37f7eb56ffbc157ea0374a70f"
+    },
+    "all714_currentAPP_sources_and715ZIPrecords_match": true,
+    "FDartifact_unchanged_4a06": [
+      {
+        "path": "tensorfold/_fd_owner.abi3.so",
+        "bytes": 37952,
+        "sha256": "4a0625bdf0a494437058e0ddbc62f04d7092c8cc64178e24fc17d669d2abd984"
+      }
+    ],
+    "no_reviewer_test_build_or_source_Git_action": true
+  },
+  "findings": "No remaining verified D13 finding or source edit.",
+  "limits": [
+    "Source/affected installed CPU closure only; no oldfull187/newimage or target/model readiness claim.",
+    "Packaging/current imageFD/protected metadata checks and actual target startup retry remain owner gates; private test need not wait for report rendering."
+  ]
+}

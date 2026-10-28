@@ -1,0 +1,34 @@
+{
+  "status": "all currently assigned ready source reviews terminal",
+  "receipts": [
+    {
+      "path": "/Warehouse/TensorFold-wt/v100-concurrency-probe-20261027/task-artifacts/concurrency-probe-20261027/combined-review-final.json",
+      "sha256": "b1bd7fc58ef3ea5f3dbb0eef647c408db3505708f8c7f75feefc22f761477721",
+      "status": "bounded combined source review CLOSED; actual physical24/GPU/model/quality/six-grid/P3 gates remain OPEN"
+    },
+    {
+      "path": "/Warehouse/TensorFold-target-greedy-20261027/combined-review-final.json",
+      "sha256": "266f20a462097ed4a2a85b6bd23a740edd388cdbc68e5f5accf026bbbf1b9f14",
+      "status": "bounded source review CLOSED; candidate hardware/admissibility/performance gates remain OPEN"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/source-native-dense-trial/combined-review-final.json",
+      "sha256": "a07360bf23cd5c200740f5309018b660e6695897c1dfa8efdeab40f5f07b715a",
+      "status": "bounded source review CLOSED; actual GPU/model and six-region performance gates remain OPEN"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/source-packed-graphs-trial/ceiling24-tool/combined-review-final.json",
+      "sha256": "1a015f6b2b1a14fb4eee3b886a9d3d189b3e35eb0002fcdaab7a6e409bf14097",
+      "status": "bounded tool-only source review CLOSED; actual24-slot graph/model and six-region P3 remain OPEN"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/source-packed-graphs-trial/materialized-gpu/combined-review-final.json",
+      "sha256": "fe4f891242c9e74b3ab7b6099ec1f4d3c71f1390298d9cdf55acc83c5f898220",
+      "status": "bounded combined source review CLOSED; actual model/all-rank observation/capture/quality/performance gates remain OPEN"
+    }
+  ],
+  "remaining": "Root-owned actual24 admission/GPU/model/output-quality and matched six-grid1/2/4/8/16/24 throughput/uncertainty/no-regression; strict N1>85 unproved",
+  "reviewer_actions": "Read-only maintained source/Git; additive evidence only; no GPU/remote actions or duplicate build/suite",
+  "scope": "D13 cleanup/compliance task-affecting source only, prior valid leaf proofs reused",
+  "supersedes_current_state_note": "The older d13-current-state.json predates this finite successor checkpoint; use exact receipts for current leaf bindings."
+}

@@ -1,0 +1,65 @@
+{
+  "schema": "tensorfold.d13-DP4A-cost-final-review-v1",
+  "at": "2026-10-28T16:52:28.374719+00:00",
+  "reviewer": "/root/cleanup_review",
+  "status": "BOUNDED_STANDALONE_COST_TOOL_C6_AND_CORRECTED_STAGED_IMPORT_RUNNER_CLOSURE_REVIEW_CLOSED",
+  "authority": {
+    "source": "c99a583ca075df3d509d274b7ced818b4347df85",
+    "APP": "2e3ecdd05f56a76d400a45c3df521294f20cabbc67b70a96d2d52a970d9be02d",
+    "HOLD": "0ed4c4756933d0be6c93dd00722457dd8431e6967e344961aefcd79c2acf4eef",
+    "payload": "bdfdbdbf18a02595e33a46b806a6b99aa07f40f30a8cb4f91fcd52561b57adc0",
+    "application": "f6528497; same724canonical/FDc79"
+  },
+  "scope_X1": "Actual512layer0/world8/rank3 shard routed10 INT32 slots R1/8/32 finite operator cost tool. Reuse closedf652 primitive safety/numeric/owner evidence and oldactual20PASS, no native/math re-audit, no model-enrollment review. Newtool/borrowedGraphadapter/timing/loader/runner/package imports and cleanup are affected boundaries.",
+  "findings": [
+    {
+      "rules": [
+        "C6",
+        "M0",
+        "Q0"
+      ],
+      "finding": "Borrowed finish_failures compaction exhaustion can overwrite native cause/context; original newcaller lacked retained roots.2165 fixed operationprimary but not cleanup-onlyfirstfailure.",
+      "remediation": "Preallocate operationnative_roots and fivecleanup root slots before acceptedwork, latch builtin cause/context/suppress at each caught outcome. Named roots remain in propagatedframe throughcompactionfailure. Actualoperation andcleanup-only realhelper compactionOOM controls preserve primaryidentity/roots; graphs still retire before owners and originalstream restoration attemptedlast.",
+      "disposition": "CLOSED on c99a."
+    },
+    {
+      "rules": [
+        "R0",
+        "T3",
+        "X4",
+        "Q5"
+      ],
+      "finding": "Originalcb5707/518f26-file hashes didnotestablish transitive import closure. Root96618 pre20/post20PASS but cost child failed importing tools.benchmark_output via borrowedprobe; no actualmath/costtiming ran. Reviewer original packagingGO missed this exact import edge.",
+      "remediation": "Add byteexact ownedf652 benchmark_output helper to fresh27-file package. Actual target96f/runc CPU-only preflight normalinstalls APP2e3e, verifies package, runs cost--help/imports with modulepaths assertedunder/qualification, invokes deferredactualfixture loader count512. No canonicaltools mounts/pathleak. Originalfailedpacket/96618 retained.",
+      "disposition": "CLOSED on exactstagedpreflight exit0; no oldfailure relabeling."
+    }
+  ],
+  "checked": {
+    "recipe_and_numerics": "RoutedBurst native sequence inverseAST exact originalPrototype._run except exact-only refusal and omitted_sharedassembly; finaldevice mask retained. Same10contiguousINT32picks0..511 forbothpaths, no512sharedslot. Original20quantizer/int64/status/graph oracles unchanged; actualqx/qh independentCPU packing/status/withinpathbitrepeat checks outside timing; DP-vs-packed error statistics are characterization, not model quality/bit equivalence.",
+    "lifetime": "OriginalGraph owns capture/end/retirement for both; publishes borrower before prepare, finds it evenifcapture()raises, allgraphs closebeforedependentowners; uncertainfence/reset preventsrelease, primary/cleanup/native roots retained. FixedsingleStream, explicitoriginal\u2192side handoff andrestore. Rawgraphreplay skipsPythonguards onlyinsideexclusive immutablebinding batches, prevalidated eachsample.",
+    "timing": "3samples x8bursts x4unroll plus8warmups atR1/8/32, paired alternatingorder, allrawms retained. CUDAevents includeenqueuegaps; graph andeager modes scoped separately. Warmfixeddata/noL2flush/no clockchange, oneactualbank/shard/syntheticuniformrouting andbothpathsresident. No model/State/NCCL/P3 claim.",
+    "resources": "GPU0/4CPU/12GiBcontainer withsingle-thread env andpids1024; finitegeometry andsource-validated packedbank. Report retainedbank/scratchtensor extents, loaderdownconcat2*512*2560*rowbytes, advisoryTorch/CUDA/hostcgroup observations outside timing. No invented nativeallocator/graphpool/CPUpeak theorem or Engine/native24 admission.",
+    "runner": "Parent noCUDA; isolatedpre20 then cost3 thenpost20, originalcostfailure takesprecedence whilepostconditionevidence retained; all20passed/0skip required andsame DSOdigest acrosspre/cost/post. Normalwholewheel/protected checks before+after, sequentialRootlease.",
+    "bindings": "8canonicalsource+3evidence hashes verified, all27localpayloadfile hashes exact, emptyruntime srcdiffvsf652. Onlyactual_case definition changedfromcb5707 (cleanuproots); classes,recipe,timed,main numericbody exact. Addedbenchmarkhelper byteexactf652. Remote27verification/fresh-evidence and exactstaged CPUcommand exit0 independently read fromlocalcopied receipts.",
+    "cleanup": "No verified dead or unjustifiably duplicated task code left in bounded increment; original failure evidence and independentoracles retained."
+  },
+  "evidence": {
+    "source-hold.json": "0ed4c4756933d0be6c93dd00722457dd8431e6967e344961aefcd79c2acf4eef",
+    "cpu-command.json": "9ce5f842ee1fcb83119edb9b3b4bddeb855a962dd388569ef6dd3dd37db65c23",
+    "cpu-exit.json": "724283c2bcef1c04afce1146c5d94a569af7783f0d5bca454dc183dff8305b73",
+    "cpu.log": "1c4c6ffff320affb986d8128893961683dc6ebcc5c3d4f8a55111a502e32d8b3",
+    "wheel-provenance.json": "3662990ab46d80d89528f9069c7f9cfecef6677a1c8ed57d20a4dfa326dc5b52",
+    "gpu-stage/stage-ready.json": "238392a882ad06a72afbb2b57f3c538c36cc354a359f1d9865dad2a88a72c2fb",
+    "gpu-stage/package/stage-files.json": "e4747e8f13e1bc31d6742cdceeb45a578332c549fd7de799cad00235b247e577",
+    "gpu-stage/remote-stage-verification.json": "94895054727ea322edeffba81ab7205e956af79d6a96de402cb06e449cf93a05",
+    "preflight-remote.py": "6491c5e04d41275674d16cc668b66069b7c90192cc3c2a6294fa479d0a0ffe10",
+    "staged-preflight-command.json": "d895c6c0ebf57dad55d369e5c20666e2dd8a0b772d1f05025fccc1f04c61ce91",
+    "staged-preflight.stdout": "13c704b623ed3c7d97447f6c4bb7855b2b73629da1bc5eab18cf8a3bfccdfd74"
+  },
+  "checks": "Author8affectednormalinstalledCPU2.63/Ruff +original20GPUcollection, normal724FDc79/protected andstaged96f CPU-only import/help/deferredfixture512 exit0. Reviewer readonly source/AST/manifest/receipt checks; no GPU/remoteheavy/test repetition.",
+  "limits": [
+    "This is final source/tool/packet review for bounded operator diagnostic only. No model enrollment/native24/resource/quality/performance approval.",
+    "Original96618 importfailure/pre20post20PASS/zero costtiming preserved. Corrected actual53175 results and interpretation are separate Root-owned evidence.",
+    "Operator-cost adverse results do not establish universal DP4A inferiority or quality; model-enrollment work stopped by Root and not reviewed/admitted here."
+  ]
+}

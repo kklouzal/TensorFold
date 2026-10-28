@@ -1,0 +1,40 @@
+{
+  "schema": "tensorfold.d13-host-commitment-progress",
+  "version": 1,
+  "status": "read_in_progress_no_final_hold_or_admission_closure",
+  "source_commit": "fdb4f6a83c37cee135d20e39885c4e43b705a14f",
+  "source_read": {
+    "src/tensorfold/families/qwen4_exp/cuda/retention_resources.py": "c68726840eeffa6ae450afe9233c5867a43ee8de42d4fb3b3cf0a7d8105e7c47",
+    "src/tensorfold/families/qwen4_exp/cuda/multi.py": "0c552ee19e8387290ce185f571bd7a6be3fab3622492bc86f770a7a9a66405b9",
+    "src/tensorfold/families/qwen4_exp/cuda/tp_scheduler.py": "d45efd93104e1cf83dd9cd9834d130bb542bed21f915a84bda2362e70e19f69a",
+    "src/tensorfold/cuda/scheduler.py": "ac85b824817299ec087d66fcdc7baccf14a4a3ca736e7ed8c2d37cb71074a17d",
+    "src/tensorfold/cuda/streams.py": "afdb4ecc78f80652a409416254b063584ce94731330390e8288dacd50144c286",
+    "src/tensorfold/server/request_limits.py": "79dfd1b669f679e6bb06b3a919c9d91eee6ae922b2e8f7ec5d2ed1984d7541d3"
+  },
+  "scope": "Current logicalcontext/enforced input-credit owner count/plainByteLevel/sourceACK resource increments and actual producers/callers<=3hops; genericJSON/parser/deepcopy/HTTP envelope remains separate unfinished ownerwork.",
+  "reviewed_so_far": [
+    "Logical context replaces physicalguard storage as semantic output horizon; all State logical contexts checked equal.",
+    "Optional stream=None reservation query uses same actual complete future prompt floor as real enqueue; Waiting/InputClaim holds charge through active and between-subruns until caller retirement.",
+    "Pinned tokenizers0.23.3 ByteLevel converts eachpiece independently, concatenates bytes, then UTF8-lossy conversion; separately decoded piece lengths are subadditive under boundary completion. Actual library enumeration and mixed boundary controls preserve other decoder affine fallback roles.",
+    "SourceTP ACK producer has fixed errorclass/state/optionalcompletion schema; real retention dispatch returnsbool or two-bool completion. SourceACK graph replaces only that role; generic received/malformed/error graphs remain."
+  ],
+  "primary_authority": {
+    "url": "https://raw.githubusercontent.com/huggingface/tokenizers/v0.23.3/tokenizers/src/pre_tokenizers/byte_level.rs",
+    "lines": "144-160",
+    "use": "Read exact pinned decode_chain; no copied decoder implementation or blanket upstream retesting."
+  },
+  "open_concrete_boundary": {
+    "topic": "Pre-input-claim owners",
+    "evidence": "Scheduler.submit creates OutputMailbox and Stream(list(prompt),...) before borrow/Waiting.publish; App.run frame also exists before complete-future credit publication.",
+    "disposition": "min credit/floor proves admitted generation count, not automatically preclaim/frontend owners. Native owner and final_gate notified to pay/prove these roles within final HTTP/pending envelope. No numeric underbound asserted while current aggregate remains conservative/open."
+  },
+  "verification_reuse": "Owner diagnostic64 normalinstalledresource controls and31sourceACK controls/Ruff read; not rerun, not final fit or newimage qualification.",
+  "regions": "Original4pending/16connections/16MiB/262144/int8/TP8/MTP2/23physical windows remains OPEN. Rootdiagnostic1pending/1connection/prefill256 is distinct; no shrink/substitution/equivalence claim.",
+  "open_gates": [
+    "Complete selectedCPython3.12.3 JSON tree/parser/writer/error/deepcopy/memo/keepalive envelope",
+    "HTTP/error/preclaim/ResponseStore cache and materialization lifetimes",
+    "Actual prepared frontend identity and source fixed input role binding",
+    "Final coherent source HOLD/integration/region-fit proof and actual target tests"
+  ],
+  "reviewer_actions": "Read-only source/contracts/tests/primarysource; no code/Git/device/remote/test actions."
+}

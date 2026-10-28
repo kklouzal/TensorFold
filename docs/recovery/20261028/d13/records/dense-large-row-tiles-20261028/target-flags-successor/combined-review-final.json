@@ -1,0 +1,32 @@
+{
+  "schema": "tensorfold.combined-d13-fixture-target-region-binding-v1",
+  "at": "2026-10-28T08:20:24.785719+00:00",
+  "reviewer": "/root/cleanup_review",
+  "fixture_commit": "2a1c9dcffc597524d148b6b6aa2ff7fb7f8473e3",
+  "HOLD_sha256": "34c20fc2b7b55e40dcf9111edea66ed153a73ee6f06e521ad654ed37f125fdac",
+  "APP_source": "c517964e",
+  "APP_sha256": "991fd09081a9f3029e25ac67f02c10477f07a0f65ad210f24d953799e9388737",
+  "status": "FIXTURE TARGET-REGION FINDING CLOSED + NUMERICAL STAGE BOUND; wholecandidate/modelselection separate",
+  "findings_dispositions": [
+    {
+      "rules": [
+        "D3",
+        "D4",
+        "T2",
+        "F2",
+        "N1",
+        "Q2",
+        "X12"
+      ],
+      "finding": "Originalc517fixture overwrote selectedFP16reductionTrue toFalse, so old32PASS waswrong-REGION reference, notselected-targetproof.",
+      "disposition": "Fixture nowonlyobserves+assertsTrue reduction/Falseaccum beforeandafter, no flagsetters/restoration. Entireoldtest/oracle/workspace/mathbodyAST unchanged; onlyautousepolicy helper/body+3CPUflagcontrols differ. Oldsource/stage/raw32False positive preserved asreference, notGPUfailure."
+    }
+  ],
+  "checks": [
+    "src diff empty2a1c vsc517; no APP/native/forward/policy/budget changes",
+    "16stagemanifest hashes/sizes checked; exact718+FDc79 sourceproof andfixtureHOLD preserved",
+    "3CPUflagchecks1.59s/32collection0.40s/Ruff andnormal718FD sourceclosure reused; no reviewerretest",
+    "Rootactualcorrect target32PASS0.79s/0skip/exit0 andTrue/Falsepolicy prepost normal718FD reported/archived actual-2a1c; no newGPUbyreviewer"
+  ],
+  "limit": "This closes wrong-math-fixture qualification gap for same32componentcases. It is not proof all input/history/dispatch regions, currentGDN/router integration orall6DenseLargeRow performance; originalprivateprepared/fallback/alias/autograd/otherstream contracts remain tobeassessed withcandidateimplementation asappropriate. No P3/85/600/service superiority/equivalence claim."
+}

@@ -1,0 +1,72 @@
+{
+  "schema": "task-wide-combined-D13-review-v1",
+  "at": "2026-10-28T11:47:30.177666+00:00",
+  "reviewer": "/root/cleanup_review",
+  "scope": "Separate current146f generic packed/shared-FFN fusion private candidate, its actual selector/epoch/callers, pointer ownership, allocator/resource/graph obligations, required guards and held package. Reuse prior current Router/GDN/startup3/Dense and exact pinned04cf allocator review; no closed-native algorithm re-audit or extra reviewer.",
+  "source": {
+    "commit": "42f522f02ef9c58237bfaf7eafd7b18adefa3ed8",
+    "HOLD_sha256": "08edabd6a5ca89d933e8cf0a58e113fd45468c2eaa2de4721263cacbb648902f",
+    "APP_sha256": "76047cf24e274a10549619ed3a6064551ba71d756d1dc007a25ffdfd28bb2af5",
+    "held_source_paths": 19,
+    "held_check_files": 9,
+    "canonical_packaged_files_verified": 721,
+    "FD_sha256": "c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d",
+    "native_CUDA_existing_prefix_exact146f": true,
+    "new_suffix_bytes": 1523,
+    "byte_exact_parent_paths": [
+      "src/tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+      "src/tensorfold/families/qwen4_exp/cuda/forward.py",
+      "src/tensorfold/families/qwen4_exp/cuda/gdn_state_batch.py",
+      "src/tensorfold/families/qwen4_exp/cuda/execution_identity.py"
+    ],
+    "common_helpers_byte_exact146f": [
+      "tools/finite_concurrency.py",
+      "tools/finite_quality.py",
+      "tools/benchmark_output.py"
+    ]
+  },
+  "stage": {
+    "payload_files_verified": 21,
+    "manifest_sha256": "caf6ebd44a04fa46c2812006e9548a29b22bfa9dde5821c005ef3a113272c225",
+    "controller_sha256": "c527a4a8fc3bbab47f507e3397554302d0892b60bfd8f96067d7e6ffe2a37e0c",
+    "stage_ready_sha256": "e44e48c28ca12ea201ccb4bdac7c678c88a242b3924172cf87c6122e544aa68d",
+    "executable_gate": "run_fusion_controls.py requires6actualcases/no skips and validates32fusion+4Dense code variants; legacyJUnit retains empirical error properties. Only after success does bootstrap execute all6+unchangedquality.",
+    "remote_execution": "Root owns actual68618. Reviewer verified exact local held package, no remote launch or GPU."
+  },
+  "disposition": "SOURCE_AND_HELD_STAGE_REVIEW_CLOSED_FOR_PRIVATE_CANDIDATE; NO_REMAINING_CONCRETE_SOURCE_FINDINGS_WITHIN_SCOPE; NUMERICAL_ADMISSIBILITY/QUALITY/P3_SELECTION_SEPARATE",
+  "contracts_verified": [
+    "Only explicit source-router-gdn-shared-fusion-trial selects existing GGUFExperts.packed_blocks2w. Distinct numeric identity and State/prefix epoch prevent foreign-profile cache reuse. Original defaults remain; original GGUFExpert class/forward and full forward code byte-identical146f.",
+    "Actual IQ/Q8 gate/up does not satisfy the kinds12/13 aligned blockwise predicate, so uses existing generic expert_gate_up; fused shared-FFN work and original nonexact down reduction are the candidate, not WMMA or a claimed two-warp projection acceleration. Existing bodies unchanged; only32attribute residency helper appended.",
+    "Shared weights remain original contiguous CUDA FP16 GGUFDense.weight objects passed directly as three pointers; original routed PackedView data is read/dequantized inline. No expert-bank decoding/replication, new weight representation or persistent tensor copied. Shared ID equals actual routed512; public bank.count513 and full49banks are checked before follow/submit.",
+    "Input/output/alias/type/shape/index validation remains in original raw API. Shared slot is actually produced by generic kernel, not the WMMA zero contract. Raw pair bound65535 remains distinct from profile row32/slots11. Unsupported publicR>32 keeps original reference route, prefill uses unchanged forward_prefill reference method.",
+    "Existing unsplit packed execution allocates onlyFP16 activation: max32*33*80*2=168960B, actual32*11=56320B. No Splits4 partial allocation selected. Caller owns output; single current-stream reuse retained. Engine prepays2MiB/rank default-native small-segment operating credit and64KiB/rank host before authoritative admit.",
+    "All CUDA/HIP/unified allocator-config aliases plus no-caching override refused, native backend required. Selected fresh qwen4/bootstrap has no programmatic allocator setter; arbitrary externally mutated allocator processes are not covered by this default-runtime REGION. Pinned04cf allocator small-size threshold1MiB/small segment2MiB confirmed in prior39dfe review.",
+    "All32 selected generic/blockwise/down index/dtype variants attribute-materialized before physical baseline, no model tensor/kernel launch in helper. Existing graph warm/settlement and future-service/native24Q8 obligations remain additional;2MiB is not a universal vendor/driver/private-pool bound or reusable graph-cache credit.",
+    "Current Router/GDN/batch prelude/coordinate producer/FP32 recurrent state/Dense32/startup3 contracts retained via explicit profile memberships, real caller/follower factory checks, native24floor, row32/TP8/MTP2/.7/Q8/fullcontext. Original prefill separation, target-greedy eligibility, N1 graph preparation and compact-candidate reconstruction preserve current integration.",
+    "New tool check verifies actual49banks/count513/localwidth80/D2560, targetFP16/MTPFP32 and prepaid device/global-host fields before follow/caller submission. Existing batch/GDN host evidence funding and all6 FASTv2/2048/EOS/cancel/drain/sixquality helpers remain."
+  ],
+  "numerical_limits": "Fused shared expert and routed down reduction differ from original Dense/BMM. This is a separate explicitly unqualified numeric profile. Existing old20 empirical records are not an accepted tolerance; no universal logit/output equivalence or in-profile cached-dispatch/history equivalence inferred. New safety controls retain finite/error reporting, per-row determinism/cast/capture/invalid/alias/fallback checks; no old strict oracle modified.",
+  "verification": {
+    "CPU": "332PASS7.82s/Ruff/package/pip/help, exactcommands/cwd/exits/loghashes inHOLD and controls-provenance",
+    "compile": "PinnedSM70compile/link/import passed; GPUless prepare refusal is not hardware proof",
+    "raw_actual": "Root reports6safetyPASS3.92 and all6 rates32.1/29.7/51.1/78.5/105.6/107.6/errors0, archived generic-shared-fusion-current-20261028/actual-first-all6-7604. Author task/prefix/capacity/counter audit ongoing; reviewer has not independently bound raw archive in this receipt."
+  },
+  "findings": [
+    {
+      "id": "FUSION-STAGE-CAPTION",
+      "rules": [
+        "X6",
+        "A0"
+      ],
+      "status": "DISPOSITIONED_METADATA_ONLY_CORRECTION_REQUESTED",
+      "fact": "stage-ready.required_before_launch still says shared3controls inherited from a prior packet. Actual immutable executable requires6/no skips, and Root reported6executed. Source/control contract is unambiguous; author notified to add outside-payload correction, preserve historical/live packet. No rerun/rebuild/source change required."
+    }
+  ],
+  "cleanup": "No verified dead code or unjustified duplication found in affected candidate scope. Existing kernels, required baseline/default/capability paths and independent/historical oracles retained. Rejected WMMA evidence remains separate; no source cleanup invented.",
+  "execution": "Local readonly source/Git/hash/ZIP checks only; no reviewer GPU, tests, remote process or source edits.",
+  "pending_acceptance": [
+    "Independently archived actualsafety and all6 task/prefix/nativeID/capacity/counter/startup-retirement audit",
+    "Explicit accepted numerical/requiredquality contract; known historical4/6 alone is not broadqualification",
+    "Per-user repeats/broad qualification deferred, not passed; no production/service claim"
+  ]
+}

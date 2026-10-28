@@ -1,0 +1,86 @@
+{
+  "schema": "tensorfold.combined-d13-review-v1",
+  "at": "2026-10-28T01:08:22.099450+00:00",
+  "status": "COMPONENT SOURCE REVIEW COMPLETE; full6adapterintegration OPEN",
+  "scope": "21heldchangedpaths, newgate/upkernel/directoldcoefficient+down/publichostguards/sharedDense/control/profile/funding/oracles within3hops; no broadlibraryaudit",
+  "source_commit": "f587d5976bb8865414e9d1c33fcd6eb93e35349f",
+  "hold_sha256": "fe5a09eaded5c3f88a1b6e2ed2db460c8750d20d246fa80bbfb37ebe690bd502",
+  "wheel": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/exact-gateup-independent-20261028/resource-doc-wheel/wheels/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3143128,
+    "sha256": "ce2eb055dcb4202fda69cb58726580f09a20793018b190469822b66a7370113b"
+  },
+  "component_assessment": [
+    {
+      "rules": [
+        "P0",
+        "P1",
+        "N1",
+        "U1",
+        "U3"
+      ],
+      "proof": "128threads/4fullwarps, pair-of-warps peroutput, eachlegusesoriginalFP16storedcoefficientboundary/FP32fmafsequence and16/8/4/2/1shuffle tree. Two lane0 sharedpartials initialized eveninvalid/shared/inactive; everythreadreachesCTAbarrier; onlyleg0lane0writesuniqueactivation. FP32sharedstore/loadaddsnovaluequantization; originalSilu+Halfround retained. InvalidIDs skipallcoefficientreadsandemitdeclaredNaN, sharedslotpositivezero beforeoriginalDenseownerreplacement. ActualGPUbitwiseadmissibilitystillpending."
+    },
+    {
+      "rules": [
+        "C3",
+        "V1",
+        "M0"
+      ],
+      "proof": "Nativeentry retainsoriginaltypedCUDA/contiguity/shape/device/range/overlapguardsandD2560/K80or160constraints; picksIndex32/64 retainoldboundsandpointerformula; activationallocation/down80/down160/shared/reference bodies reused. Allworkusesoriginalstream andownedTorchlifetime/buffers; no newglobaldevicearena. Staticsharedarrayrequested16B, actualcompiled32B recorded, noinvaliduninitializedsharedread."
+    },
+    {
+      "rules": [
+        "S1",
+        "M1",
+        "T0"
+      ],
+      "proof": "Actualshippingpickint32fromMoEBuffers;8selectedvariantattributesforcedbeforeselectorpublication/initialphysicalbaseline, failurepreservesoldselectors. Fixed8*6nativeintegerreceipt+wrappersboundedbyextra8192host/rank; no persistentweightmirror/event/tensorworkspace. Kind18I32REG32/STACK0/SHARED32; genericI32STACK64vsold0isa disclosedcapacity/P3risk, notRSS/occupancyprooforhiddenformatrestriction."
+    },
+    {
+      "rules": [
+        "A0",
+        "Q3",
+        "X12"
+      ],
+      "proof": "Explicitprivateprofile/Stateepoch/currentprelude/guard/targetsampling/MTPconfidence/full24Q8context wiring; oldprofiles/defaultoldkernel retained. Existingindependentreference/ggmlwirebits/sharedbadID/alias/captureoracles preserved andparameterizedwithnewmode, rows1/2/3/8/18/32 andbothdtypes; no tolerancerelaxation.549GPUcases collectednotexecuted;800normalCPUandSM70compile/refusalrecorded, finaldocs-onlywheelruntimebyteproofretainsCPUevidence."
+    },
+    {
+      "rules": [
+        "D13",
+        "S0",
+        "P5"
+      ],
+      "proof": "Newlegownership kernel is a justifiedmeasured-underfillcandidate, sharedcoefficient/down/Densealgorithms retained. Originalkernel/control bodies servevalidbaseline+independentoraclesandarenotdead. No verifieddeadorunjustifiedduplicate mathpathfound; no micro/gain/equivalenceclaimbeforehardwareandmodelREGIONcomparison."
+    }
+  ],
+  "open_findings": [
+    {
+      "rules": [
+        "R0",
+        "T3",
+        "X5",
+        "Q0"
+      ],
+      "source": "tools/v100_backend_probe.py worker/profileadmission unchangeda7b1",
+      "finding": "FutureFASTnewprofileisnotincludedinworkergraphs=Trueprofiletuple, so newunique_graph_requestcorrectlyrequiresgraphsTrueandthetoolwouldself-rejectbeforemodel. Source/graphreportprofile integrationandactualfactoryforwardingcontrolrequired beforefull6handoff.",
+      "disposition": "Rootnotified; soleownerassignmentpending. Doesnotblockdirect549nativeGPUmathoracles, butfullmodel-readyclaimblocked."
+    }
+  ],
+  "evidence": {
+    "CPU": "800pass15.71s/Ruff/normal717source+FDc79/protectedclosure",
+    "CPU_command_sha256": "ef0318f62e7ff6932f7549fe20912e76ca8739d42c8430df37d09442e46a65fa",
+    "compile_command_sha256": "7ce8a750b224dfd671547c40cc99c0b585ac78635aed4643bd5b6d2930542ee5",
+    "compile_log_sha256": "dd7df136c99675e71fdb57035e07400d65310b5513d75e950d9a7ac84a7ea1a9",
+    "compile": "ExplicitSM70compile/link/importDSOab2bdd, GPUlessattributescorrectlyrefused; notGPUexecution",
+    "structural_proof_sha256": "6c7fc855e579ec9d926aa31d4a62178ce37fb0dc45516163b569e7430161bd48",
+    "final_runtime_proof_sha256": "e0b3266ffcf0de38c1993db11c0325db0cae3af8533ad2bbcb635148a00ddf19",
+    "cubin_resources_sha256": "66a85197ec2b552478474e94bfff6eadd160427685fd63720e35ad73f1434667",
+    "reviewer": "Read/hash/source reasoning only; noGPU/build/testduplication"
+  },
+  "remaining": [
+    "ResolveprivateFASTprofile/graph/source-reportadapter andverifyintegratedcaller/stage",
+    "Rootstrict549GPUmath+state/capturecontrols, actualcurrentprofileTP8/capacity/fullmodelquality",
+    "All6matchedP3/repeats/noregression/85and600goals; genericstack/capacityrisk dispositionbeforeselection"
+  ]
+}

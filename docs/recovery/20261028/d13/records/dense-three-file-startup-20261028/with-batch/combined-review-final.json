@@ -1,0 +1,73 @@
+{
+  "schema": "tensorfold.combined-d13-incremental-review-v1",
+  "at": "2026-10-28T03:56:23.179682+00:00",
+  "reviewer": "/root/cleanup_review",
+  "policy": "latest user single combined D13; tiered objective24>16>8>4>2>1, Root owns acceptable tradeoffs; fast iteration, no duplicate suites",
+  "scope": {
+    "commit": "694b1c223f17d7716fdd78736d91087480ac7d6f",
+    "source_hold_sha256": "489b30121fd25689485b549947fd41f3a994ee07638349e4dab83b93f0430f19",
+    "wheel_sha256": "e9a425535950b2a6793537b73f08aa81f4b4193ccc15a4e06450a2c4ab914405",
+    "paths": 8,
+    "relationship_hops": 3
+  },
+  "status": "SOURCE AND R2 STAGE REVIEW CLOSED; no unresolved incremental finding; actual combined model/performance separately Root-owned",
+  "structural_checks": {
+    "held_source_paths": 8,
+    "runtime_difference_vs_7de": [
+      "startup_content.py",
+      "execution_identity.py"
+    ],
+    "execution_identity_exact_d73": true,
+    "startup_content_exact_d73_except_Dense_and_Batch_profile_allowlist": true,
+    "all_other_runtime_including_batch_Dense_native_MTP_State_coordinates": "Git byte-identical to7de/86cb",
+    "current_R2_manifest_hash_and_size_verified_files": 20,
+    "current_R2_source_hold_wholewheel_and_tool_match": true,
+    "CLI_and_environment": "explicit workers1/3;3 requires enabled manifest overlap; all8 children inherit exact worker count before startup; default unchanged",
+    "authority_and_funding": "existing d73 current-process three-authority reuse, strict canonical list-of-lists receipt, allrank settings and global226504704B before start; native24Q8 floor unchanged",
+    "current_batch_tool": "existing profile-derived8192B coverage reserve, after-retirement counters and all6 protocol retained"
+  },
+  "findings_dispositions": [
+    {
+      "rules": [
+        "D13",
+        "C5",
+        "C6",
+        "U2",
+        "M1",
+        "A0",
+        "R0",
+        "X5"
+      ],
+      "disposition": "No new source defect found. Reused closed d73 group ownership/primary-preservation and7de/86cb batch proofs; no cosmetic edits or suite cloning."
+    },
+    {
+      "rules": [
+        "A0",
+        "X4",
+        "X6"
+      ],
+      "disposition": "Initial package declared old probe SHA and was rejected before publication/GPU. R2 corrects declared new-probe identity, fresh output/name; validator/source/APP/HOLD unchanged; failed artifact retained."
+    }
+  ],
+  "reused_evidence": [
+    "3100e9ef2583821c2fa56720ec40a0b42d6a609b7bd6393e87649ba017d310b0",
+    "d9d21830c91f7bbf0e8597db8c0c9668a12ec1f1f206868e9c9f097f62f78a32",
+    "da9dae225c23a8decc9b8404d6a4c61754269ebad08eeb66c135902ec0309148",
+    "75ef5098114b296557378acb98f2ba0a2605bacd59896069ee2d87251ec8f69a"
+  ],
+  "checks": {
+    "author_380_CPU_seconds": 19.23,
+    "normal_package": "718+FDc79; all8 source hold paths independently matched; wholewheel hash independently matched",
+    "Ruff": "author PASS reused",
+    "pip": "author PASS reused",
+    "command_sha256": "67bb90690c7b6ec59a9cefa362042d2d2fd6f8defcc680de0ae39920156be595",
+    "exit_sha256": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17",
+    "stage_ready_R2_sha256": "faf3717f373427b188f69562c7fd7ab58f9d01deb641d4f6f0322a9b63a45571",
+    "source_review_checks": "read-only Git/AST/source/hash and local package checks, no new CPU suite or GPU/remote execution"
+  },
+  "limitations": [
+    "Root95443 experiment reported LIVE; no terminal outcome invented.",
+    "No performance equivalence/superiority, broad quality, or service qualification inferred.",
+    "Higher N tier tradeoffs remain explicit Root decisions; all6 required quality/native IDs/drains/capacity remain hard evidence obligations."
+  ]
+}

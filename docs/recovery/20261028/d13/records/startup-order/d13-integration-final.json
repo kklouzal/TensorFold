@@ -1,0 +1,72 @@
+{
+  "schema": "tensorfold.d13-startup-order-fixture-integration-final",
+  "version": 1,
+  "status": "closed_bounded_three_path_frame",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-order/source-hold-integration.json",
+    "bytes": 784,
+    "sha256": "d79e01a34ab44f005a0405e302e7688a2e0ee2af39a0bd4887ddd61549b6b45b"
+  },
+  "paths": {
+    "src/tensorfold/families/qwen4_exp/cuda/engine.py": {
+      "bytes": 176229,
+      "sha256": "6da0849836c4b6983164842fc9b36a1759a5caf56b415dbdda886fd936f5f445"
+    },
+    "tests/test_cuda_scheduler_startup_source.py": {
+      "bytes": 12624,
+      "sha256": "096acbdea04fc80801361507ec2403f62fcb48d4e77cc142a05943a64662cc40"
+    },
+    "tests/test_flashnext_engine_lifetime.py": {
+      "bytes": 17777,
+      "sha256": "9e4db5086d8fcaacb3a218aa7587beab5b5ccb5239f3083e7491ccaec70329f3"
+    }
+  },
+  "prior_source_review": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-order/d13-source-final.json",
+    "bytes": 4814,
+    "sha256": "bbc5b4fdd7bb55ceb5f5242d7e50f3bb8db87bc8b69177e9c583fe886195f830"
+  },
+  "tested_prefixture_parent": "a1523f6628c7d429a97b19f96e779a23b8c90b9d",
+  "fixture_commit": "4ad7015a07fbec8b80d73afa9a2203386741eb49",
+  "scope": "Only2line lifetime fixture prerequisite correction added after closed2path startup-order source. No runtime change or broad review.",
+  "review": [
+    "AST fixture includes actualcontext_window property required by actual_limit; plan supplies2048logical with unchanged2053physical/depth4. This matches intended prior lifetime semantics.",
+    "Independent deletion of exactlythe newkeep-element+planassignment reconstructs entire original module AST at pinnedtestedparenta1523. All15test bodies/assertions/timeouts/ownership/failure oracles exact.",
+    "Originalsame-image5failed/33passed/2subtest log retained. Missingextractedproperty caused pre-event failure; no productionfallback or weakened assertion.",
+    "Correctednormalinstalledsame30fdlifetime15pass/2subtests0.37s/exit0,715package707code/protected/source no drift. Other23 readiness/construction/failure checks are structurally reused from originalrun, not relabelled as a full38 rerun. Closedsource2/86awheel/30fdimage/FD4a06 unchanged."
+  ],
+  "verification": {
+    "all3held_hashes_match": true,
+    "entire_fixture_AST_two_line_reverse_exact": true,
+    "all15_test_bodies_exact": true,
+    "prior68_sourcecontrols_retained": true,
+    "lifetime_result": {
+      "path": "/Warehouse/TensorFold-wt/v100-adaptive-sc117-runtime-20261025/task-artifacts/startup-order-gate/lifetime-result.json",
+      "bytes": 330,
+      "sha256": "c9e97cac821903f43e9ceca339d2a97069fd956b9a40d4f1389c894538ebe9ee"
+    },
+    "lifetime_log": {
+      "path": "/Warehouse/TensorFold-wt/v100-adaptive-sc117-runtime-20261025/task-artifacts/startup-order-gate/lifetime.log",
+      "bytes": 217,
+      "sha256": "d6e93cb3a936863b6edcb23a1230ff138d46ee231820aea132d64c181e277348"
+    },
+    "lifetime_command": {
+      "path": "/Warehouse/TensorFold-wt/v100-adaptive-sc117-runtime-20261025/task-artifacts/startup-order-gate/lifetime-command.json",
+      "bytes": 3374,
+      "sha256": "57346c92a61d11db3e369858f26e383a96481e52949790d47a821ad77c369780"
+    },
+    "negative_result": {
+      "path": "/Warehouse/TensorFold-wt/v100-adaptive-sc117-runtime-20261025/task-artifacts/startup-order-gate/result.json",
+      "bytes": 466,
+      "sha256": "e43d22bd53339fd0060b3de0128029138635f7266c1b53699efe6f13568c1ac8"
+    },
+    "negative_log": {
+      "path": "/Warehouse/TensorFold-wt/v100-adaptive-sc117-runtime-20261025/task-artifacts/startup-order-gate/installed.log",
+      "bytes": 7236,
+      "sha256": "0ba3aa044355eb6c4d55a33db123b7b9228c41082d8dc04e2e0ff6176fbdf8fe"
+    },
+    "no_reviewer_tests_source_or_Git_actions": true
+  },
+  "findings": "No new verified finding; source and fixture integration closed.",
+  "limits": "No full187/newmodel/readiness/performance claim; remaining actual target workload gates separate."
+}

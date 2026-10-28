@@ -1,0 +1,105 @@
+{
+  "status": "bounded combined source review CLOSED; actual TP8/model/quality/capacity-sixgrid/P3 gates remain OPEN",
+  "scope": "Root-assigned12 paths and necessary canonical frame/native owner/State/capture/resource/teardown consumers within three relationship hops; sole writer coordinated corrections",
+  "hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-piece-integration-20261027/source-hold.json",
+    "sha256": "20f47c9891a6c0b8d71f69a264e987a3ae81e2ba4072bc720a2c978f70491742"
+  },
+  "source_commit": "7afe2564d251f268e2e33c27e5ab78eb3e724100",
+  "source_hashes": {
+    "README.md": "7eecf148e11757fefb028db2fd6eb1e94b8ad8ad6d4e64c38c8e659c57471eb0",
+    "src/tensorfold/cuda/sm70/execution_policy.py": "0822b20f31cc384df21c56299ddd40c1cc9acd9acac67b7484d1fd05b7f87e2f",
+    "src/tensorfold/families/qwen4_exp/cuda/bound_graphs.py": "74bde1990785d0d9398ff68be91be102fac103fc80756fcbaa7efd10f7379341",
+    "src/tensorfold/families/qwen4_exp/cuda/engine.py": "d4c870a9be022b4ac1c8c87abe6238bfb2bac0dba9dca0b977883843dfab4096",
+    "src/tensorfold/families/qwen4_exp/cuda/multi.py": "8fd003592df4c9bf0a1ddcc6e47dce6745ed527b81dd7bb60d2efcd758e25145",
+    "src/tensorfold/families/qwen4_exp/cuda/multi_graphs.py": "dba5294098e04feaf6e720ab0c9cf03b4dfbaed271d5428ba5a305f8ada25ceb",
+    "src/tensorfold/families/qwen4_exp/cuda/prefix_policy.py": "09c19006ba584ec8299c04f60e30ec9d6a474f0e6cf98927d2810c017b8d3b73",
+    "tests/cuda/test_sm70_owner_piece_graphs_tp8.py": "c8fd6bf10e9b4e2234ef1533aeb2638ceda8ab6fa847987314f3bb15db7f4526",
+    "tests/test_sm70_owner_piece_adapter.py": "5b54b89a9f56001b09e636b2c729b98e8aa74a72b6a017eff13dbddc424f1ba8",
+    "tests/test_sm70_owner_piece_policy.py": "4c9820df817aff25efb42437f15954207f5ac614f24c5bfd6b46e6c6aff06a1f",
+    "tests/test_sm70_packed_graph_trial_policy.py": "5108ae25ec4b9098d32d2780b1f7ab17ecd149a02f9df9ccc364a5de79783d48",
+    "tests/test_sm70_unique_piece_graphs.py": "f8ccef1e6df039410817db15861d7e0ce49d96203c9b49a69bae588bf9c36eeb"
+  },
+  "wheel": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-piece-integration-20261027/wheels/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3112496,
+    "sha256": "e9d093888f11acad23752eb44f53015c4ae1b11eb95fc823f39e8c0b33aa955b"
+  },
+  "manifest": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-piece-integration-20261027/wheel-provenance.json",
+    "sha256": "ef022fa830fef332c0ff9298d5fac6f43fd3611eb415c6b959e51083fd7aa90f",
+    "source_files": 715,
+    "compiled_extensions": [
+      {
+        "path": "tensorfold/_fd_owner.abi3.so",
+        "bytes": 37936,
+        "sha256": "9fbc446d1fb4c8f0d01963b18678bf501f01e2dafda5b1122624c6abb0bd5665"
+      }
+    ],
+    "normal_installed_all715plusFD_verified": true
+  },
+  "independent_byte_AST_check": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-piece-integration-20261027/combined-review-byte-check.json",
+    "sha256": "7aad7cca8ea36f72a646675e10bff3009a6df44f06559d6111308d14823366d1"
+  },
+  "execution_companion": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-piece-integration-20261027/execution-companion.json",
+    "sha256": "f8d2ca0477b271bd04cf9c31d83c4ea339ca412726baa70c79602d3b291d57ae",
+    "scope": "Retrospective actual invocation transcription, explicit flags/cwd/env, existing logs/exit0; no rerun or inferred daemon defaults"
+  },
+  "verification": {
+    "SDK": "sha256:30fda46a4c40422e055e0615a8186fc1c39678be9c8c9761885fc0cb77c28993",
+    "normal_installed": "227passed+11subtests16.30s; final19 adapter/policy/floorcontrols3.83s;Ruffpass; bothTP8modulecasescollect",
+    "logs": {
+      "build3.log": "f4886161788bbd769a7cb5e55e910c0ae832fb09d5e417eea7466a9251923b8d",
+      "cpu2.log": "020c1b8490b6d36055aced9df86864a45ddfd56e78e7366b6370693cf1a2b7d3",
+      "cpu.xml": "12374847b6e7ede30dc33d45f2fe5081760838b5db17f4b45a1b4c64b3bcdfed",
+      "final-adapter.log": "8c9e2d78ca88a433b0b01d046fac01e363ce31d5327f54dd7425f723d5e40ee4",
+      "package-check.log": "1e492a296ec6287180a141ec3efce53d29e0dc54c9dd738ef002cf46deafdfad",
+      "run-cpu.sh": "b70174809f54b040659a540c67add071fd5c1cc8a82e3a25e5568a773db2f3c0"
+    },
+    "historical_failure": "cpu.log/prototype1:219pass/7missingreusedpolicyfixture errors, correctedalias; no contract/oracle weakened"
+  },
+  "findings": [
+    {
+      "rule": "T0/V1/U3/M1",
+      "finding": "New owner mode initially tested one participating segment only, admitting an unqualified one-participant MTP substep while other requests were globally live.",
+      "disposition": "Remediated with new-mode-only GLOBAL dec.live()>1 early decline before frame/alias/private work, retaining old profiles. CPU regression covers global multiple live, not only len(segs)>1."
+    },
+    {
+      "rule": "Q0/Q2/P0",
+      "finding": "Required owner-profile resident>=24 guard initially lacked direct boundary coverage.",
+      "disposition": "Remediated with actual Engine constructor/source control23refusal,24+26acceptance and old-profile1acceptance, before resident publication/weight load; no shadow planner or weakened guard."
+    },
+    {
+      "rule": "X1/X4/X6",
+      "finding": "Final HOLD initially named inner script/logs but not complete outer verification argv/cwd/exit linkage; ledger start-time pending rows were stale.",
+      "disposition": "Additive execution companion binds actual existing commands/logs/exit files and honestly labels retrospective/default scope, plus terminal pending clarification. No HOLD rewrite, source change or rerun."
+    }
+  ],
+  "source_dispositions": {
+    "selection": "Explicit source-owner-pieces-trial requires issued native eager full8/zero-attention-graph-budget/trial/current-stack/INT8/MTP2/resident>=24 configuration and distinct prefix/State/cohort identity. Default/legacy optimized/cu126 qualifiers unchanged; no native catalogue or private-attention/capture grants widened.",
+    "ownership": "Only pa and attn_o private activation fields become leading exact-width views of stable canonical Buffers storage. Canonical Tensor owners outlive graph borrowers; eager attention consumes original State IDs/issued frames/source buffers while private PLE/GDN/recurrent bindings retain their prior contracts. No copied history or second native workspace.",
+    "ordering": "Original source frame/membership preflight and prior native-reader event join precede graph/private writes. Supported fixed canonical storage lifetime remains authoritative; existing native descriptor checks retained. Graphs close before canonical OwnerPreparation and transport; failed fence retains owners.",
+    "geometry": "Exact1/2/3live rows and global live<=1 only, no State.graph_rows. Other cohorts decline to ordinary native eager. State pool remains all>=24canonical windows; per-slot lazy graph keys stay separately budget-admitted, not promised all24fit.",
+    "resources": "Existing graph physical/pool/driver budget and service promises remain; view substitutions retain storage and remove duplicate activation ownership. No allocator/private-pool spare credit, model context/capacity reduction or hidden native workspace introduced.",
+    "oracles": "Real OwnerPreparation fixture captures reference before adoption then adopts native on the SAME graph activation pointers; strict same-native frame/partialcommit/reset/prefix comparisons retained. Torch-native differences are reported separately without invented tolerance; no GPU or model quality result claimed by CPU tests.",
+    "cleanup": "No further verified dead path, unjustified duplicate implementation or unnecessary indirection. Explicit owner_frame tuple has the real cross-owner adapter/lifetime purpose; native_owner boolean resolves stable preparation policy once. Valid eager/legacy paths, failure journals, independent oracles and historical failures retained."
+  },
+  "candidate_dispositions": {
+    "canonical_alias_adapter": "selected prototype under preserved source ownership contract; actual device/P3 acceptance pending",
+    "separate_private_native_workspace_or_expanded_catalogue": "constraint-ruled-out within Root original-owner/no-extra-workspace contract; no general inferiority claim",
+    "per-frameN1_with_globalN>1": "blocked pending separate admissibility/resource/performance qualification; currently declines eagerly"
+  },
+  "pending": [
+    "RootactualTP8synthetic old+neworacles (noGPUlaunch byauthor)",
+    "Rootactualwholemodel math/quality/admission>=24completeINT8contexts",
+    "Rootcommon6grid1/2/4/8/16/24decodeprimary>85N1/noreganyN,prefillsecondary"
+  ],
+  "limits": [
+    "227+11 and final19 CPU groups retain their actual scopes, not additive independent total or GPU proof",
+    "All715 wheel/source and exact FD9f matched; known identical FD evidence reused, no fault-shim qualification transfer",
+    "No reviewer maintained-source/Git/GPU/remote writes or duplicate suite/build",
+    "No integrated gain, model quality, six-grid no-regression, strict85TPS, deployment readiness or global-optimality claim"
+  ]
+}

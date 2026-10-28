@@ -1,0 +1,32 @@
+{
+  "at": "2026-10-28T01:40:26.617286+00:00",
+  "status": "CLOSED repeatstage-only review; actualmeasurements pending",
+  "scope": "OnlynewOUT/NAME controllerconstantsandupdatedmanifest versusclosedbaselinev2 andce36Dense source; noimplementationchanges",
+  "results": [
+    {
+      "label": "baseline5635",
+      "files": 19,
+      "provenance_sha256": "e6c46cc39e62d04d8955f88e63f5097bed34c8e3176f6a63fc687eed9d9040a9",
+      "manifest_sha256": "abd3baf4a7d906c4978470403bb3cadcb6b16541e7d17e5e2e55483ab18a7f14",
+      "controller_sha256": "df0f3833879ed6f36cce0112e899f4029fe271e978acc74974eab50168dbe9a2",
+      "source_and_AST_inverse_equal": true
+    },
+    {
+      "label": "dense4efe",
+      "files": 20,
+      "provenance_sha256": "be376b8b8f967cbc9a5e48cbd806087f2104c5c2c5170ec616789dd637fcb8b1",
+      "manifest_sha256": "fabc78b551ac14c2351dc8930d61a3d50ad85785bc6c84216f744c1261bab8bb",
+      "controller_sha256": "f72d25c984d72606cefbd4e743df71d9bfb3146a20230b426b0490c0c006e1b5",
+      "source_and_AST_inverse_equal": true
+    }
+  ],
+  "rules": [
+    "X4",
+    "X6",
+    "F1",
+    "F2",
+    "D14"
+  ],
+  "disposition": "Everywheel/HOLD/tool/helper/manifest/bootstrap/verifierbyteidenticaltoeachoriginal. ControllerinverseexactsourceandAST, onlynewoutput/containernames preventoverwrites. Same2048cap,10s/readiness,all6/EOS/MTP/context/floor/quality/cache/environment retained. ExistingRootexclusivelease/onlyPortainer guards unchanged. No newtests/GPU byreviewer.",
+  "limits": "FirstdisplayprecisionN1/N24tieisnotEVIDENCEequivalence. No repeatresultclaimed; Rootmustrecordorder/runtimeconditions/rawcounts/uncertainty/drain/qualitybeforegain/nonregressionselection."
+}

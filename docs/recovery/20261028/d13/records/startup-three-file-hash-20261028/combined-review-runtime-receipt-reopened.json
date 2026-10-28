@@ -1,0 +1,10 @@
+{
+  "at": "2026-10-28T02:21:21.020184+00:00",
+  "status": "REOPENED actualworkers3Engine-phase receipt integration",
+  "source": "8840939d/478ad/a2a5",
+  "prior_source_review": "ae4f3462",
+  "finding": "StartupContentGroup.record returns tuple-of-tuples partitions, but actualcanonical_runtime_json accepts onlyexactdict/list JSONcontainers. Actual89525modelstartuprefusedphase beforeanyrequest; noall6/startupgainclaim. Reviewerprioridentity/recordauditmissedthe strictserializerconsumer.",
+  "remediation_owner": "Rootsolewriter; nooverlap",
+  "authorized_fix": "Onlyreceipt partitions become list-of-lists; do notweakenserializer orchangeimmutableinternalpartition/authority/hash/ownership. Addactualserialcurrentphasecanonicalregression.",
+  "reuse": "SingleCapture/nativeFD/ModelIdentity/math and actual53componentPASS24.79remainvalidwithinoldscope; actualworker3startup/fullmodel/P3unverified."
+}

@@ -1,0 +1,67 @@
+{
+  "schema": "tensorfold.combined-d13-source-assessment-v1",
+  "at": "2026-10-28T04:00:38.081763+00:00",
+  "reviewer": "/root/cleanup_review",
+  "commit": "149e52a28a3297b7c98383a5576083b2743c23ed",
+  "hold_sha256": "c0fe1973e5099ed792143cc2fff1324ef2d7dd09443e2553bf7f16b4c90acc46",
+  "wheel_sha256": "84b35acbd6bd5e69a1514abf6c6e679c86993a4f2b0262e8bd8ef5b2af7a32a2",
+  "state": "BOUND SOURCE READ; final metadata derivation and successor HOT-dispatch cleanup pending; not SELECT/model-performance qualification",
+  "scope": [
+    "frame_descriptors.py",
+    "history_owner metadata/last-reader API",
+    "forward/mtp wrappers and BoundStateGraphs replay context",
+    "OwnerPreparation/Engine resource and profile wiring",
+    "State boundary guards and compact coordinate-frame producer",
+    "new CPU/GPU tests and staged maintained-oracle selection",
+    "exact Dense4efe supplier and FASTv2 reporting"
+  ],
+  "safety_assessment": [
+    "Whole-frame metadata borrows canonical retained State storage and exact issued coordinate frame; each attention cut still validates that frame and preserves projection/cache/indexer publication calls.",
+    "Only pointer/control rows are hoisted; State positions/generations/version/row spans rechecked per cut, storage catalogue checked at frame entry under existing serialized actor ownership; no general concurrent mutation API guarantee inferred.",
+    "Pinned packet reuse waits prior upload once per frame. Cross-stream packet upload and canonical descriptor writes join their producer events. done joins final native_done and descriptor upload before slot/mutation reuse.",
+    "Unknown submission/completion failure poisons and retains packet/State readers until positive model/global fence; partial construction is journalled before allocation.",
+    "Native State placement/codec/coordinate guards, native_done, full8 communicator, target/MTP cache transactions and fixed24Q8 floor remain. Decode/MTP packet allocations only, no unused prefill packet.",
+    "Actual bucket count now controls pre-admission host envelope and constructed catalogue; settled preallocated GPU/event residency precedes physical baseline."
+  ],
+  "findings": [
+    {
+      "id": "frame-bucket-metadata",
+      "rules": [
+        "M1",
+        "V1"
+      ],
+      "disposition": "Fixed in held149e: envelope consumes actual accepted bucket_count, not a presumed default count; both OwnerPreparation and actual FrameDescriptors use the matching catalogue size."
+    },
+    {
+      "id": "frame-hot-dispatch-materialization",
+      "rules": [
+        "D13",
+        "C1",
+        "S0",
+        "F0"
+      ],
+      "disposition": "OPEN in frozen149e, remediating only new Batch+FramePackets successor: unnecessary options=dict and ** expansion in compute/mtp_compute, plus Bound argument tuple. Need explicit-forwarding/inverse body proof; preserve frozen prototype/evidence."
+    },
+    {
+      "id": "frame-metadata-derivation",
+      "rules": [
+        "M1",
+        "X3"
+      ],
+      "disposition": "Requested selected-SDK/source extent derivation for8192+4096*actual_bucket_count per layer/chunk and2048*frame_rows; no new broad suite required. Requested-object envelope must remain distinct from allocator/RSS/native event residency."
+    }
+  ],
+  "checks": {
+    "source_paths_hash_matched": 33,
+    "evidence_paths_hash_matched": 27,
+    "stage_receipt_sha256": "f8b3d33de2aead4f57bffd6a6baa3dfc5e8466fd5e1652b42adc0cb77cdd6c16",
+    "author_CPU": "1333+2/55.35s/Ruff/pip/normal718+FDc79 plus actual pre-allocation funding and fixture constructor controls reused",
+    "GPU": "Root59PASS26.83s/exit0 relayed by author; no reviewer launch; fullmodel/P3 unrun as lastreported"
+  },
+  "cleanup": "No verified dead supplier/oracle/default recovery path removed. Packet/frame helpers have ownership and synchronization purposes; no source simplification claimed HOT-equivalent by appearance.",
+  "remaining": [
+    "metadata extent derivation",
+    "verify successor explicit call forwarding and borrowed batch-prefix integration when held",
+    "current winner86cb composition and actual physical capacity/fullall6 remain separate Root gates"
+  ]
+}

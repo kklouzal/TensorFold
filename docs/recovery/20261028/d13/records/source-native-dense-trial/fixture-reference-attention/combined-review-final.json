@@ -1,0 +1,44 @@
+{
+  "status": "bounded TEST-only reference-attention fixture correction CLOSED; corrected four GPU cases pending Root",
+  "hold_sha256": "2b2b1032c34b2384c052922a65163bc21933af9ae7c6ed21103c31ab5fb7ff45",
+  "paths": [
+    {
+      "path": "tests/cuda/test_flashnext_sm70_bound_graphs.py",
+      "sha256": "3877518348ef4259b404e32012751acb1bc1654a708ed3e114fcd7bb389dc745",
+      "bytes": 20521
+    },
+    {
+      "path": "tests/cuda/test_sm70_gguf_prepared.py",
+      "sha256": "f39686465830f49a7a5c8d6d41df00d74f7bd3153316962c5f13e590cc2f3b3c",
+      "bytes": 8582
+    },
+    {
+      "path": "tests/test_sm70_bound_graph_fixture.py",
+      "sha256": "331031463716d73e6574299c5f7076fd25b7270c17b2f024d81ca97729e7bb8c",
+      "bytes": 4277
+    }
+  ],
+  "runtime_wheel_sha256": "c896b42b1979d01e8c20ddb70dfcc978349c1141854e0c10b5ec3da49492da12",
+  "runtime715_FD4a_unchanged": true,
+  "verification": {
+    "passed": 4,
+    "seconds": 0.29,
+    "Ruff": 0,
+    "pip_check": 0,
+    "source_drift": []
+  },
+  "independent_proof": "Within the affected integration function only, changing _NATIVE_ATTENTION False back to True restores the ENTIRE old CUDA module AST. All other private-attention selectors remain intact; original assertions/method helpers retained.",
+  "finding_disposition": {
+    "rule": "T0/Q0/Q2/X12",
+    "signal": "After method geometry correction, actual same-c896 component retry declined unsupported private attention for this end/head_dim/source runtime; negative retained.",
+    "correction": "Match selected source-native-dense attention family with reference attention in the prepared integration. Actual policy leaves private attention disabled. Family/prepared M32, varied/partial-prefix/state/MTP oracles unchanged; separate legacy-private attention coverage is not claimed."
+  },
+  "cleanup": "No extra dead path/unjustified duplication/complexity. CPU controller executes maintained adapter for both real method domains; numerical gates are substituted only at CPU control boundaries, not GPU.",
+  "reviewer_proof_note": "Initial broad selector scan correctly encountered unchanged True selectors in other test functions; independent inverse was narrowed to the assigned function, with no source change.",
+  "limits": [
+    "Only two TEST leaves changed; third bound helper carried unchanged",
+    "No runtime guard/kernel/head_dim/end/precision/tolerance/capacity/wheel/public support change",
+    "Prior55 actual GPU passes and both failed retries retained; no added totals or corrected GPU pass asserted",
+    "No reviewer maintained-source/Git/GPU/remote action or repeated test/build"
+  ]
+}

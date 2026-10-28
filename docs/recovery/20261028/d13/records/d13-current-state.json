@@ -1,0 +1,20 @@
+{
+  "utc": "2026-10-27T17:10:17.986366+00:00",
+  "agent": "cleanup_review",
+  "role": "dedicatedD13; read-onlysource, ignoredreceipt/witnesswrites only; Root ownsGit/GPU",
+  "priority": "85single-activecommitteddecodeTPS/noqualityloss; frontend/HTTP/renderer paused",
+  "current": [
+    "empty-owner known8B directfunding Engine/history_placement readclean; ownernative_policy_assessment finalgate/HOLD pending; runtimehistory_owner e34 unchanged",
+    "queuedcurrentlyready1/2/4/8/16/24 finiteconcurrency scope /Warehouse/TensorFold-wt/v100-concurrency-probe-20261027 task-artifacts/concurrency-probe-20261027/source-hold.json SHA3c53430c21597bf6718ca6f2926540bb5cb005fa0eb441d42f8c3b2d3ad71d04; publisher owns6paths; normal190+30/6.93s,715+FD4a,d86fwheel; read next duringfundingwait"
+  ],
+  "recent_closures": {
+    "packed_graph_caller_fix": "source-packed-graphs-trial/graph-intent-final/d13/source-final.json 37a0535a; af902/664938/326f715FD4a95+11; earlier243a actualEngine activation assessment reopened and superseded (missedgraphsFalse override/promptmembership)",
+    "CPU_label_category_fix": "profiling/per-rank-capture/cpu-label-correction/d13/source-final.json ee0c11b3;7fe7/tool25b6/testa52581+Ruff;fee6same8rawcorrectedsidecars; old5ceCPUclassificationmissowned/old55.8mixedtableinvalidCPUtime",
+    "coordinate_original": "/Warehouse/TensorFold-coordinate-staging-20261027/d13/source-final.json c947a8be;856/dd6a274+2",
+    "fused_coordinate_integration": "/Warehouse/TensorFold-wt/v100-fused-coordinate-20261027/task-artifacts/fused-coordinate-20261027/d13/source-final.json e9a40d1f;4788/869bc436f715FD4a922+2/272/205",
+    "WMMA_profile": "wmma80-profile-20261027/d13/source-final.json f987e5b0;62b9/f9f/c27e715FD9f751+10; quality/85unqualified",
+    "fused_readback": "/Warehouse/TensorFold-wt/v100-fused-readback-20261027/task-artifacts/fused-readback-20261027/d13/source-final.json19d98da2;220d/6d10/918+2;numericinvalideligibility/deadlist/Torchskipfixed",
+    "fused_combined": "/Warehouse/TensorFold-wt/v100-fused-combined-20261027/task-artifacts/fused-combined-20261027/d13/source-final.json8690ad28;26b9/af00/b890715FD4a920+2/272"
+  },
+  "coordination": "No sourceeditwithoutsoleowner; completedagentsneedfollowup_task notsend_message; no newreviewpairs/spawns. DistinctD14final_gate/Root assignment. Reusevalidgates, no duplicatebuild/broadsuite/GPU/remote."
+}

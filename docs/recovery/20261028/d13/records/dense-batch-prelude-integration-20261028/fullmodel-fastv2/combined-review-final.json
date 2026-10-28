@@ -1,0 +1,37 @@
+{
+  "schema": "tensorfold.combined-d13-review-v1",
+  "at": "2026-10-28T03:03:40.790267+00:00",
+  "status": "CLOSED newBatchcoverage-tool/funding/stage; actualP3pending",
+  "commit": "7de2259b1a402542b91fde9e906a9ebb07f4c949",
+  "hold_sha256": "2564496f1387524131796322abf367c6be353c442e9c090bce6e0a3ee6a3e9ee",
+  "runtime": "86cb/eca6/545f718source+FDc79 unchanged; runtimeda9dae22reused, current81PASSRoot42561",
+  "scope": "Tool/tests/docsaftereca6; after-draincoveragequalifierand8192globalcontrolfundingonly, samecommonFASTv2/quality/helpers",
+  "finding_disposition": {
+    "rules": [
+      "M1",
+      "V1",
+      "R0",
+      "Q0"
+    ],
+    "issue": "IntermediateWIPfundedbatchreceiptbyoptionalflagwhilequalifierselectedbyactualprofile.",
+    "fixed": "Finalcallercontrolusesactualengine.sm70_profile==OWNER_BATCH_PRELUDE_TRIAL, beforephysicalfinalization/logicalsubmit. Actualexpressiontestcoversflaglessbatch8192andnonbatchflagged0;287previouscontrols+1focused0.62/Ruff/pip/718proofreused."
+  },
+  "assessment": [
+    "Knownsigned63before/aftertotal+MTPcountersrequirepresence/exactint/nonregression/MTP<=total. No fabricatedzeros, booleanoroverflowaccepted; targetdelta=total-MTPonlywhenvalid. N1declaredscalar0, N>1mustactuallysubmitbothnativeTargetandMTPbatches; no requirementmaxsegments==offeredN.",
+    "Qualifierrunsafterrealcohortdrain, scopesreadiness/decode/cancel/drainhostsubmissionsnotdevicecompletion/timedwindowwork. Failedcoverage markscohort+screeninvalid andretainsrawcase; all6continueandqualityremainunchanged. Existingratecount/timer/EOS/nativeIDs/limit/backendretirementcodeunchanged.",
+    "8192globalonlyleaderfixedreceipt/controltermhasboundedtypedfields/reasonliterals, fundedactualprofilebeforeadmission. NoAPP/kernel/math/counterallocationchange; genericfallbacksretained.",
+    "No verifieddead/unjustifiedduplicatedpath. Newcoveragehelperhasaactualdiagnosticqualificationpurpose; N1scalarcheckconformsdeclaredcandidate, notinventedP3nonregressiongate. Latestobjective24>16>8>4>2>1allowsacceptablelower-tiertradeoffs, notquality/full24Q8loss."
+  ],
+  "evidence": {
+    "proof_sha256": "089f26c65586834e5c4caf6fbe7535ae21eba5e8f27cdcc5c14b3888a722988f",
+    "stage_files": 20,
+    "stage_manifest_sha256": "a37b2e498a4b7ad2e69c240d2ea760b5785df52c60d454decc7e6f3f8cc5bf3c",
+    "stage_ready_sha256": "082d20db98bcce40a7cd82a47c51bec43b740f6e30e7afdd5b74c4414de3b0e3",
+    "reviewer": "Read/hash/sourceonly,noGPU/build/duplicatetests",
+    "CPU": "287targetedtool/FAST/funding/startupchecksPASS12.64s+1actualflaglessprofilefundingregressionPASS0.62s;Ruff/pip/718normalpackageproofPASS"
+  },
+  "remaining": [
+    "Rootonequickall6live24capacity/source/counter/nativeIDs/drain/quality/tieredP3comparisonvscurrentDense4efe",
+    "Repeatedvalidationdeferredbyexplicitfastiterationpriority, notclaimedcomplete; no service/85/600/broadqualityqualification"
+  ]
+}

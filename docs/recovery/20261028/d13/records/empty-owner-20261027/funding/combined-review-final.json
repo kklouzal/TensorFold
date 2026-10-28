@@ -1,0 +1,136 @@
+{
+  "schema": "tensorfold.combined-d13.empty-owner-funded-final-v1",
+  "utc": "2026-10-27T17:38:32.977969+00:00",
+  "reviewer": "cleanup_review",
+  "role": "single task-wide combined cleanup and compliance reviewer",
+  "policy": {
+    "path": "/home/kklouzal/AGENTS.md",
+    "sha256": "f34b7836eb0703ccef0d85953d3dcd1a8fca092faaeff8815195c0c0126c435e",
+    "override": "latest directuser replacement; no separate mandatoryD14 pass"
+  },
+  "status": "CLOSED: scoped runtime/funding/fixture obligations remediated and reviewed; modelP3pending",
+  "checkout": "/Warehouse/TensorFold-wt/v100-empty-owner-20261027",
+  "commit": "9f8685068ae00473cec617238c12b0d74b6e5a46",
+  "hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/empty-owner-20261027/funding/source-hold.json",
+    "sha256": "59606f2ccd03e57dd9b9a0acfd512a9b5279dd04c0aca1adbbb50e68b9acc308"
+  },
+  "held_files": {
+    "README.md": "d473ad0de629fd4dbfc2f489e897e17e5872f318cb683b63311e896cca5a5261",
+    "src/tensorfold/families/qwen4_exp/cuda/history_owner.py": "e34a4fe9481e496d39bc780bc2cc8893a4b0e3d9fc83f721d76c80ded1da61b2",
+    "src/tensorfold/families/qwen4_exp/cuda/history_placement.py": "60ec53b15d659958544ed221cbdd3f900f9ad50999d5947feb8cb22ff25f9b71",
+    "src/tensorfold/families/qwen4_exp/cuda/engine.py": "5e1df20b5fe11e025a1c8d426c661e1adeb50af51c726d060b8e46bb9be8a98a",
+    "tests/test_flashnext_history_placement.py": "98e6cdca8b35d9442e3325bb52623d00af6f482f0c2de74a8e4b9cf11bcee3b7",
+    "tests/cuda/test_sm70_unique_history.py": "f38ec7b4c7b5c600ee2f0623dd191a8fe6c84cbabc5b1b246db045a5a168328f",
+    "tests/test_owned_cache_host_metadata.py": "58357d9cd9180e2d0adef386b1fb210af692dd62959aa15c1b6c186e5d1e71dd"
+  },
+  "wheel": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/empty-owner-20261027/funding/wheels/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "sha256": "42a37203c2b7b93bdbbfc09aa9b6e1a8eac5bb1f39a24f21c912ab0571386133",
+    "bytes": 3109516
+  },
+  "manifest": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/empty-owner-20261027/funding/wheel-provenance.json",
+    "sha256": "5cc9a2b4625692e1c6bbb35b25b74e4dc3f3069367b53d5c83418a8728348b5d",
+    "source_files": 715,
+    "compiled_extensions": [
+      {
+        "path": "tensorfold/_fd_owner.abi3.so",
+        "bytes": 37936,
+        "sha256": "9fbc446d1fb4c8f0d01963b18678bf501f01e2dafda5b1122624c6abb0bd5665"
+      }
+    ],
+    "all715_nobinary_equal_source": true
+  },
+  "CPU": {
+    "SDK": "sha256:30fda46a4c40422e055e0615a8186fc1c39678be9c8c9761885fc0cb77c28993",
+    "installed": "599passed12.64s; onlynewtest importplacement then adjusted (no assertions/runtime change); final7resource cases passed1.90s+Ruff",
+    "logs": {
+      "build.log": "c0482d75f8fce0e70535758897190e472459a9dce3ddc206f7e38527387f276c",
+      "cpu.log": "eee3247d7efd5c5d6d5edc8f301601a8f475ab335413d1c85cb6199162125d75",
+      "cpu.xml": "91f8a82a6498633a89ee19f18839d62e9205c57ed476cc953425e53f713fc49b",
+      "final-resource-check.log": "1f7db0cb1520f06e292308aa7948e46f8d67158d4b17d9961b25247fe2632662",
+      "run-cpu.sh": "7992baf8f10e17763a1b92499ab3c565b09ee8e8cc5343125f8f8ddc64f463fe"
+    }
+  },
+  "funding_proof": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/empty-owner-20261027/funding/funding-proof.json",
+    "sha256": "af7eb9c9f550878eb8d9be63f78435384fd386b6d28f5f561cc35b0460337240"
+  },
+  "runtime_read": [
+    "initial empty proof only sharedarena-backed target cache owning0pages; sharedarena capacity alone no longer forces allmaskedtilework",
+    "FP32 neutral maxima-inf,denominator+0,value+0 match independent oldtilepath across empty/masked/visible/outofrange INT8/Rotor4; originalmerge invalidmass/status preserved",
+    "MTP/nonarena/clone/resized paths retain capacity semantics withfalse proof; everynewOwnedcache initializes flag",
+    "only live page-table publisher expires proof BEFORE GPU/host table writes, even on uncertain failure; failedmigration remainsconservativeFalse/poisoned; fences/barriers/generation unchanged",
+    "serving/migration serialized between rounds; cacheowners not backgroundmutated; supported uniquegraph pieces keep attention eager, so hostempty flag not baked into stale capturedtorchpartial graphs",
+    "no newtensor/device/stream/event/table allocation or collective/default/precision change; unchangedtop-level helper bodies independently ASTchecked"
+  ],
+  "finding": {
+    "rules": [
+      "M1",
+      "P0",
+      "X1"
+    ],
+    "initial_issue": "known new8B slot on EVERY OwnedKVCache had no exactnamedfunding; configurable runtime reserve is not proof",
+    "resolution": "cache_owner_host_bytes(pointerSize*caches*world) funds actualplanned canonicalpool before admission/allocation; actualcompletepool len(kc)+mtp_kc count andw.mtp agreement checked before onlymatchingmaterializedHostBaseline credit. Partial/failedconstruction gets no credit.",
+    "future_contract": "unique onlyadaptive/concurrent fixedpool; unique resize doesnotallocate; servingprefix/retention/shallowboundviews reusecacheobjects; standaloneclone/resized callers countown extraobjects via samehelper. Managedreplacement admitted separately.",
+    "numeric_example": "world8*slots26*(target12+MTP1)*pointer8=21632B global; target-onlyworld8*26*12*8=19968B. No opaqueGPU/RSS credit."
+  },
+  "candidate_dispositions": [
+    {
+      "candidate": "keep bool and exactsourcefunding",
+      "disposition": "selected",
+      "reason": "original hotpredicate/offset construction unchanged; exactknownrow+matchingactualcredit minimalcoherent integration"
+    },
+    {
+      "candidate": "tuple-subtype initial-empty tag",
+      "disposition": "notselected/blocked for superiority",
+      "reason": "same retainedgetsizeof doesnot proveequivalence; selectedCPython builds exacttuple temporary then subtype copy (SDK2048peak16424 vs32904B), plustransitive type metadata. No P3advantage evidence; referenceinvestigation retained."
+    },
+    {
+      "candidate": "use genericreserve asfunding",
+      "disposition": "constraint-ruled-out",
+      "reason": "reserve configurable0; sourceclaim explicitlywithdrawn"
+    },
+    {
+      "candidate": "remove oldall-unowned tileoracle/migrationcases",
+      "disposition": "constraint-ruled-out",
+      "reason": "independent numerical/lifetime oracles remainrequired"
+    }
+  ],
+  "verification": "599 installedCPU12.64s reused; import-only testlayout correction preserves allassertions andfinal7resource1.90s/Ruff validatescurrenttest. Runtimee34 unchanged from original2695, so Root2TP8 INT8/Rotor4 before/afterdegree1to4 pass17.80s and sixteenCPUfixturecases reused as scoped componenthistory, not claimed executed onnew42a. All715newwheelSources/FD9f matched; no reviewer test/build/GPU/remote action.",
+  "evidence": {
+    "source-hold.json": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/empty-owner-20261027/funding/source-hold.json",
+      "sha256": "59606f2ccd03e57dd9b9a0acfd512a9b5279dd04c0aca1adbbb50e68b9acc308"
+    },
+    "funding-proof.json": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/empty-owner-20261027/funding/funding-proof.json",
+      "sha256": "af7eb9c9f550878eb8d9be63f78435384fd386b6d28f5f561cc35b0460337240"
+    },
+    "cpu.log": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/empty-owner-20261027/funding/cpu.log",
+      "sha256": "eee3247d7efd5c5d6d5edc8f301601a8f475ab335413d1c85cb6199162125d75"
+    },
+    "final-resource-check.log": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/empty-owner-20261027/funding/final-resource-check.log",
+      "sha256": "1f7db0cb1520f06e292308aa7948e46f8d67158d4b17d9961b25247fe2632662"
+    },
+    "wheel-provenance.json": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/empty-owner-20261027/funding/wheel-provenance.json",
+      "sha256": "5cc9a2b4625692e1c6bbb35b25b74e4dc3f3069367b53d5c83418a8728348b5d"
+    }
+  },
+  "pending": [
+    "Root actualcombined admission/sourceclosure onnewfundedwheel",
+    "full-modeloutput/quality/capacity/performance andrequiredsameN6grid",
+    "85single-activecommitteddecode objective"
+  ],
+  "not_claimed": [
+    "speedup from feweroperationsalone",
+    "newfundedwheelactualGPUrun",
+    "physicalRSSqualification",
+    "whole task completion"
+  ],
+  "reviewer_mutations": "ignored combinedD13 JSON only; soleauthor handledsource changes"
+}

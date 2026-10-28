@@ -1,0 +1,12 @@
+{
+  "purpose": "Deliberate current-source cache quota publication-failure witness, not a component pass",
+  "python": "3.14.4",
+  "source_sha256": "765fa5eacd38c2719c3089a958529d7134346a1d0e4a5c6885ffda07d7201bb1",
+  "fault_line": 101,
+  "primary_identity_preserved": true,
+  "declared_cache_bytes": 3396,
+  "reported_cache_bytes": 2264,
+  "live_entry_encoded_bytes": 4528,
+  "live_entries": 2,
+  "get_still_returns_unaccounted_entry": true
+}

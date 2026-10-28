@@ -1,0 +1,31 @@
+{
+  "schema": "tensorfold.d13-streamed-encoding-extraction-final",
+  "version": 1,
+  "reviewer": "/root/cleanup_review",
+  "recorded_utc": "2026-10-27T08:09:14.651292+00:00",
+  "status": "closed-bounded-source-extraction",
+  "hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/http-streamed-encoding/source-hold.json",
+    "sha256": "3e42e3e1b8776e2c2fafc53bda4b0375c766c6f5063b823cc5bddc42ccccf39a"
+  },
+  "source": {
+    "path": "src/tensorfold/families/qwen4_exp/cuda/retention_resources.py",
+    "sha256": "2a6626aed1261f9604eae9eb092b22d2903e9eee8fcd1ec46626bed1aaa08439"
+  },
+  "scope": "Only moved selected Python iterencode/StringIO projection block, its one existing RPC caller and exact-result comparison. No HTTP source implementation change, C-encoder recursion authority, target fit or performance claim.",
+  "disposition": "No verified finding. Helper has a real shared preparation/accounting purpose; explicit layout argument reuses the caller captured layout. Positive output-bound validation is valid for prospective dynamic caller bounds. Retained closure/finally and ASCII writer/metadata terms are unchanged.",
+  "evidence": {
+    "normal_installed_focused": 55,
+    "seconds": 3.52,
+    "ruff": 0,
+    "diff_check": 0,
+    "rpc_dictionary_fields_exact": 23,
+    "global_rpc_python_working_bytes_exact": 140958149829
+  },
+  "proof": "Owner actual-runtime comparison reads the historical offline-proxy23-field JSON record and compares it with the current installed function; exact agreement is at that recorded input, not a fresh old-function execution. Reviewer independently read the moved block and existing caller: formulas, generator/frame observations, finally-close, writer capacity and returned field assignments are unchanged after local variable substitution. Independent current source/evidence/wheel hashes match.",
+  "separate_open_items": [
+    "One-shot HTTP bridge encoding/source/copy phase proof remains a new read-only derivation.",
+    "Actual runtime allocator/native/model/HTTP resource fit and target qualification remain separate."
+  ],
+  "reviewer_actions": "Read/hash verification only; no code/tests/Git edits or duplicate suite."
+}

@@ -1,0 +1,40 @@
+{
+  "schema": "tensorfold.d13-DP4A-cost-incremental-review-v1",
+  "at": "2026-10-28T16:34:04.831392+00:00",
+  "reviewer": "/root/cleanup_review",
+  "source": "21cf2cb0",
+  "source_tool_sha256": "fd84f763207efd5ba0757ca82385c1809014c1733e69956527036d62be582b9b",
+  "status": "POSITIVE_PATH_BOUNDED_EXPERIMENT_GO_SENT; FINAL_C6_CLEANUP_ONLY_ROOT_BRANCH_PENDING",
+  "scope": "Standalone actual512bank routed10slots R1/8/32 cost tool only; closedf652 originalPrototype/Graph/native/math/oracle evidence reused. No model/State/NCCL/native24/quality/P3 approval.",
+  "checked": [
+    "Native recipe matches original except omitted shared assembly and exact-only refusal; finalstatusmask retained, picks contiguousINT32 0..511, same10slots onpackedbaseline.",
+    "OriginalGraph captures/close protocols reused; both publishedgraphborrowers found evenifcapture()raises, graphs retire beforedependentowners, originalstream restoration attemptedlast. Fixedimmutablebinding prevalidationbefore exclusive rawgraph timing, nohotCPUstatusread/reset.",
+    "Eventtimes includeCPUenqueuegaps;3samples/8bursts/4unroll pairedorder, originalweights/inputdigests andindependentqx/qh CPUquantizer +withinpathbits outsidetiming; changednumericprofile/errorreport notqualityacceptance."
+  ],
+  "finding": {
+    "rules": [
+      "C6",
+      "M0",
+      "Q0"
+    ],
+    "site": "actual_case -> borrowed finish_failures(primary,errors) compaction-exhaustion branch",
+    "failure": "finish_failures raisesprimary fromallocation before retaining primary originalnativecause/context. Newactual_case caller has no namedpriorroots; originalcause can be replaced/lost onthisbranch. Knownvendor734 pattern applies directly.",
+    "requested": "Capture nativecause/context/suppress atprimary latch beforecleanup, retain namedroots throughoutcomefailure, addnarrow actualfinalizercompaction faultcontrol. No native/math/timingbody change needed.",
+    "status": "Authornotified; coherentheldsuccessorpending",
+    "disposition": "2165 captures operationprimary native_roots beforecleanup; realcompactionOOM control7CPU passed. Cleanup-onlyfirstfailure branch still needs native-root retention; authornotified."
+  },
+  "pending": [
+    "Fixednative-root retention forcleanup-onlyprimary plusactual compactionOOM control",
+    "Finalsuccessorbinding/structuralpositivetimingreuse andremote receipt",
+    "Actualpre20/cost3/post20results notinferred"
+  ],
+  "checks_reused": "Author6normalinstalledCPU +20GPUcollection/Ruff/protected evidence; noGPUor broadgate launchedbyreviewer.",
+  "held_successor": {
+    "source": "cb5707bf3d41d359bce8d62344e1f87385874414",
+    "HOLD": "518f17c7122934f36c66bd1279e19c559db5134d58d064620e7c3d05c8e1fdb6",
+    "APP": "2e3ecdd05f56a76d400a45c3df521294f20cabbc67b70a96d2d52a970d9be02d",
+    "payload": "78910bab37f7f7de8737e76b8371121b3b6104ff8bcc7255b21b9ac3f5953c23",
+    "local_source_evidence_and_manifest": "7source+7evidence+26payload hashesPASS, srcdiffemptyf652",
+    "remote": "Authorreports26verified/freshevidence; localreceiptpending"
+  }
+}

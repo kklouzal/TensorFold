@@ -1,0 +1,14 @@
+{
+  "schema": "tensorfold.d13-finite-cleanup-witness-v1",
+  "source": "/Warehouse/TensorFold-wt/v100-portable-audit-20261026/tools/v100_backend_probe.py",
+  "source_sha256": "0668474fc38e8280d839a5f138311a540f5795fa811f796d11024304d69b1a8e",
+  "scope": "Actual worker function; only external model/GPU/import/output boundaries substituted. One real local pipe validates the failure descriptor, retired by witness harness. No GPU/model/subprocess/remote actions.",
+  "failure": "Primary.__str__ raises MemoryError during report construction before cleanup",
+  "observation": {
+    "raised_type": "MemoryError",
+    "raised_is_primary": false,
+    "engine_close_events": []
+  },
+  "expected": "Original primary preserved; acquired engine.close attempted before any escaping diagnostic failure.",
+  "disposition": "Verified defect stimulus, not a component pass."
+}

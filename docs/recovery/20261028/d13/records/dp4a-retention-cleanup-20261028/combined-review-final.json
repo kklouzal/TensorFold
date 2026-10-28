@@ -1,0 +1,106 @@
+{
+  "schema": "task-wide-combined-D13-standalone-numeric-review-v1",
+  "at": "2026-10-28T14:51:41.714914+00:00",
+  "reviewer": "/root/cleanup_review",
+  "scope": "OnlynewstandaloneDP4A three-fileoperator/Pythonowner/nativeboundary, independentoracle/generator/license, focusedtests/build andheldnumericalpacket. NoEngine/model/quality/native24/P3enrollment or expandednumericacceptance.",
+  "final_source": {
+    "commit": "3f1a09da72b3dddfb18ad9b93b280de0cef96c13",
+    "HOLD_sha256": "8537658caf37403c1c8b67a57b13a016f7810964414aaa13b8cbcf707e769de4",
+    "APP_sha256": "7c05da65f2abd6beeebf048df3cd2f316746e26039ee4fef7622a3ddd42e26df",
+    "canonical_source_paths_verified": 11,
+    "normal_packaged_files_verified": 724,
+    "FD_sha256": "c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d",
+    "normal_provenance_sha256": "3863434dccd4180e0e372edd0e9bce992ef2e68df44e6046790db2671c995552",
+    "structural_proof_sha256": "601e8d9cb31485114b266f6689e3d7062bb1c9f2d4181c8061cf846c104dad92"
+  },
+  "executed_primitive_packet": {
+    "commit": "f6528497ea01bb31e3b1be0282de469dce7f8940",
+    "HOLD_sha256": "9736e4bd53f0a0ca277c738e1c041d8dc259f193568f73f8481e9edfc402b802",
+    "APP_sha256": "2e3ecdd05f56a76d400a45c3df521294f20cabbc67b70a96d2d52a970d9be02d",
+    "payload_files_verified": 17,
+    "manifest_sha256": "69fabc8b007bb1edbad35871b177534120ff5c52dbd0a499376d0e6fcceaaa87",
+    "fixture_HOLD_sha256": "25e0cc0c66a2d88a4159041b8501931be896e2915d2336037b1d83481b8f9733",
+    "stage_bytes_exactlocal": true,
+    "remote_receipt_sha256": "58bcac7f7445d0b95a2a531c223c8fc100661d81128596b1de21f9cd75f4e586",
+    "fresh_SM70_compiled_DSO_sha256": "3827ce9c493311277fc03e7486f3fd5fbf46366801bd8c1eb704a52a5bc66d69",
+    "compiled_DSO_file_hash_verified": true,
+    "kernel_and_oracles_exact_final_cleanup": true,
+    "Root_result": "Author relaysRootactualf65220PASS2.85s/exit0. Reviewer didnotlaunchGPU or independentlyarchiveparseactualrun inthisreceipt."
+  },
+  "disposition": "BOUNDED_STANDALONE_FIXED_CONTRACT_SAFETY_SOURCE/HELD_PACKET_AND_RETENTION_CLEANUP_REVIEW_CLOSED; NO_REMAINING_CONCRETE_FINDINGS_WITHIN_SCOPE. NOTMODEL/QUALITY/PERFORMANCE/RESOURCE_ADMISSION.",
+  "findings": [
+    {
+      "id": "DP-GRAPH-ADMISSION-RETIREMENT",
+      "rules": [
+        "C6",
+        "M0",
+        "M3",
+        "U2"
+      ],
+      "status": "CLOSED_D945_REUSED_FINAL",
+      "fix": "Explicitnew/preparing/capturing/prepared/retiring/failed/closed states. Latchbeforefalliblefence/reset, retainownersandpoisonrun/replay onfailure. Begin/end-onlyfailures latch; acceptedbeginends once; coldresetfailurepoisons."
+    },
+    {
+      "id": "DP-FOREIGN-CAPTURE",
+      "rules": [
+        "P1",
+        "M0",
+        "U1"
+      ],
+      "status": "CLOSED_D945_REUSED_FINAL",
+      "fix": "Rejectforeigncapturebeforegraphpublication/replay/close/coldreset. owner.run permitscaptureonlyduringits successfullybegunownedcapturingstate, notmeregraph_ownerpresence."
+    },
+    {
+      "id": "DP-DEBUG-STATUS-ALIAS",
+      "rules": [
+        "V1",
+        "P1",
+        "U1"
+      ],
+      "status": "CLOSED_F652_NATIVE_GUARD",
+      "fix": "debugstatusdisjointQ/weights enforcedbeforeCUDAGuard/dispatch, matchingothernativeboundaries. ExistingGPUboundarycase addsalignedsourcealiases andbytepreservation; same20casecount."
+    },
+    {
+      "id": "DP-INITIAL-SHARED-GRAD",
+      "rules": [
+        "V1",
+        "P0",
+        "C3"
+      ],
+      "status": "CLOSED_F652",
+      "fix": "Constructor inference-only guardincludesoriginalsharedweights; prevents partialautogradthroughsharedhelper whilecustomroutedoperators are nondifferentiable. FocusedCPUadmission controladded."
+    },
+    {
+      "id": "DP-UNUSED-WEIGHT-RETENTION",
+      "rules": [
+        "D13",
+        "M0",
+        "S0"
+      ],
+      "status": "CLOSED_REMOVED_3F1A",
+      "fix": "Unusedweight_bindings tuple/clearremoved. Exactdiffonlyconstructor/post-positive-fence cleanup. bindings stillretains eachoriginaltensor, weights ownerobjects, bank andscratch unchanged; nouncertainretirementrelease movedearlier.30CPU+structural proof, noGPUrerunneeded."
+    }
+  ],
+  "native_safety_reasoning": [
+    "Quantizationinput iscontiguousFP16, Q8_32 exactly36bytes/alignment4.32threads/warp cover32codes, lane0scale; allbyteswritten. Warpballot ofanynonfinite precedesdivision/round/intcast; badgroupwriteszero codes/scale andORs1or4, uniformreturn. FiniteHalfnonzero max>=2^-24 givesnonzero normalF32delta=max/127; ratio magnitude remainsbelow127.5 afterF32rounding, codes[-127,127]. Zero group hascanonicalpositivezero scale/codes.",
+    "Codebook magnitudesindependentlyread fromcurrenttable:IQ3_XXS62,IQ2_S43,IQ4_NL127. Exactintegernumeratormaxima32*127*62*31=7811008;2*16*127*43*31=5417312;32*127*127=516128. DP4Apartial16sums/oddscalecombination fitint32; all<2^24 so __int2float_rn exact. Factors1/4,1/8,1 andspecifiedF32mul/add tree explicit; currentRN16coef boundary deliberatelynotclaimed.",
+    "Hostshape/dtype/contiguous/device/range/alias guards boundR<=32,S<=11,pairs<=352, GUPgroups80/output80, down3groups/output2560. Packedrowshapes40960x980/820 and1310720x54 matchtype18/22/20; maxrow-byteaddress withinallocatedfixedextents. size_tpointerarithmetic andboundedintlaunch conversions safe;4warps/outputgrid80or2560 yieldscomplete livewarp shuffles.",
+    "Crop0or16 pads80hiddenvaluesintoexact96positions; outofrangepadding loadsnone andwriteszero beforedot. GUPblock/group offsets stayinside98/82bytes; down3x18bytes. Invalidpick<0/>512 setsbit8 anddoesnotformbankaddress;512sharedplaceholderzero is overwrittenbyoriginalexactsharedhelper.",
+    "Finitepackedscale checkedbeforeuse; nonfiniteORs2. HiddenHalfnonfinitecheckedbeforequantintcast. Statusinitialization comesfromcoldzeros/explicitrawcallerprecondition, ismonotonicatomicOR duringrun, neverhotread/reset. Stream-orderedfinalmaskaftershared observespriorflags andwriteswholeoutNaN onlatchedfailure. NoConcurrentexternalstatusreset/storagewrite permitted.",
+    "Aliasesallwritableoutputs/status versusreadinputs guarded, includingnewdebugfix. Strongoriginaltensor/owner bindings andfixed-layout/version-relevantmetadata retained; callersmusthonorfixedstorage andproducerstream leases untilpositiveclose. No safetyguaranteeunderexternalStorage.resize_/set_ race. Eagerandgraph serializedonconstructionstream; failedprepare/replay/retirement cannot reopenadmission."
+  ],
+  "oracle_and_scope": {
+    "independent_source": "UnmodifiedGGMLscalar b3fa69955ea81c3b60e77e3c1e2224c4a826ffb9; quantsSHA5574a2dccf7c07e75b143733e04a5412d3d8c819e7945f5217a7b83a2b2ff8ab/commonSHA0061131b615c5721fc88a78feeb22c1f8c450f1c2646a317d80796a653bf595c",
+    "generator": "SourceSHAverified; temporaryCshim extracts original scalarfunctions andreadonlyheader, noownedCUDAdecoder/codebook derivesexpectedvalues. Fixtureprovenance/generatorhashchecked. NumPyQ8ties-away/int64numerator/F32term andwarp-tree mechanism independent.",
+    "tests": "Quantbytes/numerators/F32terms compareexactly; mixed18/22 GUP+20downoffset0/16,R1/8/32x11slots, shared512,invalid/nonfinite/graph/alias/refusal cases. Endtoendbanksrepeatcoeffrows, so passisnotdistinctvalidexpert/neuronaddressdiscrimination; addressingboundsreviewedstatically.",
+    "activation": "Downoracle consumesactualCUDAhidden; noCPUexpf approximationthreshold invented. OriginalSiLUexpression/castlibraryprimitive andanalytic-zero guard plusgraph/sourcewiring proof. Notuniversalendtoendaccuracy proof.",
+    "license": "GGMLMIT attribution/notices retained; normalwheel includesLICENSES/GGML-MIT.txt andTHIRD_PARTY_NOTICES.md; noad-hocvendorpatch."
+  },
+  "resources_and_numeric_limits": "Standaloneonly:rawscratch411780B,512granulepayload412672B, externaloutput/weights notreplicated. These areNOTcompleteallocatorsegment/host/code/graph/modeladmissionbounds. Q8FP32scale/rawGGUF/newreduction differsincumbent; nostatedrelativequalitytolerance/boundaccepted. Latchtrackslistedinput/weight/hidden/pickconditions, notallpossiblefloatingoutputoverflow (e.g.finalFP16/sharedcast); futuremodelvalue/commitveto requiredandunenrolled. No hotCPUstatusread orreset, MTP/unsupported usesoriginalexactroute.",
+  "verification": "Finalcleanup30CPU4.36s/Ruff/normal724FD/protected, sourcepaths/provenance/structuralproofhashesverified. F652freshSM70CXX/CUDAcompile/link/import DSO3827...actualfileverified; native/oraclesbyteexact3f1a.17heldpayloadhashes/fixture/APP724canonicalparity/FDc79verified. Prior074a/d945/f652 evidence preserved; reviewerlocalreadonly/AST/hash/source only, noGPU/tests.",
+  "pending": [
+    "Independentbinding ofactualRoot20rawarchive ifclaimingthatresultbeyondRootreport",
+    "NoEngine/modelregistration orcommit-vetopath; additionalhost/graph/code/native24/fallbackcoverage/taskquality andnumericcontractadmissionrequiredbeforemodeluse",
+    "No P3gain, qualitybound, fullcrossTARGEToruniversalcorrectnessclaim fromstandalone20cases"
+  ]
+}

@@ -1,0 +1,26 @@
+{
+  "status": "source/byte/oracle read CLEAN; final execution companion requested, no runtime finding",
+  "hold_sha256": "20f47c9891a6c0b8d71f69a264e987a3ae81e2ba4072bc720a2c978f70491742",
+  "all12_current_paths_match": true,
+  "all715_wheel_and_current_source_match": true,
+  "compiled_extensions": [
+    {
+      "path": "tensorfold/_fd_owner.abi3.so",
+      "bytes": 37936,
+      "sha256": "9fbc446d1fb4c8f0d01963b18678bf501f01e2dafda5b1122624c6abb0bd5665"
+    }
+  ],
+  "native_authority_base_bytes_unchanged": {
+    "src/tensorfold/families/qwen4_exp/cuda/history_owner.py": true,
+    "src/tensorfold/families/qwen4_exp/cuda/owner_preparation.py": true,
+    "src/tensorfold/families/qwen4_exp/cuda/state.py": true,
+    "src/tensorfold/families/qwen4_exp/cuda/compact_indexer.py": true
+  },
+  "legacy_optimized_if_enabled_AST_equal": true,
+  "all_linked_logs_and_selected_exit0_checked": true,
+  "corrected_findings": [
+    "global-live early decline only for native-owner contract",
+    "actualEngine23refusal/24and26acceptance/priorprofile1 unchanged beforepublication/load"
+  ],
+  "runtime_findings_remaining": []
+}

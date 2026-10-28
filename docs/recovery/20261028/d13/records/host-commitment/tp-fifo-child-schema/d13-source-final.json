@@ -1,0 +1,49 @@
+{
+  "schema": "tensorfold.d13-fifo-tp-child-schema-final",
+  "version": 1,
+  "status": "closed_bounded_two_file_guard_delta",
+  "scope": "OnlyTP_pack/_unpack FIFOcarry guards and newchildschema tests; directScheduler.submit/_yield/_run_legacy/Stream.continued/TPpolicyhandshake<=3hops. Numericresourceproducer remains nativeowner separate.",
+  "source_hashes": {
+    "src/tensorfold/families/qwen4_exp/cuda/tp_scheduler.py": "fc6e33c7f977d6bddf14320d81adbc1cd9ccc8da907951aa026e991dd6d64872",
+    "tests/test_tp_fifo_child_schema.py": "079db6141192bd88d828e302e7a802d751ed8ca18b97768d6f225e6cbe816599"
+  },
+  "review": [
+    "ActualFIFOsubmit constructs a freshStream whosecarrydefaultNone. Stream.continued creates legacycarry only fromScheduler._yield, calledonlyby_run_legacy; no supportedFIFO producerneedsopaquelegacy continuationstats.",
+    "Sender andreceiver reject carry isnotNone onlywhen admissionpolicyFIFO, beforegrammar work/Stream publication. Emptydict/list/str,False/0 reject; Noneaccepted. Legacybranches andalllegacycarryforms unchanged.",
+    "_dispatch appliescontrolpolicy before_unpackedstream processing, so peers transitionthrough existinghandshake beforeenforcingFIFOconstraint. No newpolicyflag/epoch/ownershippath or bypass.",
+    "Prompt/owed lists,context/replay roles, principal/ticket/outputcapacity/retention/media validation remain unchanged. Wholemodule AST exactlyrecoversbaseline afterremovingonlytwo leadingguards.",
+    "Malformed/rejectedreceiver graphsalreadyparsed remain genericparse/errorowners; carryabsence onlytightensvalidFIFOpersistentchild schema, notalllegacy/source/errorroots."
+  ],
+  "verification": {
+    "dedicated_cases": 16,
+    "normal_installed_with_maintained_TP_suite": 54,
+    "seconds": 4.01,
+    "exit_status": 0,
+    "pipcheck_Ruff": "passed",
+    "all2current_source_hashes_match_pre_post": true,
+    "wholemodule_two_guard_inverse_exact": true,
+    "start": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/tp-fifo-child-schema/start.json",
+      "bytes": 1712,
+      "sha256": "9e2d955bbf3924b5b7a3f6b283d5c788e6996a963abd880bc2464a63cb4345e9"
+    },
+    "exit": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/tp-fifo-child-schema/exit.json",
+      "bytes": 2120,
+      "sha256": "608c0f22daecc79083012174fa37f47b5d3503e432381d017bb843bc199277bc"
+    },
+    "log": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/tp-fifo-child-schema/controls.log",
+      "bytes": 1104,
+      "sha256": "563fa18aa411919ddb52e9e22af2f2be2773b57794c98aa1a54b9de6b4e05632"
+    },
+    "no_reviewer_tests_source_Git_GPU_or_remote_actions": true
+  },
+  "assessment": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/tp-ownership-d14/assessment.json",
+    "bytes": 14268,
+    "sha256": "d399e3fe1068c44ddf300ef9518e58ae3ce39e3f04742626293f84cd2ad298bd"
+  },
+  "findings": "No newverified finding orrevieweredit.",
+  "limits": "No fullhostresource/admission/regionfit/model/performance closure. Numericintegration mustselectthe FIFOvalidschema onlyafterpolicyhandshake whilepreservinglegacy opaquecarry andgenericmalformed parse/error bounds."
+}

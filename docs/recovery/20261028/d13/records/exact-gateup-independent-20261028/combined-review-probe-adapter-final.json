@@ -1,0 +1,38 @@
+{
+  "schema": "tensorfold.combined-d13-review-v1",
+  "at": "2026-10-28T01:35:31.272063+00:00",
+  "status": "CLOSED component+graphadapter source review; hardware/commonv2P3stage pending",
+  "scope": "Reuse32062component/math/ownership/bounds/proof; only6289four-filegraphintent/report/factorycontrols+normalwheelbinding",
+  "commit": "6289e3cb41c6843638c5e5c6719773aa81d089b1",
+  "hold_sha256": "488310ffb054900db9124a6871303071d033f818ce1e5e354bd576b41e91e367",
+  "wheel": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/exact-gateup-independent-20261028/probe-adapter-wheel/wheels/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3143173,
+    "sha256": "bac586248066366b7e5ddce1ba9e23eb06f46d433e03d416aa4635790de3e00d"
+  },
+  "finding": {
+    "rules": [
+      "R0",
+      "T3",
+      "X5",
+      "Q0"
+    ],
+    "prior": "NewprivateprofilemissingProbegraphsTrue/nativeownercontract+keychecks, wouldrejectstartupbeforemodel.",
+    "remediation": "Candidateaddedtosameexplicitworker/readinessdomain; existingrealcuda_enginefactory\u2192Engineacquisitioncontrollerexpandedoldowner/prelude/candidate, validates24/262144/Q8/MTP2/.7/manifest/graphsTrue. Missingcapture/keys stillrefuse. No sourceguard/default/domainrelaxation."
+  },
+  "evidence": {
+    "CPU": "140pinnedcontrols/Ruff +newnormalwholewheel717source+FDc79/pip/protectedbyteproof; actualmath/native/549GPUoraclefiles unchanged",
+    "CPU_command_sha256": "4e4439b87f2407a87cd04741e43adb4102df026cd43da88a381c2b6a0fb5372b",
+    "CPU_log_sha256": "98b471de185fdc6fb737b282fc3bca655beb8e18b1108f2c512a7ee7ce7e2cbf",
+    "byte_proof_sha256": "846263996d9db9be7d10f8693b5859c0589822763f04e84e0fcd82cd7ba5ca04",
+    "component_review_sha256": "32062de87dc6908397cd29fd494117bf4034e7a482e9ad21a62554c7395cd260",
+    "reviewer": "Read/hash only; noGPU/build/duplicatetests"
+  },
+  "cleanup": "Smallprofilemembershipextensionsreusesexistingfactory/readinesspath; no duplicatedmeasurement/nativealgorithm/framework. Originalreference/oldkernels/independentBMM+GGMLbitcontrols retained. No remainingverifiedsourcefindinginheldcomponent+adapter.",
+  "remaining": [
+    "Actualstrict549SM70math/state/capturecases+runtimepre-admissionresidency/capacity; compile/refusalnotexecution",
+    "CurrentProbeleafstillv1/512; composeclosed2048/v2commonhelpersandverifyfreshstagebeforematched5635v2all6P3comparison (notclaimedreadybythisreceipt)",
+    "GenericI32compiledstack64vsold0/compiledshared32riskrequiresactualcapacity/performancevalidation; selectedkind18stack0notgeneralproof",
+    "Actualfull24nativewindows/all6quality/noregression/repeats/85and600beforeselection; no P3gain/mathadmissibilityclaimfromCPUonly"
+  ]
+}

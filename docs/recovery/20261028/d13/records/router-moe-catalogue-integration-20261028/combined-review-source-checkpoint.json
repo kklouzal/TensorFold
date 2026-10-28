@@ -1,0 +1,80 @@
+{
+  "schema": "D13-coherent-source-read-checkpoint-v1",
+  "at": "2026-10-28T11:11:49.830408+00:00",
+  "reviewer": "/root/cleanup_review",
+  "commit_read": "ba164f5f340422c520214084dc20399310827d34",
+  "status": "SOURCE_READ_WITH_ONE_CLEANUP_FINDING; final owned successor/HOLD/package/144oracle pending",
+  "scope": "MoE-only Engine/Buffer/Multi/aggregate-capacity integration plus direct component, captured RolePlans, source extraction, lifetime, cleanup and targeted tests; reused exact leaf800/7979 and current146f source proofs; no restart of native arithmetic audits",
+  "source_hashes": {
+    "README.md": "e9940304a9ee58209704490bdba3add38d819c40c58db750f6d446891618c5c8",
+    "src/tensorfold/cuda/sm70/router_blas.py": "15a7f8b5116fd103cf996880032b75085154bd747d54e17faf0361fc86df29de",
+    "src/tensorfold/families/qwen4_exp/cuda/capture_lifetime.py": "43c1d7dcf16450ae5be482087adf85da35b3ec67eda7e3419ce1d8bd30b550f8",
+    "src/tensorfold/families/qwen4_exp/cuda/engine.py": "ba8338ad321ce1065252c191101a7d3d11d20545be3af11319d7e5cd2fe70531",
+    "src/tensorfold/families/qwen4_exp/cuda/forward.py": "af79b0990b4924220f99be3a72da6103a2db4c4345d4de58138bf3bc1ff1d237",
+    "src/tensorfold/families/qwen4_exp/cuda/moe_region_catalogue.py": "a22f3c50440a4a2c088012287a12e0fcb7061006fecc8a7d35cde63432afeb5c",
+    "src/tensorfold/families/qwen4_exp/cuda/moe_region_graphs.py": "5242d250611c540326430c803b7ea679440cc6ca70d80278ccbf5007cf66c985",
+    "src/tensorfold/families/qwen4_exp/cuda/multi.py": "5fa1eed908af29f648abe4c8fc319440a44198a7b189dbda9aaa1af77e586168",
+    "src/tensorfold/families/qwen4_exp/cuda/multi_graphs.py": "a1634650b089044cb5531ff3ab40fb39ab72c8afe940643b90cbbf7f07d4596d",
+    "src/tensorfold/families/qwen4_exp/cuda/state.py": "3a16276de9322098ee3fec5c453f60154642c619116c7ab45fbdca4d836a1414",
+    "tests/cuda/test_sm70_moe_region_graphs.py": "de5b69e59501aacebe988aab63ee707b81e7e7a07ec469ecd1fd911a03ea5e7c",
+    "tests/test_moe_region_catalogue.py": "2c06dce716e341ae733f8a095d3ae30f2d108563a692bfa9fda55d691e5f98c7",
+    "tests/test_moe_region_graphs.py": "22c2de37dac05e76daf0e57bc676ebd0558bfbbcbaf8d8faccc7343f3ce5f1a4",
+    "tools/v100_backend_probe.py": "dca3e6985e72f98d04885a10aa20e90e4367a981cede50eadf9ec4efc13c760f"
+  },
+  "evidence": {
+    "targeted_controls_log": {
+      "sha256": "ce2e0bf5efa634fa8e64b15610a3659b903ff5a6bc04be82e56aeca9064bea9c",
+      "observed_summary": "52passed2.55s; author supplied scope33owned+19GDN/router; final command/HOLD binding pending"
+    },
+    "native_supplier_proof": "b6072a6be8a6c54cfe569d9356dfa806b1e0df64a1789eb33380f3347184c856"
+  },
+  "findings": [
+    {
+      "id": "MOE-CAPACITY-DOUBLE-DEBIT",
+      "rules": [
+        "M1",
+        "P3",
+        "V1"
+      ],
+      "status": "REMEDIATED_SOURCE_AND_FOCUSED_TEST_READ; final gate/HOLD pending",
+      "actual_caller": "Multi.capture_graphs passes spare=lambda:physicalLive-future, future_bytes explicit. Capture charge now compares corrected general_available-future, not spare-private_inactive. service_live excludes all owned private inactive exactly once; new unavailable-owned delta captures cached-to-private ownership even without physical drop.",
+      "tests": [
+        "test_capture_charge_does_not_subtract_private_from_physical_authority_twice",
+        "test_capture_charge_debits_new_unavailable_owned_bytes_even_without_driver_drop"
+      ]
+    },
+    {
+      "id": "MOE-UNUSED-DONE-EVENT",
+      "rules": [
+        "D13",
+        "M0",
+        "S0",
+        "F3"
+      ],
+      "status": "OPEN; sole author notified, no reviewer code edits",
+      "fact": "Catalogue.done Event has no wait/query/record consumer. It is initialized/recorded/synchronized cold, recorded each finish, then cleared on close. Serialized serving stream plus positive global close fence/reset already establish required lifetime.",
+      "required": "Remove unused Event/record path or document concrete actual owning consumer; retain positive fence/reset and full-cycle counters/failure semantics."
+    },
+    {
+      "id": "MOE-SHARED-CONTAINER-ALLEGATION",
+      "status": "WITHDRAWN_FALSE_FINDING",
+      "fact": "Actual GGUFExperts.__init__ converts shared to immutable tuple. Binding tuple identity and member weight/scalar anchors detects supported rebind/reorder/storage changes. No same-list mutation test/remediation required."
+    }
+  ],
+  "reviewed_contracts": [
+    "Target only exactR30/31/32 and full ordered48-layer lease; distinct perR shared graph pools, no partial failed-cycle reuse. N1/MTP/nonmatching rows retain original route.",
+    "Catalogue.bindings retains original untypedStorage plus Tensor pointer/layout spans, captured model/scalars/profile and canonical buffer identities. Serialized actor/quiescent mutation contract remains necessary; no claim of safety under arbitrary external storage races.",
+    "Dedicated shared capture-side48-weight RolePlans is separate from eager role, construction stream only during recording, retained through every graph reset. Original model/buffers are borrowed and not duplicated.",
+    "All new GPU allocations charged through aggregate graph phase/settlement; capture-role bound is preflight, not duplicate device workspace debit. All N1/new pool inactive bytes excluded from reusable spare. Required24 full nativeQ8 windows and future service remain.",
+    "Engine pre-admission global8GiB inclusive host operating allowance, bounded controlled catalogue metadata and capture role host included once; RSS/HWM gates observed, not universal vendor/transient/RSS bound.",
+    "Fixed preallocated multi-frontier journal attempts observer/GDN/MoE retirement after compute failure; clears gdn/attn bindings in nested finally; fatal publication after releasing forward lease. Partial capture/reset failure retains owners and poisons reuse."
+  ],
+  "cleanup": "No other verified dead paths/unjustified duplication found within affected contracts. Candidate catalogue pool extension hook is explicitly coordinated with the separate Root-approved leaf author; it is not proof of current head integration.",
+  "pending": [
+    "Remove or justify unused done Event",
+    "Final normal724+FD package/HOLD and exact stage",
+    "Actual144-key oracle source and actual Root execution",
+    "Actual Engine/all8 capacity/counter/quality/all6 performance under private flag before selection"
+  ],
+  "reviewer_execution": "Read-only local source/Git/evidence; no GPU, remote launch, tests or source mutation."
+}

@@ -1,0 +1,37 @@
+{
+  "schema": "tensorfold.combined-d13-review-v1",
+  "at": "2026-10-28T01:45:16.165551+00:00",
+  "status": "CLOSED v2toolcomposition+549stage review; actualmath/model/P3pending",
+  "scope": "Reuse32062kernelcomponent/289agraphadapter/closedbebf7commonv2; e33tool/constructor-output-fundingtestsand24filenumericalstageonly",
+  "commit": "e33d7c3286fcd6356aada4bace610317e5a00cce",
+  "hold_sha256": "5499ec9681a4f1018fe88f8d6b0c3a2b6e85f713aeb7c926d954d56b2c5e1a86",
+  "APP": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/exact-gateup-independent-20261028/probe-adapter-wheel/wheels/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "sha256": "bac586248066366b7e5ddce1ba9e23eb06f46d433e03d416aa4635790de3e00d"
+  },
+  "APP_HOLD": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/exact-gateup-independent-20261028/source-hold-probe-adapter.json",
+    "sha256": "488310ffb054900db9124a6871303071d033f818ce1e5e354bd576b41e91e367"
+  },
+  "assessment": [
+    "All717runtimebytes+FDc79/native/oracles unchanged6289/bac5; no newkernel/numeric/privateworkspace/defaultactivation.",
+    "Allcommonhelpersbyteexactclosedbebf7; allProbeprotocolfunction/classASTs excepttwoexpectedcandidategraphclassifiers equal. Closedv2/2048timingarrays/nativepointercopies589824/finite6150span/full24/262144/Q8/MTP.7/readiness/window/EOS/nativeIDs/drain+quality6x320 contractsretained.",
+    "RealFactoryforoldowner/prelude/newcandidate testedbothv1/512andv2/2048 withgraphsTrue/manifest/full24;245CPU/Ruffrecords authoritative, no shadowfactory bypass. EarlierR0missinggraphintentfixed; earliermatchedv2workflowgapclosedatsourcelevel.",
+    "Componentstage24fileshash+sizeexact; freshnormalwholewheel/protectedclosurebeforeandafter, main-guardedrunnerprechecksactualSM70/modelpath, actualattributequeriesbeforetests, strict549collected+549passed/0skipped/0failed required. No copiedexpectedoutputs/relaxedbits/oraclechange.",
+    "No verifieddead/unjustifiedduplicatepath; code/sourcepasses areconditionalcandidateprogresstowardhardwareadmissibility, notglobalperformanceequivalence/selection. Originaloldkernel/longdiagnostics/failures preserved."
+  ],
+  "evidence": {
+    "v2_proof_sha256": "150cd9d3dac1a9d7ec77b164baa43c0c54c952ba19b545142689f5ee4d118140",
+    "CPU_command_sha256": "ce42a24099c7c6cbe9b7d52aa89a66f33d660704a2df89b6f456966b674ab0d1",
+    "CPU_exit_sha256": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17",
+    "CPU_log_sha256": "23da7f59e7e904e4bdfac7ca27fa23d41cbdbbe803b34541efaf91ee8bcc8bf1",
+    "component_manifest_sha256": "e204ee69eae176f781d11fa48dc76c5e8059edb156f7842b469232b326db8057",
+    "component_files": 24,
+    "reviewer": "Read/hash/ASTonly; noGPU/build/testduplication"
+  },
+  "remaining": [
+    "Rootactual549SM70bitwise/state/capturecases, source/data/attribute/normalpackageclosure; currentlyrunning96254notassumedpassed",
+    "Freshall6v2performancestage/controllerbindingifbuilt, physicaladmission/full24windows/quality/nativeIDs/counters/drain",
+    "GenericI32STACK64/staticshared32riskandall6matchedP3/repeats/85+600/broadqualitybeforeselection; no gainfromcomponent alone"
+  ]
+}

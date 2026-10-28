@@ -1,0 +1,82 @@
+{
+  "schema": "tensorfold.d13-gpu-local-affinity-review-v1",
+  "at": "2026-10-28T17:05:55.583566+00:00",
+  "reviewer": "/root/cleanup_review",
+  "status": "REQUIRED_GPU_LOCAL_BIND_CONFIGURATION_SOURCE_AND_HELD_CORRECTED_STAGE_REVIEW_CLOSED",
+  "authority": {
+    "source": "f11b36c245c596da4a39278b30fa04139ff5f32d",
+    "affinity_HOLD": "205b0d8d48c2493d51f73d549c3a3e0920cfd716ad1138ceb7519e1af3e56d11",
+    "APP": "4b0ea6b51047f93b2b973ed5a467d8c279b94f6d85c683c4258a712ff6edd99f",
+    "APP_HOLD": "b5c78eb23e5d4c5111a707506a8afb5623cef81c0dd6412c70c1376786560f3a",
+    "row_HOLD": "8021154e213e1383b2a26290d14cb4d5318dfb0c80eee7cb003e3f9fc5e2979d",
+    "worker_policy": "0af25aaa7200bef51c4bc0e3a58b4a11374f79b40c39ca10340c0d9815433bc8",
+    "controller": "8e769c2a9c1b0ab517b5b5e3d3d53acae14b3ecf72a6c0ca4e31074a192152b5",
+    "manifest": "fd02f518f22ed2c4e210efa59c264afec794d6027987f78fdf29588b87352100",
+    "payload": "0961bafac8281c36cec34b2743521898f215ca98d10ca9df9d36c311dba96dbb"
+  },
+  "scope_X1": "User-required whole-GPU-local-socket CPU grouping for exact8V100 profile regardless of P3. Tool-only child entry, CLI/probe/freeze/docs/tests and direct Linux process/thread/FD/GPUidentity/caller integration. No APP/GPU math/NUMA memory-policy changes, no extra reviewer, GPU or remoteheavy analysis by reviewer. Reuse currentc928 runtime/descriptor schema recovery and closed523 finite-core/funding/graph/counter proofs.",
+  "findings": [
+    {
+      "rules": [
+        "P0",
+        "T0",
+        "M3",
+        "C3",
+        "U1"
+      ],
+      "finding": "Predecessor671 matched numeric CUDA_VISIBLE_DEVICES to NVML/nvidia-smi index but retained numeric execenvironment. Default CUDA FASTEST_FIRST ordinal semantics didnotprove actual GPU matched heldUUID/socket.",
+      "remediation": "f11 exec uses resolved fullheldUUID andrecordsinput/execvisibility; sample verifiesunchangedUUIDenv andbootstrapidentity. ActualTorch UUID is checkedpostengine againstsameGPU row. Pinned04cf Module.cpp exposes UUID/__str__; CUDA12.9 guide documentsUUID visibility support and ordering.",
+      "disposition": "CLOSED;671 remains unrun/immutable."
+    },
+    {
+      "rules": [
+        "C6",
+        "M0",
+        "Q0"
+      ],
+      "finding": "New raw withfile receipt write couldlose writeprimary onclosefailure; direct failure-notify chaining couldlose existingnativecause/context.",
+      "remediation": "Ownedfile_operation preallocatesstatus beforeopen, alwayscloses, captures/restores nativeprimary fields anduses existingpurestdlibcleanup onlywithactualsecondary; shortwrite rejects. Both bootstrap andprebackend notify paths reserve slot/capture/restore roots andpreserveprimary. Actualread/write/shortwrite+close andnotification failures controlled.",
+      "disposition": "CLOSED onf11."
+    }
+  ],
+  "checked": {
+    "exec_and_locality": "BeforeTorch/backend/CUDA/helperthreads: SHAheld8rankUUID/PCIpolicy, liveall8NVMLidentityset, PCI sysfsNUMAnode/currentCPUlist/online CPUs, intersectionwith inheritedallowance, exactlyonecurrentthread, affinityset/readback/topologyreadback. FullUUIDexec selects actualGPU; parentmask/env unaffected. No silently emptyintersection, changedtopology, cpusetnarrowing, ambiguousdevices orlateTorch allowed.",
+    "identity_handoff": "Directexec samePID/session/startticks, commandargv andfailureFIFO inheritable validation preserved; original TP8parent owns all8 childcommands/sessions/exit/retirement. No preexec_fn, secondreplica, expert-only<=4launcher substitution. ActualCPUchildPID/SID/FD/exit7/threadinheritance tests cover OS boundary; ordinaryexternalTP8 --rank/master CLIflags independentlyconfirmed source.",
+    "observability": "Boundarycensuses beforebackend/postengine/afterrequests andleaderprecohort afterfiniteowned_pool hasmaterializedallworkers via barrier. LiveTIDs escapingselectedmaskrefuse; vanishedTIDs recorded. No census100Hz/decode/callback loop change. IndependentAST compared actualcurrent4b0 tool; changedexistingfunctions ['arguments', 'run_concurrency_leader', 'worker', 'launch'] andadded ['affinity_module', 'worker_affinity'].",
+    "resources": "Sameparentaffinity/quota/native24Q8/graphfamilies/callerlimits; no mbind/sysctl/migration/page locality claim. BoundedPID4096/held64CPU census andexisting256KiBfollower/512KiBleader/64KiBsupervisor receipts; fullleaderreport size rechecked beforecohorts. Cumulative follower<=3/leader<=4 snapshots plusbootstrapreloadtransient explicitlyrecorded. Serializedbytecaps do notproveequalRSS; no extramemorycredit orvendorpeak theorem. Actualauthoritativehost/floor/pools/calleradmission checks remain required.",
+    "stage_binding": "6canonicalsourcehashes/all29localmanifestfiles exact; runtime srcdiffempty againstc928. Exactuuid-stage normal4b0installed727FD/policy/rowinheritance/helper+probeimports/help preflight exit0 withTorch-unloaded assertion. Root reports latest29remotehash/freshresults verified before67294 launch; no independentremotecommandrun byreviewer.",
+    "cleanup": "No verifieddead/unjustifiablyduplicated affected code remains. StaticNVML/sysfsreadbacks preserve independentlycontrolled identity across initialization; existingclosedmeasuredloop andfinitehelpers retained."
+  },
+  "evidence": {
+    "uuid-stage/package/source-hold-affinity.json": "205b0d8d48c2493d51f73d549c3a3e0920cfd716ad1138ceb7519e1af3e56d11",
+    "uuid-stage/package/worker-affinity-policy.json": "0af25aaa7200bef51c4bc0e3a58b4a11374f79b40c39ca10340c0d9815433bc8",
+    "uuid-stage/package/stage-files.json": "fd02f518f22ed2c4e210efa59c264afec794d6027987f78fdf29588b87352100",
+    "uuid-stage/stage-ready.json": "02a3f64d7a0daeecdb0d0bd8863b9566df9575e6418c13d3bdaeb9693e8502ff",
+    "uuid-source-command.json": "0dd21cb592335113380388ad315a429199f10b9d55d4bd7c40dfb041f6a244e8",
+    "uuid-source-exit.json": "57a71bacdbad9dbbe9e33065c8ece75287fad1495c497559bcd243b36c46f92d",
+    "uuid-source.log": "2769d77299bd99c08450bfa6642c32eeec61288866aa1f2295b69647ccd6acf2",
+    "uuid-preflight-command.json": "5810fe589373644b72ac8c05bb3dadb2a02767f54afc28d615d3d161187cec05",
+    "uuid-preflight-exit.json": "e3186f5e14996cab3ae9bcd311f9c0845fa1cccf9a56a6f64e85b5954ae32e1c",
+    "uuid-preflight.log": "41d6cb34041a59b2f3c6eb8f7ff1c0b659e08ea403bc502abde8a64322cfd69e",
+    "preflight.py": "e18008912e9aa2384dfc58bb95c28f631bd79c8d62cd866ceb27717eaa6d45d6",
+    "evidence-accounting.json": "81928bfa09bf56654a4fbb77049e5b0c56efc691ff58253abd87d02bed417142"
+  },
+  "versioned_sources": [
+    {
+      "path": "/Warehouse/TensorFold-foundation-sockaddr-20261026/sources/pytorch/torch/csrc/cuda/Module.cpp",
+      "lines": "1133-1141,1200",
+      "scope": "selected04cf CUDAuuid string/property API, readonlysourcecheck"
+    },
+    {
+      "url": "https://docs.nvidia.com/cuda/archive/12.9.1/cuda-c-programming-guide/index.html#env-vars",
+      "scope": "CUDA12.9 familyUUID selection anddefaultFASTEST_FIRST ordering; actual12.9.2image/SDK boundseparately; no newerfeature assumed"
+    }
+  ],
+  "checks": "131affectedCPU8.57/Ruff inclactualchildOS andfailurecontrols; exactstaged CPUimport/help/policy/normalinstalledpreflight0. Reviewer readsource/contracts/AST/hash/evidence; no repeatedCPUgate/GPU/numericaltests.",
+  "limits": [
+    "RequiredBINDconfiguration approval is independentof P3. No actualall8 affinity/helperprogress, native24 floor/resource, quality or six-tier performance result is inferred fromCPUsource review.",
+    "Boundarycensus is notcontinuousaffinity proof; newthreads inherit creator mask butlibraries canchange it, so actualtargetcensuses/refusal remainrequired.",
+    "GPUUUID normalization fixes selectorambiguity; oldunbound4b0 is historicalcomparison, and pointthroughputdifferences cannot be assignedcausally toNUMAalone.",
+    "No memorypolicy/pageplacement/physicalCPU/RSS equivalence, productionHTTP/release/servicequalification."
+  ]
+}

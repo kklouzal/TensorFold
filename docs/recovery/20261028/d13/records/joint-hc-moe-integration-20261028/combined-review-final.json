@@ -1,0 +1,74 @@
+{
+  "schema": "task-wide-combined-D13-HC-enrollment-review-v1",
+  "at": "2026-10-28T13:49:32.855235+00:00",
+  "reviewer": "/root/cleanup_review",
+  "scope": "HC+MoE source enrollment delta on d5eb/fbaa, reuseclosedMoE/fusion/candidate/lifetime and HCcomponent source. Exactissuedcut/fullforwardlease, trustedreplaycaller, input/storage/policy/accounting/retirement plusheldselected-profileTP8packet. No native arithmetic or closedparent audit restart.",
+  "source": {
+    "commit": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+    "HOLD_sha256": "af80254a017d9c92724fe767ae0ccb469f85313b7800c92b72c9950d84c44983",
+    "APP_sha256": "4d2ba426c999ed07e27e4040dc2d8bac8949d49fa1dcf357154963d3ae97bc62",
+    "source_paths_verified": 8,
+    "evidence_files_verified": 10,
+    "canonical_packaged_files_verified": 727,
+    "FD_sha256": "c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d",
+    "native97_exactd5eb": true,
+    "runtime_delta": [
+      "engine.py",
+      "forward.py",
+      "moe_region_catalogue.py",
+      "newhc_moe_region.py"
+    ]
+  },
+  "stage": {
+    "payload_files_verified": 17,
+    "manifest_sha256": "e2a05de23cec6e425c8368658dd4af109bffc83cb6a2c2c3bfbf8b23376e66c7",
+    "payload_tar_sha256": "c632cc52c99d71af426e3b6d2c95c76b267a2d8b8ec63838678a24c19333480e",
+    "tar_content_exactlocal": true,
+    "runner": "One selectedFusionTP8node/0skip only; originalRouternode retainedbutnot redundantlyrerun. Independent postinstalledcheck afterpytest, pytestfailureprecedence. Reviewer noliveGPU/remote launch."
+  },
+  "disposition": "HELD_HC_ENROLLMENT_SOURCE_AND_COMPONENT_STAGE_REVIEW_CLOSED; NO_REMAINING_CONCRETE_SOURCE_FINDINGS_IN_SCOPED_INCREMENT. Numericalgate andfullEngine/currentIQall6 remainseparate.",
+  "contracts_verified": [
+    "HCENV1 requiresadmittedMoEENV1 andRouter/Fusionprofile, recordedinmodelruntimepolicy/sealedBindings. Defaultdisabled/outsideexactR/nonactive/otherBuffers keepsoriginalHCcall. ExistingnumericFusionepoch/backendpair remains; graphcontract changesexplicitly toMLP-HC-mode3 orderedpool variant.",
+    "Original _pre_moe runsState/PLE/attention/GDN/priorNCCL first. defer_hc validatesexactorderedlayer/R/canonicalFP32g_branchprefix+FP16inj_a span/mode3 underactivelease, issuesonecutand suppressesonlytheimmediatelyreplacedHC. Nextmoe_block consumesonce throughcombinedHC+pureMoEgraph, thenoriginalpartial/NCCL. Missing/duplicate/unconsumed orfailedcuts poison; no eager retry/doubleHC.",
+    "Whole-modelHCModelBindings validatesoriginalHCweights/scalars/comm/mathflags/Bufferstorages onceatforwardbegin, retainingoriginalStorageanchors. Existingserialactor/immutablebindings lease contract preserves thoseinvariants through48layers. Standalone replay keepsfullguards. replay_prevalidated has explicittrustedcatalogue-onlypreconditions andstilldelegatesoriginalMoEprepared/failure/externalowner/streamchecks; actualonlycaller isissuedcut run.",
+    "PrepareusesdedicatedcaptureRolePlans, same144graphs/threeexactRorderedpools, initializedall32h/PSS/g_branch/inj_a inputs. EachHCprivateallocation ischarged byunchangedRoundGraphs phase/settlement budget, allprivateinactiveexcludedonce andfuture/native24Q8protected. No free-creditfromordinaryFusion2MiB ornewseparateGPUworkspace debit.",
+    "SameinclusiveMoE1GiB/rank controlledmetadata/library operatingallowance andobservedhostgate remain; candidate1GiB/rank isindependent/additive16GiBglobal. NewHCmetadata/tensorviews areboundedby144graphs/48layers/fixedbuffers. RSS/HWM caveats areexplicit; no universalvendorbound inferred. Actualall8physicalplans stillrequired.",
+    "Partialcapture/replay/issuedcut errors retainowners; originalcombined-frontierjournal attemptsobserver/GDN/MoEcleanup andpreservesprimary/priorroots. Lease releasedbeforefatalnotification; positiveoriginaldevicefence andgraphreset precedeHCstorage/capturerole release. Candidate64pool/lifecycle, N1/Multi/State/MTPrecurrent andnative code unchanged."
+  ],
+  "findings": [
+    {
+      "id": "HC-PARENT-POSTPRIMARY-SLOT",
+      "rules": [
+        "C6",
+        "U2",
+        "M0"
+      ],
+      "status": "CLOSED_IN_SUCCESSOR28ac_ONLY",
+      "fix": "Parentsecondaryfixedslot nowallocatedbeforefirstspawn (ASTlines206<208). Existing actualparentcausecontrol plusnewordering controlpassed; no fabricatedNone cleanupoutcome. Old8ed/81688 packet preservedandnotretroactivelyfailure-qualified."
+    },
+    {
+      "id": "HC-COMPONENT-FORMAT-SCOPE",
+      "rules": [
+        "D5",
+        "N1",
+        "Q2",
+        "Q4"
+      ],
+      "status": "CLOSED_BY_EXPLICIT_SCOPE_DISPOSITION",
+      "fact": "SelectedFusionTP8fixture usesggmltype12Q4_K, exercising2warpprojectionvariant. ItisnotcheckpointIQgenericprecisionproof. SameoriginalHCbodyandprioractualIQ18/20pureMoEgraph evidence areseparate; fullcurrentIQEngine/all6pending. No bogusGPUfailureornewthreshold; no extra primitivegate requested.",
+      "companion_sha256": "4f0ffbd6046d0545c00452388f8fa832a559e0f0bb089245527a13b652341ece"
+    }
+  ],
+  "verification": {
+    "CPU": "65affectednormalinstalledPASS2.52s/Ruff/pip/protected/727FD; exactcommand/cwd/log/exitheld. InitialF811fixtureimportfailurepreserved; aliasfixonly.",
+    "structural": "97nativeinputs exactd5eb, originalHC/readout/MoE/candidatebody ASTs unchanged; _pre_moe inverseguard recoversoriginalHCcall. Oldcomponent regularguardsretained; onlyadmittedtrustedcaller bypassesduplicateHCvalidation.",
+    "GPU": "SelectedFusionTP8nodecollected, source/mathpolicyobservedbeforeafterwithoutsetters; noRootnewoutcomeinferred. ActualoldRouter81688proofonlypositiveoriginalboundaryscope."
+  },
+  "cleanup": "ReusedMoElifecycleandHCbindings, no duplicatedmath oruncheckedgeneralreplayAPIclaim. No newverifieddeadcode/unjustifiedduplication remaining. Requiredcandidate/oracle/historical evidence preserved; noreviewer sourceedits/tests/GPU.",
+  "pending": [
+    "Rootselected-profileQ4_KTP8strictcomponentoutcome",
+    "ExactnewHCall6adapterbinding",
+    "ActualcurrentIQall8fullcapacity/pools/host/native24/ledgers/HCissuedcoverage/counters/quality/performance beforeselection",
+    "Broaderquality/repeatability deferrednotpassed"
+  ]
+}

@@ -1,0 +1,102 @@
+{
+  "schema": "task-wide-combined-D13-review-v1",
+  "at": "2026-10-28T11:33:53.661238+00:00",
+  "reviewer": "/root/cleanup_review",
+  "scope": "Final MoE-only catalogue integration and actual affected Engine/Buffer/Multi/accounting/storage/lifecycle/harness contracts; reused closed selected-router component and146f parent evidence, no restarted native audit. Direct user single combined D13 overrides repository separate pair text.",
+  "source": {
+    "worktree": "/Warehouse/TensorFold-wt/v100-router-moe-catalogue-20261028",
+    "commit": "f6978a15ca8448ddbbebfaedbf9d11c6b802c3c6",
+    "HOLD_sha256": "0f8d4974e07ca20cc5a7a315ed3105b15242733a510a95623270d74b70086150",
+    "APP_sha256": "61654b385feae0243eefc6e3d0c8bb840a5f8da3b98f9edec724f7772f531d81",
+    "source_paths_verified": 17,
+    "evidence_files_verified": 12,
+    "canonical_packaged_files_verified": 724,
+    "FD_sha256": "c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d",
+    "native_supplier_files_exact146f": 97
+  },
+  "stage": {
+    "payload_files_verified": 16,
+    "manifest_sha256": "c633019c75df20917468e7c53e2a7582c22909192ad463b62b4911d2b91fadec",
+    "payload_tar_sha256": "93dfcb88c2f2338ddf27f1a78d58205ae3b90cd74599bf4d35d5a21889005102",
+    "tar_files": 17,
+    "tar_scope": "16heldpayload files plus stage-files manifest; exactlocalbytes/noextra files orlinks",
+    "stage_ready_sha256": "750c3a0139aca072ac2577f4d306de17fc34a2b366c218815e3283bccc0b0fad",
+    "remote": "Root/author reported16files hash-verified then Root84513 actual. Reviewer did no remote or GPU launch. stage-ready.status is historical pre-upload snapshot, not current execution status.",
+    "runner": "Actual1case/0skip required; originalpytest exit has priority and independent postinstalled verification always runs; sourcefixture strictoneGPU scope explicit."
+  },
+  "disposition": "FINAL_HELD_SOURCE_AND_COMPONENT_STAGE_REVIEW_CLOSED; NO_REMAINING_CONCRETE_SOURCE_CLEANUP_OR_COMPLIANCE_FINDINGS_WITHIN_SCOPE. Ready for separately bound actual Engine/eight-rank/all-six experiment, not selection/service qualification.",
+  "findings": [
+    {
+      "id": "MOE-CAPACITY-DOUBLE-DEBIT",
+      "rules": [
+        "M1",
+        "P3",
+        "V1"
+      ],
+      "status": "CLOSED_REMEDIATED_AND_FOCUSED_VERIFIED",
+      "fix": "RoundGraphs receives actual future_bytes. Charge uses corrected general_available-future, not physical spare minus private inactive again; all-pool inactive excluded once. Phase max includes unavailable-owned growth even without driver drop. Actual focused tests preserve old authority and cached-to-private counterexample."
+    },
+    {
+      "id": "MOE-UNUSED-DONE-EVENT",
+      "rules": [
+        "D13",
+        "M0",
+        "S0",
+        "F3"
+      ],
+      "status": "CLOSED_REMOVED",
+      "fix": "No owning consumer existed; removed cold Event and per-forward record. Same original stream orders replays and positive global close fence/reset retains lifetime. Deleted only obsolete marker-fault test; full-cycle/partial/fence/reset failure controls retained. No runtime-equivalence or gain claim inferred from removed work."
+    },
+    {
+      "id": "MOE-COLD-LEDGER-PRIMARY",
+      "rules": [
+        "C5",
+        "C6",
+        "X4",
+        "X6"
+      ],
+      "status": "CLOSED_REMEDIATED_AND_ACTUAL_HELPER_CONTROL",
+      "fix": "Cold145-phase raw export uses exclusive-create/no-overwrite; fixed close slot precedes acquisition, explicit close then existing finish_failures. Actual helper write+close fault control preserves named primary plus both its prior explicit root and close failure. Success/rawhash/small-descriptor and incomplete-refusal controls pass."
+    },
+    {
+      "id": "MOE-SHARED-CONTAINER-ALLEGATION",
+      "status": "WITHDRAWN_FALSE_FINDING",
+      "reason": "Real GGUFExperts shared container is tuple(shared). Tuple identity plus member storage/scalar checks cover supported mutations; no same-list source fix required."
+    },
+    {
+      "id": "MOE-INITIAL-AUTHORITY-GATE",
+      "status": "DISPOSITIONED_ENVIRONMENT_FAILURE_PRESERVED",
+      "reason": "Source-path authority attempt lacked installed native _fd_owner. Original10FAIL/154PASS log retained; final normal installed724+FD gate114PASS covers tool authority and new ledger controls. No app/test contract weakened."
+    }
+  ],
+  "contracts_verified": [
+    "Cold preparation requires selected Router profile, actual canonical target row32 owner, no active/filling/kept requests, all24 free slots, supported native allocator and no alternate drafter. Source profile already requires TP8/adaptive24/fullQ8/stockMTP2/.7/graphs; requested catalogue failures refuse, never silently become eager-only.",
+    "Bindings retain original untypedStorage and Tensor owners; validate full pointer/storage offset/span/shape/stride/dtype/device/autograd, captured layer/packed/shared/config/profile choices once each forward. Serial/quiescent fixed-binding lifetime remains necessary; no arbitrary external concurrent resize/storage-race guarantee.",
+    "One dedicated capture-side48-weight RolePlans owns scratch independently from serving eager role. Graphs share only within exactR30/31/32 pools, each fixed48-layer capture/replay order. NonmatchingR/MTP/prefill/N1 keep original paths. Partial/reordered cycles poison every borrower and retain owners.",
+    "Canonical buffer/model storage and eager roles already funded; new capture role/pools/library residency charged once via aggregate graph max physical/general/owned phase deltas plus wholecapture settlement. All N1/new pool inactive bytes excluded from service credit. Actual future_service and native24 windows remain authoritative; toy admission is not substituted.",
+    "Engine adds global world*1GiB inclusive graph-host operating allowance before authoritative admit. Capture-role host, controlled catalogue/native metadata, record and bounded encoded evidence included once. RSS/HWM observations and physical/cgroup preflights are recorded; historical HWM caveat and unmeasured vendor/transient peak remain explicit.",
+    "Full forward nonblocking lease checks canonical identities/storage and original serving stream; after release, fatal publication retains actual primary. Preallocated observer/GDN/MoE outcome journal attempts all independent frontiers and nested finally always clears gdn/attention frame bindings.",
+    "Close retires replay admission, requires no borrower, positively fences then resets all graphs before releasing capture roles/storage anchors/pools. Failure retains poisoned owners. No state/projection/cache/PLE/indexer/GDN/partial/NCCL math moved into pure MoE capture.",
+    "Default record is compact for existing ready-reply bound; detail API remains. Tool saves actual145 raw phase observations, funding/all-pool/host evidence once in a <=1MiB rank file, under inclusive allowance and observed gate; descriptor/hash only in replies, no per-window hot I/O."
+  ],
+  "structural_evidence": {
+    "author_proof": "a907fdbb01ec27e95b2d028d391a3a992a8e7388210e26da4dcae6cab8bfada8",
+    "native_proof": "b6072a6be8a6c54cfe569d9356dfa806b1e0df64a1789eb33380f3347184c856",
+    "independent_inverse_moe_body_proof": "4344c2bbd6495977d1cf8feedc6b60b7b37912a584afb85978ef209147b511d7",
+    "inverse_scope": "After removing declared private dispatch/local-only keyword/return annotation changes, original MoE statements AST-exact146f. All otherforward function ASTs and97native supplier files exact. No enabled-graph performance equivalence asserted."
+  },
+  "verification": {
+    "normal": "51PASS2.39s/Ruff/pip/protected-before-after/normal724+FD; normal-command/log/exit bound",
+    "package": "114PASS3.47s including actual exporter prior-root control; one144fixture collected; final-package-command/log/exit bound",
+    "component_reference": "Selected-router800/7979 actual2PASS5.77 targetF16/MTPF32 reused within finite fixed-storage scope",
+    "actual_new_oracle": "Root reports84513 exit0,1PASS7.25s,144graphs/432changed-input replays/eager comparisons, exacttails, normal724FDprepost. Local rawarchive binding not yet independently inspected; no inferred native24 capacity."
+  },
+  "actual_oracle_limits": "oneGPU/world1, noState/noNCCL/noEngine, future_service0, proxy charge125829120. It validates catalogue replay arithmetic/ordering/tails on fixture, not fullmodel/eight-rank/floor24/quality/P3.",
+  "cleanup": "No other verified dead code/unjustified duplication remains in affected increment. Required independent oracles/component references/historical failed attempts retained. Candidate-head catalogue is not enrolled; reserved shared accounting hook does not imply head proof.",
+  "reviewer_execution": "Local readonly source/Git/hash/ZIP/tar/AST/evidence verification only; no GPU, source mutation, tests or remote launch.",
+  "pending_acceptance": [
+    "Exact full-eight-rank/all-six adapter binding",
+    "Actual Engine/eight-rank capture quiescence, full native24Q8/futurehost/device plans and allrank counters",
+    "All-six speed/required quality/prefix/nativeIDs and retirement evidence; repeats/broad qualification deferred by user, not passed"
+  ]
+}

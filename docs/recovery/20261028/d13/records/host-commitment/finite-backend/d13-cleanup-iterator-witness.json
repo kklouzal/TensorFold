@@ -1,0 +1,12 @@
+{
+  "schema": "tensorfold.d13-finite-cleanup-iterator-witness-v1",
+  "source_sha256": "6fd34fa32e53fece7c67585975788f44fea31b77ec41a4506bd2ad54bc12586d",
+  "scope": "Actual launch function; injected OOM at its actual second enumerate constructor, external supervision and signals substituted; two real local owned pipe descriptors inspected and retired by harness. No subprocess/GPU/remote action.",
+  "observation": {
+    "raised_is_primary": false,
+    "raised_is_cleanup_iterator": true,
+    "open_owned_fds": 2,
+    "handlers_restored": false
+  },
+  "disposition": "Verified defect stimulus; not a component pass."
+}

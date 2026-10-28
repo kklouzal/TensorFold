@@ -1,0 +1,73 @@
+{
+  "schema": "tensorfold.d13-bounded-source-final",
+  "version": 1,
+  "reviewer": "/root/cleanup_review",
+  "recorded_utc": "2026-10-27T07:22:51.258123+00:00",
+  "status": "closed-scoped-source-and-affected-CPU-controls",
+  "worktree": "/Warehouse/TensorFold-wt/v100-portable-audit-20261026",
+  "source": {
+    "src/tensorfold/families/qwen4_exp/cuda/tp_scheduler.py": "bf0c680b746b2ea39ddd4dfe1ddd94c5ad11b3dae2ac5eeeb4898cbd8ec0392e",
+    "tests/test_tp_fifo_child_schema.py": "f285d1258d61e9cdb9f10234dd0b5076661e5411f70cf4e48b729a0647eb0c4d",
+    "tests/test_tp_rpc_lifetime.py": "fc98a5490f75da409b4407a32f67bb1c9284f9def1f840b0a59f72e235d1283e",
+    "tests/test_retained_tp_caller.py": "47f6b8820853031e3542eed35d17815f93fd84f94f77149cb41d8615446d69d3",
+    "tests/test_retained_multi_caller.py": "9c45828856d3bf8c3864703e401ea29fe74abf3d90b3e423bf93af2c3b255925"
+  },
+  "scope": "Expanded FIFO child schema and four affected tests; direct Scheduler/Stream/Sampling/App producers, TP control handshake, actual resource capability consumer, at most three relationship hops. No broad resource audit or admission claim.",
+  "findings": [
+    {
+      "id": "D13-pack-failure-order",
+      "rules": [
+        "P0",
+        "C0",
+        "U3",
+        "D13"
+      ],
+      "status": "remediated-and-six-current-installed-controls-passed",
+      "evidence": "Prior81d210 wire_sampling read preceded existing unsupported vision/logprobs/penalties refusal; currentbf0c restores refusal before those reads and retains FIFO validation before grammar. Six new legacy/FIFO x three-feature controls assert existing ValueError despite missing sampling fields."
+    }
+  ],
+  "contracts": [
+    "Actual bound adapter capability derives positive exact native logical_context and vocabulary; legacy returns None.",
+    "Prompt and owed are each exact lists, at most logical_context native token IDs in selected vocabulary.",
+    "FIFO carry is None; epoch is nullable nonnegative native int; committed progress nonnegative native int. No added reply/epoch/digit cap.",
+    "Sampling is one five-field flat numeric record for actual normalized App/JSON/finite-runner builtin-number domain. Arbitrary Python subclass-attached payloads are not a supported source-domain claim. Generic malformed/error graphs remain required.",
+    "Peer FIFO admission policy is applied before unpack; required schema checks precede grammar preparation and child publication.",
+    "Actual Scheduler fresh FIFO Stream and legacy-only continued producer remain unchanged."
+  ],
+  "structural_proofs": {
+    "base": "d0837291",
+    "entire_TP_AST_outside_three_added_helpers_two_reviewed_methods_and_constant_equals_base": true,
+    "entire_current_TP_AST_after_only_order_reversal_equals_tested170_wheel": true,
+    "three_maintained_fixture_all_assertion_ASTs_equal_base": true,
+    "whole_RPC_fixture_AST_after_exact_legacy_policy_reversal_equals_base": true,
+    "whole_TP_caller_fixture_AST_after_exact_logical_context_line_removal_equals_base": true,
+    "whole_Multi_caller_fixture_AST_after_exact_logical_context_line_removal_equals_base": true
+  },
+  "reused_evidence": {
+    "receipt": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/tp-fifo-child-schema/typed-fields/fixture-repair/exit.json",
+    "sha256": "d9de42847766b91928354cf65c0200c99013ed5a4ee7a640bec11cec552097f8",
+    "result": "170 normal-installed related cases passed in16.92s; pipcheck and Ruff passed; allfive sources stable before/after",
+    "scope": "81d210/b6df frame before the isolated supported-feature error-order correction and six added controls",
+    "controls_log_sha_matches_receipt": true
+  },
+  "reviewer_execution": "Read/AST/hash verification only. No source writes, tests rerun, GPU/model/remote activity or Git mutation.",
+  "remaining_gates": [
+    "Full numeric host-resource envelope, actual guard consumption and affected REGION fit remain separately owned. No GPU/model/HTTP readiness or full-suite performance claim."
+  ],
+  "current_verification": {
+    "start": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/finite-installed-controls-start.json",
+      "sha256": "983efcda82621bee86f54551bd5035682d6a95337ff1381b7c8b9b83ab436b6f"
+    },
+    "exit": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/finite-installed-controls-exit.json",
+      "sha256": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17"
+    },
+    "log": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/finite-installed-controls.log",
+      "sha256": "7ed5fdf29097e5df668a2f19632ed92772eac981c1f1b9aae4ddc98ac11ae90f"
+    },
+    "result": "167 normal-installed related resource/schema cases passed6.67s on a4f59035 wheel, including all six new order controls; pipcheck passed. This overlaps prior170 and is not added to it.",
+    "wheel_source_match": "Actual a4f wheel TP bytes equal held bf0c; all current five reviewed paths equal the source read frame. Other independently-owned resource guard edits are separate and not inferred covered by this TP leaf."
+  }
+}

@@ -1,0 +1,67 @@
+{
+  "status": "bounded owner-piece+COMMON/FAST integration source review CLOSED; actual candidate model/all6/quality/P3 gates OPEN",
+  "hold_sha256": "75e65dda8d97b2c23901b5d0dee33e4f0089a6a5ace158d65adef6690bb57cc0",
+  "source_commit": "266ff97681194f026116bfc516a4728b06da23a1",
+  "source_hashes": {
+    "README.md": "f691d5aeb5e96c1e9ef7876ed12f2085f5f8829ed62da25cfd07a29288f4cf40",
+    "src/tensorfold/cuda/rank_protocol.py": "5df5da6f2bb085e9ad24f8dca499d01173684cc08ce60cc7e0458f8cba529e02",
+    "src/tensorfold/families/qwen4_exp/cuda/retention_resources.py": "edf4cfeddd2cb721a58385e5c506e0f78e894d2aee8c9a732e97d0ef7d23156b",
+    "src/tensorfold/families/qwen4_exp/cuda/tp_scheduler.py": "c0713df801cc4f51f727e0e75427ae3a0536a3ca366cb2c885f784a597cf8d5f",
+    "tests/test_fast_grid.py": "af3336d96c59a4cf97fb51c0b6fb3add090b85c18c94ee96b399e23c962a24ed",
+    "tests/test_finite_backend_resources.py": "442348f63c76e6d61b4394ae50744ba1ae21a7651a201794291ba13d31ea1d6e",
+    "tests/test_finite_concurrency.py": "af934cd87cfaeb923973d43028affa49fbc4c8a7760b1ae93c1e7dc97436babb",
+    "tests/test_finite_quality.py": "4cbe74471824ecc9e957057c607346785acd860afefe6a1a1a35e6356c9018df",
+    "tests/test_finite_tp_contract.py": "72420b63cff933cf36fb22c6601139c01514ec26a9a4c6079bd16fcac593ab02",
+    "tests/test_prepare_owner_trial_manifest.py": "fba4990bb4f0419c23f4ee85eb1a9b6663db48c9a849304a6adc71b79c35da83",
+    "tests/test_v100_backend_probe.py": "ab551df305cf5e1f9f6fb4ceca060565ba49aa1b4a83235543009444056ae6e7",
+    "tools/finite_concurrency.py": "39e77fde13ef4d0a4ef59b8e531bc32b072096d714190ef3fc7993e5eb8cbffe",
+    "tools/finite_quality.py": "c498bd046e78c34bfc7db16c7decd43ec182151b24b3e09da282b9de0dac77a3",
+    "tools/prepare_owner_trial_manifest.py": "cd90a33ff81c60cffc1f180f0a756312cec2d06b4a29d4322cf622d7ca3b2741",
+    "tools/v100_backend_probe.py": "562fc6df8fd5eb2a11223200ffd7d923cb35fbe276315e92e25c6171fd37d6f5"
+  },
+  "wheel": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-pieces-fast-integration-20261027/wheels/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "sha256": "6d340a473aeb85a3cfd373d48d5f2ac8882dbdaefee9c58b40f696440beca8f7",
+    "bytes": 3120901
+  },
+  "715source_FD4a_match": true,
+  "CPU": "288normalinstalledPASS14.36s/Ruff/pip0/backendhelp0/manifesthelp0",
+  "independent_structural_proof": {
+    "all_base_owner_APP_paths_checked": 718,
+    "only_three_finite_runtime_files_equal_b379_all_others_equal7afe": true,
+    "three_FAST_quality_output_helper_bytes_equal_dfaa": true,
+    "manifest_producer_bytes_equal6197": true,
+    "only_tool_functions_changed": [
+      "arguments",
+      "record_execution_profile",
+      "run_leader",
+      "worker",
+      "launch"
+    ],
+    "all_other_tool_function_class_ASTs_equal": true
+  },
+  "findings": [],
+  "dispositions": {
+    "merge": "Exact previously reviewed globalN1/native-original-frame/canonical-alias/floor24/epoch/teardown owner implementation preserved; only reviewed finite runtime files integrated. No graph/math/kernel/State/arena re-audit or replacement required.",
+    "caller": "Graph request enabled only explicit PACKED/OWNER profiles; actual admitted graph owner, expected contract and nonempty verify/MTP keys required. Actual factory control preserves manifest/24/full-context/Q8/TP8/MTP2/.7 and input/output funding.",
+    "manifest": "Canonical producer hashes actual loader target/tokenizer/MTP file closure, stamps change detection and input-overwrite refusal; strict existing Engine manifest/content verifier remains authority. Tool records exact supplied manifest bytes/hash and observed adopted role/prepared identity without inventing evidence. Selected inputs remain immutable through startup.",
+    "cache": "Explicit per-rank Triton cache root set in child environment BEFORE process/import; worker argument validates inherited path. Unconfigured option preserves inherited cache; adopted provider/content-key and source/library verification remain unchanged.",
+    "measurement": "FAST source39e77, old full mode, all6 window/readiness/cancel/drain/native-tail proof, same real24 resource authority,1507328 slices, independent quality and graph counters reused exactly. Same matched baseline/candidate protocol required; no post-result threshold/tolerance change.",
+    "cleanup": "Changes serve existing interface/provenance/activation/cache lifetime contracts; no unjustified duplicate algorithm/dead path/new protocol. Generic prefix epoch checks and original defaults/legacy qualifiers retained."
+  },
+  "source_leaf_reuse": [
+    "owner-piece15ddbec8",
+    "finite-bootstrapf3ab4dca",
+    "COMMONfb5581be",
+    "FASTf4c6e08d",
+    "counter6c2403c4",
+    "receiptf53b4571",
+    "cache5ce7c0cf with correctedCPUlabelleafee0c11b3"
+  ],
+  "actual_component_history": "Root actual ownerpiece2 TP8 PASS33.59s/strictnativeeager; all7afegraph/sourcepolicy/alias/epoch/globalN1/floor24 APPbytes unchanged. New finiteTP integrated CPU; actualmodel/all6/quality/85 pending. No GPU byintegrationowner.",
+  "limits": [
+    "Actual twoTP8 owner oracle passes are Root-owned reused component history, not a new integrated-model/all6 result",
+    "Candidate physical24 admission/model/math/quality and >85single/>600aggregate/sameN no-regression remain pending",
+    "Reviewer no source/Git/GPU/remote writes or duplicate build/suite"
+  ]
+}

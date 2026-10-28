@@ -1,0 +1,130 @@
+{
+  "schema": "tensorfold.combined-d13-review-v1",
+  "at": "2026-10-28T01:20:37.629532+00:00",
+  "status": "CLOSED currentcapturedOwner source+stages; all6/P3stillRoot-pending",
+  "scope": "27heldchangedpaths,newprofile/contract,BoundGraphandactualpreparedOwnerAttentionGraphs/OwnerPreparation/canonicalBuffers/nativeDone/poolaccounting/directEngineadmission/manifest+Probe/testinterfaces within3hops; suppliermath unchanged; no broadpolicy/libraryaudit",
+  "commit": "deec48bef2370b01e473661638683f15a80f43f9",
+  "hold_sha256": "ed895c75a42de6548e5a709e8858faebf4eb1a8263cbb84fa9ecb30aac5d14b6",
+  "wheel_sha256": "900bcca4c9205ed288a82682cc4d017e8bd81a05767ba467ffc67c95fa228c87",
+  "stages": [
+    {
+      "folder": "gpu-stage-capture-outcome",
+      "files": 22,
+      "receipt_sha256": "d222b60d50563c14daba2a7a5efb31b29816293265eb6fe3c89736eba87fb345",
+      "manifest_sha256": "8f881ac926ef6f2d84f5f172cd10e540c13ff070eaa2143acd0e6c2f116b7f54"
+    },
+    {
+      "folder": "fast-stage-capture-outcome",
+      "files": 19,
+      "receipt_sha256": "c8495104030967c62a228c5004ab056671c610664cd94872f1c12b38d2af4c33",
+      "manifest_sha256": "4fff7280c97b4c76d9592780f9a388c81a793a164f94cfed548e0b226a6c3d6a"
+    }
+  ],
+  "findings": [
+    {
+      "rules": [
+        "M1",
+        "T0",
+        "V3",
+        "Q0"
+      ],
+      "finding": "Newprofile omittedfromexistingEngineauto-resident<24 refusal tuple.",
+      "disposition": "Fixedonepredicate; actualEngine23reject/24+26allowCPUcontrols, onlyEnginefloorhunkchangesfrom3dc. Explicitparallel24Toolguarddoesnotreplaceprofileauto contract."
+    },
+    {
+      "rules": [
+        "C5",
+        "C6",
+        "M0",
+        "Q0"
+      ],
+      "finding": "NewlyactivatedOwnerGraph._capture allocatederrorsafteracceptedbeginandrunprimary,beforecapture_end; append/poison notificationlistargumentcouldalsoexhaustoutsideprimary-preservinghelper.",
+      "disposition": "deec preallocatesfixedslotbeforebegin, acceptedcaptureendsafterrun/error,runprimary+endsecondarypreserved;cleanreturnsdirect/end-onlyraisesactualerror. _poison catchesargumentpreparation+transportwithoriginalself.failure/explicitcause retained; notification/allocation context remainsowned.7actualmethodsuccess/faultcontrols within96CPU passed; finding3c4cf1historyretained."
+    },
+    {
+      "rules": [
+        "T0",
+        "Q0",
+        "Q3",
+        "X12"
+      ],
+      "finding": "Fixtureinitialexecution_rows4illegalwithoneState; lateroldUNCAPTUREDfamilyassertblockednewcapturedmodeafteradopt.",
+      "disposition": "OriginaloneState/buf3retained; legalexistingowner.rows4>=actual3 exercisedbyactualconstructor2CPU andpaddedbucket4. Strictmodehelper retainsoldUNCAPTURED+Nonemanager, addsnewGRAPH+actualcanonical/prepared/healthy manager/workspace;44CPUrejectwrongmode/foreignmanager. Allnumeric/State/transcript/pendingpromptcancelasserts retained; originalstagefailurespreserved."
+    }
+  ],
+  "source_assessment": [
+    {
+      "rules": [
+        "P0",
+        "P1",
+        "N1",
+        "C3"
+      ],
+      "proof": "No nativeCUDA/attention/GDN/PLE/MTP/sampling/codec/sourceKernelmathbodychanges; newprivateprofile/versionedcaptured-ownercontractdistinctfromoldeager. prepare_weightsneedsactualmatchingpreparedhealthyroleGraphcatalogue. Olduncapturedguardbodyretainedunderoldcontract. Currentfixed24Q8/logical262144/FP32State/confidence.7 gates preserved."
+    },
+    {
+      "rules": [
+        "M0",
+        "M3",
+        "U1",
+        "U2",
+        "U3"
+      ],
+      "proof": "Samecanonicalworkspace/tensor+storage/communicatorleases andvalidatedadoption; actualStatecatalogue andcurrentcoordinateframechecks precedeprivategraphmutation. PerlayerGPUdescriptor/controlvalues remainmutablebehindstablepointers; existingnativeDone last-consumerwaitbeforestaging andafterviewconsumptionrecord unchanged. Attention graph replay is eagerinsert betweennonattentionpieces, no nestedcapture. Graphreset/fencesbeforeworkspace/commrelease; failurepoisons/retainsuntildeclaredterminalcohortretirement."
+    },
+    {
+      "rules": [
+        "M1",
+        "V1",
+        "T0"
+      ],
+      "proof": "Allfixeddecode/mtp/prefillrowbuckets captured/warmed/allranksettled beforeinitialphysicalcapacity; explicitaggregate512MiBcap aftereachrole physicalcharge, notclaimedallocationorfreecredit. Existingprivate/outside/liveaccountingandunknownsnapshotphysical-onlyfallback retained; laterN1poolseparatelycharged. Auto floor24 nowenforcedbeforepublication/load; livephysicalmodeladmissionstillrequired."
+    },
+    {
+      "rules": [
+        "C3",
+        "U1",
+        "S4"
+      ],
+      "proof": "NCCL2.32.3 officialgraphcontract supportsuniformcollectivecapture/replay andcaptured/noncapturedmixing. ActualprofileoneGPU/process,samecanonicalfull8comm,defaultordering/mixing/currentpinnedsoftware; nohead4/multiplecomm/oldcu126qualification widening. Capturegeometry/codecs/bucketscohortvotesmatchbeforeall8capture/replay. No broadupstreamalgorithmreproof."
+    },
+    {
+      "rules": [
+        "D13",
+        "S0",
+        "P5",
+        "D14"
+      ],
+      "proof": "ExistingOwnerAttentionGraphs/native_run/OwnerPreparationactivatedbehindnewminimalcontract, notduplicatedattentionimplementation. Newcontractandtwofamilieshaveactualdifferentlifetime/providerroles; independentnativeeager/Torchoraclespreserved. Noverifieddead/unjustifiedduplicatepathafterremediation; oldsource/rejected4slotRingnotpromoted. Structuralreuseisnotperformance-equivalence."
+    }
+  ],
+  "evidence": {
+    "held_source_and_evidence_hashes_checked": true,
+    "controls": {
+      "finalCPU": 1260,
+      "subtests": 2,
+      "seconds": 43.73,
+      "extra_boundaryCPU": 149,
+      "extra_seconds": 7.26,
+      "Ruff": "PASS",
+      "pip": "PASS",
+      "normal_package": "717canonical+FDc79",
+      "floor_successor_CPU": 274,
+      "floor_successor_seconds": 17.34,
+      "fixture_family_CPU": 44,
+      "fixture_family_seconds": 4.44,
+      "capture_outcome_CPU": 96,
+      "capture_outcome_seconds": 12.18
+    },
+    "CPU_counts": "1260+2 predecessor,149boundary,274floor,44family,96C6 reusedonlytheirnonoverlappingcontracts; no summedcaseclaim",
+    "actualRoot": "a2ce53PASS24.04 thenCURRENT900b53PASS24.98/Docker0/all8cancel+retire; unchangedmath+newpadded/capturedroleoraclesexecuted. ActualcurrentevidenceRoot-owned, notreviewerGPU.",
+    "official_reference": "https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/cudagraph.html version2.32.3 independentlyread2026-10-28",
+    "failure_finding_sha256": "3c4cf1c945ed7a02064817cbb225d169aa2c91f2e04b56910bbbe29cf9a3f5bf",
+    "reviewer": "Read/hash/source reasoning only; noGPU/build/broadtestduplication"
+  },
+  "remaining": [
+    "Rootall6experimentalmodelstartup livehost/device/full24admission afterbothactualpools, fullnativeID/quality/counter/drain receipts",
+    "Matchedall6P3/repeats/changedbottleneck and85/600goals; no gain/selection/releaseclaimfrom53components",
+    "OwnerGraph N1toolstage mustbindcurrent900b/C6runtimebeforeuse; earlier3dc/e64candidate stageshistorical"
+  ]
+}

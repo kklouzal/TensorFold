@@ -1,0 +1,53 @@
+{
+  "schema": "tensorfold.d13-portable-audit-review",
+  "version": 1,
+  "status": "in_progress_pending_owner_remediation_and_exact_final_hold",
+  "scope": "Portable build/host projection, explicit immutable rebind, existing manifest/header/process consumers <=3 relationship hops; no broad framework audit",
+  "source": {
+    "deploy/v100/source_foundation.py": "df50df1fb9c5d1384235ace74f5b4329cef07dc1912e574959564f76e88287ea",
+    "deploy/v100/audit-policy-build-host-v1.json": "5ccebed711e4ff4a891887b60f67aeb0b894b3438aac7db978adf1ab15a8c43a",
+    "deploy/v100/Dockerfile.audit-policy": "2f0016ceada127f085f70ec2da283913842f3c9581b8b46d614c47c7ab9c2841",
+    "tests/test_v100_runtime_policy.py": "c00a73b9768fd2e459014a0459c5af274101191d9c2217ad7b78193c835df1f7",
+    "tests/test_v100_source_install.py": "f6e6f69dc724240ba877dd58d0dc7a90ca3030ce0ae427f18657f9e6bd131f48",
+    "src/tensorfold/cuda/sm70/foundation_headers.py": "82c0474855c0bfb29665021e49119ab403540e265b64d8de483a4e9615f24ca5"
+  },
+  "verified_findings": [
+    {
+      "id": "D13-V2-HEADER",
+      "rules": [
+        "C3",
+        "R0",
+        "Q5"
+      ],
+      "finding": "SelectedHeaders requires install manifest v1 while the new producer/rebind emits v2; public constructor independently refuses v2 before header inventory",
+      "witness": "/Warehouse/TensorFold-portable-audit-20261026/d13-v2-header-witness.json",
+      "status": "Root authorized single-owner narrow reader/fixture correction; no reviewer writes"
+    },
+    {
+      "id": "D13-V2-RECIPE-TEST",
+      "rules": [
+        "X4",
+        "X12",
+        "Q5"
+      ],
+      "finding": "Current unit-controls-final.log is 52 passed/1 failed: original source-build recipe test now applies source_artifacts/sha256sum expectations to the new policy-only recipe",
+      "status": "Owner notified to preserve original two build-recipe assertions and verify distinct offline immutable-rebind contract"
+    }
+  ],
+  "reviewed_clean_so_far": [
+    "Pinned Version.cpp/CUDAHooks.cpp justify CPU capability and conditional CUDA display as host-dependent; all other configuration lines retained",
+    "Entire installed CUDAConfig.h and its single NVCC flags macro bound, visible NVCC display compared",
+    "Explicit rebind authenticates declared old manifest/full original configuration hash/producer/build receipt and complete original artifact inventory before deriving new identity",
+    "Production audit version gate is v2 only; public process-audit result remains v1 with fresh host observations",
+    "One shared installed-artifact verifier reused rather than a second byte-validation algorithm"
+  ],
+  "evidence_reuse": {
+    "projection": "actual-config-projection.json",
+    "reported_tests": "53 originally reported; current inspected final log is 52/1, no fresh passing result yet"
+  },
+  "limitations": [
+    "No target audit pass inferred from build projection equality",
+    "No new application image or installed/native/device/model/performance qualification",
+    "No Git or source mutations by D13"
+  ]
+}

@@ -1,0 +1,36 @@
+{
+  "schema": "tensorfold.combined-d13-review-v1",
+  "at": "2026-10-28T02:09:29.702192+00:00",
+  "status": "CLOSED boundedMTP0tool/source/stage; actualP3/qualitynotpresumed",
+  "commit": "2aee41c95b979c53d1c7c699878d425708e5fd5c",
+  "hold_sha256": "a28339cb241d1a8ce7642cc7eaccd9c3b76a9a958685e073e1f5826b27d347ae",
+  "scope": "Threeheldtool/test/READMEpaths plusdirectunchangedEngineconfidencevalidation/consensus,stockMTPproposalstopping,targetgreedyaccept/commit/EOS within3hops; noAPP/math edit",
+  "runtime": "5635/a7b1/717source+FDc79 unchanged",
+  "assessment": [
+    "Enginealreadyacceptsconfidence[0,1]; explicitCLIchoices0/.7 default.7,0requiresv2+all6fixedquality. Zeroisforwarded/checkedasactual0withoutfalsydefaultreset; qualitymodelidentity/launchsettingsrecordactualarg; all8nativeconfidencefloatbitsconsensusbeforeadmission.",
+    "StockMTP_draft_all confidence>0&&p<confidence onlycutslaterproposals. Zeroallowssecondonlywithinunchangeddepth2/proposal_limit/room/controller/contextbounds. Targetsamplematchingchildrenprefix/terminal/EOS/limitandtentativecommit/discard/_takeunchanged; noacceptancebranchreadstheconfidencecutoff.",
+    "Actualruntimefloatingdispatchmaychangewithadditionalverifyrows; nocrossparameterbitidentity/stochasticequivalence/qualityclaimfromsourcealgebra. FixedgreedySamplingseed17/temp0 andfullnativeID/callbackprefix/drain/sixindependentqualityproofsstillrequired.",
+    "No additionalworstcasebuffers/admissionbudget: maxdepth2alreadyfunded, v2outputs2048/cpu6150/native262144/full24Q8/counters/limits unchanged. Existing.7callstyleandbaselinepreserved, no newprofilefallback or guardrelaxation.",
+    "No verifieddead/unjustifiedduplicatepath; newcheck_engineconfidenceparameteranddefault.7branchpreserveexistingcallercompatibilityandrealadmissionpurpose. No shippingkernel/qualityselectionoccursfromthisprivateflag."
+  ],
+  "evidence": {
+    "CPU": "251normal5635CPU13.76s/Ruff/pip/help,actualfactory0/.7andreadinessmismatchcontrols",
+    "controls_provenance_sha256": "d23c9f51f17feb761591b9c26b27e477b2eea53a503ae8e16362a8852a28c6e7",
+    "structural_proof_sha256": "dd351266a9953e6939140b62304740b01a7a94b3e21aed33652b7be7a3ce35bf",
+    "proposal_proof_sha256": "f0248082d83a57c83f571275062f1efc68dbf9a859d2eed91b2c7a9d8890c51b",
+    "stage_files": 19,
+    "stage_manifest_sha256": "c2b9dcbf8260f6c882d6d9044f678cfad2bd24b60d0a7cdc7e7ac63d821cdcb5",
+    "stage_ready_sha256": "36747be705334591f8eeaa817c8d42238387948b24c1423fecd00e952dd8ff49",
+    "reviewer": "Read/hash/sourceonly,noGPU/test/buildduplication"
+  },
+  "priority_update": {
+    "authority": "Rootreported directUSER2026-10-28: concurrentgainstrumpsinglegains; Dense4efe retaineddevelopmentreference despiteN1tradeoff.",
+    "effect": "N1-onlyshape-gateremediationnotrequired. Concurrentnonregression/quality/full24Q8remainconstraints; sourceHOLDhistorical5635referencekeptasfrozen, comparecurrentDensebeforeperformancepromotion.",
+    "no_qualification": "Developmentreferencechoiceisnotservice/broadquality/P3goalcompletion."
+  },
+  "remaining": [
+    "Root91402actualall6P3/quality/nativeID/room/counter/admission/retirement results unpresumed",
+    "ConcurrentprimaryobjectivecomparisonvscurrentDense4efeandhistorical5635; moreproposalrowfloatdispatch/qualitymustbemeasured",
+    "Repeat/uncertainty/requiredconcurrentnonregression;85N1aspiration/600aggregate/broadqualityremainunfinished; noautomaticselection"
+  ]
+}

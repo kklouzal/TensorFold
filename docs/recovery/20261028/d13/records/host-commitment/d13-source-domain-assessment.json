@@ -1,0 +1,54 @@
+{
+  "schema": "tensorfold.d13-publisher-source-json-domain-assessment",
+  "version": 1,
+  "status": "read_only_role_assessment_not_source_closure_or_admission",
+  "question": "Whether supportedpre-encodingTPcommand/control roots require generic224 or can qualifyforG45 sourceextension",
+  "scope": "Direct_pack/_controls/_invoke producers and supportedcarry/profile/media/execution/event callees<=3hops. Requests/wires/processmaps separate. No tests/edits/regionfit.",
+  "source_commit": "fdb4f6a83c37cee135d20e39885c4e43b705a14f",
+  "source": {
+    "src/tensorfold/families/qwen4_exp/cuda/tp_scheduler.py": "d45efd93104e1cf83dd9cd9834d130bb542bed21f915a84bda2362e70e19f69a",
+    "src/tensorfold/cuda/streams.py": "afdb4ecc78f80652a409416254b063584ce94731330390e8288dacd50144c286",
+    "src/tensorfold/families/qwen4_exp/cuda/adaptive_controller.py": "37a7bb9648ad1d1be945807020c051d3fa0f9a447f49eb16e3663de7ddb6f230",
+    "src/tensorfold/families/qwen4_exp/cuda/owner_execution.py": "1d36eee541155fa3730df7a659ca3ceabb6d54fafba5d3ca875441bde49d78a7",
+    "src/tensorfold/families/qwen4_exp/cuda/serving_profiles.py": "6a03300c21e28ec3374e5c6ff7332c129670d4305dc38e17a7cf214d6a44dc1b",
+    "src/tensorfold/families/qwen4_exp/cuda/retained_catalog.py": "5ee6572610b21858c2e68388144f5488c76faa8737169b7aaf27236a0cb28960",
+    "src/tensorfold/families/qwen4_exp/cuda/retained_host.py": "8d54465cab6e8137e4b214adf14703527453f1c7edc6c5c51b24b7ac3ccc2d6d",
+    "src/tensorfold/engine/grammar.py": "a137e831b8415aae6b0746eb73cac95ae1f9beae406fe90250c41d9c7a9d7402",
+    "src/tensorfold/families/qwen4_exp/cuda/media_wire.py": "4932a9cba181a0352f5a5e716728b9f38654dffc115644c21e4ad798d2b554d2"
+  },
+  "finding": "No supported variable-size churned dictionary or non-JSON payload requiring224forwholecommand identified. This does not prove plainG45forwhole sourcegraph: parserfresh construction hypothesis differs from source fixedrecord merges/copies.",
+  "supported_roles": {
+    "prompt_owed": "Declaredtokenlists, separatelyowned/funded;_pack borrows them",
+    "grammar": "Fresh integer list from kind/think_end/UTF8bytes;byte values0..255sharedCPythonsingletons",
+    "carry": "InternalStream.stats/continuedorparsedretentiondata;fixed10keyrecord,notarbitraryHTTPdict",
+    "controls": "Fresh forget/cancel/flowlists+fixedkeycontrolrecord;oneexecutionboundary",
+    "events": "Fresh tuple of dict(event) from fixed6key owned logicaleventrecords;authoritativemapnotcopied",
+    "profile": "PreparedProfile.wire has4keys(name,manifest_sha256,identity,artifacts);artifacts arefixed4key(path,size,sha256,stat)dicts plusstatlist",
+    "retention": "Intent.record fixed4keys(target,parent,aliases,operation), references fixed3item lists",
+    "media": "pack_media rebuilds fixed schema/probe records with bounded scalar/list fields",
+    "execution": "Controllerfixedsettings/families,notrawconfiguredprofiletable"
+  },
+  "fixed_key_ceilings": {
+    "Stream.stats_return": 10,
+    "Stream.stats_own": 10,
+    "Stream.stats_both": 7,
+    "Controller.settings_maximum_configured_effective": 4,
+    "FAMILY_FIELDS": 2,
+    "freeze_boundary_outer": 5,
+    "freeze_outer": 10,
+    "migration": 3,
+    "freeze_execution_workload_local": 10
+  },
+  "multiplicity_notes": [
+    "Onecurrent_controls constructs oneboundary;oneadmit/enqueue_pack can borrowonecarry. Existingperpending/perrank retainedchild/error counts stillapply.",
+    "Stats overlappingdictunpacks/update andcontrollercopy/merge paths need general/churn table geometry or independentlyproved fixedheaderoverage; keyuniverse alone does not make a parserfresh table.",
+    "Working/errorframes mayretain Statsown/both andController values/family/workload locals beyond returnedrecord; pay their phase/error multiplicities explicitly ratherthan count onlyreturnedheaders.",
+    "Source tuples have no larger payload than equivalent appendlistbound, but mustbe included in the sourcelemma explicitly.",
+    "No needtoinclude unsupportedarbitrary internalStream mutation orcustommetadata injection as a supportedwire role; actualpublicScheduler doesnotacceptcarry dictinput."
+  ],
+  "proposal_disposition": "G45 variableJSON/list/string subtrees plus source-namedfixedrecord tableallowances is a plausible supportedextension; keep genericprocessmap geometry. Bareglobal224to45substitution remainsunproved until sourcehelper/lifetimes/tests/HOLD reviewed.",
+  "limits": [
+    "No finalG45envelope proof bythisartifact; final_gate parsedJSONderivation is separate authority.",
+    "No admission/fit/model/performance claim; no source/test/Git/device action."
+  ]
+}

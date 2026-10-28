@@ -1,0 +1,63 @@
+{
+  "schema": "tensorfold.d13-selected-tokenizer-native-payload-final",
+  "version": 1,
+  "status": "closed_bounded_two_file_helper_only",
+  "scope": "Root-owned tokenizer_payload.py/tests and direct PresentationBound/model_identity/_small consumers; pinned source derivation read. Native resource integration remains separately owned/unclosed.",
+  "source_hashes": {
+    "src/tensorfold/families/qwen4_exp/cuda/tokenizer_payload.py": "e0326d2829eb95c0b68244c1716cf084e959011cdc7eb995d00d9cd5cdc94dc4",
+    "tests/test_tokenizer_payload.py": "11fd885e3e40dbcdbfabc3806a83f2f6bc77cd6e8062c3c711ecac8fb98cd1ed"
+  },
+  "review": [
+    "ExactLinux64/CPython3.12.3 +tokenizers0.23.3 +mappednativeDSO path +DSO/SBOM bytecapture authenticates selectedRust/PyO3capacity equations before any resultaccepted. Retired or additional distinct mappedartifact or changedcontent refuses; existing boundedreader and descriptor owner reused.",
+    "Exactlyone context-IDcount or encoded-decimal-IDwirebudget required. HTTPmode hasno modelcontextclip. n<=(R+1)//2 and exactintegerceil ratios preserve largeintegerprecision; zero/negative/bool/unsupported/overflow domains followexplicitguards.",
+    "A-D own requestedheap phases followpinned token lookup/Stringclone/RawVec growth/flatbytes/lossy/oneStringVec/join lifetimes; charge maximum, notsum. B<=min(L,D) and bmax<=piece/decoded/totalbounds retainvalidgrowth maxima; emptyresult stillpays24B vectorheader.",
+    "PinnedRuststring source to_string_str! specializesCow<str> viaString::from(&str), validating exactlengthcopy assumption; join makes a separateexactlengthString. No replacementdecoder or guessedallocator coefficient.",
+    "E paysnativeresult plusselectedCPython Doc160+8D conversion separately; escapedcontent usesprovedByteLevelASCIIescape subadditivity and separate2quotes. ExistingPythoninput/output/wrapper/nativefixedstack/allocator/RSS are not silently credited.",
+    "Model/builtinByteLevel/exactlist-int/noasync-noCustomDecoder restrictions and synchronousGIL sourceproof permit onecurrentdecode peak peractualprocess only whenintegrationbindsactualroute/runtime; notmultiprocessing/batch/encodejobcredit.",
+    "IndependentFractionceil andconstructibleRawVecgrowthoracles retained; arithmetic tests explicitlystubpolicyasunit-only, actualinstalledDSO/SBOM selection andchangedartifact rejection tested. No newmutableglobal/worker/lock/controller orfallbackintroduced."
+  ],
+  "evidence": {
+    "native_derivation": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/bytelevel-d14/derivation.json",
+      "bytes": 8039,
+      "sha256": "7fa6a3d7d7ec9333a7da5e5744a7dee59a8558a708e6f9169bb4288553035f1e"
+    },
+    "escape_GIL_derivation": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/bytelevel-d14/escape-gil-proof.json",
+      "bytes": 9097,
+      "sha256": "f53c74c8a8c9e85a64e3bf2d47d185384a99d28ed37b0fe8ea90d104e1c35ec6"
+    },
+    "start": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/tokenizer-payload/start.json",
+      "bytes": 1676,
+      "sha256": "26ca25f6f171dc49248bd6f640479178f9287a684108aff54de2455bb5736b7a"
+    },
+    "exit": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/tokenizer-payload/exit.json",
+      "bytes": 2086,
+      "sha256": "627a94639484c45402a5d2de3bf07027d7c3f91a9c35060ad99f89ab422f0dbc"
+    },
+    "controls_log": {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/tokenizer-payload/controls.log",
+      "bytes": 1104,
+      "sha256": "06f3a85382ed7bf5075d976fc3b38990b4c67acbf4a04c4020c05e009ed6cc63"
+    }
+  },
+  "verification": {
+    "normal_installed_diagnostic_tests": 44,
+    "seconds": 0.37,
+    "exit_status": 0,
+    "pipcheck_Ruff_diffcheck": "passed",
+    "source_before_after_current_hashes_match": true,
+    "whole_diagnostic_wheel": "df30e6e41a8e389d832215255c1187df0f91d0d0bc48ad56fe56f2a48790447e",
+    "no_reviewer_suite_build_source_Git_or_device_actions": true
+  },
+  "findings": "No newverified sourceissue orrevieweredit.",
+  "integration_limits": [
+    "ActualloadedimmutablePresentationBound/enumeratedratios mustfeedhelper; arbitrarymathrecordisnotadmissionauthority.",
+    "E requiresseparatelyboundselectedCPythonlayout; currentversion/DSOtagalone doesnotcertifyotherCPythonbuilds.",
+    "Takeappropriatephase/GILmaximum whilepayingallretainedPythonoldoutputs, HTTP/raw/tokenlists andothernativejobs separately; no contextcap onHTTPdetokenize.",
+    "CompletehostJSON/cache/preclaim/fixedrecord/nativeencode/allocator/RSS/regionfit andactualtarget/model/performancequalification remainseparate.",
+    "Repeatedartifact-policy verification canbereused onlyunderprovedimmutablecaller scope; no standaloneguardremoved orperformanceequivalenceclaim."
+  ]
+}

@@ -1,0 +1,58 @@
+{
+  "schema": "tensorfold.combined-d13-source-C6-tool-stage-review-v1",
+  "at": "2026-10-28T07:46:09.197843+00:00",
+  "reviewer": "/root/cleanup_review",
+  "source_commit": "f6a0d02113716c75408fac2dc5e991b6380c43b3",
+  "APP_source": "93656f11035265566a07ab7a2e0458bbeaaebf60",
+  "APP_sha256": "90f30cc4b4effd7901f423157cdc72c141a2b0447c9a9d2ab03b7dc031fb5964",
+  "HOLD_sha256": "f541a02c64e9a20ac59167859bb740ed310629279c8be0666cdc804dbfb3c633",
+  "status": "SCOPED IMPLEMENTATION/CLEANUP/COMPLIANCE AND CURRENT22-FILE STAGE CLOSED; actualP3/quality/tierdecision separateRootauthority",
+  "scope": "privateGDNState scheduling and native shared-body ABI, canonical target producer/frame/frontier, host admission, C6 outcome/follower factory integration; task-linked up to3relationshiphops; no duplicateGPU/suites",
+  "implementation_reasoning": [
+    "Grid.y independentState and grid.x6valueheads call original chain_body; declaration extracted with original arithmetic/body, scalar wrapper and replay/commit semantics retained. Recurrence remainsFP32, input/output/scratch dtype/ranges preserved.",
+    "Fixed24weakState catalogue holds noState/KV ownership outside activeframe. Activeowners strongly retain States/pointees; canonical storage/generation/conv/rec/scratch identities validated onbind/change, parity androwspans refreshed; descriptors are copied byvalue1920B intoCUDAlaunchargs underVolta4KiB limit, no descriptorGPUtable/H2D.",
+    "Nativefill validates fixedshape/contiguity/dtypes/complete1..3rowspan/pointee storage disjointness and Stateindependence; selected actualmodel nk2/nv6,other N1/prefill/graph/general shapes use originalchain. Serialized modelactor/sameconstructionstream is required; no general concurrentrawState mutation guarantee implied.",
+    "used is latched before accepted native call; complete/partial target frame sealed via oneEvent; activeState owners released onlyafter producer event and mandatory sampling/targetstatus frontier. Unknownretirement/eventfailure retains failedowner for model/globalfence/terminal policy; callback/cancel alone isnotcompletion.",
+    "Selected bothdecay codeattributes materializedbeforecapacity baseline; originalnative source/runtime flags unchanged. CUDAruntime event/driver/allocator effects are runtime-managed, not a universalzeroRSS orallocation claim."
+  ],
+  "budget": [
+    "Engineadds global tp*(layers*24*10*8+24*4*8+32768+128KiB) host obligation BEFORE authoritativeadmit; fixedmetadata and boundednativevalidationstack included. Application-controlled extraGPUtensor bytes0; existing output/State buffers reused.",
+    "Foractual36linear layers, catalogue69120B+frame768B+32768metadata+131072stack=233728B/rank; nativefixedarray spans~92928B plus boundedvalidation/sort within128KiB stack allowance.",
+    "Privateenv1 limitedexistingBatchprofile, samehard24fullnativeQ8/262144context/FP32rec/MTP2.7/row32; no capacitycut or hostcredit. Tool adds8192B global boundedcounterevidence beforefinitecaller admission."
+  ],
+  "findings_dispositions": [
+    {
+      "id": "gdn-seal-primary",
+      "rules": [
+        "C5",
+        "C6",
+        "D13"
+      ],
+      "finding": "73cMulti targetfinally calledsealunprotected andcouldreplace targetprimary on event/streamfailure.",
+      "disposition": "FixedAPP936/90f: preallocatedone-slot owner outcome, preserve nativepriorcause/context/suppress, existingraise_failures transports operation+seal failure; nestedfinally alwaysclears gdn_tables/attn_step. Actualinstalledtargettry+seal/cancel/priorcause controls retained. Old73c/c8ab packet+actual50 unchanged."
+    },
+    {
+      "id": "gdn-follower-tool",
+      "rules": [
+        "R0",
+        "T3",
+        "Q2"
+      ],
+      "finding": "Initialpostfactory GDN check reused leaderScheduler requirement onintentionallyscheduler-less follower.",
+      "disposition": "Fixedonlytool f6: require_scheduler defaultTrue remains; GDNworker usesrank==0, including requestlimitaccess guard. Everyrank stillchecks actualnativecontext/Q8/MTP/rows/materialized24/canonicalowner/funding beforecaller/follow. Actualsuccessfulfollowerfactory\u2192postcheck\u2192follow control andleadernegative retained; oldunrun936stagewithdrawn."
+    }
+  ],
+  "verification": {
+    "original": "62CPU6.76/Ruff/SM70compileGPUlessprepare refusal; original50strictGPUcases Root77612 ALL50PASS1.44exit0normal719+FDc79prepost; exactscratch/conv/FP32rec/output/tworounds/partialcommit/controls/lifetime paths, source73c",
+    "C6": "37focusedCPU2.39s incl8 actualtargettry primary+seal faults; originalnative/math/replay/commit/FD/provider unchanged",
+    "follower": "19narrowCPU1.95/Ruff actualsuccessfulfollower, prior18 controls retained; no broadnative50rerun",
+    "independent_binding": "5latestheldpaths match;22stageSHA+size rows match; stagedHOLD/APPmatch; ZIP comparison originalc8ab\u219290f changes EXACTLYgdn_state_batch.py andmulti.py; allCUDA/CXX/provider/FDbytes unchanged",
+    "current_manifest": "3d35e9038205aa680227c7ab1126fa71c5347cea97ef74a41eacaea90342db56",
+    "execution": "Root31339 actualall6 reportedLIVE withpositiveN>1GDNcounter andphysical24startup; partialrates not finalresult orselection. ReviewerlaunchednoGPU/remoteheavy/testrepeat."
+  },
+  "cleanup": "Sharednativebody has numeric-purpose structuralproof, fixedowner has ownership/reusepurpose. No deadcode/candidate/oracle removed ordefaults weakened. Required originalfallbacks and historicalfailedfixtures/buildroot/withdrawnstages retained. No additionalconcrete scopefinding remains.",
+  "pending": [
+    "Rootcomplete allsix raw/nativecounter N1zero N>1positive, full24capacity/status/IDs/drain/quality evidence beforeprovisionaltieredkeep/push",
+    "currentobjective24>16>8>4>2>1; reporteach regression/uncertainty, Rootacceptancetradeoffs; no85/600/servicequalification claim"
+  ]
+}

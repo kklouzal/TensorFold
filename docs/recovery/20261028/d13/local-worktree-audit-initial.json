@@ -1,0 +1,3753 @@
+{
+  "schema": "emergency-D13-readonly-worktree-audit-v1",
+  "at": "2026-10-28T18:12:30.537281+00:00",
+  "scope": "Local Git metadata only; no tests/development/build/V100 access; no modifications to other worktrees. Remote tracking refs are local snapshots, not fresh push proof. Owners/Root own commits and remote verification.",
+  "worktrees": [
+    {
+      "worktree": "/Warehouse/TensorFold",
+      "HEAD": "33578d83ea35d96b074674604da238ead2d01691",
+      "branch": "refs/heads/perf-resume-paused-20261021",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/api",
+      "HEAD": "354b565941d3d0d629d06d5f254e5d1fb73c61ce",
+      "branch": "refs/heads/perf-api",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/base",
+      "HEAD": "cadcae5ce7e729cc4e6eadae44552f9b02dd1985",
+      "detached": "",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/base-clean",
+      "HEAD": "1a2836b061e0744c82909cd19cb0d74363274c98",
+      "detached": "",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/bw",
+      "HEAD": "18a7c4483cb90d9433fefa9f9f0a80c87f295b98",
+      "branch": "refs/heads/perf-bandwidth",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/bw-attn",
+      "HEAD": "443b4fc8e5b7e65184adf8821f6a83f2ac40bceb",
+      "branch": "refs/heads/perf-bw-attn",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/bw-chain",
+      "HEAD": "9a1932e4147b612b42de4a8dcfd41ce6bc701514",
+      "branch": "refs/heads/perf-bw-chain",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/bw-clean",
+      "HEAD": "b76a5a2ad08a3150931e3c4ba06a6f8023be3215",
+      "branch": "refs/heads/perf-bw-clean",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/bw-gdn",
+      "HEAD": "a96f9fe190524848f54535bbadfbec4ecd902bad",
+      "branch": "refs/heads/perf-bw-gdn",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/bw-hc",
+      "HEAD": "af7a2e225835608e6c1c44bf1d2d6a31c2403c3f",
+      "branch": "refs/heads/perf-bw-hc",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/bw-int",
+      "HEAD": "3dd2b63672383d1a12861e89ba626011aeddce89",
+      "branch": "refs/heads/perf-bw-int",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/bw-int2",
+      "HEAD": "1a2836b061e0744c82909cd19cb0d74363274c98",
+      "branch": "refs/heads/perf-bw-int2",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/bw-qmm",
+      "HEAD": "bc8e966341be95dba90425069285e7721d452bf6",
+      "branch": "refs/heads/perf-bw-qmm",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/c-gemma4",
+      "HEAD": "b7bef36afe699ac0d1471faa50cfe1574e71f4e7",
+      "branch": "refs/heads/campaign-gemma4-20261018",
+      "status_exit": 0,
+      "dirty": [
+        " M src/tensorfold/families/gemma4/cuda/engine.py",
+        " M tests/test_gemma_cuda_engine.py",
+        "?? tests/cuda/test_gemma_cuda_graphs.py"
+      ],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/c-infra",
+      "HEAD": "30ddab3b87f6dc0932ff77a504e98c423d2938cc",
+      "branch": "refs/heads/campaign-infra-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/c-moe",
+      "HEAD": "43f8af167db9a25c770eb6b4e20cf3cedf48f314",
+      "branch": "refs/heads/campaign-moe-20261018",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/c-moe-dedupe",
+      "HEAD": "43f8af167db9a25c770eb6b4e20cf3cedf48f314",
+      "branch": "refs/heads/campaign-moe-dedupe-20261019",
+      "status_exit": 0,
+      "dirty": [
+        " M src/tensorfold/cuda/nvfp4/experts_a4.cu",
+        " M src/tensorfold/cuda/nvfp4/grouped_a4.py"
+      ],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/c-moe-graphmem",
+      "HEAD": "30935317ffa49da1952e7abe9698fb0766124fdb",
+      "branch": "refs/heads/campaign-moe-graphmem-20261019",
+      "status_exit": 0,
+      "dirty": [
+        " M src/tensorfold/families/qwen3_5_moe/cuda/chain_graphs.py",
+        " M tests/cuda/test_qwen_moe_chain_graphs.py"
+      ],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/c-moe-proto",
+      "HEAD": "ba3617e2fb2b6af78ee9b0a2a8f4625c696ecd77",
+      "branch": "refs/heads/campaign-moe-proto-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/c-qwen36",
+      "HEAD": "5cd7fc71e6a9cbc350b50dca05b4955f1f3a566b",
+      "branch": "refs/heads/campaign-qwen36-20261018",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/c-qwen36-nvfp4",
+      "HEAD": "cb5ec0c8776b59a1069a477d5fdacbd07c167c51",
+      "branch": "refs/heads/campaign-qwen36-nvfp4-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/c-qwen36-yarn",
+      "HEAD": "7adf2b7014ccaf18ce600c4948d4ce5306e2e6e8",
+      "branch": "refs/heads/campaign-qwen36-yarn-20261019",
+      "status_exit": 0,
+      "dirty": [
+        " M README.md",
+        " M docs/recipes/qwen3.6-moe.md",
+        " M src/tensorfold/families/qwen3_5_moe/__init__.py",
+        " M src/tensorfold/families/qwen3_5_moe/cuda/engine.py",
+        " M src/tensorfold/families/qwen3_5_moe/cuda/nvfp4_engine.py",
+        " M src/tensorfold/families/qwen3_5_moe/cuda/nvfp4_load.py",
+        " M src/tensorfold/families/qwen3_5_moe/cuda/weights.py",
+        " M tests/test_qwen35_yarn.py",
+        " M tests/test_qwen36_nvfp4_load_controls.py",
+        " M tests/test_qwen36_yarn_wiring.py",
+        " M tests/test_qwen_nvfp4_startup.py",
+        "?? tests/cuda/test_qwen36_yarn.py"
+      ],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/c-qwen38",
+      "HEAD": "7abefad2b2478361d0f9f8d057a1ec10e8e3440d",
+      "branch": "refs/heads/campaign-qwen38-20261018",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/c-qwen38-kv",
+      "HEAD": "f1629dd6672d42c0577b6e9af9378c5bb286e5ff",
+      "branch": "refs/heads/campaign-qwen38-kv-20261018",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/c-qwen38-vocab",
+      "HEAD": "b0466c3f885bbde615846dea9431a7fd5e3717c1",
+      "branch": "refs/heads/campaign-qwen38-vocab-20261019",
+      "status_exit": 0,
+      "dirty": [
+        " M src/tensorfold/families/qwen3_5/cuda/affine_memory.py",
+        " M src/tensorfold/families/qwen3_5/cuda/dflash2.py",
+        " M src/tensorfold/families/qwen3_5/cuda/draft_tree.py",
+        " M src/tensorfold/families/qwen3_5/cuda/engine.py",
+        " M src/tensorfold/families/qwen3_5/cuda/exl3_load.py",
+        " M tests/cuda_27b_headers.py",
+        " M tests/test_cuda_memory_plan.py",
+        "?? tests/cuda/test_qwen27_draft_vocab.py"
+      ],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/c-sampling",
+      "HEAD": "9d9a28a1cf838027333f83618adbb60e6a5d38f2",
+      "branch": "refs/heads/campaign-fp8-20261019",
+      "status_exit": 0,
+      "dirty": [
+        " M src/tensorfold/cuda/requant.py",
+        " M src/tensorfold/families/qwen3_5_moe/cuda/dflash.py",
+        " M src/tensorfold/families/qwen3_5_moe/cuda/nvfp4_engine.py",
+        " M src/tensorfold/families/qwen3_5_moe/dflash_metadata.py",
+        " M tests/cuda/test_qwen36_dflash.py",
+        " M tests/cuda/test_requant_cuda.py",
+        " M tests/test_qwen_nvfp4_startup.py",
+        " M tests/test_requant.py"
+      ],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/c-sampling-hooks",
+      "HEAD": "2f9adf416605f4f5cd3ed5a8b6df078fd4ba8c83",
+      "branch": "refs/heads/campaign-fp8-hooks-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/campaign",
+      "HEAD": "bd2ebac6317ae7db835572152a97b113520999ee",
+      "branch": "refs/heads/nvfp4-campaign-20261018",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/clean-a",
+      "HEAD": "9d24f93658f9f92640a8051078b4865648446d27",
+      "branch": "refs/heads/perf-clean-a",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/clean-b",
+      "HEAD": "fed5af4e74cffbe5b74dd55d6df77c41a190fd0f",
+      "branch": "refs/heads/perf-clean-b",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/clean-d14",
+      "HEAD": "bf61cc3ebe33e4e2936c0be9eed3e3a7d0e8ff11",
+      "branch": "refs/heads/perf-clean-d14",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/cold-build-docs-16ae",
+      "HEAD": "7abf2220b407f701610a102c3cb0bf4078fb5cc6",
+      "branch": "refs/heads/cold-build-docs-20261018",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/final",
+      "HEAD": "4f13bc844e39e178aae154696914f38ce9016ac2",
+      "branch": "refs/heads/perf-final-20261013",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/finite-exit-audit-20261027",
+      "HEAD": "d69ed5a25ae870e4486a7db512255fcf22dc157b",
+      "branch": "refs/heads/finite-exit-audit-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/fix-cuda-managed-read-20261023",
+      "HEAD": "437e61e5829f6bbdd92a4c59fc0f3377fa3446a2",
+      "branch": "refs/heads/fix-cuda-managed-read-20261023",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/flashnext-final-composition",
+      "HEAD": "297e8487bc44e941d0fffeac753ac465c72165ce",
+      "branch": "refs/heads/flashnext-final-composition-20261018",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/flashnext-graph-auto",
+      "HEAD": "449bae0bf1775a5ceb69c8f34f5611f1ba09fb8c",
+      "branch": "refs/heads/flashnext-graph-auto-20261018",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/flashnext-graph-fixedcount",
+      "HEAD": "9a4b0e49a4f003599106810ddd141a56e67b3557",
+      "branch": "refs/heads/flashnext-graph-fixedcount-20261018",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/flashnext-modelopt-a4",
+      "HEAD": "f7369899f949f62b3aafaa763d0ba178b5baeba8",
+      "branch": "refs/heads/flashnext-modelopt-a4-20261018",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/flashnext-modelopt-a4-combined",
+      "HEAD": "cc70a3b0aa65b0b38b553e81eb405dffae5ad60b",
+      "branch": "refs/heads/flashnext-modelopt-a4-combined-20261018",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/flashnext-modelopt-a4-combined-root",
+      "HEAD": "1e04aa92caff8daa35df49fa9472beb7e0bf7046",
+      "branch": "refs/heads/flashnext-modelopt-a4-combined-root-20261018",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/flashnext-modelopt-a4-gpu-load",
+      "HEAD": "e7f1f8b52119d232363db6d3941a78c33b855fb1",
+      "branch": "refs/heads/flashnext-modelopt-a4-gpu-load-20261018",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/flashnext-modelopt-a4-plan-combined",
+      "HEAD": "bd1f0e9d624183b341bc615adefc0c308ad88aa5",
+      "branch": "refs/heads/flashnext-modelopt-a4-plan-combined-20261018",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/flashnext-modelopt-a4-plan-diagnostic",
+      "HEAD": "8b742bbdabdc90fd9319e1a75ed27a82308b15ba",
+      "branch": "refs/heads/flashnext-modelopt-a4-plan-diagnostic-20261018",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/flashnext-modelopt-a4-plan-general",
+      "HEAD": "376a1f6f59e0d0844704ba9b42857c17a03f7c21",
+      "branch": "refs/heads/flashnext-modelopt-a4-plan-general-20261018",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/flashnext-modelopt-a4-read-plan",
+      "HEAD": "7ffa009baa16013fd37ec5319cf1152ca0b7a738",
+      "branch": "refs/heads/flashnext-modelopt-a4-read-plan-20261018",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/flashnext-modelopt-a4-shared-input",
+      "HEAD": "524eae32dbed042976f08f15934e9fc306bdc3f4",
+      "branch": "refs/heads/flashnext-modelopt-a4-shared-input-20261018",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/foundation-fixture-isolation",
+      "HEAD": "30f033aab410c4339fc5619a315698e2c4b6e18c",
+      "branch": "refs/heads/foundation-fixture-isolation-20261018",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/foundation-guard",
+      "HEAD": "b6dc4a8f675d3afa1a88cd082c00a67aae34eca1",
+      "branch": "refs/heads/foundation-guard-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/foundation-source-build",
+      "HEAD": "abb67d6231903b67da2dd3fbca208c9e8b667180",
+      "branch": "refs/heads/foundation-source-build-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/foundation-triton-tools",
+      "HEAD": "0db7bdb14fcc7ec4b4e9fda856d56c776a129717",
+      "branch": "refs/heads/foundation-triton-tools-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/foundation-triton-tools-followup",
+      "HEAD": "a69284b637cbca536e57bc2376e7902cdd995138",
+      "branch": "refs/heads/foundation-triton-tools-followup-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/gate-clean",
+      "HEAD": "b76a5a2ad08a3150931e3c4ba06a6f8023be3215",
+      "detached": "",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/gb10-a4-cpu-1d643d2c",
+      "HEAD": "1d643d2c3253dbfd4cb38aae3841887fe3dcb59c",
+      "detached": "",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/gb10-a4-cpu-7bc40906",
+      "HEAD": "7bc4090619a642e38571e3687c244337297402ce",
+      "detached": "",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/gb10-nvfp4-docs",
+      "HEAD": "c3cf484cd8442d4511fcea21c12a5d196958c35e",
+      "branch": "refs/heads/gb10-nvfp4-docs-20261018",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/heretic-a4-select-cleanup",
+      "HEAD": "2e14de265caf407184d5ef70c774b8105ce9d3e4",
+      "branch": "refs/heads/heretic-a4-select-cleanup-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/heretic-b16-head",
+      "HEAD": "e64f5df88c23f5b6e5e9bd9e85a39c1ed776497b",
+      "branch": "refs/heads/heretic-b16-head-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/heretic-b16-small-rows",
+      "HEAD": "ffed48e4861e65bb1d9bd5971fb2f1d0010fc934",
+      "branch": "refs/heads/heretic-b16-small-rows-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/heretic-blob-a4",
+      "HEAD": "8b4ac4e4b2456e0a17ea56a4ac1014c29b0e9488",
+      "branch": "refs/heads/heretic-blob-a4-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/heretic-cache",
+      "HEAD": "9845e8f0f60f917431d0b1bb97c2c38c51b1f3f2",
+      "branch": "refs/heads/heretic-cache-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/heretic-cpu-final-triage",
+      "HEAD": "2319d8fa30629d76cc4206f7994061138c0f4e2f",
+      "branch": "refs/heads/cpu-final-triage-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/heretic-cpu-triage",
+      "HEAD": "9a5685282d8d11b98415e8f7b0c09b0735165acd",
+      "branch": "refs/heads/cpu-triage-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/heretic-dflash",
+      "HEAD": "c95e77d89e5c36c09646d408836ac6acd927460f",
+      "branch": "refs/heads/heretic-dflash-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/heretic-dflash-tiles",
+      "HEAD": "6aabbcb6e2f9295f0983dbc00d99eb19c36d638a",
+      "branch": "refs/heads/heretic-dflash-tiles-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/heretic-final",
+      "HEAD": "dfb63b7c21f4a91e714687e96fc55cf8c92b0851",
+      "branch": "refs/heads/heretic-final-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/heretic-loader",
+      "HEAD": "71b71fc77c66c9a9fd684fe2667141d0962b6261",
+      "branch": "refs/heads/heretic-loader-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/heretic-native-a4",
+      "HEAD": "7d944337b1cf852cb9038094bc080b94f60af4d9",
+      "branch": "refs/heads/heretic-native-a4-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/heretic-nvfp4",
+      "HEAD": "abb67d6231903b67da2dd3fbca208c9e8b667180",
+      "branch": "refs/heads/heretic-nvfp4-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/heretic-scales",
+      "HEAD": "4524adbe4c0a9c193d7d69f9ce23b93deddea1f6",
+      "branch": "refs/heads/heretic-scales-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/heretic-static",
+      "HEAD": "00c83d698f9ca4e299ac8882966f9104087828b8",
+      "branch": "refs/heads/heretic-static-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/heretic-static-base",
+      "HEAD": "c17b02aefaceb9cf57c4af7bde95266322bdc0f3",
+      "detached": "",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/idea1",
+      "HEAD": "328489c5d0b561ac840499d55effde0f837186fa",
+      "branch": "refs/heads/perf-idea1-select",
+      "status_exit": 0,
+      "dirty": [
+        "?? IDEA1-NOTES.md"
+      ],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/idea2",
+      "HEAD": "ade71aa4150cfe805c4b5eb41b5a6a9b0ecb08d2",
+      "branch": "refs/heads/perf-idea2-round",
+      "status_exit": 0,
+      "dirty": [
+        "?? IDEA2-NOTES.md"
+      ],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/idea3",
+      "HEAD": "32b4ab99b6b0b7f4ca34f30be12fd1a630b866e5",
+      "branch": "refs/heads/perf-idea3-drafting",
+      "status_exit": 0,
+      "dirty": [
+        "?? IDEA3-NOTES.md"
+      ],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/idea3b",
+      "HEAD": "263d72037f0e16cb365568ce19ad490e851930ba",
+      "branch": "refs/heads/perf-idea3-phase2",
+      "status_exit": 0,
+      "dirty": [
+        "?? IDEA3B-NOTES.md"
+      ],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/idea3c",
+      "HEAD": "db7b74575334f822d527eec4cadbe8fd47dad07c",
+      "branch": "refs/heads/perf-idea3-rework",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/integ",
+      "HEAD": "263d72037f0e16cb365568ce19ad490e851930ba",
+      "detached": "",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/local-nccl-store",
+      "HEAD": "4755ac0f490b66f680de01492fbf85ef13f1d6b3",
+      "branch": "refs/heads/local-nccl-store-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/metadata-constructor-order",
+      "HEAD": "1ef45580c47e95d8ac9874a86fce4dcf2dd137d6",
+      "branch": "refs/heads/metadata-constructor-order-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/metadata-defaults",
+      "HEAD": "b6c37bb717f26f4bab268f4bc1cdcf398549d5a7",
+      "branch": "refs/heads/metadata-defaults-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/metadata-layout",
+      "HEAD": "9e204c525e03747ecb22386e63f6daf02a132c39",
+      "branch": "refs/heads/metadata-layout-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/metadata-quant",
+      "HEAD": "b6fdf9133d124ff26abdc4e8d3752a05809fde24",
+      "branch": "refs/heads/metadata-quant-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/metadata-qwen-comm",
+      "HEAD": "1ea20477e35270cda94180d885d7ee96214b8441",
+      "branch": "refs/heads/metadata-qwen-comm-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/model-metadata",
+      "HEAD": "3553ecffdf4f7d7e6b1063dbe97a26ec71c00c2d",
+      "branch": "refs/heads/auto-model-metadata-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/moe-prefill-batch",
+      "HEAD": "1e8c8ea4934695ddd89ae8262e2e3fcf4ce8f482",
+      "branch": "refs/heads/moe-prefill-batch-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/nvfp4-host-precision",
+      "HEAD": "b83f03e030238ef70f52cd9cd003a7b54a970877",
+      "branch": "refs/heads/nvfp4-host-precision-20261018",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/nvfp4-load-host-budget",
+      "HEAD": "b9d370166da39a5e5d0df19d7d3921bd7d1631b2",
+      "branch": "refs/heads/nvfp4-load-host-budget-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/nvfp4-load-packing",
+      "HEAD": "5f9fd9bb46a8c3183f724df68733c0fc3dc2730c",
+      "branch": "refs/heads/nvfp4-load-packing-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/nvfp4-optional-sdk-test",
+      "HEAD": "8c0728c4b544dac87a98fdf424a90e2a18e10b60",
+      "branch": "refs/heads/nvfp4-optional-sdk-test-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-build-capture-io-20261023",
+      "HEAD": "6a9689d0b7f5206fce69c2380f0e6ed21a433572",
+      "branch": "refs/heads/perf-build-capture-io-20261023",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-decode-flash-20261022",
+      "HEAD": "949e5e02c18dfbda9812eb68e042dab0e97e3d6b",
+      "branch": "refs/heads/perf-decode-flash-20261022",
+      "status_exit": 0,
+      "dirty": [
+        " M README.md",
+        " M docs/recipes/qwen3.8-flash-next.md",
+        " M src/tensorfold/families/qwen4_exp/cuda/forward.py",
+        " M src/tensorfold/families/qwen4_exp/cuda/glue.py",
+        " M src/tensorfold/families/qwen4_exp/cuda/state.py",
+        "?? tests/cuda/test_flashnext_hc_mix_optional_sums.py",
+        "?? tests/test_flashnext_modelopt_mlp_xs_control.py"
+      ],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-decode-gemma-20261022",
+      "HEAD": "4c73ffd120aa9cc570135aee886e66a9e5fa0be4",
+      "branch": "refs/heads/perf-decode-gemma-20261022",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-decode-gemma-body-graphs-20261023",
+      "HEAD": "348e7012ed6484a5ecfc0882664253de139fb409",
+      "branch": "refs/heads/perf-decode-gemma-body-graphs-20261023",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-decode-gemma-fp8-greedy-alt-20261024",
+      "HEAD": "266cd0299561227e98d534ee710810a6a17be49d",
+      "branch": "refs/heads/perf-decode-gemma-fp8-greedy-alt-20261024",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-decode-gemma-fp8-head-20261023",
+      "HEAD": "6e9d1fad93f5a251fab6ed5ebd921cb10f8ca4ea",
+      "branch": "refs/heads/perf-decode-gemma-fp8-head-20261023",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-decode-gemma-fp8-head-cache-20261024",
+      "HEAD": "20499c1cefb12da9379bb34ced5fd15a96c6ca66",
+      "branch": "refs/heads/perf-decode-gemma-fp8-head-cache-20261024",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-decode-gemma-fp8-maxfinite-20261023",
+      "HEAD": "de6ba2678e3c86c464cf198dddd59007d24346aa",
+      "branch": "refs/heads/perf-decode-gemma-fp8-maxfinite-20261023",
+      "status_exit": 0,
+      "dirty": [
+        "M  README.md",
+        "M  docs/optimization-validation.md",
+        "M  docs/recipes/gemma-4.md"
+      ],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-decode-gemma-fp8-prepare-20261023",
+      "HEAD": "4ab3fad7c78134cb67c82a18d68485ce4a835c6e",
+      "branch": "refs/heads/perf-decode-gemma-fp8-prepare-20261023",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-decode-gemma-fp8-scratch-20261024",
+      "HEAD": "04372bed624d1ce14333d9886276068943956b34",
+      "branch": "refs/heads/perf-decode-gemma-fp8-scratch-20261024",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-decode-gemma-greedy-20261023",
+      "HEAD": "e4277966619a6e7ab1b76a0401d11945a9b8c281",
+      "branch": "refs/heads/perf-decode-gemma-greedy-20261023",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-decode-gemma-greedy-max-20261023",
+      "HEAD": "5978bbe46dc3d0600a5b814193c521a59e409844",
+      "branch": "refs/heads/perf-decode-gemma-greedy-max-20261023",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-decode-gemma-head-20261023",
+      "HEAD": "f4a88d38bdd034ec4bfb2853f357288f9506cc90",
+      "branch": "refs/heads/perf-decode-gemma-head-20261023",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-decode-gemma-head-cache-20261023",
+      "HEAD": "612d3e6b46654ee673ecc3f4be1fa2796df5c0d8",
+      "branch": "refs/heads/perf-decode-gemma-head-cache-20261023",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-decode-gemma-moe-up-20261023",
+      "HEAD": "47b6fd0bf59ca9f67a52a633e7bd6264940e4271",
+      "branch": "refs/heads/perf-decode-gemma-moe-up-20261023",
+      "status_exit": 0,
+      "dirty": [
+        " M README.md",
+        " M docs/gemma-moe-up-validation.md",
+        " M src/tensorfold/cuda/build.py",
+        " M tests/test_benchmark_output.py",
+        " M tests/test_cuda_build.py",
+        " M tools/benchmark_output.py",
+        "?? tests/cuda/test_gemma4_cuda_moe_bench.py",
+        "?? tests/test_gemma4_cuda_moe_bench.py",
+        "?? tools/gemma4_cuda_moe_bench.py"
+      ],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-decode-gemma-target-max-20261023",
+      "HEAD": "77569ead832bcdf9dfce2ab0d247bbe50635573e",
+      "branch": "refs/heads/perf-decode-gemma-target-max-20261023",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-decode-qwen-20261022",
+      "HEAD": "949e5e02c18dfbda9812eb68e042dab0e97e3d6b",
+      "branch": "refs/heads/perf-decode-qwen-20261022",
+      "status_exit": 0,
+      "dirty": [
+        " M README.md",
+        " M docs/optimization-validation.md",
+        " M src/tensorfold/families/qwen3_5/cuda/engine.py",
+        " M src/tensorfold/families/qwen3_5/cuda/forward.py",
+        " M src/tensorfold/families/qwen3_5/cuda/glue.py",
+        " M tests/cuda/test_qwen27_glue.py",
+        " M tests/cuda/test_qwen27_nvfp4.py",
+        " M tests/test_qwen27_startup_metadata.py",
+        "?? tests/test_qwen27_decode_sums.py"
+      ],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-expandable-packing-20261021",
+      "HEAD": "6bf31eea5d91ea6dfae45403ce30d9d7b707473e",
+      "branch": "refs/heads/perf-expandable-packing-20261021",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-flash-cached-empty-20261022",
+      "HEAD": "5b0e3f813d639b9a33eccd616042b5d89b0e0cab",
+      "branch": "refs/heads/perf-flash-cached-empty-20261022",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-flash-chain-metadata-20261022",
+      "HEAD": "01cc5c32b39e9f17d8b06c787f2270c4e2e3dcbf",
+      "branch": "refs/heads/perf-flash-chain-metadata-20261022",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-flash-readout-20261022",
+      "HEAD": "656eeb5069f135135bc5ef43a90c64034def541b",
+      "branch": "refs/heads/perf-flash-readout-20261022",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-flash-readout-tool-budget-20261022",
+      "HEAD": "299cd909f3f203aeb3db436dc9ed8af88230c8e2",
+      "branch": "refs/heads/perf-flash-readout-tool-budget-20261022",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-gemma-graph-preparation-20261022",
+      "HEAD": "d42d79d08fb95bddb1ef79891fac8c9a3887498b",
+      "branch": "refs/heads/perf-gemma-graph-preparation-20261022",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-gemma-replay-closure-20261022",
+      "HEAD": "22b4c7a5a93775f390e9a840fbfadf4f460b9b3d",
+      "branch": "refs/heads/perf-gemma-replay-closure-20261022",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-native-preparation-20261021",
+      "HEAD": "5c28dff8de536026eb1cd8f5b580994418106ebe",
+      "branch": "refs/heads/perf-native-preparation-20261021",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-native-preparation-five-20261022",
+      "HEAD": "08010f4d06843a0c5556e838a343e7e5afc5f696",
+      "branch": "refs/heads/perf-native-preparation-five-20261022",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-pause-release-20261021",
+      "HEAD": "437e61e5829f6bbdd92a4c59fc0f3377fa3446a2",
+      "branch": "refs/heads/qualify-integration-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-qwen-bulk-loading-20261021",
+      "HEAD": "dcfc448a400083c031d6dd779abf66432e55c70c",
+      "branch": "refs/heads/perf-qwen-bulk-loading-20261021",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-qwen-bulk-projection-20261022",
+      "HEAD": "1c2045b232068b8378031c22b0990639f3e984e6",
+      "branch": "refs/heads/perf-qwen-bulk-projection-20261022",
+      "status_exit": 0,
+      "dirty": [
+        " M README.md",
+        " M docs/nvfp4-loading-validation.md"
+      ],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-qwen-bulk-staged-copy-20261022",
+      "HEAD": "d3523145b739ce70023ebf3eee72be66b8a6ccd2",
+      "branch": "refs/heads/perf-qwen-bulk-staged-copy-20261022",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-qwen-expandable-fragments-20261022",
+      "HEAD": "84eacce1efdbd400aedcafa262e418bf9ed43c02",
+      "branch": "refs/heads/perf-qwen-expandable-fragments-20261022",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-qwen-native-bank-20261022",
+      "HEAD": "9734f82a46a6dfa31ecc67167a76369bca0ee1a3",
+      "branch": "refs/heads/perf-qwen-native-bank-20261022",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-qwen-native-bank-c-exchange-20261022",
+      "HEAD": "1f88d99cb66b9cdd6e08f4ed8307e8300e8852fc",
+      "branch": "refs/heads/perf-qwen-native-bank-c-exchange-20261022",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-qwen-native-bank-c-exchange-inline-20261022",
+      "HEAD": "3fed5e39c8f5962093af510f947b70cff65e3adb",
+      "branch": "refs/heads/perf-qwen-native-bank-c-exchange-inline-20261022",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-qwen-native-bank-inline-20261022",
+      "HEAD": "e87214fb8a348b984995ecb64e55144d8ec6eec4",
+      "branch": "refs/heads/perf-qwen-native-bank-inline-20261022",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-qwen-native-bank-integrated-20261022",
+      "HEAD": "fcbaeea373dd13fc82d2fce40bd2b70241ecd622",
+      "branch": "refs/heads/perf-qwen-native-bank-integrated-20261022",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "fcbaeea373dd13fc82d2fce40bd2b70241ecd622",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-qwen-native-bank-metadata-20261022",
+      "HEAD": "430936c8d0cb7c27de67c6d880fb6948dd44ceb9",
+      "branch": "refs/heads/perf-qwen-native-bank-metadata-20261022",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-qwen-native-bank-metadata-c-exchange-inline-20261022",
+      "HEAD": "5f1bd46c2a19f734fb0e470f5a0aa85128f80963",
+      "branch": "refs/heads/perf-qwen-native-bank-metadata-c-exchange-inline-20261022",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-qwen-native-bank-parallel-20261022",
+      "HEAD": "280a69ff3bbc531978e2f4591d43e18146d70390",
+      "branch": "refs/heads/perf-qwen-native-bank-parallel-20261022",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-qwen-native-bank-parallel-expert-20261022",
+      "HEAD": "8b7ec5a2909fe9b4822804a31d9fa95c3f0d8197",
+      "branch": "refs/heads/perf-qwen-native-bank-parallel-expert-20261022",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-qwen-native-bank-sf-first-20261022",
+      "HEAD": "a5a83247cf7b3e4763740778cc1a10634e53b455",
+      "branch": "refs/heads/perf-qwen-native-bank-sf-first-20261022",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-qwen-native-bank-vector-20261022",
+      "HEAD": "ab3c33ba4cd23c844f2c4ff34f2a875fd3101c0c",
+      "branch": "refs/heads/perf-qwen-native-bank-vector-20261022",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-qwen-native-bank-workspace-20261022",
+      "HEAD": "3334c196898b1d137d2477a6e9e8283cda9bc70e",
+      "branch": "refs/heads/perf-qwen-native-bank-workspace-20261022",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-qwen-native-factor-errors-20261022",
+      "HEAD": "95b83e0668cdcf2930260633978ad9fc5d8f1110",
+      "branch": "refs/heads/perf-qwen-native-factor-errors-20261022",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-shared-shard-path-20261022",
+      "HEAD": "0ece058b37eaaefdb247d43bdb3c4db72f778d82",
+      "branch": "refs/heads/perf-shared-shard-path-20261022",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/perf-verified-loading-20261021",
+      "HEAD": "5247097207945c1f160f06bf312594226dec01a1",
+      "branch": "refs/heads/perf-verified-loading-20261021",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/python-0.6",
+      "HEAD": "89fd5efc1e97cfc5db097a896e76a56a857275ac",
+      "branch": "refs/heads/python-0.6",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "89fd5efc1e97cfc5db097a896e76a56a857275ac",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-campaign-evidence-20261019",
+      "HEAD": "005217d72a98139d1572e5e0f69c1dfb94ac8052",
+      "branch": "refs/heads/qualify-campaign-evidence-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-chain-geometry-20261019",
+      "HEAD": "a8e2962cb4333c53aab75bc285070d3c660c3f75",
+      "branch": "refs/heads/qualify-chain-geometry-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-common-finalcore-20261019",
+      "HEAD": "15702c49ba19f9aa2a51a6e1fdfd1120dee2de9d",
+      "branch": "refs/heads/qualify-common-finalcore-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-common-rs-20261019",
+      "HEAD": "981f3916759dbb9a686363fdc11824ce33a6e482",
+      "branch": "refs/heads/qualify-common-rs-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-composed-fixes-20261019",
+      "HEAD": "fd7ef06abd3a8a766230345a7d6884e5bb3af1e2",
+      "branch": "refs/heads/qualify-composed-fixes-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-draft-confidence-20261019",
+      "HEAD": "3200137395453d6ee36bde692c8dbafe8e3ad0c2",
+      "branch": "refs/heads/qualify-draft-confidence-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-gemma-cache-sampling-20261019",
+      "HEAD": "e7cde74c0cfd5297baa3e9d2fc0651c8e605a0ac",
+      "branch": "refs/heads/qualify-gemma-cache-sampling-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-gemma-common-deploy-20261019",
+      "HEAD": "24f377cd4c9b0bf4fe35a41f417f4c708bd9f868",
+      "branch": "refs/heads/qualify-gemma-common-deploy-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-gemma-common-finalcore-20261019",
+      "HEAD": "14335766b68a0f0c5a173e2f7f516973fc7eb8e6",
+      "branch": "refs/heads/qualify-gemma-common-finalcore-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-gemma-fullv2-attn16-20261019",
+      "HEAD": "d1eeec2c4320348695eeb4a0db026234914550c0",
+      "branch": "refs/heads/qualify-gemma-fullv2-attn16-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-gemma-fullv2-attn64s-20261019",
+      "HEAD": "2b7fb30cb8e2e8f58d0d56aa808f2e608499d1cf",
+      "branch": "refs/heads/qualify-gemma-fullv2-attn64s-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-gemma-fullv2-attnrev-20261019",
+      "HEAD": "0c4bc40d2ca933a54ba2469ade2c6b633ed9bb65",
+      "branch": "refs/heads/qualify-gemma-fullv2-attnrev-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-gemma-fullv2-base-20261019",
+      "HEAD": "c0da6c59c04a9440b653a68c43603c87fc4165fe",
+      "branch": "refs/heads/qualify-gemma-fullv2-base-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-gemma-fullv2-combinedesc-20261019",
+      "HEAD": "ba23ee2d6b94e3fc67843e8cbb4546083defff30",
+      "branch": "refs/heads/qualify-gemma-fullv2-combinedesc-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-gemma-fullv2-rmswarps-20261019",
+      "HEAD": "97cd94ab2f8154aff020fa04d2fe9f6795643c00",
+      "branch": "refs/heads/qualify-gemma-fullv2-rmswarps-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-gemma-gate-peers-20261019",
+      "HEAD": "28007ab113896fea77820f4c3141b6d6fc3a5c28",
+      "branch": "refs/heads/qualify-gemma-gate-peers-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-gemma-kl-lifecycle-20261019",
+      "HEAD": "f0867da49b7ac89610a38a9340a8eb1648bd417c",
+      "branch": "refs/heads/qualify-gemma-kl-lifecycle-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-gemma-moe-20261019",
+      "HEAD": "4f33497d3b4e52e1d2eaa275566a03a796f5092d",
+      "branch": "refs/heads/qualify-gemma-moe-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-moe-dedupe-20261019",
+      "HEAD": "ce30b259696ceb7cd23680c0d2ddcc840fe4c4ae",
+      "branch": "refs/heads/qualify-moe-dedupe-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-moe-dedupe-808-20261019",
+      "HEAD": "634c1f81ba7669ca94b2b359cd113096ece66a78",
+      "branch": "refs/heads/qualify-moe-dedupe-808-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-moe-dedupe-b0-20261019",
+      "HEAD": "290f30060a9aea4c81b94717e1b7edeffc77f5e5",
+      "branch": "refs/heads/qualify-moe-dedupe-b0-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-moe-dedupe-final-20261019",
+      "HEAD": "1081d690ea1a55e48cfc3f0b0895535721af4535",
+      "branch": "refs/heads/qualify-moe-dedupe-final-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-qwen36-affine-reference-20261019",
+      "HEAD": "5b563a2ec126e438fb8e8ccc629ac69d5f3b30d2",
+      "branch": "refs/heads/qualify-qwen36-affine-reference-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-qwen36-affine-rs-808-20261019",
+      "HEAD": "dfeb3fd8cd00638c70d1722d8c4014b87e9a69d7",
+      "branch": "refs/heads/qualify-qwen36-affine-rs-808-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-qwen36-affine-rs-final-20261019",
+      "HEAD": "c924cb08e718a6116b8a155964d095f9b54df278",
+      "branch": "refs/heads/qualify-qwen36-affine-rs-final-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-qwen36-affine-rs-reference-20261019",
+      "HEAD": "070e0bc37cd5175862769fe7d1324503e47cc7e1",
+      "branch": "refs/heads/qualify-qwen36-affine-rs-reference-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-qwen36-order-20261019",
+      "HEAD": "24f994e95dca47b2693f8a502ee3fa996e176f9d",
+      "branch": "refs/heads/qualify-qwen36-order-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-qwen36-yarn-20261019",
+      "HEAD": "0026e75e393b47d1685c6a55b46887a10cc4442f",
+      "branch": "refs/heads/qualify-qwen36-yarn-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-qwen38-arena-20261019",
+      "HEAD": "63530543e625686c58a9917ae20d31fcdd96d4b1",
+      "branch": "refs/heads/qualify-qwen38-arena-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-qwen38-vocab-20261019",
+      "HEAD": "b729f1386691bc4ff2f4bc6fac4ac4194a2f4b1b",
+      "branch": "refs/heads/qualify-qwen38-vocab-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-qwen38-vocab-808-20261019",
+      "HEAD": "08748f9b8498b8101d4a429157c5ab7d11a559d0",
+      "branch": "refs/heads/qualify-qwen38-vocab-808-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-qwen38-vocab-composed-20261019",
+      "HEAD": "cce8ff61e7147bb407578761fe4dbc71575f8601",
+      "branch": "refs/heads/qualify-qwen38-vocab-composed-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-qwen38-vocab-final-20261019",
+      "HEAD": "cce8ff61e7147bb407578761fe4dbc71575f8601",
+      "branch": "refs/heads/qualify-qwen38-vocab-final-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-qwen38-vocab-finalcore-20261019",
+      "HEAD": "d6e85e8f614720d6376879411d8bb0a4988ce746",
+      "branch": "refs/heads/qualify-qwen38-vocab-finalcore-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-qwen38-vocab-rs-20261019",
+      "HEAD": "78df054d4c5dab93ee605b2a6cbf9c8c1352f495",
+      "branch": "refs/heads/qualify-qwen38-vocab-rs-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-qwen38-vocab-rs-factory-20261019",
+      "HEAD": "67e7288df8aadf0986f8462a89fdac22ba1d95fd",
+      "branch": "refs/heads/qualify-qwen38-vocab-rs-factory-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-rejection-20261019",
+      "HEAD": "bc0f4ea0890658064ec7e46ed8ea6724e97329f9",
+      "branch": "refs/heads/qualify-rejection-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-requant-20261019",
+      "HEAD": "5d1b874010ab5013b54f65d70347e795b308e92c",
+      "branch": "refs/heads/qualify-requant-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-requant-peak-20261019",
+      "HEAD": "da781de8f5b2e9559c51d2e6e4c11368e8582af3",
+      "branch": "refs/heads/qualify-requant-peak-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qualify-stats-20261019",
+      "HEAD": "db2cf421955ef28084b5678595f19f6d8bdde785",
+      "branch": "refs/heads/qualify-stats-20261019",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qwen-nvfp4-startup",
+      "HEAD": "5bcc00d896912c10826309873be7c811fd73c8f6",
+      "branch": "refs/heads/qwen-nvfp4-startup-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/qwen-serving-setup",
+      "HEAD": "d87eda57c70a41dc145d1c8e4db53a4652d971f4",
+      "branch": "refs/heads/qwen-serving-setup-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/recovery-grouped-finish-paused-20261028",
+      "HEAD": "5b52e804e84bef1f5187a32b2848e315fe0a898a",
+      "branch": "refs/heads/recovery/grouped-finish-paused-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "5b52e804e84bef1f5187a32b2848e315fe0a898a",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/resource-budget",
+      "HEAD": "8ea3c63132828f36b558f0fea8ec7bc1895dd3e5",
+      "branch": "refs/heads/resource-budget-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/rq6",
+      "HEAD": "94b6743555a42ccdae82ea843a3a76a50065b6cd",
+      "branch": "refs/heads/perf-rq6-lookup",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/rq6g",
+      "HEAD": "d1416db09e2a0e59d584d4509eb9941db7114445",
+      "branch": "refs/heads/perf-rq6G-on-ideas",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/rq6g0",
+      "HEAD": "5e81802c463a6a41c4d4c9b03450f31df41922b6",
+      "branch": "refs/heads/perf-rq6G0",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/rq6i",
+      "HEAD": "7375ddcbf9d91751706050a12e19ea8fe066da46",
+      "branch": "refs/heads/perf-rq6-on-ideas",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/rq6s",
+      "HEAD": "a6ebe4d2ab2b43f83e8bf9afd8611e6ba8a49759",
+      "branch": "refs/heads/perf-rq6S-on-ideas",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/strict",
+      "HEAD": "c84c1a6ace473b1e3da7119160dce26830c6b62d",
+      "branch": "refs/heads/perf-strict",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/strict-json-tools",
+      "HEAD": "a3faa682641edb74534a7ebbb68c6b213f199eec",
+      "branch": "refs/heads/strict-json-tools-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/triton38-rotorquant",
+      "HEAD": "d59a3515897e5d7d8cc6aa2d3b3cef80f3e611a9",
+      "branch": "refs/heads/triton38-rotorquant-20261017",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-adaptive-compact-20261025",
+      "HEAD": "0b68a8d2bceb675ff5687060b828ca7f751fbc0f",
+      "branch": "refs/heads/v100-adaptive-compact-20261025",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-adaptive-dflash-20261025",
+      "HEAD": "bd0762f00866576b441e86bc8dada6959a797eeb",
+      "branch": "refs/heads/v100-adaptive-dflash-20261025",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-adaptive-foundation-20261025",
+      "HEAD": "d03bddcd9905f077c1d2124f359468b25a440afd",
+      "branch": "refs/heads/v100-adaptive-foundation-20261025",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-adaptive-media-binding-20261025",
+      "HEAD": "579eef854b5ac4f80c878a50b2e0e4c0c777a347",
+      "branch": "refs/heads/v100-adaptive-media-binding-20261025",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-adaptive-media-front-20261025",
+      "HEAD": "48f384710695d4be1e2758ee0a25d7d0c0d5ae43",
+      "branch": "refs/heads/v100-adaptive-media-front-20261025",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-adaptive-media-mtp-20261025",
+      "HEAD": "f1231881f00a1ffc1ea193e8317ea78f6244bf54",
+      "branch": "refs/heads/v100-adaptive-media-mtp-20261025",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-adaptive-native-20261025",
+      "HEAD": "752b37e82b0a99fed09f5584f491794efe131803",
+      "branch": "refs/heads/v100-adaptive-native-20261025",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-adaptive-nvfp4-20261025",
+      "HEAD": "a09cf7cf6f91e9a7d587b860de769853755d2b3e",
+      "branch": "refs/heads/v100-adaptive-nvfp4-20261025",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-adaptive-position-20261025",
+      "HEAD": "b3ad478a9f7fac8c4555f4679a9b71e28a3bbd91",
+      "branch": "refs/heads/v100-adaptive-position-20261025",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-adaptive-position-profiles-20261025",
+      "HEAD": "c211d705be1224ccd38ba589d7b830cac8342c20",
+      "branch": "refs/heads/v100-adaptive-position-profiles-20261025",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-adaptive-profiles-20261025",
+      "HEAD": "ce13e59fc2e412b19837c4637d924bb461ffbc3e",
+      "branch": "refs/heads/v100-adaptive-profiles-20261025",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-adaptive-queues-20261025",
+      "HEAD": "ac8f25ad3d2bf209d1216453e936640f75bf5a6a",
+      "branch": "refs/heads/v100-adaptive-queues-20261025",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-adaptive-sc117-20261025",
+      "HEAD": "3fc6ac12421446f19388bd47ee1afe24e1a5f579",
+      "branch": "refs/heads/v100-adaptive-sc117-20261025",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-adaptive-sc117-runtime-20261025",
+      "HEAD": "7d3ddbb9d066fe7451769ad9a36739619ce2d618",
+      "branch": "refs/heads/v100-adaptive-sc117-runtime-20261025",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-batch-execution-rows-20261028",
+      "HEAD": "60980af6dca5f5b33b761f978265f8c93843648b",
+      "branch": "refs/heads/v100-batch-execution-rows-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-batch-expert72-20261028",
+      "HEAD": "b3b5e27eb9218f4f844859e3520c06cea58276d9",
+      "branch": "refs/heads/v100-batch-expert72-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "b3b5e27eb9218f4f844859e3520c06cea58276d9",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-batch-frame-packets-20261028",
+      "HEAD": "712283679f89b80a9d58420694f93febd7160771",
+      "branch": "refs/heads/v100-batch-frame-packets-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "712283679f89b80a9d58420694f93febd7160771",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-batch-mtp-one-draft-20261028",
+      "HEAD": "5dd48d29501ecb1c1f4ebabb62ccd4396bc128a0",
+      "branch": "refs/heads/work/v100-batch-mtp-one-draft-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "5dd48d29501ecb1c1f4ebabb62ccd4396bc128a0",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-best-single-profile-20261028",
+      "HEAD": "3f460a4f8ce83479cc035ca2d7b5d9f4be1b9e8c",
+      "branch": "refs/heads/v100-best-single-profile-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-candidate-finish-catalogue-20261028",
+      "HEAD": "9a026217d09222fd9f360e778ce921a0bf598f83",
+      "branch": "refs/heads/work/v100-candidate-finish-catalogue-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "9a026217d09222fd9f360e778ce921a0bf598f83",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-candidate-finish-graph-20261028",
+      "HEAD": "7fe472b647d9b609c833e1f97f836ec6750da88d",
+      "branch": "refs/heads/work/v100-candidate-finish-graph-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "7fe472b647d9b609c833e1f97f836ec6750da88d",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-coalesced-candidate-readback-20261028",
+      "HEAD": "9f52e8b680cc082dd7a4c4b8d6c1a83e7a7b10f1",
+      "branch": "refs/heads/work/v100-coalesced-candidate-readback-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "9f52e8b680cc082dd7a4c4b8d6c1a83e7a7b10f1",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-common-grid-integration-20261027",
+      "HEAD": "75d660a77ffcdb89ca7135805eb539a99ec22732",
+      "branch": "refs/heads/v100-common-grid-integration-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-compact-pool-namespace-20261028",
+      "HEAD": "37518d018730da786dd5577bfaa7f6d2fb1a4885",
+      "branch": "refs/heads/v100-compact-pool-namespace-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-compact-pool-preparation-20261028",
+      "HEAD": "1572417190ed494e7afb6ea2894874f233dad2ba",
+      "branch": "refs/heads/v100-compact-pool-preparation-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-compact-tail-fixture-20261028",
+      "HEAD": "eeb168c12b3637805f55fbb0a10701b9ab8e1831",
+      "branch": "refs/heads/v100-compact-tail-fixture-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-compact-tail-pool-integration-20261028",
+      "HEAD": "9d4a4c256e28378d7ec413cbdc9df5bf4f518d7f",
+      "branch": "refs/heads/v100-compact-tail-pool-integration-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-compact-tail-screen-20261028",
+      "HEAD": "122d66dc0cd09d338b4561ccf04e9e520e6a8ddb",
+      "branch": "refs/heads/v100-compact-tail-screen-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "122d66dc0cd09d338b4561ccf04e9e520e6a8ddb",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-compact-tail-slices-20261028",
+      "HEAD": "d3a68247b0a650cbc67db144ddc36d0c6b7f9403",
+      "branch": "refs/heads/v100-compact-tail-slices-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "d3a68247b0a650cbc67db144ddc36d0c6b7f9403",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-concurrency-probe-20261027",
+      "HEAD": "b379b302b2e6d1fd9aa2756ff7e1301a9d9c1439",
+      "branch": "refs/heads/v100-concurrency-probe-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-concurrent-prelude-alias-profile-20261027",
+      "HEAD": "8f1f904d7b9b54d415447ad687ee3843bb8c3c80",
+      "branch": "refs/heads/v100-concurrent-prelude-alias-profile-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-concurrent-prelude-profile-20261027",
+      "HEAD": "c26ac773a7aea910beb26fc8c25df4f7744a696f",
+      "branch": "refs/heads/v100-concurrent-prelude-profile-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-concurrent-profile-20261027",
+      "HEAD": "67a10e579b6ca4e747915ed5d82903997cc75d9a",
+      "branch": "refs/heads/v100-concurrent-profile-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-concurrent-startup-mtp-profile-20261027",
+      "HEAD": "02643c0689438c64fb4313d7ddda0d4ed262fe48",
+      "branch": "refs/heads/v100-concurrent-startup-mtp-profile-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-coordinate-staging-20261027",
+      "HEAD": "44998ba7b814ab7e7baa9ef864ec8d5528bbb174",
+      "branch": "refs/heads/v100-coordinate-staging-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-cpu-counter-diagnostic-20261028",
+      "HEAD": "a3b2640ae1f182a1f211e2bef894436144c47128",
+      "branch": "refs/heads/v100-cpu-counter-diagnostic-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "a3b2640ae1f182a1f211e2bef894436144c47128",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-cpu-parent-acquisition-20261028",
+      "HEAD": "ea563863386e472818e73a726dd925a5c766f3a5",
+      "branch": "refs/heads/v100-cpu-parent-acquisition-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-cpu-parent-rescan-20261028",
+      "HEAD": "7e3ba65aa2c8ab937a688d88dd6fc5f44b6f3e33",
+      "branch": "refs/heads/v100-cpu-parent-rescan-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-current-dense-residency-20261028",
+      "HEAD": "f0a78fa0f607256db459486ed4989ed7a41dddb3",
+      "branch": "refs/heads/work/v100-current-dense-residency-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "f0a78fa0f607256db459486ed4989ed7a41dddb3",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-current-mtp-hc-20261028",
+      "HEAD": "6434099199a0c3dcd139641e4471c62ec9dba728",
+      "branch": "refs/heads/v100-current-mtp-hc-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-current-native-dense-20261028",
+      "HEAD": "8c5c0cf88df905df28baf2624050dcb0c0fcda7b",
+      "branch": "refs/heads/work/v100-current-native-dense-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "8c5c0cf88df905df28baf2624050dcb0c0fcda7b",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dense-batch-prelude-20261028",
+      "HEAD": "7de2259b1a402542b91fde9e906a9ebb07f4c949",
+      "branch": "refs/heads/work/v100-dense-batch-prelude-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "7de2259b1a402542b91fde9e906a9ebb07f4c949",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dense-execution-rows-20261028",
+      "HEAD": "f0a78fa0f607256db459486ed4989ed7a41dddb3",
+      "branch": "refs/heads/v100-dense-execution-rows-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dense-hc-native-domain-20261028",
+      "HEAD": "e96357ed2ab84d32e705c9288ef9018b7542ea1c",
+      "branch": "refs/heads/v100-dense-hc-native-domain-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dense-hc-physical-tiles-20261028",
+      "HEAD": "43e514dd170e7dcba8a5290ab4191e9d7f9318db",
+      "branch": "refs/heads/v100-dense-hc-physical-tiles-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dense-independent-20261028",
+      "HEAD": "b92c58283e72c9dad528f67ac288ad06e44c1908",
+      "branch": "refs/heads/v100-dense-independent-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "b92c58283e72c9dad528f67ac288ad06e44c1908",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dense-large-row-targetflags-20261028",
+      "HEAD": "2a1c9dcffc597524d148b6b6aa2ff7fb7f8473e3",
+      "branch": "refs/heads/v100-dense-large-row-targetflags-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dense-large-row-tiles-20261028",
+      "HEAD": "c517964eb7bebc3543274dc7be7ab920788384d5",
+      "branch": "refs/heads/v100-dense-large-row-tiles-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-20261028",
+      "HEAD": "6ef006ae68c4ac16bb500519f4b27c8f7ef21125",
+      "branch": "refs/heads/v100-dense-n24-profile-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dense-n24-profile-closefix-20261028",
+      "HEAD": "4c75bed1ec3fc801722b4f74f8664a352405434e",
+      "branch": "refs/heads/v100-dense-n24-profile-closefix-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dense-three-file-startup-20261028",
+      "HEAD": "694b1c223f17d7716fdd78736d91087480ac7d6f",
+      "branch": "refs/heads/work/v100-dense-three-file-startup-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "694b1c223f17d7716fdd78736d91087480ac7d6f",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-descriptor-current-n24-profile-20261028",
+      "HEAD": "86b841b879b24ceecb131dd320679d224e7e1d17",
+      "branch": "refs/heads/v100-descriptor-current-n24-profile-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-descriptor-host-words-20261028",
+      "HEAD": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "branch": "refs/heads/v100-descriptor-host-words-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "c9284c500dd9c983a9673f42ad6061ef190dc591",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-descriptor-host-words-workflow-20261028",
+      "HEAD": "ddad3c63c9f5d4476560cbb9b8bf1a5928af76a1",
+      "branch": "refs/heads/v100-descriptor-host-words-workflow-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "ddad3c63c9f5d4476560cbb9b8bf1a5928af76a1",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dp4a-actual-cost-20261028",
+      "HEAD": "cb5707bf3d41d359bce8d62344e1f87385874414",
+      "branch": "refs/heads/v100-dp4a-actual-cost-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dp4a-actual-cost-roots-20261028",
+      "HEAD": "c99a583ca075df3d509d274b7ced818b4347df85",
+      "branch": "refs/heads/v100-dp4a-actual-cost-roots-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "c99a583ca075df3d509d274b7ced818b4347df85",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dp4a-expert-prototype-20261028",
+      "HEAD": "074a79bf329c4d0759d2bf8e37f9502143f1fb50",
+      "branch": "refs/heads/v100-dp4a-expert-prototype-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dp4a-lifetime-successor-20261028",
+      "HEAD": "d945a7d90638ff978b131b8e68635142c7db96f0",
+      "branch": "refs/heads/v100-dp4a-lifetime-successor-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dp4a-retention-cleanup-20261028",
+      "HEAD": "3f1a09da72b3dddfb18ad9b93b280de0cef96c13",
+      "branch": "refs/heads/v100-dp4a-retention-cleanup-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dp4a-status-alias-20261028",
+      "HEAD": "f6528497ea01bb31e3b1be0282de469dce7f8940",
+      "branch": "refs/heads/v100-dp4a-status-alias-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dp4a-target-enrollment-20261028",
+      "HEAD": "52b98e9f61194f2f198c9b57a02069d2eb23e418",
+      "branch": "refs/heads/v100-dp4a-target-enrollment-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-empty-owner-20261027",
+      "HEAD": "9f8685068ae00473cec617238c12b0d74b6e5a46",
+      "branch": "refs/heads/v100-empty-owner-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-exact-gateup-fastv2-20261028",
+      "HEAD": "e33d7c3286fcd6356aada4bace610317e5a00cce",
+      "branch": "refs/heads/v100-exact-gateup-fastv2-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "e33d7c3286fcd6356aada4bace610317e5a00cce",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-exact-gateup-finite-fixture-20261028",
+      "HEAD": "a5fd784f35f64d2ebe8fa3933c65b1ad9f97068d",
+      "branch": "refs/heads/v100-exact-gateup-finite-fixture-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "a5fd784f35f64d2ebe8fa3933c65b1ad9f97068d",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-exact-gateup-two-warps-20261028",
+      "HEAD": "6289e3cb41c6843638c5e5c6719773aa81d089b1",
+      "branch": "refs/heads/v100-exact-gateup-two-warps-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "6289e3cb41c6843638c5e5c6719773aa81d089b1",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-expert72-screen-20261028",
+      "HEAD": "2cd2d9bb5156b45544a8dac8a405ae267bb8b3e4",
+      "branch": "refs/heads/v100-expert72-screen-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "2cd2d9bb5156b45544a8dac8a405ae267bb8b3e4",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-family-exit-integration-20261027",
+      "HEAD": "f0e321004753c9a749f08f36fd0de35e88b35058",
+      "detached": "",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-family-prefix-20261027",
+      "HEAD": "7d0f54ebd2a1e5d3fdd865945cecc7737ddd4d79",
+      "branch": "refs/heads/v100-source-family-prefix-trial-20261027",
+      "status_exit": 0,
+      "dirty": [
+        " M tools/v100_backend_probe.py"
+      ],
+      "status_error": "",
+      "local_origin_tracking_sha": "7d0f54ebd2a1e5d3fdd865945cecc7737ddd4d79",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-family-trial-20261027",
+      "HEAD": "f5f640e0ee49b4e84da6283b38cfabaf66d14394",
+      "branch": "refs/heads/v100-source-family-trial-20261027",
+      "status_exit": 0,
+      "dirty": [
+        " M tests/cuda/test_sm70_gguf_concat.py",
+        " M tests/cuda/test_sm70_gguf_exact_actual.py"
+      ],
+      "status_error": "",
+      "local_origin_tracking_sha": "f5f640e0ee49b4e84da6283b38cfabaf66d14394",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-fast-grid-20261027",
+      "HEAD": "dfaa0be9465aa100535b7b8d093ca913068e9dfc",
+      "branch": "refs/heads/v100-fast-grid-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-fast-grid-v2-20261027",
+      "HEAD": "bebf7cbc0bf2b4d3b59bf650764e16457accc7f5",
+      "branch": "refs/heads/v100-fast-grid-v2-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-fast-profiler-20261027",
+      "HEAD": "a4af1a783bcb782743572a3b78d93e3c674daae5",
+      "detached": "",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-fast-tokenizer-20261027",
+      "HEAD": "add6042394c2279a1d4f5f38eadc3ad4c242d897",
+      "detached": "",
+      "status_exit": 0,
+      "dirty": [
+        " M README.md",
+        " M src/tensorfold/cuda/server.py",
+        " M src/tensorfold/families/qwen4_exp/cuda/tokenizer_encode_payload.py",
+        " M src/tensorfold/server/segments.py",
+        " M tests/test_segment_encoder.py",
+        " M tests/test_tokenizer_encode_payload.py"
+      ],
+      "status_error": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-fifo-shutdown-snapshot-20261028",
+      "HEAD": "d3314e2ffdea1a3eac888f61873c53c0dc8ebdec",
+      "branch": "refs/heads/v100-fifo-shutdown-snapshot-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "d3314e2ffdea1a3eac888f61873c53c0dc8ebdec",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-fifo-snapshot-combined-20261028",
+      "HEAD": "dc6fd0caa04af4e2ff9a2d600a8c0deed90b5329",
+      "branch": "refs/heads/v100-fifo-snapshot-combined-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "dc6fd0caa04af4e2ff9a2d600a8c0deed90b5329",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-finite-quality-20261027",
+      "HEAD": "76fa3a50d1206f2889789a61945842fd2b89d57e",
+      "detached": "",
+      "status_exit": 0,
+      "dirty": [
+        " M README.md",
+        " M tools/v100_backend_probe.py",
+        "?? tests/test_finite_quality.py",
+        "?? tools/finite_quality.py"
+      ],
+      "status_error": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-fused-combined-20261027",
+      "HEAD": "af00e6e06402b0781199d4612cc43630ae17db13",
+      "branch": "refs/heads/v100-fused-combined-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-fused-coordinate-20261027",
+      "HEAD": "869bc0b20458bb9f8e8735046edf659b15334af0",
+      "branch": "refs/heads/v100-fused-coordinate-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "869bc0b20458bb9f8e8735046edf659b15334af0",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-fused-readback-20261027",
+      "HEAD": "645f83db7f56ea74758ffde3e0d037a7e0278abc",
+      "branch": "refs/heads/v100-fused-readback-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-gdn-startup3-20261028",
+      "HEAD": "2a053c55b958300b7f290dd80efdd133419d43bd",
+      "branch": "refs/heads/v100-gdn-startup3-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-gdn-state-batch-20261028",
+      "HEAD": "73c463cd2445c659a0c4c6513aba9d041855ecbf",
+      "branch": "refs/heads/v100-gdn-state-batch-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-gdn-state-batch-screen-20261028",
+      "HEAD": "6e028857e2f1b02c8265e924e82931f454e486eb",
+      "branch": "refs/heads/v100-gdn-state-batch-screen-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-gdn-state-batch-seal-20261028",
+      "HEAD": "f6a0d02113716c75408fac2dc5e991b6380c43b3",
+      "branch": "refs/heads/v100-gdn-state-batch-seal-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "f6a0d02113716c75408fac2dc5e991b6380c43b3",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-gpu-local-affinity-20261028",
+      "HEAD": "f11b36c245c596da4a39278b30fa04139ff5f32d",
+      "branch": "refs/heads/v100-gpu-local-affinity-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "f11b36c245c596da4a39278b30fa04139ff5f32d",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-graph-ceiling24-20261027",
+      "HEAD": "1918166c756857dc176eccb035ddf6f1c95f1561",
+      "branch": "refs/heads/v100-graph-ceiling24-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-graph-execution-report-20261027",
+      "HEAD": "669d1f7628ad4931fc9c847343ca11f4e5712361",
+      "branch": "refs/heads/v100-graph-execution-report-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-graph-materialized-gpu-20261027",
+      "HEAD": "79963c0d7d95ab7e1b16c6fc2ef01ec7d081ae85",
+      "branch": "refs/heads/v100-graph-materialized-gpu-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-graph-receipts-20261027",
+      "HEAD": "1a3bc3843719b36cb7191f37f5e80a7cbdeb91e2",
+      "branch": "refs/heads/v100-graph-receipts-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-graph-resource-report-20261027",
+      "HEAD": "87cce8a642246f9b4e48d3f6c771ced3ac0c7c9f",
+      "branch": "refs/heads/v100-graph-resource-report-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-grouped-moe-trial-20261027",
+      "HEAD": "379af620b224af21f38e3d2ceca8f8f1419bce27",
+      "branch": "refs/heads/v100-grouped-moe-trial-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-hc-moe-component-20261028",
+      "HEAD": "8ed7bd05f3b461cba0eff8b5db1231a7402850e8",
+      "branch": "refs/heads/v100-hc-moe-component-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "8ed7bd05f3b461cba0eff8b5db1231a7402850e8",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-hc-moe-hot-rows-20261028",
+      "HEAD": "f0300ac8166349882a3de5f82687e0bf836eeff5",
+      "branch": "refs/heads/v100-hc-moe-hot-rows-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "f0300ac8166349882a3de5f82687e0bf836eeff5",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-hc-moe-hot-rows-screen-20261028",
+      "HEAD": "101f75eed0787145092338004d0138a58715f4d0",
+      "branch": "refs/heads/v100-hc-moe-hot-rows-screen-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "101f75eed0787145092338004d0138a58715f4d0",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-hc-moe-shared-pool-oracle-20261028",
+      "HEAD": "5cd45e3bf41458151f50bdcb8a05dd69640106bd",
+      "branch": "refs/heads/v100-hc-moe-shared-pool-oracle-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "5cd45e3bf41458151f50bdcb8a05dd69640106bd",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-hc-smallrow-fixture-c6-20261028",
+      "HEAD": "7b1167ffd615272bba0ae78753f34831cbe06c13",
+      "branch": "refs/heads/work/v100-hc-smallrow-fixture-c6-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "7b1167ffd615272bba0ae78753f34831cbe06c13",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-hc-smallrow-integration-20261028",
+      "HEAD": "ee6f69c2f857867c1e6223c8248fcb6c5ed0ee50",
+      "branch": "refs/heads/work/v100-hc-smallrow-integration-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "ee6f69c2f857867c1e6223c8248fcb6c5ed0ee50",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-hc-smallrow-vendor-20261028",
+      "HEAD": "a976a29bd56942fa875baceda780c316e9931656",
+      "branch": "refs/heads/work/v100-hc-smallrow-vendor-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "a976a29bd56942fa875baceda780c316e9931656",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-hot16-current-n24-profile-20261028",
+      "HEAD": "84cc902d49d57689aff2d15cbfe0646c126a4f2c",
+      "branch": "refs/heads/v100-hot16-current-n24-profile-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-input-mailbox-codec-20261028",
+      "HEAD": "3631459aa91b71c8ad1dd5b1608524065972c581",
+      "branch": "refs/heads/v100-input-mailbox-codec-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-input-mailbox-selfwait-20261028",
+      "HEAD": "bc7db03ac728499a5752ed06214e00e8057d7d93",
+      "branch": "refs/heads/v100-input-mailbox-selfwait-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "bc7db03ac728499a5752ed06214e00e8057d7d93",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-joint-candidate-finish-20261028",
+      "HEAD": "d5ebfce578dc8a1e3c59bdd27f3dd1558c14043f",
+      "branch": "refs/heads/v100-joint-candidate-finish-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "d5ebfce578dc8a1e3c59bdd27f3dd1558c14043f",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-joint-candidate-screen-20261028",
+      "HEAD": "8d9eeaae1082645679bb02869b2d622515f4791f",
+      "branch": "refs/heads/v100-joint-candidate-screen-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "8d9eeaae1082645679bb02869b2d622515f4791f",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-joint-hc-moe-20261028",
+      "HEAD": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+      "branch": "refs/heads/v100-joint-hc-moe-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-joint-hc-moe-screen-20261028",
+      "HEAD": "022b492d98e531f08900322c6b65fa2b80a0edb6",
+      "branch": "refs/heads/v100-joint-hc-moe-screen-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "022b492d98e531f08900322c6b65fa2b80a0edb6",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-joint-hc-moe-screen-cleanup-20261028",
+      "HEAD": "723a023a1f279d7cb5b7666acf528d126d78a271",
+      "branch": "refs/heads/v100-joint-hc-moe-screen-cleanup-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "723a023a1f279d7cb5b7666acf528d126d78a271",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-joint-single-profile-20261028",
+      "HEAD": "b6369c36131c6432dc82fa7e058be65daaa92dc1",
+      "branch": "refs/heads/v100-joint-single-profile-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-moe-catalogue-screen-20261028",
+      "HEAD": "4db0bc65db11cde26c8414e0b96748f59715b9e9",
+      "branch": "refs/heads/v100-moe-catalogue-screen-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "4db0bc65db11cde26c8414e0b96748f59715b9e9",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-moe-fusion-screen-20261028",
+      "HEAD": "654d456e7ebac066f52c2e9a0867d09297455473",
+      "branch": "refs/heads/v100-moe-fusion-screen-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "654d456e7ebac066f52c2e9a0867d09297455473",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-moe-region-graphs-20261028",
+      "HEAD": "b06cb17997a444ebfb9b11d83e48be1441c9c3f1",
+      "branch": "refs/heads/v100-moe-region-graphs-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "b06cb17997a444ebfb9b11d83e48be1441c9c3f1",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-moe-shared-fusion-20261028",
+      "HEAD": "073649a963d0d2df5f6b8fbd207de51ad2ab5d64",
+      "branch": "refs/heads/v100-moe-shared-fusion-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "073649a963d0d2df5f6b8fbd207de51ad2ab5d64",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-mtp-confidence-zero-20261028",
+      "HEAD": "2aee41c95b979c53d1c7c699878d425708e5fd5c",
+      "branch": "refs/heads/v100-mtp-confidence-zero-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-n1-frame-descriptors-20261028",
+      "HEAD": "149e52a28a3297b7c98383a5576083b2743c23ed",
+      "branch": "refs/heads/v100-n1-frame-descriptors-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-native-dense-trial-20261027",
+      "HEAD": "92d0b5956a5e88a4b182cbc4a280bd3b59c3e1d4",
+      "branch": "refs/heads/v100-native-dense-trial-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-native-owner-trial-20261027",
+      "HEAD": "5376e2d3be0ee0f69c953e9f46cf60679357441f",
+      "branch": "refs/heads/v100-native-owner-trial-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-native-storage-metadata-20261028",
+      "HEAD": "4f2a73c78293b0e282d10aef9ffb11d831cbe243",
+      "branch": "refs/heads/work/v100-native-storage-metadata-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "4f2a73c78293b0e282d10aef9ffb11d831cbe243",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-ncu-component-20261027",
+      "HEAD": "1d56666309566087b4da514d29a45b4f2b9afbc1",
+      "branch": "refs/heads/v100-ncu-component-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-ncu-operator-20261027",
+      "HEAD": "685198621e0d841b0782e91a9061561fd5815a35",
+      "branch": "refs/heads/v100-ncu-operator-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "685198621e0d841b0782e91a9061561fd5815a35",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-ncu-operator-int32-20261028",
+      "HEAD": "7af9b891cfef4047d2340bb539c7f8c3ac0e65b6",
+      "branch": "refs/heads/v100-ncu-operator-int32-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "7af9b891cfef4047d2340bb539c7f8c3ac0e65b6",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-attention-graphs-20261028",
+      "HEAD": "deec48bef2370b01e473661638683f15a80f43f9",
+      "branch": "refs/heads/v100-owner-attention-graphs-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "deec48bef2370b01e473661638683f15a80f43f9",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-attention-single-final-profile-20261028",
+      "HEAD": "dc05c3f890d582a1fc3b7946a38cb8fdfa7850bd",
+      "branch": "refs/heads/v100-owner-attention-single-final-profile-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-attention-single-profile-20261028",
+      "HEAD": "939a26265e5e69e4184fb43e0fe8cff30796664d",
+      "branch": "refs/heads/v100-owner-attention-single-profile-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-batch-prelude-20261027",
+      "HEAD": "08188e8303b00e992efa710be2a37be8cfe90e61",
+      "branch": "refs/heads/v100-owner-batch-prelude-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-descriptor-ring-20261027",
+      "HEAD": "8ac214f9c2a164e73c4577ee3f7df5e518326357",
+      "branch": "refs/heads/v100-owner-descriptor-ring-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "8ac214f9c2a164e73c4577ee3f7df5e518326357",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-fixture-diagnostics-20261027",
+      "HEAD": "4e7d0f375b9946ecdd66f890ee49a010d1b0b49e",
+      "detached": "",
+      "status_exit": 0,
+      "dirty": [
+        " M tests/cuda/test_sm70_owner_graphs.py",
+        "?? tests/test_sm70_owner_graph_diagnostics.py"
+      ],
+      "status_error": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-native-prelude-20261027",
+      "HEAD": "631d5e25dacf450b165903a7654e1e24559d5b7a",
+      "branch": "refs/heads/v100-owner-native-prelude-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-piece-integration-20261027",
+      "HEAD": "7afe2564d251f268e2e33c27e5ab78eb3e724100",
+      "branch": "refs/heads/v100-owner-piece-integration-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-pieces-fast-20261027",
+      "HEAD": "266ff97681194f026116bfc516a4728b06da23a1",
+      "branch": "refs/heads/v100-owner-pieces-fast-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-prelude-coordinate-alias-20261027",
+      "HEAD": "ff95df40a6f835ae042df2acf2c528804545374b",
+      "branch": "refs/heads/v100-owner-prelude-coordinate-alias-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "ff95df40a6f835ae042df2acf2c528804545374b",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-prelude-mtp-text-20261027",
+      "HEAD": "e3ed8297483da2c58cb0c0067c9f5e848d35b6f8",
+      "branch": "refs/heads/v100-owner-prelude-mtp-text-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-prelude-native-positions-20261027",
+      "HEAD": "734960f4c279a92c7ce008439763fde34003c827",
+      "branch": "refs/heads/v100-owner-prelude-native-positions-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "734960f4c279a92c7ce008439763fde34003c827",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-target-funded-fast-20261027",
+      "HEAD": "3b649c72f37a8e2c56692af55b82769f62fc87a6",
+      "branch": "refs/heads/v100-owner-target-funded-fast-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "3b649c72f37a8e2c56692af55b82769f62fc87a6",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-target-greedy-20261027",
+      "HEAD": "5ff2be14b5f5efe0c265654769dd39750b45a2ca",
+      "branch": "refs/heads/v100-owner-target-greedy-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "5ff2be14b5f5efe0c265654769dd39750b45a2ca",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-target-grouped-20261027",
+      "HEAD": "ed058b1e690adbe70be04a0ed99d5d8a09457c88",
+      "branch": "refs/heads/v100-owner-target-grouped-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-target-grouped-funded-20261027",
+      "HEAD": "5915c1bd6f072ed34db622bb2ed941280112930b",
+      "branch": "refs/heads/v100-owner-target-grouped-funded-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-target-guard-20261027",
+      "HEAD": "815f4ef9c130dceb720874430aa45f34181cff63",
+      "branch": "refs/heads/v100-owner-target-guard-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-target-guard-maps-20261027",
+      "HEAD": "0a097d87fe30a7f0dcc6f9840d231c29e84efdcc",
+      "branch": "refs/heads/v100-owner-target-guard-maps-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "0a097d87fe30a7f0dcc6f9840d231c29e84efdcc",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-packed-graphs-active-grid-20261027",
+      "HEAD": "4c2f0e4d26444541c47ad2eebd5056429165cac8",
+      "branch": "refs/heads/v100-packed-graphs-active-grid-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-packed-graphs-integration-20261027",
+      "HEAD": "3c08cfb50ffc7359d12898a82fb394f3f14ae379",
+      "branch": "refs/heads/v100-packed-graphs-integration-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-packed-graphs-intent-20261027",
+      "HEAD": "af902e61779643df89bda7abcdafd5b0921e1a53",
+      "branch": "refs/heads/v100-packed-graphs-intent-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-packed-integration-20261027",
+      "HEAD": "35a457d5857e3337fd1f5ac556ed35b89af26ac0",
+      "branch": "refs/heads/v100-source-packed-trial-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-packed-kernels-20261027",
+      "HEAD": "cde5777e198fc3239822f29af82689141017d76f",
+      "branch": "refs/heads/v100-packed-kernel-exact-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-packed-wmma-20261027",
+      "HEAD": "cf1f1c788191c78564ba0e0759e7279914af907d",
+      "branch": "refs/heads/v100-wmma80-candidate-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-perf85-integration-20261027",
+      "HEAD": "c7bea7902bb0639b432edbcbbacbbad04deb4cb6",
+      "detached": "",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-phase-batch-20261027",
+      "HEAD": "ed79d7ba80bbe62df5b827e2e5c212ee06110a10",
+      "branch": "refs/heads/v100-phase-mailbox-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-phase-integration-20261027",
+      "HEAD": "7d0f54ebd2a1e5d3fdd865945cecc7737ddd4d79",
+      "detached": "",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-ple-combined-staging-20261028",
+      "HEAD": "146f8a818d11ea69ca5b9cbd0f3d1f90067896ac",
+      "branch": "refs/heads/work/v100-ple-combined-staging-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "146f8a818d11ea69ca5b9cbd0f3d1f90067896ac",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-portable-audit-20261026",
+      "HEAD": "f80c4f87c662085a32e2737835b981011df5abf0",
+      "detached": "",
+      "status_exit": 0,
+      "dirty": [
+        " M tests/cuda/test_sm70_unique_history.py",
+        "?? tests/test_v100_backend_probe.py",
+        "?? tools/v100_backend_probe.py"
+      ],
+      "status_error": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-profiler-capture-20261027",
+      "HEAD": "7d0f54ebd2a1e5d3fdd865945cecc7737ddd4d79",
+      "detached": "",
+      "status_exit": 0,
+      "dirty": [
+        " M README.md",
+        " M tests/test_v100_backend_probe.py",
+        " M tools/v100_backend_probe.py"
+      ],
+      "status_error": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-ring-single-profile-20261028",
+      "HEAD": "c94ad8dbfbfd6b694c04512e76d6476ba548a7d8",
+      "branch": "refs/heads/v100-ring-single-profile-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-router-cublas-batched-20261028",
+      "HEAD": "490a49c2013f29b9551eec5d573da7c5fa852b63",
+      "branch": "refs/heads/v100-router-cublas-batched-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-router-cublas-model-20261028",
+      "HEAD": "30c3bf3199cd6cb45075c1e749b2c798ed0c8412",
+      "branch": "refs/heads/v100-router-cublas-model-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-router-cublas-model-wiring-20261028",
+      "HEAD": "f0a3bfd535f039315591d8b2f1cdba8d348f03c1",
+      "branch": "refs/heads/v100-router-cublas-model-wiring-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "f0a3bfd535f039315591d8b2f1cdba8d348f03c1",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-router-gdn-integration-20261028",
+      "HEAD": "146f8a818d11ea69ca5b9cbd0f3d1f90067896ac",
+      "branch": "refs/heads/v100-router-gdn-integration-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "146f8a818d11ea69ca5b9cbd0f3d1f90067896ac",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-router-gdn-n24-profile-20261028",
+      "HEAD": "eb7179abb8826a30f952c6d0759b268f75242984",
+      "branch": "refs/heads/v100-router-gdn-n24-profile-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-router-gdn-shared-fusion-20261028",
+      "HEAD": "42f522f02ef9c58237bfaf7eafd7b18adefa3ed8",
+      "branch": "refs/heads/v100-router-gdn-shared-fusion-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "42f522f02ef9c58237bfaf7eafd7b18adefa3ed8",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-router-gdn-wmma80-20261028",
+      "HEAD": "1db0dbab8d3d033516ae6b6747ee509e107693c7",
+      "branch": "refs/heads/v100-router-gdn-wmma80-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-router-moe-catalogue-20261028",
+      "HEAD": "f6978a15ca8448ddbbebfaedbf9d11c6b802c3c6",
+      "branch": "refs/heads/v100-router-moe-catalogue-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "f6978a15ca8448ddbbebfaedbf9d11c6b802c3c6",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-router-moe-region-graphs-20261028",
+      "HEAD": "800396fa9f6908b9dea0a0edb47bbecc72cb9c2b",
+      "branch": "refs/heads/v100-router-moe-region-graphs-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-startup-guard-maps-20261027",
+      "HEAD": "c0f49f4998e47af99633a099769b675dbdd3fd43",
+      "branch": "refs/heads/v100-startup-guard-maps-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-startup-hash-overlap-20261027",
+      "HEAD": "32bc97fbddbd4157894fd88af5608142870bf0ce",
+      "branch": "refs/heads/v100-startup-hash-overlap-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-startup-mtp-prelude-20261027",
+      "HEAD": "521d78ba1edffab669546d6b1ee26bfa17db09e8",
+      "branch": "refs/heads/v100-startup-mtp-prelude-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "521d78ba1edffab669546d6b1ee26bfa17db09e8",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-startup-prelude-20261027",
+      "HEAD": "ee248b80fdddfe01fb1af1a595385fd84928c44e",
+      "branch": "refs/heads/v100-startup-prelude-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-startup-three-file-hash-20261027",
+      "HEAD": "d73d4c962a4a691e7150eb4f77923a5b0121bfbd",
+      "branch": "refs/heads/v100-startup-three-file-hash-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "d73d4c962a4a691e7150eb4f77923a5b0121bfbd",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-target-greedy-20261027",
+      "HEAD": "41894a4548bcc0224e89804f77a08d8f3547fa1e",
+      "branch": "refs/heads/v100-target-greedy-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-unique-graphs-20261027",
+      "HEAD": "6b46606965c45679b17a0bbc58964a2c5e1d09c0",
+      "branch": "refs/heads/v100-unique-graphs-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-unique-graphs-prefix-diagnostic-20261027",
+      "HEAD": "a09bc4ee1bbeca87491998b4be8bd57932ac9528",
+      "branch": "refs/heads/v100-unique-graphs-prefix-diagnostic-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-unique-graphs-retirement-20261027",
+      "HEAD": "432e3cda298812e02e911bfd66cd5dc505c3ba8c",
+      "branch": "refs/heads/v100-unique-graphs-retirement-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-unique-graphs-rightsize-20261027",
+      "HEAD": "4e7d0f375b9946ecdd66f890ee49a010d1b0b49e",
+      "branch": "refs/heads/v100-unique-graphs-rightsize-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-unique-graphs-transfer-20261027",
+      "HEAD": "28c97f1690582e5842211f4d504d90994f08cb39",
+      "branch": "refs/heads/v100-unique-graphs-transfer-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-unique-static-maps-20261027",
+      "HEAD": "cff7b6b89f90b56f4cfa62211a646329697206be",
+      "branch": "refs/heads/v100-unique-static-maps-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": "cff7b6b89f90b56f4cfa62211a646329697206be",
+      "tracking_equal": true
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-vendor-blas-n1-shapes-20261028",
+      "HEAD": "2ae90c586acdfdb30b3a1040b10a84fe4c884353",
+      "branch": "refs/heads/v100-vendor-blas-n1-shapes-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-vendor-blas-retire-envelope-20261028",
+      "HEAD": "734484a2cd2760f97954918145674323691e865e",
+      "branch": "refs/heads/v100-vendor-blas-retire-envelope-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-vendor-blas-shapes-outcome-20261028",
+      "HEAD": "b4e6af85c2b742512ffe573a1266747f5ac89e98",
+      "branch": "refs/heads/v100-vendor-blas-shapes-outcome-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-wmma-profile-20261027",
+      "HEAD": "f9f644663cede4f9bb8989736eb342842acddae1",
+      "branch": "refs/heads/v100-source-wmma80-trial-20261027",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-wmma80-current-harness-20261028",
+      "HEAD": "e1881d5457de738c5cb4bfe635b8f8347c1cd854",
+      "branch": "refs/heads/v100-wmma80-current-harness-20261028",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/verification-git",
+      "HEAD": "8523189b37c6fd8c0e319e5bce040104c36be811",
+      "branch": "refs/heads/verification-git-20261018",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": "",
+      "local_origin_tracking_sha": null,
+      "tracking_equal": false
+    },
+    {
+      "worktree": "/home/kklouzal/audit-artifacts/gemma4-throughput-20261020/candidate-arm64/source-capture-only",
+      "HEAD": "cda5d48e0f8f589bf8dbf28b50c8fea752684b89",
+      "detached": "",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": ""
+    },
+    {
+      "worktree": "/home/kklouzal/audit-artifacts/gemma4-throughput-20261020/release-guard32/source-capture-only",
+      "HEAD": "259b4238ae16d8019c106603f104b18cbffb385a",
+      "detached": "",
+      "status_exit": 0,
+      "dirty": [],
+      "status_error": ""
+    }
+  ]
+}

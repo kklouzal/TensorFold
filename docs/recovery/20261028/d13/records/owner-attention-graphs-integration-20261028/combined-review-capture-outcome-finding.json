@@ -1,0 +1,22 @@
+{
+  "at": "2026-10-28T01:10:07.672176+00:00",
+  "status": "OPEN verified C5/C6 newlyactivatedcapturefailure-path finding; soleauthorremediation",
+  "scope": "OwnerAttentionGraphs._capture anddirect_poison, actualpreparedroleactivationfromprivateprofile; no broaderhelperaudit",
+  "source_frame": "83723634/6649/a2ce (unchangedexistinghelper)",
+  "finding": [
+    {
+      "site": "_capture",
+      "cut": "errors=[] afteracceptedcapture_begin andrunprimary; canfailbeforecapture_end andreplaceprimary. append afterendfailurealsooutsidehelperprotection.",
+      "required": "Preallocateboundedsecondaryslotbeforebegin, alwaysattemptendafteracceptedbegin/run, preserveoriginalrunprimaryandendsecondary, handlecleansuccesswithoutinvalidraise_failures(None,[None])."
+    },
+    {
+      "site": "_poison",
+      "cut": "raise_failures(error,[notification]) buildslistbeforeprimary-preservinghelper; allocationfailurecanreplaceoriginalduringnotificationfailure.",
+      "required": "Guardargumentpreparation/fixedstoragewithoriginal+notificationretained; keepfailurelatchandfatalnotificationorder."
+    }
+  ],
+  "earlier_fixed_finding": "NewprofileEngineauto resident<24conditionomissionfixedonepredicate+actual23reject/24+26allow274CPU; fixturemodefamilyassertfixedseparately44CPU, no mathorStateoracleweakening.",
+  "source_safety_other": "No otherconcretepool/address/descriptor/nativeDone/NCCLparticipationfindingincurrentread; preparedroleGraphsandolduncapturedcontractseparate, frame/cataloguevalidation beforegraphmutation, borrowedslab/nativecommretiredaftergraphfences.",
+  "actual": "Rootcurrenta2ce53ALLPASS24.04simplyvalidsuccess-pathnumerical/lifecycleevidence; no failure-contract orfull24/P3qualificationinferred.",
+  "remaining": "AwaitactualmethodCPUfaultregressions/currentwholewheelHOLD/stagebinding; noGPUoroverlappingsourcewritesbyreviewer."
+}

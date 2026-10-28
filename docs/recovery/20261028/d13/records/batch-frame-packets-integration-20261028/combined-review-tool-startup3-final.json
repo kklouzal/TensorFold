@@ -1,0 +1,29 @@
+{
+  "schema": "tensorfold.combined-d13-incremental-tool-stage-binding-v1",
+  "at": "2026-10-28T04:23:14.859527+00:00",
+  "commit": "712283679f89b80a9d58420694f93febd7160771",
+  "source_hold_sha256": "9259796ddab8cbd360c82ef083eefce847f9763da39d73c0b164bd535cd98807",
+  "runtime_commit": "c2de6ac36c80554bc837b4c6633a5caeaa85b632",
+  "runtime_source_review_sha256": "f2a5967a83542242b7eef62103560a44f697ca6035aa9addf97afe0858c7a28c",
+  "component_stage_review_sha256": "4f3b2bd72d9a81860973629f55ca5668b1cb5df27fe79d6df7d4ed26c3fd6728",
+  "wheel_sha256": "1d83d23dc6ffb1def73486670c0ee096e3d876d44cbcfb3856afc38481a7a5b0",
+  "status": "SCOPED SOURCE/CLEANUP/COMPLIANCE AND CURRENT FAST STAGE BINDING CLOSED; actual numerical/model/P3 gates remain Root-owned",
+  "checks": [
+    "runtime src diff empty712283 versusc2de; no change to funded metadata/native math/frame/Batch ownership",
+    "current additive HOLD hash and all38 source-path hashes matched",
+    "tool delta limited to reviewed694b workers1/3 CLI, overlap/manifest/inherited worker-count validation, launch environment/report fields and changed batch_prelude affected-source fingerprint",
+    "defaultworker1 unchanged; explicit3 only with funded overlap; every rank receives exact env before startup; current sourcePlan retains226504704B global3-worker obligation before first thread starts",
+    "126 author CPU PASS5.99s/Ruff/help on sameAPP reused; no broad duplicate suite or GPU/remote execution",
+    "20 FAST manifest files independently matched SHA+size; current HOLD9259/APP1d83 and sourceprofile matched",
+    "controller keeps same sixNs,2048FASTv2,24fullcontextQ8,MTPdepth2/confidence.7,10swindows/30sreadiness,EOS,late-native-output retention/drain,6quality320,manifest9533/cache; adds explicit workers3 as already supported by runtime",
+    "normal719+FD/protected closure remains; raw bounded host counters and missing/overflow distinctions retained"
+  ],
+  "findings_dispositions": "No new tool/lifetime/funding/source finding. Previous descriptor dynamic-budget, final-host obligation and needless-dispatch findings closed in c2de, not retroactively in frozen149.",
+  "pending": [
+    "Root current59 numerical integration/postnormal-source verification before model comparison",
+    "actual Engine24physical windows and fixed all6 FAST/raw native IDs/drains/quality; inspect actual per-role frame submitted/copied/borrowed deltas to distinguish active optimization from fallback (N1scalar borrowing zero is expected)",
+    "performance against current86cb development reference and complete tiered objective; higher-tier tradeoffs require Root decision, no unstated regression margin",
+    "repeat/stability/fullhistory/service qualification deferred per user quick-iteration direction, not certified by this review"
+  ],
+  "stage_ready_sha256": "5e34be87605ddff11a297830b4ad71b39395d8ec92cdec12a6b8ca7f666ae6fc"
+}

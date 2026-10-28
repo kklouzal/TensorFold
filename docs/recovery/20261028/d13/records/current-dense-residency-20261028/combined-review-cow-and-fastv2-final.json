@@ -1,0 +1,74 @@
+{
+  "schema": "tensorfold.combined-d13-review-v1",
+  "at": "2026-10-28T01:25:59.917539+00:00",
+  "status": "CLOSED incrementalfixture+FASTv2source/stages; all6P3pending",
+  "scope": "Reusea9c5runtime/e20b/4efe; only3ddvalidscopefilter,a702COWfixture,f0a78tool/preflight/controller within3hops; no kernelre-audit",
+  "commit": "f0a78fa0f607256db459486ed4989ed7a41dddb3",
+  "hold_sha256": "1747a491a4a8172f90a5676e3e4ffc4102cdab95b80649814508ea7ed2e3154a",
+  "runtime_wheel": {
+    "path": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3142884,
+    "sha256": "4efee794469bade8b86bf964cca1fd72dd33e98ec4d4228baa5e201747fde2e9"
+  },
+  "stages": [
+    {
+      "path": "gpu-stage-valid-retry-failed-cow",
+      "files": 30,
+      "manifest_sha256": "ab73d710c647d335515350a0a1845ae73e8fac050fb6637970a692692c236fd3",
+      "ready_sha256": "cff13157f6a477e135e52cad05599d16e4db1c56103aa291aca045527db98f35"
+    },
+    {
+      "path": "gpu-stage-cow-tp8",
+      "files": 31,
+      "manifest_sha256": "d14c6c8b87b7c58ff9722a672194207aff415a66acf788cba4f671d3ef91d176",
+      "ready_sha256": "b29f5af3195c756d2a90e849224e2266cbcef14b553b87f4bc07cfaead74f0f3"
+    },
+    {
+      "path": "fullmodel-fastv2/stage",
+      "files": 20,
+      "manifest_sha256": "351684850d5658b21ddf840ffdb81d32865da8d88c2005b1d5edcaccbb216cd0",
+      "ready_sha256": "d28c6aa57ea180f8e9f71de57ba4b2bd93d6602fa55a4d3229b144119bb43100"
+    }
+  ],
+  "findings": [
+    {
+      "rules": [
+        "T0",
+        "Q0",
+        "Q3",
+        "X12"
+      ],
+      "finding": "Unrelatedlegacyprivateattention/PADDEDTruefunctionasksinvalidmethodnone/depth2beforenewintegration.",
+      "disposition": "Exactly4namedinstancesexcluded, canonicaltestsuntouched;109/113collectionandallprior55passesretained,53currentprelude+newboundDenseTP8required. Oldc896/431/4efefailures preserved; NOTPASSED/nolegacyqualification. No broadskip/oracle/toleranceweakening."
+    },
+    {
+      "rules": [
+        "C1",
+        "M3",
+        "Q0"
+      ],
+      "finding": "Converterrebuiltunchangedembeddingtuplebeforeexistingidentityassert; reviewera9c5missedfixtureprerequisite.",
+      "disposition": "COWdataclass/list/tuplepreservesoriginalwhenallchildrenidentical; memopreserveschangedowner/head/repeatedlayer/stockMTPaliases. RealCPUcreatorbodiesandactualembeddingtuplenowtested5CPU/Ruff; allGPUassertASTsindependentlyidentical. RootcorrectedboundDenseonecasePASS18.88,prior108validcases unaffected andnotrerun/duplicated."
+    }
+  ],
+  "tool_review": [
+    "4efealreadyallowsDenseoverlaphashscope; actualEngine-type/MethodGeometrymtp2CPUtestconfirmsfundedplan, noAPPfix/build. ExplicitDenseintentmatchingprofile/ceiling24, realfactorygraphsTrue/nativeownercontract/reportchecks preserved.",
+    "Finitehelperbyteexactclosedbebf7; protocolfunctionASTsexceptarguments/record_execution_profile/workerexact.2048/30ready/10decode/sixNs/EOS/MTP.7/native262144+24Q8/pointercopy589824/realadmission+nativeIDs+drain+sixquality320unchanged.",
+    "No shippingmatmulcounter/allDensecallsnativeclaim; inheritedpreludetarget/MTPcountersandactualDenseclass/metadatarecorded, requiredgenericfallbackretained. Manifestuncapturednativeattention; capturedOwnerC6capabilityseparate.",
+    "20freshFASTstagefiles/sourcehelpers/protectednormal4efe717+FD verified. ControllerexplicitLAZYrecorded; effectiveloading/sameREGION/performancecomparison remainsRootmeasurementresponsibility. No dead/unjustifiedduplicationoradditionalverifiedsourcefinding."
+  ],
+  "evidence": {
+    "CPU": "265passed12.81/Ruff/normal4efe717FD",
+    "command_sha256": "48a3531941a3e8bab2b230ddb11afeeb401982aceaf4948cdbee23038109c724",
+    "exit_sha256": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17",
+    "tool_proof_sha256": "8e2b7732b7216575d32e99a6b33dc9020e245043fcf948ce95907c0a37239e0b",
+    "cow_proof_sha256": "59ed0cf3c89c06a6535bda725fc2062ab0bc0338edd6fc5ca8b02238666e299b",
+    "retry_scope_sha256": "e555bd1ee043ffb0c88f886799d91f5d3939cfd9ccaa582c3ab32160c55c5e79",
+    "actual": "Root108previousPASS+1correctedTP8PASSnonoverlap, do notaddolder55again;4legacycasesexplicitlydeselected/notpassed.",
+    "reviewer": "Read/hash/ASTonly; noGPU/rebuild/duplicatetests"
+  },
+  "remaining": [
+    "ActualRootall6live24capacity/admission/source/counters/nativeIDs/drains/qualityandmatched5635v2reference",
+    "P3repeats/allNsnonregression/85+600/broadquality/releasequalification; no claimsfromCPU/components"
+  ]
+}

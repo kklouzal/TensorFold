@@ -1,0 +1,35 @@
+{
+  "schema": "tensorfold.combined-d13-readback-source-stage-review-v1",
+  "at": "2026-10-28T07:58:04.628194+00:00",
+  "reviewer": "/root/cleanup_review",
+  "commit": "9f52e8b680cc082dd7a4c4b8d6c1a83e7a7b10f1",
+  "source_HOLD_sha256": "6f7f6f635740ffe9147715c7ec7d625053c33d7c687a0a7463ba378ce8c2d9eb",
+  "model_HOLD_sha256": "4ada1aefc6fd51233fded4aa8f929ae8a02490470edf51aa58b6dba8e39d9d22",
+  "APP_sha256": "a451810cad55e1d54bd5785f4c528e75d14b7f5176d8784e3bc8b73ae75522a7",
+  "status": "SCOPED SOURCE/CLEANUP/COMPLIANCE + GPU/MODEL STAGE BINDING CLOSED; actualall6P3/selection separate",
+  "scope": "3runtimefiles decode/kv_status/multi and related candidate producer/status/chooser/caller/arena/budget interfaces; \u22643hops; no reviewerGPU or broadretests",
+  "causal_correctness": [
+    "Originaltarget/MTP completeworldFP32candidate packets are produced before the SAMEupstream status readback boundary. No candidate-generation math orcollectiveordering moved.",
+    "Statusgather stillchecks matchingFP16States/rank/world/shape. Packedcopies opaqueF32bits D2D into candidatearena thencontiguousD2H; splitcopies status/candidates into disjoint prepaidpinnedspans; eachhasONEcurrentstream completionfence.",
+    "check_received executes before NumPyowner.copy or anycandidatevalueinterpretation/exposure. Invalidpacket/layout preserves originalstatus-firstprecedence via check. Local+peer numericerrororder and reset/poisonbehavior retained; enqueue/collective/wait uncertainty latches owner._readback_error for terminalretirement.",
+    "read_candidates returns exactownedcontiguousF32[world,rows,65], sufficientprefix validated; original opaque int32 tokenword bits preserved by representation-copy. CompleteFP32values/tokens/padding/cutoff/targetselector/FP64LSEconfidence/mathreturn suffix independently ASTexact7de. No tolerance orRNG/tie/EOS change."
+  ],
+  "ownership_budget": [
+    "Samecandidate_rows GPU/pinnedarena and oneescaped NumPyowner paid by existingworkspace_bytes. Added actualsys.getsizeof2tuple=56B percohorthandoff enters same pre-admission hostforecast; no newGPU/pinned allocation introduced.",
+    "Targetcaller clears owned packet beforeMTP producer. MTPtuple handedonce and clearedeveryproposal/earlyreturn/error; _round/_draft_all/_picks/_mtp finallyclear formal/local references; chooser clearsg/norms/gathered views onhelderrors. Values/tokens/FP64norms areindependentcopies, soexceptiontracebacks do notretain oldescapedpacket acrossarena reuse.",
+    "N1/compacttarget, nonuniform/non-greedy/copy/grammar/prefillcoupled/DFlash/drafthead/othercapability paths retain existing transport/selector semantics. Refreshcoalescing requires allproposing/noCopy; changedactive rowsetgets nextfresh packet, no stalepayloadrow reuse.",
+    "Originalgeneric traceback behavior retained; required originalsource/fullrow repairs and independentoracles notremoved. Explicitpacked/split alternatives shareparser/fence but are not errorfallbacks."
+  ],
+  "evidence": {
+    "author_CPU": "20narrowtransport/status/layout/tie/held-error/lifetime +3caller/RNG +2badlayout/numericprecedence PASS;Ruff/pip/718+FDc79; no duplicatebroad250suite",
+    "independent_binding": "1857heldsourcepathhashes matched; exactly3runtimefilediffs7de;29GPUstage+21modelstage SHA/size/HOLD/APP matched; all5modeltools EXACT7de; normal718+FDc79",
+    "actual_GPU": "Root15362 actual2PASS40.67s/exit0/prepostnormal718FD; realNCCL8 BOTHIO layouts success/remoteNumericError/noNumPyexposure/arenaoverwrite andreal2attention8State96tokenMTP SPLIT212calls/rank+alloldstate/assertions/weakrefretirement",
+    "IO_cost": "tinycorrelated8sampleABBA pooledmedianpacked467.204us/split472.110us,7/8rankmedianpackedlower; means468.999/470.009. Exploratoryoperatorcost ONLY; no strictgain/equivalence/endtoendP3 inferred. Packedincumbentretainedpendingall6; strictoracles unchanged.",
+    "mathpolicy": "selectedfoundationTrue FP16reducedprecisionreduction/FalseFP16accumulation unchanged; no flagwrites ornewnumeric approximation"
+  },
+  "findings_disposition": "Currentheldresumedsource resolves priorcaller-held error-lifetime cuts with ordinary finallyscopes and onefundedowner; no additionalconcrete scopefinding. Previous545/96aa/intermediatefailures preserved separately, no retroactivequalification.",
+  "remaining": [
+    "Rootcurrentpackedall6status/IDs/rolecoverage/drain/capacity/quality andtier24>16>8>4>2>1 comparison",
+    "pairedcurrentGDNreference/region uncertainty decisions Root-owned; no85/600/servicequality/globalcompletion claim"
+  ]
+}

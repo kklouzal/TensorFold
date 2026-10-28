@@ -1,0 +1,49 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T21:41:13.170555+00:00",
+  "status": "CLOSED grouped tool-only funded receipt successor; no new runtime/math qualification",
+  "reviewer": "/root/cleanup_review",
+  "commit": "5915c1bd6f072ed34db622bb2ed941280112930b",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-grouped-funded-fast-20261027/source-hold.json",
+    "sha256": "c24319cfe553e42845365ecb6e7f3067392041f9d0d7d403d5acfa2fd9fb5b4d"
+  },
+  "application": "Allsrc bytes unchangeded058/12cd; reuse grouped composition7418 and Root3b649 funded tool08b9 proof",
+  "delta": "Only four tool/test/README paths; same follower256KiB/global2,424,832/grid60,620,800 pre-finalizer bound. All existing tool function/class ASTs unchanged except receipt docstring; constant changed intentionally. Benchmark/generation/quality/helper source unchanged.",
+  "checks": "235 normalinstalledCPU13.43s with declared4CPUs/Ruff/pip passed. Initial2CPU234PASS/one40msN16window expectation failure retained; source/assertion/timer unchanged. This is a recorded noisy scheduling-sensitive unit fixture configuration, not a gain/equivalence or new supported application CPU-floor claim.",
+  "cleanup": "No verified remaining new dead path, duplicate authority or required safe simplification in tinydelta. Runtime/operator/oracle source unchanged and alreadyreviewed.",
+  "pending": [
+    "Actual fullmodel/quality/all6 performance and85/600/no-regression",
+    "Do not aggregate old860grouped and235tool overlapping test counts; historical sourceHOLD pending labels remain gate history"
+  ],
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-grouped-funded-fast-20261027/command.json",
+      "sha256": "3336f1a05dafcadeaee6353eb39316a5198488a25b44c8572e58a05b2e1fd9d4"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-grouped-funded-fast-20261027/controls.log",
+      "sha256": "3e09dcdb624343a985b82ac1e3e89a1e47dc1cf078a12a97e7169c2b9bf8952b"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-grouped-funded-fast-20261027/exit.json",
+      "sha256": "56296949d3a02e635b050fd6b4762f0f0b52c23d05b925203095f7daf8e19027"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-grouped-funded-fast-20261027/retry-command.json",
+      "sha256": "a7999e6c7293f39aa16207fb0f39a01b95acafb5c0ce00f0ce8d896a129c12b9"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-grouped-funded-fast-20261027/retry-controls.log",
+      "sha256": "77141410c8f4a20dbb78d212b7a000cabe53fad014619114429e5361846554f7"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-grouped-funded-fast-20261027/retry-exit.json",
+      "sha256": "81868a6e94ffc0178bf833deb1c9013d9fab4ee95ddb876a5e8ec4f1d26376d2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-grouped-funded-fast-20261027/fast-stage/stage-ready.json",
+      "sha256": "6a084bc32199ba9e8178351a359a1820e2bd47fe2b3b59cab2f9a379b6cbdad2"
+    }
+  ]
+}

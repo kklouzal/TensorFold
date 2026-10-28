@@ -1,0 +1,7 @@
+{
+  "at": "2026-10-28T01:42:15.112784+00:00",
+  "supersedes_only_actual_status_in_review": "d9d21830c91f7bbf0e8597db8c0c9668a12ec1f1f206868e9c9f097f62f78a32",
+  "correction": "Root87515actualcurrenta2a5component53GPU PASS24.79s/exit0. Priorstage-reviewremaining53unrunwordingis supersededbythislaterRoot-report binding, notsource/gate failure.",
+  "still_unrun": "Actualthree-workerEnginehashstartup/nativeoperation/stack/resource receipts andfullmodel/all6P3; direct53GPUfixturedoesnotexerciseEngineworker3startup.",
+  "source_and_review": "8840939d/478ad0/a2a591 unchanged; sourceae4f+staged9d remainclosed; no rerun/sourcechange/reviewexpansion."
+}

@@ -1,0 +1,46 @@
+{
+  "schema": "tensorfold.combined-d13-review-v1",
+  "at": "2026-10-28T03:37:18.407170+00:00",
+  "status": "CLOSED ownedreader-remediation/currentfutureprofile source; nofreshstage/GPUqualified",
+  "scope": "N24onlyprivateinstrumentation/closed3f460capture+Densepolicyintegration,512label/128threadtables,168/169C6scope plusownedboundaryretention/resourcecorrection within3hops; no genericupstreamsuite/newparserrewrite",
+  "commit": "4c75bed1ec3fc801722b4f74f8664a352405434e",
+  "hold_sha256": "885f9b6a7fa53f0471f5cd08b291345a9b4e03b62376509e8945bc09201c4f5c",
+  "findings": [
+    {
+      "rules": [
+        "C5",
+        "C6"
+      ],
+      "prior": "Old6effinallyclosecanreplaceparseprimary",
+      "fixed": "475b pre-openprimary/fixedjournal+finish_failures preservesboth; actualtruncatedJSON+realfileclosefault. Positive6efsuccessflowstructurallysame, nofixedfailureclaimfromoldcapture."
+    },
+    {
+      "rules": [
+        "M0",
+        "M1",
+        "C1"
+      ],
+      "prior": "Stream.valueboundarylookaheadhelddecodedvaluewhilemore/reparse pluspreviousyield, permitting3objectgraphs; unproved2GiBreserve.",
+      "fixed": "4c75deletesunuseddefaultJSONvaluebeforelookahead; nohooks/subclassdestructors/semanticpublication, samevalue/hash. Sourcecharactercreditproof4,672,454,656Brequestedobjects<6GiB/rank, Rootauthorized48GiBglobalactualcallerreserve, noreducedparsercap. Actualboundary/Unicode/metadata-layout/fundingcontrols tested."
+    }
+  ],
+  "assessment": [
+    "DefaulttrustedKinetoJSONonly, allraw retained onrefusal, completeheaderparsed/discarded, no wholetraceeventslist. Raw8GiB/events8M/kernels4M limitsareacceptanceboundsnotexportquotas. Fixedsummarylabels<=128\u00d7512chars/threads<=128; CPUcategoryuser_annotationonly, noGPUmirroredranges.",
+    "N24requiresv2/2048; ownerRows0..256+257overflow/selectedcompute0..72+73overflow preserveactualprefill+decode.7fixedhists/12int64accumulators+overflowlatch; repeatedState/data notretained.128KiB/rankobserverreserveunchanged.",
+    "RankCapture/observed_call/mapping_snapshotprotectedsource/CUPTI28/all8clockanchors/retirement+primarytransport suppliersemanticsunchanged. Runtime4efepinned, descriptor/static/BoundGraphlabelsrestoredcorrectly; noGPUqueries, callback/timer/EOS/modelweightschange.",
+    "Requested-objectboundusespinnedCPython3.12freshbuiltinJSONgeometry+memo+workingandUnicodebuffers, notuniversalallocator/RSS/nativeKinetoassertion. Nativebuffersunder320GiBcgroupandactualnoOOM/guardsstillseparate; futurephysicalhostgateauthoritativeandcannotlower24Q8floor.",
+    "No verifieddead/unjustifiedduplicatepath; borrowedclosedstreamalgorithmownership/lifetimefactoryhasrealresourcepurpose. Newearlierdestructionexecution-neutralforplainacyclicJSON, noquality/P3claim."
+  ],
+  "evidence": {
+    "new_hold": "/Warehouse/TensorFold-portable-audit-20261026/dense-n24-profile-closefix-20261028/source-hold-reader-envelope.json",
+    "resource_proof_sha256": "da4fb746f6fd4aae4cd75d84550c8e11a8f80a725f1f3f83a88842a66bfe7bb2",
+    "new_tests": "8PASS0.42+1PASS1.01/Ruff; earlier7PASS0.59 and169baseline notsummed/duplicated",
+    "prior_source": "6ef/5dec liveRoot36447all8terminal0/positiveoldsummary/noOOM Rootreport; immutableoldcode preserved.",
+    "reviewer_activity": "Explicitexclusiveownershiphandoff,5maintainedfiles local4c75commit/no push; narrowlocalSDKCPUonly, noGPU/heavyremote/broadsuite"
+  },
+  "remaining": [
+    "Rootmaycheckpoint/pushthroughauthorizedworkflowandrebasefuturetool/stage ifneeded; old6efcapture notrewritten",
+    "Actualoldcapture/rawall8source/CUPTI/hash/anchors/summary/retirement mustbeverified forreuse; future6GiBfailurecontractrequirescurrentcode/physicaladmission",
+    "NoN24nativepeak/utilization/TPS/SUPERIOR/servicequalificationfromsummary; tier24>16>8>4>2>1withquality/full24Q8constraints remainsRootmeasurementtask"
+  ]
+}

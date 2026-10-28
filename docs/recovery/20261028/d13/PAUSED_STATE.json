@@ -1,0 +1,25 @@
+{
+  "schema": "tensorfold.D13-emergency-pause-recovery-v1",
+  "at": "2026-10-28T18:18:09.266987+00:00",
+  "owner": "/root/cleanup_review",
+  "authority": "Explicit user emergency pause as relayed by Root. No development, tests, builds or V100 access after pause; only local Git/record backup and independent byte/mode verification. Root owns global recovery manifest and full evidence archive.",
+  "source_work_owned": "No runtime/source code changes by this reviewer; only task-wide review/checkpoint JSON outside Git. Isolated recovery branch contains copies and this status note, no application changes.",
+  "preservation": "Existing review/checkpoint bytes copied unchanged; historical failure, partial, superseded and unrun statuses remain. This note distinguishes latest known GO messages from unfinished final receipt formatting and does not manufacture qualification.",
+  "latest_state": {
+    "Tail_runtime": "d3a68247/APPc1418cb4/HOLDdc400f05 source/algebra/alias/lifetime/CPU110 reviewed; original82440 firstbytecasePASS, secondfixtureNone-return failure retained. Correctedeeb168 fixture uses actual on_stream void API/resultslot; Root68597 actual2PASS3.61 reported. Final formal receipt formatting was not completed before pause.",
+    "Tail_NUMA_adapter": "122d66dc/toolHOLD452079b7/32files: source lineage helper and actualchosenfiles validator PASS; hashes/currentAPP/schema/f11probe-worker-checker reuse read; boundedall6GO sent. Actualall6 failed EROFS beforecontainer launch and remains UNRUN/noP3 per Root; do not treat GO as execution.",
+    "Pool_preparation": "37518d01/APPed3283ac/HOLD1f1d66d3: source/algebra/lifetime/namespacefix,69CPU withoneindependentlyreproducedunchangedbaselineASTdeselection,15files/prefight reviewed. Root84930 actual45PASS4.13 reported. Final formal receipt formatting was not completed before pause.",
+    "Combined_Tail_Pool": "Authorprofile_tool latest9d4a4c256e28378d7ec413cbdc9df5bf4f518d7f; methodproofTail2exactd3a/Pool2exact375/restwholemodulec928. Authorreports local124CPU3.58/normal727FD/47collected finishedbeforepause. CombinedD13/finalheldbinding andactualGPU47/NUMAall6 remain UNRUN/pending; no inferred closure.",
+    "Mailbox_codec": "3631459aa91b71c8ad1dd5b1608524065972c581/APP30e32a8/HOLDc56fccc0 author191CPU+2subtests/realTCPStore reported. Queued, not read/review-closed by D13 beforepause; no GPU/P3.",
+    "Required_NUMA": "f11b36c2/sourceHOLD205b: finalsource/stage reviewa4403468 closed; Rootreported actualall8UUID/masks/native24/resources andsameQA/prefixaudit9a2353b0. Requiredconfig independentofP3; no continuousmask/RSS/page-locality/productionclaim.",
+    "DP4A": "Standalone/correctedcostsource C6+import review0481e42 closed. Root53175 actualR1/8/32 operatorcost adverse, pre20/post20/status0; RootSTOPPED modelenrollment52b98 unheldWIP. No universalalgorithmrejection ormodelqualification.",
+    "HC_smallrow": "a976/APP6fe8 source/funding+fixture7b116 review6527b3d5 closed forboundedcomponent; historical61317ninePASS/regexfailure retained. Anylaterintegration7aee/targetmodel results are author/Root-owned, not inferred fromthis snapshot.",
+    "outstanding": "Unfinished final receipts, candidateadmissibility/performance/repeatability/quality and any unreviewed WIP stay pending. No automatic resume authorized."
+  },
+  "backup_limits": [
+    "This branch preserves small review records only; Root separately preserves sourceheads/dirtysnapshots and full raw evidence/wheels/traces.",
+    "Localorigin trackingrefs in initialscan may be stale/different from newrecoveryref names; they are not fresh push proof.",
+    "Older22dirtytrees/87changed-untracked paths were independently compared againstRoot temporary-index recoverycommit tree blobs/modes: all exact. Originalindexes/worktrees left unchanged.",
+    "No automatic commit/push hooks or CI tests should run during this emergency backup; commit uses [skip ci] and disabledlocalhooks per explicit pause."
+  ]
+}

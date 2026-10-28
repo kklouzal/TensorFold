@@ -1,0 +1,51 @@
+{
+  "schema": "tensorfold.combined-d13-review-v1",
+  "at": "2026-10-27T23:49:00.573458+00:00",
+  "status": "CLOSED current successor source+stage; actual permission result separate",
+  "scope": "Tiny C5 success-path remediation after1ec6 plus direct failure-helper contract/tests/stage ownership; reuse prior scoped replay/metric/oracle/capability review2443 and preserve reopen5851",
+  "commit": "0ca2fc78a60bc31406401fd57b6a88e31b430426",
+  "hold_sha256": "40f91a6b7ed1b37f293912a9aab9137315e6c30e7a52e699a26ac191935158e8",
+  "paths": [
+    {
+      "path": "README.md",
+      "sha256": "a24477243515d89b3f990190723de456a5eb511864db166ad5dbd86b2ddb5bdd",
+      "bytes": 177554
+    },
+    {
+      "path": "tools/ncu_counter_smoke.py",
+      "sha256": "8bb1e5aaff9dbb207318d82878836bccc325121ea058d7840f08cfe4c7930765",
+      "bytes": 6921
+    },
+    {
+      "path": "tests/test_ncu_counter_smoke.py",
+      "sha256": "84c10d6c819fc78be4fc9e0012a9e50b19a71873b07c01631c47cbd02724bf02",
+      "bytes": 4444
+    }
+  ],
+  "stage_ready_sha256": "ef2b84cf89110db62238131a5ce993486ed478d34edf3e497e1dc8c69ffae76d",
+  "stage_files_checked": 14,
+  "findings": [
+    {
+      "rules": [
+        "C5",
+        "C6",
+        "S4",
+        "Q0"
+      ],
+      "finding": "Prior profiled_call unconditionally called raise_failures(None,[None]) after success, violating helper precondition and causing TypeError before actual after-output oracle. Reviewer original2443 missed this success branch; Root actual failure retained.",
+      "disposition": "Fixed0ca2: namedprimary\u2192raise_failures(primary,preallocatedslot); stop-only\u2192raise actual slot error; clean success\u2192returnactualresult. Real helper success result/order and stop-only identity controls added after implementation; priorprimary+stopMemoryError/fixedslotidentity controls preserved."
+    }
+  ],
+  "structural": "Entire tool AST excludingprofiled_call exactly1ec6; APP5635/source717/FDc79 untouched. No runtime math/oracle/metric criteria/NCU clock-cache-replay flags changed.",
+  "checks": {
+    "normal_CPU": "10 passed1.47s/Ruff; exactcommand/log/exit checked fromsuccess-fix",
+    "evidence": "All held source/evidence hashes and14 local stage files checked; stage scripts inspected. Remote ready receipt bound, no reviewer re-execution.",
+    "cleanup": "Failurecollection allocatedbeforestart, no new outcome tuple afteroperation failure; no failurehelper calloncleansuccess. No further verified dead/duplicated code or unnecessary abstraction in scope."
+  },
+  "stage_disposition": "Fresh mode output refused ifexisting; chownonly task evidence directory0:0 topermitcap-dropALLwriting, preservingoldresultsubdirs. Networknone/cap-dropALL minimal; SYS_ADMIN-onlyalternate afteractualRootERR_NVGPUCTRPERM and latestexplicitaccessauthority. No hostsecurity/clock/cache/DAC setting mutation.",
+  "actual_status": "Root launchedcurrentSYS_ADMIN-only smoke whilefinalbinding; source review doesnot presume its result. PreviousminimalERR_NVGPUCTRPERM remains separate validpermissiondenial, not counter-success.",
+  "remaining": [
+    "Actualcurrentcounterpermission/CSVandbefore-afteroutputoracles Root-owned",
+    "No TensorFold model/throughput/quality/releasequalification fromsmoke"
+  ]
+}

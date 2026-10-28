@@ -1,0 +1,48 @@
+{
+  "schema": "tensorfold.d13-one-shot-c-json-source-read",
+  "version": 1,
+  "reviewer": "/root/cleanup_review",
+  "recorded_utc": "2026-10-27T09:27:04.095633+00:00",
+  "status": "source-read-clean-on-named-row; duplication-candidate-owner-disposition-pending",
+  "hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/host-commitment/http-one-shot-encoding/source-hold.json",
+    "sha256": "b96dfd0e873cd94f0ff9c8a7a6b3ca3a28faef29802b703dfb56823b5256de01"
+  },
+  "held_paths": {
+    "src/tensorfold/families/qwen4_exp/cuda/retention_resources.py": {
+      "bytes": 92089,
+      "sha256": "c5b2f6318d34e5010e0d44ffd6013130d5b8a929a59b1c024794039c10052a24"
+    },
+    "tests/test_json_one_shot_payload.py": {
+      "bytes": 2636,
+      "sha256": "95822248e4a8ef07bc1551781d3a33c5108a6e3182019d398316235d429b9be0"
+    }
+  },
+  "current_hashes": {
+    "src/tensorfold/families/qwen4_exp/cuda/retention_resources.py": "3c0dbbec8ff9a5d154fee5a2919291c56fff1b5d67435cacea764e0611cfde04",
+    "tests/test_json_one_shot_payload.py": "95822248e4a8ef07bc1551781d3a33c5108a6e3182019d398316235d429b9be0"
+  },
+  "scope": "New _json_one_shot_payload, json-encoder.py capture addition, direct selected C/Python encoder contracts and focused tests. Not full HTTP aggregate/physical admission.",
+  "verified_contracts": [
+    "C recursion/marker depth is independent of Python generator recursion; container count<=B//2 and selected C limit10000 bound live markers.",
+    "Exact unsorted dictionaries use PyDict_Next with no item-list materialization; exact list/tuple fast conversion aliases input. Foreign callbacks/subclass/sorted materialization domain is excluded.",
+    "General int-address marker dictionary may churn; old/new tables and one temporary address ID are separate from source object payloads.",
+    "ensure_asciiTrue output keeps writer kindASCII; old/new writer plus escaped chunk and later returnedASCII/UTF8 conversion are separate named phases.",
+    "Native encoder, bound default callable, Python floatstr function/default tuple and shallow selected Python call frames match captured geometry; source graphs/results/C-stack/native runtime/allocator/RSS qualification remain distinct.",
+    "New encoder.py16070/af7bd authority is captured through existing actual content policy; no runtimev1 or generic-policy fallback grants this row."
+  ],
+  "evidence": {
+    "normalinstalled": 71,
+    "seconds": 3.91,
+    "ruff": 0,
+    "pipcheck": 0
+  },
+  "candidate": {
+    "id": "D13-duplicate-churn-table-equation",
+    "status": "pending-single-owner-disposition",
+    "target": "one-shot marker table and existing RPC local dictionary_table repeat the same selected calculate_log2_keysize/entrywidth/maxcapacity equation",
+    "proposed_bound": "One module-local authority with explicit entry-byte units could preserve both roles; preserve one-shot depth0 empty-map case, old/new resize terms, and independent tests. Do not replace churn with fresh-table or unrelated cache wrapper equations.",
+    "coordination": "Native sole writer notified; no reviewer edits or extra suite requested."
+  },
+  "reviewer_actions": "Read/hash/source proof and artifact only; no source/tests/Git/GPU/remote changes."
+}

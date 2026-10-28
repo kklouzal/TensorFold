@@ -1,0 +1,105 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T21:06:48.457221+00:00",
+  "status": "CLOSED scoped source integration cleanup and compliance; ready for Root finite TP8 numerical oracle, not performance selection",
+  "reviewer": "/root/cleanup_review",
+  "policy": {
+    "path": "/home/kklouzal/AGENTS.md",
+    "sha256": "f34b7836eb0703ccef0d85953d3dcd1a8fca092faaeff8815195c0c0126c435e",
+    "mode": "one combined task-wide reviewer; no mandatory second audit"
+  },
+  "workspace": "/Warehouse/TensorFold-wt/v100-owner-target-greedy-20261027",
+  "commit": "5ff2be14b5f5efe0c265654769dd39750b45a2ca",
+  "base": "266ff97681194f026116bfc516a4728b06da23a1",
+  "target_component_reference": "41894a4548bcc0224e89804f77a08d8f3547fa1e",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-greedy-integration-20261027/source-hold.json",
+    "sha256": "0d518e88c2dbc0eb4360b6ee8f3d3f54ead7315e4ad70ac4985dd3e1431d957e"
+  },
+  "wheel": {
+    "path": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "sha256": "997e4c08df3fcb87c03f143d1d9a3ed91695a4a46dd1b3f3dd84e91b6ed8a465",
+    "bytes": 3127336
+  },
+  "source_paths_verified": 19,
+  "evidence_hashes_verified": 6,
+  "package_source_files_equal_current": 716,
+  "FD_sha256": "4a0625bdf0a494437058e0ddbc62f04d7092c8cc64178e24fc17d669d2abd984",
+  "scope": [
+    "Changed19 source/test/tool/README paths from266ff owner+COMMON/FAST baseline",
+    "Reuse original41894 target-only native/Python ownership/numerical source proof and266ff owner-piece/frame/alias/graph/resource proof",
+    "Review new composition: private profile/epoch, verify-graph head, post-replay packet gather, fallback producers, MTP/status/feedback lifetime, initial funding and tool intent"
+  ],
+  "structural_proofs": {
+    "native_math": "Both greedy.cu and greedy_bindings.cpp byte-exact41894; no new kernel/math introduced by composition",
+    "MTP": "mtp.py byte-exact266ff; Multi._picks/_mtp/_draft_all whole ASTs independently equal266ff; Bound MTP compute and original65-word candidate export remain, confidence.7 unchanged",
+    "target_owner": "Only eligibility extends41894 to explicit newprofile with unique/native_owner graph owner. Existing local/max/accept/status/flag/EOS/output-room/shard validation and poisoning retained",
+    "graph_head": "Only newprofile verify captures gather_candidates=False; logits andoriginalState/projection exports retain order. Actual round calls target.gather after replay on the same actor stream. MTP capture/export branch retains old packet",
+    "ineligible_requests": "With a compact-head owner present but target ineligible, actual round bypasses its graph and executes ordinary eager producer/chooser. Media/grammar/stochastic/copy/owed/unsupported routes remain available",
+    "capacity": "Distinct profile/State/prefix epoch; realEngine retains native owner eager/full8/current source contract and resident floor24 before weights/windows publication. Native context/cache/INT8/recurrent/math unchanged",
+    "funding": "Pre-admission options fund full-vocabulary EOS and candidate-row feedback slab delta once per rank device and all-rank host. Plain status base remains per-session geometry. Adaptive target_rows32 matches actual execution_rows; conservative existing feedback-envelope allowance retained, no unproved credit",
+    "lifetimes": "Target registered in weight metadata before partial constructor; weakrefs borrow existing candidate arenas; local packet\u2192NCCL\u2192feedback overwrite stays ordered on actor stream; status from every peer checked before feedback interpretation; ownedCPU escape only; model fence precedes target owner retirement; graph borrower closes before canonical native owner",
+    "tool": "New profile forwards graphsTrue and same manifest24/native arguments; actual admitted owner/contract checked; target.completed observed separately. Same FAST/quality/benchmark helpers39e77/c498/ce7 and model settings unchanged"
+  },
+  "cleanup_disposition": "Compact feedback uses existing justified owner interface; unrelated fused-only read_candidates implementation was not copied into this base. Default/standalone/unsupported routes and independent native/Torch/chain oracles retained. No verified remaining dead path, unjustified duplicate model or necessary execution-neutral cleanup found in the assigned integration. No invented edit.",
+  "findings": [],
+  "checks": {
+    "normal_installed": "800 passed plus2 subtests22.05s on final997e; Ruff/pip/help passed, two TP8 fixture cases collected",
+    "reviewer": "Exact held paths, logs/evidence hashes, whole-wheel716 rows/FD4a and native/MTP structural equality independently verified; source clean5ff2",
+    "actual_GPU_by_reviewer": false,
+    "no_duplicate_build_or_broad_suite": true
+  },
+  "historical_evidence": "Preserve initial751/48 and784/16 fixture/import failures and their corrections. Original target single-device/eight-logical-shard result is distinct from current actualTP8; no qualification transfer claimed here.",
+  "pending": [
+    "Root actual native full8 TP component with target_greedy=True, including original native-eager outputs/drafts/partial commits/prefix/originalState/frame checks",
+    "Actual full-model outputs/independent quality and matched all6 region measurements",
+    "Strict N1>85, N24aggregate>600, no regression atN1/2/4/8/16/24 and actual full24 capacity",
+    "No source/CPU work-count evidence alone establishes gain or equivalence"
+  ],
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-greedy-integration-20261027/final/controls.log",
+      "sha256": "688fef0152c23f076d967a9738b3dcb7088fc0d75af5b183386a13539848d3d7"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-greedy-integration-20261027/final/exit.json",
+      "sha256": "124fd50cb6d223cdd18fedc166d00af7254199b6e6dedf9be82f71db87af6d01"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-greedy-integration-20261027/final-wheel.log",
+      "sha256": "2b1fef005b82be5847bd466b20a97e8fbb91d658ebea1988db96a2636670f4d5"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-greedy-integration-20261027/final-wheel-exit.json",
+      "sha256": "124fd50cb6d223cdd18fedc166d00af7254199b6e6dedf9be82f71db87af6d01"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-greedy-integration-20261027/wheel-provenance.json",
+      "sha256": "3cf70e07858d1a4579e8ad7237d6c3ee1c941b5144f1a427fbb3c4ba8e984e50"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-greedy-integration-20261027/structural-proof.json",
+      "sha256": "9f6833609b591ea3375994c5d82460d47d2e12368a4ec3cdf3c81ccb937c0f5b"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-greedy-integration-20261027/final/command.json",
+      "sha256": "e38e19286e751744bafd7f10300701c7d632d386754760147a57edd6ea7ec73b"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-greedy-integration-20261027/final-wheel-command.json",
+      "sha256": "9335a7481eda0c585b141bcf7653cad3e3489dd8094572947dd51e10301858d3"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-greedy-integration-20261027/final-package-exit.json",
+      "sha256": "124fd50cb6d223cdd18fedc166d00af7254199b6e6dedf9be82f71db87af6d01"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-greedy-integration-20261027/gpu-stage/stage-receipt.json",
+      "sha256": "ab3ef3d63446a3c5c6c68ac4ff7c5e0572ffe61d72b3e8a2a62e3663a1ac6b0e"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-target-greedy-integration-20261027/fast-stage/stage-ready.json",
+      "sha256": "6d392d32bf0b2776031c846c9d32f103c2dfcf710280385a52d12da4e1e5a598"
+    }
+  ]
+}

@@ -1,0 +1,66 @@
+{
+  "schema": "task-wide-combined-D13-component-review-v1",
+  "at": "2026-10-28T13:31:45.563911+00:00",
+  "reviewer": "/root/cleanup_review",
+  "scope": "Standalone HCReadoutMoERegion on closedf697/6165 Router/packed_exact component, directHC/currentpending/NCCL/storage/capture/lifetime plusnewTP8fixture andheldpackage. No Engine/State/catalogue/native24/funding/performance admission; no Fusion enrollment inferred.",
+  "source": {
+    "commit": "8ed7bd05f3b461cba0eff8b5db1231a7402850e8",
+    "HOLD_sha256": "1957b902f3bd92fd75198322a2ee9137bf83635dfa393afd4656a1b048951ac9",
+    "APP_sha256": "af472b7eb43b1e2d58d974218cd6e9197409c7f4f7c2dd1bbac2551648f12cc5",
+    "source_paths_verified": 732,
+    "canonical_packaged_files_verified": 725,
+    "all724preexistingnonDSOfiles_exactf697": true,
+    "FD_sha256": "c79cfce476072d1ce5aab867b8264b9d9887c5441a28365cc83782397e251c7d",
+    "only_runtime_delta": "newhc_moe_region.py; alloldhelpers/native/Engine/Multi/Buffers untouched"
+  },
+  "stage": {
+    "payload_files_verified": 17,
+    "manifest_sha256": "39b827e18771e68f78247888017bb55df2fde5f2c0e9a5ffc3fc099f9f1a2560",
+    "payload_tar_sha256": "a81bb3c57bc6ea270f55a3d534eabc97f0affa9cea92a15bbb461d1b5fb3a62c",
+    "tar_content_exactlocal": true,
+    "fixture_provenance_companion_sha256": "1140480afc6e45b9580e083c8b5581962fda453a903886a2cf1b37c53f756801",
+    "generated_marker": "tests/cuda/__init__.py empty generatednamespace marker only;4canonicalfixtures exact",
+    "runner": "1actualTP8pytestcase/0skip plusindependent postinstalledcheck, originaltestfailure precedence; Root81688actualstatusseparate"
+  },
+  "disposition": "RUNTIME_COMPONENT_READ_AND_HELD_BINDING_VERIFIED; FINAL_PARENT_HARNESS_C6_EXHAUSTION_FINDING_OPEN_PENDING_OWNED_SUCCESSOR. Successful numerical run may retain its positivepath scope; do not claim finalfailure-contract qualification.",
+  "contracts_verified": [
+    "Calls originalhc_block mode3 MLPwriteback/readout then originalpuremoe body; no newmath/nativecode, no surroundingState/PLE/attention/projection/NCCLhoist. Entry is exactFP32g_branch[:8*R*2560].view(8,R,2560) andFP16inj_a[:R] onoriginalstream afterpriorNCCL; nextMoEpartial/gatherremainoutside.",
+    "Canonical shapes/dtypes/HCdown-inject-up structure, ownedtargetorMTP layer, TP8profile/nativefamily/router, nonoverlap andinference layout checkedbeforepreparation. Model/scalars/mathflags/comm andoriginalStorage/span/layout sealed. Scopedone-layerBindings includesactualMTP outsideweights.layers.",
+    "Warm/captureusesdisposableinitializedstartup h/gbranch/inj inputs andmutatesscratch; callerrefreshesbeforeeachreplay. Originalhc_writeback overwritesPSS, thennorm/readout consumesit; no hiddenoldPSSinputdependency. SourceNccladapter explicitlysubmitsoncurrentcommunicatordevice stream andborrowsstorageuntilcompletion.",
+    "Separatecapture-sideRolePlans, sameoriginalservingstream, wrongmode/spans/bindings refusebeforeissue. Failurepoisonsreuse. Stableoriginalcapture_device positivelyfencedbeforegraphreset; graphreset/fencefailure retainsweights/input/storage/branch/injection owners; no redirectretirement to externallyrebounddevice.",
+    "Strictfixture hasactual8ranks, rank-dependentpriorpartials, targetF16/MTPF32, R30/31/32, changed/zeroinputs, allpublicHC/MoEactivebytes/tails/protectedinputs andnextpartial/gather exact.18replays/78externalgathersperrank; countersassertnoneinsidecapture. NoState/fullmodel capacity proxy masqueradesasrealadmission."
+  ],
+  "findings": [
+    {
+      "id": "HC-PARENT-NONE-SECONDARY",
+      "rules": [
+        "C5",
+        "C6"
+      ],
+      "status": "CLOSED_IN_HELD8ed",
+      "fix": "Passsecondarylistonlywhenactualsecondaryexists; otherwise raiseoriginalprimary. Actualparentcontrol retires8fakechildren andpreserveshistoricalcause/no fabricatednotes."
+    },
+    {
+      "id": "HC-PARENT-POSTPRIMARY-SLOT",
+      "rules": [
+        "C6",
+        "U2",
+        "M0"
+      ],
+      "status": "OPEN; soleauthor/rootnotified, heldlive8ednotmutated",
+      "fact": "Parentsecondary=[None] isstillallocatedafterspawn/joinprimary andbeforekill/join. Allocationexhaustioncan bypassretirement andreplaceoriginalprimary.",
+      "required": "Reservefixedslotbeforefirstspawn inownedfixture-onlysuccessor; preserveoldactualpacket andworkerAST/mathproof; actualparentcontrol/structuralordering sufficient, noGPUmathrerun requested. Author will carryfix inselectedFusionleafsuccessor perRoot."
+    }
+  ],
+  "verification": {
+    "CPU": "37PASS1.84s/Ruff/pins;actualparentcausecontrol included;cpu.loghashbound inHOLD",
+    "normal": "725canonical+unchangedFD; allpreexistingpackagedbytesexactf697 sourceverified",
+    "actual": "Root81688runningreported; nooutcomeinferredbyreviewer"
+  },
+  "cleanup": "No newverifiedruntime deadcode/unjustifiedduplication; reusesexistinglifecycle/Bindings andoriginalmath. Onependingharnessfix iscoordinatedwithsoleowner. No sourceedits/tests/GPU/remoteexecutionbyreviewer.",
+  "limitations": [
+    "Onlyf697 Router/packed_exact; currentFusion adaptation needsitsowncompatibility/strictsamebackendproof",
+    "No State/Engine/catalogue/funding/native24/fullmodel/quality/performance qualification",
+    "Oldpositive-run scope doesnot provefixedfuturefailurecontract"
+  ]
+}

@@ -1,0 +1,184 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T23:09:41.231120+00:00",
+  "status": "CLOSED batchednativeprelude prototype source cleanup/compliance; ready Root81GPUoracles, not selection or capacityqualification",
+  "reviewer": "/root/cleanup_review",
+  "policy": "One combinedtaskwideD13; \u22643contract/ABI/owner/resource/caller/testhops; no secondreviewer",
+  "commit": "08188e8303b00e992efa710be2a37be8cfe90e61",
+  "runtime_commit": "a523de1c41232df6089f6c6c931dc4f0ccf5b8f8",
+  "workspace": "/Warehouse/TensorFold-wt/v100-owner-batch-prelude-20261027",
+  "source_hold": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/source-hold-cohort.json",
+    "sha256": "6e084bedac855744769e706cb5ac4b3df196b1334b1451c50d8c9f218a29df6e"
+  },
+  "wheel": {
+    "path": "tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "sha256": "2cc76a62a730a6ef9bec131ec6ae52dc6768eee3872b5b1337112677474405c3",
+    "bytes": 3136933
+  },
+  "source_scope": "Nineteenheldruntime/test/tool/docs paths; reuseclosed710ccoordinatealias/oldscalar/owner/target/Frame/ModelState proofs, reviewnewprep_unit extraction+batchedkernel+typedprivateentry+descriptorowner/dispatch/funding.",
+  "findings": [
+    {
+      "rules": [
+        "M0",
+        "U2",
+        "C5"
+      ],
+      "finding": "InitialpendingDMAeventwait occurredoutsideowner.error latching; retirementfailurecouldallowrepeatownerreuse",
+      "disposition": "Resolved: wait,hostdescriptoredit,upload/eventrecord,kernellaunch andcache/indexerpublication allinsideonefailurelatch. ActualCPUwaitfaultretainsoriginal andalllaterreusefails fromsameprimary. No retry/optionalfallbackafterunknownsubmission."
+    },
+    {
+      "rules": [
+        "Q0",
+        "U0",
+        "N0"
+      ],
+      "finding": "Extraeightrequestfixture hadvariable9..37prompts but12outputs anddidnotguaranteefull8livebatch beforeearliestcompletion",
+      "disposition": "Onlytwo testfiles changed afterruntimefreeze. Newactualcohortbuilder96outputs>3*28boundedprefillpasses+1 guaranteesearliestoutputbudgetoutlastsallprefill undermaxMTP3/round;37+96+guards<257. Originaltwo12tokensingleState/prefixoracles andmax8requirement remain,240deadlineunchanged.88CPUbuilder/domaincontrols bound; no skippedcounterassertion."
+    }
+  ],
+  "proofs": {
+    "row_schema": "PrivateprojectnativeAPI acceptsactor-prepared4int64words/row: livecanonicalStateint32position/status pointers,segmentfirst/count. Existingattentioncaller validatescurrentState/nativecatalogue/frame/generation andpriornative-readerjoin beforebatch. Directnativecalls mustsupplytrustedlivepointerrecords; not anuntrustedexternalpointerAPI. CanonicalfixedStatepool/position/status anddescriptorownersoutlivekernel throughsameactor/modeldevicefence.",
+    "addressing": "Nativewrapper requires SM70/FP16contiguousR1..4096\u00d72688,descriptorR\u00d74int64, exactq/iq/Q8/scales/rawIKgeometry/normfrequencyfloat32shape,finitepositiveeps/amplitude anddisjointoutputs/reads beforewrites. Kernelrow\u22644095 andfirst/countbound order preventsint64first+countoverflow; int32position+row-first promotedint64thencheckednativecontext. Invalidinternalrecordtraps/fatalstatus, no clamping orsilentrepair. ValidStatehostdomain/lifecycle suppliesmatchingpositionpointer.",
+    "math": "Independently comparedoldprep arithmeticbody to extractedprep_unit: byteequalaftersoleexplicitcoordinateparam substitution. Scalarwrapper passesoldcache_row+delta int64unchanged. BatchpassesStatepos+globalrow-segmentfirst. `rows=int(segmentcount)` preserves oldFalseRMSoutputs=count*normheads; Trueusesnormheads. OriginalFP32tree,FMA/shuffleorder,Halfcasts,RoPE,h32/Q8rounding,finiteguards/statusOR/firstlayerCAS retained. Compilationresourceequalityisdiagnostic, notP3equivalence.",
+    "publication": "Sharedpublisher preservesexistingcache.append/CompactIndexerappend/pool/MTPcommit/statefrontiers. Exact710c_native_frame_coordinateshelper andcompactframevalidatorbytes retained; issuedcoordinatesborrowedwithptr/stride, no equal-valuewrite/versionbump. Multiattentionregressionported.",
+    "eligibility": "Everysegment mustmatchactualboundnativepositions/currentcanonicalscalartextrecipe/Q8/noMedia/nooffset/fixed3H256+4I128 beforedescriptororscratchmutation. Unsupportedinputskeepordinaryscalar/reference route. Actualapplicationdispatch len1retainsscalar; nontrivialbatch onlylen>1.",
+    "stream": "PendinguploadEventsynchronouslyretires previouspinnedhostDMA beforeNumPyhostrewrite. Same serializedcoordinatorCUDAstream ordersolddevice-descriptor readersbeforenextH2Doverwrite; recordexplicitactualproducerstream. No cross-streamconcurrentBatchPreludeuseclaimed. Existingframe/native-readerjoins andmodelCUDAfenceboundborrowerlifetime; ownerpoisonretainedonuncertainty.",
+    "allocation": "CanonicalBufferspublishesBatchPreludeownerbeforefallibleinit. FixeddescriptorGPU/pinnedCPU+NumPyview/Event perrole; privategraphBuffers disablesextraowner onlynewprofile (oldkwargs/APIunchanged). Gatedq/iq/outputframearenasreuseddisjoint, no per-Statebank ornewgeneraldeviceallocation/countreadback inbatchcore.",
+    "funding": "Beforeinitialadmit paydescriptor32B/rowrounded512GPU pluspinnedpayload+16384hostmetadata/role +16384module. Exampleplannedroles32/32/288 =>11264GPU/76800host perrank, actualnonconvergedpbufmaybesmaller, nodoublecredit. Existingpreludezero/markerfunding and24native262144Q8/FP32Statefloor unchanged. ActualCUDAevent/allocatorresidentfootprint/capacitytargetproofpending, not0cost/RSSclaim.",
+    "oracles": "81stage includes20mixedsegments\u00d7RMS/adverse independentTorch stored-bit cases,7malformednativeprewriterefusals,1live-positiongraphreplay,52retainedstrictscalar/offset/fault andTP8twoattention+eightStateoutput/draft/cache/prefixparity withbatchcountermax8. Sharednewscalar/helper alone isnot independentoracle. Oldreferencewheelretained."
+  },
+  "cleanup_disposition": "Extractingoneprep_unit givesoneauthoritativeownedmathbody withseparatevalidscalar/batchdispatch. Existinggeneric/scalarN1/customcoord/transfer/sampler/independentoracles remainrequired. Packedframeviewduplicateexpressionservesgeneric-dimension scalar versusfixedbatch specialization; no unsupportedHOTequivalencerefactoradded. No verifiedremainingdeadpath/unjustifiedduplicatealgorithm or necessarysafesimplification withinheldscope.",
+  "candidate_dispositions": [
+    {
+      "candidate": "batchmultiState/scalarN1",
+      "status": "implementedprototype, pendingactualGPU/integratedP3"
+    },
+    {
+      "candidate": "uniformbatchN1",
+      "status": "crediblecomponentalternative retaineddirectnativeR1oracle; notselected norinferiorbyunmeasuredsourceworkcount"
+    },
+    {
+      "candidate": "descriptorhosttemplatepacking",
+      "status": "notbundled, pendingprofilesafterrootfix"
+    }
+  ],
+  "checks": {
+    "current_heldpaths": 19,
+    "held_evidence_hashes": 20,
+    "normalinstalled": "1079CPU+2subtests18.11s/Ruff/pip/help; sourcevalues unchanged;88CPU3.42sfixture-onlysuccessor groupseparate",
+    "package": "All717currentcanonicalsource+FD4a independentlymatched2cc7ZIP",
+    "SM70compile": "Current53f16nativecompile/link/import/CPUrefusalPASS, sourcehashescurrent; batch32/scalar30registers and32Bstack/0spills/3072Bshared notruntimeequivalenceproof",
+    "localstage_files": 23,
+    "guardedspawnrunner": true,
+    "reviewer": "Noduplicatebuild/broadsuite/GPU/remoteDocker; source/ABI/arithmetic/ownership/ZIP/hashproofsonly"
+  },
+  "pending": [
+    "Rootcurrent81GPUindependentmath/malformed/lifetime/graph/TP8cohortoracles",
+    "Actualfullmodelstartup/eventresidency/resource/capacity andall6quality/performance; N1scalaranduniformbatchalternativecomparisonbeforeselection",
+    "StrictN1>85/N24aggregate>600/no regionalloss/full24nearfullhistoryunqualified; profilecounts/workeliminationnotgain",
+    "Anyactualsource/runtimefailuremustreopenboundedcallerproof; old3224gainnottransferabletonewcompiledfamilykernel"
+  ],
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/command.json",
+      "sha256": "616fc571b336742a1ad02287fa4605d8c5613fa88c914072525390502a0d8ba2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/controls.log",
+      "sha256": "e626a209b27afeb5fbef33dcf216743b9389f6cbcc3350b58a0d6ffb1b339734"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/exit.json",
+      "sha256": "56296949d3a02e635b050fd6b4762f0f0b52c23d05b925203095f7daf8e19027"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/third/controls.log",
+      "sha256": "b537e3fcf912f8bd18c67b6c4da3b742b610cf2fc84976e3362ee26eaab30624"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/third/exit.json",
+      "sha256": "56296949d3a02e635b050fd6b4762f0f0b52c23d05b925203095f7daf8e19027"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/final/command.json",
+      "sha256": "b63aad5388f366e3c89648fa437e9da1806b7ed90ac1fd993dfe51596cdcd104"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/final/controls.log",
+      "sha256": "398c09644c5abcc3d5c54b68581d7ccb848db2652f1e984ba231806b485bcff2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/final/exit.json",
+      "sha256": "81868a6e94ffc0178bf833deb1c9013d9fab4ee95ddb876a5e8ec4f1d26376d2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/package-command.json",
+      "sha256": "5229fb5fec0c171fff679e99dbfa0e671bfb8e912e1c1c96514ce31578bef5b6"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/package.log",
+      "sha256": "927ba27ee0059c9d18fe2b069c1592df00e831df03d10b4231ff6ea23ec475b8"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/package-exit.json",
+      "sha256": "81868a6e94ffc0178bf833deb1c9013d9fab4ee95ddb876a5e8ec4f1d26376d2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/wheel-provenance.json",
+      "sha256": "fe834ce47b4415ec009be9cdddad9a481c8ad7072028e3ea679ef54e3553df61"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/compile/command.json",
+      "sha256": "29ae57e31cd5ad6204a3c609aed65199ed35f6d120937934ed6858ec9284ee00"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/compile/compile.log",
+      "sha256": "4e1de1ddd882eedd436d8559c878b7829c37241999b7ac087748e2992fb297cf"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/compile/compile-result.json",
+      "sha256": "345ede0cb15b7603c1e5f15fc94767fbe47d743359b638414c9a02529401a5ff"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/compile/exit.json",
+      "sha256": "b158575f58925d48cfe6ab3192dba90683df211641a6ad4e1c5a339c3f98deeb"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/structural-proof.json",
+      "sha256": "353bcbb940c6db4da8b60f13048960dfea50a10e3e2a8d6a2b76a6ef8f4626f0"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/cohort-fixture/command.json",
+      "sha256": "fe51d1edc6576821874a1255de4096bf680ddbc420152aa279243e89668d42b0"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/cohort-fixture/controls.log",
+      "sha256": "9d1346203775b5c4e2591690de7d4b8300727c0353053b3c4b8ed8c4d35ed520"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/cohort-fixture/exit.json",
+      "sha256": "81868a6e94ffc0178bf833deb1c9013d9fab4ee95ddb876a5e8ec4f1d26376d2"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/source-hold-cohort.json",
+      "sha256": "6e084bedac855744769e706cb5ac4b3df196b1334b1451c50d8c9f218a29df6e"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/structural-proof.json",
+      "sha256": "353bcbb940c6db4da8b60f13048960dfea50a10e3e2a8d6a2b76a6ef8f4626f0"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/gpu-stage-cohort/stage-receipt.json",
+      "sha256": "15186ebba8d81a10daddee569ed96a0d4416adda08254d03c87fd7db3dd88f12"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/gpu-stage-cohort/package/run_controls.py",
+      "sha256": "a5f05e2fb25d18ba39b2500c42131a7b23d1328a372e00d5049e0d1c8b1a76f7"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/owner-batch-prelude-prototype-20261027/fast-stage-cohort/stage-ready.json",
+      "sha256": "b3211a2503136fa9458ad29a9fab4f27eee55572005bf572bfd7524bce9a5bfc"
+    }
+  ]
+}

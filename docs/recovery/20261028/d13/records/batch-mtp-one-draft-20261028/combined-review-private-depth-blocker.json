@@ -1,0 +1,40 @@
+{
+  "schema": "tensorfold.combined-d13-blocking-caller-finding-v1",
+  "at": "2026-10-28T04:29:42.787543+00:00",
+  "reviewer": "/root/cleanup_review",
+  "commit": "305584315ab7ee02085533d11d556f0d2af8e9f4",
+  "source_hold_sha256": "6a0c66fa7fe909984b12891d98bbbc0d0c93d2238956c04613b0296b113bdba4",
+  "app": "unchanged694b/E9all718runtime source",
+  "status": "CURRENT TOOL-ONLY CANDIDATE CONSTRAINT-RULED-OUT; do not launch as supported until separately assessed compatible contract/route exists",
+  "rules": [
+    "D3",
+    "T0",
+    "T3",
+    "R0",
+    "X5",
+    "Q0",
+    "Q2",
+    "V3",
+    "D13"
+  ],
+  "finding": "Generic MethodGeometry depth1 support does not admit depth1 in the selected private DenseBatch graph/prelude contract. Engine always calls unique_graph_request for selectedSM70profile before configure/admission; unchanged function explicitly rejects depth!=2.",
+  "source_evidence": [
+    "Engine._initialize line556 calls unique_graph_request(requested_profile,method=self.method_geometry.method,depth=self.depth,...).",
+    "execution_policy.unique_graph_request lines303-307 requires methodmtp/depth2/INT8/unique/concurrent/graphsTrue for thisprivateprofile.",
+    "Tool worker forwards mtp_drafts1 correctly. Existing factory forwarding test deliberately stops at FlashNextEngine acquisition; it does not execute the subsequent private method-contract guard.",
+    "Tool check_engine on an already-constructed depth1 fixture does not prove a real selected private Engine can be constructed."
+  ],
+  "actual_noGPU_witness": {
+    "path": "d13-private-depth-guard-witness.json",
+    "sha256": "32759b6d90fecd94a4ee65004edc98af7be649e6fa8400f706b730f05be944f7",
+    "method": "executed actual maintained function AST unchanged using literal profile constants extracted from maintained source; no replacement guard, package patch orGPU",
+    "outcome": "ValueError: source-packed-graphs-trial requires concurrent unique GPU histories, INT8 KV, stock MTP depth2 and graphs"
+  },
+  "checks": "3 held tool/test/doc paths hashmatched; runtime src diff empty30558431 vs694b. Existing5CPU/Ruff/pip/help evidence valid for its limited forwarding/checker scope and retained; no repeated suite.",
+  "remediation": "Preserve private guard and negative witness. Root owns a separately specified/implemented admissible APP contract/profile or actually compatible reference route with affected integration/numerics/funding/capture verification. Do not weaken the guard or claim tool-only qualification from genericMAX15/design table.",
+  "limits": [
+    "No GPU/model/requests run by reviewer. No issue in generic depth1 Engine support claimed.",
+    "This disposition applies to current unchanged private E9 route; depth1 as a broader credible candidate can be reopened with justified source/contract changes.",
+    "Existing depth2 default, current references and historical results untouched."
+  ]
+}

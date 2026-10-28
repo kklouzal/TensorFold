@@ -1,0 +1,58 @@
+{
+  "schema": "task-wide-combined-review-v1",
+  "at": "2026-10-27T22:57:25.851997+00:00",
+  "status": "CLOSED startup-prelude immutable component+enabledall6stagebinding; Rootexclusiveexecution",
+  "reviewer": "/root/cleanup_review",
+  "source_commit": "ee248b80fdddfe01fb1af1a595385fd84928c44e",
+  "source_hold": "f633c8f5ee888412bb142685bbfbf8dfbc54ffacebce65afeb11bb8c3cbe6782",
+  "wheel": "fa6e3561f076e26709de186b87336760062ba2747b1a1d9bd482fc0e78b580aa",
+  "source_review": "81bebccc6a5e71ca4fffbff1a5a253cca57d4b654ea266b4d9b6160a6121a628",
+  "stage_checks": {
+    "component": "22localfiles/pins verified, same710cguardedspawnrunner+53canonicalmultilayerfixturebodies; current717source+FDc79 manifest",
+    "all6": "17localfiles/pins verified; controller69397changes uniqueoutput/container/sourcecheckpoint, adds--overlap-content-capture and updates descriptivehost-region metadata tostartup/prelude. Same model/manifest9533/cache/256Kreceipts/512outputs/24floor/all6window+quality+drain.",
+    "preimport": "Closedtoolflagsetsonlyall8childenvbeforeprocessimport; sameactualstartupcapability/resource/consensus guards",
+    "newnativeFD": "Exactc79bound, no oldFD4awhitelist orinstalledpatch",
+    "reviewer_GPU": false
+  },
+  "scope": "Metadata/controllerstagebindingonly. CurrentcomponentdoesnotconstructthefullEnginehashworker; itestablishesnewwholeartifact/numericalregression only. Actualenabledall6musttestworkerstart/reuse/retirement/sourcebinding andmeasurestartup/quality/performance.",
+  "launch_preconditions": [
+    "Rootcurrentfa6e53multilayernativesoftware/regressionacceptance beforeenabledmodel",
+    "RootexclusiveGPUlease andexactstagecontents; noautomaticlaunchfromreview",
+    "Actualstartupbenefit andall6quality/nonregression/85/600/full24nearfullhistoryremainpending"
+  ],
+  "cleanup_disposition": "No verifiedremainingstagingdeadpath/duplicateworkflow orsourceinterface mismatch; oldwithdrawn stages/results retained ashistory. No suite/build/GPUrepeatbyreviewer.",
+  "evidence": [
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-prelude-integration-20261027/source-hold.json",
+      "sha256": "f633c8f5ee888412bb142685bbfbf8dfbc54ffacebce65afeb11bb8c3cbe6782"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-prelude-integration-20261027/combined-review-final.json",
+      "sha256": "81bebccc6a5e71ca4fffbff1a5a253cca57d4b654ea266b4d9b6160a6121a628"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-prelude-integration-20261027/gpu-stage/stage-receipt.json",
+      "sha256": "45b74fd28eddafb826dbd2ad65e03d6df1e9e92865ce187483c5e8c8f6c46780"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-prelude-integration-20261027/gpu-stage/package/stage-files.json",
+      "sha256": "825997269f3113bf71aa5ab1b3c8a55df9ff16a35c3a422849bf8701757401ce"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-prelude-integration-20261027/fast-stage/stage-ready.json",
+      "sha256": "380f88976d3ad2e2b46c70775db637c55ae0c4b2e2b6d95fc9cfb8222d565f1f"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-prelude-integration-20261027/fast-stage/package/stage-files.json",
+      "sha256": "b878a650d895e1063f2f4de0439e306fcbd0176a8899d988c52e46c82501eda0"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-prelude-integration-20261027/fast-stage/package/launch-finite.py",
+      "sha256": "69397b5b3dbadf092872d9c2f5e67e340c1369bad7ad93c2e38eab00e6eb8525"
+    },
+    {
+      "path": "/Warehouse/TensorFold-portable-audit-20261026/startup-prelude-integration-20261027/ledger.json",
+      "sha256": "b088c6ea29caca5d137fb2f6d12ab2af131e9deac3154d49a4a5a22635d14046"
+    }
+  ]
+}

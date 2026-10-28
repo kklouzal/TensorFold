@@ -1,0 +1,31 @@
+{
+  "schema": "tensorfold.combined-d13-implementation-stage-review-v1",
+  "at": "2026-10-28T07:09:04.059602+00:00",
+  "reviewer": "/root/cleanup_review",
+  "source_commit": "bc7db03ac728499a5752ed06214e00e8057d7d93",
+  "source_hold_sha256": "6cecf720bd2881c43c6fd7ba67eb06ada8d62f843b4c128f0a445ece80f49a8d",
+  "APP_sha256": "e92ce5a30fa6b32e6c33185ce07f1efc45a04b534db0af1703f1dbb50f5be8d6",
+  "status": "SCOPED SOURCE/CLEANUP/COMPLIANCE AND CURRENT FAST STAGE CLOSED; actual P3 separatelyRootowned",
+  "scope": "3selfWAITconditions in input_preparation._PreparationMailbox; actual pinnedTCPStore client/server semantics and related tests/lifecycle docs; no extra reviewers/GPU/tests",
+  "structural": "Only1packagedruntimefile differs7de/86cb; all785heldsourcepathhashes matched, current21-file stage hash+size/HOLD/APP matched; normal718+FDc79 proof retained. No GPUmath/flags/fence/bytes/schema/latch/counter/error/admission policy changed.",
+  "protocol_proof": {
+    "native_authority": "/Warehouse/TensorFold-foundation-sockaddr-20261026/sources/pytorch HEAD04cf2557f315a350e7eea7ab064288def65db75a, notold5ab; read TCPStore.cpp448-511, legacyBackend191-205/336-383, libUv parseADD930-946; author full referencedsource proof reused",
+    "ordering": "sameclient activeOpLock serializesSET/ADD/GET/delete. SETflush precedes laterADD on the same socket. Server updatescounter before returningADD value; alloutcomeSETs precede theirarrivalADDs. Exactworld threshold therefore provesallpublishedoutcomes exist before lastparty read_many; nativeMultiGet wait remains.",
+    "ready": "Lastarrival stillpublishesready; only its own redundantWAIT skipped. Allotherparticipants retain WAIT. read_many response alsoorderspublisher priorSET.",
+    "consumed": "Lastconsumer stillpublishesconsumed; its own nextackADD/reply ordersSET before progress. Threshold2world provesalloutcome readersretired; others stillwaitconsumed.",
+    "ack": "EveryackADD remains; onlyrank0readsfinalack. If rank0itself got3world, it stillSETsack thenDELETEs on sameconnection withreply, preservingpublication/deleteorder; otherwisewait remains. EverypeerconsumedWAIT completed before final3world threshold, so no late readerloseslatch.",
+    "epochs_and_errors": "Strictarrival1..W,consumerW+1..2W,ack2W+1..3W ranges unchanged; namedordinal/label verification,payloadbounds, allpeerlatches/slots,ackand4deletes, uncertainty/fatalcontainment remain. No counter clamp/retry/default orGPUcompletion inference."
+  },
+  "verification": {
+    "author_CPU": "154PASS+2subtests6.82s/Ruff/pip/protected prepost in exact04cfSDK",
+    "native_Store": "Actual8rank nativeTCPStore bothlegacyFalse andlibUvTrue retireallkeys;4adversarialW2/8\u00d7lastACKrank0/1 controls provepublisherdoesnotWAITitsownlatch whilepeerwaits/latewaitprotection remain; originalassertions retained",
+    "historical_failures": "Initial3liveSchedulergeometryfixtures failunchanged7de; negative logs retained; helper719source-count expectation corrected to independently proved718, oldfailure retained",
+    "reviewer": "readonlysource/Git/hash/selectednativeABI/ordering checks only; no extraGPU or repeatedCPU suite"
+  },
+  "cleanup_disposition": "Verified redundantown-latch reads removed withnativecausalproof; no genericStore/backend/reference path orindependentoracle removed. No speculativecleanup/remediationfinding remains.",
+  "performance_scope": "TP8explicitWAIT17 becomes15or14 (world-1ready+world-1consumed+conditionalrank0ack), nativeMultiGetimplicit8WAIT unchanged. Counts are not timegain orsuperiority. ActualRoot34815 all6 reportedLIVE; no result invented.",
+  "remaining": [
+    "Rootcompleteall6current-source nativeIDs/status/drains/quality/capacity evidence beforedevelopmentreference decision",
+    "tierobjective24>16>8>4>2>1 andallregressions/uncertainty disclosed; no global85/600/servicequalification claim"
+  ]
+}

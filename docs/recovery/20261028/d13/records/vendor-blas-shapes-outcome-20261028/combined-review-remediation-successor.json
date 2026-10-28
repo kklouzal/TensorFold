@@ -1,0 +1,7 @@
+{
+  "executedsource": "b4e6/4e57/25315 immutable",
+  "finalreview": "/Warehouse/TensorFold-portable-audit-20261026/vendor-blas-retire-envelope-20261028/combined-review-final.json",
+  "finalreview_sha256": "29c63f7e9e259c3b25d27ec4209d860f6c9461e03a4f29336c2f65db7500af61",
+  "source": "734484a2/dc20 tool-onlyC6 successor",
+  "measurementreuse": "positivecode unchanged; measurementsstaylabeledb4e6,noGPUrepeat"
+}

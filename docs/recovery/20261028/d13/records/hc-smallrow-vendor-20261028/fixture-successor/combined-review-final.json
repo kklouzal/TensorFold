@@ -1,0 +1,79 @@
+{
+  "schema": "tensorfold.d13-HC-smallrow-source-fixture-review-v1",
+  "at": "2026-10-28T17:15:44.559819+00:00",
+  "reviewer": "/root/cleanup_review",
+  "status": "BOUNDED_HC_OPERATOR_PROFILE_FUNDING_SOURCE_AND_CORRECTED_COMPONENT_FIXTURE_STAGE_REVIEW_CLOSED; MODEL_ADAPTER_AND_ACTUAL_ACCEPTANCE_SEPARATE",
+  "authority": {
+    "runtime_source": "7d4a60be; helda976a29bd56942fa875baceda780c316e9931656",
+    "fixture_source": "7b1167ffd615272bba0ae78753f34831cbe06c13",
+    "APP": "6fe82cbd7001070dea2f3a3b8fa88561ef2448960286bbaefde2108b39160ff1",
+    "original_source_HOLD": "cc82bff26d80896e04c5391303677f3ec1bed673f117cdfc401653f4d45f05ac",
+    "fixture_source_HOLD": "72b6358ee0a3ab46030f4b005c436697378b8f758e3105d1aa3d47324d8b69b7",
+    "component_stage_HOLD": "471fd387eb29f4a1fe34895a83131d9cfa19daf264c730489a30e3437f7b36ef",
+    "payload": "6aea51baebb46b3172244d651afc27e76a80ae666d481cfaefe8386af1cef94c"
+  },
+  "scope_X1": "HCdown/inject/up logicalR1..3 originalFP16 operand vendor-M candidate only. New65line nativehost entry/threeexistingcopy attrs, HCproxies, profile/Stateepoch/allowlists, actualcaller _down_act/_readout/_mm/prepared compatibility, metadataforecast andheldcomponentfixture. Reuse f030/Dense/Router/GDN/Fusion/hot16/candidate andnormalbuild proofs; no unrelated native/math audit or extra reviewer/GPU tests.",
+  "findings": [
+    {
+      "rules": [
+        "C0",
+        "C1",
+        "M3",
+        "N1",
+        "Q0"
+      ],
+      "finding": "Original nativeConcat doesnot publish normalTensor raw-output mutation version; newoperator shouldnot copy that metadata gap.",
+      "remediation": "NewHCproxy increments normalTensor version once afteropaque rawcopy whenATenhasnotalreadyadvanced it; inferenceTensor counter reads avoided. Independentactualsaved-autograd-input/NumPyopaque-write control shows whyrequires_gradFalse doesnotremove version obligation. Pinned04cf torch/autograd/graph.py252-270 supports this use. OldgenericConcat outofscope, unchanged.",
+      "disposition": "CLOSED newoperator; no unrelatedgenericmigration."
+    },
+    {
+      "rules": [
+        "C6",
+        "M0",
+        "Q0"
+      ],
+      "finding": "Originala976 GPUfixture constructed [cleanup] afterfailure, risking primaryreplacement beforecleanuphelper onallocation exhaustion.",
+      "remediation": "7b116 preallocatesfixedone-slot beforeCUDAGraph/capture, assigns onlycaughtactualcleanup; existingraise_failures preserves roots. Structuralactualsource ordering/noallocationliteral control passed.",
+      "disposition": "CLOSED fixture-only, oldpacketimmutable."
+    },
+    {
+      "rules": [
+        "X12",
+        "Q0"
+      ],
+      "finding": "Root61317 had9numerical/capture passes then tenth expectedgeometry refusal failed onlythe regex geometry vsactual geometries; lateraliasassertions neverran.",
+      "remediation": "Independentlychecked literalCPP TORCH_CHECK message. Fixture nowexpects exact semanticpluralmessage, with originaloutputuntouched/alias assertions retained. Allnumeric/captureAST unchanged aftertwo predeclaredfixture normalizations.",
+      "disposition": "CLOSED defectiveexpectedtext; originalfailure preserved, freshfull10 result notinferred."
+    }
+  ],
+  "checked": {
+    "operator_safety": "Only1..3 contiguousF16Cuda input, exactlyone/two originalHC weights, legal320/4/10240 shapes, sameSM70device, downF32/upF16 contiguousdisjoint output/no grad/conj/neg. Boundedtotals/intarithmetic, allvalidation precedesGEMMs, allseparateGEMMs finishhostsubmission beforeonecopykernel. Newcopy launches reuseunchanged originalscalar/concat kernel logic; no newCUDAkernel body or weightcopy/merge.",
+    "lifetime": "ATenownedtemporaryvalues retained untilsamestreamcopy submission; supportedCudaallocator stream/capture lifetime applies. Proxystrongoriginalmatrixreferences anddynamicweightproperties retain originals, generic/prefill routes use originalowners; no staticweight replicas/extra persistentGPUslabs. Capturedtemporaryallocations belong to existingprivategraph accounting/settlement, not an addedindependent untrackedpool.",
+    "numeric_region": "LogicalM ATen dispatch deliberatelydiffersfromM32; newprivateprofile/numericalpolicy/State+prefixepoch keepit distinct. OriginalF16 operands, down/inject separateF32GEMMs andupF16; existingcopy boundaries reused. TestsobservepreferredCublas/reductionTrue/accumFalse/workspaceNone andthreeLAZYcopyattribute functions; no precision setters. StrictownATen finiteinput bits/capture checks plusoriginalM32error characterization, no invented tolerance/universalerrorbound/modelquality acceptance.",
+    "integration": "ReadactualHCdecodepartials->proxy.matmul andup_mm paths, original__call__/prefill owners forprompts, R>=4/unsupported/alias/autograd/layout fallbackoriginal. HCModelBindings usesisinstance andoriginalparts/storageproperties, existingreadonlycapture seals compatible. Newenum inherits Fusionpacked_blocks2w/Router/GDN/nativeprelude/Dense32/N1/greedy/candidate contracts andseparateprefilllist; defaultsoldprofiles untouched.",
+    "funding": "Engine adds256KiB/rank futurehost beforeauthoritativeadmit, metadataextent observed/refusedatenroll beforepublication; sameweightstorage/GPUworkspaceinherited. Actualrole/N1 graphpool capture charges remainadditional; explicit24fullQ8 floor checkincludesnewprofile. Code-residency3attrs preparebeforephysicalbaseline. Sourcefootprint is notavendorworkspace/wholemodelpeak proof; actualEngine/floor/quality/resource evidence required beforeselection.",
+    "bindings": "Original23canonicalsource+10evidence hashes verified; normal728canonicalFDc79 andSM70compile/import/refusal proof reused. Original16 andsuccessor18localmanifest hashes exact, successor runtime srcdiffemptyvsa976; noAPP rebuild or170CPU repetition. Root/author report18remoteverified/freshpacket, no reviewerremotecommand.",
+    "cleanup": "No verifieddead/unjustifiedduplication inboundednewsource; proxy/subclass adapters serve existingHCprefill andpreparedbinding contracts. Independentoracles, originalfailuredata andoldgenericroutes retained."
+  },
+  "evidence": {
+    "source-hold.json": "cc82bff26d80896e04c5391303677f3ec1bed673f117cdfc401653f4d45f05ac",
+    "structural-proof.json": "c621f000ee27260cfde8a4b3aabb73eff61210e24a45a019ef74f1d7d6926cfd",
+    "final-normal.log": "083f441f80191188fea67639f5df7ad697d035ee032b8991f09da840e1aa19b8",
+    "final-normal-exit.json": "e89df0eae5ec7db81135aed16463968955c578bcc4f2ec43172eff351f080c17",
+    "wheel-provenance.json": "dc8b05be16fa9ad48f83dff061e6ad03ac8766c440ad6fb4272b21737c39c482",
+    "compile-import-refusal.json": "1ecd12864072e9cf2a29843ae5a3a9def31bbb832cd28a7de8a1392d6de61b4d",
+    "fixture-successor/source-hold.json": "72b6358ee0a3ab46030f4b005c436697378b8f758e3105d1aa3d47324d8b69b7",
+    "fixture-successor/structural-proof.json": "b459913728b5c20d8b445c8b70aa7ccf3afcf209c9d797f88aa3c3a1617fcdb8",
+    "fixture-successor/CPU-command.json": "06384fe4df03bfe1857eae0171173644116b525236f0e7cbe89b0fb659612ef8",
+    "fixture-successor/CPU-exit.json": "5bc232b82de377a5655a39a2af9d7ae0fc868de5b9df957e18905cb914606c88",
+    "fixture-successor/CPU.log": "a9ceda9444770ad970042983e5ad5161985daaa7c5cd1cd7c73901fd603e5c4d",
+    "fixture-successor/gpu-stage/HOLD.json": "471fd387eb29f4a1fe34895a83131d9cfa19daf264c730489a30e3437f7b36ef",
+    "fixture-successor/gpu-stage/package/stage-files.json": "3fb2642399bb75f9ea61e546246e54d4462496febcc0783d49211f2b46866f28"
+  },
+  "checks": "170normalinstalledCPU8.94/Ruff/normal728FDc79/protected +SM70compile/link/import/GPUlessrefusal; successor1actualstructuralCPU/import/10collection/Ruff. Root61317 ninepositiveGPUcases+regexfailure preserved separately. Reviewer readonlysource/callers/AST/hash/manifestchecks; no tests/GPU launched.",
+  "limits": [
+    "No modelall6/admission/quality/P3/deployment approval from component/source review. Actualfull10component result and targetall8native24/quality/performance separate.",
+    "FutureHC modeladapter mustcompose REQUIREDf11NUMA and explicitlyseparatecurrentHCAPP728/sourceHOLD fromoriginal8021 rowauthority. Existingdescriptorvalidator onlyaccepts descriptor-schema/727/history_owner-onlydelta and cannot be reusedunchanged forHC; recordactualHCprofile/catalogue/row/pool inheritance proof instead ofschemaforgery. No futureadapter reviewed here.",
+    "Originala976/fae1/61317 failure remainsimmutable; existingninepasses retainonlytheirpositivepath scope."
+  ]
+}

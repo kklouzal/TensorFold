@@ -1,0 +1,43 @@
+{
+  "status": "bounded tool-only source review CLOSED; actual24-slot graph/model and six-region P3 remain OPEN",
+  "hold_sha256": "13a0d02353d3c23465a5ef5df2d73cdf7ed898dc3305d9eca1a06c5e454acbf7",
+  "source": {
+    "tools/v100_backend_probe.py": "b3d36ce29e0040d12bcd54b452ccf3df3af9fe4c00c9d6b05c7be2793be19b99",
+    "tests/test_v100_backend_probe.py": "8adb788dc9d1b457c1e3f56c34e3355bace96cf06a09bd17e4f7c1551fe7ff78",
+    "README.md": "80351f9a0c34f109fb31cd41717e286042d08f5000f135941e5f4c3fc0f8b990"
+  },
+  "same_application_wheel": {
+    "path": "/Warehouse/TensorFold-portable-audit-20261026/source-packed-graphs-trial/graph-intent-final/wheels/tensorfold-0.6.6-cp311-abi3-linux_x86_64.whl",
+    "bytes": 3110896,
+    "sha256": "326f8fe950bb199e507c3ce2d76a8bca0f84a8eaf9d62be4c867cea7fbdfac7e"
+  },
+  "scope": "Only optional --session-ceiling24 argument/factory/check/report and tests/README; prior resource-tool cleanup proof reused",
+  "unchanged_other_function_AST": {
+    "digest": true,
+    "write_report": true,
+    "finish_failures": true,
+    "regular_file": true,
+    "installed_identity": true,
+    "record_execution_profile": true,
+    "prepared_prompt": true,
+    "generate_reply": true,
+    "repeat_replies": true,
+    "graph_failure_resources": true,
+    "launch": true,
+    "main": true
+  },
+  "findings": [],
+  "dispositions": [
+    "Default automatic solver preserved; only explicit choice24 reaches existing supported factory parallel=24. Context/precision/TP8/MTP2/.7 remain unchanged.",
+    "Checks require configured/resident/full-context commitments exactly24 and materialized true before host finalization/submission; no guard override or fabricated admission.",
+    "Actual factory-through-Engine boundary controls and existing errors/lifetime controls are meaningful; test prerequisite corrections preserve all earlier assertions.",
+    "No extra launcher/framework or production resource path added; optional interface has a distinct user-authorized capacity-region purpose.",
+    "Inherited resource diagnostic caveat dfffb5ad remains: before worker cleanup, after constructor rollback attempt; no inference of zero prior ownership from cleared attributes."
+  ],
+  "verification": "89normalinstalledsame326ftoolcontrolsPASS3.24s/Ruff/pip0/standalonehelp0",
+  "limitations": [
+    "actual24sessiongraphcapture/model",
+    "strictN1>85andgrid1/2/4/8/16/24sameNnonmeaningfulregression"
+  ],
+  "reviewer_execution": "No GPU/remote actions, source edits, duplicate tests/builds"
+}

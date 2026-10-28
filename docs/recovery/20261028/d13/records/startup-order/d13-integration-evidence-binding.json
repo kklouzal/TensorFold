@@ -1,0 +1,9 @@
+{
+  "schema": "tensorfold.d13-startup-integration-evidence-binding",
+  "version": 1,
+  "closed_source_disposition_sha256": "dbc30bfcba12ed2ce194cc471ae9f1089bdc14c2a968bf2675d517ea905292d3",
+  "current3path_hold_sha256": "d79e01a34ab44f005a0405e302e7688a2e0ee2af39a0bd4887ddd61549b6b45b",
+  "green_sha256": "792bc7aeaee00bc89bf6710edfc4790f5213db4af174d89ac05440508d9e375b",
+  "execution_sha256": "c432bef4f7285abf0b6c966df71604df4abe81c5d0be6725063d8680a63a5317",
+  "disposition": "Additive finalgreen8rawhashes verified; current15+2lifetime, other23andowner68 explicitly separate reuse, original5/33 preserved. No rerun/source change or reopening; primary D13 byte receipt unchanged."
+}
