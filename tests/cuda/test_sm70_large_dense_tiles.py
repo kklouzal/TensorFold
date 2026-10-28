@@ -9,14 +9,21 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_
                                reason="actual SM70 large-row Dense oracle")
 
 
+def target_math_policy():
+    """Observe the actual selected profile policy; never rewrite oracle flags."""
+    policy = {"allow_fp16_reduced_precision_reduction": torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction,
+              "allow_fp16_accumulation": torch.backends.cuda.matmul.allow_fp16_accumulation}
+    if (policy["allow_fp16_reduced_precision_reduction"] is not True
+            or policy["allow_fp16_accumulation"] is not False):
+        raise RuntimeError("Dense oracle requires target FP16 reduction=True/accumulation=False")
+    return policy
+
+
 @pytest.fixture(scope="module",autouse=True)
-def full_precision_reduction_policy():
-    before=torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction
-    torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction=False
-    try:
-        yield
-    finally:
-        torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction=before
+def actual_target_math_region():
+    before = target_math_policy()
+    yield
+    assert target_math_policy() == before
 
 
 def workspace(rows):

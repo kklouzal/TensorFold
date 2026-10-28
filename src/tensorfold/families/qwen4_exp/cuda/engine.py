@@ -773,6 +773,8 @@ class FlashNextEngine:
                 main_rows = row_envelope(count) if concurrent else max(8, each)
                 padded_bytes = (1 + int(mtp)) * padded_linears.workspace_bytes_from_text(
                     text, main_rows, tp, large_profile=self.sm70_profile)
+                if mtp:
+                    padded_bytes += padded_linears.mtp_hc_workspace_bytes(text, main_rows, self.sm70_profile)
                 native_attention = (family_ops._NATIVE_FAMILY and family_ops._NATIVE_ATTENTION
                                     and history_placement is None)
                 if not native_attention and not padded_bytes and history_placement is None:
@@ -1189,6 +1191,8 @@ class FlashNextEngine:
                 large_row_bound = row_envelope(streams) if concurrent else max(8, each)
             dense_tile_host = tp * (1 + int(mtp)) * padded_linears.host_workspace_bytes(
                 large_row_bound, self.sm70_profile)
+            if mtp:
+                dense_tile_host += tp * padded_linears.mtp_hc_host_bytes(text, large_row_bound, self.sm70_profile)
             host_capacity["host_workspace_bytes"] = host_capacity.get("host_workspace_bytes", 0) + dense_tile_host
         from .startup_content import prepare as prepare_startup_content
 

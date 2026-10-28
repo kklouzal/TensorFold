@@ -156,7 +156,7 @@ def test_large_projection_counter_saturates_without_growing_or_losing_output(mon
     assert torch.all(out==3)
 
 
-@pytest.mark.parametrize("adaptive,explicit,expected",[(False,None,1048576),(True,None,0),(True,64,1048576),(False,32,0)])
+@pytest.mark.parametrize("adaptive,explicit,expected",[(False,None,1048576),(True,None,524288),(True,64,1048576),(False,32,524288)])
 def test_actual_engine_host_term_covers_fixed72_and_adaptive_default32(adaptive,explicit,expected):
     import ast
     from pathlib import Path
@@ -168,7 +168,7 @@ def test_actual_engine_host_term_covers_fixed72_and_adaptive_default32(adaptive,
         and c.func.attr=="host_workspace_bytes"for c in ast.walk(n)))
     env={"__package__":"tensorfold.families.qwen4_exp.cuda","sm70":True,"adaptive_sessions":adaptive,
         "execution_rows":explicit,"each":3,"streams":24,"concurrent":True,"tp":8,"mtp":True,
-        "session_ceiling":24 if adaptive else None,"host_capacity":{},"self":NS(sm70_profile=PROFILE)}
+        "session_ceiling":24 if adaptive else None,"host_capacity":{},"self":NS(sm70_profile=PROFILE),"text":metadata()}
     exec(compile(ast.Module(body=[envelope,block],type_ignores=[]),str(source),"exec"),env)
     assert env["host_capacity"]["host_workspace_bytes"]==expected
 

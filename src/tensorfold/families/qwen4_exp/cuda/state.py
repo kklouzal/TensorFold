@@ -82,7 +82,7 @@ class Buffers:
         self.execution_dtype = bf
         from .padded_linears import create as padded_linears
 
-        self.padded_linears = padded_linears(w, rows, prefill=prefill, dtype=bf)
+        self.padded_linears = padded_linears(w, rows, prefill=prefill, dtype=bf, role=owner_role)
 
         def row_tensor(name, shape, *, dtype=bf, zero=False):
             if self.padded_linears is not None:

@@ -156,6 +156,26 @@ def host_workspace_bytes(rows, profile):
     return LARGE_HOST_BYTES_PER_ROLE if rows > ROWS and profile in LARGE_PROFILES else 0
 
 
+def mtp_hc_workspace_bytes(text, rows, profile):
+    """Additional MTP-only scratch for named fc_h physical rows at logical<=32.
+
+    The existing caller already owns mtp_hs [logical_rows*HC, hidden]. Larger
+    logical owners already pay the general TiledLinears scratch, so this term
+    is zero there and cannot double-charge target/MTP roles.
+    """
+    if profile not in LARGE_PROFILES or not 0 < rows <= ROWS:
+        return 0
+    text = text.get("text_config") or text
+    hidden, streams = int(text["hidden_size"]), int(text.get("hc_count", 4))
+    if rows * streams <= ROWS:
+        return 0
+    return ROWS * hidden * 8 + 3 * 512
+
+
+def mtp_hc_host_bytes(text, rows, profile):
+    return LARGE_HOST_BYTES_PER_ROLE if mtp_hc_workspace_bytes(text, rows, profile) else 0
+
+
 def large_limits(c, rows, head_width, world):
     maximum_input = max(c.streams * c.hidden, c.ple_dim, c.nv * 128, c.heads * c.head_dim, c.low)
     maximum_output = max(shape[-1] for shape, _size in field_layout(c, rows, head_width, world).values())
@@ -171,7 +191,7 @@ class TiledLinears:
     Other streams/layouts retain the original matrix operation.
     """
 
-    def __init__(self, w, rows):
+    def __init__(self, w, rows, *, hc_only=False):
         from .gguf_weights import GGUFDense, GGUFConcat
 
         self.rows, self.device = rows, w.device
@@ -185,13 +205,19 @@ class TiledLinears:
                               and projection.k == w.cfg.hidden and projection.n == w.cfg.hidden else None)
         self.hc_streams = w.cfg.streams
         self.hc_hidden = w.cfg.hidden
-        self.maximum_input, self.maximum_output = large_limits(w.cfg, rows, w.head.n, int(w.meta.get("world", 1)))
+        self.hc_only = hc_only
+        if hc_only:
+            if self.hc_projection is None or not 0 < rows <= ROWS < rows * self.hc_streams:
+                raise ValueError("HC-only owner requires its named MTP hidden projection and physical row span")
+            self.maximum_input = self.maximum_output = self.hc_hidden
+        else:
+            self.maximum_input, self.maximum_output = large_limits(w.cfg, rows, w.head.n, int(w.meta.get("world", 1)))
         self.stream = torch.cuda.current_stream(self.device) if self.device.type == "cuda" else None
         self.input_owner, self.input_storage = self._aligned(ROWS * self.maximum_input, torch.float16)
         self.half_owner, self.half_storage = self._aligned(ROWS * self.maximum_output, torch.float16)
         self.float_owner, self.float_storage = self._aligned(ROWS * self.maximum_output, torch.float32)
-        self.partial = {width: torch.empty((rows, width), dtype=torch.float32, device=self.device)
-                        for width in (w.cfg.low, w.cfg.low + w.cfg.streams)}
+        self.partial = ({} if hc_only else {width: torch.empty((rows, width), dtype=torch.float32, device=self.device)
+                        for width in (w.cfg.low, w.cfg.low + w.cfg.streams)})
 
     def _aligned(self, elements, dtype):
         size = 2 if dtype == torch.float16 else 4
@@ -295,11 +321,20 @@ class TiledLinears:
         return None if result is None else result.unsqueeze(0)
 
 
-def create(w, rows, *, prefill, dtype):
+def create(w, rows, *, prefill, dtype, role=None):
     if (not prefill and rows > ROWS and dtype == torch.float16
             and w.meta.get("sm70_profile") in LARGE_PROFILES
             and w.meta.get("execution_provider") == "sm70" and w.device.type == "cuda"):
         return TiledLinears(w, rows)
+    if (role == "mtp" and not prefill and 0 < rows <= ROWS < rows * w.cfg.streams
+            and dtype == torch.float16 and w.meta.get("sm70_profile") in LARGE_PROFILES
+            and w.meta.get("execution_provider") == "sm70" and w.device.type == "cuda"):
+        from .gguf_weights import GGUFDense
+
+        projection = getattr(getattr(w, "mtp", None), "fc_h", None)
+        if (type(projection) is GGUFDense and projection.implementation == "native32"
+                and projection.k == w.cfg.hidden and projection.n == w.cfg.hidden):
+            return TiledLinears(w, rows, hc_only=True)
     if (not _ENABLED or prefill or dtype != torch.float16 or not 1 <= rows <= ROWS
             or w.meta.get("execution_provider") != "sm70" or w.device.type != "cuda"):
         return None

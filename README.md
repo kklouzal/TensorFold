@@ -7,6 +7,14 @@ groups. Other weights retain the logical row limit. M32 scratch and the HC
 partial arrays retain their existing allocations; default32-buffer creation
 is unchanged. New96/128/256-row numerical checks remain pending on V100.
 
+The private HC physical-row successor adds an MTP-role-only owner for the named
+stock `fc_h` projection when logical32 rows imply up to128 HC rows. It pays
+656,896 device bytes and64KiB host metadata per rank before admission, reuses
+its caller-owned physical output, and preserves all other/small-row paths.
+Logical64 contexts retain their already-funded general scratch for fc_h256.
+Target-flag32 parent oracles passed; new physical-domain GPU and integrated
+performance gates remain pending. No new kernel or approximate math is selected.
+
 The private Dense large-row candidate uses prepaid, stream-owned M32 scratch
 for eligible64/72-row Dense/Concat projections. Each part retains the original
 fixed-M32 ATen operation, and tile outputs are written into their final owner
