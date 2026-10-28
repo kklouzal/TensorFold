@@ -160,7 +160,11 @@ def test_actual_on_stream_uses_owned_result_slot_not_helper_return():
     from tensorfold.families.qwen4_exp.cuda.capture_lifetime import on_stream
     source,side=object(),object()
     selected=[source]
-    cuda=N(current_stream=lambda:selected[0],set_stream=lambda stream:selected.__setitem__(0,stream))
+    class StreamContext:
+        def __init__(self,stream):self.stream=stream
+        def __enter__(self):selected[0]=self.stream
+        def __exit__(self,*args):selected[0]=source
+    cuda=N(stream=StreamContext)
     slot=[None]
     expected=(object(),object())
     def read():
