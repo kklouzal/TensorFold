@@ -44,6 +44,8 @@ def eligible(bank, role):
     return (role == "target" and bank.count == 513 and bank.width == 80 and bank.dims == 2560
             and bank.gate.ggml_type in (18, 22) and bank.up.ggml_type in (18, 22)
             and bank.gate.column_offset == bank.up.column_offset == 0
+            and bank.gate.k == bank.up.k == 2560 and bank.down.k == 80
+            and bank.gate.n == bank.up.n == 512 * 80 and bank.down.n == 512 * 2560
             and bank.down.ggml_type == 20 and bank.down.column_offset in (0, 16)
             and bank.limit == 0.0 and bank.swiglu is True and len(bank.shared) == 3)
 
@@ -86,9 +88,12 @@ class Prototype:
             (x, picks, out, bank.gate.data, bank.up.data, bank.down.data, *(part.weight for part in bank.shared), *self.scratch))
         self.weights = (bank.gate, bank.up, bank.down, *bank.shared)
         self.weight_bindings = (bank.gate.data, bank.up.data, bank.down.data, *(part.weight for part in bank.shared))
+        self.math_policy = (torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction,
+                            torch.backends.cuda.matmul.allow_fp16_accumulation)
         self.shared_policy = tuple((part.n, part.k, part.implementation) for part in bank.shared)
         self.layout = (bank.count, bank.width, bank.dims, bank.gate.ggml_type, bank.up.ggml_type,
-                       bank.down.ggml_type, bank.gate.column_offset, bank.up.column_offset, bank.down.column_offset, bank.limit, bank.swiglu)
+                       bank.down.ggml_type, bank.gate.column_offset, bank.up.column_offset, bank.down.column_offset, bank.limit, bank.swiglu,
+                       bank.gate.n, bank.gate.k, bank.up.n, bank.up.k, bank.down.n, bank.down.k)
 
     def _validate(self):
         if self.closed or self.failed is not None:
@@ -102,12 +107,16 @@ class Prototype:
             raise RuntimeError("prototype lost original tensor/storage bindings")
         now = (self.bank.count, self.bank.width, self.bank.dims, self.bank.gate.ggml_type, self.bank.up.ggml_type,
                self.bank.down.ggml_type, self.bank.gate.column_offset, self.bank.up.column_offset,
-               self.bank.down.column_offset, self.bank.limit, self.bank.swiglu)
+               self.bank.down.column_offset, self.bank.limit, self.bank.swiglu,
+               self.bank.gate.n, self.bank.gate.k, self.bank.up.n, self.bank.up.k, self.bank.down.n, self.bank.down.k)
         parts = (self.bank.gate, self.bank.up, self.bank.down, *self.bank.shared)
         if len(parts) != len(self.weights) or any(value is not old for value, old in zip(parts, self.weights)):
             raise RuntimeError("prototype lost original packed/shared owners")
         if tuple((part.n, part.k, part.implementation) for part in self.bank.shared) != self.shared_policy:
             raise RuntimeError("prototype shared exact policy changed")
+        if (torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction,
+                torch.backends.cuda.matmul.allow_fp16_accumulation) != self.math_policy:
+            raise RuntimeError("prototype shared exact math policy changed")
         if now != self.layout:
             raise RuntimeError("prototype packed layout changed")
 

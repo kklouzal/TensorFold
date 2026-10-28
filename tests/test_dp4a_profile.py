@@ -74,8 +74,8 @@ def test_original_scalar_coefficients_derive_independent_int64_oracle(kind):
 
 def test_shared_mtp_and_other_formats_are_explicit_exact_fallbacks():
     from tensorfold.cuda.sm70.dp4a_experts import eligible
-    bank=NS(count=513,width=80,dims=2560,gate=NS(ggml_type=18,column_offset=0),
-            up=NS(ggml_type=22,column_offset=0),down=NS(ggml_type=20,column_offset=16),limit=0.,swiglu=True,shared=[None]*3)
+    bank=NS(count=513,width=80,dims=2560,gate=NS(ggml_type=18,column_offset=0,n=40960,k=2560),
+            up=NS(ggml_type=22,column_offset=0,n=40960,k=2560),down=NS(ggml_type=20,column_offset=16,n=1310720,k=80),limit=0.,swiglu=True,shared=[None]*3)
     assert eligible(bank,'target') and not eligible(bank,'mtp')
     bank.gate.ggml_type=21
     assert not eligible(bank,'target')

@@ -22,9 +22,9 @@ def setup(monkeypatch, role="target"):
         limit=0.0,
         swiglu=True,
         shared=shared,
-        gate=NS(data=torch.zeros((2, 3), dtype=torch.uint8), ggml_type=18, column_offset=0),
-        up=NS(data=torch.zeros((2, 3), dtype=torch.uint8), ggml_type=22, column_offset=0),
-        down=NS(data=torch.zeros((2, 3), dtype=torch.uint8), ggml_type=20, column_offset=16),
+        gate=NS(data=torch.zeros((2, 3), dtype=torch.uint8), ggml_type=18, column_offset=0, n=40960, k=2560),
+        up=NS(data=torch.zeros((2, 3), dtype=torch.uint8), ggml_type=22, column_offset=0, n=40960, k=2560),
+        down=NS(data=torch.zeros((2, 3), dtype=torch.uint8), ggml_type=20, column_offset=16, n=1310720, k=80),
     )
     x = torch.zeros((1, 2560), dtype=torch.float16)
     picks = torch.zeros((1, 2), dtype=torch.int32)
@@ -111,4 +111,24 @@ def test_capture_body_and_end_failures_preserve_primary(monkeypatch):
     cause = caught.value.__cause__
     assert cause is secondary or isinstance(cause, BaseExceptionGroup) and secondary in cause.exceptions
     owner.graph_owner.close()
+    owner.close()
+
+
+def test_graph_math_policy_change_refuses_replay(monkeypatch):
+    owner,_log,_stream,_backend=setup(monkeypatch)
+    previous=torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction
+    try:
+        torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction=not previous
+        with pytest.raises(RuntimeError,match="math policy"):
+            owner.run()
+    finally:
+        torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction=previous
+    owner.close()
+
+
+def test_retained_packed_metadata_change_refuses_reuse(monkeypatch):
+    owner,_log,_stream,_backend=setup(monkeypatch)
+    owner.bank.down.k=79
+    with pytest.raises(RuntimeError,match="layout"):
+        owner.run()
     owner.close()
