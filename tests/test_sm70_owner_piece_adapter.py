@@ -132,3 +132,24 @@ def test_captured_owner_cut_checks_actual_manager_and_original_frame_before_muta
     manager.workspace = object()
     with pytest.raises(ValueError, match="prepared canonical full8"):
         graph._forward(kind, [(state, 0, 2)])
+
+
+@pytest.mark.parametrize("role", ["decode", "mtp"])
+def test_actual_tp8_fixture_family_check_distinguishes_legacy_and_captured_preparation(role):
+    from tests.cuda.test_sm70_owner_piece_graphs_tp8 import _check_adopted_owner_family
+    from tensorfold.families.qwen4_exp.cuda.owner_execution import GRAPH_FAMILY
+    owner = object()
+    manager = NS(workspace=owner, prepared=True, closed=False, failure=None)
+    preparation = NS(graphs={role: manager})
+    source = NS(owner_kernel_family=KERNEL_FAMILY, owner_graph_family=UNCAPTURED,
+                owner_graphs=None, history_owner=owner)
+    _check_adopted_owner_family(source, preparation, role, captured=False)
+    with pytest.raises(AssertionError):
+        _check_adopted_owner_family(source, preparation, role, captured=True)
+    source.owner_graph_family, source.owner_graphs = GRAPH_FAMILY, manager
+    _check_adopted_owner_family(source, preparation, role, captured=True)
+    with pytest.raises(AssertionError):
+        _check_adopted_owner_family(source, preparation, role, captured=False)
+    source.owner_graphs = NS(workspace=owner, prepared=True, closed=False, failure=None)
+    with pytest.raises(AssertionError):
+        _check_adopted_owner_family(source, preparation, role, captured=True)
