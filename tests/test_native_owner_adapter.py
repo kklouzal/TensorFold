@@ -364,7 +364,8 @@ def test_invalid_descriptor_lane_frame_does_not_modify_an_already_staged_table()
         assert torch.equal(workspace.descriptors, before)
 
 
-def test_actual_buffers_adopt_prepared_role_workspaces_without_reallocation(monkeypatch):
+@pytest.mark.parametrize("actual_rows", [3, 4])
+def test_actual_buffers_adopt_prepared_role_workspaces_without_reallocation(monkeypatch, actual_rows):
     weights = _weights()
     weights.device = torch.device("cpu")
     weights.cfg.low, weights.cfg.experts, weights.cfg.top_k = 32, 8, 2
@@ -379,7 +380,7 @@ def test_actual_buffers_adopt_prepared_role_workspaces_without_reallocation(monk
         raise AssertionError("a prepared owner workspace was allocated twice")
     monkeypatch.setattr(OwnerBuffers, "__init__", unexpected_allocation)
     for role in prepared:
-        buffers = Buffers(weights, 4, 257, prefill=role == "prefill", owner_role=role)
+        buffers = Buffers(weights, actual_rows, 257, prefill=role == "prefill", owner_role=role)
         assert buffers.history_owner is prepared[role]
         assert buffers.history_owner.queries.data_ptr() == pointers[role]
 
