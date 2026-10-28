@@ -1,5 +1,13 @@
 # TensorFold fork
 
+The FIFO shutdown-snapshot candidate now uses the integrated Router/GDN and
+three-worker startup source. Its only runtime change avoids a full admitted-
+claims queue view during ordinary decoding; shutdown still reads and checks
+actual claims under the same stop predicate. The combined benchmark tools,
+startup worker funding, native code and model settings are unchanged. The
+48 affected scheduler CPU checks passed on the pinned runtime; all-six model
+and throughput checks remain pending, with no gain established.
+
 The private router/GDN/startup composition retains the explicit experimental
 router numerical epoch and adds the existing sealed FP16 State-batched GDN
 implementation with `--gdn-state-batch-trial` and private environment value1.

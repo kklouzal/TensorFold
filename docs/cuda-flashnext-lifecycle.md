@@ -30,3 +30,11 @@ request work makes this policy sticky. Abort precedes device fencing; ordinary
 communicator retirement fences before destroy. A native destroy/abort whose
 completion is unknown is not retried. Source fixtures do not qualify two-GPU
 NCCL, model output, or performance; those require their actual runtime gates.
+
+The FIFO actor samples the published stop state at its execution boundary. It
+reads the admitted-claims snapshot inside the shutdown predicate that consumes
+it; ordinary decoding needs no such snapshot. A claim between backend subruns
+retains the logical caller's input credit without keeping the worker alive.
+Other backend claims still prevent retirement until their actual work ends.
+The waiting-request view, accepted control boundary and queue notifications
+remain independent of this shutdown-only observation.
