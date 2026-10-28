@@ -77,7 +77,7 @@ def test_both_rope_fields_must_declare_the_same_yarn(tmp_path):
         qwen3_5.rope_parameters(_model(tmp_path, text))
 
 
-def test_the_mac_decoders_read_rope_themselves_and_qwen36_cuda_reads_yarn_like_the_dense_family(tmp_path):
+def test_the_mac_decoders_read_rope_themselves_and_qwen36_cuda_reads_yarn_like_the_dense_family():
     from tensorfold.families import qwen3_5_moe
 
     assert qwen3_5.ROPE_BACKENDS == qwen3_5_moe.ROPE_BACKENDS == ("cuda",)
@@ -85,12 +85,7 @@ def test_the_mac_decoders_read_rope_themselves_and_qwen36_cuda_reads_yarn_like_t
     raw = {"model_type": "qwen3_5_moe", "text_config": dict(TEXT, rope_parameters=yarn)}
     qwen3_5_moe.check_metadata(raw, "mlx")
     qwen3_5_moe.check_metadata(raw, "cuda")                      # declared YaRN is read, not refused
-    (tmp_path / "config.json").write_text(json.dumps({"model_type": "qwen3_5_moe", "text_config": TEXT}))
-    for factor in (None, 4.0):
-        mine, dense = qwen3_5_moe.rope_parameters(tmp_path, factor), qwen3_5.rope_parameters(tmp_path, factor)
-        assert (mine.rope_type, mine.context_limit, mine.attention_factor) == \
-            (dense.rope_type, dense.context_limit, dense.attention_factor)
-    assert qwen3_5_moe.rope_parameters(tmp_path, 4.0).context_limit == 1048576
+    assert qwen3_5_moe.rope_parameters is qwen3_5.rope_parameters  # one policy: the dense family's tests cover it
 
 
 @pytest.mark.parametrize("quantized", [True, False])
@@ -99,7 +94,6 @@ def test_qwen36_cuda_engines_receive_the_yarn_factor(tmp_path, monkeypatch, quan
     from tensorfold.families import qwen3_5_moe
     from tensorfold.families.qwen3_5_moe.cuda import engine, nvfp4_engine
 
-    (tmp_path / "config.json").write_text(json.dumps({"model_type": "qwen3_5_moe", "text_config": TEXT}))
     got = []
     monkeypatch.setattr(fmt, "is_quantized", lambda path: quantized)
     monkeypatch.setattr(qwen3_5_moe, "check_vram_experts", lambda *a, **k: None)

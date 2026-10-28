@@ -54,18 +54,18 @@ def routed(prefix: str, get: Callable, top_k: int) -> Routed:
 
 def load(model_dir: str | Path, *, eos_token_ids=None, expert_factory=None, rope=None) -> Weights:
     """The checkpoint on the GPU, projections packed for the shared matmul and experts for the grouped kernels
-    (``rope``: a static YaRN policy for a default-RoPE checkpoint)."""
+    (``rope``: the engine's static YaRN policy, from ``--yarn-factor`` or the checkpoint; None, like
+    ``eos_token_ids``, reads the checkpoint's own)."""
 
     from tensorfold.families.qwen3_5.cuda.nvfp4_load import quantized
 
-    options = {name: value for name, value in (("eos_token_ids", eos_token_ids), ("rope", rope)) if value is not None}
     if quantized(Path(model_dir)):
         from .nvfp4_load import load_nvfp4
 
-        return load_nvfp4(model_dir, expert_factory=expert_factory, **options)
+        return load_nvfp4(model_dir, expert_factory=expert_factory, eos_token_ids=eos_token_ids, rope=rope)
     return load_dense(model_dir, tiled=True,
                       mlp=lambda prefix, get, qlinear, cfg: {"moe": routed(prefix, get, cfg.top_k)},
-                      prefill_mlp=(), **options)
+                      prefill_mlp=(), eos_token_ids=eos_token_ids, rope=rope)
 
 
 @dataclass
