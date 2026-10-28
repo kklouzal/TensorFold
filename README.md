@@ -2015,3 +2015,13 @@ ordered pools. The ordinary2MiB fused-provider workspace credit remains for
 eager/MTP execution; newly captured activation storage is separately debited
 inside the graph budget. The strict selected-IQ fused-eager versus captured
 oracle and combined all-six capacity/quality/performance remain pending.
+
+### Explicit V100 GPU-local worker scheduling
+
+The eight-V100 profile's worker entrypoint now supports the required GPU-local
+socket CPU grouping before backend/CUDA imports, without changing parent CPU
+allowances or memory policy. The same owned exec bootstrap supports finite
+backend workers and ordinary externally supervised TP8 serving ranks; see
+[worker setup and evidence limits](deploy/v100/worker-affinity.md). Actual
+all-eight helper-affinity, resource, quality and six-tier throughput checks remain
+pending; no deployment or performance qualification is claimed by this source.
