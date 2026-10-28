@@ -8,7 +8,7 @@ This initial correctness policy has unqualified per-operation control cost.
 import threading
 from datetime import timedelta
 import json
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 import weakref
 
 from tensorfold.cleanup import finish, raise_failures
@@ -21,6 +21,42 @@ from .execution_identity import (
 from .position_coordinates import _digest
 
 KEY = "input_preparation_context"
+
+# These trusted coordinator roles have fixed ASCII spellings. Other supported
+# labels and every non-success envelope keep the general canonical serializer.
+_SUCCESS_PREFIXES = MappingProxyType({label: '{"label":"' + label + '","ordinal":' for label in (
+    "prefill-window", "decode-window", "mixed-prefill-window", "mtp-refresh-window", "mtp-proposal-window",
+)})
+_SUCCESS_KEYS = frozenset(("ok", "value"))
+_MISSING_RESULT = object()
+
+
+def _success_envelope(ordinal, label, outcome, max_bytes):
+    """Return exact canonical wire text only for the bounded immutable domain.
+
+    This validates the entire known success schema, not just an ok bit. Equality
+    against these bytes later proves every envelope field. No mutable protocol
+    value can take this path; refusal/unknown/noncanonical data use old parsing.
+    """
+    if (type(ordinal) is not int or not 1 <= ordinal <= (1 << 63) - 1
+            or type(label) is not str or label not in _SUCCESS_PREFIXES
+            or type(max_bytes) is not int or max_bytes <= 0
+            or type(outcome) is not dict or any(type(key) is not str for key in outcome)
+            or outcome.keys() != _SUCCESS_KEYS or outcome["ok"] is not True):
+        return None
+    value = outcome["value"]
+    prefix = _SUCCESS_PREFIXES[label]
+    if value is None:
+        encoded = f'{prefix}{ordinal},"outcome":{{"ok":true,"value":null}},"version":1}}'
+    elif _digest(value):
+        encoded = f'{prefix}{ordinal},"outcome":{{"ok":true,"value":"{value}"}},"version":1}}'
+    else:
+        return None
+    # Every fragment/value here is ASCII. The general serializer's complete
+    # UTF8 byte bound therefore equals this character count exactly.
+    if len(encoded) > max_bytes:
+        raise ValueError("runtime identity exceeds byte bound")
+    return encoded
 
 
 class _PreparationMailbox:
@@ -62,8 +98,13 @@ class _PreparationMailbox:
         if stage != "prepare":
             raise RuntimeError("input mailbox is only the preparation phase transport")
         context, world = self.context, self.context.cohort.tp
-        record = {"version": 1, "ordinal": ordinal, "label": label, "outcome": outcome}
-        encoded = canonical_runtime_json(record, max_bytes=context.cohort._phase_value_bytes)
+        encoded = _success_envelope(ordinal, label, outcome, context.cohort._phase_value_bytes)
+        expected = None
+        if encoded is None:
+            record = {"version": 1, "ordinal": ordinal, "label": label, "outcome": outcome}
+            encoded = canonical_runtime_json(record, max_bytes=context.cohort._phase_value_bytes)
+        else:
+            expected = encoded.encode("ascii")
         try:
             if fields is not None:
                 fields.value(encoded)
@@ -86,6 +127,14 @@ class _PreparationMailbox:
                     raise ValueError("input preparation outcome exceeds its bounded byte schema")
                 if fields is not None:
                     fields.received(value)
+                if expected is not None and value == expected:
+                    # read_many preserves the ordered per-rank slot keys. Exact
+                    # equality proves version/epoch/label/full outcome for this
+                    # rank too. _phase only reads these per-phase dictionaries,
+                    # then projects their immutable None/SHA values; no mutable
+                    # outcome reference escapes that boundary.
+                    outcomes.append(outcome)
+                    continue
                 row = json.loads(value)
                 if (type(row) is not dict or row.keys() != {"version", "ordinal", "label", "outcome"}
                         or type(row["version"]) is not int or row["version"] != 1
@@ -235,9 +284,10 @@ class InputPreparationContext:
                         if not may_refuse or not isinstance(error, (ValueError, OSError)) or _unretired(error):
                             _fatal(self.cohort, error)
                         raise
-                result = []
+                result = _MISSING_RESULT
                 def build():
-                    result.append(operation())
+                    nonlocal result
+                    result = operation()
                     return contract
                 primary = None
                 try:
@@ -259,7 +309,9 @@ class InputPreparationContext:
                         raise_failures(primary, (retirement,))
                 if primary is not None:
                     raise primary
-                return result[0]
+                if result is _MISSING_RESULT:
+                    raise RuntimeError("input preparation phase did not invoke its operation")
+                return result
             finally:
                 self.cohort.multi = None  # A long-lived model must not retain its decoder through this borrow.
                 self._active, self._pure = None, False
