@@ -2,6 +2,7 @@
 from concurrent.futures import CancelledError
 from types import SimpleNamespace as NS
 import hashlib
+import json
 import signal
 import threading
 import time
@@ -47,6 +48,27 @@ def test_parallel_full_file_authorities_equal_serial_content_without_rehash(tmp_
     assert record["bytes_hashed"]==serial.bytes_read and record["workers_global"]==3
     assert all(row["hash_operation_started_monotonic_ns"]<=row["finished_monotonic_ns"] for row in record["workers"])
     assert record["worker_operation_retired"]
+    assert record["partitions"] == [list(group) for group in capture.partitions]
+
+    class Store:
+        def __init__(self):
+            self.values = {}
+
+        def set(self, key, value):
+            self.values[key] = value.encode()
+
+        def get(self, key):
+            return self.values[key]
+
+        def wait(self, keys, timeout):
+            assert all(key in self.values for key in keys)
+
+    store = Store()
+    content = {"contents": contents, "bytes_read": read, "hashes_reused": reused,
+               "startup_artifact_capture": record}
+    coordinator = NS(rank=0, tp=1, comm=NS(store=store))
+    assert identity._phase(coordinator, "startup", "content", lambda: content) == [content]
+    assert json.loads(store.values["startup/phase/content/0"])["value"] == content
     capture.close()
     assert capture.closed and all(c.closed and c.operation_retired.is_set() for c in capture.captures)
     assert startup.partition_files(dict(reversed(list(files.items()))),before,3)==capture.partitions

@@ -6,7 +6,8 @@ owned Captures hash deterministic disjoint partitions of whole files, each
 using the original SHA256 and current-process authority checks. No chunk digests
 are combined. The default remains one worker. All three stack/guard/working
 allowances are funded globally before start; failures cancel siblings and
-every accepted file borrower retires under its own completion latch. Input
+every accepted file borrower retires under its own completion latch. Partition
+receipts use JSON arrays for the existing strict all-rank identity schema. Input
 immutability, byte/stat verification, MTP quality and24-window capacity remain
 required. Actual startup benefit and all-six throughput require measurement.
 

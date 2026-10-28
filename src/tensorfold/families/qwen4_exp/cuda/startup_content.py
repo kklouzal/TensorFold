@@ -370,7 +370,7 @@ class StartupContentGroup:
                    for index, capture in enumerate(self.captures)]
         starts = [row["registration_wait_started_monotonic_ns"] for row in records]
         ends = [row["registration_wait_finished_monotonic_ns"] for row in records]
-        return {"workers_global": 3, "partitions": self.partitions, "workers": records,
+        return {"workers_global": 3, "partitions": [list(group) for group in self.partitions], "workers": records,
                 "started_monotonic_ns": min(row["started_monotonic_ns"] for row in records),
                 "finished_monotonic_ns": max(row["finished_monotonic_ns"] for row in records),
                 "bytes_hashed": sum(row["bytes_hashed"] for row in records),
