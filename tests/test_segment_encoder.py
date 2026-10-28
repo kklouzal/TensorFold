@@ -9,7 +9,7 @@ import pytest
 
 tokenizers = pytest.importorskip("tokenizers")
 
-from tensorfold.server.segments import LIMIT, SegmentEncoder, _size  # noqa: E402
+from tensorfold.server.segments import LIMIT, SegmentEncoder, _size, bind_ids_encoder  # noqa: E402
 
 OPEN, END = "<|im_start|>", "<|im_end|>"
 PIECES = ["hello", " world", "\n", "  ", "\t", "é", "é", "日本語", "🙂", "<think>", "</think>", "<tool_call>",
@@ -265,3 +265,105 @@ def test_containment_does_not_retire_another_callers_borrowed_hit(monkeypatch):
         thread.join(3)
     assert not thread.is_alive() and errors == [] and results == [expected]
     assert owner() is None
+
+
+def test_pinned_native_misses_use_public_fast_ids_and_preserve_order_and_flags():
+    enc = small_encoder()
+    native, fast, calls = enc.tok, enc.tok.encode_batch_fast, []
+    def selected(parts, **options):
+        calls.append((list(parts), options))
+        return fast(parts, **options)
+    native.encode_batch_fast = selected
+    native.encode_batch = lambda *a, **k: pytest.fail("ordinary batch called after native fast selection")
+    enc = SegmentEncoder(native, OPEN)
+    first, second = OPEN + "a", OPEN + "b"
+    assert enc.batch_codec == "encode_batch_fast"
+    assert enc.encode(first + second + first) == native.encode(first + second + first, add_special_tokens=False).ids
+    assert calls == [([first, second], {"add_special_tokens": False})]
+    assert enc.encode(first) == native.encode(first, add_special_tokens=False).ids
+    assert calls[-1] == ([], {"add_special_tokens": False})
+
+
+def test_fast_failure_is_not_retried_as_ordinary_or_published():
+    native = small_encoder().tok
+    primary = MemoryError("controlled fast API failure")
+    def selected(*args, **kwargs):
+        raise primary
+    native.encode_batch_fast = selected
+    native.encode_batch = lambda *a, **k: pytest.fail("fast failure triggered an ordinary retry")
+    enc = SegmentEncoder(native, OPEN)
+    with pytest.raises(MemoryError) as caught:
+        enc.encode(OPEN + "ab")
+    assert caught.value is primary and not enc.cache and enc.held == 0
+
+
+def test_custom_provider_keeps_ordinary_protocol_without_probing_fast_property():
+    native, calls = small_encoder().tok, []
+    class Custom:
+        def __getattr__(self, name):
+            return getattr(native, name)
+        @property
+        def encode_batch_fast(self):
+            pytest.fail("a custom fast capability was inferred")
+        def encode_batch(self, parts, **options):
+            calls.append((list(parts), options))
+            return native.encode_batch(parts, **options)
+        def encode(self, text, **options):
+            calls.append((text, options))
+            return native.encode(text, **options)
+    custom = Custom()
+    enc = SegmentEncoder(custom, OPEN)
+    assert enc.batch_codec == "encode_batch"
+    assert enc.encode(OPEN + "ab") == native.encode(OPEN + "ab", add_special_tokens=False).ids
+    ids = bind_ids_encoder(custom)
+    assert ids.codec == "encode" and ids.tokenizer_identity is None
+    assert ids("ab", add_special_tokens=True) == native.encode("ab", add_special_tokens=True).ids
+    assert calls == [([OPEN + "ab"], {"add_special_tokens": False}), ("ab", {"add_special_tokens": True})]
+
+
+@pytest.mark.parametrize("fallback", ["older", "dropout", "other_model"])
+def test_unqualified_or_stochastic_native_tokenizers_keep_ordinary_call(monkeypatch, fallback):
+    native = small_encoder().tok
+    if fallback == "older":
+        monkeypatch.setattr(tokenizers, "__version__", "0.23.2")
+    elif fallback == "dropout":
+        native.model.dropout = 0.1
+    else:
+        native.model = tokenizers.models.WordLevel({"a": 0, "[UNK]": 1}, unk_token="[UNK]")
+    native.encode_batch_fast = lambda *a, **k: pytest.fail("unqualified native fast API selected")
+    enc = SegmentEncoder(native, OPEN)
+    assert enc.batch_codec == "encode_batch"
+    enc.encode(OPEN + "a")
+    assert bind_ids_encoder(native).codec == "encode"
+
+
+def test_ids_callback_is_bound_once_with_identity_and_preserves_special_token_flags(monkeypatch):
+    from tensorfold import token_metadata
+
+    native = small_encoder().tok
+    native.post_processor = tokenizers.processors.TemplateProcessing(
+        single="$A " + OPEN, special_tokens=[(OPEN, native.token_to_id(OPEN))])
+    ordinary, original_identity, calls = native.encode, token_metadata.tokenizer_identity, []
+    def identity(tok):
+        calls.append(tok)
+        return original_identity(tok)
+    monkeypatch.setattr(token_metadata, "tokenizer_identity", identity)
+    ids = bind_ids_encoder(native)
+    assert ids.codec == "encode_batch_fast" and calls == [native]
+    assert ids.tokenizer_identity == original_identity(native)
+    native.encode = lambda *a, **k: pytest.fail("profile-bound callback reselected ordinary encode")
+    for special in (False, True):
+        for text in ("a", "b", "ab", "", "é", "e\u0301"):
+            assert ids(text, add_special_tokens=special) == ordinary(text, add_special_tokens=special).ids
+    assert calls == [native]
+
+
+@pytest.mark.parametrize("inputs", [[None], ["\ud800"]])
+def test_public_fast_and_ordinary_batch_errors_keep_their_type_and_message(inputs):
+    native = small_encoder().tok
+    outcomes = []
+    for method in (native.encode_batch, native.encode_batch_fast):
+        with pytest.raises(BaseException) as caught:
+            method(inputs, add_special_tokens=False)
+        outcomes.append((type(caught.value), caught.value.args))
+    assert outcomes[0] == outcomes[1]

@@ -40,6 +40,7 @@ class EncodeBound:
     added_tokens: int
     minimum_added_utf8: int
     python_encoding_wrapper_bytes: int
+    codec: str = "encode"
 
 
 def _size(value, name, *, positive=False):
@@ -54,7 +55,7 @@ def _plain_bytelevel(value):
             and all(value[key] is False for key in ("add_prefix_space", "trim_offsets", "use_regex")))
 
 
-def capture_encode_bound(tokenizer):
+def capture_encode_bound(tokenizer, *, codec="encode", expected_tokenizer_identity=None):
     """Capture one fresh, privately owned tokenizer before concurrent use.
 
     Artifact verification is shared with the decoder policy. No tokenizer or
@@ -64,8 +65,12 @@ def capture_encode_bound(tokenizer):
     import tokenizers
     from tensorfold.token_metadata import tokenizer_identity, tokenizer_vocab_size
 
+    if type(codec) is not str or codec not in ("encode", "encode_batch", "encode_batch_fast"):
+        raise ValueError("encode storage requires a proved public encoding API")
     if type(tokenizer) is not tokenizers.Tokenizer:
         raise ValueError("encode storage requires the exact native Tokenizer")
+    if not callable(getattr(tokenizer, codec, None)):
+        raise ValueError("encode storage requires its selected public API")
     artifact = bytelevel_payload_policy()
     state = json.loads(tokenizer.to_str())
     pre = state.get("pre_tokenizer")
@@ -106,8 +111,11 @@ def capture_encode_bound(tokenizer):
     if shallow < 256:
         raise ValueError("Encoding wrapper disagrees with its pinned native layout")
     wrapper = shallow - 256
-    return EncodeBound(tokenizer_identity(tokenizer), artifact["identity"], tokenizer_vocab_size(tokenizer),
-                       maximum, len(added), minimum, wrapper)
+    identity = tokenizer_identity(tokenizer)
+    if expected_tokenizer_identity is not None and identity != expected_tokenizer_identity:
+        raise ValueError("IDs-only callback tokenizer changed since profile preparation")
+    return EncodeBound(identity, artifact["identity"], tokenizer_vocab_size(tokenizer),
+                       maximum, len(added), minimum, wrapper, codec)
 
 
 def _map_bytes(count, entry_bytes):
@@ -123,26 +131,14 @@ def _map_bytes(count, entry_bytes):
     return (entry_bytes + 1) * buckets + 16
 
 
-def encode_payload(bound, *, utf8_bytes, owners, cache_generations,
-                   normalized_utf8_bytes=None, normalized_scalar_bound=None):
-    """Bound requested layouts, without clipping metadata to model context.
-
-    ``owners`` counts HTTP/native Encoding owners of this input envelope.
-    ``cache_generations`` separately counts all retained per-thread BPE cache
-    generations, including any startup-thread cache. Both are explicit caller
-    lifetime bounds. Other tokenizers, encoders and native runtime overheads
-    remain the aggregate's responsibility. Batch/Rayon/SegmentEncoder calls
-    release the GIL and require their own aggregation; this formula does not
-    serialize those calls.
-
-    Optional normalized bounds require the caller's selected-renderer proof.
-    They bound the SUM of protected literal pieces and the independently
-    NFC-normalized remaining raw pieces. Whole-string NFC across protected
-    boundaries is not that effective stream. Intermediate decomposition is
-    never reduced by these final-output bounds.
-    """
+def _encode_layout(bound, *, utf8_bytes, owners, cache_generations, normalized_utf8_bytes,
+                   normalized_scalar_bound, decomposed_scalar_bound, split_bound, protected_match_bound, batch):
     if type(bound) is not EncodeBound:
         raise ValueError("encode storage requires its captured immutable metadata")
+    allowed = ("encode_batch", "encode_batch_fast") if batch else ("encode",)
+    if bound.codec not in allowed:
+        raise ValueError("encoding API requires its matching synchronous or batch resource contract")
+    fast_ids = bound.codec == "encode_batch_fast"
     n = _size(utf8_bytes, "UTF8 bytes")
     h = _size(owners, "Encoding owners", positive=True)
     generations = _size(cache_generations, "cache generations", positive=True)
@@ -152,15 +148,20 @@ def encode_payload(bound, *, utf8_bytes, owners, cache_generations,
     _size(bound.added_tokens, "added token count")
     minimum = _size(bound.minimum_added_utf8, "minimum added-token bytes", positive=bool(bound.added_tokens))
     wrapper = _size(bound.python_encoding_wrapper_bytes, "Encoding wrapper bytes")
-    generic_utf8, decomposed = _size(3 * n, "normalized UTF8 bytes"), 3 * n // 2
+    generic_utf8, generic_decomposed = _size(3 * n, "normalized UTF8 bytes"), 3 * n // 2
+    decomposed = (generic_decomposed if decomposed_scalar_bound is None else
+                  _size(decomposed_scalar_bound, "proved intermediate decomposed scalar count"))
     u = generic_utf8 if normalized_utf8_bytes is None else _size(normalized_utf8_bytes, "proved normalized UTF8 bytes")
-    scalars = (decomposed if normalized_scalar_bound is None else
+    scalars = (generic_decomposed if normalized_scalar_bound is None else
                _size(normalized_scalar_bound, "proved normalized scalar count"))
-    if u > generic_utf8 or scalars > decomposed:
+    if u > generic_utf8 or scalars > generic_decomposed or decomposed > generic_decomposed:
         raise ValueError("proved normalized bounds must fit the selected generic NFC envelope")
-    scalars = min(scalars, u)  # Every scalar has at least one UTF8 byte.
+    scalars = min(scalars, u, decomposed)  # Final scalars also fit their NFD expansion.
     u = min(u, 4 * scalars)    # Every valid Unicode scalar has at most four.
-    m, v = min(n, scalars), max(n, u)
+    splits = n if split_bound is None else _size(split_bound, "proved split count")
+    if splits > n:
+        raise ValueError("proved split count must fit the input UTF8 envelope")
+    m, v = min(splits, scalars), max(n, u)
     t = u
     # Region offsets and stack_n are native int32. Check the actual rounded
     # stack-capacity envelope, not just the number of currently live cells.
@@ -170,7 +171,13 @@ def encode_payload(bound, *, utf8_bytes, owners, cache_generations,
     if u > (1 << 31) - 1 or stack_capacity > (1 << 31) - 1:
         raise ValueError("encode envelope exceeds the selected native regex integer domain")
     a = n // minimum if bound.added_tokens else 0
-    raw_parts = min(n, 2 * a + 1) if n else 0
+    if protected_match_bound is not None:
+        protected = _size(protected_match_bound, "proved protected match count")
+        if protected > a:
+            raise ValueError("proved protected matches must fit the literal input envelope")
+        a = protected
+    a = min(a, m)
+    raw_parts = min(m, 2 * a + 1) if n else 0
     c, j = _capacity, _growth
     onig_heap = 96 * max(160, scalars + 24) + 32 + 72 + 112 if u else 0
     # Raw extraction: original-role4N + old/new normalized2N + token valuesN;
@@ -198,9 +205,13 @@ def encode_payload(bound, *, utf8_bytes, owners, cache_generations,
     # Model-stage normalized/alignment payload34U+72m, token Strings2U and
     # Token arrays48T survive until each consumed split retires.
     resident = 4 * n + 36 * u + 72 * m + 104 * c(m) + 48 * t
-    offset_map = _map_bytes(n, 16)
+    # OffsetType::None returns before constructing BytesToCharOffsetConverter.
+    # It drops each old token value and puts an empty String in the Encoding.
+    # Earlier normalization/model/temporary-token ownership stays paid.
+    offset_map = 0 if fast_ids else _map_bytes(n, 16)
     sequence_map = _map_bytes(1, 24)
-    returned = 256 + 64 * c(t) + 2 * u + sequence_map
+    returned_strings = 0 if fast_ids else 2 * u
+    returned = 256 + 64 * c(t) + returned_strings + sequence_map
 
     # Fresh default BPE: each cached word reserves at most255 Symbols and
     # a255-byte key, even when merging leaves only one live Symbol. The TLS
@@ -221,26 +232,30 @@ def encode_payload(bound, *, utf8_bytes, owners, cache_generations,
         # Earlier tokens cost<=50*(U-u_i), so adding128*u_i to the34U
         # model base is<=162U; protected tokens are included in the earlier set.
         "bpe_words_and_prior_tokens": 4 * n + 162 * u + 72 * m + 104 * c(m) + cache_resize,
-        "character_offset_map": resident + 2 * offset_map + 48,
         # At most one column is reallocating; its largest old element is a
         # String header24, and old capacity is below the required T.
         "encoding_columns": resident + offset_map + 64 * c(t) + 24 * t + 256 + sequence_map,
         # Two64-byte column sets plus a conservative extra16-byte offset
         # map/collect column. Strings move; only their single2U pool survives.
-        "postprocessing_move": 144 * c(t) + 2 * u + 2 * sequence_map + 256,
+        "postprocessing_move": 144 * c(t) + returned_strings + 2 * sequence_map + 256,
         "ids_getter": returned + 4 * t,
     }
+    if not fast_ids:
+        phases["character_offset_map"] = resident + 2 * offset_map + 48
     for name, value in phases.items():
         _size(value, name)
     active = max(phases.values())
     retained = _size((h - 1) * returned, "other returned Encodings")
     total = _size(active + retained + cache_bytes, "requested native/Encoding layouts")
     ids = _size(h * (56 + (8 + sys.getsizeof(bound.maximum_token_id)) * t), "Python ID outputs")
-    return {"schema": "tensorfold.selected-tokenizer-encode-payload-v1",
+    return {"schema": "tensorfold.selected-tokenizer-encode-payload-v1", "codec": bound.codec,
         "tokenizer_identity": bound.tokenizer_identity, "artifact_identity": bound.artifact_identity,
         "budget": {"utf8_bytes": n, "owners": h, "cache_generations": generations,
                    "externally_proved_normalized_utf8_bytes": normalized_utf8_bytes,
-                   "externally_proved_normalized_scalar_bound": normalized_scalar_bound},
+                   "externally_proved_normalized_scalar_bound": normalized_scalar_bound,
+                   "externally_proved_decomposed_scalar_bound": decomposed_scalar_bound,
+                   "externally_proved_split_bound": split_bound,
+                   "externally_proved_protected_match_bound": protected_match_bound},
         "bounds": {"nfc_utf8_bytes": u, "nfc_scalars": scalars, "nfd_scalars": decomposed,
                    "nfc_old_new_extent": v, "splits": m, "tokens": t,
                    "final_slice_original_bytes": 2 * n, "slice_construction_original_bytes": 3 * n,
@@ -248,6 +263,7 @@ def encode_payload(bound, *, utf8_bytes, owners, cache_generations,
         "phase_heap_requested_bytes": phases, "active_native_heap_requested_bytes": active,
         "native_layout_rows": {"nfc_iterator_heap_bytes": 80 * decomposed,
             "character_offset_map_bytes": offset_map, "encoding_columns_bytes": 64 * c(t),
+            "returned_token_string_bytes": returned_strings,
             "bpe_one_word_working_bytes": 128 * u, "bpe_cache_table_bytes": cache_table,
             "regex_search_heap_bytes": onig_heap, "regex_stack_capacity_bound": stack_capacity},
         "returned_native_encoding_per_owner_bytes": returned,
@@ -264,5 +280,52 @@ def encode_payload(bound, *, utf8_bytes, owners, cache_generations,
         "caller_preconditions": ("fresh private source loader; no BPE cache resize/clear or tokenizer mutation",
             "explicit retained cache generation count; managed churn is not implicitly qualified",
             "optional final bounds cover protected + independently normalized pieces jointly, not whole-string NFC",
+            "optional NFD/split/protected counts need their own source-domain proof, not final-scalar inference",
+            "detached batch sequences require their own concurrent/result/container aggregation" if batch else
             "synchronous encode only; encode_batch/SegmentEncoder/Rayon require separate aggregation"),
         "evidence": "source-owned requested layouts and lifetime bounds; no whole HTTP admission/RSS grant"}
+
+
+def encode_payload(bound, *, utf8_bytes, owners, cache_generations,
+                   normalized_utf8_bytes=None, normalized_scalar_bound=None, decomposed_scalar_bound=None,
+                   split_bound=None, protected_match_bound=None):
+    """One synchronous active peak plus other returned Encoding owners.
+
+    Cache generations are a separate, explicit lifetime bound. Optional final
+    bounds cover protected literals + independently normalized pieces jointly,
+    never whole-string NFC across protected boundaries or intermediate NFD.
+    This contract grants no GIL serialization to batch/SegmentEncoder calls.
+    """
+    return _encode_layout(bound, utf8_bytes=utf8_bytes, owners=owners, cache_generations=cache_generations,
+        normalized_utf8_bytes=normalized_utf8_bytes, normalized_scalar_bound=normalized_scalar_bound,
+        decomposed_scalar_bound=decomposed_scalar_bound, split_bound=split_bound,
+        protected_match_bound=protected_match_bound, batch=False)
+
+
+def batch_encode_sequence_payload(bound, *, utf8_bytes, cache_generations,
+                                  normalized_utf8_bytes=None, normalized_scalar_bound=None, decomposed_scalar_bound=None,
+                                  split_bound=None, protected_match_bound=None):
+    """One detached batch sequence, without an implicit batch/process total.
+
+    The caller must aggregate simultaneous sequences and all returned Encodings,
+    not assume one GIL-held peak. Global cache storage is charged once. Input
+    and result batch vectors, the Python Encoding list, singleton adapter
+    containers and callback-live Python sources are separate obligations.
+    """
+    result = _encode_layout(bound, utf8_bytes=utf8_bytes, owners=1, cache_generations=cache_generations,
+        normalized_utf8_bytes=normalized_utf8_bytes, normalized_scalar_bound=normalized_scalar_bound,
+        decomposed_scalar_bound=decomposed_scalar_bound, split_bound=split_bound,
+        protected_match_bound=protected_match_bound, batch=True)
+    result["schema"] = "tensorfold.selected-tokenizer-batch-sequence-payload-v1"
+    result["single_sequence_peak_requested_bytes"] = result.pop("active_native_heap_requested_bytes")
+    result.pop("native_heap_requested_bytes")
+    result.pop("other_returned_encodings_bytes")
+    result["budget"].pop("owners")
+    result["scheduling"] = "detached batch sequence; no single-active-GIL or whole-batch grant"
+    result["cache_accounting"] = "global generation storage, add once across the batch/other callers"
+    result["required_external_roles"] += (
+        "batch input/EncodeInput and native Encoding/PyEncoding vector backing",
+        "Python result Encoding list and singleton input/result containers",
+        "all simultaneously active sequences and retained batch Encodings; callback-live source owners",
+    )
+    return result

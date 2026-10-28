@@ -284,3 +284,55 @@ def test_actual_normalization_split_and_encoding_stay_inside_the_bound(tokenizer
          ("special_tokens_mask", 4), ("attention_mask", 4)))
     native_strings = sum(len(token.encode()) for token in encoded.tokens)
     assert native_columns + native_strings <= result["returned_native_encoding_per_owner_bytes"]
+
+
+def test_fast_ids_resource_mode_removes_only_proved_offset_and_returned_label_roles(tokenizer, monkeypatch):
+    monkeypatch.setattr(payload, "bytelevel_payload_policy", lambda: {"identity": "equations"})
+    ordinary = payload.capture_encode_bound(tokenizer, codec="encode_batch")
+    fast = payload.capture_encode_bound(tokenizer, codec="encode_batch_fast")
+    char = payload.batch_encode_sequence_payload(ordinary, utf8_bytes=4096, cache_generations=3)
+    ids = payload.batch_encode_sequence_payload(fast, utf8_bytes=4096, cache_generations=3)
+    assert ordinary.tokenizer_identity == fast.tokenizer_identity
+    assert ids["native_layout_rows"]["character_offset_map_bytes"] == 0
+    assert ids["native_layout_rows"]["returned_token_string_bytes"] == 0
+    assert char["native_layout_rows"]["character_offset_map_bytes"] > 0
+    assert char["native_layout_rows"]["returned_token_string_bytes"] > 0
+    assert "character_offset_map" not in ids["phase_heap_requested_bytes"]
+    for phase in ("raw_added_token_slices", "nfc_normalization_and_full_slice", "regex_slices_and_search",
+                  "bytelevel_normalization", "bpe_words_and_prior_tokens"):
+        assert char["phase_heap_requested_bytes"][phase] == ids["phase_heap_requested_bytes"][phase]
+    assert ids["returned_native_encoding_per_owner_bytes"] < char["returned_native_encoding_per_owner_bytes"]
+    assert ids["persistent_cache_bytes"] == char["persistent_cache_bytes"]
+    assert "native_heap_requested_bytes" not in ids and "owners" not in ids["budget"]
+    assert "no single-active-GIL" in ids["scheduling"]
+    with pytest.raises(ValueError, match="matching synchronous or batch"):
+        payload.encode_payload(fast, utf8_bytes=1, owners=1, cache_generations=1)
+    with pytest.raises(ValueError, match="matching synchronous or batch"):
+        payload.batch_encode_sequence_payload(bound(), utf8_bytes=1, cache_generations=1)
+
+
+def test_ids_callback_and_resource_mode_share_the_prepared_tokenizer_identity(tokenizer, monkeypatch):
+    import tokenizers as tk
+    from tensorfold.server.segments import bind_ids_encoder
+
+    monkeypatch.setattr(payload, "bytelevel_payload_policy", lambda: {"identity": "equations"})
+    callback = bind_ids_encoder(tokenizer)
+    captured = payload.capture_encode_bound(tokenizer, codec=callback.codec,
+        expected_tokenizer_identity=callback.tokenizer_identity)
+    assert captured.codec == "encode_batch_fast"
+    tokenizer.add_tokens([tk.AddedToken("<|new-literal|>", normalized=False)])
+    with pytest.raises(ValueError, match="changed since profile preparation"):
+        payload.capture_encode_bound(tokenizer, codec=callback.codec,
+            expected_tokenizer_identity=callback.tokenizer_identity)
+
+
+@pytest.mark.parametrize("special", [False, True])
+def test_actual_fast_api_keeps_ids_but_has_empty_labels_and_offsets(tokenizer, special):
+    inputs = ["", "a", "e\u0301", "日本語", "\U0001d162" * 4, "<|literal|>a", "0123456789" * 10]
+    ordinary = tokenizer.encode_batch(inputs, add_special_tokens=special)
+    fast = tokenizer.encode_batch_fast(inputs, add_special_tokens=special)
+    assert [encoding.ids for encoding in fast] == [encoding.ids for encoding in ordinary]
+    for encoding in fast:
+        assert encoding.tokens == [""] * len(encoding.ids)
+        assert encoding.offsets == [(0, 0)] * len(encoding.ids)
+        assert encoding.word_ids == [None] * len(encoding.ids)

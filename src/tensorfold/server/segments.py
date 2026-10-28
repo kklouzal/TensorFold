@@ -11,9 +11,53 @@ import sys
 import threading
 from array import array
 from collections import OrderedDict
+from dataclasses import dataclass
 from typing import Any
 
 LIMIT = 64 << 20         # bytes the cache holds: segment texts and their ids (about 7M tokens of English text)
+
+
+def _fast_ids_batch(tok):
+    native = sys.modules.get("tokenizers")
+    if (native is not None and getattr(native, "__version__", None) == "0.23.3"
+            and type(tok) is getattr(native, "Tokenizer", None)):
+        model = tok.model
+        if type(model) is native.models.BPE and model.dropout is None:
+            method = getattr(tok, "encode_batch_fast", None)
+            if callable(method):
+                return method
+    return None
+
+
+@dataclass(frozen=True, slots=True)
+class IDsEncoder:
+    """One immutable profile's actual method, tokenizer lifetime and identity."""
+    tokenizer: Any
+    method: Any
+    codec: str
+    tokenizer_identity: str | None
+
+    def __call__(self, text: str, *, add_special_tokens: bool) -> list[int]:
+        # The singleton containers/released GIL need the batch resource mode.
+        encoded = (self.method([text], add_special_tokens=add_special_tokens)[0]
+                   if self.codec == "encode_batch_fast" else
+                   self.method(text, add_special_tokens=add_special_tokens))
+        return encoded.ids
+
+
+def bind_ids_encoder(tok):
+    """Resolve a private file-loaded tokenizer once, before profile publication.
+
+    Only the pinned deterministic native BPE API receives fast selection. Other
+    providers retain their ordinary call. Tokenizer mutation after binding is
+    outside this immutable profile contract; errors never trigger a retry.
+    """
+    fast = _fast_ids_batch(tok)
+    if fast is None:
+        return IDsEncoder(tok, tok.encode, "encode", None)
+    from tensorfold.token_metadata import tokenizer_identity
+
+    return IDsEncoder(tok, fast, "encode_batch_fast", tokenizer_identity(tok))
 
 
 class SegmentEncoder:
@@ -28,6 +72,22 @@ class SegmentEncoder:
         self.cache: OrderedDict[str, array] = OrderedDict()
         self.held = 0
         self.lock = threading.Lock()
+
+    @property
+    def tok(self):
+        return self._batch_binding[0]
+
+    @tok.setter
+    def tok(self, value):
+        # Only the inspected native API supplies the IDs-only guarantee.
+        # Keep the established lazy ordinary call for older/custom providers.
+        fast = _fast_ids_batch(value)
+        self._batch_binding = (value, fast, "encode_batch_fast" if fast is not None else "encode_batch")
+
+    @property
+    def batch_codec(self):
+        """Actual batch API, for the separately validated resource contract."""
+        return self._batch_binding[2]
 
     @staticmethod
     def qualifies(tok: Any, opener: str) -> bool:
@@ -54,8 +114,10 @@ class SegmentEncoder:
             for segment in known:
                 self.cache.move_to_end(segment)
         missing = list(dict.fromkeys(s for s in segments if s not in known))
+        binding = self._batch_binding
+        batch = binding[1] if binding[1] is not None else binding[0].encode_batch
         fresh = {segment: array("i", encoding.ids)                    # the GIL is free while these encode
-                 for segment, encoding in zip(missing, self.tok.encode_batch(missing, add_special_tokens=False))}
+                 for segment, encoding in zip(missing, batch(missing, add_special_tokens=False))}
         out: list[int] = []
         for segment in segments:
             ids = known.get(segment)

@@ -1,5 +1,14 @@
 # TensorFold fork
 
+The isolated CPU tokenizer candidate selects the public `encode_batch_fast`
+API for the pinned deterministic native BPE tokenizer where CUDA serving needs
+only token IDs. Message-cache misses and profile-bound ID callbacks omit
+character-offset work; ordinary encoding remains the independent oracle and
+the path for older, custom or stochastic tokenizers. Its detached batch
+resource mode retains normalization, BPE, vector, cache and callback ownership.
+CPU comparison, complete HTTP admission and target qualification remain
+separate gates; this change does not qualify an endpoint or a model workload.
+
 The V100 path is being refactored against the
 [adaptive inference specification](docs/v100-adaptive-inference-design.md):
 full-context capacity planning, unique GPU histories, bounded execution and live

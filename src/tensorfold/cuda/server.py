@@ -23,7 +23,7 @@ from tensorfold.server.request_options import (
     PENALTY_FIELDS, drop_penalties, fixed_thinking, heard_effort, parse_numbers, thinking_fields,
 )
 from tensorfold.server.request_limits import RequestLimit, optional_limit
-from tensorfold.server.segments import SegmentEncoder
+from tensorfold.server.segments import SegmentEncoder, bind_ids_encoder
 from tensorfold.server.stopping import matched_stop, stop_options
 from tensorfold.server import failure_capture
 from tensorfold.server.thinking_notes import ended_thinking, ended_thinking_note, unanswered
@@ -192,6 +192,7 @@ class App:
         elif options != (None, None) and options != self.template.options:
             raise ValueError("engine and server must use the same captured chat template selection")
         self.segments = _segment_encoder(self.tok, self.template)
+        self.ids_encoder = bind_ids_encoder(self.tok)
         self.default_thinking = default_thinking
         fixed = self._fixed_thinking(False)
         if fixed is not None:
@@ -387,7 +388,7 @@ class App:
                 raise DecisionError(f"the chat template failed: {exc}") from exc
 
         def encode(text: str) -> list[int]:
-            return [int(token) for token in self.tok.encode(text, add_special_tokens=False).ids]
+            return [int(token) for token in self.ids_encoder(text, add_special_tokens=False)]
 
         try:
             prepared = prompts_for(body, render, encode, context_len=self.effective_context_window)
@@ -507,14 +508,14 @@ class App:
                     raise
             text = render(body["messages"])
             prompt = (self.segments.encode(text) if self.segments is not None
-                      else self.tok.encode(text, add_special_tokens=False).ids)
+                      else self.ids_encoder(text, add_special_tokens=False))
         elif isinstance(body.get("prompt"), list):       # token ids (vLLM's and OpenAI's form): served as given
             prompt = self.token_ids(body["prompt"])
         else:
             text = body.get("prompt")
             if not isinstance(text, str):
                 raise RequestError("prompt must be a string or a list of token ids")
-            prompt = self.tok.encode(text, add_special_tokens=flag(body, "add_special_tokens", False)).ids
+            prompt = self.ids_encoder(text, add_special_tokens=flag(body, "add_special_tokens", False))
         if not prompt:
             raise RequestError("rendered prompt is empty")
         # sampling is resolved here, so a malformed control is refused before a stream opens
@@ -639,7 +640,7 @@ class App:
             text = body.get("prompt")
             if not isinstance(text, str):
                 raise RequestError("prompt must be a string (or send messages)")
-            ids = self.tok.encode(text, add_special_tokens=flag(body, "add_special_tokens", True)).ids
+            ids = self.ids_encoder(text, add_special_tokens=flag(body, "add_special_tokens", True))
         limit = self._context_limit()
         reply: dict[str, Any] = {"count": len(ids), "tokens": [int(t) for t in ids],
                                  "max_model_len": limit if limit is not None else self.native_context_window}
@@ -1112,9 +1113,9 @@ class App:
 
         if prepared.think_budget <= 0 or think_end is None:
             return None
-        close = [*self.tok.encode("\n", add_special_tokens=False).ids, think_end]
+        close = [*self.ids_encoder("\n", add_special_tokens=False), think_end]
         if prepared.grammar is None:
-            close += self.tok.encode("\n\n", add_special_tokens=False).ids
+            close += self.ids_encoder("\n\n", add_special_tokens=False)
         return ThinkBudget(prepared.think_budget, close, think_end)
 
     def _call_gate(self, prompt: list[int], tools: list[dict[str, Any]]) -> CallGate:
@@ -1144,13 +1145,13 @@ class App:
             return token not in eos and not text(token).strip()
 
         opens, closes = self.thinking_markers
-        opening = self.tok.encode(opens, add_special_tokens=False).ids if opens else ()
+        opening = self.ids_encoder(opens, add_special_tokens=False) if opens else ()
         think = [opening[0] if opening else self.tok.token_to_id("<think>"), self.tok.token_to_id(closes)]
         think = [-1 if token is None else token for token in think]
         names = [str((t.get("function") or t).get("name") or "") for t in tools] if lead is not None else []
         return CallGate.after_prompt(prompt, self.tok.token_to_id(opener), blank, think_open=think[0],
                                      think_end=think[1], text=text, lead=lead or "", names=names, tail=tail or "",
-                                     encode=lambda t: list(self.tok.encode(t, add_special_tokens=False).ids))
+                                     encode=lambda t: list(self.ids_encoder(t, add_special_tokens=False)))
 
 
 def token_sha(tokens: list[int]) -> str:
