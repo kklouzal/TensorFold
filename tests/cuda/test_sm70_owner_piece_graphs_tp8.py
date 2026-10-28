@@ -226,6 +226,23 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
         from tensorfold.cuda.sm70 import gguf_ops
 
         native_calls = [0]
+        coalesced_calls = [0]
+        previous_candidate = [None]
+        import weakref
+        from tensorfold.families.qwen4_exp.cuda.kv_status import KVStatusCohort
+
+        ordinary_candidates = KVStatusCohort.read_candidates
+
+        def counted_candidates(owner, *args, **kwargs):
+            if previous_candidate[0] is not None:
+                assert previous_candidate[0]() is None  # One escaped payload, retired before the next.
+            coalesced_calls[0] += 1
+            packet = ordinary_candidates(owner, *args, **kwargs)
+            previous_candidate[0] = weakref.ref(packet)
+            return packet
+
+        if target_greedy == "dense-batch-prelude":
+            KVStatusCohort.read_candidates = counted_candidates
         ordinary_dense32 = gguf_ops.dense32
 
         def counted_dense32(*args, **kwargs):
@@ -324,6 +341,7 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
                               "dense_native_capture_submissions": capture_native_calls,
                               "dense_native_after_capture_submissions": native_calls[0] - capture_native_calls}), flush=True)
         if target_greedy == "dense-batch-prelude":
+            assert coalesced_calls[0] == 0
             assert combined_weights.meta["sm70_owner_prelude_submitted_batches"] == 0
             assert combined_weights.meta["sm70_owner_prelude_submitted_mtp_batches"] == 0
             references = _batch_fixture_requests()
@@ -355,6 +373,9 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
             print(json.dumps({"rank": rank, "batch_counters": {name: value for name, value in combined_weights.meta.items()
                 if name in ("sm70_owner_prelude_submitted_batches", "sm70_owner_prelude_submitted_mtp_batches",
                             "sm70_owner_prelude_max_batch_segments")}}), flush=True)
+            assert coalesced_calls[0] > 0
+            assert previous_candidate[0]() is None
+            print(json.dumps({"rank": rank, "coalesced_candidate_readbacks": coalesced_calls[0]}), flush=True)
             phase("eight-session-native-batch-completed")
         assert graphs.bound.hits > 0
         if target_greedy in ("prelude", "bound-prelude", "bound-dense", "dense-batch-prelude"):

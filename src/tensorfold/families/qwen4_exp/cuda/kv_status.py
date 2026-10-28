@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import torch
 import numpy as np
+import sys
 
 from .state import CAND, KVNumericError
 
+_CANDIDATE_HANDOFF_BYTES = sys.getsizeof((None, None))  # One bounded MTP result/owned-packet handoff.
 _CANDIDATE_OWNER_HEADER_BYTES = np.empty((0, 0, 0), dtype=np.float32).__sizeof__()
 
 
@@ -18,7 +20,7 @@ def workspace_bytes(slots: int, world: int, *, candidate_rows: int = 0) -> tuple
     if type(candidate_rows) is not int or candidate_rows < 0:
         raise ValueError("KV candidate workspace requires nonnegative admitted rows")
     candidates = 4 * world * candidate_rows * (2 * CAND + 1)
-    owner = candidates + _CANDIDATE_OWNER_HEADER_BYTES if candidate_rows else 0
+    owner = candidates + _CANDIDATE_OWNER_HEADER_BYTES + _CANDIDATE_HANDOFF_BYTES if candidate_rows else 0
     return 8 * slots * (world + 1) + candidates, 8 * slots * world + candidates + owner
 
 
@@ -104,6 +106,34 @@ class KVStatusCohort:
         self._readback(status + count)
         self.check_received(states, self.host[:status].view(self.world, len(states), 2).tolist())
         return self.host[status:status + count].numpy().copy()
+
+    def read_candidates(self, states, candidates, rows, *, comm):
+        """Read an already-produced opaque packet with status at the same fence.
+
+        No candidate value is interpreted or returned until every peer status
+        has been checked. The returned NumPy array owns its bytes, survives
+        arena reuse, and is the single candidate owner funded by workspace_bytes.
+        Callers retire that owner before producing another escaped packet.
+        """
+        width = 2 * CAND + 1
+        if (type(rows) is not int or not 0 < rows <= self.candidate_rows
+                or not isinstance(candidates, torch.Tensor) or candidates.dtype != torch.float32
+                or candidates.device != self.device or not candidates.is_contiguous()
+                or candidates.numel() < self.world * rows * width):
+            self.check(states, comm=comm)  # Retain status-first precedence even for malformed packets.
+            raise ValueError("candidate packet differs from its admitted readback envelope")
+        status = self._gather(states, comm)
+        count = self.world * rows * width
+        try:
+            # Candidate production already precedes this boundary on the same
+            # stream. Bit views preserve FP32 scores/LSE and encoded int32 IDs.
+            self.receive[status:status + count].copy_(candidates.view(-1)[:count].view(torch.int32))
+        except BaseException as error:
+            self._readback_error = error
+            raise
+        self._readback(status + count)
+        self.check_received(states, self.host[:status].view(self.world, len(states), 2).tolist())
+        return self.host[status:status + count].view(self.world, rows, width).numpy().view(np.float32).copy()
 
     def check_received(self, states, peers) -> None:
         """Validate an owned, completed frame packet without another readback."""

@@ -1,5 +1,16 @@
 # TensorFold fork
 
+For eligible homogeneous greedy multi-State batches, TP status and the already
+produced target/MTP candidate packet now share one ordered readback and fence.
+Every status is validated before an owned NumPy packet is exposed; original
+FP32 packet bits, FP64 confidence, tie repair, RNG and EOS rules are retained.
+The existing device/pinned candidate arena and single escaped copy are reused,
+with a bounded MTP handoff header funded before admission. N1 and unsupported
+policies retain their existing paths. Focused CPU tests and normal-package
+checks pass; actual GPU feedback/failure, TP8 lifecycle and all-six development
+screen gates remain pending. Trace wait totals do not establish avoidable time
+or a performance gain.
+
 The combined Dense/batched-prelude wheel `86cb036d` passed 81 integrated GPU
 controls, including real Dense weights, two target attention layers and eight
 96-token sessions. All eight ranks recorded 329 batches, including 109 MTP

@@ -24,6 +24,7 @@ def _status_cohort_oracle(owner):
         state.kv_status = torch.tensor([0, -2], dtype=torch.int32, device="cuda")
         state._kv_peer_status = torch.empty((owner.world, 2), dtype=torch.int32, device="cuda")
         state._kv_pending, state._kv_error, state._resize_error = True, None, None
+        state.compact_indexer = None  # Match the actual State invariant before kv_begin.
         state.pos, state.mtp_len = 9, 7
         states.append(state)
     for count in (1, 3, 6):
@@ -49,6 +50,62 @@ def _status_cohort_oracle(owner):
     assert peers.cpu().tolist() == list(range(owner.world))
 
 
+
+def _candidate_cohort_oracle(owner):
+    import numpy as np
+    from unittest.mock import patch
+    from tensorfold.families.qwen4_exp.cuda.kv_status import KVStatusCohort
+    from tensorfold.families.qwen4_exp.cuda.state import CAND, KVNumericError, State
+
+    class Counted(KVStatusCohort):
+        def _readback(self, count):
+            self.reads += 1
+            return super()._readback(count)
+
+    rows, width = 3, 2 * CAND + 1
+    workspace = Counted(rows, owner, "cuda", candidate_rows=rows)
+    workspace.reads = 0
+    states = []
+    for _ in range(rows):
+        state = object.__new__(State)
+        state.execution_dtype = torch.float16
+        state.kv_key_dtype, state.kv_value_dtype = "int8", "int8"
+        state.kv_status = torch.tensor([0, -2], dtype=torch.int32, device="cuda")
+        state._kv_pending, state._kv_error, state._resize_error = True, None, None
+        state.compact_indexer = None
+        state.pos, state.mtp_len = 9, 7
+        states.append(state)
+    local = torch.full((rows, width), float(owner.rank), dtype=torch.float32, device="cuda")
+    ids = torch.arange(CAND, device="cuda", dtype=torch.int32) + owner.rank * CAND
+    local[:, CAND:2*CAND].view(torch.int32).copy_(ids.expand(rows, CAND))
+    packet = torch.empty(owner.world * rows * width, dtype=torch.float32, device="cuda")
+    owner.all_gather(local, packet)  # Complete packet is produced before the tested status boundary.
+    actual = workspace.read_candidates(states, packet, rows, comm=owner)
+    expected = np.empty((owner.world, rows, width), dtype=np.float32)
+    for rank in range(owner.world):
+        expected[rank].fill(rank)
+        expected[rank, :, CAND:2*CAND] = np.broadcast_to(
+            np.arange(rank*CAND, (rank+1)*CAND, dtype=np.int32), (rows, CAND)).view(np.float32)
+    assert workspace.reads == 1
+    assert np.array_equal(actual.view(np.uint32), expected.view(np.uint32))
+    assert actual.flags.owndata and all(not state._kv_pending for state in states)
+    workspace.host.fill_(-37)
+    assert np.array_equal(actual.view(np.uint32), expected.view(np.uint32))
+    del actual  # Retire the sole escaped payload before the next candidate readback.
+    if owner.rank == owner.world - 1:
+        states[1].kv_status.copy_(torch.tensor([4, -1], dtype=torch.int32, device="cuda"))
+    for state in states:
+        state.kv_begin()
+    with patch.object(torch.Tensor, "numpy", side_effect=AssertionError("candidate exposed before status")):
+        with pytest.raises(KVNumericError):
+            workspace.read_candidates(states, packet, rows, comm=owner)
+    assert workspace.reads == 2 and states[1]._kv_error is not None
+    # Expected numeric failure contains only the affected sequence, not the transport.
+    source = torch.tensor([owner.rank], dtype=torch.int32, device="cuda")
+    peers = torch.empty(owner.world, dtype=torch.int32, device="cuda")
+    owner.all_gather(source, peers)
+    assert peers.cpu().tolist() == list(range(owner.world))
+
 def _collectives(rank, world, port, outcomes):
     """One process owns each CUDA context and communicator through retirement."""
     from tensorfold.cuda.comm import NCCL, agree_eos
@@ -65,6 +122,7 @@ def _collectives(rank, world, port, outcomes):
             torch.cuda.synchronize()
             assert destination.cpu().tolist() == [v for r in range(world) for v in (r, r + 11)]
         _status_cohort_oracle(owner)
+        _candidate_cohort_oracle(owner)
         agree_eos(owner.all_gather, (9, 1, 9), world=world, device=torch.device("cuda", rank))
         source = torch.tensor([rank, rank + 11], dtype=torch.float16, device="cuda")
         destination = torch.empty(2 * world, dtype=torch.float16, device="cuda")

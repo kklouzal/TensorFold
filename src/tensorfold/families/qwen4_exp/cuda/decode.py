@@ -69,7 +69,7 @@ def _validate_gathered_padding(values: np.ndarray, tokens: np.ndarray, plan: Sam
 
 def choose_gathered(w: Weights, cand_all: torch.Tensor, R: int, positions: Sequence[int], sampling: Sampling | None,
                     with_prob: bool = False, *, logits: torch.Tensor | None = None,
-                    plan: SamplingShard | None = None):
+                    plan: SamplingShard | None = None, gathered: np.ndarray | None = None):
     """Use original FP32-score/FP32-lse packets; borrow original logits to repair tied truncation.
 
     ``cand_all`` must be the completed packet produced with these exact source
@@ -102,7 +102,16 @@ def choose_gathered(w: Weights, cand_all: torch.Tensor, R: int, positions: Seque
             raise ValueError("gathered policy or token-ID range requires the complete original logits")
         return tp_sample_rows(w, logits, positions, sampling, with_prob=with_prob, plan=plan,
                               offset=int(w.meta.get("vocab_offset", 0)))
-    g = cand_all[:world * R * width].view(world, R, width).cpu().numpy()
+    if gathered is None:
+        g = cand_all[:world * R * width].view(world, R, width).cpu().numpy()
+    else:
+        # Internal callers supply only the owned, status-checked snapshot from
+        # KVStatusCohort; generic callers retain their original device readback.
+        if (type(gathered) is not np.ndarray or gathered.dtype != np.float32
+                or gathered.shape != (world, R, width) or not gathered.flags.c_contiguous
+                or not gathered.flags.owndata):
+            raise ValueError("gathered candidate snapshot must own its complete FP32 packet")
+        g = gathered
     values = g[:, :, :CAND].astype(np.float32)
     tokens = np.ascontiguousarray(g[:, :, CAND:2 * CAND]).view(np.int32).astype(np.int64)
     _validate_gathered_padding(values, tokens, plan)

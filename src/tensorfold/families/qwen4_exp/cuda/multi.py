@@ -7,6 +7,8 @@ import sys
 import time
 
 import numpy as np
+
+from tensorfold.engine.exact_sampling import Sampling
 import torch
 
 from tensorfold.cleanup import raise_failures, rollback
@@ -1963,6 +1965,20 @@ class MultiDecoder:
         raise_failures(primary, errors)
         return result
 
+    def _coalesced_candidates(self, samplings):
+        """Select only the admitted multi-State greedy packet path, without value reads."""
+        if (not self.w.meta.get("sm70_owner_batch_prelude_trial") or self.w.comm is None
+                or self.kv_cohort is None or self.kv_cohort.candidate_rows == 0
+                or len(samplings) < 2 or self.w.draft_head is not None):
+            return False
+        for sampling in samplings:
+            if sampling is not None and (type(sampling) is not Sampling
+                    or type(sampling.seed) is not int or type(sampling.temperature) not in (int, float)
+                    or type(sampling.top_k) is not int or type(sampling.top_p) not in (int, float)
+                    or type(sampling.min_p) not in (int, float) or not sampling.temperature <= 0):
+                return False
+        return all(sampling == samplings[0] for sampling in samplings)
+
     def _round(self) -> list[Stream]:
         """One round over the live streams, with the next prompt pass in the same forward while prompts fill."""
 
@@ -2102,10 +2118,14 @@ class MultiDecoder:
             raise
         finally:
             self.buf.gdn_tables = self.buf.attn_step = None
-        target_result = None
+        target_result, gathered = None, None
         if self.w.comm is not None:
             if target is not None:
                 target_result = target.finish(self, segs, live[0], logits)
+            elif (dflash is None and not pieces and not grammars
+                    and self._coalesced_candidates([stream.sampling for stream in live])):
+                gathered = self.kv_cohort.read_candidates([state for state, _, _ in segs],
+                    self.buf.cand_all, logits.shape[0], comm=self.w.comm)
             else:
                 _kv_check(segs, comm=self.w.comm, workspace=getattr(self, "kv_cohort", None))
         lasts = self._absorb(pieces, psegs, cuts) if pieces else None
@@ -2156,9 +2176,12 @@ class MultiDecoder:
                 paths, sampled = [paths], [chosen]
             elif (not grammars and self.w.meta.get("execution_provider") == "sm70"
                     and all(sampling == samplings[0] for sampling in samplings) and _gathered_fits(samplings[0])):
-                chosen = choose_gathered(self.w, self.buf.cand_all, logits.shape[0],
-                                         [position for group in positions for position in group], samplings[0],
-                                         logits=logits, plan=self._sample_plan)
+                try:
+                    chosen = choose_gathered(self.w, self.buf.cand_all, logits.shape[0],
+                        [position for group in positions for position in group], samplings[0],
+                        logits=logits, plan=self._sample_plan, gathered=gathered)
+                finally:
+                    gathered = None  # Retire the sole owned packet before MTP may reuse the arena/allowance.
                 sampled = [chosen[a0:a1] for a0, a1 in zip(starts, starts[1:])]
             else:
                 sampled = [tp_sample_rows(self.w, logits[a0:a1], pos, sampling, plan=self._sample_plan)
@@ -2368,7 +2391,13 @@ class MultiDecoder:
         context = getattr(self.mbuf, "input_preparation_context", None)
         segs = prepare_refresh() if context is None else context.prepare("mtp-refresh-window", prepare_refresh)
         proposing = any(room[s.sid] > 0 for s, _, _ in todo)
-        logits = self._mtp(segs) if proposing else self._mtp(segs, logits=False)
+        coalesced = (proposing and not self.copy and all(room[s.sid] > 0 for s, _, _ in todo)
+                     and self._coalesced_candidates([stream.sampling for stream, _, _ in todo]))
+        gathered = None
+        if coalesced:
+            logits, gathered = self._mtp(segs, candidates=True)
+        else:
+            logits = self._mtp(segs) if proposing else self._mtp(segs, logits=False)
         if self.controller is not None:
             self.controller.work_observations.mtp(
                 segs, role="refresh", zero_proposal_rows=sum(len(keep) for stream, _, keep in todo
@@ -2408,7 +2437,15 @@ class MultiDecoder:
                 words.settle()
                 return
         for j in range(self._proposal_limit()):
-            picks = self._picks(logits, [s.st.pos + 1 + j for s, _ in active], [s.sampling for s, _ in active], words)
+            try:
+                positions = [s.st.pos + 1 + j for s, _ in active]
+                samplings = [s.sampling for s, _ in active]
+                if gathered is None:
+                    picks = self._picks(logits, positions, samplings, words)
+                else:
+                    picks = self._picks(logits, positions, samplings, words, gathered=gathered)
+            finally:
+                gathered = None  # No candidate payload overlaps the next MTP readback.
             nxt = []
             for (s, row), (d, p) in zip(active, picks):
                 low = self.confidence > 0 and p < self.confidence
@@ -2426,7 +2463,10 @@ class MultiDecoder:
                 return mtp_stage(self.mbuf, windows)
 
             segs = prepare_proposal() if context is None else context.prepare("mtp-proposal-window", prepare_proposal)
-            logits = self._mtp(segs)
+            if self._coalesced_candidates([stream.sampling for stream, _, _ in nxt]):
+                logits, gathered = self._mtp(segs, candidates=True)
+            else:
+                logits = self._mtp(segs)
             if self.controller is not None:
                 self.controller.work_observations.mtp(segs, role="proposal")
 
@@ -2438,9 +2478,15 @@ class MultiDecoder:
             words = KVWords(segs, self.kv_host, chained)  # the next pick's readback checks them (a step has one)
             active = [(s, a0) for (s, _, _), (_, a0, _) in zip(nxt, segs)]
 
-    def _mtp(self, segs: list, *, logits: bool = True, next_inputs: torch.Tensor | None = None) -> torch.Tensor | None:
-        """An MTP step over every drafting stream, its attention one launch a kernel for all of them."""
+    def _mtp(self, segs: list, *, logits: bool = True, next_inputs: torch.Tensor | None = None,
+             candidates: bool = False) -> torch.Tensor | tuple[torch.Tensor, np.ndarray | None] | None:
+        """Run MTP; optionally hand its one status-validated owned packet to the next pick.
 
+        The caller releases that packet before another candidate readback. Generic
+        callers retain the original Tensor/None result and status boundary.
+        """
+        if candidates and not logits:
+            raise ValueError("coalesced MTP candidates require their already-produced logits")
         self.mbuf.rotor_lookup = False
         if self.live() == 1:
             request = next(iter(self.streams.values())) if self.streams else self.filling[0]
@@ -2454,9 +2500,14 @@ class MultiDecoder:
             if out is None:
                 out = mtp_compute(self.w, segs, self.mbuf, check=False, logits=logits,
                                   **({"next_inputs": next_inputs} if next_inputs is not None else {}))
+            gathered = None
             if self.w.comm is not None:
-                _kv_check(segs, comm=self.w.comm, workspace=getattr(self, "kv_cohort", None))
-            return out
+                if candidates and logits and out.data_ptr() == self.mbuf.logits.data_ptr():
+                    gathered = self.kv_cohort.read_candidates([state for state, _, _ in segs],
+                        self.mbuf.cand_all, out.shape[0], comm=self.w.comm)
+                else:
+                    _kv_check(segs, comm=self.w.comm, workspace=getattr(self, "kv_cohort", None))
+            return (out, gathered) if candidates else out
         except BaseException as primary:
             if self.controller is not None:
                 self.controller.work_observations.incomplete(primary)
@@ -2465,7 +2516,7 @@ class MultiDecoder:
             self.mbuf.attn_step = None
 
     def _picks(self, logits: torch.Tensor, positions: list[int], samplings: list,
-               words: KVWords) -> list[tuple[int, float]]:
+               words: KVWords, *, gathered: np.ndarray | None = None) -> list[tuple[int, float]]:
         """Batch drafts and original confidence; greedy keeps the first physical FP32 maximum.
 
         Positive keyed policies use global-ID ties. Borrow full rows only to
@@ -2496,7 +2547,7 @@ class MultiDecoder:
                     and all(sampling == samplings[0] for sampling in samplings) and _gathered_fits(samplings[0])):
                 chosen, probabilities = choose_gathered(
                     self.w, self.mbuf.cand_all, len(positions), positions, samplings[0], with_prob=True,
-                    logits=logits, plan=self._draft_plan)
+                    logits=logits, plan=self._draft_plan, gathered=gathered)
                 return list(zip(chosen, probabilities))
             picks = []
             for row, (position, sampling) in enumerate(zip(positions, samplings)):
