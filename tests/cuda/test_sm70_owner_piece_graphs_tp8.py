@@ -85,24 +85,37 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
             from dataclasses import fields, is_dataclass, replace
             from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense
 
+            converted = {}
+
             def actual_target_dense(value):
                 # Only this new case replaces synthetic target Linear adapters
-                # with the actual owned wrapper on both sides of the oracle.
-                # Stock MTP Dense/DenseExperts retain their distinct semantics.
+                # with actual owners on both sides. Memoization preserves the
+                # head/draft-head and repeated-layer owner aliases; tensors and
+                # embeddings retain their original objects and storage.
+                if id(value) in converted:
+                    return converted[id(value)]
                 if (getattr(value, "kernel", None) == "gguf"
                         and isinstance(getattr(value, "weight", None), torch.Tensor)
                         and value.weight.ndim == 2):
-                    return GGUFDense(value.weight)
-                if is_dataclass(value):
-                    return replace(value, **{item.name: actual_target_dense(getattr(value, item.name))
-                                             for item in fields(value) if item.init})
-                if isinstance(value, list):
-                    return [actual_target_dense(item) for item in value]
-                if isinstance(value, tuple):
-                    return tuple(actual_target_dense(item) for item in value)
-                return value
+                    result = GGUFDense(value.weight)
+                elif is_dataclass(value):
+                    result = replace(value, **{item.name: actual_target_dense(getattr(value, item.name))
+                                               for item in fields(value) if item.init})
+                elif isinstance(value, list):
+                    result = [actual_target_dense(item) for item in value]
+                elif isinstance(value, tuple):
+                    result = tuple(actual_target_dense(item) for item in value)
+                else:
+                    return value
+                converted[id(value)] = result
+                return result
 
+            original = base
             base = actual_target_dense(base)
+            assert base.embed is original.embed
+            assert base.mtp.fc_e is original.mtp.fc_e and base.mtp.fc_h is original.mtp.fc_h
+            assert base.head.weight is original.head.weight
+            assert base.layers[1].attn.proj is base.layers[2].attn.proj
             assert isinstance(base.head, GGUFDense)
             assert isinstance(base.layers[1].attn.proj, GGUFDense)
         width = base.cfg.vocab // 8
@@ -182,6 +195,11 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
         torch_weights, torch_decoder, _ = decoder(False)
         eager_weights, eager, eager_preparation = decoder(True)
         combined_weights, combined, combined_preparation = decoder(True, compact_target=target_greedy)
+        if target_greedy == "bound-dense":
+            assert torch_weights.head is eager_weights.head is combined_weights.head
+            assert torch_weights.embed is eager_weights.embed is combined_weights.embed
+            assert torch_weights.mtp is eager_weights.mtp is combined_weights.mtp
+            assert combined_weights.head.n == width and combined_weights.head.weight.shape[0] == width
         eager_preparation.adopt(eager_weights, eager)
         from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense
         from tensorfold.cuda.sm70 import gguf_ops

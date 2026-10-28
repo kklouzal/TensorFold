@@ -76,7 +76,7 @@ def test_new_tp8_oracle_installs_actual_target_dense_and_preserves_stock_mtp_own
     tree = ast.parse((Path(__file__).parent / "cuda/test_sm70_owner_piece_graphs_tp8.py").read_text())
     function = next(node for node in ast.walk(tree)
                     if isinstance(node, ast.FunctionDef) and node.name == "actual_target_dense")
-    namespace = dict(torch=family.torch, GGUFDense=GGUFDense,
+    namespace = dict(torch=family.torch, GGUFDense=GGUFDense, converted={},
                      fields=fields, is_dataclass=is_dataclass, replace=replace)
     exec(compile(ast.Module(body=[function], type_ignores=[]), "actual_tp8_dense_fixture", "exec"), namespace)
 
@@ -88,7 +88,8 @@ def test_new_tp8_oracle_installs_actual_target_dense_and_preserves_stock_mtp_own
     weight = family.torch.ones((4, 8), dtype=family.torch.float16)
     target = NS(kernel="gguf", weight=weight)
     stock = Dense(weight)
-    actual = namespace["actual_target_dense"](Fixture([target], (stock,)))
+    actual = namespace["actual_target_dense"](Fixture([target, target], (stock, target)))
     assert isinstance(actual.target[0], GGUFDense)
     assert actual.target[0].weight is weight
     assert actual.mtp[0] is stock
+    assert actual.target[0] is actual.target[1] is actual.mtp[1]
