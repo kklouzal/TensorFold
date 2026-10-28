@@ -45,9 +45,9 @@ def read(tensor, start, rows):
     return np.frombuffer(value, np.uint8).reshape(rows, tensor.row_bytes).copy()
 
 
-def make(layer, world):
+def make(layer, world, *, rank=3):
     width = 640 // world
-    first = 3 * width
+    first = rank * width
     base = f"blk.{layer}."
     packed = []
     metadata = []
@@ -116,9 +116,10 @@ def actual_bank(request):
     return bank, metadata
 
 
-@pytest.mark.parametrize("rows", [1, 3, 6, 18, 32])
+@pytest.mark.parametrize("rows", [1, 2, 3, 6, 8, 18, 32])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
-def test_actual_source_complete_routed_shared_outputs(actual_bank, rows, dtype):
+@pytest.mark.parametrize("independent_gate_up", [False, True])
+def test_actual_source_complete_routed_shared_outputs(actual_bank, rows, dtype, independent_gate_up):
     bank, _ = actual_bank
     torch.manual_seed(9201 + rows)
     x = (torch.randn(rows, 2560, device="cuda") * 0.1).half()
@@ -128,7 +129,7 @@ def test_actual_source_complete_routed_shared_outputs(actual_bank, rows, dtype):
     ids[:, -1] = 10
     expected = bank.forward_reference(x, ids).to(dtype)
     actual = torch.empty_like(expected)
-    bank.forward_exact(x, ids, actual)
+    bank.forward_exact(x, ids, actual, independent_gate_up=independent_gate_up)
     bits(actual, expected)
     # Every source row uses the original path independently as well.
     serial = torch.cat(
@@ -161,8 +162,9 @@ def committed_equal(a, b):
 @pytest.mark.parametrize("cache", ["fp16", "int8"])
 @pytest.mark.parametrize("lanes", [1, 6])
 @pytest.mark.parametrize("expert_world", [8, 4])
+@pytest.mark.parametrize("implementation", ["packed_exact", "packed_exact_independent"])
 def test_common_full_state_actual_banks_match_original_with_graph_partial_commit_and_prefix(
-    cache, lanes, expert_world, monkeypatch
+    cache, lanes, expert_world, monkeypatch, implementation
 ):
     from test_flashnext_sm70_family import _small_weights
     from test_sm70_gguf_prepared import dense_fixture
@@ -214,7 +216,7 @@ def test_common_full_state_actual_banks_match_original_with_graph_partial_commit
         expected = compute(w, ref_segs, rb, context=256).clone()
         stream_expected = rb.streams[:rows].clone()
         for layer in w.layers:
-            layer.moe.experts.implementation = "packed_exact"
+            layer.moe.experts.implementation = implementation
         segs = stage(w, nb, list(zip(states, tokens)))
         compute(w, segs, nb, context=256)
         graph = torch.cuda.CUDAGraph()
@@ -239,7 +241,7 @@ def test_common_full_state_actual_banks_match_original_with_graph_partial_commit
     ref_segs = stage(w, rb, [(original, [31])])
     expected = compute(w, ref_segs, rb, context=256).clone()
     for layer in w.layers:
-        layer.moe.experts.implementation = "packed_exact"
+        layer.moe.experts.implementation = implementation
     segs = stage(w, nb, [(restored, [31])])
     bits(compute(w, segs, nb, context=256), expected)
     commit(w, original, rb, 1, 1)

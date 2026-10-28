@@ -387,3 +387,23 @@ between bounded reads and joins the worker before releasing engine owners.
 A blocked filesystem read retains its existing I/O completion contract.
 The unset default retains serial content hashing. CPU controls and an actual
 V100 startup/quality/performance comparison are separate gates.
+
+
+## Private Dense and independent expert composition
+
+`source-owner-dense-gateup-trial` retains selected Dense4efe eligibility,
+mutation/version handling, arithmetic, workspaces and recovery paths, and adds
+the verified independent gate/up operator behind its own profile and State
+epoch. Startup prepares all four Dense code variants and eight independent
+int32 variants before the physical admission baseline. The attribute receipt
+adds8192 host bytes per rank; the full existing Dense workspace plan remains.
+Both dispatches keep their32-row ceiling. R48/64/72/96/256 expert frames retain
+the original bank fallback; larger native dispatch requires separate admission
+and exact-oracle evidence after actual planner/profile rows are known.
+
+The finite probe requests and verifies the native owner graph contract through
+the real factory. Startup content overlap uses the original funded owner path.
+The native24 full262144 Q8 K/V floor, MTP2 confidence0.7, six Ns and independent
+quality320 checks remain unchanged. The performance reference is selected
+Dense4efe with the same closed FASTv2/2048 workload. Standalone549 component
+passes do not qualify this integrated composition or establish a model gain.

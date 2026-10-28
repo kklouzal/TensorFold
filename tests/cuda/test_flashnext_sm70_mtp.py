@@ -72,11 +72,11 @@ def test_native_experts_fp16_storage_fp32_accumulation_and_dynamic_routes_graph(
     torch.testing.assert_close(replay_output, expected, atol=0, rtol=0)
 
 
-def _weights_with_stock_mtp_protocol(*, head_dim=128):
+def _weights_with_stock_mtp_protocol(*, head_dim=128, hidden=256, lowrank=32):
     from test_flashnext_sm70_family import _small_weights
     from tensorfold.families.qwen4_exp.cuda.weight_types import MTPW, MoEW
 
-    w = _small_weights(True, head_dim=head_dim)
+    w = _small_weights(True, head_dim=head_dim, hidden=hidden, lowrank=lowrank)
     c = w.cfg
 
     def linear(previous):

@@ -35,7 +35,13 @@ OWNER_TARGET_PRELUDE_STATE = ("sm70-prefix-epoch-v1", hashlib.sha256(OWNER_TARGE
 OWNER_TARGET_DENSE_PROFILE = "source-owner-target-dense-trial"
 OWNER_TARGET_DENSE_IDENTITY = "sm70-native-owner-frame-prelude-dense-native32-exact-v1:" + QSA_SELECTION
 OWNER_TARGET_DENSE_STATE = ("sm70-prefix-epoch-v1", hashlib.sha256(OWNER_TARGET_DENSE_IDENTITY.encode()).hexdigest())
-EARLY_IDENTITY_STATES = (FAMILY_PREFIX_STATE, PACKED_GRAPH_STATE, OWNER_GRAPH_STATE, TARGET_GREEDY_STATE, OWNER_TARGET_GREEDY_STATE, OWNER_TARGET_GUARD_STATE, OWNER_TARGET_PRELUDE_STATE, OWNER_TARGET_DENSE_STATE)
+GATEUP_INDEPENDENT_PROFILE = "source-owner-gateup-independent-trial"
+GATEUP_INDEPENDENT_IDENTITY = "sm70-owner-prelude-exact-independent-gate-up-warps-v1:" + QSA_SELECTION
+GATEUP_INDEPENDENT_STATE = ("sm70-prefix-epoch-v1", hashlib.sha256(GATEUP_INDEPENDENT_IDENTITY.encode()).hexdigest())
+DENSE_INDEPENDENT_PROFILE = "source-owner-dense-gateup-trial"
+DENSE_INDEPENDENT_IDENTITY = "sm70-owner-prelude-native32-dense-independent-gate-up-v1:" + QSA_SELECTION
+DENSE_INDEPENDENT_STATE = ("sm70-prefix-epoch-v1", hashlib.sha256(DENSE_INDEPENDENT_IDENTITY.encode()).hexdigest())
+EARLY_IDENTITY_STATES = (FAMILY_PREFIX_STATE, PACKED_GRAPH_STATE, OWNER_GRAPH_STATE, TARGET_GREEDY_STATE, OWNER_TARGET_GREEDY_STATE, OWNER_TARGET_GUARD_STATE, OWNER_TARGET_PRELUDE_STATE, OWNER_TARGET_DENSE_STATE, GATEUP_INDEPENDENT_STATE, DENSE_INDEPENDENT_STATE)
 
 
 def identity(profile):
@@ -58,6 +64,10 @@ def identity(profile):
         return OWNER_TARGET_GUARD_IDENTITY
     if profile == OWNER_TARGET_PRELUDE_PROFILE:
         return OWNER_TARGET_PRELUDE_IDENTITY
+    if profile == DENSE_INDEPENDENT_PROFILE:
+        return DENSE_INDEPENDENT_IDENTITY
+    if profile == GATEUP_INDEPENDENT_PROFILE:
+        return GATEUP_INDEPENDENT_IDENTITY
     if profile == OWNER_TARGET_DENSE_PROFILE:
         return OWNER_TARGET_DENSE_IDENTITY
     return IDENTITY if profile in ("optimized", "reference") else None
@@ -79,6 +89,10 @@ def state_epoch(profile):
         return OWNER_TARGET_GUARD_STATE
     if profile == OWNER_TARGET_PRELUDE_PROFILE:
         return OWNER_TARGET_PRELUDE_STATE
+    if profile == DENSE_INDEPENDENT_PROFILE:
+        return DENSE_INDEPENDENT_STATE
+    if profile == GATEUP_INDEPENDENT_PROFILE:
+        return GATEUP_INDEPENDENT_STATE
     if profile == OWNER_TARGET_DENSE_PROFILE:
         return OWNER_TARGET_DENSE_STATE
     return FAMILY_PREFIX_STATE if profile == FAMILY_PREFIX_PROFILE else None
@@ -110,7 +124,7 @@ def reuse_allowed(w, sampling, *, draft, vision, position, kv_pair=None):
     ordinary = draft and vision is None
     if not ordinary or w.meta.get("execution_provider") != "sm70":
         return ordinary
-    if w.meta.get("sm70_profile") in (FAMILY_PREFIX_PROFILE, PACKED_PROFILE, PACKED_GRAPH_PROFILE, OWNER_GRAPH_PROFILE, TARGET_GREEDY_PROFILE, OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_TARGET_DENSE_PROFILE):
+    if w.meta.get("sm70_profile") in (FAMILY_PREFIX_PROFILE, PACKED_PROFILE, PACKED_GRAPH_PROFILE, OWNER_GRAPH_PROFILE, TARGET_GREEDY_PROFILE, OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_TARGET_DENSE_PROFILE, GATEUP_INDEPENDENT_PROFILE, DENSE_INDEPENDENT_PROFILE):
         return _family_prefix_allowed(sampling, position, kv_pair)
     if w.meta.get("sm70_profile") == "source-family-trial":
         return False  # Cold qualification has no same-format cached-suffix receipt yet.
@@ -132,7 +146,7 @@ def reuse_allowed(w, sampling, *, draft, vision, position, kv_pair=None):
 def serial_reuse_allowed(w, sampling, *, draft, position, kv_pair, vision=None):
     """Serial/twin Q4 has the same qualification; legacy serial policy stays intact."""
     if (w.meta.get("execution_provider") == "sm70"
-            and w.meta.get("sm70_profile") in (FAMILY_PREFIX_PROFILE, PACKED_PROFILE, PACKED_GRAPH_PROFILE, OWNER_GRAPH_PROFILE, TARGET_GREEDY_PROFILE, OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_TARGET_DENSE_PROFILE)):
+            and w.meta.get("sm70_profile") in (FAMILY_PREFIX_PROFILE, PACKED_PROFILE, PACKED_GRAPH_PROFILE, OWNER_GRAPH_PROFILE, TARGET_GREEDY_PROFILE, OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_TARGET_DENSE_PROFILE, GATEUP_INDEPENDENT_PROFILE, DENSE_INDEPENDENT_PROFILE)):
         return draft and vision is None and _family_prefix_allowed(sampling, position, kv_pair)
     if (w.meta.get("execution_provider") == "sm70"
             and w.meta.get("sm70_profile") == "source-family-trial"):

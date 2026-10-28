@@ -29,7 +29,8 @@ def test_cache_epoch_is_distinct_and_only_existing_greedy_int8_text_domain_is_bo
         assert prefix_policy.serial_reuse_allowed(weights, sampling, **kwargs) is expected
 
 
-def test_worker_handshake_seals_actual_dense_selection_and_keeps_old_profile_packet(monkeypatch):
+@pytest.mark.parametrize("selected_profile", [PROFILE, prefix_policy.DENSE_INDEPENDENT_PROFILE])
+def test_worker_handshake_seals_actual_dense_selection_and_keeps_old_profile_packet(monkeypatch, selected_profile):
     from .test_flashnext_stochastic_prefix import method
     from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
     from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense
@@ -56,7 +57,7 @@ def test_worker_handshake_seals_actual_dense_selection_and_keeps_old_profile_pac
     monkeypatch.setattr(GGUFDense, "implementation", "native32")
     agree(engine, proxy, None)
     assert torch.equal(old_packet, packets[-1])
-    engine.sm70_profile = PROFILE
+    engine.sm70_profile = selected_profile
     agree(engine, proxy, None)
     native_digest = int(packets[-1][9])
     monkeypatch.setattr(GGUFDense, "implementation", "reference")
@@ -67,7 +68,8 @@ def test_worker_handshake_seals_actual_dense_selection_and_keeps_old_profile_pac
         agree(engine, proxy, None)
 
 
-def test_new_tp8_oracle_preserves_actual_toy_embedding_and_stock_mtp_aliases(monkeypatch):
+@pytest.mark.parametrize("hidden", [256, 2560])
+def test_new_tp8_oracle_preserves_actual_toy_embedding_and_stock_mtp_aliases(monkeypatch, hidden):
     import ast
     from dataclasses import fields, is_dataclass, replace
     from pathlib import Path
@@ -109,7 +111,8 @@ def test_new_tp8_oracle_preserves_actual_toy_embedding_and_stock_mtp_aliases(mon
     monkeypatch.setitem(sys.modules, module.__name__, module)
     stock = actual_function(fixture_directory / "test_flashnext_sm70_mtp.py", "_weights_with_stock_mtp_protocol",
                             dict(torch=cpu, Dense=Dense, DenseExperts=DenseExperts, replace=replace))
-    original = stock(head_dim=256)
+    original = stock(head_dim=256, hidden=hidden, lowrank=320 if hidden == 2560 else 32)
+    assert original.cfg.hidden == hidden
     original.layers.append(replace(original.layers[1], index=original.cfg.layers))
     assert isinstance(original.embed, tuple) and len(original.embed) == 1
     assert hasattr(original.embed[0], "lookup")

@@ -401,7 +401,7 @@ class GGUFExperts:
         self._prefill_plan = plan
 
     def forward(self, x, picks, out=None):
-        if self.implementation not in ("reference", "packed", "packed_splitk4", "packed_blocks", "packed_blocks2w", "packed_exact"):
+        if self.implementation not in ("reference", "packed", "packed_splitk4", "packed_blocks", "packed_blocks2w", "packed_exact", "packed_exact_independent"):
             raise ValueError("unknown GGUF expert execution implementation")
         if self.implementation == "packed" and x.shape[0] <= self.packed_rows:
             return self.forward_packed(x, picks, out)
@@ -411,8 +411,8 @@ class GGUFExperts:
             return self.forward_blocks(x, picks, out)
         if self.implementation == "packed_blocks2w" and x.shape[0] <= self.packed_rows:
             return self.forward_blocks2w(x, picks, out)
-        if self.implementation == "packed_exact" and x.shape[0] <= self.packed_rows:
-            return self.forward_exact(x, picks, out)
+        if self.implementation in ("packed_exact", "packed_exact_independent") and x.shape[0] <= self.packed_rows:
+            return self.forward_exact(x, picks, out, independent_gate_up=self.implementation == "packed_exact_independent")
         return self.forward_reference(x, picks, out)
 
     def forward_packed(self, x, picks, out=None):
@@ -436,13 +436,14 @@ class GGUFExperts:
         return gguf_ops.experts(x, picks, self.gate, self.up, self.down, self.shared, out,
                                blockwise=True, projection_warps=2)
 
-    def forward_exact(self, x, picks, out=None):
+    def forward_exact(self, x, picks, out=None, *, independent_gate_up=False):
         """Retain original BMM bytes while executing eligible target banks packed."""
         if self.width not in (80, 160) or self.dims != 2560 or x.shape[0] > self.packed_rows:
             return self.forward_reference(x, picks, out)
         if out is None:
             out = torch.empty((*picks.shape, self.dims), dtype=torch.float32, device=x.device)
-        gguf_ops.experts_exact(x, picks, self.gate, self.up, self.down, self.shared, out)
+        gguf_ops.experts_exact(x, picks, self.gate, self.up, self.down, self.shared, out,
+                               independent_gate_up=independent_gate_up)
         return self._write_shared(x, picks, out)
 
     def _write_shared(self, x, picks, out):

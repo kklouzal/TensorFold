@@ -81,10 +81,10 @@ class TargetGreedy:
                 or getattr(self.w, "dspark", None) is not None):
             return False
         if decoder.graphs is not None:
-            from .prefix_policy import OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_TARGET_DENSE_PROFILE
+            from .prefix_policy import OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_TARGET_DENSE_PROFILE, GATEUP_INDEPENDENT_PROFILE, DENSE_INDEPENDENT_PROFILE
 
             bound = getattr(decoder.graphs, "bound", None)
-            if (self.w.meta.get("sm70_profile") not in (OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_TARGET_DENSE_PROFILE)
+            if (self.w.meta.get("sm70_profile") not in (OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_TARGET_DENSE_PROFILE, GATEUP_INDEPENDENT_PROFILE, DENSE_INDEPENDENT_PROFILE)
                     or bound is None or not bound.unique or not bound.native_owner):
                 return False
         stream = live[0]

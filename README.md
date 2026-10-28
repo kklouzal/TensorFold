@@ -1,5 +1,19 @@
 # TensorFold fork
 
+An explicit private `source-owner-dense-gateup-trial` composes the selected
+native32 Dense dispatch with exact independent gate/up warps. Its comparison
+reference is the selected Dense4efe runtime, not the earlier owner-prelude
+runtime. Both code families are prepared before admission; all existing Dense
+workspace terms and the additional8192-byte per-rank attribute receipt remain
+funded. The distinct State epoch, native24-window Q8 floor, full262144 context,
+MTP2 confidence0.7 and closed FASTv2/2048 plus six320-token quality checks remain.
+Defaults stay unchanged. Both dispatches retain their32-row ceilings; larger
+expert frames use the reference bank. Actual planner/profile rows must establish
+which full24 frames are eligible. Combined
+CPU controls and explicit SM70 compilation pass. The joint TP8 numerical/counter
+control and first development all-six screen remain pending; no quality, capacity
+or performance gain is claimed.
+
 The unchanged Dense residency wheel `4efee794` passed the corrected real-bound
 Dense TP8 integration gate with every existing assertion and native counter.
 Together with the prior 108 passes, this closes the scoped component controls.

@@ -22,6 +22,11 @@ void gguf_experts_exact(const at::Tensor&, const at::Tensor&,
                          const at::Tensor&, int64_t, int64_t, const at::Tensor&, int64_t, int64_t,
                          const at::Tensor&, int64_t, int64_t, const at::Tensor&, const at::Tensor&,
                          const at::Tensor&, at::Tensor);
+void gguf_experts_exact_independent(const at::Tensor&, const at::Tensor&,
+                         const at::Tensor&, int64_t, int64_t, const at::Tensor&, int64_t, int64_t,
+                         const at::Tensor&, int64_t, int64_t, const at::Tensor&, const at::Tensor&,
+                         const at::Tensor&, at::Tensor);
+std::vector<std::vector<int64_t>> gguf_prepare_experts_exact_independent();
 int gguf_prepare_dense32();
 void gguf_dense32(const at::Tensor&, const at::Tensor&, at::Tensor, bool);
 void gguf_dense_wmma(const at::Tensor&, const at::Tensor&, at::Tensor);
@@ -36,6 +41,8 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     // Routed-only core: the owning family writes the original Dense shared
     // expert over initialized zero shared slots after this call.
     m.def("experts_exact", &gguf_experts_exact);
+    m.def("experts_exact_independent", &gguf_experts_exact_independent);
+    m.def("prepare_experts_exact_independent", &gguf_prepare_experts_exact_independent);
     m.def("prepare_dense32", &gguf_prepare_dense32);
     m.def("dense32", &gguf_dense32);
     m.def("dense_wmma", &gguf_dense_wmma);

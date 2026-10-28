@@ -16,7 +16,8 @@ pytestmark = pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
 @pytest.mark.parametrize("index_dtype", [torch.int32, torch.int64])
 @pytest.mark.parametrize("rows", [1, 3])
-def test_skipped_shared_slots_are_defined_zero_without_reading_shared_values(kind, width, dtype, index_dtype, rows):
+@pytest.mark.parametrize("independent_gate_up", [False, True])
+def test_skipped_shared_slots_are_defined_zero_without_reading_shared_values(kind, width, dtype, index_dtype, rows, independent_gate_up):
     bank, _, _ = exact_fixture(kind, width=width)
     torch.manual_seed(1942 + rows)
     x = (torch.randn(rows, 2560, device="cuda") * .1).half()
@@ -25,20 +26,23 @@ def test_skipped_shared_slots_are_defined_zero_without_reading_shared_values(kin
     for part in bank.shared:
         part.weight.fill_(float("nan"))
     output = torch.full_like(expected, float("nan"))
-    gguf_ops.experts_exact(x, picks, bank.gate, bank.up, bank.down, bank.shared, output)
+    gguf_ops.experts_exact(x, picks, bank.gate, bank.up, bank.down, bank.shared, output,
+                           independent_gate_up=independent_gate_up)
     shared = picks == 2
     bits(output[shared], torch.zeros_like(output[shared]))
     bits(output[~shared], expected[~shared])
 
 
-def test_exact_shared_skip_tracks_live_routes_during_capture_and_preserves_invalid_nan_contract():
+@pytest.mark.parametrize("independent_gate_up", [False, True])
+def test_exact_shared_skip_tracks_live_routes_during_capture_and_preserves_invalid_nan_contract(independent_gate_up):
     bank, _, _ = exact_fixture(13)
     x = (torch.randn(3, 2560, device="cuda") * .1).half()
     picks = torch.tensor([[0, 1, 2], [1, 2, 0], [2, 0, 1]], device="cuda", dtype=torch.int64)
     output = torch.empty((3, 3, 2560), device="cuda")
 
     def run():
-        gguf_ops.experts_exact(x, picks, bank.gate, bank.up, bank.down, bank.shared, output)
+        gguf_ops.experts_exact(x, picks, bank.gate, bank.up, bank.down, bank.shared, output,
+                           independent_gate_up=independent_gate_up)
 
     run()
     graph = torch.cuda.CUDAGraph()
@@ -53,4 +57,4 @@ def test_exact_shared_skip_tracks_live_routes_during_capture_and_preserves_inval
     # The public owner still overwrites every shared slot with the original
     # Dense arithmetic, including arbitrary positions in the slot matrix.
     valid = torch.tensor([[2, 0, 1], [1, 2, 0], [0, 1, 2]], device="cuda")
-    bits(bank.forward_exact(x, valid), bank.forward_reference(x, valid))
+    bits(bank.forward_exact(x, valid, independent_gate_up=independent_gate_up), bank.forward_reference(x, valid))
