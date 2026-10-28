@@ -334,10 +334,12 @@ def test_outcome_argument_preparation_failure_keeps_original_hash_primary(monkey
 
 
 
-def test_actual_engine_dense_profile_funds_existing_startup_capture_without_eligibility_patch(tmp_path, monkeypatch):
+@pytest.mark.parametrize("workers", [1, 3])
+@pytest.mark.parametrize("profile", ["source-owner-target-dense-trial", "source-dense-owner-batch-prelude-trial"])
+def test_actual_engine_dense_profile_funds_existing_startup_capture_without_eligibility_patch(tmp_path, monkeypatch, workers, profile):
     from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
     from tensorfold.families.qwen4_exp.cuda.speculation import MethodGeometry
-    from tensorfold.families.qwen4_exp.cuda.prefix_policy import OWNER_TARGET_DENSE_PROFILE
+    from tensorfold.families.qwen4_exp.cuda.prefix_policy import OWNER_TARGET_DENSE_PROFILE, OWNER_BATCH_PRELUDE_PROFILE
 
     # Use the actual engine type and method contract at its pre-load boundary;
     # no constructor/weights/GPU work is performed by this CPU admission control.
@@ -346,9 +348,14 @@ def test_actual_engine_dense_profile_funds_existing_startup_capture_without_elig
     engine.tp = 8
     engine.method_geometry = MethodGeometry("mtp", 2)
     engine.media_profile = None
-    engine.sm70_profile = OWNER_TARGET_DENSE_PROFILE
-    engine._execution_preload = {"capture_files": {"target/model": tmp_path / "model"}}
+    assert profile in (OWNER_TARGET_DENSE_PROFILE, OWNER_BATCH_PRELUDE_PROFILE)
+    engine.sm70_profile = profile
+    engine._execution_preload = {"capture_files": {
+        "target/shard1": tmp_path / "shard1", "target/shard2": tmp_path / "shard2",
+        "draft/model": tmp_path / "mtp"}}
     monkeypatch.setenv(startup.ENV, "1")
+    monkeypatch.setenv(startup.WORKERS_ENV, str(workers))
     admitted = startup.prepare(engine, {})
-    assert admitted.host_bytes == startup.STACK_LIMIT + admitted.guard_bytes + startup.HASH_WORKING_BYTES
+    assert admitted.workers == workers
+    assert admitted.host_bytes == workers * (startup.STACK_LIMIT + admitted.guard_bytes + startup.HASH_WORKING_BYTES)
     assert admitted.files == engine._execution_preload["capture_files"]
