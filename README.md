@@ -1,5 +1,19 @@
 # TensorFold fork
 
+The private `source-router-gdn-shared-fusion-trial` selects the already-owned
+`packed_blocks2w` entrypoint as a generic packed/shared-fusion candidate. Actual
+IQ/Q8 expert formats use its generic projection path; the two-warp projection
+specialization applies only to aligned types12/13. Shared FFN work moves inside
+the packed kernels and routed/shared reduction trees differ from the reference.
+A distinct numeric State/prefix epoch prevents cross-mode reuse. Target outputs
+remain FP16 and MTP outputs FP32, with512 routed experts plus public shared
+slot512. Current Router/GDN/startup3/Dense32/prefill/N1 graphs and defaults
+remain. The default native allocator region prepays2MiB/rank small-segment
+operating credit and64KiB/rank host metadata;32 existing code variants are
+materialized before the physical baseline. Quality/performance are unqualified;
+current safety/capture and all-six task comparisons remain pending. No new
+kernel algorithm, weight replication, requantization or numeric tolerance.
+
 The private router/GDN/startup composition retains the explicit experimental
 router numerical epoch and adds the existing sealed FP16 State-batched GDN
 implementation with `--gdn-state-batch-trial` and private environment value1.

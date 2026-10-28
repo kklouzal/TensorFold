@@ -260,3 +260,19 @@ def test_router_profile_explicitly_composes_sealed_gdn_flag(policy, monkeypatch)
     assert policy.module.configure(text(), tp=8, torch=torch) == router_blas.PROFILE
     assert policy.family._NATIVE_FAMILY and not policy.family._NATIVE_ATTENTION
     assert not policy.routing._NATIVE_LOGITS and not policy.padded._ENABLED
+
+
+
+def test_shared_fusion_changes_only_experts_in_current_composition(policy, monkeypatch):
+    from tensorfold.cuda.sm70 import router_blas
+    prepared = []
+    monkeypatch.setenv(policy.module.PROFILE_ENV, policy.module.SHARED_FUSION_TRIAL)
+    monkeypatch.setenv("TENSORFOLD_SM70_GDN_STATE_BATCH", "1")
+    monkeypatch.setattr(policy.module, "_prepare_family_trial", lambda *a, **kw: prepared.append(kw) or {})
+    monkeypatch.setattr(router_blas, "extension", lambda: object())
+    assert policy.module.configure(text(), tp=8, torch=torch) == policy.module.SHARED_FUSION_TRIAL
+    assert prepared[0]["shared_fusion"] and prepared[0]["owner_batch"] and prepared[0]["dense"]
+    assert policy.weights.GGUFExperts.implementation == "packed_blocks2w"
+    assert policy.weights.GGUFDense.implementation == policy.weights.GGUFConcat.implementation == "native32"
+    assert policy.family._NATIVE_FAMILY and not policy.family._NATIVE_ATTENTION
+    assert not policy.routing._NATIVE_LOGITS and not policy.padded._ENABLED

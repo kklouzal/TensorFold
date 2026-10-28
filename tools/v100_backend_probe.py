@@ -55,6 +55,7 @@ SOURCE_FILES = (
     "tensorfold/cuda/scheduler.py", "tensorfold/server/request_limits.py",
     "tensorfold/token_metadata.py", "tensorfold/cuda/chat_template.py",
     "tensorfold/cuda/sm70/execution_policy.py",
+    "tensorfold/cuda/sm70/gguf_ops.py", "tensorfold/cuda/sm70/gguf_ops.cpp", "tensorfold/cuda/sm70/gguf_ops.cu",
     "tensorfold/cuda/sm70/router_blas.py", "tensorfold/cuda/sm70/router_blas.cpp",
     "tensorfold/cuda/moe.py",
     "tensorfold/families/qwen4_exp/cuda/prefix_policy.py",
@@ -131,6 +132,8 @@ def arguments(argv=None):
     parser.add_argument("--out", type=Path, required=True, help="new private result directory")
     parser.add_argument("--triton-cache-root", type=Path,
                         help="opt-in persistent cache root: each child inherits TRITON_CACHE_DIR=ROOT/rank-N before startup; Triton retains its source/platform/configuration keys")
+    parser.add_argument("--packed-shared-fusion-trial", action="store_true",
+                        help="privategenericpacked/shared-fusion math; matchingepoch/currentRouter/GDN/24 required; no two-warp claim forIQtypes")
     parser.add_argument("--router-blas-trial", action="store_true",
                         help="explicit experimental pointer-batched FP32 router; requires matching numeric profile, native Dense/batch and resident24")
     parser.add_argument("--owner-batch-prelude-trial", action="store_true",
@@ -211,18 +214,18 @@ def arguments(argv=None):
     # its unset default. Recording intent must not select a different profile.
     args.requested_sm70_profile = os.environ.get(PROFILE_ENV)
     if args.native_dense_trial:
-        from tensorfold.cuda.sm70.execution_policy import OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL
+        from tensorfold.cuda.sm70.execution_policy import OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL
 
-        if args.requested_sm70_profile not in (OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL) or args.session_ceiling != 24:
+        if args.requested_sm70_profile not in (OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL) or args.session_ceiling != 24:
             parser.error("--native-dense-trial requires explicit source-owner-target-dense-trial and --session-ceiling24")
     if args.owner_batch_prelude_trial:
-        from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL
+        from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL
 
-        if args.requested_sm70_profile not in (OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL) or not args.native_dense_trial or args.session_ceiling != 24:
+        if args.requested_sm70_profile not in (OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL) or not args.native_dense_trial or args.session_ceiling != 24:
             parser.error("--owner-batch-prelude-trial requires matching source-dense-owner-batch-prelude-trial, --native-dense-trial and --session-ceiling24")
-    from tensorfold.cuda.sm70.execution_policy import ROUTER_BLAS_TRIAL
+    from tensorfold.cuda.sm70.execution_policy import ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL
 
-    if args.router_blas_trial != (args.requested_sm70_profile == ROUTER_BLAS_TRIAL):
+    if args.router_blas_trial != (args.requested_sm70_profile in (ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL)):
         parser.error("--router-blas-trial and explicit source-batch-router-blas-trial must agree")
     if args.router_blas_trial and (not args.owner_batch_prelude_trial or not args.native_dense_trial or args.session_ceiling != 24):
         parser.error("router trial requires native Dense, owner batch prelude and session-ceiling24")
@@ -235,6 +238,10 @@ def arguments(argv=None):
     elif gdn_flag is not None:
         parser.error("private GDN environment requires explicit --gdn-state-batch-trial intent")
 
+    if args.packed_shared_fusion_trial != (args.requested_sm70_profile == SHARED_FUSION_TRIAL):
+        parser.error("--packed-shared-fusion-trial and matchingnumericprofile must agree")
+    if args.packed_shared_fusion_trial and (not args.router_blas_trial or not args.gdn_state_batch_trial):
+        parser.error("shared fusion retains currentRouter/GDN/Dense/24 composition")
     if args.expect_prefix_reuse:
         from tensorfold.families.qwen4_exp.cuda.prefix_policy import state_epoch
 
@@ -356,14 +363,14 @@ def record_execution_profile(engine, report, *, requested):
         "roles": roles}
     if requested is not None and requested != engine.sm70_profile:
         raise ValueError("requested SM70 profile differs from the actual constructor selection")
-    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL
+    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL
 
-    if engine.sm70_profile in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL):
+    if engine.sm70_profile in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
         from tensorfold.families.qwen4_exp.cuda.multi_graphs import (
             UNIQUE_CAPTURE_CONTRACT, UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT,
         )
 
-        contract = (UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT if engine.sm70_profile in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL)
+        contract = (UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT if engine.sm70_profile in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL)
                     else UNIQUE_CAPTURE_CONTRACT)
 
         decoder = engine.multi
@@ -665,9 +672,9 @@ BATCH_EVIDENCE_CONTROL_BYTES = 8192  # Fixed host-only receipt fields, bounded i
 
 def batch_preparation_evidence(profile, count, before, after):
     """Qualify actual cohort dispatch after drain; never infer missing counts as zero."""
-    from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL
+    from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL
 
-    if profile not in (OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL):
+    if profile not in (OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
         return None
     result = {"passed": False, "available": False, "cohort_N": count,
               "scope": "submitted native batches during readiness/decode/cancel/drain; not device timing"}
@@ -733,9 +740,9 @@ def check_gdn_batch_engine(engine):
 
 def check_router_blas_engine(engine):
     """Read actual prepared owners and prepaid charges on every rank before submit."""
-    from tensorfold.cuda.sm70.router_blas import PROFILE, RolePlans, role_bytes, role_payload_bytes
+    from tensorfold.cuda.sm70.router_blas import PROFILES, RolePlans, role_bytes, role_payload_bytes
 
-    if engine.sm70_profile != PROFILE or engine.execution_rows != 32:
+    if engine.sm70_profile not in PROFILES or engine.execution_rows != 32:
         raise ValueError("actual router factory differs from private row32 profile")
     roles = (("target", engine.multi.buf.router_blas, 48), ("mtp", engine.multi.mbuf.router_blas, 1))
     for _name, owner, count in roles:
@@ -753,6 +760,27 @@ def check_router_blas_engine(engine):
     return {"enabled": True, "target_weights": 48, "mtp_weights": 1, "target_rows": 32,
             "device_charge_per_rank": charged_device, "raw_device_payload_per_rank": 801024,
             "global_host_charge": charged_host, "scope": "eager target/MTP only; graph/prefill canonical; experimental numeric implementation"}
+
+
+def check_shared_fusion_engine(engine):
+    from tensorfold.cuda.sm70.execution_policy import SHARED_FUSION_TRIAL
+    from tensorfold.cuda.sm70.gguf_ops import shared_fusion_workspace_bytes
+    from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFExperts
+    import torch
+
+    banks = [layer.moe.experts for layer in engine.w.layers] + [engine.w.mtp.layer.moe.experts]
+    device, host = shared_fusion_workspace_bytes()
+    plan = engine.capacity_plan.get("shared_fusion_experiment", {})
+    if (engine.sm70_profile != SHARED_FUSION_TRIAL or engine.execution_rows != 32 or len(banks) != 49
+            or any(type(bank) is not GGUFExperts or bank.implementation != "packed_blocks2w"
+                   or (bank.count, bank.width, bank.dims) != (513, 80, 2560) for bank in banks)
+            or engine.multi.buf.moe.y.dtype != torch.float16 or engine.multi.mbuf.moe.y.dtype != torch.float32
+            or plan.get("device_operating_bytes_per_rank") != device or plan.get("global_host_bytes") != WORLD * host):
+        raise ValueError("actualgenericshared-fusion factory/output/funding contract differs")
+    return {"enabled": True, "banks": 49, "routed_experts": 512, "public_count": 513, "slots": 11,
+            "target_output": "float16", "mtp_output": "float32", "device_operating_bytes_per_rank": device,
+            "global_host_bytes": WORLD * host, "numeric_policy": "unqualified-generic-packed-shared-fusion",
+            "dispatch": "existingblocks2wAPI; actualIQtypesusegenericpackedprojection, no two-warp claim"}
 
 
 def concurrency_module():
@@ -896,7 +924,7 @@ def run_concurrency_leader(engine, tokenizer, args, report):
     from tensorfold.families.qwen4_exp.cuda.retention_resources import FiniteBackendCaller, finalize_backend_resources
     from tensorfold.server.request_limits import RequestLimit
     from tensorfold.token_metadata import decode_presentation, tokenizer_vocab_size
-    from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL
+    from tensorfold.cuda.sm70.execution_policy import OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL
 
     finite = concurrency_module()
     prepared = []
@@ -938,7 +966,7 @@ def run_concurrency_leader(engine, tokenizer, args, report):
         max_concurrent_requests=finite.MAXIMUM, worker_stack_bytes=finite.STACK_BYTES,
         control_payload_bytes=finite.control_payload_bytes(args.tokens) + quality_control
             + (finite.screen_control_payload_bytes(args.tokens) if getattr(args, "fast_grid", False) else 0)
-            + (BATCH_EVIDENCE_CONTROL_BYTES if engine.sm70_profile in (OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL) else 0)
+            + (BATCH_EVIDENCE_CONTROL_BYTES if engine.sm70_profile in (OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL) else 0)
             + (GDN_EVIDENCE_CONTROL_BYTES if getattr(args, "gdn_state_batch_trial", False) else 0))
 
     limit, pool = RequestLimit(finite.MAXIMUM), None
@@ -1037,7 +1065,7 @@ def worker(args):
     from tensorfold.cuda import precision, prompt_precision
     from tensorfold.cuda.cohort import FAILURE_FD_ENV, notify_failure
     from tensorfold.families.qwen4_exp import cuda_engine
-    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL
+    from tensorfold.cuda.sm70.execution_policy import PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL
     from tensorfold.serve_options import drafter_metadata_source
     from tensorfold.token_metadata import load_tokenizer, tokenizer_identity
 
@@ -1066,16 +1094,18 @@ def worker(args):
             context=CONTEXT, context_explicit=True,
             parallel=getattr(args, "session_ceiling", None) or "auto", kv_full_windows="auto",
             kv_dtype="int8", indexer_history="gpu", max_waiting_input_bytes=waiting_input_credit(args),
-            output_queue_tokens=args.tokens, graphs=args.requested_sm70_profile in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL),
+            output_queue_tokens=args.tokens, graphs=args.requested_sm70_profile in (PACKED_GRAPH_TRIAL, OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_TARGET_DENSE_TRIAL, OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL),
             **({"execution_profile_manifest": args.execution_profile_manifest}
                if getattr(args, "execution_profile_manifest", None) is not None else {}))
         record_execution_profile(engine, report, requested=args.requested_sm70_profile)
         if getattr(args, "gdn_state_batch_trial", False):
             check_engine(engine, session_ceiling=24, require_scheduler=args.rank == 0)
             report["gdn_state_batch"] = check_gdn_batch_engine(engine)
-        if getattr(engine, "sm70_profile", None) == ROUTER_BLAS_TRIAL:
+        if getattr(engine, "sm70_profile", None) in (ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
             report["router_blas"] = check_router_blas_engine(engine)
         report["moe_capture_ledger"] = write_moe_capture_ledger(engine, args.out, args.rank)
+        if getattr(args, "packed_shared_fusion_trial", False):
+            report["shared_fusion"] = check_shared_fusion_engine(engine)
         report["capacity_plan"] = engine.capacity_plan
         report["graph_execution"] = {"before_requests": graph_execution_snapshot(engine),
             "after_requests": None, "delta": None,
