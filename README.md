@@ -1,5 +1,15 @@
 # TensorFold fork
 
+The private `tools/v100_dense_shape_diagnostic.py` compares the verified
+native M32 projection with rank-local vendor calls at direct/smaller padded
+shapes using unchanged FP16 weights/inputs and role FP16/FP32 outputs. It is
+a synthetic geometry/cache/timing diagnostic, not a working-backend change
+or model-speed/quality claim. Current math flags are asserted, not modified;
+output bits/errors and captured-versus-eager differences are recorded.
+Complete padding/copy and prepared-input math paths are separate, with
+one hot versus two rotating weight addresses and explicit footprint limits.
+Root GPU lease and fresh output are required; actual CUDA execution is pending.
+
 The private `source-router-gdn-shared-fusion-trial` selects the already-owned
 `packed_blocks2w` entrypoint as a generic packed/shared-fusion candidate. Actual
 IQ/Q8 expert formats use its generic projection path; the two-warp projection
