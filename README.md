@@ -1,5 +1,18 @@
 # TensorFold fork
 
+The private `source-dense-owner-batch-prelude-trial` composes selected exact
+Dense staging and the current canonical target/MTP text producers with the
+existing batched native owner-prelude candidate. Only multi-State frames upload
+prepared bounded descriptors; N1 retains the scalar route. Original per-segment
+casts/reduction trees, coordinate borrowing/version guards and native completion
+remain. Descriptor and diagnostic storage is funded before native-context
+262144-token Q8 K/V admission and the 24-window floor. Existing component
+evidence does not qualify this composition; CPU, actual multi-State/MTP batch
+counters, TP8 two-attention/state oracles and all-six performance/quality gates
+remain pending. Select the matching explicit profile and
+`--owner-batch-prelude-trial --native-dense-trial --session-ceiling 24` only in
+the finite private tool.
+
 The unchanged Dense residency wheel `4efee794` passed the corrected real-bound
 Dense TP8 integration gate with every existing assertion and native counter.
 Together with the prior 108 passes, this closes the scoped component controls.

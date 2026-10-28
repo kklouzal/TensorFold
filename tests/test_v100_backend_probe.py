@@ -1330,3 +1330,24 @@ def test_private_native_dense_flag_requires_explicit_matching_profile_and_funded
         with pytest.raises(SystemExit):
             probe.arguments(argv)
     assert not (tmp_path / "results").exists()
+
+
+@pytest.mark.parametrize("profile,dense,ceiling,valid", [
+    ("source-owner-target-dense-trial", True, 24, False),
+    ("source-dense-owner-batch-prelude-trial", False, 24, False),
+    ("source-dense-owner-batch-prelude-trial", True, None, False),
+    ("source-dense-owner-batch-prelude-trial", True, 24, True)])
+def test_explicit_batch_prelude_intent_requires_composed_profile_and_funded_dense_region(
+        tmp_path, monkeypatch, profile, dense, ceiling, valid):
+    monkeypatch.setenv("TENSORFOLD_SM70_PROFILE", profile)
+    argv = [*cli(tmp_path), "--owner-batch-prelude-trial"]
+    if dense:
+        argv.append("--native-dense-trial")
+    if ceiling is not None:
+        argv.extend(["--session-ceiling", str(ceiling)])
+    if valid:
+        assert probe.arguments(argv).owner_batch_prelude_trial
+    else:
+        with pytest.raises(SystemExit):
+            probe.arguments(argv)
+    assert not (tmp_path / "results").exists()
