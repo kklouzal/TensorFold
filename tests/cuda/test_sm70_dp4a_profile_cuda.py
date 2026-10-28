@@ -105,8 +105,8 @@ def test_mixed_hot_experts_dot_tree_crop_and_exact_shared(gkind, ukind, offset, 
     b, raws, decoded = bank(gkind, ukind, offset)
     rng = np.random.default_rng(81 + rows)
     x = (rng.normal(size=(rows, 2560)) * 0.03).astype(np.float16)
-    picks = torch.tensor([[0, 511, 7, 512]] * rows, dtype=torch.int32, device="cuda")
-    out = torch.empty((rows, 4, 2560), device="cuda")
+    picks = torch.tensor([[0, 511, 7, 3, 88, 91, 5, 12, 42, 21, 512]] * rows, dtype=torch.int32, device="cuda")
+    out = torch.empty((rows, 11, 2560), device="cuda")
     owner = Prototype(b, torch.tensor(x, device="cuda"), picks, out)
     try:
         owner.run()
@@ -117,18 +117,18 @@ def test_mixed_hot_experts_dot_tree_crop_and_exact_shared(gkind, ukind, offset, 
             for kind, actual in [(gkind, owner.gate), (ukind, owner.up)]:
                 _integer, terms = group_oracle(np.tile(raws[kind], 10), np.tile(decoded[kind], 10), q[row], kind)
                 value = warp_sum(terms)
-                exact(actual[row, :3].cpu(), torch.full((3, 80), float(value)))
-        h = owner.hidden.cpu().numpy().reshape(rows * 4, 80)
+                exact(actual[row, :10].cpu(), torch.full((10, 80), float(value)))
+        h = owner.hidden.cpu().numpy().reshape(rows * 11, 80)
         assert np.isfinite(h).all()
         qdown, _ = quantize(h, offset)
         exact(owner.qh.cpu(), torch.from_numpy(qdown))
         for row in range(rows):
-            for slot in range(3):
-                _integer, terms = group_oracle(np.tile(raws[20], 3), np.tile(decoded[20], 3), qdown[row * 4 + slot], 20)
+            for slot in range(10):
+                _integer, terms = group_oracle(np.tile(raws[20], 3), np.tile(decoded[20], 3), qdown[row * 11 + slot], 20)
                 exact(out[row, slot].cpu(), torch.full((2560,), float(warp_sum(terms))))
         reference = torch.zeros_like(out)
         b._write_shared(owner.x, picks, reference)
-        exact(out[:, 3], reference[:, 3])
+        exact(out[:, 10], reference[:, 10])
     except BaseException as primary:
         rollback(owner, primary, owner.close)
     else:
