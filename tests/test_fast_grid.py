@@ -523,3 +523,82 @@ def test_actual_batch_profile_without_optional_intent_is_still_funded():
     namespace['args'].owner_batch_prelude_trial = True
     namespace['engine'].sm70_profile = "source-owner-target-dense-trial"
     assert eval(expression, namespace) == 0
+
+
+@pytest.mark.parametrize("count", [1,8,16,24])
+def test_profile_concurrency_is_one_instrumented_cohort_without_all6_credit(tmp_path, monkeypatch, count):
+    extra=(["--tokens","2048","--fast-grid-protocol",finite.FAST_V2] if count in (1,24) else ["--tokens","512"])
+    args=probe.arguments(cli(tmp_path)+["--concurrency-grid","--fast-grid",*extra,"--profile-concurrency",str(count)])
+    monkeypatch.setattr(probe,"concurrent_observation_snapshot",lambda:{"test_observations":True})
+    events=[]
+    engine=NS(sm70_profile="source-owner-target-guard-trial")
+    def warmup(*_args,count,result,**_kwargs):
+        events.append(("bringup",count))
+        result.update(stats={},first_committed_token_elapsed_ns=1,token_ids=[1])
+    def case(_pool,*,count,write,**_kwargs):
+        events.append(("screen",count))
+        write({})
+        return {"passed":True}
+    monkeypatch.setattr(probe,"generate_reply",warmup)
+    monkeypatch.setattr(finite,"run_screen_case",case)
+    monkeypatch.setattr(probe,"write_report",lambda *_args,**_kwargs:None)
+    report={"concurrency":{"completed_cases":0}}
+    assert probe.run_fast_grid(engine,object(),args,report,RequestLimit(24),object(),
+        [("sustained",[1],{"rendered":"Notebook"})],finite,3)==0
+    assert events==[("bringup",2),("screen",count)]
+    assert not report["fast_screen"]["all_required_N_attempted"]
+    assert report["fast_screen"]["offered_counts"]==[count]
+    assert report["fast_screen"]["measurement_role"]=="instrumentedONEcohortdiagnostic_notall6comparison"
+
+
+@pytest.mark.parametrize("extra", [
+    ["--profile-concurrency","2"],
+    ["--profile-concurrency","8"],
+    ["--concurrency-grid","--fast-grid","--tokens","512","--profile-concurrency","8","--quality-spotchecks"],
+    ["--concurrency-grid","--fast-grid","--tokens","512","--profile-concurrency","16","--serial-reference"],
+])
+def test_profile_concurrency_refuses_unbounded_or_misleading_combinations(tmp_path,extra):
+    with pytest.raises(SystemExit):
+        probe.arguments(cli(tmp_path)+extra)
+
+
+def test_profile_observer_payload_is_funded_globally_before_any_request(tmp_path, monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda import retention_resources
+    args=probe.arguments(cli(tmp_path)+["--concurrency-grid","--fast-grid","--tokens","512","--profile-concurrency","8"])
+    monkeypatch.setattr(probe,"prepared_prompt",lambda *_args:([1],{"rendered":"Notebook"}))
+    seen=[]
+    error=RuntimeError("stop at real host admission, before requests")
+    def finalize(_catalog,*,caller,**_kwargs):
+        expected=finite.control_payload_bytes(512)+finite.screen_control_payload_bytes(512)+8*((128<<10)+(6<<30))
+        assert caller.control_payload_bytes==expected
+        assert caller.max_concurrent_requests==24 and caller.max_receipt_bytes==60620800
+        seen.append(caller)
+        raise error
+    monkeypatch.setattr(retention_resources,"finalize_backend_resources",finalize)
+    engine=NS(retention_catalog=object(),scheduler=object(),sm70_profile="source-owner-target-guard-trial")
+    with pytest.raises(RuntimeError) as caught:
+        probe.run_concurrency_leader(engine,object(),args,{})
+    assert caught.value is error and len(seen)==1
+
+
+def test_single_profile_requires_v2_and_exposes_real_graph_hit_delta(tmp_path):
+    with pytest.raises(SystemExit):
+        probe.arguments(cli(tmp_path)+["--concurrency-grid","--fast-grid","--tokens","512","--profile-concurrency","1"])
+    args=probe.arguments(cli(tmp_path)+["--concurrency-grid","--fast-grid","--tokens","2048",
+        "--fast-grid-protocol",finite.FAST_V2,"--profile-concurrency","1"])
+    assert args.profile_concurrency==1 and args.fast_grid_protocol==finite.FAST_V2
+    bound=NS(hits=7,misses=0,lane_declines=0)
+    engine=NS(multi=NS(graphs=NS(bound=bound,verify={},mtp={})),w=NS(meta={}))
+    before=probe.graph_execution_snapshot(engine)
+    bound.hits+=12
+    after=probe.graph_execution_snapshot(engine)
+    assert probe.graph_execution_delta(before,after)["bound.hits"]==12
+    assert before["counters"]["bound.hits"]==7 and after["counters"]["bound.hits"]==19
+
+
+def test_full24_profile_requires_v2_and_keeps_actual24_request_cohort(tmp_path):
+    with pytest.raises(SystemExit):
+        probe.arguments(cli(tmp_path)+["--concurrency-grid","--fast-grid","--tokens","512","--profile-concurrency","24"])
+    args=probe.arguments(cli(tmp_path)+["--concurrency-grid","--fast-grid","--tokens","2048",
+        "--fast-grid-protocol",finite.FAST_V2,"--profile-concurrency","24"])
+    assert args.profile_concurrency==24 and args.tokens==2048 and not args.quality_spotchecks

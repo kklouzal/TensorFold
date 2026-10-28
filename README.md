@@ -1,5 +1,15 @@
 # TensorFold fork
 
+The private ONE-N1 Torch CPU+CUDA diagnostic keeps the verifiedd5eb/fbaa
+normal726-file application byte exact, including MoE/shared-fusion/candidate
+graphs, GDN and funded three-file startup. All24 native Q8 windows remain
+reserved. All eight ranks capture one2048-cap/10-second core after warmup,
+with bounded cancellation/retirement, protected CUPTI28/source/maps/clock
+guards and the existing6GiB/rank reader plus128KiB/rank observer credit.
+CPU labels expose bound replay, target owner/head, candidate packets,
+collectives and waits; CPU scopes inside pre-existing graph replays are
+not fabricated. No shapes/stacks/memory tracing or all-six/quality/P3 credit.
+
 The private `source-router-gdn-shared-fusion-trial` selects the already-owned
 `packed_blocks2w` entrypoint as a generic packed/shared-fusion candidate. Actual
 IQ/Q8 expert formats use its generic projection path; the two-warp projection
