@@ -1,5 +1,14 @@
 # TensorFold fork
 
+A private actual-bank DP4A cost tool measures only a routed10-slot operator
+boundary atR1/8/32 on the standalone profile. It includes original activation
+quantizers, projections, SiLU, scratch reuse and final device mask; shared
+assembly is omitted from both paths. Three fixed CUDA-event/graph samples
+retain raw timings and report actual-profile errors without an equivalence or
+model-quality threshold. Original quantizer/int64/status oracles run before
+and after. This tool changes no application code and does not enroll DP4A into
+Engine, State, NCCL or serving; actual costs remain unmeasured.
+
 A standalone SM70 DP4A experiment uses private Q8-32 activations with FP32
 scales and retained IQ3_XXS/IQ2_S gate/up plus cropped IQ4_NL down weights.
 It changes activation precision, the current coefficient FP16-rounding boundary
