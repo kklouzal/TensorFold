@@ -20,3 +20,22 @@ Its conversion shim uses the C compiler's `_Float16` conversion. It never reads
 TensorFold's layouts, decoders or integer codebooks to derive expected values.
 GGML MIT attribution is retained in `THIRD_PARTY_NOTICES.md` and
 `LICENSES/GGML-MIT.txt`.
+
+`gguf_mixed_projection_ggml.npz` is a separate finite FP16 projection corpus.
+It retains every original packed quant/sign/local-scale byte, changing only
+the block's FP16 global scale. The same unmodified pinned GGML C dequantizers
+produce its independent FP32 oracle bits. Regenerate with the command above
+plus `--finite-projections --output tests/fixtures/gguf_mixed_projection_ggml.npz`.
+The full-range corpus and its FP16-overflow reproducer remain unchanged.
+
+The independent maximum quant multipliers are4096 (Q6_K),1976.25 (IQ3_XXS),
+7905 (IQ3_S),988.125 (IQ2_S),4064 (IQ4_XS) and2 (Q2_0). Global scale magnitude
+is bounded by2^-20, so the common8192 bound gives coefficients at most2^-7.
+For finite FP16 inputs with magnitude at most1 and K2560, FP32 dot products
+stay below21 including rounding; SwiGLU/FP16 activation stays below441.
+A K80 down projection using these coefficients stays below276. The existing
+IQ4_NL fixture's0.001 global scale gives the looser finite down bound4500.
+Projection controls assert this input/coefficient domain and retain strict
+bitwise comparisons. The full-range FP32 corpus intentionally contains scales
+such as65504 that overflow after FP16 coefficient conversion; it cannot serve
+as a finite FP16 dot-product oracle without changing that contract.

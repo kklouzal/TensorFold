@@ -14,6 +14,13 @@ explicit SM70 compilation pass; actual SM70 bitwise, capacity and all-six
 end-to-end gates remain pending. This grants no numerical or performance
 qualification.
 
+The first actual component run recorded394 passes before an independent CPU
+lane oracle encountered FP16 overflow from the deliberately full-range wire
+fixture. That fixture and failure are preserved. A separate finite projection
+corpus now uses the same unmodified pinned GGML C oracle with bounded scale
+metadata, retaining strict bitwise comparisons. CPU fixture controls pass; the
+549-case GPU rerun remains pending. APP/native math is unchanged.
+
 Canonical MTP text refresh/proposal frames now use the existing actual text
 coordinate producer when no explicit coordinates or deferred boundary are
 present. It preserves hidden/cache positions at `mtp_len`, independent of next

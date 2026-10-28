@@ -18,7 +18,7 @@ def wire_rows(kind, rows, columns):
     # The pinned GGML fixture supplies independently produced scalar FP32 bits.
     # Repeat complete original blocks; never regenerate a coefficient oracle
     # with the production decoder or the candidate's packed coefficient reader.
-    with np.load(Path(__file__).parents[1] / "fixtures/gguf_mixed_ggml.npz", allow_pickle=False) as fixture:
+    with np.load(Path(__file__).parents[1] / "fixtures/gguf_mixed_projection_ggml.npz", allow_pickle=False) as fixture:
         raw = fixture[f"raw_{kind}"]
         values = fixture[f"bits_{kind}"].view(np.float32)
     block, stored = FORMATS[kind][1:]
@@ -46,8 +46,13 @@ def mixed_bank(request):
             values = None  # The retained independent scalar down control owns this existing type.
         else:
             raw, values = wire_rows(kind, rows, physical)
+        if values is not None:
+            assert np.isfinite(values).all() and np.max(np.abs(values)) <= 2.**-7
+            with np.errstate(over="raise", invalid="raise"):
+                values = values[:, crop:crop + columns].astype(np.float16)
+            assert np.isfinite(values).all()
+        coefficients.append(values)
         packed.append(GGUFPacked(torch.tensor(raw, device="cuda"), kind, rows, columns, crop))
-        coefficients.append(None if values is None else values[:, crop:crop + columns].astype(np.float16))
     torch.manual_seed(7811)
     shared = [GGUFDense(torch.randn(shape, device="cuda", dtype=torch.float16) * .02)
               for shape in [(width, dims), (width, dims), (dims, width)]]
@@ -61,6 +66,7 @@ def test_mixed_wire_formats_match_original_bank_and_original_kernel(mixed_bank, 
     bank, _ = mixed_bank
     torch.manual_seed(8191 + rows)
     x = (torch.randn(rows, 2560, device="cuda") * .1).half()
+    assert bool(torch.isfinite(x).all()) and bool((x.abs() <= 1).all())
     picks = (torch.arange(rows * 3, device="cuda", dtype=index_dtype).reshape(rows, 3) % 3).contiguous()
     expected = bank.forward_reference(x, picks).to(dtype)
     original, candidate = torch.empty_like(expected), torch.empty_like(expected)
@@ -74,6 +80,7 @@ def test_gate_up_original_bmm_has_independent_fp16_coefficient_and_lane_chain_or
     bank, coefficients = mixed_bank
     torch.manual_seed(7191)
     x = (torch.randn(1, 2560, device="cuda") * .1).half()
+    assert bool(torch.isfinite(x).all()) and bool((x.abs() <= 1).all())
     padded = torch.zeros((16, 1, 2560), dtype=torch.float16, device="cuda")
     padded[0].copy_(x)
     for packed, trusted in zip((bank.gate, bank.up), coefficients[:2]):
@@ -90,6 +97,7 @@ def test_gate_up_original_bmm_has_independent_fp16_coefficient_and_lane_chain_or
         for offset in (16, 8, 4, 2, 1):
             previous = partials.copy()
             partials[:, :32 - offset] = previous[:, :32 - offset] + previous[:, offset:]
+        assert np.isfinite(partials).all() and np.isfinite(actual).all()
         np.testing.assert_array_equal(actual.view(np.uint32), partials[:, 0].view(np.uint32))
 
 
@@ -100,6 +108,7 @@ def test_mixed_wire_capture_preserves_invalid_nan_shared_zero_and_live_routes(mi
 
     bank, _ = mixed_bank
     x = (torch.randn(3, 2560, device="cuda") * .1).half()
+    assert bool(torch.isfinite(x).all()) and bool((x.abs() <= 1).all())
     picks = torch.tensor([[0, 1, 2], [1, 2, 0], [2, 0, 1]], device="cuda", dtype=index_dtype)
     candidate = torch.empty((3, 3, 2560), device="cuda", dtype=dtype)
     original = torch.empty_like(candidate)
