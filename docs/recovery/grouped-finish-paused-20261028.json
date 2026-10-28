@@ -1,0 +1,220 @@
+{
+  "status": "USERPAUSED emergencybackup; no development/tests/V100access after pause",
+  "source_worktrees": [
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-grouped-moe-trial-20261027",
+      "branch": "v100-grouped-moe-trial-20261027",
+      "HEAD": "379af620b224af21f38e3d2ceca8f8f1419bce27",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-target-greedy-20261027",
+      "branch": "v100-owner-target-greedy-20261027",
+      "HEAD": "5ff2be14b5f5efe0c265654769dd39750b45a2ca",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-target-grouped-20261027",
+      "branch": "v100-owner-target-grouped-20261027",
+      "HEAD": "ed058b1e690adbe70be04a0ed99d5d8a09457c88",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-target-grouped-funded-20261027",
+      "branch": "v100-owner-target-grouped-funded-20261027",
+      "HEAD": "5915c1bd6f072ed34db622bb2ed941280112930b",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-target-guard-20261027",
+      "branch": "v100-owner-target-guard-20261027",
+      "HEAD": "815f4ef9c130dceb720874430aa45f34181cff63",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-target-guard-maps-20261027",
+      "branch": "v100-owner-target-guard-maps-20261027",
+      "HEAD": "0a097d87fe30a7f0dcc6f9840d231c29e84efdcc",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-native-prelude-20261027",
+      "branch": "v100-owner-native-prelude-20261027",
+      "HEAD": "631d5e25dacf450b165903a7654e1e24559d5b7a",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-prelude-native-positions-20261027",
+      "branch": "v100-owner-prelude-native-positions-20261027",
+      "HEAD": "734960f4c279a92c7ce008439763fde34003c827",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-prelude-coordinate-alias-20261027",
+      "branch": "v100-owner-prelude-coordinate-alias-20261027",
+      "HEAD": "ff95df40a6f835ae042df2acf2c528804545374b",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-prelude-mtp-text-20261027",
+      "branch": "v100-owner-prelude-mtp-text-20261027",
+      "HEAD": "e3ed8297483da2c58cb0c0067c9f5e848d35b6f8",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-batch-prelude-20261027",
+      "branch": "v100-owner-batch-prelude-20261027",
+      "HEAD": "08188e8303b00e992efa710be2a37be8cfe90e61",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-descriptor-ring-20261027",
+      "branch": "v100-owner-descriptor-ring-20261027",
+      "HEAD": "8ac214f9c2a164e73c4577ee3f7df5e518326357",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-n1-frame-descriptors-20261028",
+      "branch": "v100-n1-frame-descriptors-20261028",
+      "HEAD": "149e52a28a3297b7c98383a5576083b2743c23ed",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-owner-attention-graphs-20261028",
+      "branch": "v100-owner-attention-graphs-20261028",
+      "HEAD": "deec48bef2370b01e473661638683f15a80f43f9",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-router-moe-region-graphs-20261028",
+      "branch": "v100-router-moe-region-graphs-20261028",
+      "HEAD": "800396fa9f6908b9dea0a0edb47bbecc72cb9c2b",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-router-moe-catalogue-20261028",
+      "branch": "v100-router-moe-catalogue-20261028",
+      "HEAD": "f6978a15ca8448ddbbebfaedbf9d11c6b802c3c6",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-moe-region-graphs-20261028",
+      "branch": "v100-moe-region-graphs-20261028",
+      "HEAD": "b06cb17997a444ebfb9b11d83e48be1441c9c3f1",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-moe-catalogue-screen-20261028",
+      "branch": "v100-moe-catalogue-screen-20261028",
+      "HEAD": "4db0bc65db11cde26c8414e0b96748f59715b9e9",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-moe-shared-fusion-20261028",
+      "branch": "v100-moe-shared-fusion-20261028",
+      "HEAD": "073649a963d0d2df5f6b8fbd207de51ad2ab5d64",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-moe-fusion-screen-20261028",
+      "branch": "v100-moe-fusion-screen-20261028",
+      "HEAD": "654d456e7ebac066f52c2e9a0867d09297455473",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-joint-candidate-finish-20261028",
+      "branch": "v100-joint-candidate-finish-20261028",
+      "HEAD": "d5ebfce578dc8a1e3c59bdd27f3dd1558c14043f",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-joint-candidate-screen-20261028",
+      "branch": "v100-joint-candidate-screen-20261028",
+      "HEAD": "8d9eeaae1082645679bb02869b2d622515f4791f",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-joint-hc-moe-20261028",
+      "branch": "v100-joint-hc-moe-20261028",
+      "HEAD": "28ac5b2da8660542c156adf60b8a3e5072b89244",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-joint-hc-moe-screen-20261028",
+      "branch": "v100-joint-hc-moe-screen-20261028",
+      "HEAD": "022b492d98e531f08900322c6b65fa2b80a0edb6",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-joint-hc-moe-screen-cleanup-20261028",
+      "branch": "v100-joint-hc-moe-screen-cleanup-20261028",
+      "HEAD": "723a023a1f279d7cb5b7666acf528d126d78a271",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-hc-moe-hot-rows-20261028",
+      "branch": "v100-hc-moe-hot-rows-20261028",
+      "HEAD": "f0300ac8166349882a3de5f82687e0bf836eeff5",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-hc-moe-hot-rows-screen-20261028",
+      "branch": "v100-hc-moe-hot-rows-screen-20261028",
+      "HEAD": "101f75eed0787145092338004d0138a58715f4d0",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-hc-moe-shared-pool-oracle-20261028",
+      "branch": "v100-hc-moe-shared-pool-oracle-20261028",
+      "HEAD": "5cd45e3bf41458151f50bdcb8a05dd69640106bd",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dp4a-actual-cost-20261028",
+      "branch": "v100-dp4a-actual-cost-20261028",
+      "HEAD": "cb5707bf3d41d359bce8d62344e1f87385874414",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-dp4a-actual-cost-roots-20261028",
+      "branch": "v100-dp4a-actual-cost-roots-20261028",
+      "HEAD": "c99a583ca075df3d509d274b7ced818b4347df85",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-compact-tail-slices-20261028",
+      "branch": "v100-compact-tail-slices-20261028",
+      "HEAD": "d3a68247b0a650cbc67db144ddc36d0c6b7f9403",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-compact-tail-fixture-20261028",
+      "branch": "v100-compact-tail-fixture-20261028",
+      "HEAD": "eeb168c12b3637805f55fbb0a10701b9ab8e1831",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-compact-tail-screen-20261028",
+      "branch": "v100-compact-tail-screen-20261028",
+      "HEAD": "122d66dc0cd09d338b4561ccf04e9e520e6a8ddb",
+      "dirty": ""
+    },
+    {
+      "worktree": "/Warehouse/TensorFold-wt/v100-ncu-component-20261027",
+      "branch": "v100-ncu-component-20261027",
+      "HEAD": "1d56666309566087b4da514d29a45b4f2b9afbc1",
+      "dirty": ""
+    }
+  ],
+  "verification": {
+    "Tail_runtime": "d3a68247/APPc141,110normalCPU/Ruff/727FDc79; strictGPU2PASS3.61 viaeebfixture successor; NUMAmodelall6UNRUN becauseBTRFSrootEROFS beforecontainer",
+    "Tail_fixture": "eeb168c1; correctedvoidon_streamresultslot+actualstreamcontextCPUcontrol; actual68597 2PASS; prior82440/case2fixturefailureandda5CPUfakefailurepreserved",
+    "Tail_NUMA_adapter": "122d66dc/452079b7;13policyCPU/Ruff, exactstagednormalSDKpreflight0; f11UUIDmasks/probe/workerunchanged; old8021rowauthorityseparate. NoP3data",
+    "Tail_reuse": "No implementation/sourceWIP exists inthisagent scope; allocation/ownership followupisread-onlyartifactplan, freshoutputs remainallocated",
+    "DP4A_cost": "c99a583c/current53175pre20+cost3+post20PASS; currentprototype slower2.736/3.925/4.264x graphcomponentR1/8/32,NOTmodel/globalinferiority; preserveoracles/WIP; cb5707/96618missingimportfailurepreserved",
+    "Graph_milestones": "Historicalsourcebranches preservedasnamed; scoped component/model results in local audit artifacts. Firstscreens doNOTgrantrepeatability/broadquality."
+  },
+  "external_blocker": "V100BTRFSrootreadonly; nofurtherhostaccess authorized while paused. Recovery/push operations targetGitHubonly.",
+  "unrelated_work": "Excluded otheragents ownedcombinedTailPool/Pool/broaderallocations; Rootinventories separately.",
+  "secrets": "No privatekeys/auth tokens/modelpayloads added; source identities andverification status only."
+}
