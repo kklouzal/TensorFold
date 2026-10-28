@@ -66,3 +66,29 @@ def test_new_labels_wrap_actual_router_and_gdn_methods_only():
         assert matches[0][3].__wrapped__ is matches[0][2]
         assert inspect.getclosurevars(matches[0][3]).nonlocals["label"] == label
     assert len(plan) <= 128
+
+
+def test_phase_operation_boundary_preserves_real_operation_result_and_primary():
+    from contextlib import contextmanager
+    from tensorfold.families.qwen4_exp.cuda import execution_identity
+    events = []
+    @contextmanager
+    def label(name):
+        events.append(("enter", name))
+        try:
+            yield
+        finally:
+            events.append(("exit", name))
+    engine = NS(comm=None)
+    def operation():
+        return {"actual": 17}
+    observed = probe.observed_phase_call(execution_identity._phase, "phase", label)
+    assert observed(engine, "local", "prepare", operation) == [{"actual": 17}]
+    assert events == [("enter", "phase"), ("enter", "tensorfold/cpu/phase-operation"),
+                      ("exit", "tensorfold/cpu/phase-operation"), ("exit", "phase")]
+    error = ValueError("actual operation refusal")
+    def failed():
+        raise error
+    with pytest.raises(execution_identity._ManifestRefusal) as caught:
+        observed(engine, "local", "prepare", failed)
+    assert caught.value.__cause__ is error

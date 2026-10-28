@@ -63,6 +63,8 @@ SOURCE_FILES = (
     "tensorfold/cuda/scheduler.py", "tensorfold/server/request_limits.py",
     "tensorfold/token_metadata.py", "tensorfold/cuda/chat_template.py",
     "tensorfold/cuda/sm70/execution_policy.py",
+    "tensorfold/families/qwen4_exp/cuda/gguf_weights.py",
+    "tensorfold/families/qwen4_exp/gguf.py", "tensorfold/families/qwen4_exp/read_ahead.py",
     "tensorfold/families/qwen4_exp/cuda/gdn_state_batch.py",
     "tensorfold/cuda/sm70/gdn.cu", "tensorfold/cuda/sm70/gdn_bindings.cpp",
     "tensorfold/cuda/sm70/router_blas.py", "tensorfold/cuda/sm70/router_blas.cpp",
@@ -324,12 +326,24 @@ def observed_call(function, label, record_function):
     return observed
 
 
+def observed_phase_call(function, label, record_function):
+    """Expose the existing operation callback separately; never proxy Store traffic."""
+    outer = observed_call(function, label, record_function)
+    @wraps(function)
+    def observed(engine, channel, stage, operation, *, may_refuse=True):
+        operation = observed_call(operation, "tensorfold/cpu/phase-operation", record_function)
+        return outer(engine, channel, stage, operation, may_refuse=may_refuse)
+    return observed
+
+
 def project_observers(record_function):
-    from tensorfold.families.qwen4_exp.cuda import decode, execution_identity, mtp, compact_indexer
+    from tensorfold.families.qwen4_exp.cuda import decode, execution_identity, mtp, compact_indexer, forward
     from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
-    from tensorfold.families.qwen4_exp.cuda.input_preparation import InputPreparationContext
+    from tensorfold.families.qwen4_exp.cuda.input_preparation import InputPreparationContext, _PreparationMailbox
     from tensorfold.families.qwen4_exp.cuda.state import State
-    from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFExperts
+    from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFExperts, GGUFPLETable
+    from tensorfold.families.qwen4_exp.cuda import gguf_weights
+    from tensorfold.families.qwen4_exp.read_ahead import ReadAhead
     from tensorfold.families.qwen4_exp.cuda.history_owner import OwnerBuffers
     from tensorfold.families.qwen4_exp.cuda.bound_graphs import BoundStateGraphs
     from tensorfold.cuda.comm import NCCL
@@ -340,7 +354,9 @@ def project_observers(record_function):
                  (execution_identity._retire_store, "tensorfold/cpu/retire-store"),
                  (decode.choose_gathered, "tensorfold/cpu/choose-gathered"),
                  (compact_indexer._validate_frame, "tensorfold/cpu/indexer-frame-validate"),
-                 (mtp.mtp_compute, "tensorfold/body/mtp")]
+                 (mtp.mtp_compute, "tensorfold/body/mtp"),
+                 (forward.stage_late, "tensorfold/cpu/ple-stage-late"),
+                 (forward.stage_ple_rows, "tensorfold/cpu/ple-row-stage")]
     plan = []
     for module in tuple(sys.modules.values()):
         if module is None or not getattr(module, "__name__", "").startswith("tensorfold."):
@@ -348,8 +364,13 @@ def project_observers(record_function):
         for name, value in tuple(vars(module).items()):
             for original, label in functions:
                 if value is original:
-                    plan.append((module, name, original, observed_call(original, label, record_function)))
+                    observer = observed_phase_call if original is execution_identity._phase else observed_call
+                    plan.append((module, name, original, observer(original, label, record_function)))
     for owner, name, label in [(InputPreparationContext, "prepare", "tensorfold/cpu/input-prepare"),
+                              (GGUFPLETable, "_gather_flat", "tensorfold/cpu/ple-gather-decode"),
+                              (ReadAhead, "gather", "tensorfold/cpu/read-ahead-gather"),
+                              (_PreparationMailbox, "exchange", "tensorfold/cpu/preparation-mailbox-exchange"),
+                              (_PreparationMailbox, "retire", "tensorfold/cpu/preparation-mailbox-retire"),
                               (State, "kv_check", "tensorfold/cpu/kv-status"),
                               (FlashNextEngine, "_retire_request", "tensorfold/cpu/request-retire"),
                               (FlashNextEngine, "generate", "tensorfold/host/generate"),
@@ -361,6 +382,12 @@ def project_observers(record_function):
                               (BoundStateGraphs, "forward", "tensorfold/body/bound-pieces")]:
         original = getattr(owner, name)
         plan.append((owner, name, original, observed_call(original, label, record_function)))
+    # This exact module alias is called by GGUFPLETable._gather_flat. A generic
+    # label stays honest if another GGUF table calls it; its PLE parent separates
+    # actual PLE decode work, including the existing ReadAhead worker path.
+    original = gguf_weights.decode_rows
+    plan.append((gguf_weights, "decode_rows", original,
+                 observed_call(original, "tensorfold/cpu/gguf-decode-rows", record_function)))
     # These are staticmethods. Preserve their original descriptors on both
     # install and restoration; a plain function would bind an extra self.
     for name, label in (("_state_storage", "tensorfold/cpu/native-state-storage"),
