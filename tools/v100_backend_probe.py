@@ -40,6 +40,9 @@ MAX_RENDERED_BYTES = 65536
 MAX_PROMPT_TOKENS = 4096
 MAX_TOKENS = 512
 MAX_RECEIPT_BYTES = 1 << 20
+PREFIX_CASE_ROW_BYTES = 512 << 10
+PREFIX_CASE_MAX_ROWS = 260
+PREFIX_CASE_CUTS = (3, 4, 5, 255, 256, 257)
 LEADER_RECEIPT_BYTES = 512 << 10
 FOLLOWER_RECEIPT_BYTES = 64 << 10
 SUPERVISOR_RECEIPT_BYTES = 64 << 10
@@ -123,6 +126,10 @@ def arguments(argv=None):
                         help="1..16 sequential repetitions using one loaded engine/admission; cache state is retained and reported")
     parser.add_argument("--expect-prefix-reuse", action="store_true",
                         help="private cached FAMILY trial: require cold first MTP and maximal legal prefix on later identical prompts")
+    parser.add_argument("--raw-prefix-cases", action="store_true",
+                        help="correctness-only raw target-ID cold/full/partial/fork/callback-stop matrix; explicit FAMILY profile, 1..32 reply tokens")
+    parser.add_argument("--prefix-oracle-dir", type=Path,
+                        help="read-only cold FAMILY raw-case rows, required by cached raw-case mode")
     parser.add_argument("--thinking", action="store_true", help="pass enable_thinking=True to the unchanged target template")
     parser.add_argument("--serial-reference", action="store_true", help="also run a separately labeled draft=False reply with MTP loaded")
     parser.add_argument("--rank", type=int, help=argparse.SUPPRESS)
@@ -138,6 +145,11 @@ def arguments(argv=None):
         parser.error("--repetitions must be 1..16")
     if args.expect_prefix_reuse and args.repetitions < 2:
         parser.error("--expect-prefix-reuse requires at least2 repetitions")
+    if args.raw_prefix_cases and (args.repetitions != 1 or args.expect_prefix_reuse
+                                 or args.serial_reference or args.tokens > 32):
+        parser.error("raw prefix cases require repetitions1, 1..32 tokens and no repeat/serial expectation modes")
+    if args.prefix_oracle_dir is not None and not args.raw_prefix_cases:
+        parser.error("--prefix-oracle-dir requires --raw-prefix-cases")
     if (not 1 <= args.master_port <= 65535 or not math.isfinite(args.timeout_seconds)
             or args.timeout_seconds <= 0 or args.rank is not None and args.rank not in range(WORLD)):
         parser.error("invalid rendezvous port, finite positive timeout, or rank")
@@ -153,6 +165,17 @@ def arguments(argv=None):
     # The existing constructor owns supported values, runtime qualification and
     # its unset default. Recording intent must not select a different profile.
     args.requested_sm70_profile = os.environ.get(PROFILE_ENV)
+    if args.raw_prefix_cases:
+        from tensorfold.cuda.sm70.execution_policy import FAMILY_TRIAL, FAMILY_PREFIX_TRIAL
+
+        if args.requested_sm70_profile not in (FAMILY_TRIAL, FAMILY_PREFIX_TRIAL):
+            parser.error("raw prefix cases require an explicit cold or cached FAMILY trial profile")
+        if (args.requested_sm70_profile == FAMILY_PREFIX_TRIAL) != (args.prefix_oracle_dir is not None):
+            parser.error("cached raw cases require a cold oracle directory; cold raw cases produce that oracle")
+        if args.prefix_oracle_dir is not None:
+            args.prefix_oracle_dir = args.prefix_oracle_dir.resolve(strict=True)
+            if not args.prefix_oracle_dir.is_dir():
+                parser.error("prefix oracle input must be an existing directory")
     if args.expect_prefix_reuse:
         from tensorfold.families.qwen4_exp.cuda.prefix_policy import FAMILY_PREFIX_PROFILE
 
@@ -192,10 +215,13 @@ def installed_identity(wheel):
 class TokenCollector:
     """One synchronous callback, with no decoding, queue or retained chunk copies."""
 
-    def __init__(self, maximum, vocab):
+    def __init__(self, maximum, vocab, *, stop_after=None):
         if type(maximum) is not int or not 1 <= maximum <= MAX_TOKENS or type(vocab) is not int or vocab <= 0:
             raise ValueError("finite callback requires a supported token allowance and vocabulary")
         self.maximum, self.vocab, self.ids, self.closed = maximum, vocab, [], False
+        if stop_after is not None and (type(stop_after) is not int or not 1 <= stop_after <= maximum):
+            raise ValueError("callback-stop count must fit the finite reply allowance")
+        self.stop_after = stop_after
         self.first_nonempty_monotonic_ns = None
 
     def __call__(self, chunk):
@@ -207,7 +233,7 @@ class TokenCollector:
         if chunk and self.first_nonempty_monotonic_ns is None:
             self.first_nonempty_monotonic_ns = time.monotonic_ns()
         self.ids.extend(chunk)
-        return False
+        return self.stop_after is not None and len(self.ids) >= self.stop_after
 
     def close(self):
         self.closed = True
@@ -274,12 +300,12 @@ def check_engine(engine):
         raise ValueError("finite backend host admission must precede logical request publication")
 
 
-def generate_reply(engine, tokenizer, tokens, *, count, draft, limit, result):
+def generate_reply(engine, tokenizer, tokens, *, count, draft, limit, result, stop_after=None):
     from torch.cuda import nvtx
     from tensorfold.engine.exact_sampling import Sampling
     from tensorfold.token_metadata import decode_presentation, tokenizer_vocab_size
 
-    collector = TokenCollector(count, tokenizer_vocab_size(tokenizer))
+    collector = TokenCollector(count, tokenizer_vocab_size(tokenizer), stop_after=stop_after)
     started = time.monotonic_ns()
     result.update(label="mtp-target" if draft else "serial-reference", draft=draft,
                   token_ids=collector.ids, complete=False,
@@ -313,6 +339,145 @@ def generate_reply(engine, tokenizer, tokens, *, count, draft, limit, result):
         return result
     finally:
         collector.close()
+
+
+def prefix_case_plan(vocab, eos, chat_tokens):
+    """Prepare bounded immutable inputs; no cache, State or scheduler is touched."""
+    from tensorfold.families.qwen4_exp.cuda.decode import entry_end
+
+    pool = tuple(token for token in range(min(vocab, 64)) if token not in eos)
+    if len(pool) < 16:
+        raise ValueError("raw correctness matrix needs sixteen non-EOS target IDs")
+    flat, steps = [], []
+
+    def add(name, phase, nonce, rows, *, branch=None, expected=(0,), cancel=False, supplied=None):
+        ids = [pool[-3]] * rows if supplied is None else list(supplied)
+        if supplied is None:
+            ids[0] = pool[nonce]
+            if branch is not None:
+                ids[branch] = pool[-2]
+        if (not ids or len(ids) > PREFIX_CASE_MAX_ROWS
+                or any(type(token) is not int or not 0 <= token < vocab for token in ids)):
+            raise ValueError("raw correctness input exceeds its declared target-ID geometry")
+        start = len(flat)
+        flat.extend(ids)
+        steps.append((name, phase, start, len(flat), tuple(expected), cancel))
+        return entry_end(ids)
+
+    add("cold", "only", 0, 24)
+    end = add("full", "seed", 1, 24)
+    add("full", "repeat", 1, 24, expected=(end,))
+    for nonce, cut in enumerate(PREFIX_CASE_CUTS, 2):
+        end = add(f"partial-{cut}", "seed", nonce, cut + 1)
+        if end != cut:
+            raise ValueError("requested raw cut differs from the shipping checkpoint endpoint")
+        add(f"partial-{cut}", "branch", nonce, cut + 3, branch=cut, expected=(end,))
+    end = add("fork", "seed", 8, 6)
+    longer = add("fork", "extend", 8, 14, expected=(end,))
+    add("fork", "branch", 8, 8, branch=end, expected=(end,))
+    add("fork", "source-revisit", 8, 14, expected=(longer,))
+    end = add("callback-stop", "stop", 9, 24, cancel=True)
+    add("callback-stop", "retry", 9, 24, expected=(0, end))
+    add("rejection-observation", "chat-control", 10, len(chat_tokens), supplied=chat_tokens)
+    return tuple(flat), tuple(steps)
+
+
+def _prepared_case_bytes(value):
+    """Logical owned Python payload, counting shared primitive objects once."""
+    seen, pending, total = set(), [value], 0
+    while pending:
+        item = pending.pop()
+        if id(item) in seen:
+            continue
+        seen.add(id(item))
+        if type(item) not in (tuple, list, dict, str, int, bool, type(None)):
+            raise TypeError("raw case descriptors must contain bounded primitive data only")
+        total += sys.getsizeof(item)
+        if isinstance(item, (tuple, list)):
+            pending.extend(item)
+        elif isinstance(item, dict):
+            pending.extend(item.keys())
+            pending.extend(item.values())
+    return total
+
+
+def _read_prefix_oracle(directory, name):
+    path = regular_file(directory / name)
+    if path.stat().st_size > PREFIX_CASE_ROW_BYTES:
+        raise ValueError("cold prefix oracle exceeds its512KiB source bound")
+    with path.open("rb") as source:
+        raw = source.read(PREFIX_CASE_ROW_BYTES + 1)
+    if len(raw) > PREFIX_CASE_ROW_BYTES:
+        raise ValueError("cold prefix oracle grew beyond its admitted source bound")
+    return json.loads(raw), hashlib.sha256(raw).hexdigest()
+
+
+def prefix_case_replies(engine, tokenizer, args, report, limit, plan, *, input_identity):
+    """One current result plus one bounded cold oracle; previous rows are durable."""
+    from tensorfold.cuda.sm70.execution_policy import FAMILY_PREFIX_TRIAL, FAMILY_TRIAL
+
+    cached = engine.sm70_profile == FAMILY_PREFIX_TRIAL
+    flat, steps = plan
+    report["prefix_case_coverage"] = {"completed_steps": 0, "rejection_observed": False,
+        "callback_stop_requested": False, "physical_slot_identity": "not exposed by Engine.generate",
+        "principal_and_eviction_control": "not exposed by this finite caller",
+        "forced_model_rejection": "not exposed; actual acceptance counters are retained"}
+    for index, (case, phase, start, end, expected, cancel) in enumerate(steps):
+        report["replies"].clear()
+        tokens = list(flat[start:end])
+        name = f"prefix-{index:02d}-{case}-{phase}.json"
+        active_cancel = cached and cancel
+        row = {"case": case, "phase": phase, "input_token_ids": tokens,
+            "input_identity": input_identity, "profile": engine.sm70_profile,
+            "output_contract": "raw target IDs; legal EOS-only output; no chat/quality qualification",
+            "callback_stop_requested": active_cancel}
+        report["replies"].append(row)
+        primary, diagnostics, oracle = None, [None], None
+        try:
+            generate_reply(engine, tokenizer, tokens, count=args.tokens, draft=True, limit=limit,
+                           result=row, stop_after=1 if active_cancel else None)
+            if not row["token_ids"]:
+                raise ValueError("raw correctness completed without an observable target token/EOS")
+            allowed = expected if cached else (0,)
+            observed = row["stats"].get("cached")
+            row["cache_cut_check"] = {"allowed": allowed, "observed": observed,
+                "passed": type(observed) is int and observed in allowed,
+                "contract": "shipping prompt endpoint; cancellation may drop or retain that endpoint"}
+            if not row["cache_cut_check"]["passed"]:
+                raise ValueError("raw prefix case differs from its declared legal checkpoint cut")
+            drafted, accepted = row["stats"].get("drafted"), row["stats"].get("accepted")
+            if type(drafted) is int and type(accepted) is int and 0 <= accepted < drafted:
+                report["prefix_case_coverage"]["rejection_observed"] = True
+            if active_cancel:
+                report["prefix_case_coverage"]["callback_stop_requested"] = True
+            if cached:
+                oracle, oracle_sha = _read_prefix_oracle(args.prefix_oracle_dir, name)
+                if (oracle.get("case") != case or oracle.get("phase") != phase
+                        or oracle.get("input_identity") != input_identity or oracle.get("profile") != FAMILY_TRIAL
+                        or oracle.get("input_token_ids") != tokens or not oracle.get("complete")):
+                    raise ValueError("cold prefix oracle identity/input/terminal contract differs")
+                target = oracle["token_ids"]
+                matched = row["token_ids"] == (target[:len(row["token_ids"])] if active_cancel else target)
+                row["oracle_check"] = {"sha256": oracle_sha, "passed": matched,
+                    "comparison": "committed prefix of uninterrupted cold output" if active_cancel else "exact committed IDs"}
+                if not matched:
+                    raise ValueError("cached raw prefix output differs from its independent cold oracle")
+            if len(json.dumps(row, ensure_ascii=False, allow_nan=False).encode()) > PREFIX_CASE_ROW_BYTES:
+                raise ValueError("raw prefix case exceeds its512KiB result slice")
+        except BaseException as error:
+            primary = error
+        finally:
+            oracle = None
+        try:
+            write_json(args.out / name, row)
+        except BaseException as error:
+            diagnostics[0] = error
+        finish_failures(primary, diagnostics)
+        report["prefix_case_coverage"]["completed_steps"] = index + 1
+        write_report(args.out / "prefix-cases-progress.json", report, allowance=LEADER_RECEIPT_BYTES)
+        print(json.dumps({"event": "prefix-case", "file": name, "cached": observed,
+                          "tokens": len(row["token_ids"])}, allow_nan=False), flush=True)
+        row = tokens = None
 
 
 def repeat_replies(engine, tokenizer, tokens, args, report, limit):
