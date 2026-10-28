@@ -184,6 +184,11 @@ def test_engine_prefills_on_the_fixed_buffers_and_conversations_switch_like_eage
     assert again == _generate(eager, turn, None)[0]
     assert stats["cached"] == (len(first) - 1 if budget else 0)
     assert all(kept.kv is fixed for ids, kept, _ in graphed.cache.entries if turn[:len(ids)] == ids)
+    # The same conversation's next turn resumes on the fixed buffers in place (no copy either way).
+    last = turn + again + [4, 5, 6]
+    fourth, stats = _generate(graphed, last, SAMPLINGS[1])
+    assert fourth == _generate(eager, last, SAMPLINGS[1])[0] and stats["cached"] == len(turn) - 1
+    assert all(kept.kv is fixed for ids, kept, _ in graphed.cache.entries if last[:len(ids)] == ids)
     assert runner._addresses() == tuple(t.data_ptr() for kv in fixed if kv is not None for t in kv)
 
 
@@ -212,3 +217,68 @@ def test_begin_refuses_kept_states_on_the_fixed_buffers_that_are_not_one_prompts
         runner.begin(cache, None, base, [1, 2, 3, 4, 5])
     with pytest.raises(RuntimeError, match="not one prompt's prefixes"):
         runner.begin(cache, None, None, [7, 7, 7])                           # moving them out checks the chain too
+    # Resuming a moved-out chain checks the states sharing its buffers before they join the fixed ones.
+    private = [None if kv is None else (kv[0][:3].clone(), kv[1][:3].clone()) for kv in runner.st.kv]
+    resumed, stray = State(w), State(w)
+    resumed.kv, resumed.pos, stray.kv, stray.pos = private, 3, private, 2
+    moved = PrefixCache(4)
+    moved.add([5, 6, 7], resumed, None)
+    moved.add([5, 9], stray, None)                                           # not a prefix of the resumed prompt
+    with pytest.raises(RuntimeError, match="not one prompt's prefixes"):
+        runner.begin(moved, None, resumed, [5, 6, 7, 8])
+    assert resumed.kv is private and stray.kv is private                    # raised before any buffer changed
+
+
+def _same_rows(kvs, sources, rows):
+    return all(kv is None or torch.equal(kv[0][:rows], src[0][:rows]) and torch.equal(kv[1][:rows], src[1][:rows])
+               for kv, src in zip(kvs, sources))
+
+
+def test_moving_a_conversation_out_keeps_the_resumed_one_and_evicts_older_ones_first(model):
+    """M6: resuming a moved-out conversation while another one's kept states hold the fixed buffers. Their copy must
+    fit the stream's room beside the resumed state's private buffers (live until copied in): older conversations'
+    kept states go first, the resumed one's never; when the copy still does not fit, the fixed buffers' kept
+    states are dropped instead. Copies keep every row."""
+
+    from tensorfold.cuda.streams import KVRoom, PrefixCache
+    from tensorfold.families.qwen3_5.cuda.forward import State
+
+    w = model
+    older, resumed, current = list(range(100, 140)), list(range(200, 260)), list(range(300, 350))
+    for spare, moves in ((len(current), True), (len(current) - 1, False)):
+        runner = ChainGraphs(w, 256, bucket=64)
+        fixed = runner.st.kv
+        row = sum(t.stride(0) * t.element_size() for kv in fixed if kv is not None for t in kv)
+
+        def kept(ids, kv):
+            st = State(w)
+            st.kv, st.pos = kv, len(ids)
+            return st
+
+        def private(rows):
+            return [None if kv is None else (torch.randn_like(kv[0][:rows]), torch.randn_like(kv[1][:rows]))
+                    for kv in fixed]
+
+        for kv in fixed:
+            if kv is not None:
+                kv[0].normal_()
+                kv[1].normal_()
+        before = [None if kv is None else (kv[0].clone(), kv[1].clone()) for kv in fixed]
+        cache = PrefixCache(4)
+        cache.add(older, kept(older, private(len(older))), None)
+        own = private(len(resumed))
+        cache.add(resumed, kept(resumed, own), None)
+        cache.add(current[:20], kept(current[:20], fixed), None)
+        cache.add(current, kept(current, fixed), None)
+        hit = cache.longest(resumed + [1])                                   # the engine's resume: newest, and hit
+        room = KVRoom(cache, 0)
+        room.budget = room.held(runner.st) - len(older) * row + spare * row  # the copy fits only without ``older``
+        st = runner.begin(cache, room, hit[1], resumed + [1])
+        assert st is hit[1] and st.kv is fixed and _same_rows(fixed, own, len(resumed))
+        assert cache.entries[-1][0] == resumed and older not in [ids for ids, _, _ in cache.entries]
+        out = [kept.kv for ids, kept, _ in cache.entries if ids in (current, current[:20])]
+        if moves:
+            assert len(out) == 2 and out[0] is out[1] is not fixed and _same_rows(out[0], before, len(current))
+            assert room.held(runner.st) + len(resumed) * row <= room.budget  # made beside the resumed buffers
+        else:
+            assert not out                                                   # dropped: no room beside the resumed one
