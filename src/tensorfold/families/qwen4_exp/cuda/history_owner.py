@@ -536,6 +536,7 @@ class OwnerBuffers:
         self.queries = self.selection = self.selections = self.partial = self.partials = self.position = None
         self.native_states, self.native_owners, self.native_pair, self.native_buckets = None, (), None, ()
         self.descriptors = self.descriptors_host = self.global_stats = self.lane_rows = self.native_layer = None
+        self.descriptor_host_words = None
         self.descriptor_upload = self.native_done = None
         self._upload_pending = self._native_pending = self._base_ready = self._construction_started = False
         self.native_comm = self.native_collective = None
@@ -661,6 +662,9 @@ class OwnerBuffers:
             self.descriptors = torch.zeros((self.rows, DESCRIPTOR_WORDS), dtype=torch.int64, device=device)
             self.descriptors_host = torch.zeros((self.rows, DESCRIPTOR_WORDS), dtype=torch.int64,
                                                 pin_memory=self.queries.is_cuda)
+            # Retain a zero-copy CPU view of the same pinned DMA mirror. Its writes
+            # remain behind descriptor_upload retirement in stage_native_descriptors.
+            self.descriptor_host_words = self.descriptors_host.numpy()
             self.global_stats = torch.empty((self.rows, 12, 2), dtype=torch.float32, device=device)
             self.lane_rows = torch.zeros((self.rows,), dtype=torch.int32, device=device)
             self.native_layer = torch.zeros((1,), dtype=torch.int32, device=device)
@@ -791,7 +795,7 @@ class OwnerBuffers:
                          cache.page_offsets.data_ptr(), state.history_generations.data_ptr(), state.kv_status.data_ptr(),
                          position.data_ptr(), live_pointer, state.slot_generation, state.history_generation,
                          state.capacity, cache.capacity, cache.page_offsets.numel(), row - first, index_owner)
-                host[row - base].copy_(torch.tensor(words, dtype=torch.int64))
+                self.descriptor_host_words[row - base] = words
         self.descriptors[:bucket].copy_(host, non_blocking=self.queries.is_cuda)
         if self.descriptor_upload is not None:
             self.descriptor_upload.record(torch.cuda.current_stream(self.queries.device))
@@ -958,6 +962,7 @@ class OwnerBuffers:
         self.retire_native()
         self.queries = self.selection = self.selections = self.partial = self.partials = self.position = None
         self.descriptors = self.descriptors_host = self.global_stats = self.lane_rows = self.native_layer = None
+        self.descriptor_host_words = None
         self.descriptor_upload = self.native_done = None
         self.native_comm = None
         self.closed, self._base_ready = True, False
