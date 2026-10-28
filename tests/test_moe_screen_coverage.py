@@ -1,5 +1,5 @@
 import pytest
-from tools.moe_screen_coverage import validate_case
+from tools.moe_screen_coverage import validate_case, validate_prepared_profile
 
 KEYS={(rows,layer) for rows in (30,31,32) for layer in range(48)}
 
@@ -44,3 +44,17 @@ def test_unsupported_rows_keep_independent_eager_authority_and_n1_baseline():
     n1={name:0 for name in ('moe_regions.frames','moe_regions.hits','moe_regions.rows_30_frames',
                               'moe_regions.rows_31_frames','moe_regions.rows_32_frames')}
     assert validate_case(1,n1,prepared_keys=KEYS)['captured_moe_replays']==0
+
+
+def test_captured_fusion_uses_its_sealed_backend_not_python_wrapper_increments():
+    profile='source-router-gdn-shared-fusion-trial'
+    ready={'sm70_profile':profile,'native_flags':{'gguf_experts_implementation':'packed_blocks2w'},
+           'shared_fusion':{'enabled':True,'banks':49,'public_count':513,'slots':11,
+                           'target_output':'float16','mtp_output':'float32'},
+           'capacity_plan':{'multi_graphs':{'moe_regions':{'numeric_profile':profile,
+               'graph_contract':'pure-moe-target-exactR-ordered-pools-v1'}}}}
+    assert validate_prepared_profile(ready)=='packed_blocks2w'
+    assert validate_case(24,delta(),prepared_keys=KEYS)['eager_target_wrapper_calls']==0
+    ready['native_flags']['gguf_experts_implementation']='packed_exact'
+    with pytest.raises(ValueError,match='Fusion backend'):
+        validate_prepared_profile(ready)

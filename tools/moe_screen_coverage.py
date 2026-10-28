@@ -50,6 +50,25 @@ def validate_case(offered, delta, *, prepared_keys):
             'scope': 'cohort readiness+decode+drain; graph replay is not a fabricated Python router call'}
 
 
+def validate_prepared_profile(ready):
+    profile = ready.get('sm70_profile')
+    if profile == 'source-router-gdn-shared-fusion-trial':
+        flags = ready.get('native_flags', {})
+        fusion = ready.get('shared_fusion', {})
+        graph = ready.get('capacity_plan', {}).get('multi_graphs', {}).get('moe_regions', {})
+        if (flags.get('gguf_experts_implementation') != 'packed_blocks2w'
+                or fusion.get('enabled') is not True or fusion.get('banks') != 49
+                or fusion.get('public_count') != 513 or fusion.get('slots') != 11
+                or fusion.get('target_output') != 'float16' or fusion.get('mtp_output') != 'float32'
+                or graph.get('numeric_profile') != profile
+                or graph.get('graph_contract') != 'pure-moe-target-exactR-ordered-pools-v1'):
+            raise ValueError('captured Fusion backend/profile/output contract is not qualified')
+        return 'packed_blocks2w'
+    if profile != 'source-batch-router-blas-trial':
+        raise ValueError('unknown captured numeric profile')
+    return 'packed_exact'
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run', type=Path, required=True)
@@ -59,6 +78,7 @@ def main():
     raw = []
     for rank in range(8):
         ready = json.loads((args.run / f'rank-{rank}-ready.json').read_text())
+        backend = validate_prepared_profile(ready)
         descriptor = ready.get('moe_capture_ledger')
         if not descriptor or descriptor['phase_records'] != 145:
             raise ValueError('required cold capture descriptor missing')
@@ -73,7 +93,8 @@ def main():
         if prepared is not None and keys != prepared:
             raise ValueError('prepared graph keyspaces differ between ranks')
         prepared = keys
-        raw.append({'rank': rank, 'sha256': descriptor['sha256'], 'phase_records': len(phases)})
+        raw.append({'rank': rank, 'sha256': descriptor['sha256'], 'phase_records': len(phases),
+                    'qualified_captured_backend': backend})
     results = []
     for offered in (1, 2, 4, 8, 16, 24):
         case = json.loads((args.run / f'fast-mtp-target-n{offered:02}.json').read_text())
