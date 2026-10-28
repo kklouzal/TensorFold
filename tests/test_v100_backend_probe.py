@@ -727,7 +727,8 @@ def test_prefix_expectation_accepts_each_explicit_distinct_packed_epoch(tmp_path
 
 @pytest.mark.parametrize("profile,expected", [(None, False), ("source-family-trial", False),
     ("source-packed-trial", False), ("source-packed-graphs-trial", True),
-    ("source-owner-pieces-trial", True)])
+    ("source-owner-pieces-trial", True), ("source-owner-target-prelude-trial", True),
+    ("source-owner-gateup-independent-trial", True)])
 def test_worker_requests_graphs_only_for_explicit_graph_profile(tmp_path, monkeypatch, profile, expected):
     from tensorfold import hub, serve_options
     from tensorfold.cuda.cohort import FAILURE_FD_ENV
@@ -757,13 +758,14 @@ def test_worker_requests_graphs_only_for_explicit_graph_profile(tmp_path, monkey
         os.close(read_fd)
 
 
-@pytest.mark.parametrize("profile", ["source-packed-graphs-trial", "source-owner-pieces-trial"])
+@pytest.mark.parametrize("profile", ["source-packed-graphs-trial", "source-owner-pieces-trial",
+                                    "source-owner-gateup-independent-trial"])
 @pytest.mark.parametrize("captured,keys,allowed", [(False, True, False), (True, False, False), (True, True, True)])
 def test_graph_trial_record_requires_actual_admitted_owner_and_reports_its_budget(captured, keys, allowed, profile):
     from tensorfold.families.qwen4_exp.cuda.multi_graphs import (
         UNIQUE_CAPTURE_CONTRACT, UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT,
     )
-    contract = (UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT if profile == "source-owner-pieces-trial"
+    contract = (UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT if profile != "source-packed-graphs-trial"
                 else UNIQUE_CAPTURE_CONTRACT)
 
     admission = {"planned_bytes": 4096, "room_bytes": 128}
@@ -1232,7 +1234,9 @@ def test_unconfigured_rank_cache_preserves_inherited_environment(tmp_path, monke
 
 
 
-def test_owner_piece_tool_intent_and_manifest_reach_real_factory_with_24_native_windows(tmp_path, monkeypatch):
+@pytest.mark.parametrize("profile", ["source-owner-pieces-trial", "source-owner-target-prelude-trial",
+                                    "source-owner-gateup-independent-trial"])
+def test_owner_piece_tool_intent_and_manifest_reach_real_factory_with_24_native_windows(tmp_path, monkeypatch, profile):
     import json
     from tensorfold import hub, serve_options
     from tensorfold.cuda.cohort import FAILURE_FD_ENV
@@ -1240,7 +1244,7 @@ def test_owner_piece_tool_intent_and_manifest_reach_real_factory_with_24_native_
     import tensorfold.families.qwen4_exp.gguf as gguf
     import tensorfold.families.qwen4_exp.cuda.engine as engine_module
 
-    monkeypatch.setenv("TENSORFOLD_SM70_PROFILE", "source-owner-pieces-trial")
+    monkeypatch.setenv("TENSORFOLD_SM70_PROFILE", profile)
     manifest = tmp_path / "execution.json"
     manifest.write_text(json.dumps({"schema": "tensorfold.execution-profile-manifest", "version": 1, "artifacts": {}}))
     args = probe.arguments(cli(tmp_path) + ["--session-ceiling", "24", "--execution-profile-manifest", str(manifest),
@@ -1253,6 +1257,7 @@ def test_owner_piece_tool_intent_and_manifest_reach_real_factory_with_24_native_
     primary = RuntimeError("stop at the real factory Engine acquisition")
     seen = []
     def constructor(directory, **options):
+        assert os.environ["TENSORFOLD_SM70_PROFILE"] == profile
         seen.append(options)
         raise primary
     monkeypatch.setattr(probe, "installed_identity", lambda _wheel: {})
@@ -1278,6 +1283,7 @@ def test_owner_piece_tool_intent_and_manifest_reach_real_factory_with_24_native_
     assert (options["max_len"], options["tp"], options["depth"], options["confidence"], options["kv_dtype"]) == (
         262144, 8, 2, .7, "int8")
     assert options["max_waiting_input_bytes"] == probe.waiting_input_credit(args)
+    assert args.requested_sm70_profile == profile
     assert args.fast_grid and args.quality_spotchecks and args.tokens == 512
     assert probe.MAX_RECEIPT_BYTES == 2424832
 

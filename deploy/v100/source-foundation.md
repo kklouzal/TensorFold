@@ -411,3 +411,9 @@ The profile uses a distinct State epoch and keeps the default unchanged.
 CPU policy/source-proof checks and explicit SM70 compilation pass. Actual
 SM70 bitwise/capture/capacity and all-six model comparisons remain pending;
 no throughput improvement is claimed.
+
+The finite backend probe forwards this explicit private profile with graph
+intent through the normal engine factory and requires the actual admitted
+native owner graph contract in its report. CPU controls cover this forwarding
+with the original24 native windows,262144 context, Q8 K/V and MTP depth2; actual
+GPU admission/capture and model performance remain separate pending gates.

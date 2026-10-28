@@ -7,7 +7,9 @@ shared array (32 bytes static shared memory in the compiled SM70 object)
 replaces no persistent tensor workspace; selected int32 function
 attributes are loaded before the physical admission baseline, and the profile
 has its own State epoch and original24-window native Q8 floor. The default
-remains unchanged. CPU policy controls, normal wholewheel source proof and
+remains unchanged. The finite probe forwards and verifies the issued owner
+graph contract through the normal engine factory for this private profile.
+CPU policy controls, normal wholewheel source proof and
 explicit SM70 compilation pass; actual SM70 bitwise, capacity and all-six
 end-to-end gates remain pending. This grants no numerical or performance
 qualification.
