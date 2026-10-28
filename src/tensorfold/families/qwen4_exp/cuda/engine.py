@@ -197,6 +197,11 @@ class FlashNextEngine:
             from .moe_region_catalogue import requested_hc
 
             self._hc_moe_region_graphs_requested = requested_hc(os.environ.get("TENSORFOLD_SM70_PROFILE", "reference"))
+        self._hc_moe_shared_pool_requested = False
+        if "TENSORFOLD_SM70_HC_MOE_SHARED_POOL" in os.environ:
+            from .moe_region_catalogue import requested_shared
+
+            self._hc_moe_shared_pool_requested = requested_shared(os.environ.get("TENSORFOLD_SM70_PROFILE", "reference"))
         self._candidate_region_graphs_requested = False
         if "TENSORFOLD_SM70_CANDIDATE_REGION_GRAPHS" in os.environ:
             from .candidate_region_catalogue import requested as candidate_regions_requested
@@ -1024,7 +1029,7 @@ class FlashNextEngine:
                 # This additional host FUTURE term survives authoritative admit;
                 # it includes capture-role host and all controlled graph metadata.
                 options["host_workspace_bytes"] = options.get("host_workspace_bytes", 0) + (
-                    tp * moe_regions_funding()["future_host_bytes_per_rank"])
+                    tp * moe_regions_funding(independent=getattr(self, "_hc_moe_shared_pool_requested", False))["future_host_bytes_per_rank"])
             if getattr(self, "_candidate_region_graphs_requested", False):
                 from .candidate_region_catalogue import funding as candidate_regions_funding
 
@@ -1474,6 +1479,7 @@ class FlashNextEngine:
             w.meta["owner_workspaces"] = owner_preparation.workspaces
         w.meta["sm70_moe_region_graphs_trial"] = getattr(self, "_moe_region_graphs_requested", False)
         w.meta["sm70_hc_moe_region_graphs_trial"] = getattr(self, "_hc_moe_region_graphs_requested", False)
+        w.meta["sm70_hc_moe_shared_pool_trial"] = getattr(self, "_hc_moe_shared_pool_requested", False)
         w.meta["sm70_candidate_region_graphs_trial"] = getattr(self, "_candidate_region_graphs_requested", False)
         if self._indexer_history_session is not None:
             w.meta.update(indexer_history="ram", indexer_history_session=self._indexer_history_session)
@@ -2179,6 +2185,8 @@ class FlashNextEngine:
                 expert_policy.append(GGUFDense.implementation)
             expert_policy.append(["private-moe-regions", getattr(self, "_moe_region_graphs_requested", False)])
             expert_policy.append(["private-hc-moe-regions", getattr(self, "_hc_moe_region_graphs_requested", False)])
+            if getattr(self, "_hc_moe_shared_pool_requested", False):
+                expert_policy.append(["private-hc-shared-pool", "hot16-independent-pool-v1"])
             expert_policy.append(["private-candidate-regions", getattr(self, "_candidate_region_graphs_requested", False)])
             proposal_policy = bool(proposal_enabled)
             context_policy = bool(context_enabled)

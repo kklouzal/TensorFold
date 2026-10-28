@@ -332,7 +332,8 @@ class RoundGraphs:
                     catalogue = getattr(self, name, None)
                     mapping = None if catalogue is None else getattr(catalogue, "pools", None)
                     if mapping is not None:
-                        pools.extend((prefix + str(key), pool) for key, pool in mapping.items())
+                        pools.extend((("moe-target-shared" if name == "moe_regions" and key == "shared"
+                                   else prefix + str(key)), pool) for key, pool in mapping.items())
                 if len({tuple(pool) for _label, pool in pools}) != len(pools):
                     raise ValueError("graph families must own disjoint allocator pools")
                 spare = []

@@ -15,7 +15,9 @@ from .capture_lifetime import host_memory as _host_memory, on_stream
 
 ENV = 'TENSORFOLD_SM70_MOE_REGION_GRAPHS'
 HC_ENV = 'TENSORFOLD_SM70_HC_MOE_REGION_GRAPHS'
+SHARED_ENV = 'TENSORFOLD_SM70_HC_MOE_SHARED_POOL'
 ROWS = (30, 31, 32)
+HOT_ROWS = (4, 5, 6, 8, 9, 10, 11, 17, 18, 19, 20, 21, 22, 30, 31, 32)
 LAYERS = 48
 HOST_ALLOWANCE = 1 << 30
 MAX_COUNT = (1 << 63) - 1
@@ -39,11 +41,26 @@ def requested_hc(profile):
     return value == '1'
 
 
-def funding(layers=LAYERS):
+def requested_shared(profile):
+    from tensorfold.cuda.sm70.execution_policy import SHARED_FUSION_TRIAL
+
+    value = os.environ.get(SHARED_ENV, '0')
+    if value not in ('0', '1'):
+        raise ValueError('private HC/MoE shared-pool choice must be0 or1')
+    if value == '1' and (profile != SHARED_FUSION_TRIAL or not requested_hc(profile)):
+        raise ValueError('private shared HC/MoE pool requires its selected fused HC catalogue')
+    return value == '1'
+
+
+def funding(layers=LAYERS, *, independent=False):
+    if type(independent) is not bool:
+        raise ValueError('shared pool funding requires an explicit boolean policy')
     if type(layers) is not int or layers != LAYERS:
         raise ValueError('private MoE catalogue requires its48-layer model')
     gpu, host = role_bytes(32, layers)
-    return {'rows': ROWS, 'maximum_graphs': layers * len(ROWS),
+    rows = HOT_ROWS if independent else ROWS
+    return {'rows': rows, 'maximum_graphs': layers * len(rows),
+            'pool_policy': ('one-independent-no-private-output-pool' if independent else 'ordered-pool-per-exact-R'),
             'capture_role_gpu_rounded_bytes': gpu, 'capture_role_host_bound_bytes': host,
             'future_host_bytes_per_rank': HOST_ALLOWANCE,
             'device_charge': 'new GPU active/pool/library bytes charged ONCE by max physical-drop/corrected-general-available-drop plus aggregate settlement; all private inactive excluded from reusable spare',
@@ -106,6 +123,7 @@ class Bindings:
                 tuple(id(layer) for layer in w.layers), w.meta.get('sm70_profile'),
                 w.meta.get('execution_provider'), w.meta.get('sm70_moe_region_graphs_trial'),
                 w.meta.get('sm70_hc_moe_region_graphs_trial'),
+                w.meta.get('sm70_hc_moe_shared_pool_trial'),
                 w.meta.get('sm70_family_trial', {}).get('numerical_policy'),
                 w.meta.get('sm70_family_trial', {}).get('experts'),
                 GGUFDense.implementation, GGUFExperts.implementation, GGUFConcat.implementation,
@@ -134,6 +152,13 @@ class Catalogue:
         self.regions, self.pools, self.measured = {}, {}, []
         self.capture_router = self.bindings = None
         self.hc = self.weights.meta.get('sm70_hc_moe_region_graphs_trial') is True
+        self.independent = self.weights.meta.get('sm70_hc_moe_shared_pool_trial') is True
+        if self.independent:
+            from tensorfold.cuda.sm70.execution_policy import SHARED_FUSION_TRIAL
+
+            if not self.hc or self.weights.meta.get('sm70_profile') != SHARED_FUSION_TRIAL:
+                raise ValueError('shared HC/MoE graph owner lacks its sealed explicit admission')
+        self.row_keys = HOT_ROWS if self.independent else ROWS
         self.pending_hc = None
         self.ready = self.closed = self.retiring = self.active = False
         self.failure = None
@@ -141,7 +166,7 @@ class Catalogue:
         self.notification = [None]
         self.rows = self.cursor = self.frames = self.hits = 0
         self.counter_overflowed = False
-        self.row_frames = {row: 0 for row in ROWS}
+        self.row_frames = {row: 0 for row in self.row_keys}
         self.frame_lock = threading.Lock()
         self.lease = False
         self.stream_id = None
@@ -149,7 +174,7 @@ class Catalogue:
         self.host_observed_peak_growth = self.host_observed_retained_growth = 0
         self.role_and_warm_bytes = 0
         self.host_preflight = self.host_final = None
-        self.plan = funding(len(self.layers))
+        self.plan = funding(len(self.layers), independent=self.independent)
         self.plan['boundary'] = 'MLP-HC-mode3+pure-MoE' if self.hc else 'pure-MoE'
 
 
@@ -226,15 +251,22 @@ class Catalogue:
             on_stream(torch.cuda, self.parent.side, prepare_role)
             self.parent.side.synchronize()
             self.role_and_warm_bytes = self._account(before, ['capture-role-and-initial-residency'])
-            for rows in ROWS:
-                self.pools[rows] = torch.cuda.graph_pool_handle()
-                for layer in self.layers:  # Fixed capture/replay order within each exactRpool.
+            if self.independent:
+                # All graph-private intermediates die in their own pure body.
+                # Only external operands survive, and the exclusive same-stream
+                # forward lease preserves complete48-layer semantic order.
+                self.pools['shared'] = torch.cuda.graph_pool_handle()
+            for rows in self.row_keys:
+                if not self.independent:
+                    self.pools[rows] = torch.cuda.graph_pool_handle()
+                pool = self.pools['shared'] if self.independent else self.pools[rows]
+                for layer in self.layers:  # Fixed48-layer replay order for every exactR cycle.
                     before = self.parent.capture_observation()
                     key = rows, layer.index
                     region = object.__new__(region_type)
                     self.regions[key] = region
                     region.__init__(self.weights, layer, self.buffers, rows, side=self.parent.side,
-                                    pool=self.pools[rows], capture_router=self.capture_router)
+                                    pool=pool, capture_router=self.capture_router)
                     region.prepare()
                     if self.hc:
                         region.replay(3, region.branch, region.injection)
@@ -274,7 +306,7 @@ class Catalogue:
     def begin(self, weights, buffers, rows):
         if not self.ready or self.closed or self.retiring or self.failure is not None:
             raise RuntimeError('MoE graph catalogue is not reusable') from self.failure
-        if rows not in ROWS:
+        if rows not in self.row_keys:
             return False
         if not self.parent.admitted:
             raise RuntimeError('MoE graph catalogue has not passed aggregate physical admission')
@@ -386,9 +418,10 @@ class Catalogue:
     def record(self, *, detail=False):
         row_charges = {row: sum(item['charged_bytes'] for item in self.measured
                                if len(item['key']) > 2 and item['key'][1] == 'target' and item['key'][2] == row)
-                       for row in ROWS}
+                       for row in self.row_keys}
         return {'enabled': True, 'numeric_profile': self.weights.meta.get('sm70_profile'),
-                'graph_contract': ('mlp-hc-mode3-moe-target-exactR-ordered-pools-v1' if self.hc else 'pure-moe-target-exactR-ordered-pools-v1'), 'rows': ROWS, 'graphs': len(self.regions), 'frames': None if self.counter_overflowed else self.frames,
+                'graph_contract': ('mlp-hc-mode3-moe-hot16-independent-pool-v1' if self.independent else
+                    'mlp-hc-mode3-moe-target-exactR-ordered-pools-v1' if self.hc else 'pure-moe-target-exactR-ordered-pools-v1'), 'rows': self.row_keys, 'graphs': len(self.regions), 'frames': None if self.counter_overflowed else self.frames,
                 'replays': None if self.counter_overflowed else self.hits,
                 'row_frames': None if self.counter_overflowed else dict(self.row_frames), 'funding': self.plan,
                 'capture_role_and_initial_residency_charge_bytes': self.role_and_warm_bytes,

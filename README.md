@@ -1,5 +1,19 @@
 # TensorFold fork
 
+A separate unqualified hot-row candidate uses one HC/MoE private pool for
+exact rows4,5,6,8,9,10,11,17–22,30–32 (768 target graph keys). The private
+`TENSORFOLD_SM70_HC_MOE_SHARED_POOL=1` requires the selected fused HC/MoE
+profile and both existing catalogue opt-ins. Rows1–3 stay outside this catalogue,
+preserving N1-piece participation; other rows retain their original path. Every graph-private
+intermediate is consumed within its own pure region; externally prepaid
+operands and48-layer cycle/stream/lease authority remain unchanged. The single
+HC pool is owned/accounted once and remains disjoint from N1 and candidate
+pools. An unchanged-application IQ18/20 one-pool oracle passed192 keys and384
+strict replays; that test configuration does not prove Engine admission or
+performance. This expansion retains the inclusive host operating allowance and
+actual aggregate GPU charging before the24-Q8-window floor. Current hot16
+Engine capacity, output quality and all-six throughput remain unqualified.
+
 The isolated HC/MoE successor extends the existing target exactR30/31/32
 catalogue upstream only to the MLP-HC mode3 cut after its preceding collective.
 `TENSORFOLD_SM70_HC_MOE_REGION_GRAPHS=1` requires the existing private MoE
