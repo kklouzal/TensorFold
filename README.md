@@ -5,7 +5,9 @@ scales and retained IQ3_XXS/IQ2_S gate/up plus cropped IQ4_NL down weights.
 It changes activation precision, the current coefficient FP16-rounding boundary
 and reduction order. It has no Engine/model enrollment; kernel, status/lifetime
 and later model-quality/resource gates remain pending. Existing defaults and
-shared/unsupported/MTP exact paths are retained.
+shared/unsupported/MTP exact paths are retained. Graph preparation and retirement
+failures latch the standalone owners against reuse; uncertain retirement retains
+the original bindings. Foreign or nested capture is refused.
 
 The private router/GDN/startup composition retains the explicit experimental
 router numerical epoch and adds the existing sealed FP16 State-batched GDN

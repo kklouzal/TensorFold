@@ -73,6 +73,7 @@ class Prototype:
         self.device = x.device
         self.stream = torch.cuda.current_stream(self.device)
         self.closed, self.failed, self.graph_owner = False, None, None
+        self.retiring = False
         self.exact_only = not eligible(bank, role)
         self.qx = self.qh = self.gate = self.up = self.hidden = self.status = None
         if not self.exact_only:
@@ -96,7 +97,8 @@ class Prototype:
                        bank.gate.n, bank.gate.k, bank.up.n, bank.up.k, bank.down.n, bank.down.k)
 
     def _validate(self):
-        if self.closed or self.failed is not None:
+        if (self.closed or self.retiring or self.failed is not None
+                or self.graph_owner is not None and self.graph_owner.state in ("retiring", "failed")):
             raise RuntimeError("prototype is closed or has uncertain native lifetime") from self.failed
         if torch.cuda.current_stream(self.device) != self.stream:
             raise RuntimeError("prototype requires its original serialized CUDA stream")
@@ -136,7 +138,8 @@ class Prototype:
 
     def run(self):
         self._validate()
-        if torch.cuda.is_current_stream_capturing() and self.graph_owner is None:
+        if torch.cuda.is_current_stream_capturing() and not (
+                self.graph_owner is not None and self.graph_owner.state == "capturing"):
             raise RuntimeError("prototype capture needs its explicit graph borrower")
         try:
             return self._run()
@@ -148,13 +151,20 @@ class Prototype:
         self._validate()
         if self.graph_owner is not None:
             raise RuntimeError("close graph borrower before cold status recovery")
-        self.stream.synchronize()
-        if self.status is not None:
-            self.status.zero_()
+        if torch.cuda.is_current_stream_capturing():
+            raise RuntimeError("cold recovery refuses CUDA capture")
+        try:
+            self.stream.synchronize()
+            if self.status is not None:
+                self.status.zero_()
+        except BaseException as error:
+            self.failed = error
+            raise
 
     def capture(self):
         self._validate()
-        if self.graph_owner is not None or self.stream.cuda_stream == 0:
+        if (self.graph_owner is not None or self.stream.cuda_stream == 0
+                or torch.cuda.is_current_stream_capturing()):
             raise RuntimeError("one graph borrower requires a preselected nondefault construction stream")
         graph = Graph(self)
         self.graph_owner = graph  # Retain uncertain accepted capture before any native graph operation.
@@ -166,7 +176,14 @@ class Prototype:
             return
         if self.graph_owner is not None:
             raise RuntimeError("prototype graph borrower must close first")
-        self.stream.synchronize()
+        if torch.cuda.is_current_stream_capturing():
+            raise RuntimeError("prototype close refuses CUDA capture")
+        self.retiring = True  # Latch before fallible retirement; retain bindings on failure.
+        try:
+            self.stream.synchronize()
+        except BaseException as error:
+            self.failed = error
+            raise
         self.closed = True
         self.bank = self.x = self.picks = self.out = None
         self.bindings = self.weights = self.weight_bindings = self.scratch = ()
@@ -177,41 +194,72 @@ class Graph:
     def __init__(self, owner):
         self.owner, self.graph = owner, None
         self.closed = False
+        self.state = "new"
+        self.failed = None
         self.capture_errors = [None]
 
+    def _fail(self, error):
+        self.state = "failed"
+        self.failed = error
+        if self.owner.failed is None:
+            self.owner.failed = error
+
     def prepare(self):
-        self.owner.run()
-        self.owner.stream.synchronize()
-        self.graph = torch.cuda.CUDAGraph()
-        primary = None
-        self.graph.capture_begin(capture_error_mode="thread_local")
+        if self.state != "new" or torch.cuda.is_current_stream_capturing():
+            raise RuntimeError("graph prepare requires a new borrower outside CUDA capture")
+        self.state = "preparing"
         try:
             self.owner.run()
+            self.owner.stream.synchronize()
+            self.graph = torch.cuda.CUDAGraph()
+            self.graph.capture_begin(capture_error_mode="thread_local")
+            self.state = "capturing"  # Only this successfully begun region permits owner.run.
+            primary = None
+            try:
+                self.owner.run()
+            except BaseException as error:
+                primary = error
+            try:
+                self.graph.capture_end()
+            except BaseException as error:
+                self.capture_errors[0] = error
+            if self.capture_errors[0] is not None:
+                raise_failures(primary, self.capture_errors)
+            if primary is not None:
+                raise primary
         except BaseException as error:
-            primary = error
-        try:
-            self.graph.capture_end()
-        except BaseException as error:
-            self.capture_errors[0] = error
-        if self.capture_errors[0] is not None:
-            raise_failures(primary, self.capture_errors)
-        if primary is not None:
-            raise primary
+            self._fail(error)
+            raise
+        self.state = "prepared"
 
     def replay(self):
-        if self.closed:
-            raise RuntimeError("prototype graph is closed")
+        if self.state != "prepared":
+            raise RuntimeError("prototype graph is not prepared or has uncertain lifetime") from self.failed
         self.owner._validate()
-        self.graph.replay()
+        if torch.cuda.is_current_stream_capturing():
+            raise RuntimeError("prototype graph replay refuses foreign CUDA capture")
+        try:
+            self.graph.replay()
+        except BaseException as error:
+            self._fail(error)
+            raise
         return self.owner.out
 
     def close(self):
         if self.closed:
             return
-        self.owner.stream.synchronize()
-        if self.graph is not None:
-            self.graph.reset()
+        if torch.cuda.is_current_stream_capturing():
+            raise RuntimeError("prototype graph close refuses CUDA capture")
+        self.state = "retiring"  # No replay while a fallible fence/reset is outstanding.
+        try:
+            self.owner.stream.synchronize()
+            if self.graph is not None:
+                self.graph.reset()
+        except BaseException as error:
+            self._fail(error)  # Strong owner and graph remain retained after uncertain retirement.
+            raise
         self.graph = None
         self.owner.graph_owner = None
         self.owner = None
         self.closed = True
+        self.state = "closed"

@@ -132,3 +132,141 @@ def test_retained_packed_metadata_change_refuses_reuse(monkeypatch):
     with pytest.raises(RuntimeError,match="layout"):
         owner.run()
     owner.close()
+
+
+def fake_graph(monkeypatch, log):
+    graph = NS(capture_begin=lambda **_: log.append("begin"),
+               capture_end=lambda: log.append("end"), replay=lambda: log.append("replay"),
+               reset=lambda: log.append("reset"))
+    monkeypatch.setattr(torch.cuda, "CUDAGraph", lambda: graph)
+    return graph
+
+
+def fail(error):
+    def operation(*_args, **_kwargs):
+        raise error
+    return operation
+
+
+@pytest.mark.parametrize("operation", ["capture_begin", "capture_end"])
+def test_prepare_native_failure_latches_both_owners(monkeypatch, operation):
+    owner, log, _stream, _backend = setup(monkeypatch)
+    graph = fake_graph(monkeypatch, log)
+    error = OSError(operation)
+    setattr(graph, operation, fail(error))
+    with pytest.raises(OSError) as caught:
+        owner.capture()
+    assert caught.value is error
+    borrower = owner.graph_owner
+    assert borrower.state == "failed" and borrower.owner is owner and owner.failed is error
+    with pytest.raises(RuntimeError, match="not prepared"):
+        borrower.replay()
+    with pytest.raises(RuntimeError, match="uncertain"):
+        owner.run()
+    with pytest.raises(RuntimeError, match="new borrower"):
+        borrower.prepare()
+    borrower.close()
+    owner.close()
+
+
+@pytest.mark.parametrize("operation", ["fence", "reset"])
+def test_graph_failed_retirement_retains_and_poisons(monkeypatch, operation):
+    owner, log, stream, _backend = setup(monkeypatch)
+    graph = fake_graph(monkeypatch, log)
+    borrower = owner.capture()
+    error = OSError(operation)
+    def retire_fault():
+        assert borrower.state == "retiring"
+        with pytest.raises(RuntimeError, match="uncertain"):
+            owner.run()
+        with pytest.raises(RuntimeError, match="not prepared"):
+            borrower.replay()
+        raise error
+
+    if operation == "fence":
+        stream.synchronize = retire_fault
+    else:
+        graph.reset = retire_fault
+    with pytest.raises(OSError) as caught:
+        borrower.close()
+    assert caught.value is error and borrower.owner is owner and borrower.graph is graph
+    assert owner.graph_owner is borrower and borrower.state == "failed" and not borrower.closed
+    with pytest.raises(RuntimeError, match="not prepared"):
+        borrower.replay()
+    with pytest.raises(RuntimeError, match="uncertain"):
+        owner.run()
+    stream.synchronize = lambda: log.append("recovered-fence")
+    graph.reset = lambda: log.append("recovered-reset")
+    borrower.close()
+    owner.close()
+    assert borrower.closed and owner.closed
+
+
+@pytest.mark.parametrize("operation", ["close", "reset_after_fence"])
+def test_owner_failed_fence_blocks_reuse_and_retains(monkeypatch, operation):
+    owner, log, stream, _backend = setup(monkeypatch)
+    original = owner.bindings
+    error = OSError(operation)
+    stream.synchronize = fail(error)
+    with pytest.raises(OSError) as caught:
+        getattr(owner, operation)()
+    assert caught.value is error and owner.bindings is original and not owner.closed
+    with pytest.raises(RuntimeError, match="uncertain"):
+        owner.run()
+    with pytest.raises(RuntimeError, match="uncertain"):
+        owner.capture()
+    stream.synchronize = lambda: log.append("recovered-fence")
+    owner.close()
+    assert owner.closed
+
+
+def test_foreign_capture_refused_before_borrower_publication(monkeypatch):
+    owner, log, _stream, _backend = setup(monkeypatch)
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: True)
+    with pytest.raises(RuntimeError, match="borrower"):
+        owner.capture()
+    assert owner.graph_owner is None and log == []
+    with pytest.raises(RuntimeError, match="explicit graph"):
+        owner.run()
+    with pytest.raises(RuntimeError, match="capture"):
+        owner.close()
+
+
+def test_only_owned_active_capture_accepts_run(monkeypatch):
+    owner, log, _stream, _backend = setup(monkeypatch)
+    graph = fake_graph(monkeypatch, log)
+    capturing = [False]
+    monkeypatch.setattr(torch.cuda, "is_current_stream_capturing", lambda: capturing[0])
+    graph.capture_begin = lambda **_: capturing.__setitem__(0, True)
+    graph.capture_end = lambda: capturing.__setitem__(0, False)
+    borrower = owner.capture()
+    assert borrower.state == "prepared" and owner.failed is None
+    capturing[0] = True
+    with pytest.raises(RuntimeError, match="foreign"):
+        borrower.replay()
+    with pytest.raises(RuntimeError, match="explicit graph"):
+        owner.run()
+    with pytest.raises(RuntimeError, match="borrower"):
+        owner.capture()
+    with pytest.raises(RuntimeError, match="capture"):
+        borrower.close()
+    assert borrower.state == "prepared"
+    capturing[0] = False
+    borrower.replay()
+    borrower.close()
+    owner.close()
+
+
+def test_replay_failure_poison_blocks_owner_run(monkeypatch):
+    owner, log, _stream, _backend = setup(monkeypatch)
+    graph = fake_graph(monkeypatch, log)
+    borrower = owner.capture()
+    error = OSError("replay")
+    graph.replay = fail(error)
+    with pytest.raises(OSError) as caught:
+        borrower.replay()
+    assert caught.value is error and borrower.failed is error and owner.failed is error
+    with pytest.raises(RuntimeError, match="uncertain"):
+        owner.run()
+    borrower.close()
+    owner.close()
