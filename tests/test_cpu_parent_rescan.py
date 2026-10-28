@@ -28,8 +28,7 @@ def event(name, ts, dur, *, cat="cpu_op", tid=1, correlation=None):
 def run_actual(tmp_path, helpers, events):
     path = tmp_path / "trace.json"
     path.write_text(json.dumps({"baseTimeNanoseconds": 17, "traceEvents": events}))
-    stream = helpers.Stream(path)
-    result = scan.scan(stream, helpers, 105, 190)
+    result, stream = scan.scan(path, helpers, 105, 190)
     assert stream.file.closed
     return result
 
@@ -84,10 +83,17 @@ def test_event_cap_refuses_without_truncation_and_retires_file(tmp_path, helpers
     monkeypatch.setattr(scan, "MAX_ROWS", 1)
     path = tmp_path / "trace.json"
     path.write_text(json.dumps({"traceEvents": [event("a", 110, 1), event("b", 112, 1)]}))
-    stream = helpers.Stream(path)
+    owners = []
+    original = helpers.Stream.__init__
+
+    def observed(owner, source):
+        original(owner, source)
+        owners.append(owner)
+
+    monkeypatch.setattr(helpers.Stream, "__init__", observed)
     with pytest.raises(ValueError, match="events exceed"):
-        scan.scan(stream, helpers, 105, 190)
-    assert stream.file.closed
+        scan.scan(path, helpers, 105, 190)
+    assert len(owners) == 1 and owners[0].file.closed
 
 
 def test_actual_scan_preserves_primary_and_native_roots_on_close_failure(helpers):
@@ -98,13 +104,14 @@ def test_actual_scan_preserves_primary_and_native_roots_on_close_failure(helpers
     primary.__cause__, primary.__context__ = cause, context
 
     class Stream:
-        file = NS(close=lambda: (_ for _ in ()).throw(secondary))
+        def __init__(self, _path):
+            self.file = NS(close=lambda: (_ for _ in ()).throw(secondary))
 
         def events(self, _header):
             raise primary
 
     with pytest.raises(ValueError) as caught:
-        scan.scan(Stream(), helpers, 105, 190)
+        scan.scan(Path("unused"), NS(Stream=Stream, timelines=helpers.timelines, phase_at=helpers.phase_at), 105, 190)
     assert caught.value is primary
     assert all(retained_failure(primary, e) for e in (secondary, cause, context))
 
@@ -164,3 +171,40 @@ def test_actual_current_capture_metadata_and_closed_core_before_rescan(tmp_path)
     (folder / "window-definition.json").write_text(json.dumps(changed))
     with pytest.raises(ValueError, match="core differs from closed"):
         scan.capture_context(tmp_path)
+
+
+def test_actual_scan_setup_memoryerror_happens_before_any_file_open(tmp_path, helpers, monkeypatch):
+    primary = MemoryError("setup")
+    opened = []
+    original = helpers.Stream.__init__
+
+    def observe(owner, path):
+        opened.append(path)
+        original(owner, path)
+
+    def fail_setup(*_args):
+        raise primary
+
+    monkeypatch.setattr(helpers.Stream, "__init__", observe)
+    monkeypatch.setattr(scan, "defaultdict", fail_setup)
+    with pytest.raises(MemoryError) as caught:
+        scan.scan(tmp_path / "not-opened", helpers, 105, 190)
+    assert caught.value is primary and opened == []
+
+
+def test_actual_stream_constructor_fault_after_open_retires_file(tmp_path, helpers, monkeypatch):
+    path = tmp_path / "trace.json"
+    path.write_text('{"traceEvents":[]}')
+    primary = MemoryError("after open")
+    owners = []
+    original = helpers.Stream.__init__
+
+    def fail(owner, source):
+        original(owner, source)
+        owners.append(owner)
+        raise primary
+
+    monkeypatch.setattr(helpers.Stream, "__init__", fail)
+    with pytest.raises(MemoryError) as caught:
+        scan.scan(path, helpers, 105, 190)
+    assert caught.value is primary and len(owners) == 1 and owners[0].file.closed

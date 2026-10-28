@@ -101,12 +101,17 @@ def capture_context(root):
     return folder / "rank-0-trace.json", rank0, definition, start, end
 
 
-def scan(stream, helpers, start, end):
+def scan(path, helpers, start, end):
     """Owned close, one record->one parent; raw event ordering need not be sorted."""
     primary, close_failures = None, [None]
     ranges, events, names, runtime_ids = defaultdict(list), [], {}, set()
     header, range_count = {}, 0
+    # All setup and the owned file slot exist before acquisition. Constructor
+    # failures after opening are inside the same primary-preserving close.
+    stream = object.__new__(helpers.Stream)
+    stream.file = None
     try:
+        helpers.Stream.__init__(stream, path)
 
         def name_key(value):
             if type(value) is not str or len(value) > MAX_NAME_CHARS:
@@ -188,11 +193,12 @@ def scan(stream, helpers, start, end):
         primary = error
     finally:
         try:
-            stream.file.close()
+            if stream.file is not None:
+                stream.file.close()
         except BaseException as error:
             close_failures[0] = error
     finish(primary, close_failures)
-    return result
+    return result, stream
 
 
 def finish(primary, failures):
@@ -234,8 +240,7 @@ def main():
     helpers = trusted_helpers(args.root / "analysis-tools/analyze_traces.py")
     path, profile, definition, start, end = capture_context(args.root)
     before, begun = path.stat(), time.monotonic()
-    stream = helpers.Stream(path)
-    report = scan(stream, helpers, start, end)
+    report, stream = scan(path, helpers, start, end)
     after = path.stat()
     if (before.st_ino, before.st_size, before.st_mtime_ns) != (after.st_ino, after.st_size, after.st_mtime_ns):
         raise ValueError("raw trace changed during selected rescan")
