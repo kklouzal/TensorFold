@@ -15,6 +15,7 @@ pytestmark=pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_de
                             reason='actual SM70 capture component')
 
 
+@torch.inference_mode()
 def test_actual513_router_11slots_r32_pure_region_replay_preserves_original_bits(monkeypatch):
     # Owned synthetic packed bank; independent native arithmetic controls remain
     # unchanged. This oracle isolates capture/replay/input/route ownership.
