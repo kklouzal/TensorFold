@@ -18,6 +18,13 @@ candidate clone/top32/ID-cast/logsumexp packet construction. NCCL, codec-status
 validation and sampling remain outside. It is not enrolled in serving and has
 no CLI flag or performance claim. CPU lifecycle and actual SM70 packet-bit
 oracles are required before catalogue funding and model integration.
+The earlier component wheel `3ef89234` passed four exact-packet controls on an
+actual V100 in2.18s: target/shared-MTP shard width31040 plus separate odd/pruned
+generic cases. This successor adds a private target/MTP exactR1..32 catalogue
+leaf with one independent-inference shared pool and an additive1GiB/rank host
+operating allowance. It requires the integrating RoundGraphs owner to fund all
+GPU pool/driver allocations before admission. Engine enrollment and actual
+catalogue/model checks remain pending; no capacity or performance gain is claimed.
 
 The private router/GDN/startup composition retains the explicit experimental
 router numerical epoch and adds the existing sealed FP16 State-batched GDN
