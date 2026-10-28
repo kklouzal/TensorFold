@@ -59,7 +59,7 @@ class Qwen27Engine:
         from tensorfold.cuda.capacity import admit, config, gather_ints, total_bytes, unified
         from tensorfold.cuda.geometry import (draft_geometry, gdn_geometry, prompt_row_bytes, prompt_rows,
                                               stream_geometry)
-        from .affine_memory import draft_weights, weight_transform
+        from .affine_memory import draft_head_copy, draft_weights, weight_transform
         from tensorfold.vision.qwen_cuda import capacity_geometry, weight_transform as vision_weights
 
         self.torch = torch
@@ -120,7 +120,8 @@ class Qwen27Engine:
                                    rank=rank, world=tp, gather=gather,
                                    weight_estimator=weight_estimator,
                                    draft_dir=draft_dir if rank == 0 or tp_draft else None,
-                                   draft_weights=draft_weights,
+                                   draft_weights=(partial(draft_weights, head_copy=draft_head_copy(model_dir))
+                                                  if nvfp4 and draft_dir is not None else draft_weights),
                                    draft_geometry=lambda text: draft_geometry(text, tp if tp_draft else 1, max_rows,
                                                                               bounded=True, streams=streams,
                                                                               kept=keep + 1 if many else 0),

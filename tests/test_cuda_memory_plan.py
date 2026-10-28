@@ -3,9 +3,9 @@
 import pytest
 
 from tensorfold.cuda import capacity, geometry
-from tensorfold.families.qwen3_5.cuda.affine_memory import draft_bytes, draft_weights, weight_transform
+from tensorfold.families.qwen3_5.cuda.affine_memory import draft_bytes, draft_head_copy, draft_weights, weight_transform
 
-from cuda_27b_headers import TEXT, drafter, target
+from cuda_27b_headers import TEXT, _write, drafter, target
 
 GIB = capacity.GIB
 HEAD = 248320 * 640 * 4 + 2 * 248320 * 80 * 2          # the 4-bit head: words, scales and biases
@@ -82,3 +82,22 @@ def test_twelve_rows_bound_the_scratch_and_a_prompt_chunk_shares_it():
     replay = 48 * (128 - 12) * (16480 * 2 + 16 * 128 * 4 + 48 * 128 * 4 + 48 * 8) + 32 * (128 - 12) * 2560 * 4
     assert wide.bytes_at(4108) - verify.bytes_at(4108) >= replay + 16 * (128 - 12) * extent * 4
     assert prompt.bytes_at(4108) - verify.bytes_at(4108) == 2048 * 360448 - 16 * 12 * extent * 4
+
+
+def test_the_drafter_counts_its_fp8_copy_of_an_nvfp4_checkpoints_bf16_head(model, tmp_path):
+    """DFlash2 scores wide rounds on an FP8 copy of a bf16 head (an NVFP4 checkpoint's, e.g. AEON's): admission
+    counts the copy with the drafter; a head the drafter reads as the target holds it (NVFP4 codes) adds nothing."""
+
+    pytest.importorskip("torch")
+    from tensorfold.cuda import requant
+
+    bf16 = _write(tmp_path / "bf16", TEXT, [("lm_head.weight", "BF16", [248320, 5120])])
+    codes = _write(tmp_path / "codes", TEXT, [("lm_head.weight", "U8", [248320, 2560])])
+    copy = draft_head_copy(bf16)
+    assert copy == (requant.resident_bytes("fp8", 248320, 5120), requant.staging_bytes("fp8", 248320, 5120))
+    assert copy[0] == 248320 * 5120 + 248320 * 4                   # E4M3 codes and an FP32 scale an output row
+    assert draft_head_copy(codes) == (0, 0)
+    _, draft = model
+    alone, with_copy = draft_weights(draft), draft_weights(draft, head_copy=copy)
+    assert with_copy.resident == alone.resident + copy[0]
+    assert with_copy.staging == max(alone.staging, copy[1]) and with_copy.mapped == alone.mapped

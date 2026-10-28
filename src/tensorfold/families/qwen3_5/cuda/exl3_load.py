@@ -257,7 +257,9 @@ def _storage_estimate(header, text, parse_group, itemsize, original_host_staging
     if with_drafter:
         head = groups["lm_head"]
         vocab = int(text["vocab_size"])
-        spans = tuple((a, min(b, vocab)) for a, b in ((0, 98304), (248032, 248320)) if a < vocab)
+        from .draft_tree import HOT_SPANS
+
+        spans = tuple((a, min(b, vocab)) for a, b in HOT_SPANS if a < vocab)
         blocks = sorted({b for a, end in spans for b in range(a // 128, -(-end // 128))})
         count = len(blocks) * 128
         picked = sum(end - a for a, end in spans)

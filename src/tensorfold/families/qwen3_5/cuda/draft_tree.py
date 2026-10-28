@@ -11,6 +11,17 @@ from tensorfold.engine.exact_sampling import Sampling, uniform_rows
 # the Metal engine's values; the target's keyed Gumbel noise is known ahead, so ``noise`` weighs it into draft scores
 POLICY = {"edge": 0.6, "noise": 0.7, "scale": 1.5, "branch": 4, "nucleus": False}
 
+# The drafter's fast head rows: the token ids most English, code and CJK text uses (the vocabulary's first 98,304 ids
+# and its control tokens). A round whose pending token lies outside them scores the whole vocabulary (one GPU), so
+# Devanagari, Thai or Arabic text drafts too. Proposals only: the target verifies every token.
+HOT_SPANS = ((0, 98304), (248032, 248320))
+
+
+def hot(token: int, spans: tuple[tuple[int, int], ...] = HOT_SPANS) -> bool:
+    """Whether ``token`` lies in the drafter's fast head rows."""
+
+    return any(a <= token < b for a, b in spans)
+
 
 def best_first(cands: np.ndarray, unary: np.ndarray, projected: np.ndarray,
                pred: np.ndarray, succ: np.ndarray, anchor: int, max_nodes: int,

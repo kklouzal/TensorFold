@@ -64,15 +64,31 @@ def packed_draft(name: str, shape) -> bool:
             and shape[0] * shape[1] >= 1 << 20)
 
 
-def draft_weights(draft_dir):
-    """Drafter storage and packing overlap, including retained affine64 group metadata."""
+def draft_weights(draft_dir, *, head_copy: tuple[int, int] = (0, 0)):
+    """Drafter storage and packing overlap, including retained affine64 group metadata, plus ``head_copy``: the
+    resident and staging bytes of the drafter's own copy of the target's head (``draft_head_copy``)."""
 
     from tensorfold.cuda.capacity import Weights, estimate_weights, headers
 
     held = estimate_weights(draft_dir, draft_bytes)
     largest = max((math.prod(info["shape"]) for name, info in headers(draft_dir).items()
                    if packed_draft(name, info["shape"])), default=0)
-    return Weights(held.resident, max(held.staging, 14 * largest + 20 * (largest // 64)), held.mapped)
+    return Weights(held.resident + head_copy[0], max(held.staging, 14 * largest + 20 * (largest // 64), head_copy[1]),
+                   held.mapped)
+
+
+def draft_head_copy(model_dir) -> tuple[int, int]:
+    """Resident and staging bytes of the FP8 copy ``DFlash2`` makes of an NVFP4 checkpoint's bf16 head (rounds that
+    leave the fast rows score the whole vocabulary on it); nothing for a head it reads as the target holds it."""
+
+    from tensorfold.cuda.capacity import headers
+    from tensorfold.cuda.requant import resident_bytes, staging_bytes
+
+    info = headers(Path(model_dir)).get("lm_head.weight")
+    if info is None or info["dtype"] not in ("BF16", "F16", "F32"):
+        return 0, 0
+    n, k = (int(x) for x in info["shape"])
+    return resident_bytes("fp8", n, k), staging_bytes("fp8", n, k)
 
 
 def draft_bytes(name: str, info: dict) -> tuple[int, int]:
