@@ -1597,6 +1597,21 @@ Baseline and candidates must use the same funding leaf, prompts, cache schedule
 and instrumentation. Actual GPU, matched performance, quality and the85-token/s
 single-request objective remain unverified by this source increment.
 
+Optional `--quality-spotchecks` requires the concurrency grid and a funded output
+allowance of at least320 tokens. After the unchanged timed grid, it runs six
+fixed math, retrieval, logic, instruction, JSON and code-output checks in the
+same loaded engine and real request owner. Each uses the existing greedy sampler
+and a320-token allowance with ordinary EOS handling; `--serial-reference` also
+checks the serial answer. Expected answers are independent of either model path.
+The prompts specify exact answer formats, including minified JSON, and only outer
+whitespace is ignored. All eight performance/quality prompts are prepared before
+admission within the existing24 input-owner envelope; static oracle/control
+payload is explicitly charged. Unique case receipts retain raw text, token IDs,
+prompt hashes, model/run identities and objective differences, including failed
+answers. Mismatches fail the quality gate after all semantic checks finish;
+quality jobs are excluded from performance metrics. These are initial spot
+checks, not broad model-quality qualification or token-identity requirements.
+
 The finite diagnostic tool `tools/v100_backend_probe.py` records worker process
 IDs. When the installed supervisor exposes exit reporting, its final receipt
 includes the reason, observed child statuses and final return codes; older

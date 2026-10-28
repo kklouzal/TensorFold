@@ -127,6 +127,8 @@ def arguments(argv=None):
                         help="private cached FAMILY trial: require cold first MTP and maximal legal prefix on later identical prompts")
     parser.add_argument("--concurrency-grid", action="store_true",
                         help="finite burst measurement at1,2,4,8,16,24; short bringup then >=256 committed-token overlap per request; EOS unchanged")
+    parser.add_argument("--quality-spotchecks", action="store_true",
+                        help="after the unchanged concurrency grid, run six fixed independent answer/format checks with320-token allowances; requires grid and --tokens>=320")
     parser.add_argument("--thinking", action="store_true", help="pass enable_thinking=True to the unchanged target template")
     parser.add_argument("--serial-reference", action="store_true", help="also run a separately labeled draft=False reply with MTP loaded")
     parser.add_argument("--rank", type=int, help=argparse.SUPPRESS)
@@ -142,6 +144,8 @@ def arguments(argv=None):
         parser.error("--repetitions must be 1..16")
     if args.concurrency_grid and (args.tokens < 256 or args.expect_prefix_reuse):
         parser.error("--concurrency-grid requires --tokens256..512 and cannot impose sequential prefix-reuse assertions")
+    if args.quality_spotchecks and (not args.concurrency_grid or args.tokens < 320):
+        parser.error("--quality-spotchecks requires --concurrency-grid and --tokens>=320 for the declared caller funding")
     if args.expect_prefix_reuse and args.repetitions < 2:
         parser.error("--expect-prefix-reuse requires at least2 repetitions")
     if (not 1 <= args.master_port <= 65535 or not math.isfinite(args.timeout_seconds)
@@ -410,6 +414,44 @@ def waiting_input_credit(args):
     return concurrency_module().input_credit(CONTEXT) if getattr(args, "concurrency_grid", False) else INPUT_CREDIT
 
 
+def run_quality_spotchecks(engine, tokenizer, args, report, limit, prepared, quality):
+    """Reuse the admitted owner; keep one raw reply and write every mismatch."""
+    status = report["quality"]
+    for case_id, tokens, prompt in prepared:
+        for draft in ((True, False) if args.serial_reference else (True,)):
+            mode = "mtp-target" if draft else "serial-reference"
+            row = {"case_id": case_id, "prompt": prompt,
+                "prompt_sha256": hashlib.sha256(prompt["rendered"].encode("utf-8")).hexdigest(),
+                "source_prompt_sha256": hashlib.sha256(prompt["messages"][0]["content"].encode("utf-8")).hexdigest(),
+                "model_identity": status["model_identity"], "dataset": quality.VERSION,
+                "quality_helper_sha256": status["helper_sha256"],
+                "max_tokens": quality.OUTPUT_TOKENS, "stop_eos": True,
+                "quality": {"passed": False, "assessment_complete": False},
+                "measurement_role": "quality spotcheck; excluded from performance metrics"}
+            primary, diagnostics = None, [None]
+            try:
+                generate_reply(engine, tokenizer, tokens, count=quality.OUTPUT_TOKENS, draft=draft,
+                               limit=limit, result=row)
+                row["quality"] = quality.assess(case_id, row["text"])
+            except BaseException as error:
+                primary = error
+            try:
+                # Raw text/IDs also persist on generation or oracle failure.
+                write_report(args.out / f"quality-{case_id}-{mode}.json", row, allowance=MAX_RECEIPT_BYTES)
+            except BaseException as diagnostic:
+                diagnostics[0] = diagnostic
+            finish_failures(primary, diagnostics)
+            status["completed_requests"] += 1
+            status["failed_requests"] += not row["quality"]["passed"]
+            status["last_result"] = {"case_id": case_id, "draft": draft, "passed": row["quality"]["passed"]}
+            row = None  # No previous result graph survives the next generation.
+            write_report(args.out / "progress.json", report, allowance=LEADER_RECEIPT_BYTES)
+    status["passed"] = status["failed_requests"] == 0
+    write_report(args.out / "quality-summary.json", status, allowance=LEADER_RECEIPT_BYTES)
+    if not status["passed"]:
+        raise ValueError("fixed quality spot checks failed; all raw answers and differences were retained")
+
+
 def run_concurrency_leader(engine, tokenizer, args, report):
     """One physical envelope and real logical cap; no fake HTTP or runtime patch."""
     from types import SimpleNamespace
@@ -423,11 +465,38 @@ def run_concurrency_leader(engine, tokenizer, args, report):
     for label, prompt in (("bringup", args.prompt), ("sustained", finite.SUSTAINED_PROMPT)):
         tokens, receipt = prepared_prompt(engine, tokenizer, SimpleNamespace(prompt=prompt, thinking=args.thinking))
         prepared.append((label, tokens, receipt))
+    quality, quality_prepared, quality_control = None, None, 0
+    if getattr(args, "quality_spotchecks", False):
+        if __package__:
+            from . import finite_quality as quality
+        else:
+            import finite_quality as quality
+        quality_prepared = []
+        for case_id, prompt, _expected in quality.CASES:
+            tokens, receipt = prepared_prompt(engine, tokenizer, SimpleNamespace(prompt=prompt, thinking=args.thinking))
+            quality_prepared.append((case_id, tokens, receipt))
+        if len(prepared) + len(quality_prepared) > finite.MAXIMUM:
+            raise ValueError("prepared quality/performance ID owners exceed the funded24-owner envelope")
+        quality_control = (quality.control_payload_bytes() + sys.getsizeof(quality_prepared)
+                           + sum(sys.getsizeof(row) for row in quality_prepared))
+        report["quality"] = {"dataset": quality.VERSION, "helper_sha256": digest(quality.__file__),
+            "prepared_prompts": [receipt for _, _, receipt in quality_prepared],
+            "prepared_input_owners_total": len(prepared) + len(quality_prepared),
+            "additional_control_payload_bytes": quality_control,
+            "completed_requests": 0, "failed_requests": 0, "passed": False,
+            "model_identity": {"model_path": str(args.model), "mtp_path": str(args.mtp),
+                "prepared_model_dir": report.get("prepared_model_dir"), "profile": engine.sm70_profile,
+                "context": CONTEXT, "tp": WORLD, "kv_dtype": "int8", "mtp_drafts": DEPTH,
+                "mtp_confidence": CONFIDENCE, "thinking": args.thinking,
+                "sampling": {"seed": 17, "temperature": 0, "top_k": 0, "top_p": 1},
+                "tokenizer_identity": report["tokenizer_identity"], "native_flags": report["native_flags"],
+                "wheel_sha256": digest(args.wheel), "source_hold_sha256": digest(args.source_hold)},
+            "scope": "six deterministic answer/format spot checks only; no broad quality or performance qualification"}
     caller = FiniteBackendCaller(max_input_tokens=MAX_PROMPT_TOKENS, max_output_tokens=args.tokens,
         retained_results=finite.MAXIMUM, max_source_bytes=MAX_PROMPT_BYTES + MAX_RENDERED_BYTES,
         max_receipt_bytes=(finite.MAXIMUM + 1) * MAX_RECEIPT_BYTES,
         max_concurrent_requests=finite.MAXIMUM, worker_stack_bytes=finite.STACK_BYTES,
-        control_payload_bytes=finite.control_payload_bytes(args.tokens))
+        control_payload_bytes=finite.control_payload_bytes(args.tokens) + quality_control)
     limit, pool = RequestLimit(finite.MAXIMUM), None
     primary, failures = None, [None, None]
     report["concurrency"] = {"grid": finite.GRID, "caller": caller.__dict__,
@@ -489,6 +558,8 @@ def run_concurrency_leader(engine, tokenizer, args, report):
                         report["concurrency"]["completed_cases"] += 1
                         report["concurrency"]["last_case"] = {"name": name, **summary}
                         write_report(args.out / "progress.json", report, allowance=LEADER_RECEIPT_BYTES)
+        if quality is not None:
+            run_quality_spotchecks(engine, tokenizer, args, report, limit, quality_prepared, quality)
     except BaseException as error:
         primary = error
     finally:
