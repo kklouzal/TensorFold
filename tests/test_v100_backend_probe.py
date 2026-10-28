@@ -1527,3 +1527,14 @@ def test_native_descriptor_labels_preserve_static_call_binding_and_restore(monke
     assert vars(history_owner.OwnerBuffers)["_storage_signature"] is original_signature
     assert "tensorfold/cpu/native-state-storage" in labels
     assert "tensorfold/cpu/native-storage-signature" in labels
+
+
+def test_actual_normal_installed_wholewheel_audit_has_no_foreign_profile_leaf():
+    wheel=os.environ.get("TENSORFOLD_TEST_INSTALLED_WHEEL")
+    if wheel is None:
+        pytest.skip("normal wholewheel artifact supplied by the target CPU gate")
+    record=probe.installed_identity(Path(wheel))
+    assert "site-packages" in Path(record["package"]).parts
+    assert set(record["affected_files"])==set(probe.SOURCE_FILES)
+    assert "tensorfold/families/qwen4_exp/cuda/history_owner.py" in record["affected_files"]
+    assert "tensorfold/families/qwen4_exp/cuda/descriptor_upload.py" not in record["affected_files"]

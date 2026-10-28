@@ -73,7 +73,6 @@ SOURCE_FILES = (
     "tensorfold/cuda/sm70/paged_attention.py",
     "tensorfold/engine/model_identity.py",
     "tensorfold/families/qwen4_exp/cuda/target_greedy.py",
-    "tensorfold/families/qwen4_exp/cuda/descriptor_upload.py",
     "tensorfold/families/qwen4_exp/cuda/kv_status.py",
     "tensorfold/families/qwen4_exp/cuda/forward.py",
     "tensorfold/cuda/sm70/greedy_native.py", "tensorfold/cuda/sm70/greedy_bindings.cpp",
@@ -160,7 +159,7 @@ def arguments(argv=None):
     parser.add_argument("--quality-spotchecks", action="store_true",
                         help="after the unchanged concurrency grid, run six fixed independent answer/format checks with320-token allowances; requires grid and --tokens>=320")
     parser.add_argument("--profile-concurrency", type=int, choices=(1,8,16),
-                        help="instrumented diagnostic: exactlyone1/8/16-request cohort,30sreadiness/10sdecode/cancel+drain; requires --concurrency-grid --fast-grid --tokens512; no quality/serial/repeats; notall6performancecomparison")
+                        help="instrumented diagnostic: exactlyone1/8/16-request cohort,30sreadiness/10sdecode/cancel+drain; requires --concurrency-grid --fast-grid,512(v1)/2048(v2), N1v2; no quality/serial/repeats; notall6performancecomparison")
     parser.add_argument("--thinking", action="store_true", help="pass enable_thinking=True to the unchanged target template")
     parser.add_argument("--serial-reference", action="store_true", help="also run a separately labeled draft=False reply with MTP loaded")
     parser.add_argument("--rank", type=int, help=argparse.SUPPRESS)
