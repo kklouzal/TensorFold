@@ -1334,13 +1334,15 @@ class Scheduler:
             done = self._admit_fifo(entries)
             ran = self._round_requests(done, only_runnable=True) if self._serving_profile_available else False
             _current, waiting = self.waiting.requests()
-            _all_revision, claims = self.waiting.requests(include_reserved=True)
             # A between-subruns claim has positively retired its backend and
             # retains only the logical caller's input credit. That caller may
             # itself be closing this scheduler; its credit must outlive the
             # worker, rather than make the worker wait for caller retirement.
-            backend_claims = self._stopping and any(
-                entry[2][0].admission_status.phase != "between_subruns" for entry in claims)
+            backend_claims = False
+            if self._stopping:
+                _all_revision, claims = self.waiting.requests(include_reserved=True)
+                backend_claims = any(
+                    entry[2][0].admission_status.phase != "between_subruns" for entry in claims)
             live = self.decoder.live() if self._serving_profile_available else 0
             boundary = getattr(self.decoder, "retention_boundary", None)
             drained, changed = True, False

@@ -1,5 +1,14 @@
 # TensorFold fork
 
+The FIFO actor now reads the full admitted-claims snapshot only when evaluating
+shutdown. Normal decoding avoids that unused queue scan and temporary tuple;
+stop publication, accepted controls, logical input credit and actual backend
+retirement retain their existing contracts. The current GDN source is the base;
+the unselected input-mailbox self-wait candidate is not included. Installed CPU
+checks passed 108 cases, including real scheduler shutdown, queued cancellation,
+concurrent close and live-credit controls. GPU and all-six throughput checks
+remain pending; no performance gain is established.
+
 The combined Dense/batched-prelude wheel `86cb036d` passed 81 integrated GPU
 controls, including real Dense weights, two target attention layers and eight
 96-token sessions. All eight ranks recorded 329 batches, including 109 MTP
