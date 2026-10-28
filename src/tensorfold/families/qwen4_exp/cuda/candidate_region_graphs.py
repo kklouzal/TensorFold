@@ -3,6 +3,8 @@
 Preparation requires process-wide capture quiescence and externally admitted
 storage. This component is not enrolled in serving. Its graph pool allocation
 and retained metadata must be funded by an integrating owner before admission.
+The serialized actor must retire accepted GPU work before storage mutation;
+Storage anchors do not make concurrent Storage.resize_ or rebinding safe.
 """
 from __future__ import annotations
 
@@ -17,7 +19,9 @@ from .state import CAND
 
 
 def _binding(tensor):
-    return tensor.data_ptr(), tuple(tensor.shape), tuple(tensor.stride()), tensor.dtype, tensor.device
+    storage = tensor.untyped_storage()
+    return (tensor.data_ptr(), storage.data_ptr(), storage.nbytes(), tensor.storage_offset(),
+            tuple(tensor.shape), tuple(tensor.stride()), tensor.dtype, tensor.device, tensor.requires_grad)
 
 
 class CandidateRegion:
@@ -30,6 +34,7 @@ class CandidateRegion:
         self.failure, self.replay_stream = None, None
         self.prepared = self.closed = self.retiring = False
         self.hits = 0
+        self.counter_overflowed = False
         if (type(rows) is not int or not 1 <= rows <= 32 or type(offset) is not int
                 or weights.meta.get('execution_provider') != 'sm70'):
             raise ValueError('candidate region requires canonical SM70 rows in1..32 and integer offset')
@@ -51,6 +56,10 @@ class CandidateRegion:
         self.input_owner = buffers.logits
         self.bindings = tuple(_binding(value) for value in (logits, self.packet))
         self.map_binding = None if id_map is None else _binding(id_map)
+        operands = (logits, self.packet, self.input_owner) + (() if id_map is None else (id_map,))
+        # A mutable Tensor can be rebound with set_ while an old Storage still
+        # belongs to an accepted replay. Retain that original allocation too.
+        self.storage_owners = tuple(value.untyped_storage() for value in operands)
 
     def _body(self):
         from .forward import candidates_local
@@ -121,7 +130,10 @@ class CandidateRegion:
             if current.cuda_stream != self.replay_stream:
                 raise RuntimeError('candidate replay requires its original serialized CUDA stream')
             self.graph.replay()
-            self.hits += 1
+            if self.hits < (1 << 63) - 1:
+                self.hits += 1
+            else:
+                self.counter_overflowed = True
         except BaseException as error:
             self.failure = error
             raise
@@ -132,13 +144,19 @@ class CandidateRegion:
         self.retiring = True
         try:
             torch.cuda.synchronize(self.logits.device)
-            if self.graph is not None:
-                self.graph.reset()
+            self._release_fenced()
         except BaseException as error:
             if self.failure is None:
                 self.failure = error
             raise
+
+    def _release_fenced(self):
+        """Catalogue-only: caller fenced accepted work and closed admission."""
+        self.retiring = True
+        if self.graph is not None:
+            self.graph.reset()
         self.graph = self.side = self.pool = None
         self.weights = self.buffers = self.logits = self.id_map = None
         self.packet = self.input_owner = None
+        self.storage_owners = ()
         self.closed = True

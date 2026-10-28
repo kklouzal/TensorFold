@@ -7,6 +7,14 @@ import pytest
 from tensorfold.families.qwen4_exp.cuda import candidate_region_graphs as module
 
 
+class Storage:
+    def data_ptr(self):
+        return 1
+
+    def nbytes(self):
+        return 32 * 65 * 4
+
+
 class Tensor:
     shape = (32, 65)
     ndim = 2
@@ -14,6 +22,15 @@ class Tensor:
     device = 'cuda:0'
     is_cuda = True
     requires_grad = False
+
+    def __init__(self):
+        self.storage = Storage()
+
+    def untyped_storage(self):
+        return self.storage
+
+    def storage_offset(self):
+        return 0
 
     def is_contiguous(self):
         return True
@@ -132,6 +149,25 @@ def test_failed_reset_retains_external_storage_until_retry(setup):
     graph.reset = lambda: None
     owner.close()
     assert owner.closed and owner.input_owner is None and owner.logits is None
+
+
+def test_rebound_tensor_keeps_prior_storage_until_positive_retirement(setup):
+    import weakref
+
+    owner, graph, _, _, _ = setup
+    original = weakref.ref(owner.logits.storage)
+    owner.prepare()
+    # Cold/quiescent rebind containment: no replay has been accepted. This is
+    # not a promise that concurrent Storage.resize_ can be made safe.
+    owner.logits.storage = Storage()
+    assert original() is not None
+    graph.reset = lambda: (_ for _ in ()).throw(OSError('reset'))
+    with pytest.raises(OSError, match='reset'):
+        owner.close()
+    assert original() is not None
+    graph.reset = lambda: None
+    owner.close()
+    assert original() is None
 
 
 def test_side_stream_restore_preserves_warm_primary(setup):
