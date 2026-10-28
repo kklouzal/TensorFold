@@ -161,8 +161,7 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
                 if preparation.graphs:
                     weights.meta["owner_attention_graphs"] = preparation.graphs
             result = MultiDecoder(weights, slots=1, capacity=260, logical_context=257, depth=2,
-                confidence=.7, prefill_rows=8, kv_dtype="int8", graphs=False, keep=1, full_windows=1,
-                **({"execution_rows": 4} if captured_attention else {}))
+                confidence=.7, prefill_rows=8, kv_dtype="int8", graphs=False, keep=1, full_windows=1)
             if compact_target:
                 target_owners.append(weights.meta["target_greedy_owner"])
             return weights, result, preparation
