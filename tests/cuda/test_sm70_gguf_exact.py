@@ -54,9 +54,10 @@ def bank(request):
     return exact_fixture(request.param), request.param
 
 
-@pytest.mark.parametrize("rows", [1, 3, 18, 32])
+@pytest.mark.parametrize("rows", [1, 2, 3, 8, 18, 32])
 @pytest.mark.parametrize("dtype", [torch.float16, torch.float32])
-def test_all_formats_recover_original_routed_and_shared_bytes(bank, rows, dtype):
+@pytest.mark.parametrize("independent_gate_up", [False, True])
+def test_all_formats_recover_original_routed_and_shared_bytes(bank, rows, dtype, independent_gate_up):
     (b, _, _), _kind = bank
     torch.manual_seed(1851 + rows)
     x = (torch.randn(rows, b.dims, device="cuda") * 0.1).half()
@@ -64,10 +65,10 @@ def test_all_formats_recover_original_routed_and_shared_bytes(bank, rows, dtype)
     ids = ids.roll(1, 1).contiguous()
     expected = b.forward_reference(x, ids).to(dtype)
     out = torch.empty_like(expected)
-    assert b.forward_exact(x, ids, out) is out
+    assert b.forward_exact(x, ids, out, independent_gate_up=independent_gate_up) is out
     bits(out, expected)
     serial = torch.cat(
-        [b.forward_exact(x[r : r + 1], ids[r : r + 1]).to(dtype) for r in range(rows)]
+        [b.forward_exact(x[r : r + 1], ids[r : r + 1], independent_gate_up=independent_gate_up).to(dtype) for r in range(rows)]
     )
     bits(out, serial)
 
@@ -113,34 +114,36 @@ def test_independent_scalar_half_coefficients_and_fp32_contiguous_chain(bank):
     assert np.all(np.abs(actual.astype(np.float64) - exact) <= bound)
 
 
-def test_original_shared_is_required_and_fallback_boundaries_are_exact():
+@pytest.mark.parametrize("independent_gate_up", [False, True])
+def test_original_shared_is_required_and_fallback_boundaries_are_exact(independent_gate_up):
     b, _, _ = exact_fixture(12)
     for rows in (0, 1, 33):
         x = torch.randn(rows, b.dims, device="cuda", dtype=torch.float16) * 0.1
         ids = torch.full((rows, 3), 2, device="cuda", dtype=torch.int32)
-        bits(b.forward_exact(x, ids), b.forward_reference(x, ids))
+        bits(b.forward_exact(x, ids, independent_gate_up=independent_gate_up), b.forward_reference(x, ids))
     b, _, _ = exact_fixture(12, width=320)
     x = torch.randn(3, b.dims, device="cuda", dtype=torch.float16) * 0.1
     ids = torch.tensor([[0, 1, 2], [2, 0, 1], [1, 2, 0]], device="cuda")
-    bits(b.forward_exact(x, ids), b.forward_reference(x, ids))
+    bits(b.forward_exact(x, ids, independent_gate_up=independent_gate_up), b.forward_reference(x, ids))
 
 
-def test_recovered_graph_has_dynamic_routes_and_no_alias_or_invalid_reads():
+@pytest.mark.parametrize("independent_gate_up", [False, True])
+def test_recovered_graph_has_dynamic_routes_and_no_alias_or_invalid_reads(independent_gate_up):
     b, _, _ = exact_fixture(13)
     x = torch.randn(3, b.dims, device="cuda", dtype=torch.float16) * 0.1
     ids = torch.tensor([[0, 1, 2], [2, 0, 1], [1, 2, 0]], device="cuda")
     out = torch.empty((3, 3, b.dims), device="cuda", dtype=torch.float16)
-    b.forward_exact(x, ids, out)
+    b.forward_exact(x, ids, out, independent_gate_up=independent_gate_up)
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
-        b.forward_exact(x, ids, out)
+        b.forward_exact(x, ids, out, independent_gate_up=independent_gate_up)
     ids.copy_(ids.roll(1, 1))
     x.mul_(0.5)
     graph.replay()
     bits(out, b.forward_reference(x, ids).half())
     with pytest.raises(RuntimeError, match="overlap"):
-        b.forward_exact(x, ids[:, :1].contiguous(), x[:, None])
+        b.forward_exact(x, ids[:, :1].contiguous(), x[:, None], independent_gate_up=independent_gate_up)
     ids[0] = torch.tensor([-1, 3, 2**40], device="cuda")
-    result = b.forward_exact(x, ids)
+    result = b.forward_exact(x, ids, independent_gate_up=independent_gate_up)
     assert torch.isnan(result[0]).all()
     assert torch.isfinite(result[1:]).all()

@@ -368,7 +368,8 @@ their software identity fields.
 
 On the pinned Linux/glibc CPython3.12 image, the private
 `source-owner-pieces-trial`, `source-owner-target-greedy-trial` and
-`source-owner-target-guard-trial` and `source-owner-target-prelude-trial` MTP profiles
+`source-owner-target-guard-trial`, `source-owner-target-prelude-trial` and
+`source-owner-gateup-independent-trial` MTP profiles
 may opt into `TENSORFOLD_STARTUP_CONTENT_OVERLAP=1` with an explicit execution
 manifest. Python/pthread thread defaults must remain owned and fixed during
 engine construction. One rank0 worker begins only after the complete admission
@@ -387,3 +388,24 @@ between bounded reads and joins the worker before releasing engine owners.
 A blocked filesystem read retains its existing I/O completion contract.
 The unset default retains serial content hashing. CPU controls and an actual
 V100 startup/quality/performance comparison are separate gates.
+
+
+## Private independent gate/up warp candidate
+
+`TENSORFOLD_SM70_PROFILE=source-owner-gateup-independent-trial` retains the
+existing owner prelude, native24-window Q8 floor and capture/factory contracts.
+Only eligible packed expert gate/up scheduling changes: two independent dots
+use separate warps, each retaining the original FP16 coefficient boundary,
+FP32 FMA sequence and shuffle tree. A16-byte CTA shared join retains the original
+SwiGLU and FP16 activation boundary; all CTA warps participate even for skipped
+shared slots, invalid IDs and inactive output tiles. The exact down projection
+and independent original BMM controls remain unchanged.
+
+Before the physical-free admission baseline, `cudaFuncGetAttributes` admits
+the eight selected int32 same-format/generic code variants and records their
+register/local/shared resource attributes. The bounded receipt adds8192 host
+bytes per rank; no tensor/event workspace or cache-format change is introduced.
+The profile uses a distinct State epoch and keeps the default unchanged.
+CPU policy/source-proof checks and explicit SM70 compilation pass. Actual
+SM70 bitwise/capture/capacity and all-six model comparisons remain pending;
+no throughput improvement is claimed.

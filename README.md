@@ -1,5 +1,16 @@
 # TensorFold fork
 
+An explicit private `source-owner-gateup-independent-trial` candidate retains
+the native owner prelude and original expert coefficient/FP32 dot arithmetic,
+while assigning independent gate/up dots to two warps per output. A16-byte CTA
+shared join replaces no persistent tensor workspace; selected int32 function
+attributes are loaded before the physical admission baseline, and the profile
+has its own State epoch and original24-window native Q8 floor. The default
+remains unchanged. CPU policy controls, normal wholewheel source proof and
+explicit SM70 compilation pass; actual SM70 bitwise, capacity and all-six
+end-to-end gates remain pending. This grants no numerical or performance
+qualification.
+
 Canonical MTP text refresh/proposal frames now use the existing actual text
 coordinate producer when no explicit coordinates or deferred boundary are
 present. It preserves hidden/cache positions at `mtp_len`, independent of next

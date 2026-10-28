@@ -237,6 +237,45 @@ __global__ void expert_gate_up(const __half* x, const Index* picks, PackedView g
     }
 }
 
+// Each dot retains the original lane sequence and shuffle tree. Only the
+// independent gate/up ownership changes. All four warps reach the CTA join,
+// including shared placeholders, invalid IDs and any inactive output tile.
+template <typename Index, int GateKind = -1, int UpKind = -1>
+__global__ void expert_gate_up_independent(const __half* x, const Index* picks, PackedView gate, PackedView up,
+    int dims, int width, int slots, int experts, __half* activation) {
+    constexpr int OUTPUTS = EXPERT_WARPS / 2;
+    __shared__ float reduced[OUTPUTS][2];
+    const int lane = threadIdx.x % 32, warp = threadIdx.x / 32;
+    const int leg = warp % 2, local_output = warp / 2;
+    const unsigned output = blockIdx.x * OUTPUTS + local_output;
+    const int pair = blockIdx.y;
+    const auto expert = picks[pair];
+    const bool valid = expert >= 0 && expert <= experts;
+    float sum = 0.0f;
+    if (output < width && valid && expert != experts) {
+        const int64_t source = int64_t(expert) * width + output;
+        const __half* input = x + int64_t(pair / slots) * dims;
+        for (unsigned k = lane; k < unsigned(dims); k += 32) {
+            const float xv = __half2float(input[k]);
+            const float coefficient_value = leg == 0 ? coefficient<GateKind>(gate, source, k)
+                                                     : coefficient<UpKind>(up, source, k);
+            sum = fmaf(xv, coefficient_value, sum);
+        }
+        for (int offset = 16; offset; offset /= 2)
+            sum += __shfl_down_sync(0xffffffff, sum, offset);
+    }
+    if (lane == 0) reduced[local_output][leg] = sum;
+    __syncthreads();
+    if (leg == 0 && lane == 0 && output < width) {
+        const float g = reduced[local_output][0], u = reduced[local_output][1];
+        // The original exact routed kernel initializes the separately owned
+        // shared slot to positive zero, without evaluating its gate/up dots.
+        const float result = expert == experts ? 0.0f : valid
+            ? (g / (1.0f + expf(-g))) * u : __int_as_float(0x7fffffff);
+        activation[int64_t(pair) * width + output] = __float2half_rn(result);
+    }
+}
+
 template <int Byte>
 __device__ __forceinline__ int scale_byte(const uint4& header) {
     static_assert(Byte >= 0 && Byte < 12, "K-quant scale byte");
@@ -478,7 +517,7 @@ PackedView packed_view(const at::Tensor& raw, int64_t kind, int64_t offset, int 
 void run_exact_down(const at::Tensor& activation, const at::Tensor& picks, PackedView view,
                     const at::Tensor& shared, at::Tensor& result, int dims, int experts);
 
-template <typename Index, int Splits = 1, bool ExactDown = false>
+template <typename Index, int Splits = 1, bool ExactDown = false, bool IndependentGateUp = false>
 void run_experts(const at::Tensor& x, const at::Tensor& picks, PackedView gate, PackedView up, PackedView down,
                    const at::Tensor& shared_gate, const at::Tensor& shared_up, const at::Tensor& shared_down,
                    at::Tensor& output, at::Tensor& activation, int dims, int width, int slots, int experts,
@@ -497,7 +536,30 @@ void run_experts(const at::Tensor& x, const at::Tensor& picks, PackedView gate, 
     const dim3 gu_grid(1 + (width - 1) / EXPERT_WARPS, pairs, Splits);
     const dim3 down_grid(1 + (dims - 1) / (EXPERT_WARPS * 4), pairs);
     bool launched = false;
-    if constexpr (Splits == 1) {
+    if constexpr (IndependentGateUp) {
+        static_assert(ExactDown && Splits == 1, "independent projections retain the exact unsplit route");
+        const dim3 independent_grid(1 + (width - 1) / (EXPERT_WARPS / 2), pairs);
+        #define LAUNCH_INDEPENDENT(KIND) \
+            expert_gate_up_independent<Index, KIND, KIND><<<independent_grid, EXPERT_WARPS * 32, 0, stream>>>( \
+                xx, ids, gate, up, dims, width, slots, experts, act)
+        if (gate.kind == up.kind) {
+            switch (gate.kind) {
+                case 8: LAUNCH_INDEPENDENT(8); break;
+                case 12: LAUNCH_INDEPENDENT(12); break;
+                case 13: LAUNCH_INDEPENDENT(13); break;
+                case 18: LAUNCH_INDEPENDENT(18); break;
+                case 21: LAUNCH_INDEPENDENT(21); break;
+                case 22: LAUNCH_INDEPENDENT(22); break;
+                case 23: LAUNCH_INDEPENDENT(23); break;
+                default: LAUNCH_INDEPENDENT(-1); break;
+            }
+        } else {
+            LAUNCH_INDEPENDENT(-1);
+        }
+        #undef LAUNCH_INDEPENDENT
+        launched = true;
+    }
+    if constexpr (Splits == 1 && !IndependentGateUp) {
         const bool kquants = (gate.kind == 12 || gate.kind == 13) && (up.kind == 12 || up.kind == 13);
         const bool aligned = (reinterpret_cast<uintptr_t>(gate.data) & 15) == 0
             && (reinterpret_cast<uintptr_t>(up.data) & 15) == 0 && gate.stride % 16 == 0 && up.stride % 16 == 0;
@@ -589,7 +651,7 @@ void gguf_experts_impl(const at::Tensor& x, const at::Tensor& picks,
                   const at::Tensor& down, int64_t down_kind, int64_t down_offset,
                   const at::Tensor& shared_gate, const at::Tensor& shared_up,
                   const at::Tensor& shared_down, at::Tensor output, bool split_k4, bool blockwise = false,
-                  bool split_projections = false, bool exact_down = false) {
+                  bool split_projections = false, bool exact_down = false, bool independent_gate_up = false) {
     TORCH_CHECK(x.is_cuda() && x.scalar_type() == at::kHalf && x.dim() == 2 && x.is_contiguous()
                 && x.size(1) > 0 && x.size(1) <= std::numeric_limits<int>::max(),
                 "packed experts require contiguous FP16 CUDA [rows,hidden] inputs");
@@ -629,6 +691,9 @@ void gguf_experts_impl(const at::Tensor& x, const at::Tensor& picks,
         if (split_k4)
             run_experts<int32_t, 4>(x, picks, g, u, d, shared_gate, shared_up, shared_down,
                 output, activation, dims, width, int(picks.size(1)), int(gate.size(0) / width));
+        else if (independent_gate_up)
+            run_experts<int32_t, 1, true, true>(x, picks, g, u, d, shared_gate, shared_up, shared_down,
+                output, activation, dims, width, int(picks.size(1)), int(gate.size(0) / width));
         else if (exact_down)
             run_experts<int32_t, 1, true>(x, picks, g, u, d, shared_gate, shared_up, shared_down,
                 output, activation, dims, width, int(picks.size(1)), int(gate.size(0) / width),
@@ -640,6 +705,9 @@ void gguf_experts_impl(const at::Tensor& x, const at::Tensor& picks,
     } else {
         if (split_k4)
             run_experts<int64_t, 4>(x, picks, g, u, d, shared_gate, shared_up, shared_down,
+                output, activation, dims, width, int(picks.size(1)), int(gate.size(0) / width));
+        else if (independent_gate_up)
+            run_experts<int64_t, 1, true, true>(x, picks, g, u, d, shared_gate, shared_up, shared_down,
                 output, activation, dims, width, int(picks.size(1)), int(gate.size(0) / width));
         else if (exact_down)
             run_experts<int64_t, 1, true>(x, picks, g, u, d, shared_gate, shared_up, shared_down,
@@ -1182,4 +1250,42 @@ void gguf_experts_exact(const at::Tensor& x, const at::Tensor& picks,
     gguf_experts_impl(x, picks, gate, gate_kind, gate_offset, up, up_kind, up_offset,
                       down, down_kind, down_offset, shared_gate, shared_up, shared_down,
                       output, false, true, true, true);
+}
+
+void gguf_experts_exact_independent(const at::Tensor& x, const at::Tensor& picks,
+                  const at::Tensor& gate, int64_t gate_kind, int64_t gate_offset,
+                  const at::Tensor& up, int64_t up_kind, int64_t up_offset,
+                  const at::Tensor& down, int64_t down_kind, int64_t down_offset,
+                  const at::Tensor& shared_gate, const at::Tensor& shared_up,
+                  const at::Tensor& shared_down, at::Tensor output) {
+    TORCH_CHECK(shared_gate.dim() == 2 && (shared_gate.size(0) == 80 || shared_gate.size(0) == 160) && shared_gate.size(1) == 2560,
+                "recovered packed expert down projection requires the qualified D2560/K80 or K160 geometry");
+    gguf_experts_impl(x, picks, gate, gate_kind, gate_offset, up, up_kind, up_offset,
+                      down, down_kind, down_offset, shared_gate, shared_up, shared_down,
+                      output, false, true, true, true, true);
+}
+
+std::vector<std::vector<int64_t>> gguf_prepare_experts_exact_independent() {
+    // Attribute queries load every selected int32 source-format specialization
+    // before the engine's physical-free baseline. No kernel or tensor launch.
+    const auto* prop = at::cuda::getDeviceProperties(at::cuda::current_device());
+    TORCH_CHECK(prop->major == 7 && prop->minor == 0, "independent exact experts require SM70");
+    std::vector<std::vector<int64_t>> result;
+    result.reserve(8);
+    #define PREPARE_INDEPENDENT(KIND) { \
+        cudaFuncAttributes attributes; \
+        C10_CUDA_CHECK(cudaFuncGetAttributes(&attributes, expert_gate_up_independent<int32_t, KIND, KIND>)); \
+        result.push_back({KIND, attributes.numRegs, int64_t(attributes.sharedSizeBytes), \
+            int64_t(attributes.localSizeBytes), attributes.maxThreadsPerBlock, attributes.binaryVersion}); \
+    }
+    PREPARE_INDEPENDENT(8);
+    PREPARE_INDEPENDENT(12);
+    PREPARE_INDEPENDENT(13);
+    PREPARE_INDEPENDENT(18);
+    PREPARE_INDEPENDENT(21);
+    PREPARE_INDEPENDENT(22);
+    PREPARE_INDEPENDENT(23);
+    PREPARE_INDEPENDENT(-1);
+    #undef PREPARE_INDEPENDENT
+    return result;
 }

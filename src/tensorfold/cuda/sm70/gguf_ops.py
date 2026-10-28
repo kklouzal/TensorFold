@@ -88,14 +88,16 @@ def dense32(x, weight, out, *, force_f32=False):
     return out
 
 
-def experts_exact(x, picks, gate, up, down, shared, out):
+def experts_exact(x, picks, gate, up, down, shared, out, *, independent_gate_up=False):
     """Original BMM arithmetic for the qualified D2560/K80 or K160 packed target route.
 
     The owning family evaluates its shared expert with the original Dense
     projections; this routed core initializes shared slots to positive zero.
     Old packed operator entrypoints remain independent controls.
     """
-    extension().experts_exact(x, picks, gate.data, gate.ggml_type, gate.column_offset,
+    module = extension()
+    method = module.experts_exact_independent if independent_gate_up else module.experts_exact
+    method(x, picks, gate.data, gate.ggml_type, gate.column_offset,
         up.data, up.ggml_type, up.column_offset, down.data, down.ggml_type, down.column_offset,
         *(part.weight for part in shared), out)
     return out
