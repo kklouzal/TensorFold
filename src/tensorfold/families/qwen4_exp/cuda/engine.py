@@ -779,6 +779,8 @@ class FlashNextEngine:
 
                 main_rows = row_envelope(count) if concurrent else max(8, each)
                 padded_bytes = (1 + int(mtp)) * padded_linears.workspace_bytes_from_text(text, main_rows, tp)
+                if mtp:
+                    padded_bytes += padded_linears.mtp_hc_workspace_bytes(text, main_rows, self.sm70_profile)
                 native_attention = (family_ops._NATIVE_FAMILY and family_ops._NATIVE_ATTENTION
                                     and history_placement is None)
                 if not native_attention and not padded_bytes and history_placement is None:
@@ -1200,6 +1202,15 @@ class FlashNextEngine:
                 media_resources["shared_host_payload_bound"])
             host_capacity["host_extra_staging"] = host_capacity.get("host_extra_staging", 0) + (
                 media_resources["vision_loading_host_payload_bound"])
+        if sm70 and mtp:
+            from . import padded_linears
+
+            hc_bound = (execution_rows if execution_rows is not None else 32) if adaptive_sessions else (
+                row_envelope(streams) if concurrent else max(8, each))
+            if adaptive_sessions and session_ceiling is not None:
+                hc_bound = min(hc_bound, session_ceiling * each)
+            host_capacity["host_workspace_bytes"] = host_capacity.get("host_workspace_bytes", 0) + (
+                tp * padded_linears.mtp_hc_host_bytes(text, hc_bound, self.sm70_profile))
         from .startup_content import prepare as prepare_startup_content
 
         self._startup_content_plan = prepare_startup_content(self, manifest if execution_profile_manifest is not None else None)

@@ -139,7 +139,153 @@ class PaddedLinears:
         return None if result is None else result.unsqueeze(0)
 
 
-def create(w, rows, *, prefill, dtype):
+HC_PROFILE = "source-batch-router-blas-trial"
+HC_HOST_BYTES = 64 << 10
+
+
+def mtp_hc_workspace_bytes(text, rows, profile):
+    if profile != HC_PROFILE or not 0 < rows <= 72:
+        return 0
+    text = text.get("text_config") or text
+    hidden, streams = int(text["hidden_size"]), int(text.get("hc_count", 4))
+    return ROWS * hidden * 8 + 3 * 512 if rows * streams > ROWS else 0
+
+
+def mtp_hc_host_bytes(text, rows, profile):
+    return HC_HOST_BYTES if mtp_hc_workspace_bytes(text, rows, profile) else 0
+
+
+class MTPHCTiles:
+    """Named MTP fc_h only; original M32 tile math and caller-owned output.
+
+    This does not adopt generic large-row Dense/Concat eligibility. Its three
+    fixed scratch owners serve one serialized construction stream; other
+    weights, small physical rows, prefill and foreign streams retain reference.
+    """
+    def __init__(self, w, rows):
+        from .gguf_weights import GGUFDense
+
+        self.rows, self.device = rows, w.device
+        self.hc_projection = w.mtp.fc_h
+        self.hc_streams, self.hc_hidden = w.cfg.streams, w.cfg.hidden
+        if (type(self.hc_projection) is not GGUFDense or not 0 < rows <= 72
+                or not ROWS < rows * self.hc_streams or self.hc_projection.k != self.hc_hidden
+                or self.hc_projection.n != self.hc_hidden):
+            raise ValueError("MTP HC owner requires its actual named hidden projection and complete row span")
+        self.maximum_input = self.maximum_output = self.hc_hidden
+        self.stream = torch.cuda.current_stream(self.device) if self.device.type == "cuda" else None
+        self.input_owner, self.input_storage = self._aligned(ROWS * self.maximum_input, torch.float16)
+        self.half_owner, self.half_storage = self._aligned(ROWS * self.maximum_output, torch.float16)
+        self.float_owner, self.float_storage = self._aligned(ROWS * self.maximum_output, torch.float32)
+        self.partial = {}
+        self.submitted_calls = self.submitted_rows = 0
+        self.counter_overflowed = False
+
+    def _parts(self, matrix):
+        if matrix is self.hc_projection and matrix.implementation == "native32":
+            return (matrix,)
+        return None
+
+    def partials(self, _matrix, _x):
+        return None  # No generic HC low-rank path or partial scratch is added.
+
+
+    def _aligned(self, elements, dtype):
+            size = 2 if dtype == torch.float16 else 4
+            owner = torch.empty((elements + 512 // size,), dtype=dtype, device=self.device)
+            offset = ((-owner.data_ptr()) % 512) // size
+            return owner, owner[offset:offset + elements]
+
+    def device_tensors(self):
+            return (self.input_owner, self.half_owner, self.float_owner, *self.partial.values())
+
+    def tensor(self, _name, shape, dtype, *, zero=False):
+            # Logical Buffers keep their original shapes/owners; only scratch is new.
+            return (torch.zeros if zero else torch.empty)(shape, dtype=dtype, device=self.device)
+
+    def _hc_rows_allowed(self, rows, matrix):
+            return (matrix is self.hc_projection and self.hc_projection is not None
+                    and ROWS < rows <= self.rows * self.hc_streams and rows % self.hc_streams == 0
+                    and matrix.k == self.hc_hidden and matrix.n == self.hc_hidden)
+
+    def matmul(self, x, matrix, out):
+            # Small-row projections preserve the existing Dense/Concat bodies.
+            if type(x) is not torch.Tensor or x.ndim != 2 or not ROWS < x.shape[0]:
+                return None
+            if not self._hc_rows_allowed(x.shape[0], matrix):
+                return None
+            parts = self._parts(matrix)
+            if (parts is None or type(out) is not torch.Tensor or x.layout != torch.strided
+                    or out.layout != torch.strided or not x.is_cuda or x.device != self.device
+                    or x.dtype != torch.float16 or x.shape[1] != matrix.k or not 0 < matrix.k <= self.maximum_input
+                    or out.shape != (x.shape[0], matrix.n) or not 0 < matrix.n <= self.maximum_output
+                    or out.device != self.device or out.dtype not in (torch.float16, torch.float32)
+                    or out.stride(1) != 1 or out.stride(0) < matrix.n or x.stride(0) < 0 or x.stride(1) < 0
+                    or x.is_neg() or x.is_conj() or out.is_neg() or out.is_conj()
+                    or out.is_inference() and not torch.is_inference_mode_enabled()):
+                return None
+            weights = tuple(part.weight for part in parts)
+            if (sum(part.n for part in parts) != matrix.n
+                    or any(part.implementation not in ("reference", "native32") or part.k != matrix.k
+                           or not 0 < part.n <= self.maximum_output or type(weight) is not torch.Tensor or weight.layout != torch.strided
+                           or weight.dtype != torch.float16 or weight.device != self.device
+                           or weight.shape != (part.n, matrix.k) or not weight.is_contiguous()
+                           or weight.is_neg() or weight.is_conj() for part, weight in zip(parts, weights))
+                    or torch.is_grad_enabled() and any(value.requires_grad for value in (x, out, *weights))
+                    or torch._C._overlaps(x, out) or any(torch._C._overlaps(out, weight) for weight in weights)):
+                return None
+            scratch = (self.input_owner, self.half_owner, self.float_owner)
+            if any(torch._C._overlaps(value, owner) for value in (x, out, *weights) for owner in scratch):
+                return None
+            if torch.cuda.current_stream(self.device) != self.stream:
+                return None
+            # Preserve original part order, including which completed prefix exists
+            # if a later projection fails. Each part keeps the original M32 GEMM.
+            column = 0
+            for part in parts:
+                for start in range(0, x.shape[0], ROWS):
+                    count = min(ROWS, x.shape[0] - start)
+                    source = x[start:start + count]
+                    if not (count == ROWS and source.is_contiguous() and source.data_ptr() % 512 == 0):
+                        padded = self.input_storage[:ROWS * matrix.k].view(ROWS, matrix.k)
+                        padded[:count].copy_(source)
+                        if count < ROWS:
+                            padded[count:].zero_()
+                        source = padded
+                    destination = out[start:start + count, column:column + part.n]
+                    direct = count == ROWS and destination.is_contiguous() and destination.data_ptr() % 512 == 0
+                    if direct:
+                        target = destination
+                    else:
+                        storage = self.float_storage if out.dtype == torch.float32 else self.half_storage
+                        target = storage[:ROWS * part.n].view(ROWS, part.n)
+                    version = None if target.is_inference() else target._version
+                    part.matmul_prepared(source, target)
+                    if direct:
+                        if version is not None and target._version == version:
+                            torch.autograd.graph.increment_version(target)
+                    else:
+                        destination.copy_(target[:count])
+                column += part.n
+            if not self.counter_overflowed:
+                limit = (1 << 63) - 1
+                if self.submitted_calls == limit or self.submitted_rows > limit - x.shape[0]:
+                    self.counter_overflowed = True
+                else:
+                    self.submitted_calls += 1
+                    self.submitted_rows += x.shape[0]
+            return out
+
+def create(w, rows, *, prefill, dtype, role=None):
+    if (role == "mtp" and not prefill and dtype == torch.float16 and 0 < rows <= 72
+            and w.meta.get("sm70_profile") == HC_PROFILE and w.meta.get("execution_provider") == "sm70"
+            and w.device.type == "cuda" and rows * w.cfg.streams > ROWS):
+        from .gguf_weights import GGUFDense
+
+        projection = getattr(getattr(w, "mtp", None), "fc_h", None)
+        if (type(projection) is GGUFDense and projection.implementation == "native32"
+                and projection.k == w.cfg.hidden and projection.n == w.cfg.hidden):
+            return MTPHCTiles(w, rows)
     if (not _ENABLED or prefill or dtype != torch.float16 or not 1 <= rows <= ROWS
             or w.meta.get("execution_provider") != "sm70" or w.device.type != "cuda"):
         return None

@@ -131,6 +131,8 @@ def arguments(argv=None):
     parser.add_argument("--out", type=Path, required=True, help="new private result directory")
     parser.add_argument("--triton-cache-root", type=Path,
                         help="opt-in persistent cache root: each child inherits TRITON_CACHE_DIR=ROOT/rank-N before startup; Triton retains its source/platform/configuration keys")
+    parser.add_argument("--mtp-hc-tiles-trial", action="store_true",
+                        help="private named MTP fc_h owned M32 physical-row screen on current Router/GDN profile")
     parser.add_argument("--router-blas-trial", action="store_true",
                         help="explicit experimental pointer-batched FP32 router; requires matching numeric profile, native Dense/batch and resident24")
     parser.add_argument("--owner-batch-prelude-trial", action="store_true",
@@ -226,6 +228,8 @@ def arguments(argv=None):
         parser.error("--router-blas-trial and explicit source-batch-router-blas-trial must agree")
     if args.router_blas_trial and (not args.owner_batch_prelude_trial or not args.native_dense_trial or args.session_ceiling != 24):
         parser.error("router trial requires native Dense, owner batch prelude and session-ceiling24")
+    if args.mtp_hc_tiles_trial and (not args.router_blas_trial or not args.gdn_state_batch_trial):
+        parser.error("--mtp-hc-tiles-trial requires current router and GDN trial intent")
     gdn_flag = os.environ.get("TENSORFOLD_SM70_GDN_STATE_BATCH")
     if args.gdn_state_batch_trial:
         if gdn_flag != "1" or not args.owner_batch_prelude_trial or not args.fast_grid or not args.quality_spotchecks:
@@ -557,6 +561,12 @@ def graph_execution_snapshot(engine):
     counters = {}
     if type(submitted) is int and 0 <= submitted <= (1 << 63) - 1:
         counters["gdn.batch_submitted_layers"] = submitted
+    hc = _owned_attributes(_owned_attributes(decoder).get("mbuf")).get("padded_linears")
+    hc_fields = _owned_attributes(hc)
+    for field in ("submitted_calls", "submitted_rows"):
+        value = hc_fields.get(field)
+        if type(value) is int and 0 <= value <= (1 << 63) - 1:
+            counters["mtp.hc_" + field] = value
     names = ("hits", "misses", "lane_declines", "verify_hits", "mtp_hits",
              "eager_declines", "verify_misses", "mtp_misses")
     for role, values in (("owner", fields), ("bound", _owned_attributes(fields.get("bound")))):
@@ -712,6 +722,38 @@ def check_router_blas_engine(engine):
             "global_host_charge": charged_host, "scope": "eager target/MTP only; graph/prefill canonical; experimental numeric implementation"}
 
 
+HC_EVIDENCE_CONTROL_BYTES = 8192
+
+
+def check_mtp_hc_engine(engine):
+    from tensorfold.families.qwen4_exp.cuda.padded_linears import MTPHCTiles
+
+    owner = engine.multi.mbuf.padded_linears
+    if (type(owner) is not MTPHCTiles or owner.hc_projection is not engine.w.mtp.fc_h
+            or owner.rows != 32 or owner.hc_hidden != 2560 or owner.hc_streams != 4
+            or engine.execution_rows != 32 or owner.partial
+            or sum(t.numel()*t.element_size() for t in owner.device_tensors()) != 656896
+            or engine.multi.mbuf.mtp_hs.shape != (128,2560)
+            or engine.capacity_plan.get("host_workspace_bytes_estimate", 0) < WORLD * 65536):
+        raise ValueError("actual MTP HC owner/span/funding differs from admitted named fc_h domain")
+    return {"enabled": True,"logical_rows":32,"physical_cap":128,"projection":"stock_mtp.fc_h",
+            "device_bytes_per_rank":656896,"global_host_bytes":WORLD*65536,
+            "other_Dense_Concat":"unchanged","scope":"owned M32 scratch; source additive preadmission charge"}
+
+
+def mtp_hc_evidence(count, before, after):
+    field = "mtp.hc_submitted_calls"
+    result = {"passed":False,"cohort_N":count,"scope":"host submission delta over readiness/decode/cancel/drain; not GPU time"}
+    if any(type(v) is not dict or type(v.get("counters")) is not dict
+           or type(v["counters"].get(field)) is not int for v in (before,after)):
+        result["reason"] = "missing HC submission counters"
+        return result
+    delta = after["counters"][field] - before["counters"][field]
+    result["submitted_calls"] = delta
+    result["passed"] = delta == 0 if count == 1 else delta > 0 if count >= 16 else delta >= 0
+    return result
+
+
 def concurrency_module():
     if __package__:
         from . import finite_concurrency
@@ -833,6 +875,12 @@ def run_fast_grid(engine, tokenizer, args, report, limit, pool, prepared, finite
                 if not gdn_evidence["passed"]:
                     result["passed"] = False
                     result["screen"]["measurement_valid"] = False
+            if getattr(args, "mtp_hc_tiles_trial", False):
+                hc_evidence = mtp_hc_evidence(count, graph_before, graph_after)
+                result["mtp_hc_tiles"] = hc_evidence
+                if not hc_evidence["passed"]:
+                    result["passed"] = False
+                    result["screen"]["measurement_valid"] = False
             write_report(args.out / f"fast-mtp-target-n{count:02d}.json", result,
                          allowance=finite.MAXIMUM * MAX_RECEIPT_BYTES)
         summary = finite.run_screen_case(pool, count=count, maximum_tokens=args.tokens, vocab=vocab,
@@ -896,7 +944,8 @@ def run_concurrency_leader(engine, tokenizer, args, report):
         control_payload_bytes=finite.control_payload_bytes(args.tokens) + quality_control
             + (finite.screen_control_payload_bytes(args.tokens) if getattr(args, "fast_grid", False) else 0)
             + (BATCH_EVIDENCE_CONTROL_BYTES if engine.sm70_profile in (OWNER_BATCH_PRELUDE_TRIAL, ROUTER_BLAS_TRIAL) else 0)
-            + (GDN_EVIDENCE_CONTROL_BYTES if getattr(args, "gdn_state_batch_trial", False) else 0))
+            + (GDN_EVIDENCE_CONTROL_BYTES if getattr(args, "gdn_state_batch_trial", False) else 0)
+            + (HC_EVIDENCE_CONTROL_BYTES if getattr(args, "mtp_hc_tiles_trial", False) else 0))
 
     limit, pool = RequestLimit(finite.MAXIMUM), None
     primary, failures = None, [None, None]
@@ -1032,6 +1081,8 @@ def worker(args):
             report["gdn_state_batch"] = check_gdn_batch_engine(engine)
         if getattr(engine, "sm70_profile", None) == ROUTER_BLAS_TRIAL:
             report["router_blas"] = check_router_blas_engine(engine)
+        if getattr(args, "mtp_hc_tiles_trial", False):
+            report["mtp_hc_tiles"] = check_mtp_hc_engine(engine)
         report["capacity_plan"] = engine.capacity_plan
         report["graph_execution"] = {"before_requests": graph_execution_snapshot(engine),
             "after_requests": None, "delta": None,
