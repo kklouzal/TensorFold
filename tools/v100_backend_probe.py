@@ -553,25 +553,33 @@ def _owned_attributes(value):
     return result if type(result) is dict else {}
 
 def write_moe_capture_ledger(engine, output, rank):
-    """One bounded cold evidence file; never duplicate145 phase rows in replies."""
+    return _write_region_capture_ledger(engine, output, rank, family="moe", phases=145)
+
+
+def write_candidate_capture_ledger(engine, output, rank):
+    return _write_region_capture_ledger(engine, output, rank, family="candidate", phases=64)
+
+
+def _write_region_capture_ledger(engine, output, rank, *, family, phases):
+    """One bounded cold evidence file per disjoint catalogue, outside replies."""
     decoder = _owned_attributes(engine).get("multi")
     owner = _owned_attributes(_owned_attributes(decoder).get("graphs"))
-    catalogue = owner.get("moe_regions")
+    catalogue = owner.get(family + "_regions")
     fields = _owned_attributes(catalogue)
     if catalogue is None:
         return None
     measurements = fields.get("measured")
-    if fields.get("ready") is not True or type(measurements) is not list or len(measurements) != 145:
-        raise ValueError("required complete145-phase MoE capture ledger is unavailable")
-    payload = {"schema": "tensorfold.cold-moe-capture-ledger-v1", "rank": rank,
+    if fields.get("ready") is not True or type(measurements) is not list or len(measurements) != phases:
+        raise ValueError(f"required complete{phases}-phase {family} capture ledger is unavailable")
+    payload = {"schema": f"tensorfold.cold-{family}-capture-ledger-v1", "rank": rank,
                "funding": fields.get("plan"), "capture_phases": measurements,
                "private_pools": owner.get("private_pool_records"),
                "host_before": fields.get("host_before"), "host_after": fields.get("host_after"),
                "scope": "coldpreparation only; baselinecanonical buffers/weights alreadyfunded; newGPUphasecharges usemax physical/general/owned deltas, never sum overlappingviews"}
     encoded = (json.dumps(payload, indent=1, allow_nan=False) + "\n").encode("ascii")
     if len(encoded) > 1 << 20:
-        raise ValueError("cold MoE capture ledger exceeds its inclusive graph-host allowance slice")
-    path = Path(output) / f"rank-{rank}-moe-capture-ledger.json"
+        raise ValueError("cold region capture ledger exceeds its inclusive graph-host allowance slice")
+    path = Path(output) / f"rank-{rank}-{family}-capture-ledger.json"
     primary = None
     close_failures = [None]  # Reserve before acquiring the output stream.
     file = path.open("xb")
@@ -605,6 +613,22 @@ def graph_execution_snapshot(engine):
         value = moe_regions.get(name)
         if not moe_regions.get("counter_overflowed", False) and type(value) is int and 0 <= value <= (1 << 63) - 1:
             counters["moe_regions." + name] = value
+    row_frames = moe_regions.get("row_frames")
+    if not moe_regions.get("counter_overflowed", False) and type(row_frames) is dict:
+        for rows in (30, 31, 32):
+            value = row_frames.get(rows)
+            if type(value) is int and 0 <= value <= (1 << 63) - 1:
+                counters["moe_regions.rows_" + str(rows) + "_frames"] = value
+    candidate = _owned_attributes(fields.get("candidate_regions"))
+    frames = candidate.get("frame_counts")
+    if not candidate.get("counter_overflowed", False) and type(frames) is dict:
+        for role in ("target", "mtp"):
+            counts = frames.get(role)
+            if type(counts) is dict:
+                for rows in range(1, 33):
+                    value = counts.get(rows)
+                    if type(value) is int and 0 <= value <= (1 << 63) - 1:
+                        counters[f"candidate_regions.{role}.rows_{rows}"] = value
     if type(submitted) is int and 0 <= submitted <= (1 << 63) - 1:
         counters["gdn.batch_submitted_layers"] = submitted
     names = ("hits", "misses", "lane_declines", "verify_hits", "mtp_hits",
@@ -1104,6 +1128,7 @@ def worker(args):
         if getattr(engine, "sm70_profile", None) in (ROUTER_BLAS_TRIAL, SHARED_FUSION_TRIAL):
             report["router_blas"] = check_router_blas_engine(engine)
         report["moe_capture_ledger"] = write_moe_capture_ledger(engine, args.out, args.rank)
+        report["candidate_capture_ledger"] = write_candidate_capture_ledger(engine, args.out, args.rank)
         if getattr(args, "packed_shared_fusion_trial", False):
             report["shared_fusion"] = check_shared_fusion_engine(engine)
         report["capacity_plan"] = engine.capacity_plan
