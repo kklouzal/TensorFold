@@ -59,3 +59,13 @@ def test_actual_export_write_and_close_fault_preserve_named_primary(tmp_path,mon
         return sum((leaves(item) for item in error.exceptions),[]) if isinstance(error,BaseExceptionGroup) else [error]
     assert {id(value) for value in leaves(primary.__cause__)}=={id(prior),id(secondary)}
     assert log==['write','close']
+
+
+def test_candidate_ledger_is_separate64_phase_artifact(tmp_path):
+    rows=[{'key':['candidate',role,r],'charged_bytes':0} for role in ('target','mtp') for r in range(1,33)]
+    owner=N(ready=True,measured=rows,plan={},host_before={},host_after={},_host_gate=lambda:None)
+    result=probe.write_candidate_capture_ledger(N(multi=N(graphs=N(candidate_regions=owner))),tmp_path,2)
+    assert result['phase_records']==64
+    raw=json.loads((tmp_path/'rank-2-candidate-capture-ledger.json').read_text())
+    assert raw['schema']=='tensorfold.cold-candidate-capture-ledger-v1'
+    assert raw['capture_phases']==rows
