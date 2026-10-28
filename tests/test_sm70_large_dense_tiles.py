@@ -154,3 +154,20 @@ def test_large_projection_counter_saturates_without_growing_or_losing_output(mon
     assert workspace.matmul(torch.ones_like(out),matrix,out)is out
     assert workspace.counter_overflowed and workspace.submitted_calls==(1<<63)-1
     assert torch.all(out==3)
+
+
+@pytest.mark.parametrize("adaptive,explicit,expected",[(False,None,1048576),(True,None,0),(True,64,1048576),(False,32,0)])
+def test_actual_engine_host_term_covers_fixed72_and_adaptive_default32(adaptive,explicit,expected):
+    import ast
+    from pathlib import Path
+    source=Path(__file__).parents[1]/"src/tensorfold/families/qwen4_exp/cuda/engine.py"
+    tree=ast.parse(source.read_text())
+    envelope=next(n for n in ast.walk(tree)if isinstance(n,ast.FunctionDef)and n.name=="row_envelope")
+    block=next(n for n in ast.walk(tree)if isinstance(n,ast.If)and isinstance(n.test,ast.Name)
+        and n.test.id=="sm70"and any(isinstance(c,ast.Call)and isinstance(c.func,ast.Attribute)
+        and c.func.attr=="host_workspace_bytes"for c in ast.walk(n)))
+    env={"__package__":"tensorfold.families.qwen4_exp.cuda","sm70":True,"adaptive_sessions":adaptive,
+        "execution_rows":explicit,"each":3,"streams":24,"concurrent":True,"tp":8,"mtp":True,
+        "session_ceiling":24 if adaptive else None,"host_capacity":{},"self":NS(sm70_profile=PROFILE)}
+    exec(compile(ast.Module(body=[envelope,block],type_ignores=[]),str(source),"exec"),env)
+    assert env["host_capacity"]["host_workspace_bytes"]==expected

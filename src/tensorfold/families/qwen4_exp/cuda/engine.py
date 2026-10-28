@@ -1181,9 +1181,12 @@ class FlashNextEngine:
         if sm70:
             from . import padded_linears
 
-            large_row_bound = execution_rows if execution_rows is not None else 32
-            if session_ceiling is not None:
-                large_row_bound = min(large_row_bound, session_ceiling * each)
+            if adaptive_sessions:
+                large_row_bound = execution_rows if execution_rows is not None else 32
+                if session_ceiling is not None:
+                    large_row_bound = min(large_row_bound, session_ceiling * each)
+            else:
+                large_row_bound = row_envelope(streams) if concurrent else max(8, each)
             dense_tile_host = tp * (1 + int(mtp)) * padded_linears.host_workspace_bytes(
                 large_row_bound, self.sm70_profile)
             host_capacity["host_workspace_bytes"] = host_capacity.get("host_workspace_bytes", 0) + dense_tile_host
