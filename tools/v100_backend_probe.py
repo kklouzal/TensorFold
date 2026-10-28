@@ -130,6 +130,8 @@ def arguments(argv=None):
                         help="opt-in persistent cache root: each child inherits TRITON_CACHE_DIR=ROOT/rank-N before startup; Triton retains its source/platform/configuration keys")
     parser.add_argument("--overlap-content-capture", action="store_true",
                         help="private TP8 owner MTP diagnostic: enable funded one-worker fresh artifact hashing during startup; inherited by all ranks before imports; default serial hashing")
+    parser.add_argument("--startup-content-workers", type=int, choices=(1,3), default=1,
+                        help="explicit1(default) or3 independent whole-file startup SHA workers; requires --overlap-content-capture, all resources prepaid")
     parser.add_argument("--gpus", default="0,1,2,3,4,5,6,7")
     parser.add_argument("--session-ceiling", type=int, choices=(24,),
                         help="optional explicit24-session qualification region; default retains automatic capacity")
@@ -209,11 +211,15 @@ def arguments(argv=None):
         _manifest_schema(document)
         args.execution_manifest_identity = {"path": str(args.execution_profile_manifest), "bytes": len(raw),
                                             "sha256": hashlib.sha256(raw).hexdigest()}
+    if args.startup_content_workers != 1 and not args.overlap_content_capture:
+        parser.error("--startup-content-workers3 requires --overlap-content-capture")
     if args.overlap_content_capture:
         if args.execution_profile_manifest is None:
             parser.error("--overlap-content-capture requires an explicit execution manifest")
         if args.rank is not None and os.environ.get("TENSORFOLD_STARTUP_CONTENT_OVERLAP") != "1":
             parser.error("worker startup content overlap must be inherited from the launcher")
+        if args.rank is not None and os.environ.get("TENSORFOLD_STARTUP_CONTENT_WORKERS", "1") != str(args.startup_content_workers):
+            parser.error("worker content hash worker budget must match inherited startup environment")
     args.out = args.out.expanduser().absolute()
     return args
 
@@ -938,6 +944,7 @@ def launch(args, argv):
             "requested_sm70_profile": args.requested_sm70_profile,
             "triton_cache_root": str(args.triton_cache_root) if args.triton_cache_root is not None else None,
             "overlap_content_capture": getattr(args, "overlap_content_capture", False),
+            "startup_content_workers": getattr(args, "startup_content_workers", 1),
             "instrumented_departure_grace_seconds": args.instrumented_departure_grace_seconds,
             "repetitions": args.repetitions,
             "output_queue_tokens": args.tokens, "prefill_rows_env": os.environ.get("TENSORFOLD_PREFILL_ROWS", "2048")},
@@ -996,6 +1003,8 @@ def launch(args, argv):
                                **{FAILURE_FD_ENV: str(write_fd)})
             if getattr(args, "overlap_content_capture", False):
                 environment["TENSORFOLD_STARTUP_CONTENT_OVERLAP"] = "1"
+                if getattr(args, "startup_content_workers", 1) != 1:
+                    environment["TENSORFOLD_STARTUP_CONTENT_WORKERS"] = str(args.startup_content_workers)
             if args.triton_cache_root is not None:
                 environment["TRITON_CACHE_DIR"] = str(args.triton_cache_root / f"rank-{rank}")
             environments.append(environment)

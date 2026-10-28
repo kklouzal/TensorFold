@@ -1,5 +1,15 @@
 # TensorFold fork
 
+The private startup overlap can explicitly select `--startup-content-workers 3`
+(or `TENSORFOLD_STARTUP_CONTENT_WORKERS=3` with overlap enabled). Three bounded
+owned Captures hash deterministic disjoint partitions of whole files, each
+using the original SHA256 and current-process authority checks. No chunk digests
+are combined. The default remains one worker. All three stack/guard/working
+allowances are funded globally before start; failures cancel siblings and
+every accepted file borrower retires under its own completion latch. Input
+immutability, byte/stat verification, MTP quality and24-window capacity remain
+required. Actual startup benefit and all-six throughput require measurement.
+
 Canonical MTP text refresh/proposal frames now use the existing actual text
 coordinate producer when no explicit coordinates or deferred boundary are
 present. It preserves hidden/cache positions at `mtp_len`, independent of next

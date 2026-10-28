@@ -387,3 +387,13 @@ between bounded reads and joins the worker before releasing engine owners.
 A blocked filesystem read retains its existing I/O completion contract.
 The unset default retains serial content hashing. CPU controls and an actual
 V100 startup/quality/performance comparison are separate gates.
+
+
+The explicit startup worker budget may be1(default) or3. With3, fixed whole-file
+partitions balance captured input sizes, preserving independent per-fileSHA256
+values and deterministic content-map identity. The global host allowance is
+three times the one-worker stack/observed-guard/8MiB working envelope. One failed
+hash cancels its siblings between reads; partial start or interrupted retirement
+keeps uncertain accepted owners attached to constructor failure. All peers
+agree on the worker budget before any start. No startup speed or memory-release
+qualification follows from thread creation or Python join alone.
