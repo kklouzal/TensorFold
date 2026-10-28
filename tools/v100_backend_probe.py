@@ -566,6 +566,7 @@ def write_moe_capture_ledger(engine, output, rank):
         raise ValueError("cold MoE capture ledger exceeds its inclusive graph-host allowance slice")
     path = Path(output) / f"rank-{rank}-moe-capture-ledger.json"
     primary = None
+    close_failures = [None]  # Reserve before acquiring the output stream.
     file = path.open("xb")
     try:
         if file.write(encoded) != len(encoded):
@@ -575,11 +576,8 @@ def write_moe_capture_ledger(engine, output, rank):
     try:
         file.close()
     except BaseException as error:
-        if primary is not None:
-            raise primary from error
-        raise
-    if primary is not None:
-        raise primary
+        close_failures[0] = error
+    finish_failures(primary, close_failures)
     catalogue._host_gate()  # Include the bounded cold diagnostic buffer in the observed operating gate.
     return {"path": str(path), "bytes": len(encoded), "sha256": hashlib.sha256(encoded).hexdigest(),
             "phase_records": len(measurements), "scope": "cold rankevidence; graphhostallowance, not256KiB replypayload"}

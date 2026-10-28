@@ -35,6 +35,8 @@ def test_incomplete_cold_ledger_refuses_without_ready_descriptor(tmp_path):
 
 def test_actual_export_write_and_close_fault_preserve_named_primary(tmp_path,monkeypatch):
     primary,secondary=OSError('ledger-write'),OSError('ledger-close')
+    prior=ValueError('native-write-root')
+    primary.__cause__=prior
     log=[]
     class File:
         def write(self,encoded):
@@ -52,5 +54,8 @@ def test_actual_export_write_and_close_fault_preserve_named_primary(tmp_path,mon
     engine=N(multi=N(graphs=N(moe_regions=catalogue,private_pool_records=[])))
     with pytest.raises(OSError) as caught:
         probe.write_moe_capture_ledger(engine,tmp_path,0)
-    assert caught.value is primary and caught.value.__cause__ is secondary
+    assert caught.value is primary
+    def leaves(error):
+        return sum((leaves(item) for item in error.exceptions),[]) if isinstance(error,BaseExceptionGroup) else [error]
+    assert {id(value) for value in leaves(primary.__cause__)}=={id(prior),id(secondary)}
     assert log==['write','close']
