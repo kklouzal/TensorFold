@@ -341,9 +341,9 @@ def _native_frame_prepare(projection, state, layer, weights, buffers, start, sto
 
 def prepare(projection, state, layer, weights, buffers, start, stop, *, mtp):
     """Prepare one bounded frame; only owners publish persistent rows."""
-    from .prefix_policy import OWNER_TARGET_PRELUDE_PROFILE
+    from .prefix_policy import OWNER_TARGET_PRELUDE_PROFILE, OWNER_DESCRIPTOR_RING_PROFILE
 
-    if (weights.meta.get("sm70_profile") == OWNER_TARGET_PRELUDE_PROFILE
+    if (weights.meta.get("sm70_profile") in (OWNER_TARGET_PRELUDE_PROFILE, OWNER_DESCRIPTOR_RING_PROFILE)
             and _native_frame_prepare(projection, state, layer, weights, buffers, start, stop, mtp=mtp)):
         return
     c, a = weights.cfg, layer.attn
@@ -529,6 +529,7 @@ class OwnerBuffers:
         self.native_states, self.native_owners, self.native_pair, self.native_buckets = None, (), None, ()
         self.descriptors = self.descriptors_host = self.global_stats = self.lane_rows = self.native_layer = None
         self.descriptor_upload = self.native_done = None
+        self.descriptor_ring = None
         self._upload_pending = self._native_pending = self._base_ready = self._construction_started = False
         self.native_comm = self.native_collective = None
         self._native_transport_configured = False
@@ -608,7 +609,7 @@ class OwnerBuffers:
                 "collective_family": native["collective_family"], "attention_members": native["attention_members"],
                 "qualification": "construction extents; not physical allocator or execution qualification"}
 
-    def prepare_native(self, states=None, *, pair=None, page_tokens=128, buckets=None):
+    def prepare_native(self, states=None, *, pair=None, page_tokens=128, buckets=None, descriptor_upload_slots=None):
         """Prepare fixed pointer tables before capture/admission; never select a kernel.
 
         A header-only caller may supply ``pair`` and no States. Zero descriptor
@@ -648,16 +649,30 @@ class OwnerBuffers:
             raise ValueError("native history pages must contain complete positive pooling groups")
         if self.native_pair is not None and self.native_page_tokens != page_tokens:
             raise ValueError("prepared native graphs cannot change their page geometry")
+        from .descriptor_upload import selected_slots, host_commitment, DescriptorUploadRing
+
+        slots = selected_slots() if descriptor_upload_slots is None else descriptor_upload_slots
+        host_commitment(self.rows, slots)
+        if self.descriptors is not None and slots != (1 if self.descriptor_ring is None else self.descriptor_ring.slots):
+            raise ValueError("descriptor upload ring cannot change after startup preparation")
         if self.descriptors is None:
             device = self.queries.device
             self.descriptors = torch.zeros((self.rows, DESCRIPTOR_WORDS), dtype=torch.int64, device=device)
-            self.descriptors_host = torch.zeros((self.rows, DESCRIPTOR_WORDS), dtype=torch.int64,
-                                                pin_memory=self.queries.is_cuda)
+            if slots > 1:
+                ring = object.__new__(DescriptorUploadRing)
+                self.descriptor_ring = ring  # Journal partial ownership before pinned/event allocations.
+                ring.__init__(self.rows, slots, device)
+                self.descriptors_host = ring.views[0]
+                self.descriptor_upload = ring.latest_event
+            else:
+                self.descriptors_host = torch.zeros((self.rows, DESCRIPTOR_WORDS), dtype=torch.int64,
+                                                    pin_memory=self.queries.is_cuda)
             self.global_stats = torch.empty((self.rows, 12, 2), dtype=torch.float32, device=device)
             self.lane_rows = torch.zeros((self.rows,), dtype=torch.int32, device=device)
             self.native_layer = torch.zeros((1,), dtype=torch.int32, device=device)
             if self.queries.is_cuda:
-                self.descriptor_upload = torch.cuda.Event()
+                if self.descriptor_ring is None:
+                    self.descriptor_upload = torch.cuda.Event()
                 self.native_done = torch.cuda.Event()
         self.native_pair = pair
         self.native_page_tokens = page_tokens
@@ -768,26 +783,40 @@ class OwnerBuffers:
             cursor = end
         if cursor != base + count:
             raise ValueError("native descriptor lanes do not cover the live execution prefix")
-        if self._upload_pending:
-            self.descriptor_upload.synchronize()  # Retire only host DMA, not the complete model iteration.
-        self.wait_native_reuse()
-        host = self.descriptors_host[:bucket]
-        host.zero_()
-        self.lane_rows[:bucket].zero_()
-        self.native_layer.fill_(layer.index)
-        for lane, (state, first, last, begin, end, cache, position, index_owner) in enumerate(spans):
-            self.lane_rows[lane].fill_(last - first)
-            live_pointer = self.lane_rows.data_ptr() + lane * self.lane_rows.element_size()
-            for row in range(begin, end):
-                words = (cache.k.data_ptr(), cache.v.data_ptr(), cache.ks.data_ptr(), cache.vs.data_ptr(),
-                         cache.page_offsets.data_ptr(), state.history_generations.data_ptr(), state.kv_status.data_ptr(),
-                         position.data_ptr(), live_pointer, state.slot_generation, state.history_generation,
-                         state.capacity, cache.capacity, cache.page_offsets.numel(), row - first, index_owner)
-                host[row - base].copy_(torch.tensor(words, dtype=torch.int64))
-        self.descriptors[:bucket].copy_(host, non_blocking=self.queries.is_cuda)
-        if self.descriptor_upload is not None:
-            self.descriptor_upload.record(torch.cuda.current_stream(self.queries.device))
-            self._upload_pending = True
+        ring = self.descriptor_ring
+        try:
+            if ring is None and self._upload_pending:
+                self.descriptor_upload.synchronize()
+            self.wait_native_reuse()
+            if ring is not None:
+                self.descriptors_host = ring.acquire()
+                stream = torch.cuda.current_stream(self.queries.device) if self.queries.is_cuda else None
+                if stream is not None:
+                    ring.before_gpu_write(stream)
+            host = self.descriptors_host[:bucket]
+            host.zero_()
+            self.lane_rows[:bucket].zero_()
+            self.native_layer.fill_(layer.index)
+            for lane, (state, first, last, begin, end, cache, position, index_owner) in enumerate(spans):
+                self.lane_rows[lane].fill_(last - first)
+                live_pointer = self.lane_rows.data_ptr() + lane * self.lane_rows.element_size()
+                for row in range(begin, end):
+                    words = (cache.k.data_ptr(), cache.v.data_ptr(), cache.ks.data_ptr(), cache.vs.data_ptr(),
+                             cache.page_offsets.data_ptr(), state.history_generations.data_ptr(), state.kv_status.data_ptr(),
+                             position.data_ptr(), live_pointer, state.slot_generation, state.history_generation,
+                             state.capacity, cache.capacity, cache.page_offsets.numel(), row - first, index_owner)
+                    host[row - base].copy_(torch.tensor(words, dtype=torch.int64))
+            self.descriptors[:bucket].copy_(host, non_blocking=self.queries.is_cuda)
+            if ring is not None:
+                self.descriptor_upload = ring.publish(stream)
+                self._upload_pending = self.descriptor_upload is not None
+            elif self.descriptor_upload is not None:
+                self.descriptor_upload.record(torch.cuda.current_stream(self.queries.device))
+                self._upload_pending = True
+        except BaseException as error:
+            if ring is not None:
+                ring.poison(error)
+            raise
 
     def native_views(self, rows):
         if self.descriptors is None or type(rows) is not int or not 1 <= rows <= self.rows:
@@ -817,16 +846,28 @@ class OwnerBuffers:
         return next(bucket for bucket in self.native_buckets if actual_rows <= bucket)
 
     def clear_native_inputs(self, rows):
-        self.wait_native_reuse()
-        views = self.native_views(rows)
-        for name in ("q_all", "selected_all", "row_table"):
-            views[name].zero_()
-        self.selection[:rows].zero_()
-        self.lane_rows[:rows].zero_()
-        self.native_layer.zero_()
-        if self.descriptor_upload is not None:
-            self.descriptor_upload.record(torch.cuda.current_stream(self.queries.device))
-            self._upload_pending = True
+        ring = self.descriptor_ring
+        try:
+            if self.descriptor_ring is not None:
+                self.descriptor_ring.drain()
+            self.wait_native_reuse()
+            views = self.native_views(rows)
+            for name in ("q_all", "selected_all", "row_table"):
+                views[name].zero_()
+            self.selection[:rows].zero_()
+            self.lane_rows[:rows].zero_()
+            self.native_layer.zero_()
+            if self.descriptor_upload is not None:
+                stream = torch.cuda.current_stream(self.queries.device)
+                self.descriptor_upload.record(stream)
+                if self.descriptor_ring is not None:
+                    self.descriptor_ring.latest_event = self.descriptor_upload
+                    self.descriptor_ring.latest_stream = stream.cuda_stream
+                self._upload_pending = True
+        except BaseException as error:
+            if ring is not None:
+                ring.poison(error)
+            raise
 
     def wait_native_inputs(self):
         if self._upload_pending:
@@ -926,6 +967,8 @@ class OwnerBuffers:
         device_owned = any(isinstance(value, torch.Tensor) and value.is_cuda for value in vars(self).values())
         if device_owned:
             torch.cuda.synchronize(self.device)
+        if self.descriptor_ring is not None:
+            self.descriptor_ring.drain(globally_fenced=device_owned)
         if self.descriptors is not None:
             self.descriptors.zero_()
             if self.lane_rows is not None:
@@ -951,6 +994,7 @@ class OwnerBuffers:
         self.queries = self.selection = self.selections = self.partial = self.partials = self.position = None
         self.descriptors = self.descriptors_host = self.global_stats = self.lane_rows = self.native_layer = None
         self.descriptor_upload = self.native_done = None
+        self.descriptor_ring = None
         self.native_comm = None
         self.closed, self._base_ready = True, False
 
@@ -966,9 +1010,14 @@ class OwnerBuffers:
                 "global_statistics_bytes": 0 if self.global_stats is None else self.global_stats.nbytes,
                 "lane_control_bytes": 0 if self.lane_rows is None else self.lane_rows.nbytes,
                 "layer_control_bytes": 0 if self.native_layer is None else self.native_layer.nbytes,
-                "host_descriptor_bytes": 0 if self.descriptors_host is None else self.descriptors_host.nbytes,
-                "pinned_descriptor_bytes": (self.descriptors_host.nbytes if self.descriptors_host is not None
-                                             and self.descriptors_host.is_pinned() else 0)}
+                "descriptor_upload_slots": 1 if self.descriptor_ring is None else self.descriptor_ring.slots,
+                "host_ring_metadata_bytes_bound": 0 if self.descriptor_ring is None else 16384,
+                "host_descriptor_bytes": (self.descriptor_ring.hosts.nbytes if self.descriptor_ring is not None
+                                          and self.descriptor_ring.hosts is not None else
+                                          0 if self.descriptors_host is None else self.descriptors_host.nbytes),
+                "pinned_descriptor_bytes": ((self.descriptor_ring.hosts.nbytes if self.descriptor_ring is not None
+                                               else self.descriptors_host.nbytes)
+                                             if self.descriptors_host is not None and self.descriptors_host.is_pinned() else 0)}
 
     @property
     def nbytes(self):

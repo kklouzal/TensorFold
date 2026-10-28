@@ -33,6 +33,9 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
     from tensorfold.families.qwen4_exp.kv_formats import get_pair
     from test_sm70_unique_piece_graphs_tp8 import _equal, _committed
 
+    ring_trial = target_greedy == "ring-prelude"
+    if ring_trial:
+        target_greedy = "bound-prelude"
     torch.set_num_threads(1)
     torch.cuda.set_device(rank)
     from test_flashnext_sm70_mtp import _weights_with_stock_mtp_protocol
@@ -143,6 +146,10 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
                 assert context is weights.meta["input_preparation_context"]
             preparation = None
             if native:
+                if ring_trial and compact_target:
+                    import os
+                    os.environ["TENSORFOLD_SM70_PROFILE"] = "source-owner-descriptor-ring-trial"
+                    os.environ["TENSORFOLD_OWNER_DESCRIPTOR_UPLOAD_SLOTS"] = "4"
                 preparation = OwnerPreparation(spec, role_rows={"decode": 3, "mtp": 3, "prefill": 8},
                     manifest_sha256=hashlib.sha256(json.dumps(text, sort_keys=True).encode()).hexdigest())
                 preparations.append(preparation)
@@ -153,6 +160,13 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
                 confidence=.7, prefill_rows=8, kv_dtype="int8", graphs=False, keep=1, full_windows=1)
             if compact_target:
                 target_owners.append(weights.meta["target_greedy_owner"])
+            if ring_trial and compact_target:
+                from tensorfold.families.qwen4_exp.cuda.prefix_policy import OWNER_DESCRIPTOR_RING_PROFILE
+                weights.meta["sm70_profile"] = OWNER_DESCRIPTOR_RING_PROFILE
+                assert preparation.host_ring_admission["total_commitment_bytes"] > 0
+                for owner in preparation.workspaces.values():
+                    assert owner.descriptor_ring.slots == 4
+                    assert len(owner.descriptor_ring.events) == 4
             return weights, result, preparation
 
         torch_weights, torch_decoder, _ = decoder(False)
@@ -295,7 +309,7 @@ def _retire_fixture_context(context, directory, primary=None):
         BaseException.__context__.__set__(primary, secondary)
         raise primary
 
-@pytest.mark.parametrize("target_greedy", [False, True, "guard", "prelude", "bound-prelude"])
+@pytest.mark.parametrize("target_greedy", [False, True, "guard", "prelude", "bound-prelude", "ring-prelude"])
 def test_v100_tp8_native_owner_exact_pieces_match_native_eager_frames_and_commits(target_greedy):
     if torch.cuda.device_count() < 8 or any(torch.cuda.get_device_capability(rank) != (7, 0) for rank in range(8)):
         pytest.skip("requires eight real SM70 GPUs and the supported source foundation")

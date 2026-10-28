@@ -173,9 +173,13 @@ def native_owner_workspace_bytes(rows: int) -> dict[str, int]:
 
     chunk = min(rows, 256)
     descriptors, operator = chunk * DESCRIPTOR_BYTES, workspace_bytes(chunk)
+    from .descriptor_upload import selected_slots, METADATA_BOUND
+
+    slots = selected_slots()
     return {"descriptor_bytes": descriptors, "global_statistics_bytes": operator - descriptors,
             "lane_control_bytes": chunk * 4, "layer_control_bytes": LAYER_BYTES,
-            "device_bytes": operator + chunk * 4 + LAYER_BYTES, "host_staging_bytes": descriptors}
+            "device_bytes": operator + chunk * 4 + LAYER_BYTES, "host_staging_bytes": slots * descriptors,
+            "host_metadata_bytes_bound": METADATA_BOUND if slots > 1 else 0}
 
 
 def owner_workspace_bytes(text, rows: int, world: int = 8, *, native: bool = False) -> dict[str, int]:

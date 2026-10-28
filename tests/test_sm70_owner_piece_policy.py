@@ -32,10 +32,10 @@ def request(module, **changes):
     return module.unique_graph_request(module.OWNER_GRAPH_TRIAL, **args)
 
 
-@pytest.mark.parametrize("target,guard,prelude", [(False, False, False), (True, False, False), (True, True, False), (True, True, True)])
+@pytest.mark.parametrize("target,guard,prelude", [(False, False, False), (True, False, False), (True, True, False), (True, True, True), (True, True, "ring")])
 def test_new_profile_requires_issued_native_owner_and_grants_only_exact_nonattention_pieces(source, monkeypatch, target, guard, prelude):
     module = source.module
-    selected = module.OWNER_TARGET_PRELUDE_TRIAL if prelude else module.OWNER_TARGET_GUARD_TRIAL if guard else module.OWNER_TARGET_GREEDY_TRIAL if target else module.OWNER_GRAPH_TRIAL
+    selected = module.OWNER_DESCRIPTOR_RING_TRIAL if prelude == "ring" else module.OWNER_TARGET_PRELUDE_TRIAL if prelude else module.OWNER_TARGET_GUARD_TRIAL if guard else module.OWNER_TARGET_GREEDY_TRIAL if target else module.OWNER_GRAPH_TRIAL
     monkeypatch.setenv(module.PROFILE_ENV, selected)
     if guard:
         monkeypatch.setattr(family_native, "extension", lambda: source.calls.append("extension") or

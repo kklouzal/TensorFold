@@ -44,6 +44,10 @@ def parse_preparation(value):
 
 class OwnerPreparation:
     def __init__(self, specification, *, role_rows, manifest_sha256):
+        from .descriptor_upload import selected_slots
+
+        self.descriptor_upload_slots = selected_slots()
+        self.host_ring_admission = None
         self.specification = parse_preparation(specification)
         if self.specification is None or not isinstance(role_rows, dict) or not {"decode", "prefill"} <= role_rows.keys():
             raise ValueError("native preparation requires the actual decode and prefill envelopes")
@@ -93,7 +97,8 @@ class OwnerPreparation:
                     "heads": text["num_attention_heads"], "kv_heads": text["num_key_value_heads"],
                     "head_dim": text.get("head_dim") or text["hidden_size"] // text["num_attention_heads"],
                     "index_budget": text.get("indexer_budget", 2048),
-                    "index_ratio": text.get("indexer_compress_ratio", 4)}
+                    "index_ratio": text.get("indexer_compress_ratio", 4),
+                    "descriptor_upload_slots": self.descriptor_upload_slots}
         import json
 
         contract = json.loads(canonical_runtime_json(contract, max_bytes=4 << 20))
@@ -108,6 +113,13 @@ class OwnerPreparation:
             peers = self._phase(engine, "contract", prepared_contract)
             if any(peer != peers[0] for peer in peers):
                 raise ValueError("native owner preparation differs across TP8 ranks")
+            if self.descriptor_upload_slots > 1:
+                from tensorfold.cuda.capacity import admit_host_commitment
+                from .descriptor_upload import host_commitment
+
+                requested = engine.tp * sum(host_commitment(min(rows, 256), self.descriptor_upload_slots)
+                                            for rows in self.role_rows.values())
+                self.host_ring_admission = admit_host_commitment(requested)
             torch.cuda.synchronize(device)
             torch.cuda.empty_cache()
             self.before = self._memory(torch, device)
@@ -147,7 +159,9 @@ class OwnerPreparation:
                         idw=contract["index_budget"] + contract["index_ratio"], world=engine.tp,
                         rank=engine.rank, device=device, comm=engine.comm,
                         register=lambda owner: self.workspaces.__setitem__(role, owner))
-                    owner.prepare_native(pair=pair, page_tokens=page_tokens, buckets=self.buckets[role])
+                    owner.prepare_native(pair=pair, page_tokens=page_tokens, buckets=self.buckets[role],
+                                         **({"descriptor_upload_slots": self.descriptor_upload_slots}
+                                            if self.descriptor_upload_slots > 1 else {}))
                     owner.configure_native_transport(self.specification["collective_family"],
                                                      self.head_comm or engine.comm)
                     return owner.allocation_record()
@@ -297,6 +311,7 @@ class OwnerPreparation:
         return {"specification": {name: deepcopy(value) for name, value in self.specification.items() if name != "trial"},
                 "source_foundation_headers": deepcopy(self.source_foundation),
                 "roles": dict(self.role_rows),
+                "descriptor_upload_slots": self.descriptor_upload_slots,
                 "row_buckets": {role: list(rows) for role, rows in self.buckets.items()},
                 "allocations": deepcopy(self.allocations),
                 "allocator_accounting": "exclude-proved-private-spare; physical-only-when-unavailable"}

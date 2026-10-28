@@ -1,5 +1,14 @@
 # TensorFold fork
 
+The private `source-owner-descriptor-ring-trial` prepares four pinned descriptor
+upload slots per fixed owner role. Each slot retires its own DMA before reuse;
+all slots retire before model release. The GPU descriptor address, native reader
+fences, row/schema/generation checks and native arithmetic remain unchanged.
+`TENSORFOLD_OWNER_DESCRIPTOR_UPLOAD_SLOTS` selects controlled 2/4/8-slot trials.
+Host payload/metadata is admitted before allocation and all event handles warm
+before the initial model baseline. CPU, TP8, capacity24 and all-six quality and
+performance gates remain pending for this prototype.
+
 Canonical MTP text refresh/proposal frames now use the existing actual text
 coordinate producer when no explicit coordinates or deferred boundary are
 present. It preserves hidden/cache positions at `mtp_len`, independent of next
