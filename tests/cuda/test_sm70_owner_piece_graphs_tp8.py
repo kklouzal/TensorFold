@@ -29,7 +29,7 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
     from tensorfold.families.qwen4_exp.cuda.multi_graphs import RoundGraphs, UNIQUE_NATIVE_OWNER_CAPTURE_CONTRACT
     from tensorfold.families.qwen4_exp.cuda.owner_execution import KERNEL_FAMILY, FULL_COLLECTIVE, UNCAPTURED
     from tensorfold.families.qwen4_exp.cuda.owner_preparation import OwnerPreparation
-    from tensorfold.families.qwen4_exp.cuda.prefix_policy import OWNER_GRAPH_PROFILE, OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE
+    from tensorfold.families.qwen4_exp.cuda.prefix_policy import OWNER_GRAPH_PROFILE, OWNER_TARGET_GREEDY_PROFILE, OWNER_TARGET_GUARD_PROFILE, OWNER_TARGET_PRELUDE_PROFILE, OWNER_DESCRIPTOR_RING_PROFILE
     from tensorfold.families.qwen4_exp.kv_formats import get_pair
     from test_sm70_unique_piece_graphs_tp8 import _equal, _committed
 
@@ -121,7 +121,7 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
             if compact_target:
                 from tensorfold.families.qwen4_exp.cuda.target_greedy import POLICY
 
-                weights.meta.update(sm70_profile=OWNER_TARGET_PRELUDE_PROFILE if compact_target in ("prelude", "bound-prelude") else
+                weights.meta.update(sm70_profile=OWNER_DESCRIPTOR_RING_PROFILE if ring_trial else OWNER_TARGET_PRELUDE_PROFILE if compact_target in ("prelude", "bound-prelude") else
                     OWNER_TARGET_GUARD_PROFILE if compact_target == "guard" else OWNER_TARGET_GREEDY_PROFILE,
                     sm70_target_greedy_trial={"policy": POLICY}, target_greedy_owner=None)
                 if compact_target in ("guard", "prelude", "bound-prelude"):
@@ -161,8 +161,6 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
             if compact_target:
                 target_owners.append(weights.meta["target_greedy_owner"])
             if ring_trial and compact_target:
-                from tensorfold.families.qwen4_exp.cuda.prefix_policy import OWNER_DESCRIPTOR_RING_PROFILE
-                weights.meta["sm70_profile"] = OWNER_DESCRIPTOR_RING_PROFILE
                 assert preparation.host_ring_admission["total_commitment_bytes"] > 0
                 for owner in preparation.workspaces.values():
                     assert owner.descriptor_ring.slots == 4
