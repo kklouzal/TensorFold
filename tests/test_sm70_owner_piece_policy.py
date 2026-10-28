@@ -106,6 +106,9 @@ def test_combined_prefix_epoch_cannot_borrow_old_graph_or_eager_state_before_mut
 
 
 @pytest.mark.parametrize("profile,slots,refused", [
+    (prefix_policy.OWNER_ATTENTION_GRAPHS_PROFILE, 23, True),
+    (prefix_policy.OWNER_ATTENTION_GRAPHS_PROFILE, 24, False),
+    (prefix_policy.OWNER_ATTENTION_GRAPHS_PROFILE, 26, False),
     (prefix_policy.OWNER_TARGET_PRELUDE_PROFILE, 23, True),
     (prefix_policy.OWNER_TARGET_PRELUDE_PROFILE, 24, False),
     (prefix_policy.OWNER_TARGET_PRELUDE_PROFILE, 26, False),

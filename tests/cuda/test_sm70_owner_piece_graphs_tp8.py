@@ -16,6 +16,22 @@ import pytest
 torch = pytest.importorskip("torch")
 
 
+def _check_adopted_owner_family(source, preparation, role, *, captured):
+    """Fixture contract: new captured mode keeps strict legacy family checks."""
+    from tensorfold.families.qwen4_exp.cuda.owner_execution import KERNEL_FAMILY, UNCAPTURED, GRAPH_FAMILY
+
+    assert source.owner_kernel_family == KERNEL_FAMILY
+    if captured:
+        assert source.owner_graph_family == GRAPH_FAMILY
+        assert source.owner_graphs is preparation.graphs[role]
+        assert source.owner_graphs.workspace is source.history_owner
+        assert source.owner_graphs.prepared and not source.owner_graphs.closed
+        assert source.owner_graphs.failure is None
+    else:
+        assert source.owner_graph_family == UNCAPTURED
+        assert source.owner_graphs is None
+
+
 def _worker(rank, port, target_greedy=False, profile_directory=None):
     import faulthandler
     import traceback
@@ -187,7 +203,8 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
         for kind, source in (("verify", combined.buf), ("mtp", combined.mbuf)):
             private = graphs.bound.buffers[kind]
             assert (private.pa.data_ptr(), private.attn_o.data_ptr()) == addresses[kind]
-            assert source.owner_kernel_family == KERNEL_FAMILY and source.owner_graph_family == UNCAPTURED
+            _check_adopted_owner_family(source, combined_preparation, "decode" if kind == "verify" else "mtp",
+                                        captured=captured_attention)
         phase("adopt/native-on-same-pointers")
 
         prompt = ([4, 17, 3, 99, 33, 2, 7, 5, 6] * 15)[:129]

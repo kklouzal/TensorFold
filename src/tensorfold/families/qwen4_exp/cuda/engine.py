@@ -1202,7 +1202,7 @@ class FlashNextEngine:
             streams = self.capacity_plan["session_capacity"]["resident_capacity"]
             from tensorfold.cuda.sm70.execution_policy import OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_ATTENTION_GRAPHS_TRIAL
 
-            if self.sm70_profile in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL) and streams < 24:
+            if self.sm70_profile in (OWNER_GRAPH_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_ATTENTION_GRAPHS_TRIAL) and streams < 24:
                 raise ValueError("source-owner-pieces-trial must preserve at least24 complete INT8 context windows")
             resident_windows = streams
             self.streams = self.kv_full_windows = streams
