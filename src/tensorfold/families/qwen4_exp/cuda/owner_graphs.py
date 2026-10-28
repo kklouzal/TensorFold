@@ -17,6 +17,11 @@ from tensorfold.cleanup import error_name, raise_failures
 from .owner_execution import GRAPH_FAMILY, KERNEL_FAMILY, row_buckets
 
 
+def _outcome_slot(error=None):
+    """Reserve cold diagnostic ownership before capture or inside its outcome guard."""
+    return [error]
+
+
 class OwnerAttentionGraphs:
     """One serialized workspace and at most logarithmically many graph objects.
 
@@ -122,18 +127,21 @@ class OwnerAttentionGraphs:
         return int(torch.cuda.mem_get_info(self.device)[0])
 
     def _capture(self, graph, run):
+        secondary = _outcome_slot()  # Fallible storage precedes native acquisition.
         graph.capture_begin(pool=self.pool, capture_error_mode="global")
         primary = None
         try:
             run()
         except BaseException as error:
             primary = error
-        errors = []
         try:
             graph.capture_end()
         except BaseException as error:
-            errors.append(error)
-        raise_failures(primary, errors)
+            secondary[0] = error
+        if primary is not None:
+            raise_failures(primary, secondary)
+        if secondary[0] is not None:
+            raise secondary[0]
         return graph
 
     def _poison(self, error):
@@ -146,7 +154,16 @@ class OwnerAttentionGraphs:
             try:
                 notify_failure()
             except BaseException as notification:
-                raise_failures(error, [notification])
+                try:
+                    raise_failures(error, _outcome_slot(notification))
+                except BaseException as secondary:
+                    if secondary is error:
+                        raise
+                    # The secondary traceback/context owns both a failed
+                    # notification and any outcome-preparation exhaustion.
+                    # Preserve the primary's explicit cause and latched owner.
+                    BaseException.__context__.__set__(error, secondary)
+                    raise error
 
     def prepare(self, *, quiescent):
         """Capture the complete bounded catalogue in a process-wide idle startup scope.

@@ -342,3 +342,78 @@ def test_construction_hooks_cover_capture_and_replay_and_retire_before_clearing_
     catalogue.close()
     assert not replay_map and not bindings and all(graph.resets == 1 for graph in graphs)
     assert events[5:7] == [("retire", id(catalogue)), ("retire", id(replay_map))]
+
+
+@pytest.mark.parametrize("run_fails,end_fails", [(False, False), (True, False), (False, True), (True, True)])
+def test_actual_capture_outcome_preserves_primary_and_always_ends_accepted_begin(monkeypatch, run_fails, end_fails):
+    from tensorfold.families.qwen4_exp.cuda import owner_graphs
+    owner = object.__new__(owner_graphs.OwnerAttentionGraphs)
+    owner.pool = object()
+    calls = []
+    primary, secondary = RuntimeError("run"), RuntimeError("end")
+    class Graph:
+        def capture_begin(self, **kwargs):
+            calls.append("begin")
+        def capture_end(self):
+            calls.append("end")
+            if end_fails:
+                raise secondary
+    graph = Graph()
+    def run():
+        calls.append("run")
+        if run_fails:
+            raise primary
+    if not run_fails and not end_fails:
+        monkeypatch.setattr(owner_graphs, "raise_failures", lambda *args: pytest.fail("success cannot transport None primary"))
+        assert owner._capture(graph, run) is graph
+    else:
+        with pytest.raises(RuntimeError) as caught:
+            owner._capture(graph, run)
+        assert caught.value is (primary if run_fails else secondary)
+        if run_fails and end_fails:
+            assert caught.value.__cause__ is secondary
+    assert calls == ["begin", "run", "end"]
+
+
+def test_capture_outcome_allocation_failure_precedes_any_native_acquisition(monkeypatch):
+    from tensorfold.families.qwen4_exp.cuda import owner_graphs
+    owner = object.__new__(owner_graphs.OwnerAttentionGraphs)
+    owner.pool = object()
+    calls = []
+    error = MemoryError("outcome")
+    def fail(*args):
+        raise error
+    monkeypatch.setattr(owner_graphs, "_outcome_slot", fail)
+    graph = SimpleNamespace(capture_begin=lambda **kwargs: calls.append("begin"),
+                            capture_end=lambda: calls.append("end"))
+    with pytest.raises(MemoryError) as caught:
+        owner._capture(graph, lambda: calls.append("run"))
+    assert caught.value is error and not calls
+
+
+@pytest.mark.parametrize("allocation_fails", [False, True])
+def test_actual_poison_retains_operation_primary_when_notification_or_outcome_allocation_fails(monkeypatch, allocation_fails):
+    from tensorfold.cuda import cohort
+    from tensorfold.families.qwen4_exp.cuda import owner_graphs
+    owner = object.__new__(owner_graphs.OwnerAttentionGraphs)
+    owner.failure = None
+    primary, notification, allocation = RuntimeError("operation"), RuntimeError("notify"), MemoryError("outcome")
+    calls = []
+    def notify():
+        calls.append("notify")
+        raise notification
+    monkeypatch.setattr(cohort, "notify_failure", notify)
+    if allocation_fails:
+        def fail(error=None):
+            assert error is notification
+            raise allocation
+        monkeypatch.setattr(owner_graphs, "_outcome_slot", fail)
+    with pytest.raises(RuntimeError) as caught:
+        owner._poison(primary)
+    assert caught.value is primary and owner.failure is primary and calls == ["notify"]
+    if allocation_fails:
+        assert primary.__context__ is allocation and allocation.__context__ is notification
+    else:
+        assert primary.__cause__ is notification
+    owner._poison(RuntimeError("later"))
+    assert owner.failure is primary and calls == ["notify"]
