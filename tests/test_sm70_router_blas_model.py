@@ -66,3 +66,17 @@ def test_private_numeric_epoch_is_distinct_and_fixed_roles_are_funded_before_adm
                      and any(isinstance(t, ast.Attribute) and t.attr == "capacity_plan" for t in n.targets)
                      and isinstance(n.value, ast.Call) and isinstance(n.value.func, ast.Name) and n.value.func.id == "admit")
     assert block.end_lineno < admission.lineno
+
+
+@pytest.mark.parametrize("profile", [rb.PROFILE, prefix_policy.OWNER_BATCH_PRELUDE_PROFILE])
+def test_actual_prefill_pieces_preserve_independent_prompt_math(profile):
+    from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder
+
+    decoder = object.__new__(MultiDecoder)
+    streams = [NS(sid=index, prompt=[1, 2, 3]) for index in range(2)]
+    decoder.w = NS(meta={"execution_provider": "sm70", "sm70_profile": profile})
+    decoder.fills = {index: (None, None, 0) for index in range(2)}
+    decoder._order = lambda: streams
+    decoder._pass_rows = lambda: 32
+    decoder._points = lambda *_args: []
+    assert decoder._pieces() == [(streams[0], 0, 3)]
