@@ -62,3 +62,20 @@ def test_actual_owned_fixture_imports_with_explicit_full_bank_count():
     module = probe.fixture(Path(__file__).resolve().parents[1])
     assert module.count == 512 and module.dims == 2560
     assert callable(module.make) and callable(module.checkpoint)
+
+
+@pytest.mark.parametrize("rows", probe.ROWS)
+def test_shipping_int32_picks_preserve_seeded_legacy_routing_values(rows):
+    torch = pytest.importorskip("torch")
+    generator = torch.Generator(device="cpu").manual_seed(9201 + rows)
+    torch.randn(rows, 2560, generator=generator)  # Same input draws precede routing.
+    prior_state = generator.get_state().clone()
+    actual = probe.synthetic_ids(rows, generator)
+    legacy = torch.Generator(device="cpu")
+    legacy.set_state(prior_state)
+    expected = torch.stack([torch.randperm(512, generator=legacy)[:10] for _ in range(rows)])
+    expected = torch.cat([expected, torch.full((rows, 1), 512)], dim=1)
+    assert actual.dtype == torch.int32 and actual.device.type == "cpu"
+    assert actual.shape == (rows, 11) and actual.is_contiguous()
+    assert torch.equal(actual.long(), expected)
+    assert torch.equal(generator.get_state(), legacy.get_state())

@@ -35,6 +35,14 @@ def fixture(source):
     return module
 
 
+def synthetic_ids(rows, generator):
+    """Preserve seeded routing values while matching MoEBuffers.pick int32."""
+    import torch
+
+    ids = torch.stack([torch.randperm(EXPERTS, generator=generator)[:10] for _ in range(rows)])
+    return torch.cat([ids, torch.full((rows, 1), EXPERTS)], dim=1).to(torch.int32)
+
+
 def command(source, out, model, wheel, runtime_source, rows):
     argv = [smoke.NCU, "--config-file", "off", "--target-processes", "application-only",
             "--profile-from-start", "off", "--replay-mode", "kernel", "--kernel-name-base", "function",
@@ -100,8 +108,7 @@ def run_operator(args):
     generator = torch.Generator(device="cpu").manual_seed(seed)
     x = (torch.randn(args.rows, 2560, generator=generator) * .1).half().cuda()
     # Uniform sampling without replacement within each synthetic topK10 row.
-    ids_cpu = torch.stack([torch.randperm(EXPERTS, generator=generator)[:10] for _ in range(args.rows)])
-    ids_cpu = torch.cat([ids_cpu, torch.full((args.rows, 1), EXPERTS)], dim=1)
+    ids_cpu = synthetic_ids(args.rows, generator)
     picks = ids_cpu.cuda()
     expected = bank.forward_reference(x, picks)
     output = torch.empty_like(expected)
@@ -137,7 +144,7 @@ def run_operator(args):
     for name, array in (("input", x.cpu().numpy()), ("picks", ids_cpu.numpy()), ("reference", reference), ("before", before), ("after", after)):
         np.save(args.out / (name + ".npy"), array, allow_pickle=False)
     dump(args.out / "application.json", {"status": "PASS strict uint32 output oracle before/after kernel replay",
-        "seed": seed, "rows": args.rows, "hidden": 2560, "local_width": 80, "top_k": 10,
+        "seed": seed, "picks_dtype": str(picks.dtype), "rows": args.rows, "hidden": 2560, "local_width": 80, "top_k": 10,
         "resident_routed_experts": 512, "shared_slot": 512, "layer": 0, "world": 8, "rank_slice": 3,
         "routing": "synthetic uniform without replacement per row; actual checkpoint weights",
         "model": str(args.model), "weight_spans": spans, "wheel_sha256": smoke.sha(args.wheel),

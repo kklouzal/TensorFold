@@ -10,9 +10,12 @@ qualification.
 A private `tools.ncu_experts_actual` diagnostic stages actual layer0 TP8 expert
 banks with all512 routed experts resident and synthetic uniform topK10 routing
 at R1/R8/R32. It bounds profiling to gate/up and exact down, checks bitwise
-outputs against the original bank, and preserves raw counters and units. CPU
-contract checks pass; actual expert-counter replay remains pending and grants
-no model or throughput qualification.
+outputs against the original bank, and preserves raw counters and units. Initial
+actual GV100 reports passed with int64 IDs, which select a different template
+specialization from shipping MoEBuffers int32 IDs. The tool now preserves those
+seeded routing values as int32 before CUDA transfer; CPU controls pass while
+actual int32 counter confirmation remains pending. The reports grant no model
+or throughput qualification.
 
 Canonical MTP text refresh/proposal frames now use the existing actual text
 coordinate producer when no explicit coordinates or deferred boundary are
