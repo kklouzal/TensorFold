@@ -167,3 +167,52 @@ def test_changed_frame_or_rows_refuses_before_canonical_descriptor_overwrite():
             owner.stage_native_descriptors(segments, packet.layers[0], 0, 3, bucket_rows=4)
     assert bool((owner.descriptors == 91).all())
     owner.close()
+
+
+def test_actual_preparation_funds_complete_global_packets_before_any_role_allocation(monkeypatch):
+    from tensorfold.cuda import capacity
+    from tensorfold.cuda.sm70 import foundation_headers
+    from tensorfold.families.qwen4_exp.cuda import execution_identity
+    from tensorfold.families.qwen4_exp.cuda.owner_preparation import OwnerPreparation
+    from tensorfold.families.qwen4_exp.cuda.owner_execution import KERNEL_FAMILY, UNCAPTURED
+    from tensorfold.families.qwen4_exp.kv_formats import get_pair
+
+    events = []
+    def fund(total, **kwargs):
+        events.append(("fund", total))
+        return {"total_commitment_bytes": total}
+    monkeypatch.setattr(capacity, "admit_host_commitment", fund)
+    monkeypatch.setattr(capacity, "cuda_limit_bytes", lambda: None)
+    monkeypatch.setattr(foundation_headers, "selected_identity", lambda: {"test": "prepared-source"})
+    monkeypatch.setattr(execution_identity, "_retire_store", lambda *args, **kwargs: None)
+    monkeypatch.setattr(torch.cuda, "synchronize", lambda *args: None)
+    monkeypatch.setattr(torch.cuda, "empty_cache", lambda: None)
+    monkeypatch.setattr(torch.cuda, "mem_get_info", lambda *args: (1 << 30, 1 << 30))
+    monkeypatch.setattr(torch.cuda, "memory_allocated", lambda *args: 0)
+    monkeypatch.setattr(torch.cuda, "memory_reserved", lambda *args: 0)
+    monkeypatch.setattr(OwnerPreparation, "_phase", lambda self, engine, name, operation, **kwargs: [operation()] * 8)
+    original = OwnerBuffers.from_text
+    def allocate(*args, **kwargs):
+        assert events and events[0][0] == "fund"
+        events.append(("allocate", kwargs["rows"]))
+        return original(*args, **kwargs)
+    monkeypatch.setattr(OwnerBuffers, "from_text", allocate)
+    monkeypatch.setattr(OwnerBuffers, "native_run", lambda self, rows: self.native_views(rows)["out"])
+    def gather(source, target):
+        target.copy_(source.clone().expand_as(target))
+    comm = NS(world=8, rank=0, all_gather=gather)
+    engine = NS(comm=comm, tp=8, rank=0, multi=None, _calls=0)
+    text = {"num_attention_heads": 24, "num_key_value_heads": 2, "head_dim": 256,
+            "hidden_size": 2560, "layer_types": ["full_attention", "full_attention"],
+            "indexer_budget": 8, "indexer_compress_ratio": 4}
+    spec = {"kernel_family": KERNEL_FAMILY, "graph_family": UNCAPTURED, "graph_budget_bytes": 0, "trial": True}
+    prepared_owner = OwnerPreparation(spec, role_rows={"decode": 4, "mtp": 4, "prefill": 8},
+                                      manifest_sha256="a" * 64, frame_rows=8)
+    prepared_owner.prepare(engine, text, get_pair("int8"), page_tokens=128, device="cpu")
+    expected = 8 * sum(envelope(layers, 8, 4, bucket_count=3)["host_commitment_bytes"] for layers in (2, 1))
+    assert events[0] == ("fund", expected)
+    assert [event[0] for event in events] == ["fund", "allocate", "allocate", "allocate"]
+    assert prepared_owner.workspaces["decode"].descriptor_frames.layout["payload_bytes"] == 2144
+    assert prepared_owner.workspaces["mtp"].descriptor_frames.layout["payload_bytes"] == 1072
+    assert prepared_owner.workspaces["prefill"].descriptor_frames is None
+    prepared_owner.close()

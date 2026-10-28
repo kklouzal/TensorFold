@@ -196,7 +196,7 @@ def _family_software():
     return record
 
 
-def _prepare_family_trial(text, tp, torch, *, packed=False, target_greedy=False, native_guard=False, owner_prelude=False):
+def _prepare_family_trial(text, tp, torch, *, packed=False, target_greedy=False, native_guard=False, owner_prelude=False, dense=False):
     # This trial changes no weight/KV representation, persistent workspace,
     # graph allowance or capacity rule. Native module residency precedes the
     # existing physical-free/admission baseline and weight loading.
@@ -218,7 +218,9 @@ def _prepare_family_trial(text, tp, torch, *, packed=False, target_greedy=False,
     if packed:
         from .gguf_ops import extension as gguf_extension
 
-        gguf_extension()  # Selected packed/concat module precedes the physical baseline too.
+        module = gguf_extension()
+        if dense:
+            module.prepare_dense32()  # Materialize lazy kernel code before initial admission.
     if target_greedy:
         from .greedy_native import extension as greedy_extension
 
@@ -270,13 +272,15 @@ def configure(text, *, tp, torch, record_graph_inputs=None):
     family_software = (_prepare_family_trial(text, tp, torch, packed=packed_trial,
                                              target_greedy=profile in (TARGET_GREEDY_TRIAL, OWNER_TARGET_GREEDY_TRIAL, OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_FRAME_DESCRIPTORS_TRIAL),
                                              native_guard=profile in (OWNER_TARGET_GUARD_TRIAL, OWNER_TARGET_PRELUDE_TRIAL, OWNER_FRAME_DESCRIPTORS_TRIAL),
-                                             owner_prelude=profile in (OWNER_TARGET_PRELUDE_TRIAL, OWNER_FRAME_DESCRIPTORS_TRIAL))
+                                             owner_prelude=profile in (OWNER_TARGET_PRELUDE_TRIAL, OWNER_FRAME_DESCRIPTORS_TRIAL),
+                                             dense=profile == OWNER_FRAME_DESCRIPTORS_TRIAL)
                        if family_trial else None)
     family_ops._NATIVE_FAMILY = enabled or family_trial
     family_ops._NATIVE_ATTENTION = enabled
     routing_native._NATIVE_LOGITS = padded_linears._ENABLED = enabled
     gguf_weights.GGUFExperts.implementation = "packed_exact" if enabled or packed_trial else "reference"
     gguf_weights.GGUFConcat.implementation = "native32" if enabled or packed_trial else "reference"
+    gguf_weights.GGUFDense.implementation = "native32" if profile == OWNER_FRAME_DESCRIPTORS_TRIAL else "reference"
     gguf_prefill.WORKSPACE_BUDGET_BYTES = (1 << 30) if enabled else None
     dspark_proposal_graphs._ENABLED = dspark_context_graphs._ENABLED = enabled
     _FAMILY_SOFTWARE = family_software
@@ -378,6 +382,8 @@ def prepare_weights(w, *, graph_contract=None):
             w.meta["sm70_owner_prelude_submitted_frames"] = 0  # Serialized actor diagnostic, not device timing.
             w.meta["sm70_owner_prelude_submitted_mtp_frames"] = 0
             w.meta["sm70_owner_prelude_mtp_counter_overflowed"] = False
+    if _SELECTED == OWNER_FRAME_DESCRIPTORS_TRIAL:
+        w.meta["sm70_family_trial"].update(dense="native32", dense_math="original-fixed-m32-aten-v1")
     w.meta["sm70_profile"] = _SELECTED
     if _SELECTED == "optimized":
         from .attention_qualification import metadata_prepare

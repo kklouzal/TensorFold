@@ -84,6 +84,50 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
             base.cfg.layers += 1
             base.cfg.layer_types = [*base.cfg.layer_types, "attention"]
             base.mtp = replace(base.mtp, layer=replace(base.mtp.layer, index=base.cfg.layers))
+        if frame_packets:
+            from dataclasses import fields, is_dataclass, replace
+            from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense
+
+            converted = {}
+
+            def actual_target_dense(value):
+                # Only this new case replaces synthetic target Linear adapters
+                # with actual owners on both sides. Memoization preserves the
+                # head/draft-head and repeated-layer owner aliases; tensors and
+                # embeddings retain their original objects and storage.
+                if id(value) in converted:
+                    return converted[id(value)]
+                if (getattr(value, "kernel", None) == "gguf"
+                        and isinstance(getattr(value, "weight", None), torch.Tensor)
+                        and value.weight.ndim == 2):
+                    result = GGUFDense(value.weight)
+                elif is_dataclass(value):
+                    children = {item.name: actual_target_dense(getattr(value, item.name))
+                                for item in fields(value) if item.init}
+                    result = (value if all(child is getattr(value, name) for name, child in children.items())
+                              else replace(value, **children))
+                elif isinstance(value, list):
+                    children = [actual_target_dense(item) for item in value]
+                    result = value if all(child is old for child, old in zip(children, value)) else children
+                elif isinstance(value, tuple):
+                    children = tuple(actual_target_dense(item) for item in value)
+                    result = value if all(child is old for child, old in zip(children, value)) else children
+                else:
+                    return value
+                converted[id(value)] = result
+                return result
+
+            original = base
+            base = actual_target_dense(base)
+            assert base.embed is original.embed
+            assert base.mtp.fc_e is original.mtp.fc_e and base.mtp.fc_h is original.mtp.fc_h
+            assert base.head.weight is original.head.weight
+            assert base.layers[1].attn.proj is base.layers[2].attn.proj
+            assert isinstance(base.head, GGUFDense)
+            assert isinstance(base.layers[1].attn.proj, GGUFDense)
+            GGUFDense.implementation = "native32"
+            from tensorfold.cuda.sm70 import gguf_ops
+            assert gguf_ops.extension().prepare_dense32() == 4
         width = base.cfg.vocab // 8
         base.head.weight = base.head.weight[rank * width:(rank + 1) * width].contiguous()
         base.head.n, base.comm = width, comm
@@ -212,6 +256,14 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
                 commit(weights, dec.free[0], dec.buf, rows, kept)
             _committed(actual_state, target)
 
+        dense_counter = [0]
+        if frame_packets:
+            from tensorfold.cuda.sm70 import gguf_ops
+            dense_native = gguf_ops.dense32
+            def observed_dense(*args, **kwargs):
+                dense_counter[0] += 1
+                return dense_native(*args, **kwargs)
+            gguf_ops.dense32 = observed_dense
         for weights, dec in ((eager_weights, eager), (combined_weights, combined)):
             dec.free[0].reset(weights)
         for repetition in range(2):
@@ -247,12 +299,15 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
                 windows_expected = [(state, [11]) for state in eager.free[:participants]]
                 windows_actual = [(state, [11]) for state in combined.free[:participants]]
                 expected = compute(eager_weights, stage(eager_weights, eager.buf, windows_expected), eager.buf).clone()
+                dense_before = dense_counter[0]
                 actual = compute(combined_weights, stage(combined_weights, combined.buf, windows_actual), combined.buf).clone()
+                assert dense_counter[0] > dense_before
                 _equal(actual, expected)
                 for at, (left, right) in enumerate(zip(combined.free[:participants], eager.free[:participants])):
                     commit(combined_weights, left, combined.buf, 1, 1, at=at)
                     commit(eager_weights, right, eager.buf, 1, 1, at=at)
                     _committed(left, right)
+            assert dense_counter[0] > 0
             for role in ("decode", "mtp"):
                 packet = combined_preparation.workspaces[role].descriptor_frames
                 assert packet.submitted > 0 and packet.error is None and not packet.active
