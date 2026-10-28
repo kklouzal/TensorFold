@@ -30,3 +30,13 @@ request work makes this policy sticky. Abort precedes device fencing; ordinary
 communicator retirement fences before destroy. A native destroy/abort whose
 completion is unknown is not retried. Source fixtures do not qualify two-GPU
 NCCL, model output, or performance; those require their actual runtime gates.
+
+The standalone future HC/MoE component borrows canonical FP16 HC scratch and the
+actual TP8 mode3 FP32 branch/injection spans. Its prepare step is quiescent
+startup work that mutates disposable scratch; the caller must supply fresh
+h/g_branch/inj_a values afterward. Replay consumes the prior collective on its
+original serialized stream, leaving State authority and the next partial and
+collective to the caller. It never enables the unsupported EXL3 HC plans.
+Positive retirement fences the original captured device before graph reset and
+storage release. Refused rebinding cannot redirect that fence; failed retirement
+retains owners. The component has no serving catalogue or Engine enrollment.

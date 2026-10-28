@@ -1,5 +1,14 @@
 # TensorFold fork
 
+A separate future HC/pure-MoE component captures the original MLP-HC mode3
+writeback/readout followed by the original router and expert body. Actual prior
+and following NCCL operations stay outside capture; State, PLE and attention are
+not captured. It reuses the closed MoE lifecycle helpers and remains unenrolled
+in Engine, MultiDecoder and Buffers. Thirty-seven CPU ownership/admissibility
+checks passed and one strict eight-V100 oracle was collected; its numerical GPU
+execution remains pending. This provides no catalogue, full-model, graph-memory,
+24-window capacity or performance qualification, and changes no model math.
+
 The private router/GDN/startup composition retains the explicit experimental
 router numerical epoch and adds the existing sealed FP16 State-batched GDN
 implementation with `--gdn-state-batch-trial` and private environment value1.
