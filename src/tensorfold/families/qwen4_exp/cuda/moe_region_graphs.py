@@ -1,0 +1,130 @@
+"""Private pure-MoE capture component; serving integration follows actual oracles.
+
+No State, sampling, partial reduction or collective is inside this region.
+The caller owns process-wide CUDA quiescence during prepare and fixed buffer/
+weight bindings until close. Replay is serialized on its original CUDA stream.
+"""
+from __future__ import annotations
+
+import torch
+
+from tensorfold.cleanup import raise_failures
+
+
+def region_tensors(buffers):
+    return (buffers.mixed, buffers.moe.logits, buffers.moe.pick,
+            buffers.moe.wts, buffers.moe.y)
+
+
+def validate_region(weights, layer, buffers, rows):
+    if type(rows) is not int or not 1 <= rows <= 32:
+        raise ValueError("MoE graph region needs an exact row count in1..32")
+    if buffers.prefill or buffers.mixed.dtype != torch.float16 or not buffers.mixed.is_cuda:
+        raise ValueError("MoE graph region requires canonical FP16 CUDA decode buffers")
+    expert = layer.moe.experts
+    if (getattr(expert, "kernel", None) != "gguf"
+            or expert.implementation != "packed_exact" or expert.packed_rows < rows
+            or expert.count != 513 or expert.dims != 2560 or expert.width not in (80, 160)
+            or weights.cfg.experts != 512 or weights.cfg.top_k != 10):
+        raise ValueError("MoE graph region requires the qualified actual513-router/11-selected-slot GGUF bank")
+    if buffers.mixed.shape[0] < rows or buffers.moe.y.shape[0] < rows:
+        raise ValueError("MoE graph region exceeds its external prepared rows")
+    for tensor in region_tensors(buffers):
+        if tensor.device != buffers.mixed.device or not tensor.is_contiguous():
+            raise ValueError("MoE graph operands require canonical contiguous device storage")
+
+
+class MoERegion:
+    """One exact layer/row graph over externally prepaid persistent operands.
+
+    The component keeps an independent pool by default. A later bounded serving
+    catalogue may share one pool per exactR only if every layer replays in its
+    capture order, no partial failed cycle is reused, and consumers retire.
+    """
+    def __init__(self, weights, layer, buffers, rows):
+        self.weights, self.layer, self.buffers, self.rows = weights, layer, buffers, rows
+        self.graph = self.side = None
+        self.failure = None
+        self.prepared = self.closed = False
+        self.hits = 0
+        self.replay_stream = None
+        self.tensors = ()
+        validate_region(weights, layer, buffers, rows)
+        self.tensors = region_tensors(buffers)  # Strong storage owners, not transient addresses.
+
+    def _body(self):
+        from .forward import moe_block
+
+        moe_block(self.layer, self.weights, self.buffers, self.rows, _local_only=True)
+
+    def prepare(self):
+        if self.prepared or self.graph is not None or self.closed or self.failure is not None:
+            raise RuntimeError("MoE graph component cannot be prepared twice or after failure")
+        if torch.cuda.is_current_stream_capturing():
+            raise RuntimeError("MoE region preparation requires process-wide capture quiescence")
+        secondary = [None]  # Allocate outcome storage before any capture can begin.
+        device = self.buffers.mixed.device
+        current = torch.cuda.current_stream(device)
+        self.replay_stream = current.cuda_stream
+        try:
+            self.side = torch.cuda.Stream(device=device)
+            self.side.wait_stream(current)
+            with torch.cuda.stream(self.side):
+                self._body()  # Materialize exact row kernels and required modules before capture.
+            self.side.synchronize()
+            self.graph = torch.cuda.CUDAGraph()  # Publish ownership before accepted capture.
+            with torch.cuda.stream(self.side):
+                self.graph.capture_begin(capture_error_mode="thread_local")
+                primary = None
+                try:
+                    self._body()
+                except BaseException as error:
+                    primary = error
+                try:
+                    self.graph.capture_end()  # Exactly once after an accepted begin, even on body failure.
+                except BaseException as error:
+                    secondary[0] = error
+                if primary is not None or secondary[0] is not None:
+                    raise_failures(primary, secondary)
+            current.wait_stream(self.side)
+            self.prepared = True
+        except BaseException as error:
+            self.failure = error
+            raise
+
+    def replay(self):
+        if not self.prepared or self.closed or self.failure is not None:
+            raise RuntimeError("MoE region is not an admitted prepared component") from self.failure
+        try:
+            # Component boundary validation. A later actor may hoist this only
+            # with a proved immutable canonical-buffer lifetime contract.
+            current = region_tensors(self.buffers)
+            if any(value is not original for value, original in zip(current, self.tensors)):
+                raise RuntimeError("MoE region lost its original external buffer owners")
+            stream = torch.cuda.current_stream(self.buffers.mixed.device)
+            if stream.cuda_stream != self.replay_stream:
+                raise RuntimeError("MoE region replay requires its original serialized stream")
+            if self.hits == (1 << 63) - 1:
+                raise OverflowError("MoE graph replay counter exhausted")
+            self.graph.replay()
+            self.hits += 1
+        except BaseException as error:
+            self.failure = error
+            raise
+
+    def close(self):
+        if self.closed:
+            return
+        # Do not clear references on uncertain retirement. Caller cleanup must
+        # preserve a previously propagated primary if this fence/reset fails.
+        torch.cuda.synchronize(self.buffers.mixed.device)
+        if self.graph is not None:
+            self.graph.reset()
+        self.graph = self.side = None
+        self.tensors = ()
+        self.closed = True
+
+    def record(self):
+        return {"rows": self.rows, "layer": self.layer.index, "prepared": self.prepared,
+                "closed": self.closed, "replays": self.hits,
+                "scope": "private component only; no integrated performance/capacity qualification"}

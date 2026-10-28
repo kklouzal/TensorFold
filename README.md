@@ -1889,3 +1889,12 @@ admission. Rank cache directories are inherited before worker startup. The
 windows, bounded cancellation/drain, graph counter intervals and independent
 quality spot checks. This integration is a candidate; actual matched-grid
 performance, quality and the single-request target remain unqualified.
+
+A private pure-MoE graph component is under evaluation on the provisional
+GDN/batch source. It captures the original GGUF router, selection, routed and
+shared experts for one exact row count, with partial reduction and NCCL outside.
+Its first numerical fixture uses32 rows,513 total router experts and11 selected
+slots including the shared expert. CPU capture/failure/retirement controls pass;
+actual SM70 graph/eager bits, Engine integration, physical graph/host admission
+and full-grid performance remain unqualified. Serving profiles do not enable
+this component.
