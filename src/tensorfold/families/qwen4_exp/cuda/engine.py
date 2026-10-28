@@ -192,6 +192,11 @@ class FlashNextEngine:
             self._moe_region_graphs_requested = moe_regions_requested(os.environ.get("TENSORFOLD_SM70_PROFILE", "reference"))
             if self._moe_region_graphs_requested and not sm70:
                 raise ValueError("private MoE regions require the native SM70 GGUF provider")
+        self._hc_moe_region_graphs_requested = False
+        if "TENSORFOLD_SM70_HC_MOE_REGION_GRAPHS" in os.environ:
+            from .moe_region_catalogue import requested_hc
+
+            self._hc_moe_region_graphs_requested = requested_hc(os.environ.get("TENSORFOLD_SM70_PROFILE", "reference"))
         self._candidate_region_graphs_requested = False
         if "TENSORFOLD_SM70_CANDIDATE_REGION_GRAPHS" in os.environ:
             from .candidate_region_catalogue import requested as candidate_regions_requested
@@ -1468,6 +1473,7 @@ class FlashNextEngine:
         if owner_preparation is not None:
             w.meta["owner_workspaces"] = owner_preparation.workspaces
         w.meta["sm70_moe_region_graphs_trial"] = getattr(self, "_moe_region_graphs_requested", False)
+        w.meta["sm70_hc_moe_region_graphs_trial"] = getattr(self, "_hc_moe_region_graphs_requested", False)
         w.meta["sm70_candidate_region_graphs_trial"] = getattr(self, "_candidate_region_graphs_requested", False)
         if self._indexer_history_session is not None:
             w.meta.update(indexer_history="ram", indexer_history_session=self._indexer_history_session)
@@ -2172,6 +2178,7 @@ class FlashNextEngine:
             if getattr(self, "sm70_profile", None) in (OWNER_TARGET_DENSE_PROFILE, OWNER_BATCH_PRELUDE_PROFILE, ROUTER_BLAS_PROFILE, SHARED_FUSION_PROFILE):
                 expert_policy.append(GGUFDense.implementation)
             expert_policy.append(["private-moe-regions", getattr(self, "_moe_region_graphs_requested", False)])
+            expert_policy.append(["private-hc-moe-regions", getattr(self, "_hc_moe_region_graphs_requested", False)])
             expert_policy.append(["private-candidate-regions", getattr(self, "_candidate_region_graphs_requested", False)])
             proposal_policy = bool(proposal_enabled)
             context_policy = bool(context_enabled)

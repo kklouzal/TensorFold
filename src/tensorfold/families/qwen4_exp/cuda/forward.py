@@ -567,7 +567,10 @@ def _pre_moe(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int,
         mode, branch = gdn_block(layer, w, segs, b, R, cuts)
     else:
         mode, branch = attn_block(layer, w, segs, b, R, mtp, context)
-    hc_block(layer.mlp_hc, b, R, c.eps, c.streams, c.low, mode, b.inj_a[:R], b.inj_m, h, branch=branch)
+    regions = getattr(b, "moe_region_graphs", None)
+    if (regions is None or not regions.hc or not regions.active
+            or not regions.defer_hc(layer, b, R, mode, branch, b.inj_a[:R])):
+        hc_block(layer.mlp_hc, b, R, c.eps, c.streams, c.low, mode, b.inj_a[:R], b.inj_m, h, branch=branch)
 
 
 def layer_forward(layer: LayerW, w: Weights, segs: Sequence[Seg], b: Buffers, R: int, pending, *,

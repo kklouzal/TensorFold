@@ -14,6 +14,7 @@ from .moe_region_graphs import MoERegion, validate_region
 from .capture_lifetime import host_memory as _host_memory, on_stream
 
 ENV = 'TENSORFOLD_SM70_MOE_REGION_GRAPHS'
+HC_ENV = 'TENSORFOLD_SM70_HC_MOE_REGION_GRAPHS'
 ROWS = (30, 31, 32)
 LAYERS = 48
 HOST_ALLOWANCE = 1 << 30
@@ -26,6 +27,15 @@ def requested(profile):
         raise ValueError('private MoE graph choice must be0 or1')
     if value == '1' and profile not in PROFILES:
         raise ValueError('private MoE regions require the admitted batched-router profile')
+    return value == '1'
+
+
+def requested_hc(profile):
+    value = os.environ.get(HC_ENV, '0')
+    if value not in ('0', '1'):
+        raise ValueError('private HC/MoE graph choice must be0 or1')
+    if value == '1' and (profile not in PROFILES or not requested(profile)):
+        raise ValueError('private HC/MoE graphs require the admitted MoE graph catalogue')
     return value == '1'
 
 
@@ -95,6 +105,7 @@ class Bindings:
         return (id(w.cfg), w.cfg.experts, w.cfg.top_k,
                 tuple(id(layer) for layer in w.layers), w.meta.get('sm70_profile'),
                 w.meta.get('execution_provider'), w.meta.get('sm70_moe_region_graphs_trial'),
+                w.meta.get('sm70_hc_moe_region_graphs_trial'),
                 w.meta.get('sm70_family_trial', {}).get('numerical_policy'),
                 w.meta.get('sm70_family_trial', {}).get('experts'),
                 GGUFDense.implementation, GGUFExperts.implementation, GGUFConcat.implementation,
@@ -122,6 +133,8 @@ class Catalogue:
         self.layers = tuple(self.weights.layers)
         self.regions, self.pools, self.measured = {}, {}, []
         self.capture_router = self.bindings = None
+        self.hc = self.weights.meta.get('sm70_hc_moe_region_graphs_trial') is True
+        self.pending_hc = None
         self.ready = self.closed = self.retiring = self.active = False
         self.failure = None
         self.notified = False
@@ -137,6 +150,8 @@ class Catalogue:
         self.role_and_warm_bytes = 0
         self.host_preflight = self.host_final = None
         self.plan = funding(len(self.layers))
+        self.plan['boundary'] = 'MLP-HC-mode3+pure-MoE' if self.hc else 'pure-MoE'
+
 
     def _host_gate(self):
         now = _host_memory()
@@ -177,7 +192,17 @@ class Catalogue:
                 raise ValueError('MoE capture requires the original ordered48-layer catalogue')
             for layer in self.layers:
                 validate_region(self.weights, layer, self.buffers, 32)
-            self.bindings = Bindings(self.weights, self.buffers)
+            region_type = MoERegion
+            if self.hc:
+                from .hc_moe_region import HCModelBindings, HCReadoutMoERegion, validate_hc_region
+
+                region_type = HCReadoutMoERegion
+
+                for layer in self.layers:
+                    validate_hc_region(self.weights, layer, self.buffers, 32)
+                self.bindings = HCModelBindings(self.weights, self.buffers)
+            else:
+                self.bindings = Bindings(self.weights, self.buffers)
             torch.cuda.synchronize(self.weights.device)  # Prior warm/copy/NCCL consumers positively retired.
             before = self.parent.capture_observation()
             remaining = before['general_available_bytes'] - self.parent.future_bytes
@@ -190,6 +215,14 @@ class Catalogue:
                 self.capture_router.__init__(tuple(layer.moe.router for layer in self.layers), 32)
                 # Every cold input row is valid initialized FP16; old N1warm only covered <=3.
                 self.buffers.mixed[:32].zero_()
+                if self.hc:
+                    # Old bound warmup covers <=3 rows; every capture operand
+                    # must be initialized for all exact30/31/32 cold graphs.
+                    self.buffers.h[:32].fill_(0.5)
+                    self.buffers.pss[:32].zero_()
+                    self.buffers.g_branch.zero_()
+                    self.buffers.inj_a[:32].fill_(1)
+
             on_stream(torch.cuda, self.parent.side, prepare_role)
             self.parent.side.synchronize()
             self.role_and_warm_bytes = self._account(before, ['capture-role-and-initial-residency'])
@@ -198,12 +231,15 @@ class Catalogue:
                 for layer in self.layers:  # Fixed capture/replay order within each exactRpool.
                     before = self.parent.capture_observation()
                     key = rows, layer.index
-                    region = object.__new__(MoERegion)
+                    region = object.__new__(region_type)
                     self.regions[key] = region
                     region.__init__(self.weights, layer, self.buffers, rows, side=self.parent.side,
                                     pool=self.pools[rows], capture_router=self.capture_router)
                     region.prepare()
-                    region.replay()  # Materialize graph/runtime resources cold, noState orRNG mutation.
+                    if self.hc:
+                        region.replay(3, region.branch, region.injection)
+                    else:
+                        region.replay()  # Materialize graph/runtime resources cold, noState orRNG mutation.
                     self._account(before, ['target', rows, layer.index])
             self.bindings.validate()
             self._host_gate()
@@ -246,6 +282,7 @@ class Catalogue:
             raise RuntimeError('MoE graph owner already has a forward borrower')
         self.lease = self.active = True
         self.rows, self.cursor = rows, 0
+        self.pending_hc = None
         try:
             if weights is not self.weights or buffers is not self.buffers or buffers.prefill:
                 raise ValueError('MoE graph forward lost its canonical target owner')
@@ -259,13 +296,35 @@ class Catalogue:
             self.frame_lock.release()
             self._notify(error)
 
+    def defer_hc(self, layer, buffers, rows, mode, branch, injection):
+        """Issue the original HC cut to the immediately following MoE replay."""
+        if not self.hc or not self.active:
+            return False
+        if (buffers is not self.buffers or rows != self.rows or self.cursor >= len(self.layers)
+                or layer is not self.layers[self.cursor] or self.pending_hc is not None):
+            raise RuntimeError('HC/MoE original cut order or owner changed')
+        region = self.regions[rows, layer.index]
+        if (type(mode) is not int or mode != 3 or type(branch) is not torch.Tensor
+                or type(injection) is not torch.Tensor or _span(branch) != region.branch_signature
+                or _span(injection) != region.injection_signature):
+            raise RuntimeError('HC/MoE requires its original mode3 branch/injection spans')
+        self.pending_hc = layer
+        return True
+
     def run(self, layer, buffers, rows):
         if not self.active:
             return False
         if (buffers is not self.buffers or rows != self.rows or self.cursor >= len(self.layers)
                 or layer is not self.layers[self.cursor]):
             raise RuntimeError('MoE graph exactRpool replay order changed within a forward')
-        self.regions[rows, layer.index].replay()
+        region = self.regions[rows, layer.index]
+        if self.hc:
+            if self.pending_hc is not layer:
+                raise RuntimeError('HC/MoE replay has no issued original HC cut')
+            region.replay_prevalidated()
+            self.pending_hc = None
+        else:
+            region.replay()
         self.cursor += 1
         if self.hits < MAX_COUNT:
             self.hits += 1
@@ -278,7 +337,7 @@ class Catalogue:
         if self.active:
             try:
                 if primary is None:
-                    if self.cursor != len(self.layers):
+                    if self.cursor != len(self.layers) or self.pending_hc is not None:
                         raise RuntimeError('MoE graph forward did not consume its full ordered layer cycle')
                     if self.frames < MAX_COUNT and self.row_frames[self.rows] < MAX_COUNT:
                         self.frames += 1
@@ -329,7 +388,7 @@ class Catalogue:
                                if len(item['key']) > 2 and item['key'][1] == 'target' and item['key'][2] == row)
                        for row in ROWS}
         return {'enabled': True, 'numeric_profile': self.weights.meta.get('sm70_profile'),
-                'graph_contract': 'pure-moe-target-exactR-ordered-pools-v1', 'rows': ROWS, 'graphs': len(self.regions), 'frames': None if self.counter_overflowed else self.frames,
+                'graph_contract': ('mlp-hc-mode3-moe-target-exactR-ordered-pools-v1' if self.hc else 'pure-moe-target-exactR-ordered-pools-v1'), 'rows': ROWS, 'graphs': len(self.regions), 'frames': None if self.counter_overflowed else self.frames,
                 'replays': None if self.counter_overflowed else self.hits,
                 'row_frames': None if self.counter_overflowed else dict(self.row_frames), 'funding': self.plan,
                 'capture_role_and_initial_residency_charge_bytes': self.role_and_warm_bytes,

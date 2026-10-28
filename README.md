@@ -1,5 +1,18 @@
 # TensorFold fork
 
+The isolated HC/MoE successor extends the existing target exactR30/31/32
+catalogue upstream only to the MLP-HC mode3 cut after its preceding collective.
+`TENSORFOLD_SM70_HC_MOE_REGION_GRAPHS=1` requires the existing private MoE
+catalogue opt-in. The original HC block is deferred exactly once to the combined
+graph; State, attention/GDN, PLE, pending-result authority and the following
+MoE partial/collective remain in their original path. Target/MTP candidate
+catalogues stay independent. The selected packed/shared-fusion numeric policy
+is preserved. New capture resources are paid by the existing aggregate graph
+budget and inclusive host operating gate before the24-native-window Q8 floor;
+this is not free workspace or a vendor memory bound. The predecessor HC-only
+boundary component passed on TP8, but fused boundary compatibility, integrated
+capacity/quality and all-six performance remain unqualified for this successor.
+
 The private `source-router-gdn-shared-fusion-trial` selects the already-owned
 `packed_blocks2w` entrypoint as a generic packed/shared-fusion candidate. Actual
 IQ/Q8 expert formats use its generic projection path; the two-warp projection
