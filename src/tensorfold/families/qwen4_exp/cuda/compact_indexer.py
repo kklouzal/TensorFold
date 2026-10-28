@@ -650,6 +650,33 @@ class Cache:
                     coords.index_copy_(0, positions % RATIO, axes)
         return result, coords
 
+    def _pool_slices_supported(self, span):
+        """Ordinary inference storage only; indexed generic/error route stays exact."""
+        if (type(self) is not Cache or torch.is_grad_enabled() or type(span) is not Span or type(span.start) is not int
+                or any(type(tensor) is not torch.Tensor for tensor in (
+                    self.raw, self.coordinates, self.protected, self.protected_coordinates,
+                    span.raw, span.coordinates))):
+            return False
+        count = len(span.raw)
+        if (count == 0 or not 0 <= span.start <= self.capacity
+                or count > self.capacity - span.start or span.end > (1 << 63) - 1):
+            return False
+        device = self.raw.device
+        if device.type not in ("cpu", "cuda"):
+            return False
+        for tensor, shape, dtype in (
+                (self.raw, (RATIO, self.dim), torch.float16),
+                (self.coordinates, (RATIO, 3), torch.int64),
+                (self.protected, (RATIO, self.dim), torch.float16),
+                (self.protected_coordinates, (RATIO, 3), torch.int64),
+                (span.raw, (count, self.dim), torch.float16),
+                (span.coordinates, (count, 3), torch.int64)):
+            if (tensor.layout != torch.strided or tensor.shape != shape or tensor.dtype != dtype
+                    or tensor.device != device or tensor.requires_grad or not tensor.is_contiguous()
+                    or tensor.is_neg() or tensor.is_conj()):
+                return False
+        return True
+
     def pool(self, pooled, weight, inv_freq, eps, sections, scale):
         span = self.span
         span.check()
@@ -657,10 +684,18 @@ class Cache:
         if first == end:
             return
         with self.reading((self.protected, self.protected_coordinates, span.raw, span.coordinates), span=span) as reader:
-            positions = torch.arange(first * RATIO, end * RATIO, device=self.raw.device, dtype=torch.int64)
-            previous = positions < span.start
-            source = (positions - span.start).clamp(0, len(span.raw) - 1)
-            raw = torch.where(previous[:, None], self.protected.index_select(0, positions % RATIO), span.raw.index_select(0, source))
+            sliced = self._pool_slices_supported(span)
+            if sliced:
+                # A complete group starts at a multiple of RATIO. Only its
+                # first prefix can predate this span; all later rows are new.
+                prefix = span.start % RATIO
+                width = (end - first) * RATIO
+                raw = torch.cat((self.protected[:prefix], span.raw[:width - prefix]), dim=0)
+            else:
+                positions = torch.arange(first * RATIO, end * RATIO, device=self.raw.device, dtype=torch.int64)
+                previous = positions < span.start
+                source = (positions - span.start).clamp(0, len(span.raw) - 1)
+                raw = torch.where(previous[:, None], self.protected.index_select(0, positions % RATIO), span.raw.index_select(0, source))
             raw = raw.reshape(end - first, RATIO, self.dim).float()
             total = raw[:, 0]
             for member in range(1, RATIO):
@@ -673,10 +708,18 @@ class Cache:
                 value = ops.rms(padded, weight, eps)[:len(value)]
             else:
                 value = ops.rms(value, weight, eps)
-            member = positions.reshape(-1, RATIO)[:, 0]
-            old = member < span.start
-            at = (member - span.start).clamp(0, len(span.raw) - 1)
-            coordinates = torch.where(old[:, None], self.protected_coordinates.index_select(0, member % RATIO), span.coordinates.index_select(0, at))
+            if sliced:
+                # Keep coordinate preparation after the original reduction/RMS
+                # so its errors cannot overtake a preceding math failure.
+                old_rows = 1 if prefix else 0
+                begin = RATIO - prefix if prefix else 0
+                coordinates = torch.cat((self.protected_coordinates[:old_rows],
+                    span.coordinates[begin:width - prefix:RATIO]), dim=0)
+            else:
+                member = positions.reshape(-1, RATIO)[:, 0]
+                old = member < span.start
+                at = (member - span.start).clamp(0, len(span.raw) - 1)
+                coordinates = torch.where(old[:, None], self.protected_coordinates.index_select(0, member % RATIO), span.coordinates.index_select(0, at))
             value = ops.rotary(value, inv_freq, torch.arange(len(value), device=value.device),
                                rope=coordinates, length=len(value), sections=sections, scale=scale)
             value = ops._guard(value, self.status, 16, self.layer)
