@@ -71,11 +71,16 @@ class KVStatusCohort:
             raise
         return words.numel()
 
-    def _readback(self, count):
+    def _readback(self, count, *, direct_candidates=None, status=0):
         # A failed enqueue/wait does not prove that pinned or device storage
         # may be reused. Keep the original failure and its owner until teardown.
         try:
-            self.host[:count].copy_(self.receive[:count], non_blocking=self.device.type == "cuda")
+            if direct_candidates is None:
+                self.host[:count].copy_(self.receive[:count], non_blocking=self.device.type == "cuda")
+            else:
+                self.host[:status].copy_(self.receive[:status], non_blocking=self.device.type == "cuda")
+                self.host[status:count].copy_(direct_candidates.view(-1)[:count - status].view(torch.int32),
+                                            non_blocking=self.device.type == "cuda")
             if self.device.type == "cuda":
                 torch.cuda.current_stream(self.device).synchronize()
         except BaseException as error:
@@ -107,16 +112,18 @@ class KVStatusCohort:
         self.check_received(states, self.host[:status].view(self.world, len(states), 2).tolist())
         return self.host[status:status + count].numpy().copy()
 
-    def read_candidates(self, states, candidates, rows, *, comm):
+    def read_candidates(self, states, candidates, rows, *, comm, layout="packed"):
         """Read an already-produced opaque packet with status at the same fence.
 
         No candidate value is interpreted or returned until every peer status
         has been checked. The returned NumPy array owns its bytes, survives
         arena reuse, and is the single candidate owner funded by workspace_bytes.
         Callers retire that owner before producing another escaped packet.
+        Packed is the incumbent prototype; split is an explicit comparison
+        candidate, not an error fallback or a presumed performance winner.
         """
         width = 2 * CAND + 1
-        if (type(rows) is not int or not 0 < rows <= self.candidate_rows
+        if (type(layout) is not str or layout not in ("packed", "split") or type(rows) is not int or not 0 < rows <= self.candidate_rows
                 or not isinstance(candidates, torch.Tensor) or candidates.dtype != torch.float32
                 or candidates.device != self.device or not candidates.is_contiguous()
                 or candidates.numel() < self.world * rows * width):
@@ -124,14 +131,19 @@ class KVStatusCohort:
             raise ValueError("candidate packet differs from its admitted readback envelope")
         status = self._gather(states, comm)
         count = self.world * rows * width
-        try:
-            # Candidate production already precedes this boundary on the same
-            # stream. Bit views preserve FP32 scores/LSE and encoded int32 IDs.
-            self.receive[status:status + count].copy_(candidates.view(-1)[:count].view(torch.int32))
-        except BaseException as error:
-            self._readback_error = error
-            raise
-        self._readback(status + count)
+        if layout == "packed":
+            try:
+                # Both packets already exist. This layout pays one extra D2D
+                # copy for a contiguous single D2H, before the common fence.
+                self.receive[status:status + count].copy_(candidates.view(-1)[:count].view(torch.int32))
+            except BaseException as error:
+                self._readback_error = error
+                raise
+            self._readback(status + count)
+        else:
+            # Two ordered D2H copies into disjoint prepaid pinned spans, then
+            # the SAME single completion fence; no candidate device repacking.
+            self._readback(status + count, direct_candidates=candidates, status=status)
         self.check_received(states, self.host[:status].view(self.world, len(states), 2).tolist())
         return self.host[status:status + count].view(self.world, rows, width).numpy().view(np.float32).copy()
 

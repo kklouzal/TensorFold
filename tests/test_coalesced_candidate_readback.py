@@ -33,12 +33,13 @@ def prepared(*, world=2, rows=3, failure=False):
     return owner, comm, states, torch.from_numpy(packet), packet
 
 
-def test_one_readback_retains_all_fp32_packet_bits_and_survives_arena_reuse(monkeypatch):
+@pytest.mark.parametrize("layout", ["packed", "split"])
+def test_one_readback_retains_all_fp32_packet_bits_and_survives_arena_reuse(monkeypatch, layout):
     owner, comm, states, device, packet = prepared()
     calls = []
     original = owner._readback
-    monkeypatch.setattr(owner, "_readback", lambda count: calls.append(count) or original(count))
-    actual = owner.read_candidates(states, device, 3, comm=comm)
+    monkeypatch.setattr(owner, "_readback", lambda count, **kwargs: calls.append(count) or original(count, **kwargs))
+    actual = owner.read_candidates(states, device, 3, comm=comm, layout=layout)
     assert calls == [2*3*2 + 2*3*(2*CAND+1)]
     assert np.array_equal(actual.view(np.uint32), packet.view(np.uint32))
     assert actual.flags.owndata and not any(state._kv_pending for state in states)
@@ -47,14 +48,15 @@ def test_one_readback_retains_all_fp32_packet_bits_and_survives_arena_reuse(monk
     assert np.array_equal(actual.view(np.uint32), packet.view(np.uint32))
     # Only one escaped owner is live; retire it before another candidate packet.
     del actual
-    owner.read_candidates(states, device, 3, comm=comm)
+    owner.read_candidates(states, device, 3, comm=comm, layout=layout)
     device_bytes, host_bytes = workspace_bytes(3, 2, candidate_rows=3)
     assert device_bytes == owner.send.nbytes + owner.receive.nbytes
     assert host_bytes == owner.host.nbytes + packet.nbytes + np.empty((0,0,0), dtype=np.float32).__sizeof__() + _CANDIDATE_HANDOFF_BYTES
 
 
+@pytest.mark.parametrize("layout", ["packed", "split"])
 @pytest.mark.parametrize("malformed", [False, True])
-def test_numeric_error_precedes_packet_interpretation_or_malformed_error(monkeypatch, malformed):
+def test_numeric_error_precedes_packet_interpretation_or_malformed_error(monkeypatch, malformed, layout):
     owner, comm, states, device, _ = prepared(failure=True)
     if malformed:
         device = device.double()
@@ -62,12 +64,13 @@ def test_numeric_error_precedes_packet_interpretation_or_malformed_error(monkeyp
     original = torch.Tensor.numpy
     monkeypatch.setattr(torch.Tensor, "numpy", lambda value: calls.append(value) or original(value))
     with pytest.raises(KVNumericError):
-        owner.read_candidates(states, device, 3, comm=comm)
+        owner.read_candidates(states, device, 3, comm=comm, layout=layout)
     assert calls == [] and states[0]._kv_error is not None
 
 
+@pytest.mark.parametrize("layout", ["packed", "split"])
 @pytest.mark.parametrize("failure", ["gather", "copy", "readback"])
-def test_transport_failure_poison_retains_primary_and_refuses_owner_reuse(monkeypatch, failure):
+def test_transport_failure_poison_retains_primary_and_refuses_owner_reuse(monkeypatch, failure, layout):
     owner, comm, states, device, _ = prepared()
     primary = RuntimeError("injected readback transport failure")
     def fail(*_args, **_kwargs):
@@ -81,14 +84,14 @@ def test_transport_failure_poison_retains_primary_and_refuses_owner_reuse(monkey
                             fail() if target.data_ptr() == owner.host.data_ptr() else original(target, source, **kw))
     else:
         original = torch.Tensor.copy_
-        candidate_start = owner.receive.data_ptr() + 2*3*2*4
+        candidate_start = (owner.receive if layout == "packed" else owner.host).data_ptr() + 2*3*2*4
         monkeypatch.setattr(torch.Tensor, "copy_", lambda target, source, **kw:
                             fail() if target.data_ptr() == candidate_start else original(target, source, **kw))
     with pytest.raises(RuntimeError) as caught:
-        owner.read_candidates(states, device, 3, comm=comm)
+        owner.read_candidates(states, device, 3, comm=comm, layout=layout)
     assert caught.value is primary and owner._readback_error is primary
     with pytest.raises(RuntimeError, match="requires retirement") as stopped:
-        owner.read_candidates(states, device, 3, comm=comm)
+        owner.read_candidates(states, device, 3, comm=comm, layout=layout)
     assert stopped.value.__cause__ is primary
 
 
@@ -141,3 +144,59 @@ def test_retained_chooser_failure_traceback_releases_owned_candidate_packet(monk
     assert retained.value.__traceback__ is not None
     assert reference[0]() is None
     owner.host.fill_(17)  # A retained error no longer holds an escaped packet across arena reuse.
+
+
+def test_picks_retained_failure_releases_its_packet_argument(monkeypatch):
+    import weakref
+    from tensorfold.families.qwen4_exp.cuda import multi
+
+    decoder = object.__new__(MultiDecoder)
+    logits = torch.zeros((2, CAND), dtype=torch.float32)
+    decoder.w = NS(comm=object(), meta={"execution_provider": "sm70"})
+    decoder.mbuf = NS(logits=logits, cand_all=torch.empty(1))
+    decoder._draft_map, decoder._draft_plan = None, None
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda _self: True))
+    primary = ValueError("injected post-status chooser failure")
+
+    def fail(*args, gathered=None, **kwargs):
+        try:
+            assert gathered is not None
+            raise primary
+        finally:
+            gathered = None  # The actual chooser's release is covered independently above.
+
+    monkeypatch.setattr(multi, "choose_gathered", fail)
+    references, settled = [], []
+    def attempt():
+        packet = np.ones((2, 2, 2*CAND+1), dtype=np.float32)
+        references.append(weakref.ref(packet))
+        try:
+            decoder._picks(logits, [1, 2], [Sampling(17, 0)]*2,
+                           NS(settle=lambda: settled.append(True)), gathered=packet)
+        finally:
+            packet = None
+
+    with pytest.raises(ValueError) as retained:
+        attempt()
+    assert retained.value is primary and retained.value.__traceback__ is not None
+    assert settled == [True] and references[0]() is None
+
+
+@pytest.mark.parametrize("with_prob", [False, True])
+def test_owned_packet_keeps_keyed_stochastic_choices_and_confidence(monkeypatch, with_prob):
+    owner, comm, states, device, _ = prepared()
+    packet = owner.read_candidates(states, device, 3, comm=comm)
+    monkeypatch.setattr(torch.Tensor, "is_cuda", property(lambda _self: True))
+    weights, plan = NS(meta={"world": 2}), NS(widths=(CAND, CAND), graph_ids_safe=True)
+    sampling = Sampling(17, .8, top_k=3, top_p=1.)
+    expected = choose_gathered(weights, device, 3, [1, 2, 3], sampling, plan=plan, with_prob=with_prob)
+    actual = choose_gathered(weights, device, 3, [1, 2, 3], sampling, plan=plan,
+                             with_prob=with_prob, gathered=packet)
+    assert actual == expected
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_invalid_comparison_mode_keeps_numeric_status_precedence(failure):
+    owner, comm, states, device, _ = prepared(failure=failure)
+    with pytest.raises(KVNumericError if failure else ValueError):
+        owner.read_candidates(states, device, 3, comm=comm, layout=object())

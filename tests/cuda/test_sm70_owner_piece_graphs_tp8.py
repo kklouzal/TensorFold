@@ -237,6 +237,9 @@ def _worker(rank, port, target_greedy=False, profile_directory=None):
             if previous_candidate[0] is not None:
                 assert previous_candidate[0]() is None  # One escaped payload, retired before the next.
             coalesced_calls[0] += 1
+            # Explicit comparison-mode API: exercise split IO in the real-model
+            # oracle while the production default remains the packed incumbent.
+            kwargs.setdefault("layout", "split")
             packet = ordinary_candidates(owner, *args, **kwargs)
             previous_candidate[0] = weakref.ref(packet)
             return packet
