@@ -88,7 +88,6 @@ class Prototype:
         self.bindings = tuple((value, _signature(value)) for value in
             (x, picks, out, bank.gate.data, bank.up.data, bank.down.data, *(part.weight for part in bank.shared), *self.scratch))
         self.weights = (bank.gate, bank.up, bank.down, *bank.shared)
-        self.weight_bindings = (bank.gate.data, bank.up.data, bank.down.data, *(part.weight for part in bank.shared))
         self.math_policy = (torch.backends.cuda.matmul.allow_fp16_reduced_precision_reduction,
                             torch.backends.cuda.matmul.allow_fp16_accumulation)
         self.shared_policy = tuple((part.n, part.k, part.implementation) for part in bank.shared)
@@ -186,7 +185,7 @@ class Prototype:
             raise
         self.closed = True
         self.bank = self.x = self.picks = self.out = None
-        self.bindings = self.weights = self.weight_bindings = self.scratch = ()
+        self.bindings = self.weights = self.scratch = ()
         self.qx = self.qh = self.gate = self.up = self.hidden = self.status = None
 
 
