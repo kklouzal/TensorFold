@@ -801,14 +801,25 @@ and upstream merges. Documentation changes to `README.md` also change the wheel'
 package metadata, so publish a fresh source capture and image identity while
 reusing native compilation evidence only where its actual inputs still match.
 
-## Gemma 4 E2B integration status
+## Gemma 4 E2B deployment baseline
 
-The [E2B recipe](../../docs/recipes/gemma-4-e2b.md) records the current complete
-BF16 target/DFlash2 implementation and pending qualification. It requires its
-own checkpoint, companion and native template. Do not apply the 26B MoE
-deployment's model paths, template override, context or historical performance
-selection to E2B. Build and qualify an immutable image before changing a live
-service; source-mounted diagnostics are preliminary evidence.
+The complete BF16 E2B target and BF16 DFlash2 companion are deployed as
+`gemma4-e2b-tf` on port `8888`, retaining the client model alias `gemma4-26b`.
+The baseline enables native image/video/audio input, text output, eight
+verification rows and a 131,072-token configured context, with the checkpoint's
+own template. The former 26B container is stopped and retained for rollback.
+The [E2B recipe](../../docs/recipes/gemma-4-e2b.md),
+[validation record](../../docs/gemma4-e2b-validation.md) and
+[immutable baseline receipt](deployment-gemma4-e2b-baseline-20261031.json)
+record the scope.
+
+Installed-image CPU/native processor and HTTP/Harness qualification passed.
+The full native-context run used source-mounted code through the same protected
+SDK before wheel installation; do not describe it as an installed-wheel 131K
+exercise. All older bare-entrypoint GPU runs remain debugging evidence only.
+The BF16/eight-row baseline has not won a comparative prefill/decode performance
+selection. Keep the protected CUDA/Harness launch and provider checks intact;
+do not carry the 26B checkpoint's template or performance claims into E2B.
 
 An application-only rebuild can reuse an already qualified owned runtime with
 the required pinned dependencies. Build from a clean source capture with

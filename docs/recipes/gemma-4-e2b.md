@@ -41,39 +41,58 @@ text; audio input support does not add audio generation. See the
 context and request admission limits remain active. URL fetching requires the
 separate `--vision-urls` opt-in and existing public URL policy.
 
-## Verification status
+## Deployed correctness baseline
 
-Source-mounted diagnostic execution on GB10 with Torch
-`2.16.0.dev20261014+cu134` and Transformers `5.17.0` loaded all target and
-companion weights. Initial greedy serial/drafted output agrees at prompt lengths
-22, 511, 512 and 513; a fixed-seed drafted prefix replay also agrees. These
-checks do not establish a sampled target distribution or performance winner.
-The stricter checks initially exposed batch-dependent normalization and attention
-reductions. The owned decode adapters now reuse fixed-row FP32 RMS reduction
-and a uniform attention mask dispatch, retaining BF16 checkpoint operands and
-output rounding.
+The GB10 service `gemma4-e2b-tf` serves port `8888` and retains the API model alias
+`gemma4-26b` for existing clients. The loaded weights are the E2B pair above.
+The baseline uses BF16 target weights, BF16 KV and a BF16 DFlash2 companion with
+eight verification rows (seven proposals), one request lane, the native
+131,072-token context and this checkpoint's unchanged chat template. Image,
+timestamped video and audio input are enabled; output is text.
 
-Those initial direct-entrypoint GPU runs bypassed the owned CUDA bootstrap and
-mapped a different cuBLAS/driver combination. They are debugging evidence only.
-All target correctness, quality and performance gates must be repeated through
-`cuda_entrypoint.py` and its protected provider launch. The corrected managed
-launch subsequently passed full target/companion loading, bit-exact target
-logits for every verification width 1–8, greedy identity at prompt lengths
-22/511/512/513 and fixed-seed drafted prefix replay. The 24 normalization
-primitive cases also pass all widths. These are source-mounted results;
-installed-image qualification remains required. Keep the standard Harness
-entrypoint in deployment.
+The installed immutable runtime passed **1,423 CPU checks** with **50 documented
+skips**, followed by **38 native processor checks with no skips**. The latter
+exercise the 17 opt-in processor cases omitted in the earlier CPU run. All
+**23 HTTP/Harness checks** passed, including stored audio/video, thinking,
+tools/schema, SSE and cancellation. Production readiness and the retained alias
+passed four additional checks.
 
-Installed final-image checks, full multimodal and native-context execution,
-HTTP/Harness behavior, cancellation/grammar integration and comparative prefill
-and decode measurements remain pending. There is no qualified E2B deployment
-command or throughput claim yet. Existing 26B measurements retain their original
-checkpoint and runtime scope.
+Managed source-mounted execution through the same protected SDK passed complete
+target/companion loading, exact target logits at verification widths 1–8,
+greedy identity and seeded cache replay. It also exercised the native context
+with 131,040 prompt tokens plus 32 generated continuation tokens in serial and
+drafted greedy calls and sampled new/replay calls. EOS stopping was disabled
+for this capacity diagnostic. A separate teacher-forced comparison of the first
+eight generated IDs found hidden states, logits and all four draft taps identical
+at verification widths one and eight. That native-context test preceded the
+wheel build and used a source mount: it is **not** an installed-wheel 131K test.
+The installed package's source identity supports carrying the result within
+that recorded scope. This capacity diagnostic does not prove long-context
+retrieval quality or performance. Earlier bare-entrypoint GPU runs are debugging
+evidence only. See the [validation record](../gemma4-e2b-validation.md) for immutable
+identities and the distinction between these checks.
 
-The [Compose integration example](../../deploy/gb10/compose.gemma4-e2b.yaml)
-and [environment template](../../deploy/gb10/gemma4-e2b.env.example) preserve the
-complete read-only HF cache and the Harness entrypoint. Their BF16/eight-row
-values are initial correctness settings, not a measured performance selection.
-Use a separate container name and port for qualification. Replace the image
-placeholder only after qualifying the actual immutable image and resource
-envelope. The example intentionally uses this checkpoint's own template.
+Comparative prefill/decode performance selection remains pending. BF16/eight-row
+settings are a validated correctness baseline, not a measured optimum. The
+explicit FP8 companion candidate remains outside this baseline. Historical 26B
+results do not establish E2B throughput.
+
+## Deployment and API boundaries
+
+The [Compose profile](../../deploy/gb10/compose.gemma4-e2b.yaml) and
+[environment template](../../deploy/gb10/gemma4-e2b.env.example) retain the complete
+read-only HF cache and protected Harness entrypoint. Use the qualified immutable
+image and its resource envelope; do not substitute the 26B model paths, template
+override or context. The former 26B container is stopped and retained for rollback.
+
+Video input processes visual frames by default. The optional native HF
+`load_audio_from_video=True` convenience is not exposed by this API; submit the
+soundtrack separately as `input_audio` when both modalities are required. Audio
+segments retain the native 30-second limit. Existing `logprobs` and decision
+requests return HTTP 400; this baseline does not add those capabilities.
+
+The [deployment receipt](../../deploy/gb10/deployment-gemma4-e2b-baseline-20261031.json)
+records the installed baseline. Preserve the managed CUDA entrypoint and its
+provider verification. Application-only rebuilds use the guarded
+`Dockerfile.application`; changed SDK dependencies require the foundation build
+workflow and fresh qualification.

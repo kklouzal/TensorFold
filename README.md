@@ -1,14 +1,16 @@
 # TensorFold fork
 
-Gemma 4 E2B CUDA integration is in development for the complete BF16 checkpoint
-and its five-layer DFlash2 companion. It retains the native image, video and
-audio encoders, per-layer embeddings and shared KV architecture. Source-mounted
-GB10 checks through the protected CUDA launcher pass target logit identity for
-verification widths 1–8, initial greedy identity and fixed-seed cache replay.
-Installed-image, complete media/context qualification and performance selection
-remain pending. See the [E2B recipe](docs/recipes/gemma-4-e2b.md) for the exact
-checkpoint scope and current limits. Historical 26B results below do not qualify
-E2B.
+Gemma 4 E2B and its DFlash2 companion are deployed on GB10 as a correctness
+baseline with complete BF16 target weights and KV, a BF16 companion, and eight
+verification rows. The protected installed image passed CPU, native processor
+and HTTP/Harness checks, including image, video and audio input. Native
+131,072-token execution passed separately through the protected source-mounted
+runtime; it was not repeated as an installed-wheel context test. The checkpoint's
+own template is retained. Comparative prefill/decode tuning remains pending;
+this baseline is not a performance winner. See the
+[E2B recipe](docs/recipes/gemma-4-e2b.md) and
+[validation scope](docs/gemma4-e2b-validation.md). Historical 26B measurements
+retain their original checkpoint and runtime scope.
 
 The V100 path is being refactored against the
 [adaptive inference specification](docs/v100-adaptive-inference-design.md):
@@ -743,7 +745,7 @@ Caps bound owner counts, not arbitrary total payload bytes. Generated token buff
 | `--no-drafts` | Off; opt in to the same-engine serial reference. |
 | `--drafter auto\|none\|MODEL` | `auto`: a supported family drafter when already pulled. Dense Qwen CUDA needs the drafter pulled or explicit `--no-drafts`. |
 | `--drafter-bits N` | MLX default `4`, with `0` retaining BF16 draft linears. CUDA Qwen CT NVFP4 defaults to BF16 (`0` or `16`); explicit `8` (FP8) or `4` (NVFP4) requantizes draft linears and copies a floating target head, for proposals only. Qwen borrows a checkpoint's quantized target head without another copy. CUDA Gemma4 DFlash takes `16` (BF16, default), or `8` only with a BF16 tied target head: private FP8 copies of its companion projections and head. Gemma FP8 prepares its selected prompt and lane providers during initialization after validating those copies; build failures abort startup. Gemma affine checkpoints with a quantized tied head retain `16`. Target verification preserves reply semantics. A CUDA engine with one draft precision refuses the flag. |
-| `--draft-rows N` | CUDA Gemma4 MoE with DFlash: 2–128 rows, default 16, with `--parallel 1`. E2B DFlash2: 2–8 rows, default 8, one lane; [qualification pending](docs/recipes/gemma-4-e2b.md). CUDA Qwen CT NVFP4: unset uses the secondary's metadata block width. With a secondary, explicit width is 2–128 on one stream, at most 16 with `--parallel`; without one, width 1 is also valid. |
+| `--draft-rows N` | CUDA Gemma4 MoE with DFlash: 2–128 rows, default 16, with `--parallel 1`. E2B DFlash2: 2–8 rows, default 8, one lane; [correctness baseline and validation scope](docs/recipes/gemma-4-e2b.md). CUDA Qwen CT NVFP4: unset uses the secondary's metadata block width. With a secondary, explicit width is 2–128 on one stream, at most 16 with `--parallel`; without one, width 1 is also valid. |
 | `--mtp-drafts N` | Family-specific; Flash Next defaults to 3 on MLX and up to 6 on CUDA. Startup 0 retains legacy structural-disable behavior under `auto`; explicit `--draft-method mtp` requires a positive allocated maximum. Adaptive runtime `proposal_limit: 0` keeps enabled MTP warm. |
 | `--mtp-confidence P` | Flash Next CUDA default `0.70`; range 0–1, stops later low-confidence drafts. |
 | `--lane-kernels auto\|on\|off` | `auto`; Qwen dense lane kernels on GPUs with tensor units. |
@@ -778,7 +780,7 @@ FP8 prefill, checkpoint-native low-precision activation math, weight quantizatio
 | `--prefill-pass N` | MLX, default 8 prompt chunks per forward for families with a prompt pass. |
 | `--pass-cache-gib N` | MLX, default 16 GiB freed-buffer cache during a prompt pass when budget permits. |
 | `--mlx-cache-gib N` | MLX, default 8 GiB reusable freed-buffer cache. |
-| `--vision` | Off. GLM on MLX, Qwen dense on MLX/CUDA, Flash Next CUDA with parallel ≥2, and supported Gemma4 CUDA checkpoints. E2B includes native image/video/audio input; its qualification remains pending. |
+| `--vision` | Off. GLM on MLX, Qwen dense on MLX/CUDA, Flash Next CUDA with parallel ≥2, and supported Gemma4 CUDA checkpoints. E2B includes qualified image/video/audio input; [validation scope](docs/gemma4-e2b-validation.md). |
 | `--vision-urls` | Off; image data URLs only by default. Opt in to public HTTP(S) URLs; URL safety policy still applies. |
 | `--vision-max-images N` | Effective default 4 across the full history; byte, pixel and visual-token limits also apply. |
 

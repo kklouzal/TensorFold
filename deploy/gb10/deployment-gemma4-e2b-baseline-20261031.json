@@ -1,0 +1,132 @@
+{
+  "schema": 1,
+  "date": "2026-10-31",
+  "status": "deployed_correctness_baseline",
+  "service": {
+    "container": "gemma4-e2b-tf",
+    "port": 8888,
+    "model_alias": "gemma4-26b",
+    "previous_26b_container": "stopped_retained_for_rollback"
+  },
+  "source": {
+    "revision": "4d19bdd1546cd2417f16af09fd71de37647920e6",
+    "installed_application_files_matched": 726,
+    "application_source_overlay": false,
+    "fd_owner_rebuilt": true,
+    "fd_owner_c_source_sha256": "f85d2c923adfaa14e819250e8def3c3166b8c8624295a37572916e62ad20c1f2"
+  },
+  "artifacts": {
+    "runtime_image": "sha256:290c8f7f132e6d98ed521a39c4616f63385becb55553009aaf9bb5d666d60d72",
+    "wheel_sha256": "1cf6613d6a1260e72f0c632856a8731431b57911cf12f6f07b2f00d6bb19ac8b"
+  },
+  "build": {
+    "workflow": "deploy/gb10/Dockerfile.application",
+    "protected_sdk_preserved": true,
+    "managed_cuda_provider_launch_required": true
+  },
+  "models": {
+    "target": {
+      "repository": "DavidAU/gemma-4-E2B-it-The-DECKARD-Expresso-ONE-Universe-HERETIC-UNCENSORED-Thinking",
+      "revision": "a91cc4c5eaa277338bff3fd2889725bb6e07c2e0"
+    },
+    "companion": {
+      "repository": "rasyosef/gemma-4-E2B-it-dflash2",
+      "revision": "6eb3ade2e4ae841974d692e9edc177dcaa7e20ff"
+    }
+  },
+  "baseline": {
+    "target": "BF16",
+    "kv": "BF16",
+    "companion": "BF16",
+    "verification_rows": 8,
+    "proposals": 7,
+    "request_lanes": 1,
+    "native_context_tokens": 131072,
+    "checkpoint_template_unchanged": true,
+    "inputs": [
+      "text",
+      "image",
+      "video_frames",
+      "audio"
+    ],
+    "output": "text"
+  },
+  "installed_validation": {
+    "cpu": {
+      "passed": 1423,
+      "skipped": 50
+    },
+    "native_processor": {
+      "passed": 38,
+      "skipped": 0,
+      "previously_skipped_opt_in_cases_covered": 17
+    },
+    "http_harness": {
+      "passed": 23,
+      "total": 23,
+      "includes": [
+        "stored_audio",
+        "stored_video",
+        "thinking",
+        "tools_schema",
+        "sse",
+        "cancellation"
+      ]
+    },
+    "production_readiness_and_alias": {
+      "passed": 4
+    }
+  },
+  "source_mounted_validation": {
+    "protected_sdk_same_as_installed": true,
+    "verification_widths": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8
+    ],
+    "target_logits_bit_exact": true,
+    "greedy_identity": "PASS",
+    "seeded_prefix_replay": "PASS",
+    "native_context": {
+      "prompt_tokens": 131040,
+      "ran_before_wheel_installation": true,
+      "installed_wheel_native_context_exercised": false,
+      "generated_continuation_tokens_per_call": 32,
+      "calls": [
+        "serial_greedy",
+        "cached_drafted_greedy",
+        "sampled_new",
+        "sampled_replay"
+      ],
+      "stop_eos": false,
+      "purpose": "capacity_diagnostic_not_retrieval_quality_or_performance",
+      "teacher_forced_verifier_identity": {
+        "first_generated_token_ids": 8,
+        "verification_widths": [
+          1,
+          8
+        ],
+        "hidden_logits_and_four_taps": "identical"
+      }
+    }
+  },
+  "limits": {
+    "audio_seconds_per_segment": 30,
+    "video_soundtrack_auto_extraction_exposed": false,
+    "soundtrack_input": "separate_input_audio",
+    "logprobs": "HTTP_400",
+    "decision_requests": "HTTP_400",
+    "bare_entrypoint_gpu_evidence": "debug_only"
+  },
+  "performance": {
+    "selection": "pending",
+    "baseline_is_performance_winner": false,
+    "incidental_token_rates_published": false
+  },
+  "validation_document": "docs/gemma4-e2b-validation.md"
+}
