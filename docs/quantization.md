@@ -8,6 +8,45 @@ tensorfold info ./model-8bit
 tensorfold serve ./model-8bit
 ```
 
+## Offline NVFP4 planning
+
+Inspect a local original BF16 dense Gemma4 E4B or Google E4B assistant without
+loading a model, importing a producer, downloading files or changing weights:
+
+```bash
+tensorfold quantize plan ./gemma4-e4b-bf16
+tensorfold quantize plan ./gemma4-e4b-assistant-bf16
+```
+
+The JSON result is explicitly `plan-only` with `execution_implemented=false`.
+Its versioned Local-Hessian W4A4 recipe is a quality candidate, not a measured
+winner. It specifies E2M1 weight codes, E4M3 scales per 16 values, FP32 global
+scales and calibrated per-projection activation globals. Batch-wide activation
+amax fallback is forbidden because it can change serial versus speculative-row
+results. The producer source is pinned; compatible container installation and
+execution remain separate gates.
+
+The initial mixed recipe selects active text attention/MLP projections in E4B,
+or the assistant's 22 ordinary core projections. PLE/token tables, tied output
+heads, norms, native scalar arithmetic, KV and multimodal components retain
+their original precision. Stored shared-KV receiver tensors that the native
+architecture does not execute are identified separately. Raw payload estimates
+include these choices; they exclude runtime layout padding, allocator reserve,
+calibration peaks and metadata. The selected E4B source estimates about 10.4 GB,
+not a uniform four-bit conversion of its approximately 16 GB checkpoint.
+
+Source header/configuration identities are recorded; full weight-payload
+verification, observed calibration coverage, export validation, a compatible
+packed loader and held-out quality/runtime checks are still required. Seeing
+multimodal prefixes alone cannot prove complete modality coverage. The
+assistant additionally requires actual target-conditioned calibration and an
+explicit adapter before its custom ordered vocabulary head can be quantized.
+
+FP8 and BF16 sensitivity-based component assignments, packed embedding lookup,
+and quantization-aware distillation are further pipeline work; this command
+does not execute those methods. Keep the original BF16 checkpoint as the
+reference and export future derived checkpoints to a separate destination.
+
 The `quants` branch extends the Qwen3.5/3.8 dense family to MLX affine weights at 2, 3, 4, 5, 6 and 8 bits, with group sizes 32, 64 and 128.
 It keeps packed words, scales and biases at their stored precision, including mixed layer formats.
 It does not convert a checkpoint during loading.

@@ -24,14 +24,15 @@ from tensorfold.serve_options import (
     vision_options as _vision_options,
 )
 
-COMMANDS = ("serve", "pull", "models", "info", "update", "service", "tui", "plan")
+COMMANDS = ("serve", "pull", "models", "info", "update", "service", "tui", "plan", "quantize")
 
 
 def build_parser() -> argparse.ArgumentParser:
     """The ``tensorfold`` parser with this module's subcommand handlers."""
 
     return cli_args.build_parser(
-        {"serve": cmd_serve, "pull": cmd_pull, "models": cmd_models, "update": cmd_update, "info": cmd_info, "plan": cmd_plan}
+        {"serve": cmd_serve, "pull": cmd_pull, "models": cmd_models, "update": cmd_update,
+         "info": cmd_info, "plan": cmd_plan, "quantize_plan": cmd_quantize_plan}
     )
 
 
@@ -191,6 +192,16 @@ def cmd_plan(args: argparse.Namespace) -> int:
     from tensorfold.cli_plan import cmd_plan as plan
 
     return plan(args)
+
+
+def cmd_quantize_plan(args: argparse.Namespace) -> int:
+    """Print an explicit offline recipe without converting or loading weights."""
+    import json
+    from tensorfold.offline_quantization import plan_nvfp4
+
+    options = {} if args.recipe is None else {"recipe": args.recipe}
+    print(json.dumps(plan_nvfp4(args.model, **options), indent=2, sort_keys=True))
+    return 0
 
 
 def _generation_config(model_dir: Path, *, overrides: dict[str, Any] | None = None) -> dict[str, Any]:

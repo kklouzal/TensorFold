@@ -92,3 +92,18 @@ qualification. An installed-image receipt, full serving checks and a measured
 head/setting selection must be recorded before describing an E4B cutover as
 qualified. Preserve the protected CUDA entrypoint/provider checks and the E2B
 rollback service while evaluating this candidate.
+
+## Offline mixed-precision quantization work
+
+`tensorfold quantize plan ./original-e4b-bf16` prints the versioned, local
+header-only NVFP4 plan. Its initial quality recipe retains the embedding tables,
+multimodal components, norms, output head and KV at their existing precision.
+The assistant plan initially selects only 22 ordinary projections; its custom
+ordered vocabulary head remains BF16. These are explicit mixed-precision plans,
+not uniform four-bit exports. FP8 component alternatives require their own
+calibration, packed-consumer and quality gates.
+
+The [quantization guide](../quantization.md#offline-nvfp4-planning) separates the
+implemented planner from pending conversion, producer-container compatibility,
+packed E4B execution and quantized-model qualification. Original BF16 weights
+remain the quality reference.

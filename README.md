@@ -8,6 +8,13 @@ The live service remains the E2B baseline below. The
 [E4B recipe](docs/recipes/gemma-4-e4b.md) records the exact checkpoint, forced
 thinking policy and two distinct assistant candidates.
 
+`tensorfold quantize plan ./original-bf16-model` now produces a local,
+header-only [offline NVFP4 plan](docs/quantization.md#offline-nvfp4-planning)
+for dense E4B or its Google assistant. It reports active projections, deliberate
+BF16 exceptions, provenance and mixed-payload estimates. Calibration, conversion,
+packed E4B loading and quantized quality/performance qualification remain pending;
+the planner does not modify the source model or claim a quantized deployment.
+
 On E4B, omitted API sampling fields remain greedy because the selected checkpoint
 has no `generation_config.json`. The benchmark's `sampled_hf_defaults` region
 uses explicit conditional library sampling settings; it is not a publisher

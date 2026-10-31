@@ -366,4 +366,13 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     plan.add_argument("--ram", type=int, action="append", default=[], metavar="GIB",
                       help="also estimate this RAM class under the current GPU ceiling (repeatable)")
     plan.set_defaults(func=handlers["plan"])
+
+    quantize = commands.add_parser("quantize", help="prepare explicit offline quantization plans")
+    quantization = quantize.add_subparsers(dest="quantization_command", required=True)
+    quantization_plan = quantization.add_parser(
+        "plan", help="inspect local BF16 E4B/assistant metadata; no conversion or model loading")
+    quantization_plan.add_argument("model", type=Path, help="local original BF16 E4B or Google assistant directory")
+    quantization_plan.add_argument("--recipe", default=None,
+                                   help="explicit offline recipe ID; omitted selects the versioned NVFP4 Local-Hessian candidate")
+    quantization_plan.set_defaults(func=handlers["quantize_plan"])
     return parser
