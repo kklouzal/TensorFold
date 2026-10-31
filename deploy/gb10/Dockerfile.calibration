@@ -1,0 +1,49 @@
+# syntax=docker/dockerfile:1.7
+# Build only after the native metadata/closure report and D13/D14 admission.
+# producer-inputs is a named context containing the generated manifest/lock and
+# the exact downloaded/built wheels. No resolver/network runs during installation.
+# The operator verifies this local tag's config ID before and after the build;
+# a config ID is not a registry manifest digest. Use the selected docker driver.
+ARG CALIBRATION_BASE_IMAGE=local/tensorfold-e2b-verification-base:20261030
+ARG CALIBRATION_PARENT=sdk
+FROM ${CALIBRATION_BASE_IMAGE} AS sdk
+COPY deploy/gb10/calibration /opt/tensorfold-calibration/tools
+
+# Only source-wheel builds select this parent. The final producer defaults to
+# sdk and has no Git/dependency payload or OS install. Inspection is read-only;
+# installation requires the actual reviewed plan bound to these helper bytes.
+FROM sdk AS git-sdk
+COPY --from=git-inputs manifest.json /opt/tensorfold-calibration/git-inputs/manifest.json
+COPY --from=git-inputs debs /opt/tensorfold-calibration/git-inputs/debs
+RUN python3 /opt/tensorfold-calibration/tools/git_os.py install \
+      --debs /opt/tensorfold-calibration/git-inputs/debs && \
+    python3 /opt/tensorfold-calibration/tools/git_os.py verify
+
+FROM ${CALIBRATION_PARENT} AS additive
+COPY --from=producer-inputs manifest.json requirements.lock /opt/tensorfold-calibration/
+COPY --from=producer-inputs wheels /opt/tensorfold-calibration/wheels
+RUN python3 /opt/tensorfold-pins/foundation_guard.py audit && \
+    python3 /opt/tensorfold-calibration/tools/role.py check-wheels \
+      --wheels /opt/tensorfold-calibration/wheels && \
+    python3 -m pip install --no-index --no-deps --no-compile --require-hashes \
+      --find-links /opt/tensorfold-calibration/wheels \
+      --target /opt/tensorfold-calibration/prefix \
+      --requirement /opt/tensorfold-calibration/requirements.lock && \
+    python3 /opt/tensorfold-calibration/tools/role.py seal && \
+    python3 /opt/tensorfold-pins/foundation_guard.py audit
+# Preserve the original managed bootstrap, changing only its final consumer.
+ENTRYPOINT ["python3", "/opt/harness/cuda_entrypoint.py", "python3", "/opt/tensorfold-calibration/tools/role.py", "run"]
+LABEL tensorfold.modelopt.source="e352caca3c36236fc15adea2627a9d42788380c4" \
+      tensorfold.qualification="producer API admission only; model calibration unqualified"
+
+FROM additive AS build-tools
+RUN python3 /opt/tensorfold-pins/foundation_guard.py run -- \
+    python3 /opt/tensorfold-calibration/tools/role.py run /opt/tensorfold-calibration/tools/build_tools_smoke.py
+CMD ["/opt/tensorfold-calibration/tools/build_tools_smoke.py"]
+LABEL tensorfold.role="additive-calibration-build-tools"
+
+FROM additive AS calibration
+RUN python3 /opt/tensorfold-pins/foundation_guard.py run -- \
+    python3 /opt/tensorfold-calibration/tools/role.py run /opt/tensorfold-calibration/tools/smoke.py
+CMD ["/opt/tensorfold-calibration/tools/smoke.py"]
+LABEL tensorfold.role="additive-calibration"

@@ -19,6 +19,10 @@ keep sensitive tables and multimodal components at their original precision
 initially. Experimental packed-loader and shared FP8-table components have CPU
 contract tests; calibrated full-model integration and GB10 qualification remain
 pending and these components are not enabled by `serve`.
+The separate [containerized producer workflow](deploy/gb10/calibration/README.md)
+has built the pinned ModelOpt source wheel while retaining the original SDK.
+The isolated producer passes CPU quantization/export API and integrity checks;
+actual calibration, GPU execution and exported-model qualification remain pending.
 
 On E4B, omitted API sampling fields remain greedy because the selected checkpoint
 has no `generation_config.json`. The benchmark's `sampled_hf_defaults` region

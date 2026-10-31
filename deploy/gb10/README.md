@@ -25,6 +25,12 @@ profile uses YaRN factor 4, a 1,048,576-token prompt-plus-reply window,
 `rotorquant8-norm` K/V and four slots. Do not carry its capacity assumptions into
 a different checkpoint; four simultaneous full windows are not assumed to fit.
 
+The separate [ModelOpt producer workflow](calibration/README.md) builds a pinned
+source wheel and admits an isolated additive dependency prefix. Its ARM64 CPU
+API and integrity checks pass without changing the original SDK; model
+calibration, CUDA kernels and quantized E4B serving remain unqualified. This
+producer is separate from the serving image and does not install on the host.
+
 ## Local model and authentication paths
 
 The Compose profile defaults `HF_CACHE` to `/models/hf`, the shared local Hugging
