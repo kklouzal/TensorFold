@@ -22,9 +22,14 @@ pending and these components are not enabled by `serve`.
 The [containerized producer workflow](deploy/gb10/calibration/README.md) now pins
 an owned ModelOpt source candidate through a TensorFold-hosted incremental Git
 bundle, preserving its NVIDIA upstream provenance. The earlier upstream-only
-producer image `91bc` passed CPU API/integrity checks; those checks do not qualify
-the new fork. Its source wheel, producer image, GPU calibration and exported-model
-qualification remain pending. The serving SDK and live model are unchanged.
+producer image `91bc` passed CPU API/integrity checks but failed GPU compilation
+against Triton 3.9. The owned fork's `d6b54ef6` producer passed CPU admission and
+a small guarded GPU Local-Hessian calibration; the corrected 39-case focused
+GPU regression suite also passed. Full E4B calibration, export,
+packed reload and quality/performance qualification remain pending. The
+serving SDK and live model are unchanged. See the
+[producer evidence](deploy/gb10/calibration/EVIDENCE.md) for the numerical
+regression investigation and its limits.
 
 On E4B, omitted API sampling fields remain greedy because the selected checkpoint
 has no `generation_config.json`. The benchmark's `sampled_hf_defaults` region

@@ -1,0 +1,20 @@
+# syntax=docker/dockerfile:1.7
+# Root verifies this local tag's immutable config ID before/after the build.
+# test-inputs contains the actual reviewed manifest, lock and six wheels.
+ARG CALIBRATION_PRODUCER_IMAGE=local/tensorfold-modelopt-producer:a851-v1
+FROM ${CALIBRATION_PRODUCER_IMAGE}
+COPY deploy/gb10/calibration/test_environment.py /opt/tensorfold-test-tools/test_environment.py
+COPY --from=test-inputs manifest.json requirements.lock /opt/tensorfold-test-inputs/
+COPY --from=test-inputs wheels /opt/tensorfold-test-inputs/wheels
+RUN PYTHONDONTWRITEBYTECODE=1 python3 /opt/tensorfold-pins/foundation_guard.py run -- \
+    python3 /opt/tensorfold-test-tools/test_environment.py materialize \
+      --manifest /opt/tensorfold-test-inputs/manifest.json \
+      --wheels /opt/tensorfold-test-inputs/wheels
+RUN PYTHONDONTWRITEBYTECODE=1 python3 /opt/tensorfold-pins/foundation_guard.py run -- \
+    python3 /opt/tensorfold-test-tools/test_environment.py start \
+      --output /tmp/tensorfold-test-cpu-admission \
+      /opt/tensorfold-test-tools/test_environment.py cpu-smoke
+# Keep the inherited producer entrypoint. Qualified tests explicitly select the
+# old-interpreter start boundary before the new test interpreter and bootstrap.
+LABEL tensorfold.role="isolated-modelopt-test-application" \
+      tensorfold.qualification="CPU framework admission only; native GPU regressions unqualified"

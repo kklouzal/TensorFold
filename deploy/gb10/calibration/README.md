@@ -8,9 +8,11 @@ The historical upstream-only producer image `91bc` passed CPU API admission,
 including namespace, dependency, file-seal and provider audits. Its guarded GPU
 probe later reached the Hessian pass and failed on Triton 3.9's removed block
 pointer API. Those results do not qualify the new owned source candidate below.
-The candidate's clean source wheel, producer image, CUDA/JIT execution, full
+The owned fork's clean source wheel and `d6b54ef6` producer passed CPU
+admission, followed by a small guarded GPU Local-Hessian calibration. Full E4B
 calibration, exported-model compatibility and quality/performance remain
-**not yet verified**. See [current evidence](EVIDENCE.md).
+**not yet verified**. The corrected focused 39-case GPU regression suite passed
+with unchanged production bytes; see [current evidence](EVIDENCE.md).
 
 The current pin is owned fork commit
 `a851b028ecbd5f843eb1fc05b93cc2d0abed0de3`, distributed in the
@@ -21,7 +23,7 @@ on NVIDIA's or TensorFold's remote Git history. Its NVIDIA upstream is
 `e352caca3c36236fc15adea2627a9d42788380c4`; the generated
 [source record](modelopt-fork/source.json) and [reconstruction instructions](modelopt-fork/README.md)
 preserve the source, patch and local signature scope. The compatibility change
-is a source candidate, **not GPU qualified**. Base dependencies retain genuine
+is a source candidate, **not full-model GPU qualified**. Base dependencies retain genuine
 upstream metadata. Its HF extra supports Transformers `>=5.5,<5.19`, including
 this baseline's `5.17.0`; stable ModelOpt 0.47 excludes 5.17. The full HF extra
 also adds unrelated DeepSpeed/diffusion dependencies, so this role initially

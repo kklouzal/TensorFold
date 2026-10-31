@@ -1,6 +1,39 @@
 # Producer integration checkpoint
 
-Current verified stage: the isolated Git/build-tools image
+Latest verified stage: owned runtime fork `a851b028` produced wheel
+`0.48.0rc1.dev268+ga851b028e`, SHA256
+`1c99f1a5b0109104a97bdebefcc78fa496ea5a1b59d3d71ef1498759490723db`.
+Producer image
+`sha256:d6b54ef6eb5f8e98d29ad4e2f733a04b23285c170e02e30b0dc58de648aff86d`
+passed CPU API, dependency, namespace, seal and original-provider admission.
+On GB10 SM121, its guarded synthetic Local-Hessian calibration passed four
+batches and 64 activation rows per pass, including the native Hessian weight sweep and
+the receipt-bound FP8 helper. This establishes that small execution path,
+not full-model calibration, quality, throughput or peak-memory qualification.
+
+The focused native GPU regression attempt collected all 39 cases: 36 passed
+and three new ragged-layout cases failed their static-versus-dynamic comparison.
+A subsequent guarded diagnostic completed all 12 combinations of two input
+generator precisions, three output precisions and two ragged shapes. Dynamic
+results were bitwise identical across contiguous, padded, singleton-row and
+three tile layouts, and both paths matched their respective adopted helpers.
+The mismatch was isolated to a one-ULP block-scale difference crossing an FP4
+rounding boundary, rather than an addressing discrepancy. The original failure
+and complete diagnostic remain retained in the host task ledger.
+
+Local test-only fork checkpoint `f8a02ef4` corrects that new test's false
+cross-path equivalence assumption. It compares independently gathered aligned
+1-by-16 blocks using the same dynamic quantizer and global scale, with exact
+equality and explicit FP32/BF16 generators. All production bytes and earlier
+tests remain unchanged. The corrected 39-case native GPU rerun passed on test
+image `a0b914aa`, with no skipped, retried or expected-failure cases; outer
+producer, original-provider, resource-guard and retirement checks also passed.
+The run took 1.43 seconds inside pytest, which is a regression-test duration,
+not an inference performance result. The runtime producer remains pinned to
+`a851b028`. No calibrated E4B artifact
+or quantized E4B serving/performance result exists at this checkpoint.
+
+Historical verified stage: the isolated Git/build-tools image
 `sha256:ee54ef39fa38f8fff5cdde2e9948d1d75bc8f5fe05f1ba428c68c5ca2fc28877`
 passed its original SDK, added OS/Python seals and CPU backend smoke. The public
 Setuptools backend built the clean pinned ModelOpt checkout as
