@@ -32,6 +32,8 @@ from .dense_packed import PackedProjection, PackedProjectionSpec
 from .e2b_metadata import E2BConfig
 
 MANIFEST = "tensorfold_quantization_manifest.json"
+BINDING_METADATA = ("config.json", "hf_quant_config.json", "quantization_config.json",
+                    "quant_config.json", "model.safetensors.index.json")
 PIECE = 64 << 20
 # HF no_init_weights and Torch's default dtype are process-global. This lock
 # serializes THIS loader; caller must exclude unrelated model construction too.
@@ -70,7 +72,7 @@ def _manifest(root, inventory):
     if any(not isinstance(key, str) or not isinstance(sha, str) or re.fullmatch(r"[a-f0-9]{64}", sha) is None
            for mapping in (hashes, metadata) for key, sha in mapping.items()):
         raise ValueError("quantized manifest requires canonical SHA256 identities")
-    for filename in ("hf_quant_config.json", "model.safetensors.index.json"):
+    for filename in BINDING_METADATA:
         if checkpoint_path(root, filename).exists() and filename not in metadata:
             raise ValueError(f"quantized manifest must bind {filename}")
     policy = value.get("unused_shared_kv_policy")
@@ -269,7 +271,7 @@ def load_dense_quantized(model_dir, *, device, prompt_policy) -> DenseMaterializ
     if device != torch.device("cuda:0"):
         raise ValueError("dense packed materialization requires the admitted GB10 CUDA0 device")
     initial_metadata = {filename: _file_hash(checkpoint_path(root, filename))
-                        for filename in ("config.json", "hf_quant_config.json", "model.safetensors.index.json")
+                        for filename in BINDING_METADATA
                         if checkpoint_path(root, filename).exists()}
     manifest_identity = _file_hash(checkpoint_path(root, MANIFEST))
     raw = read_config(root)

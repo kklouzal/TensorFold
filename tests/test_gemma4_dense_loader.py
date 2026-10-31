@@ -201,3 +201,43 @@ def test_metadata_hashing_enforces_existing_owned_size_bound(tmp_path, monkeypat
         dense_loader._file_hash(path)
     path.write_bytes(b'')
     assert dense_loader._file_hash(path)==hashlib.sha256(b'').hexdigest()
+
+
+@pytest.mark.parametrize('filename',['quantization_config.json','quant_config.json'])
+def test_manual_manifest_must_bind_each_present_supported_quantization_sidecar(tmp_path,filename):
+    _,body,inventory=checkpoint(tmp_path)
+    config=b'{"model_type":"synthetic-test"}'
+    (tmp_path/'config.json').write_bytes(config)
+    sidecar=b'{"quant_method":"modelopt","quant_algo":"NVFP4"}'
+    (tmp_path/filename).write_bytes(sidecar)
+    manifest={'schema_version':1,'tensor_sha256':{'weight':hashlib.sha256(body).hexdigest()},
+              'metadata_sha256':{'config.json':hashlib.sha256(config).hexdigest()},'unused_shared_kv_policy':'omitted'}
+    path=tmp_path/'tensorfold_quantization_manifest.json'
+    path.write_text(json.dumps(manifest))
+    with pytest.raises(ValueError,match=filename):
+        _manifest(tmp_path,inventory)
+    manifest['metadata_sha256'][filename]=hashlib.sha256(sidecar).hexdigest()
+    path.write_text(json.dumps(manifest))
+    assert _manifest(tmp_path,inventory)==manifest
+    (tmp_path/filename).write_bytes(b'{"quant_method":"modelopt","quant_algo":"FP8"}')
+    with pytest.raises(ValueError,match='metadata hash mismatch'):
+        _manifest(tmp_path,inventory)
+
+
+def test_sidecar_binding_uses_same_finite_inventory_before_topology_and_at_manifest_check():
+    import ast
+    from tensorfold.families.gemma4.cuda import dense_loader
+    assert dense_loader.BINDING_METADATA == ('config.json','hf_quant_config.json','quantization_config.json',
+                                            'quant_config.json','model.safetensors.index.json')
+    # Execute the actual pre-topology comprehension without importing/allocating
+    # a native E4B model; both paths must reference this authoritative inventory.
+    import inspect
+    tree=ast.parse(inspect.getsource(dense_loader.load_dense_quantized))
+    assignment=next(node for node in ast.walk(tree) if isinstance(node,ast.Assign)
+                    and any(isinstance(target,ast.Name) and target.id=='initial_metadata' for target in node.targets))
+    names=[]
+    namespace={'BINDING_METADATA':dense_loader.BINDING_METADATA,'root':object(),
+               '_file_hash':lambda path: names.append(path) or 'hash',
+               'checkpoint_path':lambda root,name:type('Path',(),{'exists':lambda self:True,'name':name})()}
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[assignment],type_ignores=[])),'<actual-loader-initial-metadata>','exec'),namespace)
+    assert len(namespace['initial_metadata'])==5 and len(names)==5
