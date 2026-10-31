@@ -66,6 +66,7 @@ def scenario(tmp_path, monkeypatch):
         (stage/'hf_quant_config.json').write_text(json.dumps({
             'producer': {'name': 'modelopt'}, 'quantization': {'quant_algo': 'NVFP4'}}))
         (stage/'generation_config.json').write_text('{"do_sample":true}')
+        (stage/'.gitattributes').write_text('*.safetensors filter=lfs\n')
         (stage/'tokenizer.json').write_text('{"WRONG":true}')
         tensor_file(stage/'model.safetensors', {'synthetic': b'packed'})
     module.export_hf_checkpoint = export
@@ -84,6 +85,7 @@ def test_stages_unqualified_preserves_assets_absence_and_actual_manifest(scenari
     assert result['status'] == 'exported-staging-UNQUALIFIED'
     assert result['consumer_reload_pending'] and result['quality_pending'] and not result['output_published']
     assert not (s.stage/'generation_config.json').exists()
+    assert not (s.stage/'.gitattributes').exists()
     for name in ('tokenizer.json', 'merges.txt'):
         assert (s.stage/name).read_bytes() == (s.source/name).read_bytes()
     assert json.loads((s.stage/'config.json').read_text())['quantization_config']['quant_method'] == 'modelopt'
@@ -108,6 +110,52 @@ def test_source_generation_bytes_restored_when_original_present(scenario):
     s.records[path.name] = {'sha256': sha(raw), 'identity': (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)}
     assert s.run()['manifest']['metadata_sha256'][path.name] == sha(raw)
     assert (s.stage/path.name).read_bytes() == raw
+
+
+@pytest.mark.parametrize('contradiction', [False, True])
+def test_restore_omitted_source_config_fields_preserves_quantization_and_rejects_contradictions(
+    scenario, monkeypatch, contradiction
+):
+    s = scenario
+    path = s.source/'config.json'
+    original = json.loads(path.read_text())
+    original['text_config'] = {'global_head_dim': 512, 'head_dim': 256}
+    path.write_text(json.dumps(original))
+    st = path.stat()
+    s.records[path.name] = {'sha256': sha(path.read_bytes()),
+                           'identity': (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns)}
+    upstream = s.module.export_hf_checkpoint
+    restore_assets = target._restore_assets
+
+    def checked_restore(source, stage, records):
+        quantization = target.read_config(stage)['quantization_config']
+        result = restore_assets(source, stage, records)
+        assert target.read_config(stage)['quantization_config'] == quantization
+        return result
+
+    monkeypatch.setattr(target, '_restore_assets', checked_restore)
+
+    def omitted(model, **kwargs):
+        upstream(model, **kwargs)
+        emitted = kwargs['export_dir']/'config.json'
+        config = json.loads(emitted.read_text())
+        config['text_config'] = {'head_dim': 256}
+        if contradiction:
+            config['text_config']['global_head_dim'] = 256
+        emitted.write_text(json.dumps(config))
+
+    s.module.export_hf_checkpoint = omitted
+    if contradiction:
+        with pytest.raises(ValueError, match='semantics'):
+            s.run()
+        assert not (s.stage/'tensorfold_quantization_manifest.json').exists()
+    else:
+        s.run()
+        restored = json.loads((s.stage/'config.json').read_text())
+        assert restored['text_config'] == original['text_config']
+        assert restored['quantization_config']['quant_method'] == 'modelopt'
+        assert restored['quantization_config']['quant_algo'] == 'NVFP4'
+        assert json.loads(path.read_text()) == original
 
 
 @pytest.mark.parametrize('hint', [0, -1, True, '1GB'])
@@ -270,6 +318,19 @@ def test_config_source_semantics_cannot_be_hidden_by_added_quantization():
         target._config_semantics({'native_flags': [False, None]}, {'native_flags': [0, None]})
     with pytest.raises(ValueError, match='removed'):
         target._config_semantics({'native_nullable': None}, {})
+
+
+def test_native_gemma_vision_rope_normalization_preserves_effective_semantics():
+    from copy import deepcopy
+
+    source = {'model_type': 'gemma4', 'vision_config': {'model_type': 'gemma4_vision',
+              'rope_parameters': {'rope_type': 'default', 'rope_theta': 100.0}}}
+    emitted = deepcopy(source)
+    emitted['vision_config']['rope_parameters']['rope_type'] = 'axial'
+    target._config_semantics(source, emitted)
+    emitted['vision_config']['rope_parameters']['rope_theta'] = 200.0
+    with pytest.raises(ValueError, match='semantics'):
+        target._config_semantics(source, emitted)
 
 
 @pytest.fixture

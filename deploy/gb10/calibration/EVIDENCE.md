@@ -46,6 +46,21 @@ The corrected focused CPU suite passed 254 checks. A short 64-sample conversion
 diagnostic precedes another full 1,024-sample attempt; it is not a substitute
 for final calibration or quality/performance qualification.
 
+The 64-sample diagnostic subsequently wrote six model shards, retained the 54
+unused source tensors and dropped the declared tied-head alias. Its owned
+post-export check then rejected an omitted legacy config field, leaving the
+stage unqualified. HF 5.17 consumes `global_head_dim` into `per_layer_config`
+and normalizes the vision RoPE spelling `default` to `axial`; these translations
+are not changes to the native model's effective behavior. Postprocessing now
+restores missing source declarations required by TensorFold's geometry reader,
+compares both configurations through the pinned native `Gemma4Config`, and
+retains canonical quantization semantics and group ordering. It removes only
+the exporter's inert `.gitattributes` copy from the model artifact. A read-only
+CPU preflight against the actual emitted 2,904 tensor headers passed the full
+258-projection/54-unused geometry contract with corrected config held in memory;
+the failed stage itself was not repaired or published. Raw BF16 payload equality,
+successful finalization and consumer execution remain separate gates.
+
 Historical verified stage: the isolated Git/build-tools image
 `sha256:ee54ef39fa38f8fff5cdde2e9948d1d75bc8f5fe05f1ba428c68c5ca2fc28877`
 passed its original SDK, added OS/Python seals and CPU backend smoke. The public

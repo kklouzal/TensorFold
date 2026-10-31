@@ -27,6 +27,8 @@ against Triton 3.9. The owned fork's `d6b54ef6` producer passed CPU admission an
 a small guarded GPU Local-Hessian calibration; the corrected 39-case focused
 GPU regression suite also passed. Full E4B calibration, export,
 packed reload and quality/performance qualification remain pending. The
+short conversion diagnostic has written actual weight shards; metadata
+finalization and consumer checks are still under verification. The
 serving SDK and live model are unchanged. See the
 [producer evidence](deploy/gb10/calibration/EVIDENCE.md) for the numerical
 regression investigation and its limits.

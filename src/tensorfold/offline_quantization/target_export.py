@@ -8,6 +8,9 @@ consumer, quality or serving qualification follows from this operation.
 """
 from __future__ import annotations
 
+from copy import deepcopy
+import hashlib
+import json
 import os
 from pathlib import Path
 import warnings
@@ -33,6 +36,7 @@ from .target_calibration import (
 
 _DERIVED = {'config.json', 'hf_quant_config.json', 'quantization_config.json',
             'quant_config.json', 'model.safetensors.index.json'}
+_CONFIG_DESCRIPTIVE = {'_name_or_path', 'transformers_version', 'quantization_config', 'quantization'}
 
 
 def _files(root):
@@ -50,9 +54,16 @@ def _files(root):
 
 def _config_semantics(source, exported):
     """Keep source-declared semantics; producer owns added serialization defaults."""
-    ignored = {'_name_or_path', 'transformers_version', 'quantization_config', 'quantization'}
+    if source.get('model_type') == 'gemma4':
+        if exported.get('model_type') != 'gemma4':
+            raise ValueError('export changed source model type')
+        from transformers import Gemma4Config
+        # The pinned native config translates legacy vision RoPE and per-layer
+        # declarations. Compare its effective semantics, not obsolete spellings.
+        source = Gemma4Config.from_dict(deepcopy(source)).to_dict()
+        exported = Gemma4Config.from_dict(deepcopy(exported)).to_dict()
     for key, value in source.items():
-        if key in ignored:
+        if key in _CONFIG_DESCRIPTIVE:
             continue
         field = 'dtype' if key == 'torch_dtype' and key not in exported else key
         if field not in exported:
@@ -66,6 +77,18 @@ def _config_semantics(source, exported):
             raise ValueError(f'export changed source config semantics: {key}')
 
 
+def _restore_config_fields(source, exported):
+    """Restore declarations omitted by the producer; never override contradictions."""
+    for key, value in source.items():
+        if key in _CONFIG_DESCRIPTIVE:
+            continue
+        field = 'dtype' if key == 'torch_dtype' and key not in exported else key
+        if field not in exported:
+            exported[field] = deepcopy(value)
+        elif isinstance(value, dict) and isinstance(exported[field], dict):
+            _restore_config_fields(value, exported[field])
+
+
 def _restore_assets(source, stage, records):
     source_owners = {tuple(item['identity'][:2]) for item in records.values()}
     for name in _files(stage):
@@ -75,14 +98,22 @@ def _restore_assets(source, stage, records):
     assets = {name for name in records if not name.endswith('.safetensors') and name not in _DERIVED}
     # In particular remove an export-synthesized generation_config when absent
     # in SOURCE. Never replace the producer's derived quantized config/sidecars.
-    known = set(_STANDARD_METADATA) - _DERIVED
+    # HF export copies Git attributes too; these are not runtime model assets.
+    known = (set(_STANDARD_METADATA) | {'.gitattributes'}) - _DERIVED
     known.update(name for name in _files(stage) if name.endswith('.jinja'))
     for name in sorted(known - assets):
         path = stage / name
         if path.exists():
             path.unlink()
+    original_config, config = read_config(source), read_config(stage)
+    _restore_config_fields(original_config, config)
+    _config_semantics(original_config, config)
+    # Preserve producer map/list order, including ordered quantization groups.
+    config_bytes = (json.dumps(config, separators=(',', ':'), allow_nan=False) + '\n').encode()
+    if len(config_bytes) > MAX_HEADER_BYTES:
+        raise ValueError('restored derived config exceeds checkpoint metadata bound')
     observed = {}
-    for name in sorted(assets):
+    for name in sorted(assets | {'config.json'}):
         destination = stage / name
         destination.parent.mkdir(parents=True, exist_ok=True)
         with _input(source, name, observed) as (stream, before):
@@ -95,8 +126,11 @@ def _restore_assets(source, stage, records):
                 record, _ = scope.open(destination, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW,
                                        'wb', max_bytes=MAX_HEADER_BYTES)
                 output = record.stream
-                while chunk := stream.read(CHUNK_BYTES):
-                    output.write(chunk)
+                if name == 'config.json':
+                    output.write(config_bytes)
+                else:
+                    while chunk := stream.read(CHUNK_BYTES):
+                        output.write(chunk)
                 output.flush()
                 os.fsync(output.fileno())
             except BaseException as error:
@@ -126,7 +160,9 @@ def _restore_assets(source, stage, records):
                     raise_failures(primary, [*errors, retention])
             raise_failures(primary, errors)
         with _input(stage, name, {}) as (output, before):
-            if _hash_range(output, before.st_size, name) != records[name]['sha256']:
+            expected_hash = (hashlib.sha256(config_bytes).hexdigest() if name == 'config.json'
+                             else records[name]['sha256'])
+            if _hash_range(output, before.st_size, name) != expected_hash:
                 raise ValueError(f'authoritative source asset copy differs: {name}')
     return assets
 
@@ -266,7 +302,6 @@ def export_target(owner, source, stage, *, admit_phase, source_revision,
         _recheck_source(source, records)
         _files(stage)
         assets = _restore_assets(source, stage, records)
-        _config_semantics(read_config(source), read_config(stage))
         _, unused = _inventory(original_inventory, cfg, stage, unused_shared_kv_policy,
                                bf16_linears=bf16_linears)
         allowed = set(assets) | _DERIVED | {name for name in _files(stage) if name.endswith('.safetensors')}
