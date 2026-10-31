@@ -692,7 +692,7 @@ class ApiRecordStore:
                 # Serialize once before ownership/publication. The same bounded
                 # codec is used for disk and request-owned immutable snapshots.
                 item = self._decode(self._blob(value))
-                messages([item], allow_video=True)  # wire validation; actual capability gates at execution/capture
+                messages([item], allow_video=True, allow_audio=True)  # wire validation; execution gates actual capability
                 kind = item.setdefault("type", "message")
                 prefix = {"message": "msg", "function_call": "fc", "function_call_output": "fco", "reasoning": "rs"}[kind]
                 if "id" not in item:

@@ -12,7 +12,7 @@ from typing import Any
 
 from tensorfold.cleanup import rollback
 from tensorfold.server.errors import CONTEXT_LIMIT, ContextLengthError, RequestError
-from tensorfold.server.messages import normalize_messages
+from tensorfold.server.messages import audio_capable, normalize_messages
 from tensorfold.server.prompts import has_images, prepare_prompt
 from tensorfold.server.request_options import thinking_fields
 from tensorfold.server.text import render_prompt_ids
@@ -89,7 +89,8 @@ def count_chat(app: Any, chat: dict[str, Any]) -> int:
         tools = active_tool_specs(chat.get("tools"), chat.get("tool_choice"))
     except ValueError as exc:
         raise RequestError(str(exc)) from None
-    msgs = normalize_messages(chat["messages"], allow_images=getattr(app, "vision", None) is not None)
+    msgs = normalize_messages(chat["messages"], allow_images=getattr(app, "vision", None) is not None,
+                              allow_audio=audio_capable(app))
     if has_images(msgs):                          # as /tokenize and generation prepare an image prompt
         count = len(prepare_prompt(app, msgs, tools, thinking, None, fields).tokens)
     else:
@@ -113,7 +114,8 @@ def tokenize(app: Any, body: Any) -> dict[str, Any]:
     strings = flag(body, "return_token_strs", False)
     if "messages" in body:
         generation = flag(body, "add_generation_prompt", True)
-        messages = normalize_messages(body["messages"], allow_images=getattr(app, "vision", None) is not None)
+        messages = normalize_messages(body["messages"], allow_images=getattr(app, "vision", None) is not None,
+                                      allow_audio=audio_capable(app))
         try:
             tools = active_tool_specs(body.get("tools"), body.get("tool_choice"))
         except ValueError as exc:

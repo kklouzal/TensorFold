@@ -20,6 +20,7 @@ from tensorfold.server.errors import RequestError, error_body, invalid_request, 
 from tensorfold.server.request_body import read_body
 from tensorfold.server.responses_translate import Reply, _id, messages, translate
 from tensorfold.server.authentication import current_principal
+from tensorfold.server.messages import audio_capable
 
 LIMIT = 32 * 1024**2
 
@@ -47,6 +48,15 @@ def route(path: str) -> str | None:
         if rest and ("/" not in rest or rest.endswith("/input_items") and rest.count("/") == 1):
             return rest
     return None
+
+
+def _media_options(app, store):
+    from tensorfold.server.api_record_media import video_capable
+
+    native_files = bool(getattr(getattr(app, "vision", None), "responses_video", False))
+    return {"allow_video": video_capable(app) and (
+                bool(getattr(store, "durable_conversations", False)) or native_files),
+            "allow_audio": audio_capable(app)}
 
 
 # -- store ------------------------------------------------------------------------------------
@@ -353,7 +363,7 @@ def post(handler: Any, app: Any) -> None:
         durable = getattr(store, "durable_conversations", False)
         from tensorfold.server.api_record_media import video_capable
         request = translate(body, store, principal=principal, history=[] if durable else None,
-                            allow_video=durable and video_capable(app))
+                            **_media_options(app, store))
     except RequestError as exc:
         return _refused(handler, exc, store=store)
     except ValueError as exc:
@@ -372,7 +382,9 @@ def post(handler: Any, app: Any) -> None:
             if operation is not None:
                 operation.capture_media(app)
                 instructions = ([{"role": "system", "content": body["instructions"]}] if body.get("instructions") else [])
-                request.chat["messages"] = instructions + messages(list(operation.execution_input()), allow_video=video_capable(app))
+                request.chat["messages"] = instructions + messages(list(operation.execution_input()),
+                                                                   allow_video=video_capable(app),
+                                                                   allow_audio=audio_capable(app))
                 store.check_materialized(operation.history, operation.execution_history, operation.added, operation.snapshots, request.chat)
             failure_keep = None
             if operation is not None:
@@ -471,7 +483,7 @@ def input_tokens(handler: Any, app: Any) -> None:
         durable = getattr(store, "durable_conversations", False)
         from tensorfold.server.api_record_media import video_capable
         request = translate(body, store, principal=principal, history=[] if durable else None,
-                            allow_video=durable and video_capable(app))
+                            **_media_options(app, store))
         scope = store.response_operation(principal, _id("resp"), previous_response_id=body.get("previous_response_id"),
                                          conversation_id=request.conversation_id, added=request.items,
                                          stored=False, read_only=True) if durable else nullcontext()
@@ -479,7 +491,9 @@ def input_tokens(handler: Any, app: Any) -> None:
             if operation is not None:
                 operation.capture_media(app)
                 instructions = ([{"role": "system", "content": body["instructions"]}] if body.get("instructions") else [])
-                request.chat["messages"] = instructions + messages(list(operation.execution_input()), allow_video=video_capable(app))
+                request.chat["messages"] = instructions + messages(list(operation.execution_input()),
+                                                                   allow_video=video_capable(app),
+                                                                   allow_audio=audio_capable(app))
                 store.check_materialized(operation.history, operation.execution_history, operation.added, operation.snapshots, request.chat)
             count = count_chat(app, request.chat)
     except RequestError as exc:

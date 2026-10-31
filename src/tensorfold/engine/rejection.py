@@ -259,7 +259,8 @@ def verify(chain: ChainPacket, p_rows, seed: int, *, room: int | None = None, eo
 
     Room truncates the defined rejection output, never proposal existence. An accepted child
     in the last output slot is returned as the pending terminal, excluded from the commit path.
-    None p rows are permitted only at unreachable grammar-pruned descendants.
+    None p rows are permitted only at descendants unreachable because grammar
+    pruned the input path or output room terminates verification first.
     """
 
     if len(p_rows) != len(chain.tokens) + 1:

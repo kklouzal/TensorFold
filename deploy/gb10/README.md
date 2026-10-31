@@ -800,3 +800,23 @@ same change. Follow [CONTRIBUTING.md](../../CONTRIBUTING.md) for source validati
 and upstream merges. Documentation changes to `README.md` also change the wheel's
 package metadata, so publish a fresh source capture and image identity while
 reusing native compilation evidence only where its actual inputs still match.
+
+## Gemma 4 E2B integration status
+
+The [E2B recipe](../../docs/recipes/gemma-4-e2b.md) records the current complete
+BF16 target/DFlash2 implementation and pending qualification. It requires its
+own checkpoint, companion and native template. Do not apply the 26B MoE
+deployment's model paths, template override, context or historical performance
+selection to E2B. Build and qualify an immutable image before changing a live
+service; source-mounted diagnostics are preliminary evidence.
+
+An application-only rebuild can reuse an already qualified owned runtime with
+the required pinned dependencies. Build from a clean source capture with
+`Dockerfile.application`, supplying `APPLICATION_BASE_IMAGE` and `SOURCE_REVISION`
+explicitly and selecting `--target runtime` or `--target verification`. Record
+the resolved immutable base image ID before and after the build. This path
+rebuilds the complete owned wheel and native extension, replaces the previous
+TensorFold package through the existing guarded installer, and audits the
+protected foundation. It preserves the base's CUDA launcher/provider policy;
+dependency changes require the full foundation workflow above. Qualify the
+installed result before a live cutover.

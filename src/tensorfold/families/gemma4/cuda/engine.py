@@ -83,6 +83,7 @@ class Gemma4Engine:
 
     tp = 1
     graphs = None          # text decode/verify CUDA graph runner (None: every forward eager)
+    _clip_sampled_verification_to_room = False
 
     def __init__(self, model_dir: Path, *, drafter: str = "", drafter_bits: int = 16,
                  depth: int | None = None, context: int | None = None,
@@ -376,6 +377,11 @@ class Gemma4Engine:
                                                    for t in guesses):
                         raise RuntimeError("Gemma4 DFlash returned an invalid proposal")
                     inputs.extend(guesses)
+                if stochastic and self._clip_sampled_verification_to_room:
+                    # E2B owns only the logical context. Unreachable target
+                    # rows need no cache/RoPE capacity; the full q packet above
+                    # remains unchanged, including its noncausal geometry.
+                    inputs = inputs[:room]
                 window = None
                 if constraint is not None:
                     window = constraint.window(inputs, [-1, *range(len(inputs) - 1)])

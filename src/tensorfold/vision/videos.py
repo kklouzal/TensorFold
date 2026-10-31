@@ -46,6 +46,7 @@ class VideoInput:
     frames: np.ndarray            # [frames, height, width, 3] uint8, already at the tower's resolution
     indices: tuple[int, ...]      # each frame's index in the source
     fps: float                    # the source's frame rate
+    timestamp_seconds: tuple[float, ...] | None = None  # opt-in actual presentation times, relative to first frame
     content_hash: str = field(init=False)
 
     def __post_init__(self) -> None:
@@ -53,6 +54,12 @@ class VideoInput:
                 or self.frames.shape[-1] != 3 or len(self.indices) != self.frames.shape[0] or not self.indices
                 or not math.isfinite(self.fps) or self.fps <= 0):
             raise ImageInputError("video input requires RGB frames, one index each and a positive frame rate")
+        if self.timestamp_seconds is not None and (
+                len(self.timestamp_seconds) != len(self.indices)
+                or any(isinstance(x, bool) or not isinstance(x, (int, float)) or not math.isfinite(x) or x < 0
+                       for x in self.timestamp_seconds)
+                or any(b < a for a, b in zip(self.timestamp_seconds, self.timestamp_seconds[1:]))):
+            raise ImageInputError("video presentation times must be finite, ordered and match the selected frames")
         self.frames.setflags(write=False)
         digest = hashlib.sha256(b"tensorfold-video-v1\0" + np.asarray(self.frames.shape, dtype=">u4").tobytes())
         digest.update(np.asarray(self.indices, dtype=">u8").tobytes())
@@ -101,9 +108,36 @@ def sample_indices(total: int, fps: float, limits: VideoLimits) -> np.ndarray:
     return np.linspace(0, total - 1, count).round().astype(int)
 
 
+def _presentation_geometry(data: bytes, limits: VideoLimits, deadline: float) -> tuple[int, float | None]:
+    """Probe an unindexed clip without retaining frames or inventing its rate."""
+    av = _av()
+    count, origin, last = 0, None, None
+    with av.open(io.BytesIO(data), mode="r") as probe:
+        stream = probe.streams.video[0]
+        for frame in probe.decode(stream):
+            if time.monotonic() >= deadline:
+                raise ImageInputError("video timeline scan exceeds the time limit")
+            if frame.pts is None or frame.time_base is None:
+                raise ImageInputError("video presentation timestamps are unavailable")
+            seconds = float(frame.pts * frame.time_base)
+            if not math.isfinite(seconds):
+                raise ImageInputError("video presentation timestamps are invalid")
+            if origin is None:
+                origin = seconds
+            if (seconds < origin or (last is not None and seconds < last)
+                    or seconds - origin > limits.max_seconds):
+                raise ImageInputError("video presentation timeline is invalid or exceeds the time limit")
+            last = seconds
+            count += 1
+    return count, ((count - 1) / (last - origin)
+                   if count >= 2 and last is not None and origin is not None and last > origin else None)
+
+
 def decode_video(data: bytes, size: Callable[[int, int, int], tuple[int, int]], limits: VideoLimits,
-                 deadline: float) -> VideoInput:
+                 deadline: float, *, preserve_timestamps: bool = False, minimum_frames: int = 2) -> VideoInput:
     """Decode the sampled frames of one video, each scaled to ``size(frames, height, width)`` (bicubic)."""
+    if type(minimum_frames) is not int or minimum_frames <= 0:
+        raise ValueError("minimum decoded video frames must be positive")
     av = _av()
     try:
         with av.open(io.BytesIO(data), mode="r") as container:
@@ -114,40 +148,71 @@ def decode_video(data: bytes, size: Callable[[int, int, int], tuple[int, int]], 
             width, height = int(stream.codec_context.width or 0), int(stream.codec_context.height or 0)
             if min(width, height) <= 0 or max(width, height) > limits.max_dimension:
                 raise ImageInputError("video dimensions are missing or exceed the pixel limit")
-            rate = stream.average_rate or stream.guessed_rate or 24
-            fps = float(rate)
+            rate = stream.average_rate or stream.guessed_rate
+            measured = None
+            if preserve_timestamps and (not stream.frames or rate is None):
+                measured = _presentation_geometry(data, limits, deadline)
+            fps = float(rate) if rate is not None else (measured[1] if measured is not None else 24.0)
             seconds = float(stream.duration * stream.time_base) if stream.duration else (
                 container.duration / 1e6 if container.duration else 0.0)
-            total = int(stream.frames or round(seconds * fps))
-            if not 0 < fps <= 1000 or total <= 0:
+            total = int(stream.frames or (measured[0] if measured is not None else round(seconds * fps)))
+            if fps is None or not 0 < fps <= 1000 or total <= 0:
                 raise ImageInputError("the video's frame count or rate is missing")
             if total / fps > limits.max_seconds:
                 raise ImageInputError(f"videos are limited to {limits.max_seconds / 60:.0f} minutes")
             wanted = sample_indices(total, fps, limits)
             out_h, out_w = size(len(wanted), height, width)
             keep = set(int(i) for i in wanted)
-            frames, indices = [], []
+            frames, indices, timestamps = [], [], []
+            origin, previous_seconds = None, None
+            decoded = 0
             for n, frame in enumerate(container.decode(stream)):
-                if n > wanted[-1] or time.monotonic() >= deadline:
+                if (n > wanted[-1] and not preserve_timestamps) or time.monotonic() >= deadline:
                     break
+                decoded += 1
+                if preserve_timestamps and decoded > total:
+                    raise ImageInputError("decoded video frame count differs from its metadata")
+                if min(frame.width, frame.height) <= 0 or max(frame.width, frame.height) > limits.max_dimension:
+                    raise ImageInputError("decoded video dimensions exceed the pixel limit")
+                if preserve_timestamps:
+                    if frame.pts is None or frame.time_base is None:
+                        raise ImageInputError("video presentation timestamps are unavailable")
+                    seconds = float(frame.pts * frame.time_base)
+                    if not math.isfinite(seconds):
+                        raise ImageInputError("video presentation timestamps are invalid")
+                    if origin is None:
+                        origin = seconds
+                    seconds -= origin
+                    if (seconds < 0 or seconds > limits.max_seconds
+                            or (previous_seconds is not None and seconds < previous_seconds)):
+                        raise ImageInputError("video presentation timeline is invalid or exceeds the time limit")
+                    previous_seconds = seconds
                 if n in keep:
                     frames.append(frame.to_ndarray(format="rgb24", width=out_w, height=out_h,
                                                    interpolation="BICUBIC"))
                     indices.append(n)
+                    if preserve_timestamps:
+                        timestamps.append(seconds)
             if time.monotonic() >= deadline:
                 raise ImageInputError("video decoding exceeds the time limit")
+            if preserve_timestamps and decoded != total:
+                raise ImageInputError("decoded video frame count differs from its metadata")
     except ImageInputError:
         raise
     except (OSError, ValueError, MemoryError) as exc:
         raise ImageInputError(f"video bytes are invalid or unsupported ({type(exc).__name__}); use MP4 or "
                               "WebM") from None
-    if len(frames) < 2:
-        raise ImageInputError("the video has fewer than two decodable frames")
-    return VideoInput(np.stack(frames), tuple(indices), fps)
+    if len(frames) < minimum_frames:
+        if minimum_frames == 2:
+            raise ImageInputError("the video has fewer than two decodable frames")
+        raise ImageInputError(f"the video has fewer than {minimum_frames} decodable frames")
+    return VideoInput(np.stack(frames), tuple(indices), fps,
+                      tuple(timestamps) if preserve_timestamps else None)
 
 
 def load_videos(sources: list[VideoSource], size: Callable[[int, int, int], tuple[int, int]], *,
-                limits: VideoLimits = DEFAULT_VIDEO_LIMITS, allow_urls: bool = False) -> list[VideoInput]:
+                limits: VideoLimits = DEFAULT_VIDEO_LIMITS, allow_urls: bool = False,
+                preserve_timestamps: bool = False, minimum_frames: int = 2) -> list[VideoInput]:
     """Bound encoded bytes and decoding time across the videos of one request."""
     if len(sources) > limits.max_videos:
         raise ImageInputError(f"a request supports at most {limits.max_videos} videos")
@@ -168,5 +233,11 @@ def load_videos(sources: list[VideoSource], size: Callable[[int, int, int], tupl
         else:
             raise ImageInputError("video URLs are off on this server")
         total += len(data)
-        output.append(decode_video(data, size, limits, deadline))
+        if preserve_timestamps:
+            output.append(decode_video(data, size, limits, deadline, preserve_timestamps=True,
+                                       minimum_frames=minimum_frames))
+        elif minimum_frames != 2:
+            output.append(decode_video(data, size, limits, deadline, minimum_frames=minimum_frames))
+        else:
+            output.append(decode_video(data, size, limits, deadline))
     return output

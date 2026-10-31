@@ -72,10 +72,13 @@ class ChatTemplate:
         return {"name": active.source.name, "source": active.source.origin, "sha256": active.sha256}
 
     def render(self, messages: list[dict[str, Any]], *, tools: list[dict[str, Any]] | None,
-               enable_thinking: bool, extra: dict[str, Any] | None = None, allow_images: bool = False) -> str:
+               enable_thinking: bool, extra: dict[str, Any] | None = None, allow_images: bool = False,
+               allow_audio: bool = False) -> str:
         active = self.selected(tools=tools)
         messages = _normalize_tool_call_arguments(normalize_messages(messages, late_system=active.late_system,
-                                                                     allow_images=allow_images))
+                                                                     allow_images=allow_images,
+                                                                     allow_audio=allow_audio,
+                                                                     audio_placeholders=allow_audio))
         kwargs = dict(self.specials, messages=messages, tools=tools or None, add_generation_prompt=True,
                       enable_thinking=enable_thinking)
         kwargs.update(extra or {})

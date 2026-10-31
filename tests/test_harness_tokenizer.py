@@ -475,10 +475,20 @@ def test_app_reuses_engine_template_snapshot_after_files_change(tmp_path):
     captured = app.template
     engine = NoGenerationEngine()
     engine.chat_template = captured
-    (tmp_path / "tokenizer_config.json").write_text("invalid after capture")
+    # Change only the captured template; tokenizer metadata remains independently valid.
+    (tmp_path / "tokenizer_config.json").write_text(json.dumps({"chat_template": "changed after capture"}))
     reused = App(engine, tmp_path, "served")
     assert reused.template is captured
     assert reused._prepare(request(count=1), True).prompt == [4, 1]
+
+
+def test_captured_template_does_not_authorize_invalid_tokenizer_metadata(tmp_path):
+    app = served_app(tmp_path)
+    engine = NoGenerationEngine()
+    engine.chat_template = app.template
+    (tmp_path / "tokenizer_config.json").write_text("invalid after capture")
+    with pytest.raises(json.JSONDecodeError):
+        App(engine, tmp_path, "served")
 
 
 @pytest.mark.parametrize("payload, headers, problem", [

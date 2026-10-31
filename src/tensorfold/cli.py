@@ -443,8 +443,8 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
         fp8 = prompt_precision.fp8() and bool(getattr(weights, "fast_prefill", False))
         if asked and not fp8 and getattr(weights, "precision", "full") == precision.CHECKPOINT:
             raise ValueError(
-                "--prefill-fp8 is for --precision full: the checkpoint's own math already runs its prompts in "
-                "FP4 and FP8"
+                "--prefill-fp8 needs a supported --precision full prompt path; "
+                "this checkpoint retains its native prompt arithmetic"
             )
         if asked and not fp8:
             raise ValueError(

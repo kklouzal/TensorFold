@@ -41,6 +41,11 @@ def redact_images(value: Any) -> Any:
         return value
     if value.get("type") in ("image_url", "video_url"):
         return {**value, value["type"]: {"url": "<redacted>"}}
+    if value.get("type") in ("input_audio", "audio"):
+        kind = value["type"]
+        payload = value.get(kind)
+        return {**value, kind: {"data": "<redacted>",
+                                        "format": payload.get("format") if isinstance(payload, dict) else None}}
     return {key: redact_images(item) for key, item in value.items()}
 
 

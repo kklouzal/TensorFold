@@ -1,0 +1,82 @@
+name: tensorfold-gb10-gemma4-e2b
+
+services:
+  tensorfold:
+    image: ${TENSORFOLD_IMAGE:?Set the qualified immutable TensorFold image}
+    container_name: ${TENSORFOLD_CONTAINER_NAME:-gemma4-e2b-tf}
+    entrypoint: [python3, /opt/harness/cuda_entrypoint.py, python3, /opt/harness/tensorfold_harness.py]
+    command:
+      - serve
+      - ${TENSORFOLD_MODEL_PATH:?Set the complete E2B snapshot path inside /models/hf}
+      - --backend
+      - cuda
+      - --precision
+      - checkpoint
+      - --name
+      - gemma4-e2b
+      - --host
+      - 0.0.0.0
+      - --port
+      - ${TENSORFOLD_PORT:-8888}
+      - --drafter
+      - ${TENSORFOLD_DRAFTER_PATH:?Set the complete E2B DFlash2 snapshot path inside /models/hf}
+      - --drafter-bits
+      - ${TENSORFOLD_DRAFTER_BITS:-16}
+      - --draft-rows
+      - ${TENSORFOLD_DRAFT_ROWS:-8}
+      - --parallel
+      - '1'
+      - --context
+      - ${TENSORFOLD_CONTEXT:-131072}
+      - --kv-dtype
+      - bf16
+      - --vision
+      - --thinking
+      - --thinking-budget
+      - '0'
+    environment:
+      HF_HUB_OFFLINE: '1'
+      HF_HOME: /models/hf
+      HF_HUB_CACHE: /models/hf/hub
+      HF_MODULES_CACHE: /cache/hf-modules
+      TENSORFOLD_NO_UPDATE_CHECK: '1'
+      TENSORFOLD_MEMORY_RESERVE_GIB: ${TENSORFOLD_MEMORY_RESERVE_GIB:-16}
+      TENSORFOLD_CUDA_MEMORY_RESERVE_GIB: ${TENSORFOLD_CUDA_MEMORY_RESERVE_GIB:-0}
+      MAX_JOBS: ${TENSORFOLD_MAX_JOBS:-10}
+      OMP_NUM_THREADS: ${TENSORFOLD_OMP_NUM_THREADS:-10}
+      MKL_NUM_THREADS: ${TENSORFOLD_MKL_NUM_THREADS:-10}
+    volumes:
+      # Snapshot links may reach repository blobs and shared hub blobs. Mount
+      # the complete cache, retaining its hierarchy and canonical model identity.
+      - type: bind
+        source: ${TENSORFOLD_HF_STORE:?Set the complete HF store, normally /models/hf}
+        target: /models/hf
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${TENSORFOLD_CACHE:?Set an existing writable kernel cache directory}
+        target: /cache
+        bind:
+          create_host_path: false
+    devices:
+      - nvidia.com/gpu=${TENSORFOLD_GPU_UUID:?Set the GB10 GPU UUID}
+    cpuset: ${TENSORFOLD_CPUSET:-5-9,15-19}
+    network_mode: host
+    ipc: host
+    restart: unless-stopped
+    ulimits:
+      memlock: -1
+      stack: -1
+      nofile: 1048576
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
+    healthcheck:
+      test: [CMD, python3, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:${TENSORFOLD_PORT:-8888}/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15m
+      retries: 3

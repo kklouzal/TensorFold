@@ -27,7 +27,7 @@ from tensorfold.server.errors import (ModelNotFound, RequestError, error_body, i
                                      server_error, status_of, unknown_route)
 from tensorfold.server.request_options import parse_numbers, thinking_fields
 from tensorfold.server.probabilities import probability_options
-from tensorfold.server.messages import normalize_messages, validate_modalities
+from tensorfold.server.messages import audio_capable, normalize_messages, validate_modalities
 from tensorfold.server.tool_policy import ToolCallPolicy
 from tensorfold.server.cancellation import RequestCancelled, socket_cancellation
 from tensorfold.server import metrics, stats
@@ -577,10 +577,12 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                         handle.write(json.dumps(redact_images(body)) + "\n")
                 raw_kw: dict[str, Any] = {}
                 if is_chat_completion:
-                    messages = normalize_messages(body.get("messages"), allow_images=getattr(app, "vision", None) is not None)
+                    messages = normalize_messages(body.get("messages"), allow_images=getattr(app, "vision", None) is not None,
+                                                  allow_audio=audio_capable(app))
                     tools = active_tool_specs(body.get("tools"), body.get("tool_choice"))
                 elif isinstance(body.get("messages"), list) and body["messages"]:
-                    messages, tools = normalize_messages(body["messages"], allow_images=getattr(app, "vision", None) is not None), []
+                    messages, tools = normalize_messages(body["messages"], allow_images=getattr(app, "vision", None) is not None,
+                                                         allow_audio=audio_capable(app)), []
                 elif getattr(app, "accepts_raw_prompt", False):
                     # a text completion reads its prompt raw, as vLLM and mlx_lm do: no chat template, no think block
                     messages, tools = [], []

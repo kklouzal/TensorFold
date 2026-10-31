@@ -1,5 +1,9 @@
 # Gemma 4 26B-A4B (`gemma4`)
 
+The dense E2B model and DFlash2 companion have a separate
+[CUDA integration recipe](gemma-4-e2b.md). The architecture, tokenizer template,
+context and performance results on this page apply to 26B-A4B.
+
 CUDA DFlash sampled requests use standard rejection sampling; greedy serial identity remains required. Fixed seed/configuration and cache reuse reproduce the drafted request, while sampled serial/drafted or different proposal-precision tokens may differ. Apple paths retain their separate sampling contract. Historical measurements below retain their source and scope. See [migration validation](../rejection-sampling-validation.md) for outstanding qualification gates.
 
 ## Native CUDA trial

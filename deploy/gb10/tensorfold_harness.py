@@ -153,6 +153,8 @@ those from the fingerprint of a template whose contract it has pinned.
         "video": bool(getattr(app.vision, "videos", False)),
         "reasoning_efforts": sorted(efforts),
     }
+    if bool(getattr(app.vision, "audio", False)):
+        capabilities["audio"] = True
     if app.reasoning_effort is not None:
         from tensorfold.server.request_options import heard_effort
         # Resolution can return a name the template lacks (xhigh, none, or any

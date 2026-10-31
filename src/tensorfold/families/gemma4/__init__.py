@@ -14,7 +14,7 @@ MODELS = ("mlx-community/gemma-4-26b-a4b-it-4bit",)
 CUDA_DRAFTER = "z-lab/gemma-4-26B-A4B-it-DFlash"
 CUDA_DRAFTER_BITS = True
 CUDA_DRAFT_ROWS = True
-QUANT_METHODS = {"cuda": ("mlx", "compressed-tensors")}
+QUANT_METHODS = {"cuda": ("mlx", "compressed-tensors", None), "mlx": ("mlx",)}
 KERNEL_PACKAGE = "tensorfold.kernels.gemma.v1"
 KERNEL_VERSION = "v1"
 # the decode projections run another family's matmul kernels
@@ -27,6 +27,10 @@ def check(model_dir: str | Path) -> None:
     from tensorfold.families import OWN_MODEL_HELP, describe_quantization, quant_method, quantization, read_config
 
     config = read_config(model_dir)
+    from .cuda.e2b_metadata import E2BConfig, is_e2b
+    if is_e2b(config):
+        E2BConfig.from_dict(config)
+        return
     if quant_method(config) == "compressed-tensors":
         check_metadata(config, "cuda")
         return
@@ -54,6 +58,14 @@ def check(model_dir: str | Path) -> None:
 def check_metadata(config: dict, backend: str) -> None:
     """Native CT activation math and architecture are declared before downloads."""
     from tensorfold.families import quant_method
+    from .cuda.e2b_metadata import E2BConfig, is_e2b
+    if is_e2b(config):
+        if backend != "cuda":
+            raise ValueError("Gemma E2B is implemented by the CUDA backend")
+        E2BConfig.from_dict(config)
+        return
+    if backend == "cuda" and quant_method(config) is None:
+        raise ValueError("Unquantized Gemma4 CUDA support requires the complete dense E2B architecture")
     if backend == "cuda" and quant_method(config) == "compressed-tensors":
         from .cuda.weights import Config
         Config.from_dict(config)
@@ -94,6 +106,17 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         raise ValueError("Gemma4 CUDA does not implement: " + ", ".join(unsupported))
     if options.get("vision_offload"):
         raise ValueError("Gemma4's vision tower stays resident; drop --vision-offload")
+    from .cuda.e2b_metadata import is_e2b
+    from tensorfold.families import read_config
+    if is_e2b(read_config(model_dir)):
+        from .cuda.e2b_engine import E2BEngine
+        rows = options.get("draft_rows")
+        return E2BEngine(Path(model_dir), drafter=drafter, no_drafts=no_drafts,
+                         depth=None if rows is None else rows - 1, context=context,
+                         streams=options.get("parallel", 1),
+                         **{name: options[name] for name in ("context_explicit", "drafter_bits", "vision",
+                                                           "vision_urls", "eos_token_ids", "chat_template_file",
+                                                           "chat_template_name") if name in options})
     if options.get("vision_urls"):
         raise ValueError("Gemma4 currently accepts embedded images/video; drop --vision-urls")
     from tensorfold.families import quant_method, read_config
@@ -115,11 +138,21 @@ def load(model_dir: Path, *, lane_kernels: str = "auto", drafter: str = "", draf
          trust_model_code: bool = False, **_: Any) -> tuple[Any, Any]:
     """MLX's qmv loop a row by default; ``lane_kernels`` "on": the lane matmul; ``drafter``: a DFlash model's chains."""
 
+    from tensorfold.families import read_config
+    from .cuda.e2b_metadata import is_e2b
+    if is_e2b(read_config(model_dir)):
+        raise ValueError("Gemma E2B requires the CUDA backend")
     from tensorfold.families.gemma4.model import load as load_model
 
     backend = "lane" if str(lane_kernels) == "on" else "rows"
     return load_model(Path(model_dir), backend=backend, drafter=drafter, drafter_bits=drafter_bits,
                       trust_model_code=trust_model_code)
+
+
+def cuda_drafter(model_dir):
+    from tensorfold.families import read_config
+    from .cuda.e2b_metadata import is_e2b
+    return "rasyosef/gemma-4-E2B-it-dflash2" if is_e2b(read_config(model_dir)) else CUDA_DRAFTER
 
 
 def engine_settings(model: Any) -> dict[str, Any]:

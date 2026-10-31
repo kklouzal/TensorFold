@@ -9,6 +9,11 @@ _MEDIA = ("image", "images", "image_url", "input_image", "audio", "input_audio",
 _IMAGE_ROLES = ("user", "tool")    # a tool result may carry images (an agent's screenshots): templates render them
 
 
+def audio_capable(app: Any) -> bool:
+    """Audio input is admitted only by an actual loaded audio frontend."""
+    return bool(getattr(getattr(app, "vision", None), "audio", False))
+
+
 def validate_modalities(body: dict[str, Any]) -> None:
     if any(body.get(k) for k in _MEDIA) or body.get("modalities") not in (None, ["text"]):
         raise RequestError("this server accepts and produces text only; image, audio and video are unsupported")
@@ -33,7 +38,8 @@ _VISUAL = ("image_url", "image", "video_url", "video")      # a video part reach
 
 
 def normalize_messages(messages: list[dict[str, Any]], *, late_system: str = "system",
-                       allow_images: bool = False) -> list[dict[str, Any]]:
+                       allow_images: bool = False, allow_audio: bool = False,
+                       audio_placeholders: bool = False) -> list[dict[str, Any]]:
     """Merge leading instructions as system text and retain later instructions as ``late_system`` so earlier conversation tokens stay unchanged."""
 
     if not isinstance(messages, list) or not messages:
@@ -48,13 +54,18 @@ def normalize_messages(messages: list[dict[str, Any]], *, late_system: str = "sy
         if any(message.get(k) for k in _MEDIA):
             raise RequestError("this server accepts text only; image, audio and video inputs are unsupported")
         content = message.get("content")
-        if isinstance(content, list) and allow_images and any(
-                isinstance(p, dict) and p.get("type") in _VISUAL for p in content):
+        audio_types = ("input_audio", "audio") if audio_placeholders else ("input_audio",)
+        allowed_media = (*(_VISUAL if allow_images else ()), *(audio_types if allow_audio else ()))
+        if isinstance(content, list) and any(
+                isinstance(p, dict) and p.get("type") in allowed_media for p in content):
             if role not in _IMAGE_ROLES:
                 raise RequestError("images and videos are supported only in user and tool messages")
             for part in content:
-                if not isinstance(part, dict) or part.get("type") not in ("text", *_VISUAL):
-                    raise RequestError("image messages may contain text and image_url (or video_url) parts only")
+                if not isinstance(part, dict) or part.get("type") not in ("text", *allowed_media):
+                    raise RequestError("message contains an unsupported media content part" if allow_audio
+                                       else "image messages may contain text and image_url (or video_url) parts only")
+                if part["type"] in ("input_audio", "audio") and role != "user":
+                    raise RequestError("input_audio parts are supported only in user messages")
                 if part["type"] == "text" and not isinstance(part.get("text"), str):
                     raise RequestError("a text content part must contain a text string")
             out.append({**message, "content": list(content)})

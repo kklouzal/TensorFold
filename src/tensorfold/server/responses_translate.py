@@ -34,7 +34,7 @@ class Request:
     conversation_id: str | None = None
 
 
-def _content(content: Any, *, allow_video=False) -> str | list[dict[str, Any]]:
+def _content(content: Any, *, allow_video=False, allow_audio=False) -> str | list[dict[str, Any]]:
     """A message's content as chat content: text parts as text, images as image_url parts."""
 
     if isinstance(content, str):
@@ -53,6 +53,15 @@ def _content(content: Any, *, allow_video=False) -> str | list[dict[str, Any]]:
                 raise RequestError("input_image needs an image_url (a URL or data URL); file ids are not supported")
             url = {"url": part["image_url"], **({"detail": part["detail"]} if part.get("detail") else {})}
             parts.append({"type": "image_url", "image_url": url})
+        elif kind == "input_audio" and allow_audio:
+            from tensorfold.vision.audio import audio_source
+            from tensorfold.vision.images_http import ImageInputError
+
+            try:
+                audio_source(part.get("input_audio"))
+            except ImageInputError as exc:
+                raise RequestError(str(exc)) from exc
+            parts.append({"type": "input_audio", "input_audio": dict(part["input_audio"])})
         elif kind == "input_file" and allow_video:
             if (not isinstance(part.get("filename"), str) or not part["filename"]
                     or not isinstance(part.get("file_data"), str) or not part["file_data"].startswith("data:video/")
@@ -80,7 +89,7 @@ def _output(output: Any, *, allow_video=False) -> str | list[dict[str, Any]]:
     raise RequestError("a function_call_output's output must be a string or input_text and input_image parts")
 
 
-def messages(items: list[Any], *, allow_video=False) -> list[dict[str, Any]]:
+def messages(items: list[Any], *, allow_video=False, allow_audio=False) -> list[dict[str, Any]]:
     """Input items (output items too) as chat messages: a turn's reasoning, text and calls are one assistant message."""
 
     out: list[dict[str, Any]] = []
@@ -99,7 +108,11 @@ def messages(items: list[Any], *, allow_video=False) -> list[dict[str, Any]]:
             role = item.get("role")
             if role not in ("user", "assistant", "system", "developer"):
                 raise RequestError("a message's role must be user, assistant, system or developer")
-            message = {"role": role, "content": _content(item.get("content"), allow_video=allow_video)}
+            message = {"role": role, "content": _content(item.get("content"), allow_video=allow_video,
+                                                        allow_audio=allow_audio)}
+            if role != "user" and isinstance(message["content"], list) and any(
+                    p.get("type") == "input_audio" for p in message["content"]):
+                raise RequestError("input_audio parts are supported only in user messages")
             if item.get("phase") is not None:
                 if role != "assistant" or item["phase"] not in ("commentary", "final_answer"):
                     raise RequestError("message phase must be commentary or final_answer on an assistant message")
@@ -199,7 +212,8 @@ def _format(text: Any) -> dict[str, Any] | None:
     raise RequestError("text.format must be text, json_object or json_schema")
 
 
-def translate(body: Any, store: Store, *, principal=None, history=None, allow_video=False) -> Request:
+def translate(body: Any, store: Store, *, principal=None, history=None, allow_video=False,
+              allow_audio=False) -> Request:
     """A Responses request as the chat completion that runs it; RequestError where it asks what this server lacks."""
 
     if not isinstance(body, dict):
@@ -253,11 +267,11 @@ def translate(body: Any, store: Store, *, principal=None, history=None, allow_vi
     logical_items = given
     if getattr(store, "durable_conversations", False):
         given = store.normalize_items(principal, given)
-    added = messages(given, allow_video=allow_video)
+    added = messages(given, allow_video=allow_video, allow_audio=allow_audio)
     if history is None:
         history = store.conversation(parent, principal=principal) if parent is not None else []
     else:
-        history = messages(history, allow_video=allow_video)
+        history = messages(history, allow_video=allow_video, allow_audio=allow_audio)
     tools = _tools(body.get("tools"))
     choice, offered = _tool_choice(body.get("tool_choice"), tools)
     chat: dict[str, Any] = {k: body[k] for k in PASSED if k in body}

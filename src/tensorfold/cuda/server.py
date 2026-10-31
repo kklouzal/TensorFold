@@ -479,7 +479,8 @@ class App:
                 retire = (self.vision.requests.close_if_unclaimed
                           if getattr(self.vision, "is_media_runtime", False) else None)
                 rendered = prepare_images(self.vision, body["messages"],
-                                          lambda messages: render(messages, allow_images=True),
+                                          lambda messages: render(messages, allow_images=True,
+                                                                  allow_audio=bool(getattr(self.vision, 'audio', False))),
                                           context_limit=self._context_limit(),
                                           limits=getattr(self, "image_limits", DEFAULT_LIMITS),
                                           max_visual_tokens=getattr(self, "vision_image_tokens", None))
@@ -937,6 +938,8 @@ class App:
                     if same:
                         extra["vision"] = prepared.vision
                     elif getattr(self.vision, "is_media_runtime", False):
+                        extra["vision"] = self.vision.continued(prepared.vision, ids)
+                    elif callable(getattr(self.vision, "continued", None)):
                         extra["vision"] = self.vision.continued(prepared.vision, ids)
                     elif hasattr(self.vision.frontend, "continued"):
                         extra["vision"] = self.vision.frontend.continued(prepared.vision, ids)

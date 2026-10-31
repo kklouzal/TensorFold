@@ -17,8 +17,10 @@ from tensorfold.cleanup import raise_failures, rollback
 
 def video_capable(app):
     frontend = getattr(app, "vision", None)
-    return bool(getattr(frontend, "is_media_runtime", False) and getattr(frontend, "videos", False)
-                and getattr(frontend, "media_envelope", None) is not None)
+    return bool(getattr(frontend, "videos", False) and (
+        getattr(frontend, "responses_video", False)
+        or getattr(frontend, "is_media_runtime", False)
+        and getattr(frontend, "media_envelope", None) is not None))
 
 
 def _parts(item):

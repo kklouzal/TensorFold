@@ -122,7 +122,8 @@ def _check_source(source: ImageSource, limits: ImageLimits, allow_urls: bool = F
 
 
 def split_images(messages: list[dict[str, Any]], *, limits: ImageLimits = DEFAULT_LIMITS, allow_urls: bool = False,
-                 allow_videos: bool = False, video_limits=None) -> tuple[list[dict[str, Any]], list[ImageSource]]:
+                 allow_videos: bool = False, video_limits=None, allow_audio: bool = False,
+                 audio_limits=None) -> tuple[list[dict[str, Any]], list[ImageSource]]:
     """Preserve ordered parts, replacing user and tool-result image URLs with processor image markers; ``allow_videos``:
     also ``video_url`` parts (``VideoSource`` among the sources, a video marker in the template)."""
     if not isinstance(messages, list) or not messages:
@@ -151,6 +152,16 @@ def split_images(messages: list[dict[str, Any]], *, limits: ImageLimits = DEFAUL
                 if not isinstance(part.get("text"), str) or any(part.get(key) for key in _MEDIA):
                     raise ImageInputError("text parts must contain a text string without media")
                 parts.append(dict(part))
+            elif kind == "input_audio" and allow_audio:
+                from .audio import DEFAULT_AUDIO_LIMITS, audio_source
+
+                if role != "user":
+                    raise ImageInputError("input_audio parts are supported only in user messages")
+                if any(part.get(key) for key in _MEDIA - {"input_audio"}):
+                    raise ImageInputError("input_audio parts cannot contain other media")
+                sources.append(audio_source(part.get("input_audio"),
+                                            DEFAULT_AUDIO_LIMITS if audio_limits is None else audio_limits))
+                parts.append({"type": "audio"})
             elif kind == "video_url" and allow_videos:
                 from .videos import DEFAULT_VIDEO_LIMITS, video_source
 

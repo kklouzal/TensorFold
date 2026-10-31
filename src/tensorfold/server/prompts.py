@@ -19,7 +19,7 @@ class RenderedPrompt:
 
 def has_images(messages):
     return any(isinstance(m, dict) and isinstance(m.get('content'), list)
-               and any(isinstance(p, dict) and p.get('type') in ('image_url', 'video_url') for p in m['content'])
+               and any(isinstance(p, dict) and p.get('type') in ('image_url', 'video_url', 'input_audio') for p in m['content'])
                for m in messages or [])
 
 
@@ -51,6 +51,23 @@ def prepare_images(frontend, messages, render, *, context_limit=None, limits: Im
         raise RequestError('image input requires a supported vision checkpoint served with --vision')
     allow_urls = bool(getattr(frontend, 'allow_urls', False))
     videos = bool(getattr(frontend, 'videos', False))       # a frontend that encodes video frames too
+    if bool(getattr(frontend, 'audio', False)):
+        prepare = getattr(frontend, 'prepare_messages', None)
+        if not callable(prepare):
+            raise RuntimeError('audio frontend must own bounded multimodal message preparation')
+        slot = image_slot()
+        if not MANY_IMAGES.acquire(timeout=IMAGE_WAIT_S):
+            slot.release()
+            raise CapacityError('multimodal processing capacity is busy; retry shortly')
+        try:
+            prepared = prepare(messages, render, max_prompt_tokens=context_limit,
+                               max_visual_tokens=max_visual_tokens, image_limits=limits)
+        except (ImageInputError, ValueError, ImportError) as exc:
+            raise refusal(str(exc)) from exc
+        finally:
+            MANY_IMAGES.release()
+            slot.release()
+        return RenderedPrompt(list(prepared.token_ids), vision=prepared)
     # The SM70 admitted source frontend must branch before the existing eager
     # decode path. No envelope or resource defaults are inferred from flags.
     envelope = getattr(frontend, 'media_envelope', None)
@@ -127,7 +144,8 @@ def prepare_prompt(app, messages, tools, thinking, prompt, fields):
         tokens, history = app.render(messages, tools, thinking=thinking)
         return RenderedPrompt(tokens, history)
     messages = _normalize_tool_call_arguments(normalize_messages(messages, late_system=app.late_system,
-                                                                 allow_images=True))
+                                                                 allow_images=True,
+                                                                 allow_audio=bool(getattr(getattr(app, 'vision', None), 'audio', False))))
     effort = app.effort_for(fields.get('reasoning_effort'))
 
     def render(template):

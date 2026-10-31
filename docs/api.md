@@ -65,7 +65,17 @@ request, images expanded. `/detokenize` takes `tokens` and returns `prompt`.
 With `--vision`, supported Qwen3.5/3.8 dense checkpoints accept `image_url` content parts alongside text in user
 messages and in tool results (`role: "tool"`), such as an agent's screenshots.
 See [image input](vision.md) for data URLs, public image URLs, limits and cache behavior.
-Unsupported image input, audio, video and non-text output requests receive HTTP 400.
+The Gemma 4 E2B CUDA integration adds native image/video and audio input with
+`--vision`; its [qualification status](recipes/gemma-4-e2b.md) remains explicit.
+Audio uses user content parts shaped as
+`{"type":"input_audio","input_audio":{"data":"BASE64","format":"wav"}}`
+(or `"mp3"`). The same nested part is accepted in Responses input messages when
+the loaded frontend supports audio. Clips are limited to 30 seconds each and
+produce text replies. Other frontends reject audio. Unsupported media and
+non-text output requests receive HTTP 400.
+Video inputs supply visual frames and timestamps; send a separate `input_audio`
+part when the soundtrack is needed. Automatic soundtrack extraction is not
+currently exposed by this API.
 
 Flash Next's RAM expert cache, optional host pinning, shared KV-window budget and
 same-host NCCL expert ranks are startup settings. Rank 0 owns the HTTP server;

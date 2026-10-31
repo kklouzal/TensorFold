@@ -1,0 +1,35 @@
+# syntax=docker/dockerfile:1.7
+# APPLICATION_BASE_IMAGE is mandatory: an already qualified owned runtime whose
+# sealed dependency versions satisfy this source. This never provisions an SDK.
+ARG APPLICATION_BASE_IMAGE
+FROM ${APPLICATION_BASE_IMAGE} AS application
+ARG SOURCE_REVISION
+WORKDIR /opt
+RUN test -n "${SOURCE_REVISION}" && \
+    python3 /opt/tensorfold-pins/foundation_guard.py audit && \
+    rm -rf /opt/TensorFold /opt/application-update-wheel
+COPY . /opt/TensorFold
+RUN python3 /opt/tensorfold-pins/foundation_guard.py run -- \
+      python3 -m pip wheel --no-deps --no-build-isolation --wheel-dir /opt/application-update-wheel /opt/TensorFold && \
+    python3 /opt/tensorfold-pins/foundation_guard.py run -- python3 -m pip uninstall -y tensorfold && \
+    python3 /opt/tensorfold-pins/foundation_guard.py application --wheel /opt/application-update-wheel/*.whl && \
+    python3 -m pip check && \
+    python3 /opt/tensorfold-pins/foundation_guard.py audit && \
+    python3 /opt/tensorfold-pins/foundation_guard.py run -- python3 -c \
+      "import pathlib,sysconfig,tensorfold; assert pathlib.Path(tensorfold.__file__).resolve().is_relative_to(pathlib.Path(sysconfig.get_path('purelib')).resolve())"
+# Only the application adapter changes. The base's qualified driver/bootstrap,
+# dependency seal and provider selection remain intact.
+COPY deploy/gb10/tensorfold_harness.py /opt/harness/tensorfold_harness.py
+ENV TENSORFOLD_SOURCE_REVISION=${SOURCE_REVISION}
+LABEL org.opencontainers.image.revision=${SOURCE_REVISION} \
+      deployment.source_tree="/opt/TensorFold" \
+      deployment.application_update="whole owned wheel; protected foundation unchanged"
+WORKDIR /opt/TensorFold
+
+FROM application AS verification
+RUN python3 /opt/tensorfold-pins/foundation_guard.py install --role verification \
+      --lock /opt/tensorfold-pins/requirements-test.lock && \
+    python3 /opt/tensorfold-pins/foundation_guard.py audit && python3 -m pip check
+ENTRYPOINT ["python3", "/opt/harness/cuda_entrypoint.py", "python3", "-m", "pytest", "-o", "pythonpath=tests"]
+
+FROM application AS runtime
