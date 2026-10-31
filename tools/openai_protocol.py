@@ -55,7 +55,7 @@ def object_json(raw):
             raise ValueError('nonfinite response JSON number')
         return parsed
     value = json.loads(raw, object_pairs_hook=_pairs, parse_constant=constant, parse_float=finite)
-    if type(value) is not dict or 'error' in value:
+    if type(value) is not dict or value.get('error') is not None:
         raise ValueError('SSE error or invalid object in OpenAI response')
     return value
 

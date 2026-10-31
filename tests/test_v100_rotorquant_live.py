@@ -341,3 +341,28 @@ def test_cold_mode_rejects_cached_reply_in_every_completed_drafted_phase(monkeyp
     summary = json.loads((output / "summary.json").read_text())
     assert not summary["passed"] and not summary["complete"] and summary["prefix_reuse"] == "cold"
     assert "cold prefix mode" in summary["error"]["message"]
+
+
+@pytest.mark.parametrize("body", [None, {"input": "Describe this recording."}])
+def test_recorded_responses_object_accepts_null_error_for_post_and_stored_get(monkeypatch, tmp_path, body):
+    value = {"id": "resp_fixture", "object": "response", "status": "incomplete", "error": None,
+             "incomplete_details": {"reason": "max_output_tokens"}, "output": [],
+             "usage": {"input_tokens": 31, "output_tokens": 3, "total_tokens": 34}}
+    raw = json.dumps(value).encode()
+    monkeypatch.setattr(live.urllib.request, "urlopen", lambda *a, **kw: Response(raw))
+    got = live.Client("http://unused", tmp_path).call("stored-response", body,
+                     path="/v1/responses/resp_fixture" if body is None else "/v1/responses", object_response=True)
+    assert got == value
+    assert (tmp_path / "stored-response/response.raw").read_bytes() == raw
+    assert json.loads((tmp_path / "stored-response/exchange.json").read_text())["complete"] is True
+
+
+@pytest.mark.parametrize("error", [{"message": "failed"}, {}, [], False, 0, ""])
+def test_recorded_responses_object_still_rejects_nonnull_error(monkeypatch, tmp_path, error):
+    raw = json.dumps({"object": "response", "error": error}).encode()
+    monkeypatch.setattr(live.urllib.request, "urlopen", lambda *a, **kw: Response(raw))
+    with pytest.raises(ValueError, match="SSE error or invalid object"):
+        live.Client("http://unused", tmp_path).call("error-response", {"input": "x"},
+                                                  path="/v1/responses", object_response=True)
+    assert (tmp_path / "error-response/response.raw").read_bytes() == raw
+    assert json.loads((tmp_path / "error-response/exchange.json").read_text())["complete"] is False

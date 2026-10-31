@@ -70,9 +70,22 @@ class Protocol(unittest.TestCase):
                       {'choices': [{'delta': {'content': False}}]}]:
             with self.subTest(value=value), self.assertRaises(ValueError):
                 protocol.chunk_fields(value)
-        for data in (b'[]', b'{"error":null}', b'{"usage":{},"usage":{}}', b'{"score":NaN}', b'{"score":Infinity}', b'{"score":1e400}'):
+        for data in (b'[]', b'{"error":{}}', b'{"usage":{},"usage":{}}', b'{"score":NaN}', b'{"score":Infinity}', b'{"score":1e400}'):
             with self.subTest(data=data), self.assertRaises(ValueError):
                 protocol.object_json(data)
+
+    def test_responses_nullable_error_preserves_absence_and_rejects_every_nonnull_error(self):
+        value = {'object': 'response', 'status': 'incomplete', 'error': None,
+                 'incomplete_details': {'reason': 'max_output_tokens'}, 'output': []}
+        self.assertEqual(protocol.object_json(json.dumps(value)), value)
+        self.assertEqual(protocol.object_json(b'{"object":"response"}'), {'object': 'response'})
+        for error in ({'message': 'failed'}, {}, [], False, True, 0, '', 'failed'):
+            with self.subTest(error=error), self.assertRaises(ValueError):
+                protocol.object_json(json.dumps({'object': 'response', 'error': error}))
+        for raw in (b'{"error":null,"error":null}', b'{"error":null,"score":NaN}',
+                    b'{"error":null,"score":1e400}'):
+            with self.subTest(raw=raw), self.assertRaises(ValueError):
+                protocol.object_json(raw)
 
     def test_typed_bounded_completion_and_positive_prompt_counts(self):
         for value in (None, False, 0, -1, 3, '2', 2.0):
