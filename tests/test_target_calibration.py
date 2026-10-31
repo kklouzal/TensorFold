@@ -186,7 +186,10 @@ def test_source_file_hash_and_observed_identity_check(tmp_path, monkeypatch):
         target._recheck_source(tmp_path, files)
 
 
-def test_coordinator_replays_native_flags_and_returns_explicit_owner_without_export(monkeypatch, tmp_path):
+@pytest.mark.parametrize("serialization_failure", [False, True])
+def test_coordinator_replays_native_flags_and_returns_explicit_owner_without_export(
+    monkeypatch, tmp_path, serialization_failure
+):
     """Fake device/provider only; actual freeze/replay/control flow is exercised."""
     from contextlib import contextmanager
     import sys
@@ -266,6 +269,20 @@ def test_coordinator_replays_native_flags_and_returns_explicit_owner_without_exp
     torch_package.__path__ = []
     quant = ModuleType("modelopt.torch.quantization")
     quant.NVFP4_W4A4_WEIGHT_LOCAL_HESSIAN_CFG = {}
+    serialization_error = TypeError("synthetic recipe serialization failure")
+
+    class Recipe:
+        def __init__(self, **attributes):
+            self.attributes = attributes
+
+        def model_dump(self, *, mode):
+            assert mode == "json"
+            events.append("recipe-serialized")
+            if serialization_failure:
+                raise serialization_error
+            return {"synthetic-schema-only": self.attributes}
+
+    quant.QuantizeConfig = Recipe
 
     def quantize(model, config, forward_loop):
         forward_loop(model)
@@ -279,9 +296,18 @@ def test_coordinator_replays_native_flags_and_returns_explicit_owner_without_exp
         ("modelopt.torch.quantization", quant),
     ]:
         monkeypatch.setitem(sys.modules, name, module)
+    if serialization_failure:
+        with pytest.raises(TypeError) as caught:
+            target.calibrate_target(
+                tmp_path, inputs(), limits=target.CalibrationLimits(1, 16, 16, 1024), admit_phase=lambda _: {}
+            )
+        assert caught.value is serialization_error
+        assert "load" not in events and "pass" not in events and "drain" not in events
+        return
     owner = target.calibrate_target(
         tmp_path, inputs(), limits=target.CalibrationLimits(1, 16, 16, 1024), admit_phase=lambda _: {}
     )
+    assert events.index("recipe-serialized") < events.index("load")
     assert events.index("before-native-load") < events.index("load")
     assert events.count("pass") == 2
     assert len([item for item in events if isinstance(item, tuple) and item[0] == "forward"]) == 2

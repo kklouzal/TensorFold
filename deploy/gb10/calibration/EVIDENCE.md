@@ -33,6 +33,19 @@ not an inference performance result. The runtime producer remains pinned to
 `a851b028`. No calibrated E4B artifact
 or quantized E4B serving/performance result exists at this checkpoint.
 
+The first full E4B attempt completed both 1,024-batch passes and all 258
+Local-Hessian weight refinements, then failed while hashing the recipe for its
+receipt: raw ModelOpt block maps mix integer axes with named string attributes,
+which Python's sorted JSON encoder cannot compare. No export was started and
+no OOM event occurred; the E2B service was restored. The coordinator now uses
+ModelOpt's public `QuantizeConfig.model_dump(mode="json")` representation and
+computes its digest before loading weights. An actual D6 CPU preflight
+reproduced the original failure, serialized the complete 258-projection recipe
+without changing its numerical configuration, and passed final producer audits.
+The corrected focused CPU suite passed 254 checks. A short 64-sample conversion
+diagnostic precedes another full 1,024-sample attempt; it is not a substitute
+for final calibration or quality/performance qualification.
+
 Historical verified stage: the isolated Git/build-tools image
 `sha256:ee54ef39fa38f8fff5cdde2e9948d1d75bc8f5fe05f1ba428c68c5ca2fc28877`
 passed its original SDK, added OS/Python seals and CPU backend smoke. The public

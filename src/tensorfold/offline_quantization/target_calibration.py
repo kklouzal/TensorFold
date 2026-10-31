@@ -427,6 +427,12 @@ def calibrate_target(source, batches, *, limits, admit_phase):
     kwargs = None
     try:
         admissions.append(_phase("before-native-load", admit_phase))
+        import modelopt.torch.quantization as mtq
+
+        config = scoped_local_hessian_config(plan, mtq.NVFP4_W4A4_WEIGHT_LOCAL_HESSIAN_CFG)
+        # ModelOpt block maps mix integer axes with named attributes. Its public
+        # schema owns JSON conversion; finish bookkeeping before loading weights.
+        recipe_sha256 = _digest(mtq.QuantizeConfig(**config).model_dump(mode="json"))
         _recheck_source(root, files)
         owner.model = _load_native(root)
         native = _native_inventory(owner.model, cfg, inventory, "cpu")
@@ -435,9 +441,6 @@ def calibrate_target(source, batches, *, limits, admit_phase):
         owner.model.to(torch.device("cuda:0"))
         cuda_native = _native_inventory(owner.model, cfg, inventory, "cuda:0")
         native["cuda_storage_proof"] = cuda_native["cuda_storage_proof"]
-        import modelopt.torch.quantization as mtq
-
-        config = scoped_local_hessian_config(plan, mtq.NVFP4_W4A4_WEIGHT_LOCAL_HESSIAN_CFG)
         max_elements = max(batch["input_ids"].numel() for batch in frozen) * max(
             item["shape"][1] for item in plan["tensors"] if item["action"] == "quantize"
         )
@@ -491,7 +494,8 @@ def calibrate_target(source, batches, *, limits, admit_phase):
             "native": native,
             "coverage": coverage,
             "admissions": admissions,
-            "recipe_sha256": _digest(config),
+            "recipe_sha256": recipe_sha256,
+            "recipe_serialization": "ModelOpt QuantizeConfig.model_dump(mode=json); sorted compact JSON SHA256",
             "output_published": False,
         }
         return owner
