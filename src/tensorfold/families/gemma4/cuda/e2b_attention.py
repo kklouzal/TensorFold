@@ -21,7 +21,8 @@ CHUNK = 256
 def _parts(Q, K, V, MASK, PO, PM, PL, H: tl.constexpr, D: tl.constexpr, R,
            LENGTH, START, ORIGIN, BASE, SPLITS, WINDOW: tl.constexpr, QS: tl.constexpr, QH: tl.constexpr,
            KS: tl.constexpr, VS: tl.constexpr, MQ, MK,
-           MASKED, BK: tl.constexpr, CH: tl.constexpr, PACK: tl.constexpr):
+           MASKED, BK: tl.constexpr, CH: tl.constexpr, PACK: tl.constexpr,
+           HK: tl.constexpr, KH: tl.constexpr, VH: tl.constexpr):
     split = tl.program_id(1)
     # PACK1 is a qualification candidate. The selected incumbent packs two
     # queries; runtime mask dispatch must preserve its single arithmetic graph.
@@ -34,6 +35,11 @@ def _parts(Q, K, V, MASK, PO, PM, PL, H: tl.constexpr, D: tl.constexpr, R,
         row = tl.program_id(0) * 2 + lane // H
         head = lane % H
         live = row < R
+    if HK != 1:
+        group: tl.constexpr = H // HK
+        row = tl.program_id(0) * PACK + lane // group
+        head = tl.program_id(2) * group + lane % group
+        live = (row < R) & (lane < PACK * group)
     absolute = START + row
     dd = tl.arange(0, D)
     q = tl.load(Q + row[:, None] * QS + head[:, None] * QH + dd[None, :],
@@ -45,8 +51,14 @@ def _parts(Q, K, V, MASK, PO, PM, PL, H: tl.constexpr, D: tl.constexpr, R,
         key = (BASE + split) * CH + offset + tl.arange(0, BK)
         index = key - ORIGIN
         held = (index >= 0) & (index < LENGTH)
-        k = tl.load(K + index[:, None] * KS + dd[None, :], mask=held[:, None], other=0.0)
-        v = tl.load(V + index[:, None] * VS + dd[None, :], mask=held[:, None], other=0.0)
+        if HK == 1:
+            k = tl.load(K + index[:, None] * KS + dd[None, :], mask=held[:, None], other=0.0)
+            v = tl.load(V + index[:, None] * VS + dd[None, :], mask=held[:, None], other=0.0)
+        else:
+            k = tl.load(K + tl.program_id(2) * KH + index[:, None] * KS + dd[None, :],
+                        mask=held[:, None], other=0.0)
+            v = tl.load(V + tl.program_id(2) * VH + index[:, None] * VS + dd[None, :],
+                        mask=held[:, None], other=0.0)
         valid = live[:, None] & held[None, :] & (key[None, :] <= absolute[:, None])
         if WINDOW:
             valid &= key[None, :] >= absolute[:, None] - WINDOW + 1
@@ -80,12 +92,13 @@ def _finish(PO, PM, PL, OUT, H: tl.constexpr, D: tl.constexpr, SPLITS):
 
 
 def chronological_attention(query, key, value, mask, *, start: int, window: int, query_rows=2):
-    """Single sequence,8 query heads/1 KV head, BF16D256/512, scale1/dropout0."""
+    """Single sequence,8 query heads/1 or2 KV heads, BF16D256/512, scale1/dropout0."""
     _, heads, rows, dim = query.shape
+    kv_heads = key.shape[1]
     length = key.shape[-2]
     if (query.dtype != torch.bfloat16 or key.dtype != query.dtype or value.dtype != query.dtype
             or query.shape[0] != 1 or heads != 8 or dim not in (256, 512)
-            or tuple(key.shape) != (1, 1, length, dim) or value.shape != key.shape
+            or kv_heads not in (1, 2) or tuple(key.shape) != (1, kv_heads, length, dim) or value.shape != key.shape
             or query.stride(-1) != 1 or key.stride(-1) != 1 or value.stride(-1) != 1
             or window not in (0, 512) or type(start) is not int or start < 0
             or type(query_rows) is not int or query_rows not in (1, 2)):
@@ -106,11 +119,12 @@ def chronological_attention(query, key, value, mask, *, start: int, window: int,
     # U8 views preserve one kernel pointer signature. With no external mask,
     # the borrowed query-byte view is never read by the uniform runtime branch.
     mask_bytes = (mask if mask is not None else query).view(torch.uint8)
-    _parts[(triton.cdiv(rows, query_rows), splits)](
+    _parts[(triton.cdiv(rows, query_rows), splits, kv_heads)](
         query, key, value, mask_bytes, partial, maxima, masses,
         heads, dim, rows, length, start, origin, base, splits, window,
         query.stride(2), query.stride(1), key.stride(2), value.stride(2), mq, mk,
         mask is not None, 32 if dim == 512 else 64, CHUNK, query_rows,
+        kv_heads, key.stride(1), value.stride(1),
         num_warps=4, num_stages=1, enable_fp_fusion=False)
     _finish[(rows, heads, dim // 64)](partial, maxima, masses, out, heads, dim, splits,
                                     num_warps=1, enable_fp_fusion=False)

@@ -14,7 +14,9 @@ from test_gemma4_e2b_metadata import e2b_config  # noqa: E402 - optional runtime
 
 
 @pytest.mark.parametrize("cleanup_fails", [False, True])
-def test_late_cuda_stream_failure_closes_target_and_preserves_primary(monkeypatch, tmp_path, cleanup_fails):
+@pytest.mark.parametrize("fuse_prompt_norms", [False, True])
+def test_late_cuda_stream_failure_closes_target_and_preserves_primary(monkeypatch, tmp_path, cleanup_fails,
+                                                                    fuse_prompt_norms):
     import tensorfold.checkpoint_metadata as metadata
     import tensorfold.cuda.chat_template as template
     import tensorfold.token_metadata as tokens
@@ -25,8 +27,8 @@ def test_late_cuda_stream_failure_closes_target_and_preserves_primary(monkeypatc
     class Target:
         device = "cuda:0"
 
-        def __init__(self, _path):
-            pass
+        def __init__(self, _path, *, fuse_prompt_norms=False):
+            assert fuse_prompt_norms is expected_fusion
 
         def make_state(self, _context):
             return object()
@@ -47,8 +49,9 @@ def test_late_cuda_stream_failure_closes_target_and_preserves_primary(monkeypatc
     monkeypatch.setattr(torch.cuda, "Stream", fail_stream)
     monkeypatch.setattr(e2b_engine, "admit", lambda *args: {"context_window": 32})
     monkeypatch.setattr(e2b_engine, "E2BTarget", Target)
+    expected_fusion = fuse_prompt_norms
     with pytest.raises(RuntimeError) as caught:
-        e2b_engine.E2BEngine(tmp_path)
+        e2b_engine.E2BEngine(tmp_path, fuse_prompt_norms=fuse_prompt_norms)
     assert caught.value is primary
     assert closed == [True]
     if cleanup_fails:
@@ -197,13 +200,15 @@ def test_token_row_merge_exactly_matches_native_masked_scatter(padding):
 
 
 @pytest.mark.parametrize("cleanup_fails", [False, True])
-def test_target_late_hook_failure_retires_owned_model_and_restores_policy(monkeypatch, tmp_path, cleanup_fails):
+@pytest.mark.parametrize("fuse_prompt_norms", [False, True])
+def test_target_late_hook_failure_retires_owned_model_and_restores_policy(monkeypatch, tmp_path, cleanup_fails,
+                                                                        fuse_prompt_norms):
     import transformers
     import tensorfold.checkpoint_metadata as metadata
     from tensorfold.families.gemma4.cuda import e2b_attention, e2b_norm, e2b_policy, e2b_runtime
     primary = RuntimeError("late hook registration failed")
     cleanup = RuntimeError("policy restoration failed")
-    removed, restored, models = [], [], []
+    removed, restored, models, installed = [], [], [], []
 
     class Layer:
         def __init__(self, index):
@@ -247,13 +252,14 @@ def test_target_late_hook_failure_retires_owned_model_and_restores_policy(monkey
     monkeypatch.setattr(metadata, "read_config", lambda _: e2b_config())
     monkeypatch.setattr(e2b_runtime, "require_runtime", lambda *_: None)
     monkeypatch.setattr(e2b_attention, "install_attention", lambda *_: None)
-    monkeypatch.setattr(e2b_norm, "install_row_norms", lambda *_: None)
+    monkeypatch.setattr(e2b_norm, "install_row_norms", lambda module, policy: installed.append(policy.fuse_prompt_norms))
     monkeypatch.setattr(e2b_policy, "E2BBlasPolicy", Policy)
     monkeypatch.setattr(transformers.Gemma4ForConditionalGeneration, "from_pretrained",
                         lambda *_, **__: (Model(), {}))
     with pytest.raises(RuntimeError) as caught:
-        E2BTarget(tmp_path)
+        E2BTarget(tmp_path, fuse_prompt_norms=fuse_prompt_norms)
     assert caught.value is primary and removed == [True] and restored == [True]
+    assert installed == [fuse_prompt_norms]
     if cleanup_fails:
         assert caught.value.__cause__ is cleanup
     gc.collect()

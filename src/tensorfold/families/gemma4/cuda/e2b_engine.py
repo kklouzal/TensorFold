@@ -86,7 +86,8 @@ class E2BEngine(Gemma4Engine):
 
     def __init__(self, model_dir: Path, *, drafter="", drafter_bits=16, depth=None, context=None,
                  context_explicit=None, streams=1, no_drafts=False, vision=False,
-                 eos_token_ids=None, chat_template_file=None, chat_template_name=None, vision_urls=False):
+                 eos_token_ids=None, chat_template_file=None, chat_template_name=None, vision_urls=False,
+                 fuse_prompt_norms=False):
         import torch
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.cuda.chat_template import prepare_chat_template
@@ -96,7 +97,7 @@ class E2BEngine(Gemma4Engine):
             raise ValueError("Gemma E2B currently requires one exclusive request lane")
         if type(drafter_bits) is not int or drafter_bits not in (8, 16):
             raise ValueError("Gemma E2B DFlash2 proposal precision must be BF16(16) or private FP8(8)")
-        if any(type(value) is not bool for value in (no_drafts, vision, vision_urls)):
+        if any(type(value) is not bool for value in (no_drafts, vision, vision_urls, fuse_prompt_norms)):
             raise ValueError("Gemma E2B feature switches must be boolean")
         if vision_urls and not vision:
             raise ValueError("Gemma E2B media URLs require --vision")
@@ -106,6 +107,8 @@ class E2BEngine(Gemma4Engine):
             raise ValueError("Gemma E2B draft depth requires its enabled companion")
         raw = read_config(model_dir)
         cfg = E2BConfig.from_dict(raw)
+        if cfg.profile == "E4B" and drafter:
+            raise ValueError("Gemma E4B has no admitted compatible DFlash companion; omit --drafter")
         draft_dir = Path(drafter) if drafter and not no_drafts else None
         self.max_rows = (8 if depth is None else depth + 1) if draft_dir else 1
         self.chat_template = prepare_chat_template(model_dir, template_file=chat_template_file,
@@ -123,7 +126,7 @@ class E2BEngine(Gemma4Engine):
                                    self.max_rows, vision, drafter_bits)
         self.capacity_plan["media_encoder_workspace"] = "checked per request against live remaining pool"
         self.context_window = self.capacity_plan["context_window"]
-        self.target = E2BTarget(model_dir)
+        self.target = E2BTarget(model_dir, fuse_prompt_norms=fuse_prompt_norms)
         self.w = self.target
         self.head = None
         self._draft = None

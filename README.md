@@ -1,5 +1,17 @@
 # TensorFold fork
 
+The dense Gemma CUDA adapter is being extended to the complete BF16 E4B
+checkpoint. Protected GB10 source checks pass native-model prompt logits,
+verification widths 1–8 and cache replay; E4B media, companion selection,
+installed serving and performance qualification remain in progress. The
+currently deployed E2B baseline below retains its own evidence scope.
+
+For benchmark preparation on a checkpoint without `generation_config.json`,
+`tools/gemma_e2b_bench.py prepare --generation-policy hf-defaults` records the
+pinned library's conditional sampling values. Its `sampled_hf_defaults` region
+is an explicit sampling test; omitted E4B API sampling settings remain greedy.
+Use `--thinking on` for the DavidAU E4B checkpoint's fixed thinking template.
+
 Gemma 4 E2B and its DFlash2 companion are deployed on GB10 as a correctness
 baseline with complete BF16 target weights and KV, a BF16 companion, and eight
 verification rows. The protected installed image passed CPU, native processor

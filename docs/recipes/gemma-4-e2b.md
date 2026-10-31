@@ -1,5 +1,10 @@
 # Gemma 4 E2B and DFlash2 on CUDA
 
+The shared native CUDA adapter also has an E4B integration candidate for the
+original BF16 42-layer, width-2560, two-KV-head profile. E2B's DFlash2 model is
+incompatible with that decoder. E4B companion research and separate full-model
+qualification are ongoing; the deployed E2B results below do not qualify E4B.
+
 This integration reads the complete original BF16 Gemma 4 E2B conditional
 generation checkpoint. It uses the native Transformers 5.17 model, including
 per-layer embeddings, shared KV, clipped projections, vision and audio encoders.

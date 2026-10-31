@@ -143,3 +143,27 @@ def test_request_body_keeps_each_fixed_output_budget():
         assert body["max_tokens"] == budget
         assert body["ignore_eos"] is True
         assert body["top_k"] == 64
+
+
+def test_missing_card_uses_actual_conditional_hf_defaults_with_greedy_provenance(tmp_path):
+    from transformers import Gemma4Config
+    Gemma4Config().save_pretrained(tmp_path)
+    card, source, label = bench.sampling_policy(tmp_path, 'hf-defaults')
+    assert card == {'temperature': 1.0, 'top_k': 50, 'top_p': 1.0}
+    assert source['do_sample'] is False
+    assert source['native_omitted_api_policy'].startswith('greedy')
+    assert label == 'sampled_hf_defaults'
+    item = {'messages': [{'role': 'user', 'content': 'fixed'}], 'thinking': True}
+    body = bench.body_for({'model': 'test', 'native_sampling': card}, item, label, 0, 8)
+    assert body['temperature'] == 1.0
+    assert body['top_k'] == 50
+
+
+def test_existing_generation_card_cannot_be_replaced_with_defaults(tmp_path):
+    (tmp_path / 'generation_config.json').write_text('{"temperature":0.7,"top_k":64,"top_p":0.9}')
+    with pytest.raises(ValueError, match='retain checkpoint authority'):
+        bench.sampling_policy(tmp_path, 'hf-defaults')
+    card, source, label = bench.sampling_policy(tmp_path, 'checkpoint')
+    assert card['temperature'] == 0.7
+    assert source['sha256'] == bench.digest(tmp_path / 'generation_config.json')
+    assert label == 'native'

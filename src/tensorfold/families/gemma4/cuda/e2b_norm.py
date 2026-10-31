@@ -2,8 +2,9 @@
 
 Pinned Torch's pow(x,-0.5) CUDA implementation dispatches to rsqrt. TensorFold's
 existing CT RMS primitive has the same square/mean/epsilon/rsqrt/scale order and
-one BF16 output rounding, with a fixed reduction per flattened row. The native
-HF prompt branch remains an independent library-owned baseline.
+one BF16 output rounding, with a fixed reduction per flattened row. Prompts
+remain native by default; explicit reference scopes retain the HF baseline
+even when the prompt fusion candidate is enabled.
 """
 import torch
 from transformers.models.gemma4.modeling_gemma4 import Gemma4RMSNorm
@@ -20,7 +21,8 @@ class E2BRowRMSNorm(Gemma4RMSNorm):
 
     def forward(self, value):
         if self.policy.prompt:
-            return super().forward(value)
+            if not self.policy.fuse_prompt_norms or self.policy.reference_depth:
+                return super().forward(value)
         if value.dtype != torch.bfloat16:
             raise ValueError("Gemma E2B canonical RMS requires BF16 activations")
         from .forward import ct_rms_norm

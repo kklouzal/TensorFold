@@ -7,9 +7,9 @@ FAMILIES = ('qwen3_5', 'qwen4_exp', 'glm5_next')     # the Qwen3.5/3.8 dense mod
 
 def validate_vision_config(config, family):
     if family in ('gemma4', 'gemma4_text'):
-        from tensorfold.families.gemma4.cuda.e2b_metadata import E2BConfig, is_e2b
+        from tensorfold.families.gemma4.cuda.e2b_metadata import E2BConfig, is_dense_gemma
 
-        if is_e2b(config):
+        if is_dense_gemma(config):
             E2BConfig.from_dict(config)
             return config['vision_config']
         from tensorfold.families.gemma4.cuda.vision import validate_vision_config as gemma

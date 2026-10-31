@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import math
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -108,7 +109,7 @@ class E2BTarget:
     precision = "checkpoint"
     fast_prefill = False
 
-    def __init__(self, model_dir: Path, *, projection: str = "native"):
+    def __init__(self, model_dir: Path, *, projection: str = "native", fuse_prompt_norms=False):
         import torch
         import transformers
         from importlib.metadata import version
@@ -130,7 +131,8 @@ class E2BTarget:
         self._taps: dict[int, Any] = {}
         self._hooks = []
         self._blas_policy = None
-        self._row_policy = E2BRowPolicy(projection)
+        self._row_policy = E2BRowPolicy(projection, fuse_prompt_norms=fuse_prompt_norms)
+        self.tap_layers = self.config.tap_layers
         try:
             self._blas_policy = E2BBlasPolicy(torch)
             self.model, info = Gemma4ForConditionalGeneration.from_pretrained(
@@ -150,7 +152,7 @@ class E2BTarget:
             if projection != "native":
                 install_row_linears(self.model.model.language_model, self._row_policy)
                 self.model.lm_head = E2BRowLinear(self.model.lm_head, self._row_policy)
-            for layer in TAP_LAYERS:
+            for layer in self.tap_layers:
                 self._hooks.append(self.model.model.language_model.layers[layer].register_forward_hook(
                     self._tap_hook(layer)))
         except BaseException as primary:
@@ -165,6 +167,20 @@ class E2BTarget:
 
     def make_state(self, context: int):
         return E2BState(self.model.config, context, owner=self)
+
+    @contextmanager
+    def native_reference(self):
+        """Yield the native HF oracle under the caller's drained exclusive lane.
+
+        No generation, Target.forward or configuration mutation may run in
+        parallel. This explicit scope keeps whole-HF golden forwards native
+        even when the production prompt norm candidate is enabled. The caller
+        completes reference CUDA work before handing owners to another stream.
+        """
+        if self._closed:
+            raise RuntimeError("Gemma E2B target is closed")
+        with self._row_policy.native_reference():
+            yield self.model
 
     def _feature_kwargs(self, model_inputs):
         import torch
@@ -332,6 +348,10 @@ class E2BTarget:
 
         if self._closed:
             raise RuntimeError("Gemma E2B target is closed")
+        if self._row_policy.reference_depth:
+            raise RuntimeError("native_reference requires direct whole-HF forward, not Target.forward")
+        if output_taps and not self.tap_layers:
+            raise ValueError("Gemma E4B has no admitted speculative hidden-state tap contract")
         if not isinstance(state, E2BState) or state.owner is not self:
             raise ValueError("Gemma E2B cache state belongs to a different target")
         if not isinstance(ids, (list, tuple)) or not ids:
@@ -375,7 +395,7 @@ class E2BTarget:
             state.position += len(ids)
             state.attention_mask = None if mask is None else mask[:, :state.position]
             hidden = out.last_hidden_state.squeeze(0)
-            if output_taps and set(self._taps) != set(TAP_LAYERS):
+            if output_taps and set(self._taps) != set(self.tap_layers):
                 raise RuntimeError("Gemma E2B target did not publish the required decoder outputs")
             logits = self.project_logits(hidden[-1:] if prompt else hidden) if output_logits else None
             result = E2BForward(logits, hidden, dict(self._taps))

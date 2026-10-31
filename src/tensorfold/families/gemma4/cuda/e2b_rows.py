@@ -8,6 +8,7 @@ TensorFold's established separate prompt/decode numerical contract.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 import torch
 from torch import nn
 
@@ -15,12 +16,32 @@ from torch import nn
 class E2BRowPolicy:
     """One target lane exclusively sets this mode for the whole model forward."""
 
-    def __init__(self, projection="native"):
+    def __init__(self, projection="native", *, fuse_prompt_norms=False):
         if projection not in ("native", "padded", "route"):
             raise ValueError("Gemma E2B canonical projection must be native, padded or fixed-route")
         self.projection = projection
+        if type(fuse_prompt_norms) is not bool:
+            raise ValueError("Gemma E2B prompt norm fusion must be boolean")
+        self.fuse_prompt_norms = fuse_prompt_norms
         self.prompt = True
         self.position = 0
+        self.reference_depth = 0
+
+    @contextmanager
+    def native_reference(self):
+        """Caller owns the drained exclusive lane; raw HF forwards only.
+
+        Keep fusion configured but override it explicitly. Nesting restores
+        the immediate enclosing reference mode, even after a failed oracle.
+        """
+        previous = self.prompt, self.position
+        self.reference_depth += 1
+        self.prompt = True
+        try:
+            yield
+        finally:
+            self.prompt, self.position = previous
+            self.reference_depth -= 1
 
 
 class E2BRowLinear(nn.Module):

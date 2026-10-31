@@ -1,4 +1,4 @@
-"""Fixed-region, single-stream Gemma E2B comparison using the maintained HTTP reader.
+"""Fixed-region, single-stream Gemma dense comparison using the maintained HTTP reader.
 
 prepare URL MODEL SNAPSHOT CORPUS MANIFEST freezes prompts, native sampling and ABBA order.
 run URL MANIFEST META OUT --cycle C --position P records one independently started server.
@@ -14,6 +14,7 @@ from __future__ import annotations
 import argparse
 import collections
 import hashlib
+import inspect
 import json
 import math
 from pathlib import Path
@@ -71,8 +72,39 @@ def json_endpoint(url, body=None):
     return protocol.object_json(raw)
 
 
+def sampling_policy(root, policy):
+    """Freeze actual checkpoint values or explicitly requested HF sampling defaults.
+
+    HF do_sample=False is native greedy. Conditional sampled coverage explicitly
+    supplies its temperature/top-k/top-p instead of claiming default sampling.
+    """
+    path = root / "generation_config.json"
+    if policy == "checkpoint":
+        generation = json.loads(path.read_text())
+        return ({k: generation[k] for k in ("temperature", "top_k", "top_p")},
+                {"kind": "checkpoint", "sha256": digest(path),
+                 "do_sample": generation.get("do_sample")}, "native")
+    if policy != "hf-defaults" or path.exists():
+        raise ValueError("hf-defaults requires an absent generation_config.json; retain checkpoint authority")
+    import transformers
+    from transformers import AutoConfig, GenerationConfig
+    config = AutoConfig.from_pretrained(str(root), local_files_only=True, trust_remote_code=False)
+    generation = GenerationConfig.from_model_config(config)
+    # HF5.17 leaves unset members None until its generation preparation fills them.
+    defaults = GenerationConfig._get_default_generation_params()
+    def effective(key):
+        value = getattr(generation, key)
+        return defaults[key] if value is None else value
+    return ({k: effective(k) for k in ("temperature", "top_k", "top_p")},
+            {"kind": "HF GenerationConfig.from_model_config", "transformers": transformers.__version__,
+             "do_sample": effective("do_sample"),
+             "defaults_source_sha256": hashlib.sha256(inspect.getsource(GenerationConfig._get_default_generation_params).encode()).hexdigest(),
+             "native_omitted_api_policy": "greedy; no checkpoint sampling overrides",
+             "sampled_region": "explicit conditional HF sampling parameters"}, "sampled_hf_defaults")
+
+
 def prepare(url, model, snapshot, corpus_path, out, *, depths, samples, cycles, reply_tokens, thinking, tasks,
-            baseline, candidate):
+            baseline, candidate, generation_policy="checkpoint"):
     positive(samples, "samples")
     positive(cycles, "cycles")
     if not reply_tokens or len(set(reply_tokens)) != len(reply_tokens):
@@ -83,10 +115,9 @@ def prepare(url, model, snapshot, corpus_path, out, *, depths, samples, cycles, 
         raise ValueError("comparison needs two distinct nonempty variant names")
     root = Path(snapshot)
     config = json.loads((root / "config.json").read_text())
-    generation = json.loads((root / "generation_config.json").read_text())
+    card, sampling_source, sampling_label = sampling_policy(root, generation_policy)
     context = config.get("text_config", config)["max_position_embeddings"]
     positive(context, "checkpoint context")
-    card = {k: generation[k] for k in ("temperature", "top_k", "top_p")}
     if (isinstance(card["temperature"], bool) or not isinstance(card["temperature"], (int, float))
             or not math.isfinite(card["temperature"]) or card["temperature"] <= 0
             or type(card["top_k"]) is not int or card["top_k"] <= 0
@@ -120,7 +151,8 @@ def prepare(url, model, snapshot, corpus_path, out, *, depths, samples, cycles, 
     doc = {
         "schema": 1, "model": model, "model_revision": root.name, "checkpoint_context": context,
         "config_sha256": digest(root / "config.json"),
-        "generation_config_sha256": digest(root / "generation_config.json"),
+        "generation_config_sha256": sampling_source.get("sha256"),
+        "sampling_source": sampling_source, "sampling_modes": ["greedy", sampling_label],
         "corpus_sha256": corpus_sha, "native_sampling": card, "reply_tokens": reply_tokens,
         "samples_per_start": samples, "baseline": baseline, "candidate": candidate,
         "cycles": [[baseline, candidate, candidate, baseline] if c % 2 == 0
@@ -200,14 +232,14 @@ def run(url, manifest_path, meta_path, out, *, cycle, position, timeout):
         # Prime longest-sequence/verify shapes; keep the entire warmup fact separate from measured rows.
         longest = max(manifest["prompts"], key=lambda x: x["prompt_tokens"])
         doc["warmup"] = []
-        for sampling in ("greedy", "native"):
+        for sampling in manifest.get("sampling_modes", ["greedy", "native"]):
             warm = campaign.stream_chat(url, body_for(manifest, longest, sampling, 0, max(manifest["reply_tokens"])), timeout=timeout,
                                         prompt_tokens=longest["prompt_tokens"], label="excluded warmup")
             campaign.reply_token_ids(warm)
             doc["warmup"].append(warm)
             write_json(out, doc)
         for item in manifest["prompts"]:
-            for sampling in ("greedy", "native"):
+            for sampling in manifest.get("sampling_modes", ["greedy", "native"]):
                 for tokens in manifest["reply_tokens"]:
                     for sample in range(manifest["samples_per_start"]):
                         request = body_for(manifest, item, sampling, sample, tokens)
@@ -348,6 +380,8 @@ def main():
                    help="correlated samples per independent start; CI units remain paired cycles")
     p.add_argument("--cycles", type=int, default=5)
     p.add_argument("--reply-tokens", default="8,32,256")
+    p.add_argument("--generation-policy", choices=("checkpoint", "hf-defaults"), default="checkpoint",
+                   help="hf-defaults explicitly samples HF conditional defaults when checkpoint card is absent")
     p.add_argument("--baseline", default="baseline")
     p.add_argument("--candidate", default="candidate")
     r = commands.add_parser("run")
@@ -369,7 +403,7 @@ def main():
                 depths=[int(x) for x in args.depths.split(",")], samples=args.samples, cycles=args.cycles,
                 reply_tokens=[int(x) for x in args.reply_tokens.split(",")],
                 thinking=thinking, tasks=args.tasks.split(","),
-                baseline=args.baseline, candidate=args.candidate)
+                baseline=args.baseline, candidate=args.candidate, generation_policy=args.generation_policy)
     elif args.command == "run":
         if not math.isfinite(args.timeout) or args.timeout <= 0:
             parser.error("timeout must be positive and finite")
