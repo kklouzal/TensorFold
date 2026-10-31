@@ -33,7 +33,8 @@ RUN python3 /opt/tensorfold-pins/foundation_guard.py audit && \
     python3 /opt/tensorfold-pins/foundation_guard.py audit
 # Preserve the original managed bootstrap, changing only its final consumer.
 ENTRYPOINT ["python3", "/opt/harness/cuda_entrypoint.py", "python3", "/opt/tensorfold-calibration/tools/role.py", "run"]
-LABEL tensorfold.modelopt.source="e352caca3c36236fc15adea2627a9d42788380c4" \
+LABEL tensorfold.modelopt.source="a851b028ecbd5f843eb1fc05b93cc2d0abed0de3" \
+      tensorfold.modelopt.upstream="e352caca3c36236fc15adea2627a9d42788380c4" \
       tensorfold.qualification="producer API admission only; model calibration unqualified"
 
 FROM additive AS build-tools

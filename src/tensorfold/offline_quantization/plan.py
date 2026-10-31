@@ -19,7 +19,13 @@ from tensorfold.families.gemma4.cuda.e2b_metadata import E2BConfig
 from tensorfold.families.gemma4.dense_tensor_contract import TEXT_PREFIX as TEXT, text_tensor_contract
 
 NVFP4_RECIPE = "gemma4-nvfp4-w4a4-local-hessian-v1"
-PRODUCER_COMMIT = "e352caca3c36236fc15adea2627a9d42788380c4"
+PRODUCER_COMMIT = "a851b028ecbd5f843eb1fc05b93cc2d0abed0de3"
+PRODUCER_SOURCE_TYPE = "incremental-git-bundle"
+PRODUCER_REPOSITORY = "https://github.com/kklouzal/TensorFold"
+PRODUCER_UPSTREAM_REPOSITORY = "https://github.com/NVIDIA/Model-Optimizer"
+PRODUCER_UPSTREAM_COMMIT = "e352caca3c36236fc15adea2627a9d42788380c4"
+PRODUCER_BUNDLE_PATH = "deploy/gb10/calibration/modelopt-fork/modelopt-triton39.bundle"
+PRODUCER_BUNDLE_SHA256 = "adfee7d91e371c90eebe8c4da33c4eb1572760322187d8f67662990c34a9221d"
 
 
 
@@ -133,7 +139,13 @@ def plan_nvfp4(source: str | Path, *, recipe: str = NVFP4_RECIPE) -> dict:
                    "global_scales": "FP32", "activation_global": "static calibrated per projection",
                    "activation_block_scales": "dynamic per16 values under fixed calibrated global",
                    "batch_amax_fallback": False, "kv_dtype": "BF16", "transforms": None,
-                   "producer": {"repository": "https://github.com/NVIDIA/Model-Optimizer", "commit": PRODUCER_COMMIT,
+                   "producer": {"repository": PRODUCER_REPOSITORY, "commit": PRODUCER_COMMIT,
+                                "source_type": PRODUCER_SOURCE_TYPE,
+                                "bundle_path": PRODUCER_BUNDLE_PATH, "bundle_sha256": PRODUCER_BUNDLE_SHA256,
+                                "commit_scope": "fork history in TensorFold-hosted bundle; not a remote repository commit claim",
+                                "upstream_repository": PRODUCER_UPSTREAM_REPOSITORY,
+                                "upstream_commit": PRODUCER_UPSTREAM_COMMIT,
+                                "qualification": "source candidate; fork wheel/image/GPU calibration unqualified",
                                 "transformers_requirement": ">=5.5,<5.19", "torch_requirement": ">=2.10",
                                 "install_status": "not checked; planner never imports or installs producer"}},
         "calibration": {"status": "required-not-run", "provenance_required": [

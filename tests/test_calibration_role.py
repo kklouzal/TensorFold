@@ -312,3 +312,21 @@ print(json.dumps({{"restored_path":sys.path,"baseline_wheel":baseline['wheel']['
     assert len(set(during["wheel_metadata"])) == 2
     assert after["restored_path"] == during["consumer_path"][:-2]
     print(json.dumps({"actual_setuptools_consumer": during, "after_restoration": after}, sort_keys=True))
+
+
+def test_owned_fork_pin_matches_planner_and_exact_hosted_incremental_bundle():
+    from tensorfold.offline_quantization import plan
+    root=Path(__file__).resolve().parents[1]
+    record=json.loads((root/'deploy/gb10/calibration/modelopt-fork/source.json').read_text())
+    assert role.MODEL_OPT_COMMIT==plan.PRODUCER_COMMIT==record['fork_commit']
+    assert role.MODEL_OPT_UPSTREAM_COMMIT==plan.PRODUCER_UPSTREAM_COMMIT==record['upstream_commit']
+    assert role.MODEL_OPT_UPSTREAM_REPOSITORY==plan.PRODUCER_UPSTREAM_REPOSITORY==record['upstream_repository']
+    assert role.MODEL_OPT_REPOSITORY==plan.PRODUCER_REPOSITORY=='https://github.com/kklouzal/TensorFold'
+    assert role.MODEL_OPT_SOURCE_TYPE==plan.PRODUCER_SOURCE_TYPE=='incremental-git-bundle'
+    assert role.MODEL_OPT_BUNDLE_PATH==plan.PRODUCER_BUNDLE_PATH
+    assert role.MODEL_OPT_BUNDLE_SHA256==plan.PRODUCER_BUNDLE_SHA256==record['bundle_sha256']
+    assert role.sha(root/role.MODEL_OPT_BUNDLE_PATH)==record['bundle_sha256']
+    assert role.MODEL_OPT_COMMIT!=role.MODEL_OPT_UPSTREAM_COMMIT
+    dockerfile=(root/'deploy/gb10/Dockerfile.calibration').read_text()
+    assert f'tensorfold.modelopt.source="{role.MODEL_OPT_COMMIT}"' in dockerfile
+    assert f'tensorfold.modelopt.upstream="{role.MODEL_OPT_UPSTREAM_COMMIT}"' in dockerfile

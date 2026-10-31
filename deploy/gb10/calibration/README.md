@@ -4,13 +4,24 @@ This is a producer-only extension of verification image
 `sha256:2a772b064f593ae9a4436562c4c26ceaa60cec55709992cbf966b74b16bc649c`.
 It does not install packages on the host, replace the serving image, or modify
 the original foundation manifest, bootstrap, prefixes, provider selection or seal.
-The isolated build-tools/source-wheel build and producer CPU API admission
-passed, including the final namespace, dependency, file-seal and provider audits.
-Actual model calibration, CUDA/JIT execution, exported-model compatibility and
-quality/performance are **not yet verified**. See [current evidence](EVIDENCE.md).
+The historical upstream-only producer image `91bc` passed CPU API admission,
+including namespace, dependency, file-seal and provider audits. Its guarded GPU
+probe later reached the Hessian pass and failed on Triton 3.9's removed block
+pointer API. Those results do not qualify the new owned source candidate below.
+The candidate's clean source wheel, producer image, CUDA/JIT execution, full
+calibration, exported-model compatibility and quality/performance remain
+**not yet verified**. See [current evidence](EVIDENCE.md).
 
-ModelOpt is pinned to NVIDIA commit
-`e352caca3c36236fc15adea2627a9d42788380c4`. Its base dependencies retain genuine
+The current pin is owned fork commit
+`a851b028ecbd5f843eb1fc05b93cc2d0abed0de3`, distributed in the
+[TensorFold-hosted incremental bundle](modelopt-fork/modelopt-triton39.bundle)
+with SHA256 `adfee7d91e371c90eebe8c4da33c4eb1572760322187d8f67662990c34a9221d`.
+The commit identifies that bundle's fork history, not a commit claimed to exist
+on NVIDIA's or TensorFold's remote Git history. Its NVIDIA upstream is
+`e352caca3c36236fc15adea2627a9d42788380c4`; the generated
+[source record](modelopt-fork/source.json) and [reconstruction instructions](modelopt-fork/README.md)
+preserve the source, patch and local signature scope. The compatibility change
+is a source candidate, **not GPU qualified**. Base dependencies retain genuine
 upstream metadata. Its HF extra supports Transformers `>=5.5,<5.19`, including
 this baseline's `5.17.0`; stable ModelOpt 0.47 excludes 5.17. The full HF extra
 also adds unrelated DeepSpeed/diffusion dependencies, so this role initially
@@ -28,7 +39,7 @@ this GB10's Docker enforcer selects `5-9,15-19` even when another set is request
 The original runtime's constraints remain in force. The source checkout/archive
 and built wheel are operator-provided immutable inputs, not an editable copy of
 TensorFold. Preserve the exact archive SHA256, source commit, wheel SHA256,
-build-tool versions/command/log and actual upstream-derived wheel version.
+build-tool versions/command/log and actual checkout-derived wheel version.
 Do not invent a release number or edit ModelOpt metadata. Its setuptools build
 requires `setuptools>=80` and `setuptools-scm>=8`; missing build dependencies
 need their own constrained, hashed isolated build-tool solution. Do not install
@@ -150,12 +161,14 @@ python3 /opt/tensorfold-calibration/tools/role.py run \
 Execute that command through `foundation_guard.py run` with no NVIDIA devices,
 bounded CPU resources and no network. Use the checkout owner's UID/GID and
 writable user-owned output; keep Git's ownership checks intact. The source must
-be the clean exact pinned checkout with sufficient history/tags. Normal backend
-generated outputs are allowed; tracked upstream changes and SCM pretend-version
+be the clean exact pinned Git checkout with sufficient history/tags, reconstructed
+from the recorded upstream and owned bundle. Normal backend generated outputs are
+allowed; uncommitted tracked changes and SCM pretend-version
 overrides are rejected. The public PEP517 backend executes in the same managed
 interpreter, retaining the append-only build-tools prefix. The wheel version is
 whatever genuine setuptools-scm derives. Output `source.json` records the real
-wheel version/hash and build-tool versions for the subsequent producer solution.
+wheel version/hash, exact fork commit, upstream/bundle provenance and build-tool
+versions for the subsequent producer solution.
 Both static build requirements and the public backend's dynamic
 `get_requires_for_build_wheel()` requirements must already be satisfied; no
 implicit installation is allowed. Backend code execution is root-reviewed and

@@ -2,7 +2,7 @@
 
 Run only inside the reviewed build-tools role. The public backend runs in this
 interpreter so it retains the append-only build-tools prefix. No global path
-override, pip build isolation or changes to upstream source/metadata are used.
+override, pip build isolation or uncommitted source/metadata changes are used.
 """
 import argparse
 import importlib.metadata as md
@@ -15,7 +15,9 @@ import tomllib
 
 from packaging.requirements import Requirement
 
-from role import MODEL_OPT_COMMIT, sha, wheel_record, write
+from role import (MODEL_OPT_COMMIT, MODEL_OPT_SOURCE_TYPE, MODEL_OPT_REPOSITORY,
+                  MODEL_OPT_UPSTREAM_REPOSITORY, MODEL_OPT_UPSTREAM_COMMIT,
+                  MODEL_OPT_BUNDLE_PATH, MODEL_OPT_BUNDLE_SHA256, sha, wheel_record, write)
 from wheel_preflight import preflight
 
 
@@ -32,12 +34,12 @@ def main():
         return subprocess.run([str(executable), "-C", str(source), *arguments], check=True,
                               capture_output=True, text=True).stdout.strip()
     if git("rev-parse", "HEAD") != MODEL_OPT_COMMIT or git("status", "--porcelain=v1"):
-        raise ValueError("build requires the exact clean upstream Git checkout")
+        raise ValueError("build requires the exact clean pinned Git checkout")
     if any(key.startswith("SETUPTOOLS_SCM_PRETEND_") for key in os.environ):
         raise ValueError("SCM version overrides are not permitted")
     spec = tomllib.loads((source / "pyproject.toml").read_text())["build-system"]
     if spec["build-backend"] != "setuptools.build_meta" or "backend-path" in spec:
-        raise ValueError("upstream build backend changed")
+        raise ValueError("pinned source build backend changed")
     def validate_requirements(requirements):
         for raw in requirements:
             requirement = Requirement(raw)
@@ -56,7 +58,7 @@ def main():
         os.chdir(source)
         dynamic = backend.get_requires_for_build_wheel()
         validate_requirements(dynamic)
-        # Public PEP517 backend: upstream determines the wheel/SCM version.
+        # Public PEP517 backend: the clean pinned checkout determines the wheel/SCM version.
         filename = backend.build_wheel(str(output))
     finally:
         os.chdir(previous)
@@ -67,6 +69,9 @@ def main():
     if record["name"] != "nvidia-modelopt":
         raise ValueError("build backend produced the wrong distribution")
     write(output / "source.json", {"source_commit": MODEL_OPT_COMMIT,
+        "source_type": MODEL_OPT_SOURCE_TYPE, "source_repository": MODEL_OPT_REPOSITORY,
+        "upstream_repository": MODEL_OPT_UPSTREAM_REPOSITORY, "upstream_commit": MODEL_OPT_UPSTREAM_COMMIT,
+        "source_bundle_path": MODEL_OPT_BUNDLE_PATH, "source_bundle_sha256": MODEL_OPT_BUNDLE_SHA256,
         "source_archive_sha256": args.source_archive_sha256,
         "wheel_sha256": sha(output / filename), "wheel_version": record["version"],
         "git_describe": describe, "build_backend": spec["build-backend"],

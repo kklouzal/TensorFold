@@ -1,3 +1,6 @@
 # Unified diff context encodes an empty source line as a single space. Actual
 # patched source is checked independently by upstream Spin/lintrunner before commit.
 deploy/v100/framework-patches/*.patch whitespace=-blank-at-eol,-blank-at-eof
+
+# ModelOpt format-patch context is syntax; the owned fork source is checked separately.
+deploy/gb10/calibration/modelopt-fork/modelopt-triton39.patch whitespace=-blank-at-eol,-blank-at-eof

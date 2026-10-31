@@ -27,7 +27,13 @@ from packaging.tags import sys_tags
 from packaging.utils import canonicalize_name, parse_wheel_filename
 from packaging.version import Version
 
-MODEL_OPT_COMMIT = "e352caca3c36236fc15adea2627a9d42788380c4"
+MODEL_OPT_COMMIT = "a851b028ecbd5f843eb1fc05b93cc2d0abed0de3"
+MODEL_OPT_SOURCE_TYPE = "incremental-git-bundle"
+MODEL_OPT_REPOSITORY = "https://github.com/kklouzal/TensorFold"
+MODEL_OPT_UPSTREAM_REPOSITORY = "https://github.com/NVIDIA/Model-Optimizer"
+MODEL_OPT_UPSTREAM_COMMIT = "e352caca3c36236fc15adea2627a9d42788380c4"
+MODEL_OPT_BUNDLE_PATH = "deploy/gb10/calibration/modelopt-fork/modelopt-triton39.bundle"
+MODEL_OPT_BUNDLE_SHA256 = "adfee7d91e371c90eebe8c4da33c4eb1572760322187d8f67662990c34a9221d"
 BASE = "sha256:2a772b064f593ae9a4436562c4c26ceaa60cec55709992cbf966b74b16bc649c"
 GUARD = "/opt/tensorfold-pins/foundation_guard.py"
 PURE_BINDINGS = {"nvidia-modelopt", "nvidia-ml-py"}

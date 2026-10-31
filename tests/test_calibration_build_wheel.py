@@ -45,7 +45,7 @@ def arguments(producer, tmp_path, monkeypatch, head=None):
             return SimpleNamespace(stdout="git version 2.43.0")
         command = argv[3]
         text = {"rev-parse": head or producer.MODEL_OPT_COMMIT, "status": "",
-                "describe": "genuine-upstream-description", "diff": ""}[command]
+                "describe": "genuine-pinned-description", "diff": ""}[command]
         return SimpleNamespace(stdout=text)
     monkeypatch.setattr(producer.subprocess, "run", git)
     return source, output
@@ -85,8 +85,15 @@ def test_backend_version_and_wheel_hash_are_recorded_without_override(producer, 
     receipt = json.loads((output / "source.json").read_text())
     assert Path.cwd() == previous
     assert receipt["wheel_version"] == "0.0.0"
+    assert receipt["source_commit"] == producer.MODEL_OPT_COMMIT
+    assert receipt["source_type"] == "incremental-git-bundle"
+    assert receipt["upstream_repository"] == producer.MODEL_OPT_UPSTREAM_REPOSITORY
+    assert receipt["upstream_commit"] == producer.MODEL_OPT_UPSTREAM_COMMIT
+    assert receipt["source_repository"] == "https://github.com/kklouzal/TensorFold"
+    assert receipt["source_bundle_path"] == producer.MODEL_OPT_BUNDLE_PATH
+    assert receipt["source_bundle_sha256"] == producer.MODEL_OPT_BUNDLE_SHA256
     assert receipt["wheel_sha256"] == producer.sha(output / "nvidia_modelopt-0.0.0-py3-none-any.whl")
-    assert receipt["git_describe"] == "genuine-upstream-description"
+    assert receipt["git_describe"] == "genuine-pinned-description"
 
 
 def test_unsatisfied_dynamic_backend_dependency_stops_before_build(producer, tmp_path, monkeypatch):

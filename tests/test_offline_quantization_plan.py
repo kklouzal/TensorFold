@@ -44,7 +44,11 @@ def test_plan_is_deterministic_header_only_and_explicitly_not_conversion(source)
     assert plan['source']['config_sha256'] == hashlib.sha256((path/'config.json').read_bytes()).hexdigest()
     assert plan['calibration']['status'] == 'required-not-run'
     assert plan['required_gates']
-    assert plan['recipe']['producer']['commit'] == 'e352caca3c36236fc15adea2627a9d42788380c4'
+    assert plan['recipe']['producer']['commit'] == 'a851b028ecbd5f843eb1fc05b93cc2d0abed0de3'
+    assert plan['recipe']['producer']['upstream_commit'] == 'e352caca3c36236fc15adea2627a9d42788380c4'
+    assert plan['recipe']['producer']['source_type'] == 'incremental-git-bundle'
+    assert plan['recipe']['producer']['repository'] == 'https://github.com/kklouzal/TensorFold'
+    assert plan['recipe']['producer']['upstream_repository'] == 'https://github.com/NVIDIA/Model-Optimizer'
     assert plan['recipe']['name'] == NVFP4_RECIPE
     assert plan['recipe']['weight_scale_algorithm'] == 'local_hessian'
     assert plan['recipe']['fp8_scale_sweep'] is True

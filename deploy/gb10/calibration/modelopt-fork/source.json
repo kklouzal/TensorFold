@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "upstream_repository": "https://github.com/NVIDIA/Model-Optimizer",
+  "upstream_commit": "e352caca3c36236fc15adea2627a9d42788380c4",
+  "fork_commit": "a851b028ecbd5f843eb1fc05b93cc2d0abed0de3",
+  "fork_tree": "8021229213f6aa11a09a7712cb80607669ed7e3f",
+  "bundle_sha256": "adfee7d91e371c90eebe8c4da33c4eb1572760322187d8f67662990c34a9221d",
+  "patch_sha256": "22d2bdb8cf00e8d4944ce07e826e45e23045f9e995bbae249d9a9766146f333c",
+  "signing_public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAILAxLK9wZr2lRohnFDYFt0dWEXoXQ37EoRZQrE4eIo4j TensorFold local ModelOpt build signing",
+  "signature": "verified locally with dedicated repository build signer; no GitHub signature-verification claim",
+  "changed_paths": [
+    "modelopt/torch/kernels/quantization/gemm/fp4_kernel_hopper.py",
+    "tests/gpu/torch/quantization/test_tensor_quant_cuda.py"
+  ],
+  "source_checks": "Ruff check/format and address-only structural review passed",
+  "gpu_tests": "pending qualified test dependencies and fork image",
+  "status": "source candidate; not yet selected for conversion/serving"
+}
