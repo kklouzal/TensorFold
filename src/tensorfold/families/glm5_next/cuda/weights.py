@@ -9,7 +9,6 @@ from typing import Any
 import torch
 
 from tensorfold.cuda import experts as grouped
-from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json
 
 from tensorfold.cuda.exl3.experts import Exl3RoutedExperts as Exl3Experts
 from . import latent
@@ -67,8 +66,11 @@ class Config:
     quant: str = "mlx"         # "mlx" (affine 4-bit everywhere) or "exl3" (EXL3 routed experts, BF16 elsewhere)
 
     @classmethod
-    def read(cls, model_dir: str | Path) -> "Config":
-        raw = read_metadata_json(checkpoint_path(Path(model_dir), "config.json"))
+    def read(cls, model_dir: str | Path, *, eos_token_ids=None) -> "Config":
+        from tensorfold.checkpoint_metadata import read_config
+        from tensorfold.token_metadata import resolve_eos
+
+        raw = read_config(model_dir)
         want = raw.get("tensorfold_activation_dtype")
         if want not in (None, "bfloat16", "float32"):
             raise ValueError(f"tensorfold_activation_dtype {want!r}: bfloat16 or float32")
@@ -77,8 +79,8 @@ class Config:
         t = dict(raw.get("text_config") or raw)
         lin = dict(t.get("linear_attn_config") or {})
         quant = raw.get("quantization") or raw.get("quantization_config") or {}
-        eos = t.get("eos_token_id", raw.get("eos_token_id"))
-        eos = tuple(int(e) for e in eos) if isinstance(eos, list) else (int(eos),)
+        eos = resolve_eos(model_dir, t.get("eos_token_id", raw.get("eos_token_id")),
+                          vocab_size=int(t["vocab_size"]), override=eos_token_ids)
         n = int(t["num_hidden_layers"])
         kinds = ["kda" if k == "linear_attention" else "dsa" for k in t["layer_types"]]
         dense = int(t.get("first_k_dense_replace", 3))
@@ -255,7 +257,8 @@ class Weights:
         return total
 
 
-def load(model_dir: str | Path, *, rank: int, device: str = "cuda", mtp: bool = True, world: int = 2) -> Weights:
+def load(model_dir: str | Path, *, rank: int, device: str = "cuda", mtp: bool = True, world: int = 2,
+         eos_token_ids=None) -> Weights:
     """One of world ranks from a checkpoint or rank folder, MTP included unless mtp is False."""
 
     from .split import RankReader
@@ -263,7 +266,7 @@ def load(model_dir: str | Path, *, rank: int, device: str = "cuda", mtp: bool = 
     if (type(world) is not int or world not in (2, 4)
             or type(rank) is not int or not 0 <= rank < world):
         raise ValueError("GLM requires an integer rank within two or four ranks")
-    cfg = Config.read(model_dir)
+    cfg = Config.read(model_dir, **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
     if any(value <= 0 or value % world for value in
            (cfg.heads, cfg.lin_heads, cfg.vocab, cfg.dense_width, cfg.moe_width)) or cfg.shared_width % world:
         raise ValueError("GLM heads, vocabulary and projection widths must split evenly over the ranks")

@@ -7,7 +7,8 @@ if not torch.cuda.is_available():
     pytest.skip("CUDA fork integration needs an NVIDIA GPU", allow_module_level=True)
 
 from test_flashnext_forward import _model
-from test_flashnext_prompt_cache import _assert_same_state, _prompt, _same_bits, _same_snap
+from prefix_checks import same_bits
+from test_flashnext_prompt_cache import _assert_same_state, _prompt, _same_snap
 from tensorfold.cuda.streams import Stream
 from tensorfold.engine.exact_sampling import Sampling
 from tensorfold.families.qwen4_exp.cuda.decode import Engine, prefill, serial_decode
@@ -50,9 +51,9 @@ def test_three_forks_preserve_the_source_and_equal_fresh_serial(dtype, sampling,
         assert s.cached == len(prefix) and s.st is not source
         assert _same_snap(s.st.snapshot(), {**snap, "mtp_len": snap["mtp_len"] + 1})
         for got, want in zip(s.st.pooled, source.pooled):
-            assert _same_bits(got[:len(prefix) // s.st.ratio], want[:len(prefix) // s.st.ratio])
+            assert same_bits(got[:len(prefix) // s.st.ratio], want[:len(prefix) // s.st.ratio])
     _assert_same_state(source, before)
-    assert _same_snap(kept[2], snap) and _same_bits(kept[3], tail)
+    assert _same_snap(kept[2], snap) and same_bits(kept[3], tail)
     while dec.live():
         dec.finish(dec.round())
     for s in forks:
@@ -60,7 +61,7 @@ def test_three_forks_preserve_the_source_and_equal_fresh_serial(dtype, sampling,
     assert original.out == fresh(w, one, sampling, dtype, 32)
     if not busy:
         _assert_same_state(source, before)
-    assert _same_snap(kept[2], snap) and _same_bits(kept[3], tail)
+    assert _same_snap(kept[2], snap) and same_bits(kept[3], tail)
     later = Stream(one + original.out + _prompt(7, seed=31), 12, sampling, stop_eos=False)
     dec.admit(later)
     assert later.cached == len(one) - 1

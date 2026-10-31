@@ -7,7 +7,6 @@ from pathlib import Path
 from typing import Any
 
 import mlx.core as mx
-import mlx.nn as nn
 
 from tensorfold.streaming.pool import PARTS, Streamer, expert_nbytes, sources
 

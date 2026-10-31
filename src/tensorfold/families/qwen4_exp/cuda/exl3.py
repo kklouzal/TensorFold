@@ -134,12 +134,19 @@ def requant_rows(head, ids: torch.Tensor, device) -> tuple[torch.Tensor, torch.T
 
 def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: tuple[int, int] | None = None,
          draft_vocab: int | str | None = None, table_reads: list | None = None,
-         rope: RopeParameters | None = None, vram_experts: float | str | None = None, _ram_layout=None):
+         rope: RopeParameters | None = None, vram_experts: float | str | None = None, _ram_layout=None,
+         vram_experts_pin: str = "off", _pin_future_bytes: int = 0, eos_token_ids=None):
     """Load native EXL3 weights, optionally retaining original expert streams on CPU."""
 
     from .weight_types import Config, draft_token_ids
 
-    cfg = Config.read(model_dir, rope=rope)
+    if (vram_experts_pin not in ("off", "auto", "on")
+            or vram_experts_pin != "off" and vram_experts is None):
+        raise ValueError("expert pinning requires a RAM expert budget and off, auto or on")
+    if type(_pin_future_bytes) is not int or _pin_future_bytes < 0:
+        raise ValueError("remaining expert-loader host workspace must be nonnegative integer bytes")
+
+    cfg = Config.read(model_dir, rope=rope, **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
     ids = draft_token_ids(draft_vocab, cfg.vocab)
     tables = PLETables()
     if table_reads is not None:
@@ -151,13 +158,24 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
 
         check(model_dir, vram_experts, tp=tp[1] if tp is not None else 1)
         plan = layout(model_dir, vram_experts, mtp=mtp) if _ram_layout is None else _ram_layout
+        # One compact payload per main/MTP bank, rather than one allocation per
+        # expert. The existing admission forecast supplies still-unallocated
+        # nonexpert host staging; the policy also covers the loader's own
+        # metadata/read/publication buffers before registering any payload.
+        policy = None
+        if vram_experts_pin != "off":
+            from ..expert_authority import pin_policy
+            from tensorfold.cuda.capacity import config
+
+            policy = pin_policy(config(model_dir), plan, vram_experts_pin, future_bytes=_pin_future_bytes)
         # Keep only one bootstrap cell while the immutable host authority and
         # fixed device weights load. The final arena replaces it once, before
         # any lease, so numeric budgets do not require two full pools at once.
-        cache = Exl3HostExpertCache(plan.entry_bytes, plan.entry_bytes, device)
+        cache = Exl3HostExpertCache(plan.entry_bytes, plan.entry_bytes, device,
+                                   **({"pin_policy": policy} if policy is not None else {}))
     try:
         weights = _load(model_dir, device, mtp=mtp, tp=tp, _config=cfg, _draft_ids=ids,
-                        table_reads=table_reads, rope=rope, expert_cache=cache, _ple_tables=tables)
+                        table_reads=table_reads, expert_cache=cache, _ple_tables=tables)
         weights.meta["ple_tables"] = tables
         if cache is not None and not plan.automatic:
             # _load has sealed every registration, drained its read owner and
@@ -182,7 +200,7 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
 
 def _load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: tuple[int, int] | None = None,
           _config: object, _draft_ids: object, table_reads: list | None = None,
-          rope: RopeParameters | None = None, expert_cache=None, _ple_tables: PLETables):
+          expert_cache=None, _ple_tables: PLETables):
     from .qmm import make_q4
     from tensorfold.cuda.direct_read import in_background
 

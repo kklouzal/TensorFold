@@ -12,6 +12,10 @@ import json
 from types import MappingProxyType
 
 from .cuda.rotorquant_ref import FormatDescriptor, descriptor, variant_id
+from tensorfold.cuda.sm70.rotorquant_compact import (
+    CompactDescriptor, descriptor as compact_descriptor, variant_codec as compact_variant_codec,
+    NAME as COMPACT_Q4, ISO_NAME as COMPACT_ISO4,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -22,6 +26,7 @@ class KVFormat:
     group: int
     scale_bytes: int
     rotor: FormatDescriptor | None = None
+    compact: CompactDescriptor | None = None
 
     def __post_init__(self) -> None:
         if type(self.name) is not str or not self.name or any(type(value) is not int for value in
@@ -33,18 +38,25 @@ class KVFormat:
                                       or self.rotor.group != self.group or self.rotor.scale_dtype != "float32"
                                       or self.scale_bytes != 4 or not self.codec):
             raise ValueError("Rotor KV format differs from its pinned descriptor")
-        if bool(self.codec) != (self.rotor is not None):
+        if self.compact is not None and (type(self.compact) is not CompactDescriptor or self.rotor is not None
+                                        or self.bits != 4 or self.codec not in (9, 10)
+                                        or (self.group, self.scale_bytes) != (128, 4)
+                                        or compact_variant_codec(self.compact.variant) != self.codec
+                                        or (self.compact.bits, self.compact.group, self.compact.scale_dtype)
+                                        != (4, 128, "float32")):
+            raise ValueError("compact Planar4 differs from its pinned descriptor")
+        if bool(self.codec) != (self.rotor is not None or self.compact is not None):
             raise ValueError("KV codec and Rotor descriptor must agree")
         if self.rotor is not None and self.codec != variant_id(self.rotor.variant):
             raise ValueError("KV codec differs from its Rotor transform/norm policy")
 
     @property
     def payload_dtype(self) -> str:
-        return "bfloat16" if self.bits == 16 else "int8" if self.name == "int8" else "uint8"
+        return "float16" if self.name == "fp16" else "bfloat16" if self.bits == 16 else "int8" if self.name == "int8" else "uint8"
 
     @property
     def scale_dtype(self) -> str:
-        return "float32" if self.rotor is not None else "float16"
+        return "float32" if self.rotor is not None or self.compact is not None else "float16"
 
     @property
     def quantized(self) -> bool:
@@ -58,7 +70,9 @@ class KVFormat:
     def storage_uid(self) -> str:
         if self.rotor is not None:
             return self.rotor.codec_id
-        return f"kv-native-v1-{self.name}-h32-midpoint-fp16-absmax" if self.quantized else "kv-native-v1-bf16"
+        if self.compact is not None:
+            return self.compact.codec_id
+        return f"kv-native-v1-{self.name}-h32-midpoint-fp16-absmax" if self.quantized else f"kv-native-v1-{self.name}"
 
     def value_bytes(self, head_dim: int) -> int:
         """One position/head's K or V payload and metadata; reject partial groups."""
@@ -78,9 +92,9 @@ class KVFormat:
     def handshake(self) -> int:
         """Legacy protocol values stay fixed; new formats identify all pinned tables."""
 
-        if self.rotor is None:
-            return self.bits
-        return int.from_bytes(hashlib.sha256(self.rotor.codec_id.encode("ascii")).digest()[:8], "big") & (2**63 - 1)
+        if self.rotor is None and self.compact is None:
+            return 0x10010 if self.name == "fp16" else self.bits
+        return int.from_bytes(hashlib.sha256(self.storage_uid.encode("ascii")).digest()[:8], "big") & (2**63 - 1)
 
 
 FORMATS = (
@@ -91,6 +105,10 @@ FORMATS = (
     # descriptors remain distinct even when their payload byte counts match.
     KVFormat("rotorquant-planar4", 4, 1, 128, 4, descriptor(4, "planar")),
     KVFormat("rotorquant-iso4", 4, 2, 128, 4, descriptor(4, "isofast")),
+    # Metadata is an opaque four-byte word: FP16 corrected L2 + FP16 zero.
+    # Existing FP32-RMS variants retain their identities and arithmetic.
+    KVFormat(COMPACT_Q4, 4, 9, 128, 4, compact=compact_descriptor()),
+    KVFormat(COMPACT_ISO4, 4, 10, 128, 4, compact=compact_descriptor(10)),
     KVFormat("rotorquant-iso64-norm4", 4, 3, 128, 4, descriptor(4, "iso64-norm")),
     KVFormat("rotorquant-signed128-4", 4, 4, 128, 4, descriptor(4, "signed-iso128")),
     KVFormat("rotorquant-signed64-norm4", 4, 5, 128, 4, descriptor(4, "signed-iso64-norm")),
@@ -102,6 +120,7 @@ FORMATS = (
     KVFormat("rotorquant8-norm", 8, 8, 128, 4, descriptor(8, "signed-iso128-norm8")),
     KVFormat("rotorquant-planar3", 3, 1, 128, 4, descriptor(3, "planar")),
     KVFormat("rotorquant-iso3", 3, 2, 128, 4, descriptor(3, "isofast")),
+    KVFormat("fp16", 16, 0, 32, 2),
 )
 DTYPES = tuple(item.name for item in FORMATS)
 BITS_OF = MappingProxyType({item.name: item.bits for item in FORMATS})

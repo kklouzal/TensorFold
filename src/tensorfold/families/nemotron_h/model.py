@@ -18,7 +18,6 @@ class NemotronH:
 
     fused_rows = 16
     lane_family = True
-    gpu_sampling = True
     # a shared forward's rows and streams (``hidden_rows``): the lane matmul (M5) and ``rows.qmv`` keep a row's bits
     batch_rows = 128
     max_streams = 64

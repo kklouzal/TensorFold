@@ -1,0 +1,335 @@
+{
+  "schema_version": 1,
+  "date_utc": "2026-10-17",
+  "scope": "Owner-selected local AMD64 failure remediation; commit/push, no deployment",
+  "qualified_runtime_revision": "a7b9feed34a814d62bf944de646ac3ed7bf3149e",
+  "baseline_revision": "0240cefea90fcd83a593384259b7346875e3603c",
+  "historical_issue_gate": {
+    "name": "broad CUDA non-matrix",
+    "source": "05d053c11b2d00a9665763ef9f84ff5db15514cd",
+    "passed": 1871,
+    "skipped": 97,
+    "failed": 41,
+    "errors": 45,
+    "exit_code": 1,
+    "log": "gates-integrated/cuda.log",
+    "baseline": "1a2836b0",
+    "new_failure_error_ids": 0,
+    "resolved_baseline_ids": 5,
+    "comparison": "gates-integrated/cuda-vs-baseline.json",
+    "disposition": "Retained baseline numerical/family/build-lock failures and invalid-vocabulary TP fixtures; failing broad suite, no all-GPU-pass claim.",
+    "evidence_packet": "/home/kklouzal/tensorfold-resume-20261017"
+  },
+  "runtime_image": "sha256:1528158f426991935c05adfc61a949734a2ccb2b1dba56cd53349b80627b3328",
+  "verification_image": "sha256:3d6a57cf578884d60ad360d632dc6be98a082aaceb8a6f869fd39a74752a9cb6",
+  "wheel_sha256": "c50a39c6735dbd546317d7f5bbb1319c25b5b5612b0381e91619bb4837afe8fa",
+  "source_manifest_sha256": "37109ba3fcfe3fe987fe62733ea722830fe41097a46ee7f4ae6a6450a7e26343",
+  "artifact_identity_note": "Closing documentation changes preserve runtime/test/build bytes. These IDs identify tested images; README changes alter future wheel metadata.",
+  "host": {
+    "platform": "Linux AMD64",
+    "gpu": "NVIDIA RTX PRO 2000 Blackwell 16 GB",
+    "compute_capability": "12.0",
+    "host_ram_gib_approx": 62,
+    "power_limit_w": 70,
+    "kernel_driver": "595.91.07",
+    "container_compat_driver": "615.71.09",
+    "kernel": "7.0.0-31-generic"
+  },
+  "runtime": {
+    "python": "3.12.3",
+    "machine": "x86_64",
+    "packages": {
+      "tensorfold": "0.6.6",
+      "torch": "2.16.0.dev20261006+cu134",
+      "triton": "3.9.0+gitaad2a60d",
+      "xgrammar": "0.2.8",
+      "tokenizers": "0.23.1",
+      "jinja2": "3.1.6",
+      "numpy": "2.1.0"
+    }
+  },
+  "model": {
+    "name": "Qwen3.8-Flash-Next",
+    "format": "EXL3",
+    "input_identity_scope": "Config/tokenizer/index SHA256; weight file size/mtime/uid/mode recorded in model-inputs.json; read-only container bind mount; no new full-weight hash",
+    "input_hashes": {
+      "chat_template.jinja": "c3cf9e34abf4f9e36c2d72165aa9c132d3e2a725b6c2586aaa3a8af9d7a81041",
+      "config.json": "d4a35225fc5236c8a2d64d01fd273f2f41192be5ff43e5c50ef1ef50e28ccda2",
+      "generation_config.json": "e70c136c1b78ddc1fb0905bac8e733a4dc448d4f852a5dd75143fffc70be550e",
+      "model.safetensors.index.json": "c17e08f4e7fe1fece39ba7c8144ad6b15f2c76520b3add6c6f9b98aaccfb51ed",
+      "preprocessor_config.json": "27225450ac9c6529872ee1924fcb0962ff5634834f817040f444118116f4e516",
+      "qbench_prompts.json": "80b3b8c6d41ec54da40f79d593ab91bcac42d638a5d96e069cb4e01e31666467",
+      "quantization_config.json": "c057f732f92379dac8b345ee065d3f07c72df77fead15ee4ec972e8e9831bef5",
+      "tokenizer.json": "0997f410c57a1f4e53b09e4be8f4a172d90edd9564368fb0847030937229b9f3",
+      "tokenizer_config.json": "b11349aafa7cdc6a320767cf7ceb29ed82f7eda5d65e8e0819e76f0ce947bf27",
+      "video_preprocessor_config.json": "7768af27c1fafa9cc9011c1dc20067e03f8915e03b63504550e11d5066986d13",
+      "vocab.json": "ce99b4cb2983d118806ce0a8b777a35b093e2000a503ebde25853284c9dfa003"
+    },
+    "provenance_correction": "The original model-inputs.json scope text says root-owned; its actual file records show uid1000/mode0644. Those measured records and the read-only container mount are authoritative; root ownership is not claimed.",
+    "previous_evidence_packet": "/home/kklouzal/tensorfold-resume-20261017",
+    "current_input_evidence": [
+      "model-input-check.json",
+      "model-stat-check.json"
+    ],
+    "current_check": "11 config/tokenizer/index hashes and 23 file size/mtime/uid/mode records match previous packet; read-only mounts; no full-weight rehash"
+  },
+  "service_profile": {
+    "context": 16384,
+    "parallel": 4,
+    "kv_dtype": "rotorquant8-norm",
+    "mtp_drafts": 4,
+    "mtp_confidence": 0.5,
+    "vram_experts": "auto",
+    "prefill": "BF16",
+    "thinking_budget": 0,
+    "max_http_connections": 32,
+    "max_pending_requests": 8,
+    "cpus": 6,
+    "ram_bytes": 56000000000,
+    "swap_bytes": 0,
+    "shm_bytes": 2147483648,
+    "network": "none; internal loopback HTTP checks",
+    "request_chat_template_kwargs": {
+      "enable_thinking": false
+    }
+  },
+  "remediated_baseline": {
+    "failures": 41,
+    "setup_errors": 45,
+    "baseline_issue_ids_sha256": "9f6b6d0b44449e41b32f684e66601c434a43b04b59f48dd48f43bd02054d317d",
+    "renamed_lock_test": {
+      "old": "tests/cuda/test_build.py::test_a_lock_left_by_a_killed_build_is_named_and_the_steps_it_names_clear_it",
+      "new": "tests/cuda/test_build.py::test_a_killed_build_releases_or_reports_its_actual_lock",
+      "reason": "Verify the actual pinned advisory-lock protocol; retain legacy FileBaton branch only where that runtime uses it."
+    },
+    "groups": [
+      {
+        "cases": 7,
+        "cause": "Qwen MoE cache copy omitted arena origin",
+        "fix": "Preserve origin with independent cache ownership assertions"
+      },
+      {
+        "cases": 24,
+        "cause": "Implicit Triton affine accumulation differed from native FMA order",
+        "fix": "Explicit nested FMA; independent exact dyadic oracle"
+      },
+      {
+        "cases": 5,
+        "cause": "Implicit Triton attention denominator differed from native FMA order",
+        "fix": "Explicit FMA; native admission/alignment/alias/range checks and widened offsets"
+      },
+      {
+        "cases": 1,
+        "cause": "Torch PLE sum comparator differs by one FP32 ULP",
+        "fix": "Independent exact fixture arithmetic plus actual consuming-kernel parity; production unchanged"
+      },
+      {
+        "cases": 3,
+        "cause": "Generic weighted GLM BF16 combine fused separately rounded operations",
+        "fix": "Host-selected rounded-product/add specialization; default FP32 FMA retained"
+      },
+      {
+        "cases": 45,
+        "cause": "GLM synthetic ranks duplicate global IDs; restored tests expose NumPy token scalar fixtures",
+        "fix": "Typed test-only shard adapter and native Python int prompts; production validation retained"
+      },
+      {
+        "cases": 1,
+        "cause": "Stale-lock test assumes FileBaton under pinned advisory FileLock",
+        "fix": "Exercise actual killed-owner protocol; bound identity-safe test-session retirement"
+      }
+    ]
+  },
+  "gates": {
+    "installed_source_audit": {
+      "matched": 501,
+      "mismatches": [],
+      "readme_only_omissions": [
+        "families/README.md",
+        "families/qwen3_5/cuda/README.md",
+        "kernels/README.md"
+      ]
+    },
+    "full_installed_cpu": {
+      "summary": "7642 passed, 168 skipped, 2 warnings in 577.95s (0:09:37)",
+      "exit_code": 0,
+      "failed": 0,
+      "errors": 0,
+      "passed": 7642,
+      "skipped": 168,
+      "warnings": 2
+    },
+    "whole_installed_cuda_nonmatrix": {
+      "summary": "2012 passed, 97 skipped, 28 warnings in 1025.36s (0:17:05)",
+      "exit_code": 0,
+      "failed": 0,
+      "errors": 0,
+      "passed": 2012,
+      "skipped": 97,
+      "warnings": 28
+    },
+    "uid65534_public_controls": {
+      "summary": "231 passed, 6 skipped in 5.10s",
+      "exit_code": 0,
+      "failed": 0,
+      "errors": 0,
+      "passed": 231,
+      "skipped": 6,
+      "warnings": 0
+    },
+    "three_format_exactness": {
+      "formats": [
+        "rotorquant8-norm",
+        "rotorquant8",
+        "rotorquant6-norm"
+      ],
+      "aggregate_hash": "67a762f3ac80e419",
+      "exit_code": 0
+    },
+    "native_api": {
+      "exit_code": 0,
+      "strict_tool_catalog_count": 31,
+      "sigint_exit_code": 0,
+      "oom_killed": false,
+      "checks": "models/errors/tokenize/input_tokens, repeated/serial/drafted IDs, SSE usage/progress/IDs, forced strict tool, unsupported-schema JSON400, real catalog, four concurrent versus solo, stats/metrics/zero final logical owners"
+    },
+    "cross_revision_default_outputs": {
+      "baseline_runtime_revision": "2dd77a9a794a9d2349c43adf487b12f21a0a5d0f",
+      "current_runtime_revision": "a7b9feed34a814d62bf944de646ac3ed7bf3149e",
+      "baseline_api_path": "/home/kklouzal/tensorfold-resume-20261017/native/api.json",
+      "baseline_api_sha256": "7eab2e71f930c3db0228aac36922cf3887d6515d732fa5a6351376378d985c9d",
+      "current_api_sha256": "5fa5c40e5ca1330280467158c1ebe6469609aedb7762e23f702296e0c1f0055a",
+      "nonstream_replies": 13,
+      "sequential_replies_compared_by_fixed_request_position": 9,
+      "concurrent_replies_compared_with_per_prompt_solo_oracle": 4,
+      "sse_replies": 1,
+      "exact_fixed_prompt_token_sequences_equal": true,
+      "exact_sse_choices_and_token_ids_equal": true,
+      "scope": "Identical helper and fixed prompts/seeds/profile. Sequential request positions match exactly; only concurrent completion order ignored, with native helper enforcing per-prompt solo equality."
+    },
+    "reused_kv_subset": {
+      "source": "2dd77a9a794a9d2349c43adf487b12f21a0a5d0f",
+      "passed": 1666,
+      "deselected": 3430,
+      "warnings": 1,
+      "evidence_packet": "/home/kklouzal/tensorfold-resume-20261017",
+      "scope": "Exactly seven unchanged prep/encoder/oracle families; D14 structural dependency proof. Historical identity, not newly executed at a7 or full-matrix qualification."
+    }
+  },
+  "cache_preparation": {
+    "method": "cp -a --reflink=always; current whole directories first; legacy absent directories only",
+    "current": "/home/kklouzal/tensorfold-resume-20261017/native-cache/cu1341-torch216-dev20261006-triton39-aad2a60d/amd64/triton",
+    "legacy": "/home/kklouzal/tensorfold-audit-20261012/triton-cache",
+    "composite": "/home/kklouzal/tensorfold-remediate-20261017/compiler-cache",
+    "current_keys": 2259,
+    "legacy_keys": 19569,
+    "legacy_added_on_resume": 0,
+    "total_keys": 19921,
+    "resumed_seconds": 0.32265872007701546,
+    "metadata_rewritten": false,
+    "writers_quiesced": true,
+    "preparation_note": "Initial copy completed; unprivileged final inventory read failed with PermissionError; root inventory resumed without changing copied keys."
+  },
+  "partial_run": {
+    "status": "Intentionally interrupted exit2 near54%; no failure/error observed; not a completed gate",
+    "reason": "Restart full gate using audited standard same-stack compiler cache reuse",
+    "diagnostics": "Read-only GDB identified LLVM compilation. SIGINT-only nanobind reference diagnostics retained. No cold-start timing claim."
+  },
+  "diagnostics": {
+    "ruff": {
+      "ruff-selected-baseline": {
+        "findings": 12,
+        "exit_code": 1
+      },
+      "ruff-project-baseline": {
+        "findings": 56,
+        "exit_code": 1
+      },
+      "ruff-selected-integrated": {
+        "findings": 12,
+        "exit_code": 1
+      },
+      "ruff-project-integrated": {
+        "findings": 63,
+        "exit_code": 1
+      },
+      "selected-new": [],
+      "project-new": [
+        {
+          "path": "tests/cuda/test_build.py",
+          "code": "I001",
+          "message": "Import block is un-sorted or un-formatted",
+          "count": 1
+        },
+        {
+          "path": "tests/cuda/test_build.py",
+          "code": "BLE001",
+          "message": "Do not catch blind exception: `BaseException`",
+          "count": 1
+        },
+        {
+          "path": "tests/cuda/test_build.py",
+          "code": "SIM117",
+          "message": "Use a single `with` statement with multiple contexts instead of nested `with` statements",
+          "count": 3
+        },
+        {
+          "path": "tests/cuda/test_glm_draft_ring.py",
+          "code": "RUF100",
+          "message": "Unused `noqa` directive (non-enabled: `E402`)",
+          "count": 1
+        },
+        {
+          "path": "tests/cuda/test_glm_draft_ring.py",
+          "code": "PLC0414",
+          "message": "Import alias does not rename original package",
+          "count": 1
+        },
+        {
+          "path": "tests/cuda/test_glm_long_context.py",
+          "code": "RUF100",
+          "message": "Unused `noqa` directive (non-enabled: `E402`)",
+          "count": 1
+        },
+        {
+          "path": "tests/cuda/test_glm_long_context.py",
+          "code": "PLC0414",
+          "message": "Import alias does not rename original package",
+          "count": 1
+        },
+        {
+          "path": "tests/test_cuda_build_cleanup.py",
+          "code": "SIM117",
+          "message": "Use a single `with` statement with multiple contexts instead of nested `with` statements",
+          "count": 3
+        }
+      ]
+    },
+    "disposition": "No new selected correctness findings. Broad default new advisories are reviewed test style/intentional primary-cleanup error preservation and fixture reexports. CPU2/CUDA28 FutureWarnings are existing deprecated Torch allocator calls, valid on the pinned runtime; CUDA warnings are at four unchanged fixture calls. No suppressions."
+  },
+  "performance": {
+    "scope": "Correctness fixes; no model-wide throughput or equivalence claim. EXL3 routed-component diagnostic preserves exact outputs; default row1 timing inconclusive. Old API/statistics overhead qualification remains incomplete and separate.",
+    "component_evidence": "glm-exl3/bench.json and ledger.md"
+  },
+  "unrun": [
+    "Apple/MLX native execution",
+    "Actual two-GPU/NCCL execution",
+    "Fresh ARM64/GB10 qualification",
+    "Optional external ExLlamaV3 oracle",
+    "Full pretrained GLM checkpoint quality",
+    "Fresh exhaustive 256-pair engine matrix",
+    "General answer quality/full-context capacity"
+  ],
+  "evidence_packet": "/home/kklouzal/tensorfold-remediate-20261017",
+  "review_proofs": [
+    "d13/ledger.md",
+    "d14/ledger.md",
+    "d14/final-evidence-reuse.md",
+    "d13/triton-cache-reuse-audit.md"
+  ],
+  "evidence_manifest": {
+    "path": "/home/kklouzal/tensorfold-remediate-20261017/evidence-sha256.json",
+    "sha256": "228fe5bf547b4c1060308a9458a488c47b75f18944aa52fade3d59c746477c39",
+    "entries": 8800
+  }
+}

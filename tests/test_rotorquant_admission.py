@@ -375,13 +375,14 @@ def test_two_ranks_reject_same_bits_with_different_codec_identity(fake_runtime, 
 
         def all_gather(self, send, recv):
             self.sent = send.clone()
+            assert recv.numel() == 2 * send.numel()
             recv.copy_(torch.cat((send, send if self.other is None else self.other)))
 
     def rank(cache, exchange):
         engine = FlashNextEngine.__new__(FlashNextEngine)
         engine.rope = RopeParameters.from_config(small_config())
         engine.depth, engine.confidence, engine.max_len = 3, 0.5, 8192
-        engine.streams, engine.graphs_enabled, engine.prefill_rows = 1, True, 2048
+        engine.streams, engine.graphs_enabled, engine.prefill_rows, engine.tp = 1, True, 2048, 2
         engine.comm = exchange
         engine.kv_pair = kv_formats.get_pair(cache)
         return engine

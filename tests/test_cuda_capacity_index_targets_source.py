@@ -6,6 +6,7 @@ ROOT gates; no SDK or installed extension is imported by these controls.
 """
 from __future__ import annotations
 import ast
+from collections.abc import Callable
 from contextlib import contextmanager
 import json
 import os
@@ -43,7 +44,7 @@ def header_function():
                  and any(isinstance(target, ast.Name) and target.id == "SIZES" for target in node.targets))
     function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "headers")
     module = ast.fix_missing_locations(ast.Module(body=[sizes, function], type_ignores=[]))
-    namespace = dict(os=os, Path=Path, __name__="tensorfold.cuda.capacity", __package__="tensorfold.cuda")
+    namespace = dict(os=os, Path=Path, Callable=Callable, __name__="tensorfold.cuda.capacity", __package__="tensorfold.cuda")
     exec(compile(module, str(path), "exec"), namespace)
     return namespace["headers"]
 

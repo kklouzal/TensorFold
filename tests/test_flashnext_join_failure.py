@@ -12,11 +12,11 @@ import pytest
 torch = pytest.importorskip("torch")
 pytest.importorskip("triton")
 
-from tensorfold.cuda.sampling import validate_policy
-from tensorfold.cuda.streams import Stream
-from tensorfold.engine.exact_sampling import Sampling
-from tensorfold.families.qwen4_exp.cuda import multi
-from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder
+from tensorfold.cuda.sampling import validate_policy  # noqa: E402 - optional backend admission precedes imports
+from tensorfold.cuda.streams import Stream  # noqa: E402
+from tensorfold.engine.exact_sampling import Sampling  # noqa: E402
+from tensorfold.families.qwen4_exp.cuda import multi  # noqa: E402
+from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder  # noqa: E402
 
 VOCAB = 8
 
@@ -39,7 +39,8 @@ def joining(sid, sampling, got):
 
 def decoder(streams):
     dec = object.__new__(MultiDecoder)
-    dec.w = SimpleNamespace(meta={})
+    dec.controller, dec.retained, dec.retain_sessions = None, {}, False
+    dec.w = SimpleNamespace(meta={}, comm=None)
     dec.eos, dec.depth, dec.confidence = (VOCAB - 1,), 0, 0.0
     dec.streams, dec.kept, dec.free, dec._shrink = {}, [], [], lambda st: None
     dec.used, dec.clock = {}, 0
@@ -50,7 +51,7 @@ def decoder(streams):
 
 
 def test_a_refused_first_token_fails_only_its_own_request(monkeypatch):
-    monkeypatch.setattr(multi, "_kv_check", lambda segs: None)
+    monkeypatch.setattr(multi, "_kv_check", lambda segs, *, comm=None: None)
     good_tokens, bad_tokens = [], []
     good = joining(1, Sampling(7, 1.0, 20, 0.95), good_tokens)
     bad = joining(2, Sampling(7, 1.0, 20, 1.5), bad_tokens)             # out of range: the sampler refuses it

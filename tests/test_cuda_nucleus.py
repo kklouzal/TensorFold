@@ -7,7 +7,7 @@ exercise the production device path.
 
 from pathlib import Path
 import threading
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 
 import numpy as np
 import pytest
@@ -50,15 +50,25 @@ class Ranks:
         return gather
 
 
-def two_ranks(logits, positions, sampling, split, probs=None):
+def two_ranks(logits, positions, sampling, split, probs=None, operation=None):
     ranks, out = Ranks(), [None, None]
     errors = [None, None]
     shards = (logits[:, :split], logits[:, split:])
 
     def run(r):
         try:
-            out[r] = cs.nucleus_rows(shards[r], positions, sampling, offset=0 if r == 0 else split,
-                                     gather=ranks.gather(r), probs=probs if r == 0 else None)
+            if operation is None:
+                out[r] = cs.nucleus_rows(shards[r], positions, sampling, offset=0 if r == 0 else split,
+                                         gather=ranks.gather(r), probs=probs if r == 0 else None)
+            else:
+                # Startup geometry is explicit CPU metadata; the actual production gather/normalization
+                # and chooser execute unchanged. CUDA plan construction has separate native controls.
+                widths = [split, logits.shape[1] - split]
+                plan = SimpleNamespace(world=2, mapping=None, device_map=None, token_map=None,
+                                       sorted_mapping=True, native_greedy=True, widths=widths,
+                                       offset=0 if r == 0 else split, total_width=logits.shape[1],
+                                       max_width=max(widths), gather=ranks.gather(r), check=lambda row: None)
+                out[r] = operation(shards[r], positions, sampling, plan=plan)
         except BaseException as error:
             errors[r] = error
             ranks.barrier.abort()
@@ -212,3 +222,39 @@ def test_streams_with_top_k_off_draw_by_the_nucleus_rule():
     keyed = Sampling(4, 1.0, 20, 0.95)
     got = cs.sample_streams(logits, [0, 2, 3, 4], [[1, 2], [3], [4]], [s, keyed, s])
     assert got[0] == want[:2] and got[2] == want[3:]
+
+
+@pytest.mark.parametrize("offset", [1e30, -1e30])
+@pytest.mark.parametrize("top_k,top_p,min_p", [(0, 1., 0.), (0, .7, .1), (3, 1., 0.), (3, .9, .1)])
+def test_centered_nucleus_and_shards_match_independent_extreme_offset_oracle(offset, top_k, top_p, min_p):
+    logits = torch.full((2, 8), offset)
+    logits[1, :3] = -float("inf")  # an all-masked local shard is valid
+    values = np.zeros((2, 8))
+    values[1, :3] = -np.inf
+    ids = np.broadcast_to(np.arange(8, dtype=np.int64), values.shape)
+    positions = [17, 19]
+    for seed in range(8):
+        policy = Sampling(seed, .7, top_k, top_p, min_p)
+        expected = choose_rows(values, ids, positions, policy)
+        actual = cs.sample_rows(logits, positions, policy)
+        assert actual == expected
+        assert [cs.sample_rows(logits[r:r + 1], positions[r:r + 1], policy)[0] for r in range(2)] == expected
+        for split in (3, 4):
+            assert two_ranks(logits, positions, policy, split, operation=cs.sample_shards) == expected
+            probability = two_ranks(logits, positions, policy, split,
+                                    operation=lambda row, _pos, s, **kw: cs.effective_shards(row, s, **kw))
+            assert probability == cs.effective_rows(logits, policy)
+
+
+def test_stochastic_shard_confidence_never_adds_large_maximum_to_small_log_mass():
+    logits = torch.full((2, 8), 1e30)
+    logits[1, :3] = -float("inf")
+    policy = Sampling(6, .7, 3, 1.)
+    chosen, confidence = two_ranks(logits, [17, 19], policy, 3,
+                                  operation=lambda *a, **kw: cs.sample_shards(*a, **kw, with_prob=True))
+    expected = choose_rows(np.where(np.isfinite(logits.numpy()), 0., -np.inf),
+                           np.broadcast_to(np.arange(8), (2, 8)), [17, 19], policy)
+    assert chosen == expected
+    # Explicit centered FP32 local log-masses, merged in FP64, are the declared confidence rule.
+    first_log_mass = np.log(np.exp(float(np.float32(np.log(3)))) + np.exp(float(np.float32(np.log(5)))))
+    assert confidence == [float(np.exp(-first_log_mass)), float(np.exp(-float(np.float32(np.log(5)))))]

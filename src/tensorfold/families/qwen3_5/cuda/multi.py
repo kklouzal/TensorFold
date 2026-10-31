@@ -12,19 +12,20 @@ from tensorfold.cuda.memory_gate import MemoryGate, NoRoom, torch_live
 from tensorfold.cuda.sampling import sample_streams
 from tensorfold.cuda.streams import PrefixCache, Stream, accept, next_fill
 from tensorfold.engine.grammar import GrammarError, pack
+from tensorfold.engine.penalties import History
 
 from .decode import CopyIndex, clone_state
 from .decode_tp import (
     SAMPLING_WORDS as W, _sample_split, _share, first_token, pack_sampling, split_sampling_plan, unpack_sampling,
 )
-from .draft_tree import allocate
+from .draft_tree import RejectionResult, allocate, chain_probabilities, copy_packet
 from .engine import entry_end
 from .forward import State, _paths, commit_streams, multi_tree_forward, path_indices, reserve
 from .prefill import CHUNK, Piece, prefill_batch, prefill_state
 from .weights import Weights
 
 ADMIT, ROUND, DONE, FILL, FILLS = 1, 2, 3, 4, 5   # rank 0's messages
-COPY, TREE, ONE = 0, 1, 2               # a stream's window this round
+COPY, TREE, ONE, CHAIN, COPY_CHAIN = 0, 1, 2, 3, 4    # greedy windows, serial, and stochastic q-bearing windows
 STEP = 1024                             # prompt rows a prefill step takes while other streams decode
 GROW = 8192                             # rows a stream's attention caches grow by at a time (one GPU)
 GIB = 1024**3
@@ -41,12 +42,19 @@ def calibration_rows(streams: int, steps: bool = True) -> list[int]:
     return sorted({r for r in grid if r <= 16 * streams} | {16 * streams})
 
 
-def private(st: State, rows: int) -> State:
-    """A copy of a committed state with its own attention caches of ``rows`` rows (rows below ``pos`` copied in)."""
+def private(st: State, rows: int, most: int | None = None) -> State:
+    """A fresh or kept state on private attention caches, reserved for ``most`` rows (default ``rows``).
+
+    The input is a fresh State, or a kept/viewed entry clipped to its committed ``pos``. Callers request more rows
+    than those views hold (a strictly longer prompt and its reply), so ``reserve`` enters ``grow`` and replaces
+    every cache under the new owner. The first ``rows`` map now, with the committed prefix copied in.
+    """
 
     other = clone_state(st)
-    other.kv = list(st.kv)                            # its own list: the buffers reserved next are this stream's
-    reserve(other, rows)                              # new buffers now: prefill never grows or reallocates them
+    other.kv = list(st.kv)                            # its own list and owner: the caches reserved next are this
+    other.kv_owner = object()                         # stream's (moved into its arenas; prefill never moves them)
+    other.limit = rows if most is None else most
+    reserve(other, rows)
     return other
 
 
@@ -205,6 +213,10 @@ class MultiDecoder:
         """Queue a request on the longest cached prefix of its prompt; rounds prefill the rest a step at a time."""
 
         self._check()
+        if s.penalties is not None:              # a replay admits again with a fresh history
+            if self.world != 1:
+                raise ValueError("presence, frequency and repetition penalties require one GPU (--tp 1)")
+            s.history = History(s.penalties, s.prompt)
         if self.context:
             room = self.context - len(s.prompt) - 1
             if room < 1:
@@ -235,7 +247,7 @@ class MultiDecoder:
     def _queue(self, s: Stream, hit) -> None:
         drafter = self.draft if s.draft and self.drafts else None
         rows = self._most(s) if self.memory_gate is None else self._first(s)
-        state = private(hit[1] if hit else State(self.w), rows)
+        state = private(hit[1] if hit else State(self.w), rows, self._most(s))
         s.st = state
         s.snap = None if drafter is None else own(hit[2]) if hit and hit[2] is not None else \
             ([None] * drafter.layers, [None] * drafter.layers, 0, 0)
@@ -259,24 +271,42 @@ class MultiDecoder:
 
         if any(x.waiting for x in self.streams.values()):
             raise NoRoom("streams already wait for memory; a new request waits until one finishes")
-        while not self.memory_gate.fits(self._first(s) * self.row_bytes):
+        while not self.memory_gate.fits(self._cache_bytes(self._first(s))):
+            from tensorfold.cuda.kv_arena import pending_bytes, reap
+
+            if pending_bytes():             # physical-fit failure: complete queued releases before evicting more
+                reap()
+                continue
             if not self.cache.evict():
                 if not self.live():
                     return                          # alone: startup fitted one stream's whole window
                 raise NoRoom(f"a {len(s.prompt)}-token prompt waits for memory until a live stream finishes")
             torch.cuda.empty_cache()
 
-    def _grow(self, st: State, have: int, size: int, alone: bool) -> bool:
-        """Grow ``st``'s caches from ``have`` to ``size`` rows while the gate has room (a layer's copy at a time)."""
+    def _cache_bytes(self, rows: int) -> int:
+        """What a stream's attention caches map at ``rows`` rows: each layer's keys and values an arena, rounded up
+        to its granule (``geometry.ARENA_GRANULE``)."""
 
-        while not self.memory_gate.fits((size - have) * self.row_bytes + size * self.layer_bytes):
+        from tensorfold.cuda.geometry import ARENA_GRANULE
+
+        tensor = -(-rows * self.layer_bytes // 2 // ARENA_GRANULE) * ARENA_GRANULE
+        return 2 * tensor * (self.row_bytes // self.layer_bytes if self.layer_bytes else 0)
+
+    def _grow(self, st: State, have: int, size: int, alone: bool) -> bool:
+        """Grow ``st``'s caches from ``have`` mapped rows to ``size`` while the gate has room (mapped in place)."""
+
+        while not self.memory_gate.fits(self._cache_bytes(size) - self._cache_bytes(have)):
+            from tensorfold.cuda.kv_arena import pending_bytes, reap
+
+            if pending_bytes():             # do not end/wait a stream while its required bytes can be reclaimed
+                reap()
+                continue
             if not self.cache.evict():
                 if alone:
                     break                           # startup fitted one stream's whole window
                 return False
             torch.cuda.empty_cache()
-        reserve(st, size)
-        torch.cuda.empty_cache()                    # the old buffers back to the system: MemAvailable stays true
+        reserve(st, size)                           # maps memory at the caches' ends: nothing old to give back
         return True
 
     def _make_room(self, live: list[Stream]) -> list[Stream]:
@@ -305,7 +335,6 @@ class MultiDecoder:
             newest.st = None                         # its caches go now (a cached prompt end may still view them)
             torch.cuda.empty_cache()
             return [newest, *self._make_room(live[:-1])]
-        self.memory_gate.waits += any(s.waiting for s in live)
         return []
 
     def _fill(self) -> list[Stream]:
@@ -335,10 +364,12 @@ class MultiDecoder:
         return [s] if s.done else []
 
     def _batch(self) -> list[tuple[Stream, int]]:
-        """Foreground prompts for one prefill forward, oldest first, each to its next kept state or its end: STEP rows
-        in all while streams decode, a forward's prompt rows otherwise; the last one in takes the rows left."""
+        """Foreground prompts oldest first, each to its next kept state or end: at most STEP rows while streams
+        decode, always within the forward's admitted prompt rows; the last one takes the rows left."""
 
-        room = STEP if any(not x.done for x in self.streams.values()) else getattr(self.w, "prompt_rows", CHUNK)
+        room = getattr(self.w, "prompt_rows", CHUNK)
+        if any(not x.done for x in self.streams.values()):
+            room = min(STEP, room)
         out = []
         for s in self.filling:
             if s.background:
@@ -396,7 +427,8 @@ class MultiDecoder:
                     self.cache.add(list(s.prompt[:stop]), kept(s.st), own(s.snap))
                 n = len(s.prompt)
                 firsts.append(None if stop < n else first_token(self.w, normed, n, s.sampling, self.rank, self.world,
-                                                                s.constraint, plan=self._sampling_plan))
+                                                                s.constraint, plan=self._sampling_plan,
+                                                                history=s.history))
                 if end is not None:
                     self.cache.add(list(s.prompt[:end]), viewed(at[0]) if end < n else kept(at[0]), own(at[1]))
         except Exception as exc:
@@ -436,7 +468,7 @@ class MultiDecoder:
             if stop in s.stops:
                 self.cache.add(list(s.prompt[:stop]), kept(s.st), own(s.snap))
             first = None if stop < n else first_token(self.w, normed, n, s.sampling, self.rank, self.world,
-                                                     s.constraint, plan=self._sampling_plan)
+                                                     s.constraint, plan=self._sampling_plan, history=s.history)
             if end is not None:
                 at, snap = out[1]
                 self.cache.add(list(s.prompt[:end]), viewed(at) if end < n else kept(at), own(snap))
@@ -476,7 +508,8 @@ class MultiDecoder:
         wins, record, taps, starts, sampled = self._verify(plan, copied)
         paths, ends = [], []
         for s, (tokens, parents), rows in zip(live, wins, sampled):
-            path, end = accept(tokens, parents, rows, s.count - len(s.out), self._ends(s))
+            path, end = rows if isinstance(rows, RejectionResult) else \
+                accept(tokens, parents, rows, s.count - len(s.out), self._ends(s))
             paths.append(path)
             ends.append(end)
         self._send([x for path in paths for x in (len(path), *path)])
@@ -484,6 +517,8 @@ class MultiDecoder:
         self.last = (start, len(plan), sum(len(t) for t, _ in wins)) if self.costs is not None else None
         for s, (tokens, _), path, end in zip(live, wins, paths, ends):
             new = [tokens[r] for r in path[1:]] + [end]
+            if s.history is not None:
+                s.history.extend(new)
             if s.constraint is not None and s.error is None:
                 try:
                     s.constraint.advance(new)
@@ -526,13 +561,19 @@ class MultiDecoder:
     def _mode(self, s: Stream, copied: dict[int, list[int]]) -> int:
         if not s.draft:
             return ONE
-        copied[s.sid] = s.copies.propose(s.context, self.max_rows - 1) if s.copies is not None else []
-        return COPY if copied[s.sid] else (TREE if self.draft is not None else ONE)
+        stochastic = s.sampling is not None and s.sampling.temperature > 0
+        nodes = min(self.draft.trained if self.draft is not None else self.max_rows, self.max_rows) - 1 \
+            if stochastic else self.max_rows - 1
+        copied[s.sid] = s.copies.propose(s.context, nodes) if s.copies is not None else []
+        if copied[s.sid]:
+            return COPY_CHAIN if stochastic else COPY
+        return (CHAIN if stochastic else TREE) if self.draft is not None else ONE
 
     def _trees(self, plan, blocks) -> dict[int, tuple[list[int], list[int], list[float]]]:
         """Rank 0: each tree stream's nodes, parents and path scores, in the policy's pop order."""
 
-        return {sid: self.draft.finish_tree(blocks[sid], length, self.max_rows - 1, self.streams[sid].sampling)
+        return {sid: self.draft.finish_tree(blocks[sid], length, self.max_rows - 1, self.streams[sid].sampling,
+                                            self.streams[sid].history)
                 for sid, mode, _, length in plan if mode == TREE and blocks.get(sid) is not None}
 
     def _cost(self, rows: int) -> float:
@@ -542,25 +583,36 @@ class MultiDecoder:
                 return t0 + (t1 - t0) * (rows - r0) / (r1 - r0)
         return pts[0][1]
 
-    def _windows(self, plan, copied, blocks) -> list[tuple[list[int], list[int]]]:
+    def _windows(self, plan, copied, blocks, chains=None) -> list[tuple[list[int], list[int]]]:
         """Rank 0: every stream's window; with a cost curve, the trees' widths by expected tokens a millisecond."""
 
+        chains = {} if chains is None else chains
         trees = self._trees(plan, blocks)
         keep = {sid: len(t[0]) for sid, t in trees.items()}
         if self.costs is not None and trees:
             sids = list(trees)
-            fixed = sum(1 + (len(copied[sid]) if mode == COPY else 0) for sid, mode, _, _ in plan)
+            fixed = sum(1 + (len(chains[sid].tokens) if sid in chains else len(copied[sid]) if mode == COPY else 0)
+                        for sid, mode, _, _ in plan)
             counts = allocate([trees[sid][2] for sid in sids], fixed, float(len(plan)), self._cost,
                               self._overhead(len(plan)))
             keep = dict(zip(sids, counts))
         wins = []
         for sid, mode, pending, _ in plan:
+            if mode in (CHAIN, COPY_CHAIN) and sid not in chains:
+                raise ValueError("a stochastic window requires its original probability packet")
             guesses, parents = [], []
-            if mode == COPY:
+            if sid in chains:
+                guesses = list(chains[sid].tokens)
+                parents = list(range(-1, len(guesses) - 1))
+            elif mode == COPY:
                 guesses, parents = copied[sid], list(range(-1, len(copied[sid]) - 1))
             elif sid in trees:
                 guesses, parents = trees[sid][0][:keep[sid]], trees[sid][1][:keep[sid]]
-            wins.append(([pending] + list(guesses), [-1] + [0 if p < 0 else p + 1 for p in parents]))
+            tokens, ancestors = [pending] + list(guesses), [-1] + [0 if p < 0 else p + 1 for p in parents]
+            if sid in chains:
+                room = self.streams[sid].count - len(self.streams[sid].out)
+                tokens, ancestors = tokens[:room], ancestors[:room]
+            wins.append((tokens, ancestors))
         return wins
 
     @torch.no_grad()
@@ -587,16 +639,31 @@ class MultiDecoder:
     def _verify(self, plan, copied=None):
         """Both ranks: drafter blocks, rank 0's windows, the forward and each stream's samples."""
 
-        blocks = {}
-        tree = [(sid, pending) for sid, mode, pending, _ in plan if mode == TREE] if self.drafts else []
+        blocks, chains = {}, {}
+        tree = [(sid, pending, mode) for sid, mode, pending, _ in plan if mode in (TREE, CHAIN)] if self.drafts else []
         block = self.block if self.depth else self.max_rows    # one stream too: DFlash2 drafts best near 8 rows
         if tree:                                      # every stream's block in one drafter pass
-            launched = self.draft.launch_blocks([self.streams[sid].snap for sid, _ in tree],
-                                                [pending for _, pending in tree], self.max_rows - 1, block)
-            blocks = {sid: block for (sid, _), block in zip(tree, launched)}
+            for sampled in (False, True):
+                group = [(sid, pending) for sid, pending, mode in tree if (mode == CHAIN) == sampled]
+                if not group:
+                    continue
+                snaps = [self.streams[sid].snap for sid, _ in group]
+                pendings = [pending for _, pending in group]
+                launched = (self.draft.launch_chains(snaps, pendings, self.max_rows - 1,
+                                                    histories=[self.streams[sid].history for sid, _ in group]) if sampled else
+                            self.draft.launch_blocks(snaps, pendings, self.max_rows - 1, block,
+                                                     histories=[self.streams[sid].history for sid, _ in group]))
+                blocks.update({sid: value for (sid, _), value in zip(group, launched)})
         grammars = {}
         if self.rank == 0:
-            wins = self._windows(plan, copied, blocks)
+            for sid, mode, _, length in plan:
+                s = self.streams[sid]
+                if mode == CHAIN:
+                    chains[sid] = self.draft.finish_chain(blocks[sid], length, self.max_rows - 1,
+                                                         s.sampling, s.history)
+                elif mode == COPY_CHAIN:
+                    chains[sid] = copy_packet(copied[sid], length)
+            wins = self._windows(plan, copied, blocks, chains)
             grammars = self._constrain(plan, wins)
             self._send([x for tokens, parents in wins for x in (len(tokens), *tokens, *parents)])
         else:
@@ -612,9 +679,38 @@ class MultiDecoder:
         for k, window in grammars.items():          # a constrained stream's rows, each masked by its path
             self.streams[plan[k][0]].constraint.mask(logits[starts[k]:starts[k + 1]], window,
                                                      self.rank * self.w.head.n if self.split else 0)
+        histories = [self.streams[item[0]].history for item in plan] if self.rank == 0 else []
+        if any(h is not None for h in histories):     # penalized streams' rows, each by its path, in FP32 (exact
+            logits = logits.float()                   # for the others: their scores widen without rounding)
+            for k, history in enumerate(histories):
+                if history is not None:
+                    history.apply(logits[starts[k]:starts[k + 1]], *wins[k])
         positions = [[st.pos + d + 1 for d in _paths(parents)[0]] for (_, parents), st in zip(wins, states)]
         samplings = [self.streams[item[0]].sampling for item in plan]
-        if self.split:                                # both ranks gather their halves' candidates
+        rejecting = any(mode in (CHAIN, COPY_CHAIN) for _, mode, _, _ in plan)
+        if rejecting:
+            from tensorfold.cuda.sampling import sample_rows
+            from tensorfold.engine.rejection import verify
+
+            sampled = []
+            for k, (sid, mode, _, _) in enumerate(plan):
+                s = self.streams[sid]
+                scores = logits[starts[k]:starts[k + 1]] if self.split or self.rank == 0 else None
+                if mode in (CHAIN, COPY_CHAIN):
+                    chain = chains.get(sid)
+                    # Followers need the same collectives; only the leader owns q and consumes the outcome.
+                    p = chain_probabilities(scores, s.sampling, len(chain.tokens) + 1 if chain is not None else
+                                            len(wins[k][0]), plan=self._sampling_plan) if self.split else \
+                        chain_probabilities(scores, s.sampling, len(chain.tokens) + 1) if self.rank == 0 else None
+                    result = verify(chain, p, s.sampling.seed, room=s.count - len(s.out), eos=self._ends(s)) \
+                        if self.rank == 0 else None
+                    del p                         # do not overlap one stream's full p rows with the next extraction
+                    sampled.append(RejectionResult(*result) if result is not None else None)
+                else:
+                    sampled.append(_sample_split(scores, positions[k], samplings[k], self.rank,
+                                                  plan=self._sampling_plan) if self.split else
+                                   sample_rows(scores, positions[k], samplings[k]) if self.rank == 0 else None)
+        elif self.split:                              # both ranks gather their halves' candidates
             sampled = [_sample_split(logits[starts[k]:starts[k + 1]], positions[k], samplings[k], self.rank,
                                      plan=self._sampling_plan) for k in range(len(plan))]
         else:

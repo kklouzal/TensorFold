@@ -16,7 +16,7 @@ from tensorfold.engine.exact_sampling import Sampling  # noqa: E402
 from tensorfold.families.qwen3_5.cuda.decode import draft_decode, prefill, serial_decode  # noqa: E402
 from tensorfold.families.qwen3_5.cuda.engine import KEEP_ONE, Qwen27Engine  # noqa: E402
 from tensorfold.families.qwen3_5.cuda.forward import State  # noqa: E402
-from tensorfold.families.qwen3_5.cuda.multi import TREE, MultiDecoder  # noqa: E402
+from tensorfold.families.qwen3_5.cuda.multi import ONE, TREE, MultiDecoder  # noqa: E402
 from tensorfold.families.qwen3_5.cuda.weights import Attention, Config, GDN, Layer, QLinear, Weights  # noqa: E402
 
 V = 256
@@ -81,8 +81,9 @@ class _Truth:
 
     def __init__(self, ref, depth):
         self.ref, self.depth = ref, depth
+        self.trained = depth + 1
 
-    def propose_tree(self, pending, context_length, max_nodes, sampling):
+    def propose_tree(self, pending, context_length, max_nodes, sampling, history=None):
         k = context_length                          # the prompt is empty: the context is the reply so far
         chain = [self.ref[k + j] if k + j < len(self.ref) else 1 for j in range(self.depth)]
         guesses = chain + [(chain[0] + 1) % V]
@@ -90,6 +91,12 @@ class _Truth:
 
     def add_taps(self, taps):
         pass
+
+    def propose_chain(self, pending, context_length, max_nodes, sampling, history=None):
+        from tensorfold.engine.rejection import ChainPacket, ProbabilityRow
+
+        tokens = tuple(self.propose_tree(pending, context_length, max_nodes, sampling)[0][:self.depth])
+        return ChainPacket(tokens, tuple(ProbabilityRow([t], [1.0]) for t in tokens), context_length)
 
 
 @pytest.mark.parametrize("sampling", SAMPLINGS)
@@ -102,15 +109,21 @@ def test_drafted_equals_serial_past_an_end_token(sampling):
     assert serial_decode(w, State(w), 5, 40, sampling, stop_eos=False).tokens == ref
     inside = False
     for depth in (2, 3, 4, 5):                   # rounds of up to 3 to 6 tokens: some round holds the end token
+        expected = ref if sampling is None else draft_decode(
+            base, State(base), [], 5, 40, sampling, _Truth(ref, depth), max_rows=8, allow_copy=False,
+            stop_eos=False).tokens
+        end, at = _crossing(expected)
+        w = _with_eos(base, (end,))
         rounds: list[list[int]] = []
         drafted = draft_decode(w, State(w), [], 5, 40, sampling, _Truth(ref, depth), max_rows=8, allow_copy=False,
                                stop_eos=False, on_tokens=lambda new: rounds.append(list(new)) or False)
-        assert drafted.tokens == ref and [5] + [t for r in rounds for t in r] == ref, depth
+        assert drafted.tokens == expected and [5] + [t for r in rounds for t in r] == expected, depth
         assert max(drafted.widths) > 1
         inside |= any(end in r[:-1] for r in rounds)        # accepted as a draft, with tokens after it
         stopped = draft_decode(w, State(w), [], 5, 40, sampling, _Truth(ref, depth), max_rows=8, allow_copy=False)
-        assert stopped.tokens == ref[:at + 1], depth
-    assert inside
+        assert stopped.tokens == expected[:at + 1], depth
+    if sampling is None:
+        assert inside                              # greedy truth forces this case; RS may legitimately reject it
 
 
 def _engine(w):
@@ -124,7 +137,12 @@ def _engine(w):
     return eng
 
 
-def _reference(w, prompt, sampling, count, stop_eos=True):
+def _reference(w, prompt, sampling, count, stop_eos=True, *, draft=False):
+    if draft:
+        out = []
+        _engine(w).generate(list(prompt), count, sampling, lambda new: out.extend(new) and False,
+                            draft=True, stop_eos=stop_eos)
+        return out
     st, first = prefill(w, prompt, sampling)
     return serial_decode(w, st, first, count, sampling, stop_eos=stop_eos).tokens
 
@@ -133,11 +151,16 @@ def _reference(w, prompt, sampling, count, stop_eos=True):
 def test_engine_decodes_past_end_tokens_and_keeps_only_prompt_ends(sampling):
     base = _model()
     first, longer = [9, 10, 11, 12, 13], [9, 10, 11, 12, 13, 14, 15, 16]
-    ends = [_crossing(_reference(base, p, sampling, 32, stop_eos=False))[0] for p in (first, longer)]
+    ends = [_crossing(_reference(base, p, sampling, 32, stop_eos=False, draft=draft))[0]
+            for p in (first, longer) for draft in (False, True)]
     w = _with_eos(base, ends)
-    refs = {(tuple(p), stop): _reference(w, p, sampling, 32, stop_eos=stop)
-            for p in (first, longer) for stop in (True, False)}
-    assert all(len(refs[(tuple(p), True)]) < 32 == len(refs[(tuple(p), False)]) for p in (first, longer))
+    refs = {(tuple(p), stop, draft): _reference(w, p, sampling, 32, stop_eos=stop, draft=draft)
+            for p in (first, longer) for stop in (True, False) for draft in (False, True)}
+    assert all(len(refs[(tuple(p), True, draft)]) < 32 == len(refs[(tuple(p), False, draft)])
+               for p in (first, longer) for draft in (False, True))
+    if sampling is None:
+        assert all(refs[(tuple(p), stop, False)] == refs[(tuple(p), stop, True)]
+                   for p in (first, longer) for stop in (True, False))
     eng = _engine(w)
     # drafted from a fresh prefill, then again from its own entry (one token early); the serial reference from
     # scratch; then a longer prompt from the first one's entry, and again from its own
@@ -147,7 +170,7 @@ def test_engine_decodes_past_end_tokens_and_keeps_only_prompt_ends(sampling):
             got: list[int] = []
             stats = eng.generate(prompt, 32, sampling, lambda new: got.extend(new) or False, draft=draft,
                                  stop_eos=stop_eos)
-            assert got == refs[(tuple(prompt), stop_eos)], (prompt, draft, stop_eos)
+            assert got == refs[(tuple(prompt), stop_eos, draft)], (prompt, draft, stop_eos)
             want = cached[(draft, stop_eos)] if prompt is first else (len(first) - 1, len(longer) - 1)[stop_eos]
             assert stats["cached"] == want, (prompt, draft, stop_eos)
     # the kept states end one token before their prompts: no token past an end token (or any reply token) entered
@@ -163,6 +186,10 @@ class _Oracle(MultiDecoder):
         self.truth, self.rng = truth, random.Random(seed)
 
     def _mode(self, s, copied):
+        if s.sampling is not None and s.sampling.temperature > 0:
+            # A q-less independent target-choice oracle; production stochastic producers use RS mode tags.
+            copied[s.sid] = []
+            return TREE if s.draft else ONE
         mode = super()._mode(s, copied)
         return TREE if s.draft and not copied.get(s.sid) else mode
 

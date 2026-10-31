@@ -1,0 +1,236 @@
+{
+  "schema": "tensorfold.v100-corrected-sdk-installed-cpu-checkpoint",
+  "version": 1,
+  "status": "Verified corrected-stack installed CPU checkpoint; target release qualification remains pending",
+  "application_commit": "2c0b4c4a51fbf2f8370fcccd2980c3e3a77ede2b",
+  "application_input_tree": "21a12df376313d5e95bbae5e269b32ae31ad2d14",
+  "specification": {
+    "home_sha256": "7c9f724346866cfb89382ee2e30d60d9d827222c347610783b37683ba04e5a8c",
+    "normalized_maintained_sha256": "5ccbbb27cdd1ccbf2d04fb63b1036937aa304b1bc9af93cf6bb01c80f2f0519a"
+  },
+  "image_identity": {
+    "local_docker_image_id": "sha256:e99c7284234376f43634c7103fcd6fe313fee4b61c073ad79965a100b2b1baef",
+    "inspect_repo_digests_observed": [
+      "tensorfold-v100@sha256:e99c7284234376f43634c7103fcd6fe313fee4b61c073ad79965a100b2b1baef"
+    ],
+    "uncompressed_bytes": 23507139871,
+    "registry_publication_verified": false,
+    "published_registry_reference": null
+  },
+  "base_consumer_image": "sha256:34ee301528d3525b86696145ae30b39bd068845ef6b5be8f0489548e34581b25",
+  "source_capture": {
+    "archive_sha256": "e64de9c4dc3ac2ade2c9c9c73b3b758e23dfb173bf777aed6bca4afbf2344c0d",
+    "manifest_sha256": "74ac232eb8f7728b6776dbac78a9f7f83916a26f6dc9655501642fc7da1d7198",
+    "full_archive_inputs": 2024,
+    "base_scoped_inputs": 2013,
+    "code_files": 707,
+    "test_modules": 183,
+    "input_content_sha256": "44ae1dbfb0bd352b5d0862f8c1da5b26ea2607c9f4b811f43d470163b292d6af",
+    "code_inventory_sha256": "a82c2cef99dc3cba63dc9f34369e8b81e74702fae1d7dac73f6ea5ad531da230"
+  },
+  "actual_consumer_stack": {
+    "torch": "2.14.1+tfcu129sm70",
+    "torch_git": "04cf2557f315a350e7eea7ab064288def65db75a",
+    "python": "3.12.3",
+    "openai": "3.37.0",
+    "xgrammar": "0.2.8",
+    "apache_tvm_ffi": "0.1.15.post1",
+    "native_store_utf8_bytes": true,
+    "remaining_native_keys": 0
+  },
+  "installed_gate": {
+    "passed": 5582,
+    "failed": 0,
+    "skipped": 9,
+    "subtests": 144,
+    "pytest_elapsed_s": 559.91,
+    "driver_elapsed_s": 565.5995011818595,
+    "test_modules": 183,
+    "code_files": 707,
+    "full_archive_input_files": 2024,
+    "base_scoped_input_files": 2013,
+    "code_content_sha256": "a82c2cef99dc3cba63dc9f34369e8b81e74702fae1d7dac73f6ea5ad531da230",
+    "input_content_sha256": "44ae1dbfb0bd352b5d0862f8c1da5b26ea2607c9f4b811f43d470163b292d6af",
+    "all_normal_installed_code_matches": true,
+    "all2024_archive_inputs_equal_before_after": true,
+    "all2013_scoped_inputs_equal_before_after": true,
+    "canonical_git_status_head_real_index_equal_before_after": true,
+    "source_overlay": false,
+    "status": "GREEN",
+    "exit_status": 0,
+    "no_source_overlay": true
+  },
+  "evidence_files": {
+    "capture.json": {
+      "name": "capture.json",
+      "sha256": "2c69ea68cd4c760df72cd701377f7ceb8ae57a6818292aeaeb05dcfd40caeffa"
+    },
+    "consumer-build-result.json": {
+      "name": "consumer-build-result.json",
+      "sha256": "800e0f403a4e87450aa1203a4e05b7b77325a84069f63e315f3f2e9802fe51b6"
+    },
+    "consumer-identity.json": {
+      "name": "consumer-identity.json",
+      "sha256": "71e49723250ea935f52b3c2f5c0899c7348caba9fce0f38be162acdc13f07147"
+    },
+    "consumer-audits.json": {
+      "name": "consumer-audits.json",
+      "sha256": "6b53f1db43f7ac11a0a60254d1f79d7aae9c07ccea57736f3cce05f6dac299fc"
+    },
+    "app-build-result.json": {
+      "name": "app-build-result.json",
+      "sha256": "afb97db1def04ed1e45ace8a69db9e9917e9b6d55774a60540b608ecd8d8a075"
+    },
+    "app-identity.json": {
+      "name": "app-identity.json",
+      "sha256": "68de894764290f8c7b7e96e92ffe5e5a6507765b5b27e5c03d25f0b8c2fdc0c8"
+    },
+    "conditions.json": {
+      "name": "conditions.json",
+      "sha256": "9ca042500626ba0d90cb8677f31e882a6ea7bf60b44749a8f6c26c972db38560"
+    },
+    "docker-limits.json": {
+      "name": "docker-limits.json",
+      "sha256": "de8fa4cd700563c87e345a88c3ee84e21084a018658567b094a4bd767e7fa4f0"
+    },
+    "consumer-inputs.json": {
+      "name": "consumer-inputs.json",
+      "sha256": "0c4aae4c7924f6829ef3b4c54003a27a4611e954bc9f50d3ac3bfb7a69d2b7dc"
+    },
+    "consumer-source-audit.log": {
+      "name": "consumer-source-audit.log",
+      "sha256": "bd363c1d9a1c571e817d5c3b30a71268cb0b9002bc97b351386da958ea8b8c00"
+    },
+    "consumer-media-audit.log": {
+      "name": "consumer-media-audit.log",
+      "sha256": "fe400664fb6e108ea624699acbc3f5b33ef71943633919676bd339f5edd5e4d1"
+    },
+    "installed.log": {
+      "name": "installed.log",
+      "sha256": "da4a40bcdd5ad8fc6b510d85517d2e6ac583336c979e664e7b26fb2114e90764"
+    },
+    "installed-result.json": {
+      "name": "installed-result.json",
+      "sha256": "69601c590e69d54acbdf9a1f7348a7b181aef43bfd2121afe7e5d02465e5f427"
+    },
+    "drift.json": {
+      "name": "drift.json",
+      "sha256": "1cac78ebd8c6ebc4663d04125f6ab631d45692ffcb05bc8981723de94eb8cb43"
+    },
+    "green.json": {
+      "name": "green.json",
+      "bytes": 7667,
+      "sha256": "c8b8c6fb8918a9ec80a7021b1b2a445ca8a152723b2945c1cf52c07298cf9c03"
+    }
+  },
+  "component_receipt": {
+    "name": "final-sdk-media-checkpoint.json",
+    "bytes": 16968,
+    "sha256": "37a61582a101c5a52d833ba1644cc896ca7f9d8c5eae1a8e0b4846bd810c6a38"
+  },
+  "implementation_reviews": {
+    "d13-implementation-final.json": {
+      "name": "d13-implementation-final.json",
+      "bytes": 6446,
+      "sha256": "7ea81616dd74abbbe6cf74fed7342f1aad6bcfa5ea5da6c3e2179871c000021d"
+    },
+    "d14-final.json": {
+      "name": "d14-final.json",
+      "bytes": 7827,
+      "sha256": "e798b2aafbc6b22b4afc72cb423cfc8345671eb68c13aba8af805f93b7d4213d"
+    }
+  },
+  "source_controls": {
+    "name": "source-controls.json",
+    "bytes": 9872,
+    "sha256": "10f1f3b64d9ff2c74c952a05f095ca782ef936f8f7fa5a66767302df2e28057d"
+  },
+  "maintained_replay": {
+    "name": "maintained-replay.json",
+    "bytes": 3722,
+    "sha256": "3d929607b3618e7b861ff64a76b87443eb7ba458f1efce9fea64559cd9cfe8f8"
+  },
+  "structural_reuse": {
+    "name": "structural-reuse.json",
+    "bytes": 746,
+    "sha256": "108ffb8296bf2ec38cc95b0f5b59abf2dc21f806d95f57a1f0173c209400e7c9"
+  },
+  "historical_checkpoint": {
+    "receipt": "verification-v100-adaptive-cpu-20261026.json",
+    "source_tree": "ff1883131180963a1de18bb00c74d6777466dcb9",
+    "torch_effective_commit": "5ab14acbced0c33e6b6e8fdbc5b541b57487f7e1",
+    "scope": "Earlier 5582 result remains historical and is not proof for corrected stack.",
+    "receipt_sha256": "fdc949b063d67e55d4d650463a5c145c2a609ea1240d5b031b3da82fe368127e"
+  },
+  "release_qualified": false,
+  "pending_gates": [
+    "Actual target source-audit portability policy successor and requalification",
+    "Actual V100/TP8/native collectives/graphs",
+    "NVIDIA compiler issue6111901 disposition",
+    "SC117/MTP/DFlash/media model outputs/numerics/quality",
+    "Physical capacity/allocatorRSS/NUMA/native wall deadlines",
+    "Representative end-to-end P3/P4 performance"
+  ],
+  "created_utc": "2026-10-26T22:40:14.013408+00:00",
+  "skip_disposition": [
+    "SKIPPED [1] ../src/tests/test_grammar_lanes.py:8: could not import 'mlx.core': No module named 'mlx'",
+    "SKIPPED [1] ../src/tests/test_prefix_snapshots.py:8: could not import 'mlx.core': No module named 'mlx'",
+    "SKIPPED [1] ../src/tests/test_cuda_server_stream.py:22: needs the Qwen3.8-27B tokenizer (tensorfold pull TensorFold/Qwen3.8-27B-MLX-4bit)",
+    "SKIPPED [1] ../src/tests/test_flashnext_dflash2.py:583: optional exact large artifact was not supplied",
+    "SKIPPED [1] ../src/tests/test_flashnext_gguf_mtp.py:463: optional pinned companion and actual target metadata not supplied",
+    "SKIPPED [2] ../src/tests/test_v100_compose.py:58: requires host Docker Compose >=2.30",
+    "SKIPPED [1] ../src/tests/test_v100_compose.py:67: requires host Docker Compose >=2.30",
+    "SKIPPED [1] ../src/tests/test_v100_compose.py:74: requires host Docker Compose >=2.30"
+  ],
+  "evidence_availability": "Raw evidence retained with the task; hashes are recorded here. Private evidence paths are not required by maintained tests.",
+  "selected_runtime": {
+    "torch_effective_commit": "04cf2557f315a350e7eea7ab064288def65db75a",
+    "torch_upstream_commit": "5c4886908584029761b579af026dcfb627c84070",
+    "torch_whole_wheel_bytes": 222923385,
+    "torch_whole_wheel_sha256": "7bb0c6cf42736ef4abcaa58c962423c65315f91c124353b5b46ddc76d82faac6",
+    "source_build_receipt_sha256": "779ce85651c6236be2874a9b478d04ac1c8560a712b8632bd300792e83cd4c24",
+    "sdk_image": "sha256:eb09ff449dba6acc89d7207547a10b767adde592f47fef839f33dc98f269df28",
+    "media_image": "sha256:f1c72b97ae8949a0aab0b1407edd4fc320671fb129e104e39095eb602ce2e94f",
+    "consumer_image": "sha256:34ee301528d3525b86696145ae30b39bd068845ef6b5be8f0489548e34581b25",
+    "python": "CPython3.12.3",
+    "gcc_build": "13.3",
+    "cxx11_abi": 1,
+    "libstdcxx_runtime_bytes": 2592224,
+    "libstdcxx_runtime_sha256": "1fd75fe70354a416d75aef22bcae68c47bd25d20e2d0568c30b1a9838cf62f11",
+    "finite_existing_hard_fd_limit_required": true,
+    "image_platform": "Linux amd64",
+    "openai_sdk": "3.37.0",
+    "xgrammar": "0.2.8",
+    "native_fd_embedded_source_sha256": "f85d2c923adfaa14e819250e8def3c3166b8c8624295a37572916e62ad20c1f2"
+  },
+  "component_controls": {
+    "source_resource_and_helper": {
+      "passed": 300,
+      "skipped": 0,
+      "pytest_seconds": 78.85,
+      "ruff": "passed",
+      "scope": "Canonical source overlay on actual corrected SDK with byte-matched installed FD extension; not installed application/physical resource qualification"
+    },
+    "media_and_source_installed": {
+      "passed": 110,
+      "skipped": 0,
+      "warnings": 0,
+      "pytest_seconds": 325.85,
+      "media_audit_artifacts": 4211,
+      "source_audit_artifacts": 15634,
+      "scope": "Actual immutable corrected SDK/media software and CPU processor/decoder controls; exact original media bytes reused, not clean media compilation"
+    },
+    "overlap": "These component suites overlap the complete installed gate and are not added to its count."
+  },
+  "documentation_relationship": {
+    "this_receipt_and_following_status_docs_were_not_inputs_to_tested_image": true,
+    "all_application_code_tests_and_tools_equal_tested_source": true,
+    "tested_image_retains_pending_status_text_from_its_exact_capture": true
+  },
+  "scope": "Development-host corrected SDK/media/client/application CPU composition only; no target device/model/resource/quality/P3 qualification.",
+  "target_portability_blocker": {
+    "status": "Open; separate owned project audit-policy successor is being implemented and qualified",
+    "observed": "Actual V100 host source audit rejects torch_config_sha256 because the framework configuration display reports runtime CPU dispatch AVX512 instead of development-host AVX2. CUDA display sections are also runtime-dependent.",
+    "disposition": "Separate immutable build/runtime-identity policy split; preserve compiler/build flags, source/native bytes and all protected-artifact validation. No AVX2 forcing, old-manifest rewrite or audit bypass. Current local CPU GREEN does not resolve this actual-target gate."
+  }
+}

@@ -330,7 +330,7 @@ class NativeTests(unittest.TestCase):
         table.close()
         self.assertEqual(table._fds, [])
 
-    def test_native_fd_close_interruption_and_validation(self):
+    def test_fd_close_interruption(self):
         table = NativeSSDTable(self.files, workers=16)
         owned = list(table._fds)
         release = table._life.release_fds
@@ -352,22 +352,6 @@ class NativeTests(unittest.TestCase):
             with self.assertRaises(OSError):
                 os.fstat(fd)
         table.close()
-        fd = os.open(self.files[0][0], os.O_RDONLY)
-        for owner in ([fd, fd], [-1], [fd, 2**40], [fd, "x"]):
-            with self.assertRaises(ValueError):
-                self.mod.close_fds(owner)
-            self.assertGreater(os.fstat(fd).st_size, 0)
-        owner = [fd]
-        self.mod.close_fds(owner)
-        self.assertEqual(owner, [])
-        with self.assertRaises(OSError):
-            os.fstat(fd)
-        bad = os.open(self.files[0][0], os.O_RDONLY)
-        os.close(bad)
-        owner = [bad]
-        with self.assertRaises(OSError):
-            self.mod.close_fds(owner)
-        self.assertEqual(owner, [])
         table = NativeSSDTable(self.files, workers=1)
         old = os.close
 

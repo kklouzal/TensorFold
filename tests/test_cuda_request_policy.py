@@ -1,20 +1,12 @@
 import json
 import threading
-from types import SimpleNamespace
 
 import pytest
 
 from tensorfold.cuda import server
 from tests.test_cuda_admission import http_server, post
 from tests.test_request_policy import CALL, TOOLS, stream_calls
-
-
-class TextTokenizer:
-    def encode(self, text, **kwargs):
-        return SimpleNamespace(ids=[ord(c) for c in text])
-
-    def decode(self, ids, **kwargs):
-        return "".join(chr(c) for c in ids)
+from tests.text_tokenizer_fixture import TextTokenizer
 
 
 class Engine:
@@ -87,8 +79,8 @@ def test_cuda_tool_limit_keeps_generation_and_usage_unchanged(tmp_path, stream, 
     assert status == 200
     if stream:
         calls = stream_calls(body)
-        usage = [json.loads(line[5:])["usage"] for line in body.splitlines()
-                 if line.startswith("data:") and line != "data: [DONE]" and '"usage"' in line][0]
+        usage = [json.loads(line[5:])["usage"] for line in body.splitlines()          # null before the usage chunk
+                 if line.startswith("data:") and line != "data: [DONE]" and '"usage": {' in line][0]
     else:
         payload = json.loads(body)
         calls = payload["choices"][0]["message"]["tool_calls"]

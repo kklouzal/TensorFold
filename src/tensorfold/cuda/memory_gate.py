@@ -14,9 +14,13 @@ class NoRoom(RuntimeError):
 class MemoryGate:
     """``room`` bytes for every stream's growing caches; ``fits`` also asks the host (MemAvailable on a unified GPU)."""
 
-    def __init__(self, room: int, reserve: int, live: Callable[[], int] | None = None) -> None:
+    def __init__(self, room: int, reserve: int, live: Callable[[], int] | None = None, *,
+                 allow_lone_growth: bool = True) -> None:
         self.room, self.reserve, self.held = int(room), int(reserve), 0
         self.live = live
+        # Flash Next's default admits a whole lone window separately. An
+        # explicitly shared reservation must never borrow outside this gate.
+        self.allow_lone_growth = allow_lone_growth
         self.waits = self.ends = 0
 
     def fits(self, extra: int) -> bool:
@@ -33,12 +37,34 @@ class MemoryGate:
         self.held = max(0, self.held - int(freed))
 
 
-def torch_live(torch, available: Callable) -> Callable[[], int]:
-    """Reusable allocator bytes plus free memory, capped by the budget left after current allocations."""
+def torch_live(torch, available: Callable, *, unavailable_spare_bytes: int = 0, owner=None) -> Callable[[], int]:
+    """Reusable allocator bytes plus free memory, capped by the budget left after current allocations.
 
-    def room() -> int:
-        allocated = int(torch.cuda.memory_allocated())
-        free = int(available(torch)) + int(torch.cuda.memory_reserved()) - allocated
+    Attention-cache arenas (``kv_arena``) map memory outside the allocator: all mappings count as allocated until
+    released. Queued releases are not free yet; this shared callable also serves ordinary Torch allocations that
+    do not pass through an arena's reaping boundary. Sampling never forces a stream wait or driver release.
+    A prepared immutable graph pool can retain inactive blocks that ordinary
+    service allocations cannot reuse. Its owner supplies that constant and
+    outlives this callable; default callers retain the original accounting.
+    """
+
+    from .kv_arena import mapped_bytes
+
+    if not unavailable_spare_bytes and owner is None:
+        # Select the arithmetic without a private graph-pool exclusion once during preparation.
+        def room() -> int:
+            torch_allocated = int(torch.cuda.memory_allocated())
+            allocated = torch_allocated + mapped_bytes()
+            free = int(available(torch)) + int(torch.cuda.memory_reserved()) - torch_allocated
+            limit = cuda_limit_bytes()
+            return max(0, min(free, limit - allocated)) if limit is not None else max(0, free)
+        return room
+
+    def room(_owner=owner) -> int:  # the default retains a prepared pool owner without a HOT lookup/callback
+        torch_allocated = int(torch.cuda.memory_allocated())
+        spare = max(0, int(torch.cuda.memory_reserved()) - torch_allocated - unavailable_spare_bytes)
+        free = int(available(torch)) + spare
+        allocated = torch_allocated + mapped_bytes()
         limit = cuda_limit_bytes()
         return max(0, min(free, limit - allocated)) if limit is not None else max(0, free)
 

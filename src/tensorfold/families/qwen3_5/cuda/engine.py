@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import struct
 import time
 from functools import partial
 from pathlib import Path
@@ -24,13 +25,23 @@ class Qwen27Engine:
 
     tree_rows: int | None = None       # a lone stream's tree rows on one GPU (None: max_rows, as in 0.5.0)
     room = None                        # one GPU's attention-cache budget (streams.KVRoom), None on two
+    runner = None                      # a lone stream's graph runner: its fixed attention buffers hold the stream's
+                                       # prefills and kept prompt states (None: private buffers, every round eager)
 
     def __init__(self, model_dir: Path, draft_dir: Path | None, *, max_rows: int = 12, tp: int = 1,
                  rank: int = 0, master: str = "", port: int = 29551, split_head: bool = False,
                  tp_draft: bool = False, allow_copy: bool = True, streams: int = 1,
                  context: int | None = None, context_explicit: bool | None = None, vision: bool = False,
                  vision_urls: bool = False, vision_offload: bool = False, tree_rows: int | None = None,
-                 keep: int | None = None):
+                 keep: int | None = None, eos_token_ids=None, chat_template_file=None, chat_template_name=None,
+                 yarn_factor: float | None = None):
+        from tensorfold.cuda.chat_template import prepare_chat_template
+        from tensorfold.families.qwen3_5 import rope_parameters
+
+        self.tree_rows = None if tree_rows is None else min(int(tree_rows), max_rows)
+        keep = KEEP if keep is None else int(keep)         # --checkpoint-slots: each kept state is in the estimate
+        self.chat_template = prepare_chat_template(model_dir, template_file=chat_template_file,
+                                                   template_name=chat_template_name)
         import torch
 
         from tensorfold.cuda.nvfp4.format import is_quantized
@@ -45,22 +56,62 @@ class Qwen27Engine:
         if nvfp4 and vision:
             raise ValueError("image input on CUDA is tested on the MLX checkpoint only: drop --vision for an NVFP4 "
                              "checkpoint, or serve TensorFold/Qwen3.8-27B-MLX-4bit")
+        rope = rope_parameters(model_dir, yarn_factor)       # default RoPE, or static YaRN past native positions
+        yarn = rope if rope.rope_type == "yarn" else None
+        from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json
+
+        from .draft_tree import COPY_MIN_MATCH, draft_block, draft_limit, draft_spans
+
+        draft_metadata = read_metadata_json(checkpoint_path(draft_dir, "config.json")) if draft_dir is not None else None
+        companion_limit = draft_limit(draft_metadata) if draft_metadata is not None else None
+        trained = draft_block(draft_metadata) if draft_metadata is not None else None
+        if companion_limit is not None and context is not None and context > companion_limit:
+            raise ValueError(f"DFlash2 declares at most {companion_limit} positions; requested context {context} "
+                             "exceeds its limit. Use --drafter none/--no-drafts for extended target-only context")
         from .weights import load
-        from tensorfold.cuda.capacity import admit, config, gather_ints, total_bytes, unified
-        from tensorfold.cuda.geometry import (draft_geometry, gdn_geometry, live_kv, prompt_row_bytes, prompt_rows,
+        from tensorfold.cuda.capacity import admit, config, gather_ints, headers, total_bytes, unified
+        from tensorfold.cuda.geometry import (draft_geometry, gdn_geometry, prompt_row_bytes, prompt_rows,
                                               stream_geometry)
         from .affine_memory import draft_weights, weight_transform
         from tensorfold.vision.qwen_cuda import capacity_geometry, weight_transform as vision_weights
 
+        rejection_device = rejection_host = rejection_resident_host = 0
+        each = max_rows if streams == 1 else 16
+        configured = min(each, self.tree_rows) if streams == 1 and tp == 1 and self.tree_rows is not None else each
+        # Single TP2 only proposes copies when a companion exists; Multi has its own16-row copy route.
+        copies_possible = allow_copy and (tp == 1 or streams > 1) and configured > COPY_MIN_MATCH
+        if draft_dir is not None or copies_possible:
+            from tensorfold.cuda.sampling import effective_workspace
+            from tensorfold.cuda.speculative import chain_workspace
+
+            text = config(model_dir)
+            sampled_each = max(1, min(configured, trained if trained is not None else each))
+            rows = sampled_each * streams
+            sharded = tp if split_head else 1
+            target = effective_workspace(rows, -(-int(text["vocab_size"]) // sharded), world=sharded)
+            packet = chain_workspace(max(1, sampled_each - 1), 16, streams=streams)
+            rejection_device = target["device_bytes"] + packet["device_bytes"]
+            rejection_host = target["host_bytes"] + packet["host_bytes"]
+            if draft_dir is not None:
+                rank_width = int(headers(draft_dir)["candidate_selector.hidden_projection.weight"]["shape"][0])
+                proposal_rows = (sampled_each - 1) * streams
+                # Projected selector rows survive beside their packed readback and FP64 conversion. Per-parent
+                # edge evaluation also owns a16-row gathered successor matrix and its FP64 copy.
+                rejection_device += 8 * proposal_rows * rank_width
+                rejection_host += 16 * proposal_rows * rank_width + 256 * rank_width
+                proposal_world = tp if tp_draft else 1
+                proposal_vocab = sum(b - a for a, b in draft_spans(int(text["vocab_size"])))
+                rejection_resident_host = 8 * -(-proposal_vocab // proposal_world)  # prepared immutable ID map
+
         self.torch = torch
         self.tp, self.rank, self.max_rows, self.allow_copy = tp, rank, max_rows, allow_copy
-        self.tree_rows = None if tree_rows is None else min(int(tree_rows), max_rows)
         self.vision = None
-        self.vision_enabled = bool(vision)
         torch.cuda.set_device(0)
+        from tensorfold.cuda.kv_arena import driver
+
+        driver(0)                           # required VMM and admission granularity, before payloads or requests
         if streams > 1 and tp == 1:          # streams' caches of many sizes come and go: growable segments, less slack
-            torch.cuda.memory._set_allocator_settings("expandable_segments:True")
-        keep = KEEP if keep is None else int(keep)         # --checkpoint-slots: each kept state is in the estimate
+            torch._C._accelerator_setAllocatorSettings("expandable_segments:True")
         if tp == 2:
             import torch.distributed as dist
 
@@ -70,17 +121,19 @@ class Qwen27Engine:
             # both ranks must run the same calls: refuse to start when they were given different settings
             flags = torch.tensor([int(draft_dir is not None and tp_draft), max_rows, int(split_head), int(allow_copy),
                                   streams, -1 if context is None else int(context), int(bool(context_explicit)),
-                                  int(vision), keep, int(prompt_precision.fp8())],      # precision last (same_on_ranks)
+                                  int(vision), keep,
+                                  struct.unpack("<q", struct.pack("<d", yarn.factor if yarn else 0.0))[0],
+                                  int(prompt_precision.fp8())],      # precision last (same_on_ranks)
                                  dtype=torch.int64, device="cuda")
             both = torch.empty((2, flags.numel()), dtype=torch.int64, device="cuda")
             dist.all_gather_into_tensor(both, flags)
             prompt_precision.same_on_ranks(int(both[0, -1]), int(both[1, -1]))
             if not torch.equal(both[0], both[1]):
                 raise RuntimeError("the two ranks were started with different settings (two-rank drafter, rows, "
-                                   f"head split, copies, --parallel, --context, --checkpoint-slots): rank 0 "
-                                   f"{both[0].tolist()}, rank 1 {both[1].tolist()}; pull the draft model on both "
-                                   "machines, and pass the same --no-drafts, --parallel, --context and "
-                                   "--checkpoint-slots to both")
+                                   "head split, copies, --parallel, --context, --checkpoint-slots, --yarn-factor): "
+                                   f"rank 0 {both[0].tolist()}, rank 1 {both[1].tolist()}; pull the draft model on "
+                                   "both machines, and pass the same --no-drafts, --parallel, --context, "
+                                   "--checkpoint-slots and --yarn-factor to both")
             def gather(values):
                 return gather_ints(torch, lambda send, recv: dist.all_gather_into_tensor(recv, send), values)
         else:
@@ -89,7 +142,8 @@ class Qwen27Engine:
         # prompt chunks sized to the card (4096 rows from 80 GB), the verify scratch to the rows a round takes
         chunk = prompt_rows(total_bytes(torch), prompt_row_bytes(config(model_dir), tp))
         geometry = ((lambda text: stream_geometry(text, tp, streams, keep, first=256 if tp == 1 else None)) if many
-                    else (lambda text: gdn_geometry(text, tp, max_rows, rows=max_rows, prompt=chunk, evicts=tp == 1)))
+                    else (lambda text: gdn_geometry(text, tp, max_rows, rows=max_rows, prompt=chunk,
+                                                   evicts=tp == 1, kept=KEEP_ONE)))
         # an affine checkpoint's packed words at their stored precision; an EXL3 pack's by its own format
         tensor_bytes = weight_transform(model_dir, one_gpu=tp == 1)
         weight_estimator = None
@@ -116,14 +170,32 @@ class Qwen27Engine:
                                    draft_geometry=lambda text: draft_geometry(text, tp if tp_draft else 1, max_rows,
                                                                               bounded=True, streams=streams,
                                                                               kept=keep + 1 if many else 0),
-                                   startup_copies=int(tp == 2))
+                                   startup_copies=int(tp == 2),
+                                   device_workspace_bytes=rejection_device, host_workspace_bytes=rejection_host,
+                                   host_resident=rejection_resident_host,
+                                   **({"context_limit": yarn.context_limit, "original_context": yarn.native_context}
+                                      if yarn is not None else {}))
         self.context_window = self.capacity_plan["context_window"]
+        if companion_limit is not None and self.context_window > companion_limit:
+            raise ValueError(f"DFlash2 declares at most {companion_limit} positions; admitted context "
+                             f"{self.context_window} exceeds its limit. Use --drafter none/--no-drafts for extended "
+                             "target-only context")
+        bindings = {name: value for name, value in (("eos_token_ids", eos_token_ids), ("rope", yarn))
+                    if value is not None}
         if tp == 2:
-            full = load(model_dir, prefill_world=tp)
+            full = load(model_dir, prefill_world=tp, **bindings)
             self.w = split_weights(full, rank, tiled=True, split_head=split_head)
         else:
-            full = load(model_dir, tiled=True)
+            full = load(model_dir, tiled=True, **bindings)
             self.w = full
+        if yarn is not None and rank == 0:
+            print(f"[tensorfold] static YaRN factor {yarn.factor:g}, rotary amplitude {yarn.attention_factor:.8g}, "
+                  f"original context {yarn.native_context}; positions up to {yarn.context_limit}", flush=True)
+        if tp == 2:
+            from tensorfold.cuda.comm import agree_eos
+
+            agree_eos(lambda send, recv: dist.all_gather_into_tensor(recv, send),
+                      self.w.config.eos, world=tp, device=self.w.norm.device)
         self.w.prompt_rows = chunk
         self.draft = None
         if draft_dir is not None and (rank == 0 or (tp == 2 and tp_draft)):
@@ -137,22 +209,44 @@ class Qwen27Engine:
 
             self.vision = QwenCudaVision(model_dir, self.w.norm.device, allow_urls=vision_urls,
                                          offload=vision_offload)
+        self._prepare_serving(model_dir, streams=streams, keep=keep)
+
+    def _prepare_serving(self, model_dir: Path, *, streams: int, keep: int, max_rows: int | None = None,
+                         kv_capacity: int | None = None) -> None:
+        """Prepare request state after loading/admission and optional drafter/vision.
+
+        The loader establishes torch, tp/rank, allow_copy, capacity_plan,
+        context_window, w, draft, vision and chat_template before this call.
+        ``keep`` is the normalized retained-prefix count used by admission.
+        ``max_rows`` overrides the concurrent decoder's window before calibration;
+        omitting it preserves that decoder's default.
+        ``kv_capacity`` is an already-admitted fixed graph cache capacity in rows;
+        ordinary caches use the served context window. Credit the same rounded
+        mapping that admission reserved, including any graph verification suffix.
+        Calibration completes before publishing a running scheduler.
+        """
+        from tensorfold.cuda.capacity import config
+        from tensorfold.cuda.geometry import live_kv
+
+        torch, tp, rank, allow_copy = self.torch, self.tp, self.rank, self.allow_copy
+        many = streams > 1
         torch.cuda.empty_cache()
         from tensorfold.cuda.markers import resume_points
         from tensorfold.cuda.streams import PrefixCache
 
         self.eos = tuple(self.w.config.eos)
         self.model_dir = Path(model_dir)
-        self.points = resume_points(model_dir)              # message starts a prefill keeps states at
+        self.points = resume_points(model_dir, template=self.chat_template)
         self.cache = PrefixCache(KEEP_ONE)                  # (committed ids, state, drafter snapshot)
         if tp == 1 and not many:              # one GPU: kept buffers stay inside the bytes admission left the caches
             from tensorfold.cuda.streams import KVRoom
 
             plan = self.capacity_plan
             spare = plan["budget_bytes"] - plan["weight_bytes_estimate"] - plan["cache_workspace_bytes_estimate"]
-            self.room = KVRoom(self.cache, spare + live_kv(config(model_dir), 1, self.context_window))
+            cache_rows = self.context_window if kv_capacity is None else kv_capacity
+            self.room = KVRoom(self.cache, spare + live_kv(config(model_dir), 1, cache_rows))
         # ``streams`` > 1: up to that many requests decoded together, their windows verified in one forward
-        self.concurrent = streams > 1
+        self.concurrent = many
         self.multi = self.scheduler = None
         if self.concurrent:
             from tensorfold.cuda.scheduler import Scheduler
@@ -161,7 +255,7 @@ class Qwen27Engine:
 
             self.multi = MultiDecoder(self.w, self.draft, allow_copy=allow_copy, rank=rank, world=tp,
                                       context=self.capacity_plan["cache_slots"], keep=keep, points=self.points,
-                                      vision=self.vision)
+                                      vision=self.vision, **({"max_rows": max_rows} if max_rows is not None else {}))
             self.multi.model_dir = self.model_dir             # rank 1 compiles a request's grammar from it
             self.multi.calibrate(streams)
             if rank == 0:
@@ -223,11 +317,22 @@ class Qwen27Engine:
             self.scheduler.close()
             self.scheduler = None
 
+    @property
+    def penalties_supported(self) -> bool:
+        """Penalties run on one GPU (single or concurrent streams); the two-rank protocols carry none."""
+
+        return self.tp == 1
+
     def generate(self, prompt: list[int], max_tokens: int, sampling, on_tokens: Callable[[list[int]], bool | None],
-                 draft: bool = True, stop_eos: bool = True, *, vision=None, constraint=None, background=False):
+                 draft: bool = True, stop_eos: bool = True, *, vision=None, constraint=None, background=False,
+                 penalties=None):
         """``draft=False``: serial re-runs, no drafts; ``background``: last under ``--parallel``, yielding lanes."""
 
+        from tensorfold.engine.penalties import History
         from .decode import draft_decode, prefill
+
+        if penalties is not None and penalties.active and not self.penalties_supported:
+            raise ValueError("presence, frequency and repetition penalties require one GPU (--tp 1)")
 
         if vision is not None and self.vision is None:
             raise ValueError("image inputs require starting this engine with --vision")
@@ -238,6 +343,8 @@ class Qwen27Engine:
         grammar = {} if constraint is None else {"constraint": constraint}     # a plain request calls as before
         if self.scheduler is not None:
             grammar.update({"background": True} if background else {})
+            if penalties is not None and penalties.active:      # the decoder keeps each admission's history
+                grammar["penalties"] = penalties
             if vision is None:
                 return self.scheduler.submit(list(prompt), max_tokens, sampling, draft, on_tokens, stop_eos=stop_eos,
                                              **grammar)
@@ -254,9 +361,14 @@ class Qwen27Engine:
             drafter.restore(hit[2])
         elif drafter is not None:
             drafter.restore(([None] * drafter.layers, [None] * drafter.layers, 0, 0))
+        if penalties is not None and penalties.active:
+            grammar["history"] = History(penalties, prompt)
         stops, keep = self._stops(prompt, hit, draft) if vision is None else ((), None)
         end = entry_end(prompt) if draft and vision is None and self._ends(prompt, stops) else None
-        st, pending, *kept = prefill(self.w, prompt, sampling, drafter, state=hit[1] if hit else None, room=self.room,
+        base = hit[1] if hit else None
+        if self.runner is not None:             # every prefill extends the runner's fixed attention buffers in place
+            base = self.runner.begin(self.cache, self.room, base, prompt)
+        st, pending, *kept = prefill(self.w, prompt, sampling, drafter, state=base, room=self.room,
                                      limit=self.context_window, stops=stops, keep=keep, keep_at=end, vision=encoded,
                                      **grammar)
         if end is not None:
@@ -265,10 +377,12 @@ class Qwen27Engine:
         if on_tokens([pending]):
             return {"prefill_s": prefill_s, "cached": hit[1].pos if hit else 0}
         # the cache holds the state before the last prompt token, not ``st``: the decode may commit into it
+        runner = self.runner if vision is None else None        # image positions decode eagerly
         result = draft_decode(self.w, st, prompt, pending, max_tokens, sampling, drafter,
                               max_rows=self.max_rows, tree_rows=self.tree_rows,
                               allow_copy=self.allow_copy and draft, stop_eos=stop_eos,
-                              on_tokens=on_tokens, inplace=True, **grammar)
+                              on_tokens=on_tokens, inplace=True, **grammar,
+                              **({"runner": runner} if runner is not None else {}))
         return {"prefill_s": prefill_s, "decode_s": result.seconds, "rounds": result.rounds,
                 "cached": hit[1].pos if hit else 0, "drafts": draft, "min_rows": min(result.widths, default=0),
                 "drafted": result.drafted_rows, "accepted": result.accepted_drafts}

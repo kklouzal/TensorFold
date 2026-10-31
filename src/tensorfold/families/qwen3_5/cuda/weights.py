@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from functools import cached_property
+from operator import index
 from pathlib import Path
-
-from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json
 from typing import Any
 
 import torch
+
+from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json
 
 
 @dataclass
@@ -133,40 +134,49 @@ class Config:
     top_k: int = 0
     moe_width: int = 0
     mrope_section: tuple[int, int, int] = (11, 11, 10)
+    layer_types: tuple[str, ...] = ()  # absent layout retains constant-space interval selection
+    yarn: Any = None          # static YaRN (``qwen4_exp.rope.RopeParameters``): its frequencies; None: default RoPE
+    rope_scale: float = 1.0   # YaRN's rotary amplitude (attention factor) on cos and sin; 1 under default RoPE
 
     @classmethod
-    def read(cls, model_dir: str | Path) -> "Config":
-        raw = read_metadata_json(checkpoint_path(model_dir, "config.json"))
-        t = raw.get("text_config", raw)
+    def read(cls, model_dir: str | Path, *, eos_token_ids=None, rope=None) -> "Config":
+        """``rope``: a static YaRN policy (``--yarn-factor``) over a default checkpoint; a checkpoint that declares
+        YaRN brings its own."""
+        from tensorfold.checkpoint_metadata import read_config
+        from tensorfold.families.qwen3_5.config_metadata import (
+            declared_yarn,
+            resolve_default_rope,
+            resolve_layer_types,
+            validate_cuda_metadata,
+        )
+        from tensorfold.token_metadata import resolve_eos
+
+        raw = read_config(model_dir)
+        validate_cuda_metadata(raw)
+        t = raw.get("text_config") or raw
         if not isinstance(t, dict):
             raise ValueError("text_config must be a JSON object")
-        rope = t.get("rope_parameters")
-        rope = {} if rope is None else rope
-        if not isinstance(rope, dict):
-            raise ValueError("rope_parameters must be a JSON object")
         head_dim = int(t.get("head_dim") or t["hidden_size"] // t["num_attention_heads"])
-        gen = Path(model_dir) / "generation_config.json"
-        found: list[int] = []
-        # EXL3 packs name the chat turn's end, <|im_end|>, in generation_config.json only
-        for value in (raw.get("eos_token_id", t.get("eos_token_id")),
-                      read_metadata_json(checkpoint_path(model_dir, "generation_config.json")).get("eos_token_id") if gen.exists() else None):
-            found += [] if value is None else [int(e) for e in value] if isinstance(value, list) else [int(value)]
-        if not found:
-            raise ValueError("no eos_token_id in config.json or generation_config.json")
-        eos = tuple(dict.fromkeys(found))
+        if rope is None:
+            rope = declared_yarn(raw)
+        yarn = rope if rope is not None and rope.rope_type == "yarn" else None
+        rope = yarn if yarn is not None else resolve_default_rope(t, head_dim=head_dim)
+        kinds = resolve_layer_types(t, layers=int(t["num_hidden_layers"])) if t.get("layer_types") is not None else ()
+        eos = resolve_eos(model_dir, raw.get("eos_token_id", t.get("eos_token_id")),
+                          vocab_size=int(t["vocab_size"]), override=eos_token_ids)
         config = cls(
             hidden=int(t["hidden_size"]), intermediate=int(t.get("intermediate_size", 0)),
             layers=int(t["num_hidden_layers"]), heads=int(t["num_attention_heads"]),
             kv_heads=int(t["num_key_value_heads"]), head_dim=head_dim, vocab=int(t["vocab_size"]),
             k_heads=int(t["linear_num_key_heads"]), v_heads=int(t["linear_num_value_heads"]),
             dk=int(t["linear_key_head_dim"]), dv=int(t["linear_value_head_dim"]),
-            conv_kernel=int(t["linear_conv_kernel_dim"]), interval=int(t.get("full_attention_interval", 4)),
+            conv_kernel=int(t["linear_conv_kernel_dim"]), interval=4 if kinds else int(t.get("full_attention_interval", 4)),
             eps=float(t.get("rms_norm_eps", 1e-6)),
-            rope_dims=int(head_dim * float(rope.get("partial_rotary_factor", t.get("partial_rotary_factor", 0.25)))),
-            rope_theta=float(rope.get("rope_theta", t.get("rope_theta") or 10000000.0)),
+            rope_dims=rope.rotary_dim, rope_theta=rope.theta,
             eos=eos, experts=int(t.get("num_experts", 0)), top_k=int(t.get("num_experts_per_tok", 0)),
             moe_width=int(t.get("moe_intermediate_size", 0)),
-            mrope_section=tuple(rope.get("mrope_section", (11, 11, 10))),
+            mrope_section=rope.mrope_section, layer_types=kinds,
+            yarn=yarn, rope_scale=1.0 if yarn is None else float(yarn.attention_factor),
         )
         from triton.language.core import TRITON_MAX_TENSOR_NUMEL
 
@@ -191,7 +201,7 @@ class Config:
             raise ValueError("positive vocabulary required for model token emission")
         if type(self.layers) is not int or self.layers < 0:
             raise ValueError("layer count must be nonnegative")
-        if type(self.interval) is not int or self.interval <= 0:
+        if not self.layer_types and (type(self.interval) is not int or self.interval <= 0):
             raise ValueError("full-attention interval must be positive")
         if type(self.experts) is not int or self.experts < 0:
             raise ValueError("expert count must be nonnegative")
@@ -199,8 +209,8 @@ class Config:
             raise ValueError("head width must be nonnegative")
         if type(self.rope_dims) is not int or not 0 <= self.rope_dims <= self.head_dim:
             raise ValueError("frequency allocation/rotation must lie within the head width")
-        attention = self.layers >= self.interval
-        linear = self.layers > 0 and self.interval > 1
+        attention = ("full_attention" in self.layer_types if self.layer_types else self.layers >= self.interval)
+        linear = ("linear_attention" in self.layer_types if self.layer_types else self.layers > 0 and self.interval > 1)
         if attention:
             if (type(self.heads) is not int or self.heads <= 0 or type(self.kv_heads) is not int
                     or self.kv_heads <= 0 or self.heads % self.kv_heads or self.heads // self.kv_heads > 16):
@@ -226,6 +236,8 @@ class Config:
                 raise ValueError("dense layers require positive intermediate width")
 
     def is_linear(self, layer: int) -> bool:
+        if self.layer_types:
+            return self.layer_types[layer] == "linear_attention"
         return (layer + 1) % self.interval != 0
 
     def validate_fp8_prefill(self, *, max_tensor_numel: int, world: int = 1) -> None:
@@ -240,9 +252,9 @@ class Config:
         if type(max_tensor_numel) is not int or max_tensor_numel < 64:
             raise ValueError("installed Triton tensor capacity must admit64-cell FP8 glue")
         active = []
-        if self.layers >= self.interval:
+        if "full_attention" in self.layer_types if self.layer_types else self.layers >= self.interval:
             active.append((self.heads, self.head_dim, "attention"))
-        if self.layers > 0 and self.interval > 1:
+        if "linear_attention" in self.layer_types if self.layer_types else self.layers > 0 and self.interval > 1:
             active.append((self.v_heads, self.dv, "GDN"))
         for heads, width, role in active:
             if heads % world or heads // world <= 0:
@@ -251,6 +263,24 @@ class Config:
             rounded = 1 << (local - 1).bit_length()
             if rounded * width > max_tensor_numel:
                 raise ValueError(role + " FP8 prefill rounded-head block exceeds installed Triton tensor capacity")
+
+
+def _rotary_frequencies(cfg, device):
+    """Validated default RoPE, retaining the original FP64 power/FP32 cast order; static YaRN's own (Transformers'
+    interpolation/extrapolation blend, checked finite and positive by its policy).
+
+    Theta>=1 produces frequencies in [0,1]. Only an active attention role with
+    theta<1 and more than one pair needs the constructed FP32 finite check.
+    """
+    if cfg.yarn is not None:
+        return cfg.yarn.inverse_frequencies(torch).to(device)
+    half = cfg.rope_dims // 2
+    inv = cfg.rope_theta ** (-torch.arange(0, half, dtype=torch.float64) / half)
+    inv = inv.to(torch.float32)
+    if (cfg.rope_theta < 1 and half > 1 and any(not cfg.is_linear(i) for i in range(cfg.layers))
+            and not bool(torch.isfinite(inv).all())):
+        raise ValueError("active attention rotary frequencies overflow FP32")
+    return inv.to(device)
 
 
 @dataclass
@@ -301,6 +331,39 @@ class Weights:
     inv_freq: torch.Tensor | None = None             # (rope_dims/2,) fp32
     quant: str = "mlx"                               # "exl3": an EXL3 pack (prompt glue then stays in bf16); "nvfp4"
     prompt_rows: int = 4096                          # a prompt chunk's rows, sized to the GPU: any count, the same bits
+    draft_tap_layers: tuple[int, ...] = (5, 19, 33, 47, 61)  # DFlash2 default; a drafter binds its own before use
+
+    @cached_property
+    def draft_taps(self) -> tuple[int, ...]:
+        """Validated zero-based residual taps, fixed before prompt or verify execution."""
+
+        return self._validated_draft_taps(self.draft_tap_layers)
+
+    def _validated_draft_taps(self, layers) -> tuple[int, ...]:
+        try:
+            taps = tuple(index(i) if not isinstance(i, bool) else -1 for i in layers)
+        except TypeError as exc:
+            raise ValueError("draft target taps must be integer layer indices") from exc
+        if not taps or tuple(sorted(set(taps))) != taps or not 0 <= taps[0] <= taps[-1] < len(self.layers):
+            raise ValueError("draft target taps must be distinct increasing indices inside the complete target")
+        return taps
+
+    def bind_draft_taps(self, layers) -> tuple[int, ...]:
+        """Prepare one drafter's immutable selector before any target execution.
+
+        Construction and binding are serialized by the engine. Once a selector
+        has been observed, a different drafter cannot silently reuse its cache.
+        """
+
+        taps = self._validated_draft_taps(layers)
+        if "draft_taps" in self.__dict__:
+            selected = self.draft_taps
+            if selected != taps:
+                raise ValueError("draft target taps are already bound to a different selector")
+            return selected
+        self.draft_tap_layers = taps
+        self.__dict__["draft_taps"] = taps
+        return taps
 
     @cached_property
     def attention_origin(self) -> torch.Tensor:
@@ -444,8 +507,10 @@ def _close_failed_checkpoint(reader, primary: BaseException) -> None:
 
 
 def load(model_dir: str | Path, device: str = "cuda", *, tiled: bool = False, mlp=None,
-         prefill_world: int = 1, prefill_mlp: tuple[str, ...] | None = None) -> Weights:
-    """MLX affine 4-bit, EXL3 or NVFP4 weights; ``tiled`` packs projections as read.
+         prefill_world: int = 1, prefill_mlp: tuple[str, ...] | None = None, eos_token_ids=None,
+         rope=None) -> Weights:
+    """MLX affine 4-bit, EXL3 or NVFP4 weights; ``tiled`` packs projections as read; ``rope``: a static YaRN policy
+    (``--yarn-factor``) for a default-RoPE checkpoint.
 
     ``prefill_world`` describes the eventual rank layout before loading its full
     weights. A custom ``mlp`` may declare its consumed prompt projection names
@@ -461,11 +526,12 @@ def load(model_dir: str | Path, device: str = "cuda", *, tiled: bool = False, ml
             or any(type(name) is not str or name not in ("gate_proj", "up_proj", "down_proj") for name in prefill_mlp)
             or len(set(prefill_mlp)) != len(prefill_mlp))):
         raise ValueError("custom prefill MLP metadata must name its unique gate/up/down projections")
+    bindings = {name: value for name, value in (("eos_token_ids", eos_token_ids), ("rope", rope)) if value is not None}
     if quant_config(model_dir) is not None:
-        return load_exl3(model_dir, device)
+        return load_exl3(model_dir, device, **bindings)
     if quantized(model_dir):
-        return load_nvfp4(model_dir, device)
-    cfg = Config.read(model_dir)
+        return load_nvfp4(model_dir, device, **bindings)
+    cfg = Config.read(model_dir, **bindings)
     raw = read_metadata_json(checkpoint_path(model_dir, "config.json"))
     t = _Tensors(model_dir, device)
     try:
@@ -530,9 +596,7 @@ def load(model_dir: str | Path, device: str = "cuda", *, tiled: bool = False, ml
                                 **{"gate": None, "up": None, "down": None, **fields}))
         w = Weights(config=cfg, embed=qlinear("model.embed_tokens", pack=False), layers=layers,
                     norm=get("model.norm.weight"), head=qlinear("lm_head"))
-        half = cfg.rope_dims // 2
-        inv = cfg.rope_theta ** (-torch.arange(0, half, dtype=torch.float64) / half)
-        w.inv_freq = inv.to(torch.float32).to(device)
+        w.inv_freq = _rotary_frequencies(cfg, device)
         if prompt_precision.fp8() and not preflight and w.fast_prefill:
             _validate_fp8_prefill(cfg, prefill_world)
         if any(not layer.linear for layer in w.layers):

@@ -25,6 +25,10 @@ ROUTES = [
 @pytest.fixture(params=["cuda", "mac"])
 def auxiliary_port(request, tmp_path):
     app = cuda_app(tmp_path) if request.param == "cuda" else MacApp()
+    if request.param == "cuda":                     # the id the Messages body names, as --alias would add it
+        app.aliases = (CHAT["model"],)
+    else:
+        app.model_ids = [*app.model_ids, CHAT["model"]]
     app.reasoning_effort = None
     handler = (cuda_handler if request.param == "cuda" else mac_handler)(app)
     handler.log_message = lambda *args: None

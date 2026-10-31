@@ -31,6 +31,7 @@ def test_serialized_complete_fixture_is_deterministic_readable_and_admitted(tmp_
     assert plan.entry_bytes == largest and plan.slots == 3 and plan.gpu_bytes == 3*largest
     expected = (2+int(mtp))*sum(sum(widths)*256*128//16 for widths in EXPERT_WIDTHS)
     assert plan.host_bytes == expected and plan.host_bytes < (2+int(mtp))*4*largest
+    assert plan.authority_allocations == (expected // (2 + int(mtp)),) * (2 + int(mtp))
     assert plan.metadata_host_bytes == 28*4*(2+int(mtp))
     assert plan.control_device_bytes == 96 and plan.control_host_bytes == 192
     base = "model.language_model.layers.0.mlp.experts.0"

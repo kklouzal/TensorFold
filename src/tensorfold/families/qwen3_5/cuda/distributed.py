@@ -193,7 +193,9 @@ if triton is not None:
             s = tl.load(S + rn * KG + g, mask=n_ok, other=0.0).to(tl.float32)
             b = tl.load(B + rn * KG + g, mask=n_ok, other=0.0).to(tl.float32)
             xs = tl.load(XS + rm * KG + g, mask=m_ok, other=0.0)
-            acc = acc + p * s[None, :] + xs[:, None] * b[None, :]
+            # Match the native CUDA contract explicitly: scale into acc, then add the bias correction.
+            # Compiler-dependent contraction must not change a stored-layout row or TP partial.
+            acc = tl.fma(xs[:, None], b[None, :], tl.fma(p, s[None, :], acc))
         mask = m_ok[:, None] & n_ok[None, :]
         if SK == 1:
             tl.store(OUT + rm[:, None] * N + rn[None, :], acc, mask=mask)

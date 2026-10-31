@@ -11,6 +11,8 @@ def _decoder(prompts):
     from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder
 
     m = object.__new__(MultiDecoder)
+    m.controller = None
+    m.w = SimpleNamespace(meta={"execution_provider": "cuda"})
     m.filling = [SimpleNamespace(sid=i, prompt=[0] * n, background=bg, cancel=None)
                  for i, (n, bg) in enumerate(prompts)]
     m.fills = {s.sid: [None, False, done, None] for s, (_, _, done) in zip(m.filling, [(*p, 0) for p in prompts])}

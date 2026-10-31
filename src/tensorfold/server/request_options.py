@@ -11,12 +11,22 @@ from tensorfold.server.stopping import stop_options
 
 
 _INTEGER_FIELDS = {"seed", "top_k", "thinking_budget", "max_tokens", "max_completion_tokens"}
+# OpenAI presence/frequency and vLLM repetition penalties (tensorfold.engine.penalties), each with its off value;
+# vLLM SamplingParams' ranges
+PENALTY_FIELDS = {"presence_penalty": 0.0, "frequency_penalty": 0.0, "repetition_penalty": 1.0}
+
+
+def drop_penalties(sampling: dict[str, Any]) -> dict[str, Any]:
+    """Remove the penalty defaults from ``sampling`` (for a backend that cannot apply them); return the active ones."""
+
+    dropped = {k: sampling.pop(k) for k in PENALTY_FIELDS if k in sampling}
+    return {k: v for k, v in dropped.items() if v != PENALTY_FIELDS[k]}
 
 
 def parse_numbers(fields: dict[str, Any]) -> dict[str, Any]:
     stop_options(fields)
     parsed = dict(fields)
-    for name in (*sorted(_INTEGER_FIELDS), "temperature", "top_p", "min_p"):
+    for name in (*sorted(_INTEGER_FIELDS), "temperature", "top_p", "min_p", *PENALTY_FIELDS):
         value = fields.get(name)
         if value is None:
             continue
@@ -34,6 +44,10 @@ def parse_numbers(fields: dict[str, Any]) -> dict[str, Any]:
             raise RequestError(f"{name} must be {kind} or null") from exc
         if name in ("top_p", "min_p") and not 0.0 <= number <= 1.0:
             raise RequestError(f"{name} must be between 0 and 1, or null")
+        if name in ("presence_penalty", "frequency_penalty") and not -2.0 <= number <= 2.0:
+            raise RequestError(f"{name} must be between -2 and 2, or null")
+        if name == "repetition_penalty" and number <= 0.0:
+            raise RequestError("repetition_penalty must be greater than 0, or null")
         parsed[name] = max(0, number) if name == "top_k" else number
     return parsed
 
@@ -119,6 +133,24 @@ def thinking_fields(body: dict[str, Any], levels: frozenset[str] = frozenset()) 
     return fields
 
 
+def fixed_thinking(template: str) -> bool | None:
+    """A sole unconditional constant assignment overrides the caller's switch.
+
+    Conditional/default assignments remain controlled by the existing template
+    behavior. Inspect the captured Jinja AST, never comments or substring names.
+    """
+    from jinja2 import Environment, nodes
+
+    parsed = Environment(extensions=["jinja2.ext.loopcontrols"]).parse(template)
+    assignments = [node for node in parsed.find_all(nodes.Assign)
+                   if isinstance(node.target, nodes.Name) and node.target.name == "enable_thinking"]
+    if len(assignments) == 1 and assignments[0] in parsed.body:
+        value = assignments[0].node
+        if isinstance(value, nodes.Const) and type(value.value) is bool:
+            return value.value
+    return None
+
+
 class RequestOptions:
     """Resolve sampling and thinking controls before a request reaches the engine."""
 
@@ -177,6 +209,41 @@ class RequestOptions:
         return CallGate.after_prompt(prompt_ids, opener, self._blank, think_open=think_open,
                                      think_end=self._token_id(closes), text=self._text, encode=self._encode,
                                      lead=form[1] or "", names=names if form[1] is not None else (), tail=form[2] or "")
+
+    def strict_calls(self, tools: Any, *, required: bool, parallel: bool, beside: Any = None,
+                     offered: Any = None) -> Any:
+        """The call grammar (``server.strict_tools.Plan``) when the active ``tools`` ask for strict arguments, else None;
+        RequestError when this template's calls or another grammar (``beside``) rule them out."""
+
+        from tensorfold.server import strict_tools
+        from tensorfold.server.text import render_prompt_ids
+
+        if not tools or not strict_tools.wanted(tools):
+            return None
+        if beside is not None:
+            raise RequestError(f"{beside.field} cannot be combined with strict function tools: send one")
+        if self.__dict__.get("_strict_markup") is None:            # (supported, why not), read once
+            with self.tokenizer_lock:
+                try:
+                    text = self.tokenizer.decode(render_prompt_ids(self.tokenizer, strict_tools.PROBE, tools=strict_tools.PROBE_TOOLS,
+                                                                   add_generation_prompt=False))
+                    found = (strict_tools.template_supported(text), "writes calls otherwise")
+                except Exception as exc:  # noqa: BLE001 - a template that renders no calls cannot be held to them
+                    found = (False, f"could not render a call ({exc})")
+            self.__dict__["_strict_markup"] = found
+        supported, why = self.__dict__["_strict_markup"]
+        if not supported:
+            raise RequestError("strict function tools are enforced for Qwen XML tool calls (<tool_call><function=...>), "
+                               f"and this model's chat template {why}: send strict false")
+        return strict_tools.Plan(tools, required=required, parallel=parallel, offered=offered)
+
+    def _strict_accepts(self, plan: Any, text: str) -> bool:
+        """Whether a whole answer is a reply of ``plan``'s grammar (a call written where no grammar held it)."""
+
+        from tensorfold.engine import grammar
+
+        grammars = grammar.compiler(self, self.model_dir, self.stop_ids)
+        return grammars.accepts(grammars.compile(plan.spec), text)
 
     def _call_form(self) -> tuple[str, str, str] | None:
         """(opener, lead, tail) of this template's tool calls, read once from a rendered call."""

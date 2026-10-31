@@ -108,3 +108,124 @@ def test_nucleus_without_top_k_matches_the_whole_vocabulary_draw():
     assert drawn > 40
     flat = mx.zeros((1, 50_000), dtype=mx.bfloat16)          # every token tied: the nucleus needs them all
     assert es._nucleus_rows(flat, [0], es.Sampling(seed=1, top_k=0, top_p=0.95)) is None
+
+
+@pytest.mark.parametrize("offset", [1e30, -1e30, np.finfo(np.float64).max, -np.finfo(np.float64).max])
+@pytest.mark.parametrize("top_k,top_p,min_p", [(0, 1., 0.), (2, .9, .2), (0, .5, 1.)])
+def test_extreme_common_offset_cannot_erase_keyed_noise(offset, top_k, top_p, min_p):
+    from tensorfold.engine.exact_sampling import choose_rows
+
+    ids = np.array([7, 2, 19, 5], dtype=np.int64)
+    baseline, shifted = np.zeros(4), np.full(4, offset)
+    seen = set()
+    for seed in range(32):
+        policy = Sampling(seed, .7, top_k, top_p, min_p)
+        expected = choose(baseline, ids, 17, policy)
+        assert choose(shifted, ids, 17, policy) == expected
+        assert choose_rows(np.stack([baseline, shifted]), np.stack([ids, ids]), [17, 17], policy) == [expected, expected]
+        seen.add(expected)
+    assert len(seen) > 1
+
+
+def test_exactly_represented_score_shifts_preserve_support_and_draw():
+    from tensorfold.engine.exact_sampling import choose_rows
+
+    values = np.array([[4., 2., 1., -3.], [-5., -1., 2., 0.]])
+    ids = np.array([[9, 8, 2, 3], [9, 8, 2, 3]], dtype=np.int64)
+    for seed in range(32):
+        for k, p, m in [(0, 1., 0.), (3, .9, .1), (0, .7, 0.)]:
+            policy = Sampling(seed, .7, k, p, m)
+            expected = choose_rows(values, ids, [17, 20], policy)
+            assert choose_rows(values + 2.**40, ids, [17, 20], policy) == expected
+            assert expected == [choose(v, i, pos, policy) for v, i, pos in zip(values, ids, [17, 20])]
+
+
+def test_extreme_finite_difference_has_zero_tail_mass_without_invalid_operation():
+    from tensorfold.engine.exact_sampling import choose_rows
+
+    bound = np.finfo(np.float64).max
+    values, ids = np.array([bound, -bound, -np.inf]), np.array([3, 4, 5], dtype=np.int64)
+    policy = Sampling(1, 1e-6, 0, 1.)
+    with np.errstate(all="raise"):
+        assert choose(values, ids, 17, policy) == 3
+        assert choose_rows(values[None], ids[None], [17], policy) == [3]
+
+
+@pytest.mark.parametrize("offset", [1e30, -1e30])
+def test_mlx_extreme_offset_nucleus_and_native_kernel_keep_noise(offset):
+    mx = pytest.importorskip("mlx.core")
+    from tensorfold.engine import exact_sampling, gpu_sampling
+
+    logits = mx.full((2, 2048), offset, dtype=mx.float32)
+    baseline = mx.zeros_like(logits)
+    # A narrow nucleus also exercises the host MLX normalizer, not just its complete-row fallback.
+    narrow = mx.full((1, 2048), -100., dtype=mx.float32)
+    narrow[0, :4] = 0.
+    for top_k, top_p in [(0, .9), (20, 1.)]:
+        for seed in (0, 1, 6, 13):
+            policy = Sampling(seed, .7, top_k, top_p)
+            assert exact_sampling.sample_rows(logits, [17, 19], policy) == exact_sampling.sample_rows(baseline, [17, 19], policy)
+            native = gpu_sampling.sample(logits, policy, [17, 19])
+            np.testing.assert_array_equal(np.array(native), np.array(gpu_sampling.sample(baseline, policy, [17, 19])))
+            assert np.array(native).tolist() == [gpu_sampling.reference(np.full(2048, offset), policy, p) for p in (17, 19)]
+    policy = Sampling(6, .7, 0, .7)
+    assert exact_sampling._nucleus_rows(narrow, [17], policy) == exact_sampling.sample_rows(narrow, [17], policy, keep={})
+
+
+def test_uniform_grid_exact_endpoints_by_independent_inverse_hash():
+    from fractions import Fraction
+
+    from tensorfold.engine.exact_sampling import uniform_rows
+
+    mask = (1 << 64) - 1
+
+    def undo_xor(value, shift):
+        result = value
+        for _ in range(64 // shift + 1):
+            result = value ^ (result >> shift)
+        return result
+
+    def unmix(value):
+        value = undo_xor(value, 31)
+        value = value * pow(0x94D049BB133111EB, -1, 1 << 64) & mask
+        value = undo_xor(value, 27)
+        value = value * pow(0xBF58476D1CE4E5B9, -1, 1 << 64) & mask
+        return undo_xor(value, 30)
+
+    # Construct exact keyed preimages of both bins and their adjacent/discarded-bit boundaries.
+    for word in (0, 1, 4095, 4096, 1 << 63, mask - 4096, mask - 4095, mask):
+        seed = (unmix(unmix(unmix(word)) ^ 0xD1B54A32D192ED03) - 0x9E3779B97F4A7C15) & mask
+        expected = Fraction(2 * (word >> 12) + 1, 1 << 53)
+        actual = float(uniform(seed, 1, np.array([0], dtype=np.int64))[0])
+        assert Fraction(*actual.as_integer_ratio()) == expected
+        assert Fraction(1, 1 << 53) <= expected <= 1 - Fraction(1, 1 << 53)
+        assert uniform_rows(seed, [1], np.array([[0]], dtype=np.int64))[0, 0] == actual
+    # Historical 53-bit midpoint failed at the top bin; no production clamp repairs it.
+    assert (mask >> 11) * 2.**-53 + 2.**-54 == 1.
+
+
+def test_endpoint_witness_preserves_masks_and_scalar_vector_key_bits():
+    from tensorfold.engine.exact_sampling import choose_rows, uniform_rows
+
+    seed, position = 4199689772251414973, 1
+    ids = np.array([0, 1], dtype=np.int64)
+    assert uniform(seed, position, ids)[0] == 1. - 2.**-53
+    values = np.array([-np.inf, 0.])
+    policy = Sampling(seed, 1., 0, 1.)
+    with np.errstate(all="raise"):
+        assert choose(values, ids, position, policy) == 1
+        assert choose_rows(np.stack([values, values]), np.stack([ids, ids]), [position, position], policy) == [1, 1]
+        positions = np.array([0, 1, (1 << 64) - 1], dtype=np.uint64)
+        tokens = np.array([[0, 1, 7], [1 << 54, 3, 2], [(1 << 63) - 1, 0, 1]], dtype=np.int64)
+        np.testing.assert_array_equal(uniform_rows(seed, positions, tokens),
+                                      np.stack([uniform(seed, int(p), row) for p, row in zip(positions, tokens)]))
+
+
+def test_metal_23bit_midpoints_are_already_exact_and_strictly_interior():
+    from fractions import Fraction
+
+    # Binary32 has24significandbits: (2*b+1)*2^-24 is exact for every23bit bin.
+    for word in (0, 1, (1 << 22), (1 << 23) - 2, (1 << 23) - 1):
+        actual = float((np.float32(word) + np.float32(.5)) * np.float32(2.**-23))
+        assert Fraction(*actual.as_integer_ratio()) == Fraction(2 * word + 1, 1 << 24)
+        assert 0 < actual < 1

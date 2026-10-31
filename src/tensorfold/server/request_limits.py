@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from functools import wraps
 import inspect
@@ -21,12 +22,60 @@ def optional_limit(value: int | None, name: str) -> int | None:
     return value
 
 
+def require_finite_endpoint_limits(*, max_pending_requests, max_http_connections):
+    """Validate explicit adaptive endpoint policy without inventing a count."""
+    missing = []
+    for value, flag in ((max_pending_requests, "--max-pending-requests"),
+                        (max_http_connections, "--max-http-connections")):
+        if optional_limit(value, flag) is None:
+            missing.append(flag)
+    if missing:
+        raise ValueError("adaptive V100 serving requires explicit positive " + " and ".join(missing)
+                         + "; choose finite request/socket limits before loading or publishing the endpoint")
+
+
 @dataclass(eq=False)
 class _Request:
     # A native lock's scoped release also survives interruption of Python
     # retirement bookkeeping. Admission can reclaim the journal afterward.
     scope: Any = field(default_factory=threading.Lock)
     workers: set[Any] = field(default_factory=set)
+    inherit_jobs: bool = True
+    principal: str | None = None
+    input_claim: Any = None  # One actual admission-queue owner across sequential backend jobs.
+    retirement_failure: BaseException | None = None
+
+
+@dataclass(frozen=True)
+class _PreparedKey:
+    scope: Any  # weak native-lock reference; the registry must not retain its holder
+
+
+class PreparedAdmission:
+    """One finite logical request reserved across prepare-to-run/close/GC."""
+
+    def __init__(self, limit, *, principal=None):
+        self.limit = limit
+        self._scope = threading.Lock()
+        self._scope.acquire()
+        self._close_lock = threading.Lock()
+        self.token = _PreparedKey(weakref.ref(self._scope))
+        # The registry owns token, never this holder: a lost return can collect
+        # the holder and retire its reservation instead of pinning capacity.
+        self._finalizer = weakref.finalize(self, limit.release, self.token)
+        try:
+            limit.borrow(self.token, inherit=False, principal=principal)
+        except BaseException as primary:
+            rollback(self, primary, self.close)
+
+    def close(self):
+        with self._close_lock:
+            if self._scope.locked():
+                self._scope.release()
+        # An interrupted release remains journaled and is reclaimable from
+        # native unlocked/dead scope evidence; explicit close can retry too.
+        self.limit.release(self.token)
+        self._finalizer.detach()
 
 
 class RequestLimit:
@@ -40,10 +89,12 @@ class RequestLimit:
     required. The scheduler retires a borrow only after engine work ends.
     """
 
-    def __init__(self, maximum: int) -> None:
+    def __init__(self, maximum: int, *, per_principal: int | None = None) -> None:
         self.maximum = optional_limit(maximum, "max_pending_requests")
         if self.maximum is None:
             raise ValueError("max_pending_requests must be a positive integer")
+        self.per_principal = optional_limit(per_principal, "max_pending_requests_per_principal")
+        self._principal = ContextVar("tensorfold-request-principal", default=None)
         self._lock = threading.RLock()
         self._owners: set[_Request] = set()
         self._callers: dict[int, list[_Request]] = {}
@@ -60,6 +111,10 @@ class RequestLimit:
 
     def _prune(self) -> None:
         for worker, owner in tuple(self._workers.items()):
+            if isinstance(worker, _PreparedKey):
+                scope = worker.scope()
+                if scope is None or not scope.locked():
+                    owner.workers.discard(worker)
             if worker not in owner.workers:
                 self._workers.pop(worker, None)
         for owner in tuple(self._owners):
@@ -71,7 +126,53 @@ class RequestLimit:
             else:
                 del self._callers[identity]
 
-    def _check(self) -> None:
+    def _identity(self, principal=None, *, owner=None):
+        identity = self._principal.get() if principal is None else principal
+        if identity is not None and (type(identity) is not str or not identity):
+            raise ValueError("authenticated request principal must be a nonempty opaque string")
+        if owner is not None:
+            if identity is not None and identity != owner.principal:
+                raise ValueError("request admission belongs to another authenticated principal")
+            return owner.principal
+        if self.per_principal is not None and identity is None:
+            raise ValueError("per-principal admission requires an authenticated request principal")
+        return identity
+
+    def current_principal(self):
+        """Trusted logical-owner identity for internal queue/cache adapters, never a body hint."""
+        with self._lock:
+            stack = self._callers.get(threading.get_ident())
+            owner = stack[-1] if stack and stack[-1].scope.locked() else None
+            return self._identity(owner=owner) if owner is not None else self._identity()
+
+    def delivery_active(self, worker):
+        """Existing logical caller and engine borrow jointly own this live delivery path."""
+        with self._lock:
+            owner = self._workers.get(worker)
+            return owner is not None and owner.scope.locked()
+
+    def worker_active(self, worker):
+        """Positive engine-job retirement check, independent of caller cancellation."""
+        with self._lock:
+            owner = self._workers.get(worker)
+            return owner is not None and worker in owner.workers
+
+    @contextmanager
+    def principal(self, identity):
+        """Bind trusted authentication identity, never a request-body/cache hint.
+
+        The limit owns this context-local state. It spans preparation, sequential
+        App jobs and delivery and is restored on every exit, including failure.
+        """
+        if type(identity) is not str or not identity:
+            raise ValueError("authenticated request principal must be a nonempty opaque string")
+        token = self._principal.set(identity)
+        try:
+            yield
+        finally:
+            self._principal.reset(token)
+
+    def _check(self, principal=None) -> None:
         if self._closed.is_set():
             raise RuntimeError("request admission is closed")
         if len(self._workers) >= self.maximum:
@@ -80,6 +181,11 @@ class RequestLimit:
             self._prune()
             if len(self._owners) >= self.maximum:
                 raise CapacityError(f"request capacity reached ({self.maximum} unfinished requests); retry later")
+        if self.per_principal is not None:
+            if sum(owner.principal == principal for owner in self._owners) >= self.per_principal:
+                self._prune()
+                if sum(owner.principal == principal for owner in self._owners) >= self.per_principal:
+                    raise CapacityError(f"principal request capacity reached ({self.per_principal} unfinished requests); retry later")
 
     def close(self) -> None:
         """Reject future callers while preserving every outstanding owner."""
@@ -87,19 +193,58 @@ class RequestLimit:
             self._closed.set()
 
     def _retire(self, owner: _Request) -> None:
-        if not owner.scope.locked() and not owner.workers:
+        if not owner.scope.locked() and not owner.workers and owner.retirement_failure is None:
+            if owner.input_claim is not None:
+                try:
+                    owner.input_claim.close()
+                except BaseException:
+                    self._closed.set()  # Do not reuse possibly released byte credit after uncertain cleanup.
+                    raise
+                owner.input_claim = None
             self._owners.discard(owner)
 
+    def publish_inputs(self, worker, authority, publish):
+        """Reuse the logical caller's queue credit; lock order is owner then queue.
+
+        publish performs bounded CPU queue publication only. It journals a new
+        claim before publishing its entry, so interruption cannot strand credit.
+        """
+        with self._lock:
+            owner = self._workers.get(worker)
+            if owner is None:
+                raise RuntimeError("input credit requires its actual registered backend worker")
+            claim = owner.input_claim
+            if claim is not None and claim.authority is not authority:
+                raise RuntimeError("one logical request cannot change its admitted input authority")
+            def register(value):
+                owner.input_claim = value
+            return publish(claim, register)
+
     @contextmanager
-    def request(self) -> Iterator[None]:
+    def request(self, prepared: PreparedAdmission | None = None, *, inherit_jobs: bool = True,
+                principal: str | None = None) -> Iterator[None]:
         identity = threading.get_ident()
-        owner = _Request()
+        if prepared is None:
+            owner = _Request(inherit_jobs=inherit_jobs, principal=self._identity(principal))
+        else:
+            with self._lock:
+                owner = self._prepared_owner(prepared)
+                self._identity(principal, owner=owner)
+                if owner.inherit_jobs != inherit_jobs:
+                    raise ValueError("prepared admission has a different engine-job inheritance policy")
         primary = None
         prior = None
         try:
             with owner.scope:
                 with self._lock:
-                    self._check()
+                    if prepared is None:
+                        self._check(owner.principal)
+                    else:
+                        if self._prepared_owner(prepared) is not owner:
+                            raise RuntimeError("prepared admission changed before adoption")
+                        # Native caller scope holds the same owner before its
+                        # prepared token retires: neither a gap nor double count.
+                        prepared.close()
                     self._owners.add(owner)
                     self._callers.setdefault(identity, []).append(owner)
                 yield
@@ -132,8 +277,42 @@ class RequestLimit:
                     BaseException.__context__.__set__(primary, prior[1])
                     BaseException.__suppress_context__.__set__(primary, prior[2])
 
-    def wrap(self, call: Callable) -> Callable:
-        """Selected only for configured Apps; uncapped calls keep their original method."""
+    @contextmanager
+    def inherited_request(self):
+        """Reuse the App caller, or own a direct scheduler caller through delivery.
+
+        A worker borrow alone cannot bound replies retained by a blocked caller
+        after GPU work finishes. One direct submission therefore owns a caller
+        scope too; sequential jobs inside one App request keep that same owner.
+        """
+        with self._lock:
+            self._prune()
+            stack = self._callers.get(threading.get_ident())
+            inherited = bool(stack and stack[-1].scope.locked() and stack[-1].inherit_jobs)
+            if inherited:
+                self._identity(owner=stack[-1])
+        if inherited:
+            yield
+        else:
+            with self.request(inherit_jobs=False):
+                yield
+
+    def prepare(self, *, principal: str | None = None) -> PreparedAdmission:
+        """Reserve an independent request before standalone preparation work."""
+        return PreparedAdmission(self, principal=principal)
+
+    def _prepared_owner(self, prepared):
+        if not isinstance(prepared, PreparedAdmission) or prepared.limit is not self:
+            raise CapacityError("prepared request belongs to a different admission owner")
+        owner = self._workers.get(prepared.token)
+        if owner is None or not prepared._finalizer.alive or not prepared._scope.locked():
+            raise CapacityError("prepared request admission was already consumed or closed")
+        if owner.workers != {prepared.token}:
+            raise RuntimeError("prepared admission unexpectedly owns another engine job")
+        return owner
+
+    def wrap(self, call: Callable, *, inherit_scope: bool = False) -> Callable:
+        """App callers own fresh/adopted scopes; direct engine jobs retain delivery ownership."""
         function, owner = call.__func__, weakref.ref(call.__self__)
         signature = inspect.signature(call)
 
@@ -142,7 +321,7 @@ class RequestLimit:
             instance = owner()
             if instance is None:
                 raise RuntimeError("request App has retired")
-            with self.request():
+            with self.inherited_request() if inherit_scope else self.request():
                 # This local strong owner spans every active call. The stored
                 # function/metadata hold no bound App, so idle App retirement
                 # does not depend on cyclic garbage collection.
@@ -150,7 +329,7 @@ class RequestLimit:
         limited.__signature__ = signature
         return limited
 
-    def borrow(self, worker: Any) -> None:
+    def borrow(self, worker: Any, *, inherit: bool = True, principal: str | None = None) -> None:
         """Journal a queued engine job before publication; caller cancellation does not release it."""
         owner = None
         try:
@@ -159,15 +338,17 @@ class RequestLimit:
                     raise RuntimeError("request admission is closed")
                 if worker in self._workers:
                     raise ValueError("an engine job may borrow request admission only once")
-                stack = self._callers.get(threading.get_ident())
+                stack = self._callers.get(threading.get_ident()) if inherit else None
                 if stack and not stack[-1].scope.locked():
                     self._prune()
                     stack = self._callers.get(threading.get_ident())
-                selected = stack[-1] if stack else _Request()
+                selected = stack[-1] if stack else _Request(principal=self._identity(principal))
+                if stack:
+                    self._identity(principal, owner=selected)
                 if selected.workers:
                     raise RuntimeError("one logical request cannot publish concurrent engine jobs")
                 if not stack:
-                    self._check()
+                    self._check(selected.principal)
                 owner = selected
                 owner.workers.add(worker)
                 self._workers[worker] = owner
@@ -199,7 +380,15 @@ class RequestLimit:
         with self._lock:
             owner = self._workers.get(worker)
             if owner is not None:
-                owner.workers.discard(worker)
+                active = worker in owner.workers
+                owner.workers.discard(worker)  # Native owner proof precedes fallible journal removal.
+                try:
+                    if active and owner.input_claim is not None:
+                        owner.input_claim.backend_retired(worker)
+                except BaseException as failure:
+                    owner.retirement_failure = failure
+                    self._closed.set()
+                    raise
                 self._retire(owner)
                 self._workers.pop(worker, None)
 

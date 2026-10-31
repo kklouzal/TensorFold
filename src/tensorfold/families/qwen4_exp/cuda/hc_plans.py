@@ -7,7 +7,6 @@ readout. Unsupported optional enrollment regions retain the original path.
 Explicit close follows accepted-work drain and fences before releasing views.
 """
 from dataclasses import dataclass
-import hashlib
 
 
 ARGUMENTS = ('X', 'W', 'OUT', 'M', 'N', 'x_stride', 'o_stride', 'K', 'KS', 'BM', 'BN', 'BK', 'F32')
@@ -19,7 +18,7 @@ class _F16Plan:
     runner: object
     arguments: tuple
     owners: tuple
-    receipt: dict
+    grid: tuple
 
     @classmethod
     def prepare(cls, matrix, x, out, *, f32=False):
@@ -52,14 +51,7 @@ class _F16Plan:
         if kernel.src.fn is not _f16_mm or kernel.metadata.num_warps != 4 or kernel.metadata.num_stages != 3:
             raise ValueError('original compiled specialization/provider differs')
         runner = kernel[grid]  # Same binary, launcher and packed metadata; no JIT cache/binder on replay.
-        receipt = {'grid':grid, 'M':m, 'N':n, 'K':k, 'SK':sk, 'F32':f32,
-                   'dtype':(str(x.dtype), str(matrix.w.dtype), str(out.dtype)),
-                   'stride':(tuple(x.stride()), tuple(matrix.w.stride()), tuple(out.stride())),
-                   'alignment_mod16':tuple(t.data_ptr() % 16 for t in (x, matrix.w, out)),
-                   'compiled_hash':kernel.hash, 'cubin_sha256':hashlib.sha256(kernel.kernel).hexdigest(),
-                   'triton':triton.__version__, 'launch': 'CompiledKernel[fixed_grid] with unchanged bound args',
-                   'original_JIT_startup_launch':True, 'owned_view_lifetime':True}
-        return cls(kernel, runner, args, (matrix, x, out, matrix.w), receipt)
+        return cls(kernel, runner, args, (matrix, x, out, matrix.w), grid)
 
     def __call__(self):
         fn = self.kernel.src.fn
@@ -67,27 +59,26 @@ class _F16Plan:
             # A launch hook may register a JIT pre-run hook between HC's down
             # and up calls. Preserve the original positional/constexpr packing.
             x, weight, out, m, n, xs, os, k, ks, bm, bn, bk, f32 = self.arguments
-            fn[self.receipt['grid']](x, weight, out, m, n, xs, os, K=k, KS=ks, BM=bm, BN=bn, BK=bk, F32=f32,
-                                     num_warps=4, num_stages=3)
+            fn[self.grid](x, weight, out, m, n, xs, os, K=k, KS=ks, BM=bm, BN=bn, BK=bk, F32=f32,
+                          num_warps=4, num_stages=3)
         else:
             self.runner(*self.arguments)
 
 
 class _HCPlans:
-    def __init__(self, w, b, named):
+    def __init__(self, w, b, hcs):
         import torch
         from . import glue
         from .exl3_mm import _f16_mm
 
         self._glue, self._jit, self._device = glue, _f16_mm, w.device
-        self._entries, self._owners = {}, tuple(hc for _, hc in named)
+        self._entries, self._owners = {}, tuple(hcs)
         self._closed = False
-        receipts = []
         with torch.no_grad():
             b.normed.zero_()
             b.act.zero_()
             try:
-                for name, hc in named:
+                for hc in hcs:
                     rows = [None]
                     for n in range(1, b.rows + 1):
                         part = w.x3.part[:hc.down.sk * n * hc.down.n].view(hc.down.sk, n, hc.down.n)
@@ -95,7 +86,6 @@ class _HCPlans:
                         up = _F16Plan.prepare(hc.up, b.act[:n], b.up[:n])
                         rows.append((down, up, part, b.act[:n], b.xs_act[:n], b.up[:n], b.normed[:n],
                                      b.mixed[:n], b.xs_mixed[:n], b.pss[:n], b.xs_normed[:n]))
-                        receipts.append({'HC': name, 'rows': n, 'down': down.receipt, 'up': up.receipt})
                     self._entries[id(hc)] = tuple(rows)
                 torch.cuda.synchronize(self._device)
             except BaseException as primary:
@@ -105,9 +95,6 @@ class _HCPlans:
                 except BaseException as cleanup:
                     raise primary from cleanup
                 raise
-        self.receipt = {'status': 'compiled-exact-F16', 'plans': 2 * b.rows * len(named), 'rows': b.rows,
-                        'entries': receipts, 'selection': 'model-owned HC identity and bounded runtime row count',
-                        'JIT_pre_run_hooks': 'original readout', 'launch_hooks': 'native CompiledKernel runner'}
 
     @property
     def enabled(self):
@@ -139,24 +126,17 @@ def enroll(w, b, *, mtp=False):
     import triton
     from .exl3_mm import F16, _f16_mm
 
-    named = ([(f'layer{layer.index}.{field}', getattr(layer, field))
-              for layer in w.layers for field in ('attn_hc', 'mlp_hc')] + [('main.mixer', w.mixer)]
-             if not mtp else [('MTP.attn_hc', w.mtp.layer.attn_hc), ('MTP.mlp_hc', w.mtp.layer.mlp_hc),
-                               ('MTP.mixer', w.mtp.mixer)])
-    reason = None
+    hcs = ([getattr(layer, field) for layer in w.layers for field in ('attn_hc', 'mlp_hc')] + [w.mixer]
+           if not mtp else [w.mtp.layer.attn_hc, w.mtp.layer.mlp_hc, w.mtp.mixer])
+    # Outside the qualified region the buffer keeps the original readout:
     if not triton.__version__.startswith('3.9.0') or tuple(_f16_mm.arg_names) != ARGUMENTS:
-        reason = 'unqualified optional compiled-launch ABI'
-    elif _f16_mm.pre_run_hooks:
-        reason = 'JIT pre-run hooks require original readout'
-    elif not 1 <= b.rows <= 128 or 2 * b.rows * len(named) > 8192:
-        reason = 'optional startup plan count/row budget; original readout retained'
-    elif any(not isinstance(hc.down, F16) or not isinstance(hc.up, F16) or hc.up.sk != 1
-             or hc.down.sc is not w.x3 or hc.up.sc is not w.x3
-             or hc.down.k % (hc.down.sk * 64) or hc.up.k % 64 for _, hc in named):
-        reason = 'HC geometry outside qualified fixed-view F16 region'
-    if reason is not None:
-        b.hc_plan_selection = {'status': 'original', 'reason': reason}
-        return
-    plans = _HCPlans(w, b, named)
-    b.hc_plans = plans
-    b.hc_plan_selection = plans.receipt
+        return                      # an unqualified optional compiled-launch ABI
+    if _f16_mm.pre_run_hooks:
+        return                      # JIT pre-run hooks require the original readout
+    if not 1 <= b.rows <= 128 or 2 * b.rows * len(hcs) > 8192:
+        return                      # past the optional startup plan count/row budget
+    if any(not isinstance(hc.down, F16) or not isinstance(hc.up, F16) or hc.up.sk != 1
+           or hc.down.sc is not w.x3 or hc.up.sc is not w.x3
+           or hc.down.k % (hc.down.sk * 64) or hc.up.k % 64 for hc in hcs):
+        return                      # HC geometry outside the qualified fixed-view F16 region
+    b.hc_plans = _HCPlans(w, b, hcs)

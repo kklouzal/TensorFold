@@ -12,6 +12,7 @@ from tokenizers import Tokenizer, decoders, models, pre_tokenizers
 from tensorfold.cuda import server
 from tensorfold.families.glm5_next.cuda.app import GlmApp, ThinkingOffTemplate
 from tests.test_cuda_admission import http_server, post
+from cuda_http_fixtures import events
 from tests.test_request_policy import CALL, TOOLS
 
 WIDTHS = (1, 3, 5, 2, 7, 4)            # a drafted reply's rounds; "draft": false delivers one token a round
@@ -104,10 +105,6 @@ def make_app(tmp_path, engine, cls=server.App):
 def body(chat, stream, **fields):
     prompt = {"messages": [{"role": "user", "content": "x"}]} if chat else {"prompt": "x"}
     return {**prompt, "stream": stream, "stream_options": {"include_usage": True}, "temperature": 0, **fields}
-
-
-def events(text):
-    return [json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: {")]
 
 
 def reply(port, chat, stream, **fields):
@@ -339,3 +336,44 @@ def test_stop_scan_reads_only_the_tail_that_can_hold_a_new_match():
     assert not stops.hit(tokens[:-3]) and stops.hit(tokens[:-1]) and stops.hit(tokens)
     assert all(len(s) <= 14 for s in seen) and END_ID not in seen[-1]
     assert stops.visible("ab数", partial=True) == "ab" and stops.visible("ab数学c") == "ab"
+
+
+@pytest.mark.parametrize("stream", [False, True])
+@pytest.mark.parametrize("chat", [False, True])
+def test_model_zero_byte_rows_preserve_stop_context_and_precommit_continuation(tmp_path, monkeypatch, stream, chat):
+    from tensorfold.token_metadata import bind_token_roles
+
+    tok = Tokenizer.from_str(TOK.to_str())
+    tok.add_special_tokens(["<control>"])
+    control = tok.token_to_id("<control>")
+    unused = tok.get_vocab_size()
+    bind_token_roles(tok, {"version": 1, "vocab_size": unused + 1,
+                           "control": [END_ID, control], "unused": [unused]})
+    first = [*ids("A"), *([unused, control] * 100)]
+    second = ids("Bignored")
+
+    class ContinuationEngine(Engine):
+        def __init__(self):
+            super().__init__([])
+            self.cuts = []
+
+        def generate(self, prompt, max_tokens, sampling, on_tokens, draft=True, token_limit=None):
+            new = (first if not self.cuts else second)[:max_tokens]
+            count, stopped = token_limit(new, [])
+            self.cuts.append((count, stopped))
+            on_tokens(new[:count])
+            return {}
+
+    def continue_after_gate(generate, prompt, max_tokens, gates, on_tokens):
+        generate(prompt, len(first), on_tokens)
+        return generate([*prompt, *first], max_tokens - len(first), on_tokens)
+
+    monkeypatch.setattr(server, "generate_gated", continue_after_gate)
+    engine = ContinuationEngine()
+    app = make_app(tmp_path, engine)
+    app.tok = tok
+    with http_server(app) as port:
+        got = reply(port, chat, stream, stop="AB", max_tokens=len(first) + len(second))
+    kept = [*first, *ids("B")]
+    assert got == ("", "", "stop", len(kept), server.token_sha(kept), [])
+    assert engine.cuts == [(len(first), False), (1, True)]

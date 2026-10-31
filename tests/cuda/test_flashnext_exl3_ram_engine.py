@@ -239,7 +239,10 @@ def test_cold_loader_authority_original_bytes_types_device_accounting_and_peak(c
         assert cache.metadata_host_bytes == plan.metadata_host_bytes
         assert cache.control_device_bytes == plan.control_device_bytes
         assert cache.control_host_bytes == plan.control_host_bytes
-        assert cache.pinned_bytes == plan.staging_bytes
+        # The tensor payload is two cells; host admission also covers the
+        # pinned allocator's power-of-two backing allocation.
+        assert cache.pinned_bytes == 2 * plan.entry_bytes
+        assert plan.staging_bytes == 2 ** (cache.pinned_bytes - 1).bit_length()
         assert len(expert_sources) > 0 and not cache._policy.resident
         # Assert the observer catches a borrowed offset/dtype alias itself;
         # rejection happens before any CUDA transfer or allocation.

@@ -52,7 +52,7 @@ class Opaque:
 
 
 def namespace():
-    scope = mapped.definitions('_MappedTable', 'HostTable', '_release_mapped', '_unlock_pins', '_note',
+    scope = mapped.definitions('_MappedTable', 'HostTable', '_release_mapped', '_unlock_pins',
                                '_retain_prefetch_lifetime', '_release_unpublished_file', '_retire_local_file',
                                '_release_prefetch_files', '_joined_copy', '_prefetch_file', '_prefetch',
                                '_random_access')

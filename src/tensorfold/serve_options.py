@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import inspect
 import math
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -19,11 +20,24 @@ def check_numbers(args: argparse.Namespace) -> None:
     """
 
     from tensorfold.server.request_limits import optional_limit
+    from tensorfold.server.request_options import PENALTY_FIELDS
 
-    for name in ("max_http_connections", "max_pending_requests", "max_engine_calls"):
+    eos = getattr(args, "eos_token_ids", None)
+    if eos is not None and (not eos or any(type(token) is not int or token < 0 for token in eos)):
+        raise ValueError("--eos-token-id must be a nonnegative integer (repeat for multiple IDs)")
+
+    for name in ("max_http_connections", "max_pending_requests", "max_pending_requests_per_principal", "max_engine_calls",
+                 "max_waiting_input_bytes", "max_waiting_input_bytes_per_principal", "output_queue_tokens"):
         optional_limit(getattr(args, name, None), "--" + name.replace("_", "-"))
+    if (getattr(args, "max_pending_requests_per_principal", None) is not None
+            and getattr(args, "max_pending_requests", None) is None):
+        raise ValueError("--max-pending-requests-per-principal requires --max-pending-requests")
+    timeout = getattr(args, "queue_timeout_s", None)
+    if timeout is not None and (type(timeout) not in (int, float) or not 0 < timeout <= threading.TIMEOUT_MAX):
+        raise ValueError("--queue-timeout-s must be positive, finite and within the runtime wait range")
     budgets = ("prompt_cache_gib", "spill_gib", "pass_cache_gib", "mlx_cache_gib", "ssd_experts")
-    for name in (*budgets, "temperature", "top_p", "min_p", "decode_share", "mtp_confidence", "yarn_factor"):
+    for name in (*budgets, "temperature", "top_p", "min_p", *PENALTY_FIELDS, "decode_share", "mtp_confidence",
+                 "yarn_factor"):
         value = getattr(args, name, None)
         if value is None:
             continue
@@ -35,6 +49,51 @@ def check_numbers(args: argparse.Namespace) -> None:
                 raise ValueError(f"{flag} must be {'positive' if name == 'ssd_experts' else 'nonnegative'}")
         if name in ("top_p", "min_p", "mtp_confidence") and not 0 <= value <= 1:
             raise ValueError(f"{flag} must be between 0 and 1")
+        if name in ("presence_penalty", "frequency_penalty") and not -2 <= value <= 2:
+            raise ValueError(f"{flag} must be between -2 and 2")
+        if name == "repetition_penalty" and value <= 0:
+            raise ValueError(f"{flag} must be greater than 0")
+
+
+def prepare_service_options(args: argparse.Namespace) -> None:
+    """Freeze explicit cross-field policies before authentication/model owners."""
+    from tensorfold.families.qwen4_exp.cuda.retention_policy import parse_retention_policy
+
+    args.retention_policy = parse_retention_policy(**{name: getattr(args, name, None) for name in (
+        "retention_tier", "retained_sessions", "retention_lifetime_s", "retention_ram_bytes",
+        "retention_chunk_bytes", "retention_progress_bytes", "retention_overlap_bytes")})
+    record_store, record_limits = getattr(args, "api_record_store", None), getattr(args, "api_record_limits", None)
+    if (record_store is None) != (record_limits is None):
+        raise ValueError("--api-record-store and --api-record-limits must be configured together")
+    args._api_record_limits = None
+    if record_limits is not None:
+        from tensorfold.server.request_limits import optional_limit
+        from tensorfold.cuda.tensor_file import read_metadata_json
+        from tensorfold.server.api_records import ApiRecordLimits
+
+        if optional_limit(getattr(args, "max_http_connections", None), "--max-http-connections") is None:
+            raise ValueError("durable API records require explicit positive --max-http-connections")
+        args._api_record_limits = ApiRecordLimits.from_record(read_metadata_json(record_limits))
+
+
+def drafter_metadata_source(value: str) -> Path:
+    """Resolve a companion without preparing a second target text frontend."""
+    from tensorfold import hub
+
+    path = Path(value).expanduser()
+    if path.suffix.lower() == ".gguf" or (path.is_dir() and not (path / "config.json").exists()
+                                           and any(path.glob("*.gguf"))):
+        from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+
+        selected = resolve_gguf(path)
+        if selected is None:
+            raise FileNotFoundError(f"{value} is not an existing GGUF companion")
+        return selected
+    if path.is_dir():
+        return path
+    if not hub.is_repo_id(value):
+        raise FileNotFoundError(f"{value} is neither a drafter directory nor a Hugging Face repo id")
+    return hub.metadata(value)
 
 
 def _served_name(args: argparse.Namespace) -> str:
@@ -61,8 +120,139 @@ def name_priority(args: argparse.Namespace) -> dict[str, str]:
 
 
 def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any = None) -> None:
-    """Refuse KV cache, draft rule, image, share, slot and precision options the backend or family can't serve."""
+    """Refuse KV cache, draft rule, image, tokenizer, share, slot and precision options the backend or family can't
+    serve."""
 
+    if getattr(args, "max_pending_requests_per_principal", None) is not None and backend != "cuda":
+        raise ValueError("--max-pending-requests-per-principal currently requires the CUDA server")
+    family_manifest = getattr(args, "family_manifest", None)
+    if family_manifest is not None:
+        from tensorfold.cuda.tensor_file import read_metadata_json
+        from tensorfold.families.qwen4_exp.cuda.sm70_weight_manifest import PROFILE
+
+        declared = read_metadata_json(family_manifest)
+        numerical = declared.get("numerical")
+        if (backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next")
+                or getattr(args, "precision", None) != "full"
+                or not isinstance(numerical, dict) or numerical.get("profile") != PROFILE
+                or declared.get("transforms") != []):
+            raise ValueError("--family-manifest requires the declared Flash Next SM70 NVFP4 profile and explicit --precision full")
+        if getattr(args, "execution_profile_manifest", None) is not None:
+            raise ValueError("SM70 NVFP4 measured execution profiles require separate qualification; this recipe executes the reference provider")
+        if any(getattr(args, name, None) is not None for name in
+               ("tokenizer_file", "chat_template_file", "chat_template_name")):
+            raise ValueError("this SM70 family manifest pins the source's default tokenizer/template; overrides require a different implemented profile")
+        if any(getattr(args, name, None) is None for name in ("max_pending_requests", "max_http_connections")):
+            raise ValueError("adaptive SM70 serving requires explicit positive --max-pending-requests and --max-http-connections")
+        if getattr(args, "indexer_history", "gpu") != "gpu":
+            raise ValueError("--family-manifest requires compact GPU indexing; full raw RAM archives are unsupported")
+    method = getattr(args, "draft_method", "auto")
+    if method not in ("auto", "none", "mtp", "dspark", "dflash2"):
+        raise ValueError("--draft-method must be auto, none, mtp, dspark or dflash2")
+    if method != "auto" and (backend != "cuda" or method not in getattr(family.package, "CUDA_DRAFT_METHODS", ())):
+        raise ValueError("--draft-method requires a CUDA model with the selected proposal method")
+    draft_rows = getattr(args, "draft_rows", None)
+    if draft_rows is not None:
+        if (backend != "cuda" or not getattr(family.package, "CUDA_DRAFT_ROWS", False)
+                or type(draft_rows) is not int or not 2 <= draft_rows <= 128):
+            raise ValueError("--draft-rows requires supported CUDA DFlash and an integer from 2 through 128")
+        if _cuda_streams(getattr(args, "parallel", "auto")) > 1 and draft_rows > 16:
+            raise ValueError("--draft-rows supports at most 16 rows with --parallel")
+    ranks = getattr(args, "expert_ranks", 1)
+    shards = getattr(args, "expert_shards", None)
+    if ranks != 1 or shards is not None:
+        if backend != "cuda" or getattr(family, "model_type", "") != "qwen4_exp":
+            raise ValueError("expert parallelism is supported by Flash Next CUDA only")
+        if getattr(args, "tp", 1) != 1 or getattr(args, "vram_experts", None) is None:
+            raise ValueError("expert parallelism requires --tp 1 and --vram-experts GIB|auto")
+        from tensorfold.cuda.capacity import config
+        from tensorfold.cuda.expert_parallel import ownership
+        ownership(ranks, shards, getattr(args, "rank", 0), int(config(config_dir)["num_experts"]))
+    history = getattr(args, "indexer_history", "gpu")
+    if history not in ("gpu", "ram"):
+        raise ValueError("--indexer-history must be gpu or ram")
+    if history == "ram":
+        if backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next"):
+            raise ValueError("--indexer-history ram requires Flash Next GGUF on CUDA/SM70")
+        from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+
+        source = config_dir if config_dir is not None else getattr(args, "model", None)
+        if source is None or resolve_gguf(source) is None and family_manifest is None:
+            raise ValueError("--indexer-history ram requires a local Flash Next GGUF checkpoint")
+    serving_root = getattr(args, "serving_profile_root", None)
+    if serving_root is not None:
+        from tensorfold.families.qwen4_exp.cuda.serving_profiles import profile_root
+        from tensorfold.server.request_limits import require_finite_endpoint_limits
+
+        require_finite_endpoint_limits(max_pending_requests=getattr(args, "max_pending_requests", None),
+                                      max_http_connections=getattr(args, "max_http_connections", None))
+        profile_root(serving_root)
+    manifest = getattr(args, "execution_profile_manifest", None)
+    media_manifest = getattr(args, "media_profile_manifest", None)
+    if getattr(args, "no_graphs", False) and (backend != "cuda" or getattr(family, "model_type", "") != "qwen4_exp"):
+        raise ValueError("--no-graphs is supported by Flash Next on CUDA")
+    if media_manifest is not None:
+        from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+
+        source = config_dir if config_dir is not None else getattr(args, "model", None)
+        if (backend != "cuda" or getattr(family, "model_type", "") != "qwen4_exp"
+                or source is None or resolve_gguf(source) is None
+                or getattr(args, "tp", 1) != 8 or getattr(args, "indexer_history", "gpu") != "gpu"
+                or not getattr(args, "vision", False) or not getattr(args, "no_graphs", False)
+                or getattr(args, "draft_method", "auto") == "dspark"):
+            raise ValueError("--media-profile-manifest requires --vision, --no-graphs and resident Flash Next GGUF TP8 GPU histories without DSpark")
+        if any(getattr(args, name, None) is not None for name in ("vision_max_images", "vision_image_tokens")) or getattr(args, "vision_offload", False):
+            raise ValueError("media profile owns all media limits and fixed encoder placement; legacy vision overrides do not apply")
+    positions = getattr(args, "position_profile_manifest", None)
+    if positions is not None:
+        from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+
+        source = config_dir if config_dir is not None else getattr(args, "model", None)
+        if (backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next")
+                or source is None or resolve_gguf(source) is None and family_manifest is None):
+            raise ValueError("--position-profile-manifest requires an explicit Flash Next CUDA/SM70 provider")
+        if getattr(args, "draft_method", "auto") == "dspark":
+            raise ValueError("DSpark position profile manifests require a separately implemented positional role")
+        from tensorfold.cuda.capacity import config
+        from tensorfold.families.qwen4_exp.cuda.history_placement import HistoryPlacement
+
+        declared = config(source)
+        kv_heads = int(declared["num_key_value_heads"])
+        entry = resolve_gguf(source)
+        if entry is not None:
+            from tensorfold.families.qwen4_exp.gguf import metadata_config
+
+            actual = metadata_config(entry)["text_config"]["num_key_value_heads"]
+            if kv_heads != actual:
+                raise ValueError("declared KV geometry differs from authoritative GGUF layout")
+            kv_heads = actual
+        if history != "gpu" or not HistoryPlacement.supports(getattr(args, "tp", 1), kv_heads):
+            raise ValueError("--position-profile-manifest requires supported unique TP8 GPU histories")
+    if manifest is not None or serving_root is not None:
+        from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+
+        source = config_dir if config_dir is not None else getattr(args, "model", None)
+        if (backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next")
+                or history != "gpu" or getattr(args, "vram_experts", None) is not None
+                or source is None or resolve_gguf(source) is None):
+            raise ValueError("--execution-profile-manifest/--serving-profile-root selection requires resident Flash Next GGUF GPU histories on SM70")
+    windows = getattr(args, "kv_full_windows", None)
+    if windows is not None:
+        if backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next"):
+            raise ValueError("--kv-full-windows is supported by Flash Next CUDA only")
+        from tensorfold.families.qwen4_exp.ram_experts import check_kv_full_windows
+        from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+        resident_gguf = family_manifest is not None or config_dir is not None and resolve_gguf(config_dir) is not None
+        adaptive_gguf = resident_gguf and history == "gpu" and getattr(args, "vram_experts", None) is None
+        if windows == "auto":
+            if not adaptive_gguf:
+                raise ValueError("--kv-full-windows auto requires resident GGUF GPU histories and automatic capacity")
+        elif type(windows) is not int or windows < 1:
+            check_kv_full_windows(windows, streams=1, vram_experts=None)
+        elif not adaptive_gguf:
+            check_kv_full_windows(windows, streams=_cuda_streams(getattr(args, "parallel", "auto")),
+                                  vram_experts=getattr(args, "vram_experts", None), tp=getattr(args, "tp", 1),
+                                  resident_gguf=resident_gguf)
     if backend == "cuda":
         _cuda_topology(args, family)
     if backend == "mlx" and getattr(family, "model_type", "") == "qwen3_5_moe" and not getattr(args, "no_drafts", False):
@@ -79,6 +269,9 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         if backend != "mlx" or not getattr(family.package, "MLX_MODEL_FILE", False):
             raise ValueError("--trust-model-code requires an MLX family recipe that uses the provider's model_file")
     ram = getattr(args, "vram_experts", None)
+    pin = getattr(args, "vram_experts_pin", "off")
+    if pin not in ("off", "auto", "on") or pin != "off" and (ram is None or backend != "cuda"):
+        raise ValueError("--vram-experts-pin requires supported CUDA --vram-experts and off, auto or on")
     if getattr(args, "ssd_experts", None) is not None and backend == "cuda":
         raise ValueError("--ssd-experts is supported on MLX only; Flash Next CUDA supports --vram-experts GIB")
     if ram is not None:
@@ -93,7 +286,7 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         check_ram(config_dir, ram, tp=getattr(args, "tp", 1))
     if getattr(args, "yarn_factor", None) is not None:
         if backend != "cuda" or not hasattr(family.package, "rope_parameters"):
-            raise ValueError("--yarn-factor is supported by Flash Next on CUDA only")
+            raise ValueError("--yarn-factor is supported by Flash Next, Qwen3.8 dense and Qwen3.6 on CUDA only")
         family.package.rope_parameters(config_dir, args.yarn_factor)
     if getattr(args, "vision_urls", False) and not getattr(args, "vision", False):
         raise ValueError("--vision-urls needs --vision")
@@ -117,7 +310,16 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
             raise ValueError("--vision-offload needs --vision")
         if backend != "cuda":
             raise ValueError("--vision-offload is for the CUDA backend; the Mac's image tower already shares host memory")
-    if getattr(args, "vision", False):             # only --vision reads the config here
+    if getattr(args, "tokenizer_file", None) is not None:
+        if backend != "cuda":
+            raise ValueError("--tokenizer is read by the CUDA server; MLX serves the checkpoint's tokenizer")
+        if getattr(args, "vision", False):         # the vision processors encode image prompts with their own tokenizer
+            raise ValueError("--tokenizer encodes text prompts only: image prompts would keep the checkpoint's "
+                             "tokenizer, so it cannot be combined with --vision")
+        if int(getattr(args, "tp", 1) or 1) > 1 or int(getattr(args, "expert_ranks", 1) or 1) > 1:
+            raise ValueError("--tokenizer is admitted in one process: several ranks would each compile grammars from "
+                             "their own tokenizer, unchecked against rank 0's, so it serves one rank only")
+    if getattr(args, "vision", False) and media_manifest is None:  # Legacy checkpoints keep their own tower admission.
         if family.model_type == "glm5_next" and backend != "mlx":
             raise ValueError("GLM-5.3-Flash image input is currently MLX-only")
         from tensorfold.families import read_config
@@ -138,6 +340,12 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
     supported = getattr(family.package, "CUDA_KV_DTYPES", ("bf16",))
     if kv not in supported:
         raise ValueError(f"{family.title} on CUDA serves a {' or '.join(supported)} KV cache, not --kv-dtype {kv}")
+    if "fp16" in (kv, getattr(args, "kv_key_dtype", None), getattr(args, "kv_value_dtype", None)):
+        from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+
+        if (backend != "cuda" or getattr(family, "model_type", "") != "qwen4_exp"
+                or resolve_gguf(config_dir or args.model) is None and family_manifest is None):
+            raise ValueError("--kv-dtype fp16 requires the Flash Next GGUF FP16 execution provider")
     for name in ("kv_key_dtype", "kv_value_dtype"):
         value = getattr(args, name, None)
         if value is None:
@@ -154,6 +362,10 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         if _cuda_streams(getattr(args, "parallel", "auto")) < 2:
             raise ValueError(f"--checkpoint-slots sets the prompt states {family.title}'s concurrent decoder keeps on "
                              "CUDA (--parallel 2 or more); one stream keeps 4, which share its attention buffer")
+    if getattr(args, "drafter_bits", None) is not None and backend == "cuda" \
+            and not getattr(family.package, "CUDA_DRAFTER_BITS", False):
+        raise ValueError(f"--drafter-bits: {family.title} on CUDA runs its draft model at one fixed precision; drop "
+                         "the flag")
     fp8 = getattr(family.package, "CUDA_PREFILL_FP8", False) and backend == "cuda"
     if getattr(args, "prefill_fp8", None) and not fp8:              # asked for by name, not a default
         raise ValueError(f"--prefill-fp8 picks FP8 prompt kernels on CUDA; {family.title} on "
@@ -169,40 +381,98 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
             raise ValueError(f"--name-priority names {', '.join(bad)}, not --name or an --alias "
                              f"({', '.join(sorted(ids))})")
     confidence = getattr(args, "mtp_confidence", None)
-    if confidence is None:
+    if confidence is not None:
+        engine = getattr(family.package, "cuda_engine", None) if backend == "cuda" else None
+        if engine is None or "mtp_confidence" not in inspect.signature(engine).parameters:
+            raise ValueError(f"--mtp-confidence sets where a CUDA engine's MTP chains stop; {family.title} on "
+                             f"{'CUDA' if backend == 'cuda' else 'MLX'} has no such rule")
+        if not 0.0 <= confidence <= 1.0:
+            raise ValueError(f"--mtp-confidence is a probability from 0 to 1, not {confidence}")
+    _adaptive_service_limits(args, family, backend, config_dir)
+    _fifo_options(args, family, backend, config_dir)
+
+
+def _fifo_options(args, family, backend, config_dir):
+    """Resolve the actual unique-history admission capability before downloads."""
+    bounds = (getattr(args, "max_waiting_input_bytes", None),
+              getattr(args, "max_waiting_input_bytes_per_principal", None), getattr(args, "queue_timeout_s", None),
+              getattr(args, "output_queue_tokens", None))
+    policy = getattr(args, "retention_policy", None)
+    if backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next"):
+        if any(value is not None for value in bounds) or policy is not None:
+            raise ValueError("FIFO input/deadline and retention options require actual adaptive Flash Next unique TP8 GPU histories")
         return
-    engine = getattr(family.package, "cuda_engine", None) if backend == "cuda" else None
-    if engine is None or "mtp_confidence" not in inspect.signature(engine).parameters:
-        raise ValueError(f"--mtp-confidence sets where a CUDA engine's MTP chains stop; {family.title} on "
-                         f"{'CUDA' if backend == 'cuda' else 'MLX'} has no such rule")
-    if not 0.0 <= confidence <= 1.0:
-        raise ValueError(f"--mtp-confidence is a probability from 0 to 1, not {confidence}")
+    from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+    from tensorfold.families.qwen4_exp.cuda.serving_profiles import validate_service_options
+
+    source = config_dir if config_dir is not None else getattr(args, "model", None)
+    sm70 = source is not None and (resolve_gguf(source) is not None or getattr(args, "family_manifest", None) is not None)
+    from tensorfold.families.qwen4_exp.cuda import DEPTH
+    from tensorfold.families.qwen4_exp.cuda.speculation import checkpoint_method
+
+    method = getattr(args, "draft_method", "auto")
+    enabled = not (getattr(args, "no_drafts", False) or method == "none")
+    depth = 0 if not enabled else DEPTH if getattr(args, "mtp_drafts", None) is None else int(args.mtp_drafts)
+    choice = getattr(args, "drafter", "auto")
+    if sm70 and getattr(args, "tp", 1) == 8 and method == "auto" and depth > 0 and choice not in ("", "none", "auto"):
+        method = checkpoint_method(drafter_metadata_source(choice))
+    validate_service_options(source, {"tp": getattr(args, "tp", 1), "adaptive_sessions": sm70,
+        "depth": depth, "draft_method": method,
+        **{name: getattr(args, name, None) for name in ("max_waiting_input_bytes", "queue_timeout_s", "retention_policy", "output_queue_tokens",
+                                                     "max_waiting_input_bytes_per_principal", "family_manifest", "vram_experts")},
+        "indexer_history": getattr(args, "indexer_history", "gpu")})
+
+
+def _adaptive_service_limits(args, family, backend, config_dir):
+    """Require explicit finite endpoint policy before the SM70 model is loaded.
+
+    Counts remain administrator choices. Allocated GPU sessions do not imply a
+    particular CPU request/socket backlog, so no numeric default is derived.
+    Other providers and the explicitly selected legacy RAM path keep their
+    existing optional-cap contract.
+    """
+    if (backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next")
+            or getattr(args, "indexer_history", "gpu") != "gpu"):
+        return
+    from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+    from tensorfold.server.request_limits import require_finite_endpoint_limits
+
+    source = config_dir if config_dir is not None else getattr(args, "model", None)
+    if source is None or resolve_gguf(source) is None:
+        return
+    require_finite_endpoint_limits(max_pending_requests=getattr(args, "max_pending_requests", None),
+                                   max_http_connections=getattr(args, "max_http_connections", None))
 
 
 def _cuda_topology(args: argparse.Namespace, family: Any) -> None:
     """Validate rank topology and the selected Flash Next execution envelope before weights are resolved."""
 
     tp, rank = getattr(args, "tp", 1), getattr(args, "rank", 0)
-    if type(tp) is not int or tp not in (1, 2, 4):
-        raise ValueError("--tp must be 1, 2 or 4")
+    from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+
+    gguf = (getattr(family, "model_type", "") in ("qwen4_exp", "qwen3_8_flash_next")
+            and (resolve_gguf(getattr(args, "model", "")) is not None
+                 or getattr(args, "family_manifest", None) is not None))
+    if type(tp) is not int or tp not in (1, 2, 4, 8) or tp == 8 and not gguf:
+        raise ValueError("--tp must be 1, 2 or 4; Flash Next GGUF additionally supports 8")
     if type(rank) is not int or rank < 0:
         raise ValueError("--rank must be a nonnegative integer")
     if tp > 1 and not getattr(args, "master", ""):
-        raise ValueError("--tp 2/4 needs --master: rank 0's address on the link between the ranks")
-    if rank >= tp:
+        raise ValueError("--tp 2/4/8 needs --master: rank 0's address on the link between the ranks")
+    if rank >= max(tp, getattr(args, "expert_ranks", 1)):
         raise ValueError(f"--rank {rank} needs --tp {rank + 1} or more")
-    if tp == 4 and not getattr(family.package, "CUDA_TP4", False):
+    if tp == 4 and not gguf and not getattr(family.package, "CUDA_TP4", False):
         raise ValueError(f"--tp 4: {family.title} runs on one or two GPUs on CUDA")
     port = getattr(args, "master_port", 29551)
     # Every follower connects to this same CLI value; no channel advertises a leader's ephemeral port.
-    if tp > 1 and (type(port) is not int or not 1 <= port <= 65535):
+    if max(tp, getattr(args, "expert_ranks", 1)) > 1 and (type(port) is not int or not 1 <= port <= 65535):
         raise ValueError("--master-port must be an integer from 1 to 65535 for multiple ranks")
     if getattr(family, "model_type", "") == "qwen4_exp":
         streams = _cuda_streams(getattr(args, "parallel", "auto"))
-        if tp > 1 and streams > 1:
+        if tp > 1 and streams > 1 and not gguf:
             raise ValueError("--parallel decodes several Flash Next requests together on one GPU; with --tp 2 it "
                              "serves one request at a time for now, so drop --parallel")
-        if getattr(args, "vision", False) and (streams < 2 or tp != 1):
+        if getattr(args, "vision", False) and getattr(args, "media_profile_manifest", None) is None and (streams < 2 or tp != 1):
             raise ValueError("image input on Flash Next runs on one GPU with --parallel 2 or more")
 
 
@@ -227,4 +497,4 @@ def vision_options(args: argparse.Namespace) -> dict[str, Any]:
             "vision_offload": bool(getattr(args, "vision_offload", False))}
 
 
-__all__ = ["check", "check_numbers", "name_priority", "vision_options"]
+__all__ = ["check", "check_numbers", "prepare_service_options", "drafter_metadata_source", "name_priority", "vision_options"]

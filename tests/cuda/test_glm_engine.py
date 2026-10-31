@@ -2,8 +2,9 @@
 one-layer synthetic DFlash2 drafter: drafted replies equal serial ones for every policy, including the default that
 picks the drafter per round, and a prompt resumed from a kept state gives the reply a fresh prefill gives.
 
-One GPU plays rank 0 of two: its all-gathers hand back two copies of its own partials, a stand-in with real shapes
-and fixed bits (the numbers are not the two-rank model's, the equalities are the engine's)."""
+One GPU plays rank 0 of two: its all-gathers hand back two copies of its own partials, with sampling's vocabulary
+IDs rebased for the second shard. This is a stand-in with real shapes and fixed bits (the numbers are not the
+actual two-rank model's, the equalities are the engine's)."""
 
 from __future__ import annotations
 
@@ -196,7 +197,7 @@ def _drafter(path) -> None:
 
 
 class _TwoCopies:
-    """Rank 0 of two on one GPU: every all-gather returns this rank's input twice."""
+    """Rank 0's partials duplicated on one GPU; typed sampling packets use ``_SamplingGather`` below."""
 
     rank, world = 0, 2
 
@@ -211,6 +212,105 @@ class _TwoCopies:
 
     def ready(self, label: str, **kwargs) -> None:
         pass                                  # the other rank is this one
+
+
+class _SamplingGather:
+    """The duplicate-partial fixture's explicit sampling-wire adapter; no production check is replaced.
+
+    The real codec transports int64 packets as flat float32 words, losing packet shape at the communicator boundary.
+    The scoped fixture below supplies that shape around the unchanged codec. Scores, norms, status and fixed-point
+    masses remain bit-identical; only the synthetic peer's contiguous global vocabulary IDs change.
+    """
+
+    def __init__(self, gather):
+        self.gather = gather
+        self.packet = None
+
+    def __call__(self, words):
+        packet = self.packet
+        assert packet is not None and packet.dtype == torch.int64
+        both = self.gather(words)
+        peer = both[1].view(torch.int64).reshape(packet.shape)
+        width = V // 2
+        if packet.ndim == 1:
+            assert packet.shape == (4,), "the fixture models contiguous, equally sized vocabulary shards"
+            peer[3].add_(peer[0])                 # same width, peer offset follows rank zero's shard
+        else:
+            assert packet.ndim == 2
+            columns = packet.shape[1]
+            if columns == 3:
+                # Nucleus header: (FP64 max bits, width, status). Greedy packet: (FP32 bits, global ID, status).
+                # The fixture's local IDs are below width, so this distinction is construction-guaranteed.
+                peer[:, 1] = torch.where(peer[:, 1] == width, peer[:, 1], peer[:, 1] + width)
+                return both
+            if columns >= 3 * width + 2:         # nucleus shares: value, ID, mass, total mass, shard width
+                assert (columns - 2) % 3 == 0
+                count = (columns - 2) // 3
+            else:                               # top-k: value, ID, optional norm, status
+                count = (columns - 1) // 2
+            ids = peer[:, count:2 * count]
+            ids.copy_(torch.where(ids >= 0, ids + width, ids))  # retain -1 padding exactly
+        return both
+
+
+@pytest.fixture(scope="module", autouse=True)
+def _sampling_contract():
+    """Supply typed mock-role metadata around the real sampler codec for this module's two-copy communicator."""
+
+    from tensorfold.cuda import sampling
+    from tensorfold.families.glm5_next.cuda import decode
+
+    original_codec, original_gather = sampling._stacked, decode.comm_gather
+
+    def gather(comm):
+        raw = original_gather(comm)
+        return _SamplingGather(raw) if isinstance(comm, _TwoCopies) else raw
+
+    def stacked(gather, packet):
+        if not isinstance(gather, _SamplingGather):
+            return original_codec(gather, packet)
+        assert gather.packet is None, "the fixture's sampling operation is not reentrant"
+        gather.packet = packet
+        try:
+            return original_codec(gather, packet)
+        finally:
+            gather.packet = None
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(decode, "comm_gather", gather)
+        patch.setattr(sampling, "_stacked", stacked)
+        yield
+
+
+def test_two_copy_sampling_transport_keeps_disjoint_ids_and_serial_samples():
+    """A full-vocabulary one-rank oracle and the fixture's two equal score shards make identical keyed choices."""
+
+    from tensorfold.cuda.sampling import ShardSampler, comm_gather, one_rank, sample_shards
+    from tensorfold.families.glm5_next.cuda import decode
+
+    comm = _TwoCopies()
+    with pytest.raises(ValueError, match="distinct global token IDs"):
+        ShardSampler(V // 2, "cuda", gather=comm_gather(comm), world=2)
+    gather = decode.comm_gather(comm)
+    plan = ShardSampler(V // 2, "cuda", gather=gather, world=2, native_greedy=False)
+    whole = ShardSampler(V, "cuda", gather=one_rank, world=1, native_greedy=False)
+    logits = torch.randn((3, V // 2), generator=torch.Generator(device="cuda").manual_seed(514), device="cuda")
+    for sampling in (None, Sampling(19, 1.0, 20, 0.95), Sampling(23, 0.8, 0, 0.9, 0.02)):
+        got = sample_shards(logits, [10, 11, 12], sampling, plan=plan)
+        expected = sample_shards(torch.cat([logits, logits], dim=1), [10, 11, 12], sampling, plan=whole)
+        assert got == expected
+
+    from tensorfold.cuda import sampling as packets
+
+    for packet, expected in (
+        ([[0x3F800000, 0x40000000, 1, -1, 2]], [[0x3F800000, 0x40000000, 513, -1, 2]]),
+        ([[0x3F800000, 3, 2]], [[0x3F800000, 515, 2]]),
+        ([[0x4000000000000000, V // 2, 0]], [[0x4000000000000000, V // 2, 0]]),
+    ):
+        sent = torch.tensor(packet, dtype=torch.int64, device="cuda")
+        got = packets._stacked(gather, sent)
+        assert torch.equal(got[0], sent)
+        assert torch.equal(got[1], sent.new_tensor(expected))
 
 
 @pytest.fixture(scope="module")
@@ -305,7 +405,7 @@ def test_prompt_chunks_leave_the_same_state(engine):
                                       Sampling(1234, 1.0, 0, 0.9, 0.02), None],
                          ids=["sampled", "min_p", "nucleus", "greedy"])
 def test_drafted_replies_equal_serial(engine, sampling):
-    prompt = list(np.random.default_rng(5).integers(0, 1000, size=37))
+    prompt = np.random.default_rng(5).integers(0, 1000, size=37).tolist()
     serial, stats = _generate(engine, prompt, sampling, draft=False)
     assert len(serial) == 24 and stats["drafts"] is False and stats.get("drafted", 0) == 0
     for policy in (None, "auto", "1", "2", "3", "c3:0.35", "a:0.6:0.85"):
@@ -321,7 +421,7 @@ def test_drafted_replies_equal_serial(engine, sampling):
 def test_drafter_choice_equals_serial(engine_f, sampling):
     """Every policy with both drafters loaded, and the per-round choice made to switch often."""
 
-    prompt = list(np.random.default_rng(6).integers(0, 1000, size=41))
+    prompt = np.random.default_rng(6).integers(0, 1000, size=41).tolist()
     serial, _ = _generate(engine_f, prompt, sampling, draft=False, tokens=40)
     seen = set()
     from tensorfold.families.glm5_next.cuda.engine import encode_policy
@@ -339,7 +439,7 @@ def test_drafter_choice_resumes(engine_f):
 
     sampling = Sampling(11, 1.0, 20, 0.95)
     rng = np.random.default_rng(12)
-    first = list(rng.integers(0, 1000, size=30))
+    first = rng.integers(0, 1000, size=30).tolist()
     reply, stats = _generate(engine_f, first, sampling, policy="auto:1:1:0", tokens=30)
     assert set(stats["drafters"]) == {"m", "f"}
     after = first + reply + [21, 22]
@@ -356,7 +456,7 @@ def test_drafter_choice_resumes(engine_f):
 @pytest.mark.parametrize("sampling", [Sampling(7, 1.0, 20, 0.95), None], ids=["sampled", "greedy"])
 def test_resumed_prompts_equal_fresh_prefills(engine, sampling):
     rng = np.random.default_rng(9)
-    first = list(rng.integers(0, 1000, size=70))
+    first = rng.integers(0, 1000, size=70).tolist()
     reply, _ = _generate(engine, first, sampling)
     after_reply = first + reply + [5, 6, 7]
     warm, stats = _generate(engine, after_reply, sampling)
@@ -386,7 +486,7 @@ def test_exl3_checkpoint_drafted_equals_serial(engine_x, sampling):
     assert engine_x.w.layers[1].moe.shared is not None
     assert engine_x._effective(encode_policy("auto")) == encode_policy(EXL3_AUTO)       # the default drafts DFlash2
     assert engine_x._effective(encode_policy("auto:1:1:0")) == encode_policy("auto:1:1:0")
-    prompt = list(np.random.default_rng(8).integers(0, 1000, size=45))
+    prompt = np.random.default_rng(8).integers(0, 1000, size=45).tolist()
     serial, _ = _generate(engine_x, prompt, sampling, draft=False, tokens=32)
     for policy in (None, "auto:1:1:0", "f3", "fc5:0.3", "2", "c3:0.35", "a:0.6:0.85"):
         drafted, stats = _generate(engine_x, prompt, sampling, policy=policy, tokens=32)
@@ -437,7 +537,7 @@ def test_decision_between_chats_preserves_replies(engine_f, cache_bytes, policy)
 def test_exl3_checkpoint_resumes(engine_x):
     sampling = Sampling(21, 1.0, 20, 0.95)
     rng = np.random.default_rng(22)
-    first = list(rng.integers(0, 1000, size=70))
+    first = rng.integers(0, 1000, size=70).tolist()
     reply, _ = _generate(engine_x, first, sampling, policy="auto:1:1:0", tokens=20)
     after = first + reply + [31, 32]
     warm, stats = _generate(engine_x, after, sampling)
@@ -492,7 +592,7 @@ def test_no_mtp_head_drafts_with_dflash2(engine_n, sampling):
     assert engine_n._effective(encode_policy("auto")) == encode_policy(DFLASH_POLICY)
     assert engine_n._effective(encode_policy("2")) == encode_policy("f2")
     assert engine_n._effective(encode_policy("0")) == encode_policy("0")
-    prompt = list(np.random.default_rng(13).integers(0, 1000, size=39))
+    prompt = np.random.default_rng(13).integers(0, 1000, size=39).tolist()
     serial, _ = _generate(engine_n, prompt, sampling, draft=False, tokens=32)
     for policy in (None, "auto", "2", "c3:0.35", "a:0.6:0.85", "f3"):
         drafted, stats = _generate(engine_n, prompt, sampling, policy=policy, tokens=32)
@@ -540,7 +640,7 @@ def test_mtp_off_beside_dflash2_gives_the_same_replies(engine_off, engine_f, sam
     assert off._effective(encode_policy("auto")) == encode_policy(DFLASH_POLICY)
     assert off._effective(encode_policy("auto:1:1:0")) == encode_policy(DFLASH_POLICY)
     assert off._effective(encode_policy("2")) == encode_policy("f2")
-    prompt = list(np.random.default_rng(6).integers(0, 1000, size=41))
+    prompt = np.random.default_rng(6).integers(0, 1000, size=41).tolist()
     serial, _ = _generate(on, prompt, sampling, draft=False, tokens=40)
     assert _generate(off, prompt, sampling, draft=False, tokens=40)[0] == serial
     for policy in (None, "auto", "auto:1:1:0", "2", "c3:0.35", "a:0.6:0.85", "f3", "fc5:0.3"):
@@ -553,7 +653,7 @@ def test_mtp_off_resumes(engine_off):
     """Kept prompt states without the head's rows resume like fresh prefills."""
 
     sampling = Sampling(11, 1.0, 20, 0.95)
-    first = list(np.random.default_rng(12).integers(0, 1000, size=30))
+    first = np.random.default_rng(12).integers(0, 1000, size=30).tolist()
     reply, _ = _generate(engine_off, first, sampling, tokens=30)
     after = first + reply + [21, 22]
     for policy in ("auto", "2", "f3"):
@@ -580,7 +680,7 @@ def engine_long(tmp_path_factory):
 def test_drafted_replies_equal_serial_past_the_dense_limit(engine_long, sampling):
     """Past 2,051 tokens a window's rows must score like serial steps (2 index heads, not GLM-5.3-Flash's 32)."""
 
-    prompt = list(np.random.default_rng(11).integers(0, 1000, size=2100))
+    prompt = np.random.default_rng(11).integers(0, 1000, size=2100).tolist()
     serial, _ = _generate(engine_long, prompt, sampling, draft=False, tokens=32)
     for policy in (None, "2", "c3:0.35"):
         drafted, _ = _generate(engine_long, prompt, sampling, policy=policy, tokens=32)

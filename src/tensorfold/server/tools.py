@@ -8,6 +8,7 @@ import uuid
 from typing import Any
 
 from tensorfold.tool_parameters import decode_parameter, parameter_schemas
+from tensorfold.server.gemma_values import gemma_envelopes, gemma_json
 
 def tool_spec_name(tool: dict[str, Any]) -> str:
     function = tool.get("function") if isinstance(tool, dict) else None
@@ -133,10 +134,7 @@ def normalize_qwen_tool_markup(text: str) -> str:
 
 
 # Gemma 4: <|tool_call>call:NAME{key:value,...}<tool_call|>, and the 26B's bare :NAME{...}. Keys bare, strings between <|"|>.
-_GEMMA_TOOL_CALL_BLOCK_RE = re.compile(r"<\|tool_call>\s*(.*?)\s*<tool_call\|>", re.DOTALL)
 _GEMMA_CALL_RE = re.compile(r"^(?:call)?:([\w.-]+)\s*(\{.*\})$", re.DOTALL)
-_GEMMA_STRING_RE = re.compile(r'<\|"\|>(.*?)<\|"\|>', re.DOTALL)
-_GEMMA_KEY_RE = re.compile(r"(?<=[{,])\s*([A-Za-z_][\w-]*)\s*:")
 # DeepSeek-V4's DSML: one <｜DSML｜tool_calls> block holds invokes of named parameters, string="false" ones as JSON
 _DSML_BLOCK_RE = re.compile(r"<｜DSML｜tool_calls>(.*?)</｜DSML｜tool_calls>", re.DOTALL)
 _DSML_INVOKE_RE = re.compile(r'<｜DSML｜invoke name="([^"]*)">(.*?)</｜DSML｜invoke>', re.DOTALL)
@@ -201,21 +199,14 @@ def _parse_glm_payload(block: str, schemas: dict[str, dict[str, Any]] | None, *,
 
 
 def _parse_gemma_call(block: str) -> tuple[str, dict[str, Any]] | None:
-    """Gemma 4's ``call:NAME{...}`` or bare ``:NAME{...}`` as (name, arguments). Strings become JSON, bare keys quoted."""
+    """Gemma's calls, with native strings/keys/null decoded without interpreting text inside strings."""
 
     match = _GEMMA_CALL_RE.match(block)
     if match is None:
         return None
-    strings: list[str] = []
+    return match.group(1), _tool_json_object(gemma_json(match.group(2)))
 
-    def keep(found: re.Match[str]) -> str:
-        strings.append(found.group(1))
-        return f"\x00{len(strings) - 1}\x00"
 
-    text = _GEMMA_KEY_RE.sub(lambda found: f'"{found.group(1)}":', _GEMMA_STRING_RE.sub(keep, match.group(2)))
-    for index, value in enumerate(strings):
-        text = text.replace(f"\x00{index}\x00", json.dumps(value, ensure_ascii=False))
-    return match.group(1), _tool_json_object(text)
 
 
 def _parse_tool_call_payload(block: str, schemas: dict[str, dict[str, Any]] | None = None, *, complete: bool = False) -> tuple[str, dict[str, Any]] | None:
@@ -364,7 +355,7 @@ def _envelopes(text: str) -> list[tuple[int, int, str]]:
 
     found = sorted([(m.start(), m.end(), m.group(1).strip()) for m in _TOOL_CALL_BLOCK_RE.finditer(text)]
                    + [(m.start(), m.end(), m.group(2).strip()) for m in _NAMESPACED_TOOL_CALL_BLOCK_RE.finditer(text)]
-                   + [(m.start(), m.end(), m.group(1).strip()) for m in _GEMMA_TOOL_CALL_BLOCK_RE.finditer(text)]
+                   + gemma_envelopes(text)
                    + [(m.start(), m.end(), m.group(0)) for m in _DSML_BLOCK_RE.finditer(text)])
     kept: list[tuple[int, int, str]] = []
     for envelope in found:
@@ -382,7 +373,25 @@ def parse_tool_calls_from_content(
         return text, None
     known = {tool_spec_name(tool).lower(): tool_spec_name(tool) for tool in tools}
     schemas = parameter_schemas(tools)
-    text = normalize_qwen_tool_markup(text)
+    native, at, in_qwen = [], 0, False
+    for envelope in gemma_envelopes(text):
+        marks = list(re.finditer(r"</?tool_call>", text[at:envelope[0]], re.IGNORECASE))
+        if marks:
+            in_qwen = not marks[-1][0].startswith("</")
+        if not in_qwen:
+            native.append(envelope)
+        at = envelope[1]          # literal Qwen tags inside Gemma values never change the enclosing format
+    if native:
+        # Native strings may contain Qwen markup literally. Repair only the
+        # surrounding text, preserving every byte inside a Gemma envelope.
+        parts, at = [], 0
+        for start, end, _ in native:
+            parts.extend((normalize_qwen_tool_markup(text[at:start]), text[start:end]))
+            at = end
+        parts.append(normalize_qwen_tool_markup(text[at:]))
+        text = "".join(parts)
+    else:
+        text = normalize_qwen_tool_markup(text)
     envelopes = _envelopes(text)
     if not envelopes:
         bare_calls = _parse_bare_json_tool_calls(text, known, max_calls=max_calls)

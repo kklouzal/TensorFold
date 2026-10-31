@@ -1,5 +1,8 @@
 #include <torch/extension.h>
+#include <ATen/cuda/CUDAContext.h>
 #include <c10/cuda/CUDAGuard.h>
+#include <limits>
+#include "tensor_contracts.cuh"
 
 void prefill_attention_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, at::Tensor&, int, float, int);
 
@@ -7,15 +10,36 @@ void prefill_attention_cuda(const at::Tensor&, const at::Tensor&, const at::Tens
 void prefill_attention(const at::Tensor& q, const at::Tensor& k, const at::Tensor& v, at::Tensor& out, int64_t p0,
                        double scale, int64_t hpc) {
     TORCH_CHECK(q.is_cuda() && q.is_contiguous() && q.scalar_type() == at::kBFloat16 && q.dim() == 3 &&
-                (q.size(2) == 128 || q.size(2) == 256), "q: contiguous (W, H, 128 or 256) bf16");
-    TORCH_CHECK(k.is_contiguous() && v.is_contiguous() && k.scalar_type() == at::kBFloat16 &&
+                q.size(1) > 0 && (q.size(2) == 128 || q.size(2) == 256),
+                "q: contiguous CUDA (W, positive H, 128 or 256) bf16");
+    TORCH_CHECK(k.device() == q.device() && v.device() == q.device() &&
+                k.is_contiguous() && v.is_contiguous() && k.scalar_type() == at::kBFloat16 &&
                 v.scalar_type() == at::kBFloat16 && k.dim() == 3 && k.sizes() == v.sizes() &&
-                k.size(2) == q.size(2) && q.size(1) % k.size(1) == 0 && k.size(0) >= p0 + q.size(0),
-                "caches: contiguous bf16 (keys, HK, D) holding the chunk's keys");
-    TORCH_CHECK(out.is_contiguous() && out.sizes() == q.sizes() && out.scalar_type() == at::kBFloat16,
-                "out: like q");
+                k.size(1) > 0 && k.size(2) == q.size(2) && q.size(1) % k.size(1) == 0,
+                "caches: contiguous bf16 (keys, positive HK, D) on q's CUDA device; HK divides H");
+    // The kernel uses signed-int rows/positions, including padding a final 64-key tile and 128-row CTA.
+    constexpr int64_t limit = std::numeric_limits<int>::max();
+    TORCH_CHECK(q.size(0) <= limit - 127 && q.size(1) <= limit && k.size(1) <= limit &&
+                p0 >= 0 && p0 <= limit - 127 - q.size(0), "prompt attention position/dimensions exceed int32");
+    TORCH_CHECK(k.size(0) >= p0 + q.size(0), "caches must hold the chunk's keys");
+    TORCH_CHECK(out.device() == q.device() && out.is_contiguous() && out.sizes() == q.sizes() &&
+                out.scalar_type() == at::kBFloat16, "out: like q on q's CUDA device");
+    TORCH_CHECK(reinterpret_cast<uintptr_t>(q.data_ptr()) % (q.size(2) == 128 ? 4 : 16) == 0,
+                "q requires 4-byte alignment for D128 or 16-byte alignment for D256");
+    TORCH_CHECK(reinterpret_cast<uintptr_t>(k.data_ptr()) % 16 == 0 &&
+                reinterpret_cast<uintptr_t>(v.data_ptr()) % 16 == 0, "cache reads require 16-byte alignment");
+    TORCH_CHECK(reinterpret_cast<uintptr_t>(out.data_ptr()) % 4 == 0, "output stores require 4-byte alignment");
+    // Only [0, p0 + W) of each contiguous cache is read. Unfilled tails may hold output.
+    const int64_t keys = p0 + q.size(0);
+    const int64_t cache_reads = keys == 0 ? 0 : (k.numel() / k.size(0)) * keys;
+    TORCH_CHECK(!tensorfold::overlaps(out, q) && !tensorfold::overlaps(out, k, -1, cache_reads) &&
+                !tensorfold::overlaps(out, v, -1, cache_reads),
+                "prompt attention output must not overlap q or filled cache inputs");
+    TORCH_CHECK(hpc == 1 || hpc == 2 || hpc == 4 || hpc == 8, "heads a block must be 1, 2, 4 or 8");
     TORCH_CHECK((q.size(1) / k.size(1)) % hpc == 0, "heads a block must divide the query heads a KV head");
     c10::cuda::CUDAGuard guard(q.device());
+    TORCH_CHECK(q.size(1) / hpc <= at::cuda::getDeviceProperties(q.get_device())->maxGridSize[1],
+                "prompt attention head grid exceeds this CUDA device's limit");
     prefill_attention_cuda(q, k, v, out, static_cast<int>(p0), static_cast<float>(scale), static_cast<int>(hpc));
 }
 

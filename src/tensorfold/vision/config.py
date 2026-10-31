@@ -6,6 +6,9 @@ FAMILIES = ('qwen3_5', 'qwen4_exp', 'glm5_next')     # the Qwen3.5/3.8 dense mod
 
 
 def validate_vision_config(config, family):
+    if family in ('gemma4', 'gemma4_text'):
+        from tensorfold.families.gemma4.cuda.vision import validate_vision_config as gemma
+        return gemma(config)
     if family not in FAMILIES:
         raise ValueError('--vision supports GLM-5.3-Flash, Flash Next and Qwen3.5/3.8 dense checkpoints '
                          'with their vision tower')

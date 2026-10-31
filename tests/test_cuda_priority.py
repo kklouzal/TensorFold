@@ -71,6 +71,34 @@ def test_a_background_stream_gives_its_lane_to_a_foreground_request_and_replays(
     assert stats["back"]["rounds"] > 59                       # the replay's rounds count too (the work was redone)
 
 
+def test_a_background_stream_under_a_grammar_yields_and_replays_with_its_grammar_from_the_start():
+    """A grammar (response_format or strict tools) no longer pins a background lane: the replay decodes under a fresh
+    copy of it (``Constraint.fresh``), so its masks follow the replayed tokens from the first."""
+
+    class Grammar:
+        def __init__(self, generation=0):
+            self.generation = generation
+
+        def fresh(self):
+            return Grammar(self.generation + 1)
+
+    dec = Lanes()
+    admitted = []
+    real = dec.admit
+    dec.admit = lambda s: (admitted.append(s.constraint), real(s))
+    sched = Scheduler(dec, max_streams=1)
+    sched.start()
+    back, front, original = [], [], Grammar()
+    worker = threading.Thread(target=lambda: sched.submit(
+        [1] * 10, 60, None, True, lambda new: back.extend(new) or False, background=True, constraint=original))
+    worker.start()
+    _until(lambda: len(back) >= 5)
+    sched.submit([2] * 7, 5, None, True, lambda new: front.extend(new) or False)
+    worker.join()
+    assert back == [(10 + i) % 97 for i in range(60)] and sched.yields == 1
+    assert admitted[0] is original and admitted[1] is None and admitted[2].generation == 1
+
+
 def test_background_requests_wait_for_the_foreground_ones_queued_with_them():
     dec = Lanes()
     order = []

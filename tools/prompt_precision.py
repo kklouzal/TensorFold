@@ -8,7 +8,6 @@ dequantized weight. KL is KL(reference || path) over the vocabulary at every row
 from __future__ import annotations
 
 import argparse
-import sys
 import sysconfig
 import tempfile
 from pathlib import Path
@@ -238,7 +237,7 @@ def install_fp32_glm() -> None:
     import mlx.core as mx
 
     from tensorfold.families.glm5_next import kda, linear, mla, mlp, model, mtp
-    from tensorfold.families.glm5_next.linear import Dense, Q, QSplit
+    from tensorfold.families.glm5_next.linear import Dense, QSplit
 
     def project(x, q, *, rows_exact: bool = False):
         del rows_exact
@@ -322,7 +321,7 @@ def run(args: argparse.Namespace) -> int:
     import os
 
     if args.dense:
-        os.environ["TF_FLASH_DENSE" if args.family == "flash" else "TF_GLM_DENSE"] = args.dense
+        os.environ["TF_FLASH_DENSE"] = args.dense
     model, tokenizer = load_family(args.family, args.model, args.ple_on_ssd, args.ssd_experts)
     wiki, code, chat = counts(args.sequences)
     rows = sequences(tokenizer, args.wikitext, args.length, wiki, code, chat)
@@ -361,12 +360,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--width", type=int, default=0)
     parser.add_argument("--ple-on-ssd", action="store_true")
     parser.add_argument("--ssd-experts", type=float, default=None)
-    parser.add_argument("--dense", choices=("rows", "matrix"))
+    parser.add_argument("--dense", choices=("rows", "matrix"), help="Flash Next's dense kernels (TF_FLASH_DENSE)")
     args = parser.parse_args(argv)
     if args.self_test:
         return self_test()
     if args.model is None:
         parser.error("--model is required")
+    if args.dense and args.family != "flash":
+        parser.error("--dense selects Flash Next's dense kernels; the GLM family has no such switch")
     return run(args)
 
 

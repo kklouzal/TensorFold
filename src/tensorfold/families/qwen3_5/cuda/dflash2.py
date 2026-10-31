@@ -15,7 +15,7 @@ from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json
 from tensorfold.engine.exact_sampling import Sampling
 
 from .affine_memory import packed_draft
-from .draft_tree import best_first
+from .draft_tree import POLICY, best_first, draft_block, draft_limit, draft_spans
 from .glue import embedding, swiglu
 from .draft_attention import append, block_attention
 from .qmm import group_sums
@@ -124,10 +124,6 @@ def _rope(x: torch.Tensor, positions: torch.Tensor, inv_freq: torch.Tensor) -> t
     return torch.cat((a * cos - b * sin, b * cos + a * sin), dim=-1).to(torch.bfloat16)
 
 
-def _linear(x: torch.Tensor, weights: dict[str, torch.Tensor], name: str) -> torch.Tensor:
-    return F.linear(x, weights[name])
-
-
 def quantize4(w: torch.Tensor) -> QLinear:
     """bf16 (N, K) -> MLX-style affine 4-bit, groups of 64 along K: q = round((w - min) / scale)."""
 
@@ -190,6 +186,7 @@ class DFlash2:
         self.rank, self.world = rank, world
         self.block = block          # masked positions drafted per round (the checkpoint trained with 8)
         cfg = read_metadata_json(checkpoint_path(path, "config.json"))
+        self.max_position = draft_limit(cfg)
         self.hidden = int(cfg["hidden_size"])
         self.head_dim = int(cfg["head_dim"])
         self.heads = int(cfg["num_attention_heads"])
@@ -197,7 +194,7 @@ class DFlash2:
         self.eps = float(cfg["rms_norm_eps"])
         self.theta = float(cfg["rope_parameters"]["rope_theta"])
         self.mask_id = int(cfg["dflash_config"]["mask_token_id"])
-        self.trained = int(cfg["dflash_config"].get("block_size", 8))     # its training block: the planner's floor
+        self.trained = draft_block(cfg)     # its training block: the planner's floor
         self.group_size = int(cfg["dflash_config"]["conv_group_size"])
         self.layers = int(cfg["num_hidden_layers"])
         self.window = int(cfg["sliding_window"]) - 1
@@ -230,7 +227,7 @@ class DFlash2:
                          (torch.arange(self.head_dim // 2, device=self.device,
                                        dtype=torch.float32) * 2 / self.head_dim))
         vocab = target.config.vocab
-        spans = tuple((a, min(b, vocab)) for a, b in ((0, 98304), (248032, 248320)) if a < vocab)
+        spans = draft_spans(vocab)
         self.vocab_spans = spans
         self.head_ids = torch.cat([torch.arange(a, b, device=self.device) for a, b in spans])
         self.head_cols: torch.Tensor | None = None           # an EXL3 head's span columns in its sliced strips
@@ -261,6 +258,10 @@ class DFlash2:
             self.sub_head = QLinear(*[None if t is None else t[lo:hi].contiguous()
                                       for t in (sub.weight, sub.scales, sub.biases)],
                                     layout=sub.layout, gs=sub.gs, bits=sub.bits)
+        if self.head_ids.numel() < 16:
+            raise ValueError("DFlash2 needs at least16 available proposal-head rows on each rank")
+        self._head_ids_host = self.head_ids.cpu().numpy().copy()
+        self._head_ids_host.flags.writeable = False
         if isinstance(target.head, QLinear) and target.head.layout == "tiled" and self.sub_rows is None:
             self.sub_head = tile(self.sub_head)
         # Quantized draft projections can change acceptance but never target output.
@@ -501,14 +502,45 @@ class DFlash2:
         return self.launch_blocks([self.snapshot()], [pending], max_nodes, block)[0]
 
     @torch.no_grad()
-    def launch_blocks(self, snaps: list, pendings: list[int], max_nodes: int, block: int | None = None) -> list:
-        """GPU half of ``propose_tree`` for several streams, each weight read once; None where a context is empty."""
+    def launch_blocks(self, snaps: list, pendings: list[int], max_nodes: int, block: int | None = None,
+                      histories: list | None = None) -> list:
+        """GPU half of ``propose_tree`` for several streams, each weight read once; None where a context is empty.
 
+        The candidates do not depend on penalty ``histories``: ``finish_tree``'s tree policy applies each stream's."""
+
+        return self._launch_bounded(snaps, pendings, min(block or self.block, max_nodes + 1), stable=False) \
+            if max_nodes > 0 else \
+            [None] * len(snaps)
+
+    def launch_chains(self, snaps: list, pendings: list[int], max_nodes: int, histories=None) -> list:
+        """A fixed logical stochastic block; its shape never depends on output room or another stream's budget."""
+
+        return self._launch_bounded(snaps, pendings, min(self.trained, max_nodes + 1), stable=True) \
+            if max_nodes > 0 else [None] * len(snaps)
+
+    def _launch_bounded(self, snaps, pendings, width, *, stable):
+        """Lookahead stays inside the companion's own positions, including unused speculative mask rows."""
+
+        out, groups = [None] * len(snaps), {}
+        for i, snap in enumerate(snaps):
+            length = width
+            if self.max_position is not None:
+                length = min(length, self.max_position - snap[3])
+            if length >= 2 and snap[2] > 0:
+                groups.setdefault(length, []).append(i)
+        for length, indices in groups.items():
+            launched = self._launch_blocks([snaps[i] for i in indices], [pendings[i] for i in indices], length,
+                                           stable=stable)
+            for i, value in zip(indices, launched):
+                out[i] = value
+        return out
+
+    def _launch_blocks(self, snaps: list, pendings: list[int], length: int, *, stable: bool = False,
+                       repair: bool = True) -> list:
         out: list = [None] * len(snaps)
         live = [i for i, snap in enumerate(snaps) if snap[2] > 0]
-        if not live or max_nodes < 1:
+        if not live or length < 2:
             return out
-        length = min(block or self.block, max_nodes + 1)
         tokens = torch.tensor([t for i in live for t in [pendings[i]] + [self.mask_id] * (length - 1)],
                               dtype=torch.int32, device=self.device)
         x = embedding(tokens, self.target_embed)
@@ -539,8 +571,21 @@ class DFlash2:
             logits = matmul_rows(h, self.sub_rows)
         else:
             logits = matmul(h, self.sub_head)
-        values, local_ids = torch.topk(logits.float(), k=16, dim=-1, sorted=False)
-        global_ids = self.head_ids[local_ids]
+        support = None
+        if stable and repair and self.world == 1:
+            from tensorfold.cuda.sampling import candidate_fields
+
+            values, global_ids, flags = candidate_fields(logits, 16, id_map=self.head_ids)
+            support = {"logits": logits, "ids": self._head_ids_host, "width": logits.shape[1],
+                       "columns": values.shape[1], "canonical": False}
+        elif stable:
+            # head_ids is ascending by construction, including each rank's contiguous half. Stable sorting thus
+            # fixes top16 boundary ties by global ID; compact copies do not retain the full sorted planes.
+            ranked, order = torch.sort(logits.float(), dim=-1, descending=True, stable=True)
+            values, global_ids = ranked[:, :16].contiguous(), self.head_ids[order[:, :16]]
+        else:
+            values, local_ids = torch.topk(logits.float(), k=16, dim=-1, sorted=False)
+            global_ids = self.head_ids[local_ids]
         if self.world == 2:
             import torch.distributed as dist
 
@@ -549,15 +594,23 @@ class DFlash2:
             dist.all_gather_into_tensor(both_values, values.contiguous())
             dist.all_gather_into_tensor(both_ids, global_ids.contiguous())
             merged = torch.cat((both_values[0], both_values[1]), dim=1)
-            values, pick = torch.topk(merged, k=16, dim=-1, sorted=False)
+            if stable:
+                # Equal-score IDs in rank0 precede all rank1 IDs; each rank's own equal-score order is ascending.
+                ranked, pick = torch.sort(merged, dim=-1, descending=True, stable=True)
+                values, pick = ranked[:, :16].contiguous(), pick[:, :16]
+            else:
+                values, pick = torch.topk(merged, k=16, dim=-1, sorted=False)
             global_ids = torch.cat((both_ids[0], both_ids[1]), dim=1).gather(1, pick)
-        shared = [global_ids, torch.cat((values, projected), dim=1), None]     # read back once, by the first finish
+        fields = (values, projected, flags[:, None].float()) if support is not None else (values, projected)
+        shared = [global_ids, torch.cat(fields, dim=1), None]     # read back once, by the first finish
+        if support is not None:
+            shared.append(support)                    # retained logits permit exact repair of a tied boundary
         for j, i in enumerate(live):
             out[i] = (shared, j * (length - 1), length - 1, int(pendings[i]))
         return out
 
-    def finish_tree(self, launched, context_length: int, max_nodes: int,
-                    sampling: Sampling | None = None) -> tuple[list[int], list[int], list[float]]:
+    def finish_tree(self, launched, context_length: int, max_nodes: int, sampling: Sampling | None = None,
+                    history=None) -> tuple[list[int], list[int], list[float]]:
         """The host half: the tree policy over a launched block's candidates; nodes, parents and scores in pop order."""
 
         if launched is None:
@@ -570,9 +623,66 @@ class DFlash2:
         return best_first(ids, floats[:, :16], floats[:, 16:],
                           self.weights["candidate_selector.predecessor_codebook"],
                           self.weights["candidate_selector.successor_codebook"],
-                          pending, min(127, max_nodes), sampling, context_length)
+                          pending, min(127, max_nodes), sampling, context_length, history)
 
     @torch.no_grad()
-    def propose_tree(self, pending: int, context_length: int, max_nodes: int,
-                     sampling: Sampling | None = None, block: int | None = None) -> tuple[list[int], list[int]]:
-        return self.finish_tree(self.launch_block(pending, max_nodes, block), context_length, max_nodes, sampling)[:2]
+    def propose_tree(self, pending: int, context_length: int, max_nodes: int, sampling: Sampling | None = None,
+                     block: int | None = None, history=None) -> tuple[list[int], list[int]]:
+        return self.finish_tree(self.launch_block(pending, max_nodes, block), context_length, max_nodes, sampling,
+                                history)[:2]
+
+    def finish_chain(self, launched, context_length: int, max_nodes: int, sampling: Sampling, history=None):
+        """An ancestral sparse-q chain, with proposal noise independent of target/acceptance/residual draws.
+
+        Each q is conditioned on the actual preceding proposal and penalty prefix. The candidate set is the
+        selected head's actual top16 support; q is normalized on that support before drawing and retained verbatim.
+        """
+
+        from tensorfold.engine.rejection import PROPOSAL, ChainPacket, draw, proposal_row
+
+        if launched is None:
+            return ChainPacket((), (), context_length)
+        shared, start, rows, pending = launched
+        if rows > max_nodes:
+            raise ValueError("a stochastic logical block cannot be truncated by a physical node budget")
+        if shared[2] is None:
+            shared[2] = (shared[0].cpu().numpy().astype(np.int64), shared[1].cpu().numpy().astype(np.float64))
+        if len(shared) == 4:
+            from tensorfold.cuda.sampling import canonical_candidates
+
+            support = shared[3]
+            if not support["canonical"]:
+                candidate_ids, raw = shared[2]
+                if raw[:, -1].any():
+                    raise ValueError("DFlash2 proposal head contains NaN or positive infinity")
+                columns = support["columns"]
+
+                def complete(row):
+                    return support["logits"][row].float().cpu().numpy(), support["ids"]
+
+                values, ids = canonical_candidates(raw[:, :columns], candidate_ids, 16, support["width"], complete)
+                shared[2] = (ids, np.concatenate((values, raw[:, columns:-1]), axis=1))
+                # All rows are canonicalized together, so later streams/duplicate finish calls need no GPU logits.
+                support["logits"] = support["ids"] = None
+                support["canonical"] = True
+        ids, floats = shared[2][0][start:start + rows], shared[2][1][start:start + rows]
+        self.last_candidates = ids
+        pred = self.weights["candidate_selector.predecessor_codebook"]
+        succ = self.weights["candidate_selector.successor_codebook"]
+        tokens, distributions = [], []
+        previous = pending
+        for depth in range(rows):
+            edge = succ[ids[depth]].astype(np.float64) @ (pred[previous].astype(np.float64) * floats[depth, 16:])
+            values = floats[depth, :16] + POLICY["edge"] * edge
+            if history is not None:
+                values = history.candidates(values[None], ids[depth][None], tokens)[0].astype(np.float64)
+            q = proposal_row(values, ids[depth], sampling)
+            previous = draw(q, sampling.seed, context_length + depth, domain=PROPOSAL)
+            tokens.append(previous)
+            distributions.append(q)
+        return ChainPacket(tuple(tokens), tuple(distributions), context_length)
+
+    @torch.no_grad()
+    def propose_chain(self, pending: int, context_length: int, max_nodes: int, sampling: Sampling, history=None):
+        launched = self.launch_chains([self.snapshot()], [pending], max_nodes)[0]
+        return self.finish_chain(launched, context_length, max_nodes, sampling, history)

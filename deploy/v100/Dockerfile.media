@@ -1,0 +1,52 @@
+# Add the exact CPU processor/decoder closure without replacing Torch/CUDA/NCCL.
+# media_artifacts is the completed offline source-build state, not a resolver.
+ARG SOURCE_IMAGE=tensorfold-v100:source-socket-04cf2557@sha256:eb09ff449dba6acc89d7207547a10b767adde592f47fef839f33dc98f269df28
+FROM ${SOURCE_IMAGE}
+RUN --network=none mkdir -p /opt/tensorfold-pins/audit-history \
+    && python /opt/tensorfold-pins/source_foundation.py audit-process > /opt/tensorfold-pins/audit-history/audit-process.json \
+    && cp /opt/tensorfold-pins/source_foundation.py /opt/tensorfold-pins/audit-history/source_foundation.py \
+    && cp /opt/tensorfold-pins/v100-source-foundation.json /opt/tensorfold-pins/audit-history/v100-source-foundation.json
+COPY --chmod=0444 deploy/v100/source_foundation.py /opt/tensorfold-pins/source_foundation.py
+RUN --network=none python /opt/tensorfold-pins/source_foundation.py revise-audit-policy \
+    --pins /opt/tensorfold-pins/source-pins.json --prior-audit /opt/tensorfold-pins/audit-history \
+    --output /opt/tensorfold-pins/v100-source-foundation.json \
+    && find /opt/tensorfold-pins/audit-history -type f -exec chmod 0444 {} + \
+    && chmod 0555 /opt/tensorfold-pins/audit-history
+COPY --chmod=0444 deploy/v100/media-native-apt.sha256 /tmp/media-native-apt.sha256
+RUN --network=none --mount=from=media_artifacts,source=/apt-debs,target=/media-debs \
+    cd /media-debs && sha256sum --strict --check /tmp/media-native-apt.sha256 \
+    && dpkg -i /media-debs/*.deb
+COPY --from=media_artifacts /native /opt/tensorfold-media
+COPY --chmod=0444 deploy/v100/media_foundation.py /opt/tensorfold-pins/media_foundation.py
+COPY --chmod=0444 deploy/v100/media_probe.py /opt/tensorfold-media-pins/media_probe.py
+COPY --chmod=0444 deploy/v100/media-pins.json deploy/v100/media-runtime-amd64.json \
+    deploy/v100/source-runtime-amd64.json deploy/v100/media-native-apt.json \
+    deploy/v100/requirements-media-runtime-offline-amd64.lock /opt/tensorfold-media-pins/
+COPY --chmod=0444 --from=media_artifacts /receipts/source-wheels.sha256 /opt/tensorfold-media-pins/source-wheels.sha256
+COPY --chmod=0444 --from=media_artifacts /receipts/media-build.json /opt/tensorfold-media-pins/media-build.json
+COPY --chmod=0444 --from=media_artifacts /receipts/source-torchvision.json /opt/tensorfold-media-pins/source-torchvision.json
+COPY --chmod=0444 --from=media_artifacts /receipts/source-transformers.json /opt/tensorfold-media-pins/source-transformers.json
+COPY --chmod=0444 --from=media_artifacts /receipts/source-pyav.json /opt/tensorfold-media-pins/source-pyav.json
+COPY --chmod=0444 --from=media_artifacts /receipts/source-ffmpeg.json /opt/tensorfold-media-pins/source-ffmpeg.json
+COPY --chmod=0444 --from=media_artifacts /receipts/source-dav1d.json /opt/tensorfold-media-pins/source-dav1d.json
+COPY --chmod=0444 --from=media_artifacts /downloads/preprocessor_config.json /opt/tensorfold-media-pins/preprocessor_config.json
+COPY --chmod=0444 --from=media_artifacts /downloads/video_preprocessor_config.json /opt/tensorfold-media-pins/video_preprocessor_config.json
+COPY --chmod=0444 --from=media_artifacts /downloads/av1-decode-model.ivf /opt/tensorfold-media-pins/av1-decode-model.ivf
+RUN --network=none --mount=from=media_artifacts,source=/support-wheels,target=/support-wheels \
+    --mount=from=media_artifacts,source=/wheels,target=/source-wheels \
+    cd /source-wheels && sha256sum --strict --check /opt/tensorfold-media-pins/source-wheels.sha256 \
+    && python -m pip install --no-index --find-links /support-wheels --require-hashes \
+         -r /opt/tensorfold-media-pins/requirements-media-runtime-offline-amd64.lock \
+    && python -m pip install --no-index --no-deps /source-wheels/*.whl \
+    && python -m pip check \
+    && python /opt/tensorfold-pins/media_foundation.py capture-install \
+         --pins /opt/tensorfold-media-pins/media-pins.json \
+         --runtime /opt/tensorfold-media-pins/media-runtime-amd64.json \
+         --base-runtime /opt/tensorfold-media-pins/source-runtime-amd64.json \
+         --wheels /source-wheels \
+    && find /opt/tensorfold-media-pins -type f -exec chmod 0444 {} + \
+    && find /opt/tensorfold-media-pins -type d -exec chmod 0555 {} + \
+    && python /opt/tensorfold-pins/media_foundation.py audit --pins /opt/tensorfold-media-pins/media-pins.json \
+    && python /opt/tensorfold-media-pins/media_probe.py --configs /opt/tensorfold-media-pins \
+    && python /opt/tensorfold-pins/source_foundation.py audit-process
+WORKDIR /verification

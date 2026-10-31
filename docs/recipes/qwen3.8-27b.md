@@ -1,5 +1,7 @@
 # Qwen3.8-27B
 
+CUDA DFlash2 sampled requests use standard rejection sampling: a fixed seed/configuration stays reproducible across cache reuse and supported batching, while sampled serial/drafted tokens may differ. Greedy serial identity remains required. Historical coupled-sampler measurements below retain their source and scope. See [migration validation](../rejection-sampling-validation.md) for outstanding qualification gates.
+
 Experimental [packed affine formats](../quantization.md) include 8-bit and mixed layer precision.
 
 The `qwen3_5` family combines Gated DeltaNet and full attention. The standard recipe below uses its
@@ -13,6 +15,11 @@ tensorfold serve TensorFold/Qwen3.8-27B-MLX-4bit --name bench
 DFlash2 is used automatically once pulled. On MLX, `--drafter none` disables that draft model;
 `--no-drafts` disables all drafts on either backend. CUDA requires DFlash2 unless `--no-drafts` is set.
 The target verifies every proposed token against its own serial sample.
+
+Sampling defaults come from the checkpoint's `generation_config.json`, `repetition_penalty` included (as in vLLM).
+Some checkpoints disagree with their model cards: AEON-7's Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-NVFP4-MIXED
+declares `repetition_penalty` 1.05 where its card recommends 1.0, so a profile that serves the card's settings
+passes `--repetition-penalty 1.0` (and the card's `--temperature`/`--top-p`/`--top-k`) explicitly.
 
 ## MLX
 
@@ -66,12 +73,14 @@ has been loaded here yet.
 
 The CUDA engine reads NVIDIA's ModelOpt export of the model (`nvidia/Qwen3.8-27B-NVFP4`: NVFP4 MLP and head, FP8
 attention and DeltaNet projections, bf16 embedding and gates) as it ships. The reader also takes
-compressed-tensors NVFP4 and FP8 exports. The `RishabhSinha/Qwen3.5-9B-NVFP4` packed export has the bounded
-public-constructor qualification described in [NVFP4 precision](cuda.md#nvfp4-precision); other export layouts
+compressed-tensors NVFP4 and FP8 exports, and ModelOpt mixed exports whose FP8 layers keep a scale per output channel
+with dynamic per-token inputs ([AEON's](#aeon-mixed-nvfp4-export)). The `RishabhSinha/Qwen3.5-9B-NVFP4` packed export
+has the bounded public-constructor qualification described in [NVFP4 precision](cuda.md#nvfp4-precision); other
+export layouts
 retain their separate validation scope. Each projection is read by its tensors: NVFP4 codes with their e4m3 block scales and
 FP8 bytes go to the device unchanged. Under `--precision full`, the lane matmuls turn them into exact bf16 operands
 (an e2m1 code times
-its block scale fits bf16), so drafted replies equal `"draft": false` ones and prompts keep their bits in any
+its block scale fits bf16), so greedy drafted replies equal `"draft": false` ones and prompts keep their bits in any
 chunking. `--parallel` serves concurrent requests as on the MLX checkpoint, each reply equal to the same request
 alone. One GPU: `--tp 2` stops at startup (two ranks read the MLX checkpoint), and so does `--vision` until image
 input is qualified on this checkpoint. The default `--precision checkpoint` selects the checkpoint activation math
@@ -101,6 +110,40 @@ The table predates a fix to the FP8 lane matmul (its pipeline stages now start o
 1,240 tok/s at 2k / 8k / 16k / 32k / 64k on the FP8 prompt path (today's `--prefill-fp8`), level with the MLX
 checkpoint's. The startup estimate is 62.5 GiB at the 262,144-token window.
 
+### AEON mixed NVFP4 export
+
+`AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-NVFP4-MIXED` (revision `282e6775`) is a ModelOpt 0.46.0 mixed export:
+the MLPs of layers 0-55 are NVFP4 with static FP4 activation scales (168 projections), and the attention and DeltaNet
+projections and the MLPs of layers 56-63 are FP8 with a scale per output channel and dynamic per-token activations,
+ModelOpt's `FP8_PER_CHANNEL_PER_TOKEN` (232 projections). The embedding, head and DeltaNet gates are bf16. Under the
+default `--precision checkpoint` the FP8 layers quantize each prompt or draft row under its own scale onto the FP8
+tensor cores ([NVFP4 precision](cuda.md#nvfp4-precision) has the rule); `--precision full` runs bf16 rows against the
+stored FP8 weights, each sum times its channel's scale. `--prefill-fp8` is refused at load for this export, since its
+prompts already take the declared FP8 math. The startup line says "FP8 layers FP8 x FP8 (rows quantized a token at a
+time)".
+
+The export also ships a `tokenizer.json` (sha256
+`6f32ce20…`) whose pre-tokenizer splits combining marks from their letters: `\p{L}+` where the model it was tuned from,
+`Qwen/Qwen3.8-27B` (revision `1d4bf0f2`, `tokenizer.json` sha256 `0997f410…`), has `[\p{L}\p{M}]+`. Devanagari, Thai
+and Arabic text with marks therefore encodes into other tokens; English, code, CJK, Korean and Vietnamese samples encode
+the same. The vocabulary, merges and added tokens are equal, so `--tokenizer` admits upstream's file in place of the
+shipped one (the startup log reports `pre_tokenizer, decoder, padding` as differing; the decoder's byte-level options
+leave decoded text unchanged):
+
+```bash
+TOKENIZER=$(python3 -c "from huggingface_hub import hf_hub_download as get; print(get('Qwen/Qwen3.8-27B', 'tokenizer.json', revision='1d4bf0f2ff6012fd82039f2fa52739d0dd7c60c0'))")
+tensorfold serve AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-NVFP4-MIXED --tokenizer "$TOKENIZER"
+```
+
+The tokenizer results come from CPU comparisons of the two files. In the historical coupled-sampler qualification on one DGX Spark (GB10) with the upstream tokenizer,
+the default `--precision checkpoint` and DFlash2, drafted replies equal serial ones token for token (greedy and seeded,
+also under `full`), and a reply resumed from a cached prompt equals a cold one. 512-token replies decoded at 76.4
+(code), 30.5 (chat), 81.1 (JSON) and 11.1 (Hindi) tok/s greedy on the engine at an 8,192-token context, against
+11.2-12.2 serially, and at 31-53 tok/s through `tensorfold serve` at short and 4,096-token prompts. Prompts ran at
+about 1,750 / 2,580 / 2,300 tok/s at 4k / 16k / 32k tokens. The tool, needle and KL gates are pending;
+[the validation record](../optimization-validation.md#qwen38-27b-aeon-mixed-nvfp4-2026-10-19) has the conditions,
+including the GB10's thermal observations at long prompts.
+
 ### EXL3 checkpoints (experimental)
 
 The CUDA engine also reads turboderp's EXL3 packs of the model (`turboderp/Qwen3.8-27B-exl3`, a branch per size,
@@ -114,7 +157,7 @@ tensorfold pull z-lab/Qwen3.8-27B-DFlash2
 tensorfold serve qwen27b-exl3-3.00bpw --host 0.0.0.0 --port 8080
 ```
 
-Verify windows use the row-invariant EXL3 linear, so drafted replies equal `"draft": false` ones; prompts use the
+Verify windows use the row-invariant EXL3 linear, so greedy drafted replies equal `"draft": false` ones; prompts use the
 EXL3 prompt path (W_q decoded once a chunk, a fixed-tile GEMM), whose bits do not depend on chunking, so the
 engine keeps prompt ends as it does for the MLX checkpoint. The drafter reads the target's 6-bit head over its
 draft vocabulary by slicing the head's 128-column strips as stored: its logits are the target's, bit for bit.
@@ -159,7 +202,8 @@ tensorfold serve TensorFold/Qwen3.8-27B-MLX-4bit --parallel 16 --context 8192 --
 `--parallel N` decodes up to N requests in shared rounds: each stream verifies its own DFlash2 tree in one
 forward, and every reply equals the same request served alone. A new prompt prefills 1,024 tokens a round
 while the other streams decode. States kept at message starts let prompts that share a system prompt resume
-there, and each stream's caches are sized once, at admission.
+there. Each stream's caches reserve addresses for its prompt and reply once, at admission; two ranks map them whole
+then, one GPU a step at a time while memory lasts, in place ([cache memory](cuda.md#cache-memory)).
 
 On one DGX Spark, with the workload from issue #38 (48 chat requests of 3,000 to 5,100 tokens sharing a
 2,900-token system prompt, up to 512 tokens each, greedy, all sent at once), TensorFold serves 161.7 tok/s at
@@ -168,11 +212,35 @@ and `--max-num-seqs 16` serves 132.1 tok/s at 51.7 GiB on the same Spark. At 8 a
 serves 147.5 and 112.0 tok/s. `tools/shared_prefix_prompts.py` builds the workload and
 `tools/shared_prefix_load.py` sends it (`--concurrency`, `--mem` for the memory peak).
 
+### Context and YaRN
+
+The checkpoints declare 262,144 positions of default RoPE, and `tensorfold serve` admits that by default. On CUDA,
+`--yarn-factor F` extends the text RoPE with static YaRN to F times the native positions; the upstream card's
+1,000,000-token reach is `--yarn-factor 4` (1,048,576 positions):
+
+```bash
+tensorfold serve TensorFold/Qwen3.8-27B-MLX-4bit --yarn-factor 4 --context 1048576
+```
+
+YaRN interpolates the low-frequency rotary pairs, keeps the high-frequency ones and scales cos and sin by its
+amplitude (Transformers' formula; 1 + 0.1 ln F, 1.1386 at F = 4) in every prompt, decode, verify and concurrent
+forward, for the MLX, EXL3 and NVFP4 checkpoints and on two ranks, which must be given the same factor. A checkpoint
+that declares YaRN in its config brings its own factor, which `--yarn-factor` overrides. The startup log prints the
+factor, amplitude, original context and position limit. The DFlash2 drafter keeps its own RoPE: it only proposes
+tokens. The card notes that static YaRN applies at every length and can hurt short texts. `--context` still sets
+admission, within the memory estimate: bf16 attention caches take 64 KiB a token (16 attention layers, 4 KV heads of
+256), 64 GiB for one stream at 1,048,576 tokens. Serving on a Mac refuses `--yarn-factor`.
+
+Checked so far: the frequencies come from the shared policy that is tested against Transformers', the q/k rotation
+kernel is tested against a float reference with the amplitude, and a synthetic-model GPU test checks that every forward
+path rotates with it. A full-model run at the extended window (long-context retrieval, the quality gates, memory and
+speed) is pending.
+
 ### Structured output
 
 With `pip install 'tensorfold[grammar]'` (xgrammar), serving on one or two GPUs enforces `response_format` and the
-`guided_*` fields: drafts the grammar rejects are cut and rows are masked by their paths' grammar before sampling, so
-drafted, serial and concurrent replies stay equal. See [the API reference](../api.md#structured-output).
+`guided_*` fields: target rows are masked by their paths' grammar before sampling. Greedy serial identity and the
+sampled distribution/repeat/cache/batch contracts above apply. See [the API reference](../api.md#structured-output).
 
 ### Historical public-fixture results
 

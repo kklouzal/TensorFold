@@ -12,6 +12,8 @@ from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
 
+from tests.cli_server_fixture import cuda_cli_app, cuda_cli_engine
+
 from tensorfold import cli
 from tensorfold.serve_options import check_numbers
 from tensorfold.server.request_limits import RequestLimit, optional_limit
@@ -253,7 +255,7 @@ class Ownership(unittest.TestCase):
             order = []
             args.tp, args.rank, args.master = (2, 1, "owner") if phase == "follow" else (1, 0, "")
             args.prefill_fp8 = phase == "refusal"
-            engine = SimpleNamespace(
+            engine = cuda_cli_engine(
                 w=SimpleNamespace(precision="checkpoint", fast_prefill=False), close=lambda: order.append("close")
             )
 
@@ -267,7 +269,7 @@ class Ownership(unittest.TestCase):
                 order.append("app")
                 if phase == "app":
                     raise OpaqueFailure()
-                return SimpleNamespace(effective_context_window=2048)
+                return cuda_cli_app(effective_context_window=2048)
 
             def serve(*unused, **kwargs):
                 order.append("serve")
@@ -420,11 +422,14 @@ class Numbers(unittest.TestCase):
     def test_generation_config_validation_and_do_sample_precedence(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "generation_config.json"
-            for value in ([], {"temperature": float("nan")}, {"min_p": 2}, {"top_p": 1.5}, {"top_k": True}):
+            for value in ([], {"temperature": float("nan")}, {"do_sample": False, "temperature": float("nan")},
+                          {"min_p": 2}, {"top_p": 1.5}, {"top_k": True}):
                 path.write_text(json.dumps(value))
                 with self.assertRaises(ValueError):
                     cli._generation_config(Path(tmp))
-            path.write_text(json.dumps({"do_sample": False, "temperature": float("nan"), "top_k": 20}))
+            # This is valid JSON but not a numeric sampling value. Greedy
+            # selection replaces it; non-JSON NaN above is rejected at read.
+            path.write_text(json.dumps({"do_sample": False, "temperature": "unused", "top_k": 20}))
             self.assertEqual(cli._generation_config(Path(tmp)), {"temperature": 0.0, "top_k": 20})
 
 

@@ -55,7 +55,7 @@ class Q4:
         return sum(t.numel() * t.element_size() for t in (self.weight, self.scales, self.biases))
 
 
-# nibble slot p of a lane's word holds input 32 v + 2 (lane % 4) + OFFSETS[p] of the group (see ``pair`` in qmm.cu)
+# nibble slot p of a lane's word holds input 32 v + 2 (lane % 4) + OFFSETS[p] of the group (``pair`` in qmm_frag.cuh)
 OFFSETS = (0, 8, 16, 24, 1, 9, 17, 25)
 
 
@@ -96,7 +96,11 @@ def pack(weight: torch.Tensor, scales: torch.Tensor, biases: torch.Tensor, gs: i
 
     def major(t: torch.Tensor) -> torch.Tensor:
         t = t.t().contiguous()
-        return torch.cat([t, t.new_zeros((kg, pad))], dim=1).contiguous() if pad else t
+        t = torch.cat([t, t.new_zeros((kg, pad))], dim=1).contiguous() if pad else t
+        # PyTorch may preserve stride(0)=1 for a contiguous (1,N) transpose.
+        # The native packed ABI requires row-major strides even for one group;
+        # this view addresses exactly the same N scalars and performs no copy.
+        return t.as_strided((kg, npad), (npad, 1)) if kg == 1 else t
 
     return Q4(out, major(scales), major(biases), n, k, gs)
 

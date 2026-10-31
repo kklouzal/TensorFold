@@ -1,4 +1,6 @@
-"""Flash Next's CUDA key/value caches: bf16, or ExLlamaV3's -cq 8 / -cq 4 codes (H32-rotated groups of 32, fp16 absmax scales, midpoint grid) kept rotated."""
+"""Flash Next's CUDA key/value caches in every registered format (``kv_formats``), each side its own: bf16,
+ExLlamaV3's -cq 8 / -cq 4 codes (H32-rotated groups of 32, fp16 absmax scales, midpoint grid) kept rotated, or
+RotorQuant's packed groups of 128 with an fp32 scale each."""
 
 from __future__ import annotations
 

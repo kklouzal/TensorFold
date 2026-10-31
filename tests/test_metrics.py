@@ -281,11 +281,11 @@ def test_the_vllm_mirror_names_carry_the_same_readings():
     body = metrics.render(idle)
     for native, mirror in (("requests_running", "num_requests_running"),
                            ("requests_waiting", "num_requests_waiting"),
-                           ("kv_cache_usage_ratio", "kv_cache_usage_perc"),
                            ("mtp_drafted_total", "spec_decode_num_draft_tokens_total"),
                            ("mtp_accepted_total", "spec_decode_num_accepted_tokens_total")):
         assert sample(body, f"{metrics.PREFIX}{native}") == sample(body, f"{metrics.PREFIX}{mirror}")
-    assert sample(body, f'{metrics.PREFIX}kv_cache_usage_perc{{stream="0"}}') == "0"
+    # vLLM's KV usage is a memory reading: absent where no engine reports one, never a per-stream token ratio
+    assert f"{metrics.PREFIX}kv_cache_usage_perc" not in body
     app = SimpleNamespace(scheduler=SimpleNamespace(active=1, waiting=2, filling=[object()]),
                           context_window=80,
                           engine=SimpleNamespace(_live=[(SimpleNamespace(cache_len=40, finished=False), None)],
@@ -296,8 +296,7 @@ def test_the_vllm_mirror_names_carry_the_same_readings():
             == sample(body, f"{metrics.PREFIX}num_requests_running") == "2")
     assert (sample(body, f"{metrics.PREFIX}requests_waiting")
             == sample(body, f"{metrics.PREFIX}num_requests_waiting") == "2")
-    assert sample(body, f'{metrics.PREFIX}kv_cache_usage_ratio{{pool="0"}}') == \
-        sample(body, f'{metrics.PREFIX}kv_cache_usage_perc{{stream="0"}}') == "0.5"
+    assert sample(body, f'{metrics.PREFIX}kv_cache_usage_ratio{{pool="0"}}') == "0.5"
     assert sample(body, f"{metrics.PREFIX}mtp_drafted_total") == \
         sample(body, f"{metrics.PREFIX}spec_decode_num_draft_tokens_total") == "3"
     assert sample(body, f"{metrics.PREFIX}mtp_accepted_total") == \
@@ -322,7 +321,9 @@ def test_the_event_counters_are_read_where_the_server_keeps_them():
                                  waiting=Queue(), held=None, yields=4),
         context_window=100))
     assert sample(metrics.render(cuda), f"{metrics.PREFIX}preemptions_total") == "4"
-    assert f"{metrics.PREFIX}client_disconnections_total" not in metrics.render(cuda)
+    assert sample(metrics.render(cuda), f"{metrics.PREFIX}num_preemptions_total") == "4"
+    # CUDA counts the requests whose client left (their outcome is abort); none has yet
+    assert sample(metrics.render(cuda), f"{metrics.PREFIX}client_disconnections_total") == "0"
 
 
 def test_both_http_layers_serve_the_mirrored_and_event_families(tmp_path):
@@ -330,7 +331,6 @@ def test_both_http_layers_serve_the_mirrored_and_event_families(tmp_path):
     from tests.test_cuda_server_disconnect import MESSAGES, PacedEngine, WAIT, app_for, post, serving, until
 
     pairs = (("requests_running", "num_requests_running"), ("requests_waiting", "num_requests_waiting"),
-             ("kv_cache_usage_ratio", "kv_cache_usage_perc"),
              ("mtp_drafted_total", "spec_decode_num_draft_tokens_total"),
              ("mtp_accepted_total", "spec_decode_num_accepted_tokens_total"))
     mac_app = SimpleNamespace(served_name="test", model_ids=["test"], max_batch_size=1,

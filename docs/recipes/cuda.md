@@ -20,6 +20,13 @@ whose CUDA engine reads it declares `EXL3_VARIANT = "any"`, and TensorFold check
 downloading. The dense linear layer, its plan and its measured throughput are in [EXL3 weights](exl3.md);
 `python -m tensorfold.cuda.exl3.inspect MODEL_DIR` prints what a checkpoint holds.
 
+The shared [metadata resolver](../model-metadata.md) reconciles recognized
+quantization sidecars before format preflight. NVFP4 activation selection follows
+per-projection declarations and validated scales; W4A16 remains weight-only even
+when a stored input scale exists. Explicit precision flags remain authoritative.
+Reply EOS also includes the tokenizer's declared EOS, and template file/name
+overrides use the same captured source for rendering, probes and counting.
+
 ## Checkpoints
 
 On CUDA, TensorFold serves NVFP4 and EXL3 checkpoints, usually the ones Mia-AiLab's DGX Spark recipes run or your
@@ -95,8 +102,9 @@ separate prefill and decode forms. A shared call must preserve each row's arithm
 Prompt matmuls take bf16 activations by default. `--prefill-fp8` switches the ones that have an FP8 kernel (the
 27B's and Qwen3.6's MLX 4-bit projections, and the FP8, NVFP4 and MXFP8 layers of NVFP4 checkpoints) to e4m3
 activations with one scale a row, the arithmetic of TensorFold 0.5.0's prompts; `--no-prefill-fp8` asks for bf16 by
-name. e4m3 keeps 3 mantissa bits to bf16's 7, and one scale a row loses a row's small values when one of its channels
-is large. Either way a drafted reply equals the same server's serial one and a resumed prompt equals a fresh one;
+name. A checkpoint with per-channel FP8 layers ([NVFP4 precision](#nvfp4-precision)) refuses `--prefill-fp8` at
+startup: its checkpoint math already gives those layers e4m3 prompt rows, one scale a token. e4m3 keeps 3 mantissa
+bits to bf16's 7, and one scale a row loses a row's small values when one of its channels is large. Either way a drafted reply equals the same server's serial one and a resumed prompt equals a fresh one;
 only the prompt's own arithmetic changes.
 
 Quality over 8 sequences of 4,096 tokens (wikitext-2, CPython source, chats), every position scored. The reference
@@ -140,8 +148,13 @@ about 88 TFLOPS, 84% of the GB10's practical bf16 rate, against about 130 for th
 
 An NVFP4 checkpoint names the formats of its activations as well as its weights. `--precision checkpoint`, the
 default, runs that math, as the checkpoint's own runtimes do: each row is quantized under the checkpoint's static
-input scale, to NVFP4 (per-16 e4m3 block scales) in NVFP4 layers and to e4m3 in FP8 layers. `--precision full` runs
-bf16 activations against the stored weights exactly. The weights are the same in both modes; only the math changes.
+input scale, to NVFP4 (per-16 e4m3 block scales) in NVFP4 layers and to e4m3 in FP8 layers. FP8 layers stored with
+a scale per output channel and declared dynamic per-token inputs (ModelOpt `FP8_PER_CHANNEL_PER_TOKEN`; ModelOpt
+0.46.0 records those inputs as static in `config.json`, and the algorithm's declaration governs) quantize each row
+under its own scale instead, vLLM's rule: `s = max(amax / 448, 1 / (448 * 512))`, codes `e4m3(x / s)`, each fp32 sum
+times its channel's scale, then its row's. `--precision full` runs bf16 activations against the stored weights
+exactly (per-channel FP8: each sum times its channel's scale). The weights are the same in both modes; only the math
+changes.
 A drafted reply equals the same server's serial one, and a resumed prompt a fresh one, in either mode. Which math a
 GPU runs under `checkpoint` (its startup line says which; no GPU from 8.9 is refused):
 
@@ -149,6 +162,26 @@ GPU runs under `checkpoint` (its startup line says which; no GPU from 8.9 is ref
 | --- | --- | --- |
 | SM 12.x (RTX 50, RTX PRO 6000 Blackwell, DGX Spark) | FP4 x FP4, block-scaled mma | FP8 x FP8 |
 | SM 8.9-10.x (RTX 40, H100, H200, B200) | W4A16 (bf16 activations) | FP8 x FP8 |
+
+Flash Next ModelOpt routed experts follow their per-projection declarations:
+weight-only projections stay W4A16; declared static group-16 A4 uses native math
+on SM12. A routed bank must have uniform activation declarations; mixed A4 and
+weight-only projections require `--precision full`. Its `input_scale` and
+`weight_scale_2` are direct dequantization scales.
+TensorFold uses explicit FP32 round-to-nearest operations and multiplies the
+original scales for alpha, without a reciprocal roundtrip. This defines its
+native arithmetic; it does not promise bit identity with ModelOpt training
+fakequant or another runtime's approximate-reciprocal kernel. Shared experts,
+backbone and MTP retain their own declared representations and draft exclusions.
+An expert group negotiates one math policy before expert payload allocation: all-native ranks
+can use A4; a group containing a nonnative rank uses W4A16 throughout.
+
+Installed ARM source `bd1f0e9d` ran the full Flash Next ModelOpt export
+`dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4` on GB10 with resident routed
+experts, SSD n-grams, native MTP, vision and four concurrent slots. The
+[source-specific validation](../gb10-nvfp4-validation.md) records exact 512-token
+serial/MTP/concurrent identity, image/video and strict-tool checks, observed HTTP
+rates and remaining final-composition/performance gates.
 
 The normal public constructor was exercised on `RishabhSinha/Qwen3.5-9B-NVFP4` revision
 `d51f8fa57a09df7d91a2d84017b7f7cb310887da`, a compressed-tensors `nvfp4-pack-quantized` export,
@@ -159,6 +192,17 @@ max row width 16, BF16 KV, drafts off, `--prefill-fp8` disabled and the default 
 public constructor without admission, loader or precision hooks. Checkpoint/model bytes remained unchanged,
 and model allocations and reservations returned to zero on close. This coverage does not establish other
 export layouts, drafted or concurrent decoding, cross-precision equality or broader quality.
+
+The current installed desktop image also ran the real ModelOpt export
+`surogate/Qwen3.5-9B-NVFP4`, revision `3410fbc4f4075661f58f6b222d05b6dde646b8c1`,
+in both precision modes with four slots and a configured 16,384-token window.
+Each mode reproduced three 512-token coding replies and passed supported
+API/concurrent/strict-JSON checks through composite verification. This export
+needs explicit `stop: ["<|im_end|>"]`; its JSON-call template correctly refuses
+XML-only strict function tools and the strict Harness catalog. The
+[qualification](../small-nvfp4-validation.md) gives exact observed rates,
+resource limits, images and retained failed test assumptions. It does not
+qualify Flash Next's RAM-backed experts or new drafting/vision configurations.
 
 `nvidia/Qwen3.8-27B-NVFP4` ran on an RTX PRO 6000 Blackwell Max-Q and a DGX Spark (GB10). The SM 8.9, 9.0 and 10.0
 builds are compiled, and their math is checked on Blackwell: the SM 8.9-10.x choice served with drafted == serial,
@@ -218,6 +262,17 @@ CUDA context and workspace memory the estimate does not count. `TENSORFOLD_MEMOR
 (at least 2 GiB), and `TENSORFOLD_CUDA_MEMORY_LIMIT_GB` caps the grant from above in GiB, an absolute budget like
 the MLX one. A floor close to the smallest can end requests with CUDA errors mid-reply
 (`PYTORCH_CUDA_ALLOC_CONF` `=` `expandable_segments:True` reduces fragmentation near the cap).
+`TENSORFOLD_CUDA_MEMORY_RESERVE_GIB` separately sets the discrete GPU reserve,
+accepting finite values from zero to the device's size. It overrides the global
+reserve for discrete CUDA admission and the automatic expert cache's usual
+512 MiB margin, without subtracting it twice. Unset retains existing defaults.
+For a dedicated host with an 8 GiB RAM reserve and all available VRAM, set
+`TENSORFOLD_MEMORY_RESERVE_GIB=8` and `TENSORFOLD_CUDA_MEMORY_RESERVE_GIB=0`,
+leave absolute memory-cap variables unset, and launch without container CPU/RAM
+caps. Mandatory allocations and future KV/workspace reservations still apply.
+Host admission observes available RAM at its boundary; it cannot reserve that
+headroom against other processes. The local qualification additionally monitors
+`MemAvailable` and stops its owned validation server if it falls below 8 GiB.
 Unified-memory GPUs share physical RAM with host buffers and file-backed model data. Admission uses the
 host's available memory, reclaimable page cache included, less a floor of a tenth of RAM (at least 4 GiB) that
 `TENSORFOLD_MEMORY_RESERVE_GIB` can move, and considers mapped-table residency when sizing an automatic
@@ -228,6 +283,26 @@ collective sequence aligned. MLX disk snapshots and cache-budget flags do not co
 caches. The CUDA CLI also does not apply `--alias`; use `--name` for the served model ID. `--thinking`,
 `--reasoning-effort` and `--thinking-budget` set the defaults a request's `chat_template_kwargs.enable_thinking`,
 `reasoning_effort` and `thinking_budget` override, as on the Mac.
+
+### Cache memory
+
+Qwen3.8-27B and Qwen3.6-35B-A3B keep each attention layer's keys and values in an arena of CUDA virtual memory
+([`kv_arena.py`](../../src/tensorfold/cuda/kv_arena.py): `cuMemAddressReserve`, `cuMemCreate` and `cuMemMap` through
+`libcuda`). An arena reserves addresses once for the rows its cache may hold and maps physical memory at its end,
+in the driver's allocation granules, as the cache grows: rows never move, so growth copies nothing. Admission rounds
+each cache's rows up to 2 MiB; a supported driver's actual mapping granule divides that bound. A dropped cache's memory goes back to the driver, not to PyTorch's caching allocator, once
+the work queued before it finishes, so `torch.cuda.memory_allocated` leaves it out while `nvidia-smi` shows it. A GPU
+or driver that does not report virtual memory management, or whose granularity does not divide 2 MiB, is refused at
+startup before weight loading. Admission rounds each independent retained lineage's K/V mappings separately;
+the current lineage and its clones share their arenas, while MoE MTP graphs retain separate buffers. The NVFP4 MoE
+expert-pool reservation uses the same rounded mappings for live lanes and retained prefixes, with no growth-copy
+allowance. Shared live-memory checks count queued arena releases as allocated until the driver frees them; reading
+the budget does not synchronize or reap caches. The arena implementation was checked on an RTX PRO 2000 Blackwell (2 MiB granules); final composed-source
+GPU checks and GB10 qualification are pending.
+
+If a cache finalizer cannot establish CUDA completion, the driver retains its mappings and reports the original
+failure at the next startup, arena or memory-budget operation. It refuses further ownership operations without
+freeing memory that may still have consumers; restarting the process ends that failed driver's lifetime.
 
 ## Measuring
 

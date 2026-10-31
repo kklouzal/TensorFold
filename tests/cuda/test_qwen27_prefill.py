@@ -15,16 +15,9 @@ from tensorfold.families.qwen3_5.cuda.forward import State, commit, tree_forward
 from tensorfold.families.qwen3_5.cuda.prefill import prefill_chunk, prefill_state  # noqa: E402
 from tensorfold.families.qwen3_5.cuda.qmm_fast import prepare  # noqa: E402
 from tensorfold.families.qwen3_5.cuda.weights import Attention, Config, GDN, Layer, QLinear, Weights  # noqa: E402
+from qwen_engine_checks import same_state  # noqa: E402
 
 V = 256
-
-
-@pytest.fixture(params=[False, True], ids=["bf16", "fp8"])
-def fp8(request):
-    """Each test once with bf16 prompts (the default) and once with --prefill-fp8."""
-
-    with prompt_precision.using(request.param):
-        yield request.param
 
 
 def _model():
@@ -69,24 +62,13 @@ def _chunked(w, prompt, bounds):
     return st, normed
 
 
-def _same_state(a, b):
-    assert a.pos == b.pos
-    for x, y in zip(a.rec, b.rec):
-        assert (x is None) == (y is None) and (x is None or torch.equal(x, y))
-    for x, y in zip(a.conv, b.conv):
-        assert (x is None) == (y is None) and (x is None or torch.equal(x, y))
-    for x, y in zip(a.kv, b.kv):
-        if x is not None:
-            assert torch.equal(x[0][:a.pos], y[0][:b.pos]) and torch.equal(x[1][:a.pos], y[1][:b.pos])
-
-
 @pytest.mark.parametrize("size", [1, 7, 16, 64, 256])
 def test_every_chunking_gives_the_same_state(size, fp8):
     w = _model()
     prompt = _prompt(300)
     whole, h_whole = _chunked(w, prompt, [(0, 300)])
     parts, h_parts = _chunked(w, prompt, [(a, min(a + size, 300)) for a in range(0, 300, size)])
-    _same_state(whole, parts)
+    same_state(whole, parts)
     assert torch.equal(h_whole, h_parts)
 
 
@@ -99,7 +81,7 @@ def test_ragged_resume_equals_fresh(fp8):
     h_resumed = None
     for a, b in [(137, 140), (140, 211), (211, 300)]:
         h_resumed, _ = prefill_chunk(w, ids[a:b], resumed)
-    _same_state(fresh, resumed)
+    same_state(fresh, resumed)
     assert torch.equal(h_fresh, h_resumed)
 
 
@@ -109,7 +91,7 @@ def test_prefix_reuse_through_prefill_equals_fresh_and_drafts_equal_serial(fp8):
     fresh, first_fresh = prefill(w, prompt, None)
     cached, _ = prefill(w, prompt[:101], None)
     resumed, first_resumed = prefill(w, prompt, None, state=cached)
-    _same_state(fresh, resumed)
+    same_state(fresh, resumed)
     assert first_fresh == first_resumed
     serial = serial_decode(w, fresh, first_fresh, 24, None, stop_eos=False)
     drafted = draft_decode(w, resumed, prompt, first_resumed, 24, None, draft=None, stop_eos=False)
@@ -125,7 +107,7 @@ def test_a_cache_limit_changes_no_bits(length, limit, fp8):
     bounded.limit = limit
     h_free = prefill_state(w, prompt, free)
     h_bounded = prefill_state(w, prompt, bounded)
-    _same_state(free, bounded)
+    same_state(free, bounded)
     assert torch.equal(h_free, h_bounded)
     fresh, first = prefill(w, prompt, None)
     kept, first_kept = prefill(w, prompt, None, limit=limit)
@@ -143,7 +125,7 @@ def test_a_cache_limit_changes_no_bits(length, limit, fp8):
             _, record = tree_forward(w, torch.tensor([token], dtype=torch.int32, device="cuda"), [-1], st)
             commit(st, record, [0])
         replied.append(st)
-    _same_state(*replied)
+    same_state(*replied)
     assert max(kv[0].shape[0] for kv in replied[1].kv if kv is not None) <= limit
 
 

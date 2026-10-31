@@ -25,7 +25,8 @@ def stream_geometry(text: dict, streams: int, keep: int, depth: int):
     """The 27B's concurrent geometry plus the MTP head's keys and values for each stream and kept end, and the lone stream's graph buffers."""
 
     from tensorfold.cuda.capacity import Geometry
-    from tensorfold.cuda.geometry import layer_counts, stream_geometry as dense
+    from tensorfold.cuda.geometry import arena_kv_bytes, layer_counts
+    from tensorfold.cuda.geometry import stream_geometry as dense
 
     base = dense(text, 1, streams, keep)
     linear, attention = layer_counts(text)
@@ -37,15 +38,26 @@ def stream_geometry(text: dict, streams: int, keep: int, depth: int):
     state = linear * (nv * dk * dv * 4 + (int(text["linear_conv_kernel_dim"]) - 1) * (2 * nk * dk + nv * dv) * 2)
     if not depth:
         return Geometry(base.bytes_at, 1)
-    return Geometry(lambda slots: base.bytes_at(slots) + (streams + keep + 1) * slots * layer
-                    + state + slots * (attention + 1) * layer, depth + 1)
+    return Geometry(lambda slots: base.bytes_at(slots) + (streams + keep + 2) * slots * layer
+                    + state + arena_kv_bytes(attention, kv_heads, head_dim, slots), depth + 1)
 
 
 class Qwen36Engine:
     """``eos``, ``generate`` and ``context_window`` for ``tensorfold.cuda.server``; ``streams`` > 1 decodes that many requests together."""
 
     def __init__(self, model_dir: Path, *, depth: int = DEPTH, confidence: float = CONFIDENCE,
-                 context: int | None = None, context_explicit: bool | None = None, streams: int = 1) -> None:
+                 context: int | None = None, context_explicit: bool | None = None, streams: int = 1,
+                 eos_token_ids=None, chat_template_file=None, chat_template_name=None,
+                 yarn_factor: float | None = None) -> None:
+        from tensorfold.cuda.chat_template import prepare_chat_template
+
+        from .. import rope_parameters
+
+        self.depth, self.confidence = int(depth), float(confidence)
+        self.chat_template = prepare_chat_template(model_dir, template_file=chat_template_file,
+                                                   template_name=chat_template_name)
+        rope = rope_parameters(model_dir, yarn_factor)       # after cheap options/templates, before CUDA preparation
+        yarn = rope if rope.rope_type == "yarn" else None
         import torch
 
         from tensorfold.cuda.capacity import admit
@@ -57,20 +69,27 @@ class Qwen36Engine:
         from .weights import MTP_FILE, load, load_mtp
 
         torch.cuda.set_device(0)
-        self.depth, self.confidence = int(depth), float(confidence)
+        from tensorfold.cuda.kv_arena import driver
+
+        driver(0)                           # refuse unsupported VMM before loading any target or MTP payload
         many = streams > 1
         if many:             # streams' caches of many sizes come and go: growable segments, less slack
-            torch.cuda.memory._set_allocator_settings("expandable_segments:True")
+            torch._C._accelerator_setAllocatorSettings("expandable_segments:True")
         extra = (Path(model_dir) / MTP_FILE,) if self.depth and (Path(model_dir) / MTP_FILE).is_file() else ()
         # one admission for one stream or many (every stream's states and caches, kept prompt ends), before any load
         geometry = ((lambda text: stream_geometry(text, streams, KEEP_MANY, self.depth)) if many else
-                    (lambda text: gdn_geometry(text, 1, self.depth + 1, mtp=self.depth > 0)))
+                    (lambda text: gdn_geometry(text, 1, self.depth + 1, mtp=self.depth > 0, kept=KEEP)))
         self.capacity_plan = admit(model_dir, context, context_explicit, torch, geometry,
                                    lambda name, info: (mtp_weights(name, info) if ".mtp." in name
                                                        else linear_weights(name, info)),
-                                   extra_files=extra)
+                                   extra_files=extra,
+                                   **({"context_limit": yarn.context_limit, "original_context": yarn.native_context}
+                                      if yarn is not None else {}))
         self.context_window = self.capacity_plan["context_window"]
-        self.w = load(model_dir)
+        self.w = load(model_dir, eos_token_ids=eos_token_ids, rope=yarn)
+        if yarn is not None:
+            print(f"[tensorfold] static YaRN factor {yarn.factor:g}, rotary amplitude {yarn.attention_factor:.8g}, "
+                  f"original context {yarn.native_context}; positions up to {yarn.context_limit}", flush=True)
         self.head = self.graphs = None
         if self.depth:
             m = load_mtp(model_dir, self.w)
@@ -86,7 +105,7 @@ class Qwen36Engine:
             self.graphs = Graphs(self.w, self.head, self.context_window + self.depth + 1)
         torch.cuda.empty_cache()
         self.eos = tuple(self.w.config.eos)
-        self.points = resume_points(model_dir)
+        self.points = resume_points(model_dir, template=self.chat_template)
         self.cache = PrefixCache(KEEP)       # (ids, target state, (head cache, held row)) at message starts and ends
         # ``streams`` > 1: up to that many requests decoded together, every stream's window verified in one forward
         self.concurrent = many

@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 import math
 import os
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -13,73 +12,30 @@ import mlx.core as mx
 import mlx.nn as nn
 from mlx.utils import tree_flatten
 import numpy as np
-from mlx_lm.models.gated_delta import gated_delta_update
-from mlx_lm.models.switch_layers import SwitchGLU
 
 from tensorfold.families.qwen4_exp.host_table import ngrams_on_host
+from tensorfold.families.qwen4_exp.ngram_hash import _nth_prime_after, layer_multipliers
 from tensorfold.families.qwen4_exp.model_layers import (
     Config,
-    _derived,
     CenteredRMSNorm,
-    GatedRMSNorm,
     HyperConnection,
     _queue,
     _write_back,
     LinearCache,
     AttentionCache,
     GatedDeltaNet,
-    Indexer,
+    Indexer,  # noqa: F401 - tests reach it as ``model.Indexer``
     SparseAttention,
-    MLP,
     SparseMoE,
 )
 
-from tensorfold.kernels.qwen.flash_next.v1 import embed, prefill, prefill_hc, prefill_mm
+from tensorfold.kernels.qwen.flash_next.v1 import embed, prefill_hc, prefill_mm
+from tensorfold.kernels.qwen.flash_next.v1 import prefill  # noqa: F401 - tests patch it as ``model.prefill``
 
 MODEL_TYPE = "qwen4_exp"
 
-_MASK64 = (1 << 64) - 1
-_GOLDEN = 0x9E3779B97F4A7C15
-_MIX1 = 0xBF58476D1CE4E5B9
-_MIX2 = 0x94D049BB133111EB
-_PRIME = 10007
-
 
 # -- n-gram embedding (PLE) ------------------------------------------------------
-def _splitmix64(value: int) -> int:
-    value = (value + _GOLDEN) & _MASK64
-    value = ((value ^ (value >> 30)) * _MIX1) & _MASK64
-    value = ((value ^ (value >> 27)) * _MIX2) & _MASK64
-    return (value ^ (value >> 31)) & _MASK64
-
-
-def _is_prime(value: int) -> bool:
-    if value < 2:
-        return False
-    if value % 2 == 0:
-        return value == 2
-    for divisor in range(3, math.isqrt(value) + 1, 2):
-        if value % divisor == 0:
-            return False
-    return True
-
-
-def _nth_prime_after(start: int, count: int) -> int:
-    prime = start
-    for _ in range(count):
-        prime += 1
-        while not _is_prime(prime):
-            prime += 1
-    return prime
-
-
-def layer_multipliers(vocab: int, ngram: int, ple_index: int, seed: int) -> np.ndarray:
-    half = max(1, (((1 << 63) - 1) // max(vocab, 1)) // 2)
-    base = seed + _PRIME * ple_index
-    return np.array([2 * (_splitmix64((base + _GOLDEN * (i + 1)) & _MASK64) % half) + 1 for i in range(ngram)],
-                    dtype=np.int64)
-
-
 class NGramEmbedding(nn.Module):
     """2- and 3-gram ids hashed into 16 heads of prime-sized tables, looked up in 128 row shards."""
 

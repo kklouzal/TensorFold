@@ -14,13 +14,7 @@ from tensorfold.cuda import prompt_precision
 from tensorfold.cuda.kernels.qmm import quantize_rows
 from tensorfold.cuda.nvfp4 import format as fmt
 from tensorfold.cuda.nvfp4.linear import Concat, Fp4Linear, Fp8BlockLinear, Fp8Linear, Mx8Linear
-
-
-def _fp4(n, k, seed):
-    rng = np.random.default_rng(seed)
-    packed = rng.integers(0, 256, size=(n, k // 2), dtype=np.uint8)
-    scale = rng.integers(0x20, 0x50, size=(n, k // 16), dtype=np.uint8)           # e4m3 0.03-4
-    return packed, scale, 0.0123
+from kernel_inputs import fp4_weight
 
 
 def _fp8(n, k, seed):
@@ -46,7 +40,7 @@ def test_slices_meet_in_part_with_the_clusters_bits(kind):
 
     n, k, m = 5120, 17408, 37                                                   # 4 slices (a down projection)
     if kind == "fp4":
-        packed, scale, g = _fp4(n, k, 7)
+        packed, scale, g = fp4_weight(n, k, 7)
         lin = Fp4Linear.from_checkpoint(torch.from_numpy(packed).cuda(), torch.from_numpy(scale).cuda(), g)
         mode, w, bs = linear.FP4, lin.words, lin.bs
     else:
@@ -59,13 +53,13 @@ def test_slices_meet_in_part_with_the_clusters_bits(kind):
     clusters = lin(x)
     y = torch.empty_like(clusters)
     part = torch.empty((sk, m, n), dtype=torch.float32, device="cuda")
-    linear._ext().qmmf(x, w, bs, lin.scale, y, part, mode, n, sk, lin.npad, qmm.bucket(m), False)
+    linear._ext().qmmf(x, w, bs, lin.scale, None, y, part, mode, n, sk, lin.npad, qmm.bucket(m), False)
     assert torch.equal(y, clusters)
 
 
 @pytest.mark.parametrize("n,k", [(128, 256), (320, 1024), (1000, 5120)])
 def test_fp4_decode_is_the_dequantized_product_and_rows_are_independent(n, k):
-    packed, scale, g = _fp4(n, k, n)
+    packed, scale, g = fp4_weight(n, k, n)
     lin = Fp4Linear.from_checkpoint(torch.from_numpy(packed).cuda(), torch.from_numpy(scale).cuda(), g)
     x = (torch.randn((16, k), generator=torch.Generator().manual_seed(1)) * 0.5).to(torch.bfloat16).cuda()
     full = _check_rows(lin, x)
@@ -108,7 +102,7 @@ def _bf16_prompts(lin, x, ref):
 
 def test_prompt_gemms_track_decode_and_keep_rows_in_any_chunk():
     n, k, m = 320, 1024, 300
-    packed, scale, g = _fp4(n, k, 7)
+    packed, scale, g = fp4_weight(n, k, 7)
     fp4 = Fp4Linear.from_checkpoint(torch.from_numpy(packed).cuda(), torch.from_numpy(scale).cuda(), g)
     w, s = _fp8(n, k, 8)
     fp8 = Fp8Linear.from_checkpoint(torch.from_numpy(w).cuda().view(torch.float8_e4m3fn), s)
@@ -213,3 +207,16 @@ def test_block_fp8_and_bf16_concat_keeps_each_projection():
         st(x, out)
         assert torch.equal(out, torch.cat([a(x), matmul(x, b)], 1))
         assert torch.equal(st.prefill(x), torch.cat([a.prefill(x), matmul(x, b)], 1))
+
+
+def test_fragment_order_in_row_chunks_matches_one_gather(monkeypatch):
+    """The FP8 fragment layout built a chunk of rows at a time equals one gather over every row (rows past N zero)."""
+
+    from tensorfold.cuda.nvfp4 import linear
+
+    codes = torch.randint(0, 256, (450, 128), dtype=torch.uint8)
+    whole = linear._fragment_order(codes, 512)                      # one chunk: 512 <= FRAGMENT_ROWS
+    monkeypatch.setattr(linear, "FRAGMENT_ROWS", 128)
+    assert torch.equal(linear._fragment_order(codes, 512), whole)    # four chunks, the last one past N
+    monkeypatch.setattr(linear, "FRAGMENT_ROWS", 192)
+    assert torch.equal(linear._fragment_order(codes, 512), whole)    # a partial last chunk

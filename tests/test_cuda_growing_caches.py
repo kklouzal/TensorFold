@@ -15,7 +15,7 @@ def weights():
                           kv_heads=2, head_dim=64, index_dim=128, index_ratio=4, ple_kernel=4, ngram_size=3,
                           ple_layers=[], eos=(0,))
     layers = [SimpleNamespace(index=i, linear=i % 2 == 0) for i in range(4)]
-    return SimpleNamespace(cfg=cfg, device="cpu", layers=layers, mtp=SimpleNamespace(), meta={"world": 1})
+    return SimpleNamespace(cfg=cfg, device="cpu", layers=layers, mtp=SimpleNamespace(), meta={"world": 1}, positions=None)
 
 
 def filled(state_mod, torch, kv_dtype: str, rows: int = 256):
@@ -57,6 +57,10 @@ def decoder(multi, state, torch, room: int):
 
     dec = multi.MultiDecoder.__new__(multi.MultiDecoder)
     dec.w, dec.depth, dec.streams, dec.free, dec.kept, dec.keep = weights(), 3, {}, [], [], 8
+    dec.kv_pair = state.kvcache.get_pair()
+    dec.graphs = dec._failed_graphs = dec._memory_error = None
+    dec.failed_slots = []
+    dec.controller, dec.retained, dec.retain_sessions = None, {}, False
     dec.used, dec.clock = {}, 0
     dec.filling, dec.fills, dec.held = [], {}, {}
     dec.memory_gate = importlib.import_module("tensorfold.cuda.memory_gate").MemoryGate(room, reserve=0)

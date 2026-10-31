@@ -1,0 +1,152 @@
+{
+  "schema_version": 1,
+  "status": "live-deployment-verified",
+  "date": "2026-10-18T06:52:44.577378+00:00",
+  "deployment_source": "dfb63b7c21f4a91e714687e96fc55cf8c92b0851",
+  "runtime_source": "297e8487bc44e941d0fffeac753ac465c72165ce",
+  "runtime_image": "sha256:3645d51c532ed42606facc09d86e3b808eec9e0b400f615f9ed23329cb6bc366",
+  "image_scope": "Previously qualified immutable runtime; later docs, deployment files and a test-only EOS correction do not change its application/dependency/build source. No whole-wheel identity claim.",
+  "host": "promaxgb10-c93b",
+  "gpu": "GPU-51db75b3-8be0-5cfd-f46c-19e1f2e1c2d0, NVIDIA GB10, 580.178.04",
+  "container": {
+    "id": "ec121a1856aa4f718da3454491e839c991de31ea4c3be31ca036446d2fde9635",
+    "name": "/qwen38-flash-next-nvfp4",
+    "started_at": "2026-10-18T06:45:38.613861022Z",
+    "health": "healthy",
+    "restart_count": 0,
+    "oom_killed": false,
+    "restart_policy": {
+      "Name": "unless-stopped",
+      "MaximumRetryCount": 0
+    }
+  },
+  "endpoint": "http://192.168.1.50:8888/v1",
+  "listener": "0.0.0.0:8888",
+  "old_service_port": 8888,
+  "old_port_proof": "Archived inspect of retired qwen38-flash-next-tf: host networking, --host 0.0.0.0 --port 8888. New listener owner is actual server host PID3497400; LAN health/models and generation succeeded.",
+  "model": {
+    "repo": "dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4",
+    "revision": "be794b990578ef3031eccf9f28e675a289a09ee9",
+    "id": "Qwen3.8-Flash-Next",
+    "alias": "flash-next-gb10"
+  },
+  "profile": {
+    "precision": "checkpoint-native routed W4A4",
+    "parallel": 4,
+    "context": 262144,
+    "kv": "rotorquant-iso4",
+    "mtp_drafts": 6,
+    "mtp_confidence": 0.7,
+    "copy_proposals": false,
+    "ssd_ngrams": true,
+    "image_and_video": true,
+    "graphs": "AUTO; 128 verify + 64 MTP step keys captured",
+    "threads_environment": 20,
+    "effective_cpus": "0-19",
+    "memory_reserve_gib": 8,
+    "docker_ram_swap_cpu_pid_quota": false,
+    "metadata": "Checkpoint chat template, EOS, sampling and default reply; template thinking default on. Acceptance requests explicitly disabled thinking.",
+    "startup_log_load_s": 185.1
+  },
+  "process_proof": {
+    "pre_native_torch_affinity": "Paused CUDA entrypoint; maps contained no native Torch. Restored only owned container to 0-19; all paused tasks and cgroup verified before unpause.",
+    "final_task_affinity": "All sampled live server tasks and cgroup 0-19",
+    "driver": {
+      "driver_api": 13040,
+      "devices": 1,
+      "library": "/usr/local/cuda-13.4/compat/libcuda.so.615.71.09",
+      "mode": "forward-compatible"
+    },
+    "mapped_providers": 24,
+    "runtime_profile_sha256": "b89513b23c48a0d6e583635ad619ae7d642cace0ad0599be7b0f4ff55625405e",
+    "scope": "Actual server maps/dev/inode/stat match qualified provider reference; protected startup verifies sealed file contents. No injected server audit and no fresh-process substitution."
+  },
+  "live_checks": {
+    "health_models_and_lan": true,
+    "tokenization_prompt_tokens": 46,
+    "full512_serial_drafted_reference_equal": true,
+    "token_sha": "144dec81bb0f",
+    "four_parallel_submitted_requests_full512_equal": true,
+    "image": "red",
+    "video": {
+      "first": "red",
+      "last": "blue"
+    },
+    "strict_tools_normal_and_sse": {
+      "enabled": true,
+      "disabled": false,
+      "empty": null
+    },
+    "terminal_load": {
+      "requests_in_flight": 0,
+      "requests_running": 0,
+      "requests_waiting": 0,
+      "lanes": {
+        "decode": 0,
+        "prefill": 0,
+        "memory_wait": 0
+      },
+      "held_for_memory": false,
+      "http_connections_in_use": 1,
+      "stream_tokens": []
+    },
+    "terminal_totals": {
+      "requests": 10,
+      "finished": {
+        "stop": 2,
+        "length": 6,
+        "tool_calls": 2
+      },
+      "cancelled": 0,
+      "failed": 0,
+      "prompt_tokens": 1196,
+      "cached_prompt_tokens": 533,
+      "generated_tokens": 3212,
+      "generated_tokens_live": 3212,
+      "queue_seconds": 0.133,
+      "prefill_seconds": 1.5212,
+      "decode_seconds": 98.3651,
+      "rounds": 1313,
+      "drafted": 2709,
+      "accepted": 1889,
+      "preemptions": 0,
+      "memory_waits": 0,
+      "memory_stops": 0
+    },
+    "timing_scope": "Deployment acceptance, not a new controlled performance comparison or synchronized-barrier quartet. Earlier qualified model protocol retains barrier evidence."
+  },
+  "resources": {
+    "sampled_min_memavailable_bytes": 29224534016,
+    "final_memavailable_bytes": 34006323200,
+    "memory_sampling_scope": "Five-second samples in two windows. User-turn interruption terminated the first transient SSH monitor; the gap remains unsampled. No continuous free-memory guarantee claimed.",
+    "restart_affinity_note": "The separate host Docker event enforcer can reset affinity on future start/restart; restore and inspect this container only as documented in nvfp4.md."
+  },
+  "cleanup": {
+    "removed_other_tensorfold_containers": 40,
+    "old_service_removed": true,
+    "historical_logs_and_inspects_preserved": true,
+    "images_volumes_models_caches_removed": false,
+    "unrelated_containers": "Preserved; remain stopped."
+  },
+  "evidence": {
+    "private_local_root": "/home/kklouzal/tensorfold-heretic-implementation-20261017/gb10/persistent-service-live-01",
+    "private_remote_root": "/home/kklouzal/services/qwen3.8-flash-next/nvfp4-20261018/deployment-01",
+    "sha256": {
+      "live-api.json": "ae6aa2273accfaadea84d9e03ebb88d824d2d6f6e87b7295acb5700bd5238649",
+      "deployment-01/preinit-affinity.json": "ae8fb248d96c003ae4733c0883c06ee12a6634b05d5ae6b5b29b1703e5691c1b",
+      "deployment-01/live-process-proof.json": "7e6f1f378ec00646c83fd03f0d071f8ad860e785f9500fde2649e8b88e3a9dec",
+      "deployment-01/container-final.json": "7429151bf3920afbb47ec33afaa83af561b3dbdaf44ad3d4ea8bab20aa86cdcf",
+      "deployment-01/server.log": "cdd1b4a8fd8d99fb48a80e5a052f0448ecb1bce0dfaa4fb63e3b6e8d67944214",
+      "deployment-01/host-memory.csv": "3bd5b1c5382f454a0cea25cd924abd21f3cb656ca540321f7b7bfe135684f738",
+      "deployment-01/host-memory-02.csv": "117543ecab8d828fbe866fe2aaef6cec45a06d69c8c1e39ffcd67389c57f7378",
+      "deployment-01/cleanup/removed.json": "1cfacd39fb9ff0397a8bd052328a2aa64bd108fe0814bfb4edb803ff78d0bd1c"
+    },
+    "checker_scope": "One-off historical checker with independently reviewed successful raw responses and process proofs; not promoted as a reusable failure-safe runner."
+  },
+  "limits": [
+    "RotorQuant KV changes output; no BF16 equivalence claim.",
+    "Four full native-context windows are not a fit guarantee.",
+    "Single GB10 deployment does not qualify two-physical-GPU NCCL performance.",
+    "No new optimization or broad-suite run for this deployment receipt."
+  ]
+}

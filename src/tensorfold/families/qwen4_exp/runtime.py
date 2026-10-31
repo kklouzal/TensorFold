@@ -41,8 +41,6 @@ class FlashNext:
 
     fused_rows = 16
     lane_family = True
-    # Draw with gpu_sampling's keyed rule on the GPU.
-    gpu_sampling = True
     # the engine fills a prompt a chunk a forward: a pass holds every chunk's layer temporaries (+44-60 GiB served)
     prompt_pass = False
 
@@ -205,7 +203,7 @@ class FlashNext:
         if tokens.ndim == 1:
             tokens = tokens[None]
         if tokens.shape[1] > self.fused_rows and "_resolved_prefill_identity" in self.__dict__:
-            self.prefill_key  # refuse a changed prefill mode before reading or updating a keyed cache
+            self.prefill_key  # noqa: B018 - refuse a changed prefill mode before reading or updating a keyed cache
         out = self.model.hidden(tokens, cache[: self.layer_count])
         fused = self.fused is not None and tokens.shape[0] == 1 and tokens.shape[1] <= self.fused_rows
         self._streams = self.fused.last_streams if fused else self.model.__dict__["last_streams"]
@@ -220,7 +218,7 @@ class FlashNext:
         if min(int(n) for n in sizes) <= self.fused_rows:     # such a chunk alone takes the fused decode kernels
             raise ValueError(f"hidden_pass: every chunk needs over {self.fused_rows} rows, got {tuple(sizes)}")
         if "_resolved_prefill_identity" in self.__dict__:
-            self.prefill_key  # refuse a changed prefill mode before reading or updating a keyed cache
+            self.prefill_key  # noqa: B018 - refuse a changed prefill mode before reading or updating a keyed cache
         out = self.model.hidden_pass(tokens, cache[: self.layer_count], sizes)
         self._streams = self.model.__dict__["last_streams"]
         return out

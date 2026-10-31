@@ -94,7 +94,7 @@ class PreparationGate:
 def count_request(app: Any, body: Any, request_error: type[Exception],
                   capabilities: dict[str, Any] | None = None, *,
                   chat_template_sha256: str | None = None,
-                  provenance: dict[str, Any] | None = None) -> dict[str, Any]:
+                  provenance: dict[str, Any] | None = None, metadata_by_route=None) -> dict[str, Any]:
     """Native prompt preparation only: never call run, generate, or engine prefill."""
     if not isinstance(body, dict):
         raise request_error("token counting request body must be a JSON object")
@@ -110,6 +110,8 @@ def count_request(app: Any, body: Any, request_error: type[Exception],
     if problem:
         raise request_error(problem)
     prepared = type(app)._prepare(_PreparationView(app), body, True)
+    if metadata_by_route is not None:
+        capabilities, chat_template_sha256, provenance = metadata_by_route[int(bool(prepared.tools))]
     count = len(prepared.prompt)
     response: dict[str, Any] = {
         "count": count,
@@ -135,7 +137,7 @@ def count_request(app: Any, body: Any, request_error: type[Exception],
     return response
 
 
-def capability_metadata(app: Any) -> tuple[dict[str, Any], str | None, dict[str, Any]]:
+def capability_metadata(app: Any, *, tools=False) -> tuple[dict[str, Any], str | None, dict[str, Any]]:
     """Resolve native facts once, before any counting request is admitted.
 
 The App exposes the template's canonical efforts. Forwarding a thinking keyword
@@ -143,7 +145,7 @@ does not prove the active template consumes it or supports both values, so
 thinking controls/defaults and replay semantics remain absent. Harness derives
 those from the fingerprint of a template whose contract it has pinned.
 """
-    efforts = app.template.efforts
+    efforts = app.template.selected(tools=tools).efforts
     capabilities: dict[str, Any] = {
         "structured_output": importlib.util.find_spec("xgrammar") is not None
         and "constraint" in inspect.signature(app.engine.generate).parameters,
@@ -180,7 +182,7 @@ those from the fingerprint of a template whose contract it has pinned.
     provenance["marshal_version"] = marshal.version
     provenance["tokenizer_sha256"] = hashlib.sha256(app.tok.to_str().encode("utf-8")).hexdigest()
     provenance["tokenizer_identity"] = "runtime_serialization"
-    fingerprint, source_name = _template_fingerprint(app)
+    fingerprint, source_name = _template_fingerprint(app, tools=tools)
     if fingerprint is not None:
         provenance["template_source"] = source_name
         provenance["template_identity"] = "equivalent_active_compilation"
@@ -191,28 +193,16 @@ def _qualified_type(value: Any) -> str:
     return f"{type(value).__module__}.{type(value).__qualname__}"
 
 
-def _template_fingerprint(app: Any) -> tuple[str | None, str | None]:
+def _template_fingerprint(app: Any, *, tools=False) -> tuple[str | None, str | None]:
     """Identify source only when it compiles to the active root and block code.
 
-ChatTemplate discards its source after compiling it, so a later file read alone
-cannot identify the active template. Reusing its Jinja environment preserves
-compiler settings, filters and globals; structural code equality rejects changed
-executable source. Source precedence and default text decoding match
-ChatTemplate's loader, so the candidate is the text it would compile. The hash
-covers this equivalent source's UTF-8 encoding, not original captured file bytes.
+Use the captured source of the selected default/tool route. Reusing its Jinja
+environment preserves compiler settings, filters and globals; structural code
+equality rejects modified executable state. Later checkpoint-file mutation
+cannot replace the source of an already compiled active template.
 """
-    active = app.template.template
-    try:
-        source_path = app.model_dir / "chat_template.jinja"
-        if source_path.exists():
-            source, source_name = source_path.read_text(), "chat_template.jinja"
-        else:
-            source = json.loads((app.model_dir / "tokenizer_config.json").read_text())["chat_template"]
-            source_name = "tokenizer_config.chat_template"
-    except (OSError, UnicodeError, ValueError, KeyError, TypeError):
-        return None, None
-    if not isinstance(source, str):
-        return None, None
+    selected = app.template.selected(tools=tools)
+    active, source, source_name = selected.template, selected.source.source, selected.source.origin
     from jinja2 import TemplateError
     try:
         candidate = active.environment.from_string(source)
@@ -267,13 +257,13 @@ def make_handler_factory(native_factory: Callable[[Any], type]) -> Callable[[Any
     def make_handler(app: Any) -> type:
         from tensorfold.server import request_body
         from tensorfold.server.cancellation import RequestCancelled, socket_cancellation
-        from tensorfold.server.errors import CapacityError, RequestError, error_body
+        from tensorfold.server.errors import CapacityError, RequestError, error_body, server_error
 
         if app.thinking_budget != 0:
             raise ValueError("Harness requires TensorFold --thinking-budget 0; budgets are selected per request")
         native_handler = native_factory(app)
         gate = PreparationGate()
-        capabilities, template_sha256, provenance = capability_metadata(app)
+        metadata_by_route = (capability_metadata(app), capability_metadata(app, tools=True))
 
         class Handler(native_handler):
             def do_POST(self):
@@ -299,9 +289,7 @@ def make_handler_factory(native_factory: Callable[[Any], type]) -> Callable[[Any
                             raise RequestError("token counting request body must be valid UTF-8 JSON") from exc
                         if gone.cancelled:
                             raise RequestCancelled("token counting client disconnected")
-                        result = count_request(app, body, RequestError, capabilities,
-                                               chat_template_sha256=template_sha256,
-                                               provenance=provenance)
+                        result = count_request(app, body, RequestError, metadata_by_route=metadata_by_route)
                         if gone.cancelled:
                             raise RequestCancelled("token counting client disconnected")
                     return self._json(200, result)
@@ -317,7 +305,7 @@ def make_handler_factory(native_factory: Callable[[Any], type]) -> Callable[[Any
                     import traceback
                     print(f"TensorFold token preparation failed: {type(sys.exception()).__name__}", file=sys.stderr)
                     traceback.print_list(traceback.extract_tb(sys.exc_info()[2]), file=sys.stderr)
-                    return self._json(500, {"error": {"type": "server_error", "message": "TensorFold token preparation failed"}})
+                    return self._json(500, {"error": server_error("TensorFold token preparation failed")})
 
         return Handler
     return make_handler

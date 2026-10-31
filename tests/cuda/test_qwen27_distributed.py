@@ -165,6 +165,34 @@ def _nccl_worker(rank: int, port: int):
         got = gather_rank_partials(local)
         expected = torch.full_like(got, 1.5)
         assert torch.equal(got, expected)
+        # Both ranks execute the same new effective-p collectives. Compare their global-ID probabilities/draws
+        # with the supported complete-head sampler, then agree on rejection decisions including a final-slot cut.
+        from tensorfold.cuda.sampling import effective_rows, effective_shards, sample_shards
+        from tensorfold.engine.exact_sampling import Sampling
+        from tensorfold.engine.rejection import ChainPacket, ProbabilityRow, draw, verify
+        from tensorfold.families.qwen3_5.cuda.decode_tp import split_sampling_plan
+
+        complete = torch.linspace(-1, 1, 3 * 64, device=f"cuda:{rank}").view(3, 64)
+        complete[0].zero_()                       # global boundary ties must use the same real token IDs
+        shard = complete[:, rank * 32:(rank + 1) * 32].contiguous()
+        plan = split_sampling_plan(32, shard.device, rank)
+        for top_k in (20, 0):
+            policy = Sampling(6, .7, top_k, .95, .1)
+            probabilities = effective_shards(shard, policy, plan=plan)
+            reference = effective_rows(complete, policy)
+            for a, b in zip(probabilities, reference):
+                assert a.ids.tobytes() == b.ids.tobytes() and a.probs.tobytes() == b.probs.tobytes()
+            choices = sample_shards(shard, [17, 18, 19], policy, plan=plan)
+            assert choices == [draw(p, policy.seed, pos, domain=0)
+                               for p, pos in zip(probabilities, [17, 18, 19])]
+            chain = ChainPacket((0, 1), (ProbabilityRow([0], [1.0]), ProbabilityRow([1], [1.0])), 17)
+            for room in (1, 2, 3):
+                path, token = verify(chain, probabilities, policy.seed, room=room)
+                outcome = torch.tensor([len(path), *path, *([-1] * (3 - len(path))), token],
+                                       device=shard.device, dtype=torch.int64)
+                both = torch.empty((2, len(outcome)), device=shard.device, dtype=torch.int64)
+                dist.all_gather_into_tensor(both, outcome)
+                assert torch.equal(both[0], both[1])
     finally:
         dist.destroy_process_group()
 

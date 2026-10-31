@@ -16,8 +16,9 @@ from tensorfold.families.qwen3_5.cuda.decode import prefill, serial_decode  # no
 from tensorfold.families.qwen3_5.cuda.forward import (State, commit, commit_streams, multi_tree_forward,  # noqa: E402
                                                         tree_forward)
 from tensorfold.families.qwen3_5.cuda.draft_tree import allocate  # noqa: E402
-from tensorfold.families.qwen3_5.cuda.multi import TREE, MultiDecoder, private, viewed  # noqa: E402
+from tensorfold.families.qwen3_5.cuda.multi import ONE, TREE, MultiDecoder, private, viewed  # noqa: E402
 from tensorfold.families.qwen3_5.cuda.weights import Attention, Config, GDN, Layer, QLinear, Weights  # noqa: E402
+from qwen_engine_checks import points_after  # noqa: E402
 
 V = 256
 
@@ -97,6 +98,11 @@ class _Oracle(MultiDecoder):
         self.truth, self.rng = truth, random.Random(seed)
 
     def _mode(self, s, copied):
+        if s.sampling is not None and s.sampling.temperature > 0:
+            # This independent scheduler oracle deliberately supplies arbitrary q-less trees and checks target
+            # choices. Real stochastic DFlash/copy producers use explicit CHAIN/COPY_CHAIN modes instead.
+            copied[s.sid] = []
+            return TREE if s.draft else ONE
         mode = super()._mode(s, copied)
         return TREE if s.draft and not copied.get(s.sid) else mode
 
@@ -146,6 +152,36 @@ def test_decoder_streams_equal_serial(serial_too, curve):
         assert got == refs[tuple(s.prompt)] and s.out == got, s.prompt
         assert s.min_rows >= (2 if s.draft else 1), (s.prompt, s.min_rows)
         assert s.rounds < 23 or not s.draft
+
+
+def test_penalized_streams_equal_their_serial_decodes():
+    """Lanes with and without penalties share rounds: each penalized stream's rows follow its own reply and path,
+    its first token included, and every stream keeps its serial tokens."""
+    from tensorfold.engine.penalties import History, Penalties
+    from tensorfold.families.qwen3_5.cuda.decode import draft_decode
+
+    w = _model()
+    penalties = [Penalties(presence=1.2, frequency=0.5, repetition=1.3), None, Penalties(repetition=0.8),
+                 Penalties(frequency=1.5)]
+
+    def serial(prompt, sampling, p):
+        h = History(p, prompt) if p is not None else None
+        st, first = prefill(w, prompt, sampling, history=h)
+        return draft_decode(w, st, prompt, first, 24, sampling, None, allow_copy=False, history=h).tokens
+
+    refs = {tuple(p): serial(p, smp, pen) for p, smp, pen in zip(PROMPTS[:4], SAMPLINGS, penalties)}
+    assert refs[tuple(PROMPTS[0])] != _serial(w, PROMPTS[0], SAMPLINGS[0], 24)
+    dec = _Oracle(w, refs)
+    streams = []
+    for prompt, sampling, pen in zip(PROMPTS[:4], SAMPLINGS, penalties):
+        got: list[int] = []
+        s = Stream(prompt, 24, sampling, emit=lambda new, got=got: got.extend(new), penalties=pen)
+        dec.admit(s)
+        streams.append((s, got))
+    while dec.live():
+        dec.finish(dec.round())
+    for s, got in streams:
+        assert got == refs[tuple(s.prompt)], s.prompt
 
 
 def test_scheduler_serves_concurrent_requests_exactly():
@@ -290,12 +326,6 @@ def test_commit_streams_equals_each_stream_alone():
         assert all(a is b for a, b in zip(in_place[k].rec, held[k]))     # the same tensors, overwritten
 
 
-def _points_after(k):
-    """Snapshot points for the test prompts: position ``k`` when a prompt is longer."""
-
-    return lambda ids: [k] if len(ids) > k + 1 else []
-
-
 @pytest.mark.parametrize("step", [1024, 3])
 def test_prompts_resume_a_shared_start_and_equal_fresh(monkeypatch, step):
     """A prompt resuming another's kept state at a message start decodes a fresh prefill's tokens, prefill steps interleaved or not."""
@@ -310,7 +340,7 @@ def test_prompts_resume_a_shared_start_and_equal_fresh(monkeypatch, step):
     shared = [11, 12, 13, 14, 15, 16]
     prompts = [shared + [21, 22, 23], shared + [31, 32], shared + [41, 42, 43, 44, 45], [7, 8, 9, 10, 11]]
     refs = {tuple(p): _serial(w, p, smp, 16) for p, smp in zip(prompts, SAMPLINGS)}
-    dec = _Oracle(w, refs, seed=5, points=_points_after(len(shared)))
+    dec = _Oracle(w, refs, seed=5, points=points_after(len(shared)))
     first = Stream(prompts[0], 16, SAMPLINGS[0])
     dec.admit(first)
     while dec.live():

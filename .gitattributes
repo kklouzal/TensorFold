@@ -1,0 +1,3 @@
+# Unified diff context encodes an empty source line as a single space. Actual
+# patched source is checked independently by upstream Spin/lintrunner before commit.
+deploy/v100/framework-patches/*.patch whitespace=-blank-at-eol,-blank-at-eof

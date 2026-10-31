@@ -1,0 +1,8 @@
+# Owned application-only update; retain the exact source/media/policy base.
+ARG APPLICATION_IMAGE=tensorfold-v100:app-portable-map-policy-v1@sha256:6daae245155c890edd24ae9fc3ba699a3009d2ae57ede24ee271f85309cf44bf
+FROM ${APPLICATION_IMAGE}
+COPY --from=application_artifacts / /application-wheels/
+RUN --network=none cd /application-wheels \
+    && sha256sum --strict --check application-wheel.sha256 \
+    && python -m pip install --force-reinstall --no-deps /application-wheels/tensorfold-*.whl \
+    && python -m pip check

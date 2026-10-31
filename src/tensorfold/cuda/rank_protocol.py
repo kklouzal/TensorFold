@@ -14,11 +14,11 @@ MAX_MESSAGE_BYTES = 96 << 20
 MAX_GRAMMAR_ITEMS = MAX_MESSAGE_BYTES + 2
 
 
-def bounded_json(body):
+def bounded_json(body, *, separators=None):
     """Encode validated flat request fields without a larger transient string."""
     size = 0
     with io.StringIO() as output:
-        for chunk in json.JSONEncoder().iterencode(body):
+        for chunk in json.JSONEncoder(separators=separators).iterencode(body):
             size += len(chunk)  # the default encoder emits ASCII
             if size > MAX_MESSAGE_BYTES:
                 raise ValueError("rank request exceeds the 96 MiB transport envelope")
@@ -34,9 +34,11 @@ def ints(values, maximum, *, lower=0, upper=(1 << 31) - 1, empty=False):
 
 
 def grammar(values, vocab):
+    from tensorfold.engine.grammar import KINDS
+
     ints(values, MAX_GRAMMAR_ITEMS, empty=True)
     if values:
-        if len(values) < 2 or values[0] not in range(5) or not 0 <= values[1] <= vocab:
+        if len(values) < 2 or values[0] not in range(len(KINDS)) or not 0 <= values[1] <= vocab:
             raise ValueError("rank grammar header is invalid")
         if any(values[index] > 255 for index in range(2, len(values))):
             raise ValueError("rank grammar payload must be UTF-8 bytes")

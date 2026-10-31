@@ -138,6 +138,32 @@ class IdentityControls(unittest.TestCase):
             with self.assertRaises(ValueError):
                 dataclasses.replace(first, **changes)
 
+    def test_foreign_process_refuses_before_runtime_or_descriptor_work(self):
+        from tensorfold.engine import model_identity
+
+        _, files = self.fixture()
+        receipt = self.capture(files)
+        stages = []
+
+        def exchange(stage, operation):
+            stages.append(stage)
+            return operation()
+
+        with patch.object(model_identity.os, 'getpid', return_value=receipt._pid + 1), \
+                patch.object(model_identity, 'canonical_runtime_json', side_effect=AssertionError('runtime work')), \
+                patch.object(model_identity, 'FileStreams', side_effect=AssertionError('descriptor work')):
+            for operation in (
+                receipt.verify_unchanged,
+                lambda: self.capture(files, reuse=receipt, reuse_is_immutable=True),
+                lambda: model_identity.capture_shared_model_identity(files, runtime_identity={'loader': 'v1'},
+                    authorize=lambda _name, path: path.resolve(strict=True), max_file_bytes=1 << 20,
+                    max_total_bytes=1 << 20, rank=0, world=1, exchange=exchange,
+                    reuse=receipt, reuse_is_immutable=True),
+            ):
+                with self.assertRaisesRegex(ValueError, 'not issued in this process'):
+                    operation()
+        self.assertEqual(stages, ['inventory'])
+
     def test_changed_input_or_runtime_cannot_reuse_old_hash(self):
         _, files = self.fixture()
         first = self.capture(files)

@@ -5,7 +5,7 @@ in the same change when flags, defaults, cache policy, RAM/VRAM budgeting, or
 qualified performance results change. State each measurement's model, runtime,
 context, parallelism, and evidence scope.
 
-`--vram-experts GIB|auto` keeps Flash Next's affine 4-bit or EXL3 expert weights in pageable
+`--vram-experts GIB|auto` keeps Flash Next's affine 4-bit, EXL3 or NVFP4 expert weights in
 system RAM and allocates a bounded shared cache on the GPU. This is useful on
 machines with separate host RAM and limited NVIDIA VRAM. It uses the ordinary
 CUDA kernels; it has no GB10 hardware dependency. The existing CUDA compute
@@ -42,6 +42,37 @@ free VRAM and uses one 512 MiB allocation margin in addition to the explicitly
 budgeted future state and workspace. It sizes the pool once before the first
 expert lease; it does not compete with requests for memory at runtime. Unified
 memory devices retain the existing numeric-budget behavior and reject `auto`.
+
+On a dedicated discrete-GPU host, explicitly setting
+`TENSORFOLD_CUDA_MEMORY_RESERVE_GIB=0` removes that optional margin. Positive
+values replace it with the specified GiB reserve. The selected value is captured
+once and shared by pool planning, final admission and the runtime memory gate,
+including expert followers. Required future KV, snapshots and workspace remain
+reserved. `TENSORFOLD_MEMORY_RESERVE_GIB=8` independently retains 8 GiB of host
+admission headroom; the discrete-only override never lowers unified RAM reserves.
+
+An explicit `TENSORFOLD_CUDA_MEMORY_LIMIT_GB` is an absolute allocation cap:
+automatic sizing subtracts existing allocations and retains its future workspace
+and selected margin within that cap as well as physical free memory.
+`--kv-full-windows N` can reserve fewer full windows than concurrent slots with
+`--vram-experts auto`; the slots then share an enforced growth budget. Requests
+can wait or fail explicitly under pressure. Omit it to retain every slot's full
+window reservation. Existing memory-wait/stop metrics expose that pressure.
+
+`--vram-experts-pin off|auto|on` defaults to `off`. The other modes admit the
+complete page-backed host allocation geometry against host and cgroup room,
+then register model-owned authority in separate allocations. `auto` retains
+pageable storage on a declared resource/capability refusal; `on` requires
+registration. Unknown CUDA failures stop loading. Registered sources upload
+directly; pageable sources retain pinned staging. Startup identifies actual
+pinned, pageable or mixed authority and retains its admission receipt.
+Pages stay registered until all copy/compute consumers retire.
+
+For optional persistent affine packing and same-host asymmetric NCCL expert
+ranks, see the [desktop guide](../desktop-report-remediation.md) and
+[packed cache contract](../packed-expert-cache.md). Rank 0 owns the backbone,
+shared experts, vision and request state; followers load their routed shards.
+EXL3 expert ranks are refused. Real two-GPU execution needs its own qualification.
 
 ```bash
 tensorfold serve /models/Qwen3.8-Flash-Next-exl3 \
@@ -114,7 +145,7 @@ speedup, general answer quality, HTTP performance or sustained four-full-context
 capacity. The original notification policy remains selected; its guarded
 alternative did not establish repeatable superiority across independent
 starts. The current normal installed CLI/API baseline also passed its seven functional groups;
-see the [README API qualification](../../README.md#current-installed-cliapi-qualification).
+see the [README API qualification](../../README.md#earlier-installed-cliapi-qualification).
 Final candidate decisions and changed shipping-runtime requalification remain separate.
 See the [current reference in the README](../../README.md#current-default-prefetch-reference).
 
@@ -126,11 +157,13 @@ compilation overhead was not isolated. It is not a warm four-request throughput
 measurement. All measurements used the pinned
 PyTorch `2.16.0.dev20261006+cu134`/CUDA 13.4 runtime.
 
-The adapters support Flash Next MLX affine 4-bit/group-32 and EXL3 checkpoints
-on one CUDA GPU. They include every routed expert, the shared expert in each layer,
-and the MTP expert layer when drafts are enabled. EXL3 retains each original
+The adapters support Flash Next MLX affine 4-bit/group-32, EXL3 and ModelOpt NVFP4 checkpoints
+on one CUDA GPU; affine and NVFP4 also have same-host expert-rank adapters. Every format's CPU authority
+includes all routed experts and the MTP routed bank when drafts are enabled.
+Affine and EXL3 also keep shared-expert weights in that authority; NVFP4 keeps
+shared-expert weights resident on the GPU. EXL3 retains each original
 trellis stream and bit width, including supported half-bit widths; all experts
-within a layer must use the same native codebook. NVFP4, tensor parallelism,
+within a layer must use the same native codebook. Tensor parallelism,
 MLX, and other model families refuse this flag. `--ssd-experts` remains the MLX
 checkpoint-streaming option and is now explicitly refused on CUDA. With affine
 checkpoints, `--ple-on-ssd` controls the separate n-gram tables. EXL3 checkpoints
@@ -141,8 +174,33 @@ map their native n-gram tables directly and refuse `--ple-on-ssd`.
 The affine loader reads two experts' projections at a time directly into CPU memory and
 packs its existing bits into the CUDA kernel layout. It never uploads the full
 expert stacks first and never dequantizes or requantizes them. A single fixed GPU
-pool is shared across main and MTP layers. Two expert-sized pinned buffers stage
-cache misses; cold expert weights stay pageable.
+pool is shared across main and MTP layers. By default, two expert-sized pinned buffers stage
+cache misses and cold expert weights stay pageable. Explicit host registration uses direct uploads instead.
+
+Weight-only ModelOpt NVFP4 routed experts read original packed codes and E4M3 scales on the
+selected CUDA device, permute their original bits there, then synchronously copy
+the result into CPU authority. Global-scale conversion stays on CPU and retains
+the existing arithmetic. Only one expert's raw payload and packing temporaries
+are live at a time; their loading allowance is charged even without an MTP
+bank. This does not quantize activations or change Flash Next's W4A16 math.
+Startup performance qualification of the CUDA packing change remains pending.
+
+Declared static group-16 ModelOpt A4 has a separate native SM12 adapter under
+checkpoint precision. It preserves both direct FP32 calibrations per projection;
+main A4 and draft-converted W4A16 MTP have separately admitted six/four-field
+layouts in the shared fenced pool. Resident A4 uses live GPU routing plans and
+supports graph capture; host-backed leases still decline capture. Explicit full
+precision and the negotiated nonnative expert-group policy retain W4A16. See
+[the precision contract](cuda.md#nvfp4-precision). Full-model and startup
+performance qualification of this new path remains pending.
+
+NVFP4 admission counts the Reader's two pinned allocations with their allocator
+bucket rounding (a 256 MiB backing bound on the pinned runtime), alongside the
+larger of buffered source bytes and a subsequent CPU field publication. This is
+host allowance; it does not add 256 MiB to device packing scratch.
+The expert upload staging allocation uses the same pinned bucket bound. Staged
+Windows reads instead reserve their cached pinned read buckets alongside CPU
+publication; their actual execution qualification remains separate.
 
 For EXL3, CPU authority contains compact original trellis bytes without padding.
 Fixed GPU cells are sized for the largest gate/up/down bundle in the model. With
@@ -266,8 +324,9 @@ its [zero-copy guidance](https://docs.nvidia.com/cuda/cuda-c-best-practices-guid
 
 The grouped kernels reuse weight tiles across up to 16 routed rows in decode
 and 64 rows in prefill. Additional tiles and later requests can reuse an expert
-again. The current miss path stages immutable packed weights and queues their
-upload before the consuming kernels. Ordinary CPU tensors cannot be passed to
+again. The current miss path uploads immutable packed weights, using direct DMA
+for registered authority or pinned staging for pageable authority, before the
+consuming kernels. Ordinary CPU tensors cannot be passed to
 these kernels: they require CUDA weight tensors. Direct access would require a
 validated mapped allocation/alias and matching lifetime rules, or hardware and
 driver support for another host-access mode. Unified-memory page faults may

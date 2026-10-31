@@ -47,6 +47,11 @@ The expert decoder and BF16 target matmul keep row arithmetic fixed. A quantized
 propose drafts, but target verification retains the BF16 head. EXL3 speed, capacity and long-context
 qualification are TBD [release-0.3.5].
 
+Each CUDA MoE share multiplies an expert's output by its routing weight with
+FP32 rounding, then adds that product to the FP32 accumulator in slot order.
+The shared expert is last. This GLM contract also applies to the shared EXL3
+kernel's BF16 activation mode; its default FP32 mode uses an FMA slot sum.
+
 ### Draft policies
 
 For the affine checkpoint with its MTP head loaded, the default `auto` policy uses MTP for sampled requests.
@@ -55,7 +60,8 @@ it compares committed tokens per estimated round time and chooses a drafter. It 
 the other drafter and discards its old rate after switching away, so later probes can change the choice.
 Without the head (`TF_GLM_MTP=auto` beside DFlash2, or `0`), `auto` drafts with DFlash2.
 Every policy verifies against the same target, and `"draft": false` selects the serial reference.
-A request can select a policy after `@` in its model ID, such as `bench@c3:0.35`, or with `tf_policy`.
+A request can select a policy after `@` in its model ID, such as `bench@c3:0.35` for a server started with
+`--name bench` (the ID before `@` must be served: `--name` or an `--alias`), or with `tf_policy`.
 `--mtp-drafts N` selects a fixed depth at startup. With DFlash2 available, `--mtp-drafts 0` selects
 `fc5:0.3`; without it, zero selects the serial reference.
 

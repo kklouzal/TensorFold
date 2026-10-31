@@ -1,0 +1,7 @@
+# Consumer-only build against the exact reviewed CPU media/source environment.
+ARG MEDIA_IMAGE=tensorfold-v100:media-socket-04cf2557@sha256:f1c72b97ae8949a0aab0b1407edd4fc320671fb129e104e39095eb602ce2e94f
+FROM ${MEDIA_IMAGE}
+COPY . /src
+RUN --network=none python -m pip wheel --no-build-isolation --no-deps /src --wheel-dir /media-binding-wheels \
+    && python -m pip install --force-reinstall --no-deps /media-binding-wheels/tensorfold-*.whl
+WORKDIR /verification

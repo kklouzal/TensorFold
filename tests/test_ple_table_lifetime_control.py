@@ -235,6 +235,18 @@ class PLETableControl(unittest.TestCase):
             owner.close(lambda: None)
             self.assertTrue(owner.closed)
 
+    def test_annotation_provider_raising_same_primary_does_not_create_self_cause(self):
+        class Same(RuntimeError):
+            def __getattribute__(self, name):
+                if name == "__notes__":
+                    raise self
+                return super().__getattribute__(name)
+        primary = Same("primary")
+        with self.assertRaises(Same) as caught:
+            API._note(primary, "cleanup note")
+        self.assertIs(caught.exception, primary)
+        self.assertIsNot(primary.__cause__, primary)
+
     def test_malformed_note_cannot_replace_first_close_failure(self):
         events = []
         owner = API.PLETables()

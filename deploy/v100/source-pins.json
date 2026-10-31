@@ -1,0 +1,106 @@
+{
+  "schema": "tensorfold.v100-source-foundation",
+  "version": 1,
+  "as_of": "2026-10-25",
+  "specification_sha256": "479727e5e112995c3f4edff88747365efc33da2fe676d4e58dd7faf32b31991a",
+  "base": "nvcr.io/nvidia/cuda:12.9.2-devel-ubuntu24.04@sha256:420850a3fd665171b3f1fd08946c51d50468d732a46d6c42345ea04444755048",
+  "targets": {
+    "cuda": "12.9.2",
+    "nvcc": "12.9.86",
+    "cublas": "12.9.2.10",
+    "pytorch": "2.14.1",
+    "cccl": "3.5.0",
+    "nccl": "2.32.3",
+    "cutlass": "4.8.1",
+    "cudnn": "9.10.2.21",
+    "nsight_compute": "2025.2.1.3",
+    "nsight_systems": "2025.3.2.474",
+    "compute_sanitizer_package": "12.9.79"
+  },
+  "sources": {
+    "pytorch": {
+      "repository": "https://github.com/pytorch/pytorch.git",
+      "tag": "v2.14.1",
+      "commit": "5c4886908584029761b579af026dcfb627c84070",
+      "source_inventory_sha256": "7a44b2fe45b25ea967f869bd94abc7c18d218f4575b6c031d008dee4fb6d4112",
+      "effective_commit": "04cf2557f315a350e7eea7ab064288def65db75a",
+      "fork_date": "1793049855 +0000",
+      "fork_message": "Fix c10d socket diagnostics after hostname lookup failure\n\nThe numeric fallback cast the address of its local sockaddr pointer instead\nof the pointed-to socket address and emitted network-order port integers.\nUse the actual const socket address and convert ports to host order. Replace\nthe process-wide unsynchronized DNS-disable bool with a relaxed atomic flag;\nthis flag publishes no other data. Use each successful call's local lookup\nresult directly so another thread's failure cannot select its fallback.\n\nRetain the preceding relocatable ATen CMake package correction. The isolated\nowned replacement fork starts at upstream v2.14.1 and preserves the original\n5ab14ac candidate separately. Normal DNS behavior and all transport defaults\nare unchanged.\n\nTest Plan:\n```bash\nexport PATH=/work/lint-venv/bin:$PATH UV_CACHE_DIR=/work/lint-cache/uv UV_PYTHON_INSTALL_DIR=/work/lint-python UV_OFFLINE=1\ncd /work/sources/pytorch\nspin quicklint -- -a torch/csrc/distributed/c10d/socket.cpp test/cpp/c10d/SocketTest.cpp test/cpp/c10d/CMakeLists.txt\n/work/venv/bin/python /work/sources/pytorch/agent_space/run_socket_test.py\n```\n\nPrepared with an AI assistant. No upstream publication.\n",
+      "owned_patches": [
+        {
+          "artifact": "0001-owned-aten-and-socket-corrections.patch",
+          "bytes": 8491,
+          "sha256": "c0df744ff743241e57bb6d1163e4e50ce19f8a8b183b8f8204cbf5a4d01fc1e2"
+        }
+      ]
+    },
+    "cccl": {
+      "repository": "https://github.com/NVIDIA/cccl.git",
+      "tag": "v3.5.0",
+      "commit": "28101b07413743e1dcca8ca8af1cfc63e8cff2d1",
+      "source_inventory_sha256": "6c0357cbd6246112ed95b1696338e72083f0b799ee1e66eea104ce9ceea74ecc"
+    },
+    "nccl": {
+      "repository": "https://github.com/NVIDIA/nccl.git",
+      "tag": "v2.32.3-1",
+      "commit": "12df1a11afad322be5a204a2db890161cbf8131d",
+      "source_inventory_sha256": "eb46c85928c7118979f60137e23c8f1dbc771b7d785f562a321d8ad78d1cf1c1"
+    },
+    "cutlass": {
+      "repository": "https://github.com/NVIDIA/cutlass.git",
+      "tag": "v4.8.1",
+      "commit": "2c85f497547eb441f0fe80bfb0fb2e6f9add1719",
+      "source_inventory_sha256": "bb43b51db984b8ae296dd238262f78d7b58ae47f6c02a32cbd2d09eabdfc1071"
+    }
+  },
+  "native_packages": [
+    {
+      "artifact": "libcudnn9-cuda-12_9.10.2.21-1_amd64.deb",
+      "package": "libcudnn9-cuda-12",
+      "version": "9.10.2.21-1",
+      "bytes": 507393312,
+      "sha256": "3ba1548ac713023af88214d3cd9dadf8ab0a0be2e06c2061c777f7cf5aa31bd1",
+      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/libcudnn9-cuda-12_9.10.2.21-1_amd64.deb"
+    },
+    {
+      "artifact": "libcudnn9-dev-cuda-12_9.10.2.21-1_amd64.deb",
+      "package": "libcudnn9-dev-cuda-12",
+      "version": "9.10.2.21-1",
+      "bytes": 12924,
+      "sha256": "62e2967d2b555b5f134ad8a3527ca61ad66da39fce7e64ec72f2395bc4b14098",
+      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/libcudnn9-dev-cuda-12_9.10.2.21-1_amd64.deb"
+    },
+    {
+      "artifact": "libcudnn9-headers-cuda-12_9.10.2.21-1_amd64.deb",
+      "package": "libcudnn9-headers-cuda-12",
+      "version": "9.10.2.21-1",
+      "bytes": 34296,
+      "sha256": "24daf3cfdefe53e1bcdb2a7bdf87a682fdfacdf54d4dc5ab906d3313974468c3",
+      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/libcudnn9-headers-cuda-12_9.10.2.21-1_amd64.deb"
+    },
+    {
+      "artifact": "nsight-systems-2025.3.2_2025.3.2.474-1_amd64.deb",
+      "package": "nsight-systems-2025.3.2",
+      "version": "2025.3.2.474-253236389321v0",
+      "bytes": 420792876,
+      "sha256": "c7cfe27e2250eb91e1a67e7feb5f2c490c7f598e3b3a3d047aff000bc49f9d6b",
+      "url": "https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/nsight-systems-2025.3.2_2025.3.2.474-1_amd64.deb"
+    }
+  ],
+  "status": "source-build-candidate; native-device/model qualification unrun",
+  "host_driver_candidate": {
+    "version": "580.196.07",
+    "kernel_module": "proprietary",
+    "installation_performed": false,
+    "release_notes": "https://docs.nvidia.com/datacenter/tesla/tesla-release-notes-580-196-07/index.html",
+    "kernel_support": "https://download.nvidia.com/XFree86/Linux-x86_64/580.196.07/README/kernel_open.html"
+  },
+  "source_apt_bundle_sha256": "6c3bbf073321ad6076b8d8ccb2045253cc3ea30ce23aea35bee1bcc086afbd0d",
+  "lint_python": {
+    "version": "3.10.20",
+    "build": "20260510",
+    "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260510/cpython-3.10.20%2B20260510-x86_64-unknown-linux-gnu-install_only_stripped.tar.gz",
+    "bytes": 29324796,
+    "sha256": "dc734bdd388975c0b093fe730b272af741a2e192475d38bc6845a687b6405922"
+  }
+}

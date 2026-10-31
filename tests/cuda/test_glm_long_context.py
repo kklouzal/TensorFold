@@ -15,6 +15,7 @@ if not torch.cuda.is_available():
 from tensorfold.engine.exact_sampling import Sampling  # noqa: E402
 
 from test_glm_engine import _checkpoint, _forget, _generate, _TwoCopies  # noqa: E402  (pytest puts tests/cuda on sys.path)
+from test_glm_engine import _sampling_contract as _sampling_contract  # noqa: E402 - register scoped mock transport
 
 PROMPT = 2100              # past the dense limit: the first reply token is already a sparse row
 CONTEXT = 2600
@@ -31,7 +32,7 @@ def engine_long(tmp_path_factory):
 
 
 def _prompt(seed=11, n=PROMPT):
-    return list(np.random.default_rng(seed).integers(0, 1000, size=n))
+    return np.random.default_rng(seed).integers(0, 1000, size=n).tolist()
 
 
 def test_sparse_graphs_are_used_past_the_dense_limit(engine_long):

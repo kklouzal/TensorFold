@@ -18,7 +18,7 @@ import triton.language as tl
 if not torch.cuda.is_available():
     pytest.skip("CUDA only", allow_module_level=True)
 
-from tensorfold.families.qwen4_exp.kv_formats import FORMATS, KVPairFormat, get_pair  # noqa: E402
+from tensorfold.families.qwen4_exp.kv_formats import FORMATS as REGISTERED_FORMATS, KVPairFormat, get_pair  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda import attention, attn_multi, glue, kv_pair, kvquant  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda import rotorquant_kernel as rotor, rotorquant_ref as ref  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda.kvcache import KVCache  # noqa: E402
@@ -26,13 +26,41 @@ from tests.kv_pair_inverse_oracle import inverse_rounding_envelope, native_inver
 from tests.kv_pair_native_legacy_oracle import _canonical_legacy_chunk  # noqa: E402
 from tests.kv_pair_failure_evidence import save_failure_snapshot  # noqa: E402
 
+# These existing numeric oracles describe the modern BF16/Triton execution
+# contract. Compact Planar4 has a separate SM70 wire format and FP16 working
+# policy; its native positive matrix lives in test_sm70_rotorquant_compact.py.
+# Retain every pre-existing modern case, including the original raw-FP16 cases.
+FORMATS = tuple(format for format in REGISTERED_FORMATS if format.compact is None)
 PAIRS = tuple(KVPairFormat(k, v) for k, v in itertools.product(FORMATS, repeat=2))
+COMPACT_PAIRS = tuple(KVPairFormat(k, v) for k, v in itertools.product(REGISTERED_FORMATS, repeat=2)
+                      if k.compact is not None or v.compact is not None)
 H, HK, D = 24, 2, 256
 CODEBOOK = attention.codebook("cuda")     # the eight-bit encoders' tables, made once (outside any graph capture)
 
 
 def pair_id(pair):
     return f"K-{pair.key_dtype}__V-{pair.value_dtype}"
+
+
+@pytest.mark.parametrize("pair", COMPACT_PAIRS, ids=pair_id)
+def test_sm70_compact_pair_refuses_modern_provider_before_target_allocation(monkeypatch, tmp_path, pair):
+    from tensorfold.cuda import chat_template
+    from tensorfold.families import qwen4_exp
+    from tensorfold.families.qwen4_exp import gguf
+    from tensorfold.families.qwen4_exp.cuda import engine, weights
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("compact-only format acquired modern target metadata, model weights, or CUDA state")
+
+    monkeypatch.setattr(gguf, "resolve_gguf", lambda _: None)
+    monkeypatch.setattr(chat_template, "prepare_chat_template", forbidden)
+    monkeypatch.setattr(qwen4_exp, "rope_parameters", forbidden)
+    monkeypatch.setattr(weights, "load", forbidden)
+    monkeypatch.setattr(torch.cuda, "set_device", forbidden)
+    monkeypatch.setattr(torch, "empty", forbidden)
+    monkeypatch.setattr(torch, "zeros", forbidden)
+    with pytest.raises(ValueError, match="compact Planar4.*GGUF SM70"):
+        engine.FlashNextEngine(tmp_path, kv_key_dtype=pair.key_dtype, kv_value_dtype=pair.value_dtype)
 
 
 def traits(pair):
@@ -411,7 +439,7 @@ def test_merges_one_query_head_a_program_keep_the_kv_head_tile_bits(format):
                         device="cuda")
     single_n = torch.where(sparse != 0, nk, pos0 + torch.arange(1, rows + 1, device="cuda", dtype=torch.int32))
     multi_n = torch.where((posr + 1) // ratio > top, nk, posr + 1)
-    args = dict(BITS=bits, CODEC=0, V_BITS=bits, V_CODEC=format.codec)
+    args = dict(BITS=bits, V_BITS=bits, V_CODEC=format.codec)
     for name, n in (("merge", single_n), ("merge-multi", multi_n)):
         got = torch.full((rows, H, D), float("nan"), dtype=torch.bfloat16, device="cuda")
         if name == "merge":

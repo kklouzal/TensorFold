@@ -15,23 +15,28 @@ QSA_SELECT_ROWS, QSA_SELECT_TILE, QSA_SELECT_SLICES = 31, 2048, 64
 CENTROID_TABLE_BYTES = 1536  # each Flash Next attention scratch's 64 + 256 float32 centroids (caching-allocator blocks)
 THRESHOLD_TABLE_BYTES = 1024  # and its 255 float32 eight-bit lifting thresholds
 MULTI_GRAPH_ENV = "TENSORFOLD_MULTI_GRAPH_MIB"   # Flash Next's captured concurrent rounds: their memory budget (MiB)
-MULTI_GRAPH_MIB = 512       # its default: driver graph memory plus the graphs' private pool, within which keys are kept
 MLA_PROMPT_ATT_ROWS = 512   # GLM's prompt-chunk rows one dense latent attention call takes (forward.PROMPT_ATT_ROWS)
 MLA_SELECT_ROWS = 512       # GLM's prompt-chunk rows whose pool scores are held at once (sparse.SELECT_ROWS)
 
 
-def multi_graph_bytes() -> int:
-    """Flash Next's captured-round memory budget from TENSORFOLD_MULTI_GRAPH_MIB (0: no graphs), in bytes."""
+def multi_graph_request() -> int | None:
+    """Captured-round request: None selects remaining service memory; numeric MiB are exact ceilings."""
 
     import os
 
     value = os.environ.get(MULTI_GRAPH_ENV, "").strip()
     if not value:
-        return MULTI_GRAPH_MIB << 20
+        return None
     digits = value.lstrip("0") or "0"                    # bounded before int(): any length is refused by name
     if not (value.isascii() and value.isdecimal()) or len(digits) > 5 or int(digits) > 65536:
         raise ValueError(f"{MULTI_GRAPH_ENV}: 0 to 65,536 MiB, not {value[:32]!r}")
     return int(digits) << 20
+
+
+def multi_graph_bytes() -> int:
+    """Initial header reservation; automatic capture resolves after eager warmup without shrinking this window."""
+
+    return multi_graph_request() or 0
 
 
 def multi_static_bytes(t: dict, streams: int, each: int, mtp: bool) -> int:
@@ -39,11 +44,17 @@ def multi_static_bytes(t: dict, streams: int, each: int, mtp: bool) -> int:
     (``gdn_multi.RoundTables``; ``attn_multi.StepTables`` for the verify and, with ``mtp``, the MTP steps), and its
     pinned codec status words (``MultiDecoder.kv_host``), in bytes."""
 
+    device, host = multi_static_domains(t, streams, each, mtp)
+    return device + host
+
+
+def multi_static_domains(t: dict, streams: int, each: int, mtp: bool) -> tuple[int, int]:
+    """Actual device slabs and pinned host mirrors; neither is an extra copy of the other domain."""
     linear, attention = layer_counts(t)
     rows = streams * each
     tables = ((8 * rows + 2 * streams + 1 + rows) * 4 + 2 * linear * streams * 8
               + (1 + mtp) * (2 * rows + 2 * streams) * 4 + (attention * 6 + 4 + mtp * 10) * streams * 8)
-    return 2 * tables + 8 * streams
+    return tables, tables + 8 * streams
 
 
 def indexed_prefill_rows() -> int | None:
@@ -109,10 +120,15 @@ def exl3_indexed_scratch(t: dict, window: int, rows: int) -> int:
     return moe + exl3_workspace(largest, rows * hc, max(d, heads * hd)) + ple
 
 
-def with_fixed(geometry: Geometry, extra: int) -> Geometry:
+def with_fixed(geometry: Geometry, extra: int, *, label: str = "additional_workspace") -> Geometry:
     """``geometry`` plus ``extra`` bytes that do not grow with the cache."""
 
-    return Geometry(lambda slots: geometry.bytes_at(slots) + extra, geometry.reserve, geometry.minimum_slots)
+    def breakdown(slots):
+        values = dict(geometry.breakdown_at(slots))
+        values[label] = values.get(label, 0) + extra
+        return values
+    return Geometry(lambda slots: geometry.bytes_at(slots) + extra, geometry.reserve, geometry.minimum_slots,
+                    breakdown if geometry.breakdown_at is not None else None)
 
 
 def indexed_weights(world: int, mtp: bool, mapped_tables: bool = True):
@@ -212,23 +228,44 @@ def prompt_rows(total: int, row_bytes: int, most: int = 4096) -> int:
     return max(512, min(most, total // PROMPT_SHARE // row_bytes // 512 * 512))
 
 
+ARENA_GRANULE = 2 << 20     # conservative admission granule; the actual VMM mapping granule must divide this
+                            # (``kv_arena``: 2 MiB on the qualified GPUs)
+
+
+def arena_kv_bytes(attention: int, kv_heads: int, head_dim: int, window: int) -> int:
+    """Mapped-cache bound from prepared per-rank dimensions: each layer's BF16 K/V side rounds independently."""
+
+    tensor = max(0, window) * kv_heads * head_dim * 2
+    return attention * 2 * (-(-tensor // ARENA_GRANULE) * ARENA_GRANULE)
+
+
 def live_kv(t: dict, world: int, window: int) -> int:
-    """A dense stream's attention caches at ``window`` rows (1,024 at least) and one layer's buffer mid-grow."""
+    """A dense stream's attention caches at ``window`` rows: each layer's keys and values an arena mapped in place
+    (no growth copy), rounded up to ``ARENA_GRANULE``."""
 
     _, attention = layer_counts(t)
-    return (attention + 1) * max(1024, window) * int(t["num_key_value_heads"]) // world * int(t["head_dim"]) * 4
+    hd = int(t.get("head_dim") or int(t["hidden_size"]) // int(t["num_attention_heads"]))
+    return arena_kv_bytes(attention, int(t["num_key_value_heads"]) // world, hd, window)
 
 
 def gdn_geometry(t: dict, world: int, reserve: int, *, indexed: bool = False, mtp: bool = False,
                  kv_bits: int = 16, rows: int | None = None, prompt: int = 0, evicts: bool = False,
                  kept: int = 2, prefill_rows: int = PREFILL_ROWS, kv_group: int = 32,
                  kv_scale_bytes: int = 2, kv_status: bool = False,
-                 kv_pair: tuple[tuple[int, int, int], tuple[int, int, int]] | None = None) -> Geometry:
-    """``rows``: widest verify; ``prompt``: chunk rows sharing its scratch; ``evicts``: only the live window counts."""
+                 kv_pair: tuple[tuple[int, int, int], tuple[int, int, int]] | None = None,
+                 indexer_raw_device_bytes: int | None = None) -> Geometry:
+    """``rows``: widest verify; ``prompt``: chunk rows sharing its scratch; ``kept``: retained prefix states.
+    Non-indexed attention uses arenas: ``evicts`` charges one live lineage, otherwise ``kept`` plus the current one.
+    Non-indexed ``mtp`` also retains the MoE decoder's separate graph state and ordinary MTP head caches.
+    ``indexer_raw_device_bytes`` replaces each indexed raw-history allocation
+    with its owner's bounded persistent bytes; pooled keys remain on device."""
 
+    if indexer_raw_device_bytes is not None and (
+            type(indexer_raw_device_bytes) is not int or indexer_raw_device_bytes < 0 or not indexed):
+        raise ValueError("bounded raw indexer device bytes require nonnegative integer bytes and indexed attention")
     linear, attention = layer_counts(t)
     d, h = int(t["hidden_size"]), int(t["num_attention_heads"]) // world
-    hk = int(t["num_key_value_heads"]) // world
+    hk = local_kv_heads(t, world)
     hd = int(t.get("head_dim") or d // int(t["num_attention_heads"]))
     nk, nv = int(t["linear_num_key_heads"]) // world, int(t["linear_num_value_heads"]) // world
     dk, dv = int(t["linear_key_head_dim"]), int(t["linear_value_head_dim"])
@@ -237,8 +274,10 @@ def gdn_geometry(t: dict, world: int, reserve: int, *, indexed: bool = False, mt
     index_dim, ratio = int(t.get("indexer_head_dim", 128)), int(t.get("indexer_compress_ratio", 4))
     width = 2 * nk * dk + 2 * nv * dv + 2 * nv
     # Persistent state, retained recurrent prefixes, rollback and row replay inputs.
-    fixed = linear * ((4 + kept if indexed else 4) * nv * dk * dv * 4 +
-                      (2 + kept if indexed else 4) * (conv - 1) * (2 * nk * dk + nv * dv) * 2)
+    # A commit publishes the new recurrent state before the old one goes; MoE MTP graphs own one more state.
+    retained = kept + 2 + int(mtp)
+    fixed = linear * ((4 + kept if indexed else retained) * nv * dk * dv * 4 +
+                      (2 + kept if indexed else retained) * (conv - 1) * (2 * nk * dk + nv * dv) * 2)
     rows = rows or (64 if indexed else 128)
     fixed += linear * rows * (width * 2 + nk * dk * 4 + nv * dv * 4 + nv * 8)
     # Bound the concurrent activation arrays, MoE expert rows, logits and split-K scratch.
@@ -261,7 +300,8 @@ def gdn_geometry(t: dict, world: int, reserve: int, *, indexed: bool = False, mt
         if indexed:
             # Separate K/V arrays in both the main state and the lazy serial-reference twin.
             cache = 2 * count * (capacity * hk * row + dummies)
-            cache += 2 * count * (capacity + (capacity + ratio - 1) // ratio) * index_dim * 2
+            raw = capacity * index_dim * 2 if indexer_raw_device_bytes is None else indexer_raw_device_bytes
+            cache += 2 * count * (raw + (capacity + ratio - 1) // ratio * index_dim * 2)
             # chunk partials cover the keys a row reads (at most the indexer budget and a block's tail)
             chunks = (min(capacity, budget + ratio - 1) + 511) // 512
             blocks = (capacity + ratio - 1) // ratio
@@ -270,9 +310,13 @@ def gdn_geometry(t: dict, world: int, reserve: int, *, indexed: bool = False, mt
             scratch += qsa_select_bytes(PREFILL_ATT_ROWS, blocks)
             scratch += (2 + int(mtp)) * (CENTROID_TABLE_BYTES + THRESHOLD_TABLE_BYTES)
         else:
-            # Bound two retained prefixes, current KV state and a growth copy; speculative rows use separate workspace.
-            rounded = 1 << (max(1024, capacity - reserve) - 1).bit_length()
-            cache = live_kv(t, world, capacity - reserve) if evicts else 4 * attention * rounded * hk * hd * 4
+            # Clones share their lineage's arenas. Independent kept prompts retain their own rounded mappings;
+            # in-place growth copies nothing. Graph buffers and MTP Cache's ordinary tensors have separate owners.
+            cache = (1 if evicts else kept + 1) * arena_kv_bytes(attention, hk, hd, capacity - reserve)
+            if mtp:
+                cache += arena_kv_bytes(attention, hk, hd, capacity) + (kept + 2) * capacity * hk * hd * 4
+                # MTP Cache.view still uses Torch cat: one new K/V-side suffix coexists with its result.
+                cache += capacity * hk * hd * 2
             scratch = rows * h * (hd + 2) * ((capacity + 511) // 512) * 4
         return fixed + cache + scratch
     return Geometry(bytes_at, reserve)
@@ -446,11 +490,21 @@ def dflash2_weights(draft_dir, world: int) -> Weights:
     return Weights(resident, staging, 0)
 
 
+def local_kv_heads(t: dict, world: int) -> int:
+    """GGUF GQA may replicate KV heads when tensor ranks outnumber them."""
+    heads = int(t["num_key_value_heads"])
+    if t.get("_replicate_kv_heads") and world > heads:
+        if heads <= 0 or world % heads:
+            raise ValueError("tensor ranks must form complete replicated KV-head groups")
+        return 1
+    return heads // world
+
+
 def _gdn_dims(t: dict, world: int) -> tuple:
     d, heads = int(t["hidden_size"]), int(t["num_attention_heads"])
     nk, nv = int(t["linear_num_key_heads"]) // world, int(t["linear_num_value_heads"]) // world
     dk, dv = int(t["linear_key_head_dim"]), int(t["linear_value_head_dim"])
-    return (d, heads // world, int(t["num_key_value_heads"]) // world, int(t.get("head_dim") or d // heads),
+    return (d, heads // world, local_kv_heads(t, world), int(t.get("head_dim") or d // heads),
             nk, nv, dk, dv, 2 * nk * dk + 2 * nv * dv + 2 * nv)
 
 
@@ -472,7 +526,9 @@ def stream_geometry(t: dict, world: int, streams: int, keep: int, *, first: int 
         caches = (streams + keep + 1) * kv if first is None else \
             kv + (streams + keep) * attention * min(first, capacity) * hk * hd * 2 * 2
         scratch = rows * h * (hd + 2) * ((capacity + 511) // 512) * 4
-        return fixed + caches + kv // max(1, attention) + scratch   # one layer's growth copy
+        # each arena's mapped tail (no growth copy); no rows map nothing
+        granules = (streams + keep + 1) * 2 * attention * ARENA_GRANULE if capacity > 0 else 0
+        return fixed + caches + granules + scratch
     return Geometry(bytes_at, 1)
 
 
@@ -480,43 +536,103 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
                             first: int = 256, prefill_rows: int = PREFILL_ROWS, kv_group: int = 32,
                             kv_scale_bytes: int = 2, kv_status: bool = False,
                             kv_pair: tuple[tuple[int, int, int], tuple[int, int, int]] | None = None,
-                            world: int = 1, points: int = 1, graph_bytes: int = 0) -> Geometry:
+                            world: int = 1, points: int = 1, graph_bytes: int = 0,
+                            full_windows: int | None = None, workspace_bytes: int = 0,
+                            indexer_raw_device_bytes: int | None = None,
+                            execution_rows: int | None = None, history_placement=None, rank: int = 0,
+                            device_metadata_only: bool = False) -> Geometry:
     """Flash Next's concurrent decoder per rank, including each rank's windows and retained snapshots (``keep``, and
     the ``points`` each stream's prompt piece copies out before they are kept), its rounds' static tables and the
-    budget of its captured rounds (``graph_bytes``: ``multi_graph_bytes``, 0 without graphs)."""
+    budget of its captured rounds (``graph_bytes``: ``multi_graph_bytes``, 0 without graphs).
+    A bounded raw-history owner persists through KV resize; its exact per-layer
+    device bytes replace full raw rows and do not join the copy overlap."""
 
+    if full_windows is not None and (type(full_windows) is not int or full_windows < 1):
+        raise ValueError("full KV windows must be a positive integer")
+    if type(workspace_bytes) is not int or workspace_bytes < 0:
+        raise ValueError("full-window workspace must be nonnegative integer bytes")
+    if indexer_raw_device_bytes is not None and (
+            type(indexer_raw_device_bytes) is not int or indexer_raw_device_bytes < 0):
+        raise ValueError("bounded raw indexer device bytes must be nonnegative integer bytes")
+    if execution_rows is not None and (type(execution_rows) is not int or execution_rows < each):
+        raise ValueError("execution row envelope must fit one complete verification window")
+    if history_placement is not None and (indexer_raw_device_bytes is not None or world != history_placement.world):
+        raise ValueError("unique history geometry requires the matching GPU-history rank inventory")
+    windows = 1 if full_windows is None else min(streams, full_windows)
     linear, attention = layer_counts(t)
     d, h, hk, hd, nk, nv, dk, dv, width = _gdn_dims(t, world)
     hc = int(t.get("hc_count", 1))
     index_dim, ratio = int(t.get("indexer_head_dim", 128)), int(t.get("indexer_compress_ratio", 4))
-    budget, rows = int(t.get("indexer_budget", 2048)), streams * each
+    budget, rows = int(t.get("indexer_budget", 2048)), streams * each if execution_rows is None else execution_rows
     rec = linear * nv * dk * dv * 4
     conv = linear * (int(t["linear_conv_kernel_dim"]) - 1) * (2 * nk * dk + nv * dv) * 2
     tail = (int(t.get("ple_conv_kernel_size", 4)) - 1) * int(t.get("ngram_size", 3)) * hc * d * 2
-    fixed = streams * (2 * rec + conv + tail + linear * each * (nk * dk * 4 + nv * dv * 4 + nv * 8))
-    fixed += (keep + streams * points) * (rec + conv + tail + int(mtp) * hc * d * 2)  # retained plus a pass's points
+    state_bytes = streams * (2 * rec + conv + tail + linear * each * (nk * dk * 4 + nv * dv * 4 + nv * 8))
+    if history_placement is not None:
+        from tensorfold.cuda.sm70.paged_attention import generation_bytes
+
+        state_bytes += generation_bytes(streams)  # stable slot/ownership words per full-window State
+    recovery_bytes = (keep + streams * points) * (rec + conv + tail + int(mtp) * hc * d * 2)
+    fixed = state_bytes + recovery_bytes  # retained plus a pass's points
     slots = int(t.get("num_experts_per_tok", 1)) + 1
     moe = int(t.get("moe_intermediate_size", t.get("intermediate_size", d))) // world
     extent = d * hc + int(t["vocab_size"]) // world + slots * (moe + d) + width + h * hd
     fixed += (1 + mtp) * (linear * rows * width * 2 + 32 * max(rows, 4) * 2560 * 4) + 16 * max(64, rows) * extent * 4
     fixed += prefill_rows * _indexed_prefill_row(t, world, h, hk, hd, nv, dv, width, slots, moe)
     if kv_status:
-        fixed += 8 * streams  # each slot's status words (its steps' status pointers sit in the static step tables)
-    fixed += multi_static_bytes(t, streams, each, mtp) + graph_bytes     # static round tables, captured rounds
+        # Each State owns two local words and, with TP, an independent peer
+        # packet. The cohort's send/receive/host arrays are charged separately.
+        fixed += 8 * streams * (1 + (world if world > 1 else 0))
+    static_bytes = (multi_static_domains(t, streams, each, mtp)[0] if device_metadata_only else
+                    multi_static_bytes(t, streams, each, mtp))
+    fixed += static_bytes + graph_bytes     # slot metadata still covers every resident slot
     count = attention + int(mtp)
+    if history_placement is not None:
+        from tensorfold.families.qwen4_exp.cuda.history_placement import compact_stage_bytes as stage_bytes
+
+        fixed += stage_bytes(rows, count, mtp=False) + stage_bytes(prefill_rows, count, mtp=bool(mtp))
+        if mtp:
+            fixed += stage_bytes(rows, count, mtp=True, mtp_only=True)
+        extra_snapshots = (keep + streams * points) * ((count + world - 1) // world) * 4 * (index_dim * 2 + 3 * 8)
+        recovery_bytes += extra_snapshots
+        fixed += extra_snapshots
     row, dummies = _kv_pair_bytes(hd, kv_bits, kv_group, kv_scale_bytes, kv_pair)
     def caches(rows: int) -> int:
-        return count * (rows * hk * row + dummies + (rows + (rows + ratio - 1) // ratio) * index_dim * 2)
+        raw = rows * index_dim * 2 if indexer_raw_device_bytes is None else indexer_raw_device_bytes
+        return count * (rows * hk * row + dummies + raw + (rows + ratio - 1) // ratio * index_dim * 2)
 
-    def bytes_at(capacity: int) -> int:
+    def breakdown_at(capacity: int) -> dict[str, int]:
         blocks = (capacity + ratio - 1) // ratio
-        cache = caches(capacity) + (streams - 1) * caches(min(first, capacity))
+        if history_placement is None:
+            cache = windows * caches(capacity) + (streams - windows) * caches(min(first, capacity))
+        else:
+            cache = sum(history_placement.rank_bytes(slot, capacity if slot < windows else min(first, capacity),
+                        rank, row, dummies, index_dim=index_dim, ratio=ratio, include_mtp=mtp, proposal_rows=each)
+                        for slot in range(streams))
+        replacement = 0
+        if full_windows is not None:
+            # Resizes replace one target attention layer at a time. All full
+            # slot windows coexist with the replacement and serving workspace.
+            # Unique full-window arenas never resize; restore and page moves
+            # reuse that storage under independently charged bounded staging.
+            replacement = (caches(capacity) // count if count else 0) if history_placement is None else 0
+            if count and indexer_raw_device_bytes is not None:
+                # The bounded owner keeps its ring/staging through a KV resize;
+                # only the main KV and pooled history acquire replacements.
+                replacement -= indexer_raw_device_bytes
         chunks = (min(capacity, budget + ratio - 1) + 511) // 512
-        scratch = ((1 + mtp) * rows + PREFILL_ATT_ROWS) * (h * (hd + 2) * chunks + blocks + budget + ratio) * 4
-        scratch += (1 + mtp) * qsa_select_bytes(rows, blocks) + qsa_select_bytes(PREFILL_ATT_ROWS, blocks)
-        scratch += (2 + mtp) * (CENTROID_TABLE_BYTES + THRESHOLD_TABLE_BYTES)
-        return fixed + cache + scratch
-    return Geometry(bytes_at, each)
+        legacy_partials = h * (hd + 2) * chunks if history_placement is None else 0
+        scratch = ((1 + mtp) * rows + PREFILL_ATT_ROWS) * (legacy_partials + blocks + budget + ratio) * 4
+        if history_placement is None:
+            scratch += (1 + mtp) * qsa_select_bytes(rows, blocks) + qsa_select_bytes(PREFILL_ATT_ROWS, blocks)
+            scratch += (2 + mtp) * (CENTROID_TABLE_BYTES + THRESHOLD_TABLE_BYTES)
+        return {"session_state": state_bytes, "retained_recovery": recovery_bytes,
+                "execution_arenas": fixed - state_bytes - recovery_bytes - static_bytes - graph_bytes,
+                "slot_metadata": static_bytes, "history": cache, "replacement_overlap": replacement,
+                "serving_workspace": workspace_bytes if full_windows is not None else 0,
+                "graphs": graph_bytes, "attention_scratch": scratch}
+
+    return Geometry(lambda capacity: sum(breakdown_at(capacity).values()), each, breakdown_at=breakdown_at)
 
 
 def _pattern(t: dict) -> str:

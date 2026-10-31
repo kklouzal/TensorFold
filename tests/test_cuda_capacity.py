@@ -7,10 +7,40 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.cli_server_fixture import install_cli_server
+from tests.cli_server_fixture import cuda_cli_app, cuda_cli_engine, install_cli_server
 
 from tensorfold import cli
 from tensorfold.families.glm5_next.cuda import LATENT
+
+
+@pytest.mark.parametrize("available,room", [(None, None), (17, None), (17, 9), (0, 0)])
+def test_post_load_host_observation_preserves_unknown_unlimited_and_zero(monkeypatch, available, room):
+    from tensorfold.cuda import capacity
+
+    monkeypatch.setattr(capacity, "_meminfo", lambda: None if available is None else {"MemAvailable": available})
+    monkeypatch.setattr(capacity, "host_cgroup_bytes", lambda: room)
+    assert capacity.host_memory_snapshot() == {"mem_available_bytes": available, "cgroup_remaining_bytes": room,
+                                               "cgroup_read_error": None, "snapshot_is_reservation": False}
+
+
+def test_post_load_observation_reports_read_failure_and_preserves_cancellation(monkeypatch):
+    from tensorfold.cuda import capacity
+
+    def failed():
+        raise ValueError("unreadable cgroup allowance")
+
+    monkeypatch.setattr(capacity, "_meminfo", lambda: {"MemAvailable": 17})
+    monkeypatch.setattr(capacity, "host_cgroup_bytes", failed)
+    result = capacity.host_memory_snapshot()
+    assert result["cgroup_read_error"] == "unreadable cgroup allowance" and result["cgroup_remaining_bytes"] is None
+    assert result["mem_available_bytes"] == 17
+
+    def interrupted():
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(capacity, "host_cgroup_bytes", interrupted)
+    with pytest.raises(KeyboardInterrupt):
+        capacity.host_memory_snapshot()
 
 
 def checkpoint(path, config, tensors):
@@ -26,6 +56,7 @@ def checkpoint(path, config, tensors):
         stream.truncate(8 + len(raw) + offset)  # sparse, valid isolated payload; no model data is loaded
 
 
+@pytest.mark.usefixtures("default_memory_policy")
 @pytest.mark.parametrize("integrated", [False, True])
 def test_explicit_reserve_and_absolute_cap_apply_to_the_same_grant(monkeypatch, integrated):
     from tensorfold.cuda import capacity
@@ -55,9 +86,9 @@ def test_omitted_cuda_context_reaches_engine_as_native(tmp_path, monkeypatch, re
     observed = []
     def engine(path, **options):
         observed.append(options)
-        return SimpleNamespace(context_window=options.get("context", 8192))
+        return cuda_cli_engine(context_window=options.get("context", 8192))
     family = SimpleNamespace(title="Test", model_type="test", package=SimpleNamespace(cuda_engine=engine))
-    monkeypatch.setattr(server, "App", lambda *a, **kw: SimpleNamespace(effective_context_window=a[0].context_window))
+    monkeypatch.setattr(server, "App", lambda *a, **kw: cuda_cli_app(effective_context_window=a[0].context_window))
     install_cli_server(monkeypatch, request, server)
     args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", "--no-drafts"])
     cli._serve_cuda(args, family, tmp_path, 262144)
@@ -101,9 +132,9 @@ def test_glm_nonfit_refuses_before_weight_load(tmp_path, monkeypatch):
 def test_cli_preserves_default_vs_explicit_context(tmp_path, monkeypatch, request, override):
     from tensorfold.cuda import server
     seen = []
-    package = SimpleNamespace(cuda_engine=lambda *a, **kw: seen.append(kw) or SimpleNamespace(context_window=99))
+    package = SimpleNamespace(cuda_engine=lambda *a, **kw: seen.append(kw) or cuda_cli_engine(context_window=99))
     family = SimpleNamespace(title="Test", model_type="test", package=package)
-    monkeypatch.setattr(server, "App", lambda *a, **kw: SimpleNamespace(effective_context_window=99))
+    monkeypatch.setattr(server, "App", lambda *a, **kw: cuda_cli_app(effective_context_window=99))
     install_cli_server(monkeypatch, request, server)
     command = ["serve", str(tmp_path), "--backend", "cuda", "--no-drafts"]
     if override is not None:
@@ -174,7 +205,7 @@ class ConstructorComm:
 def fake_runtime(monkeypatch):
     import sys
     import torch
-    from tensorfold.cuda import capacity
+    from tensorfold.cuda import capacity, kv_arena
 
     original_tensor, original_empty = torch.tensor, torch.empty
     def cpu(fn):
@@ -186,6 +217,7 @@ def fake_runtime(monkeypatch):
     monkeypatch.setattr(torch, "tensor", cpu(original_tensor))
     monkeypatch.setattr(torch, "empty", cpu(original_empty))
     monkeypatch.setattr(torch.cuda, "set_device", lambda *a: None)
+    monkeypatch.setattr(kv_arena, "driver", lambda device: None)
     monkeypatch.setattr(torch.cuda, "get_device_capability", lambda *a: (12, 1))
     monkeypatch.setattr(capacity, "available_bytes", lambda t: 16 * capacity.GIB)
     monkeypatch.setattr(capacity, "total_bytes", lambda t: 128 * capacity.GIB)       # a GB10: 4096-row prompt chunks
@@ -243,6 +275,28 @@ def construct(family, path, requested, explicit, world, rank=0):
     return obj, start
 
 
+def expected_linear_geometry(text, world):
+    """The tested constructor has12 rows and no companion; only its TP1 route proposes copies.
+
+    Shared workspace formulas have independent unit controls. This integration reference deliberately declares
+    their dimensions separately from the constructor and retains its real per-rank cache/prompt geometry.
+    Single-request TP2 without a companion takes the serial route, so its geometry has no rejection scratch.
+    """
+    from tensorfold.cuda.geometry import gdn_geometry, with_fixed
+    from tensorfold.cuda.sampling import effective_workspace
+    from tensorfold.cuda.speculative import chain_workspace
+
+    assert text["vocab_size"] == 1024
+    assert world in (1, 2)
+    geometry = gdn_geometry(text, world, 12, rows=12, prompt=4096, kept=4, evicts=world == 1)
+    if world == 2:
+        return geometry
+    target = effective_workspace(12, 1024, world=1)
+    copies = chain_workspace(11, 16)
+    workspace = target["device_bytes"] + copies["device_bytes"]
+    return with_fixed(geometry, workspace)
+
+
 @pytest.mark.parametrize("family,world", [("linear", 1), ("linear", 2), ("indexed", 1), ("indexed", 2), ("mla", 2)])
 @pytest.mark.parametrize("requested,explicit,window", [(None, None, 65536), (65536, False, 65536),
                                                         (0, True, 65536), (1024, True, 1024)])
@@ -271,7 +325,8 @@ def test_real_constructors_shrink_default_and_refuse_explicit_before_loading(tmp
     from tensorfold.cuda.geometry import gdn_geometry, mla_geometry
     text = small_config()
     geometry = (mla_geometry(text, world, 8, latent=LATENT) if family == "mla" else
-                gdn_geometry(text, world, 1 if family == "indexed" else 12, indexed=family == "indexed"))
+                gdn_geometry(text, world, 1, indexed=True) if family == "indexed" else
+                expected_linear_geometry(text, world))
     budget = geometry.needed(12000) + 32768
     monkeypatch.setattr(capacity, "available_bytes", lambda t: budget)
     obj, start = construct(family, tmp_path, None, None, world)
@@ -370,7 +425,7 @@ def test_actual_distributed_startup_agrees_on_smaller_rank_before_loading(tmp_pa
     calls, capacity = fake_runtime
     geom = (mla_geometry(small_config(), 2, 8, latent=LATENT) if family == "mla" else
             gdn_geometry(small_config(), 2, 1, indexed=True, kept=5) if family == "indexed" else
-            gdn_geometry(small_config(), 2, 12, rows=12, prompt=4096))     # the 27B engine's, prompt chunks on a GB10
+            expected_linear_geometry(small_config(), 2))
     transform = split_weights(rule) if family == "mla" else indexed_weights(2, False) if family == "indexed" else linear_weights
     weights = capacity.estimate_weights(tmp_path, transform)
     if family == "linear":
@@ -461,3 +516,125 @@ def test_a_4bit_drafter_is_admitted_at_its_packed_bytes(tmp_path):
                                                                 + 2 * 5120 * 64)
     assert packed_draft("a.weight", [5120, 5120]) and not packed_draft("a.weight", [5120, 64])
     assert not packed_draft("a.bias", [5120, 5120]) and not packed_draft("a.weight", [5120])
+@pytest.mark.parametrize("model_type", ["qwen3_5", "qwen3_5_moe"])
+def test_capacity_counts_only_declared_main_qwen_layers(tmp_path, model_type):
+    from tensorfold.cuda.capacity import config
+    from tensorfold.cuda.geometry import layer_counts
+
+    raw = {"model_type": model_type, "text_config": {
+        "num_hidden_layers": 3, "num_nextn_predict_layers": 1,
+        "layer_types": ["full_attention", "linear_attention", "linear_attention", "full_attention"]}}
+    path = tmp_path / "config.json"
+    original = json.dumps(raw)
+    path.write_text(original)
+    actual = config(tmp_path)
+    assert actual["layer_types"] == raw["text_config"]["layer_types"][:3]
+    assert layer_counts(actual) == (2, 1)
+    assert path.read_text() == original
+
+
+def test_capacity_null_layout_keeps_arithmetic_pattern(tmp_path):
+    from tensorfold.cuda.capacity import config
+    from tensorfold.cuda.geometry import layer_counts
+
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "qwen3_5", "num_hidden_layers": 4,
+                                                     "layer_types": None, "full_attention_interval": 4}))
+    actual = config(tmp_path)
+    assert "layer_types" not in actual
+    assert layer_counts(actual) == (3, 1)
+
+
+@pytest.mark.parametrize("value,expected", [("0", 0), ("-0.0", 0), ("0.125", 2**27), ("16", 16 * 2**30)])
+def test_cuda_reserve_override_accepts_zero_fraction_and_exact_device_size(monkeypatch, value, expected):
+    from tensorfold.cuda import capacity
+
+    monkeypatch.setenv("TENSORFOLD_MEMORY_RESERVE_GIB", "8")
+    monkeypatch.setenv("TENSORFOLD_CUDA_MEMORY_RESERVE_GIB", value)
+    assert capacity.cuda_reserve_bytes(16 * capacity.GIB) == expected
+    assert capacity.cuda_reserve_bytes(16 * capacity.GIB, default=512 * 2**20) == expected
+    assert capacity.reserve_bytes(64 * capacity.GIB, host=True) == 8 * capacity.GIB
+
+
+@pytest.mark.parametrize("value", ["", " ", "bad", "true", "nan", "inf", "-inf", "-1", "16.00001", "1e300"])
+def test_cuda_reserve_rejects_nonfinite_negative_and_oversize_values(monkeypatch, value):
+    from tensorfold.cuda import capacity
+
+    monkeypatch.setenv("TENSORFOLD_CUDA_MEMORY_RESERVE_GIB", value)
+    with pytest.raises(ValueError, match="TENSORFOLD_CUDA_MEMORY_RESERVE_GIB"):
+        capacity.cuda_reserve_bytes(16 * capacity.GIB)
+
+
+def test_unset_cuda_reserve_preserves_global_and_explicit_caller_defaults(monkeypatch):
+    from tensorfold.cuda import capacity
+
+    monkeypatch.delenv("TENSORFOLD_CUDA_MEMORY_RESERVE_GIB", raising=False)
+    monkeypatch.delenv("TENSORFOLD_MEMORY_RESERVE_GIB", raising=False)
+    assert capacity.cuda_reserve_bytes(16 * capacity.GIB) == 4 * capacity.GIB
+    assert capacity.cuda_reserve_bytes(64 * capacity.GIB) == math.ceil(64 * capacity.GIB / 10)
+    assert capacity.cuda_reserve_bytes(16 * capacity.GIB, default=512 * 2**20) == 512 * 2**20
+    assert capacity.cuda_reserve_bytes(16 * capacity.GIB, default=0) == 0
+    monkeypatch.setenv("TENSORFOLD_MEMORY_RESERVE_GIB", "8")
+    assert capacity.cuda_reserve_bytes(16 * capacity.GIB) == 8 * capacity.GIB
+    assert capacity.cuda_reserve_bytes(16 * capacity.GIB, default=512 * 2**20) == 512 * 2**20
+    monkeypatch.setenv("TENSORFOLD_MEMORY_RESERVE_GIB", "0")
+    with pytest.raises(ValueError, match="TENSORFOLD_MEMORY_RESERVE_GIB"):
+        capacity.cuda_reserve_bytes(16 * capacity.GIB)
+
+
+@pytest.mark.parametrize("integrated", [False, True])
+def test_cuda_zero_and_host_eight_reserves_are_independent(monkeypatch, integrated):
+    from tensorfold.cuda import capacity
+
+    gib = capacity.GIB
+    runtime = SimpleNamespace(cuda=SimpleNamespace(mem_get_info=lambda: (24 * gib, 32 * gib),
+                              get_device_properties=lambda device: SimpleNamespace(is_integrated=integrated)))
+    monkeypatch.setattr(capacity, "_meminfo", lambda: {"MemTotal": 64 * gib, "MemAvailable": 26 * gib})
+    monkeypatch.delenv(capacity.LIMIT_ENV, raising=False)
+    monkeypatch.setenv("TENSORFOLD_MEMORY_RESERVE_GIB", "8")
+    monkeypatch.setenv("TENSORFOLD_CUDA_MEMORY_RESERVE_GIB", "0")
+    assert capacity.available_bytes(runtime) == (18 if integrated else 24) * gib
+    assert capacity.host_stream_bytes() == 18 * gib
+    if not integrated:
+        assert capacity.available_bytes(runtime, reserve=2 * gib) == 24 * gib
+    monkeypatch.setenv(capacity.LIMIT_ENV, "17")
+    assert capacity.available_bytes(runtime) == 17 * gib
+
+
+def test_cuda_reserve_avoids_float_overflow_and_checks_exact_upper_bound(monkeypatch):
+    from tensorfold.cuda import capacity
+
+    monkeypatch.setenv("TENSORFOLD_CUDA_MEMORY_RESERVE_GIB", "1e300")
+    assert capacity.cuda_reserve_bytes(10**400) == int(1e300) * capacity.GIB
+    monkeypatch.setenv("TENSORFOLD_CUDA_MEMORY_RESERVE_GIB", "16")
+    with pytest.raises(ValueError, match="device memory"):
+        capacity.cuda_reserve_bytes(16 * capacity.GIB - 1)
+
+
+def test_unified_missing_meminfo_still_ignores_the_discrete_override(monkeypatch):
+    from tensorfold.cuda import capacity
+
+    gib = capacity.GIB
+    runtime = SimpleNamespace(cuda=SimpleNamespace(mem_get_info=lambda: (24 * gib, 32 * gib),
+                              get_device_properties=lambda device: SimpleNamespace(is_integrated=True)))
+    monkeypatch.setattr(capacity, "_meminfo", lambda: None)
+    monkeypatch.delenv(capacity.LIMIT_ENV, raising=False)
+    monkeypatch.setenv("TENSORFOLD_MEMORY_RESERVE_GIB", "8")
+    monkeypatch.setenv("TENSORFOLD_CUDA_MEMORY_RESERVE_GIB", "0")
+    assert capacity.available_bytes(runtime) == 16 * gib
+
+
+@pytest.mark.parametrize("total,default", [(True, None), (-1, None), (16 * 2**30, True),
+                                           (16 * 2**30, -1), (16 * 2**30, 17 * 2**30)])
+def test_cuda_reserve_validates_dynamic_default_geometry_when_selected(monkeypatch, total, default):
+    from tensorfold.cuda import capacity
+
+    monkeypatch.delenv("TENSORFOLD_CUDA_MEMORY_RESERVE_GIB", raising=False)
+    with pytest.raises(ValueError, match="CUDA memory"):
+        capacity.cuda_reserve_bytes(total, default=default)
+
+
+def test_cuda_override_is_selected_before_an_unused_caller_default(monkeypatch):
+    from tensorfold.cuda import capacity
+
+    monkeypatch.setenv("TENSORFOLD_CUDA_MEMORY_RESERVE_GIB", "0")
+    assert capacity.cuda_reserve_bytes(256 * 2**20, default=512 * 2**20) == 0

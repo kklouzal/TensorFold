@@ -4,6 +4,8 @@ through every round shape (joins, finishes, copy drafts, sparse rows, prompt pas
 
 import gc
 import json
+import traceback
+import weakref
 from types import SimpleNamespace
 
 import pytest
@@ -33,7 +35,7 @@ def _solo(w, prompts, samplings, count, kv_dtype, capacity=4096, prefill_rows=25
     refs = []
     for prompt, sampling in zip(prompts, samplings):
         e = Engine(w, capacity=capacity, max_rows=8, prefill_rows=prefill_rows, kv_dtype=kv_dtype)
-        refs.append(serial_decode(e, prefill(e, prompt, sampling), count, sampling).tokens)
+        refs.append(serial_decode(e, prefill(e, prompt, sampling), count, sampling, stop_eos=False).tokens)
     return refs
 
 
@@ -212,7 +214,7 @@ def test_mtp_steps_replay_the_eager_bits(captured, n, split):
         for st, k, tok in zip(sts, split, tokens):
             windows.append((st, tok, streams[at:at + k]))
             at += k
-        segs = mtp_stage(w, b, windows)
+        segs = mtp_stage(b, windows)
         b.attn_step = None if mode == "alone" else attn_multi.Step(w, segs, mtp=True, tables=dec.mtp_tables)
         try:
             out = dec.graphs.mtp_step(segs) if mode == "graph" else mtp_compute(w, segs, b, check=False)
@@ -244,8 +246,7 @@ def _replays(dec) -> list[int]:
 
 def _decode(w, prompts, samplings, count, *, graphs, kv_dtype=RQ, capacity=4096, depth=3, confidence=0.3,
             prefill_rows=256, draft=None, later=()):
-    """Decode ``prompts`` together (``later``: (round, prompt index) admitted mid-run); each stream's tokens, the
-    decoder and its replays over the run."""
+    """Fixed-count decoding ignores EOS like ``_solo``; later streams join at their scheduled rounds."""
 
     dec = MultiDecoder(w, slots=len(prompts), capacity=capacity, depth=depth, confidence=confidence,
                        kv_dtype=kv_dtype, prefill_rows=prefill_rows, graphs=graphs)
@@ -253,7 +254,7 @@ def _decode(w, prompts, samplings, count, *, graphs, kv_dtype=RQ, capacity=4096,
     if graphs:
         dec.capture_graphs()
         replays = _replays(dec)
-    streams = [Stream(list(p), count, smp, draft=True if draft is None else draft[i])
+    streams = [Stream(list(p), count, smp, draft=True if draft is None else draft[i], stop_eos=False)
                for i, (p, smp) in enumerate(zip(prompts, samplings))]
     pending = {i: r for r, i in later}
     for i, s in enumerate(streams):
@@ -267,6 +268,7 @@ def _decode(w, prompts, samplings, count, *, graphs, kv_dtype=RQ, capacity=4096,
                 del pending[i]
         dec.finish(dec.round())
         rounds += 1
+    assert all(s.error is None and len(s.out) == count for s in streams)
     return [s.out for s in streams], dec, replays[0]
 
 
@@ -287,7 +289,8 @@ def test_graph_rounds_emit_each_streams_solo_tokens(depth, confidence):
     dec.capture_graphs()
     assert dec.graph_record["captured"] and dec.graphs.verify and dec.graphs.mtp
     replays = _replays(dec)
-    streams = [Stream(list(p), c, smp, draft=i != 3) for i, (p, smp, c) in enumerate(zip(prompts, samplings, counts))]
+    streams = [Stream(list(p), c, smp, draft=i != 3, stop_eos=False)
+               for i, (p, smp, c) in enumerate(zip(prompts, samplings, counts))]
     for s in streams[:2]:
         dec.admit(s)
     rounds = 0
@@ -298,6 +301,7 @@ def test_graph_rounds_emit_each_streams_solo_tokens(depth, confidence):
         dec.finish(dec.round())
         rounds += 1
     assert [s.out for s in streams] == refs
+    assert [len(s.out) for s in streams] == counts
     assert replays[0] > 0
 
 
@@ -315,6 +319,7 @@ def test_copy_drafts_and_prompt_passes_through_graph_rounds(monkeypatch):
     outs, dec, replays = _decode(w, prompts, samplings, 40, graphs=True, capacity=1024, prefill_rows=64,
                                  later=[(2, 1), (4, 3)])
     assert outs == refs and replays > 0
+    assert all(len(out) == 40 for out in outs)
     slots = dec.free + [k[1] for k in dec.kept]                     # kept prompt ends hold their slots
     assert max(st.version for st in slots) >= 1                     # a slot grew past its first 256 rows
 
@@ -329,8 +334,8 @@ def test_failed_status_in_a_replayed_step_raises_and_recovers(where):
     dec = MultiDecoder(w, slots=2, capacity=4096, depth=3, confidence=0.0, kv_dtype=RQ, prefill_rows=256, graphs=True)
     dec.capture_graphs()
     pieces = sum(len(p.graphs) for p in (*dec.graphs.verify.values(), *dec.graphs.mtp.values()))
-    streams = [Stream(list(PROMPTS[0]), 12, SAMPLINGS[1], emit=lambda new: emitted.extend(new)),
-               Stream(list(PROMPTS[1]), 12, None, emit=lambda new: emitted.extend(new))]
+    streams = [Stream(list(PROMPTS[0]), 12, SAMPLINGS[1], stop_eos=False, emit=lambda new: emitted.extend(new)),
+               Stream(list(PROMPTS[1]), 12, None, stop_eos=False, emit=lambda new: emitted.extend(new))]
     for s in streams:
         dec.admit(s)
     dec.finish(dec.round())
@@ -347,7 +352,7 @@ def test_failed_status_in_a_replayed_step_raises_and_recovers(where):
         scale.copy_(saved)
     assert emitted == before and all(s.st._kv_error is not None for s in streams)
     dec.drop()
-    again = Stream(list(PROMPTS[0]), 8, SAMPLINGS[1])
+    again = Stream(list(PROMPTS[0]), 8, SAMPLINGS[1], stop_eos=False)
     dec.admit(again)
     while dec.live():
         dec.finish(dec.round())
@@ -383,7 +388,7 @@ def test_a_budget_too_small_stops_capture_and_rounds_run_eagerly(monkeypatch):
     assert record["captured"] and record["stopped"] and record["bytes"] <= 1 << 20
     assert len(dec.graphs.verify) + len(dec.graphs.mtp) == len(record["keys"])
     assert record["bytes"] == sum(max(0, key["bytes"]) for key in record["keys"])
-    streams = [Stream(list(p), 12, smp) for p, smp in zip(PROMPTS[:2], SAMPLINGS[:2])]
+    streams = [Stream(list(p), 12, smp, stop_eos=False) for p, smp in zip(PROMPTS[:2], SAMPLINGS[:2])]
     for s in streams:
         dec.admit(s)
     while dec.live():
@@ -406,6 +411,16 @@ def test_graph_memory_is_measured_bounded_and_taken_from_the_cache_room():
     assert record["bytes"] == sum(max(0, key["bytes"]) for key in record["keys"])
     assert record["room_bytes"] == max(record["bytes"], record["settled_bytes"])
     assert dec.memory_gate.room == room - record["room_bytes"]
+    from tensorfold.families.qwen4_exp.cuda.service_memory import private_pool_spare
+
+    if record["allocator"]["accounting"] == "native-pool-inactive":
+        snapshot = torch.cuda.memory_snapshot(mempool_id=dec.graphs.pool, include_traces=False)
+        unavailable = private_pool_spare(snapshot, dec.graphs.pool, w.device.index or 0)
+        assert record["allocator"]["private_pool_spare_bytes"] == unavailable
+        assert dec.graphs.private_spare_bytes == unavailable
+        assert dec.memory_gate.live.__defaults__ == (dec.graphs,)
+    else:
+        assert dec.graphs.private_spare_bytes is None and dec.memory_gate.live is multi_graphs.live_bytes
     print(json.dumps({k: v for k, v in record.items() if k != "keys"}))
     per = [k["bytes"] for k in record["keys"]]
     print("per-key bytes: min", min(per), "max", max(per), "pieces", record["pieces"])
@@ -413,8 +428,8 @@ def test_graph_memory_is_measured_bounded_and_taken_from_the_cache_room():
 
 def test_a_failed_capture_raises_its_own_error_and_leaves_the_decoder_eager(monkeypatch):
     """C9: a key's capture failing midway raises that error itself; the launch policy, garbage collection, DeltaNet
-    parity and step tables are restored, the slots are reset, nothing comes off the room, and rounds decode the
-    solo tokens eagerly."""
+    parity and step tables are restored and the slots reset. The admitted failed pool remains owned/accounted;
+    rounds still decode the solo tokens eagerly."""
 
     w = _model()
     refs = _solo(w, PROMPTS[:2], SAMPLINGS[:2], 12, RQ, capacity=1024, prefill_rows=16)
@@ -432,11 +447,13 @@ def test_a_failed_capture_raises_its_own_error_and_leaves_the_decoder_eager(monk
     with pytest.raises(RuntimeError) as caught:
         dec.capture_graphs()
     assert caught.value is boom and caught.value.__cause__ is None
-    assert dec.graphs is None and not dec.graph_record["captured"] and dec.memory_gate.room == room
+    assert dec.graphs is None and not dec.graph_record["captured"]
+    assert dec._failed_graphs is not None and dec._memory_error is None
+    assert dec.memory_gate.room == room - dec.graph_record["room_bytes"]
     assert gc.isenabled() and pdl.ON == launch and dec.gdn.parity == parity
     assert dec.buf.attn_step is None and dec.buf.gdn_tables is None and dec.mbuf.attn_step is None
     assert all(not st._kv_pending and st._kv_error is None and st.pos == 0 for st in dec.free)
-    streams = [Stream(list(p), 12, smp) for p, smp in zip(PROMPTS[:2], SAMPLINGS[:2])]
+    streams = [Stream(list(p), 12, smp, stop_eos=False) for p, smp in zip(PROMPTS[:2], SAMPLINGS[:2])]
     for s in streams:
         dec.admit(s)
     while dec.live():
@@ -459,6 +476,45 @@ def test_a_failed_slot_restore_after_a_failed_capture_is_attached_to_the_capture
     assert caught.value is boom and caught.value.__cause__ is restore
     assert any("cleanup also failed" in note for note in caught.value.__notes__)
     assert dec.graphs is None and gc.isenabled() and pdl.ON == launch
+
+
+def test_failed_capture_tensor_locals_survive_real_frame_clear_and_keep_pool_receipt(monkeypatch):
+    """assertRaises-style traceback clearing cannot change the failed pool's admitted inactive-byte constant."""
+    from tensorfold.families.qwen4_exp.cuda.service_memory import private_pool_spare
+
+    w = _model()
+    refs = _solo(w, PROMPTS[:1], SAMPLINGS[:1], 8, RQ, capacity=1024, prefill_rows=16)
+    dec = MultiDecoder(w, slots=2, capacity=1024, depth=3, kv_dtype=RQ, prefill_rows=16, graphs=True)
+    original, probes = multi_graphs.RoundGraphs._pieces, []
+    boom = RuntimeError("inside the captured forward")
+    def pieces(graphs, run, b):
+        def fail():
+            temporary = torch.empty(4096, dtype=torch.bfloat16, device=w.device)
+            probes.append(weakref.ref(temporary))
+            run()
+            raise boom
+        return original(graphs, fail, b)
+    monkeypatch.setattr(multi_graphs.RoundGraphs, "_pieces", pieces)
+    with pytest.raises(RuntimeError) as caught:
+        dec.capture_graphs()
+    assert caught.value is boom and dec._memory_error is None
+    owner = dec._failed_graphs
+    assert owner is not None and owner.failure_frames
+    traceback.clear_frames(owner.failure_traceback)
+    boom.with_traceback(None)
+    gc.collect()
+    torch.cuda.synchronize()
+    assert probes[0]() is not None
+    if owner.allocator_backend == "native":
+        snapshot = torch.cuda.memory_snapshot(mempool_id=owner.pool, include_traces=False)
+        assert private_pool_spare(snapshot, owner.pool, w.device.index or 0) == owner.private_spare_bytes
+    else:
+        assert owner.private_spare_bytes is None and dec.memory_gate.live is multi_graphs.live_bytes
+    stream = Stream(list(PROMPTS[0]), 8, SAMPLINGS[0], stop_eos=False)
+    dec.admit(stream)
+    while dec.live():
+        dec.finish(dec.round())
+    assert stream.error is None and stream.out == refs[0]
 
 
 def _side_capturing(graphs) -> bool:
@@ -535,6 +591,7 @@ def test_the_engine_refuses_a_decoder_whose_graph_budget_differs_from_its_plan(t
     from test_flashnext_tp import _checkpoint
 
     _checkpoint(tmp_path)
+    monkeypatch.setenv(multi_graphs.ENV, "512")  # an explicit reservation must still agree if capture declines
     monkeypatch.setattr(multi_graphs, "capturable", lambda w: "declined by this test")
     with pytest.raises(RuntimeError, match=r"startup plan reserved .* \(declined by this test\)"):
         FlashNextEngine(tmp_path, depth=3, draft_vocab=None, max_len=512, prefetch=False, streams=2)

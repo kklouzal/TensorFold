@@ -113,9 +113,8 @@ class FamilyRounds(FamilyPrefill, SharedRounds, DraftDepth):
                 from tensorfold.engine.lane_engine import RoundStats
 
                 self.round_stats.append(RoundStats(
-                    streams=1, width=rows, rows=rows, ragged=False, rollbacks=int(0 < keep < rows),
-                    committed=len(got), forward_ms=ms, finalize_ms=0.0, rollback_ms=0.0, total_ms=ms,
-                    started_at=started))
+                    streams=1, width=rows, rows=rows, rollbacks=int(0 < keep < rows), committed=len(got), forward_ms=ms,
+                    total_ms=ms))
         for stream, cache in self._live:
             if stream.finished:
                 stream.finished_at = time.perf_counter()

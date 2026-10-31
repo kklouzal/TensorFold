@@ -9,17 +9,16 @@ import torch
 GS = 16                   # inputs per quantization block (NVFP4's block size)
 BN = 64                   # output columns per stored tile
 
-_E2M1 = (0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0)      # FP4 magnitudes by code & 7
 BF16_BITS = (0x0000, 0x3F00, 0x3F80, 0x3FC0, 0x4000, 0x4040, 0x4080, 0x40C0)   # their bf16 patterns
 E4M3_BF16_BITS = (0x0000, 0x3B00, 0x3B80, 0x3BC0, 0x3C00, 0x3C20, 0x3C40, 0x3C60)  # the fp8 subnormals m*2**-9 (m 0..7)
-BF16_SCALE2 = 0x3F800000                                # 1.0 as an fp32 pattern: e4m3 -> bf16's exponent shift
 
 
 def e2m1_table(device: str | torch.device = "cpu") -> torch.Tensor:
-    """The 16 FP4 values by code: code = sign (bit 3) * 8 + magnitude (bits 0..2)."""
+    """The 16 FP4 values by code: code = sign (bit 3) * 8 + magnitude (bits 0..2) (``nvfp4.format.E2M1``)."""
 
-    mags = torch.tensor(_E2M1, dtype=torch.float32)
-    return torch.cat([mags, -mags]).to(device)
+    from tensorfold.cuda.nvfp4.format import E2M1
+
+    return torch.from_numpy(E2M1.copy()).to(device)
 
 
 @dataclass
@@ -53,12 +52,6 @@ def e2m1_bits(words: torch.Tensor) -> torch.Tensor:
     # int32 gather and sign (torch's CUDA kernels index no uint16); the 16-bit patterns are exact either way
     pat = table[(code & 0x7).to(torch.int64)] | ((code >> 3) * 0x8000)   # sign bit 15, the pattern's sign
     return pat.to(torch.uint16)
-
-
-def quantized_values(words: torch.Tensor) -> torch.Tensor:
-    """(N, K/2) uint8 -> [N, K] bf16: the E2M1 code grid (exact: the codes' bf16 patterns)."""
-
-    return e2m1_bits(words).view(torch.bfloat16)
 
 
 def _subnormal_bits(b: torch.Tensor) -> torch.Tensor:
@@ -161,7 +154,6 @@ def dequantize_fp4(fp: FP4) -> torch.Tensor:
         factor = _scale2_rows(fp.scale2, rows, fp.n, s.device)
         return w * (s * factor[:, None]).repeat_interleave(GS, dim=1)
 
-    e = int(fp.weight.shape[0]) if fp.weight.dim() == 5 else 1   # the tile grid's leading axis, not the dataclass n
     w = _bits_to_f32(_untile_bits(fp.weight, fp.n, fp.k))
     s = fp.scale
     if s.dim() == 3:                                             # [E, K/16, N/E]
@@ -259,9 +251,7 @@ try:
     import triton                             # noqa: E402
     import triton.language as tl              # noqa: E402
 
-    @triton.jit
-    def _bf16_widen(bits):
-        return (bits.to(tl.int32) << 16).to(tl.float32, bitcast=True)
+    from .bf16 import _reduce                 # noqa: E402 - the K slices summed in slice order, as the BF16 matmul
 
     @triton.jit
     def _e2m1_pattern(code):
@@ -303,7 +293,6 @@ try:
         local = (pid_n % SUB) * BLOCK_N + tl.arange(0, BLOCK_N)
         acc = tl.zeros((BM, BLOCK_N), dtype=tl.float32)
         s2 = tl.load(S2 + rn, mask=n_ok, other=1.0)     # the per-tensor factor, one a row (a stacked table)
-        KT: tl.constexpr = K // 64
         for i in range(PER // GPI):
             for j in tl.static_range(GPI):
                 b = pid_s * PER + i * GPI + j
@@ -330,16 +319,6 @@ try:
         else:
             tl.store(PART + (pid_s * M + rm[:, None]) * N + rn[None, :], acc, mask=out_mask)
 
-    @triton.jit
-    def _reduce(PART, OUT, total, SK: tl.constexpr, BLOCK: tl.constexpr, F32: tl.constexpr):
-        """The K slices summed in slice order, one fp32 add a slice, in one launch for either output face."""
-
-        offs = tl.program_id(0) * BLOCK + tl.arange(0, BLOCK)
-        ok = offs < total
-        acc = tl.load(PART + offs, mask=ok, other=0.0)
-        for s in tl.static_range(1, SK):
-            acc = acc + tl.load(PART + s * total + offs, mask=ok, other=0.0)
-        tl.store(OUT + offs, acc if F32 else acc.to(tl.bfloat16), mask=ok)
 except ModuleNotFoundError:                   # the CPU tests of the format import this module without Triton
     HAS_TRITON = False
 

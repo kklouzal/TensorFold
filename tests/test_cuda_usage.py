@@ -56,7 +56,9 @@ def test_include_usage_moves_usage_into_its_own_chunk_before_done(tmp_path, chat
     silent = [c for c in chunks if not c["choices"]]
     assert len(silent) == 1 and chunks[-1] is silent[0]
     end = [c for c in chunks if c["choices"]][-1]
-    assert end["choices"][0]["finish_reason"] and end["tensorfold"] and "usage" not in end
+    # the spec's null usage before the usage chunk, which carries the stats too (a client pairs them on one frame)
+    assert end["choices"][0]["finish_reason"] and end["tensorfold"] and end["usage"] is None
+    assert silent[0]["tensorfold"] == end["tensorfold"]
     assert all(silent[0][key] == end[key] for key in ("id", "object", "created", "model"))
     prompt_tokens = len(engine.prompts[0])
     # a plain completion thinks of its own accord only in the chat lane, and its usage chunk says so

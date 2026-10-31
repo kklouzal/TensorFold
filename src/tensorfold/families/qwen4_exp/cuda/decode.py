@@ -25,13 +25,6 @@ from .mtp import mtp_forward
 from .weights import Weights
 
 
-def sample_mapped(logits: torch.Tensor, positions: Sequence[int], sampling: Sampling | None,
-                  id_map: torch.Tensor) -> list[int]:
-    """Apply the shared exact candidate rule to the draft vocabulary's real token IDs."""
-
-    return sample_rows(logits, positions, sampling, id_map=id_map)
-
-
 class SamplingShard(ShardSampler):
     """Bind the shared shard owner to this model's communicator at startup."""
 
@@ -55,6 +48,23 @@ def tp_sample_rows(w: Weights, logits: torch.Tensor, positions: Sequence[int], s
         plan = SamplingShard(w, logits.shape[1], offset=offset, id_map=id_map)
     plan.check_model(w, logits)
     return sample_shards(logits, positions, sampling, plan=plan, with_prob=with_prob)
+
+
+def _validate_gathered_padding(values: np.ndarray, tokens: np.ndarray, plan: SamplingShard | None) -> None:
+    """Only an original shard owner can prove a packet's absent trailing IDs."""
+
+    if plan is None:
+        if (tokens < 0).any():
+            raise ValueError("graph-gathered token IDs must be nonnegative int32 without a shard owner")
+        return
+    if len(plan.widths) != tokens.shape[0]:
+        raise ValueError("graph-gathered shard owner differs from the packet's rank count")
+    for rank, size in enumerate(plan.widths):
+        kept = min(CAND, int(size))
+        if ((tokens[rank, :, :kept] < 0).any()
+                or (tokens[rank, :, kept:] != -1).any()
+                or not np.isneginf(values[rank, :, kept:]).all()):
+            raise ValueError("graph-gathered padding differs from the immutable vocabulary shard widths")
 
 
 def choose_gathered(w: Weights, cand_all: torch.Tensor, R: int, positions: Sequence[int], sampling: Sampling | None,
@@ -95,8 +105,7 @@ def choose_gathered(w: Weights, cand_all: torch.Tensor, R: int, positions: Seque
     g = cand_all[:world * R * width].view(world, R, width).cpu().numpy()
     values = g[:, :, :CAND].astype(np.float32)
     tokens = np.ascontiguousarray(g[:, :, CAND:2 * CAND]).view(np.int32).astype(np.int64)
-    if (tokens < 0).any():
-        raise ValueError("graph-gathered token IDs must be nonnegative int32")
+    _validate_gathered_padding(values, tokens, plan)
     valid_scores(values, require_finite=False)
     norms = g[:, :, 2 * CAND]
     if np.isnan(norms).any() or np.isposinf(norms).any():
@@ -158,19 +167,21 @@ class Engine:
 
     def __init__(self, w: Weights, *, capacity: int = 4096, max_rows: int = 8, prefill_rows: int = PREFILL_ROWS,
                  graphs: bool = False, kv_dtype: str = "bf16", kv_pair=None,
-                 kv_key_dtype: str | None = None, kv_value_dtype: str | None = None) -> None:
+                 kv_key_dtype: str | None = None, kv_value_dtype: str | None = None,
+                 logical_context: int | None = None) -> None:
         self.w = w
         self.capacity = capacity
+        self.logical_context = logical_context
         self.rows, self.prefill_rows = max_rows, prefill_rows
         self.buf = Buffers(w, max_rows, capacity, moe_prefill=True)       # the experts' arithmetic MultiDecoder's use
-        self.mbuf = Buffers(w, max_rows, capacity) if w.mtp is not None else None
+        self.mbuf = Buffers(w, max_rows, capacity, owner_role="mtp") if w.mtp is not None else None
         self.pbuf = Buffers(w, prefill_rows, capacity, prefill=True)
         from .hc_plans import enroll
 
         enroll(w, self.buf)
         enroll(w, self.mbuf, mtp=True)
         self.st = State(w, capacity, max_rows, kv_dtype, kv_pair=kv_pair,
-                        kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype)
+                        kv_key_dtype=kv_key_dtype, kv_value_dtype=kv_value_dtype, logical_context=logical_context)
         self.kv_pair = self.st.kv_pair
         self._sample_plan = self._draft_plan = None
         self._draft_map = None
@@ -186,8 +197,13 @@ class Engine:
         if graphs:
             from .graphs import Graphs
 
+            if getattr(w, "dspark", None) is not None and not w.dspark.capturable:
+                print("[tensorfold] CUDA graphs off: DSpark target feature capture runs eagerly", flush=True)
+            elif w.meta.get("execution_provider") == "sm70" and not w.meta.get("capture_ready", False):
+                reason = w.meta.get("capture_reason", "the SM70 family provider has not prepared capture-safe state")
+                print(f"[tensorfold] CUDA graphs off: {reason}; decode runs eagerly", flush=True)
             # experts that read their plan on the host (NVFP4) can't be captured: decline graphs before a capture fails
-            if any(getattr(layer.moe.experts, "capturable", True) is False for layer in w.layers):
+            elif any(getattr(layer.moe.experts, "capturable", True) is False for layer in w.layers):
                 print("[tensorfold] CUDA graphs off: this MoE reads its plan's item list on the host, which a "
                       "capture rejects; decode runs eagerly (correct, slower)")
             else:
@@ -201,8 +217,11 @@ class Engine:
             raise ValueError("mixed KV engine has no single dtype; use kv_pair")
         return self.kv_pair.key_dtype
 
-    def reset(self) -> None:
-        self.st.reset(self.w)
+    def reset(self, *, new_sequence: bool = True) -> None:
+        if new_sequence:
+            self.st.reset(self.w)
+        else:
+            self.st.reset(self.w, new_sequence=False)
 
     def twin(self) -> "Engine":
         """Share weights and scratch with an independent serial state, without MTP or graphs; requests run sequentially so scratch reuse leaves this engine's state and prefix cache intact."""
@@ -212,7 +231,9 @@ class Engine:
         other.buf, other.mbuf, other.pbuf, other.graphs = self.buf, None, self.pbuf, None
         other.kv_pair = self.kv_pair
         other._sample_plan, other._draft_plan, other._draft_map = self._sample_plan, self._draft_plan, self._draft_map
-        other.st = State(self.w, self.capacity, self.rows, kv_pair=self.st.kv_pair)
+        other.logical_context = self.logical_context
+        other.st = State(self.w, self.capacity, self.rows, kv_pair=self.st.kv_pair,
+                         logical_context=self.logical_context)
         return other
 
     def forward(self, tokens: Sequence[int]) -> torch.Tensor:
@@ -259,20 +280,30 @@ class Engine:
                                   with_prob=True)
         return toks[0], probs[0]
 
-    def mtp_forward(self, next_tokens: Sequence[int], streams: torch.Tensor) -> torch.Tensor:
-        if self.graphs is not None:
+    def mtp_forward(self, next_tokens: Sequence[int], streams: torch.Tensor, *,
+                    next_inputs: torch.Tensor | None = None,
+                    indexer_coordinates: tuple | None = None) -> torch.Tensor:
+        if (self.graphs is not None and next_inputs is None and indexer_coordinates is None
+                and getattr(self.st, "media_profile_identity", None) is None):
             return self.graphs.mtp_forward(next_tokens, streams)
-        return mtp_forward(self.w, self.st, self.mbuf, next_tokens, streams)
+        # Existing captured MTP graphs perform token lookup. A supplied merged
+        # visual input uses the explicit eager tensor path until that distinct
+        # graph contract has been implemented and qualified.
+        return mtp_forward(self.w, self.st, self.mbuf, next_tokens, streams,
+                           **({"next_inputs": next_inputs} if next_inputs is not None else {}),
+                           **({"indexer_coordinates": indexer_coordinates} if indexer_coordinates is not None else {}))
 
 
-def absorb(e: Engine, streams: torch.Tensor, next_tokens: Sequence[int]) -> torch.Tensor:
+def absorb(e: Engine, streams: torch.Tensor, next_tokens: Sequence[int], *,
+           next_inputs: torch.Tensor | None = None) -> torch.Tensor:
     """The MTP cache takes positions with main-model streams [n, S*D] and next tokens; logits of the last."""
 
     st = e.st
     if st.mtp_drafted:
         st.set_mtp_len(st.mtp_len - st.mtp_drafted)
         st.mtp_drafted = 0
-    logits = e.mtp_forward(next_tokens, streams)
+    logits = e.mtp_forward(next_tokens, streams,
+                          **({"next_inputs": next_inputs} if next_inputs is not None else {}))
     st.set_mtp_len(st.mtp_len + len(next_tokens))
     return logits
 
@@ -281,6 +312,13 @@ def draft(e: Engine, streams: torch.Tensor, next_tokens: Sequence[int], position
           sampling: Sampling | None, confidence: float = 0.0) -> list[int]:
     """Absorb kept rows and chain drafts, always retaining the first even below ``confidence``, then stopping before later drafts below it or after a low-confidence first draft."""
 
+    provider = getattr(e.w, "dspark", None)
+    if provider is not None:
+        if count <= 0:
+            return []
+        if not next_tokens:
+            raise ValueError("DSpark proposals require the pending target token")
+        return provider.draft(e, int(next_tokens[-1]), count, sampling, confidence)
     st = e.st
     logits = absorb(e, streams, next_tokens)
     drafts: list[int] = []
@@ -298,6 +336,7 @@ def draft(e: Engine, streams: torch.Tensor, next_tokens: Sequence[int], position
             break
         if j + 1 < count:
             prev = e.mbuf.streams[len(next_tokens) - 1:len(next_tokens)] if j == 0 else e.mbuf.streams[:1]
+            st.begin_mtp_proposals()
             logits = e.mtp_forward([d], prev)
             st.set_mtp_len(st.mtp_len + 1)
             st.mtp_drafted += 1
@@ -310,18 +349,33 @@ def _absorbs(e: Engine, mtp: bool) -> bool:
 
 
 @torch.no_grad()
-def prefill_begin(e: Engine, prompt: Sequence[int], *, mtp: bool = True, resume: dict | None = None) -> int:
+def prefill_begin(e: Engine, prompt: Sequence[int], *, mtp: bool = True, resume: dict | None = None,
+                  new_sequence: bool = True) -> int:
     """Empty the state, or restore a kept prompt end and absorb its tail; returns the first prompt row to commit."""
 
     if not prompt:
         raise ValueError("prefill requires at least one token")
     if resume is None:
-        e.reset()
+        if new_sequence:
+            e.reset()
+        else:
+            e.reset(new_sequence=False)
+        if hasattr(e.st, "media_mtp_enabled"):
+            e.st.media_mtp_enabled = _absorbs(e, mtp)
         return 0
     st = e.st
+    if new_sequence:
+        st.begin_sequence_generation()
     st.restore(resume["state"])
+    if hasattr(st, "media_mtp_enabled"):
+        st.media_mtp_enabled = _absorbs(e, mtp)
     if not 0 < st.pos < len(prompt):
         raise ValueError("a resumed prompt must extend the cached tokens")
+    if getattr(st, "media_profile_identity", None) is not None:
+        # A restored media boundary waits for the new request's admitted ready
+        # input. The next row may be visual; token lookup is not its embedding.
+        e.last_streams = None if st.mtp_boundary is None else st.mtp_boundary.hidden
+        return st.pos
     if _absorbs(e, mtp) and resume.get("tail") is not None:
         mtp_forward(e.w, st, e.pbuf, [prompt[st.pos]], resume["tail"], logits=False)
         st.set_mtp_len(st.mtp_len + 1)
@@ -347,8 +401,28 @@ def prefill_chunk(e: Engine, prompt: Sequence[int], start: int, *, mtp: bool = T
     # only the prompt's last row is sampled: the head runs on the final chunk alone
     logits = forward(w, st, pb, chunk, logits=final, cut=cut)
     last = logits.clone() if final else None
-    e.last_streams = pb.streams[R - 1:R].clone()
     use_mtp = _absorbs(e, mtp)
+    if getattr(st, "media_input_span", None) is not None:
+        from .media_mtp import CommittedMTPChunk, condition_chunks, snapshot_state
+
+        valid = max(0, keep_at - 1) if use_mtp and point else st.mtp_len
+        snap = cut_snapshot(w, st, pb, cut, valid, defer_media=True) if cut is not None else None
+        commit(w, st, pb, R, R)
+        results = condition_chunks(w, pb, [CommittedMTPChunk(st, list(prompt), start, end, pb.streams[:R],
+                                                               (keep_at,) if cut is not None else ())]) if use_mtp else []
+        e.last_streams = results[0][0].hidden if results else None
+        st.retire_media_input_span(cancelled=False)
+        if point:
+            if snap is None:
+                snap = {**st.snapshot(), "mtp_len": valid}
+            else:
+                boundary = results[0][1][keep_at] if use_mtp else None
+                snap.update(snapshot_state(st, position=keep_at, mtp_len=valid, boundary=boundary, take_boundary=True))
+            snap.update(st.indexer_snapshot_metadata(snap["pos"], valid))
+            tail = snap["media_state"]["mtp_boundary"]["hidden"] if use_mtp else None
+            e.kept = {"state": snap, "tail": tail}
+        return last
+    e.last_streams = pb.streams[R - 1:R].clone()
     if point:                    # before the MTP head writes the streams: the point's tail, its state inside the chunk
         mtp_len = st.mtp_len + point - 1 if use_mtp else st.mtp_len       # every row but the point's last
         tail = pb.streams[point - 1:point].clone() if use_mtp else None
@@ -357,9 +431,16 @@ def prefill_chunk(e: Engine, prompt: Sequence[int], start: int, *, mtp: bool = T
     if use_mtp and nxt:
         mtp_forward(w, st, pb, nxt, pb.streams[:len(nxt)], logits=False)
         st.set_mtp_len(st.mtp_len + len(nxt))
+    if point and snap is not None and getattr(st, "indexer_history_owner", None) is not None:
+        # The recurrent cut is captured before MTP reuses the buffers. Its
+        # archive metadata is valid only after those MTP rows complete.
+        snap.update(st.indexer_snapshot_metadata(snap["pos"], mtp_len))
     commit(w, st, pb, R, R)
     if point:                                            # as a fresh prefill of prompt[:keep_at] leaves it
-        e.kept = {"state": snap if snap is not None else {**st.snapshot(), "mtp_len": mtp_len}, "tail": tail}
+        state = snap if snap is not None else {**st.snapshot(), "mtp_len": mtp_len}
+        if snap is None and getattr(st, "indexer_history_owner", None) is not None:
+            state.update(st.indexer_snapshot_metadata(st.pos, mtp_len))
+        e.kept = {"state": state, "tail": tail}
     return last
 
 
@@ -435,25 +516,40 @@ class DecodeResult:
 
 @torch.no_grad()
 def serial_decode(e: Engine, pending: int, count: int, sampling: Sampling | None, *, stop_eos: bool = False,
-                  on_tokens=None, constraint=None, probabilities=None) -> DecodeResult:
+                  on_tokens=None, constraint=None, probabilities=None, token_limit=None) -> DecodeResult:
     """One token a step through the same kernels and sampler; ``pending`` is the first sampled token. ``on_tokens(new)`` hears each step's token; it returns True to stop early."""
 
     w, st, b = e.w, e.st, e.buf
+    from tensorfold.cuda.streams import prefix_limit
+
     out = [pending]
     torch.cuda.synchronize()
     start = time.perf_counter()
+    warm_mtp = getattr(w, "mtp", None) is not None and getattr(e, "mbuf", None) is not None
+    if warm_mtp and len(out) < count and not (stop_eos and pending in w.cfg.eos):
+        absorb(e, e.last_streams, [pending])
     while len(out) < count and not (stop_eos and out[-1] in w.cfg.eos):
         logits = e.forward([out[-1]])
         if constraint is not None:
             constraint.mask(logits[:1], None, w.meta.get("vocab_offset", 0))
         tok = e.sample(logits[:1], [st.pos + 1], sampling, gathered=constraint is None)[0]
+        keep, stop = prefix_limit(token_limit, [tok], out)
+        if not keep:
+            st.discard_target_tentative()
+            break
         if probabilities is not None:
             capture(logits[:1], [tok], [st.pos + 1], probabilities)
         commit(w, st, b, 1, 1)
+        if warm_mtp:
+            # A zero-proposal batch retains immediately usable MTP capability.
+            # Only committed target features enter the conditioning cache.
+            absorb(e, b.streams[:1], [tok])
         out.append(tok)
         if constraint is not None:
             constraint.advance([tok])
         if on_tokens is not None and on_tokens([tok]):
+            break
+        if stop:
             break
     torch.cuda.synchronize()
     return DecodeResult(out, time.perf_counter() - start, len(out) - 1, committed=out[:-1], widths=[1] * (len(out) - 1))
@@ -462,8 +558,11 @@ def serial_decode(e: Engine, pending: int, count: int, sampling: Sampling | None
 @torch.no_grad()
 def mtp_decode(e: Engine, pending: int, count: int, sampling: Sampling | None, *, depth: int = DEPTH,
                confidence: float = CONFIDENCE, stop_eos: bool = False, on_tokens=None, constraint=None,
-               probabilities=None) -> DecodeResult:
+               probabilities=None, token_limit=None) -> DecodeResult:
     """Verify pending and drafted tokens from the prefill state, commit rows before the first mismatched draft, and call ``on_tokens(new)`` with kept tokens after pending, stopping on True."""
+
+    from tensorfold.families.qwen4_exp.cuda.speculation import MethodGeometry
+    from tensorfold.cuda.streams import prefix_limit
 
     w, st, b = e.w, e.st, e.buf
     out = [pending]
@@ -471,10 +570,25 @@ def mtp_decode(e: Engine, pending: int, count: int, sampling: Sampling | None, *
     keeps: list[int] = []
     widths: list[int] = []
     pos0 = st.pos
+    logical_context = getattr(e, "logical_context", None)
+    if logical_context is not None and count > logical_context - pos0:
+        raise ValueError("reply tokens exceed the retained session's logical context commitment")
     unabsorbed = None                                  # the last round's kept rows, not yet in the MTP cache
     torch.cuda.synchronize()
     start = time.perf_counter()
-    drafts = draft(e, e.last_streams, [pending], st.pos + 1, min(depth, count - len(out)), sampling, confidence)
+    method = MethodGeometry("mtp" if w.mtp is not None else "dspark", depth)
+
+    def proposal_limit():
+        remaining = max(0, count - len(out))
+        context = remaining if logical_context is None else max(0, logical_context - st.pos - 1)
+        return method.cap_proposals(depth, reply_tokens=remaining, context_tokens=context,
+                                    target_rows=getattr(e, "rows", depth + 1))
+
+    proposals = proposal_limit()
+    drafts = (draft(e, e.last_streams, [pending], st.pos + 1, proposals, sampling, confidence)
+              if len(out) < count and not (stop_eos and pending in w.cfg.eos) else [])
+    if len(drafts) > proposals:
+        raise RuntimeError("drafter returned more proposals than the remaining reply/context permits")
     while len(out) < count and not (stop_eos and out[-1] in w.cfg.eos):
         tokens = [out[-1]] + drafts
         window = constraint.window(tokens, list(range(-1, len(tokens) - 1))) if constraint is not None else None
@@ -490,6 +604,10 @@ def mtp_decode(e: Engine, pending: int, count: int, sampling: Sampling | None, *
             if sampled[i] != d or (stop_eos and sampled[i] in w.cfg.eos):
                 break
             keep += 1
+        keep, stop = prefix_limit(token_limit, sampled[:keep], out)
+        if not keep:
+            st.discard_target_tentative()
+            break
         if probabilities is not None:
             n = min(keep, count - len(out))
             capture(logits[:n], sampled[:n], list(range(st.pos + 1, st.pos + 1 + n)), probabilities)
@@ -506,16 +624,20 @@ def mtp_decode(e: Engine, pending: int, count: int, sampling: Sampling | None, *
         out.extend(sampled[:keep])
         if on_tokens is not None and new and on_tokens(new):
             break
+        if stop:
+            break
         if len(out) >= count or (stop_eos and out[-1] in w.cfg.eos):
             break
-        n = min(depth, count - len(out))
+        n = proposal_limit()
         drafts = []
-        if n > 0:
+        if n > 0 or w.mtp is not None:
             drafts = draft(e, b.streams[:keep], sampled[:keep], st.pos + 1, n, sampling, confidence)
+            if len(drafts) > n:
+                raise RuntimeError("drafter returned more proposals than the remaining reply/context permits")
             unabsorbed = None
     torch.cuda.synchronize()
     seconds = time.perf_counter() - start
-    if unabsorbed is not None:              # the MTP cache takes the last kept rows: it then covers the sequence
+    if unabsorbed is not None and w.mtp is not None:  # DSpark context commits with the target forward
         absorb(e, b.streams[:unabsorbed[0]], unabsorbed[1])
     committed = out[:st.pos - pos0]
     return DecodeResult(out[:count], seconds, rounds, drafted, accepted, keeps, committed, widths)

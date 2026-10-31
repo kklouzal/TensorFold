@@ -26,9 +26,10 @@ def _held(dec) -> int:
     return sum(seen.values())
 
 
-def _gated(m, total: int):
+def _gated(m, total: int, monkeypatch):
     dec = _decoder(m)
     dec.row_bytes = dec.layer_bytes = 8            # the stand-in state: one layer of float32 keys and values
+    monkeypatch.setattr("tensorfold.cuda.geometry.ARENA_GRANULE", 4)   # its arenas map a row (4 bytes) at a time
     dec.memory_gate = MemoryGate(1 << 62, reserve=0, live=lambda: total - _held(dec))
     return dec
 
@@ -39,10 +40,10 @@ def _stream(m, sid: int, pos: int, count: int = 30000):
                            out=[1] * 5, error=None)
 
 
-def test_the_oldest_grows_the_newest_waits_then_ends_and_a_lone_stream_grows(cuda_modules):  # noqa: F811
+def test_the_oldest_grows_the_newest_waits_then_ends_and_a_lone_stream_grows(cuda_modules, monkeypatch):  # noqa: F811
     m = cuda_modules
     held = 2 * 8190 * 8
-    dec = _gated(m, held + (16384 - 8190) * 8 + 16384 * 8 + 1000)     # room for one stream's next step
+    dec = _gated(m, held + (16384 - 8190) * 8 + 1000, monkeypatch)      # room for one stream's next step (in place)
     old, new = _stream(m, 0, 8190), _stream(m, 1, 8190)
     dec.streams = {0: old, 1: new}
     ids = _ids_of(old.st)
@@ -55,18 +56,50 @@ def test_the_oldest_grows_the_newest_waits_then_ends_and_a_lone_stream_grows(cud
     assert not old.waiting and old.st.kv[0][0].shape[0] == 24576        # alone, it grows regardless
 
 
-def test_cached_prompt_ends_go_before_a_stream_waits(cuda_modules):  # noqa: F811
+def test_cached_prompt_ends_go_before_a_stream_waits(cuda_modules, monkeypatch):  # noqa: F811
     m = cuda_modules
-    dec = _gated(m, 8190 * 8 + 16 * 8 + 4096 * 8 + (16384 - 8190) * 8 + 16384 * 8 - 10000)   # fits once it goes
+    dec = _gated(m, 8190 * 8 + 16 * 8 + 4096 * 8 + (16384 - 8190) * 8 - 10000, monkeypatch)   # fits once it goes
     dec.cache.add([1, 2, 3], _ids_state(m, list(range(4096))), None)  # a cached prompt end holding 4,096 rows
     live, other = _stream(m, 0, 8190), _stream(m, 1, 16, count=10)
     dec.streams = {0: live, 1: other}
     assert dec._make_room([live, other]) == [] and not live.waiting and dec.cache.entries == []
 
 
-def test_a_request_waits_for_room_while_others_decode_and_starts_alone_regardless(cuda_modules):  # noqa: F811
+@pytest.mark.parametrize("phase", ["admit", "grow"])
+def test_queued_releases_are_reclaimed_only_after_a_physical_fit_failure(cuda_modules, monkeypatch, phase):  # noqa: F811
+    from tensorfold.cuda import kv_arena
+
     m = cuda_modules
-    dec = _gated(m, 8190 * 8 + 100)                                   # no room beyond the live stream
+    dec = _gated(m, 1 << 30, monkeypatch)
+    memory = {"free": 0, "pending": 1 << 30, "reaps": 0}
+    dec.memory_gate.live = lambda: memory["free"]
+    monkeypatch.setattr(kv_arena, "pending_bytes", lambda: memory["pending"])
+    monkeypatch.setattr(dec.cache, "evict", lambda: pytest.fail("reclaim queued mappings before evicting another prefix"))
+
+    def reap():
+        memory["free"], memory["pending"] = memory["pending"], 0
+        memory["reaps"] += 1
+
+    monkeypatch.setattr(kv_arena, "reap", reap)
+    live = _stream(m, 0, 8190)
+    dec.streams = {0: live}
+    if phase == "admit":
+        dec._room(SimpleNamespace(prompt=list(range(300)), count=10))
+    else:
+        assert dec._grow(live.st, 8190, 16384, alone=False)
+    assert memory["reaps"] == 1
+    # A fitting request/grow never introduces a driver wait merely because unrelated releases are queued.
+    memory["pending"] = 123
+    if phase == "admit":
+        dec._room(SimpleNamespace(prompt=list(range(300)), count=10))
+    else:
+        assert dec._grow(live.st, 16384, 16384, alone=False)
+    assert memory["reaps"] == 1
+
+
+def test_a_request_waits_for_room_while_others_decode_and_starts_alone_regardless(cuda_modules, monkeypatch):  # noqa: F811
+    m = cuda_modules
+    dec = _gated(m, 8190 * 8 + 100, monkeypatch)                                   # no room beyond the live stream
     live = _stream(m, 0, 8190)
     dec.streams = {0: live}
     s = SimpleNamespace(prompt=list(range(300)), count=10, draft=False, sampling=None)
@@ -89,9 +122,9 @@ def test_eviction_takes_the_entry_add_would_drop_next():
     assert cache.evict() and cache.evict() and not cache.evict()
 
 
-def test_a_stream_near_its_end_does_not_grow_past_its_prompt_and_reply(cuda_modules):  # noqa: F811
+def test_a_stream_near_its_end_does_not_grow_past_its_prompt_and_reply(cuda_modules, monkeypatch):  # noqa: F811
     m = cuda_modules
-    dec = _gated(m, 1 << 30)
+    dec = _gated(m, 1 << 30, monkeypatch)
     s = _stream(m, 0, 150, count=50)                  # prompt 100 of its 150 rows, reply 50: it never holds past 150
     dec.streams = {0: s}
     assert dec._make_room([s]) == [] and s.st.kv[0][0].shape[0] == 150 and not s.waiting

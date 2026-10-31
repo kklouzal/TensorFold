@@ -1,0 +1,91 @@
+# Build the verified image and set MODEL_ROOT/GGUF_FILE in the environment.
+# This profile requires eight V100s and a matching MTP or DSpark drafter checkpoint.
+services:
+  tensorfold:
+    image: ${TENSORFOLD_V100_IMAGE:-tensorfold-v100:verified}
+    container_name: tensorfold-flash-next
+    gpus: all
+    ipc: host
+    restart: unless-stopped
+    stop_grace_period: 45s
+    ulimits:
+      core: 0
+      memlock: -1
+      stack: 67108864
+    ports:
+      - "${TF_BIND_ADDRESS:-127.0.0.1}:${TF_PORT:-8000}:8000"
+    volumes:
+      - "${MODEL_ROOT:?Set MODEL_ROOT to the existing model directory}:/models:ro"
+      - tensorfold-v100-cache:/cache
+    environment:
+      PYTHONUNBUFFERED: "1"
+      TENSORFOLD_NO_UPDATE_CHECK: "1"
+      TENSORFOLD_SM70_PROFILE: "${TF_SM70_PROFILE:-reference}"
+      TF_GGUF_ASSETS_DIR: /cache/gguf_assets
+      # Required explicitly for the new FIFO profile; leave unset for legacy DSpark.
+      TF_MAX_WAITING_INPUT_BYTES: "${TF_MAX_WAITING_INPUT_BYTES:-}"
+    entrypoint:
+      - /bin/bash
+      - -c
+      - |
+        args=("$$@")
+        if [[ -n "$${TF_MAX_WAITING_INPUT_BYTES:-}" ]]; then
+          args+=(--max-waiting-input-bytes "$$TF_MAX_WAITING_INPUT_BYTES")
+        fi
+        exec /opt/venv/bin/python "$${args[@]}"
+      - tensorfold-v100
+    command:
+      - /src/tools/launch_cuda_tp.py
+      - --gpus
+      - 0,1,2,3,4,5,6,7
+      - --
+      - "${GGUF_FILE:?Set GGUF_FILE to the first shard path under /models}"
+      - --backend
+      - cuda
+      - --host
+      - 0.0.0.0
+      - --port
+      - "8000"
+      - --name
+      - "${TF_MODEL_NAME:-flash-next}"
+      - --max-pending-requests
+      - "${TF_MAX_PENDING_REQUESTS:?Set TF_MAX_PENDING_REQUESTS to a positive finite unfinished-request limit}"
+      - --max-http-connections
+      - "${TF_MAX_HTTP_CONNECTIONS:?Set TF_MAX_HTTP_CONNECTIONS to a positive finite HTTP connection limit}"
+      - --context
+      - "${TF_CONTEXT:-8192}"
+      - --parallel
+      - "${TF_PARALLEL:-auto}"
+      - --kv-full-windows
+      - "${TF_KV_FULL_WINDOWS:-auto}"
+      - --kv-dtype
+      - "${TF_KV_DTYPE:-fp16}"
+      - --indexer-history
+      - "${TF_INDEXER_HISTORY:-gpu}"
+      - --draft-method
+      - "${TF_DRAFT_METHOD:-auto}"
+      - --drafter
+      - "${DRAFTER_DIRECTORY:-${MTP_DIRECTORY:-/models/mtp-stock}}"
+      - --mtp-drafts
+      - "${TF_DRAFTS:-2}"
+      - --mtp-confidence
+      - "${TF_DRAFT_CONFIDENCE:-0.7}"
+      - --no-update-check
+    healthcheck:
+      test:
+        - CMD
+        - /opt/venv/bin/python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/v1/models', timeout=5).read()"
+      interval: 30s
+      timeout: 10s
+      start_period: 10m
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: 20m
+        max-file: "3"
+volumes:
+  tensorfold-v100-cache:
+    name: ${TF_CACHE_VOLUME:-tensorfold-v100-cache}

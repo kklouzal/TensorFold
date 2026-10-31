@@ -11,6 +11,7 @@ model cut to ``TENSORFOLD_EXL3_FLASHNEXT_LAYERS`` layers (default 4, plus the he
 windows give one-row steps' logits bit for bit, and MTP-drafted decoding emits serial decoding's tokens.
 """
 
+import json
 import os
 from pathlib import Path
 
@@ -239,3 +240,69 @@ def test_cut_model_prompts_ignore_chunking_and_resume_as_fresh(cut_model):
     snap = e.st.snapshot()
     for key in ("rec", "conv", "ple_tail"):
         assert torch.equal(snap[key], runs[0][1][key]), key
+
+
+STRICT_TOOLS = [
+    {"type": "function", "function": {"name": "file_read", "description": "Read a file.", "strict": True, "parameters": {
+        "type": "object", "additionalProperties": False, "required": ["path", "offset", "encoding"],
+        "properties": {"path": {"type": "string"}, "offset": {"type": "integer", "minimum": 0, "maximum": 100000},
+                       "encoding": {"type": "string", "enum": ["utf-8", "base64"]},
+                       "note": {"type": ["string", "null"]}}}}},
+    {"type": "function", "function": {"name": "ask_user", "description": "Ask the user.", "strict": True, "parameters": {
+        "type": "object", "additionalProperties": False, "required": ["question", "choices"],
+        "properties": {"question": {"type": "string"}, "choices": {"type": "array", "maxItems": 3, "items": {
+            "type": "object", "additionalProperties": False, "required": ["id", "label"],
+            "properties": {"id": {"type": "string", "enum": ["a", "b", "c"]}, "label": {"type": "string"}}}}}}}},
+]
+
+
+@needs_model
+@pytest.mark.parametrize("required", [True, False], ids=["required", "auto"])
+def test_cut_model_strict_tool_calls_on_the_real_vocabulary(cut_model, required):
+    """Strict tool calls (``server.strict_tools``) over the checkpoint's own tokenizer, template and 248k vocabulary:
+    MTP-drafted decoding emits serial decoding's tokens under the grammar, greedy and sampled, the grammar takes every
+    token, and the replies read as calls whose arguments satisfy the tools' schemas."""
+
+    from tokenizers import Tokenizer
+
+    from tensorfold.cuda.chat_template import ChatTemplate
+    from tensorfold.engine import grammar
+    from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.families.qwen4_exp.cuda.decode import Engine, mtp_decode, prefill, serial_decode
+    from tensorfold.server.strict_tools import Plan
+
+    w = cut_model
+    tok = Tokenizer.from_file(str(Path(MODEL) / "tokenizer.json"))
+    rendered = ChatTemplate(Path(MODEL)).render([{"role": "user", "content": "Read /etc/hosts, then ask me."}],
+                                                tools=STRICT_TOOLS, enable_thinking=False)
+    prompt = tok.encode(rendered, add_special_tokens=False).ids
+    eos = tuple(int(t) for t in w.cfg.eos)
+    grammars = grammar.for_model(MODEL, grammar.vocab_size(MODEL), eos)
+    plan = Plan(STRICT_TOOLS, required=required, parallel=True)
+    compiled = grammars.compile(plan.spec)
+    e = Engine(w, capacity=2048, max_rows=8, prefill_rows=256, graphs=False)
+    for sampling in (None, Sampling(seed=1234, top_k=20, top_p=0.95)):
+        runs = []
+        for drafted in (False, True):
+            c = grammars.constraint(compiled, spec=plan.spec)
+            first = prefill(e, prompt, sampling, mtp=drafted, constraint=c)
+            run = (mtp_decode(e, first, 160, sampling, depth=6, stop_eos=True, constraint=c) if drafted
+                   else serial_decode(e, first, 160, sampling, stop_eos=True, constraint=c))
+            runs.append(run.tokens)
+        assert runs[0] == runs[1], sampling
+        m = grammars.xgr.GrammarMatcher(compiled)
+        assert all(m.accept_token(t) for t in runs[0]), sampling
+        text = tok.decode([t for t in runs[0] if t not in eos], skip_special_tokens=False)
+        content, calls = plan.parse(text)
+        if required:                              # forced: blanks, then a call (finished if the reply ended)
+            assert text.lstrip(" \t\r\n").startswith("<tool_call>\n<function="), (sampling, text)
+            assert runs[0][-1] not in eos or (calls and not content), (sampling, text)
+        for call in calls or ():
+            args = json.loads(call["function"]["arguments"])
+            if call["function"]["name"] == "file_read":
+                assert set(args) - {"note"} == {"path", "offset", "encoding"} and isinstance(args["path"], str)
+                assert type(args["offset"]) is int and 0 <= args["offset"] <= 100000
+                assert args["encoding"] in ("utf-8", "base64") and isinstance(args.get("note", ""), (str, type(None)))
+            else:
+                assert set(args) == {"question", "choices"} and len(args["choices"]) <= 3
+                assert all(set(c) == {"id", "label"} and c["id"] in "abc" for c in args["choices"])

@@ -78,10 +78,14 @@ def canonical_bf16_operand(x):
 
 @triton.jit
 def source_guard(x, STATUS, error, LAYER: tl.constexpr):
+    """Contain an invalid failed frame; its status must be checked before publication."""
+
     valid = (x == x) & (tl.abs(x) <= 2**30)
     if tl.sum((~valid).to(tl.int32), axis=0) != 0:
         tl.atomic_or(STATUS, error)
         tl.atomic_cas(STATUS + 1, -2, LAYER)
+    # These sentinels only keep the failed GPU operation numerically bounded.
+    # The owning State stays poisoned; no sentinel result may be committed.
     return tl.where(valid, x, 0.0)
 
 

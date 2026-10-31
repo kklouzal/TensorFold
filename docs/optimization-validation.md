@@ -18,6 +18,509 @@ the numerical contract before comparing speed. Quantization options have their
 own explicit quality tradeoffs; changing an optimization must not silently
 change the user's selected precision or sampling policy.
 
+## Adaptive V100 software evidence, 2026-10-26
+
+The published composed CPU checkpoint is frozen source tree `ff1883131180963a1de18bb00c74d6777466dcb9`
+and local image ID `sha256:fb0ac861483f0bc14bef1f73535d07d358c196c7e9358f76da3390f1434813a8`: **5582 installed tests and
+144 subtests**, with 9 documented skips across 183 modules.
+All 707 installed code files matched the frozen 2,012-input source capture
+without a source overlay or within-run drift. The final resource producer
+separately passed 236 CPU checks. These software checks establish no
+optimization or physical-capacity gain.
+The [CPU software receipt](verification-v100-adaptive-cpu-20261026.json)
+binds application commit `7d3ddbb9d066fe7451769ad9a36739619ce2d618` to this installed result.
+
+Current source implements DFlash2 through the shared Engine, standard
+Responses/Conversations, FIFO/catalog/prefix/RAM lifecycle and live requeue,
+the canonical key/value wake relay, owned synchronous Store provenance for all
+new unique profiles with no explicit retention or with GPU/RAM retention, and
+explicit State/FD/host lifetimes and payload obligations. That checkpoint's
+source envelope binds CPython 3.12.3, Torch5ab, GCC 13 build/ABI and recorded
+GCC 14 runtime content. Current source instead requires corrected owned
+Torch04cf2557 with the same proved headers/layouts and actual ABI/runtime
+content; it rejects the defective predecessor. A conservative generic
+96-MiB RPC graph bound can refuse an otherwise practical host workload; no
+physical insufficiency or tested capacity maximum follows from that refusal.
+
+The intermediate tree
+`045446b572d9be7a8aa08ef9f1fde125e77b38f8`/image
+`sha256:c903e72e3edb5e50bf26bac22acdd697fa444844b90dd639a56ddf48a69a5fe3`
+retains its 16 failed/5,564 passed result. The independent native bytes-contract
+proof justified a shared test-fixture producer correction; shipping ACK
+validation was preserved. The successful successor has separate evidence.
+
+The prior 5,214/9/144 candidate remains tree
+`413e132bf977625f485fffedf2011cc4bfc02f07`, image
+`sha256:05eca41e61a9410660d2a38c2c4d9ced06124efec64d635cb21580bcbb399323`.
+The published 4,365/4/124 media baseline and historical 3,277/4/105 text/core
+evidence retain their own identities. Scoped
+checks for copy applicability (50), caller paths (138) plus three focused cases
+and later resource/lifetime suites overlap and are not added to the
+installed count. [The validation record](v100-adaptive-validation.md#current-v6-source-and-cpu-evidence)
+preserves the exact boundaries and final receipt.
+
+The previous native SDK endpoint-formatter P1 failure/race concern on
+`getnameinfo` failure remains retained evidence. The corrected owned SDK has
+passed native formatter/failure-path and actual-wheel IPv4 Store/endpoint
+controls, plus its immutable-image ABI/content witness. Actual IPv6 Store
+execution is unrun on the development host. The [foundation record](../deploy/v100/source-foundation.md)
+identifies that component evidence; it does not transfer the old application's
+5,582 installed passes to the corrected source/media stack. A fresh corrected
+ordinary application image `e99c7284`, frozen tree `21a12df3`, independently
+passed 5,582 installed checks, nine documented skips and 144 subtests across
+183 modules in 559.91 seconds. All 707 code files and 2,024 captured inputs
+matched without an overlay; the [corrected CPU receipt](verification-v100-sdk-rebind-cpu-20261026.json)
+records its actual evidence. Target source auditing exposed runtime-dependent
+CPU/configuration display metadata; the separate policy successor has its own
+software evidence below. Compiler issue 6111901 remains open. V100/TP8/NCCL/full-model
+numerics, quality, physical capacity, allocator/RSS/NUMA, native wall deadlines
+and representative end-to-end performance remain unqualified. Historical
+measurements/failures below retain their original source/workload identities.
+
+The portable-policy application at `fc5e6dd4`/image `f8f66a9d` independently passed
+5,707 installed checks, nine documented skips and 144 subtests across 187 modules
+in 555.98 seconds, with 707 code files and 2,028 fixture inputs unchanged. The
+mapping-only producer successor `a39646d1`/image `6daae245` reuses the exact
+application wheel and passed 66 affected controls plus actual 2-MiB shared-map
+and source/header/native/combined-media authority checks. These are software
+correctness results, with no optimization gain or full-new-image 187-run claim.
+The [policy receipt](verification-v100-portable-policy-cpu-20261027.json) keeps
+actual target post-GPU acceptance and broader qualification pending.
+
+## Flash Next V100 live measurements, 2026-10-24
+
+This section preserves the historical campaign chronology. Intermediate
+pending/failure labels describe their named checkpoints; later closeouts in
+this document retain their own evidence scope.
+
+The unchanged installed SM70 candidate 3 passed a repeated live-request matrix
+on eight V100s: three uncached trials at each of 128/1,024/2,048 prompt tokens,
+with 64-token replies and immediate repeats. Median prefill was 32.6–35.7
+tokens/s and decode 3.94–4.28 tokens/s under INT8 KV/MTP2/eager execution and
+the host's existing 200 W power limits (SM clocks reached 1,530 MHz). This is bounded functional and
+throughput evidence, without an optimization comparison or a full-window claim.
+[Exact image, workload, cache-hit counts, formulas and observed ranges](v100-flashnext-validation.md#repeated-live-requests-2026-10-24).
+One separate six-client batch produced 384 tokens in 62.48 s: 6.15 aggregate
+end-to-end tokens/s including prefill, with 1.51–1.57 tokens/s individual decode.
+All seven bounded live API cases passed, including mixed MTP/reference
+concurrency and cancellation. No runtime changes were made for these tests.
+
+Subsequent native optimization is a separate qualification campaign. Packed
+experts passed the initial full-model gate; combined candidate 5 failed its
+predeclared mean-KL limit. Exact-math candidate 7 passed the same 325-step gate
+with Torch prompt attention and native decode attention. Private
+candidate 12 measured 59.7–64.2 decode tokens/s on three quiet 512-token replies
+and passed 2,029 CPU tests, 228 family/routing and 209 GGUF GPU checks, a native
+four-rank cohort, all 12 baseline responses and all nine serial/drafted
+comparisons. Its decoder preserves serial router
+rounding after full-model tracing exposed a row-dependent expert-weight change.
+A separate cold/cached repeat differs at token 46. Candidate 13 subsequently
+passed the same 325-step numerical gate (mean KL 0.00008817, perplexity ratio
+0.9990703, all top-1 predictions unchanged) and eight-rank forced-history
+logit/state/candidate checks. Candidate 14 adds GPU greedy draft handoffs and
+prepared matrix buffers; its installed image passed 2,090 CPU tests, 332 GPU
+checks and four/eight-rank state/error checks. All nine sequential serial/drafted
+comparisons and 12 baseline responses passed. Its three quiet 512-token replies
+measured 62.1–69.3 decode tokens/s; all benchmark IDs match candidate 12, with
+per-request GPU handoff/readback/context-bucket checks passing. Cold 128-token
+prefill regressed to about 4.6 seconds. The small measurement set has no confidence
+interval, and further profiling is underway. The original installed candidate 3
+reproduces the known prompt-layout variation; its full cold and split-prompt
+logit vectors each match candidate 14 exactly. Broader prompt-chunk quality remains
+open. Default providers remain unchanged, and the requested
+100 single-request tokens/s remains unmet.
+[Exact checkpoint and numerical gates](v100-flashnext-validation.md#native-optimization-checkpoint).
+
+Candidate 15's exact router batches and fused GPU draft gather subsequently
+passed 2,118 selected/common CPU controls, 201 installed GPU controls,
+four/eight-rank state/packet gates, all 12 baseline responses and nine sequential
+serial/drafted pairs. Three quiet 512-token replies measured 69.46, 71.23 and
+74.15 decode tokens/s with the same model/TP8/six-slot/INT8/context237,598/
+depth3/confidence0/full-draft-head configuration. All four benchmark replies
+matched candidate 12's complete IDs/messages; actual native handoff and graph
+usage were verified. Cold 128-token prefill was about 3.56 seconds in this run.
+These are bounded workload/cache observations without confidence intervals;
+100+ tokens/s and final promotion remain pending.
+
+A later serving-factory audit corrected earlier draft-head labels: GGUF CLI
+serving forced the full 248,320-token draft head for candidate 12/14/15 HTTP
+measurements. Direct-engine studies/Nsight probes have their separately recorded
+head selections. The measured rates and response identities are unchanged.
+
+Candidate 16 subsequently passed 2,151 installed CPU and 235 installed GPU
+checks, the unchanged 325-step numerical gate, and eight-rank deep/120-row
+state/logit/proposal checks. It contains admitted adaptive reference-math
+prefill and the factory draft-vocabulary correction; the direct-engine gate
+observed the 79,591-token draft map. All nine sequential serial/drafted pairs
+and 12 baseline API responses subsequently passed. Quiet decode measured
+69.39–73.99 tokens/s and cold128 prefill about 2.13 seconds; all benchmark
+IDs/messages match candidate 15. Broader quality and promotion remain pending,
+as does a distinct mixed-prompt/cache-history correctness issue found
+in the layout study. The expanded 24-request paired affinity comparison found
+no verified gain and restored original masks. See the [candidate 16 scope and
+closeout inventory](v100-flashnext-validation.md#candidate-16-and-closeout-inventory).
+
+The additional nine-case/389-step teacher suite has since completed and failed
+the fixed KL/top-1 gates (0.0003104521 and 0.9897172), while perplexity ratio
+1.0000344 passed. This supersedes the broader-quality pending label above;
+operator isolation is underway and candidate 16 remains unpromoted.
+
+## Gemma FP8 provider preparation, 2026-10-23
+
+The candidate prepares the existing native prompt and lane providers during
+Gemma DFlash initialization only for `--drafter-bits 8`, after metadata, weight
+copy validation and private head construction. Native sources, compiler flags,
+request arithmetic and the default BF16 proposal path are unchanged. Factory
+failures propagate before model readiness; no proposals, KV warmup or fallback
+are added. All preparation belongs to the production loading interval.
+
+Source `16b4c087` / DFlash `03643eab` passed twelve source AMD64 and twelve fresh
+installed ARM CPU cases, with no skips, including seven mocked-provider
+constructor coordination cases. Six real native cases passed on both SM120 and
+SM121. The ARM runtime is
+`sha256:e9b1197703b72a8c1875ae89f4bb332be22e0cda989599cff0040e2f33124278`;
+its verification image is `sha256:4ad13068032a5894aa9361d2e9c083c906352e22659973440d382bfef16490e3`.
+Both installed images had the same 564-file product manifest `d323ecb6`.
+The own-model gate and every comparison process passed complete token, prompt,
+cache, source, loaded-origin, foundation and owner-retirement checks.
+
+The fixed comparison used one GB10 (SM121), VBoost0/CPU boost1, cpuset
+`5-9,15-19`, actual Torch 10 intra-op/10 inter-op threads, 16 GiB host reserve,
+zero optional CUDA reserve, context 262144, BF16 target KV, one request lane and
+five verification rows. The unchanged local target is
+`AEON-7/Gemma-4-26B-A4B-it-Uncensored-NVFP4@90c8601b1a439497bc15d8fba9e52990b45ea0cb`;
+the companion is `z-lab/gemma-4-26B-A4B-it-DFlash@77d4202772dfe50b2396ec7bac9cfffc7b9e7057`.
+A is accepted runtime `2443…` / source `259b4238`, bits 16; F8 is the prepared
+runtime above, bits 8. No target/checkpoint activation precision changed.
+
+There were exactly six paired whole blocks / 24 fresh processes, alternating
+`A,F8,F8,A` and `F8,A,A,F8`. Each arm/block had its own new compiler cache:
+one cold process followed by one warm process using that same physical cache.
+Each process generated all 64 greedy IDs for short and 8,451-token history
+prompts, both uncached and fully cached; cached-token counts were 0/48/0/8451.
+All 6,144 IDs matched the fixed complete reference sequences. BF16 retained its
+exact counter oracle; FP8 used its declared positive, conserved proposal counts.
+This qualifies these greedy cases, not universal model quality or sampled
+throughput. Earlier pilots and the incomplete A/S cohort were not pooled.
+
+The predeclared scalar equally weights log cached throughput across short/history
+and compiler cold/warm. F8/A was **1.2096133**, with all six block effects positive
+and pointwise two-sided 95% t5 interval **[1.1526604,1.2693803]**. All eight required
+decode-cell intervals had positive lower bounds. These are pointwise intervals,
+not simultaneous family bounds; the independent representative block model
+remains an assumption. No equivalence margin or magnitude cutoff was used.
+
+| Prompt | Prompt cache | Compiler cache | BF16 tok/s | FP8 tok/s | F8/A pointwise95% interval |
+| --- | --- | --- | ---: | ---: | --- |
+| Short | Uncached | Cold | 42.559 | 46.141 | 1.08078–1.08760 |
+| Short | Uncached | Warm | 74.156 | 87.520 | 1.16996–1.19055 |
+| Short | Full | Cold | 75.386 | 91.976 | 1.20826–1.23198 |
+| Short | Full | Warm | 75.971 | 91.995 | 1.19396–1.22815 |
+| History | Uncached | Cold | 43.791 | 48.127 | 1.09175–1.10633 |
+| History | Uncached | Warm | 51.714 | 62.051 | 1.00227–1.43646 |
+| History | Full | Cold | 62.410 | 72.135 | 1.14274–1.16907 |
+| History | Full | Warm | 56.200 | 70.458 | 1.03795–1.51427 |
+
+Rates are six-process geometric means per arm/cell. Fully cached decode is
+64/settled-generation-wall; uncached decode is 63/(settled-wall−first-callback),
+using the same clock. Request preparation, all compilation and deferred CUDA
+work are retained in their applicable intervals; no observer warmed providers,
+tensors or KV. The independent own-model gate observed both FP8 provider caches
+already populated at readiness through passive cache metadata.
+
+The startup tradeoff is explicit: A/F8 whole-child ready latency was 0.8698024,
+so F8 took **14.97% longer** (inverted pointwise 95% interval: **8.84–21.44%**
+longer). The adopted decode objective ranks this below throughput, with the
+existing resource/deadline gates retained. Uncached TTFT improved by latency
+ratio A/F8=1.0771764, and all prepared-request wall latency by 1.1439377.
+These secondary measures do not establish higher-priority equivalence.
+
+The native NVFP4 GB10 profile now selects bits 8; affine exports with a quantized
+tied head still require bits 16. No global CLI default, target arithmetic or
+sampling contract changed. [Public receipt](verification-gemma-fp8-20261023.json)
+contains the frozen protocol, complete analysis, all 24 raw timing/control rows,
+source/image hashes and scope. It does not qualify other hardware, prompts,
+concurrency, precision or cache distributions. Further sampler, head, MoE and
+graph candidates remain separate investigations.
+
+## Qwen3.8-27B AEON mixed NVFP4, 2026-10-19
+
+Source: the per-channel FP8 loader and kernels, `--tokenizer` and the Qwen3.8 dense static YaRN policy (branch
+`campaign-qwen38-20261018`, measured from `35b61ae4`; the rebased commits are patch-identical). Checkpoint
+`AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-NVFP4-MIXED` revision `282e6775`, drafter `z-lab/Qwen3.8-27B-DFlash2`
+revision `50307d4c`, and the `tokenizer.json` of `Qwen/Qwen3.8-27B` revision `1d4bf0f2` through `--tokenizer`; one
+DGX Spark (GB10, SM 12.1), `--precision checkpoint`, bf16 KV, one stream. Its 232 FP8 projections are ModelOpt
+`FP8_PER_CHANNEL_PER_TOKEN`; see the [27B recipe](recipes/qwen3.8-27b.md#aeon-mixed-nvfp4-export).
+
+- Numerics: the per-token quantizer matches a PyTorch reference byte for byte, scales included; the FP8 GEMMs (decode
+  lanes, split-K, prompt GEMMs, W8A16 under `full`) match float64 references of the declared math within the retained
+  empirical product-magnitude regression envelopes; those thresholds are not deterministic error bounds. A separate
+  integer cancellation oracle has zero rounding error in fp32 for any accumulation order. Rows, chunks and split-K
+  parts are bit-invariant. 205 GPU checks passed on the GB10,
+  the checkpoint's own included; the kernel and synthetic-model suites also pass on an RTX PRO 2000 Blackwell (SM
+  12.0). A 60 s FP8 GEMM stress at the export's shapes stayed within 0.0018-0.0027 relative error of an fp32
+  reference.
+- Exactness on the checkpoint (context 4,096): drafted replies equal serial ones token for token, greedy and two
+  seeds, under `checkpoint`, `full` and the FP8-only math SM 8.9-10.x GPUs run. Through `tensorfold serve` (512
+  tokens, both thinking modes, short and 4,096-token prompts), each greedy reply resumed from a cached prompt equals its
+  cold run (seven cells).
+- Decode, 512 tokens: on the engine path at an 8,192-token context, 76.4 (code), 30.5 (chat), 81.1 (JSON) and 11.1
+  (Hindi) tok/s greedy and 70.7 / 26.6 / 79.9 / 11.0 sampled (T 0.6, top-k 20, top-p 0.95), against 11.2-12.2
+  serially; a 16-row verify round took 96-97 ms and a draft 8-10 ms. Through `tensorfold serve` (one run a cell):
+  greedy 31.0-48.3 tok/s with thinking and 32.8-52.6 without, at short and 4,096-token prompts. Hindi drafts almost
+  nothing: the drafter scores only the vocabulary's first 98,304 ids and its control tokens.
+- Prefill on the engine path, each prompt cold: 1,745-1,753 / 2,574-2,581 / 2,221-2,327 tok/s at 4,096 / 16,384 /
+  32,768 tokens; through the server a 4,096-token prompt took 1.56-1.57 s.
+- YaRN code on the default path: one interleaved pair against the build before it, at the default 262,144-token
+  window, gave the same tokens (serial and drafted, greedy and sampled) and prefill replies at 4,096 and 16,384 tokens,
+  at 0.999-1.005x the speed. The second pair is pending.
+- GB10 observations: a 32,768-token prompt draws 87-95 W with SM clocks at 2,288-2,350 MHz and no clock-event reason
+  (boost backing off on power), and takes the hottest thermal zone to about 94 C within 15 s. After minutes of decode
+  near 52 W, prompt bursts reached the firmware's SW thermal slowdown, and the GB10 stopped responding twice at the
+  start of such a burst (2026-10-18 23:33Z and 2026-10-19 10:20Z, memory flat). The cause is under investigation, and
+  further runs on the GB10 are on hold.
+- Pending: the strict and non-strict tool suite, needle recall, 32k and longer server cells, KL and agreement against
+  the BF16 export, and the extended YaRN window (1,048,576 positions).
+
+## Qwen MoE CT NVFP4, 2026-10-17
+
+Installed source `099eb4d0` ran the original pinned Heretic 35B-A3B compressed-tensors
+export and its separate BF16 DFlash v1 model on the 16 GB RTX PRO 2000 Blackwell.
+The [qualification](qwen36-ct-nvfp4-validation.md) and
+[receipt](verification-qwen36-ct-nvfp4-20261017.json) identify actual immutable
+images, native numerical checks, serial/drafted/seeded identity, strict tools,
+streaming, cancellation and four concurrent complete replies. Tests used no
+container CPU/RAM/PID quota, zero optional VRAM reserve and an 8 GiB available
+host-RAM floor. Required future state and loading reservations remain admitted.
+
+At context 4,096 with eight BF16 draft rows and registered authority, the selected
+profile reached about 37 decode tok/s. Nine rotating symmetric blocks compared
+54 complete 512-token replies with identical tokens, work and fixed expert pool;
+prepared eight-row vocabulary projection was consistently faster than the
+four-row and original singleton policies in that experiment. Reported median
+intervals are conditional on independent representative block effects; no
+unconditional population-confidence or global-optimum claim follows. The earlier
+four-row policy ordering and BF16-versus-four-bit drafter speed ordering remain
+unresolved. Four concurrent requests in a separate four-row profile completed at
+57.70 aggregate client tok/s, which excludes final device retirement and is not
+an isolated speculative-decoding speedup comparison.
+
+## Smaller pretrained NVFP4, 2026-10-17
+
+The ordinary installed desktop image `c74633ad…`/runtime `b551e68f` ran
+`surogate/Qwen3.5-9B-NVFP4` revision `3410fbc4…`. Its full weight SHA256 matched
+the publisher. Native FP4 activations and BF16 activations against the same
+NVFP4 weights were qualified separately: three identical 512-token replies
+per mode, supported HTTP/SSE/strict-JSON checks and concurrent/solo identity.
+The observed single-request rates were 24.06–24.27 and 34.41–34.73 tok/s;
+different output contracts preclude a quality-preserving speedup claim.
+
+The [record](small-nvfp4-validation.md) and
+[receipt](verification-small-nvfp4-20261017.json) retain the explicit stop policy,
+original default-EOS failure, family-specific unsupported feature refusals,
+and composite live-capture/offline validation. The recorded host minimum was
+53,324,820,480 available bytes against an 8 GiB floor. This dense checkpoint
+has no routed experts or n-gram tables; it cannot qualify the reported full
+Flash Next ModelOpt offload path. No application/model/dependency changes or
+new deployment were needed.
+
+## Desktop report remediation, 2026-10-17
+
+Runtime `b551e68f` implements admitted optional registered expert authority,
+asymmetric same-host NCCL expert ranks, explicit shared KV reservation, bounded
+affine persistence and original-arithmetic NVFP4 offload/SSD reads. The
+[desktop contracts and performance record](desktop-report-remediation.md)
+identify each selected design and measured region. Registered DMA, packed
+warm starts and common NVFP4 grouping improved their controlled workloads.
+Complete advisory-prefetch and device-residency designs regressed required
+regions and do not ship; the established serial-only prefetch gain remains
+explicitly blocked on full-scale input and dispatch/retirement qualification.
+
+The [installed receipt](verification-desktop-report-20261017.json) identifies
+the serving image, unchanged application layers and separate corrected test
+captures. The full CPU rerun passed 7,994 cases. The full non-matrix CUDA run's 2,046 passes
+plus the complete 12-case accounting-fixture rerun cover 2,049 distinct passing
+cases; the original three failures and nine overlapping passes are accounted
+explicitly. This is not a single clean full-suite rerun. No runtime defect or
+numerical tolerance was hidden by those fixture corrections.
+
+Both trained local EXL3 registration policies passed the fixed strict-tool,
+serial/MTP/concurrent and streaming API checks and clean shutdown. Their token
+sequences and the three-format long-context token/KV hashes match the prior
+qualified runtime. Native one-rank NCCL/model and the installed Harness child
+passed; this one-GPU host cannot qualify actual multi-GPU or SM89 execution.
+The reported full affine checkpoint, full pretrained ModelOpt/vision, fresh
+exhaustive KV matrix and new ARM64/Apple execution remain outside this record.
+No desktop-report speed estimate or additive combined gain is claimed.
+
+## CUDA failure remediation, 2026-10-17
+
+The remediation follows source `0240cefea90fcd83a593384259b7346875e3603c` and preserves the previous
+41 failing and 45 error IDs and their logs. Focused checks identify separate causes: Qwen MoE's missing
+private-cache arena origin; compiler-dependent Triton/native operation order; a one-ULP defect in the Torch
+PLE sum comparator; generic weighted BF16 expert mode differing from GLM's declared combine; stale GLM
+vocabulary/token-type fixtures; and an obsolete FileBaton expectation under pinned Torch advisory locks.
+No production validator, numerical tolerance, exact-token assertion or optional-check prerequisite is weakened.
+
+Frozen runtime/test/build source `a7b9feed34a814d62bf944de646ac3ed7bf3149e` produced runtime image
+`sha256:1528158f426991935c05adfc61a949734a2ccb2b1dba56cd53349b80627b3328`, verification image
+`sha256:3d6a57cf578884d60ad360d632dc6be98a082aaceb8a6f869fd39a74752a9cb6`, and wheel
+`c50a39c6735dbd546317d7f5bbb1319c25b5b5612b0381e91619bb4837afe8fa`.
+The ordinary installed-package gates passed **7,642 CPU tests** (168 explicit skips), **2,012 CUDA tests**
+(97 explicit skips), and **231 unprivileged public controls** (six explicit skips), with zero failures/errors.
+All 41 earlier failures and 45 setup errors are remediated. The killed-build case now verifies the actual
+lock protocol under its updated name. Two CPU and 28 CUDA warnings are existing Torch allocator API
+deprecations, retained without suppression. The installed audit matched all 501 owned files; three omitted
+README files contain no runtime code. No source overlay supplied the qualified package.
+
+The same RTX PRO 2000 Blackwell/SM120 host and pinned Python 3.12/Torch 2.16-dev/CUDA 13.4/Triton 3.9
+stack passed fresh three-format exactness: two streams, 64 outputs each, RotorQuant8-norm/8/6-norm,
+aggregate hash `67a762f3ac80e419`. The actual Flash Next EXL3 checkpoint passed the installed HTTP gate
+at context 16,384/four slots, RQ8-norm, BF16 prompts and MTP 4/confidence 0.5 under the recorded 56 GB/no-swap
+profile. Strict tools, the actual 31-tool catalog, unsupported-schema refusal, repeat/serial/drafted tokens,
+SSE usage/progress, four concurrent versus solo replies, final zero logical owners and SIGINT exit 0/no OOM
+passed. Nine fixed sequential replies match the previous build by request position; four concurrent replies
+match with each prompt's solo oracle, and the text SSE choices/token IDs also match exactly. No failure
+capture was produced. These fixed inputs do not establish general answer quality or all-configuration bits.
+
+The whole CUDA nonmatrix run excludes the unchanged KV-pair matrix module. Its earlier 1,666-pass subset retains
+its original `2dd77a9a`/image identity: an independent source/dependency proof covers exactly seven unchanged
+preparation/encoder/oracle families, not the 3,430 deselected cases or a fresh exhaustive matrix run.
+An initial cold CUDA run was deliberately interrupted near 54% and preserved with exit 2; only the complete
+restarted run qualifies. Standard compiler-cache reuse kept original keys/metadata and the same pinned ABI;
+it makes no cold-compilation or startup timing claim.
+
+The [machine-readable receipt](verification-cuda-remediation-20261017.json) records source, images,
+counts, baseline provenance, limits and evidence hashes. Raw development evidence remains in
+`/home/kklouzal/tensorfold-remediate-20261017`; preceding failed logs and receipts remain unchanged.
+This closing documentation update preserves qualified runtime/test/build bytes; a future rebuild has its
+own wheel metadata and image identity.
+
+The numerical correction preserves selected native CUDA arithmetic. Legacy Triton/untiled results can
+change where implicit contraction differed. GLM's current model forward already used its family combine;
+the corrected generic weighted BF16 API now honors the same rounding. Default Flash Next FP32 expert
+arithmetic remains unchanged. The PLE production implementation was correct for the independently checked
+fixtures; its old Torch sum oracle was off by one ULP. See [contracts](cuda-kernel-contracts.md).
+
+Pinned Torch uses OS advisory build locks: killing the owner releases the lock even when its marker file
+remains. Do not delete that persistent marker to recover a build. Legacy FileBaton recovery instructions
+apply only to a runtime actually using FileBaton, after its owners have stopped. The Linux-native test
+keeps child identity until all session members retire; its pidfd and waitid/WNOWAIT prerequisites were
+verified on the recorded Linux 7.0.0-31 host. This changes test supervision, not runtime platform support.
+
+Component EXL3 timings retain exact outputs but do not qualify model-wide throughput or equivalence.
+Existing API/statistics readout-performance limitations below remain separate; this remediation makes no
+new overall monitoring-overhead claim. Apple, real two-GPU execution and fresh GB10 qualification remain
+outside the owner-selected local-host run.
+
+## API/statistics and strict tools: local qualification, 2026-10-17
+
+Runtime source `2dd77a9a794a9d2349c43adf487b12f21a0a5d0f` integrates the interrupted cleanup,
+API/statistics and strict-function work. Subsequent qualification documentation changes leave its runtime,
+test and build files unchanged. The immutable AMD64 runtime is
+`sha256:0768e447d8b135089a1f2a185398d1c9aa0a9fcfcc14711478d990c74cb3a1c3`;
+verification is `sha256:9f1004f96f51ee9e21c39d661dc6bf64fc44856224a9c033ac4a4303dd61abe0`.
+README changes affect future wheel metadata; these image IDs identify the tested artifacts, not a later rebuild.
+The [machine-readable receipt](verification-api-stats-20261017.json) records inputs, gate scope and evidence hashes.
+Raw local evidence is retained in `/home/kklouzal/tensorfold-resume-20261017`; it is not part of the ordinary build.
+
+The host is Linux AMD64, RTX PRO 2000 Blackwell 16 GB (SM120), approximately 62 GiB host RAM,
+70 W GPU power cap. The normal installed Python 3.12.3 image uses the existing CUDA 13.4.1 pins:
+Torch `2.16.0.dev20261006+cu134`, Triton `3.9.0+gitaad2a60d`, xgrammar 0.2.8,
+tokenizers 0.23.1, Jinja 3.1.6 and NumPy 2.1.0. The NVIDIA compatibility userspace driver is
+615.71.09 over host kernel driver 595.91.07. Other GPU workloads were stopped during qualification;
+GPU tasks used one shared lock. This local scope was explicitly selected by the owner; no GB10 service was changed.
+
+| Gate | Result and scope |
+|---|---|
+| Final installed affected CPU | 476 passed, one MLX-only skip; API/error/schema/reader, statistics, metrics, deployment and packaging contracts |
+| Earlier full installed CPU at `8583d43b` | 7,596 passed, 168 skipped, two failures; both defects corrected and covered by the final affected gate (optional build-label oracle and packaged API reference) |
+| Unprivileged installed controls at `8583d43b` | 231 passed, six explicit platform/control skips; final packaging changes also covered above |
+| Final installed GPU | 29 passed; statistics/progress, mask and staging-lifetime oracles, strict synthetic lanes/two-rank/MoE and real-checkpoint four-layer serial/MTP equality |
+| Final installed KV preparation/encoder/oracles | 1,666 passed, 3,430 deselected; one kernel-cache write warning retained in the full log |
+| Final installed synthetic three-format exactness | RQ8-norm/RQ8/RQ6-norm reference `ALL 67a762f3ac80e419` unchanged |
+| Broad CUDA non-matrix at `05d053c1` | 1,871 passed, 97 skipped, 41 failed, 45 errors; exact comparison with pristine `1a2836b0` has zero new failure/error IDs and five resolved cases |
+| Installed runtime audit | 501 owned source files hash-identical; zero mismatches; three README-only omissions and native file-owner extension recorded |
+| Harness at `410bbbf` | 323 affected tests passed, zero failures/skips; build and scoped formatting passed |
+
+The broad CUDA gate's retained failures belong to existing numerical/family tests and a build-lock fixture; its 45 errors are old
+invalid-vocabulary TP fixtures. This remains a failing broad suite, not an all-GPU pass. Detailed identities and
+baseline comparisons are retained; no tests were disabled to change those results. Five old cases resolve with
+isolated memory-limit execution and exclusive GPU capacity. Earlier unchanged passing coverage is reused only
+with its actual source/configuration identity; the final affected checks qualify later fixes. The KV gate warned that its configured Torch disk-kernel cache directory could not be created. It completed
+all selected correctness cases with disk caching disabled for that kernel path; it supplies no timing claim.
+
+The ordinary PID-1 CLI served the actual local EXL3 Flash Next checkpoint with automatic RAM experts,
+RQ8-norm KV, BF16 prompts, context 16,384, four slots, MTP-4/confidence 0.5, requests explicitly disabling thinking,
+HTTP/pending caps 32/8, six CPUs, 56 decimal GB RAM/no swap and 2 GiB shared memory. It loaded in 142.4 s
+and reserved all four slots and 24 snapshots within its startup plan. Models/list/retrieve/unknown-model 404,
+native tokenization, Responses input counting, JSON/SSE usage and request IDs, progress, exact repeated/serial/drafted
+token IDs, a forced strict call, unsupported-bound HTTP 400, the actual 31-tool Harness prompt (8,225 tokens),
+four concurrent replies matching solo references, statistics and Prometheus all passed. Final logical owners were
+zero and normal requests produced no failure captures. SIGINT/container retirement passed with exit zero and no OOM.
+These bounded requests do not establish filled-context capacity or broad model quality.
+
+TensorFold never weakens an active strict request. Unsupported strict schemas and active grammar plus
+`ignore_eos: true` are refused before generation/SSE. The consumer change
+[Harness `410bbbf`](https://github.com/kklouzal/Harness/commit/410bbbf8222c8f75e469b5a019dc88c712e54b66)
+keeps every schema and execution validator, explicitly chooses non-strict decoding for 22 audited executable tools,
+and retains strict decoding for nine foreground tools, all five private function submissions and four memory JSON
+requests. Generation, counting and runtime probes share that choice; other providers retain their prior payloads.
+The curator's `anyOf` replaces disjoint `oneOf` branches with identical accepted values (required, distinct action
+constants). All actual exported requests pass the server validator; the full vocabulary/template and mixed-tool
+stream checks pass. Deploy this consumer before the enforcing server: older Harness marks unsupported schemas strict.
+No Harness deployment or provider-database change was performed here.
+
+String-length candidates remain rejected: native fast JSON bounds do not preserve the required escape/control-character
+domain; an exact escape-aware grammar took approximately 0.4 s per token and a raw-string DFA approximately 3.1 s per
+mask in the recorded prototypes. Those candidates remain private evidence, not production paths. Finite uniqueness
+for arrays over at most ten distinct string enum values uses the exact selected grammar. General unsupported
+constraints still fail explicitly. No new decoder/kernel optimization is selected by this qualification.
+
+The statistics readout experiment compares no background scraping against `/v1/stats` at 2 Hz plus `/metrics` at 1 Hz
+on the same warm installed service, with the unchanged actual tool catalog and equal output token IDs.
+One-request and four-request regions have separate, nonoverlapping paired ABBA/BAAB blocks, fixed prompts/seeds and a 16-token
+maximum with normal EOS. The objective measured here is the geometric full-batch wall-latency ratio; it does not
+measure the entire instrumentation change against an older release, nor claim arithmetic mean decode-round equivalence.
+The initial 20-block pilots are retained separately. Confirmation uses 80 fresh blocks per region, fixed in advance,
+97.5% Student-t intervals for a two-look alpha budget, and the larger of IID variance and a fixed Bartlett HAC
+bandwidth-four variance (finite-sample correction included). The unchanged acceptance interval is [0.995, 1.005].
+Order parity and lag correlations are reported; no observations are removed. The completed fresh-connection
+confirmation is **unqualified**: n1 ratio 1.002389, 97.5% interval [0.999304, 1.005484]; n4 ratio 1.006104,
+interval [1.001793, 1.010435]. Positive overhead is established in n4; neither interval proves the declared bound.
+ABBA/BAAB point ratios are 1.002702/1.002076 (n1) and 1.008774/1.003442 (n4). Fixed lag-four HAC widens n4's
+interval; it does not establish absence of longer-range dependence. Immediate polling at every short B-batch start
+made realized n1 rates approximately 2.67/1.78 Hz (stats/metrics) and n4 2.16/1.08 Hz, above nominal timer rates.
+All 640 measured batches (1,600 generation requests) completed with equal tokens; retirement passed exit zero/no OOM.
+
+A separate, predeclared consumer-shaped steady-state region follows authoritative Harness source: shared stats-only
+reads, at least two seconds after the preceding fetch completes, with one warmed reusable HTTP/1.1 connection
+retained idle in A. The same fixed 80 blocks, margin, conservative interval method and quality settings apply.
+This region excludes first connection, factory-handler rotation and native .NET reader execution. It cannot qualify
+or erase the failed fresh-connection stress or the unrun source-instrumentation comparison. Its results are recorded
+below. The closing validator independently checks sample order/counts, token identity, interval arithmetic,
+connection count, completion spacing and the actual reader's two-second timeout.
+
+The consumer-shaped n1 ratio is 0.9997535875, with 97.5% interval [0.9980131859, 1.0014970240]: it meets the
+unchanged criterion. The n4 ratio is 0.9981978676, with interval [0.9947211719, 1.0016867149]: it remains
+**inconclusive for two-sided equivalence**, since its lower edge is below 0.995. The upper edge is +0.169%, but
+that is not a pass of the declared two-sided criterion. Neither region establishes a speedup. Order-parity point
+ratios are 1.0002331189/0.9992742860 (n1) and 0.9989578556/0.9974384578 (n4); lag correlations remain in the
+receipt. Exactly one monitoring connection recorded 446 post-setup reads (440 measured and six workload-warmup reads),
+after two unrecorded setup reads. The recorded reads have minimum completion-to-next-start spacing
+2.000028673 s and maximum duration 0.002016093 s. All 640 measured batches/1,600 generation requests
+preserved their token sequences; the server retired exit zero/no OOM.
+
+Local functional integration is verified; the general overhead qualification remains incomplete. Fresh-connection
+stress shows positive n4 overhead, while the narrow consumer-shaped n4 interval lacks the precision required by
+the symmetric margin. No additional samples, exclusions, changed margins, production optimization or rollout are
+used to declare a pass. A future performance qualification needs a new predeclared study with enough power and
+its required hardware/workload, preserving these outcomes.
+
+Apple/MLX native execution, new ARM64/GB10 qualification, actual multi-GPU execution, exhaustive model quality and
+large/full-context performance remain unrun for this source. Historical deployment and performance records below
+retain their original source, images, hardware and workloads.
+
 ## Python-line integration, 2026-10-11
 
 The integration joins fork `2f8089a7b59588875d639a7efa860117168a29d0` with
@@ -280,8 +783,10 @@ round 0.954x at one stream (0.954, 0.952, 0.957) and 0.946x at four (0.944, 0.94
 2.0% (geometric mean +1.7%, every new-build start above every old one per request), prompt passes 0.2 to 0.7%, with
 identical tokens; the build reproduced the reference reply tokens at ~30k, ~150k, ~300k and ~650k. GB10 lane and
 expert-tile table candidates (ABCDDCBA, one and four streams) were inconclusive (base pass-to-pass spread 1.5% at one
-stream, 2.8% at four), so the GB10 keeps its previous launches; lane plus tile at four streams (round 0.980x) remains
-an open GB10 candidate. Rejected on sm_120: a router decode tile of 16 experts (no in-round gain; reverted),
+stream, 2.8% at four), so the GB10 keeps its previous launches. The 2026-10-15 follow-up closed the lane/tile
+candidates without selection: full lane+tile regressed one-stream verify time, tile alone remained inconclusive, and
+the lane table restricted to at most four rows established no complete-round gain across both regions. The original
+launches remain selected. Rejected on sm_120: a router decode tile of 16 experts (no in-round gain; reverted),
 prefetching shared-expert weights into L2 during routing (1.006 to 1.018x slower), and a fused top-k plus plan kernel
 (1.7 to 3.5x slower). Left open below round A/B resolution (< ~0.1% of a round each): alternative lane blocks for the
 attention output, DeltaNet/attention 17- to 20-row and per-layer-embedding projections. Full-model quality is
@@ -543,7 +1048,7 @@ The 360.63-second whole operation included startup and first native compilation.
 cgroup RAM peaked at 47.386 GB within 56 GB with no swap. This is the completed current
 baseline API gate, not an API throughput/tail comparison, all-format/model quality proof
 or 524k-context qualification. Future changed code/images require their relevant source,
-model/API and resource qualification. See the [README API qualification](../README.md#current-installed-cliapi-qualification).
+model/API and resource qualification. See the [README API qualification](../README.md#earlier-installed-cliapi-qualification).
 
 The final frozen-source shipping gates are also complete for commit `07f4294306aba4cc6e1851b9c774fbf89d234900`, runtime UID `e7a15d7331560e25bc31bcd5caedf27c6c81c7dbc6d19b2f74d281c78534daba`: serving image `sha256:b091954b6556a540123d2872d30fe86905344f4b24a6ff47e8361269916f7117`, verification image `sha256:46f16ad6498378a3d9a186dcbfc671c1459e86765a2ee21b950291517968455f`, and shared wheel `4d79339aa56286d6d5863e1d37c6584abacb79938ca97c75386649f62f32fbd2`. Both normal Python 3.12 installed native/source audits passed 15 controls without skips. The separate baked CPU24 packaging batch passed 343 cases, with eight explicit skips, over 16 modules as UID 1000 without a checkout mount; genuine CHANGELOG/update/public-permissions checks passed. These counts do not replace or extend the historical Source06 full CPU snapshot.
 
@@ -591,3 +1096,51 @@ Linux native file composition does not qualify Apple execution. Record unavailab
 hardware gates explicitly; source controls and substituted runtimes are not
 runtime passes. Retain rejected candidates and failed controls with their exact
 inputs until final reconciliation establishes which evidence remains applicable.
+
+
+DSpark C19 target-graph execution improved three quiet single-client512-token
+requests from C18's26.86/28.10/27.23 to43.16/45.19/44.27decode tokens/s on the
+same8×V100/depth3/confidence0 settings. All benchmark choices and9+12live
+cases matched; actual target replay hits and DSpark counters were observed.
+This is experimental evidence, not a qualified backend promotion: the separate
+389-step numerical failure still requires expert and attention math repair.
+Proposal-body GPU capture has passed three bounded component cases; common
+graph-owner, TP and actual-checkpoint validation are pending. Retain both stock
+MTP and DSpark and compare their real accepted-token latency; see the
+[full validation record](v100-flashnext-validation.md).
+
+C20's full-block greedy DSpark proposal graph increased the same three
+512-token screens to58.12/60.74/59.93decode tokens/s, with unchanged acceptance
+and complete output IDs/messages, one readback per captured proposal, and9+12
+live cases passed. It keeps C19 target arithmetic, so the broader389-step
+numerical failure remains a promotion blocker. DSpark method selection and
+shared engine/State/graph ownership are now maintained; optimized defaults are
+still pending numerical qualification.
+
+
+C21 repaired-target quality passed the unchanged325/389teacher suites
+independently: KL0/PPL1/top1all and KL0.0000254874/PPL1.00004297/top1all.
+Actual native attention was observed at6k contexts. The remaining measured
+long-case variation is recorded explicitly; this is not universal byte identity.
+The optimized profile is now a normal engine selection through
+`TENSORFOLD_SM70_PROFILE`, with reference default, pinned TP8 geometry and
+65–8192native attention scope/original Torch fallback. Live/API/performance
+selection and the separate expert-parallel full-model comparison remain pending.
+
+C22 integrated serving repairs passed2679CPU/338GPU checks and actualTP8
+DSpark six-client R24 identity,9serial/draft pairs,12baselines, streaming,
+cancellation and prefix recovery. Its capped attention scratch changes
+allocation/validation only; target arithmetic remains the C21-qualified code.
+Full-context physical allocation and quiet method/depth performance are pending;
+see the [current validation](v100-flashnext-validation.md#c22-serving-and-capacity-closeout).
+
+C22 finite closeouts are complete through actual full-window MTP acceptance:
+three262144-token windows, all eight ranks materialized, full R12 concurrency/
+SSE/cancel/prefix and9+12live checks PASS. Best measured stockMTPdepth3
+single-client128-input/512-output decode52.86/53.29/58.93tokens/s; DSpark remains
+selectable (best depth3 in2/3/7screen). NativeR32/component+R24serving PASS;
+EPfull714quality FAIL/unselected; TP4graph-budget trial unqualified/closed.
+The plain shipping service is healthy on port8000: same607runtimehashes,
+all4benchmark outputs+3concurrent complete responses exact. Quiet128-input/
+512-output decode54.04/54.42/59.78tokens/s. All four closeouts complete;
+100single-request tokens/s remains unmet and optimization pauses as agreed.

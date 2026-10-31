@@ -1,0 +1,224 @@
+diff --git a/aten/src/ATen/ATenConfig.cmake.in b/aten/src/ATen/ATenConfig.cmake.in
+index 2c0d185..3b16e44 100644
+--- a/aten/src/ATen/ATenConfig.cmake.in
++++ b/aten/src/ATen/ATenConfig.cmake.in
+@@ -5,5 +5,5 @@
+ # ATEN_FOUND -- set to 1 if found
+ 
+ set(ATEN_FOUND 1)
+-set(ATEN_INCLUDE_DIR "@ATEN_INCLUDE_DIR@")
++get_filename_component(ATEN_INCLUDE_DIR "${CMAKE_CURRENT_LIST_DIR}/@ATEN_INCLUDE_RELATIVE_DIR@" ABSOLUTE)
+ set(ATEN_LIBRARIES "@ATEN_LIBRARIES@")
+diff --git a/aten/src/ATen/CMakeLists.txt b/aten/src/ATen/CMakeLists.txt
+index 1e17f1a..7d25401 100644
+--- a/aten/src/ATen/CMakeLists.txt
++++ b/aten/src/ATen/CMakeLists.txt
+@@ -971,8 +971,10 @@ if(USE_ROCM)
+   # list(APPEND ATen_HIP_DEPENDENCY_LIBS ATEN_CUDA_FILES_GEN_LIB)
+ endif()
+ 
+-set(ATEN_INCLUDE_DIR "${CMAKE_INSTALL_PREFIX}/${AT_INSTALL_INCLUDE_DIR}")
+-configure_file(ATenConfig.cmake.in "${CMAKE_CURRENT_BINARY_DIR}/cmake-exports/ATenConfig.cmake")
++file(RELATIVE_PATH ATEN_INCLUDE_RELATIVE_DIR
++  "${CMAKE_INSTALL_PREFIX}/${AT_INSTALL_SHARE_DIR}/cmake/ATen"
++  "${CMAKE_INSTALL_PREFIX}/${AT_INSTALL_INCLUDE_DIR}")
++configure_file(ATenConfig.cmake.in "${CMAKE_CURRENT_BINARY_DIR}/cmake-exports/ATenConfig.cmake" @ONLY)
+ install(FILES "${CMAKE_CURRENT_BINARY_DIR}/cmake-exports/ATenConfig.cmake"
+   DESTINATION "${AT_INSTALL_SHARE_DIR}/cmake/ATen")
+ 
+diff --git a/test/cpp/c10d/CMakeLists.txt b/test/cpp/c10d/CMakeLists.txt
+index aa98db5..2f65bb3 100644
+--- a/test/cpp/c10d/CMakeLists.txt
++++ b/test/cpp/c10d/CMakeLists.txt
+@@ -57,6 +57,12 @@ else()
+   endif()
+ endif()
+ 
++if(LINUX)
++  c10d_add_test(SocketTest.cpp LINK_LIBRARIES torch_cpu gtest_main INSTALL_TEST OFF)
++  target_sources(SocketTest PRIVATE ${TORCH_SRC_DIR}/csrc/distributed/c10d/socket.cpp)
++  target_link_options(SocketTest PRIVATE "-Wl,--wrap=getnameinfo")
++endif()
++
+ if(USE_CUDA)
+   if(USE_GLOO AND USE_C10D_GLOO)
+     c10d_add_test(ProcessGroupGlooTest.cpp LINK_LIBRARIES torch_cpu c10d_cuda_test gtest_main INSTALL_TEST ${INSTALL_TEST})
+diff --git a/test/cpp/c10d/SocketTest.cpp b/test/cpp/c10d/SocketTest.cpp
+new file mode 100644
+index 0000000..e9fcc34
+--- /dev/null
++++ b/test/cpp/c10d/SocketTest.cpp
+@@ -0,0 +1,103 @@
++// Copyright (c) Meta Platforms, Inc. and affiliates.
++// All rights reserved.
++//
++// This source code is licensed under the BSD-style license found in the
++// LICENSE file in the root directory of this source tree.
++
++#include <torch/csrc/distributed/c10d/socket_fmt.h>
++
++#include <arpa/inet.h>
++#include <netdb.h>
++
++#include <atomic>
++#include <cstring>
++#include <thread>
++#include <vector>
++
++#include <gtest/gtest.h>
++
++namespace {
++std::atomic<bool> fail_lookup{false};
++std::atomic<unsigned> lookup_calls{0};
++} // namespace
++
++extern "C" int __wrap_getnameinfo(
++    const sockaddr* addr,
++    socklen_t,
++    char* host,
++    socklen_t host_len,
++    char* service,
++    socklen_t service_len,
++    int flags) {
++  lookup_calls.fetch_add(1, std::memory_order_relaxed);
++  if (fail_lookup.load(std::memory_order_relaxed)) {
++    return EAI_FAIL;
++  }
++  const char* name =
++      addr->sa_family == AF_INET ? "ipv4.example" : "ipv6.example";
++  if (host_len <= std::strlen(name) || service_len <= std::strlen("12345") ||
++      flags != NI_NUMERICSERV) {
++    return EAI_OVERFLOW;
++  }
++  std::strcpy(host, name);
++  std::strcpy(service, "12345");
++  return 0;
++}
++
++TEST(SocketTest, AddressFormattingAndConcurrentFailurePolicy) {
++  sockaddr_in ipv4{};
++  ipv4.sin_family = AF_INET;
++  ipv4.sin_port = htons(12345);
++  ASSERT_EQ(inet_pton(AF_INET, "192.0.2.17", &ipv4.sin_addr), 1);
++  const auto* addr4 = reinterpret_cast<const sockaddr*>(&ipv4);
++  sockaddr_in6 ipv6{};
++  ipv6.sin6_family = AF_INET6;
++  ipv6.sin6_port = htons(12345);
++  ASSERT_EQ(inet_pton(AF_INET6, "2001:db8::17", &ipv6.sin6_addr), 1);
++  const auto* addr6 = reinterpret_cast<const sockaddr*>(&ipv6);
++
++  EXPECT_EQ(
++      c10d::detail::formatSockAddr(addr4, sizeof(ipv4)), "ipv4.example:12345");
++  EXPECT_EQ(
++      c10d::detail::formatSockAddr(addr6, sizeof(ipv6)),
++      "[ipv6.example]:12345");
++  EXPECT_EQ(lookup_calls.load(std::memory_order_relaxed), 2);
++
++  fail_lookup.store(true, std::memory_order_relaxed);
++  std::atomic<bool> start{false};
++  std::atomic<unsigned> mismatches{0};
++  std::vector<std::thread> workers;
++  for (unsigned worker = 0; worker < 8; ++worker) {
++    workers.emplace_back([&] {
++      while (!start.load(std::memory_order_acquire)) {
++        std::this_thread::yield();
++      }
++      for (unsigned iteration = 0; iteration < 1000; ++iteration) {
++        if (c10d::detail::formatSockAddr(addr4, sizeof(ipv4)) !=
++                "192.0.2.17:12345" ||
++            c10d::detail::formatSockAddr(addr6, sizeof(ipv6)) !=
++                "[2001:db8::17]:12345") {
++          mismatches.fetch_add(1, std::memory_order_relaxed);
++        }
++      }
++    });
++  }
++  start.store(true, std::memory_order_release);
++  for (auto& worker : workers) {
++    worker.join();
++  }
++  EXPECT_EQ(mismatches.load(std::memory_order_relaxed), 0);
++  const auto calls_after_failure = lookup_calls.load(std::memory_order_relaxed);
++  EXPECT_GE(calls_after_failure, 3);
++  EXPECT_EQ(
++      c10d::detail::formatSockAddr(addr4, sizeof(ipv4)), "192.0.2.17:12345");
++  EXPECT_EQ(
++      c10d::detail::formatSockAddr(addr6, sizeof(ipv6)),
++      "[2001:db8::17]:12345");
++  EXPECT_EQ(lookup_calls.load(std::memory_order_relaxed), calls_after_failure);
++  sockaddr unsupported{};
++  unsupported.sa_family = AF_UNSPEC;
++  EXPECT_EQ(
++      c10d::detail::formatSockAddr(&unsupported, sizeof(unsupported)),
++      "?UNKNOWN?");
++}
+diff --git a/torch/csrc/distributed/c10d/socket.cpp b/torch/csrc/distributed/c10d/socket.cpp
+index 875509e..b533a6d 100644
+--- a/torch/csrc/distributed/c10d/socket.cpp
++++ b/torch/csrc/distributed/c10d/socket.cpp
+@@ -7,6 +7,7 @@
+ #include <c10/util/error.h>
+ #include <torch/csrc/distributed/c10d/socket.h>
+ 
++#include <atomic>
+ #include <optional>
+ #include <system_error>
+ #include <utility>
+@@ -196,42 +197,40 @@ std::string formatSockAddr(const struct ::sockaddr* addr, socklen_t len) {
+   // if we hit a transient failure we just disable it for the remainder of the
+   // job, logging IP addresses instead. See
+   // https://github.com/pytorch/pytorch/issues/159007
+-  static bool disable_getnameinfo = false;
++  static std::atomic<bool> disable_getnameinfo{false};
+ 
+   char host[NI_MAXHOST], port[NI_MAXSERV]; // NOLINT
+ 
+-  if (!disable_getnameinfo) {
++  if (!disable_getnameinfo.load(std::memory_order_relaxed)) {
+     int err = ::getnameinfo(
+         addr, len, host, NI_MAXHOST, port, NI_MAXSERV, NI_NUMERICSERV);
+-    if (err != 0) {
+-      C10D_WARNING(
+-          "The hostname of the client socket cannot be retrieved. err={}", err);
+-      disable_getnameinfo = true;
+-    }
+-  }
+-  // if getnameinfo failed, disable would be set
+-  if (!disable_getnameinfo) {
+-    if (addr->sa_family == AF_INET) {
+-      return fmt::format("{}:{}", host, port);
++    if (err == 0) {
++      if (addr->sa_family == AF_INET) {
++        return fmt::format("{}:{}", host, port);
++      }
++      return fmt::format("[{}]:{}", host, port);
+     }
+-    return fmt::format("[{}]:{}", host, port);
++    C10D_WARNING(
++        "The hostname of the client socket cannot be retrieved. err={}", err);
++    // This one-way policy flag does not publish the per-call lookup buffers.
++    disable_getnameinfo.store(true, std::memory_order_relaxed);
+   }
+   // if we can't resolve the hostname, display the IP address
+   if (addr->sa_family == AF_INET) {
+-    struct sockaddr_in* psai = reinterpret_cast<struct sockaddr_in*>(&addr);
++    const auto* psai = reinterpret_cast<const struct sockaddr_in*>(addr);
+     // NOLINTNEXTLINE(*array*)
+     char ip[INET_ADDRSTRLEN];
+     if (inet_ntop(addr->sa_family, &(psai->sin_addr), ip, INET_ADDRSTRLEN) !=
+         nullptr) {
+-      return fmt::format("{}:{}", ip, psai->sin_port);
++      return fmt::format("{}:{}", ip, ntohs(psai->sin_port));
+     }
+   } else if (addr->sa_family == AF_INET6) {
+-    struct sockaddr_in6* psai = reinterpret_cast<struct sockaddr_in6*>(&addr);
++    const auto* psai = reinterpret_cast<const struct sockaddr_in6*>(addr);
+     // NOLINTNEXTLINE(*array*)
+     char ip[INET6_ADDRSTRLEN];
+     if (inet_ntop(addr->sa_family, &(psai->sin6_addr), ip, INET6_ADDRSTRLEN) !=
+         nullptr) {
+-      return fmt::format("[{}]:{}", ip, psai->sin6_port);
++      return fmt::format("[{}]:{}", ip, ntohs(psai->sin6_port));
+     }
+   }
+   return "?UNKNOWN?";

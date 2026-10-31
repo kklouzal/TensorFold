@@ -1,14 +1,14 @@
-"""Qwen3.8-27B on an NVFP4 checkpoint: verify rows equal serial steps, prompts ignore chunking, drafted equals serial.
+"""Qwen3.8 NVFP4: row/chunk invariance, greedy serial identity and stochastic request/prefix determinism.
 
 The synthetic part runs anywhere CUDA is: a one-layer model with NVFP4 MLP and head, FP8 GDN projections and bf16
-gates, as a ModelOpt export stores them. The checkpoint part needs ``TENSORFOLD_QWEN27_NVFP4=<dir>`` and
-``TENSORFOLD_QWEN27_DRAFTER=<DFlash2 dir>``; skipped otherwise.
+gates, as a ModelOpt export stores them (per-tensor FP8 at full precision; per-channel FP8 with per-token rows and
+NVFP4 under their static input scales, the AEON MIXED export's checkpoint math, on SM 12.x). The checkpoint part
+needs ``TENSORFOLD_QWEN27_NVFP4=<dir>`` and ``TENSORFOLD_QWEN27_DRAFTER=<DFlash2 dir>``; skipped otherwise.
 """
 
 from __future__ import annotations
 
 import gc
-import hashlib
 import os
 from pathlib import Path
 
@@ -28,19 +28,29 @@ MODEL = os.environ.get("TENSORFOLD_QWEN27_NVFP4", "")
 DRAFTER = os.environ.get("TENSORFOLD_QWEN27_DRAFTER", "")
 
 
-def _fp4(n: int, k: int, gen: torch.Generator) -> Fp4Linear:
+def _fp4(n: int, k: int, gen: torch.Generator, act: float | None = None) -> Fp4Linear:
     packed = torch.randint(0, 256, (n, k // 2), generator=gen, dtype=torch.uint8)
     scale = torch.randint(0x20, 0x40, (n, k // 16), generator=gen, dtype=torch.uint8)
-    return Fp4Linear.from_checkpoint(packed.cuda(), scale.cuda(), 0.05)
+    return Fp4Linear.from_checkpoint(packed.cuda(), scale.cuda(), 0.05, act=act)
 
 
-def _fp8(n: int, k: int, gen: torch.Generator) -> Fp8Linear:
+def _fp8(n: int, k: int, gen: torch.Generator, channel: bool = False) -> Fp8Linear:
     w = torch.randint(0, 256, (n, k), generator=gen, dtype=torch.uint8)
     w[(w & 0x7F) >= 0x60] = 0x30                            # finite, magnitudes below 2^5
+    if channel:                                             # a scale a channel, rows a scale a token
+        cols = 0.002 + 0.004 * torch.rand(n, generator=gen)
+        return Fp8Linear.from_checkpoint(w.cuda().view(torch.float8_e4m3fn), cols.cuda(), token=True)
     return Fp8Linear.from_checkpoint(w.cuda().view(torch.float8_e4m3fn), 0.004)
 
 
-def _model() -> Weights:
+MODELS = ["full", "per-token"]
+
+
+def _model(kind: str = "full") -> Weights:
+    if kind == "per-token" and torch.cuda.get_device_capability()[0] != 12:
+        pytest.skip("the checkpoint's FP4 math needs an SM 12.x GPU")
+    channel = kind == "per-token"
+    act = 2.0 if channel else None                          # NVFP4 rows under a static input scale
     gen = torch.Generator().manual_seed(9)
 
     def gate(n, k):
@@ -49,9 +59,10 @@ def _model() -> Weights:
 
     norm = torch.ones(128, device="cuda", dtype=torch.bfloat16)
     conv = (torch.randn(384, 4, generator=gen) * 0.1).to(torch.bfloat16).cuda()
-    gdn = GDN(_fp8(384, 128, gen), _fp8(128, 128, gen), gate(1, 128), gate(1, 128), _fp8(128, 128, gen), conv,
-              torch.zeros(1, device="cuda"), torch.zeros(1, device="cuda"), norm)
-    layer = Layer(True, norm, norm, gdn, None, _fp4(128, 128, gen), _fp4(128, 128, gen), _fp4(128, 128, gen))
+    gdn = GDN(_fp8(384, 128, gen, channel), _fp8(128, 128, gen, channel), gate(1, 128), gate(1, 128),
+              _fp8(128, 128, gen, channel), conv, torch.zeros(1, device="cuda"), torch.zeros(1, device="cuda"), norm)
+    layer = Layer(True, norm, norm, gdn, None, _fp4(128, 128, gen, act), _fp4(128, 128, gen, act),
+                  _fp4(128, 128, gen, act))
     config = Config(hidden=128, intermediate=128, layers=1, heads=1, kv_heads=1, head_dim=128, vocab=256, k_heads=1,
                     v_heads=1, dk=128, dv=128, conv_kernel=4, interval=4, eps=1e-6, rope_dims=32,
                     rope_theta=10000000.0, eos=(0,))
@@ -59,10 +70,11 @@ def _model() -> Weights:
     return Weights(config, embed, [layer], norm, _fp4(256, 128, gen), torch.ones(16, device="cuda"), quant="nvfp4")
 
 
-def test_window_rows_equal_serial_steps():
+@pytest.mark.parametrize("kind", MODELS)
+def test_window_rows_equal_serial_steps(kind):
     """A GDN verify window on NVFP4 / FP8 / bf16 weights: each path's rows and the committed state equal serial steps."""
 
-    w = _model()
+    w = _model(kind)
     tokens = torch.tensor([7, 8, 9, 10], device="cuda", dtype=torch.int32)
     parents = [-1, 0, 0, 1]
     state = State(w)
@@ -78,12 +90,13 @@ def test_window_rows_equal_serial_steps():
     assert torch.equal(state.rec[0], st.rec[0]) and torch.equal(state.conv[0], st.conv[0])
 
 
-def test_prompts_ignore_chunking_and_resume_as_fresh():
-    """FP8 prompt rows on staged NVFP4, FP8 and gate copies: the same state in any chunks, and resumed == fresh."""
+@pytest.mark.parametrize("kind", MODELS)
+def test_prompts_ignore_chunking_and_resume_as_fresh(kind):
+    """Prompt rows on NVFP4, FP8 and gate weights: the same state in any chunks, and resumed == fresh."""
 
     from tensorfold.families.qwen3_5.cuda.prefill import prefill_state
 
-    w = _model()
+    w = _model(kind)
     prompt = [3 + (7 * i) % 250 for i in range(67)]
     runs = []
     for size in (67, 16, 5):
@@ -129,7 +142,7 @@ def test_gate_copy_tracks_the_bf16_product():
     assert torch.equal(gate(x[:3]), gate(x)[:3])
 
 
-@pytest.fixture(scope="module", params=["checkpoint", "full", "fp8-only"])
+@pytest.fixture(scope="module", params=["checkpoint", "full", "fp8-only"], ids=lambda mode: "math_" + mode)
 def engine(request):
     """The real checkpoint in its own math, at full precision, and as SM 8.9-10.x GPUs choose, one engine at a time."""
 
@@ -158,30 +171,21 @@ def engine(request):
     torch.cuda.empty_cache()
 
 
-def _ids(engine, prompt, sampling, draft, tokens=48):
-    out: list[int] = []
-    stats = engine.generate(list(prompt), tokens, sampling, lambda new: out.extend(new) and False, draft=draft)
-    return out, stats
-
-
 @pytest.mark.parametrize("seed", [None, 1234, 1237], ids=["greedy", "seed1234", "seed1237"])
 def test_checkpoint_drafted_equals_serial(engine, seed):
-    """The real checkpoint with DFlash2: drafted replies are serial's token ids (SHA-256 of the ids compared)."""
+    """Greedy remains serial-identical; stochastic RS repeats across real warm/cold prefixes and exercises DFlash2."""
 
     from tokenizers import Tokenizer
 
     from tensorfold.engine.exact_sampling import Sampling
+    from qwen_rejection_checks import checkpoint_controls
 
     tok = Tokenizer.from_file(str(Path(MODEL) / "tokenizer.json"))
     prompt = tok.encode("Write a short Python function that computes the Fibonacci sequence and explain it.",
                         add_special_tokens=False).ids
     sampling = None if seed is None else Sampling(seed, 1.0, 20, 0.95)
-    serial, s_stats = _ids(engine, prompt, sampling, draft=False)
-    drafted, d_stats = _ids(engine, prompt, sampling, draft=True)
-    digest = [hashlib.sha256(",".join(map(str, ids)).encode()).hexdigest() for ids in (serial, drafted)]
-    print(seed, tok.decode(serial)[:200].replace("\n", " "), s_stats, d_stats)
-    assert len(serial) == 48 and digest[0] == digest[1]
-    assert d_stats["rounds"] < s_stats["rounds"]                     # drafting did accept tokens
+    serial, drafted, s_stats, d_stats = checkpoint_controls(engine, prompt, sampling)
+    print(seed, "serial identity:", serial == drafted, tok.decode(serial)[:200].replace("\n", " "), s_stats, d_stats)
 
 
 def test_an_nvfp4_checkpoint_refuses_two_ranks_and_vision(tmp_path, monkeypatch):

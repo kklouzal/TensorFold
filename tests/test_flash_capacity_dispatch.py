@@ -44,7 +44,8 @@ def test_actual_attention_callsite_bounds_short_request_launches(monkeypatch, al
     scratch = SimpleNamespace(qsa=True, nch=(slots+511)//512, nb=(slots+3)//4, budget=2048, ratio=4,
                               idw=2052, ids=None, nk=None, sparse=None, scores=None, po=None, pm=None, pl=None,
                               centroids=None, thresholds=None, out=tensor)
-    buffers = SimpleNamespace(attn=scratch, mixed=tensor, xs_mixed=tensor, pa=tensor, q=tensor, iq=tensor,
+    buffers = SimpleNamespace(attn=scratch, h=tensor, attn_o=tensor,
+                              mixed=tensor, xs_mixed=tensor, pa=tensor, q=tensor, iq=tensor,
                               gated=tensor, xs_gated=tensor, prefill=False, rotor_lookup=False)
     monkeypatch.setattr(mod, "_mm", lambda *a, **kw: None)
     monkeypatch.setattr(mod, "_out_proj", lambda *a, **kw: None)
@@ -77,7 +78,7 @@ def test_actual_graph_calls_recapture_when_live_context_crosses_bucket(monkeypat
     mod = importlib.import_module("tensorfold.families.qwen4_exp.cuda.graphs")
     captures, computes = [], []
     monkeypatch.setattr(mod, "stage", lambda w, b, windows: [(windows[0][0], 0, len(windows[0][1]))])
-    monkeypatch.setattr(mod, "mtp_stage", lambda w, b, windows: [(windows[0][0], 0, len(windows[0][1]))])
+    monkeypatch.setattr(mod, "mtp_stage", lambda b, windows: [(windows[0][0], 0, len(windows[0][1]))])
     def compute(*args, **kw):
         computes.append(kw.get("context"))
         return None
@@ -87,7 +88,8 @@ def test_actual_graph_calls_recapture_when_live_context_crosses_bucket(monkeypat
     state = SimpleNamespace(pos=2000, mtp_len=2000, cur=[0], capacity=262151,
                             kv_identity=(get_pair("bf16").identity, "stored-basis-native64-v1"), version=0,
                             kv_status=None, kv_begin=lambda: events.append("begin"))
-    engine = SimpleNamespace(w=SimpleNamespace(comm=None), st=state,
+    engine = SimpleNamespace(w=SimpleNamespace(comm=None, meta={"indexer_history": "gpu"},
+                                               cfg=SimpleNamespace(execution_dtype="bfloat16")), st=state,
                              buf=SimpleNamespace(logits=[0] * rows), mbuf=None, capacity=262151)
     monkeypatch.setattr(mod.torch.cuda, "graph_pool_handle", lambda: None)
     obj = mod.Graphs(engine)

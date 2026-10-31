@@ -164,7 +164,7 @@ class Head:
         key = matmul(h, a.k, xs)
         value = matmul(h, a.v, xs).reshape(n, c.kv_heads, c.head_dim).contiguous()
         q, key = glue.attn_prep(qg, key, a.q_norm, a.k_norm, pos, w.inv_freq, c.eps, heads=c.heads,
-                                kv_heads=c.kv_heads, head_dim=c.head_dim)
+                                kv_heads=c.kv_heads, head_dim=c.head_dim, amplitude=c.rope_scale)
         key = key.view(n, c.kv_heads, c.head_dim).contiguous()
         out = attend(q.view(n, c.heads, c.head_dim).contiguous(), key, value)
         gated, gxs = glue.gate_mul(out, qg, heads=c.heads, head_dim=c.head_dim)

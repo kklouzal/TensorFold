@@ -11,10 +11,16 @@ import itertools
 import pytest
 
 from tensorfold.families.qwen4_exp.kv_formats import FORMATS, KVPairFormat, get, get_pair
+from tensorfold.families.qwen4_exp.cuda.sm70_kv import FORMATS as SM70_FORMATS, ROTOR_POLICY, COMPACT_ISO4
 from tests.test_cuda_geometry import allocations  # noqa: F401
 from tests.test_cuda_growing_caches import weights
 
 PAIRS = tuple(KVPairFormat(key, value) for key, value in itertools.product(FORMATS, repeat=2))
+COMPACT_PAIRS = tuple(pair for pair in PAIRS if pair.key.compact is not None or pair.value.compact is not None)
+STATE_PAIRS = tuple(pair for pair in PAIRS
+                    if (COMPACT_ISO4 not in (pair.key_dtype, pair.value_dtype) or pair.symmetric)
+                    and (pair not in COMPACT_PAIRS
+                         or pair.key_dtype in SM70_FORMATS and pair.value_dtype in SM70_FORMATS))
 
 
 def pair_id(pair):
@@ -44,6 +50,8 @@ def make_state(pair, capacity=37):
 
     model = weights()
     model.meta = {"world": 1}
+    if pair.key.compact is not None or pair.value.compact is not None:
+        model.meta["execution_dtype"] = "float16"
     model.cfg.head_dim = 256
     return State(model, capacity, 4, kv_pair=pair, limit=128)
 
@@ -123,7 +131,7 @@ def test_real_cache_has_independent_payload_metadata_and_fresh_clone_resize(pair
 
 
 @pytest.mark.torch
-@pytest.mark.parametrize("pair", PAIRS, ids=pair_id)
+@pytest.mark.parametrize("pair", STATE_PAIRS, ids=pair_id)
 def test_real_state_bytes_dummy_once_identity_status_and_growth(allocations, pair):  # noqa: F811
     import torch
 
@@ -133,7 +141,8 @@ def test_real_state_bytes_dummy_once_identity_status_and_growth(allocations, pai
     assert state.cache_bytes() == measured
     assert state.layer_bytes() == (37 * (pair.row_bytes(2, 256) + state.index_dim * 2)
                                    + pair.dummy_bytes + ((37 + state.ratio - 1) // state.ratio) * state.index_dim * 2)
-    assert state.kv_identity == (pair.identity, "stored-basis-native64-v1")
+    policy = ROTOR_POLICY if pair in COMPACT_PAIRS else "stored-basis-native64-v1"
+    assert state.kv_identity == (pair.identity, policy)
     assert state.kv_snapshot_metadata() == {"kv_identity": state.kv_identity, "kv_status": (0, -2)}
     guarded = not pair.symmetric or pair.key.codec != 0 or pair.value.codec != 0
     assert (state.kv_status is not None) == guarded
@@ -156,6 +165,27 @@ def test_real_state_bytes_dummy_once_identity_status_and_growth(allocations, pai
             rows = 1 if src.shape == (1,) else keep
             assert torch.equal(src[:rows].view(torch.uint8), dst[:rows].view(torch.uint8))
     assert state.cache_bytes() == sum(tensor.nbytes for tensor in context_tensors(state))
+
+
+@pytest.mark.torch
+@pytest.mark.parametrize("pair", COMPACT_PAIRS, ids=pair_id)
+def test_compact_sides_cannot_enter_modern_state_or_an_unsupported_sm70_pair(monkeypatch, pair):
+    import torch
+    from tensorfold.families.qwen4_exp.cuda.state import State
+
+    model = weights()
+    model.meta = {"world": 1}
+    model.cfg.head_dim = 256
+    def forbidden(*args, **kwargs):
+        pytest.fail("unsupported codec/provider pair allocated model state")
+    monkeypatch.setattr(torch, "zeros", forbidden)
+    monkeypatch.setattr(torch, "empty", forbidden)
+    with pytest.raises(ValueError, match="SM70"):
+        State(model, 37, 4, kv_pair=pair)
+    if pair not in STATE_PAIRS:
+        model.meta["execution_dtype"] = "float16"
+        with pytest.raises(ValueError, match="SM70"):
+            State(model, 37, 4, kv_pair=pair)
 
 
 @pytest.mark.torch

@@ -24,7 +24,7 @@ def _image(w, prompt, seed):
 
 
 @pytest.mark.parametrize("kv_dtype", ["bf16", "int8", "int4"])
-def test_image_prefill_is_chunk_invariant_and_clears_positions(kv_dtype):
+def test_image_prefill_is_chunk_invariant(kv_dtype):
     w = _model()
     prompt = [5, 17, 17, 17, 17] + list(range(20, 55))
     image = _image(w, prompt, 9)
@@ -32,7 +32,7 @@ def test_image_prefill_is_chunk_invariant_and_clears_positions(kv_dtype):
     tokens = []
     for engine in engines:
         first = prefill(engine, prompt, None, mtp=False, vision=image)
-        assert engine.pbuf.rope_rows is None and engine.st.rope_delta == -2
+        assert engine.st.rope_delta == -2
         tokens.append(serial_decode(engine, first, 8, None).tokens)
     assert tokens[0] == tokens[1]
     with pytest.raises(ValueError, match="from its start"):

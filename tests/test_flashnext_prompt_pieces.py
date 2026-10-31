@@ -92,6 +92,8 @@ def test_both_planner_paths_bound_live_pieces_and_restore_idle_width():
     from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder
 
     dec = object.__new__(MultiDecoder)
+    dec.controller = None
+    dec.w = SimpleNamespace(meta={"execution_provider": "cuda"})
     dec.prefill_rows, dec.share, dec.round_s, dec.row_s = 4096, 0.0, None, None
     dec.streams, dec.passed = {}, {}
     prompt = SimpleNamespace(sid=1, prompt=[1] * 9000, background=False, draft=False)   # no kept points

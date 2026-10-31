@@ -14,10 +14,11 @@ from tensorfold.engine import grammar
 from tensorfold.server.admission import concurrency
 from tensorfold.server.request_limits import RequestLimit, optional_limit
 from tensorfold.server.checkpoints import CheckpointStore, prune_conversations, save_conversations, spill_conversation
-from tensorfold.server.cancellation import Cancellation
+from tensorfold.server.cancellation import Cancellation, RequestCancelled
 from tensorfold.server.errors import CONTEXT_LIMIT, ContextLengthError, RequestError, RoundError
 from tensorfold.server.decision_requests import DecisionRequests
 from tensorfold.server.prompt_blocks import PromptBlocks, _REQUEST
+from tensorfold.server.request_ids import new_request_id
 from tensorfold.server.request_options import RequestOptions
 from tensorfold.server.http import served_model_ids
 from tensorfold.server import metrics
@@ -42,12 +43,6 @@ from tensorfold.server.text import (
 )
 
 
-def _mlx_version() -> str:
-    import mlx.core as mx
-
-    return str(mx.__version__)
-
-
 def _token_sha(tokens: list[int]) -> str:
     """A short fingerprint of a reply's tokens: two runs match byte for byte iff these match."""
 
@@ -61,6 +56,7 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
 
     accepts_sampling = True
     accepts_cancellation = True
+    accepts_request_ids = True          # ``chat`` takes the handler's request id and arrival clock
     accepts_raw_prompt = True
     # the request's tool list never stops prose from streaming
     streams_prose_with_tools = True
@@ -367,8 +363,12 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
         sampling: dict[str, Any] | None = None,
         cancellation: Cancellation | None = None,
         prompt: str | list[int] | None = None,
+        request_id: str | None = None,
+        arrived: float | None = None,
     ) -> dict[str, Any]:
-        """A reply to ``messages``, or with ``prompt`` (text or token ids) a raw completion: no template, no thinking."""
+        """A reply to ``messages``, or with ``prompt`` (text or token ids) a raw completion: no template, no thinking.
+        ``request_id`` names it in its ``tensorfold`` block and ``done`` line; ``arrived`` (perf_counter) is when the
+        handler read it, which its timings start from."""
 
         previous_sampling = getattr(_REQUEST, "sampling", None)
         _REQUEST.sampling = sampling  # request-scoped; nested calls restore their outer request
@@ -376,7 +376,7 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
         primary = None
         cleanup_failures = []
         try:
-            received_at = time.perf_counter()
+            received_at = time.perf_counter() if arrived is None else float(arrived)
             fields = sampling or {}
             limit = max(1, int(max_tokens or self.default_max_tokens))
             background = is_title_request(messages, tools) or fields.get("priority") == "background"
@@ -394,9 +394,12 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
                 reply_limit_explicit=max_tokens is not None,
                 cancellation=cancellation,
                 prompt=prompt,
+                request_id=request_id or new_request_id(),
             )
         except BaseException as error:
             primary = error
+            metrics.ended("abort" if isinstance(error, (RequestCancelled, BrokenPipeError, ConnectionResetError))
+                          else "error")
             if cancellation is not None:
                 try:
                     self.scheduler.cancel(cancellation)
@@ -451,6 +454,7 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
         reply_limit_explicit: bool = True,
         cancellation: Cancellation | None = None,
         prompt: str | list[int] | None = None,
+        request_id: str = "",
     ) -> dict[str, Any]:
         # a request's chat_template_kwargs.enable_thinking (via the sampling fields) overrides the server's
         cancellation = cancellation or Cancellation()
@@ -493,7 +497,10 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
         )
         spec = self._resolve_sampling(fields, temperature, prompt_ids)
         drafts = self.use_proposer and fields.get("draft", True) is not False
-        shaped = thinking and any(fields.get(k) is not None for k in grammar.FIELDS)
+        # strict tools' calls follow their grammar (server.strict_tools); refusal() checked them before any stream
+        plan = self.strict_calls(tools, required=bool(fields.get("tool_call_required")),
+                                 parallel=fields.get("parallel_tool_calls") is not False)
+        shaped = thinking and (plan is not None or any(fields.get(k) is not None for k in grammar.SPECS))
         think_end = self._token_id(self.think_markers[1]) if shaped else -1  # a grammar starts after it
 
         def make_job() -> ChatJob:
@@ -513,8 +520,9 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
                 ignore_eos=stops.ignore_eos,
                 stop_check=stops if stops.strings else None,
                 cancellation=cancellation,
-                call_gate=self._call_gate(fields, prompt_ids, tools),
-                constraint=grammar.request_constraint(self, fields, think_end if think_end >= 0 else None),
+                call_gate=self._call_gate(fields, prompt_ids, tools) if plan is None else None,   # strict: grammar
+                constraint=grammar.request_constraint(self, fields, think_end if think_end >= 0 else None,
+                                                      plan.spec if plan is not None else None),
                 vision=rendered.vision,
             )
             budget = int(fields.get("thinking_budget") or self.thinking_budget) if thinking else 0
@@ -554,7 +562,8 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
         # tool calls stream as OpenAI tool_call deltas while they are written
         from tensorfold.engine.tool_draft import ToolCallStreamer
 
-        calls_stream = ToolCallStreamer(tools) if (tools and on_delta is not None) else None
+        calls_stream = ((plan.reader() if plan is not None else ToolCallStreamer(tools))
+                        if (tools and on_delta is not None) else None)
         visible_text = IncrementalText(self.tokenizer, self.tokenizer_lock)
         replay: list[int] = []  # tokens a preempted job already delivered, owed again by its rerun
         preemptions = 0
@@ -610,7 +619,11 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
                 if piece:
                     streamed_reasoning = reasoning_so_far
                     on_delta({"reasoning_content": piece})
-            shown = hide_tool_calls(answer, finished=False) if calls_stream is not None else answer
+            if calls_stream is None:
+                shown = answer
+            else:
+                shown = (plan.content(answer, finished=False) if plan is not None
+                         else hide_tool_calls(answer, finished=False))
             visible = streaming_visible_text(shown)
             delta = visible[len(streamed) :]
             if delta:
@@ -628,19 +641,26 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
             text = stops.visible(raw_text)
         if thinking or self.think_markers == CHANNEL_MARKERS:
             reasoning_text, content = split_thinking(text, finished=True, markers=self.think_markers)
+            if plan is not None and content and self.think_markers[1] not in text and not self._strict_accepts(
+                    plan, content):
+                reasoning_text, content = text, ""   # a call written in a think block that never closed, ungrammatical
             reasoning = reasoning_text.strip() or None
         else:
             content, reasoning = parse_harmony_output(text)
-        stops.flush(on_delta, content, reasoning, streamed, streamed_reasoning, calls_stream is not None)
+        shows = (lambda answer: plan.content(answer, finished=True)) if plan is not None else True
+        stops.flush(on_delta, content, reasoning, streamed, streamed_reasoning, calls_stream is not None and shows)
         stream = job.stream
         seconds = max(0.0, job.finished_at - job.submitted_at)
         decode_seconds = max(0.0, job.finished_at - job.prefilled_at) if job.prefilled_at else 0.0
         decode_tokens = max(0, len(collected) - 1)
+        queue_s = max(0.0, job.started_at - job.submitted_at) if job.started_at else None
+        prefill_s = max(0.0, job.prefilled_at - job.started_at) if job.started_at and job.prefilled_at else None
         reply: dict[str, Any] = {
             "content": content,
             "stop_sequence": matched_stop(raw_text, stops.strings),
             "reasoning": reasoning,
             "tool_calls_streamed": bool(calls_stream is not None and calls_stream.streamed),
+            "strict_calls": plan,                  # ToolCallPolicy.finish reads strict calls with it
             "finish_reason": stream.finish_reason if stream is not None else "length",
             "prompt_tokens": len(prompt_ids),
             "cached_tokens": int(job.cached_tokens),
@@ -665,6 +685,16 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
                 "token_sha": _token_sha(collected),
                 # the narrowest verify window of the reply's rounds (drafted replies: 2 or more)
                 "min_rows": int(getattr(job.stream, "min_rows", 0) or 0),
+                # the CUDA block's version-2 keys (its last run's, for a replayed background reply)
+                "stats_version": 2,
+                "request_id": request_id,
+                "prepare_s": round(max(0.0, job.submitted_at - received_at), 4),
+                **({"queue_s": round(queue_s, 4)} if queue_s is not None else {}),
+                **({"prefill_s": round(prefill_s, 4)} if prefill_s is not None else {}),
+                "decode_s": round(decode_seconds, 4),
+                **({"ttft_s": round(first_token_at - received_at, 4)} if first_token_at else {}),
+                **({"decode_tps": round(decode_tokens / decode_seconds, 2)}
+                   if decode_seconds > 0 and decode_tokens > 0 else {}),
             },
         }
         if stream is not None:
@@ -679,12 +709,14 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
                 speculative["proposer"] = stream.proposer.telemetry()
             reply["speculative"] = speculative
         self.requests_completed += 1
+        metrics.ended(reply["finish_reason"], cached=int(job.cached_tokens),
+                      rounds=int(stream.rounds) if stream is not None else 0, queue=queue_s, prefill=prefill_s)
         store = self.checkpoints
         warning = unanswered(reply["finish_reason"], thinking, content)
         if warning:
             print(warning, flush=True)
         print(
-            f"[tensorfold] done {job.job_id} prompt={len(prompt_ids)} cached={job.cached_tokens} "
+            f"[tensorfold] done {request_id} prompt={len(prompt_ids)} cached={job.cached_tokens} "
             f"thinking={thinking} effort={reply['runtime']['reasoning_effort']} "
             f"tokens={len(collected)} sha={_token_sha(collected)} finish={reply['finish_reason']} "
             f"tok/s={reply['runtime']['tokens_per_second']:.1f} "

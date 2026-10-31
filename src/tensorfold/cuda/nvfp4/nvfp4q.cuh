@@ -1,5 +1,5 @@
 // The checkpoint's NVFP4 activation format, shared by the row quantizer (act.cu) and the fused SwiGLU epilogue
-// (gemm_ws.cu): per 16 inputs an e4m3 scale of amax / 6 under the static global scale, e2m1 codes to nearest.
+// (swiglu4.cuh): per 16 inputs an e4m3 scale of amax / 6 under the static global scale, e2m1 codes to nearest.
 #pragma once
 
 #include <cuda_fp16.h>

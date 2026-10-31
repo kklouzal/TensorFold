@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from .config_metadata import check_metadata as check_metadata
+
 MODEL_TYPES = ("qwen3_5",)
 TITLE = "Qwen3.8 dense"
 LANES = True
@@ -86,7 +88,6 @@ def install_row_decoder(model: Any) -> bool:
     # prompt chains of up to PROMPT_ROWS attend query by query too, so a prompt gets the bits decoding gives it
     exact_attention.EXACT_MAX_QUERIES = max(exact_attention.EXACT_MAX_QUERIES, row_forward.PROMPT_ROWS)
     row_matmul.install(model, backend)
-    model._tensorfold_row_decoder = True
     return True
 
 
@@ -297,6 +298,29 @@ CUDA_AFFINE_GROUPS = (32, 64, 128)
 # --checkpoint-slots on CUDA: the prompt states the concurrent decoder keeps (--parallel 2 or more)
 CUDA_CHECKPOINT_SLOTS = True
 CUDA_PREFILL_FP8 = True            # --prefill-fp8: MLX 4-bit g64 and NVFP4 checkpoints have FP8 prompt kernels
+ROPE_BACKENDS = ("cuda",)          # the CLI consults rope_parameters on CUDA only: the Mac decoders read RoPE themselves
+
+
+def rope_parameters(model_dir: str | Path, yarn_factor: float | None = None):
+    """The text RoPE policy without accelerator imports: the checkpoint's default one, or static YaRN (declared, or
+    ``yarn_factor`` over the native positions: the upstream card's 1,000,000-token reach is ``--yarn-factor 4``)."""
+
+    from tensorfold.families import read_config
+    from tensorfold.families.qwen4_exp.rope import RopeParameters
+
+    from .config_metadata import declared_yarn, requested_yarn, resolve_default_rope
+
+    raw = read_config(Path(model_dir))
+    policy = declared_yarn(raw) if yarn_factor is None else requested_yarn(raw, yarn_factor)
+    if policy is not None:
+        return policy
+    text = raw.get("text_config") or raw
+    head_dim = int(text.get("head_dim") or text["hidden_size"] // text["num_attention_heads"])
+    rope = resolve_default_rope(text, head_dim=head_dim)
+    limit = text.get("max_position_embeddings") or raw.get("max_position_embeddings")
+    native = int(limit) if isinstance(limit, int) and limit > 0 else 0      # as cli._model_context reads it
+    return RopeParameters("default", rope.theta, rope.rotary_dim, native, native, mrope_section=rope.mrope_section)
+
 
 def gb10() -> bool:
     """Whether GPU 0 is a GB10 (DGX Spark: compute capability 12.1), where the lone stream's wide windows were measured."""
@@ -332,4 +356,7 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
                         streams=streams, context=options.get("context"),
                         context_explicit=options.get("context_explicit"), vision=bool(options.get("vision", False)),
                         vision_urls=bool(options.get("vision_urls", False)),
-                        vision_offload=bool(options.get("vision_offload", False)), keep=options.get("checkpoint_slots"))
+                        vision_offload=bool(options.get("vision_offload", False)), keep=options.get("checkpoint_slots"),
+                        yarn_factor=options.get("yarn_factor"),
+                        **{name: options[name] for name in ("eos_token_ids", "chat_template_file", "chat_template_name")
+                           if options.get(name) is not None})

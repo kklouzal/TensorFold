@@ -1,4 +1,15 @@
-"""Real allocator accounting at an explicit Flash shared-cache growth cap."""
+"""Real allocator accounting at an explicit Flash shared-cache growth cap.
+
+Each case runs in a fresh process, as a server's decoder owns its allocator. ``max_memory_allocated`` counts a reused
+cached block whole (the caching allocator leaves a large-pool remainder of up to 1 MiB unsplit), so in a shared test
+process the free blocks earlier tests left cached decided the exact copy-peak comparison: on 2026-10-15 the same
+preceding tests put it up to 857,596 bytes over on either tree (1a2836b0 and the cleanup b76a5a2a) while the
+tensors' requested bytes stayed 589,828 under the bound every time."""
+
+import os
+from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 import torch
@@ -16,8 +27,19 @@ def _state_bytes(state):
 
 
 @pytest.mark.parametrize("keep_prefix", [False, True])
-def test_absolute_growth_cap_refuses_before_allocation_and_preserves_following_request(monkeypatch, keep_prefix):
-    monkeypatch.delenv(LIMIT_ENV, raising=False)
+def test_absolute_growth_cap_refuses_before_allocation_and_preserves_following_request(keep_prefix):
+    env = {name: value for name, value in os.environ.items() if name != LIMIT_ENV}
+    env["PYTHONPATH"] = os.pathsep.join(path for path in sys.path if path)     # this process's imports
+    case = (f"import sys; sys.path.insert(0, {str(Path(__file__).resolve().parent)!r}); "
+            f"import test_flashnext_memory_limit as case; case.growth_cap_case({keep_prefix!r})")
+    child = subprocess.run([sys.executable, "-c", case], env=env, stdin=subprocess.DEVNULL, capture_output=True,
+                           text=True, timeout=1800)
+    assert child.returncode == 0, child.stdout[-4000:] + child.stderr[-12000:]
+
+
+def growth_cap_case(keep_prefix: bool) -> None:
+    """The case's steps and checks, in a process whose allocator holds only this decoder's history."""
+
     decoder = MultiDecoder(_model(), slots=1, capacity=STEP, depth=2, confidence=0.0,
                            prefill_rows=64, stop_eos=False)
     prompt = [5, 17, 99, 250, 1023, 7, 64, 300, 11, 12, 13]
@@ -46,7 +68,7 @@ def test_absolute_growth_cap_refuses_before_allocation_and_preserves_following_r
         # this allocator and cache format rather than an arbitrary GiB budget.
         growth = state.cache_bytes(STEP) - state.cache_bytes()
         cap = allocated + growth + state.layer_bytes() - 1
-        monkeypatch.setenv(LIMIT_ENV, repr(cap / 1024**3))
+        os.environ[LIMIT_ENV] = repr(cap / 1024**3)
         assert cuda_limit_bytes() == cap
         long_prompt = [*prompt, *([7] * (FIRST - decoder.depth - 1 - len(prompt)))]
         assert len(long_prompt) + decoder.depth + 2 == FIRST + 1
@@ -74,7 +96,7 @@ def test_absolute_growth_cap_refuses_before_allocation_and_preserves_following_r
         # explicit-cap policy. Recompute from the following request's live
         # ownership, then exercise the real layer-at-a-time allocator copy.
         copy_peak = torch.cuda.memory_allocated() + growth + state.layer_bytes()
-        monkeypatch.setenv(LIMIT_ENV, repr(copy_peak / 1024**3))
+        os.environ[LIMIT_ENV] = repr(copy_peak / 1024**3)
         assert cuda_limit_bytes() == copy_peak
         torch.cuda.reset_peak_memory_stats()
         assert decoder._grow(state, FIRST + 1, alone=True)

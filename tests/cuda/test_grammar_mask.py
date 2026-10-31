@@ -136,3 +136,24 @@ def test_regex_and_choice_masks_follow_prefix_and_terminate(grammars, compiled, 
         assert _oracle(compiled, kind, prefix) == {STOP}
         constraint.advance([STOP])
         assert constraint.finished
+
+
+def test_masks_queued_behind_gpu_work_keep_their_own_bits(grammars, compiled):
+    """The bits go to the GPU through one pinned buffer without the host waiting for earlier work: a second window
+    staged while the first one's copy still waits behind a long kernel must not overwrite the bits it copies."""
+
+    c = grammars.constraint(compiled["json_schema"])
+    c.advance(_ids('{"k":'))
+    first = c.window(_ids(":1"), [-1, 0])
+    a = torch.zeros(len(first.rows), V, device="cuda")
+    torch.cuda._sleep(200_000_000)                         # the "forward": the first copy queues behind it
+    c.mask(a, first)
+    c.advance(_ids("1}"))
+    second = c.window([ord("}")], [-1])
+    b = torch.zeros(1, V, device="cuda")
+    c.mask(b, second)
+    torch.cuda.synchronize()
+    for row, prefix in enumerate(['{"k":', '{"k":1']):
+        want = _oracle(compiled, "json_schema", prefix)
+        assert {t for t in range(V) if a[row, t] == 0} == want, row
+    assert {t for t in range(V) if b[0, t] == 0} == _oracle(compiled, "json_schema", '{"k":1}') == {STOP}

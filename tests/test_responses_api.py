@@ -130,6 +130,21 @@ def test_items_become_the_messages_a_chat_client_sends():
         {"role": "tool", "tool_call_id": "c2", "content": "none"}]
 
 
+def test_supported_reasoning_stays_in_order_across_incomplete_and_consecutive_items():
+    def thought(text):
+        return {"type": "reasoning", "summary": [], "content": [{"type": "reasoning_text", "text": text}]}
+    assert responses.messages([thought("first"), thought("second"), {"role": "assistant", "content": "answer"}]) == [
+        {"role": "assistant", "content": "answer", "reasoning_content": "firstsecond"}]
+    placeholder = {"role": "assistant", "content": "", "reasoning_content": "partial"}
+    assert responses.messages([thought("partial")]) == [placeholder]
+    assert responses.messages([thought("partial"), {"role": "user", "content": "continue"}]) == [
+        placeholder, {"role": "user", "content": "continue"}]
+    projected = responses.messages([{"role": "assistant", "content": "earlier"}, thought("later"),
+                                    {"type": "function_call", "call_id": "c", "name": "tool", "arguments": "{}"}])
+    assert projected[0] == {"role": "assistant", "content": "earlier"}
+    assert projected[1]["reasoning_content"] == "later" and projected[1]["content"] == ""
+
+
 def test_a_function_call_output_s_image_is_a_tool_message_image_part():
     shot = "data:image/png;base64,AA"
     items = [{"type": "function_call", "call_id": "c1", "name": "screenshot", "arguments": "{}"},
@@ -346,7 +361,7 @@ def test_cuda_get_and_delete_a_stored_response(tmp_path):
         status, found = call(port, "GET", f"/v1/responses/{got['id']}")
         assert status == 200 and json.loads(found) == got and got["metadata"] == {"run": "7"}
         status, gone = call(port, "DELETE", f"/v1/responses/{got['id']}")
-        assert status == 200 and json.loads(gone) == {"id": got["id"], "object": "response", "deleted": True}
+        assert status == 200 and json.loads(gone) == {"id": got["id"], "object": "response.deleted", "deleted": True}
         assert call(port, "GET", f"/v1/responses/{got['id']}")[0] == 404
         assert call(port, "DELETE", f"/v1/responses/{got['id']}")[0] == 404
         status, text = post_response(port, input="again", previous_response_id=got["id"])
@@ -414,10 +429,164 @@ def test_the_store_keeps_the_newest_and_a_chain_needs_every_link():
                                        {"role": "user", "content": "q2"}]
 
 
+def test_history_clone_keeps_messages_without_pinning_evicted_response_entries(monkeypatch):
+    import gc
+    import weakref
+
+    store = responses.Store()
+    for identifier, parent in (("a", None), ("b", "a")):
+        store.put({"id": identifier, "previous_response_id": parent, "output": [],
+                   "tools": [{"arbitrary": {"echo": [identifier]}}]},
+                  [{"role": "user", "content": identifier}])
+    owners = [weakref.ref(entry) for entry in store.entries.values()]
+    original, seen = responses.copy.deepcopy, []
+
+    def clone(value, memo=None):
+        if not seen:
+            seen.append(value)
+            assert not store.lock.locked()
+            assert store.delete("a") and store.delete("b")
+            gc.collect()
+            assert all(owner() is None for owner in owners)
+        return original(value, memo)
+
+    monkeypatch.setattr(responses.copy, "deepcopy", clone)
+    result = store.conversation("b")
+    assert result == [{"role": "user", "content": "a"}, {"role": "user", "content": "b"}]
+    assert result is not seen[0] and all(a is not b for a, b in zip(result, seen[0], strict=True))
+    assert not store.entries and store.bytes == 0
+
+
+def test_store_measures_exact_ascii_quota_before_cloning_owned_snapshots(monkeypatch):
+    response = {"id": "a", "output": [{"type": "message", "role": "assistant", "content": [
+        {"type": "output_text", "text": "é\n𝄞"}]}], "metadata": {"empty": [], "number": -1.25}}
+    added = [{"role": "user", "content": "q\t\\"}]
+    history = added + responses.messages(response["output"])
+    expected_history = json.loads(json.dumps(history))
+    exact_size = len(json.dumps(response)) + len(json.dumps(history))
+    store = responses.Store(max_bytes=exact_size)
+    original_copy, copies = responses.copy.deepcopy, []
+    def clone(value):
+        assert not store.lock.locked()
+        copies.append(value)
+        return original_copy(value)
+    monkeypatch.setattr(responses.copy, "deepcopy", clone)
+    store.put(response, added)
+    assert len(copies) == 2 and store.bytes == exact_size
+    response["metadata"]["empty"].append("changed")
+    response["output"][0]["content"][0]["text"] = "changed"
+    added[0]["content"] = "changed"
+    assert store.entries["a"].response["metadata"] == {"empty": [], "number": -1.25}
+    assert store.entries["a"].messages == expected_history
+
+
+@pytest.mark.parametrize("identifier,remaining", [("new", []), ("a", ["b", "c"]),
+                                                 ("b", ["c"]), ("c", [])])
+def test_store_oversized_insert_preserves_eviction_order_without_cloning(monkeypatch, identifier, remaining):
+    store = responses.Store(max_bytes=1024)
+    for key in ("a", "b", "c"):
+        store.put({"id": key, "output": []}, [{"role": "user", "content": key}])
+    def no_clone(_value):
+        raise AssertionError("an over-quota entry must not clone prospective cached trees")
+    monkeypatch.setattr(responses.copy, "deepcopy", no_clone)
+    store.put({"id": identifier, "output": [], "metadata": {"large": "x" * 2048}}, [])
+    assert list(store.entries) == remaining
+    assert store.bytes == sum(len(json.dumps(entry.response)) + len(json.dumps(entry.messages))
+                              for entry in store.entries.values())
+
+
+def test_store_over_quota_replacement_keeps_principal_isolation(monkeypatch):
+    store = responses.Store(max_bytes=1024)
+    store.put({"id": "a", "output": []}, [], principal="alice")
+    previous, size = store.entries["a"], store.bytes
+    monkeypatch.setattr(responses.copy, "deepcopy",
+                        lambda _value: pytest.fail("over-quota replacement cloned before checking ownership"))
+    with pytest.raises(RuntimeError, match="another principal"):
+        store.put({"id": "a", "output": [], "metadata": {"large": "x" * 2048}}, [], principal="bob")
+    assert list(store.entries) == ["a"] and store.entries["a"] is previous and store.bytes == size
+
+
+@pytest.mark.parametrize("failure", [object(), None])
+def test_store_over_quota_serialization_failure_preserves_prior_cache(failure):
+    store = responses.Store(max_bytes=1024)
+    store.put({"id": "a", "output": []}, [])
+    previous, size = store.entries["a"], store.bytes
+    response = {"id": "b", "output": [], "metadata": {"large": "x" * 2048}}
+    if failure is None:
+        response["cycle"] = response
+    else:
+        response["unserializable"] = failure
+    with pytest.raises((TypeError, ValueError)):
+        store.put(response, [])
+    assert list(store.entries) == ["a"] and store.entries["a"] is previous and store.bytes == size
+
+
+@pytest.mark.parametrize("operation", ["add", "subtract"])
+def test_store_counter_exhaustion_clears_cache_and_propagates_primary(operation):
+    store = responses.Store(max_bytes=1024)
+    store.put({"id": "a", "output": []}, [])
+    primary = MemoryError("injected byte-counter allocation failure")
+    class ExhaustedCounter(int):
+        def __add__(self, other):
+            if operation == "add":
+                raise primary
+            return super().__add__(other)
+        def __sub__(self, other):
+            raise primary
+    store.bytes = ExhaustedCounter(store.bytes)
+    with pytest.raises(MemoryError) as caught:
+        store.put({"id": "a" if operation == "subtract" else "b", "output": []}, [])
+    assert caught.value is primary and not store.entries and store.bytes == 0
+    store.put({"id": "after", "output": []}, [])
+    assert store.get("after") == {"id": "after", "output": []} and store.bytes > 0
+
+
+@pytest.mark.parametrize("oversized", [False, True])
+def test_store_eviction_counter_exhaustion_cannot_leave_over_quota_entries(oversized):
+    store = responses.Store(max_bytes=256)
+    for key in ("a", "b", "c"):
+        store.put({"id": key, "output": []}, [])
+    primary = MemoryError("injected eviction byte-counter allocation failure")
+    class ExhaustedSize(int):
+        def __rsub__(self, _other):
+            raise primary
+    store.entries["a"].size = ExhaustedSize(store.entries["a"].size)
+    with pytest.raises(MemoryError) as caught:
+        store.put({"id": "new", "output": [], "metadata": "x" * (512 if oversized else 150)}, [])
+    assert caught.value is primary and not store.entries and store.bytes == 0
+
+
+def test_store_replacement_cycle_is_bounded_and_valid_replacement_still_resumes():
+    from collections import OrderedDict
+
+    store = responses.Store(limit=4)
+    class BoundedLookups(OrderedDict):
+        calls = 0
+        def get(self, key, default=None):
+            self.calls += 1
+            if self.calls > store.limit + 1:
+                raise AssertionError("parent traversal exceeded the existing cache cardinality")
+            return super().get(key, default)
+    store.entries = BoundedLookups()
+    def put(identifier, parent):
+        store.put({"id": identifier, "previous_response_id": parent, "output": []},
+                  [{"role": "user", "content": identifier}])
+    put("a", None)
+    put("b", "a")
+    put("a", "b")
+    store.entries.calls = 0
+    with pytest.raises(RuntimeError, match="parent chain is cyclic"):
+        store.conversation("b")
+    store.entries.calls = 0
+    put("a", None)
+    store.entries.calls = 0
+    assert store.conversation("b") == [{"role": "user", "content": "a"}, {"role": "user", "content": "b"}]
+
+
 def test_routes():
     assert responses.route("/v1/responses") == responses.route("/responses/") == ""
     assert responses.route("/v1/responses/resp_1?x=1") == "resp_1"
-    assert responses.route("/v1/responses/resp_1/input_items") is None
+    assert responses.route("/v1/responses/resp_1/input_items") == "resp_1/input_items"
     assert responses.route("/v1/chat/completions") is None
 
 

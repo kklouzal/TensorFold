@@ -21,12 +21,14 @@ def _rms(x: torch.Tensor, w: torch.Tensor | None, eps: float) -> torch.Tensor:
     return y * w.float() if w is not None else y
 
 
-def _rope(x: torch.Tensor, pos: torch.Tensor, inv_freq: torch.Tensor) -> torch.Tensor:
-    """x (T, H, D) fp32, rotate-half over the first 2 * len(inv_freq) dims."""
+def _rope(x: torch.Tensor, pos: torch.Tensor, inv_freq: torch.Tensor, amplitude: float = 1.0) -> torch.Tensor:
+    """x (T, H, D) fp32, rotate-half over the first 2 * len(inv_freq) dims with the configured rotary amplitude."""
 
     half = inv_freq.numel()
     ang = pos.float()[:, None] * inv_freq[None, :]            # (T, half)
     cos, sin = torch.cos(ang)[:, None, :], torch.sin(ang)[:, None, :]
+    if amplitude != 1.0:                                    # default RoPE retains the original reference arithmetic
+        cos, sin = cos * amplitude, sin * amplitude
     x1, x2 = x[..., :half], x[..., half:2 * half]
     out = x.clone()
     out[..., :half] = x1 * cos - x2 * sin
@@ -103,8 +105,10 @@ def _attention(layer, x: torch.Tensor, st: State, i: int, c, inv_freq: torch.Ten
     k = _linear(x, at.k).reshape(T, c.kv_heads, c.head_dim)
     v = _linear(x, at.v).reshape(T, c.kv_heads, c.head_dim)
     pos = torch.arange(st.pos, st.pos + T, device=x.device)
-    q = _rope(_rms(q, at.q_norm, c.eps).to(torch.bfloat16).float(), pos, inv_freq).to(torch.bfloat16)
-    k = _rope(_rms(k, at.k_norm, c.eps).to(torch.bfloat16).float(), pos, inv_freq).to(torch.bfloat16)
+    q = _rope(_rms(q, at.q_norm, c.eps).to(torch.bfloat16).float(), pos, inv_freq,
+              c.rope_scale).to(torch.bfloat16)
+    k = _rope(_rms(k, at.k_norm, c.eps).to(torch.bfloat16).float(), pos, inv_freq,
+              c.rope_scale).to(torch.bfloat16)
     K0, V0 = st.kv[i]
     K, V = torch.cat([K0, k]), torch.cat([V0, v])
     st.kv[i] = (K, V)

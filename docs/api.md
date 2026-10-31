@@ -11,8 +11,8 @@ The server stores SHA-256 digests and compares every configured digest for each 
 
 Send `Authorization: Bearer KEY` from OpenAI-compatible clients, or `x-api-key: KEY` from Messages clients.
 Missing or invalid credentials return HTTP 401 with `WWW-Authenticate: Bearer` and the route's error format.
-All `/v1/*`, tokenization, metrics and their inference aliases require a key; `--metrics-open` opens both metrics
-routes. `/health` remains open and returns only `{"status":"ok"}` when keys are configured.
+All `/v1/*`, tokenization, metrics, statistics and their inference aliases require a key; `--metrics-open` opens both
+metrics routes and both statistics routes. `/health` remains open and returns only `{"status":"ok"}` when keys are configured.
 With no keys, the existing open routes and health details stay unchanged; a non-loopback bind prints a warning.
 
 Replace the key file atomically to rotate keys. Its modification time is checked at most once a second; SIGHUP
@@ -27,9 +27,12 @@ Prefer a restricted file over command-line keys, which can appear in the operati
 
 | Route | Behavior |
 | --- | --- |
-| `GET /v1/models` | Served model ID and any configured aliases (both servers) |
+| `GET /v1/models` | Served model ID and any configured aliases (both servers), each with `created` (this server's start) and vLLM's `max_model_len` (the served context length) |
+| `GET /v1/models/{model}` | One served ID's model object; 404 `model_not_found` for any other |
 | `GET /health` | Server health and available status information |
-| `GET /metrics`, `GET /v1/metrics` | Prometheus text: requests, KV occupancy, drafts and latency (both servers) |
+| `GET /metrics`, `GET /v1/metrics` | Prometheus text: requests, KV memory, prefix cache, drafts and latency (both servers) |
+| `GET /stats`, `GET /v1/stats` | One JSON snapshot: server identity, model, limits, load, KV memory, prefix cache and totals (both servers) |
+| `GET /v1/runtime`, `POST /v1/runtime` | Adaptive GGUF CUDA execution settings, request/prefix-cache counts, placement and verified profile controls; other engines have no such controls |
 | `POST /v1/chat/completions` | Text chat, optional image input, tools and reasoning; streamed or non-streamed |
 | `POST /v1/completions` | Raw text without a chat template, or token IDs |
 | `POST /v1/messages` | Anthropic Messages: text, supported images, function tools and thinking; JSON or SSE |
@@ -38,10 +41,21 @@ Prefer a restricted file over command-line keys, which can appear in the operati
 | `POST /detokenize`, `POST /v1/detokenize` | vLLM's: the text of `tokens`, special tokens included |
 | `POST /v1/responses` | OpenAI's Responses API, run as the equivalent chat completion; streamed or non-streamed |
 | `GET /v1/responses/{id}`, `DELETE /v1/responses/{id}` | A stored response, or remove it |
+| `POST /v1/responses/input_tokens` | A Responses request's input tokens, rendered as its chat completion runs them; no text is generated |
 | `POST /v1/decisions` | Choice, score, and yes/no probabilities from the next-token logits; no text is generated |
 
+Harness uses the container's `tensorfold_harness.py` compatibility entrypoint with `--thinking-budget 0`. Its `/v1/tokenize` accepts chat requests and returns integer `count`, the requested served `model`, positive `context_length`, and `harness_tokenizer_version: 1`, with optional bounded prompt/token inspection. It prepares the same prompt as generation without running the engine; oversized histories can be counted while generation context admission and independent image/video safety limits remain intact. The native CLI's vLLM response above has a different metadata contract.
+
 On MLX, a completions body containing a nonempty `messages` list uses chat handling. CUDA completions
-take a string `prompt` (`add_special_tokens`, default false) or a list of token IDs, run as given.
+take a string `prompt` (`add_special_tokens`, default false) or a list of token IDs, run as given. Both servers serve
+one prompt a request: a batch of several prompts receives HTTP 400.
+
+`model` names the served ID (`--name`) or an `--alias`, as `/v1/models` lists them; a request that omits it (or sends
+null) is served as `--name`. Any other ID receives HTTP 404 with OpenAI's `model_not_found` error on every generation
+and tokenization route (chat, completions, Responses and its `input_tokens`, Messages and their token count,
+`/tokenize`, `/detokenize`, decisions); Messages routes answer Anthropic's `not_found_error`. Point a client that asks for
+several IDs (Claude Code's background model, say) at served IDs, or add them with `--alias`. On GLM-5.3 a draft policy
+follows the served ID after `@` (`ID@POLICY`).
 
 `/tokenize` takes vLLM's fields: a `prompt` string (`add_special_tokens`, default true), or `messages` with the
 chat fields that shape the prompt (`tools`, `reasoning_effort`, `chat_template_kwargs`) and `add_generation_prompt`
@@ -52,6 +66,14 @@ With `--vision`, supported Qwen3.5/3.8 dense checkpoints accept `image_url` cont
 messages and in tool results (`role: "tool"`), such as an agent's screenshots.
 See [image input](vision.md) for data URLs, public image URLs, limits and cache behavior.
 Unsupported image input, audio, video and non-text output requests receive HTTP 400.
+
+Flash Next's RAM expert cache, optional host pinning, shared KV-window budget and
+same-host NCCL expert ranks are startup settings. Rank 0 owns the HTTP server;
+followers execute their routed experts. The container's expert launcher retains
+the Harness entrypoint, including `/v1/tokenize`. A shared KV budget can queue a
+request or stop the newest blocked request with an explicit error; existing
+`memory_waits` and `memory_stops` statistics and metrics expose that pressure.
+See [desktop configuration and validation](desktop-report-remediation.md).
 
 ## Decisions
 
@@ -72,24 +94,34 @@ For decisions, `chat_template_kwargs` may be omitted, null, or an object contain
 | Field | Meaning | Backend |
 | --- | --- | --- |
 | `messages` | Text messages, including system, developer, assistant tool calls and tool results | Both |
-| `tools` | OpenAI function tools | Both |
+| `tools` | OpenAI function tools; `function.strict: true` holds each call to its schema ([strict function tools](#strict-function-tools)) | Both |
 | `tool_choice` | `none` hides tools from the template; `required` or a named function makes the reply call a tool | Both |
 | `parallel_tool_calls` | False returns at most one completed call | Both |
 | `max_tokens`, `max_completion_tokens` | Explicit reply limit; rejected if prompt plus reply exceeds the window | Both |
 | `temperature`, `top_p`, `top_k`, `min_p` | Sampling overrides; zero `temperature` or zero `top_p` is greedy | Both |
+| `presence_penalty`, `frequency_penalty`, `repetition_penalty` | OpenAI presence/frequency and vLLM repetition penalties ([penalties](#penalties)); greedy replies are penalized too | CUDA Gemma 4, Qwen dense and Qwen3.6 MoE CT NVFP4 on one GPU; others 400 |
 | `seed` | Sampling key; otherwise derived from the prompt (and `TENSORFOLD_SEED_SALT`) | Both |
 | `stream` | Server-sent events; the last event carries usage | Both |
 | `stream_options.include_usage` | Usage in its own final event with `"choices": []`, not on the finish event | Both |
 | `chat_template_kwargs.enable_thinking` | Template thinking toggle; `chat_template_kwargs.thinking` (`true`/`false` or `{"type": "enabled"}`/`{"type": "disabled"}`, as DeepSeek-V4 clients send it) is read the same way when `enable_thinking` is absent; other values are ignored | Both |
 | `draft` | False selects the serial reference; CUDA rejects it if the engine has no serial switch | Both |
 | `response_format`, `guided_json`, `guided_regex`, `guided_choice`, `guided_grammar`, `structured_outputs` | A JSON schema, any JSON object, a regex, a choice or an EBNF grammar the reply must match | Both |
-| `ignore_eos` | Disable model end-of-sequence stopping; the reply limit still applies | Both |
+| `ignore_eos` | Disable model end-of-sequence stopping; the reply limit still applies. Incompatible with active structured output or strict tools (HTTP 400 before generation). | Both |
 | `stop` | Stop at a string or any string in a list; omit the matched text from the response | Both |
 | `reasoning_effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max` | Both |
 | `thinking_budget` | Token-count limit inside reasoning | Both |
 | `priority` | `background` yields to foreground requests | Both |
+| `service_tier` | `flex` is `priority: "background"` when the request sends no `priority`; other tiers change nothing | Both |
+| `return_progress` | With `stream`, llama.cpp's `prompt_progress` frames while the prompt prefills (see Responses) | CUDA Flash Next `--parallel`, Gemma 4 |
 
 `n` must be 1; multiple choices receive HTTP 400.
+
+These fields are accepted and ignored: the reply is the one the request would get without them. Chat: `logit_bias`, `verbosity`, `functions` and `function_call`,
+`web_search_options`, `moderation` (no moderation result is returned), `prediction`, `store`, `metadata`, `user`,
+`safety_identifier`, `prompt_cache_key`, `prompt_cache_retention` and `stream_options.include_obfuscation`;
+`tool_choice: {"type": "allowed_tools", ...}` runs as `auto` over every offered tool (the Responses API applies the
+allowed list). Completions: `echo`, `suffix` and `best_of`. The prefix cache is automatic, and replies do not depend on
+it.
 
 CUDA Flash Next on one GPU supports `logprobs: true` and `top_logprobs` from 0 through 20 for nonstreamed text chat
 with thinking off, without tools, stop strings or structured output. Each visible token has its `token`, `bytes`,
@@ -106,16 +138,53 @@ the request samples: booleans, non-finite numbers, non-numeric strings, non-inte
 disables the nucleus cut; `top_p` 0 keeps only the likeliest token, as Transformers' top-p filter always keeps one,
 so the reply is greedy. Fields that the request, the server flags and `generation_config.json` all leave unset
 fall back alike on both backends: temperature 0 (greedy), and top-k, top-p and min-p off.
+The omitted reply limit uses the launch `--max-tokens`, then checkpoint
+`max_new_tokens`, then 4096. Reply EOS defaults also include the tokenizer's
+declared EOS; repeatable launch `--eos-token-id` replaces that set before engine
+initialization. Template source/name launch overrides apply to rendering, strict
+format checks and counting together. See [model metadata](model-metadata.md).
 With top-k off, a CUDA draw cuts the top-p nucleus by each token's probability mass in 40-bit fixed point, so one GPU
 and two GPUs holding halves of the vocabulary draw the same token: each GPU reads its 1,024 best candidates, and its
 whole vocabulary shard when a row's nucleus runs past them (or with `top_p` 1 and no `min_p`).
 `min_p` (0 to 1; 0 is off) keeps, after the top-k and top-p cuts, only the tokens at least `min_p` times as likely
 as the likeliest one after temperature; the top-p cut is taken without it, as SGLang does (vLLM applies `min_p`
-first). A value outside 0 to 1 gets HTTP 400. It is part of the keyed rule on every engine, so drafted replies still
-equal `"draft": false` ones.
+first). A value outside 0 to 1 gets HTTP 400. The same target filter applies with drafting enabled or disabled.
 
-On CUDA, stop strings are checked after every token on the generated text, reasoning included, so drafted and
-`"draft": false` replies stop at the same token; usage and `token_sha` count the tokens through the one that
+### Sampling under CUDA DFlash
+
+CUDA Gemma 4 DFlash, Qwen dense DFlash2 and Qwen3.6 CT NVFP4 DFlash use standard rejection sampling for sampled
+requests. It preserves the target distribution after grammar masks, penalties, temperature and sampling filters.
+A fixed seed and engine configuration reproduce the same drafted request across cache reuse and supported batching;
+sampled tokens can differ from `"draft": false` or from another proposal precision/configuration. Greedy requests
+retain full-token serial identity. Other engine/backend sampling contracts retain their own scope.
+
+The stochastic drafter uses a fixed request-local linear proposal block with independent proposal, acceptance and
+residual random streams. Greedy drafting retains its existing tree/chain policy. Background replay uses the same
+request and checks previously emitted tokens. See [migration validation](rejection-sampling-validation.md) for the
+implementation checkpoint and outstanding installed/native/model gates; historical coupled-sampler measurements
+do not qualify the migrated implementation.
+
+### Penalties
+
+`presence_penalty` and `frequency_penalty` (each -2 to 2; 0 is off) follow the OpenAI definition over the tokens the
+reply has generated so far, reasoning included: a token's score loses `frequency_penalty` times its count plus
+`presence_penalty` once it has appeared. `repetition_penalty` (greater than 0; 1 is off) follows vLLM and Hugging
+Face over the prompt's and the reply's tokens: such a token's positive score is divided by it and any other score
+multiplied by it. As in vLLM, repetition applies first, then frequency and presence, to the model's float32 scores
+before temperature, top-k, top-p, min-p and the keyed draw (vLLM's float32 arithmetic, the division being a multiply by
+`1 / repetition_penalty`; a finite score an extreme value would take past float32's range saturates there), and greedy
+requests take the argmax of the penalized scores. Values outside those ranges get
+HTTP 400; null keeps the server default: the launch flags `--presence-penalty`, `--frequency-penalty` and
+`--repetition-penalty`, else `generation_config.json`'s `repetition_penalty`, else off. A speculative verify row is
+penalized by the reply plus the drafts on its own path. The sampling contract above applies, and replies stay
+independent of the prefix cache. A continuation after a thinking budget or a required tool call counts the reply
+tokens it re-reads as reply. The CUDA Gemma 4, Qwen dense and Qwen3.6 MoE CT NVFP4 (DFlash) engines apply them on
+one GPU, single or concurrent streams; other CUDA engines (Qwen3.6 MoE affine MTP, Flash Next, GLM, Nemotron),
+two-rank Qwen and the Metal backend answer HTTP 400 when a request asks for an active penalty, and name penalty
+defaults they do not apply at startup.
+
+On CUDA, stop strings are checked after every token on the generated text, reasoning included. Drafted and
+`"draft": false` replies use the same stopping rule; usage and `token_sha` count the tokens through the one that
 completes the match. The GLM engine, and Flash Next and Nemotron on two ranks, decode on after a match to an end
 token or the reply limit; the server returns the reply only up to the match. Where a CUDA engine honors
 `ignore_eos`, end tokens inside the reply are decoded into its text, as on MLX, and `finish_reason` is `length`
@@ -132,9 +201,11 @@ suppressed.
 Session-title requests are also treated as background work.
 
 On CUDA, `--parallel auto` serves one request at a time. An explicit `--parallel N` above one shares rounds
-for Qwen3.8-27B on one or two ranks and for Flash Next and Qwen3.6 on one rank; GLM and Nemotron stay serialized.
+for Qwen3.8-27B on one or two ranks, Flash Next on one rank, Flash Next GGUF/SM70 on TP1/2/4/8,
+and Qwen3.6 on one rank; GLM and Nemotron stay serialized. The GGUF provider uses the same scheduler
+and per-request cancellation. See the [V100 qualification](v100-flashnext-validation.md) for its tested scope.
 When a client disconnects, its CUDA request stops at the next round, and a request still waiting behind
-another in one-at-a-time serving does not start; two-rank Flash Next, Nemotron and GLM requests finish on
+another in one-at-a-time serving does not start; serialized two-rank Flash Next, Nemotron and GLM requests finish on
 both ranks. Under an explicit `--parallel N`, a request that has no tokens yet (queued, or its prompt prefilling) is
 checked every 15 s: a stream whose headers are sent gets an SSE comment line (`: keepalive`), which Messages and
 Responses streams pass on, so a client with an inactivity timeout keeps a long prefill; a queued request whose client
@@ -185,19 +256,22 @@ or thought channel) opens a call to an offered tool. The server replaces the fir
 whitespace with the tool-call opener (`<tool_call>`, or Gemma 4's `<|tool_call>`) and the template's text before a
 tool name, then holds the name to the offered tools: a token that leaves them is replaced by the rest of the first
 offered name its written part starts. The template's own rendered call gives that text. A named function is the
-only tool the template offers. Each fix depends only on the tokens before it, so drafted, serial and concurrent
-decoding write the same call. The MLX engine fixes tokens inside its rounds; CUDA stops the engine at a fix and
-decodes on from the reply. The model writes the arguments; a malformed call returns as content.
+only tool the template offers. Each fix depends only on the tokens before it; the same prefix receives the same
+envelope fix in drafted, serial and concurrent decoding. The MLX engine fixes tokens inside its rounds; CUDA stops the engine at a fix and
+decodes on from the reply. The model writes the arguments; a malformed call returns as content. A request with strict
+tools uses their grammar instead (below), which also holds the arguments.
 
 ## Structured output
 
-Every model on both backends enforces `response_format` (`{"type": "json_schema", "json_schema": {"schema": ...}}`
+Supported model/backend configurations enforce `response_format` (`{"type": "json_schema", "json_schema": {"schema": ...}}`
 or `{"type": "json_object"}`) and vLLM's `guided_json`, `guided_regex`, `guided_choice`, `guided_grammar` (EBNF) and
 `structured_outputs` (`json`, `json_object`, `regex`, `choice` or `grammar`): on the Mac, and on CUDA with one or two
-GPUs, alone or under `--parallel N`. It needs xgrammar on the server: `pip install 'tensorfold[grammar]'`, which also
-installs torch, Macs included. Drafting stays on. Before each verify forward the engine cuts the drafts the grammar
-rejects, then masks each remaining row's logits to the tokens the grammar allows after that row's path, so a
-constrained reply equals its `"draft": false` reply and its solo run. Two GPUs compile the same grammar and mask
+GPUs, alone or under supported `--parallel N` modes. The modern Flash Next provider refuses `--parallel` on two CUDA ranks; other engine/mode support follows
+its family contract. GGUF/SM70 concurrent TP has separate [qualification](v100-flashnext-validation.md);
+this V100 foundation does not install the optional grammar extra. It needs xgrammar on the server: `pip install 'tensorfold[grammar]'`, which also
+installs torch, Macs included. Drafting stays on. The engine masks each target row to the tokens the grammar allows
+after that row's path and omits invalid verification paths. The sampling contract above applies to constrained
+replies, including its distinction between greedy identity and sampled distribution preservation. Two GPUs compile the same grammar and mask
 their own vocabulary columns. With thinking on, the grammar starts after the think end (`</think>`, or Gemma 4's
 `<channel|>`), and a thinking budget's close stops at that token. The grammar allows the end token only once the value
 is complete; a reply cut at `max_tokens` is incomplete, with `finish_reason: "length"`. JSON grammars allow at most
@@ -205,9 +279,108 @@ is complete; a reply cut at `max_tokens` is incomplete, with `finish_reason: "le
 its reply with whitespace inside an unfinished value.
 
 HTTP 400 comes before any token for a malformed field, a grammar xgrammar cannot compile (with xgrammar's reason), a
-server without xgrammar (with the install command), and a grammar sent with `tool_choice: "required"` or a named
-function. A reply whose grammar fails while decoding ends with HTTP 500 (an error event when streaming); the other
-requests go on.
+server without xgrammar (with the install command), and a grammar sent with `tool_choice: "required"`, a named
+function or strict function tools. A reply whose grammar fails while decoding ends with HTTP 500 (an error event when
+streaming); the other requests go on.
+
+## Strict function tools
+
+A request whose active tools (after `tool_choice`) include `"strict": true` (`tools[].function.strict` in chat,
+`tools[].strict` in Responses) decodes under one xgrammar grammar built from them, with the structured-output machinery
+above: drafting stays on, the sampling contract above applies, and a background request still yields
+its lane (it replays under the grammar from the start). `strict` must be a boolean or null. With thinking on, the
+grammar starts after `</think>`, so reasoning is never constrained, and a thinking budget's close stops at that token.
+The grammar holds only the calls and what `tool_choice` asks; prose is the model's own.
+
+- **Calls** are the chat template's Qwen XML markup to an offered tool,
+  `<tool_call>\n<function=NAME>\n<parameter=KEY>\nVALUE\n</parameter>\n…</function>\n</tool_call>`. Parameters come
+  in the schema's order; ones not in `required` may be left out, never repeated or added. A string parameter's value
+  is its raw text, as the template renders arguments; a string-or-null parameter is raw text or `null` (read as
+  null); any other value is JSON per the parameter's schema (`true`, `null`), with at most 32 blank characters in a
+  run. CUDA also recognizes the exact XML profile that renders scalar booleans/null as `True`, `False`, `None`,
+  while retaining raw strings and canonical JSON containers. It constrains those scalar spellings and returns
+  canonical JSON arguments. A raw string `True` or `None` remains a string. A nullable raw string is refused when
+  its grammar may also spell `None`, since the template cannot distinguish that string from null; an unambiguous
+  enum or a pattern proved to exclude it can be enforced. Recognition checks booleans, null and nested values as
+  well as strings and numbers; other encodings remain unsupported. The standard JSON-scalar XML path is unchanged.
+  CUDA also enforces Gemma 4's native `<|tool_call>call:NAME{key:value,…}<tool_call|>` markup, with sorted bare keys
+  and `<|"|>`-delimited strings. Null is spelled as the selected template renders it: `None` in Google's launch
+  template, `null` in its current one. Only that spelling is allowed and read.
+- **`tool_choice`:** `auto` leaves text free before, between and after calls, and the model may answer without one;
+  `required` or a named function allows only blanks (at most 32) and calls separated by newlines.
+  `parallel_tool_calls: false` ends the reply after its first call.
+- **Tools without `strict`** in the same request keep their names and markup well formed; their values are not
+  checked and decode as for any request.
+- **Reading:** the server reads strict replies exactly as the grammar wrote them, not with the lenient parser above.
+  `arguments` keeps each JSON value as the model wrote it (spacing included); the Python-scalar XML profile converts
+  only its scalar spellings to JSON. Streamed deltas add up to the same argument string. A call cut short by
+  `max_tokens` or a stop string stays text; streaming clients may already have received its partial call deltas.
+  On CUDA, an unfinished strict call reports `length` or `stop`, including when an earlier call completed, and never claims
+  a `tool_calls` finish. Earlier completed calls remain available. A call written inside a think block that never
+  closes becomes the answer only when the grammar accepts the whole answer, and otherwise stays reasoning.
+
+The supported schemas are [OpenAI's strict-mode
+subset](https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas): types (or a list of
+them), `enum`, `const`, `anyOf`, `properties`, `required`, `additionalProperties`, `items`, `minItems`/`maxItems`,
+`pattern` (matched whole, as `response_format` does), `format` (`date-time`, `time`, `date`, `duration`, `email`,
+`hostname`, `ipv4`, `ipv6`, `uuid`), `minimum`/`maximum` and their exclusive forms, `multipleOf` on integers, `$defs`
+with local `$ref` to a subschema and recursion, and annotations (`title`, `description`, `default`, `examples`,
+`$comment`, `deprecated`, `readOnly`, `writeOnly`). Beyond OpenAI's subset, optional properties and `uniqueItems` on
+arrays over at most ten distinct string enum values are accepted. Such arrays use an exact grammar for the remaining
+enum values, preserve every ordering, and obey their item-count bounds. Arbitrary uniqueness constraints are refused.
+A call
+never adds parameters its tool does not declare; a nested object adds properties only as its `additionalProperties`
+allows (none when it is absent). HTTP 400 names the keyword and its path for anything else, including
+`minLength`/`maxLength`, general `uniqueItems`, `oneOf`, `allOf`, `not`,
+`if`/`then`/`else`, `patternProperties`, `prefixItems`, `multipleOf` on numbers and references to other documents, and
+past OpenAI's limits (10 nesting levels, 5,000 properties, 1,000 enum values, 120,000 characters of names and values;
+an enum with more than 250 values has at most 15,000 string characters).
+The server also bounds what OpenAI leaves open: `anyOf` and `$defs` nest at most 10 levels in one another, a JSON
+parameter's schema holds at most 2,000 subschemas with the definitions it refers to (xgrammar 0.2.8 compiles
+references recursively; a chain of 8,000 overflowed an 8 MB thread stack and killed the process), a `pattern` must be
+a regular expression Python's `re` reads (which also bounds how deeply its groups nest), and the whole call grammar
+must stay within 96 MiB (each JSON parameter carries the definitions and root schema it refers to). Shapes xgrammar
+would not enforce whole are refused too: constraints beside `$ref`, anything but `type` beside `enum`, `const` or
+`anyOf` (an `anyOf` branch must admit only the types listed beside it), a `const` beside an `enum` that does not list
+it, type-specific keywords without a `type` or with several non-null types, `pattern` beside `format`, and
+`multipleOf` with a range. The call markup refuses a parameter that admits strings and non-string values other than
+null (raw text could be either), a string parameter whose schema refers back to itself, a string parameter's `pattern`
+that can spell `</parameter>`, `enum`/`const` strings containing it, and tool or parameter names with whitespace, `<`
+or `>`. Strict tools are also refused beside `response_format` or the `guided_*` fields, on an engine without grammar
+support (or the modern Flash Next provider on two GPUs under `--parallel`), and for a template whose call markup is not Qwen XML;
+`strict: false` keeps the lenient path. Clients that validate ordinary tool arguments before execution can explicitly
+choose that path without changing their schemas. TensorFold never retries a strict request without enforcement or
+silently drops its constraints.
+
+Active structured output or strict tools cannot be combined with `ignore_eos: true`; the server returns HTTP 400
+before generation or streaming. A grammar's terminal token ends its guarantee, so continuing past it cannot preserve
+the requested constraint. Ordinary unconstrained requests, non-strict tools and tools disabled by `tool_choice: none`
+retain normal `ignore_eos` behavior.
+
+`response_format.json_schema.strict: true` is checked against the same enforceable subset before compilation;
+unsupported constraints return HTTP 400. The finite-enum uniqueness extension belongs to strict function tools:
+strict response schemas still refuse `uniqueItems: true`. Non-strict and `guided_*` schemas retain xgrammar's native
+keyword behavior. All JSON-schema compilation is limited to 2,000 subschemas, regex group nesting is admitted before
+the native parser, and grammar source is capped at 96 MiB. These are resource admission limits, not compile-time or
+memory-use guarantees for every admitted grammar.
+
+Verification at source `2dd77a9a` on the local RTX PRO 2000 Blackwell 16 GB uses the installed images in the
+[2026-10-17 qualification](optimization-validation.md#apistatistics-and-strict-tools-local-qualification-2026-10-17).
+The affected CPU gate passed 476 tests (one MLX-only skip); the focused GPU gate passed 29, including synthetic
+strict lanes/two-rank/MoE cases and the real Flash Next checkpoint's tokenizer/vocabulary with a four-layer model
+cut. Drafted, concurrent and resumed replies match their serial references in those checks. The ordinary full-model
+HTTP server also completed a forced strict call, refused an unsupported string bound before generation, and accepted
+the actual Harness 31-tool catalog with its nine strict tools and 22 explicitly non-strict tools. All five private
+function requests and four strict JSON requests pass the shared boundary validator. These results do not establish
+exhaustive model quality, actual two-GPU execution, ARM64/GB10 behavior or MLX execution for this change. The Mac
+server shares admission, grammar and reader code; its native engine remains unrun.
+
+The later installed Heretic CT NVFP4 qualification at source `099eb4d0` exercises
+the actual checkpoint's XML `True`/`False`/`None` scalar template. Ordinary and
+streamed strict calls preserve booleans, nulls and the literal strings `"True"`
+and `"None"`; strict JSON, prefix reuse, cancellation/recovery and four concurrent
+512-token replies also pass. The [model-specific record](qwen36-ct-nvfp4-validation.md)
+keeps this single-GPU CUDA scope separate from the earlier Flash Next results.
 
 ## Reasoning
 
@@ -230,6 +403,10 @@ a new user message leaves the earlier turns' tokens, and their kept prompt state
 `chat_template_kwargs.clear_thinking: true` drops it, as the model card advises for plain chat (on CUDA; on a Mac,
 `TF_GLM_CLEAR_THINKING=1` sets it for the server).
 
+On CUDA, when the rendered Gemma 4 prompt ends inside the thought channel it opens, the reply begins inside it.
+Google's current template does this after tool results with thinking on. The reply's text before `<channel|>` is
+`reasoning_content`.
+
 A tool call written before the think block closes is the reply's tool call when the reply ends inside the block,
 on both backends; the reasoning stops where the call starts, and streamed reasoning never carries the call's markup.
 A call only mentioned while thinking, with the block closed after it, stays reasoning.
@@ -241,6 +418,43 @@ earlier is left alone. The MLX engine forces the close inside its rounds; CUDA s
 decodes on from the reply, as for a required tool call.
 
 ## Context and errors
+
+Every reply carries an `x-request-id` header. A request's own `X-Client-Request-Id` (OpenAI's client header), else
+its `x-request-id`, is used when it is 1 to 128 letters, digits, `.`, `_`, `:` or `-`; otherwise the server makes one
+(`req-` and 32 hex digits). The same id is the reply's `tensorfold.request_id` and names it in the server's `done`
+line.
+
+On CUDA, a reply that ends at an end token with its think block still open (thinking on, finish `stop`, reasoning
+but no answer and no call) prints one warning line naming its request id, prompt and reply token counts and the end
+token. With `TENSORFOLD_FAILURE_CAPTURE_DIR` set, the server also writes that one request (its body with image and
+video parts redacted, its generated token IDs and its `tensorfold` statistics) to a file there, written whole and
+readable by the server's user alone. The directory holds at most 32 files and 256 MiB: a capture that would pass
+either is skipped with a line saying so, never written over an older one. Nothing is captured for any other reply,
+and capturing never changes the reply. The Mac server neither prints this line nor captures.
+
+A route that fails before its reply starts answers HTTP 500 with a `server_error` object on both servers; once a
+reply has started, a stream ends with an error event (or the connection closes).
+
+An error reply is OpenAI's error object, `{"error": {"message", "type", "param", "code"}}`, with `param` and `code`
+null where nothing names them. A capacity refusal (a full request queue under `--max-pending-requests`, the image queue)
+is HTTP 503 with `type: "service_unavailable_error"`, `code: "server_is_overloaded"` and a `Retry-After: 1` header, on
+both servers, streamed or not, as long as no reply has started. An unknown route is HTTP 404.
+
+Adaptive Flash Next GGUF/V100 endpoints require explicit finite
+`--max-pending-requests` and `--max-http-connections` settings before model loading.
+The generation cap includes queued, running and canceled-but-not-retired engine
+work; the HTTP cap bounds retained connection handlers, including slow writers.
+The V100 Compose profile requires `TF_MAX_PENDING_REQUESTS` and
+`TF_MAX_HTTP_CONNECTIONS`; neither has a numeric default.
+
+Each CUDA engine sequence owns at most its validated reply allowance in queued
+token IDs, one coalesced prompt-progress value, and a separate completion/error
+cell. The GPU coordinator never waits for output capacity or socket writes.
+Token chunks retain publication order. A slow client can retain its bounded CPU
+reply while unrelated sequences continue; cancellation does not undo committed
+tokens. `output_ownership` reports engine-sequence publication and caller dequeue
+counts, independently of network delivery. `committed_output_tokens` excludes
+background replay and advances when model output commits, before callbacks.
 
 The rendered prompt and reserved reply must fit the effective context. In 0.3.5, an explicit `max_tokens`
 or `max_completion_tokens` that would put prompt plus reply beyond the window is rejected with counts
@@ -269,6 +483,19 @@ allocation margin. Parallel slots share weights and the expert cache; their
 sequence state is separate. Numeric `--vram-experts GIB` budgets keep their
 existing behavior. See [RAM-backed experts](recipes/ram-experts.md).
 
+Flash Next GGUF on SM70 additionally exposes `--indexer-history gpu|ram`.
+`gpu` is the default. `ram` stores lossless raw FP16 indexer history in verified
+NUMA-local host pages, using bounded GPU ring/staging storage and asynchronous
+copies into small registered local host stages. Attention KV and the complete
+pooled indexer cache remain in VRAM. This option is independent of KV precision
+and drafter selection. The host and container must support the restricted NUMA
+operations described in the [V100 guide](../deploy/v100/README.md#numa-local-indexer-archive);
+unsupported placement fails explicitly. Installed TP8 stock-MTP checks passed
+four full INT8 windows and eight 260,060-token Q4 windows, with same-format
+output comparisons and concurrent/stream/cancellation recovery. Full-context
+payloads and the RAM/DSpark combination remain unqualified; capacity is not a
+throughput guarantee.
+
 On a unified-memory GPU (the DGX Spark's GB10), the CUDA server's allocations come out of the host's RAM but are not
 charged to a container's memory limit (`docker run --memory`, cgroup `memory.max`): the limit neither caps the
 model's weights and cache nor keeps them from crowding other work on the machine. The server sizes its window from the
@@ -280,19 +507,46 @@ GPU's memory can freeze the host, so lower it only with room to spare.
 
 ## Responses
 
+Replies follow OpenAI's schemas: `choices[0].logprobs` is null unless probabilities were requested, and a probability
+reply's `logprobs.refusal` is null. With `stream_options.include_usage`, every chunk before the usage chunk carries
+`"usage": null`.
+
 `choices[0].message.content` holds the answer. Reasoning uses `reasoning_content`, or
 `delta.reasoning_content` while streaming. Tools use `tool_calls` and `finish_reason: "tool_calls"`.
 Every reply's usage, streamed ones included, carries its prompt, completion and total tokens,
 `prompt_tokens_details.cached_tokens` (the prompt tokens found in the prefix cache) and
 `completion_tokens_details.reasoning_tokens` (the thinking tokens, through the closing think marker); timing details
 depend on the backend.
-TensorFold also reports generation statistics such as decode rate, time to first token and draft acceptance.
+TensorFold also reports generation statistics such as decode rate, time to first token and draft acceptance, in a
+`tensorfold` object: on a non-streamed reply's top level, and on a stream's finish chunk and (with
+`stream_options.include_usage`) its usage chunk too, so the timings ride the frame that carries usage.
+
+On CUDA the object carries `stats_version` (2), `request_id` (the reply's `x-request-id`), the engine's own
+`prefill_s`, `decode_s` (first token to the last), `rounds`, `drafts`, `cached`, `min_rows`, `drafted` and `accepted`,
+`token_sha`, and the request's timings, in seconds from the moment its request line was read: `prepare_s` (to a
+prepared prompt: template, tokens and images), `queue_s` (waiting for a lane or the engine's turn, held for memory
+included, and under `--max-pending-requests` for admission), `ttft_s` (to the first generated token) and
+`decode_tps` (the tokens after the first over `decode_s`). A timing the request did not have (no token, no decode
+time) is left out rather than reported as zero. A background reply that yielded its lane sums its runs. The Mac's
+object keeps its own keys and adds the same `stats_version`, `request_id`, `prepare_s`, `queue_s`, `prefill_s`,
+`decode_s`, `ttft_s` and `decode_tps` (a replayed background reply's last run). The server's `done` line names the
+request by the same id.
+
+A streamed request may send `return_progress: true` (llama.cpp's field; on CUDA a boolean, else HTTP 400) to receive
+llama.cpp's `prompt_progress` frames while its prompt prefills: a chunk with no output (`delta` `{"role":
+"assistant", "content": null}`, `finish_reason` null) and `prompt_progress` `{"total", "cache", "processed",
+"time_ms"}`: the prompt's tokens, those its resumed prefix cache held, those its state holds now (cached ones
+included), and elapsed prefill milliseconds. Flash Next's concurrent engine (`--parallel N`) sends a frame when a
+lane takes the prompt and after each prefill pass. Gemma 4 sends a frame after each prefill pass, including its
+reused prefix in `processed`; a fully cached prompt needs no prefill pass. Frames stop before the first generated
+token. Other engines, the Mac server and requests that do not ask send none.
 
 On CUDA, `GET /health` also carries counters a poller can difference into rates: `busy`, `requests_running`,
 `requests_total`, `completion_tokens_total` (the running replies' tokens included as they stream), and totals that
 move when a request ends, taken from the engine's own statistics: `prompt_tokens_total`, `cached_tokens_total`,
-`prefill_seconds_total`, `decode_seconds_total`, `rounds_total`, and `drafted_total` and `accepted_total` where the
-engine reports them. A `--parallel` server adds `streams` (decoding, prefilling and the maximum), and
+`prefill_seconds_total`, `decode_seconds_total` (first token to end where the engine reports no decode time),
+`rounds_total`, and `drafted_total` and `accepted_total` where the engine reports them. They are the counters
+`/stats` and `/metrics` read. A `--parallel` server adds `streams` (decoding, prefilling and the maximum), and
 `context_length` is the served window. The first sample is a baseline, not a rate.
 
 For exactness comparisons, hold the checkpoint, template, runtime, prompt, seed and sampling settings
@@ -304,23 +558,130 @@ repeats the same samples wherever the conversations agree (an agent benchmark's 
 first). To draw independent repeats, send a `seed` per run, or start each run's server with a different
 `TENSORFOLD_SEED_SALT` (an integer mixed into every prompt-derived seed; 0, the default, keeps today's seeds).
 
+## Statistics
+
+`GET /stats` and `GET /v1/stats` answer one JSON object, schema `tensorfold.stats` version 1, on both servers. A
+field the server cannot read is null, never a fabricated zero. A scrape reads counters and the sizes of tables the
+engine already keeps, a few dozen values and a pass over the live lanes and kept prefix points: no GPU call, no engine
+lock and no work in a round. Successful polls (of `/stats`, `/metrics` and `/health`) are not logged. The sections
+are read one after another, not as one atomic snapshot, and load and memory readings are advisory: admission decides.
+Times are seconds, sizes bytes.
+
+| Field | Meaning |
+| --- | --- |
+| `object`, `schema_version` | `"tensorfold.stats"`, `1` |
+| `time.unix_s`, `time.uptime_s` | Now (wall clock) and seconds since the server process started (monotonic) |
+| `server.version`, `server.backend` | The package version; `cuda` or `mlx` |
+| `server.instance_id`, `server.started_unix_s` | This process's random id and start: a new id means a restart, whose prefix cache and counters start empty |
+| `server.source_revision` | The container build's source commit (`TENSORFOLD_SOURCE_REVISION`, set from the image's `SOURCE_REVISION`), else null; a label, not a proof |
+| `model.id`, `model.aliases` | `--name` and each `--alias` |
+| `model.model_type`, `model.context_length` | The checkpoint's `model_type`; the served context (the `max_model_len` of `/v1/models`) |
+| `model.default_max_tokens`, `model.thinking_default`, `model.vision` | The reply limit a request without one gets, whether replies think by default, whether images are accepted |
+| `model.kv_dtype`, `model.mtp_drafts` | The KV cache format (`KEY/VALUE` when they differ) and drafts a round, where the engine has them |
+| `limits.lanes` | Allocated concurrent request slots (CUDA `--parallel`; 1 when one runs at a time; the Mac's batch). Adaptive resident capacity can exceed one execution microbatch; its effective admission ceiling and actual scheduled count are in `runtime` |
+| `limits.pending_requests`, `limits.engine_calls`, `limits.http_connections` | `--max-pending-requests`, `--max-engine-calls`, `--max-http-connections`, or null when unset |
+| `limits.prefix_cache_entries` | Prompt points the prefix cache keeps at most |
+| `load.requests_in_flight` | Requests accepted and not finished (CUDA: queued ones included) |
+| `load.requests_running`, `load.requests_waiting` | In prefill or decode; queued or held for a lane or memory (as `/metrics`) |
+| `load.lanes` | `{decode, prefill, memory_wait}`: lanes decoding, prefilling, and held out of rounds until memory frees (null where not counted) |
+| `load.held_for_memory` | A request waits, first in line, for memory to admit it |
+| `load.http_connections_in_use` | Accepted HTTP connections |
+| `load.stream_tokens` | Tokens each live stream's cache holds |
+| `capacity_plan` | Backend startup admission and allocation receipt, or null when unavailable; resident full-window reservations include each tensor-parallel rank's cache capacities and allocated bytes |
+| `runtime` (adaptive engines only) | Host snapshot of configured/pending/effective execution settings, retained/active/queued sessions, actual owner-map generations, bounded migration and profile-manifest status; see the runtime control contract below |
+| `kv.budget_bytes`, `kv.held_bytes` | The memory the stream caches may grow into (less the reserve) and what they hold, kept prefix-cache slots included |
+| `kv.active_bytes`, `kv.usage_ratio` | What the running requests' slots hold beyond their first rows, and its share of the budget (vLLM's KV usage: kept entries count as free, as a request that needs room evicts them; one stream alone may pass 1) |
+| `kv.bytes_per_token`, `kv.free_tokens_estimate` | Cache bytes a token takes; the context the budget less the running requests' share would hold (host memory and the resize copy can still refuse it) |
+| `prefix_cache.entries`, `.capacity`, `.slots`, `.tokens` | Kept prompt points, the most it keeps, the slots holding them, and the distinct prompt tokens their states hold |
+| `totals.requests`, `totals.finished.{stop,length,tool_calls}`, `totals.cancelled`, `totals.failed` | Finished requests, by finish reason, client gone, or failed |
+| `totals.prompt_tokens`, `totals.cached_prompt_tokens`, `totals.generated_tokens` | Of finished requests |
+| `totals.generated_tokens_live` | The same with the running replies' tokens so far (CUDA) |
+| `totals.queue_seconds`, `.prefill_seconds`, `.decode_seconds` | Summed over finished requests |
+| `totals.rounds`, `.drafted`, `.accepted` | Rounds, draft rows verified and drafts kept, summed |
+| `totals.preemptions` | Background requests that gave up their lane to a later one |
+| `totals.memory_waits`, `totals.memory_stops` | Rounds a stream sat out for memory; streams stopped when memory ran out |
+| `mlx` (Mac only) | `memory` (as `/health`'s, without a peak reset) and `live` (connections, waiting, decode and prefill tokens a second) |
+
+On CUDA, `kv`, `prefix_cache`, `lanes.memory_wait`, `memory_waits` and `memory_stops` come from Flash Next's
+concurrent engine (`--parallel N`); other engines leave them null. The Mac fills `load` from its scheduler and leaves
+`kv` and `prefix_cache` null. Requests are counted when they finish, those whose client left (abort) or that failed
+included.
+
+## Adaptive runtime control
+
+`GET /v1/runtime` reports schema `tensorfold.runtime` version 1 on adaptive GGUF
+CUDA engines. The same API-key gate protects reads and writes; `--metrics-open`
+does not open this route. Other engines return 404 for this GET. Its counts and
+placement readings are advisory host snapshots, with no GPU synchronization.
+
+`POST /v1/runtime` accepts a nonempty JSON object, bounded to 1 MiB. One or more
+integer settings may be combined: `row_budget`, `prefill_tokens`,
+`proposal_limit`, and `session_ceiling`. Values must fit the published
+`allocated_maximum`; booleans, null, unknown fields and invalid combinations
+are refused. A lower session ceiling blocks new admissions and preserves
+existing running and idle state. A zero proposal limit keeps enabled MTP
+conditioning current. Settings become effective at a globally coordinated batch
+boundary, including between bounded prefill chunks.
+
+The following requests are each standalone, separate from execution settings:
+
+- `{"attention_degree": 1}`, `2` or `4` requests a supported unique-history
+  placement. Packed pages move in bounded bundles; committed partial maps
+  remain executable. The receipt reports pending/effective placement, epochs
+  and resource blocking. Repeating a blocked target explicitly retries it.
+- `{"profile_table": TABLE}` registers only profiles backed by already verified
+  content/evidence. Workload regions must have matching qualification proofs;
+  uncovered work uses the admitted static envelope.
+- `{"profile_manifest": "new/manifest.json"}` queues worker-owned verification
+  and atomic profile replacement. The relative path stays within the evidence
+  directory selected by startup `--execution-profile-manifest`. HTTP threads
+  perform no CUDA operations or TP collectives. Bad evidence preserves a valid
+  prior registry; changed runtime/placement identity invalidates stale proofs.
+
+Profile manifests are opt-in and hash actual checkpoint/tokenizer/source inputs;
+geometry or filenames alone cannot authorize a profile. See the
+[manifest schema and trust boundary](execution-profile-manifest.md) and
+[V100 implementation/qualification limits](v100-adaptive-validation.md).
+With startup `--serving-profile-root`, a standalone
+`{"serving_profile":"B.json"}` selects a prepared resident Flash Next SM70
+model/context/KV/method profile. The existing worker and communicator drain old
+borrowers, retire old resources and publish only after all-rank readiness.
+Expected load refusal after retirement reports unavailable and permits an
+in-process retry. `GET /v1/runtime` includes `serving_profile` status even when
+no model is available. See [lifetime, manifest and qualification contracts](serving-profiles.md).
+
 ## Metrics
 
-`GET /metrics` and `GET /v1/metrics` answer as Prometheus text on both servers. Each family is read on its own
-at scrape time (the scrape is not one atomic snapshot), and a family the server cannot count honestly is left
-out of the text rather than reported at a permanent zero.
+`GET /metrics` and `GET /v1/metrics` answer as Prometheus text on both servers, rendered from the same snapshot as
+`/stats` and from the same counters `/health` sums. Each family is read on its own at scrape time (the scrape is not
+one atomic snapshot), and a family the server cannot count honestly is left out of the text rather than reported at
+a permanent zero. Histograms share the edges 0.01 s to 4,800 s. Request timings start when the request line is read.
 
 The scrape carries `requests_running`, `requests_waiting`, `prompt_tokens_total`, `generation_tokens_total`,
-`kv_cache_usage_ratio` (one `pool` label per live stream cache), `mtp_drafted_total` and `mtp_accepted_total`
+`kv_cache_usage_ratio` (one `pool` label per live stream: its tokens over its context window), `mtp_drafted_total` and `mtp_accepted_total`
 (draft tokens verified and kept on finished requests; the engines keep one draft counter, so copies and chain
 drafts share it), `request_latency_seconds`, `time_to_first_token_seconds` and `request_decode_seconds` (each
 finished request's decode time: the CUDA engine's own figure, or first token to end on the Mac server; its `_sum`
-over `generation_tokens_total` is the decode rate), all under the `tensorfold:` prefix. Every reading is repeated under a vLLM-compatible name (`num_requests_running`, `num_requests_waiting`,
-`kv_cache_usage_perc`, `spec_decode_num_draft_tokens_total`, `spec_decode_num_accepted_tokens_total`,
-`e2e_request_latency_seconds`, `request_decode_time_seconds`) with identical values, so a dashboard copied from vLLM fills by swapping the
-`tensorfold:` prefix for the metric name. `client_disconnections_total` (requests the client walked away from)
-and `preemptions_total` (background work that gave up a lane to a later request) are published where the
-server counts those events, and never at a fabricated zero.
+over `generation_tokens_total` is the decode rate), all under the `tensorfold:` prefix. Readings are repeated under
+vLLM's names with vLLM's meanings (`num_requests_running`, `num_requests_waiting`,
+`spec_decode_num_draft_tokens_total`, `spec_decode_num_accepted_tokens_total`, `e2e_request_latency_seconds`,
+`request_decode_time_seconds`, `num_preemptions_total`), so a dashboard copied from vLLM fills by swapping the
+`tensorfold:` prefix for the metric name. `kv_cache_usage_perc` is vLLM's KV-cache usage, one unlabeled 0-to-1 reading
+(`/stats`' `kv.usage_ratio`), published where the engine reports KV memory; earlier releases published a per-stream
+token ratio under this name, which `kv_cache_usage_ratio{pool}` keeps.
+
+More families: `request_queue_time_seconds`, `request_prefill_time_seconds` and
+`request_time_per_output_token_seconds` (decode seconds over the tokens after the first) histograms;
+`request_success_total{finished_reason}` (`stop`, `length`, `tool_calls`, `abort` for a client that left, `error`);
+`prefix_cache_queries_total` and `prefix_cache_hits_total` (prompt tokens and those found cached, vLLM's names,
+counted when a request finishes rather than when it is admitted); `process_start_time_seconds`; and `build_info` (1,
+labelled `version`, `backend`, `instance`, `source_revision`, `model`, `kv_dtype`, `mtp_drafts` and `lanes` where
+known). Where the engine counts them: the gauges `lanes{phase}` (`decode`, `prefill`, `memory_wait`), `lanes_max`,
+`requests_held_for_memory`, `kv_memory_budget_bytes`, `kv_memory_held_bytes`, `kv_memory_active_bytes`,
+`prefix_cache_entries`, `prefix_cache_capacity` and `prefix_cache_tokens`, and the counters `memory_waits_total` and
+`memory_stops_total`. `client_disconnections_total` (requests the client walked away from) and `preemptions_total`
+(background work that gave up a lane to a later request) are published where the server counts those events, and
+never at a fabricated zero.
 
 ## The Responses API
 
@@ -335,14 +696,20 @@ same handler and engine path. A response has that chat completion's prompt and t
   carried to a later turn.
 - `tools` takes function tools; `tool_choice` takes `none`, `auto`, `required`, a function or `allowed_tools`;
   `parallel_tool_calls` works as in chat.
-- `max_output_tokens` counts reasoning tokens too. `temperature`, `top_p`, `top_k`, `min_p` and `seed` sample as in
-  chat.
+- `max_output_tokens` counts reasoning tokens too. `temperature`, `top_p`, `top_k`, `min_p`, `seed` and the penalties
+  sample as in chat.
 - `reasoning.effort` follows the chat effort rule: unset is the template's default and `none` turns thinking off.
   `reasoning.summary` is accepted, but no summary is written.
 - `text.format` takes `json_schema` or `json_object` through the structured-output path, with drafts.
 - `stream`, `store` (default true) and `metadata` (up to 16 string pairs). The chat extensions `draft`,
   `thinking_budget`, `stop`, `ignore_eos`, `chat_template_kwargs` and `priority` pass through.
 
+`POST /v1/responses/input_tokens` takes the same request and answers OpenAI's `{"object": "response.input_tokens",
+"input_tokens": N}`: the tokens of the prompt that request would run (template, tools, reasoning and images included),
+counted by the same preparation without generating, so a prompt too long for the context is refused as generation
+would refuse it.
+
+A response carries `access_programs: null`. A refusal of its chat completion names `input` as its `param`.
 `output` holds a `reasoning` item (its text as `reasoning_text` content, with an empty `summary`), a `message` with
 `output_text`, and `function_call` items (`call_id`, `name` and JSON `arguments`). A reply cut by the token limit has
 `status: "incomplete"` and `incomplete_details.reason: "max_output_tokens"`. `usage` has `input_tokens` (with
@@ -355,16 +722,95 @@ output item `response.output_item.added`, `response.content_part.added`, its del
 `.done` events, `response.content_part.done` and `response.output_item.done`; and last `response.completed`,
 `response.incomplete` or `response.failed`.
 
-With `store` true, a finished response is kept in memory (the newest 1,024, up to 256 MiB) before its last event or
-body is sent. `GET /v1/responses/{id}` returns it, `DELETE /v1/responses/{id}` removes it, and
-`previous_response_id` continues its conversation: the server rebuilds the messages a chat client would send, so the
-prompt cache resumes the shared prefix as it does for chat. `store: false` keeps nothing, and a restart forgets every
-response.
+Without a configured durable store, `store: true` keeps finished responses in memory (the newest 1,024, up to 256 MiB).
+With `--api-record-store PATH --api-record-limits FILE`, Responses and Conversations use a private local SQLite
+database instead. Both options are required together; there is no default database path or invented quota profile.
+The service must own its canonical parent directory, other users must not be able to write it, and the database
+must have mode 0600. One process owns that database. SQLite transactions use rollback journaling and synchronous
+FULL publication. A restart can retrieve committed logical records; RAM or GPU inference state has its own contract.
+
+`GET /v1/responses/{id}` retrieves a stored response; `DELETE` removes it. `previous_response_id` reconstructs its
+complete retained input and output items before ordinary generation. Durable child responses retain their own
+item relations, so deleting or expiring a parent does not invalidate an independently stored descendant.
+`GET /v1/responses/{id}/input_items` lists its canonical inputs when using durable storage. Top-level
+`instructions` are never inherited; explicit system/developer input items remain history. New turns rerender
+their actual input. `store: false` suppresses response-object storage; a named conversation still retains its
+new input/output items. No logical API record automatically reserves a GPU slot or computed checkpoint.
+
+In durable mode, an opened stream's terminal failed response retains its input and partial output before the
+failure event is emitted. A positively observed response-socket failure retains a cancelled record without
+writing more events to that socket. Failed/cancelled turns do not append conversation items or announce a ready
+computed checkpoint. Their private target generation is spent so delayed work cannot attach to a later retry.
+If the failed record itself cannot fit its declared storage allowance or its retirement fails, the failure
+message reports that additional outcome; retrieval can be unavailable. Refusals before a Response stream is
+created return ordinary HTTP error envelopes. The legacy in-memory mode retains its existing successful and
+incomplete-response behavior.
+
+### Durable Conversations and quotas
+
+The durable store supports standard create/retrieve/update/delete on `/v1/conversations` and `/{conversation_id}`,
+and create/list/retrieve/delete on `/{conversation_id}/items[/{item_id}]`. Updates replace metadata.
+Creation/appending accepts at most 20 items per API operation. Lists accept `after`, `limit` 1–100 (default 20) and
+`order` asc/desc (default desc). Deleting an item returns its conversation. Deleting a conversation removes the
+conversation object **and preserves its independently retained items and encoded media snapshots**, following the
+[standard deletion contract](https://developers.openai.com/api/reference/resources/conversations/methods/delete); public routes
+requiring that deleted object return 404. Stored `item_reference` inputs remain principal-authorized.
+Responses accepts a conversation ID or `{"id": "conv_..."}` in `conversation`; it is mutually exclusive with
+`previous_response_id`. A conversation admits one mutating generation at a time; conflicting operations return
+an ordinary 409 error envelope. No client revision or session header is used.
+An item ID occurs once in a collection; repeating an ID already in that conversation/resolved input is an invalid
+request. References can share immutable items across distinct collections. Deleted-conversation item relations
+continue consuming item/byte quotas; no automatic item expiry or destructive purge is inferred.
+
+Every lookup uses the authenticated key's digest-derived trust domain; a shared key shares records.
+Relabeling a key preserves its domain; replacing it creates a different domain. Body `user`, `metadata` and cache
+hints grant no authority. Authentication-disabled listeners have one local trust domain.
+
+The limits JSON has `schema: "tensorfold.api-record-limits"`, exact integer `version: 1`, and every field below:
+
+- Global counts: `max_responses`, `max_conversations`, `max_items`, `max_active_operations`.
+- Principal counts: `max_principal_responses`, `max_principal_conversations`, `max_principal_items`,
+  `max_principal_operations`.
+- Bytes: `max_total_bytes`, `max_principal_bytes`, `max_record_bytes`, `max_history_bytes`,
+  `max_operation_bytes`, `max_materialized_bytes`, `max_database_bytes`.
+- Item counts: `max_input_items`, `max_output_items`, `max_history_items`.
+- `response_retention_seconds`: positive finite seconds or explicit null for no automatic response expiry.
+
+All counts/bytes are explicit positive signed-int64 values. The global/principal byte allowances must admit one
+complete `max_operation_bytes` reservation. Accepted generation reserves its declared output/item storage before
+running. Capacity exhaustion returns 429; transient inference/media capacity retains its existing 503 behavior.
+The operation allowance covers complete canonical object/item/snapshot JSON, including generated fields and
+ASCII escaping; a small UTF-8 wire request can exceed that storage allowance and be refused before publication.
+No live conversation or item is silently evicted to make room. Unreferenced items can retire when their final
+response/item relation retires; deleting a conversation preserves its item relations.
+
+Byte accounting includes original item JSON and separately stored immutable execution snapshots. The database
+page cap includes SQLite structures and fragmentation; a rollback journal may additionally approach one database
+file during a transaction. `max_materialized_bytes` guards accepted Python record views including container
+overhead; serialized parser inputs/transient copies remain separately bounded. This is not an allocator/RSS cap
+or a device/resource qualification. The configured record and operation bounds also apply to generated output.
+HTTP parsing and slow-client response buffers have a separate transport lifetime; configure the existing
+`--max-http-connections` bound in the serving envelope rather than treating a record-operation quota as a socket cap.
+
+| Standard content | Local mapping and capability |
+| --- | --- |
+| `input_text`, assistant output/refusal, function-call/output and plaintext reasoning items | Shared existing chat template/engine; tool-call IDs and assistant phases are retained. |
+| `input_image` data URL | Existing image decoder/processor; the input bytes are self-contained. |
+| `input_image` HTTPS URL | Existing URL security/limits, only with URL fetching enabled. Durable storage preserves the original public URL and separately captures encoded bytes before generation; subsequent turns use that immutable snapshot. SM70 capture reuses its supervised replay worker. |
+| `input_file` with `filename` and base64 `file_data: "data:video/..."` | Local Responses transport only with the admitted SM70 temporal media runtime and durable API store. Internally maps to the existing VideoSource, supervised decoder and pinned temporal processor; no private video field is exposed. |
+| Uploaded `file_id`, external `file_url`, PDF/document extraction and hosted tools | Explicitly unsupported. |
+
+The `input_file` field names follow the official schema; OpenAI's [hosted file-input guide](https://developers.openai.com/api/docs/guides/file-inputs) lists document
+formats, so this local video capability is **not a claim that hosted OpenAI models accept video files**.
+Actual V100 video/model quality, resource and performance qualification remains a release gate. The image-only
+workflow is not evidence of pinned video sampling parity. API source checks use CPU/fake-engine execution;
+unmodified SDK checks pin OpenAI Python 3.37.0 separately from production dependencies.
 
 HTTP 400 refuses what this server does not run: built-in tools (web search, file search, computer use and the
-others), `background`, `include` (encrypted reasoning among them), `conversation`, `prompt` templates,
-`truncation: "auto"`, `top_logprobs`, `input_file` parts and file IDs, `item_reference` items, encrypted reasoning
+others), `background`, `include` (encrypted reasoning among them), `prompt` templates,
+`truncation: "auto"`, `top_logprobs`, unsupported `input_file` variants and file IDs, encrypted reasoning
 items, and a `previous_response_id` that is not stored.
+`conversation` and `item_reference` require the durable store; a missing/foreign durable reference returns 404.
 
 ## Anthropic Messages
 
@@ -414,3 +860,37 @@ including responses whose key label retired while they were in flight. Global
 request, token and timing counters keep their independent engine lifetimes.
 The active configuration bounds per-key series; historical key rotations do not
 retain an unbounded set of labels.
+
+
+Flash Next CUDA can select its proposal provider at launch with
+`--draft-method auto|mtp|dspark` and `--drafter`. DSpark currently uses the GGUF
+SM70 text provider. Requests retain the same sampling and `draft` controls;
+provider selection does not replace target verification. Stock MTP remains
+available. See the [Flash Next recipe](recipes/qwen3.8-flash-next.md) and
+[V100 validation limits](v100-flashnext-validation.md).
+
+Resident Flash Next GGUF concurrent CUDA serving can reserve equal complete
+windows using `--parallel N --kv-full-windows N` (N≥2). This includes selected
+MTP or DSpark auxiliary KV and serving workspace; the context limit applies to
+each lane. Without the flag, the existing shared growth policy remains.
+On the optimized SM70 profile, positive-temperature requests prefill cold
+because cached suffixes have not met output-identity checks; drafting remains
+enabled. Raw FP16/INT8 greedy requests retain prefix borrowing; SM70 Rotor Q4
+requests prepare cold for either sampler. Independent cold prompts
+retain separate prefill passes while decode windows still batch.
+
+The Flash Next GGUF/SM70 provider additionally admits the existing
+`rotorquant-signed128-4` and `rotorquant-signed64-norm4` cache descriptors,
+independently on K/V through the ordinary precision flags. Native and same-format live checks passed; actual allocation supports four
+full262144-token windows. The measured cross-format quality and latency
+tradeoffs remain explicit, and INT8 remains the reference/default pending
+the user's production-format choice. RotorQuant/INT4 codecs other than those two named Q4 formats are not admitted
+by this SM70 path.
+
+SM70 also admits `rotorquant-signed64-norm4`, retaining its existing distinct
+ordered cache identity. For either SM70 Q4 variant, valid requests prepare cold
+and report `tensorfold.cached == 0`; MTP stays enabled when requested. This
+qualification applies to serial/twin and concurrent serving. The prior raw/INT8
+reuse policy is unchanged. Same-format functional checks do not imply INT8
+quality equivalence; measured quality/performance tradeoffs are documented in
+the V100 validation record.

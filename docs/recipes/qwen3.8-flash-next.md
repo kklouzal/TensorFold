@@ -1,7 +1,8 @@
 # Qwen3.8 Flash Next
 
 The `qwen4_exp` family has Gated DeltaNet, sparse attention, MoE, hyper-connections and hashed n-gram
-embeddings. The supported checkpoint uses MLX affine 4-bit weights in groups of 32 and includes an MTP head.
+embeddings. The portable checkpoint below uses MLX affine 4-bit weights in groups of 32 and includes an MTP head.
+CUDA also reads the NVFP4, EXL3 and SM70 mixed-GGUF formats described below.
 
 ```bash
 tensorfold pull TensorFold/Qwen3.8-Flash-Next-MLX-4bit-MTP
@@ -56,8 +57,34 @@ to one stream, while successful checks allow the lane engine to combine requests
 
 ## CUDA
 
-On CUDA Flash Next serves NVFP4 and EXL3 checkpoints, and the MLX 4-bit checkpoint as the portable option: the same
-files a Mac serves, and the only format two ranks and `--ple-on-ssd` read. `tensorfold serve` loads the checkpoint
+The V100/SM70 provider reads the original mixed-GGUF shards through the same
+family engine, with FP16 activations and FP32 recurrent state. It supports
+TP1/2/4/8, including complete-group KV-head replication, and TP concurrency
+through the existing scheduler. The packed model requires enough aggregate GPU
+memory; the local host uses eight 32 GB V100s. GGUF defaults to raw
+`--kv-dtype fp16`; `int8` and mixed FP16/INT8 sides use the existing cache descriptor.
+The new `rotorquant-signed128-4` SM70 path adds packed Q4 with independently
+selectable keys/values; full-model qualification is pending. Other
+cache formats and modern BF16 checkpoint providers retain their own admission.
+Use `--no-drafts` for a baseline, or `--drafter /path/to/matching/stock-mtp` with
+`--mtp-drafts 2` for the matching separate stock head. The original GGUF is never
+rewritten. Tokenizer/config sidecars are staged in the runtime cache. See the
+[V100 serving profile](../../deploy/v100/README.md) and its
+[validation scope](../v100-flashnext-validation.md) before selecting a deployment.
+
+`--indexer-history ram` selects a bounded GPU raw-indexer working set plus a
+lossless asynchronous NUMA-local RAM archive on this GGUF/SM70 provider.
+`--indexer-history gpu` retains the default full GPU history. Pooled indexer
+keys and attention KV remain on the GPU; KV precision and drafting flags retain
+their own contracts. Use the [NUMA deployment procedure](../../deploy/v100/README.md#numa-local-indexer-archive).
+The archive path passed TP8 stock-MTP live checks with four full INT8 windows
+and eight 260,060-token Q4 windows. These are physically allocated capacities
+and same-format response checks, not full-context payload or throughput
+equivalence claims. The RAM/DSpark combination remains unqualified.
+
+The modern CUDA provider serves NVFP4 and EXL3 checkpoints, and the MLX 4-bit checkpoint as the portable option: the same
+files a Mac serves. Tensor parallelism reads the affine checkpoint; same-host expert ranks also support
+NVFP4. CUDA `--ple-on-ssd` supports affine, BF16, FP8 and NVFP4 tables. `tensorfold serve` loads the checkpoint
 you name; it picks none by itself. Use the [container setup](../../RUNBOOK.md#nvidia-gpus) for any of them. Prompts
 take bf16 activations by default; what that costs against the FP8 prompt path (`--prefill-fp8`) depends on the
 format ([prompt precision](cuda.md#prompt-precision)):
@@ -111,6 +138,38 @@ RoPE policy and must not be reused across policy changes.
 
 ### NVFP4 checkpoints
 
+RAM-backed routed experts also accept ModelOpt NVFP4 exports:
+
+```bash
+tensorfold serve /models/Flash-Next-NVFP4 --backend cuda \
+  --vram-experts auto --ple-on-ssd --parallel 4 --context 32768
+```
+
+The example requires enough host RAM for the export's packed routed experts and
+enough VRAM for its resident backbone, shared experts, MTP head, sequence state
+and workspace. It is not a fit or throughput claim for a 16 GB card. Each cache
+entry retains the original E2M1 codes, e4m3 block-scale bytes and per-expert FP32
+global scales. The shared expert keeps its resident BF16 or MXFP8 representation;
+MTP's BF16/FP8 experts retain their existing draft-only NVFP4 conversion, one
+expert at a time. Weight-only declarations and explicit full precision use
+W4A16. Under checkpoint precision, declared static group-16 A4 projections use
+native SM12 math with their original direct input/weight calibrations. Mixed
+native/nonnative expert ranks negotiate W4A16 for the whole group. Resident A4
+banks consume live GPU routing plans; host-backed banks decline graph capture.
+The [numerical contract](cuda.md#nvfp4-precision) and each mode's validation
+scope remain separate; activation quantization alone is not a throughput claim.
+
+With `--ple-on-ssd`, affine, BF16, FP8 and NVFP4 n-gram shards use their own
+validated row layouts and bounded positional reads. The decoded BF16 bits and
+table-scale behavior match the mapped readers; Linux disables read-ahead but
+does not promise that the OS will retain no file pages. The reader drains
+accepted lookups before closing its descriptors. The pinned
+`dealignai/Qwen3.8-Flash-Next-ABLITERATED-NVFP4` GB10 checkpoint passed actual
+installed resident-expert, SSD, native-MTP, vision and four-request protocols at
+bd1 and AUTO source297. [Exact sources, images and limits](../gb10-nvfp4-validation.md)
+record the user-selected four-stream comparison. SM89 execution, full-context
+capacity and broader model quality remain unqualified by these GB10 checks.
+
 The CUDA engine reads published ModelOpt NVFP4 exports as they ship, MTP head included, on one GPU:
 
 ```bash
@@ -161,8 +220,8 @@ each reply of concurrent requests (`--parallel 4`) equals the same request alone
 through the same code; its replies have not been checked on their own.
 
 Not supported here:
-- `--tp 2` and `--ple-on-ssd` on an NVFP4 checkpoint stop at startup: two ranks read the MLX checkpoint, and the
-  NVFP4 exports' tables stay memory-mapped.
+- `--tp 2` on an NVFP4 checkpoint stops at startup. Same-host `--expert-ranks` distributes only routed experts;
+  it has a separate [setup and qualification scope](../desktop-report-remediation.md).
 - `ukisai/Swift-1.5-Qwen3.8-Flash-Next-NVFP4` (186 GB; bf16 linears and n-gram table) has the RadixArk layout apart
   from its bf16 table, which the loader reads, but the whole checkpoint has not been loaded or served here, so it
   is not listed as tested.
@@ -180,8 +239,8 @@ python -m tensorfold.cuda.exl3.inspect flashnext-exl3-3.05bpw   # bits per tenso
 tensorfold serve flashnext-exl3-3.05bpw --host 0.0.0.0 --port 8080
 ```
 
-A pack maps its n-gram table from its own file and runs on one GPU: `--tp 2` and `--ple-on-ssd` are for the MLX
-checkpoint, and an EXL3 pack refuses both.
+A pack maps its n-gram table from its own file and runs on one GPU. An EXL3 pack
+refuses `--tp 2`, expert-rank partitioning and `--ple-on-ssd`.
 
 - Dense projections (attention, DeltaNet, the MTP head's fc layers, the head) run on the row-invariant EXL3
   linear (`cuda/exl3/linear.py`). Routed experts and the shared expert (as expert 512 of the same table) run on
@@ -308,12 +367,22 @@ gathered partials in rank order.
 
 On one GPU, `--parallel N` shares forwards across up to N requests: pure
 decode rounds replay CUDA graphs captured at startup within
-`TENSORFOLD_MULTI_GRAPH_MIB` (default 512 MiB; `0` disables capture) and the
-other rounds run eagerly, with the same bits. `--parallel auto` selects one
-request. Two-rank Flash Next retains serial text
+the remaining admitted memory by default. It preserves the chosen context,
+one full window's growth, resize overlap, bounded snapshots, vision/serving
+workspace and the configured memory floor; additional streams' context growth
+still shares memory through the gate. `TENSORFOLD_MULTI_GRAPH_MIB=N` sets an
+explicit MiB ceiling (`0` disables capture). Live checks can stop capture with
+a recorded reason; they do not reserve memory against other processes.
+Other rounds run eagerly with the same bits. Automatic sizing passed the
+[source297 installed GB10 model protocols](../gb10-nvfp4-validation.md#source297-auto-graph-protocols);
+the [four-stream comparison and user choice](../gb10-nvfp4-validation.md#controlled-eight-start-comparison-and-user-selection)
+retain observed single-request tradeoffs. `--parallel auto` selects one
+request. Tensor-parallel two-rank Flash Next retains serial text
 serving through the established communicator and rendezvous store. Concurrent
-two-rank/media expansion and persistent lone-stream graph selection remain
-isolated candidates until protocol, ownership and actual-target gates pass.
+requests and supported media stay on rank zero in the separate
+[same-host expert-rank implementation](../desktop-report-remediation.md);
+actual two-GPU qualification remains pending. Persistent lone-stream graph
+selection remains an isolated candidate with its own gates.
 For prefix reuse, the single-request engine and concurrent decoder keep prompt
 states; a follow-up prefills the reply again. A kept state stops one token before its prompt's end, so the
 same prompt sent again resumes, and so does a next chat turn that renders the generation prompt's `<think>`
@@ -375,7 +444,12 @@ On an M3 Ultra, each flag was held to a smaller Mac's budget and compared on the
 Maintain this recipe and the main README in the same change whenever supported KV formats, public settings,
 deployment requirements, or published quality and performance results change.
 
-`--kv-dtype bf16` is the default. `--kv-dtype int8` and `--kv-dtype int4` store each attention layer's keys and
+The modern CUDA provider defaults to `--kv-dtype bf16` and supports the BF16/INT8/INT4/RotorQuant formats
+described in this section. The GGUF SM70 provider defaults to raw `--kv-dtype fp16` and admits FP16/INT8/`rotorquant-signed128-4`
+on each side; its indexer and pooled cache are FP16. Raw FP16 uses 512 bytes per 256-value key or value head,
+with a storage identity distinct from BF16. See the [V100 profile](../../deploy/v100/README.md) for its qualification.
+
+`--kv-dtype int8` and `--kv-dtype int4` store each attention layer's keys and
 values as codes with one fp16 scale per 32 values, the arithmetic of ExLlamaV3's `-cq 8` and `-cq 4` (the
 non-companded grid): each group of 32 is rotated by a 32-point Hadamard, its absmax is the scale, and the codes sit
 on the midpoint grid. 8-bit stores `q - 128` as int8; 4-bit stores two unsigned codes a byte, low nibble first. The
@@ -490,3 +564,81 @@ TBD [release-0.3.5].
 Use `--vision` on one CUDA GPU with `--parallel` of at least two. Image requests always prefill fresh; text prefix
 caching remains available. See the [image recipe](flash-next-vision.md) for tower weights, memory admission, EXL3
 sidecar conversion and verification.
+
+
+### Select MTP, DSpark or the DFlash2 candidate on Flash Next CUDA
+
+`--draft-method auto` (the default) selects from the checkpoint passed through
+`--drafter`. Use `--draft-method mtp --drafter /path/to/mtp` or
+`--draft-method dspark --drafter /path/to/dspark` to require a method explicitly.
+A mismatched checkpoint is rejected before target payload loading. Included
+MTP heads on other Flash Next CUDA formats remain supported; DSpark currently
+requires the GGUF SM70 text provider and its full target vocabulary.
+`--mtp-drafts` controls proposal depth for either method, `--mtp-confidence`
+controls its stopping threshold, and `--no-drafts` selects serial execution.
+DSpark uses the existing position-keyed target verifier and shared scheduler.
+Its proposal graphs use the explicit admitted optimized profile; current host
+evidence and numerical qualification limits are recorded in the [V100 note](../v100-flashnext-validation.md).
+
+`--draft-method dflash2 --drafter /path/to/dflash2 --tp 8` selects the implemented
+four-row DFlash2 candidate through this same engine and scheduler. It requires
+the resident GGUF SM70 text profile, GPU history, and
+`--execution-profile-manifest /path/to/manifest.json` with a complete
+`draft_pairing` section. That section binds exact target/draft/prepared-tokenizer
+content, completed HC feature taps/transforms, actual token IDs, FP16 draft
+weights/window, selector probabilities, and target numerical policy. Geometry
+or a repository name alone cannot authorize this pairing. Content verification
+finishes before CUDA allocation; one leader reads the shared immutable payload
+and every rank validates its own opened files. The default `auto` also detects
+this architecture and requires the same manifest.
+
+For DFlash2, `--mtp-drafts` is a maximum from zero through three. Positive
+proposal counts retain the four-row draft computation; counts are chosen from
+the current frozen operation's reply/context/row budgets before drawing.
+An enabled request with runtime proposal length zero maintains the bounded
+conditioning window. Request `draft:false` selects the serial reference and
+skips draft capture/conditioning; its inactive draft snapshot cannot initialize
+a later enabled request. Background reconstruction forces already-published
+canonical token IDs through target state and enabled draft conditioning without
+sampling or publishing them again. Only the fresh suffix uses the current
+proposal policy. Sampling uses standard rejection with
+the actual conditional selector probabilities. `--mtp-confidence` does not
+truncate DFlash selector paths. Target graphs are disabled for this initial
+feature-capture implementation. Other DFlash architectures, TP geometries,
+vision, RAM history and startup proposal depths above three refuse explicitly.
+This is an **unqualified candidate**: CPU/source controls do not qualify actual
+TP8 HC parity, the new SM70 stack, selected-target quality, acceptance, resource
+peaks or V100 performance. The current design selects SC117 IQ3_S and separately
+requires image/video-to-text plus multimodal method gates; this text-only
+implementation has not completed those required extensions. Earlier Huihui
+controls remain scoped references. These model/device gates remain unrun.
+
+For the qualified eight-V100 geometry, `TENSORFOLD_SM70_PROFILE=optimized` selects
+the canonical SM70 operators before admission/loading; Compose uses
+`TF_SM70_PROFILE`. The reference profile remains the general default. Native
+attention has an explicit65–8192real-query-end scope with original Torch
+fallback elsewhere. This operator profile is independent of `--draft-method`.
+
+For resident GGUF concurrent serving, reserve equal full windows with
+`--context LIMIT --parallel N --kv-full-windows N`, N≥2. Choose LIMIT near the
+model maximum, then the largest count admitted with workspace and graph room.
+This flag covers target and selected drafter caches. V100 Compose exposes
+`TF_KV_FULL_WINDOWS` and defaults it to `TF_PARALLEL`. Counts have no parity
+restriction. The default CLI shared growth policy is unchanged.
+
+The selected eight-V100 C22 configuration is stock MTP depth3/confidence0,
+INT8 K/V, `--context 262144 --parallel 3 --kv-full-windows 3`. All eight ranks
+preallocate three complete windows; full-window concurrency/SSE/cancel/prefix
+and9+12live quality cases passed. DSpark's bounded best depth was3 with two
+262140-token windows. See the validation note for measured workload/quality
+limits; these allocations are not a full262K numerical benchmark.
+
+For native V100 Q4, select `--kv-dtype rotorquant-signed128-4` or
+`--kv-dtype rotorquant-signed64-norm4`; both use the existing registered
+128-component/group, four-bit payload/FP32-scale descriptors with distinct
+basis/norm identities. Four full262144-token windows were materialized on the
+eight-V100 host. Q4 prompt-prefix borrowing is currently unqualified: serial
+and concurrent requests prefill cold while retaining request-local KV and MTP.
+Both modes completed714teacher steps; their broader PPL ratios1.00652/1.00804
+versusINT8 mean they are explicit lossy choices, not quality-equivalent defaults.
+See the V100 validation before selecting a production format.

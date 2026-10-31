@@ -23,7 +23,7 @@ _OPEN_NONBLOCK = os.O_NONBLOCK if os.name == "posix" else 0
 
 
 @contextmanager
-def _regular_stream(path):
+def _regular_stream(path, *, no_follow=False):
     """Own a checkpoint file; a FIFO cannot block before type validation.
 
     Linux/macOS nonblocking open leaves ordinary file reads unchanged and
@@ -38,7 +38,8 @@ def _regular_stream(path):
         scope = FileStreams(max_files=1)
         primary = None
         try:
-            record, _ = scope.open(path, os.O_RDONLY | _OPEN_NONBLOCK, "rb")
+            flags = os.O_RDONLY | _OPEN_NONBLOCK | (os.O_NOFOLLOW if no_follow else 0)
+            record, _ = scope.open(path, flags, "rb")
             yield record.stream
         except BaseException as error:
             primary = error
@@ -166,17 +167,20 @@ def _constant(value):
     raise ValueError("non-JSON numeric constant in safetensors header")
 
 
-def read_metadata_json(path: str | Path) -> dict:
+def read_metadata_json(path: str | Path, *, max_bytes: int = MAX_HEADER_BYTES) -> dict:
     """Read a bounded UTF-8 configuration/index object without duplicate keys.
 
-    Checkpoint metadata shares the 100-MB file limit with tensor headers.
+    Checkpoint metadata shares the 100-MB file limit with tensor headers;
+    an owner may require a stricter per-record byte bound.
     Nonfinite numbers and unpaired surrogate strings cannot describe the
     runtime's configuration or authorized file names.
     """
+    if type(max_bytes) is not int or not 0 < max_bytes <= MAX_HEADER_BYTES:
+        raise ValueError("checkpoint metadata byte bound must be positive and within the format limit")
     with _regular_stream(path) as stream:
         size = os.fstat(stream.fileno()).st_size
-        if not 0 < size <= MAX_HEADER_BYTES:
-            raise ValueError(f"{path}: checkpoint metadata size must lie in [1, {MAX_HEADER_BYTES}]")
+        if not 0 < size <= max_bytes:
+            raise ValueError(f"{path}: checkpoint metadata size must lie in [1, {max_bytes}]")
         raw = stream.read(size + 1)
     if len(raw) != size:
         raise ValueError(f"{path}: checkpoint metadata changed during its read")
@@ -206,11 +210,13 @@ def _metadata_object(raw: bytes, path) -> dict:
 
 
 def checkpoint_path(model_dir: str | Path, shard: str) -> Path:
-    """Authorize an index-relative file in the model or its own HF blob store.
+    """Authorize an index-relative file in the model or a managed HF blob store.
 
     Parent traversal and absolute names are refused before following symlinks.
     A standard ``models--*/snapshots/<revision>`` root may borrow its sibling
-    ``blobs`` directory. Other resolved targets must stay inside the model.
+    ``blobs`` directory. Its managed blob links may also target the canonical,
+    marked cache-wide shared store; this never authorizes the whole cache.
+    Model/cache names and contents must remain immutable over validation/use.
     """
     if not isinstance(shard, str) or not shard:
         raise ValueError("checkpoint file names must be nonempty relative strings")
@@ -219,6 +225,7 @@ def checkpoint_path(model_dir: str | Path, shard: str) -> Path:
         raise ValueError(f"{shard}: checkpoint file must not be absolute or traverse parent directories")
     root = Path(model_dir).resolve()
     allowed = [root]
+    store = None
     if root.parent.name == "snapshots" and root.parent.parent.name.startswith("models--"):
         store = root.parent.parent
         blobs = (store / "blobs").resolve()
@@ -226,9 +233,58 @@ def checkpoint_path(model_dir: str | Path, shard: str) -> Path:
             raise ValueError("the model's HF blob root resolves outside its own store")
         allowed.append(blobs)
     path = (root / relative).resolve()
-    if not any(path.is_relative_to(directory) for directory in allowed):
+    if (not any(path.is_relative_to(directory) for directory in allowed)
+            and (store is None or not _shared_hf_blob(root / relative, store, path))):
         raise ValueError(f"{shard}: resolved checkpoint file is outside the model's authorized roots")
     return path
+
+
+def _shared_hf_blob(snapshot_file: Path, store: Path, resolved: Path) -> bool:
+    """HF Hub v1.32 shared layout: snapshot -> own blob link -> marked payload.
+
+    Only this file's managed two-link chain is admitted. The shared directory,
+    hash-prefix directory, payload and version marker must have their actual
+    types, with no directory/payload/marker symlinks expanding the authority.
+    Reads of the two-byte marker are bounded and ordinary-file checked.
+    """
+    shared = store.parent / "blobs"
+    if not store.name[len("models--"):] or any(char in "\r\n" for char in store.name):
+        return False
+    try:
+        parts = resolved.relative_to(shared).parts
+    except ValueError:
+        return False
+    if (len(parts) != 2 or len(parts[1]) != 64 or parts[0] != parts[1][:2]
+            or any(char not in "0123456789abcdef" for char in parts[1])):
+        return False
+    try:
+        parent = snapshot_file.parent.resolve()
+        if not parent.is_relative_to(store / "snapshots"):
+            return False
+        if not stat.S_ISLNK(snapshot_file.lstat().st_mode):
+            return False
+        own_blob = Path(os.path.abspath(parent / os.readlink(snapshot_file)))
+        blobs = store / "blobs"
+        if (own_blob.parent != blobs or any(char in "\r\n" for char in own_blob.name)
+                or not stat.S_ISDIR(blobs.lstat().st_mode)):
+            return False
+        if not stat.S_ISLNK(own_blob.lstat().st_mode):
+            return False
+        target = Path(os.path.abspath(blobs / os.readlink(own_blob)))
+        if target != resolved:
+            return False
+        marker = shared / ".huggingface-shared-blobs"
+        if not (stat.S_ISDIR(shared.lstat().st_mode)
+                and stat.S_ISDIR((shared / parts[0]).lstat().st_mode)
+                and stat.S_ISREG(resolved.lstat().st_mode)
+                and stat.S_ISREG(marker.lstat().st_mode)):
+            return False
+    except (FileNotFoundError, NotADirectoryError):
+        return False
+    # Access, IO and cleanup failures retain their actual exception/ownership
+    # context rather than being mislabeled as a different path authority error.
+    with _regular_stream(marker) as stream:
+        return stream.read(3) == b"1\n"
 
 
 def read_header(path: str | Path, sizes: dict[str, int]) -> tuple[int, dict]:
@@ -263,9 +319,23 @@ def read_header_stream(stream, sizes: dict[str, int], *, label) -> tuple[int, di
     raw = stream.read(count)
     if len(raw) != count or not raw.startswith(b"{"):
         raise ValueError(f"{path}: truncated or invalid safetensors JSON header")
+    return parse_header_bytes(raw, size, sizes, label=path)
+
+
+def parse_header_bytes(raw: bytes, size: int, sizes: dict[str, int], *, label) -> tuple[int, dict]:
+    """Validate a bounded header against an independently observed full-file size.
+
+    A range-only preparation reader can share the exact local-file schema and
+    extent contract without materializing the source's unrelated tensor bytes.
+    This validates metadata; it neither verifies nor reads the payload.
+    """
+    if type(raw) is not bytes:
+        raise ValueError(f"{label}: bounded safetensors header must be bytes")
+    path, count = label, len(raw)
+    if (type(size) is not int or size < 8
+            or not 0 < count <= min(MAX_HEADER_BYTES, size - 8) or not raw.startswith(b"{")):
+        raise ValueError(f"{path}: invalid bounded safetensors header")
     header = _metadata_object(raw, path)
-    if not isinstance(header, dict):
-        raise ValueError(f"{path}: safetensors header must be an object")
     spans = []
     for name, entry in header.items():
         if name == "__metadata__":
@@ -273,9 +343,6 @@ def read_header_stream(stream, sizes: dict[str, int], *, label) -> tuple[int, di
                 not isinstance(entry, dict) or any(not isinstance(v, str) for v in entry.values())
             ):
                 raise ValueError(f"{path}: safetensors metadata must map strings to strings")
-            if entry is not None:
-                for value in entry.values():
-                    value.encode("utf-8")
             continue
         if not isinstance(entry, dict) or not isinstance(entry.get("dtype"), str):
             raise ValueError(f"{name}: invalid safetensors tensor metadata")

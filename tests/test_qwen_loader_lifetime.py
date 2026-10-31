@@ -8,12 +8,15 @@ retain the current failure, interruption, drain and clean-success contracts.
 import ast
 import contextlib
 import json
-from pathlib import Path
 import sys
 import tempfile
 import types
 import unittest
+from pathlib import Path
 from unittest.mock import patch
+
+from tensorfold.checkpoint_metadata import read_config
+from tests.nvfp4_host_protocol import linear_metadata_class
 
 REPO = Path(__file__).resolve().parents[1]
 PATH = REPO / "src/tensorfold/families/qwen3_5/cuda"
@@ -108,7 +111,7 @@ class OwnershipControls(unittest.TestCase):
                     raise DrainFailure("drain fault")
 
         self.reader = Reader
-        self.cfg = types.SimpleNamespace(layers=0, rope_dims=4, rope_theta=10000, hidden=2)
+        self.cfg = types.SimpleNamespace(layers=0, rope_dims=4, rope_theta=10000, hidden=2, yarn=None)
         self.modules = {}
 
         def module(name, **kw):
@@ -120,7 +123,8 @@ class OwnershipControls(unittest.TestCase):
         module("tensorfold.families.qwen3_5.cuda.exl3_load", quant_config=lambda _: None, load_exl3=lambda *a: None)
         module("tensorfold.families.qwen3_5.cuda.nvfp4_load", quantized=lambda _: False, load_nvfp4=lambda *a: None)
         module("tensorfold.quantization", resolve_affine=lambda *a: None, validate_shapes=lambda *a: None)
-        module("tensorfold.cuda", prompt_precision=types.SimpleNamespace(fp8=lambda: False))
+        module("tensorfold.cuda", prompt_precision=types.SimpleNamespace(fp8=lambda: False),
+               precision=types.SimpleNamespace(CHECKPOINT="checkpoint", mode=lambda: "checkpoint"))
         module(
             "tensorfold.cuda.capacity",
             headers=lambda _: {
@@ -129,7 +133,8 @@ class OwnershipControls(unittest.TestCase):
                 "lm_head.weight": {"dtype": "BF16", "shape": [2, 2]},
             },
         )
-        fmt = module("tensorfold.cuda.nvfp4.format", config_block=lambda _: None, scheme=lambda _: "bf16")
+        fmt = module("tensorfold.cuda.nvfp4.format", config_block=lambda _: None, scheme=lambda _: "bf16",
+                     LinearMetadata=linear_metadata_class())
         module("tensorfold.cuda.nvfp4", format=fmt)
         module("tensorfold.cuda.nvfp4.linear", Fp4Linear=object, Fp8Linear=object, Staging=lambda: None)
 
@@ -163,10 +168,11 @@ class OwnershipControls(unittest.TestCase):
         self.loader = name
         path = PATH / name
         tree = ast.parse(path.read_text())
-        function = next((n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ("load", "load_nvfp4")))
+        function = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name in ("load", "load_nvfp4"))
         helper_tree = ast.parse((PATH / "weights.py").read_text())
         helpers = [n for n in helper_tree.body if isinstance(n, ast.FunctionDef)
-                   and n.name in ("_close_failed_checkpoint_impl", "_close_failed_checkpoint", "_validate_fp8_prefill")]
+                   and n.name in ("_close_failed_checkpoint_impl", "_close_failed_checkpoint", "_validate_fp8_prefill",
+                                  "_rotary_frequencies")]
         module = ast.Module(body=[*helpers, function], type_ignores=[])
 
         def weights(*a, **kw):
@@ -181,6 +187,7 @@ class OwnershipControls(unittest.TestCase):
             "json": json,
             "checkpoint_path": lambda root, name: Path(root) / name,
             "read_metadata_json": lambda path: json.loads(path.read_text()),
+            "read_config": read_config,
             "torch": self.torch,
             "prompt_precision": self.modules["tensorfold.cuda"].prompt_precision,
             "_Tensors": self.reader,
@@ -193,11 +200,18 @@ class OwnershipControls(unittest.TestCase):
             "Plain": weights,
             "skipped": lambda _: False,
         }
+        # The isolated entry point uses this immutable preparation label too.
+        # Read its actual source literal rather than importing Torch to bind it.
+        for node in tree.body:
+            if (isinstance(node, ast.Assign)
+                    and any(isinstance(target, ast.Name) and target.id == "FULL_LINE" for target in node.targets)):
+                scope["FULL_LINE"] = ast.literal_eval(node.value)
         scope.update(self.transport_globals)
         with patch.dict(sys.modules, self.modules), contextlib.redirect_stdout(__import__("io").StringIO()):
             exec(compile(module, str(path), "exec", flags=__import__("__future__").annotations.compiler_flag), scope)
             self.modules["tensorfold.families.qwen3_5.cuda.weights"]._close_failed_checkpoint = scope["_close_failed_checkpoint"]
             self.modules["tensorfold.families.qwen3_5.cuda.weights"]._validate_fp8_prefill = scope["_validate_fp8_prefill"]
+            self.modules["tensorfold.families.qwen3_5.cuda.weights"]._rotary_frequencies = scope["_rotary_frequencies"]
             return scope[function.name](self.home, device="cpu")
 
     def test_group_allocation_failure_retains_primary_native_and_reader_statuses(self):

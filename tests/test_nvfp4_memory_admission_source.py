@@ -1,12 +1,12 @@
 """Strict stdlib controls for the header-only byte bound; no runtime math claim."""
 import ast
 import builtins
-from functools import partial
 import importlib.util
-from pathlib import Path
 import re
-from types import SimpleNamespace as NS
 import unittest
+from functools import partial
+from pathlib import Path
+from types import SimpleNamespace as NS
 from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -180,7 +180,7 @@ class Contracts(unittest.TestCase):
         dense = 2 * 248320 * 4096 * 2
         self.assertEqual((weight.resident, weight.staging, weight.mapped),
                          (packed + scales + 8 + dense + 8192, 4194304, 0))
-        self.assertEqual(host, 6102712320)
+        self.assertEqual(host, 6102712320 + 2 * (128 << 20))
         # Full math pads the block-scale plane independently of packed words.
         # A nonaligned row count must reserve both planes' retained padding.
         entries['model.layers.0.m.weight_packed']['shape'][0] = 4097

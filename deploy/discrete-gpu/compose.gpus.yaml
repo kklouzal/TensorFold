@@ -1,0 +1,8 @@
+# Merge after compose.yaml; replace all-GPU requests with one explicit NVIDIA GPU.
+# Copy this override and add device_ids entries for a supported multi-GPU profile.
+services:
+  tensorfold:
+    gpus: !override
+      - driver: nvidia
+        device_ids:
+          - ${TF_GPU_UUID:?Set TF_GPU_UUID to the NVIDIA GPU UUID}

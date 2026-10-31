@@ -17,8 +17,13 @@ def test_the_startup_line_names_the_switch_only_when_the_template_has_one(tmp_pa
     assert thinking_notes.startup(tmp_path, True) is None                     # no template
     (tmp_path / "chat_template.jinja").write_text("{%- if enable_thinking is defined %}x{% endif %}")
     line = thinking_notes.startup(tmp_path, True)
-    assert "thinking on" in line and "--no-thinking" in line and '"enable_thinking": false' in line
+    assert "thinking on (server default)" in line and "--no-thinking" in line and '"enable_thinking": false' in line
     assert thinking_notes.startup(tmp_path, False) is None
+    switchable = "{% if enable_thinking is not defined %}{% set enable_thinking = false %}{% endif %}"
+    assert "server default" in thinking_notes.startup(tmp_path, True, template_source=switchable)
+    assert thinking_notes.startup(tmp_path, False, template_source=switchable) is None
+    fixed = thinking_notes.startup(tmp_path, False, template_source="{% set enable_thinking = true %}")
+    assert "fixed by the checkpoint's chat template" in fixed and "server default" not in fixed
     other = tmp_path / "other"
     other.mkdir()
     (other / "tokenizer_config.json").write_text(json.dumps({"chat_template": "{{ enable_thinking }}"}))

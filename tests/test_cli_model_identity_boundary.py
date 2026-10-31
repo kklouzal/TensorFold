@@ -27,7 +27,8 @@ class IdentityStartup(unittest.TestCase):
         self.addCleanup(substitution.stop)
 
     def execute(self, base, *, loader=None, trust=False, persistence=True, head=None, owner_journal=None,
-                mtp_family=None, mtp_drafts=None, no_drafts=True, head_resolver=None, drafter_choice="auto"):
+                mtp_family=None, mtp_drafts=None, no_drafts=True, head_resolver=None, drafter_choice="auto",
+                model_flags=(), tokenizer_journal=None):
         model_dir, runtime_dir = Path(base) / "model", Path(base) / "runtime"
         model_dir.mkdir(exist_ok=True)
         runtime_dir.mkdir(exist_ok=True)
@@ -48,6 +49,7 @@ class IdentityStartup(unittest.TestCase):
                 "0",
                 "--snapshot-dir",
                 str(Path(base) / "snapshots") if persistence else "none",
+                *model_flags,
             ]
         )
         args.trust_model_code = trust
@@ -61,7 +63,10 @@ class IdentityStartup(unittest.TestCase):
             options_seen.append(options)
             if loader:
                 loader(Path(path), runtime_dir)
-            return model, SimpleNamespace()
+            tokenizer = SimpleNamespace(eos_token_ids=(0,))
+            if tokenizer_journal is not None:
+                tokenizer_journal.append(tokenizer)
+            return model, tokenizer
 
         package = SimpleNamespace(load=load, MLX_MODEL_FILE=True, __name__="owned.family")
         if mtp_family == "qwen3_5_moe":
@@ -183,6 +188,64 @@ class IdentityStartup(unittest.TestCase):
             head.write_bytes(b"owned head 2")
             second = self.execute(base, head=head)[0]
             self.assertNotEqual(first[0].split("|", 1)[0], second[0].split("|", 1)[0])
+
+    def test_selected_external_template_binds_bytes_and_operator_selection(self):
+        with tempfile.TemporaryDirectory() as base:
+            selected = Path(base) / "operator.jinja"
+            same_bytes = Path(base) / "other.jinja"
+            selected.write_text("operator source one")
+            same_bytes.write_text("operator source one")
+            providers = []
+            flags = ("--chat-template", str(selected))
+            first = self.execute(base, model_flags=flags, tokenizer_journal=providers)[0][0]
+            self.assertEqual(providers[-1].chat_template, "operator source one")
+            self.assertEqual(first, self.execute(base, model_flags=flags)[0][0])
+
+            other = self.execute(base, model_flags=("--chat-template", str(same_bytes)))[0][0]
+            self.assertEqual(first.split("|", 1)[0], other.split("|", 1)[0])
+            self.assertNotEqual(first.split("|", 1)[1], other.split("|", 1)[1])
+
+            selected.write_text("operator source two")
+            changed = self.execute(base, model_flags=flags, tokenizer_journal=providers)[0][0]
+            self.assertEqual(providers[-1].chat_template, "operator source two")
+            self.assertNotEqual(first.split("|", 1)[0], changed.split("|", 1)[0])
+            self.assertEqual(first.split("|", 1)[1], changed.split("|", 1)[1])
+
+    def test_external_template_mutation_refuses_after_returned_model_is_owned(self):
+        with tempfile.TemporaryDirectory() as base:
+            selected = Path(base) / "operator.jinja"
+            selected.write_text("selected bytes")
+            owners = {}
+
+            def mutate(path, runtime):
+                selected.write_text("changed bytes during loading")
+
+            with self.assertRaises(ValueError):
+                self.execute(base, model_flags=("--chat-template", str(selected)), loader=mutate,
+                             owner_journal=owners)
+            self.assertIn("model", owners)
+            self.assertIsInstance(owners["model"], SimpleNamespace)
+
+    def test_named_template_and_explicit_eos_bind_runtime_identity(self):
+        with tempfile.TemporaryDirectory() as base:
+            model_dir = Path(base) / "model"
+            model_dir.mkdir()
+            (model_dir / "tokenizer_config.json").write_text(
+                '{"chat_template":{"default":"model default","rag":"named source"}}')
+            providers = []
+            first = self.execute(base, tokenizer_journal=providers)[0][0]
+            self.assertEqual(providers[-1].chat_template, "model default")
+            self.assertEqual(providers[-1].eos_token_ids, (0,))
+
+            for flags, source, eos in (
+                    (("--chat-template-name", "rag"), "named source", (0,)),
+                    (("--eos-token-id", "1"), "model default", (1,))):
+                with self.subTest(flags=flags):
+                    changed = self.execute(base, model_flags=flags, tokenizer_journal=providers)[0][0]
+                    self.assertEqual(providers[-1].chat_template, source)
+                    self.assertEqual(providers[-1].eos_token_ids, eos)
+                    self.assertEqual(first.split("|", 1)[0], changed.split("|", 1)[0])
+                    self.assertNotEqual(first.split("|", 1)[1], changed.split("|", 1)[1])
 
     def test_qwen_external_mtp_is_resolved_once_bound_and_content_hashed(self):
         with tempfile.TemporaryDirectory() as base:

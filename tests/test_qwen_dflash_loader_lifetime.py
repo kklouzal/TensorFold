@@ -104,6 +104,10 @@ class Controls(unittest.TestCase):
             "SafeTensors": Reader,
             "BoundaryDone": BoundaryDone,
         }
+        from tensorfold.families.qwen3_5.cuda.draft_tree import draft_block, draft_limit
+
+        ns["draft_limit"] = draft_limit
+        ns["draft_block"] = draft_block
         exec(
             compile(
                 ast.fix_missing_locations(ast.Module([init], [])),
@@ -126,6 +130,15 @@ class Controls(unittest.TestCase):
         self.assertEqual((self.acquired, self.closed), (1, 1))
         self.assertEqual(self.reads, ["candidate_selector.predecessor_codebook", "layers.0.weight"])
         self.assertIs(self.owner.weights["layers.0.weight"], self.value)
+
+    def test_invalid_training_block_refuses_before_opening_any_tensor_payload(self):
+        for value in (None, True, False, 0, -1, .5, "8"):
+            with self.subTest(value=value):
+                self.config["dflash_config"]["block_size"] = value
+                (self.root / "config.json").write_text(json.dumps(self.config))
+                with self.assertRaisesRegex(ValueError, "dflash_config.block_size.*positive integer"):
+                    self.invoke()
+                self.assertEqual((self.acquired, self.closed), (0, 0))
 
     def test_keys_read_and_conversion_interruption_close_once(self):
         for point in ("keys", "get", "convert"):

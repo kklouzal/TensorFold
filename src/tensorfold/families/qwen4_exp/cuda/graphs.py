@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import torch
 
+from . import history_runtime
 from .forward import _kv_check, compute, stage
 from .mtp import mtp_compute, mtp_stage
 
@@ -19,8 +20,12 @@ class Graphs:
         self.mtp_out: dict[tuple[int, int], torch.Tensor] = {}
         self.pool = torch.cuda.graph_pool_handle()
         self.captures = 0
+        self.closed = False
+        self.failed = []
 
     def _check_owner(self) -> None:
+        if self.closed:
+            raise RuntimeError("captured graph owner is closed")
         weights, state, buffers, mtp_buffers = self.owners
         e = self.e
         if (e.w is not weights or e.st is not state or e.buf is not buffers or e.mbuf is not mtp_buffers
@@ -33,6 +38,7 @@ class Graphs:
         torch.cuda.synchronize()
         gc.collect()
         g = torch.cuda.CUDAGraph()
+        self.failed.append(g)                    # acquire into a retained owner before beginning capture
         # Collecting old graphs calls cuGraphExecDestroy and invalidates an active capture.
         enabled = gc.isenabled()
         gc.disable()
@@ -45,7 +51,21 @@ class Graphs:
                 gc.enable()
         torch.cuda.synchronize()
         self.captures += 1
+        self.failed.remove(g)
         return g
+
+    def close(self) -> None:
+        """Fence replays before destroying their native communicator/cache borrowers."""
+        torch.cuda.synchronize(self.e.w.device)
+        for mapping in (self.main, self.mtp):
+            for key, graph in tuple(mapping.items()):
+                graph.reset()
+                del mapping[key]
+        for graph in tuple(self.failed):
+            graph.reset()
+            self.failed.remove(graph)
+        self.mtp_out.clear()
+        self.closed = True
 
     def _bucket(self, end: int) -> int:
         return min(self.e.st.capacity, max(8192, 1 << (end - 1).bit_length()))
@@ -55,9 +75,13 @@ class Graphs:
         e = self.e
         w, st, b = e.w, e.st, e.buf
         self._check_owner()
+        from tensorfold.cuda.sm70.attention_qualification import allows
+
+        tokens = list(tokens)
+        qualified = allows(w, [st.pos], len(tokens), self._bucket(st.pos+len(tokens)))
         segs = stage(w, b, [(st, tokens)])
         R = segs[-1][2]
-        if R > self.max_rows:
+        if not qualified or R > self.max_rows:
             return compute(w, segs, b)
         context = self._bucket(st.pos + R)
         key = (R, st.cur[0] if st.cur else 0, context)
@@ -66,8 +90,13 @@ class Graphs:
             compute(w, segs, b, context=context)     # eager warm-up: compiles this launch shape
             g = self._capture(lambda: compute(w, segs, b, context=context))
             self.main[key] = g
+        archive = getattr(w, "meta", {}).get("indexer_history") == "ram"
+        if archive:
+            history_runtime.begin(segs, prefill=b.prefill)
         st.kv_begin()
         g.replay()
+        if archive:
+            history_runtime.submitted(segs, prefill=b.prefill)
         _kv_check(segs, comm=w.comm)
         return b.logits[:R]
 
@@ -76,9 +105,13 @@ class Graphs:
         e = self.e
         w, st, b = e.w, e.st, e.mbuf
         self._check_owner()
-        segs = mtp_stage(w, b, [(st, next_tokens, streams)])
+        from tensorfold.cuda.sm70.attention_qualification import allows
+
+        next_tokens = list(next_tokens)
+        qualified = allows(w, [st.mtp_len], len(next_tokens), self._bucket(st.mtp_len+len(next_tokens)))
+        segs = mtp_stage(b, [(st, next_tokens, streams)])
         n = segs[-1][2]
-        if n > self.max_rows:
+        if not qualified or n > self.max_rows:
             return mtp_compute(w, segs, b)
         context = self._bucket(st.mtp_len + n)
         key = (n, context)
@@ -88,8 +121,13 @@ class Graphs:
             g = self._capture(lambda: mtp_compute(w, segs, b, context=context))
             self.mtp[key] = g
             self.mtp_out[key] = out
+        archive = getattr(w, "meta", {}).get("indexer_history") == "ram"
+        if archive:
+            history_runtime.begin(segs, prefill=b.prefill, mtp=True)
         st.kv_begin()
         g.replay()
+        if archive:
+            history_runtime.submitted(segs, prefill=b.prefill, mtp=True)
         _kv_check(segs, comm=w.comm)
         return self.mtp_out[key]
 

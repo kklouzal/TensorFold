@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import argparse
+from collections.abc import Callable
 from pathlib import Path
-from typing import Callable
 
 from tensorfold import __version__
 from tensorfold.cuda.prompt_precision import FP8_BY_DEFAULT
 from tensorfold.families.qwen4_exp.kv_formats import DTYPES as FLASH_NEXT_KV_DTYPES
+
+
+class _KVFormat(argparse.Action):
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        namespace._kv_dtype_explicit = True
 
 
 def _vram_experts(value: str) -> float | str:
@@ -27,6 +33,48 @@ def _vram_experts(value: str) -> float | str:
     return budget
 
 
+def _full_windows(value: str) -> int | str:
+    """Keep automatic full-context capacity distinct from a numeric ceiling."""
+
+    if value == "auto":
+        return value
+    try:
+        return int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("--kv-full-windows: use auto or a positive whole number") from None
+
+
+def add_fifo_arguments(parser) -> None:
+    """Shared explicit deployment inputs for serving and profile preparation."""
+    parser.add_argument("--max-waiting-input-bytes", type=int, default=None,
+                          help="explicit positive byte budget for queued and reserved live input/readmission credit in adaptive unique-history Flash Next FIFO admission")
+    parser.add_argument("--max-waiting-input-bytes-per-principal", type=int, default=None,
+                          help="optional positive FIFO queued/reserved live input byte cap per authenticated principal; requires configured API keys")
+    parser.add_argument("--output-queue-tokens", type=int, default=None,
+                          help="optional positive FIFO output credit per request, including callback delivery in flight; omitted preserves the full-reply mailbox bound")
+    parser.add_argument("--queue-timeout-s", type=float, default=None,
+                          help="optional positive FIFO queue deadline in seconds; no timeout is imposed when omitted")
+
+
+def add_retention_arguments(parser: argparse.ArgumentParser) -> None:
+    """Keep the seven explicit retention inputs identical in both admin CLIs."""
+    retention = parser.add_argument_group("explicit retained inference state")
+    retention.add_argument("--retention-tier", choices=("gpu", "ram"), default=None,
+                           help="retain complete inference state in the selected tier; omitted with all bounds means request-scoped execution")
+    retention.add_argument("--retained-sessions", type=int, default=None,
+                           help="explicit maximum retained logical sessions; independent of concurrent GPU slots")
+    retention.add_argument("--retention-lifetime-s", type=float, default=None,
+                           help="explicit absolute retention lifetime in seconds; not an inactivity grace period")
+    retention.add_argument("--retention-ram-bytes", type=int, default=None,
+                           help="RAM tier: explicit global host backing budget")
+    retention.add_argument("--retention-chunk-bytes", type=int, default=None,
+                           help="RAM tier: explicit bounded transfer chunk bytes")
+    retention.add_argument("--retention-progress-bytes", type=int, default=None,
+                           help="RAM tier: explicit global host progress budget for pinned and ordinary chunks on every rank")
+    retention.add_argument("--retention-overlap-bytes", type=int, default=None,
+                           help="RAM tier: explicit additional GPU overlap budget per rank; zero selects serialized direct copies")
+
+
 def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> argparse.ArgumentParser:
     """The ``tensorfold`` parser, each subcommand bound to ``handlers[name]``."""
 
@@ -39,7 +87,7 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
 
     serve = commands.add_parser("serve", help="serve a model at an OpenAI-compatible endpoint",
                                 formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    serve.add_argument("model", help="a Hugging Face repo id (downloaded on first use) or a model directory")
+    serve.add_argument("model", help="a Hugging Face repo id (downloaded on first use), model directory or Flash Next GGUF shard")
     serve.add_argument("--trust-model-code", action="store_true",
                        help="MLX provider recipes: explicitly permit checkpoint model_file Python to execute "
                             "with server privileges; custom code uses per-process disk cache identity")
@@ -48,13 +96,26 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     endpoint.add_argument("--port", type=int, default=8080)
     endpoint.add_argument("--max-http-connections", type=int, default=None,
                           help="optional positive cap on simultaneous HTTP connections; excess connections wait in the "
-                               "listen backlog until an owner retires (default: no worker cap)")
+                               "listen backlog until an owner retires (required for adaptive V100 serving; "
+                               "otherwise default: no worker cap)")
     endpoint.add_argument("--max-pending-requests", type=int, default=None,
                           help="optional positive cap on unfinished generation requests, including waiting, "
-                               "running and canceled engine work; excess requests receive HTTP 503 (default: uncapped)")
+                               "running and canceled engine work; excess requests receive HTTP 503 "
+                               "(required for adaptive V100 serving; otherwise default: uncapped)")
+    endpoint.add_argument("--max-pending-requests-per-principal", type=int, default=None,
+                          help="CUDA only: optional positive unfinished-request cap per authenticated principal; "
+                               "requires --max-pending-requests (default: no separate principal cap)")
+    add_fifo_arguments(endpoint)
+    endpoint.add_argument("--api-record-store", type=Path, default=None,
+                          help="explicit private local database for durable Responses/Conversations logical records; requires --api-record-limits and finite --max-http-connections")
+    endpoint.add_argument("--api-record-limits", type=Path, default=None,
+                          help="explicit API record quota/retention JSON; requires --api-record-store; does not reserve inference state")
+    add_retention_arguments(serve)
     endpoint.add_argument("--max-engine-calls", type=int, default=None,
                           help="MLX only: optional positive cap on queued and running engine RPC callbacks, "
                                "including timed-out callers (default: uncapped; unsupported on CUDA)")
+    endpoint.add_argument("--serving-profile-root", type=Path, default=None,
+                          help="local prepared serving-profile directory for in-process resident Flash Next SM70 model/context/KV/method transitions; requires finite request/socket limits")
     endpoint.add_argument("--name", default="", help="model id clients ask for (default: the model's name)")
     endpoint.add_argument("--alias", action="append", default=[], help="another model id to answer to")
     endpoint.add_argument("--name-priority", action="append", default=[], metavar="ID=background",
@@ -62,10 +123,16 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                                "priority: background; CUDA only, repeatable")
     endpoint.add_argument("--api-key", action="append", default=[], help="require this API key; repeat for more keys")
     endpoint.add_argument("--api-key-file", help="restricted key file, one key or label: key per line; # comments")
-    endpoint.add_argument("--metrics-open", action="store_true", help="allow metrics without an API key")
+    endpoint.add_argument("--metrics-open", action="store_true", help="allow /metrics and /stats without an API key")
     endpoint.add_argument("--vision", action="store_true",
                           help="enable image input for supported GLM and Qwen vision checkpoints; "
-                               "Flash Next CUDA requires one GPU and --parallel 2 or more")
+                               "Flash Next legacy vision requires one GPU and --parallel 2 or more; "
+                               "the explicit SM70 media profile uses TP8")
+    endpoint.add_argument("--media-profile-manifest", type=Path, default=None,
+                          help="with --vision, select explicit bounded SM70 TP8 media resources, processor and mmproj; "
+                               "requires --no-graphs; V100 qualification remains separate")
+    endpoint.add_argument("--no-graphs", action="store_true",
+                          help="Flash Next CUDA: execute whole forwards eagerly; required by the initial SM70 media profile")
     endpoint.add_argument("--vision-urls", action="store_true",
                           help="with --vision, accept public HTTP(S) image URLs (default: data URLs only)")
     endpoint.add_argument("--vision-offload", action="store_true",
@@ -79,16 +146,35 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                           help="with --vision on CUDA Qwen checkpoints, the visual tokens a request's images share "
                                "(default: 4096, at most 65536); each image keeps at most 4096")
 
-    generation = serve.add_argument_group("generation (requests can override each of these)")
+    generation = serve.add_argument_group("model defaults and generation")
     generation.add_argument("--context", type=int, default=None,
                             help="prompt plus reply window (default: model config; CUDA default/0: "
                                  "affordable native capacity; Metal 0: remove metadata cap)")
     generation.add_argument("--yarn-factor", type=float, default=None,
-                            help="Flash Next CUDA: static YaRN text RoPE extension (2: 524288 tokens for the "
-                                 "262144-token checkpoint); overrides the checkpoint factor, requires >=1. "
-                                 "Short-context quality may change; --context still controls admission")
-    generation.add_argument("--max-tokens", type=int, default=4096,
-                            help="reply tokens when a request does not say")
+                            help="Flash Next, Qwen3.8 dense and Qwen3.6 on CUDA: static YaRN text RoPE extension (2: "
+                                 "524288 tokens, 4: 1048576 for a 262144-token checkpoint); overrides the checkpoint "
+                                 "factor, requires >=1. Short-context quality may change; --context still controls "
+                                 "admission")
+    generation.add_argument("--position-profile-manifest", type=Path, default=None, metavar="PATH",
+                            help="Flash Next SM70 unique TP8 GPU histories: immutable target/MTP/draft positions; positive "
+                                 "--context must match, default/0 uses its declared rows. Source candidates need "
+                                 "independent device/model qualification")
+    generation.add_argument("--max-tokens", type=int, default=None,
+                            help="reply tokens when a request does not say (default: generation_config.json "
+                                 "max_new_tokens, else 4096)")
+    generation.add_argument("--eos-token-id", dest="eos_token_ids", type=int, action="append", default=None,
+                            help="replace metadata EOS IDs (repeat for multiple IDs); defaults reconcile model, "
+                                 "generation and tokenizer EOS declarations")
+    templates = generation.add_mutually_exclusive_group()
+    templates.add_argument("--chat-template", dest="chat_template_file", type=Path, default=None,
+                           help="use this UTF-8 Jinja template instead of checkpoint templates")
+    templates.add_argument("--chat-template-name", default=None,
+                           help="select a named checkpoint template; otherwise default/tool_use are selected automatically")
+    generation.add_argument("--tokenizer", dest="tokenizer_file", type=Path, default=None,
+                            help="CUDA: encode and decode with this tokenizer.json instead of the checkpoint's; its "
+                                 "vocabulary, merges and added tokens must equal the checkpoint's (only text handling "
+                                 "such as the pre-tokenizer may differ), e.g. the base model's when a fine-tune ships "
+                                 "an altered one; one rank, not with --vision")
     generation.add_argument("--temperature", type=float, default=None,
                             help="0 decodes greedily (default: the model's generation_config.json, else 0)")
     generation.add_argument("--top-p", type=float, default=None,
@@ -99,6 +185,16 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     generation.add_argument("--min-p", type=float, default=None,
                             help="keep tokens at least this share of the likeliest one's probability (default: the "
                                  "model's generation config, else 0: off)")
+    generation.add_argument("--presence-penalty", type=float, default=None,
+                            help="-2 to 2: subtract this from every token the reply already holds (OpenAI; default 0: "
+                                 "off; the engines docs/api.md#penalties names)")
+    generation.add_argument("--frequency-penalty", type=float, default=None,
+                            help="-2 to 2: subtract this times a token's count in the reply (OpenAI; default 0: off; "
+                                 "the engines docs/api.md#penalties names)")
+    generation.add_argument("--repetition-penalty", type=float, default=None,
+                            help="above 0: divide positive (multiply other) scores of tokens in the prompt or reply by "
+                                 "this (Hugging Face/vLLM; default: the model's generation config, else 1: off; the "
+                                 "engines docs/api.md#penalties names)")
     generation.add_argument("--thinking", action=argparse.BooleanOptionalAction, default=True,
                             help="open a think block when the chat template supports it")
     generation.add_argument("--reasoning-effort", choices=("low", "medium", "high", "xhigh"), default=None,
@@ -110,15 +206,30 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
 
     speed = serve.add_argument_group("drafting and caches")
     speed.add_argument("--no-drafts", action="store_true",
-                       help="one token a round: the serial reference (same output, slower)")
+                       help="one token a round: the serial reference. CUDA DFlash sampled replies may differ; "
+                            "greedy replies match")
     speed.add_argument("--drafter", default="auto",
                        help="a draft model (repo id or directory); auto: the family's draft model when it has been "
                             "pulled; none: no draft model")
-    speed.add_argument("--drafter-bits", type=int, default=4, help="quantize the draft model's linears (0: bf16)")
+    speed.add_argument("--draft-method", choices=("auto", "none", "mtp", "dspark", "dflash2"), default="auto",
+                       help="proposal method; none selects serial execution without loading a draft model; "
+                            "auto detects the drafter architecture. Flash Next CUDA supports MTP, DSpark and "
+                            "DFlash2; DFlash2 requires TP8 GGUF and an exact execution-profile pairing manifest. "
+                            "--drafter selects the checkpoint")
+    speed.add_argument("--drafter-bits", type=int, default=None,
+                       help="draft precision, proposals only (0: bf16). MLX: affine bits, default 4. "
+                            "CUDA Qwen MoE DFlash: 0 or 16 (default), 8 (FP8), 4 (NVFP4); requantized drafts "
+                            "copy a floating target head or borrow a stored quantized head. CUDA Gemma4 DFlash: "
+                            "16 (default), or 8 (FP8) only with a BF16 tied target head. The target verifies every draft")
+    speed.add_argument("--draft-rows", type=int, default=None,
+                       help="maximum target tokens verified per draft block. CUDA Gemma4 DFlash: 2-128 "
+                            "(default 16); CUDA Qwen MoE NVFP4: default is the draft model's block size")
     speed.add_argument("--mtp-drafts", type=int, default=None,
-                       help="most MTP drafts a round (Qwen3.8 Flash Next: 3 on Mac; on CUDA 6, stopping under 70%% "
+                       help="most proposals a round (MTP, or the selected DSpark block on Flash Next CUDA; Qwen3.8 Flash Next: 3 on Mac; on CUDA 6, stopping under 70%% "
                             "confidence; Nemotron on CUDA: 3, stopping under 20%% confidence); on Qwen3.6 MoE Mac, "
-                            "an explicit value selects included MTP instead of default DFlash; 0: no MTP drafts")
+                            "an explicit value selects included MTP instead of default DFlash; 0 with auto: "
+                            "disable startup drafting. Explicit --draft-method mtp requires positive maximum depth; "
+                            "runtime proposal_limit 0 retains an already enabled MTP method")
     speed.add_argument("--mtp-confidence", type=float, default=None,
                        help="on CUDA, stop an MTP chain before a later draft under this probability "
                             "(Flash Next default 0.70; Nemotron default 0.20)")
@@ -141,8 +252,9 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     speed.add_argument("--parallel", default="auto",
                        help="requests decoded together, their windows sharing each round's forward: a number, or "
                             "auto (Mac: up to 8, each started only while the projected memory fits the budget; "
-                            "CUDA auto: one at a time; explicit shared rounds depend on the family; "
-                            "Flash Next sharing requires one GPU)")
+                            "Flash Next GGUF GPU-history CUDA auto: computed equal full-context capacity; a number is its "
+                            "session ceiling. Other CUDA auto: one at a time; explicit shared rounds depend "
+                            "on the family)")
     speed.add_argument("--decode-share", type=float, default=None, help="Mac: while prompts prefill, running replies "
                        "keep moving for this share of each chunk's time, and a new prompt starts at the next chunk "
                        "(default 0.25; 0: whole prompts first, in order, as 0.3.6.2). CUDA Flash Next --parallel: "
@@ -157,31 +269,52 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                        help="stream routed experts from the checkpoint into a GPU pool of this many GiB, for models "
                             "past the memory budget (the rest stays resident; output is the resident model's)")
     speed.add_argument("--vram-experts", type=_vram_experts, default=None, metavar="GIB|auto",
-                       help="Flash Next affine 4-bit or EXL3 CUDA: keep experts in system RAM; use this many GiB "
+                       help="Flash Next affine 4-bit, EXL3 or NVFP4 CUDA: keep experts in system RAM; use this many GiB "
                             "for a shared GPU expert cache, or auto to use the room left after weights, slot state "
-                            "and workspace (one GPU; routing and precision preserved; slower on misses)")
+                            "and workspace (routing and precision preserved; affine/NVFP4 also support expert ranks)")
     speed.add_argument("--ple-on-ssd", action="store_true",
-                       help="Flash Next: read the n-gram (PLE) tables from the checkpoint on SSD at each lookup "
-                            "instead of holding them in memory. A trade: a few percent of decode speed for about "
-                            "40 GiB less at peak (the tables are 29.8 GiB); a 128 GB Mac needs it")
+                       help="Flash Next: read supported n-gram (PLE) table rows from SSD at lookup; CUDA supports "
+                            "affine, BF16, FP8 and NVFP4 tables; EXL3 retains its native mapped table. "
+                            "Memory and latency depend on checkpoint format and storage")
+    speed.add_argument("--kv-full-windows", type=_full_windows, default=None, metavar="N|auto",
+                       help="Flash Next GGUF GPU histories: auto computes equal full-context capacity; N caps it. "
+                            "Other Flash Next resident GGUF/RAM-expert modes reserve N full KV windows across slots")
+    speed.add_argument("--execution-profile-manifest", type=Path, default=None, metavar="PATH",
+                       help="Flash Next GGUF GPU-history SM70: load measured execution profiles only after their "
+                            "checkpoint, codec, runtime, kernel and hardware identities match this deployment")
+    speed.add_argument("--family-manifest", type=Path, default=None, metavar="PATH",
+                       help="Flash Next SM70: explicit source/numerical manifest for retained software NVFP4; "
+                            "requires --precision full and separately pending model/device qualification")
+    speed.add_argument("--indexer-history", choices=("gpu", "ram"), default="gpu",
+                       help="Flash Next GGUF/SM70: full GPU raw indexer history (default), or a bounded GPU "
+                            "working ring with asynchronous NUMA-local RAM archive; pooled history stays on GPU")
+    speed.add_argument("--vram-experts-pin", choices=("off", "auto", "on"), default="off",
+                       help="RAM expert authority: off keeps pageable bytes; auto admits host page registration, "
+                            "on requires it; allocation and full host capacity are checked before loading")
 
     speed.add_argument("--no-update-check", action="store_true",
                        help="don't ask GitHub whether a newer release exists (also TENSORFOLD_NO_UPDATE_CHECK=1)")
 
-    cuda = serve.add_argument_group("NVIDIA GPUs (DGX Spark)")
+    cuda = serve.add_argument_group("NVIDIA GPUs")
     cuda.add_argument("--backend", choices=("auto", "mlx", "cuda"), default="auto",
                       help="auto: MLX on macOS, CUDA elsewhere")
-    cuda.add_argument("--tp", type=int, choices=(1, 2, 4), default=1,
-                      help="GPUs (one per machine) the model is split over; run the same command on each")
-    cuda.add_argument("--rank", type=int, choices=(0, 1, 2, 3), default=0,
-                      help="with --tp 2/4: this machine's rank; rank 0 serves HTTP, others follow it")
-    cuda.add_argument("--master", default="", help="with --tp 2/4: rank 0's address on the link between the ranks")
+    cuda.add_argument("--tp", type=int, choices=(1, 2, 4, 8), default=1,
+                      help="tensor-parallel GPUs (one visible GPU per rank process); run the same model/settings on each")
+    cuda.add_argument("--expert-ranks", type=int, choices=(1, 2, 3, 4), default=1,
+                      help="Flash Next expert-only NCCL ranks; rank zero owns backbone/state, separate from --tp")
+    cuda.add_argument("--expert-shards", default=None, metavar="COUNTS",
+                      help="comma-separated routed-expert counts per expert rank, covering every expert exactly")
+    cuda.add_argument("--rank", type=int, choices=tuple(range(8)), default=0,
+                      help="tensor/expert rank index; rank 0 serves HTTP, others follow it")
+    cuda.add_argument("--master", default="", help="rank 0 rendezvous address; expert ranks require same-host loopback")
     cuda.add_argument("--master-port", type=int, default=29551,
-                      help="with --tp 2/4: rank 0's rendezvous port (1 to 65535, the same on every rank)")
-    cuda.add_argument("--kv-dtype", choices=FLASH_NEXT_KV_DTYPES, default="bf16",
-                      help="KV cache: bf16 (the default), int8, int4, or a RotorQuant format. "
+                      help="rank 0 rendezvous port (1 to 65535, the same on every tensor/expert rank)")
+    cuda.add_argument("--kv-dtype", choices=FLASH_NEXT_KV_DTYPES, default="bf16", action=_KVFormat,
+                      help="KV cache: bf16 (default; fp16 for Flash Next GGUF/SM70), fp16, int8, int4, or a RotorQuant format. "
                            "INT8/INT4 use one fp16 scale per 32 values. RotorQuant uses packed Lloyd-Max codes and "
-                           "fp32 scale per 128 values (all quantized formats change output; Flash Next CUDA only)")
+                           "fp32 scale per 128 values (all quantized formats change output; Flash Next CUDA only). "
+                           "GGUF/SM70 supports fp16, int8, rotorquant-signed128-4 and "
+                           "rotorquant-signed64-norm4")
     cuda.add_argument("--kv-key-dtype", choices=FLASH_NEXT_KV_DTYPES, default=None,
                       help="Flash Next CUDA: key-cache format; overrides the key side of --kv-dtype")
     cuda.add_argument("--kv-value-dtype", choices=FLASH_NEXT_KV_DTYPES, default=None,
@@ -191,15 +324,16 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                            "FP8 prompt kernel (Qwen3.8 27B and Qwen3.6 MLX 4-bit, NVFP4 checkpoints' FP8 and MXFP8 "
                            "layers): faster prompts, lower precision (e4m3 keeps 3 mantissa bits, bf16 keeps 7; "
                            "docs/recipes/cuda.md#prompt-precision has the measured cost). Default: "
-                           f"{'FP8' if FP8_BY_DEFAULT else 'bf16'} activations. Replies equal this server's own serial "
+                           f"{'FP8' if FP8_BY_DEFAULT else 'bf16'} activations. Greedy replies equal this server's own serial "
                            "decoding either way")
     cuda.add_argument("--precision", choices=("checkpoint", "full"), default=argparse.SUPPRESS,
                       help="the math for checkpoints that name their activations' formats (NVFP4): checkpoint, the "
                            "default, runs their own math as their runtimes do (FP4 x FP4 in NVFP4 layers on SM 12.x "
-                           "GPUs, FP8 x FP8 in FP8 layers from SM 8.9, under the checkpoint's static input scales; "
+                           "GPUs, FP8 x FP8 in FP8 layers from SM 8.9; rows under the checkpoint's static input scales, "
+                           "or each row's own scale for per-channel FP8 with dynamic per-token inputs; "
                            "layers a GPU has no mma for run W4A16, and the startup line says which); full runs bf16 "
                            "activations against the stored weights exactly. The weights never change, only the math; "
-                           "MLX checkpoints have one math. Replies equal this server's own serial decoding either way")
+                           "MLX checkpoints have one math. Greedy replies equal this server's own serial decoding either way")
     serve.set_defaults(func=handlers["serve"])
 
     pull = commands.add_parser("pull", help="download models (or draft models) from Hugging Face")

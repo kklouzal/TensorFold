@@ -186,7 +186,6 @@ class FileContent:
     sha256: str
     size: int
     stat_identity: tuple[int, ...]
-    hash_seconds: float
 
 
 @dataclass(frozen=True)
@@ -201,16 +200,19 @@ class ModelIdentity:
     hashes_reused: int
     elapsed_seconds: float
     _issued: object = field(repr=False, compare=False)
+    _pid: int = field(init=False, repr=False, compare=False)
 
     def __post_init__(self):
         if self._issued is not _ISSUED:
             raise ValueError("model identity must be issued by capture")
+        object.__setattr__(self, '_pid', os.getpid())
         # A copied/replaced dataclass cannot inherit the original receipt's
         # authority. No process-global mutable receipt registry is needed.
         object.__setattr__(self, '_issued', weakref.ref(self))
 
     def _check_issued(self):
-        if type(self._issued) is not weakref.ReferenceType or self._issued() is not self:
+        if (self._pid != os.getpid() or type(self._issued) is not weakref.ReferenceType
+                or self._issued() is not self):
             raise ValueError("model identity receipt was not issued in this process")
 
     def verify_unchanged(self):
@@ -228,6 +230,28 @@ class ModelIdentity:
                 raise
             finally:
                 _close(scope, primary)
+
+
+def _hash_descriptor(fd, size):
+    hasher, read = hashlib.sha256(), 0
+    while read < size:
+        block = os.read(fd, min(_READ_BYTES, size - read))
+        if not block:
+            raise ValueError("model execution input was truncated during hashing")
+        hasher.update(block)
+        read += len(block)
+    if os.read(fd, 1):
+        raise ValueError("model execution input grew during hashing")
+    return hasher.hexdigest(), read
+
+
+def _issue_identity(runtime, contents, *, bytes_read, hashes_reused, started):
+    envelope = {'format': 'model-content-v1', 'runtime': runtime,
+                'files': [{'name': c.logical_name, 'size': c.size, 'sha256': c.sha256} for c in contents]}
+    digest = hashlib.sha256(json.dumps(envelope, sort_keys=True, ensure_ascii=False,
+                                       separators=(',', ':')).encode('utf-8')).hexdigest()
+    return ModelIdentity('model-content-v1:' + digest, runtime, tuple(contents), sum(c.size for c in contents),
+                         bytes_read, hashes_reused, time.perf_counter() - started, _ISSUED)
 
 
 def capture_model_identity(files: dict[str, Path], *, runtime_identity, authorize,
@@ -254,12 +278,13 @@ def capture_model_identity(files: dict[str, Path], *, runtime_identity, authoriz
             raise ValueError("model input requires a logical name and filesystem path")
         if len(name.encode('utf-8')) > max_name_bytes:
             raise ValueError("model input logical name exceeds byte bound")
-    runtime = canonical_runtime_json(runtime_identity)
-    previous = {}
     if reuse is not None:
         if type(reuse) is not ModelIdentity or not reuse_is_immutable:
             raise ValueError("hash reuse needs current-process immutable input authority")
         reuse._check_issued()
+    runtime = canonical_runtime_json(runtime_identity)
+    previous = {}
+    if reuse is not None:
         if reuse.runtime_json == runtime and {f.logical_name for f in reuse.files} == set(files):
             previous = {f.logical_name: f for f in reuse.files}
     contents = []
@@ -277,37 +302,157 @@ def capture_model_identity(files: dict[str, Path], *, runtime_identity, authoriz
                 raise ValueError("model execution inputs exceed total byte budget")
             before = _identity(info)
             old = previous.get(name)
-            hash_started = time.perf_counter()
             if old is not None and old.path == str(path) and old.stat_identity == before:
                 digest = old.sha256
                 reused += 1
             else:
-                hasher = hashlib.sha256()
-                read = 0
-                while read < info.st_size:
-                    block = os.read(fd, min(_READ_BYTES, info.st_size - read))
-                    if not block:
-                        raise ValueError("model execution input was truncated during hashing")
-                    hasher.update(block)
-                    read += len(block)
-                if os.read(fd, 1):
-                    raise ValueError("model execution input grew during hashing")
+                digest, read = _hash_descriptor(fd, info.st_size)
                 read_bytes += read
-                digest = hasher.hexdigest()
             if _identity(os.fstat(fd)) != before or _identity(path.stat(follow_symlinks=False)) != before:
                 raise ValueError("model execution input changed during identity capture")
-            contents.append(FileContent(name, str(path), digest, info.st_size, before,
-                                        time.perf_counter() - hash_started))
+            contents.append(FileContent(name, str(path), digest, info.st_size, before))
         except BaseException as error:
             primary = error
             raise
         finally:
             _close(scope, primary)
-    envelope = {'format': 'model-content-v1', 'runtime': runtime,
-                'files': [{'name': c.logical_name, 'size': c.size, 'sha256': c.sha256} for c in contents]}
-    digest = hashlib.sha256(json.dumps(envelope, sort_keys=True, ensure_ascii=False,
-                                       separators=(',', ':')).encode('utf-8')).hexdigest()
-    receipt = ModelIdentity('model-content-v1:' + digest, runtime, tuple(contents), total,
-                            read_bytes, reused, time.perf_counter() - started, _ISSUED)
+    receipt = _issue_identity(runtime, contents, bytes_read=read_bytes, hashes_reused=reused, started=started)
     receipt.verify_unchanged()
     return receipt
+
+
+def capture_shared_model_identity(files: dict[str, Path], *, runtime_identity, authorize,
+                                  max_file_bytes: int, max_total_bytes: int, rank: int, world: int,
+                                  exchange, reuse: ModelIdentity | None = None,
+                                  reuse_is_immutable: bool = False, max_files: int = 65536,
+                                  max_name_bytes: int = 4096) -> ModelIdentity:
+    """Issue local authority after an owned same-host cohort content pass.
+
+    ``exchange(stage, operation)`` is the startup owner's matched, fatal-aware
+    phase exchange; it executes this rank's operation and returns rank-ordered
+    results. It is trusted transport, never persisted manifest/peer JSON used
+    as standalone authority. Every rank authorizes and opens the entire closure
+    and keeps its descriptor owners through the leader's hash and verification.
+    The service owns immutability from these opens through loading/serving.
+    Followers read zero payload bytes and explicitly report shared hash reuse.
+    """
+    started = time.perf_counter()
+    if (type(files) is not dict or not files or type(rank) is not int or type(world) is not int
+            or not 1 <= world <= 8 or not 0 <= rank < world or not callable(exchange)
+            or any(type(n) is not int or n < 0 for n in (max_file_bytes, max_total_bytes))
+            or any(type(n) is not int or n <= 0 for n in (max_files, max_name_bytes))
+            or len(files) > max_files or type(reuse_is_immutable) is not bool):
+        raise ValueError("bounded same-host model content cohort required")
+    runtime = None
+    previous = {}
+    scope, opened = None, {}
+    primary = None
+    try:
+        def inventory():
+            nonlocal previous, runtime, scope
+            if reuse is not None:
+                if type(reuse) is not ModelIdentity or not reuse_is_immutable:
+                    raise ValueError("shared hash reuse needs current-process immutable authority")
+                reuse._check_issued()
+            # A foreign-process receipt refuses within the matched phase,
+            # before runtime serialization or opening any execution input.
+            runtime = canonical_runtime_json(runtime_identity)
+            scope = FileStreams(max_files=max_files)
+            if reuse is not None:
+                if reuse.runtime_json == runtime and {f.logical_name for f in reuse.files} == set(files):
+                    previous = {f.logical_name: f for f in reuse.files}
+            total = 0
+            for name in sorted(files):
+                path = files[name]
+                if (type(name) is not str or not name or '\0' in name or len(name) > max_name_bytes
+                        or len(name.encode('utf-8')) > max_name_bytes or not isinstance(path, Path)):
+                    raise ValueError("model input requires a bounded logical name and filesystem path")
+                path = authorize(name, path)
+                if not isinstance(path, Path) or not path.is_absolute():
+                    raise ValueError("input authorization must return an absolute resolved path")
+                fd, info = _open_regular(path, max_file_bytes, scope)
+                total += info.st_size
+                if total > max_total_bytes:
+                    raise ValueError("model execution inputs exceed total byte budget")
+                opened[name] = (path, fd, _identity(info))
+            # boot_id names the actual running kernel, unlike a hostname alone.
+            # Read a bounded regular local file through the same native owner.
+            boot_scope = FileStreams(max_files=1)
+            boot_error = None
+            try:
+                fd, _info = _open_regular(Path('/proc/sys/kernel/random/boot_id'), 4096, boot_scope)
+                boot = os.read(fd, 4097).decode('ascii').strip()
+                if not boot or len(boot) > 128:
+                    raise ValueError("actual same-host boot identity is required")
+            except BaseException as error:
+                boot_error = error
+                raise
+            finally:
+                _close(boot_scope, boot_error)
+            return {"rank": rank, "world": world, "host": [os.uname().nodename, boot], "runtime": runtime,
+                    "files": {name: {"path": str(path), "stat": list(identity)}
+                              for name, (path, _fd, identity) in opened.items()}}
+
+        ranks = exchange("inventory", inventory)
+
+        def agree():
+            if (not isinstance(ranks, list) or len(ranks) != world
+                    or any(type(row) is not dict or set(row) != {"rank", "world", "host", "runtime", "files"}
+                           or row["rank"] != index or row["world"] != world
+                           for index, row in enumerate(ranks))):
+                raise ValueError("shared content inventory lost rank ownership")
+            reference = {key: value for key, value in ranks[rank].items() if key != "rank"}
+            if any({key: value for key, value in row.items() if key != "rank"} != reference for row in ranks):
+                raise ValueError("shared content requires identical host, runtime and opened file identities")
+
+        exchange("agreement", agree)
+
+        def content():
+            if rank:
+                return None
+            contents, read_bytes, reused = {}, 0, 0
+            for name, (path, fd, before) in opened.items():
+                old = previous.get(name)
+                if old is not None and old.path == str(path) and old.stat_identity == before:
+                    sha = old.sha256
+                    reused += 1
+                else:
+                    sha, read = _hash_descriptor(fd, before[2])
+                    read_bytes += read
+                contents[name] = {"size": before[2], "sha256": sha}
+            return {"files": contents, "bytes_read": read_bytes, "hashes_reused": reused}
+
+        outcome = exchange("content", content)[0]
+
+        def verification():
+            if (type(outcome) is not dict or set(outcome) != {"files", "bytes_read", "hashes_reused"}
+                    or type(outcome["files"]) is not dict or set(outcome["files"]) != set(opened)
+                    or type(outcome["bytes_read"]) is not int or not 0 <= outcome["bytes_read"] <= sum(
+                        before[2] for _path, _fd, before in opened.values())
+                    or type(outcome["hashes_reused"]) is not int or not 0 <= outcome["hashes_reused"] <= len(opened)):
+                raise ValueError("shared content pass did not cover the actual input closure")
+            for name, (path, fd, before) in opened.items():
+                item = outcome["files"][name]
+                if (type(item) is not dict or set(item) != {"size", "sha256"}
+                        or type(item["size"]) is not int or item["size"] != before[2]
+                        or type(item["sha256"]) is not str or len(item["sha256"]) != 64
+                        or any(char not in '0123456789abcdef' for char in item["sha256"])):
+                    raise ValueError("shared content pass returned invalid file content")
+                if _identity(os.fstat(fd)) != before or _identity(path.stat(follow_symlinks=False)) != before:
+                    raise ValueError("shared input changed across the leader content pass")
+
+        exchange("verification", verification)
+        contents = tuple(FileContent(name, str(path), outcome["files"][name]["sha256"], before[2], before)
+                         for name, (path, _fd, before) in opened.items())
+        receipt = _issue_identity(runtime, contents, bytes_read=outcome["bytes_read"] if rank == 0 else 0,
+                                  hashes_reused=outcome["hashes_reused"] if rank == 0 else len(contents), started=started)
+        # Keep the final check in an agreed phase: a local failure must not let
+        # a peer begin CUDA acquisition while this rank is still refusing.
+        exchange("issuance", receipt.verify_unchanged)
+        return receipt
+    except BaseException as error:
+        primary = error
+        raise
+    finally:
+        if scope is not None:
+            _close(scope, primary)

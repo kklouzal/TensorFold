@@ -7,6 +7,31 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Sequence
 
 
+def mark_error_state_retired(error):
+    """The decoder completed request rollback/reset; device readers still need a fence."""
+    BaseException.__dict__["__dict__"].__get__(error)["_tensorfold_request_state_retired"] = True
+    return error
+
+
+def prefix_limit(callback: Callable | None, new: Sequence[int], prefix: Sequence[int]) -> tuple[int, bool]:
+    """Validate a pure precommit decision before cache/recurrent publication.
+
+    ``prefix`` includes the already emitted pending anchor. The callback owns
+    logical stop decisions, not delivery or IO. A stop at the exact block end
+    still returns ``stop=True`` so asynchronous serving cannot run another row.
+    """
+
+    if callback is None:
+        return len(new), False
+    result = callback(new, prefix)
+    if (not isinstance(result, tuple) or len(result) != 2 or type(result[0]) is not int
+            or not 0 <= result[0] <= len(new) or type(result[1]) is not bool):
+        raise ValueError("token_limit must return a bounded (integer prefix length, boolean stop) pair")
+    if result[0] < len(new) and not result[1]:
+        raise ValueError("a shortened token prefix must stop before uncommitted output")
+    return result
+
+
 @dataclass
 class Stream:
     """One request. ``emit`` receives each round's new tokens and returns True to stop the stream."""
@@ -28,6 +53,8 @@ class Stream:
     drafts: list[int] = field(default_factory=list)       # an MTP family's drafts for the next round
     stops: list[int] = field(default_factory=list)        # prompt positions whose states the prefill keeps
     constraint: Any = None                                # the reply's grammar (tensorfold.engine.grammar), or None
+    penalties: Any = None                                 # active penalties (tensorfold.engine.penalties.Penalties)
+    history: Any = None                                   # their state, made when a lane admits it (rank 0)
     background: bool = False                              # priority "background": after, and yielding to, the rest
     probabilities: Any = None
     carry: dict | None = None                             # the stats of the stream this one continues
@@ -44,6 +71,13 @@ class Stream:
     prefill_s: float = 0.0
     started: float = 0.0
     finished: float = 0.0
+    queued: float = field(default_factory=time.perf_counter)   # when it joined the waiting queue (a replay: again)
+    queue_s: float = 0.0                                  # seconds it waited there for a lane, held for memory included
+    admitted: float = 0.0                                 # when a lane took it
+    on_fill: Callable[[int], None] | None = None         # prompt rows its state holds, after each prefill pass
+    token_limit: Callable[[Sequence[int], Sequence[int]], tuple[int, bool]] | None = None
+    profile_epoch: int | None = None  # identity only; ProfileGate/queue own the request lifetime
+    committed_output_tokens: int = 0                 # unique accepted output; replay and delivery do not advance it
 
     def take(self, new: list[int], eos: Sequence[int] = ()) -> None:
         """Append a round's tokens and emit them; the stream ends at its count, an end token or a stop."""
@@ -58,6 +92,7 @@ class Stream:
             self.owed, fresh = self.owed[k:], fresh[k:]
         self.out.extend(new)
         self.context.extend(new)
+        self.committed_output_tokens += len(fresh)
         self.accepted += max(0, len(new) - 1)             # a round's kept drafts come before its own token
         if self.owed and (len(self.out) >= self.count or self.out[-1] in eos):
             self.error = RuntimeError("a background request ended before replaying the reply it sent")
@@ -76,20 +111,25 @@ class Stream:
     def stats(self) -> dict:
         own = {"prefill_s": round(self.prefill_s, 4), "decode_s": round(max(self.finished - self.started, 0.0), 4),
                "rounds": self.rounds, "drafts": self.draft, "cached": self.cached, "min_rows": self.min_rows,
-               "drafted": self.drafted, "accepted": self.accepted}
+               "drafted": self.drafted, "accepted": self.accepted, "queue_s": round(self.queue_s, 4)}
+        own["committed_output_tokens"] = self.committed_output_tokens
         if self.carry is None:
             return own
-        both = {k: round(self.carry[k] + own[k], 4) for k in ("prefill_s", "decode_s")}
+        both = {k: round(self.carry[k] + own[k], 4) for k in ("prefill_s", "decode_s", "queue_s")}
         both.update({k: self.carry[k] + own[k] for k in ("rounds", "drafted", "accepted")})
         rows = [r for r in (self.carry["min_rows"], own["min_rows"]) if r]
         return {**own, **both, "cached": self.carry["cached"], "min_rows": min(rows, default=0)}
 
     def continued(self) -> "Stream":
-        """This stream again from its prompt, for later (as the Mac replays): what it sent is owed, not sent again."""
+        """This stream again from its prompt, for later (as the Mac replays): what it sent is owed, not sent again; its
+        grammar starts again with it."""
 
         return Stream(self.prompt, self.count, self.sampling, draft=self.draft, stop_eos=self.stop_eos, emit=self.emit,
-                      background=self.background, probabilities=self.probabilities,
-                      carry=self.stats(), owed=[*self.out, *self.owed], cancel=self.cancel)
+                      token_limit=self.token_limit,
+                      background=self.background, probabilities=self.probabilities, penalties=self.penalties,
+                      constraint=self.constraint.fresh() if self.constraint is not None else None,
+                      carry=self.stats(), owed=[*self.out, *self.owed], cancel=self.cancel,
+                      profile_epoch=self.profile_epoch, committed_output_tokens=self.committed_output_tokens)
 
 
 def next_fill(filling: list[Stream]) -> Stream:
@@ -184,11 +224,14 @@ class KVRoom:
     def held(self, st: Any) -> int:
         """Bytes of every distinct attention buffer the state and the kept entries hold."""
 
+        from .kv_arena import cache_allocation
+
         seen, total = set(), 0
         for kv in [st.kv, *(e[1].kv for e in self.cache.entries)]:
             for pair in kv:
                 for t in pair or ():
-                    if t.data_ptr() not in seen:
-                        seen.add(t.data_ptr())
-                        total += t.untyped_storage().nbytes()
+                    base, amount = cache_allocation(t)
+                    if base not in seen:
+                        seen.add(base)
+                        total += amount
         return total

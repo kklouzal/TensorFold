@@ -14,8 +14,9 @@ from tensorfold.families.qwen4_exp import ram_experts
 from test_cuda_geometry import allocations, bytes_in  # noqa: F401 (pytest fixture registration)
 
 
-def checkpoint(path, *, mtp=True, signs=False, missing=None, shared_bits=4, routed_bits=2):
-    text = {"hidden_size": 256, "moe_intermediate_size": 128, "shared_expert_intermediate_size": 128,
+def checkpoint(path, *, mtp=True, signs=False, missing=None, shared_bits=4, routed_bits=2,
+               hidden=256, width=128):
+    text = {"hidden_size": hidden, "moe_intermediate_size": width, "shared_expert_intermediate_size": width,
             "num_experts": 3, "num_experts_per_tok": 2, "num_hidden_layers": 2,
             "max_position_embeddings": 128}
     (path / "config.json").write_text(json.dumps({"model_type": "qwen4_exp", "text_config": text,
@@ -34,10 +35,11 @@ def checkpoint(path, *, mtp=True, signs=False, missing=None, shared_bits=4, rout
     if mtp:
         bases.append("mtp.layers.0.mlp")
     for base in bases:
-        add(base + ".gate.weight", "BF16", [3, 256])
-        add(base + ".shared_expert_gate.weight", "BF16", [1, 256])
+        add(base + ".gate.weight", "BF16", [3, hidden])
+        add(base + ".shared_expert_gate.weight", "BF16", [1, hidden])
         for expert, bits in [(f"experts.{i}", routed_bits) for i in range(3)] + [("shared_expert", shared_bits)]:
-            for projection, k, n in (("gate_proj", 256, 128), ("up_proj", 256, 128), ("down_proj", 128, 256)):
+            for projection, k, n in (("gate_proj", hidden, width), ("up_proj", hidden, width),
+                                    ("down_proj", width, hidden)):
                 prefix = f"{base}.{expert}.{projection}"
                 add(prefix + ".trellis", "I16", [k // 16, n // 16, int(bits * 16)])
                 add(prefix + ".su" if signs else prefix + ".suh", "I16" if signs else "F16",
@@ -64,8 +66,9 @@ def test_compact_authority_maximum_cell_and_resident_logical_scales(tmp_path, mt
     assert plan.format == "exl3" and plan.entry_bytes == large
     assert plan.slots == 2 and plan.gpu_bytes == 2 * large
     assert plan.host_bytes == layers * (3 * small + large)
+    assert plan.authority_allocations == (3 * small + large,) * layers
     assert plan.host_bytes < layers * 4 * large
-    assert plan.staging_bytes == 2 * large
+    assert plan.staging_bytes == 2 * 64 * 2**10
     assert plan.metadata_device_bytes == layers * 4 * (3 * 8 + 3 * 4)
     assert plan.metadata_host_bytes == layers * 4 * 28
     assert plan.control_device_bytes == plan.slots * 32
@@ -89,6 +92,57 @@ def test_supported_original_widths_remain_distinct(tmp_path, routed_bits, shared
     assert plan.host_bytes == 3 * (3 * 3 * 256 * 128 * routed_bits // 8 + plan.entry_bytes)
 
 
+def test_large_exl3_cells_budget_rounded_staging_beside_live_loading_temporary(tmp_path):
+    # Header-only sparse checkpoint: no large payload is allocated or loaded.
+    checkpoint(tmp_path, mtp=False, hidden=4096, width=6144)
+    plan = ram_experts.layout(tmp_path, 0.125, mtp=False)
+    entry = 36 * 2**20
+    assert plan.entry_bytes == entry and plan.loading_bytes == 2 * entry
+    rounded_staging = 2 * 64 * 2**20
+    temporary = 2 * entry
+    assert plan.staging_bytes == rounded_staging
+    assert 2 * entry + plan.loading_bytes < rounded_staging + temporary
+    assert plan.staging_bytes + plan.loading_bytes >= rounded_staging + temporary
+
+
+def test_exl3_pin_plan_uses_complete_compact_banks_and_remaining_workspace(tmp_path, monkeypatch):
+    from tensorfold.cuda import expert_pin
+    from tensorfold.families.qwen4_exp import expert_authority
+
+    text, _ = checkpoint(tmp_path)
+    plan = ram_experts.layout(tmp_path, 0.001)
+    bank_bytes = 3 * 3 * 256 * 128 * 2 // 8 + 3 * 256 * 128 * 4 // 8
+    seen = []
+
+    def capture(planned_bytes, *, mode, allocation_bytes, future_bytes):
+        seen.append((planned_bytes, mode, allocation_bytes, future_bytes))
+        return seen[-1]
+
+    monkeypatch.setattr(expert_pin, "ExpertPinPolicy", capture)
+    result = expert_authority.pin_policy(text, plan, "on", future_bytes=12345)
+    expected_future = (plan.loading_bytes + plan.staging_bytes + plan.metadata_host_bytes
+                       + plan.control_host_bytes + 12345)
+    assert result == (3 * bank_bytes, "on", (bank_bytes,) * 3, expected_future)
+    assert len(seen) == 1
+    for options in ({"owned": 1}, {"shared": False}):
+        with pytest.raises(ValueError, match="cannot be partitioned"):
+            expert_authority.allocations(text, plan, **options)
+
+
+def test_disabled_expert_pinning_requires_no_allocation_or_runtime_discovery():
+    from tensorfold.families.qwen4_exp import expert_authority
+
+    assert expert_authority.pin_policy(None, None, "off") is None
+
+
+@pytest.mark.parametrize("mode,future", [("invalid", 0), ("on", 0), ("auto", 0), ("off", -1)])
+def test_exl3_pin_controls_fail_before_checkpoint_read(tmp_path, mode, future):
+    from tensorfold.families.qwen4_exp.cuda.exl3 import load
+
+    with pytest.raises(ValueError, match="expert pinning|workspace"):
+        load(tmp_path / "does-not-exist", vram_experts_pin=mode, _pin_future_bytes=future)
+
+
 def test_incomplete_expert_group_and_subcell_budget_fail_before_payload(tmp_path):
     checkpoint(tmp_path, missing="model.language_model.layers.1.mlp.experts.2.down_proj.svh")
     with pytest.raises(ValueError, match="no output scales"):
@@ -96,6 +150,26 @@ def test_incomplete_expert_group_and_subcell_budget_fail_before_payload(tmp_path
     checkpoint(tmp_path)
     with pytest.raises(ValueError, match="at least one packed EXL3 expert"):
         ram_experts.layout(tmp_path, 1 / 2**30)
+
+
+@pytest.mark.parametrize("layers", [2**62, 3])
+def test_exl3_layer_coverage_rejects_configured_counts_without_expanding_them(tmp_path, layers):
+    checkpoint(tmp_path)
+    path = tmp_path / "config.json"
+    raw = json.loads(path.read_text())
+    raw["text_config"]["num_hidden_layers"] = layers
+    path.write_text(json.dumps(raw))
+    with pytest.raises(ValueError, match="every configured main EXL3 expert layer"):
+        ram_experts.layout(tmp_path, 1)
+
+
+def test_exl3_layer_coverage_requires_contiguous_ids_inside_the_count(tmp_path, monkeypatch):
+    checkpoint(tmp_path)
+    entries = capacity.headers(tmp_path)
+    changed = {name.replace("layers.1.", "layers.3."): info for name, info in entries.items()}
+    monkeypatch.setattr(ram_experts, "headers", lambda _: changed)
+    with pytest.raises(ValueError, match="every configured main EXL3 expert layer"):
+        ram_experts.layout(tmp_path, 1)
 
 
 def test_bad_configured_layer_width_and_mixed_codebooks_fail_before_payload(tmp_path):

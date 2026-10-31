@@ -9,16 +9,17 @@ if not torch.cuda.is_available():
 from tensorfold.cuda.streams import KVRoom, PrefixCache  # noqa: E402
 from tensorfold.families.qwen3_5.cuda.decode import prefill  # noqa: E402
 
-from test_qwen27_prefill import _model, _prompt, _same_state  # noqa: E402
+from qwen_engine_checks import same_state  # noqa: E402
+from test_qwen27_prefill import _model, _prompt  # noqa: E402
 
-BUFFER = 1024 * 128 * 2 * 2                              # the tiny model's 1,024-row attention keys and values
-
-
-@pytest.mark.parametrize("budget,kept", [(4 * BUFFER, True), (BUFFER + BUFFER // 2, False)])
-def test_a_serial_run_evicts_the_drafted_conversation_only_for_room(budget, kept):
+@pytest.mark.parametrize("buffers,kept", [(4, True), (1.5, False)])
+def test_a_serial_run_evicts_the_drafted_conversation_only_for_room(buffers, kept):
     w = _model()
+    probe, _ = prefill(w, _prompt(600, seed=33), None)
+    buffer = sum(t.untyped_storage().nbytes() for kv in probe.kv if kv is not None for t in kv)   # one granule's
+    del probe                                                                                     # arenas mapped
     cache = PrefixCache(4)
-    room = KVRoom(cache, budget)
+    room = KVRoom(cache, int(buffers * buffer))
     drafted, serial = _prompt(600, seed=31), _prompt(600, seed=32)
     st, _ = prefill(w, drafted[:500], None, room=room)
     cache.add(drafted[:500], st, None)                    # the drafted conversation's kept entry
@@ -28,5 +29,5 @@ def test_a_serial_run_evicts_the_drafted_conversation_only_for_room(budget, kept
     assert (hit is not None) == kept
     resumed, first = prefill(w, drafted, None, state=hit[1] if hit else None, room=room)
     fresh, first_fresh = prefill(w, drafted, None)
-    _same_state(fresh, resumed)
+    same_state(fresh, resumed)
     assert first == first_fresh

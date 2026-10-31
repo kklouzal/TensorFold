@@ -11,9 +11,7 @@ from typing import Any
 
 import mlx.core as mx
 
-from .dflash_attention import _dflash_attend, concat_updates
-from .dflash_capture import _capture_writer
-from .dflash_tree import best_first_tree, lattice_gain
+from .dflash_attention import concat_updates
 
 # z-lab's reference MLX implementation of the DFlash2 drafter (MIT; see THIRD_PARTY_NOTICES.md), vendored verbatim
 _VENDOR = Path(__file__).resolve().parent / "vendor" / "z_lab_dflash" / "model_mlx.py"

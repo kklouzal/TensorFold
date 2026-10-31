@@ -5,9 +5,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.cli_server_fixture import install_cli_server
-
 from tensorfold import cli
+from tests.cli_server_fixture import cuda_cli_app, cuda_cli_engine, install_cli_server
 
 
 def _family(**members):
@@ -107,11 +106,11 @@ def test_cuda_admission_metadata_does_not_enlarge_the_engine_cache(tmp_path, mon
     import tensorfold.cuda.server as server
 
     made, served = [], []
-    engine = SimpleNamespace(max_len=8192)
+    engine = cuda_cli_engine(max_len=8192)
     family = _family(cuda_engine=lambda *a, **k: made.append(k) or engine)
     family.model_type = "test"
     monkeypatch.setattr(server, "App", lambda *a, **k: served.append(k) or
-                        SimpleNamespace(effective_context_window=8185))
+                        cuda_cli_app(effective_context_window=8185))
     install_cli_server(monkeypatch, request, server)
     args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", "--no-drafts"])
     assert cli._serve_cuda(args, family, tmp_path, 262144) == 0
@@ -119,6 +118,44 @@ def test_cuda_admission_metadata_does_not_enlarge_the_engine_cache(tmp_path, mon
     assert made[0]["context_explicit"] is False
     assert served[0]["context_window"] == 262144
     assert "context: 8185" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("adaptive,parallel,expected", [(True, "auto", {"parallel_auto": True}),
+                                                       (True, "1", {"parallel": 1}),
+                                                       (True, "47", {"parallel": 47}),
+                                                       (False, "auto", {})])
+def test_cuda_none_skips_drafter_resolution_and_keeps_capacity_intent(tmp_path, monkeypatch, request,
+                                                                    adaptive, parallel, expected):
+    import tensorfold.cuda.server as server
+
+    made = []
+    engine = cuda_cli_engine(max_len=8192)
+    family = _family(cuda_engine=lambda *a, **kw: made.append(kw) or engine,
+                     CUDA_ADAPTIVE_SESSIONS=adaptive)
+    family.model_type = "test"
+    monkeypatch.setattr(cli, "_drafter", lambda *a, **kw: pytest.fail("none resolved an optional checkpoint"))
+    monkeypatch.setattr(server, "App", lambda *a, **kw: cuda_cli_app(effective_context_window=8185))
+    install_cli_server(monkeypatch, request, server)
+    args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", "--draft-method", "none",
+                                          "--parallel", parallel])
+    assert cli._serve_cuda(args, family, tmp_path, 8192) == 0
+    assert made[0]["no_drafts"] is True and made[0]["drafter"] == ""
+    assert {key: made[0][key] for key in ("parallel", "parallel_auto") if key in made[0]} == expected
+
+
+def test_cuda_dispatch_preserves_execution_manifest_path_for_preflight(tmp_path, monkeypatch, request):
+    import tensorfold.cuda.server as server
+
+    made = []
+    family = _family(cuda_engine=lambda *a, **kw: made.append(kw) or cuda_cli_engine(max_len=8192))
+    family.model_type = "test"
+    monkeypatch.setattr(server, "App", lambda *a, **kw: cuda_cli_app(effective_context_window=8185))
+    install_cli_server(monkeypatch, request, server)
+    manifest = tmp_path / "qualified-profile.json"
+    args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", "--no-drafts",
+                                          "--execution-profile-manifest", str(manifest)])
+    assert cli._serve_cuda(args, family, tmp_path, 8192) == 0
+    assert made[0]["execution_profile_manifest"] == manifest
 
 
 def test_the_prompt_precision_flag_parses_and_help_states_the_default():
@@ -149,11 +186,11 @@ def test_the_prompt_precision_is_set_before_loading_and_shown(tmp_path, monkeypa
 
     def engine(*a, **k):
         seen.append(prompt_precision.fp8())
-        return SimpleNamespace(max_len=8192, w=SimpleNamespace(fast_prefill=fast))
+        return cuda_cli_engine(max_len=8192, w=SimpleNamespace(fast_prefill=fast))
 
     family = _family(cuda_engine=engine)
     family.model_type = "test"
-    monkeypatch.setattr(server, "App", lambda *a, **k: SimpleNamespace(effective_context_window=8185))
+    monkeypatch.setattr(server, "App", lambda *a, **k: cuda_cli_app(effective_context_window=8185))
     install_cli_server(monkeypatch, request, server)
     args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", "--no-drafts"] + flags)
     try:
@@ -312,10 +349,10 @@ def test_cuda_parallel_is_one_request_at_a_time_unless_a_number_asks(tmp_path, m
     import tensorfold.cuda.server as server
 
     made = []
-    engine = SimpleNamespace(context_window=4096)
+    engine = cuda_cli_engine(context_window=4096)
     family = _family(cuda_engine=lambda *a, **k: made.append(k) or engine)
     family.model_type = "test"
-    monkeypatch.setattr(server, "App", lambda *a, **k: SimpleNamespace(effective_context_window=4096))
+    monkeypatch.setattr(server, "App", lambda *a, **k: cuda_cli_app(effective_context_window=4096))
     install_cli_server(monkeypatch, request, server)
     command = ["serve", str(tmp_path), "--backend", "cuda", "--no-drafts"] + (["--parallel", flag] if flag else [])
     assert cli._serve_cuda(cli.build_parser().parse_args(command), family, tmp_path, 4096) == 0
@@ -347,11 +384,11 @@ def test_checkpoint_slots_reach_a_cuda_engine_only_when_its_family_declares_them
     import tensorfold.cuda.server as server
 
     made = []
-    engine = SimpleNamespace(context_window=4096)
+    engine = cuda_cli_engine(context_window=4096)
     family = _family(cuda_engine=lambda *a, **k: made.append(k) or engine,
                      **({"CUDA_CHECKPOINT_SLOTS": True} if declares else {}))
     family.model_type = "test"
-    monkeypatch.setattr(server, "App", lambda *a, **k: SimpleNamespace(effective_context_window=4096))
+    monkeypatch.setattr(server, "App", lambda *a, **k: cuda_cli_app(effective_context_window=4096))
     install_cli_server(monkeypatch, request, server)
     command = ["serve", str(tmp_path), "--backend", "cuda", "--no-drafts", "--parallel", "2", "--checkpoint-slots", "6"]
     assert cli._serve_cuda(cli.build_parser().parse_args(command), family, tmp_path, 4096) == 0
@@ -418,6 +455,27 @@ def test_vision_offload_is_a_cuda_option_that_needs_vision(tmp_path, flags, back
         cli._check_serve_options(args, family, backend)
 
 
+@pytest.mark.parametrize("flags,backend,message", [
+    (["--tokenizer", "t.json"], "mlx", "--tokenizer is read by the CUDA server"),
+    (["--tokenizer", "t.json", "--vision"], "cuda", "cannot be combined with --vision"),
+    (["--tokenizer", "t.json", "--tp", "2", "--master", "10.0.0.1"], "cuda", "serves one rank only"),
+    (["--tokenizer", "t.json"], "cuda", None),
+])
+def test_tokenizer_override_is_a_cuda_text_option(tmp_path, flags, backend, message):
+    """Image prompts are encoded by the vision processor's own checkpoint tokenizer, which --tokenizer does not reach;
+    other ranks would compile grammars from a tokenizer nobody checks against rank 0's."""
+
+    from tensorfold.families import qwen3_5
+
+    args = cli.build_parser().parse_args(["serve", str(tmp_path)] + flags)
+    family = SimpleNamespace(title=qwen3_5.TITLE, package=qwen3_5, model_type="qwen3_5")
+    if message is None:
+        assert cli._check_serve_options(args, family, backend) is None
+        return
+    with pytest.raises(ValueError, match=message):
+        cli._check_serve_options(args, family, backend)
+
+
 @pytest.mark.parametrize("rank", [1, 2, 3])
 def test_four_rank_followers_retire_the_owned_engine_without_http(tmp_path, monkeypatch, rank):
     events = []
@@ -451,12 +509,12 @@ def test_auth_and_image_budget_reach_the_owned_cuda_listener(tmp_path, monkeypat
     from tensorfold.server.authentication import KeyStore
 
     seen = []
-    engine = SimpleNamespace(max_len=8192)
+    engine = cuda_cli_engine(max_len=8192)
     family = _family(cuda_engine=lambda *a, **k: engine)
     family.model_type = "test"
 
     def app(*a, **kw):
-        value = SimpleNamespace(effective_context_window=8192)
+        value = cuda_cli_app(effective_context_window=8192)
         seen.append((value, kw))
         return value
 
@@ -479,6 +537,107 @@ def test_auth_and_image_budget_reach_the_owned_cuda_listener(tmp_path, monkeypat
         assert "vision_image_tokens" not in seen[0][1]
     else:
         assert seen[0][1]["vision_image_tokens"] == tokens
+
+
+@pytest.mark.parametrize("template_option", ["file", "name"])
+def test_explicit_model_bindings_and_generation_defaults_reach_cuda_owners(tmp_path, monkeypatch, request,
+                                                                         template_option):
+    import json
+
+    from tensorfold.cuda import server
+
+    (tmp_path / "generation_config.json").write_text(json.dumps({
+        "max_new_tokens": 41, "do_sample": True, "temperature": .7, "top_k": 20, "top_p": .95, "min_p": .1,
+    }))
+    template = tmp_path / "custom.jinja"
+    template.write_text("{{ messages | length }}")
+    option, value = (("--chat-template", template) if template_option == "file"
+                     else ("--chat-template-name", "tool_use"))
+    seen_engine, seen_app = [], []
+
+    def engine(*args, **kwargs):
+        seen_engine.append(kwargs)
+        return cuda_cli_engine(eos=tuple(kwargs["eos_token_ids"]), max_len=8192)
+
+    def app(*args, **kwargs):
+        seen_app.append(kwargs)
+        return cuda_cli_app(effective_context_window=8192)
+
+    family = _family(cuda_engine=engine)
+    family.model_type = "test"
+    monkeypatch.setattr(server, "App", app)
+    install_cli_server(monkeypatch, request, server)
+    args = cli.build_parser().parse_args([
+        "serve", str(tmp_path), "--backend", "cuda", "--no-drafts", "--eos-token-id", "0", "--eos-token-id", "7",
+        option, str(value), "--max-tokens", "23", "--temperature", "0", "--top-k", "0", "--top-p", "0", "--min-p", "0",
+    ])
+    assert cli._serve_cuda(args, family, tmp_path, 8192) == 0
+    assert len(seen_engine) == len(seen_app) == 1
+    assert seen_engine[0]["eos_token_ids"] == [0, 7]
+    key = "chat_template_file" if template_option == "file" else "chat_template_name"
+    assert seen_engine[0][key] == seen_app[0][key] == str(value)
+    assert "eos_token_ids" not in seen_app[0]
+    assert seen_app[0]["max_tokens"] == 23
+    assert seen_app[0]["sampling"] == {"temperature": 0.0, "top_k": 0, "top_p": 0.0, "min_p": 0.0}
+
+
+@pytest.mark.parametrize("metadata, expected", [({}, 4096), ({"max_length": 71}, 4096), ({"max_new_tokens": 41}, 41)])
+def test_cuda_app_inherits_only_the_reply_limit_metadata(tmp_path, monkeypatch, request, metadata, expected):
+    import json
+
+    from tensorfold.cuda import server
+
+    (tmp_path / "generation_config.json").write_text(json.dumps(metadata))
+    seen = []
+    family = _family(cuda_engine=lambda *a, **k: cuda_cli_engine(max_len=8192))
+    family.model_type = "test"
+    monkeypatch.setattr(server, "App", lambda *a, **k: seen.append(k) or cuda_cli_app(effective_context_window=8192))
+    install_cli_server(monkeypatch, request, server)
+    args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", "--no-drafts"])
+    assert cli._serve_cuda(args, family, tmp_path, 8192) == 0
+    assert seen[0]["max_tokens"] == expected
+
+
+@pytest.mark.parametrize("metadata", [{"max_new_tokens": 0}, {"do_sample": True, "temperature": "invalid"}])
+def test_invalid_metadata_defaults_are_refused_before_cuda_engine_acquisition(tmp_path, metadata):
+    import json
+
+    (tmp_path / "generation_config.json").write_text(json.dumps(metadata))
+    family = _family(cuda_engine=lambda *a, **k: pytest.fail("engine acquired before invalid defaults were refused"))
+    args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", "--no-drafts"])
+    with pytest.raises(ValueError):
+        cli._serve_cuda(args, family, tmp_path, 8192)
+
+
+@pytest.mark.parametrize("flags, message", [(["--eos-token-id", "-1"], "--eos-token-id")])
+def test_invalid_model_binding_flags_are_refused_before_metadata_or_authentication(tmp_path, monkeypatch, flags,
+                                                                                message):
+    from tensorfold.server import authentication
+
+    monkeypatch.setattr(authentication, "configure", lambda *a: pytest.fail("authentication acquired before refusal"))
+    monkeypatch.setattr(cli, "_config_dir", lambda *a: pytest.fail("metadata read before refusal"))
+    args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", *flags])
+    with pytest.raises(ValueError, match=message):
+        cli.cmd_serve(args)
+
+
+@pytest.mark.parametrize("maximum", [0, -7])
+def test_explicit_cli_reply_limit_keeps_existing_owner_clamp(tmp_path, monkeypatch, request, maximum):
+    from tensorfold.cuda import server
+
+    actual_app = server.App
+    # A launch override still wins over malformed inherited reply metadata.
+    (tmp_path / "generation_config.json").write_text('{"max_new_tokens":0}')
+    seen = []
+    family = _family(cuda_engine=lambda *a, **k: cuda_cli_engine(max_len=8192))
+    family.model_type = "test"
+    monkeypatch.setattr(server, "App", lambda *a, **k: seen.append(k) or cuda_cli_app(effective_context_window=8192))
+    install_cli_server(monkeypatch, request, server)
+    args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", "--no-drafts",
+                                        "--max-tokens", str(maximum)])
+    assert cli._serve_cuda(args, family, tmp_path, 8192) == 0
+    assert seen[0]["max_tokens"] == maximum
+    assert actual_app._requested_tokens(SimpleNamespace(max_tokens=maximum), {}) == 1
 
 
 @pytest.mark.parametrize("flags, kind, message", [
@@ -520,6 +679,7 @@ def test_declared_topologies_and_port_endpoints_pass_early_validation(tmp_path, 
                                              ("glm5_next", 4, 0), ("glm5_next", 4, 3)])
 def test_multi_rank_port_zero_is_refused_before_any_weight_resolution(tmp_path, monkeypatch, kind, tp, rank):
     import importlib
+
     from tensorfold import families, hub
 
     package = importlib.import_module(f"tensorfold.families.{kind}")
@@ -599,3 +759,33 @@ def test_qwen_moe_invalid_mtp_cap_refuses_before_resolving_checkpoint_weights(tm
     ])
     with pytest.raises(ValueError, match="nonnegative integer"):
         cli.cmd_serve(args)
+
+
+def test_the_drafter_precision_flag_reaches_only_the_families_that_declare_it(tmp_path, monkeypatch, request):
+    """``--drafter-bits`` is refused on a CUDA family that does not declare ``CUDA_DRAFTER_BITS`` (never silently
+    ignored) and reaches the engine of one that does; MLX families read it in their own loaders."""
+
+    import tensorfold.cuda.server as server
+    from tensorfold.serve_options import check
+
+    parser = cli.build_parser()
+    plain, declared = _family(), _family(CUDA_DRAFTER_BITS=True)
+    for family in (plain, declared):
+        family.model_type = "test"
+
+    def args(*flags):
+        return parser.parse_args(["serve", str(tmp_path), "--backend", "cuda", *flags])
+
+    with pytest.raises(ValueError, match="--drafter-bits: Test family on CUDA"):
+        check(args("--drafter-bits", "8"), plain, "cuda")
+    check(args("--drafter-bits", "8"), declared, "cuda")
+    check(args("--drafter-bits", "8"), plain, "mlx")
+
+    made = []
+    monkeypatch.setattr(server, "App", lambda *a, **k: cuda_cli_app(effective_context_window=8185))
+    install_cli_server(monkeypatch, request, server)
+    declared.package.cuda_engine = lambda *a, **k: made.append(k) or cuda_cli_engine(max_len=8192)
+    for flags, expected in ((["--drafter-bits", "8"], 8), (["--drafter-bits", "4"], 4),
+                            (["--drafter-bits", "16"], 16), (["--drafter-bits", "0"], 0), ([], None)):
+        assert cli._serve_cuda(args("--no-drafts", *flags), declared, tmp_path, 8192) == 0
+        assert made[-1].get("drafter_bits") == expected

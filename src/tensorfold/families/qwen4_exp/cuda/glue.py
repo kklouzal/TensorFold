@@ -7,40 +7,14 @@ import triton
 import triton.language as tl
 
 from tensorfold.cuda import pdl
+from tensorfold.cuda.sm70 import family_ops as _half_ops
 from tensorfold.cuda.pdl import wait as pdl_wait
 
 from .image_rows import rope_axis
+from .indexer_history import HistoryLayer
 from .kv_pair import resolve_pair, source_guard, store_side, transform, validate_storage, validate_tables
 
 from .kvquant import h32, quant_groups_4, quant_groups_8
-from .rotorquant_kernel import quant_groups_3 as rotor_groups_3, quant_groups_4 as rotor_groups_4, rotate as rotor_rotate
-from .rotorquant_kernel import quant_groups_6 as rotor_groups_6
-from .rotorquant_kernel import quant_groups_7 as rotor_groups_7, quant_groups_8 as rotor_groups_8
-
-KV_ACTIVATION_BOUND = tl.constexpr(2**30)
-
-
-@triton.jit
-def _kv_guard(x, STATUS, error, LAYER: tl.constexpr):
-    """Contain an invalid failed frame; its status must be checked before publication."""
-
-    valid = (x == x) & (tl.abs(x) <= KV_ACTIVATION_BOUND)
-    if tl.sum((~valid).to(tl.int32), axis=0) != 0:
-        tl.atomic_or(STATUS, error)
-        tl.atomic_cas(STATUS + 1, -2, LAYER)
-    # These sentinels only keep the failed GPU operation numerically bounded.
-    # The owning State stays poisoned; no sentinel result may be committed.
-    return tl.where(valid, x, 0.0)
-
-
-@triton.jit
-def _kv_rms_guard(scale, x, STATUS, LAYER: tl.constexpr, M: tl.constexpr,
-                  MAX_SCALE: tl.constexpr = 8 * KV_ACTIVATION_BOUND):
-    nonzero = tl.max(tl.abs(x), axis=1) > 0.0
-    bad = (scale != scale) | (scale < 0.0) | (scale > MAX_SCALE) | ((scale == 0.0) & nonzero)
-    if tl.sum(bad.to(tl.int32), axis=0) != 0:
-        tl.atomic_or(STATUS, 8)
-        tl.atomic_cas(STATUS + 1, -2, LAYER)
 
 
 @triton.jit
@@ -74,6 +48,9 @@ def _embed(IDS, W, S, B, OUT, D: tl.constexpr, S_COPIES: tl.constexpr, PDL: tl.c
 def embed(ids: torch.Tensor, weight: torch.Tensor, scales: torch.Tensor, biases: torch.Tensor, dims: int,
           copies: int = 1, out: torch.Tensor | None = None) -> torch.Tensor:
     """ids (R,) int32 -> (R, copies * dims) bf16 rows of the 4-bit embedding (MLX layout, group 32)."""
+    if out is not None and out.dtype == torch.float16:
+        return _half_ops.embed(ids, weight, scales, biases, dims, copies, out)
+
 
     rows = ids.shape[0]
     if out is None:
@@ -143,6 +120,9 @@ def hc_writeback(h: torch.Tensor, hout: torch.Tensor, pss: torch.Tensor, streams
                  branch: torch.Tensor | None = None, inject: torch.Tensor | None = None,
                  y: torch.Tensor | None = None, wts: torch.Tensor | None = None, block: int = 256) -> None:
     """mode 3: ``branch`` is the gathered partials [world, R, D] fp32 (contiguous); mode 4: a matmul's K slices [SK, R, D] fp32."""
+    if h.dtype == torch.float16:
+        return _half_ops.hc_writeback(h, hout, pss, streams, mode, branch, inject, y, wts, block)
+
 
     rows, wide = h.shape
     d = wide // streams
@@ -171,6 +151,9 @@ def _moe_partial(Y, WTS, OUT, D: tl.constexpr, TOPK: tl.constexpr, SLOTS: tl.con
 
 
 def moe_partial(y: torch.Tensor, wts: torch.Tensor, out: torch.Tensor, rows: int) -> None:
+    if y.dtype == torch.float16:
+        return _half_ops.moe_partial(y, wts, out, rows)
+
     d = out.shape[1]
     _moe_partial[(rows, d // 256)](y, wts, out, D=d, TOPK=wts.shape[1] - 1, SLOTS=wts.shape[1], BLOCK=256,
                                    num_warps=2)
@@ -178,6 +161,9 @@ def moe_partial(y: torch.Tensor, wts: torch.Tensor, out: torch.Tensor, rows: int
 
 def hc_normed(h: torch.Tensor, pss: torch.Tensor, scale: torch.Tensor, normed: torch.Tensor, xs: torch.Tensor,
               streams: int, eps: float, block: int = 512) -> None:
+    if h.dtype == torch.float16:
+        return _half_ops.hc_normed(h, pss, scale, normed, xs, streams, eps, block)
+
     rows, wide = h.shape
     d = wide // streams
     _hc_normed[(rows, wide // block)](h, pss, scale, normed, xs, eps, D=d, S=streams, NC=pss.shape[1],
@@ -241,6 +227,9 @@ def _hc_reduce_act(PART, ACT, XS, INJ, SK: tl.constexpr, M, S: tl.constexpr, LOW
 def hc_reduce_act(part: torch.Tensor, act: torch.Tensor, xs: torch.Tensor, inj: torch.Tensor | None, streams: int,
                   low: int) -> None:
     """part: the down projection's unreduced slices [SK, R, N]."""
+    if act.dtype == torch.float16:
+        return _half_ops.hc_reduce_act(part, act, xs, inj, streams, low)
+
 
     sk, rows, ndn = part.shape
     _hc_reduce_act[(rows,)](part, act, xs, inj if inj is not None else act, SK=sk, M=rows, S=streams, LOW=low,
@@ -250,6 +239,9 @@ def hc_reduce_act(part: torch.Tensor, act: torch.Tensor, xs: torch.Tensor, inj: 
 
 def hc_act(dn: torch.Tensor, act: torch.Tensor, xs: torch.Tensor, inj: torch.Tensor | None, streams: int,
            low: int) -> None:
+    if act.dtype == torch.float16:
+        return _half_ops.hc_act(dn, act, xs, inj, streams, low)
+
     rows, ndn = dn.shape
     _hc_act[(rows,)](dn, act, xs, inj if inj is not None else act, S=streams, LOW=low,
                      LOWP=triton.next_power_of_2(low), HAS_INJ=inj is not None, NDN=ndn, num_warps=4,
@@ -277,6 +269,9 @@ def _hc_mix(UP, NORMED, MIXED, XS, D: tl.constexpr, S: tl.constexpr, BLOCK: tl.c
 
 def hc_mix(up: torch.Tensor, normed: torch.Tensor, mixed: torch.Tensor, xs: torch.Tensor, streams: int,
            block: int = 256) -> None:
+    if up.dtype == torch.float16:
+        return _half_ops.hc_mix(up, normed, mixed, xs, streams, block)
+
     rows, wide = up.shape
     d = wide // streams
     _hc_mix[(rows, d // block)](up, normed, mixed, xs, D=d, S=streams, BLOCK=block, num_warps=2,
@@ -305,6 +300,9 @@ def _rmsnorm(X, W, OUT, XS, eps, x_stride, D: tl.constexpr, G: tl.constexpr, BLO
 
 def rmsnorm(x: torch.Tensor, w: torch.Tensor, eps: float, group: int | None = None,
             out: torch.Tensor | None = None, xs: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+    if x.dtype == torch.float16:
+        return _half_ops.rmsnorm(x, w, eps, group, out, xs)
+
     rows, d = x.shape
     g = group or d
     if out is None:
@@ -321,7 +319,7 @@ def _attn_prep(P, POS0, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, ROPE, DELTA
                PW: tl.constexpr, NQ: tl.constexpr, NKV: tl.constexpr, HD: tl.constexpr, NI: tl.constexpr,
                IHD: tl.constexpr, HALF: tl.constexpr, BITS: tl.constexpr, MODE: tl.constexpr = 0,
                S1: tl.constexpr = 11, S2: tl.constexpr = 10, ROPE_SCALE: tl.constexpr = 1.0,
-               CODEC: tl.constexpr = 0, STATUS=None, VALIDATE: tl.constexpr = False, LAYER: tl.constexpr = 0,
+               STATUS=None, VALIDATE: tl.constexpr = False, LAYER: tl.constexpr = 0,
                K_BITS: tl.constexpr = -1, K_CODEC: tl.constexpr = 0,
                V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, CENTROIDS=None, THRESHOLDS=None,
                PDL: tl.constexpr = False):
@@ -330,7 +328,7 @@ def _attn_prep(P, POS0, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, ROPE, DELTA
     pdl_wait(PDL)
     r = tl.program_id(0)
     _prep_row(P, tl.load(POS0) + r, r, tl.program_id(1), QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, eps, PW, NQ,
-              NKV, HD, NI, IHD, HALF, BITS, ROPE, DELTA, length, MODE, S1, S2, ROPE_SCALE, CODEC=CODEC,
+              NKV, HD, NI, IHD, HALF, BITS, ROPE, DELTA, length, MODE, S1, S2, ROPE_SCALE,
               STATUS=STATUS, VALIDATE=VALIDATE, LAYER=LAYER, K_BITS=K_BITS, K_CODEC=K_CODEC,
               V_BITS=V_BITS, V_CODEC=V_CODEC, CENTROIDS=CENTROIDS, THRESHOLDS=THRESHOLDS)
 
@@ -340,7 +338,7 @@ def _prep_row(P, pos, r, head, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, eps,
               NKV: tl.constexpr, HD: tl.constexpr, NI: tl.constexpr, IHD: tl.constexpr, HALF: tl.constexpr,
               BITS: tl.constexpr, ROPE=None, DELTA=None, length=0, MODE: tl.constexpr = 0,
               S1: tl.constexpr = 11, S2: tl.constexpr = 10, ROPE_SCALE: tl.constexpr = 1.0,
-              CODEC: tl.constexpr = 0, STATUS=None, VALIDATE: tl.constexpr = False, LAYER: tl.constexpr = 0,
+              STATUS=None, VALIDATE: tl.constexpr = False, LAYER: tl.constexpr = 0,
               K_BITS: tl.constexpr = -1, K_CODEC: tl.constexpr = 0,
               V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, CENTROIDS=None, THRESHOLDS=None):
     """``_attn_prep``'s head ``head`` of row r at position ``pos``, into the caches given. Pair formats store each
@@ -350,8 +348,6 @@ def _prep_row(P, pos, r, head, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, eps,
 
     PAIR: tl.constexpr = K_BITS >= 0
     C8 = CENTROIDS + 64 if CENTROIDS is not None else None
-    QB: tl.constexpr = K_BITS if PAIR else BITS
-    QC: tl.constexpr = K_CODEC if PAIR else CODEC
     d = tl.arange(0, HD)
     if head < NQ + NKV + NI:
         width = tl.where(head >= NQ + NKV, IHD, HD)
@@ -363,8 +359,8 @@ def _prep_row(P, pos, r, head, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, eps,
         else:
             src = r * PW + NQ * 2 * HD + 2 * NKV * HD + (head - NQ - NKV) * IHD
         x = tl.load(P + src + d, mask=live, other=0.0).to(tl.float32)
-        if (PAIR or CODEC) and VALIDATE:
-            x = _kv_guard(x, STATUS, tl.where(head < NQ, 1, tl.where(head < NQ + NKV, 2, 16)), LAYER)
+        if PAIR and VALIDATE:
+            x = source_guard(x, STATUS, tl.where(head < NQ, 1, tl.where(head < NQ + NKV, 2, 16)), LAYER)
         rinv = 1.0 / tl.sqrt(tl.sum(x * x, axis=0) / width + eps)
         if head < NQ:
             w = tl.load(QW + d).to(tl.float32)
@@ -392,16 +388,13 @@ def _prep_row(P, pos, r, head, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, eps,
             cos, sin = cos * ROPE_SCALE, sin * ROPE_SCALE
         rot = tl.where(d < HALF, xn * cos - xpn * sin, tl.where(d < 2 * HALF, xpn * sin + xn * cos, xn))
         out = rot.to(tl.bfloat16)
-        if (PAIR or CODEC) and VALIDATE:
-            out = _kv_guard(out.to(tl.float32), STATUS,
-                            tl.where(head < NQ, 1, tl.where(head < NQ + NKV, 2, 16)), LAYER).to(tl.bfloat16)
+        if PAIR and VALIDATE:
+            out = source_guard(out.to(tl.float32), STATUS,
+                               tl.where(head < NQ, 1, tl.where(head < NQ + NKV, 2, 16)), LAYER).to(tl.bfloat16)
         if head < NQ:
             if PAIR:
                 out = tl.reshape(transform(tl.reshape(out.to(tl.float32), (1, HD)),
-                                           M=1, D=HD, BITS=QB, CODEC=QC), (HD,)).to(tl.bfloat16)
-            elif CODEC:
-                out = tl.reshape(rotor_rotate(tl.reshape(out.to(tl.float32), (1, HD)), M=1, W=HD,
-                                               CODEC=CODEC), (HD,)).to(tl.bfloat16)
+                                           M=1, D=HD, BITS=K_BITS, CODEC=K_CODEC), (HD,)).to(tl.bfloat16)
             elif BITS:                               # the query rides the cache's rotation (see the docstring)
                 out = tl.reshape(h32(tl.reshape(out.to(tl.float32), (HD // 32, 32)), M=HD // 32),
                                  (HD,)).to(tl.bfloat16)
@@ -411,68 +404,6 @@ def _prep_row(P, pos, r, head, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, eps,
             if PAIR:
                 store_side(out, KC, KS, slot, STATUS, D=HD, BITS=K_BITS, CODEC=K_CODEC,
                            VALIDATE=VALIDATE, LAYER=LAYER, CENTROIDS=C8, THRESHOLDS=THRESHOLDS)
-            elif CODEC:
-                gg = tl.arange(0, HD // 128)
-                block = tl.reshape(out.to(tl.float32), (HD // 128, 128))
-                v = tl.load(P + r * PW + NQ * 2 * HD + NKV * HD + (head - NQ) * HD + d)
-                if VALIDATE:
-                    v = _kv_guard(v.to(tl.float32), STATUS, 4, LAYER)
-                vblock = tl.reshape(v.to(tl.float32), (HD // 128, 128))
-                if BITS == 3:
-                    kl, kh, ks = rotor_groups_3(block, M=HD // 128, CODEC=CODEC)
-                    vl, vh, vs = rotor_groups_3(vblock, M=HD // 128, CODEC=CODEC)
-                    lo = tl.arange(0, 32)
-                    hi = tl.arange(0, 16)
-                    base = slot * (HD * 3 // 8) + gg[:, None] * 48
-                    tl.store(KC + base + lo[None, :], kl)
-                    tl.store(VC + base + lo[None, :], vl)
-                    tl.store(KC + base + 32 + hi[None, :], kh)
-                    tl.store(VC + base + 32 + hi[None, :], vh)
-                elif BITS == 6:
-                    kl, kh, ks = rotor_groups_6(block, M=HD // 128, CODEC=CODEC)
-                    vl, vh, vs = rotor_groups_6(vblock, M=HD // 128, CODEC=CODEC)
-                    lo = tl.arange(0, 64)
-                    hi = tl.arange(0, 32)
-                    base = slot * (HD * 3 // 4) + gg[:, None] * 96
-                    tl.store(KC + base + lo[None, :], kl)
-                    tl.store(VC + base + lo[None, :], vl)
-                    tl.store(KC + base + 64 + hi[None, :], kh)
-                    tl.store(VC + base + 64 + hi[None, :], vh)
-                elif BITS == 7:
-                    kl, km, kh, ks = rotor_groups_7(block, M=HD // 128, CODEC=CODEC)
-                    vl, vm, vh, vs = rotor_groups_7(vblock, M=HD // 128, CODEC=CODEC)
-                    lo = tl.arange(0, 64)
-                    mid = tl.arange(0, 32)
-                    hi = tl.arange(0, 16)
-                    base = slot * (HD * 7 // 8) + gg[:, None] * 112
-                    tl.store(KC + base + lo[None, :], kl)
-                    tl.store(VC + base + lo[None, :], vl)
-                    tl.store(KC + base + 64 + mid[None, :], km)
-                    tl.store(VC + base + 64 + mid[None, :], vm)
-                    tl.store(KC + base + 96 + hi[None, :], kh)
-                    tl.store(VC + base + 96 + hi[None, :], vh)
-                elif BITS == 8:
-                    kc, ks = rotor_groups_8(block, M=HD // 128, CODEC=CODEC, CENTROIDS=C8, THRESHOLDS=THRESHOLDS)
-                    vc, vs = rotor_groups_8(vblock, M=HD // 128, CODEC=CODEC, CENTROIDS=C8, THRESHOLDS=THRESHOLDS)
-                    gb = tl.arange(0, 128)
-                    off = slot * HD + gg[:, None] * 128 + gb[None, :]
-                    tl.store(KC + off, kc)
-                    tl.store(VC + off, vc)
-                else:
-                    tl.static_assert(BITS == 4)
-                    kc, ks = rotor_groups_4(block, M=HD // 128, CODEC=CODEC)
-                    vc, vs = rotor_groups_4(vblock, M=HD // 128, CODEC=CODEC)
-                    gb = tl.arange(0, 64)
-                    off = slot * (HD // 2) + gg[:, None] * 64 + gb[None, :]
-                    tl.store(KC + off, kc)
-                    tl.store(VC + off, vc)
-                if VALIDATE:
-                    _kv_rms_guard(ks, block, STATUS, LAYER, HD // 128,
-                                  MAX_SCALE=(128 if CODEC == 8 else 32 if CODEC == 6 or CODEC == 7 else 8) * KV_ACTIVATION_BOUND)
-                    _kv_rms_guard(vs, vblock, STATUS, LAYER, HD // 128,
-                                  MAX_SCALE=(128 if CODEC == 8 else 32 if CODEC == 6 or CODEC == 7 else 8) * KV_ACTIVATION_BOUND)
-                tl.store(KS + slot * (HD // 128) + gg, ks)
-                tl.store(VS + slot * (HD // 128) + gg, vs)
             elif BITS:
                 gg = tl.arange(0, HD // 32)
                 block = tl.reshape(out.to(tl.float32), (HD // 32, 32))
@@ -503,8 +434,8 @@ def _prep_row(P, pos, r, head, QW, KW, IW, INV, Q, KC, VC, KS, VS, IQ, IKC, eps,
     elif head == NQ + NKV + NI:
         live = d < IHD
         raw = tl.load(P + r * PW + NQ * 2 * HD + 2 * NKV * HD + NI * IHD + d, mask=live, other=0.0)
-        if (PAIR or CODEC) and VALIDATE:
-            raw = _kv_guard(raw.to(tl.float32), STATUS, 16, LAYER).to(tl.bfloat16)
+        if PAIR and VALIDATE:
+            raw = source_guard(raw.to(tl.float32), STATUS, 16, LAYER).to(tl.bfloat16)
         tl.store(IKC + pos.to(tl.int64) * IHD + d, raw, mask=live)
     elif PAIR:
         j = head - (NQ + NKV + NI + 1)
@@ -530,7 +461,9 @@ def attn_prep(p: torch.Tensor, pos0: torch.Tensor, q_scale, k_scale, i_scale, in
               status: torch.Tensor | None = None, layer: int = 0,
               k_bits: int | None = None, k_codec: int | None = None,
               v_bits: int | None = None, v_codec: int | None = None,
-              centroids: torch.Tensor | None = None, thresholds: torch.Tensor | None = None) -> None:
+              centroids: torch.Tensor | None = None, thresholds: torch.Tensor | None = None,
+              valid_rows: torch.Tensor | None = None, independent_rows: bool = False,
+              history_kind: str | None = None, history_capacity: int | None = None) -> None:
     """Write BF16 post-RMS/RoPE queries and independently encoded K/V rows.
 
     Symmetric native formats use the original kernel path. Mixed/Rotor formats
@@ -538,6 +471,13 @@ def attn_prep(p: torch.Tensor, pos0: torch.Tensor, q_scale, k_scale, i_scale, in
     K controls query rotation and V never changes query or index preparation.
     Eight-bit RotorQuant sides encode with an attention scratch's ``centroids`` and ``thresholds`` tables.
     """
+    history = isinstance(ikc, HistoryLayer)
+    if history and p.dtype != torch.float16:
+        raise ValueError("RAM indexer preparation requires the FP16 SM70 provider")
+    if p.dtype == torch.float16:
+        history_options = dict(history_kind=history_kind, history_capacity=history_capacity) if history else {}
+        return _half_ops.attn_prep(p, pos0, q_scale, k_scale, i_scale, inv_freq, q, kc, vc, iq, ikc, eps, q_heads=q_heads, kv_heads=kv_heads, head_dim=head_dim, index_heads=index_heads, index_dim=index_dim, ks=ks, vs=vs, bits=bits, rope=rope, delta=delta, length=length, sections=sections, rope_scale=rope_scale, codec=codec, status=status, layer=layer, k_bits=k_bits, k_codec=k_codec, v_bits=v_bits, v_codec=v_codec, centroids=centroids, thresholds=thresholds, valid_rows=valid_rows, independent_rows=independent_rows, **history_options)
+
 
     rows, pw = p.shape
     kb, kf, vb, vf = resolve_pair(bits, codec, k_bits, k_codec, v_bits, v_codec, head_dim)
@@ -562,7 +502,7 @@ def attn_prep(p: torch.Tensor, pos0: torch.Tensor, q_scale, k_scale, i_scale, in
         p, pos0, q_scale, k_scale, i_scale, inv_freq, q, kc, vc, ks, vs, iq, ikc,
         rope if rope is not None else pos0, delta if delta is not None else pos0, length, eps, PW=pw, NQ=q_heads,
         NKV=kv_heads, HD=head_dim, NI=index_heads, IHD=index_dim, HALF=inv_freq.numel(), BITS=kb, MODE=mode,
-        S1=sections[1], S2=sections[2], ROPE_SCALE=rope_scale, CODEC=kf if native else 0, STATUS=status,
+        S1=sections[1], S2=sections[2], ROPE_SCALE=rope_scale, STATUS=status,
         VALIDATE=status is not None, LAYER=layer, CENTROIDS=centroids, THRESHOLDS=thresholds, **pair, num_warps=2,
         PDL=pdl.ON, launch_pdl=pdl.ON)
 
@@ -585,6 +525,9 @@ def _attn_gate(O, P, OUT, XS, PW: tl.constexpr, NQ: tl.constexpr, HD: tl.constex
 
 def attn_gate(o: torch.Tensor, p: torch.Tensor, out: torch.Tensor, xs: torch.Tensor, *, q_heads: int,
               head_dim: int) -> None:
+    if o.dtype == torch.float16:
+        return _half_ops.attn_gate(o, p, out, xs, q_heads=q_heads, head_dim=head_dim)
+
     rows = o.shape[0]
     _attn_gate[(rows, q_heads)](o, p, out, xs, PW=p.shape[1], NQ=q_heads, HD=head_dim, num_warps=2,
                                 PDL=pdl.ON, launch_pdl=pdl.ON)
@@ -616,7 +559,10 @@ def _ple_embed(W, S, B, OUT, XS, HEADS: tl.constexpr, DH: tl.constexpr, SCALE: t
 
 def ple_embed(rows: int, weight: torch.Tensor, scales: torch.Tensor, biases: torch.Tensor, heads: int, dh: int,
               out: torch.Tensor, xs: torch.Tensor, *, scale: float = 1.0) -> None:
-    """Gathered rows (``weights.HostTable.gather``, row r * heads + h) -> out [rows, heads * dh] bf16."""
+    """Gathered rows (the n-gram table's ``gather``, row r * heads + h) -> out [rows, heads * dh] bf16."""
+    if out.dtype == torch.float16:
+        return _half_ops.ple_embed(rows, weight, scales, biases, heads, dh, out, xs, scale=scale)
+
 
     _ple_embed[(rows, heads)](weight, scales, biases, out, xs, HEADS=heads, DH=dh, SCALE=scale, num_warps=1,
                               PDL=pdl.ON, launch_pdl=pdl.ON)
@@ -645,6 +591,9 @@ def _ple_embed_bf16(V, OUT, XS, HEADS: tl.constexpr, DH: tl.constexpr, SCALE: tl
 def ple_embed_bf16(rows: int, values: torch.Tensor, heads: int, dh: int, out: torch.Tensor,
                    xs: torch.Tensor, *, scale: float = 1.0) -> None:
     """A bf16 table's gathered rows (``BF16Table.gather``, row r * heads + h) -> out [rows, heads * dh] bf16."""
+    if out.dtype == torch.float16:
+        return _half_ops.ple_embed_bf16(rows, values, heads, dh, out, xs, scale=scale)
+
 
     _ple_embed_bf16[(rows, heads)](values, out, xs, HEADS=heads, DH=dh, SCALE=scale, num_warps=1,
                                    PDL=pdl.ON, launch_pdl=pdl.ON)
@@ -693,7 +642,12 @@ def _ple_gate(KEYS, VALS, H, NK, NQ, GATED, PSS, eps,
         tl.store(PSS + r * S + s, gss)
 
 
-def ple_gate(keys, vals, h, norm_key, norm_query, gated, pss, eps: float, streams: int) -> None:
+def ple_gate(keys, vals, h, norm_key, norm_query, gated, pss, eps: float, streams: int, *,
+             valid_rows=None, independent_rows=False) -> None:
+    if h.dtype == torch.float16:
+        return _half_ops.ple_gate(keys, vals, h, norm_key, norm_query, gated, pss, eps, streams,
+                                   valid_rows, independent_rows)
+
     rows, wide = h.shape
     _ple_gate[(rows,)](keys, vals, h, norm_key, norm_query, gated, pss, eps, D=wide // streams, S=streams,
                        BLOCK=512, num_warps=4, PDL=pdl.ON, launch_pdl=pdl.ON)
@@ -735,6 +689,9 @@ def _ple_conv(GATED, PSS, NC, TAIL, CW, H, HOUT, NROW, eps, R,
 
 
 def ple_conv(gated, pss, norm_conv, tail, conv_w, h, hout, nrow, eps: float, streams: int, dilation: int) -> None:
+    if gated.dtype == torch.float16:
+        return _half_ops.ple_conv(gated, pss, norm_conv, tail, conv_w, h, hout, nrow, eps, streams, dilation)
+
     rows, wide = h.shape
     taps = conv_w.shape[1]
     _ple_conv[(rows, wide // 512)](gated, pss, norm_conv, tail, conv_w, h, hout, nrow, eps, rows,
@@ -757,5 +714,8 @@ def _add_streams(E, HS, OUT, D: tl.constexpr, S: tl.constexpr, BLOCK: tl.constex
 
 
 def add_streams(e: torch.Tensor, hs: torch.Tensor, out: torch.Tensor, streams: int) -> None:
+    if e.dtype == torch.float16:
+        return _half_ops.add_streams(e, hs, out, streams)
+
     rows, d = e.shape
     _add_streams[(rows, d // 256)](e, hs, out, D=d, S=streams, BLOCK=256, num_warps=2, PDL=pdl.ON, launch_pdl=pdl.ON)

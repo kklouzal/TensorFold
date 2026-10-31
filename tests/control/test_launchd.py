@@ -4,8 +4,7 @@ import sys
 
 import pytest
 
-from tensorfold.control.config import Profile
-from tensorfold.control.launchd import Manager, Result, parse_status
+from tensorfold.control.launchd import Manager, parse_status
 from tensorfold.control.safety import ControlError, atomic_write
 
 

@@ -10,16 +10,17 @@ import torch
 
 from tensorfold.engine.exact_sampling import Sampling
 
+from .draft_tree import COPY_MIN_MATCH
 from .forward import State, _paths, commit, tree_forward
 from tensorfold.cuda.sampling import sample_rows
 from .weights import Weights
 
 
 def clone_state(st: State) -> State:
-    """Commits replace list entries; the attention list is shared, so a grow reaches every clone and frees the old."""
+    """Commits replace list entries; clones share the attention list and ``kv_owner``, so a grow reaches every clone."""
 
     other = object.__new__(State)
-    other.pos, other.limit = st.pos, st.limit
+    other.pos, other.limit, other.kv_owner = st.pos, st.limit, st.kv_owner
     other.rope_delta, other.room = st.rope_delta, st.room
     other.conv = st.conv.copy()
     other.rec = st.rec.copy()
@@ -49,8 +50,11 @@ def prefill_stops(w: Weights, prompt: Sequence[int], st: State, draft=None, *, s
 @torch.no_grad()
 def prefill(w: Weights, prompt: Sequence[int], sampling: Sampling | None,
             draft=None, *, state: State | None = None, limit: int = 0, stops: Sequence[int] = (),
-            keep: Callable | None = None, keep_at: int | None = None, vision=None, constraint=None, room=None):
-    """Commit the prompt and sample the first token; resuming a kept ``state`` gives a fresh prefill's bits (``keep_at`` adds a third item: the state after prompt[:keep_at] and the drafter's snapshot there)."""
+            keep: Callable | None = None, keep_at: int | None = None, vision=None, constraint=None, room=None,
+            history=None):
+    """Commit the prompt and sample the first token; resuming a kept ``state`` gives a fresh prefill's bits (``keep_at`` adds a third item: the state after prompt[:keep_at] and the drafter's snapshot there).
+
+    ``history`` (tensorfold.engine.penalties.History) penalizes the first token's scores and records it."""
 
     from .forward import _mm
 
@@ -68,9 +72,13 @@ def prefill(w: Weights, prompt: Sequence[int], sampling: Sampling | None,
     logits = _mm(normed, w.head)
     if constraint is not None:                  # a reply's grammar (tensorfold.engine.grammar): masked, then followed
         constraint.mask(logits)
+    if history is not None:
+        logits = history.apply(logits)
     pending = sample_rows(logits, [len(prompt)], sampling)[0]
     if constraint is not None:
         constraint.advance([pending])
+    if history is not None:
+        history.extend([pending])
     return (st, pending) if keep_at is None else (st, pending, out[1])
 
 
@@ -122,7 +130,7 @@ class CopyIndex:
 
     BULK = 4096
 
-    def __init__(self, min_match: int = 8):
+    def __init__(self, min_match: int = COPY_MIN_MATCH):
         self.n = min_match
         self.hashes = self.starts = None      # the bulk: sorted gram hashes, and their starts (ascending within a hash)
         self.positions: dict[tuple[int, ...], list[int]] = {}
@@ -184,7 +192,7 @@ class CopyIndex:
 
 
 def copy_chain(context: Sequence[int], max_nodes: int = 127,
-               min_match: int = 8) -> list[int]:
+               min_match: int = COPY_MIN_MATCH) -> list[int]:
     """Reuse a repeated suffix's next tokens as a speculative chain."""
 
     if len(context) < 2 * min_match:
@@ -239,8 +247,19 @@ def draft_decode(w: Weights, st: State, prompt: Sequence[int], pending: int,
                  *, max_rows: int = 128, tree_rows: int | None = None,
                  allow_copy: bool = True, stop_eos: bool = True,
                  on_tokens: Callable[[list[int]], bool | None] | None = None,
-                 trace: list | None = None, inplace: bool = False, constraint=None) -> DecodeResult:
-    """Verify trees and replay matching paths; copies grow from ``tree_rows``, doubling while they land whole."""
+                 trace: list | None = None, inplace: bool = False, constraint=None, history=None,
+                 runner=None) -> DecodeResult:
+    """Verify trees and replay matching paths; copies grow from ``tree_rows``, doubling while they land whole.
+
+    ``history`` (tensorfold.engine.penalties.History, already holding ``pending``) penalizes each verify row by
+    its path and records the committed tokens; the drafter proposes under the same penalties.
+
+    ``runner``: optional graph runner owning every verify round. ``runner.load(st, rows)`` returns the state to
+    decode in (its fixed buffers holding ``st``'s committed state, room for ``rows`` positions; commits update them
+    in place, so graphs keep their addresses);
+    ``runner.verify(tokens, parents, capture_taps=...)`` returns ``tree_forward``'s (logits, record[, taps]) for the
+    round on that state, replaying a graph where it has one and running eagerly otherwise.
+    """
 
     if count < 1 or not 1 <= max_rows <= 128:
         raise ValueError("count >= 1 and 1 <= max_rows <= 128 required")
@@ -248,10 +267,14 @@ def draft_decode(w: Weights, st: State, prompt: Sequence[int], pending: int,
     if not 1 <= tree_rows <= max_rows:
         raise ValueError("tree_rows must be between 1 and max_rows")
     st = st if inplace else clone_state(st)
+    if runner is not None:
+        st = runner.load(st, st.pos + count + max_rows)
     out = [pending]
     context = list(prompt) + out
     copies = CopyIndex() if allow_copy else None
     copy_rows = next_copy_rows(tree_rows, False, tree_rows, max_rows)
+    stochastic = sampling is not None and sampling.temperature > 0
+    logical_nodes = min(draft.trained if draft is not None else tree_rows, tree_rows) - 1 if stochastic else 0
     stages = dict(draft=0.0, verify=0.0, sample=0.0, commit=0.0)
     rounds = drafted_rows = accepted_drafts = 0
     widths: list[int] = []
@@ -259,17 +282,30 @@ def draft_decode(w: Weights, st: State, prompt: Sequence[int], pending: int,
     stopped = False
     while len(out) < count and (not stop_eos or out[-1] not in w.config.eos) and not stopped:
         stage = time.perf_counter()
-        copied = copies.propose(context, copy_rows - 1) if copies is not None else []
+        copied = copies.propose(context, logical_nodes if stochastic else copy_rows - 1) if copies is not None else []
+        chain = None
         if copied:
             guesses = copied
             parents = list(range(-1, len(guesses) - 1))
+            if stochastic:
+                from .draft_tree import copy_packet
+
+                chain = copy_packet(guesses, len(context))
         elif draft is not None:
-            guesses, parents = draft.propose_tree(
-                out[-1], len(context), tree_rows - 1, sampling)
+            if stochastic:
+                chain = draft.propose_chain(out[-1], len(context), logical_nodes, sampling, history=history)
+                guesses, parents = list(chain.tokens), list(range(-1, len(chain.tokens) - 1))
+            else:
+                guesses, parents = draft.propose_tree(
+                    out[-1], len(context), tree_rows - 1, sampling, history=history)
         else:                                # no draft model: one row a round unless the context offers a copy
             guesses, parents = [], []
         tokens = [out[-1]] + guesses
         tree_parents = [-1] + [0 if p < 0 else p + 1 for p in parents]
+        if chain is not None:
+            # q/shape remain canonical even when only the final parent's p is needed before the output limit.
+            tokens = tokens[:count - len(out)]
+            tree_parents = tree_parents[:len(tokens)]
         window = None
         if constraint is not None:           # a grammar drops drafts no path can keep, then masks each row by its path
             window = constraint.window(tokens, tree_parents)
@@ -278,41 +314,59 @@ def draft_decode(w: Weights, st: State, prompt: Sequence[int], pending: int,
         spent = {"draft": time.perf_counter() - stage}
         stages["draft"] += spent["draft"]
         stage = time.perf_counter()
-        logits, record, *tapped = tree_forward(
-            w, _tokens(tokens, w.norm.device), tree_parents, st, capture_taps=draft is not None)
+        if runner is not None:
+            logits, record, *tapped = runner.verify(tokens, tree_parents, capture_taps=draft is not None)
+        else:
+            logits, record, *tapped = tree_forward(
+                w, _tokens(tokens, w.norm.device), tree_parents, st, capture_taps=draft is not None)
         torch.cuda.synchronize()
         spent["verify"] = time.perf_counter() - stage
         stages["verify"] += spent["verify"]
         stage = time.perf_counter()
         if window is not None:
             constraint.mask(logits, window)
+        if history is not None:              # each row follows the reply and the drafts on its path
+            logits = history.apply(logits, tokens, tree_parents)
         depths, _ = _paths(tree_parents)
-        sampled = sample_rows(logits, [st.pos + d + 1 for d in depths], sampling)
-        children: dict[tuple[int, int], int] = {}
-        for row in range(1, len(tokens)):
-            children.setdefault((tree_parents[row], tokens[row]), row)
-        path = [0]
-        terminal = sampled[0]
-        stop = "length"
-        while len(out) + len(path) < count:
-            if stop_eos and terminal in w.config.eos:
-                stop = "eos"
-                break
-            child = children.get((path[-1], terminal))
-            if child is None:
-                stop = "miss"
-                break
-            path.append(child)
-            terminal = sampled[child]
+        if chain is not None:
+            from tensorfold.engine.rejection import verify
+
+            from .draft_tree import chain_probabilities
+
+            probability = chain_probabilities(logits, sampling, len(chain.tokens) + 1)
+            path, terminal = verify(chain, probability, sampling.seed, room=count - len(out),
+                                    eos=w.config.eos if stop_eos else ())
+            del probability                    # complete host p rows are dead before the next extraction
+            stop = "eos" if stop_eos and terminal in w.config.eos else "rejection"
+        else:
+            sampled = sample_rows(logits, [st.pos + d + 1 for d in depths], sampling)
+            children: dict[tuple[int, int], int] = {}
+            for row in range(1, len(tokens)):
+                children.setdefault((tree_parents[row], tokens[row]), row)
+            path = [0]
+            terminal = sampled[0]
+            stop = "length"
+            while len(out) + len(path) < count:
+                if stop_eos and terminal in w.config.eos:
+                    stop = "eos"
+                    break
+                child = children.get((path[-1], terminal))
+                if child is None:
+                    stop = "miss"
+                    break
+                path.append(child)
+                terminal = sampled[child]
         if constraint is not None:
             constraint.advance([tokens[row] for row in path[1:]] + [terminal])
+        if history is not None:
+            history.extend([tokens[row] for row in path[1:]] + [terminal])
         spent["sample"] = time.perf_counter() - stage
         stages["sample"] += spent["sample"]
         if trace is not None:
             trace.append(_round_record(tokens, tree_parents, depths, path, terminal, stop,
                                        "copy" if copied else "tree", draft, spent))
         stage = time.perf_counter()
-        commit(st, record, path)
+        commit(st, record, path, in_place=runner is not None)       # a runner's fixed buffers
         if draft is not None:
             draft.add_taps(tapped[0][path])
         out.extend(tokens[row] for row in path[1:])
@@ -323,7 +377,7 @@ def draft_decode(w: Weights, st: State, prompt: Sequence[int], pending: int,
         stages["commit"] += time.perf_counter() - stage
         if trace is not None:
             trace[-1]["commit_ms"] = round(1000 * (time.perf_counter() - stage), 3)
-        if copied:                           # the verified window's rows: a grammar may have dropped some
+        if copied and not stochastic:        # sampled logical copy width never follows prior acceptance
             copy_rows = next_copy_rows(copy_rows, len(path) == len(tokens), tree_rows, max_rows)
         rounds += 1
         drafted_rows += len(tokens) - 1

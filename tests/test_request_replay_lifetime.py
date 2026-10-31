@@ -17,9 +17,10 @@ import uuid
 import weakref
 import gc
 
-from tensorfold.server.cancellation import Cancellation
+from tensorfold.server.cancellation import Cancellation, RequestCancelled
 from tensorfold.server.errors import CONTEXT_LIMIT, ContextLengthError, RequestError, RoundError
 from tensorfold.server.http import Server, make_handler
+from tensorfold.server.request_ids import new_request_id
 from tensorfold.server.stopping import matched_stop
 from tensorfold.server.thinking_notes import unanswered
 from tensorfold.server.text import (CHANNEL_MARKERS, IncrementalText, is_title_request, parse_harmony_output,
@@ -76,17 +77,18 @@ def maintained():
                         type_ignores=[])
     ast.fix_missing_locations(source)
     local, counts = threading.local(), []
-    metrics = SimpleNamespace(begin=lambda *a: None, bind=lambda *a: None,
+    metrics = SimpleNamespace(begin=lambda *a: None, bind=lambda *a: None, ended=lambda *a, **k: None,
                               tokens=lambda *a: counts.append(a), finish_request=lambda: None)
     namespace = dict(threading=threading, time=time, queue=queue, uuid=uuid, _REQUEST=local, metrics=metrics,
-                     Cancellation=Cancellation, ChatJob=Job, StopPolicy=Stops, RoundError=RoundError,
+                     Cancellation=Cancellation, RequestCancelled=RequestCancelled, new_request_id=new_request_id,
+                     ChatJob=Job, StopPolicy=Stops, RoundError=RoundError,
                      RequestError=RequestError, CONTEXT_LIMIT=CONTEXT_LIMIT, ContextLengthError=ContextLengthError,
                      is_title_request=is_title_request, IncrementalText=IncrementalText, CHANNEL_MARKERS=CHANNEL_MARKERS,
                      split_thinking=split_thinking, parse_harmony_output=parse_harmony_output,
                      strip_trailing_stops=strip_trailing_stops, reasoning_count=reasoning_count,
                      streaming_visible_text=streaming_visible_text, matched_stop=matched_stop, unanswered=unanswered,
                      _token_sha=lambda ids: hashlib.sha256(",".join(str(t) for t in ids).encode()).hexdigest()[:12],
-                     grammar=SimpleNamespace(FIELDS=(), request_constraint=lambda *a: None))
+                     grammar=SimpleNamespace(FIELDS=(), SPECS=(), request_constraint=lambda *a: None))
     exec(compile(source, str(path), "exec"), namespace)
     return namespace["RequestApp"], local, metrics, counts
 
@@ -102,6 +104,7 @@ def fixture(second, *, second_error=None):
     app.system_prefix_len = lambda *a, **k: 0
     app._resolve_sampling = lambda *a: None
     app._call_gate = lambda *a: None
+    app.strict_calls = lambda *a, **k: None                # no strict tools: the lenient path
     app._round_profile = lambda *a: ""
     app.effort_for = lambda *a: None
     app.exact_mode, app.checkpoints = {"mode": "exact", "engine": "lanes"}, None

@@ -1,0 +1,546 @@
+{
+  "schema": 1,
+  "verified_utc": "2026-10-18T16:59:35.856018+00:00",
+  "scope": "single GB10, single request lane; this exact native CT checkpoint and BF16 DFlash",
+  "source": {
+    "git_base": "0752d5a6",
+    "content_identity": "0752d5a6+aeon.22d1450991182980",
+    "capture_manifest_sha256": "2c7c9f5de4e9071606264035238f8117a184b74d381e1916d4eee76406f588cd",
+    "installed_affected_source": {
+      "package": "/opt/tensorfold-venv/lib/python3.12/site-packages/tensorfold",
+      "matched_files": {
+        "src/tensorfold/cli.py": "fea56920c80db247c7fb98e546e171d21f3bb5f09c45853aa888e08742c779b4",
+        "src/tensorfold/cuda/moe.py": "c1421c67a809b41802249ce8709f1adc31d8b8bccc51883622b4f9f613b307e3",
+        "src/tensorfold/cuda/nvfp4/experts_a4.py": "ce73c1ef698ec82d8c1152d26343cf78aadd0770b9a3d0633ab741f22a65d591",
+        "src/tensorfold/cuda/server.py": "30952bd7e3d6c27f7feb6a811065f67a7fe42372e13b81c59e4e274a8773d451",
+        "src/tensorfold/families/gemma4/__init__.py": "47996a69b595a4de779a80c702746c9b1fe6170dd5d24ace87e2a35694fcd893",
+        "src/tensorfold/families/gemma4/cuda/__init__.py": "0459342157e80d9ad6806669da7c6661adb6e21a3e73fd300c3dd93a005cf42c",
+        "src/tensorfold/families/gemma4/cuda/capacity.py": "38866a083ebb059548fab6f649a260bda87874341692128a8cc80ac5b071bc4a",
+        "src/tensorfold/families/gemma4/cuda/dflash.py": "e3a0535fa4d1df1316f40503c7a6b1f24a556536a63ef52d88c7bd48241c3f46",
+        "src/tensorfold/families/gemma4/cuda/engine.py": "f5a95ea77916543e475d481a7d847f6546ec1e6c21b33a3e28826eb00cae6422",
+        "src/tensorfold/families/gemma4/cuda/experts.py": "9d652961d8278e2be48a943dc7f7ca3a26469b206210c71a929d2796b8328991",
+        "src/tensorfold/families/gemma4/cuda/forward.py": "1e2982722479440220e114f2adb0472ea219557c6b47daf126c7302c38b9b3b9",
+        "src/tensorfold/families/gemma4/cuda/head.py": "c07ebd72617215ba7bd47d1ea66ac6550ef4a59ff13f664e6bb6cd07a125d9ad",
+        "src/tensorfold/families/gemma4/cuda/linear.py": "03c8b9a2631e8acc4a1fa90f3879d31e2c2e402a45d37c72f0e9e3b6609dcaea",
+        "src/tensorfold/families/gemma4/cuda/nvfp4_experts.py": "31d9f5847c98bb58351b28d80498111b57d3791981c3a6f8f7d2b72a421d94ef",
+        "src/tensorfold/families/gemma4/cuda/nvfp4_weights.py": "90628a183d3553169ff2c4116b425ccc3060318d528341fa06e2d304f68950f1",
+        "src/tensorfold/families/gemma4/cuda/state.py": "a0d9a05ecb360e8b64a5d2dc553544a1ad6283c9d9b4d7eb73c6e40c4fad866a",
+        "src/tensorfold/families/gemma4/cuda/vision.py": "7603b18c0e7107d66b671f210f6d103033e758ee9bbd9d975a1682c138f88e29",
+        "src/tensorfold/families/gemma4/cuda/weights.py": "312b32642157bf6fd7a7d554c7617e953264220b6bc27bfff4d477386fef6ad1",
+        "src/tensorfold/families/gemma4/dflash_metadata.py": "8a4c700fadf4abe60f8fbf5a5c28403360791fbfa571f047c6d5b0cf5f96ce8c",
+        "src/tensorfold/families/qwen3_5/cuda/b16.py": "e5b028b21bc347003d4a9a550d91b2bd71291af8298127a333d63d5eb5f82357",
+        "src/tensorfold/server/gemma_values.py": "760f71d95501e40a3a5049e4866ebc101cf141c6549ff66eed30926cecd3eb68",
+        "src/tensorfold/server/request_options.py": "1e371a02e2556942798653422edd32e8d7a8fe046dcfe6a119b20c2d46cc977e",
+        "src/tensorfold/server/strict_gemma_tools.py": "edd98301acaa1b37b96e2aace2ae2d3c91d6094417f1672e9aad291e83a2fe64",
+        "src/tensorfold/server/thinking_notes.py": "00326ac8bd98b01d1451fccf1dd29d00c8eaefcd205d7269ed5663d09c469188",
+        "src/tensorfold/server/tools.py": "154879519ca75e9f3c1050e4e2d4c1670de7c139a56cb2e20c23444ee4f4abd1",
+        "src/tensorfold/token_metadata.py": "d9b2603f5049630696f2d522eb72139137e84d1fee0dc2ef36ac0218608ab67f",
+        "src/tensorfold/vision/config.py": "86ea3334b0bbda8406043ff494fead0e7799d061677d4afa9835b48550d523ec"
+      }
+    },
+    "post_capture_execution_neutral_cleanup": {
+      "path": "src/tensorfold/server/gemma_values.py",
+      "change": "remove excess EOF blank line flagged when untracked source was staged",
+      "image_capture_sha256": "760f71d95501e40a3a5049e4866ebc101cf141c6549ff66eed30926cecd3eb68",
+      "canonical_sha256": "63c5d35dc6de4415ed2cfa858faa22c78292d8155740f93f7c3426edbdd9075e",
+      "compiled_identity": {
+        "0": "8f1199882eec6e77d8e219c58b82f89e53b49532e4e07b1702ecd6b6faa2ad7c",
+        "1": "8f1199882eec6e77d8e219c58b82f89e53b49532e4e07b1702ecd6b6faa2ad7c",
+        "2": "4aa4273f9767920e2f48464ed4b25511cadaa5fc444149d6b35561d1c3d0b6d2"
+      },
+      "target_runtime": {
+        "python": "3.12.3",
+        "installed_path": "/opt/tensorfold-venv/lib/python3.12/site-packages/tensorfold/server/gemma_values.py",
+        "before_sha256": "760f71d95501e40a3a5049e4866ebc101cf141c6549ff66eed30926cecd3eb68",
+        "after_sha256": "63c5d35dc6de4415ed2cfa858faa22c78292d8155740f93f7c3426edbdd9075e",
+        "optimize": {
+          "0": "61cb4b9e140e3cf0970833f8a19fa1976a595d85c1013b9a3402da5564477f3b",
+          "1": "61cb4b9e140e3cf0970833f8a19fa1976a595d85c1013b9a3402da5564477f3b",
+          "2": "c90863a16e177c66a78dfd239d0fa3989e43d5be8f0e41b05c29901d9480f3af"
+        }
+      }
+    }
+  },
+  "images": {
+    "runtime": "sha256:2b6a6d7cc496d518553d824eec7fb5cd955e20f8b87a8f2861952de79dc072b6",
+    "verification": "sha256:ff43aee142f4d885395a69f4213ffa0945c2fddea61ef83ee5ea6abfe3069e6b",
+    "wheel_sha256": "863d7a5e48e7e91d31566012c377f72a3ff7246f5f5de5acaf4867dd28372f28"
+  },
+  "runtime": {
+    "hardware": "NVIDIA GB10 SM12.1 ARM64",
+    "base": "nvcr.io/nvidia/cuda:13.4.3-cudnn-devel-ubuntu24.04@sha256:f2d23b75391766a02175908d3fa1c2afee9849aa13d09326d71649de2b33cfe9",
+    "torch": "2.16.0.dev20261014+cu134",
+    "triton": "3.9.0",
+    "foundation": "sealed SDK and official nightly wheels; build and launch audits passed; no Torch/vendor source patch"
+  },
+  "models": {
+    "target": "AEON-7/Gemma-4-26B-A4B-it-Uncensored-NVFP4",
+    "target_revision": "90c8601b1a439497bc15d8fba9e52990b45ea0cb",
+    "target_integrity": {
+      "utc": "2026-10-18T15:33:54.271393+00:00",
+      "accepted": [
+        {
+          "repo": "AEON-7/Gemma-4-26B-A4B-it-Uncensored-NVFP4",
+          "revision": "90c8601b1a439497bc15d8fba9e52990b45ea0cb",
+          "files": [
+            {
+              "file": ".gitattributes",
+              "size": 1570,
+              "digest": "52373fe24473b1aa44333d318f578ae6bf04b49b",
+              "kind": "git-blob-sha1"
+            },
+            {
+              "file": "README.md",
+              "size": 39109,
+              "digest": "d5aed08f3fa0ecfaa59d2457a33aee1c86bc945a",
+              "kind": "git-blob-sha1"
+            },
+            {
+              "file": "assets/perf/gemma26b_concurrency.svg",
+              "size": 4937,
+              "digest": "196f7a6e6e85ce6066820ae395dc9f9e2d05aa6e",
+              "kind": "git-blob-sha1"
+            },
+            {
+              "file": "assets/perf/gemma26b_stock_vs_optimized.svg",
+              "size": 5213,
+              "digest": "4196198e60efa98f6d40d429810adc8c22d7e07a",
+              "kind": "git-blob-sha1"
+            },
+            {
+              "file": "chat_template.jinja",
+              "size": 12045,
+              "digest": "33c51c2dbf7e7494b2c055cae7b52f523d3df564",
+              "kind": "git-blob-sha1"
+            },
+            {
+              "file": "config.json",
+              "size": 5329,
+              "digest": "0f009ca3cfe79f2496ef06c8fb646f1cf3408797",
+              "kind": "git-blob-sha1"
+            },
+            {
+              "file": "gemma4_patched.py",
+              "size": 63268,
+              "digest": "746c4fde725a1e2a8852580fa8d5f9cfeb5324ce",
+              "kind": "git-blob-sha1"
+            },
+            {
+              "file": "generation_config.json",
+              "size": 203,
+              "digest": "edda3c1950276d89fa83f5c515fdc0a38734fc59",
+              "kind": "git-blob-sha1"
+            },
+            {
+              "file": "model.safetensors",
+              "size": 16423500564,
+              "digest": "7ee814fc08ed1a9f3ab17c57d7f723eb043c054be9e30402b070fcf04a67b136",
+              "kind": "sha256"
+            },
+            {
+              "file": "preprocessor_config.json",
+              "size": 371,
+              "digest": "6c74283ed66b44052ca32c984351a944e877b839",
+              "kind": "git-blob-sha1"
+            },
+            {
+              "file": "processor_config.json",
+              "size": 1593,
+              "digest": "81cc8baeade45741cf75a2dfb44260f4d9870fbf",
+              "kind": "git-blob-sha1"
+            },
+            {
+              "file": "recipe.yaml",
+              "size": 237,
+              "digest": "b9316dd1ae25eb7c94979a117e7736ef1d7032e3",
+              "kind": "git-blob-sha1"
+            },
+            {
+              "file": "tokenizer.json",
+              "size": 32169892,
+              "digest": "9d0e1c859267d7cded7ad6c23bbb72a838536716fa4c37a3f5671b7918f59de4",
+              "kind": "sha256"
+            },
+            {
+              "file": "tokenizer_config.json",
+              "size": 2764,
+              "digest": "157943d17f2894a72a2a32e17e7d6207f6650740",
+              "kind": "git-blob-sha1"
+            }
+          ]
+        }
+      ]
+    },
+    "drafter": "z-lab/gemma-4-26B-A4B-it-DFlash",
+    "drafter_revision": "77d4202772dfe50b2396ec7bac9cfffc7b9e7057",
+    "chat_template_sha256": "2dfbfc7d538912f4ea11d29d85b4e25d7bc26386e53f57529f1d707c28b5828c"
+  },
+  "deployment": {
+    "url": "http://192.168.1.50:8888/v1",
+    "model": "gemma4-26b",
+    "container_id": "67ed1fd687f93b9266f66b2a6c42c2edac7bdec609b5dcfca133fa83fcf5781b",
+    "profile": "deploy/gb10/compose.gemma4.yaml",
+    "verify_rows": 5,
+    "draft_proposals": 4,
+    "drafter_bits": 16,
+    "context": 262144,
+    "kv_dtype": "bf16",
+    "precision": "checkpoint",
+    "vision": true,
+    "thinking_default": false,
+    "thinking_request_override": true,
+    "host_reserve_gib": 8,
+    "optional_vram_reserve_gib": 0,
+    "cpus": "0-19",
+    "memory_limit": 0,
+    "nano_cpus": 0,
+    "restart_count": 0,
+    "health": "healthy",
+    "startup_log_sha256": "818373b57ca189d23861fc26a20a395e68e7d5f705aa784ef6c9210193b4d81d",
+    "cached_extension_model_load_seconds": 19.1
+  },
+  "installed_checks": {
+    "cpu": {
+      "tests": 463,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 2
+    },
+    "cpu_skip_reason": "two MLX-only thinking-note cases on Linux ARM/CUDA",
+    "gpu": {
+      "tests": 50,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "all_27_affected_package_sources_match_capture": true
+  },
+  "live_checks": {
+    "Harness_versioned_count": 19,
+    "untruncated_long_count": 6013,
+    "generation_free_count": true,
+    "native_count_parity": true,
+    "image": "red fixture answered Red; count283 equals generation usage",
+    "video": "red MP4 fixture answered Red; count319 equals generation usage",
+    "strict_function_tool": "set_flag returns enabled=true,note=null under enforced schema",
+    "greedy_full_512_token_identity": true,
+    "default_thinking_off_count": 19,
+    "sampled_full_token_identity": true,
+    "sampled_tokens": 64,
+    "SSE": "DONE and exact greeting/usage passed"
+  },
+  "installed_http_performance": {
+    "workload": "report LRU coding prompt; max512; greedy; seed7; thinkingoff; sequential S-D-D-S; first prompt uncached, remaining48/48 cached",
+    "engine_decode_tokens_per_second": {
+      "serial": [
+        41.16,
+        41.37
+      ],
+      "DFlash": [
+        64.49,
+        74.41
+      ]
+    },
+    "runs": [
+      {
+        "draft": false,
+        "usage": {
+          "prompt_tokens": 48,
+          "completion_tokens": 512,
+          "total_tokens": 560,
+          "prompt_tokens_details": {
+            "cached_tokens": 0
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          }
+        },
+        "tensorfold": {
+          "stats_version": 2,
+          "request_id": "req-e5d4a730925f4c38937b17f501d6d224",
+          "prefill_s": 0.094,
+          "decode_s": 12.4135,
+          "queue_s": 0.0001,
+          "cached": 0,
+          "drafts": false,
+          "rounds": 511,
+          "drafted": 0,
+          "accepted": 0,
+          "min_rows": 1,
+          "prepare_s": 0.001,
+          "ttft_s": 0.0952,
+          "decode_tps": 41.16,
+          "token_sha": "2e4dff47a59e"
+        },
+        "client_elapsed_s": 12.518348579062149
+      },
+      {
+        "draft": true,
+        "usage": {
+          "prompt_tokens": 48,
+          "completion_tokens": 512,
+          "total_tokens": 560,
+          "prompt_tokens_details": {
+            "cached_tokens": 48
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          }
+        },
+        "tensorfold": {
+          "stats_version": 2,
+          "request_id": "req-a8c917b83d00470685b38fb185c24e7a",
+          "prefill_s": 0.0019,
+          "decode_s": 7.9234,
+          "queue_s": 0.0001,
+          "cached": 48,
+          "drafts": true,
+          "rounds": 142,
+          "drafted": 562,
+          "accepted": 369,
+          "min_rows": 1,
+          "prepare_s": 0.0005,
+          "ttft_s": 0.0028,
+          "decode_tps": 64.49,
+          "token_sha": "2e4dff47a59e"
+        },
+        "client_elapsed_s": 7.936269954079762
+      },
+      {
+        "draft": true,
+        "usage": {
+          "prompt_tokens": 48,
+          "completion_tokens": 512,
+          "total_tokens": 560,
+          "prompt_tokens_details": {
+            "cached_tokens": 48
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          }
+        },
+        "tensorfold": {
+          "stats_version": 2,
+          "request_id": "req-8948e8d2e90044d89be647595f92508c",
+          "prefill_s": 0.0019,
+          "decode_s": 6.8671,
+          "queue_s": 0.0001,
+          "cached": 48,
+          "drafts": true,
+          "rounds": 142,
+          "drafted": 562,
+          "accepted": 369,
+          "min_rows": 1,
+          "prepare_s": 0.0005,
+          "ttft_s": 0.0028,
+          "decode_tps": 74.41,
+          "token_sha": "2e4dff47a59e"
+        },
+        "client_elapsed_s": 6.88047617697157
+      },
+      {
+        "draft": false,
+        "usage": {
+          "prompt_tokens": 48,
+          "completion_tokens": 512,
+          "total_tokens": 560,
+          "prompt_tokens_details": {
+            "cached_tokens": 48
+          },
+          "completion_tokens_details": {
+            "reasoning_tokens": 0
+          }
+        },
+        "tensorfold": {
+          "stats_version": 2,
+          "request_id": "req-9a2db80376d5469da443a57be3b0b13b",
+          "prefill_s": 0.0012,
+          "decode_s": 12.3531,
+          "queue_s": 0.0001,
+          "cached": 48,
+          "drafts": false,
+          "rounds": 511,
+          "drafted": 0,
+          "accepted": 0,
+          "min_rows": 1,
+          "prepare_s": 0.0005,
+          "ttft_s": 0.0019,
+          "decode_tps": 41.37,
+          "token_sha": "2e4dff47a59e"
+        },
+        "client_elapsed_s": 12.365342451026663
+      }
+    ],
+    "raw_summary_sha256": "f2e148f26025e0566e1e045a00da335aaf7c249faab0584481b5e5ea4064d172",
+    "scope": "four observed installed HTTP requests; not a confidence/global-optimum claim; first drafted request slower than second, retained without exclusion"
+  },
+  "source_head_comparison": {
+    "artifact_identity": "0752d5a6+aeon.a1af0da28143c037",
+    "raw_sha256": "efc161e12f845597b913d18f556c885ac9b3e8137794aeb99e1a3432e3d8b830",
+    "analysis_sha256": "081427b209e0adefea666c410567f3fcbe68260c90db4b68b506bf17ec94b56f",
+    "canonical_tool": "tools/gemma4_cuda_head_bench.py",
+    "measured_tool_sha256": "987e6d052186e146223a309156dbfdfa940911632364c8d222fe6584964c51a0",
+    "settings": "context4096; code128/chat32; greedy; thinkingoff; complete warm prefixes; original native CT+BF16 head; all5 heads;10 forward/reverse blocks per region;200 exact full-reference outputs",
+    "summary": {
+      "code/reference": {
+        "wall_tps_median": 39.780027286003744,
+        "wall_tps_range": [
+          39.46524544335543,
+          39.98058808785807
+        ],
+        "decode_tps_median": 39.48145676122242,
+        "samples": 20
+      },
+      "code/reuse2": {
+        "wall_tps_median": 54.79658076997874,
+        "wall_tps_range": [
+          54.06331454243535,
+          55.20029862842915
+        ],
+        "decode_tps_median": 54.38859112985118,
+        "samples": 20
+      },
+      "code/reuse4": {
+        "wall_tps_median": 67.41935810135723,
+        "wall_tps_range": [
+          66.34172582651688,
+          67.63268859318568
+        ],
+        "decode_tps_median": 66.92136208607087,
+        "samples": 20
+      },
+      "code/reuse8": {
+        "wall_tps_median": 75.58131236264393,
+        "wall_tps_range": [
+          74.88555505326282,
+          76.67128574806779
+        ],
+        "decode_tps_median": 75.02363053684434,
+        "samples": 20
+      },
+      "code/reuse16": {
+        "wall_tps_median": 75.6356340254695,
+        "wall_tps_range": [
+          74.76909984732954,
+          76.4295149122513
+        ],
+        "decode_tps_median": 75.08351144744351,
+        "samples": 20
+      },
+      "chat/reference": {
+        "wall_tps_median": 30.019880249481737,
+        "wall_tps_range": [
+          29.46467687450602,
+          30.376489947507558
+        ],
+        "decode_tps_median": 29.101150541815304,
+        "samples": 20
+      },
+      "chat/reuse2": {
+        "wall_tps_median": 40.67732107566487,
+        "wall_tps_range": [
+          40.29385411251221,
+          41.113822742542034
+        ],
+        "decode_tps_median": 39.446096363438066,
+        "samples": 20
+      },
+      "chat/reuse4": {
+        "wall_tps_median": 49.50250280770531,
+        "wall_tps_range": [
+          48.43516977871393,
+          49.784076968102774
+        ],
+        "decode_tps_median": 48.01362996346626,
+        "samples": 20
+      },
+      "chat/reuse8": {
+        "wall_tps_median": 54.12718892133402,
+        "wall_tps_range": [
+          51.5420763490028,
+          55.02619912546419
+        ],
+        "decode_tps_median": 52.49512757539985,
+        "samples": 20
+      },
+      "chat/reuse16": {
+        "wall_tps_median": 54.63426869155459,
+        "wall_tps_range": [
+          51.805597487269736,
+          55.03402248782071
+        ],
+        "decode_tps_median": 52.986955542382574,
+        "samples": 20
+      }
+    },
+    "R16_over_original_head": "strict paired gain in both regions; conditional familywise sign p upper0.0390625 across20 comparisons",
+    "R8_vs_R16": "ranking verification-blocked by inconclusive measurements; not equivalence or R8 inferiority; R16 selected as verified original-head improvement, no unique-optimum claim",
+    "R8_vs_R16_comparisons": [
+      {
+        "workload": "code",
+        "a": "reuse8",
+        "b": "reuse16",
+        "block_latency_ratio_a_over_b": [
+          1.0109637926056612,
+          0.9980845290480597,
+          1.0049602604926429,
+          0.9967291685591939,
+          1.00629972368462,
+          1.0034549991454425,
+          1.001325520366051,
+          0.9903711355308549,
+          1.0013577385266086,
+          0.9935495107416976
+        ],
+        "median_ratio": 1.0013416293167523,
+        "range": [
+          0.9903711355308549,
+          1.0109637926056612
+        ],
+        "a_faster_blocks": 4,
+        "b_faster_blocks": 6,
+        "first_half_a_faster": 2,
+        "last_half_a_faster": 2,
+        "two_sided_sign_p": 0.75390625,
+        "familywise_p_upper": 1
+      },
+      {
+        "workload": "chat",
+        "a": "reuse8",
+        "b": "reuse16",
+        "block_latency_ratio_a_over_b": [
+          1.0267181350076922,
+          1.0093982753551496,
+          0.981218728947632,
+          1.0297584694446054,
+          1.0144546352262664,
+          1.0004548529126631,
+          1.0090410418343914,
+          0.998653250377587,
+          0.9858064843028805,
+          1.013183959474707
+        ],
+        "median_ratio": 1.009219642788525,
+        "range": [
+          0.981218728947632,
+          1.0297584694446054
+        ],
+        "a_faster_blocks": 3,
+        "b_faster_blocks": 7,
+        "first_half_a_faster": 1,
+        "last_half_a_faster": 2,
+        "two_sided_sign_p": 0.34375,
+        "familywise_p_upper": 1
+      }
+    ],
+    "depth_screen": "3/5/11/16 explored;5 had best code/chat observations; exploratory rather than independent depth-superiority inference",
+    "other_load": "only BuildKit container active; no concurrent other GPU/build during source measurements",
+    "min_observed_memavailable_gib": 100.26730346679688
+  },
+  "limitations": [
+    "Only this GB10 checkpoint/profile qualified; other GPUs, larger/concurrent/long-context workloads and Apple execution require separate qualification.",
+    "No bit identity to another engine/format or universal answer-quality claim.",
+    "Unique R8/R16 ranking remains unresolved; raw estimates and uncertainty are retained."
+  ],
+  "evidence_root": "/home/kklouzal/tensorfold-gemma4-aeon-nvfp4-20261018"
+}

@@ -7,16 +7,15 @@ import triton
 import triton.language as tl
 
 from tensorfold.cuda import pdl
+from tensorfold.cuda.sm70 import family_ops as _half_ops
 from tensorfold.cuda.pdl import wait as pdl_wait
 from tensorfold.cuda.geometry import QSA_SELECT_ROWS, QSA_SELECT_SLICES, QSA_SELECT_TILE
 
 from .image_rows import rope_axis
+from .indexer_history import HistoryLayer
 from .kv_pair import load_quarter, load_side, resolve_pair, validate_storage
 
 from .kvquant import dequant_group_4, dequant_group_8, h32
-from .rotorquant_kernel import dequant_group_3 as rotor_dequant_3, dequant_group_4 as rotor_dequant_4
-from .rotorquant_kernel import dequant_group_6 as rotor_dequant_6
-from .rotorquant_kernel import dequant_group_7 as rotor_dequant_7, dequant_group_8 as rotor_dequant_8
 from .rotorquant_kernel import LIFTING_8, rotate as rotor_rotate
 from .rotorquant_ref import CENTROIDS_6, CENTROIDS_8
 
@@ -52,7 +51,7 @@ def _tile(q, k, v, m, l, o, valid, scale: tl.constexpr):
 def _chunks(Q, KC, VC, KSC, VSC, POS0, PO, PM, PL, IDS, NKR, SPR, CENTROIDS,
             H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr, CH: tl.constexpr,
             NCH: tl.constexpr, SCALE: tl.constexpr, IDW: tl.constexpr, QSA: tl.constexpr, BITS: tl.constexpr,
-            CODEC: tl.constexpr = 0, K_BITS: tl.constexpr = -1, K_CODEC: tl.constexpr = 0,
+            K_BITS: tl.constexpr = -1, K_CODEC: tl.constexpr = 0,
             V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, ROTOR_LOOKUP: tl.constexpr = False,
             GATHER6: tl.constexpr = False, PDL: tl.constexpr = False):
     pdl_wait(PDL)
@@ -70,14 +69,13 @@ def _chunks(Q, KC, VC, KSC, VSC, POS0, PO, PM, PL, IDS, NKR, SPR, CENTROIDS,
                     GATHER6=GATHER6)
     else:
         _chunk(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS,
-               H, HK, D, G, CH, NCH, SCALE, IDW, QSA, BITS, CODEC=CODEC)
+               H, HK, D, G, CH, NCH, SCALE, IDW, QSA, BITS)
 
 
 @triton.jit
 def _chunk(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS,
            H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr, CH: tl.constexpr,
-           NCH: tl.constexpr, SCALE: tl.constexpr, IDW: tl.constexpr, QSA: tl.constexpr, BITS: tl.constexpr,
-           CODEC: tl.constexpr = 0):
+           NCH: tl.constexpr, SCALE: tl.constexpr, IDW: tl.constexpr, QSA: tl.constexpr, BITS: tl.constexpr):
     """Row r's keys in chunk c of its ``n`` (a sparse row's through IDS): the chunk's partial o, m and l."""
 
     start = c * CH
@@ -96,66 +94,7 @@ def _chunk(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS,
                 if sparse:
                     ki = tl.load(IDS + r * IDW + ki, mask=valid, other=0)
             off = (ki[:, None].to(tl.int64) * HK + hk) * D + d[None, :]
-            if CODEC:
-                gs = tl.arange(0, D // 128)
-                sgc = (ki[:, None].to(tl.int64) * HK + hk) * (D // 128) + gs[None, :]
-                sc = tl.load(KSC + sgc, mask=valid[:, None], other=0.0)
-                sv = tl.load(VSC + sgc, mask=valid[:, None], other=0.0)
-                if BITS == 3:
-                    lo = tl.arange(0, D // 4)
-                    hi = tl.arange(0, D // 8)
-                    base = (ki[:, None].to(tl.int64) * HK + hk) * (D * 3 // 8)
-                    ol = base + (lo[None, :] // 32) * 48 + lo[None, :] % 32
-                    oh = base + (hi[None, :] // 16) * 48 + 32 + hi[None, :] % 16
-                    kl = tl.load(KC + ol, mask=valid[:, None], other=0)
-                    kh = tl.load(KC + oh, mask=valid[:, None], other=0)
-                    vl = tl.load(VC + ol, mask=valid[:, None], other=0)
-                    vh = tl.load(VC + oh, mask=valid[:, None], other=0)
-                    kk = rotor_dequant_3(kl, kh, sc, M=64, W=D)
-                    vv = rotor_dequant_3(vl, vh, sv, M=64, W=D)
-                elif BITS == 6:
-                    lo = tl.arange(0, D // 2)
-                    hi = tl.arange(0, D // 4)
-                    base = (ki[:, None].to(tl.int64) * HK + hk) * (D * 3 // 4)
-                    ol = base + (lo[None, :] // 64) * 96 + lo[None, :] % 64
-                    oh = base + (hi[None, :] // 32) * 96 + 64 + hi[None, :] % 32
-                    kl = tl.load(KC + ol, mask=valid[:, None], other=0)
-                    kh = tl.load(KC + oh, mask=valid[:, None], other=0)
-                    vl = tl.load(VC + ol, mask=valid[:, None], other=0)
-                    vh = tl.load(VC + oh, mask=valid[:, None], other=0)
-                    kk = rotor_dequant_6(kl, kh, sc, M=64, W=D)
-                    vv = rotor_dequant_6(vl, vh, sv, M=64, W=D)
-                elif BITS == 7:
-                    lo = tl.arange(0, D // 2)
-                    mid = tl.arange(0, D // 4)
-                    hi = tl.arange(0, D // 8)
-                    base = (ki[:, None].to(tl.int64) * HK + hk) * (D * 7 // 8)
-                    ol = base + (lo[None, :] // 64) * 112 + lo[None, :] % 64
-                    om = base + (mid[None, :] // 32) * 112 + 64 + mid[None, :] % 32
-                    oh = base + (hi[None, :] // 16) * 112 + 96 + hi[None, :] % 16
-                    kl = tl.load(KC + ol, mask=valid[:, None], other=0)
-                    km = tl.load(KC + om, mask=valid[:, None], other=0)
-                    kh = tl.load(KC + oh, mask=valid[:, None], other=0)
-                    vl = tl.load(VC + ol, mask=valid[:, None], other=0)
-                    vm = tl.load(VC + om, mask=valid[:, None], other=0)
-                    vh = tl.load(VC + oh, mask=valid[:, None], other=0)
-                    kk = rotor_dequant_7(kl, km, kh, sc, M=64, W=D)
-                    vv = rotor_dequant_7(vl, vm, vh, sv, M=64, W=D)
-                elif BITS == 8:
-                    offb = (ki[:, None].to(tl.int64) * HK + hk) * D + d[None, :]
-                    kc = tl.load(KC + offb, mask=valid[:, None], other=0)
-                    vc = tl.load(VC + offb, mask=valid[:, None], other=0)
-                    kk = rotor_dequant_8(kc, sc, M=64, W=D)
-                    vv = rotor_dequant_8(vc, sv, M=64, W=D)
-                else:
-                    tl.static_assert(BITS == 4)
-                    db = tl.arange(0, D // 2)
-                    offb = (ki[:, None].to(tl.int64) * HK + hk) * (D // 2) + db[None, :]
-                    kc = tl.load(KC + offb, mask=valid[:, None], other=0)
-                    vc = tl.load(VC + offb, mask=valid[:, None], other=0)
-                    kk = rotor_dequant_4(kc, sc, M=64, W=D)
-                    vv = rotor_dequant_4(vc, sv, M=64, W=D)
-            elif BITS:
+            if BITS:
                 # codes with an fp16 scale per 32 values, dequantized before the dot; q carries the keys' rotation
                 gs = tl.arange(0, D // 32)
                 sgc = (ki[:, None].to(tl.int64) * HK + hk) * (D // 32) + gs[None, :]
@@ -324,7 +263,7 @@ def _chunk_quarters(Q, KC, VC, KSC, VSC, n, sparse, r, hk, c, PO, PM, PL, IDS, C
 
 @triton.jit
 def _merge(PO, PM, PL, POS0, OUT, NKR, SPR, H: tl.constexpr, D: tl.constexpr, CH: tl.constexpr, NCH: tl.constexpr,
-           QSA: tl.constexpr, BITS: tl.constexpr, CODEC: tl.constexpr = 0,
+           QSA: tl.constexpr, BITS: tl.constexpr,
            V_BITS: tl.constexpr = -1, V_CODEC: tl.constexpr = 0, PDL: tl.constexpr = False):
     pdl_wait(PDL)
     r = tl.program_id(0)
@@ -334,7 +273,7 @@ def _merge(PO, PM, PL, POS0, OUT, NKR, SPR, H: tl.constexpr, D: tl.constexpr, CH
     if V_BITS >= 0:
         _merge_row(PO, PM, PL, OUT, n, r, tl.program_id(1), H, D, CH, NCH, V_BITS, CODEC=V_CODEC)
     else:
-        _merge_row(PO, PM, PL, OUT, n, r, tl.program_id(1), H, D, CH, NCH, BITS, CODEC=CODEC)
+        _merge_row(PO, PM, PL, OUT, n, r, tl.program_id(1), H, D, CH, NCH, BITS)
 
 
 @triton.jit
@@ -372,13 +311,16 @@ def _merge_row(PO, PM, PL, OUT, n, r, h, H: tl.constexpr, D: tl.constexpr, CH: t
 
 class AttnScratch:
     def __init__(self, rows: int, heads: int, head_dim: int, capacity: int, device, *, budget: int = 2048,
-                 ratio: int = 4) -> None:
+                 ratio: int = 4, dtype=torch.bfloat16, selection_only: bool = False) -> None:
         # a row reads at most budget + ratio - 1 keys (dense below the budget, its selected blocks and tail past it)
-        self.nch = -(-min(capacity, budget + ratio - 1) // CHUNK)
-        self.po = torch.zeros((rows, self.nch, heads, head_dim), dtype=torch.float32, device=device)
-        self.pm = torch.zeros((rows, self.nch, heads), dtype=torch.float32, device=device)
-        self.pl = torch.zeros((rows, self.nch, heads), dtype=torch.float32, device=device)
-        self.out = torch.empty((rows, heads, head_dim), dtype=torch.bfloat16, device=device)
+        self.capacity = capacity
+        self.selection_only = selection_only
+        if not selection_only:
+            self.nch = -(-min(capacity, budget + ratio - 1) // CHUNK)
+            self.po = torch.zeros((rows, self.nch, heads, head_dim), dtype=torch.float32, device=device)
+            self.pm = torch.zeros((rows, self.nch, heads), dtype=torch.float32, device=device)
+            self.pl = torch.zeros((rows, self.nch, heads), dtype=torch.float32, device=device)
+            self.out = torch.empty((rows, heads, head_dim), dtype=dtype, device=device)
         # sparse attention (QSA): each row's key list, its length, whether it is sparse, block scores
         self.budget, self.ratio = budget, ratio
         self.idw = budget + ratio
@@ -388,6 +330,8 @@ class AttnScratch:
         self.nk = torch.zeros((rows,), dtype=torch.int32, device=device)
         self.sparse = torch.zeros((rows,), dtype=torch.int32, device=device)
         self.scores = torch.zeros((rows, self.nb), dtype=torch.float32, device=device) if self.qsa else None
+        if selection_only:
+            return  # Unique-owner attention has its own bounded stats/PV/output slabs.
         # T's rows (fewer than MULTI_ROWS): radix histograms (zeroed by each call) and their slices' placement counts
         # (written by the last pass before placement reads them), at most ``cw`` slices a row
         self.cw = min(SELECT_SLICES, triton.next_power_of_2(-(-self.nb // SELECT_TB)))
@@ -420,6 +364,11 @@ def attention(q: torch.Tensor, kc: torch.Tensor, vc: torch.Tensor, pos0: torch.T
     original shader dispatch; optional side traits are an all-or-none plan.
     ``prompt`` (a prompt pass's row blocks) decodes six-bit sides' centroids by register gather, the same bits.
     """
+    if scratch.selection_only:
+        raise ValueError("selection-only history scratch cannot execute legacy chunk attention")
+    if q.dtype == torch.float16:
+        return _half_ops.attention(q, kc, vc, pos0, scratch, rows, scale, out, context=context, ks=ks, vs=vs, bits=bits, codec=codec, k_bits=k_bits, k_codec=k_codec, v_bits=v_bits, v_codec=v_codec, rotor_lookup=rotor_lookup, prompt=prompt)
+
 
     _, h, d = q.shape
     kb, kf, vb, vf = resolve_pair(bits, codec, k_bits, k_codec, v_bits, v_codec, d)
@@ -449,11 +398,11 @@ def attention(q: torch.Tensor, kc: torch.Tensor, vc: torch.Tensor, pos0: torch.T
     out = scratch.out if out is None else out
     _chunks[(rows, hk, chunks)](q, kc, vc, ks, vs, pos0, scratch.po, scratch.pm, scratch.pl, scratch.ids, scratch.nk,
                              scratch.sparse, scratch.centroids, H=h, HK=hk, D=d, G=g, CH=CHUNK, NCH=nch, SCALE=scale,
-                             IDW=scratch.idw, QSA=scratch.qsa, BITS=kb, CODEC=0, ROTOR_LOOKUP=rotor_lookup,
+                             IDW=scratch.idw, QSA=scratch.qsa, BITS=kb, ROTOR_LOOKUP=rotor_lookup,
                              GATHER6=prompt and 6 in (kb, vb), **pair, num_warps=4, num_stages=1, PDL=pdl.ON,
                              launch_pdl=pdl.ON)
     _merge[(rows, h)](scratch.po, scratch.pm, scratch.pl, pos0, out, scratch.nk, scratch.sparse, H=h, D=d,
-                      CH=CHUNK, NCH=nch, QSA=scratch.qsa, BITS=vb, CODEC=0, **merge_pair, num_warps=1,
+                      CH=CHUNK, NCH=nch, QSA=scratch.qsa, BITS=vb, **merge_pair, num_warps=1,
                       PDL=pdl.ON, launch_pdl=pdl.ON)
     return out
 
@@ -825,18 +774,31 @@ def _launch_select(scratch: AttnScratch, pos: torch.Tensor, rows: int, blocks: i
 def qsa_select(iq: torch.Tensor, ikc: torch.Tensor, pooled: torch.Tensor, pos0: torch.Tensor, ik_scale: torch.Tensor,
                inv_freq: torch.Tensor, eps: float, scratch: AttnScratch, rows: int,
                *, context: int | None = None, rope=None, delta=None, length=0, sections=(11, 11, 10),
-               rope_scale: float = 1.0) -> None:
+               rope_scale: float = 1.0, history_kind: str | None = None,
+               history_capacity: int | None = None, status: torch.Tensor | None = None,
+               valid_rows: torch.Tensor | None = None, layer: int = 0) -> None:
     """Pool the blocks the window completes, score and select each sparse row's blocks (scratch.ids/nk/sparse)."""
 
+    history_options = (dict(history_kind=history_kind, history_capacity=history_capacity,
+                            status=status, valid_rows=valid_rows, layer=layer)
+                       if isinstance(ikc, HistoryLayer) else {})
     qsa_pool(ikc, pooled, pos0, ik_scale, inv_freq, eps, scratch, rows,
-             rope=rope, delta=delta, length=length, sections=sections, rope_scale=rope_scale)
+             rope=rope, delta=delta, length=length, sections=sections, rope_scale=rope_scale, **history_options)
     qsa_rows(iq, pooled, pos0, scratch, rows, context=context)
 
 
 def qsa_pool(ikc: torch.Tensor, pooled: torch.Tensor, pos0: torch.Tensor, ik_scale: torch.Tensor,
              inv_freq: torch.Tensor, eps: float, scratch: AttnScratch, rows: int, *, rope=None, delta=None, length=0,
-             sections=(11, 11, 10), rope_scale: float = 1.0) -> None:
+             sections=(11, 11, 10), rope_scale: float = 1.0, history_kind: str | None = None,
+             history_capacity: int | None = None, status: torch.Tensor | None = None,
+             valid_rows: torch.Tensor | None = None, layer: int = 0) -> None:
     """Pool completed blocks with full prompt rotary positions, including a block spanning prompt pieces."""
+    history = isinstance(ikc, HistoryLayer)
+    if history or ikc.dtype == torch.float16:
+        history_options = (dict(history_kind=history_kind, history_capacity=history_capacity,
+                                status=status, valid_rows=valid_rows, layer=layer) if history else {})
+        return _half_ops.qsa_pool(ikc, pooled, pos0, ik_scale, inv_freq, eps, scratch, rows, rope=rope, delta=delta, length=length, sections=sections, rope_scale=rope_scale, **history_options)
+
 
     mode = 2 if rope is not None else 1 if delta is not None else 0
     _pool[(rows // scratch.ratio + 2,)](ikc, pooled, pos0, ik_scale, inv_freq, eps, rows,
@@ -849,6 +811,9 @@ def qsa_pool(ikc: torch.Tensor, pooled: torch.Tensor, pos0: torch.Tensor, ik_sca
 def qsa_rows(iq: torch.Tensor, pooled: torch.Tensor, pos0: torch.Tensor, scratch: AttnScratch, rows: int, *,
              context: int | None = None) -> None:
     """Score and select the blocks of rows P0 .. P0 + rows - 1; ``context`` bounds the launches to keys in use."""
+    if iq.dtype == torch.float16:
+        return _half_ops.qsa_rows(iq, pooled, pos0, scratch, rows, context=context)
+
 
     di = pooled.shape[1]
     ratio, top = scratch.ratio, scratch.budget // scratch.ratio

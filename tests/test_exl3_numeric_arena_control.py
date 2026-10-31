@@ -63,13 +63,15 @@ class NumericArenaControl(unittest.TestCase):
         owner = SimpleNamespace(capacity_plan=deepcopy(initial))
         namespace = {"self": owner, "w": SimpleNamespace(meta={"expert_cache": cache}), "deepcopy": deepcopy,
                      "ram_layout": SimpleNamespace(format="exl3", entry_bytes=256)}
+        function("src/tensorfold/families/qwen4_exp/cuda/engine.py", "_expert_authority", namespace)
         with redirect_stdout(io.StringIO()):
             exec(compile(module, "numeric-engine-receipt", "exec"), namespace)
         return owner.capacity_plan, initial
 
     def test_final_receipt_preserves_initial_admission_and_reflects_actual_capacities(self):
         cache = SimpleNamespace(gpu_bytes=960, capacity=6, resident_capacity=8,
-                                control_device_bytes=160, control_host_bytes=512, host_bytes=10000)
+                                control_device_bytes=160, control_host_bytes=512, host_bytes=10000,
+                                pin_policy=None)
         actual, initial = self.receipt(cache)
         self.assertEqual(actual["initial_header_pool_admission"], initial)
         self.assertIsNot(actual["initial_header_pool_admission"]["vram_experts"], actual["vram_experts"])
@@ -82,7 +84,8 @@ class NumericArenaControl(unittest.TestCase):
     def test_final_receipt_rejects_gpu_or_host_admission_overrun(self):
         for gpu, device, host in ((1024, 129, 1024), (960, 160, 1025)):
             cache = SimpleNamespace(gpu_bytes=gpu, capacity=6, resident_capacity=8,
-                                    control_device_bytes=device, control_host_bytes=host, host_bytes=10000)
+                                    control_device_bytes=device, control_host_bytes=host, host_bytes=10000,
+                                    pin_policy=None)
             with self.assertRaises(MemoryError):
                 self.receipt(cache)
 

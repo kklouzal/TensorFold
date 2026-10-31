@@ -22,6 +22,7 @@ def test_resend_and_changed_last_prompt_token_resume(monkeypatch, sampling):
         decoder.admit(stream)
         while decoder.live():
             decoder.finish(decoder.round())
+        assert stream.error is None, stream.error
         return stream
 
     cold = run(prompt)
@@ -87,6 +88,7 @@ def test_three_resends_keep_fresh_state_after_each_decode(monkeypatch, sampling,
             engine.admit(stream)
             while engine.live():
                 engine.finish(engine.round())
+            assert stream.error is None, stream.error
             actual, cached = stream.out, stream.cached
         else:
             actual = []

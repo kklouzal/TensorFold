@@ -8,7 +8,6 @@ import socket
 import threading
 import time
 from contextlib import contextmanager
-from types import SimpleNamespace
 
 import pytest
 
@@ -19,19 +18,12 @@ from tensorfold.cuda.scheduler import Scheduler
 from tensorfold.cuda.turns import Turns
 from tensorfold.families.glm5_next.cuda.app import GlmApp
 from tensorfold.server.cancellation import RequestCancelled, socket_cancellation
+from tests.text_tokenizer_fixture import TextTokenizer
 
 WAIT = 10                    # seconds: every wait on a thread, a socket or the engine is bounded by this
 MESSAGES = [{"role": "user", "content": "Hi"}]
 TOOLS = [{"type": "function", "function": {"name": "measure", "parameters": {"type": "object", "properties": {}}}}]
 X = ord("x")
-
-
-class TextTokenizer:
-    def encode(self, text, **kwargs):
-        return SimpleNamespace(ids=[ord(c) for c in text])
-
-    def decode(self, ids, **kwargs):
-        return "".join(chr(c) for c in ids)
 
 
 class PacedEngine:

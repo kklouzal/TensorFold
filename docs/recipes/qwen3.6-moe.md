@@ -1,8 +1,11 @@
 # Qwen3.6-35B-A3B
 
+CUDA CT NVFP4 DFlash sampled requests use standard rejection sampling; greedy serial identity remains required. Fixed seed/configuration, cache reuse and supported batching reproduce the drafted request, while sampled serial/drafted or different proposal-precision tokens may differ. Affine native MTP and Apple paths retain their separate sampling contracts. Historical measurements below retain their source and scope. See [migration validation](../rejection-sampling-validation.md) for outstanding qualification gates.
+
 The `qwen3_5_moe` family serves Qwen3.6-35B-A3B on Apple Silicon and on one NVIDIA GPU. Its layers are the 27B's
 (Gated DeltaNet and gated full attention, every fourth layer attention) with routed experts in place of the dense
-MLP. CUDA drafts with the checkpoint's MTP layer. MLX preserves this fork's DFlash default;
+MLP. Affine CUDA checkpoints draft with their MTP layer; original CT NVFP4 uses a separate DFlash v1 model.
+MLX preserves this fork's DFlash default;
 `--mtp-drafts N` explicitly selects the newly integrated MTP capability. Its actual Apple numerical,
 exactness and performance qualification remains pending.
 
@@ -22,6 +25,141 @@ is placed in it. After the weights, one Spark keeps about 75 GB for caches: atte
 DeltaNet 63 MB a stream.
 
 `--no-drafts` or request field `"draft": false` selects serial decoding, the reference drafted output equals.
+
+## Heretic NVFP4 host check
+
+The GB10 held `AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4` at revision
+`3d05c6063e82cdae8dd1b9362116ea71be8d1439`. Its 11 files, including the unchanged
+23,354,242,448-byte safetensors file and ancillary metadata, were copied to the
+RTX PRO 2000 Blackwell host and fully verified against the publisher's pinned
+hashes. This is the 35B-A3B Heretic model, not the dense Qwen3.8-27B.
+
+The ordinary installed runtime `a44085dc…`, application source `8cf97219`,
+correctly refused `compressed-tensors nvfp4-pack-quantized` at capability
+preflight. That recorded image read MLX affine 4-bit/group-64 weights on CUDA;
+the refusal is retained as historical evidence before the new reader below.
+
+Headers show **18,119,639,040 bytes (16.88 GiB)** of routed expert payload,
+before shared experts, backbone, state or KV. Fully resident execution therefore
+cannot fit the 16 GB card. The historical image lacked this family's NVFP4 MoE
+reader and RAM-expert path. The installed CLI test exposed no GPU and stopped before weight
+loading. No decoder, GPU admission, OOM, model-quality or throughput pass is
+claimed by that historical run. The [receipt](../verification-heretic-a3b-20261017.json) preserves the
+input identities, installed refusal, size evidence and verification limits.
+
+## Original CT NVFP4 and DFlash v1
+
+The new loader reads original `compressed-tensors` `nvfp4-pack-quantized` Qwen MoE
+exports. Routed and shared gate/up/down projections retain their packed weights,
+block scales and separate activation/global calibrations. Excluded BF16 routers,
+shared gate and backbone projections remain BF16. Native FP4 activations require
+SM 12.x and `--precision checkpoint`; this path explicitly refuses other math
+modes. It does not convert the model to affine weights.
+
+Activation quantization consumes each original CT FP32 input-global multiplier
+directly; reconstructing it from a rounded reciprocal can change FP8 block-scale
+bytes. Output calibration uses separately rounded FP32 input/weight reciprocals
+and their FP32 product. Exactness means the same target math/build and sampling
+rule across serial, drafted, resident and cached execution; it does not promise
+bit identity with another runtime's reduction or epilogue ordering.
+
+The secondary `z-lab/Qwen3.6-35B-A3B-DFlash` at
+`42d3b34d588423cdae7ba8f53a8cf7789346a719` is an eight-layer DFlash v1 block-diffusion
+model, with target residual taps `[1, 10, 19, 28, 37]`, block size 16 and its declared
+YaRN rotary configuration. It is separate from a native MTP head. TensorFold reads
+its metadata and weights through owned code; checkpoint Python is never imported.
+Default draft linears keep BF16 storage. Explicit `--drafter-bits 8` (FP8, one scale an
+output row) or `--drafter-bits 4` (NVFP4, an E4M3 scale per 16 inputs and one global
+scale) requantizes the draft linears and a private copy of a floating target head.
+A checkpoint's quantized target head is borrowed without another copy. These change
+only proposals; the target verifies every committed token. `0` or `16` selects BF16 on
+this CUDA path. BF16 remains the default; GB10 precision selection at 32k is pending.
+With a secondary, `--draft-rows N` overrides the metadata block
+width, from 2 through 128 on one stream and at most 16 with `--parallel`.
+Without a secondary, width 1 is also valid. `--mtp-drafts` selects the
+affine model's native MTP path and does not apply to this separate model.
+
+```bash
+tensorfold serve /models/heretic-nvfp4 --backend cuda --name heretic \
+  --drafter /models/qwen36-dflash --context 4096 --vram-experts auto \
+  --draft-rows 8 --drafter-bits 16 --vram-experts-pin on
+```
+
+The example uses the measured single-request profile on the 16 GB Blackwell;
+registration must pass host admission. The secondary's metadata default remains
+16 rows, and registration defaults to `off`. Context and eight draft rows are
+explicit operator choices. Without a context override,
+normal capacity admission applies; a larger admitted context can leave a smaller
+expert pool. `--no-drafts` and request field `"draft": false` use the serial target
+reference. An automatically resolved drafter is used only when the family's
+separate checkpoint is present locally; explicit `--drafter` selects its path.
+
+When resident experts cannot fit the minimum admitted state, omitted
+`--vram-experts` selects RAM-backed experts automatically. A numeric GiB budget or
+`auto` explicitly selects the bounded pool; `--vram-experts-pin off|auto|on` controls
+authority registration. The pool reserves future KV, retained states, draft
+contexts and runtime scratch before choosing its final size. It requires discrete
+VRAM, a fresh native CUDA allocator and stable allocator configuration through
+startup. Reused/unproved allocator state fails explicitly. Resident execution may
+use unified memory. Resident banks group each layer's routes on the GPU (no host
+read of the picks) and run staged native FP4 activation kernels that also compute
+the layer's shared expert as the bank's last cell when it has the routed experts'
+A4 storage (otherwise it keeps its own projections); cached banks plan host windows
+from the picks. Tests compare both paths bit for bit. With one resident stream,
+verification rounds that form a chain (serial steps, DFlash v1 and copy proposals)
+replay CUDA graphs captured at startup for the smallest context span (larger spans
+on first use). The graphs' attention buffers are reserved at the full context once
+and are the stream's only attention cache: every prefill extends them in place and
+kept prompt states share them; a new conversation moves the previous one's kept
+states to buffers sized to their rows (or drops them when the cache budget has no
+room) and resuming one copies it back. Grammar-pruned trees, image prompts,
+concurrent streams and RAM-backed experts run eagerly. Admission charges one
+attention cache, the graphs' recurrent copy, their retained outputs and the
+device-plan scratch.
+The affine native-MTP graph path remains separate. Cached authority stores one
+16-byte-aligned U8 record per expert, including its three packed projections and
+four calibration fields. A miss
+uploads that record once. Native field views are prepared before the pool's
+first borrow and rebuilt transactionally when startup sizes the pool. For this
+checkpoint, each record is 1,769,536 bytes, including 40 bytes of initialized
+padding; admission charges the padding and host registration geometry.
+
+Loading validates original block-scale bytes and scalar calibration on CPU and
+retains the original one-projection CPU byte permutation. GPU loading candidates
+did not establish an improvement in the controlled component/startup region;
+they are not a production backend or fallback.
+
+The shared NVFP4 estimator owns the Reader's physical host-ring reservation.
+The offload plan adds CPU authority and projection workspace without charging
+that same ring again. Ring accounting does not change the Reader's span size or
+the GPU scratch allowance.
+
+The cache owns the CPU authority and GPU pool. Cached banks retain geometry and
+cache identity, with no separate CPU calibration copies. A lease fences native
+consumers before reuse or close. Failed allocation or view preparation before
+replacement commit preserves the existing pool; interrupted publication aborts
+startup and retires owned resources. Failed retirement retains its owners for
+explicit cleanup. Calls after a
+successful close fail before native execution or output mutation.
+
+Installed source `099eb4d0` passed native component checks and full-model serial,
+drafted and seeded token identity on the RTX PRO 2000 Blackwell. The eight-row
+BF16 profile reached about 37 tok/s with a 7.29 GiB expert pool. A balanced
+54-reply comparison retained identical 512-token outputs and work counts across
+the original and prepared vocabulary heads. The conditional paired analysis and
+its assumptions, source/image identities, API coverage and limitations are in
+the [qualification](../qwen36-ct-nvfp4-validation.md). These results establish
+same-target execution identity, rather than general answer quality or parity
+with another runtime.
+
+Concurrent prompt prefill runs the routed MoE over the aggregate batch with the
+same BF16 post-attention boundary as separate prefills. Each stream retains its
+own convolution, recurrent, attention and DFlash context. The scheduler bounds
+the aggregate prompt rows by the admitted forward limit, including while other
+streams decode. Routed batched prefill supports one GPU. Fresh installed checks cover the aggregate row bound, independent
+per-stream state, and four concurrent 512-token replies equal to the serial
+reference. That separate four-slot/four-row profile completed 2,048 tokens at
+57.70 aggregate client tok/s; it is not the single-request profile above.
 
 ## Mac execution
 
@@ -73,10 +211,16 @@ The chat template thinks by default, as on vLLM: replies reason in `reasoning_co
 
 ## CUDA execution
 
+Private copies of a retained MTP attention cache keep its model-owned arena origin as well as its
+committed rows and position. The copied K/V buffers remain private. Resumed and concurrent requests
+must complete without contained stream errors and retain the fresh serial token sequence.
+
+
 The CUDA figures below are retained upstream historical measurements at the source above, not a new
 qualification of this fork or its pinned deployment environment.
 
-CUDA reads this model's MLX 4-bit checkpoint only; NVFP4 and EXL3 exports of it are not read yet. Prompts take bf16
+The historical measurements below use the MLX 4-bit checkpoint; the CT NVFP4 path
+is described separately above, and EXL3 exports are not read. Affine prompts take bf16
 activations by default: 0.90-0.96x the FP8 prompt path from 2k to 128k, and 1.23-1.89x vLLM on NVIDIA's NVFP4 export
 from 2k to 64k. `--prefill-fp8` restores the FP8 path ([prompt precision](cuda.md#prompt-precision)).
 
@@ -94,6 +238,24 @@ head steps replay CUDA graphs captured once per width and context bucket.
 Prompts prefill in chunks; the head absorbs every prompt row but the last. States are kept at the second
 message's start, the last assistant turn's start and prompt ends, so a prompt sharing a system block or
 extending a conversation resumes there with a fresh prefill's bits.
+
+### Context and YaRN
+
+The checkpoints declare 262,144 positions of default RoPE. `tensorfold serve` targets that native window by default,
+subject to startup memory admission. On CUDA,
+`--yarn-factor F` extends the text RoPE with the same static YaRN policy as Qwen3.8 dense (see the
+[27B recipe](qwen3.8-27b.md#context-and-yarn)): the card's 1,010,000-token reach is `--yarn-factor 4` (1,048,576
+positions), for the CT NVFP4 and MLX checkpoints alike, and a checkpoint that declares YaRN brings its own factor.
+Every target prompt, decode and verify forward and the affine path's MTP layer rotate with YaRN's frequencies and
+amplitude (1.1386 at F = 4); the startup log prints the factor, amplitude, original context and position limit.
+The ten full-attention layers hold the KV (20 KiB a token in bf16: 20 GiB for one stream at 1,048,576 tokens; the
+affine path's MTP layer adds 2 KiB a token). The DFlash v1 drafter `42d3b34` declares a 262,144-position RoPE limit,
+so a larger admitted window is refused with it: serve past 262,144 with `--drafter none` (an omitted `--drafter`
+uses the DFlash checkpoint when it has been pulled), or keep it with `--context 262144`. The card notes that static
+YaRN applies at every length and can hurt short texts. Checked so far: the shared policy and rotation tests, this
+checkpoint's YaRN frequencies and amplitude against Transformers', the Qwen3.6 wiring (admission window, loaders,
+MTP amplitude), and a small synthetic affine model on which every rotary site takes the amplitude and MTP drafting
+keeps the serial tokens; a full-model run at the extended window is pending.
 
 ### Concurrent requests
 

@@ -16,7 +16,7 @@ import pytest
 pytest.importorskip("triton")
 torch = pytest.importorskip("torch")
 
-from tensorfold.families.qwen4_exp.cuda import bf16, nvfp4  # noqa: E402
+from tensorfold.cuda import precision
 from tensorfold.families.qwen4_exp.cuda import nvfp4_moe  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda.weights import Config  # noqa: E402
 
@@ -58,7 +58,10 @@ def test_the_header_names_every_tensor(tiny: Path) -> None:
 def test_the_loader_builds_the_nvfp4_faces(tiny: Path) -> None:
     from tensorfold.families.qwen4_exp.cuda.weights import load
 
-    w = load(tiny, mtp=True, draft_vocab=None)
+    # This decoder proves the W4A16 weight representation, independently of
+    # the native checkpoint-A4 bank and its different six-field layout.
+    with precision.using(precision.FULL, asked=True):
+        w = load(tiny, mtp=True, draft_vocab=None)
     assert w.cfg.quant == "modelopt"
     l0 = w.layers[0]
     moe = l0.moe
@@ -111,7 +114,10 @@ def test_the_reader_finds_the_published_naming(tmp_path: Path) -> None:
 
     if not torch.cuda.is_available():                                   # the loader builds CUDA tensors
         pytest.skip("the loader builds CUDA tensors")
-    a, b = load(plain, mtp=True, draft_vocab=None), load(named, mtp=True, draft_vocab=None)
+    # Both sides compare the four W4A16 fields by their public loader layout.
+    # Other engine/graph tests in this module keep checkpoint-native defaults.
+    with precision.using(precision.FULL, asked=True):
+        a, b = load(plain, mtp=True, draft_vocab=None), load(named, mtp=True, draft_vocab=None)
     assert b.cfg.quant == "modelopt" and len(b.layers) == len(a.layers)
     for i, (x, y) in enumerate(zip(a.layers, b.layers, strict=True)):
         for face in ("up", "down", "up_scale", "down_scale"):
@@ -360,13 +366,16 @@ def test_graph_replay_follows_each_steps_experts(tmp_path: Path, monkeypatch) ->
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="the loader builds CUDA tensors")
-def test_an_nvfp4_checkpoint_refuses_ple_on_ssd(tmp_path: Path) -> None:
-    """The SSD reader takes the MLX layout's shards only, so --ple-on-ssd on an NVFP4 checkpoint stops by name."""
+def test_an_nvfp4_checkpoint_uses_its_format_on_ssd(tmp_path: Path) -> None:
+    """NVFP4 table rows use positional code/scale reads and the same decoded BF16 bits."""
 
     from tensorfold.families.qwen4_exp.cuda.weights import load
 
-    with pytest.raises(ValueError, match="ple-on-ssd"):
-        load(write(tmp_path / "ssd", ple_nvfp4=True), mtp=True, draft_vocab=None, ple_on_ssd=True)
+    w = load(write(tmp_path / "ssd", ple_nvfp4=True), mtp=True, draft_vocab=None, ple_on_ssd=True)
+    from tensorfold.families.qwen4_exp.ssd_table import EncodedSSDTable
+
+    assert isinstance(w.layers[1].ple.table, EncodedSSDTable)
+    w.meta["ple_tables"].close(torch.cuda.synchronize)
 
 
 def test_an_nvfp4_checkpoint_refuses_two_ranks(tiny: Path, monkeypatch) -> None:
@@ -454,8 +463,38 @@ def test_fp8_expert_refusals(tmp_path: Path, monkeypatch, case: str) -> None:
     match = {"main_gate": "FP8 routed experts", "main_up": "FP8 is read only in MTP",
              "scale_shape": "one float per tensor or output row", "scale_bytes": "one float per tensor or output row",
              "mixed_dtype": "expected FP8 e4m3 MTP expert weights", "missing_scale": "need a tensor, row"}
-    with pytest.raises(ValueError, match=match[case]):
+    # These messages belong to the weight-only reader/packing contract. Native
+    # checkpoint A4 reads routed payloads through get_rows instead of get.
+    with precision.using(precision.FULL, asked=True), pytest.raises(ValueError, match=match[case]):
         load(path, mtp=True, draft_vocab=128)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available() or torch.cuda.get_device_capability()[0] != 12,
+                    reason="native checkpoint A4 requires an SM12 CUDA GPU")
+@pytest.mark.parametrize("expert, projection", [(0, "gate_proj"), (1, "up_proj")])
+def test_native_a4_refuses_fp8_routed_payload(tmp_path: Path, monkeypatch, expert: int, projection: str) -> None:
+    """Inject the actual native reader boundary; a valid U8 header cannot authorize FP8 payload."""
+
+    from tensorfold.families.qwen4_exp.cuda.reader import _Reader
+    from tensorfold.families.qwen4_exp.cuda.weights import load
+
+    path = write(tmp_path / projection, hidden=512, mtp_experts="fp8")
+    target = f"model.layers.0.mlp.experts.{expert}.{projection}.weight"
+    get_rows = _Reader.get_rows
+    injected = []
+
+    def altered(self, name, lo, hi, device="cpu"):
+        value = get_rows(self, name, lo, hi, device=device)
+        if name == target:
+            injected.append(name)
+            return value.to(torch.float8_e4m3fn)
+        return value
+
+    monkeypatch.setattr(_Reader, "get_rows", altered)
+    with (precision.using(precision.CHECKPOINT, asked=True),
+          pytest.raises(ValueError, match="device A4 packing requires CUDA U8 codes and E4M3 scales")):
+        load(path, mtp=True, draft_vocab=128)
+    assert injected == [target]
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="the loader builds CUDA tensors")

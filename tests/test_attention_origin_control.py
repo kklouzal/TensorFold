@@ -1,15 +1,15 @@
 """Model-owned attention address contracts; stdlib only, no numerical runtime."""
 from __future__ import annotations
-
 import __future__
+
 import ast
-from dataclasses import dataclass
-from functools import cached_property
 import gc
-from pathlib import Path
-from types import SimpleNamespace
 import unittest
 import weakref
+from dataclasses import dataclass
+from functools import cached_property
+from pathlib import Path
+from types import SimpleNamespace
 
 ROOT = Path(__file__).resolve().parents[1]
 ATTENTION = ROOT / "src/tensorfold/cuda/kernels/attention.py"
@@ -95,10 +95,16 @@ class OriginControls(unittest.TestCase):
         # The fixed model lifetime owns the cached view; no process cache exists.
         self.assertNotIn("lru_cache", ATTENTION.read_text())
         self.assertNotIn("def base(", ATTENTION.read_text())
+        # The canonical helper retains FP32 storage before the device transfer;
+        # actual cast bytes and overflow boundaries have independent Torch tests.
+        rotary = next(n for n in tree.body if isinstance(n, ast.FunctionDef) and n.name == "_rotary_frequencies")
+        cast = next(i for i, n in enumerate(rotary.body) if ast.unparse(n) == "inv = inv.to(torch.float32)")
+        self.assertLess(cast, len(rotary.body) - 1)
+        self.assertEqual(ast.unparse(rotary.body[-1]), "return inv.to(device)")
         for name in ("weights.py", "exl3_load.py", "nvfp4_load.py"):
             path = source.parent / name
             text = path.read_text()
-            first = text.index("w.inv_freq = inv.to(torch.float32).to(device)")
+            first = text.index("w.inv_freq = _rotary_frequencies(cfg, device)")
             second = text.index("_ = w.attention_origin", first)
             self.assertLess(first, second)
 

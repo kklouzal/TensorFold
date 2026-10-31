@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Any
-
 import mlx.core as mx
 
 from tensorfold.families.deepseek_v4.config import DECODE_ROWS
@@ -119,7 +117,3 @@ def _ring_write(ring: mx.array, rows: mx.array, start: int) -> mx.array:
         ring[a:] = rows[:size - a]
         ring[:n - (size - a)] = rows[size - a:]
     return ring
-
-
-def make_caches(ratios: list[int]) -> list[Any]:
-    return [LayerCache(r) for r in ratios]

@@ -1,0 +1,370 @@
+{
+  "schema_version": 1,
+  "date_utc": "2026-10-17",
+  "result": "pass",
+  "application_source": "8cf97219722a391203ca7602e6047cfeaaa643b5",
+  "frozen_source_uid": "d8000d22d91bbc7777d2718b61797553f16def936dc9b8bce138f6ee5ff35df3",
+  "runtime_image": "sha256:a44085dcae4f17f6a7d51ca40a6e4f6c99cf4af02647e638ce99ebdd5708855a",
+  "verification_image": "sha256:9115f1a8ed1267354dd65ed1d016092169f59f0826997e859e98abbc12a89666",
+  "build": "ordinary deploy/gb10/Dockerfile runtime and verification targets, linux/amd64; no source overlays",
+  "hardware": {
+    "gpu": "one NVIDIA RTX PRO 2000 Blackwell, SM120, 16GB class",
+    "cpu": "Intel Xeon E3-1285 v6, 4 cores / 8 threads",
+    "host_mem_total_bytes": 67299979264,
+    "host_swap_bytes": 0
+  },
+  "installed_package_audit": {
+    "source": "8cf97219722a391203ca7602e6047cfeaaa643b5",
+    "package": "/opt/tensorfold-venv/lib/python3.12/site-packages/tensorfold",
+    "matched": 517,
+    "missing_readmes": [
+      "families/README.md",
+      "families/qwen3_5/cuda/README.md",
+      "kernels/README.md"
+    ],
+    "mismatches": [],
+    "native_fd_owner": "/opt/tensorfold-venv/lib/python3.12/site-packages/tensorfold/_fd_owner.abi3.so",
+    "native_fd_owner_sha256": "e8199a960dd762f77555016a004308310e0bdba7a76ce04205be29237c868ff1",
+    "python": "3.12.3",
+    "machine": "x86_64",
+    "packages": {
+      "tensorfold": "0.6.6",
+      "torch": "2.16.0.dev20261006+cu134",
+      "triton": "3.9.0+gitaad2a60d",
+      "xgrammar": "0.2.8",
+      "tokenizers": "0.23.1",
+      "jinja2": "3.1.6",
+      "numpy": "2.1.0",
+      "huggingface-hub": "1.24.0",
+      "nvidia-nccl-cu13": "2.30.7",
+      "transformers": "5.17.0"
+    },
+    "nccl": {
+      "native_version": 23007,
+      "loader_name": "libnccl.so.2",
+      "loaded_paths": [
+        "/opt/tensorfold-venv/lib/python3.12/site-packages/nvidia/nccl/lib/libnccl.so.2"
+      ],
+      "environment": {
+        "TF_NCCL_LIB": null,
+        "TF_COMM_BACKEND": null,
+        "NCCL_P2P_DISABLE": null,
+        "NCCL_SHM_DISABLE": null
+      }
+    }
+  },
+  "cpu": {
+    "passed": 1423,
+    "skipped": 0,
+    "source": "8cf97219722a391203ca7602e6047cfeaaa643b5",
+    "image": "sha256:9115f1a8ed1267354dd65ed1d016092169f59f0826997e859e98abbc12a89666",
+    "scope": "Focused affected-contract gate, not the entire repository suite",
+    "selected_modules": [
+      "tests/test_checkpoint_metadata.py",
+      "tests/test_checkpoint_quantization.py",
+      "tests/test_token_metadata.py",
+      "tests/test_chat_metadata.py",
+      "tests/test_mlx_model_metadata.py",
+      "tests/test_cuda_metadata_bindings.py",
+      "tests/test_eos_consensus.py",
+      "tests/test_qwen35_layout_metadata.py",
+      "tests/test_qwen35_rotary_metadata.py",
+      "tests/test_nvfp4_format.py",
+      "tests/test_nvfp4_loader_phase_control.py",
+      "tests/test_qwen35_config_metadata_control.py",
+      "tests/test_qwen27b_eos.py",
+      "tests/test_flashnext_eos.py",
+      "tests/test_cuda_cli.py",
+      "tests/test_cli_startup_lifetime.py",
+      "tests/test_cli_model_identity_boundary.py",
+      "tests/test_hub_and_checks.py",
+      "tests/test_cli_plan.py",
+      "tests/test_quantization_metadata.py",
+      "tests/test_cuda_capacity.py",
+      "tests/test_cuda_geometry.py",
+      "tests/test_ram_experts.py",
+      "tests/test_harness_tokenizer.py",
+      "tests/test_strict_tools.py",
+      "tests/test_strict_constraints.py",
+      "tests/test_tokenizer_layer_types.py",
+      "tests/test_qwen27_prompt_end_template.py",
+      "tests/test_deployment_pins.py",
+      "tests/test_verification_public_permissions.py",
+      "tests/test_token_roles.py",
+      "tests/test_cuda_capacity_boundary.py",
+      "tests/test_expert_parallel_control.py",
+      "tests/test_shared_kv_windows.py",
+      "tests/test_exl3_numeric_arena_control.py",
+      "tests/test_flashnext_t47_lifecycle_source.py",
+      "tests/test_qwen27_startup_metadata.py"
+    ]
+  },
+  "native": {
+    "passed": 114,
+    "skipped": 12,
+    "source": "8cf97219722a391203ca7602e6047cfeaaa643b5",
+    "missing_inputs": {
+      "qwen27_nvfp4_matching_drafter": 9,
+      "qwen27_exl3_matching_drafter": 3
+    },
+    "minimum_sampled_host_available_bytes": 42531573760,
+    "scope": "Focused native CUDA kernels plus actual one-rank NCCL; no physical two-GPU qualification",
+    "selected_modules": [
+      "tests/cuda/test_nvfp4_checkpoint.py",
+      "tests/cuda/test_nvfp4_linear.py",
+      "tests/cuda/test_qwen27_nvfp4.py",
+      "tests/cuda/test_expert_parallel.py",
+      "tests/cuda/test_qwen27_exl3.py",
+      "tests/cuda/test_flashnext_exl3_ram_engine.py",
+      "tests/cuda/test_flashnext_nvfp4_loader.py"
+    ]
+  },
+  "static": {
+    "affected_file_baseline_findings": 298,
+    "affected_file_integrated_findings": 245,
+    "new_findings": 0
+  },
+  "nvfp4_input": {
+    "model_dir": "/home/kklouzal/models/surogate/Qwen3.5-9B-NVFP4/3410fbc4f4075661f58f6b222d05b6dde646b8c1",
+    "weight_name": "model.safetensors",
+    "weight_bytes": 9361048680,
+    "weight_sha256": "a1304acf8325cee90075bf8eb7f5e973ef893c7d497ded92e7d720f0e7178749",
+    "metadata_sha256": {
+      "config.json": "777188d9226a13c2e1db183655c10854be290e95e26619e17095bdaa45a5e99e",
+      "hf_quant_config.json": "be8ddf56c43e6c9372d07d26d7e1bfdb72b0ff69ffb4b5a2b70ec1cf6fd66dce",
+      "generation_config.json": "0c35bb39fbaed1ac0656baabc4f4e9bda20214e12336d0e4e8755aac1f487c2e",
+      "tokenizer_config.json": "316230d6a809701f4db5ea8f8fc862bc3a6f3229c937c174e674ff3ca0a64ac8",
+      "chat_template.jinja": "a4aee8afcf2e0711942cf848899be66016f8d14a889ff9ede07bca099c28f715"
+    }
+  },
+  "resource_contract": {
+    "host_floor_bytes": 8589934592,
+    "host_observation": "MemAvailable at nominal250ms intervals",
+    "device_optional_reserve_bytes": 0,
+    "container_cpu_ram_pid_caps": null,
+    "live_cgroup_ancestor_limits_proved_unlimited": true,
+    "scope": "Required model/KV/workspace remains budgeted; sampled floor is not a continuous reservation"
+  },
+  "real_model_validation": {
+    "schema_version": 2,
+    "result": "pass",
+    "validator_sha256": "c36cdc803349217b36778885a8dd586eb32fbba22de8a38790a9eb7c43d22499",
+    "scope": "Installed images, no source overlay; numerical contracts remain separate by precision; host floor sampled at250ms, not a continuous reservation",
+    "checkpoint": {
+      "records": 29,
+      "coding_token_sha": "253ca1e75134",
+      "coding_decode_tps": [
+        23.74,
+        23.94,
+        23.99
+      ],
+      "automatic_stop_without_request_stop": true,
+      "prior_same_precision_coding_tokens_equal": true,
+      "concurrent_solo_equal": true,
+      "resources": {
+        "sampled_host_minimum_bytes": 49503252480,
+        "host_samples": 544,
+        "sampled_gpu_peak_fb_vendor_mb": 8841,
+        "gpu_samples": 130,
+        "container_cpu_ram_pid_caps": null,
+        "server_exit": 0,
+        "oom_killed": false,
+        "image": "sha256:a44085dcae4f17f6a7d51ca40a6e4f6c99cf4af02647e638ce99ebdd5708855a",
+        "source": "8cf97219722a391203ca7602e6047cfeaaa643b5"
+      },
+      "api_sha256": "120f376a73ea532d09bf9dcdbb410b0ba5481c23e3b8496fe947cf10ba5cd04c"
+    },
+    "full": {
+      "records": 29,
+      "coding_token_sha": "8b1e791ef6ca",
+      "coding_decode_tps": [
+        33.97,
+        34.22,
+        34.22
+      ],
+      "automatic_stop_without_request_stop": true,
+      "prior_same_precision_coding_tokens_equal": true,
+      "concurrent_solo_equal": true,
+      "resources": {
+        "sampled_host_minimum_bytes": 53199675392,
+        "host_samples": 271,
+        "sampled_gpu_peak_fb_vendor_mb": 8851,
+        "gpu_samples": 65,
+        "container_cpu_ram_pid_caps": null,
+        "server_exit": 0,
+        "oom_killed": false,
+        "image": "sha256:a44085dcae4f17f6a7d51ca40a6e4f6c99cf4af02647e638ce99ebdd5708855a",
+        "source": "8cf97219722a391203ca7602e6047cfeaaa643b5"
+      },
+      "api_sha256": "d322b30a19b7d10d9b3c6d25d25f38ca6bc34c56a8b35982dc67536040c7bdf3"
+    },
+    "flash": {
+      "records": 24,
+      "complete_output_multiset_equals_prior_same_requests": true,
+      "sequential_request_tokens_equal_to_prior": true,
+      "concurrent_request_tokens_equal": true,
+      "sse_output_equal_to_prior": true,
+      "request_helper_contract_sha256": "574f4f26eb121706ea0d85b2c31e6f0013b81d4c11b30c506633f31966ac84a7",
+      "drafted_serial_equal": true,
+      "strict_tools_and_catalog_pass": true,
+      "resources": {
+        "sampled_host_minimum_bytes": 21920694272,
+        "host_samples": 595,
+        "sampled_gpu_peak_fb_vendor_mb": 13175,
+        "gpu_samples": 142,
+        "container_cpu_ram_pid_caps": null,
+        "server_exit": 0,
+        "oom_killed": false,
+        "image": "sha256:a44085dcae4f17f6a7d51ca40a6e4f6c99cf4af02647e638ce99ebdd5708855a",
+        "source": "8cf97219722a391203ca7602e6047cfeaaa643b5"
+      },
+      "api_sha256": "5d32531726b553c5e5b3713c52ee80c2daccc75172fa94c79263021d64145a2b"
+    },
+    "capacity": {
+      "records": 5,
+      "native_context_ceiling": 262144,
+      "fitted_context": 118149,
+      "omitted_launch_and_request_defaults_exercised": true,
+      "scope": "Fitted startup plus short generation; no filled-window performance or quality claim",
+      "resources": {
+        "sampled_host_minimum_bytes": 53720403968,
+        "host_samples": 72,
+        "sampled_gpu_peak_fb_vendor_mb": 8573,
+        "gpu_samples": 17,
+        "container_cpu_ram_pid_caps": null,
+        "server_exit": 0,
+        "oom_killed": false,
+        "image": "sha256:a44085dcae4f17f6a7d51ca40a6e4f6c99cf4af02647e638ce99ebdd5708855a",
+        "source": "8cf97219722a391203ca7602e6047cfeaaa643b5"
+      },
+      "api_sha256": "381158ba4c322c48c4fdad1811fb5ab47a9d9e6107d1107cae6810ece9ccabbf"
+    }
+  },
+  "comparison_references": {
+    "checkpoint": {
+      "directory": "/home/kklouzal/tensorfold-small-nvfp4-20261017/checkpoint-p4-eos-stop-v2",
+      "image": "sha256:c74633ad4f232c9e5ad7a1601e4043a914eaf73bae7939e4be87e5720303ed2f",
+      "source": "b551e68f7ae552ba1636fcc1967fd3534747d376",
+      "files_sha256": {
+        "/home/kklouzal/tensorfold-small-nvfp4-20261017/checkpoint-p4-eos-stop-v2/api.json": "ed8fd85ee451debfd23225b354a0639940218f7f7f76597a63ed09876d6a2ab7",
+        "/home/kklouzal/tensorfold-small-nvfp4-20261017/checkpoint-p4-eos-stop-v2/container.json": "a1b4d102a5f7a3ccb097132daff0c5a2a1a62d5927d627c68afa6c49115d87b6",
+        "/home/kklouzal/tensorfold-small-nvfp4-20261017/api_gate_v2.py": "1ff295c182ab92be93f194906f0ccd5cb68bf39462c19f656d137462215e7e85"
+      },
+      "original_attempt_exit": 1,
+      "scope": "Only the three completed512-token coding arrays/requests are used. The original attempt later failed a family-inapplicable harness assertion; the prior composite qualification and original failure remain unchanged."
+    },
+    "full": {
+      "directory": "/home/kklouzal/tensorfold-small-nvfp4-20261017/full-p4-eos-stop-v2",
+      "image": "sha256:c74633ad4f232c9e5ad7a1601e4043a914eaf73bae7939e4be87e5720303ed2f",
+      "source": "b551e68f7ae552ba1636fcc1967fd3534747d376",
+      "files_sha256": {
+        "/home/kklouzal/tensorfold-small-nvfp4-20261017/full-p4-eos-stop-v2/api.json": "7a3a09ab98f18e4a0a5a9c90d764861d387a2b9a57bffd42eaf022563ab978f4",
+        "/home/kklouzal/tensorfold-small-nvfp4-20261017/full-p4-eos-stop-v2/container.json": "6575f54080f203d0f07569c9c1043a95e2a331e3779367f40624c8399d1e3707",
+        "/home/kklouzal/tensorfold-small-nvfp4-20261017/api_gate_v2.py": "1ff295c182ab92be93f194906f0ccd5cb68bf39462c19f656d137462215e7e85"
+      },
+      "original_attempt_exit": 1,
+      "scope": "Only the three completed512-token coding arrays/requests are used. The original attempt later failed a family-inapplicable harness assertion; the prior composite qualification and original failure remain unchanged."
+    },
+    "flash": {
+      "directory": "/home/kklouzal/tensorfold-report-remediation-20261017/native-off",
+      "image": "sha256:c74633ad4f232c9e5ad7a1601e4043a914eaf73bae7939e4be87e5720303ed2f",
+      "source": "b551e68f7ae552ba1636fcc1967fd3534747d376",
+      "files_sha256": {
+        "/home/kklouzal/tensorfold-report-remediation-20261017/native-off/api.json": "3823398917787ce8b1001a9047dc6a73a2c490cdaa1dc443d56f8fed8e3de475",
+        "/home/kklouzal/tensorfold-report-remediation-20261017/native-off/container.json": "78eb1674e9a8e3d2328816ea058b45a5bf70386ed406b531010c5fc1bea2d7c8",
+        "/home/kklouzal/tensorfold-report-remediation-20261017/native_check.py": "574f4f26eb121706ea0d85b2c31e6f0013b81d4c11b30c506633f31966ac84a7"
+      }
+    }
+  },
+  "diagnostics": {
+    "existing_allocator_future_warning": "The unchanged multi-stream expandable-segment setup calls a deprecated but working PyTorch allocator alias; the same call exists in baseline a600def0. Retained as a known pre-existing warning, not a gate failure."
+  },
+  "flash_next": {
+    "checkpoint": "turboderp/Qwen3.8-Flash-Next-exl3",
+    "revision": "65c895314393431c09050b2e04e250836b3a6eb4",
+    "context": 16384,
+    "slots": 4,
+    "kv": "rotorquant8-norm",
+    "mtp_drafts": 4,
+    "mtp_confidence": 0.5,
+    "authority_gib": 28.82,
+    "gpu_pool_gib": 3.55,
+    "resident_cells": 3056,
+    "full_windows_reserved": 4,
+    "snapshots_reserved": 24,
+    "optional_headroom_mib": 0,
+    "reported_load_s": 88.1,
+    "scope": "Reused compiler/OS caches; no paired speedup claim"
+  },
+  "limits": [
+    "No two physical GPU ranks or mixed SM89/SM120 execution on this one-GPU host",
+    "No Apple MLX execution on this host",
+    "Full Flash Next ModelOpt authority exceeds available host RAM with8GiB floor",
+    "Automatic118149-token window qualified by admission and short generation, not a filled-context run",
+    "Separate precision contracts; unpaired three-request rates prove no speedup or performance equivalence",
+    "Dense JSON-call template refuses XML-only strict tools; strictJSON is positively exercised"
+  ],
+  "evidence_packet": "/home/kklouzal/tensorfold-model-metadata-20261017",
+  "evidence_sha256": {
+    "api_gate.py": "6f62aa862759819a717768d26bd6459cd3fee84c4f794dd646ab073572069612",
+    "api_gate_capacity.py": "5a5832309e368c3d08c10c37524038572c03b7c3091b272245ae5db01b19377f",
+    "autocap-p4-final-8cf97219/actual-resource-proof.json": "5d8b989e8d407ce0fd98f91a12b0395c6d729725176b6bfd108a36ab880bd299",
+    "autocap-p4-final-8cf97219/api.json": "381158ba4c322c48c4fdad1811fb5ab47a9d9e6107d1107cae6810ece9ccabbf",
+    "autocap-p4-final-8cf97219/command.json": "5014780c927431bb9fc39db3cddadc3c1a1d41eae0c10e18550bb7f4e8bea890",
+    "autocap-p4-final-8cf97219/container.json": "db0b07b824e29ae6882f2bc78283345e51b0c7c1b625df09f2045741c13eac4a",
+    "autocap-p4-final-8cf97219/gpu-dmon.log": "866893a11dc90a13a0dc6fef874b511725044f3a12dc2b0f14ab406e892742d8",
+    "autocap-p4-final-8cf97219/host-memory.csv": "cb5674e42c387883e52a0195752acfb57de516ce967bce0c4103a568e8e18082",
+    "autocap-p4-final-8cf97219/resource-summary.json": "49795f7ba9efa39533ea10aff646af780d6dd52213e8766536e5bb503d92d6a7",
+    "autocap-p4-final-8cf97219/service.log": "33aaff5348cf95ac5af116c07ceb8787fe78fe01cfdd6336b0dc01eda4b88acf",
+    "build/installed-audit.json": "e7acf87908294c62642e7531ed379880df409f4ca9f19acf62f37c91a04ecf59",
+    "build/runtime.id": "bb04b12d8de303d75d86ef327e4726d8c19560575e62d30219c5e308de72879f",
+    "build/source.json": "ce0534dae3179d01c4f8beb7bb40ba11a1a60ef3be9c1c3b8ff8a7dd38697715",
+    "build/verification.id": "c54608ceb030858889ee141b1ff8e2d335d872841313c3e372a99e9aa77956a5",
+    "checkpoint-p4-final-8cf97219/actual-resource-proof.json": "cc5969e251fd8eaa1b3eb01a5cbf00eace09617f8b5fe0f531c18f32a9c21d09",
+    "checkpoint-p4-final-8cf97219/api.json": "120f376a73ea532d09bf9dcdbb410b0ba5481c23e3b8496fe947cf10ba5cd04c",
+    "checkpoint-p4-final-8cf97219/command.json": "fd9bc14f477cdadd972b336b9cdbe75c935ef48215d28544b85922cceffcfb77",
+    "checkpoint-p4-final-8cf97219/container.json": "63d05a6fae201df4830807a5435045b28fbde1c5461943cf4ffe848cba6c2c8b",
+    "checkpoint-p4-final-8cf97219/gpu-dmon.log": "adb00790f43a9fefaed54e6e5dbc34aa6e2a3e5ad31760e471f6bfb46ce0fee5",
+    "checkpoint-p4-final-8cf97219/host-memory.csv": "8bf390cb67524d9660ab314f0e0255ec041e6d6ae9f1fb5448956c9dbd21f42b",
+    "checkpoint-p4-final-8cf97219/resource-summary.json": "6c400bce7e6f35c3ab41c388c86d6b999f7d068081810f8a477da5a3484b3c10",
+    "checkpoint-p4-final-8cf97219/service.log": "221cc3b73ff3d9722781a6d6a4ee43d42f6253703cefd980b8f22e2ba464e3c3",
+    "container-retirement.json": "c9a54ad7b4278bc9fe3a98176af32d515108f83a03187370f87384a260c7c694",
+    "d13/reference-inputs.json": "92c94c4f67f2e696391796ce59d5bf86874f7ea518a37236e04aa974215f90c9",
+    "final-validation.json": "ede4840de744a7df05afff842b71a040a45dd83b6615e415a335acff051c0b23",
+    "flash/api_gate_flash.py": "cf6ad5bc1543390213842e8097e63840524c11e4f9f8322bbb718647460e4cf6",
+    "flash/checkpoint-p4-final-8cf97219/actual-resource-proof.json": "f55dccb746f38a02e7fb18b5132d7a642bf653b0a56dfdadda9fa67f8fc52a84",
+    "flash/checkpoint-p4-final-8cf97219/api.json": "5d32531726b553c5e5b3713c52ee80c2daccc75172fa94c79263021d64145a2b",
+    "flash/checkpoint-p4-final-8cf97219/command.json": "6e87e263b208cf232382164d4dfa05f019a54b7854391a31bdc041e9604fa615",
+    "flash/checkpoint-p4-final-8cf97219/container.json": "1504a5944a2436cd4bbd157ed6f5798989ae5283a5670a082859ae807541cf72",
+    "flash/checkpoint-p4-final-8cf97219/gpu-dmon.log": "4b9271710fde6fde0426abc8bdef051b7dc7229f0022a26862727f74599ef528",
+    "flash/checkpoint-p4-final-8cf97219/host-memory.csv": "af69f7d2ebfaf25bb0fdc57f50ae210e356667aae1703b783520372e3721beb1",
+    "flash/checkpoint-p4-final-8cf97219/resource-summary.json": "5a55e6bf54a32722a0c35ff050a61f00438fc6acf7de2474cf5660ba31d3f603",
+    "flash/checkpoint-p4-final-8cf97219/service.log": "352171208f3749884156b85c797d5dd48bf7ba729c4f1b9bdea7d3adc4a29a04",
+    "full-p4-final-8cf97219/actual-resource-proof.json": "f0e9fddfcd95e3e60ce186866866eaf50f720d5c9a39137dcb6d0e74bd4d95c0",
+    "full-p4-final-8cf97219/api.json": "d322b30a19b7d10d9b3c6d25d25f38ca6bc34c56a8b35982dc67536040c7bdf3",
+    "full-p4-final-8cf97219/command.json": "922306105c1364dea22c9a86b57524199294212631ebad6bfc0111966955a16b",
+    "full-p4-final-8cf97219/container.json": "829409baeedc8b8fc9a8a88b8be6a7abf7453b1af1c1fe414ac21098027f265b",
+    "full-p4-final-8cf97219/gpu-dmon.log": "3d6063ed81859cb0ef8ed8445e071ce21e6e58baa721353585cdc00b79140c5f",
+    "full-p4-final-8cf97219/host-memory.csv": "1b741e286504d54d8dff7dd11345a01f6a4e032c2e498d24ab582517c79f34be",
+    "full-p4-final-8cf97219/resource-summary.json": "a37ef9e7d7d162c7cc8ed1498924a2280130770d913881067754d8c3fdb79dd6",
+    "full-p4-final-8cf97219/service.log": "9633402dcb46e36a81f90657f9ee924c9261d20bff8b6d0815cee711e173006d",
+    "gates/installed-cpu-v4.json": "9a412bb689183738f1184171406f9352e51b01e3fbc58e86779c86fc530f4bd3",
+    "gates/installed-cpu-v4.log": "97a9e262f2f973c79ec4634501aa7dc7a86e32db15a95fcb2763d43e3854d964",
+    "gates/ruff-final-comparison.json": "6226f159d1e45b847e2eac27c86c63dd98490162182b28700d6463a57f862f72",
+    "host-final.json": "23a4d21589a436e330b35d1b33b234bbb3b18d33b1ea10626d172d25bd4d4ba9",
+    "model-input-final.json": "14bd53a5cce1f6c6bf76a0d6bcf4a4cbe991821cd15e52c3cb977e02cd1e3ef0",
+    "native-p4-final-8cf97219-v2/actual-resource-proof.json": "8da61ad69b439b80688bb410c11037348638dd526002c8da1d2d8c314abb6663",
+    "native-p4-final-8cf97219-v2/command.json": "5f4a2d3987f9fb602e23b2883921fae2f978e066ea1ce65860635707350da18a",
+    "native-p4-final-8cf97219-v2/container.json": "692e35b7126ed5bb5352b876625b21cb99b8d5599638521d17d87d44d885c536",
+    "native-p4-final-8cf97219-v2/gpu-dmon.log": "cc7c0c6d1128f44aa42111776ea75476c663f5803c00d125c74ff407e3bb2eaf",
+    "native-p4-final-8cf97219-v2/host-memory.csv": "a13e91980514a02500fa524da0c46543c20f4080dade5f07ac88fd97085eee5c",
+    "native-p4-final-8cf97219-v2/resource-summary.json": "55023b07381c57743142f2690336e20ccda8996e7a887d8e0f5abfbae6f6fcdb",
+    "native-p4-final-8cf97219-v2/service.log": "5611438762317e8d53b4673384c517930f704a57032cb9f792d001af7cea3d65",
+    "run_capacity.py": "0909a941e1ef4e9b2a865bf1a1aebd82285f6344f33255b481af6f694cfbb530",
+    "run_flash.py": "4c176255b4927412bc9af668910d30868961da790fc35a423ec2bafaca16b93d",
+    "run_model.py": "b6673c1cd7e61be87492960049e9e642559137a767cfec8103299be0e6e0c608",
+    "run_native_final.py": "17e48b5eb00396997c5ff7d4904fe91494994a2c099d10cec8b3d0bd9d25d0f4",
+    "sequence.json": "4c0c72baee459f197aedf8f748872d2fb541c60924fcc6d13997927f7ddf078c",
+    "validate_final.py": "c36cdc803349217b36778885a8dd586eb32fbba22de8a38790a9eb7c43d22499"
+  }
+}

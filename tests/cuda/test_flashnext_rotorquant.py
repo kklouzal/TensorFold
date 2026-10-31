@@ -24,13 +24,38 @@ VARIANTS = ("planar", "isofast")
 WIDTHS = (3, 4)
 FORMAT_CASES = tuple(item for item in FORMATS if item.rotor is not None)
 CODEBOOK = attn_mod.codebook("cuda")      # the eight-bit encoders' tables, made once: graph captures encode too
+# The eight-bit binary-lifting threshold rows, level L's 2^L boundaries, from the reference thresholds
+_SELECTED_8 = tl.constexpr(tuple(tuple(ref.THRESHOLDS_8[2 * step * cell + step - 1]
+                                       for cell in range(256 // (2 * step)))
+                                 for step in (128, 64, 32, 16, 8, 4, 2, 1)))
+
+
+@triton.jit
+def _step8_selected(x, q, LEVEL: tl.constexpr):
+    """One binary-lifting decision, its boundary selected in registers from the level's compile-time row."""
+    step: tl.constexpr = 128 >> LEVEL
+    row: tl.constexpr = _SELECTED_8[LEVEL]
+    boundary = tl.full(x.shape, row[0], tl.float32)
+    for cell in tl.static_range(1, len(row)):
+        boundary = tl.where(q >= 2 * step * cell, row[cell], boundary)
+    return q + (x > boundary).to(tl.int32) * step
+
+
+@triton.jit
+def _indices8_selected(x):
+    """Oracle: eight-bit indices by binary lifting with each level's boundary selected in registers
+    (``rotorquant_kernel._indices(x, 8)`` until 2026-10-14)."""
+    q = tl.full(x.shape, 0, tl.int32)
+    for level in tl.static_range(8):
+        q = _step8_selected(x, q, level)
+    return q
 
 
 @triton.jit
 def _encode8_selected(x, M: tl.constexpr, CODEC: tl.constexpr):
     """Oracle: the eight-bit encoder before its tables (2026-10-14), boundaries and centroids selected in registers."""
-    unit, rms = kernel._normalized(x.to(tl.float32), M)
-    code = kernel._indices(kernel.rotate(unit, M, 128, CODEC), 8).to(tl.uint8)
+    unit, rms = kernel._normalized(x.to(tl.float32))
+    code = _indices8_selected(kernel.rotate(unit, M, 128, CODEC)).to(tl.uint8)
     if CODEC == 8:
         centroid = kernel._centroids(code.to(tl.int32), 8)
         energy = tl.sum(kernel._mul_rn(centroid, centroid), axis=1)
@@ -124,7 +149,7 @@ def _midpoints(X, OUT, THRESHOLDS, N: tl.constexpr, BITS: tl.constexpr, W: tl.co
     x = tl.load(X + i, i < N, other=0.0)
     if BITS == 8:
         if SELECTED:
-            q = kernel._indices(x, 8)                # the oracle: boundaries selected in registers
+            q = _indices8_selected(x)                # the oracle: boundaries selected in registers
         else:
             q = kernel._indices_8(x, THRESHOLDS)     # the encoder's: boundaries loaded from LIFTING_8
     else:
@@ -143,7 +168,7 @@ def _centroid_bits(CODE, OUT, BITS: tl.constexpr):
 
 
 def test_eight_bit_lifting_table_selects_the_same_indices():
-    """``_indices_8`` (boundaries loaded from ``LIFTING_8``) == ``_indices(x, 8)`` (selected) at every midpoint, its
+    """``_indices_8`` (boundaries loaded from ``LIFTING_8``) == ``_indices8_selected`` at every midpoint, its
     FP32 neighbours, signed zeros, infinities, NaN and spread values."""
     midpoint = torch.tensor(ref.thresholds(8), dtype=torch.float32, device="cuda")
     below = torch.nextafter(midpoint, torch.full_like(midpoint, -math.inf))

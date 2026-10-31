@@ -147,40 +147,7 @@ public:
         }
     }
 };
-// GIL-held, completion-known ownership transfer for Linux read-only local FDs.
-// No Python callback or interrupt boundary occurs between close and marking its
-// identity consumed. Linux releases an FD even on EINTR: never retry close(2).
-void close_fds(py::list fds) {
-    if (!PyList_CheckExact(fds.ptr())) throw py::value_error("FD owner must be an exact list");
-    std::vector<int> values;
-    for (py::handle value:fds) {
-        if (!PyLong_CheckExact(value.ptr())) throw py::value_error("FD identities must be exact integers");
-        long fd=PyLong_AsLong(value.ptr());
-        if (PyErr_Occurred()) throw py::error_already_set();
-        if (fd<0 || fd>std::numeric_limits<int>::max()) throw py::value_error("invalid owned FD");
-        values.push_back(static_cast<int>(fd));
-    }
-    auto sorted=values; std::sort(sorted.begin(),sorted.end());
-    if (std::adjacent_find(sorted.begin(),sorted.end())!=sorted.end())
-        throw py::value_error("owned FD identities must be distinct");
-    int code=0, bad=-1;
-    py::int_ consumed(-1);
-    for (size_t i=0;i<values.size();++i) {
-        int result=::close(values[i]); int current=errno;
-        Py_INCREF(consumed.ptr());
-        if (PyList_SetItem(fds.ptr(),static_cast<Py_ssize_t>(i),consumed.ptr())<0)
-            std::terminate(); // exact validated list and index: unreachable C-API invariant failure
-        if (result<0 && !code) { code=current; bad=values[i]; }
-    }
-    if (PyList_SetSlice(fds.ptr(),0,PyList_GET_SIZE(fds.ptr()),nullptr)<0)
-        throw py::error_already_set();
-    if (code) {
-        py::object args=py::make_tuple(code,"n-gram close fd="+std::to_string(bad)+": "+std::string(std::strerror(code)));
-        PyErr_SetObject(PyExc_OSError,args.ptr());throw py::error_already_set();
-    }
-}
 PYBIND11_MODULE(TORCH_EXTENSION_NAME,m) {
-    m.def("close_fds",&close_fds);
     py::class_<Reader>(m,"Reader")
         .def(py::init<size_t>())
         .def("read",&Reader::read)

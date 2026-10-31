@@ -7,6 +7,7 @@ if not torch.cuda.is_available():
     pytest.skip("CUDA only", allow_module_level=True)
 
 from tensorfold.cuda.kernels import qmm  # noqa: E402
+from kernel_inputs import wide as _wide  # noqa: E402
 
 ROWS = [1, 2, 7, 15, 16, 17, 31, 32, 33, 63, 64, 65, 100, 127, 128, 129, 200, 256, 384, 512, 700, 1024, 1500, 2048]
 
@@ -24,6 +25,42 @@ def _dequant(words, scales, biases, gs):
     w = words.to(torch.int64) & 0xFFFFFFFF
     q = ((w[:, :, None] >> (torch.arange(8, device=w.device) * 4)) & 0xF).reshape(n, k8 * 8).float()
     return q * scales.float().repeat_interleave(gs, 1) + biases.float().repeat_interleave(gs, 1)
+
+
+@pytest.mark.parametrize("exponent", [21, 23])
+@pytest.mark.parametrize("sign", [-1, 1])
+def test_group_epilogues_preserve_the_exact_cancellation_residual(exponent, sign):
+    """Exact dyadics distinguish the specified FMA order from rounded multiply/add."""
+
+    from fractions import Fraction
+
+    from tensorfold.families.qwen3_5.cuda import qmm as triton_qmm
+    from tensorfold.families.qwen3_5.cuda.distributed import row_partial
+    from tensorfold.families.qwen3_5.cuda.weights import QLinear
+
+    # First group contributes sign*(-1-2^-7+delta). The second contributes
+    # sign*(1-delta)*(1+2^-7), so exact arithmetic leaves -sign*delta*2^-7.
+    # Both group dots and the first accumulator are exactly representable in
+    # FP32; rounding the second product before cancellation erases the residual.
+    delta = Fraction(1, 2**exponent)
+    scale = 1 + Fraction(1, 128)
+    expected = sign * ((-scale + delta) + (1-delta)*scale)
+    assert expected == -sign * delta / 128
+    n, k = 128, 128
+    words = torch.zeros((n, k//8), device="cuda", dtype=torch.int32)
+    words[:, 8] = 0x11  # group1's first two unpacked quantized weights are one
+    scales = torch.zeros((n, k//64), device="cuda", dtype=torch.bfloat16)
+    biases = torch.zeros_like(scales)
+    scales[:, 1] = float(scale)
+    biases[:, 0] = 1
+    x = torch.zeros((1, k), device="cuda", dtype=torch.bfloat16)
+    x[0, 0], x[0, 1], x[0, 2] = -sign, -sign/128, sign*float(delta)
+    x[0, 64], x[0, 65] = sign, -sign*float(delta)
+    want = torch.full((1, n), float(expected), device="cuda", dtype=torch.bfloat16)
+    assert torch.equal(qmm.matmul(x, qmm.pack(words, scales, biases, 64)), want)
+    assert torch.equal(triton_qmm.lane_matmul(x, words, scales, biases), want)
+    partial = row_partial(x, QLinear(words, scales, biases))
+    assert torch.equal(partial, want.float())
 
 
 @pytest.mark.parametrize("n,k,gs", [(48, 5120, 64), (1024, 5120, 64), (5120, 6144, 64), (200, 1024, 32),
@@ -109,17 +146,6 @@ def test_every_nibble_decodes_exactly(n, k, gs):
     for f32 in (False, True):
         assert torch.equal(qmm.matmul(eye, q, f32=f32).float(), want), f32
         assert torch.equal(qmm.prefill_matmul(eye, q, f32=f32).float(), want), f32
-
-
-def _wide(shape, lo: int, hi: int, seed: int) -> torch.Tensor:
-    """bf16 values over a wide exponent range, both signs, with zeros and negative zeros."""
-
-    g = torch.Generator(device="cuda").manual_seed(seed)
-    mant = torch.rand(shape, generator=g, device="cuda") + 1.0
-    exp = torch.randint(lo, hi + 1, shape, generator=g, device="cuda").float()
-    sign = torch.where(torch.rand(shape, generator=g, device="cuda") < 0.5, -1.0, 1.0)
-    v = torch.where(torch.rand(shape, generator=g, device="cuda") < 0.03, sign * 0.0, sign * mant * torch.exp2(exp))
-    return v.to(torch.bfloat16)
 
 
 @pytest.mark.parametrize("wide", [False, True])

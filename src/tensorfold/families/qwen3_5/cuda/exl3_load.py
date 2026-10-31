@@ -103,16 +103,17 @@ PLANS: dict[tuple[float, int, int], tuple[int, int]] = {
 }
 
 
-def load_exl3(model_dir: str | Path, device: str = "cuda"):
+def load_exl3(model_dir: str | Path, device: str = "cuda", *, eos_token_ids=None, rope=None):
     """An EXL3 pack: the model's groups as ``Exl3``, its unquantized tensors as stored; vision tower and MTP skipped."""
 
     from tensorfold.cuda.exl3 import format as fmt
     from tensorfold.cuda.exl3.prefill import Workspace
 
-    from .weights import GDN, Attention, Config, Layer, Plain, Weights, _close_failed_checkpoint
+    from .weights import GDN, Attention, Config, Layer, Plain, Weights, _close_failed_checkpoint, _rotary_frequencies
 
     model_dir = Path(model_dir)
-    cfg = Config.read(model_dir)
+    cfg = Config.read(model_dir, **{name: value for name, value in (("eos_token_ids", eos_token_ids), ("rope", rope))
+                                    if value is not None})
     ckpt = fmt.scan(model_dir, read_markers=False)
     prefix = "model.language_model."
 
@@ -176,9 +177,7 @@ def load_exl3(model_dir: str | Path, device: str = "cuda"):
                             down=group(p + "mlp.down_proj")))
     w = Weights(config=cfg, embed=Plain(stored("embed_tokens.weight")), layers=layers,
                 norm=norm("norm.weight"), head=group("lm_head"), quant="exl3")
-    half = cfg.rope_dims // 2
-    inv = cfg.rope_theta ** (-torch.arange(0, half, dtype=torch.float64) / half)
-    w.inv_freq = inv.to(torch.float32).to(device)
+    w.inv_freq = _rotary_frequencies(cfg, device)
     if any(not layer.linear for layer in w.layers):
         _ = w.attention_origin                        # resolve before an attention runtime/capture
     if plain or exl3:
@@ -251,9 +250,9 @@ def _storage_estimate(header, text, parse_group, itemsize, original_host_staging
     norm_temp = max((max(8, itemsize(info, name) + 4) * math.prod(info["shape"])
                      for name, info in plain.items() if name.endswith("norm.weight")), default=0)
     head_dim = int(text.get("head_dim") or text["hidden_size"] // text["num_attention_heads"])
-    rope = text.get("rope_parameters") or {}
-    rope_dims = int(head_dim * float(rope.get("partial_rotary_factor", text.get("partial_rotary_factor", 0.25))))
-    inv_freq = rope_dims // 2 * 4
+    from ..config_metadata import declared_yarn, resolve_default_rope
+
+    inv_freq = (declared_yarn(text) or resolve_default_rope(text, head_dim=head_dim)).rotary_dim // 2 * 4
     subset = head_ids = head_columns = subset_counters = subset_temporary = 0
     if with_drafter:
         head = groups["lm_head"]

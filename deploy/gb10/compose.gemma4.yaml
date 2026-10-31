@@ -1,0 +1,85 @@
+name: tensorfold-gb10-gemma4
+
+services:
+  tensorfold:
+    image: ${TENSORFOLD_IMAGE:?Set the immutable TensorFold runtime image}
+    container_name: gemma4-26b-tf
+    entrypoint: [python3, /opt/harness/cuda_entrypoint.py, python3, /opt/harness/tensorfold_harness.py]
+    command:
+      - serve
+      - /model
+      - --backend
+      - cuda
+      - --precision
+      - checkpoint
+      - --name
+      - gemma4-26b
+      - --host
+      - 0.0.0.0
+      - --port
+      - '8888'
+      - --drafter
+      - /drafter
+      - --drafter-bits
+      - '8'
+      - --draft-rows
+      - ${TENSORFOLD_DRAFT_ROWS:-5}
+      - --parallel
+      - '1'
+      - --context
+      - ${TENSORFOLD_CONTEXT:-262144}
+      - --kv-dtype
+      - bf16
+      - --vision
+      - --thinking
+      - --thinking-budget
+      - '0'
+      # Google's current Gemma 4 template (google/gemma-4-26B-A4B-it@4d7ae498, sha256 ae53464b...), not the
+      # checkpoint's launch-era copy; provenance in docs/gemma4-cuda-validation.md.
+      - --chat-template
+      - /templates/gemma4-chat-template-google-4d7ae498.jinja
+    environment:
+      HF_HUB_OFFLINE: '1'
+      TENSORFOLD_NO_UPDATE_CHECK: '1'
+      TENSORFOLD_MEMORY_RESERVE_GIB: ${TENSORFOLD_MEMORY_RESERVE_GIB:-16}
+      TENSORFOLD_CUDA_MEMORY_RESERVE_GIB: ${TENSORFOLD_CUDA_MEMORY_RESERVE_GIB:-0}
+      MAX_JOBS: ${TENSORFOLD_MAX_JOBS:-10}
+      OMP_NUM_THREADS: ${TENSORFOLD_OMP_NUM_THREADS:-10}
+      MKL_NUM_THREADS: ${TENSORFOLD_MKL_NUM_THREADS:-10}
+    volumes:
+      - type: bind
+        source: ${TENSORFOLD_MODEL_PATH:?Set the complete pinned AEON NVFP4 directory}
+        target: /model
+        read_only: true
+      - type: bind
+        source: ${TENSORFOLD_DRAFTER_PATH:?Set the complete pinned BF16 DFlash directory}
+        target: /drafter
+        read_only: true
+      - type: bind
+        source: ${TENSORFOLD_CACHE:?Set the writable kernel cache directory}
+        target: /cache
+      - type: bind
+        source: ./gemma4-chat-template-google-4d7ae498.jinja
+        target: /templates/gemma4-chat-template-google-4d7ae498.jinja
+        read_only: true
+    devices:
+      - nvidia.com/gpu=${TENSORFOLD_GPU_UUID:?Set the GB10 GPU UUID}
+    cpuset: ${TENSORFOLD_CPUSET:-5-9,15-19}
+    network_mode: host
+    ipc: host
+    restart: unless-stopped
+    ulimits:
+      memlock: -1
+      stack: -1
+      nofile: 1048576
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
+    healthcheck:
+      test: [CMD, python3, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8888/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15m
+      retries: 3

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import heapq
+from typing import NamedTuple
 
 import numpy as np
 
@@ -10,12 +11,71 @@ from tensorfold.engine.exact_sampling import Sampling, uniform_rows
 
 # the Metal engine's values; the target's keyed Gumbel noise is known ahead, so ``noise`` weighs it into draft scores
 POLICY = {"edge": 0.6, "noise": 0.7, "scale": 1.5, "branch": 4, "nucleus": False}
+HOT_SPANS = ((0, 98304), (248032, 248320))
+COPY_MIN_MATCH = 8  # CopyIndex requires this many matched AND continued tokens before proposing.
+
+
+def draft_spans(vocab: int):
+    return tuple((a, min(b, vocab)) for a, b in HOT_SPANS if a < vocab)
+
+
+class RejectionResult(NamedTuple):
+    path: list[int]
+    terminal: int
+
+
+def draft_limit(metadata: dict) -> int | None:
+    """Only an explicitly declared positive companion position limit is authoritative; target YaRN cannot extend it."""
+
+    if "max_position_embeddings" not in metadata:
+        return None
+    value = metadata["max_position_embeddings"]
+    if type(value) is not int or value < 1:
+        raise ValueError("DFlash2 max_position_embeddings must be a positive integer when declared")
+    return value
+
+
+def draft_block(metadata: dict) -> int:
+    """The declared training width controls stochastic shape/admission; only a positive exact integer is valid."""
+
+    value = metadata["dflash_config"].get("block_size", 8)
+    if type(value) is not int or value < 1:
+        raise ValueError("DFlash2 dflash_config.block_size must be a positive integer when declared")
+    return value
+
+
+def copy_packet(tokens, position):
+    """Deterministic copy proposals have point-mass q, not the companion model's distribution."""
+
+    from tensorfold.engine.rejection import ChainPacket, ProbabilityRow
+
+    return ChainPacket(tuple(tokens), tuple(ProbabilityRow(np.array([t], dtype=np.int64),
+                                                          np.array([1.0], dtype=np.float64)) for t in tokens), position)
+
+
+def chain_probabilities(logits, sampling, rows, *, plan=None):
+    """Original-chain target row alignment after physical output-limit/grammar pruning.
+
+    Missing descendants are unreachable: an invalid child is rejected by its retained parent's masked p, or the
+    final output slot returns that child as pending without visiting its absent input row. Never shorten q.
+    """
+
+    from tensorfold.cuda.sampling import effective_rows, effective_shards
+
+    result = effective_rows(logits, sampling) if plan is None else effective_shards(logits, sampling, plan=plan)
+    if len(result) > rows:
+        raise ValueError("target rows exceed their original stochastic chain")
+    return [*result, *([None] * (rows - len(result)))]
 
 
 def best_first(cands: np.ndarray, unary: np.ndarray, projected: np.ndarray,
                pred: np.ndarray, succ: np.ndarray, anchor: int, max_nodes: int,
-               sampling: Sampling | None, first_position: int) -> tuple[list[int], list[int], list[float]]:
-    """Metal's best-first lattice policy on the host: nodes, parents and path scores in pop order, parents first."""
+               sampling: Sampling | None, first_position: int,
+               history=None) -> tuple[list[int], list[int], list[float]]:
+    """Metal's best-first lattice policy on the host: nodes, parents and path scores in pop order, parents first.
+
+    With a penalty ``history`` (tensorfold.engine.penalties.History) a node's candidate scores are penalized as the
+    target's verify row will be: by the reply and the tokens on the node's path."""
 
     depth_count = cands.shape[0]
     temp = max(float(sampling.temperature), 1e-6) if sampling is not None else 1.0
@@ -27,10 +87,15 @@ def best_first(cands: np.ndarray, unary: np.ndarray, projected: np.ndarray,
     heap: list[tuple[float, int, int, int]] = []
     tokens: list[int] = []
     parents: list[int] = []
+    paths: list[list[int]] = []                     # each node's tokens from the first depth down to it
 
     def expand(token: int, depth: int, parent: int, path_score: float) -> None:
         edge = successor[depth] @ (pred[token].astype(np.float64) * projected[depth])
-        values = (unary[depth] + POLICY["edge"] * edge) / temp
+        values = unary[depth] + POLICY["edge"] * edge
+        if history is not None:
+            values = history.candidates(values[None], cands[depth][None],
+                                        paths[parent] if parent >= 0 else ())[0].astype(np.float64)
+        values = values / temp
         if noise is not None:
             if POLICY["nucleus"] and sampling.top_p < 1:
                 probs = np.exp(values - values.max())
@@ -57,6 +122,8 @@ def best_first(cands: np.ndarray, unary: np.ndarray, projected: np.ndarray,
         tokens.append(token)
         parents.append(parent)
         scores.append(score)
+        if history is not None:
+            paths.append((paths[parent] if parent >= 0 else []) + [token])
         if depth + 1 < depth_count:
             expand(token, depth + 1, me, score)
     return tokens, parents, scores

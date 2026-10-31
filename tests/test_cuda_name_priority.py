@@ -8,11 +8,10 @@ import pytest
 
 pytest.importorskip("jinja2")
 
-from tests.cli_server_fixture import install_cli_server
-
 from tensorfold import cli
 from tensorfold.serve_options import check as _check_serve_options
 from tensorfold.serve_options import name_priority
+from tests.cli_server_fixture import cuda_cli_app, cuda_cli_engine, install_cli_server
 from tests.test_cuda_admission import http_server
 from tests.test_cuda_server_errors import HI, app_for
 
@@ -63,6 +62,20 @@ def test_the_named_ids_default_priority_applies_unless_the_request_sets_its_own(
     body = {"model": model, "messages": HI, "max_tokens": 4, **({"priority": priority} if priority else {})}
     with http_server(app) as port:
         assert _post(port, body) == 200
+    assert app.engine.calls == [expected]
+
+
+@pytest.mark.parametrize("model, fields, expected", [
+    ("fake-cuda", {"service_tier": "flex"}, True),                  # OpenAI's flex tier: background
+    ("fake-cuda", {"service_tier": "flex", "priority": "now"}, False),     # the request's own priority wins
+    ("fake-cuda", {"service_tier": "auto"}, False),                 # the other tiers change nothing
+    ("fake-cuda", {"service_tier": "priority"}, False),
+    ("qwen3.6-bg", {"service_tier": "default"}, True),              # and leave the id's default in force
+])
+def test_service_tier_flex_is_background_priority(tmp_path, model, fields, expected):
+    app = _app(tmp_path)
+    with http_server(app) as port:
+        assert _post(port, {"model": model, "messages": HI, "max_tokens": 4, **fields}) == 200
     assert app.engine.calls == [expected]
 
 
@@ -124,11 +137,19 @@ def test_serve_hands_the_background_ids_to_the_cuda_app(tmp_path, monkeypatch, r
 
     made = []
     family = SimpleNamespace(title="Test family", model_type="test",
-                             package=SimpleNamespace(cuda_engine=lambda *a, **k: SimpleNamespace(max_len=8192)))
-    monkeypatch.setattr(server, "App", lambda *a, **k: made.append(k) or SimpleNamespace(effective_context_window=8192))
+                             package=SimpleNamespace(cuda_engine=lambda *a, **k: cuda_cli_engine(max_len=8192)))
+    monkeypatch.setattr(server, "App", lambda *a, **k: made.append(k) or cuda_cli_app(effective_context_window=8192))
     install_cli_server(monkeypatch, request, server)
     args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", "--no-drafts",
                                           "--name", "qwen3.6", "--alias", "qwen3.6-bg",
                                           "--name-priority", "qwen3.6-bg=background"])
     assert cli._serve_cuda(args, family, tmp_path, 8192) == 0
     assert made[0]["background_ids"] == frozenset({"qwen3.6-bg"})
+
+
+def test_a_glm_policy_suffix_keeps_the_id_s_default_priority(tmp_path):
+    app = _app(tmp_path)
+    app.model_policies = True                 # GLM: ID@POLICY names a served id and a draft policy
+    with http_server(app) as port:
+        assert _post(port, {"model": "qwen3.6-bg@c3:0.35", "messages": HI, "max_tokens": 4}) == 200
+    assert app.engine.calls == [True]

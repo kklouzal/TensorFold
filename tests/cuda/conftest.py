@@ -47,3 +47,13 @@ def _pdl_policy():
     module = sys.modules.get("tensorfold.cuda.pdl")
     if module is not None:
         module.ON = before
+
+
+@pytest.fixture(params=[False, True], ids=["bf16", "fp8"])
+def fp8(request):
+    """Each test that takes it once with bf16 prompts (the default) and once with --prefill-fp8."""
+
+    from tensorfold.cuda import prompt_precision
+
+    with prompt_precision.using(request.param):
+        yield request.param

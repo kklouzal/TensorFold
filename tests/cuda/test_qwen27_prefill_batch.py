@@ -7,19 +7,13 @@ import torch
 if not torch.cuda.is_available():
     pytest.skip("CUDA only", allow_module_level=True)
 
-from tensorfold.cuda import prompt_precision  # noqa: E402
 from tensorfold.families.qwen3_5.cuda.forward import State  # noqa: E402
 from tensorfold.families.qwen3_5.cuda.prefill import Piece, prefill_batch, prefill_state  # noqa: E402
+from qwen_engine_checks import same_state  # noqa: E402
 from tensorfold.families.qwen3_5.cuda.qmm_fast import prepare  # noqa: E402
 from tensorfold.families.qwen3_5.cuda.weights import Attention, Config, GDN, Layer, QLinear, Weights  # noqa: E402
 
 V = 256
-
-
-@pytest.fixture(params=[False, True], ids=["bf16", "fp8"])
-def fp8(request):
-    with prompt_precision.using(request.param):
-        yield request.param
 
 
 @pytest.fixture(scope="module")
@@ -60,17 +54,6 @@ def _prompt(n, seed):
     return torch.randint(1, V, (n,), generator=g).tolist()
 
 
-def _same(a, b):
-    assert a.pos == b.pos
-    for x, y in zip(a.rec, b.rec):
-        assert (x is None) == (y is None) and (x is None or torch.equal(x, y))
-    for x, y in zip(a.conv, b.conv):
-        assert (x is None) == (y is None) and (x is None or torch.equal(x, y))
-    for x, y in zip(a.kv, b.kv):
-        if x is not None:
-            assert torch.equal(x[0][:a.pos], y[0][:b.pos]) and torch.equal(x[1][:a.pos], y[1][:b.pos])
-
-
 def _alone(w, prompt, start, stop, keep_at):
     """The piece prompt[start:stop] alone, from the state prompt[:start] alone left."""
 
@@ -97,11 +80,11 @@ def test_pieces_together_equal_each_alone(w, fp8):
         sts.append(st)
     got = prefill_batch(w, [Piece(p[:stop], st, keep) for p, st, (_, _, stop, keep) in zip(prompts, sts, CASES)])
     for ((normed, kept), st_alone), st, (normed_b, kept_b, snap), case in zip(alone, sts, got, CASES):
-        _same(st, st_alone)
+        same_state(st, st_alone)
         assert torch.equal(normed_b, normed), case
         assert snap is None and (kept is None) == (kept_b is None), case
         if kept is not None:
-            _same(kept_b[0], kept[0])
+            same_state(kept_b[0], kept[0])
             assert kept_b[1] is None
 
 
@@ -125,5 +108,5 @@ def test_any_mix_of_pieces_gives_the_same_bits(w, order):
         for (j, _), (normed, _, _) in zip(batch, out):
             last[j] = normed
     for (normed, st_ref), st, normed_b in zip(ref, sts, last):
-        _same(st, st_ref)
+        same_state(st, st_ref)
         assert torch.equal(normed_b, normed)

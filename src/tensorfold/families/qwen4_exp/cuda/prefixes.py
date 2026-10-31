@@ -9,10 +9,15 @@ Past ``keep``, a chain's spare points go before any value: a chain keeps one poi
 (its ``LADDER``), so a prompt that diverges anywhere in it resumes within about that distance again, not cold.
 """
 
+from tensorfold.cleanup import raise_failures
+
 LADDER = 4096          # tokens: the nearest band of a chain's ladder, each farther band twice as wide
+_UNSCOPED = object()   # Legacy policy only; None is the explicit local/no-auth domain in selected FIFO profiles.
 
 
-def _best(kept, prompt, busy=()):
+def _best(kept, prompt, busy=(), *, principal=_UNSCOPED):
+    if principal is not _UNSCOPED:
+        kept = (entry for entry in kept if "prefix_principal" in entry[2] and entry[2]["prefix_principal"] == principal)
     return max((k for k in kept if id(k[1]) not in busy and len(k[0]) < len(prompt)
                 and prompt[:len(k[0])] == k[0]), key=lambda k: len(k[0]), default=None)
 
@@ -33,7 +38,9 @@ def _value(owner, entry) -> int:
 
 def _use(owner, st) -> None:
     owner.used[id(st)] = owner.clock
-    owner.kept.sort(key=lambda k: _value(owner, k))          # stable: equal values keep their order
+    # stable: equal values keep their order. A new list, published by one store: a /stats scrape on another thread
+    # reads ``kept`` whole (sorting in place empties a list while it sorts)
+    owner.kept = sorted(owner.kept, key=lambda k: _value(owner, k))
 
 
 def _idle(owner, busy, *spared):
@@ -69,24 +76,34 @@ def _spare(kept) -> list:
     return spare
 
 
-def slot_for(owner, prompt: list[int], reuse: bool):
+def slot_for(owner, prompt: list[int], reuse: bool, *, principal=_UNSCOPED):
     """Copy a fork into spare capacity; else resume a chain in place when that keeps more than it discards."""
 
     busy = owner._busy()
-    best = _best(owner.kept, prompt) if reuse else None
+    best = _best(owner.kept, prompt, principal=principal) if reuse else None
     if best is not None and owner.free and (id(best[1]) in busy or _longer(owner.kept, best)):
         spare = owner.free.pop()
+    else:
+        spare = None
+    if spare is not None:
         try:
             if owner._grow(spare, len(prompt) + owner.depth + 2, protect=best[1]):
-                spare.copy_prefix(best[1], len(best[0]), best[2]["mtp_len"])
+                spare.begin_sequence_generation()
+                restored = spare.copy_prefix(best[1], len(best[0]), best[2]["mtp_len"],
+                    **({"indexer_snapshot": best[2]["compact_indexer"], "poison_control": owner.poison_control}
+                       if spare.compact_indexer is not None else {}))
                 _use(owner, best[1])
-                return spare, {"state": best[2], "tail": best[3]}, len(best[0])
-        except Exception:
-            owner.free.append(spare)
-            owner._shrink(spare, force=True)
+                state = best[2] if restored is None else {**best[2], "compact_indexer": restored}
+                return spare, {"state": state, "tail": best[3]}, len(best[0])
+        except BaseException as primary:  # noqa: BLE001 - retain a popped fork slot even on cancellation
+            try:
+                owner._quarantine(spare)
+                owner._retire_failed_slot(spare)
+            except BaseException as cleanup:  # noqa: BLE001 - preserve fork and exclusive-retirement failures
+                raise_failures(primary, [cleanup])
             raise
         owner.free.append(spare)        # no room for the copy: a cold prefill would need as much, so resume in place
-    best = _best(owner.kept, prompt, busy) if reuse else None
+    best = _best(owner.kept, prompt, busy, principal=principal) if reuse else None
     if best is not None:
         # resume in place unless that discards more kept tokens than going cold costs: the reused tokens prefilled
         # again, and with no free slot the whole chain a cold prefill evicts (best's own, if it is worth least)
@@ -97,26 +114,35 @@ def slot_for(owner, prompt: list[int], reuse: bool):
         if _lost(owner.kept, best) > cold:
             best = None
     if best is not None:
+        best[1].begin_sequence_generation()
         n = len(best[0])
         owner.kept = [k for k in owner.kept if k[1] is not best[1]
                       or len(k[0]) <= n and best[0][:len(k[0])] == k[0]]
         _use(owner, best[1])
         return best[1], {"state": best[2], "tail": best[3]}, n
     if owner.free:
-        return owner.free.pop(), None, 0
-    idle = evict(owner, None)
+        idle = owner.free.pop()
+        try:
+            idle.begin_sequence_generation()
+        except BaseException:
+            owner.free.append(idle)
+            raise
+        return idle, None, 0
+    idle = evict(owner, None, new_sequence=True)
     if idle is None:
         raise RuntimeError("no free stream slot")
     return idle, None, 0
 
 
-def evict(owner, keep, protect=None):
+def evict(owner, keep, protect=None, *, new_sequence=False):
     """The lowest-valued idle kept slot (never ``keep`` or ``protect``), its entries dropped and the clock risen to its
     value, or None."""
 
     idle = _idle(owner, owner._busy(), keep, protect)
     if idle is None:
         return None
+    if new_sequence:
+        idle[1].begin_sequence_generation()
     owner.clock = max(owner.clock, _value(owner, idle))
     owner._drop_kept(idle[1])
     return idle[1]
@@ -132,12 +158,20 @@ def _worth(owner, entry) -> int:
     return owner.used.get(id(entry[1]), 0) + saved
 
 
-def remember(owner, ids, st, snap, tail) -> None:
+def remember(owner, ids, st, snap, tail, *, principal=_UNSCOPED) -> None:
     """Keep a point of ``st``'s chain; past ``keep`` entries, spare ladder points go first, then the one worth least
     (near-end ladder points before deep history), displaced idle slots back to the free list."""
 
-    gone = [k[1] for k in owner.kept if k[0] == ids]
-    owner.kept = [k for k in owner.kept if k[0] != ids] + [(ids, st, snap, tail)]
+    if principal is _UNSCOPED:
+        gone = [k[1] for k in owner.kept if k[0] == ids]
+        owner.kept = [k for k in owner.kept if k[0] != ids] + [(ids, st, snap, tail)]
+    else:
+        if "prefix_principal" not in snap or snap["prefix_principal"] != principal:
+            raise ValueError("prefix publication differs from its actual request principal")
+        def same(entry):
+            return entry[0] == ids and "prefix_principal" in entry[2] and entry[2]["prefix_principal"] == principal
+        gone = [entry[1] for entry in owner.kept if same(entry)]
+        owner.kept = [entry for entry in owner.kept if not same(entry)] + [(ids, st, snap, tail)]
     _use(owner, st)
     while len(owner.kept) > owner.keep:
         spare = _spare(owner.kept)

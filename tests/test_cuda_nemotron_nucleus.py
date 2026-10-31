@@ -5,6 +5,7 @@ import math
 import sys
 from types import ModuleType
 
+import numpy as np
 import pytest
 
 torch = pytest.importorskip("torch")
@@ -58,7 +59,7 @@ def reference(row, pos, seed, temp, top_p, mod, min_p=0.0):
         x = mix((seed + mod.C1) & mask)
         x = mix(x ^ ((pos * mod.C2) & mask))
         x = mix(x ^ i)
-        u = (x >> 11) * 2.0 ** -53 + 2.0 ** -54
+        u = (2 * (x >> 12) + 1) / (1 << 53)
         score = scaled[i] - math.log(-math.log(u))
         if best is None or score > best[0]:
             best = (score, i)
@@ -89,3 +90,17 @@ def test_top_k_off_cuts_min_p_as_the_rule_does(sampler, top_p, min_p):
     sampler.keyed(logits, meta, params, out)
     rows = logits.double().tolist()
     assert out.tolist() == [reference(rows[r], 5 + r + 1, 99, 0.8, top_p, sampler, min_p) for r in range(3)]
+
+
+def test_nemotron_torch_nucleus_endpoint_witness_keeps_masked_support(sampler):
+    from tensorfold.engine.exact_sampling import choose_rows
+
+    seed = 4199689772251414973
+    logits = torch.tensor([[-float("inf"), 0.], [-690., 0.]], dtype=torch.float64)
+    params = sampler.Params("cpu")
+    policy = Sampling(seed, 1., 0, 1.)
+    params.set(policy)
+    meta, out = torch.zeros(4, dtype=torch.int32), torch.empty(2, dtype=torch.int32)
+    sampler.keyed(logits, meta, params, out)
+    expected = choose_rows(logits.numpy(), np.array([[0, 1], [0, 1]], dtype=np.int64), [1, 2], policy)
+    assert out.tolist() == expected == [1, 1]

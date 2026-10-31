@@ -6,7 +6,8 @@ import base64
 import io
 import sys
 import threading
-from types import ModuleType, SimpleNamespace as NS
+from types import ModuleType
+from types import SimpleNamespace as NS
 
 import numpy as np
 import pytest
@@ -21,6 +22,7 @@ from tensorfold.server.errors import RequestError
 from tensorfold.server.messages import normalize_messages
 from tensorfold.server.prompts import prepare_images, prepare_prompt
 from tensorfold.server.scheduler import ChatJob, Scheduler
+from tests.cli_server_fixture import prepared_chat_template
 
 
 @pytest.fixture(autouse=True)
@@ -56,6 +58,9 @@ class Tokenizer:
     def __init__(self):
         self.calls = []
 
+    def token_to_id(self, token):
+        return None
+
     def apply_chat_template(self, messages, **kwargs):
         self.calls.append((messages, kwargs))
         return "rendered with image markers"
@@ -73,8 +78,9 @@ def prompt_app(frontend):
               effort_for=lambda explicit: explicit or "medium")      # the plumbing, not the coercion (tested elsewhere)
 
 
-def cuda_app(frontend):
+def cuda_app(frontend, tmp_path):
     app = App.__new__(App)
+    app.sampling = {}
     app.tok, app.vision = Tokenizer(), frontend
     app.context_window, app.native_context_window = 32, 64
     app.max_tokens, app.default_thinking = 8, False
@@ -82,17 +88,20 @@ def cuda_app(frontend):
     app.template_calls = []
     app.engine_calls = []
 
+    app.template = prepared_chat_template(tmp_path, "rendered prompt")
+    original_render = app.template.render
+
     def render(messages, **kwargs):
         normalized = normalize_messages(messages, allow_images=kwargs.get("allow_images", False))
         app.template_calls.append((normalized, kwargs))
-        return "rendered prompt"
+        return original_render(messages, **kwargs)
 
     def generate(prompt, max_tokens, sampling, on_tokens, draft=True, **kwargs):
         app.engine_calls.append((prompt, max_tokens, sampling, draft, kwargs))
         on_tokens([65])
         return {"cached": 0}
 
-    app.template = NS(render=render)
+    app.template.render = render
     app.engine = NS(generate=generate, eos=(0,), context_window=32)
     app.sampling_for = lambda *args: None
     return app
@@ -144,8 +153,8 @@ def test_prepare_prompt_renders_a_tool_result_s_image_in_place():
     assert app.vision.calls[0][1][0].pixels == bytes([0, 0, 255]) * 4
 
 
-def test_cuda_prepare_accepts_a_tool_result_s_image():
-    app = cuda_app(Frontend())
+def test_cuda_prepare_accepts_a_tool_result_s_image(tmp_path):
+    app = cuda_app(Frontend(), tmp_path)
     prepared = app.prepare({"messages": tool_result_messages(), "max_tokens": 2}, True)
     assert prepared.prompt == [10, 11, 12, 13] and prepared.vision is not None
     rendered, kwargs = app.template_calls[0]
@@ -228,8 +237,8 @@ def test_prepare_prompt_passes_tools_thinking_and_normalized_arguments():
     assert isinstance(calls[0]["function"]["arguments"], str)
 
 
-def test_cuda_prepare_forwards_images_and_checks_expanded_context():
-    app = cuda_app(Frontend())
+def test_cuda_prepare_forwards_images_and_checks_expanded_context(tmp_path):
+    app = cuda_app(Frontend(), tmp_path)
     body = {"messages": image_messages(), "max_tokens": 2, "chat_template_kwargs": {"enable_thinking": True}}
     prepared = app.prepare(body, True)
     assert prepared.prompt == [10, 11, 12, 13] and prepared.vision is not None and prepared.thinking
@@ -240,8 +249,8 @@ def test_cuda_prepare_forwards_images_and_checks_expanded_context():
     assert not app.engine_calls
 
 
-def test_cuda_prepare_rejects_expanded_prompt_before_engine_submission():
-    app = cuda_app(Frontend(tuple(range(40))))
+def test_cuda_prepare_rejects_expanded_prompt_before_engine_submission(tmp_path):
+    app = cuda_app(Frontend(tuple(range(40))), tmp_path)
     with pytest.raises(RequestError, match="expanded image prompt"):
         app.prepare({"messages": image_messages()}, True)
     assert not app.engine_calls
@@ -249,8 +258,8 @@ def test_cuda_prepare_rejects_expanded_prompt_before_engine_submission():
 
 @pytest.mark.parametrize("image", [False, True])
 @pytest.mark.parametrize("draft", [False, True])
-def test_cuda_run_forwards_vision_without_changing_text_call_options(image, draft):
-    app = cuda_app(Frontend())
+def test_cuda_run_forwards_vision_without_changing_text_call_options(image, draft, tmp_path):
+    app = cuda_app(Frontend(), tmp_path)
     messages = image_messages() if image else [{"role": "user", "content": "text"}]
     body = {"messages": messages, "draft": draft, "max_tokens": 2}
     prepared = app.prepare(body, True)
@@ -539,10 +548,10 @@ def test_request_log_redacts_every_image_part():
     assert body["messages"][0]["content"][1]["image_url"]["url"].startswith("data:")    # the request is untouched
 
 
-def test_cuda_required_call_continuation_keeps_the_images(monkeypatch):
+def test_cuda_required_call_continuation_keeps_the_images(monkeypatch, tmp_path):
     from tensorfold.vision import qwen_processing
 
-    app = cuda_app(Frontend())
+    app = cuda_app(Frontend(), tmp_path)
     app.vision.frontend = NS(config={"image_token_id": 7})
     grown = []
     monkeypatch.setattr(qwen_processing, "continued",

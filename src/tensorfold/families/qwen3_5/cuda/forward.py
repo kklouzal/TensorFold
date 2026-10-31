@@ -12,6 +12,7 @@ import torch
 from tensorfold.cuda import moe
 from tensorfold.cuda.kernels import attention as tree_attention
 from tensorfold.cuda.kernels import gdn as deltanet
+from tensorfold.cuda.nvfp4.checkpoint import native as checkpoint_native
 
 from . import glue
 from .qmm_fast import matmul, matmul_group
@@ -29,7 +30,7 @@ def _mm_group(x: torch.Tensor, ws: list, xs: torch.Tensor | None = None) -> list
 
     if all(isinstance(w, QLinear) for w in ws):
         return matmul_group(x, ws, xs)
-    shared = [i for i, w in enumerate(ws) if getattr(w, "act", None) is not None]   # checkpoint math: quantize once
+    shared = [i for i, w in enumerate(ws) if checkpoint_native(w)]   # checkpoint math: quantize once
     got = {}
     if len(shared) > 1:
         from tensorfold.cuda.nvfp4 import checkpoint
@@ -130,7 +131,8 @@ class State:
         c = w.config
         device = w.norm.device
         self.pos = 0
-        self.limit = 0                  # attention caches grow to at most this many rows (0: as a commit needs)
+        self.limit = 0                  # attention caches reserve this many rows (0: ``UNBOUNDED``, moved past it)
+        self.kv_owner = object()        # the caches this state and its clones grow in place (``grow``)
         self.conv: list[torch.Tensor | None] = []
         self.rec: list[torch.Tensor | None] = []
         self.kv: list[tuple[torch.Tensor, torch.Tensor] | None] = []
@@ -191,29 +193,45 @@ def stage(w: Weights, st: State, width: int, context: int) -> Staged:
                   tuple(st.kv[i] for i in softmax))
 
 
-def grow(st: State, i: int, need: int, *, exact: bool = False) -> tuple[torch.Tensor, torch.Tensor]:
-    """Layer ``i``'s cache at ``need`` rows (doubled to ``st.limit``, or exact): every row moves, the old ones free."""
+UNBOUNDED = 1 << 21          # rows a cache reserves addresses for when its state has no admitted window (``limit``)
+
+
+def grow(st: State, i: int, need: int) -> tuple[torch.Tensor, torch.Tensor]:
+    """Layer ``i``'s cache holding at least ``need`` rows. A state's own caches are arenas (``cuda.kv_arena``, owned
+    by ``st.kv_owner``) reserved for ``st.limit`` rows: growing maps memory at their end and no row moves. A cache the
+    state does not own as an arena's current view (a new state's, a kept state's slice, a copied list's) or one that
+    outgrows its reservation moves into new arenas once. Clones share the list and owner, so a grow reaches every
+    clone; other views keep their rows."""
 
     k, v = st.kv[i]
-    if k.shape[0] < need:
-        cap = need if exact else max(need, 2 * k.shape[0], 1024)
-        if st.limit and not exact:
-            cap = max(need, min(cap, st.limit))
-        if st.room is not None:
-            st.room(st, cap * (k.stride(0) * k.element_size() + v.stride(0) * v.element_size()))
-        grown = k.new_empty((cap, *k.shape[1:])), v.new_empty((cap, *v.shape[1:]))
+    if k.shape[0] >= need:
+        return st.kv[i]
+    from tensorfold.cuda.kv_arena import Arena, owned        # past the no-growth return every commit takes
+
+    arenas = owned(k, st.kv_owner), owned(v, st.kv_owner)
+    move = arenas[0] is None or arenas[1] is None or need > arenas[0].capacity
+    if move:
+        capacity = max(need, st.limit or UNBOUNDED, 2 * k.shape[0])
+        arenas = tuple(Arena(capacity, tuple(t.shape[1:]), t.dtype, t.device, st.kv_owner) for t in (k, v))
+    if st.room is not None:
+        st.room(st, arenas[0].extra(need) + arenas[1].extra(need))
+    arenas[0].ensure(need)
+    arenas[1].ensure(need)
+    grown = arenas[0].view(), arenas[1].view()
+    if move and k.shape[0]:
         grown[0][:k.shape[0]], grown[1][:v.shape[0]] = k, v
-        st.kv[i] = grown
-    return st.kv[i]
+    st.kv[i] = grown
+    return grown
 
 
 def reserve(st: State, rows: int) -> None:
-    """Grow every attention cache to ``rows`` now, so later commits never move a buffer (graphs keep addresses)."""
+    """Grow every attention cache to ``rows`` now (commits within them map nothing more); caches it moves reserve
+    ``st.limit`` rows, raised to ``rows`` first."""
 
+    st.limit = max(st.limit, rows)
     for i, kv in enumerate(st.kv):
         if kv is not None:
-            grow(st, i, rows, exact=True)
-    st.limit = rows
+            grow(st, i, rows)
 
 
 @torch.no_grad()
@@ -225,6 +243,7 @@ def tree_forward(w: Weights, tokens: torch.Tensor, parents: Sequence[int], st: S
     """Return uncommitted node logits and layer data for topologically sorted parents, with each node seeing only its ancestors and committed prefix."""
 
     c = w.config
+    tap_layers = w.draft_taps if capture_taps else ()
     try:
         parents = [index(p) if not isinstance(p, bool) else -2 for p in parents]
     except TypeError as exc:
@@ -290,14 +309,14 @@ def tree_forward(w: Weights, tokens: torch.Tensor, parents: Sequence[int], st: S
                 value = value.reshape(W, c.kv_heads, c.head_dim)
             q, key = glue.attn_prep(qg, key, attn.q_norm, attn.k_norm, pos,
                                     w.inv_freq, c.eps, heads=c.heads, kv_heads=c.kv_heads,
-                                    head_dim=c.head_dim)
+                                    head_dim=c.head_dim, amplitude=c.rope_scale)
             out = tree_attention.attention(q, key, value, aoffs[i], aplan, origin=origin, scale=c.head_dim ** -0.5)
             gated, out_xs = glue.gate_mul(out, qg, heads=c.heads, head_dim=c.head_dim)
             r = _row_mm(gated, attn.o, tp, out_xs)
             record.append(AttentionRecord(key, value))
         x, h, xs = glue.add_rmsnorm(x, r, layer.post_norm, c.eps)
         pending = _mlp(layer, h, xs, tp)
-        if capture_taps and i in (5, 19, 33, 47, 61):
+        if capture_taps and i in tap_layers:
             taps.append((x.float() + pending.float()).to(torch.bfloat16))
     if not finish:
         if pending is None:
@@ -306,8 +325,6 @@ def tree_forward(w: Weights, tokens: torch.Tensor, parents: Sequence[int], st: S
     _, h, xs = glue.add_rmsnorm(x, pending, w.norm, c.eps)
     logits = _mm(h, w.head, xs) if full_logits else h
     if capture_taps:
-        if len(taps) != 5:
-            raise ValueError("DFlash2 taps require the complete 64-layer target")
         return logits, record, torch.cat(taps, dim=-1)
     if hidden:                                     # the rows' final normed states (what an MTP head reads)
         return logits, record, h
@@ -321,6 +338,7 @@ def multi_tree_forward(w: Weights, streams: Sequence[tuple[Sequence[int], Sequen
     """Several streams' windows in one forward, each row with the bits of its stream's own ``tree_forward`` (``hidden``: the rows' final normed states third)."""
 
     c = w.config
+    tap_layers = w.draft_taps if capture_taps else ()
     device = w.norm.device
     keep = c.conv_kernel - 1
     starts = [0]
@@ -399,20 +417,18 @@ def multi_tree_forward(w: Weights, streams: Sequence[tuple[Sequence[int], Sequen
                 value = value.reshape(W, c.kv_heads, c.head_dim)
             q, key = glue.attn_prep(qg, key, attn.q_norm, attn.k_norm, pos,
                                     w.inv_freq, c.eps, heads=c.heads, kv_heads=c.kv_heads,
-                                    head_dim=c.head_dim)
+                                    head_dim=c.head_dim, amplitude=c.rope_scale)
             out = tree_attention.attention(q, key, value, aoffs[i], aplan, origin=origin, scale=c.head_dim ** -0.5)
             gated, out_xs = glue.gate_mul(out, qg, heads=c.heads, head_dim=c.head_dim)
             r = _row_mm(gated, attn.o, tp, out_xs)
             record.append(AttentionRecord(key, value))
         x, h, xs = glue.add_rmsnorm(x, r, layer.post_norm, c.eps)
         pending = _mlp(layer, h, xs, tp)
-        if capture_taps and i in (5, 19, 33, 47, 61):
+        if capture_taps and i in tap_layers:
             taps.append((x.float() + pending.float()).to(torch.bfloat16))
     _, h, xs = glue.add_rmsnorm(x, pending, w.norm, c.eps)
     logits = _mm(h, w.head, xs) if full_logits else h
     if capture_taps:
-        if len(taps) != 5:
-            raise ValueError("DFlash2 taps require the complete 64-layer target")
         return logits, record, torch.cat(taps, dim=-1), starts
     return logits, record, h if hidden else None, starts
 

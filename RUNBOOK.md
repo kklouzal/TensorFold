@@ -73,10 +73,13 @@ the NVFP4 (ModelOpt FP4) checkpoint `ukisai/Swift-1.5-Qwen3.8-Flash-Next-NVFP4` 
 included, whose table ships as BF16 rows with no per-shard `scales`, a layout the reader takes as it is.
 
 CUDA `--parallel auto` serves one request at a time. To share rounds, set `--parallel N` greater than
-one for Qwen3.8-27B or Flash Next on one or two ranks. Pass the same N on both ranks.
+one for Qwen3.8-27B on one or two tensor ranks, or Flash Next on one tensor rank.
+Flash Next refuses concurrent tensor-parallel execution. Its separate same-host NCCL expert-rank mode
+keeps request state and vision on rank 0 and supports concurrent requests; see the
+[desktop guide](docs/desktop-report-remediation.md) for asymmetric GPU shards and coverage limits.
 GLM and Nemotron CUDA keep serial request scheduling.
 
-For two ranks, start a container on each host with network devices and locked-memory support:
+For two tensor-parallel ranks, start a container on each host with network devices and locked-memory support:
 
 ```bash
 docker run -it --gpus all --ipc=host --network host --device /dev/infiniband \
@@ -96,28 +99,40 @@ tensorfold serve TensorFold/Qwen3.8-27B-MLX-4bit --tp 2 --rank 0 --master 192.0.
 
 Replace the documentation address with rank 0's reachable address. Both ranks must agree on context and
 drafting settings. The default rendezvous port is 29551. The rendezvous port and the link between the ranks
-are not authenticated: keep them on a private link, or firewall the port to the peer. Flash Next under
-`--parallel` also opens one ephemeral TCP port on rank 0's address for rank 1's messages; the same applies to it.
+are not authenticated: keep them on a private link, or firewall the port to the peer.
+NCCL discovery first uses the active interpreter's `nvidia.nccl` package locations,
+then Torch's bundled library, then the system linker and native multiarch directories.
+It does not scan unrelated Python installations. A namespace portion without the
+library may be followed by another portion; an installed package with no runtime,
+or a selected wheel/bundled library that cannot load, fails with its original cause.
+Repair that environment instead of silently loading a different NCCL version.
+A nonempty `TF_NCCL_LIB=/absolute/path/to/libnccl.so.2` explicitly selects another
+provider and must itself load successfully; an empty value uses normal discovery.
+
+The same-host expert launcher binds only loopback. Its POSIX listener enables
+`SO_REUSEADDR` before bind so newly started sessions can restart after their peers
+and listener retire, including accepted connections in `TIME_WAIT`. An active
+listener still causes `EADDRINUSE`; no port stealing, `SO_REUSEPORT` or automatic
+different-port retry is enabled. A `TIME_WAIT` socket from an older listener that
+did not enable reuse may still need to expire once. Native FD-handoff failure
+still requires the launcher's rank-process containment, rather than retrying an
+uncertain descriptor in that process.
 GLM requires two CUDA ranks; Flash Next can use one or two and needs `--no-drafts` when its checkpoint lacks an MTP
 head.
 
-### RTX cards without Docker
+### Managed RTX CUDA installation
 
-On an RTX 40 or 50 series card or an RTX PRO Blackwell, pip alone is enough. torch comes from PyPI and the CUDA
-compiler from NVIDIA's own wheels, all in a virtual environment, with no root and no container:
+For production CUDA, prepare the [audited native foundation inputs](deploy/gb10/foundation.md)
+and build the maintained image. The foundation supplies the selected official
+nightly Torch/Triton and CUDA providers; installing stable Torch or another CUDA
+wheel family into that environment is not an update procedure. App/test installs
+use disjoint hash locks, exact constraints and full foundation audits. Managed
+`tensorfold update` refuses in-place changes and directs an immutable rebuild.
 
-```bash
-python3 -m venv ~/tf-venv && . ~/tf-venv/bin/activate
-python -m pip install torch ninja "cuda-toolkit[nvcc,cccl]==13.0.*"
-python -m pip install git+https://github.com/kklouzal/TensorFold.git@python-0.6
-tensorfold pull Vontra/Qwen3.8-27B-MLX-4bit z-lab/Qwen3.8-27B-DFlash2
-tensorfold serve Vontra/Qwen3.8-27B-MLX-4bit --name local-model --host 127.0.0.1 --port 8080
-```
-
-Match the compiler wheel to torch's CUDA version, which `python -c "import torch; print(torch.version.cuda)"`
-prints; PyPI's torch 2.14 uses CUDA 13.0. The first start compiles the kernels and names the compiler it found. On
-a card other jobs share, set `TENSORFOLD_MEMORY_RESERVE_GIB` to the memory TensorFold should leave free and pass an
-explicit `--context`.
+Unmanaged developer environments retain package/toolkit discovery for diagnosis.
+Their dependency stack and native execution need their own qualification; they
+do not inherit a managed image's provider or model evidence. On a card other jobs
+share, reserve the actual required memory and select context through admission.
 
 <a id="win-nvidia"></a>
 
@@ -187,7 +202,7 @@ package installation do not change a running container's code.
 | Rejected checkpoint | Quantization, model family and draft-head requirements |
 | Client cannot connect | Server process, `/health`, base URL and model ID |
 | Two-rank startup waits | Link reachability, rendezvous port, NCCL devices and matching settings |
-| CUDA start stops after `loading …`, GPU idle | `kill -USR1 <pid>` prints every thread's Python stack. A wait in the extension build is a build lock, whose path the start log names: when no other build is running, stop the start, delete the lock and start again |
+| CUDA start stops after `loading …`, GPU idle | `kill -USR1 <pid>` prints every thread's Python stack. Inspect the named extension-build path and live builder. Pinned Torch uses an OS advisory lock released when its owner exits; its persistent marker must remain. Stop the owning start before retrying; do not delete a live or persistent advisory-lock marker. |
 
 Unsupported architectures or formats need a family implementation. See [adding a family](docs/recipes/adding-a-family.md)
 or [adding a CUDA family](docs/recipes/adding-a-cuda-family.md); forcing an unsupported checkpoint to load

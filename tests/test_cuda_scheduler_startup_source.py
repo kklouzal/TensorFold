@@ -6,6 +6,8 @@ from pathlib import Path
 import threading
 from types import SimpleNamespace
 
+import pytest
+
 from tensorfold.cuda.scheduler import Scheduler
 from tensorfold.cleanup import rollback
 
@@ -19,7 +21,15 @@ def publication(family, scheduler_type):
     tree = ast.parse(path.read_text())
     constructor = next(node for node in ast.walk(tree)
                        if isinstance(node, ast.FunctionDef) and node.name == "__init__")
-    blocks = (node.body for node in ast.walk(constructor) if isinstance(getattr(node, "body", None), list))
+    startup_scope = constructor
+    if family == "qwen3_5":
+        calls = [node for node in ast.walk(constructor) if isinstance(node, ast.Call)
+                 and ast.unparse(node.func) == "self._prepare_serving"]
+        assert len(calls) == 1
+        assert ast.unparse(calls[0]) == "self._prepare_serving(model_dir, streams=streams, keep=keep)"
+        startup_scope = next(node for node in ast.walk(tree)
+                             if isinstance(node, ast.FunctionDef) and node.name == "_prepare_serving")
+    blocks = (node.body for node in ast.walk(startup_scope) if isinstance(getattr(node, "body", None), list))
     candidates = [(body[index], body[index + 1]) for body in blocks for index, node in enumerate(body[:-1])
                   if isinstance(node, ast.Assign) and isinstance(node.value, ast.Call)
                   and isinstance(node.value.func, ast.Name) and node.value.func.id == "Scheduler"]
@@ -123,18 +133,21 @@ def test_actual_flashnext_constructor_warms_before_starting_its_published_actor(
                     and any(ast.unparse(target) == "self.scheduler" for target in node.targets)
                     and isinstance(node.value, ast.Call) and ast.unparse(node.value.func) == "Scheduler"]
     assert len(starts) == len(publications) == 1 and warmups
-    assert publications[0].lineno < min(node.lineno for node in warmups)
-    assert max(node.lineno for node in warmups) < starts[0].lineno
+    assert max(node.lineno for node in warmups) < publications[0].lineno < starts[0].lineno
+    adapters = [node for node in calls if ast.unparse(node.func) == "TensorParallelDecoder"]
+    assert len(adapters) == 1 and adapters[0].lineno < min(node.lineno for node in warmups)
     public = next(node for node in cls.body if isinstance(node, ast.FunctionDef) and node.name == "__init__")
     scope = next(node for node in ast.walk(public) if isinstance(node, ast.Try)
                  and any(handler.name == "primary" for handler in node.handlers))
     assert ast.unparse(scope.body[0].value.func) == "self._initialize"
     final = constructor.body[-1]
-    assert isinstance(final, ast.If) and ast.unparse(final.test) == "self.scheduler is not None"
+    assert isinstance(final, ast.If) and ast.unparse(final.test) == "self.scheduler is not None and (not managed)"
     assert ast.unparse(final.body[0]) == "self.scheduler.start()"
 
 
-def test_actual_flashnext_startup_statements_keep_the_actor_unstarted_during_warmup():
+@pytest.mark.parametrize("policy", ["legacy", "fifo"])
+@pytest.mark.parametrize("rank", [None, 0, 1], ids=["single-device", "tp-leader", "tp-follower"])
+def test_actual_flashnext_startup_statements_defer_public_admission_until_warmup(policy, rank):
     path = ROOT / "src/tensorfold/families/qwen4_exp/cuda/engine.py"
     tree = ast.parse(path.read_text())
     cls = next(node for node in tree.body if isinstance(node, ast.ClassDef) and node.name == "FlashNextEngine")
@@ -163,7 +176,7 @@ def test_actual_flashnext_startup_statements_keep_the_actor_unstarted_during_war
 
     # Keep the production publication/warmup/start branches and rollback,
     # replacing numerical stages with a bounded, independently owned decoder.
-    wrapper = ast.parse("def startup(self, streams):\n    pass\n").body[0]
+    wrapper = ast.parse("def startup(self, streams, managed=False):\n    pass\n").body[0]
     wrapper.body = [ast.Try(body=project(initialized.body), handlers=scope.handlers, orelse=[], finalbody=[])]
     unit = ast.Module(body=[wrapper], type_ignores=[])
     ast.fix_missing_locations(unit)
@@ -174,8 +187,14 @@ def test_actual_flashnext_startup_statements_keep_the_actor_unstarted_during_war
 
     class Decoder:
         warmed = False
+        admission_policy = "legacy"
+
+        def configure_admission_policy(self, selected):
+            assert self.warmed, "public admission changed the constructor's synthetic request"
+            self.admission_policy = selected
 
         def warm(self):
+            assert self.admission_policy == "legacy"
             stages.append("warm")
             entered.set()
             assert release.wait(5), "warmup fixture did not release"
@@ -189,8 +208,14 @@ def test_actual_flashnext_startup_statements_keep_the_actor_unstarted_during_war
             return []
 
     owner = SimpleNamespace(concurrent=True, multi=Decoder(), scheduler=None,
+                            comm=None if rank is None else object(), rank=rank,
+                            _admission_options={"admission_policy": policy,
+                                **({"max_waiting_input_bytes": 4096} if policy == "fifo" else {})},
                             vision=SimpleNamespace(warm=lambda: stages.append("vision")))
-    owner.close = lambda: owner.scheduler.close()
+    # The source projection retains the public Scheduler branches; numerical
+    # TP calls are represented by the same already-owned decoder contract.
+    owner.tp_decoder = owner.multi
+    owner.close = lambda: owner.scheduler.close() if owner.scheduler is not None else None
     owner._rollback_startup = owner.close
 
     def construct():
@@ -203,10 +228,8 @@ def test_actual_flashnext_startup_statements_keep_the_actor_unstarted_during_war
     worker = threading.Thread(target=construct)
     worker.start()
     try:
-        assert entered.wait(5)
-        assert owner.scheduler is not None
-        assert not owner.scheduler._start_attempted
-        assert not owner.scheduler._worker_entered.is_set()
+        assert entered.wait(5), outcomes
+        assert owner.scheduler is None
     finally:
         release.set()
         worker.join(5)
@@ -214,3 +237,22 @@ def test_actual_flashnext_startup_statements_keep_the_actor_unstarted_during_war
         if owner.scheduler is not None:
             owner.scheduler.close()
     assert outcomes == ["ready"] and stages == ["warm", "vision"]
+    assert (owner.scheduler is not None) == (rank in (None, 0))
+    assert owner.multi.admission_policy == (policy if rank in (None, 0) else "legacy")
+
+
+def test_actual_fifo_decoder_still_requires_public_principal_and_enqueue_ticket():
+    pytest.importorskip("torch")
+    from tensorfold.cuda.streams import Stream
+    from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder
+
+    decoder = object.__new__(MultiDecoder)
+    decoder.admission_policy = "fifo"
+    decoder.capacity, decoder.depth = 131, 2
+    decoder.w = SimpleNamespace(cfg=SimpleNamespace(vocab=128))
+    stream = Stream([0], 1)
+    with pytest.raises(AttributeError, match="principal"):
+        decoder.admit(stream)
+    stream.principal = "startup-contract-test"
+    with pytest.raises(ValueError, match="enqueue ticket"):
+        decoder.admit(stream)

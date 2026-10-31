@@ -113,7 +113,7 @@ def test_two_ranks_with_different_caches_refuse_to_start(fake_runtime, peer):  #
         obj.depth, obj.confidence, obj.max_len, obj.comm = 6, 0.3, 8192, comm
         obj.kv_pair = get_pair(kv_dtype)
         obj.prefill_rows = 2048
-        obj.streams, obj.graphs_enabled = 1, True
+        obj.streams, obj.graphs_enabled, obj.tp = 1, True, 2
         return obj
 
     theirs = Comm()
@@ -141,7 +141,7 @@ def test_two_ranks_with_different_prompt_precision_refuse_to_start(fake_runtime)
         obj.depth, obj.confidence, obj.max_len, obj.comm = 6, 0.3, 8192, comm
         obj.kv_pair = get_pair("bf16")
         obj.prefill_rows = 2048
-        obj.streams, obj.graphs_enabled = 1, True
+        obj.streams, obj.graphs_enabled, obj.tp = 1, True, 2
         return obj
 
     theirs = Comm()
@@ -159,3 +159,30 @@ def test_a_draft_confidence_outside_0_to_1_is_refused_before_loading(tmp_path, f
     with pytest.raises(ValueError, match="probability from 0 to 1"):
         go()
     assert not calls
+
+
+def test_two_ranks_must_agree_on_full_window_reservation(fake_runtime):  # noqa: F811
+    from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
+    from tensorfold.families.qwen4_exp.rope import RopeParameters
+
+    class Comm:
+        def __init__(self, peer=None):
+            self.peer, self.sent = peer, None
+
+        def all_gather(self, send, recv):
+            self.sent = send.clone()
+            recv.copy_(torch.cat([send, send if self.peer is None else self.peer]))
+
+    def rank(windows, comm):
+        obj = FlashNextEngine.__new__(FlashNextEngine)
+        obj.rope = RopeParameters.from_config(small_config())
+        obj.depth, obj.confidence, obj.max_len, obj.comm = 3, 0.0, 8192, comm
+        obj.kv_pair, obj.prefill_rows = get_pair("int8"), 2048
+        obj.streams, obj.graphs_enabled, obj.tp, obj.kv_full_windows = 4, True, 2, windows
+        return obj
+
+    peer = Comm()
+    rank(4, peer)._same_settings(torch, None)
+    rank(4, Comm(peer.sent))._same_settings(torch, None)
+    with pytest.raises(RuntimeError, match="different settings"):
+        rank(2, Comm(peer.sent))._same_settings(torch, None)

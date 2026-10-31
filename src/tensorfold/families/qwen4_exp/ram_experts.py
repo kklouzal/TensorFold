@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 from tensorfold.cuda.capacity import config, headers
@@ -12,6 +12,36 @@ from tensorfold.cuda.capacity import config, headers
 GIB = 2**30
 AUTO_HEADROOM_BYTES = 512 * 2**20
 MAX_ROUTED_EXPERTS = 1023  # experts.cu's EMAX=1024 includes the shared expert.
+
+
+def check_kv_full_windows(value: int | None, *, streams: int, vram_experts: float | str | None,
+                          tp: int = 1, resident_gguf: bool = False) -> None:
+    """An explicit shared allowance changes concurrent capacity, never model precision."""
+
+    if value is None:
+        return
+    if type(value) is not int or value < 1:
+        raise ValueError("--kv-full-windows must be a positive whole number")
+    concurrent = type(streams) is int and streams > 1
+    resident = resident_gguf and vram_experts is None and type(tp) is int and tp in (1, 2, 4, 8)
+    automatic = vram_experts == "auto" and tp == 1
+    if not concurrent or not (resident or automatic):
+        raise ValueError("--kv-full-windows requires Flash Next CUDA --parallel 2 or more and either "
+                         "resident GGUF weights or --vram-experts auto with --tp 1")
+
+
+def reserved_growth(each: list[int], full_windows: int | None = None) -> tuple[int, int]:
+    """Reserve the largest N slot growths; unchanged snapshots and resize overlap are separate.
+
+    The caller validates the public policy before loading. Every actual slot
+    still exists, with its initial cache already allocated. At least one full
+    window remains available, and explicit sharing requires runtime gate
+    enforcement even for a lone decoder beside filling prompts.
+    """
+
+    if full_windows is None or full_windows >= len(each):
+        return sum(each), len(each)
+    return sum(sorted(each, reverse=True)[:full_windows]), full_windows
 
 
 def check(model_dir: str | Path, gib: float | str, *, tp: int = 1) -> None:
@@ -26,15 +56,19 @@ def check(model_dir: str | Path, gib: float | str, *, tp: int = 1) -> None:
 
     if is_exl3(Path(model_dir)):
         return
-    import json
+    from tensorfold.checkpoint_metadata import read_config
 
-    raw = json.loads((Path(model_dir) / "config.json").read_text())
+    raw = read_config(model_dir)
+    quant = raw.get("quantization_config") or {}
+    if str(quant.get("quant_method", "")).lower() == "modelopt":
+        groups = quant.get("config_groups") or {}
+        group = ((groups.get("group_0") or {}).get("weights") or {}).get("group_size", 16)
+        if group != 16:
+            raise ValueError("--vram-experts: ModelOpt checkpoints require NVFP4 in groups of 16")
+        return
     specs = [spec for spec in checkpoint_specs(raw).values() if spec is not None]
     if not specs or any(spec.bits != 4 or spec.group_size != 32 for spec in specs):
         raise ValueError("--vram-experts supports MLX affine 4-bit weights in groups of 32 only")
-    quant = raw.get("quantization_config") or raw.get("quantization") or {}
-    if quant.get("quant_method") == "modelopt":
-        raise ValueError("--vram-experts does not support NVFP4; use affine 4-bit group32 weights")
 
 
 def expert_tensor(name: str) -> bool:
@@ -70,11 +104,20 @@ class Layout:
     control_device_bytes: int = 0
     control_host_bytes: int = 0
     automatic: bool = False
+    loading_device_bytes: int = 0
+    authority_allocations: tuple[int, ...] = ()
+    native_a4_banks: tuple[str, ...] = ()
 
     def transform(self, resident):
         """Exclude expert projections; the fixed GPU pool is admitted as resident_extra."""
 
         def weights(name, info):
+            if self.format == "nvfp4":
+                from tensorfold.cuda.nvfp4.host_layout import routed_tensor
+
+                if routed_tensor(name):
+                    return 0, 0
+                return resident(name, info)
             if self.format == "exl3" and exl3_expert_tensor(name):
                 if name.endswith((".trellis", ".mcg", ".mul1")):
                     return 0, 0
@@ -91,7 +134,7 @@ class Layout:
         return weights
 
 
-def layout(model_dir: str | Path, gib: float | str, *, mtp: bool = True) -> Layout:
+def layout(model_dir: str | Path, gib: float | str, *, mtp: bool = True, native_a4: bool = False, checkpoint=None) -> Layout:
     """Size exact packed affine4 buffers, including shared and optional MTP experts."""
 
     check(model_dir, gib)
@@ -107,12 +150,14 @@ def layout(model_dir: str | Path, gib: float | str, *, mtp: bool = True) -> Layo
     width, dims = int(text["moe_intermediate_size"]), int(text["hidden_size"])
     if width <= 0 or dims <= 0 or width % 32 or dims % 32:
         raise ValueError("--vram-experts requires expert width and hidden size divisible by 32")
-    if int(text["shared_expert_intermediate_size"]) != width:
-        raise ValueError("--vram-experts requires matching routed and shared expert widths")
     from tensorfold.cuda.exl3.format import is_exl3
 
     if is_exl3(Path(model_dir)):
         return _exl3_layout(model_dir, gib, text, mtp)
+    if str(text["_quantization"].get("quant_method", "")).lower() == "modelopt":
+        return _nvfp4_layout(model_dir, gib, text, mtp, native_a4=native_a4, checkpoint=checkpoint)
+    if int(text["shared_expert_intermediate_size"]) != width:
+        raise ValueError("--vram-experts requires matching routed and shared expert widths")
     # 160 int32 words per 32x32 tile: 4-bit weights plus BF16 affine scales/biases.
     entry = 3 * (width // 32) * (dims // 32) * 160 * 4
     bundles: dict[str, dict] = {}
@@ -143,7 +188,8 @@ def layout(model_dir: str | Path, gib: float | str, *, mtp: bool = True) -> Layo
         raise ValueError("--vram-experts: checkpoint has no complete affine4 expert layers")
     main_layers = {int(match.group(1)) for base in bundles
                    if (match := re.search(r"(?:^|\.)model\.layers\.(\d+)\.mlp$", base))}
-    if main_layers != set(range(int(text["num_hidden_layers"]))):
+    layers = text["num_hidden_layers"]
+    if len(main_layers) != layers or min(main_layers, default=-1) != 0 or max(main_layers, default=-1) != layers - 1:
         raise ValueError("--vram-experts: checkpoint must contain every configured main expert layer")
     requested = entry if gib == "auto" else math.floor(gib) * GIB + int((gib % 1) * GIB)
     slots = min(count, requested // entry)
@@ -151,7 +197,66 @@ def layout(model_dir: str | Path, gib: float | str, *, mtp: bool = True) -> Layo
         raise ValueError(f"--vram-experts needs at least one packed expert ({entry / GIB:.6f} GiB)")
     # Two pinned upload entries; two-expert CPU chunks need at most 8*entry +256KiB of live arrays.
     return Layout(entry, slots, slots * entry, count * entry, 2 * entry,
-                  max(64 * 2**20, 8 * entry + 256 * 2**10), automatic=gib == "auto")
+                  max(64 * 2**20, 8 * entry + 256 * 2**10), automatic=gib == "auto",
+                  authority_allocations=tuple(size for _ in range(count // (int(text["num_experts"]) + 1))
+                      for size in ((int(text["num_experts"]) + 1) * (2 * entry // 3),
+                                   (int(text["num_experts"]) + 1) * (entry // 3))))
+
+
+def _nvfp4_layout(model_dir, gib, text, mtp, *, native_a4=False, checkpoint=None):
+    from tensorfold.cuda.capacity import SIZES
+    from tensorfold.cuda.nvfp4.host_layout import bank_bases
+    from tensorfold.cuda.read_budget import pinned_backing_bytes, reader_host_bytes
+
+    entries = headers(model_dir)
+    banks = sorted(bank_bases(entries, text, mtp), key=lambda bank:
+                   (bank.startswith("mtp."), int(re.search(r"layers\.(\d+)", bank).group(1))))
+    width, dims = text["moe_intermediate_size"], text["hidden_size"]
+    from tensorfold.cuda.nvfp4.modelopt_layout import a4_bank, cached_control_host_bytes
+
+    a4_banks = tuple(bank for bank in banks if a4_bank(entries, bank, text["num_experts"], text["_quantization"],
+                                                     native=native_a4, checkpoint=checkpoint))
+    # Both native layouts retain the original payload byte count. Static-A4
+    # adds two separately aligned input calibration fields; W4A16 MTP banks
+    # share the larger pool but allocate/read only their original four fields.
+    entry = 3 * (width // 32) * (dims // 32) * 144 * 4 + (64 if a4_banks else 32)
+    count = len(banks) * text["num_experts"]
+    requested = entry if gib == "auto" else math.floor(gib) * GIB + int((gib % 1) * GIB)
+    slots = min(count, requested // entry)
+    if not slots:
+        raise ValueError(f"--vram-experts needs at least one packed NVFP4 expert ({entry / GIB:.6f} GiB)")
+    # One expert's original routed bit packing or draft-only quantization runs
+    # on its selected CUDA device. Both retain only that expert's raw fields and
+    # pack temporaries; quantization's eight-magnitude plane dominates this bound.
+    loading = max(64 * 2**20, 128 * width * dims + 8 * entry)
+    e = text["num_experts"]
+    tiles = (width // 32) * (dims // 32) * 144 * 4
+    allocations = tuple(size for bank in banks for size in
+                        ((e * 2 * tiles, e * tiles, e * 8, e * 4, e * 8, e * 4) if bank in a4_banks else
+                         (e * 2 * tiles, e * tiles, e * 8, e * 4)))
+    # Existing generic host staging has no separately charged Reader rings.
+    # Only one expert row of a stacked MTP field is read, never its full bank.
+    # Nonstacked main codes use M/2 bytes; FP8 MTP codes use M. Scalar/row/block
+    # scales are smaller at the already validated dimensions (both >=32).
+    raw = width * dims // 2
+    for bank in banks:
+        if not bank.startswith("mtp."):
+            continue
+        if bank + ".experts.gate_up_proj" in entries:
+            raw = max(raw, 2 * width * dims * SIZES[entries[bank + ".experts.gate_up_proj"]["dtype"]],
+                      width * dims * SIZES[entries[bank + ".experts.down_proj"]["dtype"]])
+        elif any(entries[f"{bank}.experts.{e}.{p}.weight"]["dtype"] == "F8_E4M3"
+                 for e in range(text["num_experts"]) for p in ("gate_proj", "up_proj", "down_proj")):
+            raw = max(raw, width * dims)
+    # D2H's largest field is the packed gate/up pair, after reads have ended.
+    # Three retained scalar read spans fit nine alignment pages alongside it.
+    host_loading = reader_host_bytes(raw, 2 * tiles)
+    host_loading += 9 * 4096
+    return Layout(entry, slots, slots * entry, sum(allocations), pinned_backing_bytes(2 * entry), host_loading,
+                  "nvfp4", automatic=gib == "auto",
+                  loading_device_bytes=loading,
+                  authority_allocations=allocations, native_a4_banks=a4_banks,
+                  control_host_bytes=cached_control_host_bytes(text) if a4_banks else 0)
 
 
 def exl3_expert_tensor(name: str) -> bool:
@@ -187,17 +292,20 @@ def _exl3_layout(model_dir: str | Path, gib: float | str, text: dict, mtp: bool)
              else prefix.split(".shared_expert.", 1)[0] for prefix in projections}
     main = {int(match.group(1)) for base in bases
             if (match := re.search(r"(?:^|\.)model(?:\.language_model)?\.layers\.(\d+)\.mlp$", base))}
-    if main != set(range(text["num_hidden_layers"])):
+    layers = text["num_hidden_layers"]
+    if len(main) != layers or min(main, default=-1) != 0 or max(main, default=-1) != layers - 1:
         raise ValueError("--vram-experts: checkpoint must contain every configured main EXL3 expert layer")
     if any(not (re.search(r"(?:^|\.)model(?:\.language_model)?\.layers\.\d+\.mlp$", base)
                 or re.fullmatch(r"mtp\.layers\.0\.mlp", base)) for base in bases):
         raise ValueError("--vram-experts: unrecognized EXL3 expert layer")
     width, dims, total, largest, count = text["moe_intermediate_size"], text["hidden_size"], 0, 0, 0
-    expected, specs = set(), []
-    from tensorfold.cuda.exl3.cache_layout import ExpertSpec, plan as arena_plan
+    expected, specs, allocations = set(), [], []
+    from tensorfold.cuda.exl3.cache_layout import ExpertSpec
+    from tensorfold.cuda.exl3.cache_layout import plan as arena_plan
 
     for layer_id, base in enumerate(sorted(bases)):
         codebooks = set()
+        layer_begin = total
         for expert_id, expert in enumerate([f"{base}.experts.{i}" for i in range(text["num_experts"])]
                                           + [f"{base}.shared_expert"]):
             entry = 0
@@ -220,40 +328,51 @@ def _exl3_layout(model_dir: str | Path, gib: float | str, text: dict, mtp: bool)
             count += 1
         if len(codebooks) != 1:
             raise ValueError(f"--vram-experts: mixed EXL3 codebooks in {base}")
+        allocations.append(total - layer_begin)
     if set(projections) != expected:
         raise ValueError("--vram-experts: unexpected EXL3 expert projection")
     requested = largest if gib == "auto" else math.floor(gib) * GIB + int((gib % 1) * GIB)
     slots = min(count, requested // largest)
     if not slots:
         raise ValueError(f"--vram-experts needs at least one packed EXL3 expert ({largest / GIB:.6f} GiB)")
-    # Three logical pointer/width tables per layer; prepared FP16 scales are
-    # already included by the resident weight transform.
+    # The pinned runtime's caching host allocator can round the contiguous
+    # two-slot staging payload up to the next power of two.
+    # EXL3's loading bound is a separate two-entry temporary, unlike affine's
+    # deliberately wider packing bound. Charge the rounded payload separately;
+    # driver/allocator metadata is excluded from this payload estimate, and
+    # the existing host admission reserve remains separate.
+    # Three logical pointer/width tables per layer and prepared FP16 scales
+    # remain separately accounted by the resident weight transform.
     payload = slots * largest
     final = arena_plan(tuple(specs), payload, payload + slots * 32)
-    return Layout(largest, slots, payload, total, 2 * largest,
+    staging = 1 << (2 * largest - 1).bit_length()
+    return Layout(largest, slots, payload, total, staging,
                   max(64 * 2**20, 2 * largest), "exl3", count * (3 * 8 + 3 * 4), count * 28,
-                  slots * 32, final.publication_host_bytes, gib == "auto")
+                  slots * 32, final.publication_host_bytes, gib == "auto",
+                  authority_allocations=tuple(allocations))
 
 
 def auto_pool_bytes(available: int, entry_bytes: int, expert_count: int, *, control_bytes: int = 0,
-                    growth_bytes: int = 0, snapshot_bytes: int = 0, workspace_bytes: int = 0) -> dict:
+                    growth_bytes: int = 0, snapshot_bytes: int = 0, workspace_bytes: int = 0,
+                    headroom_bytes: int = AUTO_HEADROOM_BYTES) -> dict:
     """One startup allocation from actual remaining device bytes, before any lease.
 
     The caller has already allocated shared weights and every fixed decoder
     buffer. It supplies worst future full-context cache growth/copy overlap,
     retained/in-flight snapshots and unallocated prompt workspace separately.
     Packed weights and per-cell publication controls share the remainder; the
-    explicit 512-MiB headroom is additional to those model-owned allocations.
+    selected headroom (512 MiB by default) is additional to those model-owned allocations.
     """
-    values = (available, entry_bytes, expert_count, control_bytes, growth_bytes, snapshot_bytes, workspace_bytes)
+    values = (available, entry_bytes, expert_count, control_bytes, growth_bytes, snapshot_bytes, workspace_bytes,
+              headroom_bytes)
     if any(type(value) is not int or value < 0 for value in values) or not entry_bytes or not expert_count:
         raise ValueError("auto expert sizing requires nonnegative integer byte counts and positive geometry")
-    reserved = AUTO_HEADROOM_BYTES + growth_bytes + snapshot_bytes + workspace_bytes
+    reserved = headroom_bytes + growth_bytes + snapshot_bytes + workspace_bytes
     cells = min(expert_count, max(0, available - reserved) // (entry_bytes + control_bytes))
     if not cells:
         raise ValueError("CUDA remaining memory cannot fit one automatic expert cell after full service workspace")
     return {"policy": "remaining-device-bytes-after-fixed-service-state-v1", "available_bytes": available,
-            "headroom_bytes": AUTO_HEADROOM_BYTES, "full_context_growth_and_copy_bytes": growth_bytes,
+            "headroom_bytes": headroom_bytes, "full_context_growth_and_copy_bytes": growth_bytes,
             "snapshot_bytes": snapshot_bytes, "unallocated_workspace_bytes": workspace_bytes,
             "reserved_bytes": reserved, "entry_bytes": entry_bytes, "control_bytes_per_cell": control_bytes,
             "logical_expert_count": expert_count, "slots": cells, "gpu_bytes": cells * entry_bytes,

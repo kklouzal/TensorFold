@@ -101,6 +101,30 @@ def test_oversized_history_count_preserves_generation_admission(bridge, app):
         app.prepare(body, True)
 
 
+def test_exported_fixed_padding_and_truncation_cannot_change_counting_or_generation(bridge, tmp_path):
+    served_app(tmp_path)
+    path = tmp_path / "tokenizer.json"
+    exported = Tokenizer.from_file(str(path))
+    exported.enable_padding(direction="left", length=4096)
+    exported.enable_truncation(max_length=8)
+    exported.save(str(path))
+    original = path.read_bytes()
+    app = App(NoGenerationEngine(), tmp_path, "served", context_window=8, max_tokens=2,
+              thinking_budget=0, sampling={"temperature": 0})
+
+    short = request(3, max_tokens=2, return_tokens=True)
+    counted = bridge.count_request(app, short, RequestError)
+    assert counted["count"] == 4 and counted["tokens"] == [4, 4, 4, 1]
+    assert app.prepare(short, True).prompt == counted["tokens"]
+    assert app.tokenize({"prompt": "w w w"})["tokens"] == [4, 4, 4]
+    long = request(20, max_tokens=2, return_tokens=True)
+    counted = bridge.count_request(app, long, RequestError)
+    assert counted["count"] == 21 and counted["tokens"] == [4] * 20 + [1]
+    with pytest.raises(RequestError, match="context"):
+        app.prepare(long, True)
+    assert path.read_bytes() == original
+
+
 @pytest.mark.parametrize("body, problem", [
     ([], "JSON object"),
     ({}, "model"),
@@ -322,8 +346,9 @@ def test_separate_template_file_takes_precedence_and_exact_source_is_hashed(brid
     json.dumps({}), "[]", "{", b"\xff", None,
 ], ids=["changed", "invalid_jinja", "template_list", "no_template", "json_array", "malformed_json", "undecodable",
         "missing"])
-def test_changed_or_unusable_source_is_not_claimed_as_active(bridge, tmp_path, config):
-    app = served_app(tmp_path, TEMPLATE + "{% if reasoning_effort == 'medium' %} more{% endif %}")
+def test_captured_active_source_survives_changed_or_unusable_later_files(bridge, tmp_path, config):
+    active_source = TEMPLATE + "{% if reasoning_effort == 'medium' %} more{% endif %}"
+    app = served_app(tmp_path, active_source)
     path = tmp_path / "tokenizer_config.json"
     if config is None:
         path.unlink()
@@ -332,8 +357,9 @@ def test_changed_or_unusable_source_is_not_claimed_as_active(bridge, tmp_path, c
     else:
         path.write_text(config)
     capabilities, fingerprint, provenance = bridge.capability_metadata(app)
-    assert fingerprint is None
-    assert "template_identity" not in provenance and "template_source" not in provenance
+    assert fingerprint == sha256(active_source)
+    assert provenance["template_identity"] == "equivalent_active_compilation"
+    assert provenance["template_source"] == "tokenizer_config.chat_template"
     assert capabilities["reasoning_efforts"] == ["medium"]                  # the initialized template's, not the file's
 
 
@@ -342,6 +368,7 @@ def test_changed_block_is_rejected_even_when_root_code_is_unchanged(bridge, tmp_
     replacement = "{% block result %}changed{% endblock %}"
     candidate = app.template.template.environment.from_string(replacement)
     assert candidate.root_render_func.__code__ == app.template.template.root_render_func.__code__
+    app.template.template.blocks["result"] = candidate.blocks["result"]  # actual active executable mutation
     (tmp_path / "tokenizer_config.json").write_text(json.dumps({"chat_template": replacement}))
     assert bridge.capability_metadata(app)[1] is None
 
@@ -355,6 +382,13 @@ def test_changed_generated_binding_or_default_is_not_equivalent(bridge, tmp_path
     app = served_app(tmp_path)
     root = app.template.template.root_render_func
     root.__defaults__ = (*root.__defaults__[:-1], object())
+    assert bridge.capability_metadata(app)[1] is None
+
+
+def test_changed_active_root_is_not_claimed_as_the_captured_source(bridge, tmp_path):
+    app = served_app(tmp_path)
+    replacement = app.template.template.environment.from_string("changed root {{ messages }}")
+    app.template.template.root_render_func = replacement.root_render_func
     assert bridge.capability_metadata(app)[1] is None
 
 
@@ -417,6 +451,34 @@ def test_tokenize_metadata_keeps_the_initialized_template_identity_after_file_ch
                                   handler_type=handler_type)
     assert status == 200
     assert result["chat_template_sha256"] == sha256(TEMPLATE)
+
+
+def test_tool_use_route_renders_counts_and_fingerprints_the_same_captured_source(bridge, tmp_path):
+    tool_source = "tools " + TEMPLATE + "{% if reasoning_effort == 'low' %} thinking{% endif %}"
+    app = served_app(tmp_path, {"default": TEMPLATE, "tool_use": tool_source})
+    tools = [{"type": "function", "function": {"name": "lookup", "parameters": {"type": "object", "properties": {}}}}]
+    body = request(count=1, tools=tools, return_tokens=True)
+    payload = json.dumps(body).encode()
+    status, result = handler_post(bridge, app, payload, {"Content-Length": str(len(payload))})
+    assert status == 200 and result["tokens"] == [3, 4, 1, 3]
+    assert result["chat_template_sha256"] == sha256(tool_source)
+    assert result["provenance"]["template_source"] == "tokenizer_config.chat_template[tool_use]"
+    assert result["capabilities"]["reasoning_efforts"] == ["low"]
+    disabled = json.dumps({**body, "tool_choice": "none"}).encode()
+    status, result = handler_post(bridge, app, disabled, {"Content-Length": str(len(disabled))})
+    assert status == 200 and result["tokens"] == [4, 1]
+    assert result["chat_template_sha256"] == sha256(TEMPLATE)
+
+
+def test_app_reuses_engine_template_snapshot_after_files_change(tmp_path):
+    app = served_app(tmp_path)
+    captured = app.template
+    engine = NoGenerationEngine()
+    engine.chat_template = captured
+    (tmp_path / "tokenizer_config.json").write_text("invalid after capture")
+    reused = App(engine, tmp_path, "served")
+    assert reused.template is captured
+    assert reused._prepare(request(count=1), True).prompt == [4, 1]
 
 
 @pytest.mark.parametrize("payload, headers, problem", [
@@ -619,3 +681,13 @@ def test_a_count_checks_sampling_without_keying_a_seed_to_the_prompt(bridge, app
     assert hashed == [0]
     with pytest.raises(RequestError, match="top_p"):
         bridge.count_request(app, request(temperature=0.7, top_p=1.5), RequestError)
+
+
+def test_a_failed_preparation_is_a_spec_server_error_without_request_data(bridge, app, monkeypatch):
+    from tests.openai_spec import check_error
+
+    monkeypatch.setattr(bridge, "count_request", lambda *a, **k: (_ for _ in ()).throw(KeyError("private-prompt")))
+    payload = json.dumps(request()).encode()
+    status, result = handler_post(bridge, app, payload, {"Content-Length": str(len(payload))})
+    check_error(result)
+    assert status == 500 and result["error"]["type"] == "server_error" and "private-prompt" not in json.dumps(result)

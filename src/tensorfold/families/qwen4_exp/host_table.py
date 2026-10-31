@@ -64,16 +64,6 @@ def windows_lock_pages(arrays, kernel32=None):
         return False
 
 
-def _note(primary, message):
-    """A failed diagnostic cannot replace an established operation failure."""
-    try:
-        BaseException.add_note(primary, message)
-    except BaseException as annotation:
-        if annotation is primary:
-            raise primary
-        raise primary from annotation
-
-
 def _failure_roots(primary):
     return (BaseException.__cause__.__get__(primary), BaseException.__context__.__get__(primary),
             BaseException.__suppress_context__.__get__(primary))
@@ -479,6 +469,24 @@ class BF16Table(_MappedTable):
         return self._life.call(_prefetch, self.values, workers)
 
 
+def _fp8_lut(scale):
+    from tensorfold.cuda.nvfp4.format import e4m3
+
+    f32 = (e4m3(np.arange(256)) * np.float32(scale)).astype(np.float32).view(np.uint32).astype(np.uint64)
+    lut = ((f32 + 0x7FFF + ((f32 >> 16) & 1)) >> 16).astype(np.uint16)
+    lut[(np.arange(256) & 0x7F) == 0x7F] = 0x7FC0
+    return lut
+
+
+def _decode_nvfp4(codes, blocks, scale, e4m3_values, e2m1_values):
+    """Mapped and positional readers share the checkpoint's one-round BF16 decoder."""
+    width = codes.shape[1] * 2
+    nib = np.stack([codes & 0xF, codes >> 4], -1).reshape(codes.shape[0], width)
+    v = (e2m1_values[nib] * np.repeat(e4m3_values[blocks], 16, axis=1)).astype(np.float32) * np.float32(scale)
+    f32 = v.astype(np.float32).view(np.uint32).astype(np.uint64)
+    return ((f32 + 0x7FFF + ((f32 >> 16) & 1)) >> 16).astype(np.uint16)
+
+
 class FP8Table(BF16Table):
     """e4m3 n-gram shards with one table scale: lookups give bf16(e4m3 x scale) through a 256-entry table."""
 
@@ -486,8 +494,6 @@ class FP8Table(BF16Table):
         with self._construction():
             if not files:
                 raise ValueError("the n-gram table has no shards")
-            from tensorfold.cuda.nvfp4.format import e4m3
-
             self.values, starts = self._arrays(), [0]
             for path, weight in files:
                 if not isinstance(weight, dict) or weight.get("dtype") != "F8_E4M3":
@@ -501,9 +507,7 @@ class FP8Table(BF16Table):
             self.width = int(self.values[0].shape[1])
             self.wrow = self.width
             self.nbytes = sum(a.nbytes for a in self.values)
-            f32 = (e4m3(np.arange(256)) * np.float32(scale)).astype(np.float32).view(np.uint32).astype(np.uint64)
-            self.lut = ((f32 + 0x7FFF + ((f32 >> 16) & 1)) >> 16).astype(np.uint16)   # round to nearest even
-            self.lut[(np.arange(256) & 0x7F) == 0x7F] = 0x7FC0                         # e4m3's NaN codes stay NaN
+            self.lut = _fp8_lut(scale)
 
     def gather(self, ids: np.ndarray) -> np.ndarray:
         """Rows ``ids`` (global) -> [n, W] uint16 (bf16 bits of e4m3 x scale)."""
@@ -521,8 +525,6 @@ class NVFP4Table(BF16Table):
         with self._construction():
             if not files:
                 raise ValueError("the n-gram table has no shards")
-            from tensorfold.cuda.nvfp4.format import E2M1, e4m3
-
             self.values, self.scales, starts = self._arrays(), self._arrays(), [0]
             for path, weight, block in files:
                 if not isinstance(weight, dict) or not isinstance(block, dict) or weight.get("dtype") != "U8" or block.get("dtype") != "F8_E4M3":
@@ -539,7 +541,10 @@ class NVFP4Table(BF16Table):
             self.width = int(self.values[0].shape[1]) * 2
             self.wrow = self.width // 2
             self.nbytes = sum(a.nbytes for a in self.values + self.scales)
-            self.e2m1, self.e4m3, self.g = E2M1, e4m3(np.arange(256)), np.float32(scale)
+            self.g = np.float32(scale)
+            from tensorfold.cuda.nvfp4.format import E2M1, e4m3
+
+            self.e2m1, self.e4m3 = E2M1, e4m3(np.arange(256))
 
     def gather(self, ids: np.ndarray) -> np.ndarray:
         """Rows ``ids`` (global) -> [n, W] uint16: bf16 bits of the fp32 code x block scale x table scale, rounded once."""
@@ -555,10 +560,7 @@ class NVFP4Table(BF16Table):
             codes[at], blocks[at] = self.values[f][local[at]], self.scales[f][local[at]]
 
         _copy_rows(self._life, self._pool, shard, copy)
-        nib = np.stack([codes & 0xF, codes >> 4], -1).reshape(shard.size, self.width)
-        v = (self.e2m1[nib] * np.repeat(self.e4m3[blocks], 16, axis=1)).astype(np.float32) * self.g
-        f32 = v.astype(np.float32).view(np.uint32).astype(np.uint64)
-        return ((f32 + 0x7FFF + ((f32 >> 16) & 1)) >> 16).astype(np.uint16)
+        return _decode_nvfp4(codes, blocks, self.g, self.e4m3, self.e2m1)
 
     def lock(self) -> bool:
         return False
@@ -595,6 +597,25 @@ def open_table(model_dir: Path, shards: list[tuple[str, str]], scale, *, ssd: bo
     if len(used) != 1:
         raise ValueError(f"the n-gram shards mix layouts: {', '.join(used)}")
     files = kinds[used[0]]
+    if ssd and used[0] != "mlx":
+        from .ssd_table import EncodedSSDTable
+
+        kind = used[0]
+        if kind == "nvfp4":
+            from tensorfold.cuda.nvfp4.format import E2M1, e4m3
+
+            decode = partial(_decode_nvfp4, scale=np.float32(scale("weight_scale_2")),
+                             e4m3_values=e4m3(np.arange(256)), e2m1_values=E2M1)
+        elif kind == "fp8":
+            lut = _fp8_lut(scale("weight_scale"))
+
+            def decode(codes):
+                return lut[codes]
+        else:
+            def decode(bits):
+                return bits.view(np.uint16)
+        return EncodedSSDTable(files, kind, decode,
+                               weight_scale=float(scale("weight_scale")) if kind == "bf16" else 1.0)
     if used[0] == "nvfp4":
         return NVFP4Table(files, scale("weight_scale_2"))
     if used[0] == "fp8":

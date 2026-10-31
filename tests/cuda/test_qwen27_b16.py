@@ -6,7 +6,7 @@ import torch
 if not torch.cuda.is_available():
     pytest.skip("CUDA only", allow_module_level=True)
 
-from tensorfold.families.qwen3_5.cuda.b16 import matmul, matmul_pair, prompt, prompt_pair  # noqa: E402
+from tensorfold.families.qwen3_5.cuda.b16 import matmul, matmul_pair, prompt, prompt_pair
 
 
 @pytest.mark.parametrize("n,k", [(48, 5120), (96, 6144), (130, 256)])
@@ -19,6 +19,61 @@ def test_rows_do_not_depend_on_the_row_count(n, k):
         assert torch.equal(matmul(x[:m], w), alone[:m]), m
     want = (x.float() @ w.float().t()).bfloat16()
     assert (alone.float() - want.float()).abs().max().item() < 2e-2
+
+
+@pytest.mark.parametrize("dtype", [torch.bfloat16, torch.float16])
+def test_prepared_row_reuse_keeps_shipping_singleton_bits(dtype):
+    from tensorfold.families.qwen3_5.cuda.b16 import _ext
+
+    generator = torch.Generator(device="cuda").manual_seed(17032)
+    x = torch.empty(33, 2048, dtype=dtype, device="cuda").uniform_(-0.5, 0.5, generator=generator)
+    weight = torch.empty(130, 2048, dtype=dtype, device="cuda").uniform_(-0.02, 0.02, generator=generator)
+    singleton = torch.cat([matmul(row[None], weight) for row in x])
+    for rows in (1, 2, 3, 4, 5, 8, 12, 16, 17, 33):
+        for reuse in (2, 4, 8, 16):
+            got = _ext().b16_linear_rows(x[:rows], weight, reuse)
+            assert torch.equal(got.view(torch.int16), singleton[:rows].view(torch.int16))
+    order = torch.tensor([2, 0, 1], device="cuda")
+    for reuse in (2, 4, 8, 16):
+        got = _ext().b16_linear_rows(x[order], weight, reuse)
+        assert torch.equal(got.view(torch.int16), singleton[order].view(torch.int16))
+    for invalid in (0, 1, 3, 32):
+        with pytest.raises(RuntimeError, match="reused rows"):
+            _ext().b16_linear_rows(x, weight, invalid)
+
+
+# Every row-block branch of b16.cu's policy: R = 1, 2, 4 and 8, then 8 or 16 by weight size, and 16 rows x 16 warps
+# from 512 rows; sizes straddle each branch boundary. (10240, 2048) and the Qwen3.6 head are at or past 20 Mi
+# elements (R = 16), (4160, 2048) and (2048, 4096) below it (R = 8).
+POLICY_ROWS = (1, 2, 3, 4, 5, 8, 9, 15, 16, 17, 31, 63, 64, 65, 200, 511, 512, 513)
+
+
+@pytest.mark.parametrize("n,k", [(10240, 2048), (4160, 2048), (2048, 4096), (248320, 2048)])
+def test_row_block_policy_keeps_singleton_bits_at_real_shapes(n, k):
+    g = torch.Generator(device="cuda").manual_seed(n ^ k)
+    w = torch.empty((n, k), dtype=torch.bfloat16, device="cuda").uniform_(-.02, .02, generator=g)
+    rows = max(POLICY_ROWS) if n * k < 2**28 else 17
+    x = torch.empty((rows, k), dtype=torch.bfloat16, device="cuda").uniform_(-.5, .5, generator=g)
+    alone = torch.cat([matmul(x[r:r + 1], w) for r in range(rows)])
+    for m in POLICY_ROWS:
+        if m <= rows:
+            assert torch.equal(matmul(x[:m], w).view(torch.int16), alone[:m].view(torch.int16)), m
+    bias = torch.empty((n,), dtype=torch.bfloat16, device="cuda").uniform_(-.1, .1, generator=g)
+    biased = torch.cat([matmul(x[r:r + 1], w, bias) for r in range(17)])
+    assert torch.equal(matmul(x[:17], w, bias).view(torch.int16), biased.view(torch.int16))
+
+
+def test_paired_gates_follow_the_policy_with_each_weights_bits():
+    g = torch.Generator(device="cuda").manual_seed(9)
+    w0, w1 = (torch.empty((32, 2048), dtype=torch.bfloat16, device="cuda").uniform_(-.02, .02, generator=g)
+              for _ in range(2))
+    x = torch.empty((513, 2048), dtype=torch.bfloat16, device="cuda").uniform_(-.5, .5, generator=g)
+    a0 = torch.cat([matmul(x[r:r + 1], w0) for r in range(513)])
+    a1 = torch.cat([matmul(x[r:r + 1], w1) for r in range(513)])
+    for m in POLICY_ROWS:
+        y0, y1 = matmul_pair(x[:m], w0, w1)
+        assert (torch.equal(y0.view(torch.int16), a0[:m].view(torch.int16))
+                and torch.equal(y1.view(torch.int16), a1[:m].view(torch.int16))), m
 
 
 @pytest.mark.parametrize("n,k", [(48, 5120), (96, 6144), (130, 256)])

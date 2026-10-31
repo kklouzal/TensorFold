@@ -10,7 +10,8 @@ from __future__ import annotations
 
 from typing import Any
 
-from tensorfold.server.errors import RequestError
+from tensorfold.cleanup import rollback
+from tensorfold.server.errors import CONTEXT_LIMIT, ContextLengthError, RequestError
 from tensorfold.server.messages import normalize_messages
 from tensorfold.server.prompts import has_images, prepare_prompt
 from tensorfold.server.request_options import thinking_fields
@@ -37,7 +38,9 @@ def _vocab(tokenizer: Any) -> int | None:
         if hasattr(type(tokenizer), "__len__"):
             return len(tokenizer)
         if hasattr(type(tokenizer), "get_vocab_size"):              # a tokenizers.Tokenizer
-            return int(tokenizer.get_vocab_size(with_added_tokens=True))
+            from tensorfold.token_metadata import tokenizer_vocab_size
+
+            return tokenizer_vocab_size(tokenizer)
         attributes = getattr(tokenizer, "__dict__", {})
         tokenizer = next((attributes[k] for k in ("_inner", "inner", "_tokenizer") if k in attributes), None)
         if tokenizer is None:
@@ -56,6 +59,50 @@ def token_ids(value: Any, vocab: int | None, field: str = "tokens") -> list[int]
         top = "" if vocab is None else f" to {vocab - 1}"
         raise RequestError(f"{field} token ids must be in the vocabulary's range 0{top}")
     return list(value)
+
+
+def count_chat(app: Any, chat: dict[str, Any]) -> int:
+    """A chat request's prompt tokens, rendered as generation renders them (the same tokenizer, template, tools,
+    thinking controls and image expansion), without running generation: CUDA's own preparation, or the Mac's. A
+    prompt that leaves no room for a reply in the context is refused (``context_length_exceeded``) on both, as
+    generation refuses it."""
+
+    if hasattr(app, "prepare"):                   # CUDA's preparation includes vision token expansion
+        def retire():
+            close = getattr(prepared, "close", None)
+            if close is not None:
+                close()
+
+        prepare = getattr(app, "prepare_for_count", app.prepare)
+        prepared = prepare(chat, True)
+        try:
+            count = len(prepared.prompt)
+        except BaseException as primary:
+            rollback(prepared, primary, retire)
+        retire()
+        return count
+    from tensorfold.server.request_options import heard_effort
+
+    fields = thinking_fields(chat, app.effort_levels)
+    thinking = fields.get("enable_thinking", app.enable_thinking)
+    try:
+        tools = active_tool_specs(chat.get("tools"), chat.get("tool_choice"))
+    except ValueError as exc:
+        raise RequestError(str(exc)) from None
+    msgs = normalize_messages(chat["messages"], allow_images=getattr(app, "vision", None) is not None)
+    if has_images(msgs):                          # as /tokenize and generation prepare an image prompt
+        count = len(prepare_prompt(app, msgs, tools, thinking, None, fields).tokens)
+    else:
+        effort = heard_effort(fields.get("reasoning_effort"), app.reasoning_effort, app.effort_levels)
+        with app.tokenizer_lock:
+            count = len(render_prompt_ids(app.tokenizer, msgs, tools=tools, enable_thinking=thinking,
+                                          reasoning_effort=effort, late_system=app.late_system))
+    window = int(getattr(app, "context_window", 0) or 0)
+    if window and count >= window:
+        raise ContextLengthError(f"{CONTEXT_LIMIT} {window} tokens, but the rendered prompt has {count} tokens and "
+                                 "leaves no room for a reply, which exceeds the context window. Compact or shorten "
+                                 "the conversation.")
+    return count
 
 
 def tokenize(app: Any, body: Any) -> dict[str, Any]:

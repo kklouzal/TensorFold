@@ -2,15 +2,19 @@
 
 import ast
 import os
+import traceback
+import weakref
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
 from tensorfold.cuda import capacity
+from tensorfold.cleanup import raise_failures
 from tensorfold.cuda.memory_gate import MemoryGate, NoRoom, torch_live
-from tensorfold.cuda.streams import Stream
+from tensorfold.cuda.streams import Stream, mark_error_state_retired
 from tensorfold.families.qwen4_exp.cuda import prefixes
+from tensorfold.families.qwen4_exp.cuda.service_memory import cache_resize_overlap
 from tensorfold.families.qwen4_exp.kv_formats import get_pair
 
 GIB = capacity.GIB
@@ -27,6 +31,8 @@ def source_class(path, name, methods, globals):
         node.decorator_list = []
     module = ast.Module(body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0),
                               cls], type_ignores=[])
+    globals.setdefault("__name__", "tensorfold.families.qwen4_exp.cuda._host_fixture")
+    globals.setdefault("__package__", "tensorfold.families.qwen4_exp.cuda")
     exec(compile(ast.fix_missing_locations(module), str(path), "exec"), globals)
     return globals[name]
 
@@ -76,19 +82,27 @@ def rows_array(array, rows, keep):
 
 
 State = source_class("src/tensorfold/families/qwen4_exp/cuda/state.py", "State",
-                     {"cache_bytes", "layer_bytes", "resize"}, {"_rows": rows_array})
+                     {"cache_bytes", "owned_cache_bytes", "layer_bytes", "resize", "_resize_caches", "_poison_resize", "begin_sequence_generation"},
+                     {"_rows": rows_array, "KVResizeError": RuntimeError, "traceback": traceback,
+                      "raise_failures": raise_failures})
 
 
 def state(owner):
     st = State()
     st.capacity, st.limit, st.layers = 256, 81920, 2
     st.pos, st.mtp_len, st.version = 0, 0, 0
+    st._resize_error = st._kv_error = None
+    st._resize_frames_pending = None
     st.image_positions = None
     st.kv_pair = get_pair()
     # This byte-counting state contains no numeric cache payload; numeric checks have their own boundary suite.
     st.kv_check = lambda: None
     st.kv_validate_snapshot = lambda snapshot: None
     st.row_bytes, st.index_dim, st.ratio = KV.row_bytes + 256, 128, 4
+    st._resize_error = st._kv_error = st._history_error = None
+    st.slot_generation, st.history_generations = 0, None
+    st.history_native_readers = weakref.WeakSet()
+    st.compact_indexer = None
     st.kc = [KV(owner, st.capacity) for _ in range(st.layers)]
     st.ikc = [Array(owner, st.capacity, st.index_dim) for _ in range(st.layers)]
     st.pooled = [Array(owner, st.capacity // st.ratio, st.index_dim) for _ in range(st.layers)]
@@ -119,21 +133,27 @@ class AbsoluteGrowthTests(unittest.TestCase):
             empty_cache=lambda: None,
         ))
         ns = {"torch": self.torch, "STEP": 8192, "FIRST": 256, "GIB": GIB,
-              "MemoryGate": MemoryGate, "NoRoom": NoRoom, "prefixes": prefixes,
+              "MemoryGate": MemoryGate, "cache_resize_overlap": cache_resize_overlap, "NoRoom": NoRoom, "prefixes": prefixes,
+              "raise_failures": raise_failures,
+              "mark_error_state_retired": mark_error_state_retired,
               "cuda_limit_bytes": capacity.cuda_limit_bytes, "LIMIT_ENV": capacity.LIMIT_ENV,
               "time": SimpleNamespace(perf_counter=lambda: 1.0), "MIN_GAP": 32,
-              "_slot": lambda *args: SimpleNamespace(), "prefill_begin": lambda *args, **kw: 0,
+              "_slot": lambda *args, **kw: SimpleNamespace(), "prefill_begin": lambda *args, **kw: 0,
               "image_rows": SimpleNamespace(begin=lambda *args: None)}
         cls = source_class("src/tensorfold/families/qwen4_exp/cuda/multi.py", "MultiDecoder",
-                           {"_grow", "_flush", "_busy", "_evict_kept", "_drop_kept", "_make_room", "_slot_for",
-                            "_remember", "admit", "live", "finish"}, ns)
+                           {"_cache_overlap", "_grow", "_flush", "_busy", "_evict_kept", "_drop_kept", "_make_room", "_slot_for",
+                            "_remember", "_quarantine", "_retire_failed_slot",
+                            "admit", "live", "finish"}, ns)
         self.dec = cls()
         self.dec.capacity, self.dec.depth = 81920, 0
         self.dec.free, self.dec.kept, self.dec.streams, self.dec.filling = [first, second], [], {}, []
+        self.dec.kv_pair = first.kv_pair
         self.dec.fills, self.dec.held = {}, {}
+        self.dec.graphs, self.dec.failed_slots = None, []
+        self.dec.controller = None
         self.dec.next_id, self.dec.keep = 0, 8
         self.dec.used, self.dec.clock = {}, 0
-        self.dec.w, self.dec.buf, self.dec.mbuf, self.dec.pbuf = SimpleNamespace(comm=None), None, None, None
+        self.dec.w, self.dec.buf, self.dec.mbuf, self.dec.pbuf = SimpleNamespace(comm=None, meta={"execution_provider": "cuda"}), None, None, None
         self.dec._draft_map = None
         self.dec.copy = False
         self.dec.prefill_rows, self.dec.points, self.dec.vision = 4096, None, None

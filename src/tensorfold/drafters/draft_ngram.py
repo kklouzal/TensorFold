@@ -24,7 +24,6 @@ class SessionNGram:
     def __init__(self, vocab: int = 248320, *, prior: float = 2.0) -> None:
         self.vocab = int(vocab)
         self.prior = float(prior)        # an order's weight is c / (c + prior) for a context seen c times
-        self.pulls = 0                   # contexts pulled out of the index (telemetry)
         self.reset()
 
     def reset(self) -> None:
@@ -125,7 +124,6 @@ class SessionNGram:
                 at = self._bounds[order][lo:hi + 1].tolist()
                 total = at[-1] - at[0]
                 counts = {t: at[i + 1] - at[i] for i, t in enumerate(nexts)}
-            self.pulls += 1
         pending = self._pending[order].pop(context, None)
         if pending:
             for t, c in pending.items():

@@ -3,16 +3,35 @@
 
 void quant4_cuda(const at::Tensor&, double, at::Tensor&, at::Tensor&, int64_t, int64_t);
 void quant8_cuda(const at::Tensor&, double, at::Tensor&, int64_t, int64_t);
-void lane_cuda(int64_t, const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, double, at::Tensor&,
-               const at::Tensor&, int64_t, int64_t, int64_t, int64_t, int64_t, bool);
+void quant8_token_cuda(const at::Tensor&, at::Tensor&, at::Tensor&, int64_t, int64_t);
+void lane_cuda(int64_t, const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, double,
+               const at::Tensor&, const at::Tensor&, at::Tensor&, const at::Tensor&, int64_t, int64_t, int64_t, int64_t,
+               int64_t, bool);
 void pack4_cuda(const at::Tensor&, int64_t, int64_t, at::Tensor&);
-void gemm_cuda(int64_t, const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, double, at::Tensor&,
-               int64_t, int64_t, int64_t, int64_t, bool);
+void gemm_cuda(int64_t, const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, double,
+               const at::Tensor&, const at::Tensor&, at::Tensor&, int64_t, int64_t, int64_t, int64_t, bool);
 void gemm_gu_ck_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
                      const at::Tensor&, double, double, int64_t, int64_t, int64_t, double, at::Tensor&, at::Tensor&,
                      bool);
 void gemm_ws_cuda(int64_t, const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, double,
-                  at::Tensor&, int64_t, int64_t, int64_t, int64_t, int64_t, bool);
+                  const at::Tensor&, const at::Tensor&, at::Tensor&, int64_t, int64_t, int64_t, int64_t, int64_t, bool);
+
+// The output factor: ``alpha`` alone, or FP8 (mode 1) per-channel weight scales ``cs`` (fp32 [npad]) with, for
+// per-token rows, their scales ``rs`` (fp32, one a row): epilogue.cuh. Returns the (rs, cs) pair to pass on.
+static std::pair<at::Tensor, at::Tensor> scales_in(int64_t mode, const c10::optional<at::Tensor>& rs,
+                                                   const c10::optional<at::Tensor>& cs, int64_t m, int64_t npad,
+                                                   const at::Tensor& out) {
+    if (!cs.has_value()) {
+        TORCH_CHECK(!rs.has_value(), "row scales need column scales");
+        return {at::Tensor(), at::Tensor()};
+    }
+    TORCH_CHECK(mode == 1, "per-channel scales are FP8's (mode 1)");
+    TORCH_CHECK(cs->device() == out.device() && cs->is_contiguous() && cs->scalar_type() == at::kFloat &&
+                cs->numel() == npad, "cs: fp32 [npad] column scales");
+    TORCH_CHECK(!rs.has_value() || (rs->device() == out.device() && rs->is_contiguous() &&
+                                    rs->scalar_type() == at::kFloat && rs->numel() >= m), "rs: fp32 row scales, >= M");
+    return {rs.has_value() ? *rs : at::Tensor(), *cs};
+}
 
 static void rows_in(const at::Tensor& x) {
     TORCH_CHECK(x.is_cuda() && x.scalar_type() == at::kBFloat16 && x.dim() == 2 && x.stride(1) == 1 &&
@@ -38,24 +57,40 @@ void quant4(const at::Tensor& x, double g, at::Tensor codes, at::Tensor scales, 
     quant4_cuda(x, g, codes, scales, mpad, tb);
 }
 
-// FP8 rows under the static scale (``inv`` = 1 / input_scale), e4m3 bytes in the weights' fragment order; with
-// ``tb`` > 0 the prompt GEMM's tiles [mpad / tb][K/64][tb][64] for out (mpad, K), rows past M zero.
-void quant8(const at::Tensor& x, double inv, at::Tensor out, int64_t tb) {
+// The FP8 quantizers' rows and bytes: out (M, K) uint8, or (mpad, K) with ``tb`` > 0; returns mpad.
+static int64_t rows8_in(const at::Tensor& x, const at::Tensor& out, int64_t tb) {
     rows_in(x);
     const int64_t mpad = tb ? out.size(0) : x.size(0);
     TORCH_CHECK(tb == 0 || (tb % 16 == 0 && mpad % tb == 0 && mpad >= x.size(0)), "tb: 0 or a multiple of 16 "
                 "dividing the padded rows");
     TORCH_CHECK(out.is_contiguous() && out.scalar_type() == at::kByte && out.size(0) == mpad &&
                 out.size(1) == x.size(1), "out: (M, K) uint8, (mpad, K) when tiled");
+    return mpad;
+}
+
+// FP8 rows under the static scale (``inv`` = 1 / input_scale), e4m3 bytes in the weights' fragment order; with
+// ``tb`` > 0 the prompt GEMM's tiles [mpad / tb][K/64][tb][64] for out (mpad, K), rows past M zero.
+void quant8(const at::Tensor& x, double inv, at::Tensor out, int64_t tb) {
+    const int64_t mpad = rows8_in(x, out, tb);
     c10::cuda::CUDAGuard guard(x.device());
     quant8_cuda(x, inv, out, mpad, tb);
 }
 
-// out (M, n) = alpha * rows @ weight: mode 0 NVFP4 x NVFP4 (``quant4`` rows, ``pack4`` words, block scales
-// [npad/64, K/64, 64, 4]), mode 1 FP8 x FP8 (``quant8`` rows, fragment-order bytes); part (SK, M, n) past 8 slices.
-// ``tile`` (``checkpoint.lane_tile``) picks the block's shape, never the bits.
+// FP8 rows each under its own scale (dynamic per token): e4m3 bytes as ``quant8`` lays them out, scales (M,) fp32.
+void quant8_token(const at::Tensor& x, at::Tensor out, at::Tensor scales, int64_t tb) {
+    const int64_t mpad = rows8_in(x, out, tb);
+    TORCH_CHECK(scales.device() == x.device() && scales.is_contiguous() && scales.scalar_type() == at::kFloat &&
+                scales.numel() == x.size(0), "scales: (M,) fp32");
+    c10::cuda::CUDAGuard guard(x.device());
+    quant8_token_cuda(x, out, scales, mpad, tb);
+}
+
+// out (M, n) = rows @ weight times ``scales_in``'s factor: mode 0 NVFP4 x NVFP4 (``quant4`` rows, ``pack4`` words,
+// block scales [npad/64, K/64, 64, 4]), mode 1 FP8 x FP8 (``quant8`` / ``quant8_token`` rows, fragment-order bytes);
+// part (SK, M, n) past 8 slices. ``tile`` (``checkpoint.lane_tile``) picks the block's shape, never the bits.
 void lane(int64_t mode, const at::Tensor& x, const c10::optional<at::Tensor>& xs, const at::Tensor& w,
-          const c10::optional<at::Tensor>& ws, double alpha, at::Tensor out, const c10::optional<at::Tensor>& part,
+          const c10::optional<at::Tensor>& ws, double alpha, const c10::optional<at::Tensor>& rs,
+          const c10::optional<at::Tensor>& cs, at::Tensor out, const c10::optional<at::Tensor>& part,
           int64_t n, int64_t k, int64_t sk, int64_t npad, int64_t tile, bool f32) {
     TORCH_CHECK(mode == 0 || mode == 1, "mode 0 (NVFP4) or 1 (FP8)");
     const int64_t m = out.size(0);
@@ -75,15 +110,18 @@ void lane(int64_t mode, const at::Tensor& x, const c10::optional<at::Tensor>& xs
     TORCH_CHECK(out.is_cuda() && out.is_contiguous() && out.size(1) == n &&
                 out.scalar_type() == (f32 ? at::kFloat : at::kBFloat16), "out: (M, n)");
     TORCH_CHECK(sk <= 8 || (part.has_value() && part->numel() >= sk * m * n), "part: (SK, M, n) fp32");
+    const auto scales = scales_in(mode, rs, cs, m, npad, out);
     c10::cuda::CUDAGuard guard(x.device());
-    lane_cuda(mode, x, xs.has_value() ? *xs : at::Tensor(), w, ws.has_value() ? *ws : at::Tensor(), alpha, out,
-              part.has_value() ? *part : at::Tensor(), n, k, sk, mpad, tile, f32);
+    lane_cuda(mode, x, xs.has_value() ? *xs : at::Tensor(), w, ws.has_value() ? *ws : at::Tensor(), alpha,
+              scales.first, scales.second, out, part.has_value() ? *part : at::Tensor(), n, k, sk, mpad, tile, f32);
 }
 
-// Prompt rows: out (M, n) = alpha * rows @ weight in ``lane``'s layouts, one K chain a row (``tile`` picks the shape).
+// Prompt rows: out (M, n) = rows @ weight in ``lane``'s layouts and factors, one K chain a row (``tile`` picks the
+// shape).
 void gemm(int64_t mode, const at::Tensor& x, const c10::optional<at::Tensor>& xs, const at::Tensor& w,
-          const c10::optional<at::Tensor>& ws, double alpha, at::Tensor out, int64_t n, int64_t k, int64_t npad,
-          int64_t tile, bool f32) {
+          const c10::optional<at::Tensor>& ws, double alpha, const c10::optional<at::Tensor>& rs,
+          const c10::optional<at::Tensor>& cs, at::Tensor out, int64_t n, int64_t k, int64_t npad, int64_t tile,
+          bool f32) {
     TORCH_CHECK(mode == 0 || mode == 1, "mode 0 (NVFP4) or 1 (FP8)");
     const int64_t m = out.size(0);
     TORCH_CHECK(k % 64 == 0 && npad % 64 == 0 && n <= npad, "K in steps of 64, npad whole 64-column tiles");
@@ -97,9 +135,10 @@ void gemm(int64_t mode, const at::Tensor& x, const c10::optional<at::Tensor>& xs
                     ws->numel() == (k / 64) * npad * 4, "xs: (K/64, mpad, 4) row scales; ws: [npad/64, K/64, 64, 4]");
     TORCH_CHECK(out.is_cuda() && out.is_contiguous() && out.size(1) == n &&
                 out.scalar_type() == (f32 ? at::kFloat : at::kBFloat16), "out: (M, n)");
+    const auto scales = scales_in(mode, rs, cs, m, npad, out);
     c10::cuda::CUDAGuard guard(x.device());
-    gemm_cuda(mode, x, xs.has_value() ? *xs : at::Tensor(), w, ws.has_value() ? *ws : at::Tensor(), alpha, out, n, k,
-              npad, tile, f32);
+    gemm_cuda(mode, x, xs.has_value() ? *xs : at::Tensor(), w, ws.has_value() ? *ws : at::Tensor(), alpha,
+              scales.first, scales.second, out, n, k, npad, tile, f32);
 }
 
 // NVFP4 checkpoint bytes [N, K/2] -> ``lane``'s words [npad/64, K/64, 8, 32, 2] (int32).
@@ -115,8 +154,9 @@ void pack4(const at::Tensor& src, at::Tensor dst) {
 
 // Prompt rows on the warp-specialized GEMM: x the tiled rows (``quant4`` / ``quant8`` with tb 128), else as ``gemm``.
 void gemm_ws(int64_t mode, const at::Tensor& x, const c10::optional<at::Tensor>& xs, const at::Tensor& w,
-             const c10::optional<at::Tensor>& ws, double alpha, at::Tensor out, int64_t n, int64_t k, int64_t npad,
-             int64_t tile, bool f32) {
+             const c10::optional<at::Tensor>& ws, double alpha, const c10::optional<at::Tensor>& rs,
+             const c10::optional<at::Tensor>& cs, at::Tensor out, int64_t n, int64_t k, int64_t npad, int64_t tile,
+             bool f32) {
     TORCH_CHECK(mode == 0 || mode == 1, "mode 0 (NVFP4) or 1 (FP8)");
     const int64_t m = out.size(0), mpad = x.size(0);
     TORCH_CHECK(k % 64 == 0 && npad % 64 == 0 && n <= npad, "K in steps of 64, npad whole 64-column tiles");
@@ -130,9 +170,10 @@ void gemm_ws(int64_t mode, const at::Tensor& x, const c10::optional<at::Tensor>&
                     ws->numel() == (k / 64) * npad * 4, "xs: (mpad / 128, K/64, 128, 4); ws: [npad/64, K/64, 64, 4]");
     TORCH_CHECK(out.is_cuda() && out.is_contiguous() && out.size(1) == n &&
                 out.scalar_type() == (f32 ? at::kFloat : at::kBFloat16), "out: (M, n)");
+    const auto scales = scales_in(mode, rs, cs, m, npad, out);
     c10::cuda::CUDAGuard guard(x.device());
-    gemm_ws_cuda(mode, x, xs.has_value() ? *xs : at::Tensor(), w, ws.has_value() ? *ws : at::Tensor(), alpha, out, n,
-                 k, mpad, npad, tile, f32);
+    gemm_ws_cuda(mode, x, xs.has_value() ? *xs : at::Tensor(), w, ws.has_value() ? *ws : at::Tensor(), alpha,
+                 scales.first, scales.second, out, n, k, mpad, npad, tile, f32);
 }
 
 // gate|up of the same NVFP4 rows (``quant4``'s row-major layout) -> SiLU(gate) * up -> down's input as NVFP4 rows
@@ -163,6 +204,7 @@ void gemm_gu_ck(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& wg,
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
     m.def("quant4", &quant4);
     m.def("quant8", &quant8);
+    m.def("quant8_token", &quant8_token);
     m.def("lane", &lane);
     m.def("pack4", &pack4);
     m.def("gemm", &gemm);

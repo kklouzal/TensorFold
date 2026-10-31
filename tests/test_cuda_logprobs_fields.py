@@ -87,6 +87,10 @@ def test_one_token_chat_exposes_the_target_probabilities(tmp_path):
     assert choice["logprobs"]["content"] == [{"token": "A", "bytes": [65], "logprob": -0.25,
         "top_logprobs": [{"token": "A", "bytes": [65], "logprob": -0.25},
                         {"token": " B", "bytes": [32, 66], "logprob": -1.5}]}]
+    assert choice["logprobs"]["refusal"] is None                  # the spec requires it: no refusal is written
+    from tests.openai_spec import check
+
+    check(json.loads(text), "CreateChatCompletionResponse")
 
 
 @pytest.mark.parametrize("fields", [{"stream": True}, {"stop": ["A"]},

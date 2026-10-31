@@ -137,10 +137,11 @@ def test_cuda_context_errors_name_the_field(tmp_path, chat, stream):
     assert error["param"] == ("messages" if chat else "prompt")
 
 
-def test_an_error_without_a_code_has_no_param():
+def test_an_error_without_a_code_has_a_null_param_and_code():
     from tensorfold.server.errors import error_body
 
-    assert error_body(RequestError("bad"), "messages") == {"message": "bad", "type": "invalid_request_error"}
+    assert error_body(RequestError("bad"), "messages") == {"message": "bad", "type": "invalid_request_error",
+                                                           "param": None, "code": None}
     assert error_body(ContextLengthError("long"), "prompt") == {
         "message": "long", "type": "invalid_request_error", "param": "prompt", "code": "context_length_exceeded"}
 

@@ -1,0 +1,41 @@
+{
+  "files": {
+    "nightly-pins-amd64.json": {
+      "sha256": "0b7f869cdd6e019aa64ebd383bf51d4b9d834ed1149273df71be19c8224b6ff9",
+      "size": 1226,
+      "source_path": "deploy/gb10/nightly-pins-amd64.json"
+    },
+    "nightly-pins.json": {
+      "sha256": "d6f2bac57b39068bf77019bb4b2de981f8699deca89997dac8c3c46486b74e17",
+      "size": 1198,
+      "source_path": "deploy/gb10/nightly-pins.json"
+    },
+    "requirements-runtime-amd64.lock": {
+      "sha256": "af58aa618ae28eb134113d7ff500e18e83518cecc8f9ac43e4841b1a413ae3c2",
+      "size": 16414,
+      "source_path": "deploy/gb10/requirements-runtime-amd64.lock"
+    },
+    "requirements-runtime.lock": {
+      "sha256": "3b214644755fb589f3dfeac7b7105b0708a2f3e4b7cc61d824170df5383fb2bc",
+      "size": 16374,
+      "source_path": "deploy/gb10/requirements-runtime.lock"
+    },
+    "requirements-test-amd64.lock": {
+      "sha256": "40e5f902cbfb275a6814cf5b1a4b50fbd2ff8bb2d86b23ee2ea151b6f59bec84",
+      "size": 819,
+      "source_path": "deploy/gb10/requirements-test-amd64.lock"
+    },
+    "requirements-test.lock": {
+      "sha256": "4c33bee849c58916c03beb179be8f48867beb4233ebdb8b3f5e4e9ca0f9d9c0b",
+      "size": 772,
+      "source_path": "deploy/gb10/requirements-test.lock"
+    },
+    "resolver-amd64.json": {
+      "sha256": "da3afe3034b3b1378a8119ffefc887c7451d5c1e925c1ed84bef505de86b4960",
+      "size": 107093,
+      "source_path": "deploy/gb10/resolver-amd64.json"
+    }
+  },
+  "schema_version": 1,
+  "source_commit": "abb67d6231903b67da2dd3fbca208c9e8b667180"
+}

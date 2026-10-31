@@ -9,14 +9,7 @@ import struct
 import pytest
 
 from tensorfold.families.qwen4_exp.cuda import rotorquant_ref as rq
-
-
-def f32(value):
-    return struct.unpack("<f", struct.pack("<f", value))[0]
-
-
-def phi(value):
-    return 0.0 if math.isinf(value) else math.exp(-value * value / 2) / math.sqrt(2 * math.pi)
+from rotorquant_math import f32, phi
 
 
 def independent_system(centers):

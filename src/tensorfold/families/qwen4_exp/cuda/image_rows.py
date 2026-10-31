@@ -29,6 +29,15 @@ def begin(engine, stream, tower) -> None:
     if stream.vision is not None:
         if tower is None:
             raise ValueError("image inputs require starting this server with --vision")
+        if getattr(tower, "is_media_runtime", False) is True:
+            from .media_mtp import bind_context
+
+            request = getattr(stream, "_media_request", None)
+            if request is None or request.owner is not tower:
+                raise ValueError("bounded media input requires its prepared request owner before admission")
+            bind_context(engine.st, tower.identity, request.plan.media_identity)
+            engine.st.set_rope_delta(request.plan.positions.rope_delta)
+            return
         attach(engine.st, tower.encode(stream.vision, stream.prompt), len(stream.prompt))
         stream.vision = None
 

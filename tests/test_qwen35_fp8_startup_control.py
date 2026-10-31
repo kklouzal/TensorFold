@@ -2,13 +2,15 @@
 from __future__ import annotations
 
 import ast
-from contextlib import contextmanager
 import importlib.abc
-from pathlib import Path
 import sys
-from types import ModuleType, SimpleNamespace
 import unittest
+from contextlib import contextmanager
+from pathlib import Path
+from types import ModuleType, SimpleNamespace
 from unittest.mock import patch
+
+from tests.nvfp4_host_protocol import linear_metadata_class
 
 ROOT = Path(__file__).resolve().parents[1]
 WEIGHTS = ROOT / 'src/tensorfold/families/qwen3_5/cuda/weights.py'
@@ -75,7 +77,8 @@ def imports(*, fp8=True, spec=None, exl3=False, nvfp4=False, own=False, headers=
         modules[name] = result
         return result
     module('tensorfold')
-    module('tensorfold.cuda', prompt_precision=SimpleNamespace(fp8=lambda: fp8))
+    module('tensorfold.cuda', prompt_precision=SimpleNamespace(fp8=lambda: fp8),
+           precision=SimpleNamespace(CHECKPOINT='checkpoint', mode=lambda: 'checkpoint'))
     module('tensorfold.quantization', resolve_affine=lambda raw, name: spec, validate_shapes=lambda *args: None)
     module('tensorfold.families')
     module('tensorfold.families.qwen3_5')
@@ -88,7 +91,8 @@ def imports(*, fp8=True, spec=None, exl3=False, nvfp4=False, own=False, headers=
     module('triton.language')
     module('triton.language.core', TRITON_MAX_TENSOR_NUMEL=1 << 20)
     module('tensorfold.cuda.capacity', headers=lambda path: headers or {})
-    module('tensorfold.cuda.nvfp4', format=SimpleNamespace(config_block=lambda raw: {}, scheme=lambda parts: 'bf16'))
+    module('tensorfold.cuda.nvfp4', format=SimpleNamespace(config_block=lambda raw: {}, scheme=lambda parts: 'bf16',
+                                                        LinearMetadata=linear_metadata_class()))
     module('tensorfold.cuda.nvfp4.linear', Fp4Linear=object, Fp8Linear=object, Staging=lambda: object())
     with patch.dict(sys.modules, modules):
         yield modules
@@ -249,11 +253,12 @@ class Controls(unittest.TestCase):
                     raise PayloadReached()
                 def close(self):
                     events.append('close')
-            helper = source_scope(WEIGHTS, {'_validate_fp8_prefill'})['_validate_fp8_prefill']
+            helpers = source_scope(WEIGHTS, {'_validate_fp8_prefill', '_rotary_frequencies'})
             scope = source_scope(NVFP4, {'load_nvfp4'}, __package__='tensorfold.families.qwen3_5.cuda',
                                  Path=Path, skipped=lambda name: False, SUFFIXES=('weight',),
                                  prompt_precision=SimpleNamespace(fp8=lambda: fp8),
                                  read_metadata_json=lambda path: {}, checkpoint_path=lambda path, name: path / name,
+                                 read_config=lambda path: {},
                                  maths=lambda: ({'nvfp4': own, 'fp8': own}, 'labeled mode'))
             metadata = {'model.layers.0.linear_attn.in_proj_qkv.weight': {'dtype': 'BF16', 'shape': [1, 1]}}
             with imports(headers=metadata) as modules:
@@ -261,7 +266,8 @@ class Controls(unittest.TestCase):
                 fake.__dict__.update(GDN=object, Attention=object, Config=SimpleNamespace(read=lambda path: cfg),
                                      Layer=object, Weights=object, _Tensors=Reader,
                                      _close_failed_checkpoint=lambda reader, error: reader.close(),
-                                     _validate_fp8_prefill=helper)
+                                     _validate_fp8_prefill=helpers['_validate_fp8_prefill'],
+                                     _rotary_frequencies=helpers['_rotary_frequencies'])
                 modules[fake.__name__] = fake
                 with patch.dict(sys.modules, {fake.__name__: fake}):
                     with self.assertRaises((ValueError, PayloadReached)) as raised:

@@ -13,7 +13,7 @@ def _ext():
     from tensorfold.cuda.build import load
 
     here = Path(__file__).parent
-    return load(name="tensorfold_qwen_b16_v4", sources=[str(here / "b16.cpp"), str(here / "b16.cu")],
+    return load(name="tensorfold_qwen_b16_v6", sources=[str(here / "b16.cpp"), str(here / "b16.cu")],
                 extra_cuda_cflags=["-O3"], verbose=False)
 
 
@@ -24,6 +24,18 @@ def matmul(x: torch.Tensor, w: torch.Tensor, bias: torch.Tensor | None = None) -
         x = x.to(w.dtype)
     b = bias if bias is not None and bias.numel() else torch.empty(0, dtype=w.dtype, device=w.device)
     return _ext().b16_linear(x.contiguous(), w.contiguous(), b)
+
+
+def matmul_rows(x: torch.Tensor, w: torch.Tensor, rows: int) -> torch.Tensor:
+    """Bias-free BF16/FP16 projection sharing weight loads across2/4/8/16 rows.
+
+    Each row retains matmul's ordered FP32 FMA chain, XOR reduction and output
+    rounding. The native boundary validates shape/device/alignment and rows.
+    The caller selects rows at preparation; it never selects another arithmetic.
+    """
+    if x.dtype != w.dtype:
+        x = x.to(w.dtype)
+    return _ext().b16_linear_rows(x.contiguous(), w.contiguous(), rows)
 
 
 def prompt(x: torch.Tensor, w: torch.Tensor, bm: int = 0) -> torch.Tensor:

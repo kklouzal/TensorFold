@@ -1,0 +1,32 @@
+{
+  "schema": "tensorfold.v100-runtime-audit-policy-input",
+  "version": 1,
+  "runtime_policy": "torch2141-build-host-v1",
+  "torch_git": "04cf2557f315a350e7eea7ab064288def65db75a",
+  "original_source_build": {
+    "bytes": 589692,
+    "sha256": "779ce85651c6236be2874a9b478d04ac1c8560a712b8632bd300792e83cd4c24"
+  },
+  "original_producer": {
+    "bytes": 59515,
+    "sha256": "df20d55006b626e72efbedb2bc3472ee6604a3f980b6e87407ed499685a38713"
+  },
+  "original_configuration": "PyTorch built with:\n  - GCC 13.3\n  - C++ Version: 202002\n  - Intel(R) MKL-DNN v3.12.0 (Git Hash 80afa71049cd69a3df32adcccb623b12cd7baa22)\n  - OpenMP 201511 (a.k.a. OpenMP 4.5)\n  - LAPACK is enabled (usually provided by MKL)\n  - NNPACK is enabled\n  - CPU capability usage: AVX2\n  - Build settings: BLAS_INFO=open, BUILD_TYPE=Release, COMMIT_SHA=04cf2557f315a350e7eea7ab064288def65db75a, CUDA_FLAGS=-I/opt/tensorfold-native/cccl-3.5.0/include -DLIBCUDACXX_ENABLE_SIMPLIFIED_COMPLEX_OPERATIONS -Xfatbin -compress-all -DONNX_NAMESPACE=onnx_torch -gencode arch=compute_70,code=sm_70 -Xcudafe --diag_suppress=cc_clobber_ignored,--diag_suppress=field_without_dll_interface,--diag_suppress=base_class_has_different_dll_interface,--diag_suppress=dll_interface_conflict_none_assumed,--diag_suppress=dll_interface_conflict_dllexport_assumed,--diag_suppress=bad_friend_decl --expt-relaxed-constexpr --expt-extended-lambda  -Wno-deprecated-gpu-targets --expt-extended-lambda -DCUB_WRAPPED_NAMESPACE=at_cuda_detail -DDISABLE_CUSPARSE_DEPRECATED -DCUDA_HAS_FP16=1 -D__CUDA_NO_HALF_OPERATORS__ -D__CUDA_NO_HALF_CONVERSIONS__ -D__CUDA_NO_HALF2_OPERATORS__ -D__CUDA_NO_BFLOAT16_CONVERSIONS__ -DC10_NODEPRECATED, CUDA_VERSION=12.9, CUDNN_VERSION=9.10.2, CXX_COMPILER=/usr/bin/c++, CXX_FLAGS=-I/opt/tensorfold-native/cccl-3.5.0/include -fvisibility-inlines-hidden -DUSE_PTHREADPOOL -DNDEBUG -DUSE_KINETO -DHAS_CUPTI -DUSE_FBGEMM -DUSE_PYTORCH_QNNPACK -DSYMBOLICATE_MOBILE_DEBUG_HANDLE -O2 -fPIC -DC10_NODEPRECATED -Wall -Wextra -Werror=return-type -Werror=non-virtual-dtor -Werror=range-loop-construct -Werror=bool-operation -Wnarrowing -Wno-missing-field-initializers -Wno-unknown-pragmas -Wno-unused-parameter -Wno-strict-overflow -Wno-strict-aliasing -Wno-stringop-overflow -Wsuggest-override -Wno-psabi -Wno-error=old-style-cast -faligned-new -Wno-maybe-uninitialized -fno-math-errno -fno-trapping-math -Werror=format -Wno-dangling-reference -Wno-error=dangling-reference -Wno-stringop-overflow, LAPACK_INFO=open, PERF_WITH_AVX=1, PERF_WITH_AVX2=1, TORCH_VERSION=2.14.1, USE_CUDA=1, USE_CUDNN=1, USE_CUSPARSELT=OFF, USE_GFLAGS=OFF, USE_GLOG=OFF, USE_GLOO=ON, USE_HIPSPARSELT=OFF, USE_MKLDNN=ON, USE_MPI=OFF, USE_NCCL=1, USE_NNPACK=ON, USE_OPENMP=ON, USE_ROCM=OFF, USE_ROCM_KERNEL_ASSERT=OFF, USE_XCCL=OFF, USE_XPU=0, \n",
+  "original_configuration_sha256": "e98c3dc96c8f3538320dc97164dacd0fad52049bf20a8ad5273ae35e6d81a0b0",
+  "cuda_header": {
+    "path": "/opt/venv/lib/python3.12/site-packages/torch/include/ATen/cuda/CUDAConfig.h",
+    "bytes": 959,
+    "sha256": "52f5f13c7ea5214e59c90f74d25efff5720f83f8d3ab4d1d83c47b49a29a73de"
+  },
+  "original_manifests": [
+    {
+      "image": "SDKeb09",
+      "sha256": "31a79089e235381809e0433a8b2c71a82cb3bd003589dce52dd3b6a7c3e58cfb"
+    },
+    {
+      "image": "MEDIAf1c72",
+      "sha256": "056031cb7c6857b0afec54ebb0118072a61719aeb4db8481243bd5406a1fc1ae"
+    }
+  ],
+  "mapping_policy": "shared-anonymous-data-v1"
+}

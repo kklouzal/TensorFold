@@ -129,13 +129,22 @@ class Controls(unittest.TestCase):
                     stage('load')
                     self.fail('failure fixture reached actual payload/model setup')
                 cls._same_settings = lambda *args: stage('settings')
-                side = NS(bits=16, group=1, scale_bytes=0, codec=None)
+                def method_geometry(kind, maximum):
+                    self.assertEqual((kind, maximum), ('none', 0))
+                    return NS(target_tail_rows=1, receipt=lambda: {'method': 'none', 'maximum_proposals': 0})
+                side = NS(name='bf16', bits=16, group=1, scale_bytes=0, codec=None, compact=None)
                 pair = NS(key=side, value=side, symmetric=True, row_bytes=lambda *args: 128)
                 rope = NS(rope_type='default', native_context=8192, context_limit=8192, metadata=lambda: {})
                 text = dict(vocab_size=128, hidden_size=64, num_attention_heads=1, num_key_value_heads=2, head_dim=64)
                 providers = {
+                    # These pure preparation boundaries precede device/native
+                    # ownership; their real behavior has separate metadata/KV controls.
+                    'tensorfold.cuda.chat_template': NS(prepare_chat_template=lambda *args, **kwargs: None),
+                    'ram_experts': NS(check_kv_full_windows=lambda value, **kwargs: self.assertIsNone(value)),
                     '': NS(rope_parameters=lambda *args: rope),
                     'kv_formats': NS(get_pair=lambda *args: pair),
+                    'gguf': NS(resolve_gguf=lambda path: None),
+                    'speculation': NS(MethodGeometry=method_geometry),
                     'torch': NS(cuda=NS(set_device=lambda value: None)),
                     'exl3_pack': NS(admission=lambda value: value, extra_files=lambda *args: (), is_exl3=lambda *args: False),
                     'tensorfold.families': NS(quant_method=lambda value: None, read_config=lambda *args: {}),
@@ -144,7 +153,7 @@ class Controls(unittest.TestCase):
                     'tensorfold.cuda.capacity': NS(admit=admitted, config=lambda *args: text, gather_ints=lambda *args: None),
                     'tensorfold.cuda.geometry': NS(PREFILL_ROWS=128, indexed_prefill_rows=lambda: 16,
                         gdn_geometry=lambda *args, **kwargs: None, indexed_stream_geometry=lambda *args, **kwargs: None,
-                        indexed_weights=lambda *args, **kwargs: None, multi_graph_bytes=lambda: 0),
+                        indexed_weights=lambda *args, **kwargs: None, multi_graph_request=lambda: 0),
                     'tensorfold.cuda.comm': NS(open_comm=open_comm),
                     'tensorfold.vision.qwen_cuda': NS(capacity_geometry=lambda value, *args: value,
                         weight_transform=lambda value, *args: value),

@@ -19,6 +19,7 @@ from tensorfold.families.qwen4_exp.cuda.decode import (  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda.engine import KEEP_SERIAL, FlashNextEngine  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda.state import State  # noqa: E402
+from prefix_checks import same_bits  # noqa: E402
 
 NL, NL2, THINK, END_THINK = 198, 271, 300, 301     # stand-ins for Qwen's "\n", "\n\n", the think tags
 CHUNK = 16                                          # the toy engines' prompt chunk
@@ -29,14 +30,9 @@ def _prompt(n: int, seed: int = 5) -> list[int]:
     return torch.randint(1, V, (n,), generator=gen).tolist()
 
 
-def _same_bits(a: torch.Tensor, b: torch.Tensor) -> bool:
-    return (a.dtype == b.dtype and a.shape == b.shape and
-            torch.equal(a.contiguous().reshape(-1).view(torch.uint8), b.contiguous().reshape(-1).view(torch.uint8)))
-
-
 def _same_snap(a: dict, b: dict) -> bool:
-    return (a["pos"] == b["pos"] and a["mtp_len"] == b["mtp_len"] and _same_bits(a["rec"], b["rec"])
-            and _same_bits(a["conv"], b["conv"]) and _same_bits(a["ple_tail"], b["ple_tail"])
+    return (a["pos"] == b["pos"] and a["mtp_len"] == b["mtp_len"] and same_bits(a["rec"], b["rec"])
+            and same_bits(a["conv"], b["conv"]) and same_bits(a["ple_tail"], b["ple_tail"])
             and (a["ple_history"] is None) == (b["ple_history"] is None)
             and (a["ple_history"] is None or np.array_equal(a["ple_history"], b["ple_history"])))
 
@@ -45,12 +41,12 @@ def _assert_same_state(a: State, b: State) -> None:
     assert a.pos == b.pos and a.mtp_len == b.mtp_len
     assert _same_snap(a.snapshot(), b.snapshot())
     for la, lb in zip(a.kc, b.kc):
-        assert _same_bits(la.k[:a.pos], lb.k[:b.pos]) and _same_bits(la.v[:a.pos], lb.v[:b.pos])
+        assert same_bits(la.k[:a.pos], lb.k[:b.pos]) and same_bits(la.v[:a.pos], lb.v[:b.pos])
     for ia, ib in zip(a.ikc, b.ikc):
-        assert _same_bits(ia[:a.pos], ib[:b.pos])
+        assert same_bits(ia[:a.pos], ib[:b.pos])
     for ka, kb in zip(_rows(a.mtp_kc, a.mtp_len), _rows(b.mtp_kc, b.mtp_len)):
-        assert _same_bits(ka, kb)
-    assert _same_bits(a.mtp_ikc[:a.mtp_len], b.mtp_ikc[:b.mtp_len])
+        assert same_bits(ka, kb)
+    assert same_bits(a.mtp_ikc[:a.mtp_len], b.mtp_ikc[:b.mtp_len])
 
 
 @pytest.fixture(scope="module")
@@ -94,7 +90,7 @@ def test_stops_leave_the_prefill_and_the_kept_states_fresh(w, n, cuts):
         fresh = Engine(w, capacity=1024, max_rows=8, prefill_rows=CHUNK)
         _run(fresh, prompt[:p], sampling)
         assert _same_snap(snap, fresh.st.snapshot()), p
-        assert tail is not None and _same_bits(tail, fresh.last_streams), p
+        assert tail is not None and same_bits(tail, fresh.last_streams), p
 
 
 @pytest.mark.parametrize("sampling", [None, Sampling(seed=99, top_k=20, top_p=0.95)])
@@ -118,7 +114,7 @@ def test_a_turn_sent_back_without_its_reasoning_resumes_from_one_token_early(w, 
     assert p == len(first) - 1
     ref = Engine(w, capacity=1024, max_rows=8, prefill_rows=CHUNK)
     _run(ref, first[:-1], sampling)
-    assert _same_snap(snap, ref.st.snapshot()) and _same_bits(tail, ref.last_streams)
+    assert _same_snap(snap, ref.st.snapshot()) and same_bits(tail, ref.last_streams)
     got = _run(e, second, sampling, resume={"state": snap, "tail": tail})      # restore keeps e's rows below pos
     fresh = Engine(w, capacity=1024, max_rows=8, prefill_rows=CHUNK)
     want = _run(fresh, second, sampling)
@@ -205,7 +201,7 @@ def test_the_engine_resumes_the_next_turn_exactly(w, sampling, base):
     for ids, snap in engine.cache:
         mine = Engine(w, capacity=1024, max_rows=8, prefill_rows=CHUNK)
         _run(mine, ids, sampling)
-        assert _same_snap(snap["state"], mine.st.snapshot()) and _same_bits(snap["tail"], mine.last_streams)
+        assert _same_snap(snap["state"], mine.st.snapshot()) and same_bits(snap["tail"], mine.last_streams)
 
 
 @pytest.mark.parametrize("points", [None, lambda ids: [len(ids) // 2]])
@@ -266,7 +262,7 @@ def test_three_resends_then_an_earlier_fork_keep_fresh_state_bits(w, sampling):
             fresh = Engine(w, capacity=1024, max_rows=8, prefill_rows=CHUNK)
             prefill(fresh, ids, sampling)
             assert _same_snap(snap["state"], fresh.st.snapshot())
-            assert _same_bits(snap["tail"], fresh.last_streams)
+            assert same_bits(snap["tail"], fresh.last_streams)
     fork = shared + _prompt(31, seed=13)
     got, stats = _generate(engine, fork, sampling)
     assert stats["cached"] == len(shared)
@@ -287,7 +283,7 @@ def test_explicit_kept_point_and_message_stops_are_all_retained(w, keep_at):
     for p, snap in saved.items():
         prefill(fresh, prompt[:p], None)
         assert _same_snap(snap["state"], fresh.st.snapshot())
-        assert _same_bits(snap["tail"], fresh.last_streams)
+        assert same_bits(snap["tail"], fresh.last_streams)
 
 
 def test_filling_requests_do_not_retain_evicted_snapshot_references(w):

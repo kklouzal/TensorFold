@@ -12,9 +12,9 @@ import sys
 from functools import partial
 import weakref
 import numpy as np
-from tensorfold.families.qwen4_exp.ssd_table import SSDTable, MAX_READ, _release_table_files
+from tensorfold.families.qwen4_exp.ssd_table import SSDTable, _read_runs, _release_table_files
 from tensorfold.families.qwen4_exp.table_lifetime import TableLifetime, _note, _cause
-from tensorfold.families.qwen4_exp.read_ahead import ReadAhead as NativeReadAhead, row_ids  # noqa: F401
+from tensorfold.families.qwen4_exp.read_ahead import ReadAhead as NativeReadAhead  # noqa: F401 - re-exported for host_table
 
 
 def load_reader():
@@ -63,29 +63,13 @@ class NativeSSDTable(SSDTable):
 
     def _runs(self, where, offsets, width, at):
         """Canonical SSDTable._reads coalescing, represented as checked native descriptors."""
-        n = offsets.size
-        if not n:
+        if not offsets.size:
             return np.empty((0, 4), dtype=np.int64)
-        cut = np.ones(n, dtype=bool)
-        cut[1:] = (where[1:] != where[:-1]) | (offsets[1:] != offsets[:-1] + width)
-        first = np.flatnonzero(cut)
-        cut |= (np.arange(n) - first[np.cumsum(cut) - 1]) % max(1, MAX_READ // width) == 0
-        first = np.flatnonzero(cut)
-        rows = np.diff(first, append=n)
+        first, rows = _read_runs(where, offsets, width)
         plan = np.empty((first.size, 4), dtype=np.int64)
         plan[:, 0], plan[:, 1] = self._fd_of[where[first]], offsets[first]
         plan[:, 2], plan[:, 3] = rows * width, at + first * width
         return plan
-
-    def gather(self, ids):
-        return self._life.call(self._gather_ids, ids)
-
-    def _gather_ids(self, ids):
-        return self._gather_flat(row_ids(ids, self.rows))
-
-    def _gather_owned(self, flat):
-        """Borrowed immutable int64 IDs already validated by owned ReadAhead."""
-        return self._life.call(self._gather_flat, flat)
 
     def _gather_flat(self, flat):
         unique, inverse = np.unique(flat.astype(np.int64), return_inverse=True)

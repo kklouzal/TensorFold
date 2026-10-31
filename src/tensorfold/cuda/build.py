@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+import json
 import os
 from pathlib import Path
 import shutil
@@ -50,14 +51,68 @@ def refuse_old_gpu(need: tuple[int, int] = MIN_CAPABILITY) -> None:
 
 def load(name: str, sources: str | list[str], need: tuple[int, int] = MIN_CAPABILITY, *, arch_specific: bool = False,
          **kwargs: Any) -> Any:
-    """torch's JIT ``load`` for this GPU only (NVIDIA's containers list every architecture back to sm_80), with a line when it compiles or waits on a lock."""
+    """Build for this GPU only, with a target-qualified JIT module and lock identity.
+
+    Torch's public ``name`` argument controls both its default build directory
+    and TORCH_EXTENSION_NAME. Keep them consistent: a waiter must never import
+    another rank's single-target binary. Explicit build directories are roots
+    beneath which each module/actual target gets its own build and lock files.
+    """
 
     from torch.utils import cpp_extension
 
-    kwargs["extra_cuda_cflags"] = [*kwargs.get("extra_cuda_cflags", []), *arch_flags(need, arch_specific)]
+    flags = arch_flags(need, arch_specific)
+    # arch_flags constructs this single target from one current-device query;
+    # the `a` suffix also distinguishes architecture-specific instructions.
+    target = flags[0].split(",code=", 1)[1]
+    kwargs["extra_cuda_cflags"] = [*kwargs.get("extra_cuda_cflags", []), *flags]
     links = _toolkit()
     if links:
         kwargs["extra_ldflags"] = [*kwargs.get("extra_ldflags", []), *links]
+    foundation = None
+    if target == "sm_70":
+        from .sm70.foundation_headers import selected_headers
+
+        foundation = selected_headers()
+        if foundation is not None:
+            # Torch 2.14 emits user -I before its own/toolkit -isystem paths.
+            kwargs["extra_include_paths"] = [*map(str, foundation.roots), *kwargs.get("extra_include_paths", [])]
+            name += "_h" + foundation.build_identity(kwargs)[:20]
+    name = name + "_" + target
+    directory = kwargs.get("build_directory")
+    if directory is not None:
+        directory = Path(directory) / name
+        directory.mkdir(parents=True, exist_ok=True)
+        kwargs["build_directory"] = str(directory)
+    module = _load(cpp_extension, name, sources, kwargs)
+    if foundation is not None:
+        foundation.verify()  # Never publish a module compiled across changed header authority.
+    return module
+
+
+def load_cpu(name: str, sources: str | list[str], *, with_cuda: bool = False, **kwargs: Any) -> Any:
+    """Build a CPU extension without GPU discovery, CUDA flags or toolkit links.
+
+    The CPU suffix separates module/build-lock identities from GPU variants.
+    Explicit build directories remain roots, as for ``load``. Callers retain
+    responsibility for source, compiler-option and framework cache identities.
+    """
+    from torch.utils import cpp_extension
+
+    if with_cuda is not False:
+        raise ValueError("CPU extensions require with_cuda=False")
+    name = name + "_cpu"
+    directory = kwargs.get("build_directory")
+    if directory is not None:
+        directory = Path(directory) / name
+        directory.mkdir(parents=True, exist_ok=True)
+        kwargs["build_directory"] = str(directory)
+    kwargs["with_cuda"] = False
+    return _load(cpp_extension, name, sources, kwargs)
+
+
+def _load(cpp_extension: Any, name: str, sources: str | list[str], kwargs: dict[str, Any]) -> Any:
+    """Share build-lock diagnostics without adding target policy to CPU builds."""
     held = _announce(cpp_extension, name, sources, kwargs.get("build_directory"))
     timer = None
     if held is not None:
@@ -154,9 +209,69 @@ def _pip_flags() -> tuple[str, ...]:
     return tuple(pip_toolkit(cpp_extension, torch))
 
 
+def _read_managed_state(path: Path) -> bytes:
+    """Retire the same binary stream once, preserving read and close roots.
+
+    Open/file-type/symlink behavior stays Path.open('rb'); no FD extension or
+    new parser is needed. A failed close retains its stream in this owning
+    traceback until explicit recovery or process retirement, never a retry.
+    Failure transport is imported only after resource work has been attempted.
+    """
+    statuses = [None]
+    primary = prior_cause = prior_context = None
+    prior_suppress = False
+    # Bind the native getters before acquisition; exception subclasses cannot
+    # intercept them or allocate a fresh Python bound method during failure.
+    cause = BaseException.__cause__.__get__
+    context = BaseException.__context__.__get__
+    suppress = BaseException.__suppress_context__.__get__
+    stream = path.open("rb")
+    raw = None
+    try:
+        raw = stream.read(64 * 2**20 + 1)
+    except BaseException as error:  # noqa: BLE001 - every read/interruption root survives owned retirement.
+        primary = error
+        prior_cause = cause(error)
+        prior_context = context(error)
+        prior_suppress = suppress(error)
+    finally:
+        try:
+            stream.close()
+        except BaseException as error:  # noqa: BLE001 - one attempted close; unresolved stream stays frame-owned.
+            statuses[0] = error
+            if primary is None:
+                primary = error
+                prior_cause = cause(error)
+                prior_context = context(error)
+                prior_suppress = suppress(error)
+    if primary is not None:
+        try:
+            from tensorfold.cleanup import raise_failures
+
+            BaseException.__cause__.__set__(primary, prior_cause)
+            BaseException.__context__.__set__(primary, prior_context)
+            BaseException.__suppress_context__.__set__(primary, prior_suppress)
+            raise_failures(primary, statuses if statuses[0] is not None else ())
+        except BaseException as transport:  # Raw roots remain owned if failure transport exhausts.
+            if transport is primary:
+                raise
+            raise primary from transport
+    return raw
+
+
 def pip_toolkit(cpp_extension: Any, torch: Any) -> list[str]:
     """No toolkit found (CUDA_HOME, nvcc, /usr/local/cuda): NVIDIA's pip one beside torch, its cudart linked by name."""
 
+    if os.environ.get("TF_FOUNDATION_STATE"):
+        raw = _read_managed_state(Path(os.environ["TF_FOUNDATION_STATE"]))
+        if len(raw) > 64 * 2**20:
+            raise ValueError("managed CUDA foundation state exceeds its bound")
+        expected = Path(json.loads(raw)["toolchain"]["cuda_home"]).resolve(strict=True)
+        if (os.environ.get("CUDA_HOME") is None or Path(os.environ["CUDA_HOME"]).resolve(strict=True) != expected
+                or cpp_extension.CUDA_HOME is None or Path(cpp_extension.CUDA_HOME).resolve(strict=True) != expected
+                or not (expected / "bin/nvcc").is_file()):
+            raise RuntimeError("managed CUDA foundation requires its selected native toolkit; rebuild the image")
+        return []
     if cpp_extension.CUDA_HOME is not None or not getattr(torch.version, "cuda", None):
         return []
     home = Path(torch.__file__).resolve().parents[1] / "nvidia" / f"cu{torch.version.cuda.split('.')[0]}"

@@ -1,4 +1,4 @@
-"""Qwen3.8-27B on an EXL3 checkpoint: the verify window's rows are independent, and drafted replies equal serial.
+"""Qwen3.8 EXL3: verify-row invariance, greedy serial identity and stochastic request/prefix determinism.
 
 The synthetic part runs anywhere CUDA is: a one-layer model whose projections are EXL3 trellis layers (random
 words, the mul1 codebook) and whose in_proj_a/b and embedding are plain bf16, as a real pack stores them.
@@ -9,7 +9,6 @@ The checkpoint part needs ``TENSORFOLD_QWEN27_EXL3=<pack dir>`` and ``TENSORFOLD
 
 from __future__ import annotations
 
-import hashlib
 import os
 from pathlib import Path
 
@@ -110,7 +109,7 @@ def test_drafted_decode_keeps_serial_tokens():
     class Drafter:
         last_candidates = None
 
-        def propose_tree(self, pending, context_length, max_nodes, sampling):
+        def propose_tree(self, pending, context_length, max_nodes, sampling, history=None):
             k = context_length
             right = [ref[k + j] if k + j < len(ref) else 1 for j in range(4)]
             self.last_candidates = np.array([[t] * 16 for t in right])
@@ -171,26 +170,17 @@ def engine():
     return Qwen27Engine(Path(MODEL), Path(DRAFTER), max_rows=12)
 
 
-def _ids(engine, prompt, sampling, draft, tokens=48):
-    out: list[int] = []
-    stats = engine.generate(list(prompt), tokens, sampling, lambda new: out.extend(new) and False, draft=draft)
-    return out, stats
-
-
 @pytest.mark.parametrize("seed", [None, 1234, 1237], ids=["greedy", "seed1234", "seed1237"])
 def test_checkpoint_drafted_equals_serial(engine, seed):
-    """The real pack with DFlash2: drafted replies are serial's token ids (SHA-256 of the ids compared)."""
+    """Greedy identity and stochastic repeat/prefix independence under the same EXL3 target math."""
 
     from tokenizers import Tokenizer
 
     from tensorfold.engine.exact_sampling import Sampling
+    from qwen_rejection_checks import checkpoint_controls
 
     tok = Tokenizer.from_file(str(Path(MODEL) / "tokenizer.json"))
     prompt = tok.encode("Write a short Python function that computes the Fibonacci sequence and explain it.",
                         add_special_tokens=False).ids
     sampling = None if seed is None else Sampling(seed, 1.0, 20, 0.95)
-    serial, s_stats = _ids(engine, prompt, sampling, draft=False)
-    drafted, d_stats = _ids(engine, prompt, sampling, draft=True)
-    digest = [hashlib.sha256(",".join(map(str, ids)).encode()).hexdigest() for ids in (serial, drafted)]
-    assert len(serial) == 48 and digest[0] == digest[1]
-    assert d_stats["rounds"] < s_stats["rounds"]                     # drafting did accept tokens
+    checkpoint_controls(engine, prompt, sampling)

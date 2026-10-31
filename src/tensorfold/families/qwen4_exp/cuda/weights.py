@@ -7,16 +7,18 @@ from pathlib import Path
 import numpy as np
 import torch
 
+from tensorfold.checkpoint_metadata import read_config
+from tensorfold.cuda import experts as grouped
+from tensorfold.cuda import precision
+
 from ..host_table import open_table, shard_keys
 from ..ple_lifetime import PLETables, _note, _retain_failure
 from ..rope import RopeParameters
 from .bf16 import b16_from_rows, quantize4, stack_b16
-from tensorfold.cuda import experts as grouped
-
 from .qmm import Q4, dequantize, make_q4, stack_q4
-from .reader import _DT, _Reader, _groups, _rows, _rows_at, norms_around_one  # noqa: F401
+from .reader import _DT, _groups, _Reader, _rows, _rows_at, norms_around_one  # noqa: F401
 from .weight_types import (
-    AttnW, Config, GDNW, HC, LayerW, MoEW, MTPW, PLEW, Weights, draft_token_ids, stop_ids)  # noqa: F401 (re-exported)
+    AttnW, Config, GDNW, HC, LayerW, MoEW, MTPW, PLEW, Weights, draft_token_ids)
 
 
 _PLAIN = (torch.bfloat16, torch.float16, torch.float32)
@@ -33,7 +35,10 @@ def _plain(name: str, w: torch.Tensor) -> torch.Tensor:
 
 def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: tuple[int, int] | None = None,
          draft_vocab: int | str | None = None, ple_on_ssd: bool = False, table_reads: list | None = None,
-         rope: RopeParameters | None = None, vram_experts: float | str | None = None) -> Weights:
+         rope: RopeParameters | None = None, vram_experts: float | str | None = None, expert_loader=None,
+         vram_experts_pin: str = "off", _pin_future_bytes: int = 0, eos_token_ids=None,
+         mtp_model_dir=None, _draft_ids=None, _prefill_plan=None, family_manifest=None,
+         _sm70_plan=None, _sm70_workspace=None, _sm70_weight_plan=None, position_profile=None, _position_prepared=None) -> Weights:
     """Load rank ``tp``'s shares; ``draft_vocab`` selects default/file ids or ids below N, None scores all ids."""
 
     import time
@@ -42,17 +47,45 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
     from . import exl3
 
     model_dir = Path(model_dir)
+    if family_manifest is not None:
+        from .sm70_nvfp4_weights import load as load_sm70
+
+        return load_sm70(model_dir, family_manifest, device, mtp=mtp, tp=tp, rope=rope,
+                         eos_token_ids=eos_token_ids, mtp_model_dir=mtp_model_dir, _plan=_sm70_plan,
+                         _workspace=_sm70_workspace, _weight_plan=_sm70_weight_plan,
+                         ple_on_ssd=ple_on_ssd, table_reads=table_reads,
+                         position_profile=position_profile, _position_prepared=_position_prepared,
+                         vram_experts=vram_experts, expert_loader=expert_loader)
+    from ..gguf import resolve_gguf
+    if resolve_gguf(model_dir) is not None:
+        from .gguf_weights import load_gguf
+        return load_gguf(model_dir, device, mtp=mtp, tp=tp, rope=rope, eos_token_ids=eos_token_ids,
+                         table_reads=table_reads, ple_on_ssd=ple_on_ssd, vram_experts=vram_experts,
+                         expert_loader=expert_loader, mtp_model_dir=mtp_model_dir, draft_vocab=draft_vocab,
+                         _draft_ids=_draft_ids, _prefill_plan=_prefill_plan,
+                         **({"position_profile": position_profile, "_position_prepared": _position_prepared}
+                            if position_profile is not None or _position_prepared is not None else {}))
+    if position_profile is not None or _position_prepared is not None:
+        raise ValueError("explicit positional operands require the Flash Next GGUF SM70 loader")
+    quant_block = read_config(model_dir).get("quantization_config") or {}
+    native_a4 = (quant_block.get("quant_method") == "modelopt" and torch.device(device).type == "cuda"
+                 and precision.mode() == precision.CHECKPOINT
+                 and precision.own_math(torch.cuda.get_device_capability(device))["nvfp4"])
     ram_layout = None
     if vram_experts is not None:
         from ..ram_experts import check, layout
 
         check(model_dir, vram_experts, tp=tp[1] if tp is not None else 1)
-        ram_layout = layout(model_dir, vram_experts, mtp=mtp)
+        ram_layout = layout(model_dir, vram_experts, mtp=mtp, native_a4=native_a4,
+                            checkpoint=precision.mode() == precision.CHECKPOINT)
     if exl3.is_exl3(model_dir):                       # an EXL3 pack: its own loader, the same dataclasses
         return exl3.load(model_dir, device, mtp=mtp, tp=tp, draft_vocab=draft_vocab, table_reads=table_reads, rope=rope,
+                         **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}),
                          **({"vram_experts": vram_experts, "_ram_layout": ram_layout}
-                            if vram_experts is not None else {}))
-    full = Config.read(model_dir, rope=rope)
+                            if vram_experts is not None else {}),
+                         **({"vram_experts_pin": vram_experts_pin, "_pin_future_bytes": _pin_future_bytes}
+                            if vram_experts_pin != "off" else {}))
+    full = Config.read(model_dir, rope=rope, **({"eos_token_ids": eos_token_ids} if eos_token_ids is not None else {}))
     ids = draft_token_ids(draft_vocab, full.vocab)
     if ids is not None and ids.size < (tp[1] if tp is not None else 1):
         raise ValueError("the draft vocabulary must contain at least one ID per tensor-parallel rank")
@@ -62,6 +95,7 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
                                           nk=full.nk // world, nv=full.nv // world,
                                           moe_width=full.moe_width // world, shared_width=full.shared_width // world)
     expert_cache = None
+    packed_cache = None
     ple_tables = PLETables()
     next_expert_layer = 0
     rd = _Reader(model_dir, device)
@@ -69,6 +103,18 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
     # NVFP4 names the language model ``model.language_model.*``; its lm_head and mtp sit at the top level
     mbase = "model.language_model." if rd.has("model.language_model.embed_tokens.weight") else "model."
     chosen = list(range(cfg.layers))
+    a4_modes = {}
+
+    def native_a4_bank(bank_prefix):
+        # Resolve the same complete declaration once, before queueing and again
+        # by lookup at bank construction. Only this load owns the reader/cache.
+        if bank_prefix not in a4_modes:
+            from tensorfold.cuda.nvfp4.modelopt_layout import a4_bank
+
+            bank_info = {key: rd.info(key) for key in rd.where if key.startswith(bank_prefix + ".experts.")}
+            a4_modes[bank_prefix] = a4_bank(bank_info, bank_prefix, full.experts, quant_block, native=native_a4,
+                                           checkpoint=precision.mode() == precision.CHECKPOINT)
+        return a4_modes[bank_prefix]
 
     def raw(name: str) -> torch.Tensor:
         return rd.get(prefix + name)
@@ -199,16 +245,13 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
     def ple_nvfp4(name: str, ple_index: int) -> PLEW:
         """A PLE layer with bf16, FP8, NVFP4 or MLX 4-bit n-gram shards and bf16 projections."""
 
-        if ple_on_ssd:
-            raise ValueError("--ple-on-ssd reads the MLX checkpoint's n-gram shards from disk; an NVFP4 checkpoint's "
-                             "tables stay memory-mapped, so drop --ple-on-ssd")
         ngram = cfg.ngram(ple_index)
         base = name + ".ple_embedding."
         ngram.check(raw(base + "layer_multipliers").cpu().numpy(), raw(base + "ngram_heads_offsets").cpu().numpy(),
                     raw(base + "ngram_heads_vocab_sizes").cpu().numpy())
         keys = shard_keys(prefix + base + "ngram_embedding", cfg.ngram_shards, rd.where)
         table = ple_tables.acquire(open_table(model_dir, [(rd.where[k + ".weight"], k) for k in keys],
-                                               lambda n: table_scale(base, n)))
+                                               lambda n: table_scale(base, n), ssd=ple_on_ssd))
         if getattr(table, "width", ngram.dims) != ngram.dims:
             raise ValueError(f"the n-gram rows hold {table.width} values, expected {ngram.dims}")
         if table.rows != ngram.rows:
@@ -245,11 +288,13 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
         sw, ss, sb = triple(name + ".shared_expert_gate")
         shared_gate = dequantize(sw, ss, sb).to(torch.bfloat16)
         router = torch.cat([gate_rows, shared_gate]).contiguous()
+        if expert_loader is not None:
+            return MoEW(router, expert_loader(rd, name, prefix, full, "mlx"))
         if expert_cache is not None:
             from tensorfold.cuda.expert_cache import CachedExperts
             from tensorfold.cuda.host_experts import load_host_experts
 
-            host = load_host_experts(rd, prefix + name)
+            host = load_host_experts(rd, prefix + name, authority=expert_cache, packed_cache=packed_cache)
             layer_id = next_expert_layer
             next_expert_layer += 1
             return MoEW(router, CachedExperts(host, expert_cache, layer_id))
@@ -271,11 +316,21 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
     def moe_nvfp4(name: str) -> MoEW:
         """The NVFP4 checkpoint's MoE: FP4 routed experts (bf16 in the MTP layer), the bf16 shared expert and gate."""
 
+        nonlocal next_expert_layer
         from . import nvfp4_moe
 
         router = raw(name + ".gate.weight").to(torch.bfloat16)
         sgate = raw(name + ".shared_expert_gate.weight").to(torch.bfloat16).reshape(full.hidden).contiguous()
         router = torch.cat([router, sgate[None]]).contiguous()
+        if expert_loader is not None:
+            return MoEW(router, expert_loader(rd, name, prefix, full, "modelopt"))
+        bank_prefix = prefix + name
+        a4 = native_a4_bank(bank_prefix)
+        if expert_cache is not None:
+            bank = nvfp4_moe.load_moe_host(rd, prefix + name, full, device, cache=expert_cache,
+                                 layer_id=next_expert_layer, native_a4=a4)
+            next_expert_layer += 1
+            return MoEW(router, bank)
         e = full.experts
         w_ = full.moe_width
         gs = full.nvfp4_group
@@ -289,6 +344,14 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
             shared = (raw(se + "gate_proj.weight").to(torch.bfloat16)[lo:hi].contiguous(),
                       raw(se + "up_proj.weight").to(torch.bfloat16)[lo:hi].contiguous(),
                       raw(se + "down_proj.weight").to(torch.bfloat16)[:, dlo * gs:dhi * gs].contiguous())
+        if a4:
+            from tensorfold.cuda.nvfp4.modelopt_experts import load_modelopt_a4
+
+            if world != 1:
+                raise ValueError("Flash Next native ModelOpt A4 requires one CUDA GPU")
+            routed = load_modelopt_a4(rd, bank_prefix, full, device=device)
+            shared = shared if isinstance(shared, nvfp4_moe.Expert4) else nvfp4_moe.expert4_from_bf16(*shared)
+            return MoEW(router, nvfp4_moe.MoEA4(routed, shared))
         fp8_drafter = (rd.has(prefix + f"{name}.experts.0.gate_proj.weight")
                        and raw(f"{name}.experts.0.gate_proj.weight").dtype == torch.float8_e4m3fn)
         if fp8_drafter and not name.startswith("mtp."):
@@ -415,24 +478,67 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
         if ram_layout is not None:
             from tensorfold.cuda.expert_cache import HostExpertCache
 
-            expert_cache = HostExpertCache(ram_layout.gpu_bytes, ram_layout.entry_bytes, device)
+            pin_options = {}
+            if vram_experts_pin != "off":
+                from tensorfold.cuda.capacity import config
+                from ..expert_authority import pin_policy
+
+                pin_options["pin_policy"] = pin_policy(config(model_dir), ram_layout, vram_experts_pin,
+                                                        future_bytes=_pin_future_bytes)
+            if ram_layout.native_a4_banks:
+                from tensorfold.cuda.nvfp4.modelopt_cache import ModelOptExpertCache
+
+                expert_cache = ModelOptExpertCache(ram_layout.gpu_bytes, ram_layout.entry_bytes, device,
+                                                   width=full.moe_width, dims=full.hidden, **pin_options)
+            else:
+                expert_cache = HostExpertCache(ram_layout.gpu_bytes, ram_layout.entry_bytes, device, **pin_options)
+            if ram_layout.format == "affine4":
+                from tensorfold.cuda.packed_experts import PackedExpertCache
+                packed_cache = PackedExpertCache.from_environment()
         embed = ((raw(mbase + "embed_tokens.weight").to(torch.bfloat16).contiguous(),) if cfg.quant == "modelopt"
                  else triple("model.embed_tokens"))
         loaded = []
         ahead = rd.layer_names(prefix, mbase, chosen, mtp)   # read ahead of the layer that takes them
+        host_ahead = None
+        if native_a4 and expert_loader is None:
+            from tensorfold.cuda.nvfp4.modelopt_layout import a4_read_plan
+
+            # None marks an unprepared group. Resolve only the two groups
+            # entering lookahead, retaining metadata/I/O overlap across layers.
+            host_ahead = [None] * len(ahead)
+        if expert_loader is not None:
+            from tensorfold.cuda.expert_parallel import expert_tensor
+            ahead = [[name for name in names if not expert_tensor(name)] for names in ahead]
         if expert_cache is not None:
             from ..ram_experts import expert_tensor
 
-            ahead = [[name for name in names if not expert_tensor(name)] for names in ahead]
+            if host_ahead is None:
+                ahead = [[name for name in names if not expert_tensor(name)
+                          and not (cfg.quant == "modelopt" and ".mlp.experts." in name)] for names in ahead]
         layer_events: list = []                           # each layer's event, recorded once its work is queued
         for k, i in enumerate(chosen):
             if len(layer_events) >= 2:                    # at most two layers queued ahead of the GPU
                 layer_events.pop(0).synchronize()
-            for names in ahead[k:k + 2]:                  # two layers in flight: reads overlap this one's packing
-                rd.queue(names)
+            for j in range(k, min(k + 2, len(ahead))):     # two layers in flight: reads overlap this one's packing
+                if host_ahead is not None and host_ahead[j] is None:
+                    bank = (prefix + f"{mbase}layers.{chosen[j]}.mlp" if j < len(chosen)
+                            else prefix + "mtp.layers.0.mlp")
+                    banks = {bank} if native_a4_bank(bank) else set()
+                    if banks:
+                        ahead[j], host_ahead[j] = a4_read_plan(ahead[j], banks, full.experts)
+                    else:
+                        host_ahead[j] = []
+                    if expert_cache is not None:
+                        ahead[j] = [name for name in ahead[j] if not expert_tensor(name)
+                                    and not (cfg.quant == "modelopt" and ".mlp.experts." in name)]
+                rd.queue(ahead[j])
+                if host_ahead is not None and host_ahead[j]:
+                    rd.queue_host_scalars(host_ahead[j])
             loaded.append(layer(i, f"{mbase}layers.{i}", cfg.layer_types[i], True))
             layer_events.append(torch.cuda.current_stream().record_event())
             rd.drop(ahead[k])                             # what the layer never took
+            if host_ahead is not None and host_ahead[k]:
+                rd.drop(host_ahead[k])
             rd.release()
             if i % 8 == 7:                        # each release waits for the device; a layer leaves few temporaries
                 torch.cuda.empty_cache()

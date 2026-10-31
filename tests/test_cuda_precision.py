@@ -4,10 +4,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from tests.cli_server_fixture import install_cli_server
-
 from tensorfold import cli
 from tensorfold.cuda import precision
+from tests.cli_server_fixture import cuda_cli_app, cuda_cli_engine, install_cli_server
 from tests.test_cuda_cli import _family
 
 
@@ -32,11 +31,11 @@ def test_the_mode_is_set_before_loading_and_shown(tmp_path, monkeypatch, request
 
     def engine(*a, **k):
         seen.append((precision.mode(), precision.asked()))
-        return SimpleNamespace(max_len=8192, w=SimpleNamespace(fast_prefill=False, precision=mode))
+        return cuda_cli_engine(max_len=8192, w=SimpleNamespace(fast_prefill=False, precision=mode))
 
     family = _family(cuda_engine=engine)
     family.model_type = "test"
-    monkeypatch.setattr(server, "App", lambda *a, **k: SimpleNamespace(effective_context_window=8185))
+    monkeypatch.setattr(server, "App", lambda *a, **k: cuda_cli_app(effective_context_window=8185))
     install_cli_server(monkeypatch, request, server)
     args = cli.build_parser().parse_args(["serve", str(tmp_path), "--backend", "cuda", "--no-drafts"] + flags)
     try:

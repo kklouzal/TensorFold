@@ -63,10 +63,13 @@ def file_helpers():
 
 
 def layout_api():
+    """Keep the real layout/open call chain and descriptor binding in the AST fixture."""
     path = SOURCE.parent / "ssd_table.py"
     tree = ast.parse(path.read_text())
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "SSDTable")
-    method = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "_layout")
+    cls.body = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in {"_layout", "_opened"}]
+    cls.bases = [ast.Name(id="SimpleNamespace", ctx=ast.Load())]
+    ast.fix_missing_locations(cls)
     header_path = SOURCE.parents[2] / "cuda/tensor_file.py"
     header_spec = importlib.util.spec_from_file_location("ssd_header_control", header_path)
     header = importlib.util.module_from_spec(header_spec)
@@ -98,12 +101,13 @@ def layout_api():
         _KINDS=(("weight", "U32", 4), ("scales", "BF16", 2), ("biases", "BF16", 2)),
         np=SimpleNamespace(array=lambda values, **kwargs: Array(values), int64=object()),
         TableFile=view_namespace["TableFile"],
+        SimpleNamespace=SimpleNamespace,
         _file_core=core,
         _file_view_namespace=view_namespace,
     )
     exec(
         compile(
-            ast.Module(body=[method], type_ignores=[]), str(path), "exec", flags=__future__.annotations.compiler_flag
+            ast.Module(body=[cls], type_ignores=[]), str(path), "exec", flags=__future__.annotations.compiler_flag
         ),
         namespace,
     )
@@ -282,9 +286,9 @@ class NativeLifetime(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "table"
             path.write_bytes(b"payload must not be read after failed acquisition")
-            instance = SimpleNamespace(_files=[], _fds=[], _unpublished_file=[None])
+            instance = namespace["SSDTable"](_files=[], _fds=[], _unpublished_file=[None])
             with self.assertRaises(KeyboardInterrupt) as caught:
-                namespace["_layout"](instance, [(path, {}, {}, {})], False)
+                instance._layout([(path, {}, {}, {})], False)
             self.assertIs(caught.exception, primary)
             file = instance._unpublished_file[0]
             self.assertIs(file._scope.live_owners[0], created[0])
@@ -323,7 +327,7 @@ class NativeLifetime(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "table"
             path.write_bytes(b"header must not be read after interrupted return")
-            instance = SimpleNamespace(_files=[], _fds=[], _unpublished_file=[None])
+            instance = namespace["SSDTable"](_files=[], _fds=[], _unpublished_file=[None])
             prior, prior_unraisable = sys.gettrace(), sys.unraisablehook
             current = sys._getframe()
             prior_opcodes = current.f_trace_opcodes
@@ -334,7 +338,7 @@ class NativeLifetime(unittest.TestCase):
                 sys.unraisablehook = lambda status: unraisable.append(status.exc_value)
                 sys.settrace(trace)
                 with self.assertRaises(KeyboardInterrupt) as caught:
-                    namespace["_layout"](instance, [(path, {}, {}, {})], False)
+                    instance._layout([(path, {}, {}, {})], False)
             finally:
                 sys.settrace(prior)
                 sys.unraisablehook = prior_unraisable
@@ -377,13 +381,13 @@ class NativeLifetime(unittest.TestCase):
                 selected = json.loads(json.dumps(entries))
                 if forged:
                     selected[0]["data_offsets"] = [4, 36]
-                instance = SimpleNamespace(_files=[], _fds=[], _unpublished_file=[None])
+                instance = namespace["SSDTable"](_files=[], _fds=[], _unpublished_file=[None])
                 try:
                     if forged:
                         with self.assertRaisesRegex(ValueError, "opened checkpoint header"):
-                            namespace["_layout"](instance, [(path, *selected)], False)
+                            instance._layout([(path, *selected)], False)
                     else:
-                        namespace["_layout"](instance, [(path, *selected)], False)
+                        instance._layout([(path, *selected)], False)
                         self.assertEqual(instance.rows, 1)
                         self.assertEqual(instance.bases[0], (8 + len(raw), 40 + len(raw), 44 + len(raw)))
                 finally:
@@ -398,18 +402,20 @@ class NativeLifetime(unittest.TestCase):
             for n in ast.parse((SOURCE.parent / "ssd_table.py").read_text()).body
             if isinstance(n, ast.ClassDef) and n.name == "SSDTable"
         )
-        method = next(n for n in function.body if isinstance(n, ast.FunctionDef) and n.name == "_layout")
+        method = next(n for n in function.body if isinstance(n, ast.FunctionDef) and n.name == "_opened")
         line = next(
             n.lineno
             for n in ast.walk(method)
-            if isinstance(n, ast.Assign) and any(ast.unparse(t) == "self._unpublished_file[0]" for t in n.targets)
+            if isinstance(n, ast.Assign)
+            and isinstance(n.value, ast.Name) and n.value.id == "file"
+            and any(ast.unparse(t) == "self._unpublished_file[0]" for t in n.targets)
         )
         primary = KeyboardInterrupt("before first descriptor publication")
         captured = []
 
         def trace(frame, event, arg):
             if (
-                frame.f_code.co_filename == str(SOURCE.parent / "ssd_table.py")
+                frame.f_code is namespace["SSDTable"]._opened.__code__
                 and event == "line"
                 and frame.f_lineno == line
             ):
@@ -420,12 +426,12 @@ class NativeLifetime(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "table"
             path.write_bytes(b"opaque bytes: header is not read before interruption")
-            instance = SimpleNamespace(_files=[], _fds=[], _unpublished_file=[None])
+            instance = namespace["SSDTable"](_files=[], _fds=[], _unpublished_file=[None])
             prior_trace = sys.gettrace()
             try:
                 sys.settrace(trace)
                 with self.assertRaises(KeyboardInterrupt) as caught:
-                    namespace["_layout"](instance, [(path, {}, {}, {})], False)
+                    instance._layout([(path, {}, {}, {})], False)
             finally:
                 sys.settrace(prior_trace)
             self.assertIs(caught.exception, primary)

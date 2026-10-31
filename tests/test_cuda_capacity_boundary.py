@@ -40,6 +40,37 @@ class CapacityBoundary(unittest.TestCase):
         self.assertEqual(got["scalar"]["shape"], [])
         self.assertFalse(got["scalar"]["split"])
 
+    def test_header_observer_sees_each_validated_raw_shard_once_before_filtering(self):
+        first = {"a": entry(), "__metadata__": {"owner": "\U00010000"}}
+        second = {"b": entry()}
+        for name, data in (("a.safetensors", first), ("b.safetensors", second)):
+            write_tensor(self.root / name, data, b"1234")
+        observed = []
+        def inspect(offset, entries):
+            observed.append((offset, len(entries), "__metadata__" in entries, any("split" in v for v in entries.values())))
+        original = metadata_contract.read_header
+        with patch.object(metadata_contract, "read_header", wraps=original) as reads:
+            actual = capacity.headers(self.root, observer=inspect)
+        self.assertEqual(reads.call_count, 2)
+        self.assertEqual(observed, [(8 + len(json.dumps(first).encode("utf-8")), 2, True, False),
+                                    (8 + len(json.dumps(second).encode("utf-8")), 1, False, False)])
+        self.assertEqual(actual, capacity.headers(self.root))
+
+    def test_invalid_header_or_namespace_is_never_observed(self):
+        seen = []
+        write_tensor(self.root / "model.safetensors", {"x": entry()}, b"short")
+        with self.assertRaises(ValueError):
+            capacity.headers(self.root, observer=lambda *args: seen.append(True))
+        self.assertEqual(seen, [])
+        (self.root / "model.safetensors.index.json").write_text(json.dumps({"weight_map": {"x": "../outside"}}))
+        with self.assertRaisesRegex(ValueError, "traverse"):
+            capacity.headers(self.root, observer=lambda *args: seen.append(True))
+        self.assertEqual(seen, [])
+
+    def test_invalid_observer_rejects_before_checkpoint_access(self):
+        with self.assertRaisesRegex(ValueError, "observer"):
+            capacity.headers(self.root / "absent", observer=1)
+
     @unittest.skipUnless(hasattr(os, "mkfifo"), "POSIX FIFO fixture")
     def test_metadata_and_tensor_fifo_refuse_without_waiting_for_a_writer(self):
         path = self.root / "checkpoint-fifo"
@@ -157,11 +188,16 @@ class CapacityBoundary(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "another rank"):
             capacity.headers(self.root, rank=1)
 
-    def test_config_selection_keeps_valid_existing_precedence(self):
+    def test_config_selection_keeps_text_shape_and_reconciles_quantization(self):
         p = self.root / "config.json"
         p.write_text(json.dumps({"hidden_size": 9, "text_config": {"hidden_size": 4},
+                                "quantization": {"bits": 4}, "quantization_config": {"bits": 4}}))
+        self.assertEqual(capacity.config(self.root),
+                         {"hidden_size": 4, "_quantization": {"bits": 4, "quant_method": "mlx"}})
+        p.write_text(json.dumps({"hidden_size": 9, "text_config": {"hidden_size": 4},
                                 "quantization": {"bits": 4}, "quantization_config": {"bits": 8}}))
-        self.assertEqual(capacity.config(self.root), {"hidden_size": 4, "_quantization": {"bits": 4}})
+        with self.assertRaisesRegex(ValueError, "conflicting checkpoint quantization"):
+            capacity.config(self.root)
         p.write_text(json.dumps({"hidden_size": 9, "text_config": None}))
         self.assertEqual(capacity.config(self.root)["hidden_size"], 9)
 

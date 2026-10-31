@@ -12,6 +12,7 @@ from tensorfold.cuda import moe, prompt_precision
 from tensorfold.cuda.kernels import gdn as deltanet
 from tensorfold.cuda.kernels import qmm as shared
 from tensorfold.cuda.kernels.prefill_attention import attention
+from tensorfold.cuda.nvfp4.checkpoint import native as checkpoint_native
 
 from . import glue
 from . import prefill_bf16, prefill_glue
@@ -21,7 +22,6 @@ from .qmm_fast import matmul, matmul_partial, tile
 from .weights import Plain, QLinear, Weights
 
 CHUNK = 4096
-TAP_LAYERS = (5, 19, 33, 47, 61)
 
 
 def _mm(x, w: QLinear, f32: bool = False) -> torch.Tensor:
@@ -38,9 +38,9 @@ def _mm(x, w: QLinear, f32: bool = False) -> torch.Tensor:
 
 
 def _mm_group(x, ws: list) -> list[torch.Tensor]:
-    """Projections of one input: checkpoint-math ones under one input scale quantize the rows once (same bits)."""
+    """Projections of one input: checkpoint-math ones quantized alike quantize the rows once (same bits)."""
 
-    shared = [i for i, w in enumerate(ws) if getattr(w, "act", None) is not None] if torch.is_tensor(x) else []
+    shared = [i for i, w in enumerate(ws) if checkpoint_native(w)] if torch.is_tensor(x) else []
     got = {}
     if len(shared) > 1:
         from tensorfold.cuda.nvfp4 import checkpoint
@@ -84,6 +84,7 @@ def prefill_chunk(w: Weights, tokens: torch.Tensor, st: State, *, tp: bool = Fal
     """Commit ``tokens`` at [st.pos, st.pos + W) into ``st`` without writing through its entries (``every``: all rows' final normed states; ``cut``: also the state after the first ``cut`` rows, the GDN chains run as two launches with one launch's bits)."""
 
     c = w.config
+    tap_layers = w.draft_taps if capture_taps else ()
     pg = prefill_glue if w.fast_prefill and prompt_precision.fp8() else prefill_bf16   # e4m3 rows when prompts take FP8
     W = int(tokens.shape[0])
     if not 0 <= cut < W:
@@ -140,7 +141,8 @@ def prefill_chunk(w: Weights, tokens: torch.Tensor, st: State, *, tp: bool = Fal
                 qg, key, value = _mm_group(h, [attn.q, attn.k, attn.v])
                 value = value.reshape(W, c.kv_heads, c.head_dim)
             q, key = glue.attn_prep(qg, key, attn.q_norm, attn.k_norm, pos, w.inv_freq, c.eps, heads=c.heads,
-                                    kv_heads=c.kv_heads, head_dim=c.head_dim, mrope_section=c.mrope_section)
+                                    kv_heads=c.kv_heads, head_dim=c.head_dim, mrope_section=c.mrope_section,
+                                    amplitude=c.rope_scale)
             kbuf, vbuf = _grow(st, i, p0 + W)
             kbuf[p0:p0 + W] = key.view(W, c.kv_heads, c.head_dim)
             vbuf[p0:p0 + W] = value
@@ -152,7 +154,7 @@ def prefill_chunk(w: Weights, tokens: torch.Tensor, st: State, *, tp: bool = Fal
         else:
             x, h = pg.add_rmsnorm(x, r, layer.post_norm, c.eps)
             pending = _mlp(h, layer, pg, tp)
-        if capture_taps and i in TAP_LAYERS:
+        if capture_taps and i in tap_layers:
             taps.append((x.float() + pending.float()).to(torch.bfloat16))
     st.pos = p0 + W
     normed = None
@@ -240,13 +242,15 @@ def _pinned(values: np.ndarray, device) -> torch.Tensor:
 @torch.no_grad()
 def prefill_rows(w: Weights, items: list[tuple[Sequence[int], State, int]], *, tp: bool = False,
                  capture_taps: bool = False) -> list[tuple[torch.Tensor, torch.Tensor | None, State | None]]:
-    """``prefill_chunk`` for several streams in one forward (dense text layers): ``items`` are (ids, state, cut).
+    """``prefill_chunk`` for several streams in one forward (dense or routed text layers): ``items`` are (ids, state, cut).
     Projections, norms and MLPs run over every row at once, each row's bits its own; each stream's convolution
-    windows, DeltaNet chains and attention read its own state. Per item: (last row normed, taps, the state at cut)."""
+    windows, DeltaNet chains and attention read its own state. Routed experts require one GPU (tp=False).
+    Per item: (last row normed, taps, the state at cut)."""
 
+    if tp and any(layer.moe is not None for layer in w.layers):
+        raise ValueError("routed experts run on one GPU")
     c = w.config
-    if any(layer.moe is not None for layer in w.layers):
-        raise ValueError("a batched prefill takes dense layers only")
+    tap_layers = w.draft_taps if capture_taps else ()
     pg = prefill_glue if w.fast_prefill and prompt_precision.fp8() else prefill_bf16
     sts = [st for _, st, _ in items]
     sizes = [len(ids) for ids, _, _ in items]
@@ -307,7 +311,8 @@ def prefill_rows(w: Weights, items: list[tuple[Sequence[int], State, int]], *, t
                 qg, key, value = _mm_group(h, [attn.q, attn.k, attn.v])
                 value = value.reshape(W, c.kv_heads, c.head_dim)
             q, key = glue.attn_prep(qg, key, attn.q_norm, attn.k_norm, pos, w.inv_freq, c.eps, heads=c.heads,
-                                    kv_heads=c.kv_heads, head_dim=c.head_dim, mrope_section=c.mrope_section)
+                                    kv_heads=c.kv_heads, head_dim=c.head_dim, mrope_section=c.mrope_section,
+                                    amplitude=c.rope_scale)
             q, key = q.view(W, c.heads, c.head_dim), key.view(W, c.kv_heads, c.head_dim)
             outs = []
             for st, p0, (o, n) in zip(sts, p0s, spans):
@@ -316,9 +321,13 @@ def prefill_rows(w: Weights, items: list[tuple[Sequence[int], State, int]], *, t
                 vbuf[p0:p0 + n] = value[o:o + n]
                 outs.append(attention(q[o:o + n], kbuf, vbuf, p0, scale=c.head_dim ** -0.5))
             r = _row_mm(pg.gate_mul(torch.cat(outs), qg, heads=c.heads, head_dim=c.head_dim), attn.o, tp)
-        x, h = pg.add_rmsnorm(x, r, layer.post_norm, c.eps)
-        pending = _mlp(h, layer, pg, tp)
-        if capture_taps and i in TAP_LAYERS:
+        if layer.moe is not None:                          # the same bf16 expert input and slot order as one stream
+            x, h, _ = glue.add_rmsnorm(x, r, layer.post_norm, c.eps)
+            pending = moe.run(h, layer.moe, prefill=True)
+        else:
+            x, h = pg.add_rmsnorm(x, r, layer.post_norm, c.eps)
+            pending = _mlp(h, layer, pg, tp)
+        if capture_taps and i in tap_layers:
             taps.append((x.float() + pending.float()).to(torch.bfloat16))
     every = torch.cat(taps, dim=-1) if capture_taps else None
     out = []

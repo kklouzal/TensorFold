@@ -371,7 +371,9 @@ def cuda_modules(monkeypatch):
         monkeypatch.setitem(sys.modules, "triton", triton)
         monkeypatch.setitem(sys.modules, "triton.language", lang)
     from tensorfold.families.qwen3_5.cuda import decode, decode_tp, forward, multi, prefill
+    from tests.kv_arena_stand_in import install
 
+    install(monkeypatch)                 # the caches' arenas on host tensors (the policy under test is the same)
     try:
         yield SimpleNamespace(torch=torch, decode=decode, decode_tp=decode_tp, forward=forward, multi=multi,
                               prefill=prefill)
@@ -392,7 +394,7 @@ def _ids_state(m, ids):
     """A committed state whose one attention layer's keys hold its ids."""
 
     st = object.__new__(m.forward.State)
-    st.pos, st.limit, st.conv, st.rec = len(ids), 0, [None], [None]
+    st.pos, st.limit, st.conv, st.rec, st.kv_owner = len(ids), 0, [None], [None], object()
     keys = m.torch.tensor(list(ids), dtype=m.torch.float32).view(-1, 1, 1)
     st.kv = [(keys, keys.clone())]
     return st
@@ -429,7 +431,7 @@ def _stand_in_prefills(m, monkeypatch):
         return "normed", (kept, _snap(keep_at))
 
     monkeypatch.setattr(m.multi, "prefill_state", prefill_state)
-    def first_token(w, normed, n, *rest, plan=None):
+    def first_token(w, normed, n, *rest, plan=None, history=None):
         assert plan is None  # these fixtures retain a complete, unsplit head on both ranks
         return _reply(recs[w.rank].last)[0]
 
@@ -590,7 +592,7 @@ class ContextDraft:
                     cache[layer] = self._made(self.torch.zeros(self.heads, rows, self.dim))
         return [(snap[0], snap[1], min(self.window, snap[2] + n), snap[3] + n) for snap, n in zip(snaps, sizes)]
 
-    def launch_blocks(self, snaps, pendings, max_nodes, block=None):
+    def launch_blocks(self, snaps, pendings, max_nodes, block=None, histories=None):
         assert all(t is not None for snap in snaps for t in snap[0] + snap[1])
         return [None] * len(snaps)
 
@@ -617,7 +619,7 @@ def _tapped_prefills(m, monkeypatch):
 
     monkeypatch.setattr(m.prefill, "prefill_chunk", chunk)
     monkeypatch.setattr(m.multi, "State", lambda w: _ids_state(m, []))
-    def first_token(w, normed, n, *rest, plan=None):
+    def first_token(w, normed, n, *rest, plan=None, history=None):
         assert plan is None  # the drafter-context fixture also holds an unsplit head
         return _reply([n])[0]
 
@@ -807,6 +809,7 @@ def _fake_chunks(m, monkeypatch):
 def _start_state(m, base):
     st = object.__new__(m.forward.State)
     st.pos, st.limit, st.conv, st.rec, st.kv = base, 0, ["conv", None], [("rec at", base), None], [None, ("start",)]
+    st.kv_owner = object()
     return st
 
 
@@ -915,7 +918,8 @@ def _cpu_kernels(torch, monkeypatch, prefill, forward):
         return rows(lambda a, b: (a.float() * torch.rsqrt(a.float().pow(2).mean(-1, keepdim=True) + eps) * w.float()
                                   * F.silu(b.float())).reshape(-1).bfloat16(), y, z)
 
-    def attn_prep(qg, key, q_norm, k_norm, pos, inv_freq, eps, *, heads, kv_heads, head_dim, mrope_section=None):
+    def attn_prep(qg, key, q_norm, k_norm, pos, inv_freq, eps, *, heads, kv_heads, head_dim, mrope_section=None,
+                  amplitude=1.0):
         q = rows(lambda a, p: (a.float().reshape(heads, 2 * head_dim)[:, :head_dim] * q_norm.float()
                                + 1e-3 * p.float()).bfloat16(), qg, pos)
         k = rows(lambda a, p: (a.float().reshape(kv_heads, head_dim) * k_norm.float() + 1e-3 * p.float()).bfloat16(),
@@ -1202,3 +1206,45 @@ def test_the_two_rank_prefill_keeps_the_point_as_prefill_does(cpu, monkeypatch, 
         assert pending == ref_pending and kept.pos == point and snap is None and _shares_kv(kept, st)
         _assert_same_state(torch, st, ref)
         _assert_same_state(torch, kept, ref_kept)
+
+
+def test_chain_runner_receives_the_resumed_prompt_before_prefill_and_verification(monkeypatch):
+    engine, recorder = _one_gpu(monkeypatch)
+    calls = []
+
+    class Runner:
+        def begin(self, cache, room, base, prompt):
+            assert cache is engine.cache and room is engine.room
+            calls.append((base, list(prompt), len(recorder.prefills)))
+            return base
+
+    engine.runner = Runner()
+    decoder = sys.modules[PKG + ".decode"]
+    eager_decode = decoder.draft_decode
+
+    def decode(*args, runner, **kwargs):
+        assert runner is engine.runner
+        return eager_decode(*args, **kwargs)
+
+    monkeypatch.setattr(decoder, "draft_decode", decode)
+    first = list(range(20, 30))
+    _run(engine, first)
+    kept = engine.cache.entries[0][1]
+    second = first[:-1] + [90, 91]
+    _run(engine, second)
+    _run(engine, second, draft=False)
+    assert calls == [(None, first, 0), (kept, second, 1), (None, second, 2)]
+    assert recorder.prefills[1].start == len(first) - 1
+
+
+def test_chain_runner_invariant_failure_stops_before_prefill(monkeypatch):
+    engine, recorder = _one_gpu(monkeypatch)
+
+    class Runner:
+        def begin(self, cache, room, base, prompt):
+            raise RuntimeError("broken sharing invariant")
+
+    engine.runner = Runner()
+    with pytest.raises(RuntimeError, match="broken sharing invariant"):
+        _run(engine, list(range(20, 30)))
+    assert not recorder.prefills and not engine.cache.entries

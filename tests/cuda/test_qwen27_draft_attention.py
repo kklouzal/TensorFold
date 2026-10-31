@@ -6,7 +6,7 @@ import torch
 if not torch.cuda.is_available():
     pytest.skip("CUDA only", allow_module_level=True)
 
-from tensorfold.families.qwen3_5.cuda.draft_attention import block_attention  # noqa: E402
+from tensorfold.families.qwen3_5.cuda.draft_attention import block_attention
 
 D = 128
 
@@ -31,7 +31,9 @@ def _reference(q, k, v, keys, values, length, window, scale, causal):
     return torch.cat(outs)
 
 
-@pytest.mark.parametrize("heads,kv_heads,length", [(32, 8, 16), (16, 4, 16), (8, 2, 8)])
+@pytest.mark.parametrize("heads,kv_heads,length", [(32, 8, 16), (32, 4, 16), (32, 4, 32), (32, 4, 64),
+                                                 (32, 4, 97), (32, 4, 128),
+                                                 (16, 4, 16), (8, 2, 8)])
 @pytest.mark.parametrize("causal", [False, True])
 def test_block_attention_matches_masked_attention(heads, kv_heads, length, causal):
     gen = torch.Generator(device="cuda").manual_seed(heads + length + int(causal))
@@ -50,9 +52,10 @@ def test_block_attention_matches_masked_attention(heads, kv_heads, length, causa
     assert (out.float() - ref).abs().max().item() < 2e-2
 
 
-def test_a_stream_gets_the_same_bits_alone_and_among_others():
+@pytest.mark.parametrize("heads,kv_heads,length", [(32, 8, 16), (32, 4, 128)])
+def test_a_stream_gets_the_same_bits_alone_and_among_others(heads, kv_heads, length):
     gen = torch.Generator(device="cuda").manual_seed(1)
-    heads, kv_heads, length, window = 32, 8, 16, 2047
+    window = 2047
     lens = [2047, 500, 2047]
     q = torch.randn(heads, 3 * length, D, generator=gen, device="cuda").bfloat16()
     k = torch.randn(kv_heads, 3 * length, D, generator=gen, device="cuda").bfloat16()

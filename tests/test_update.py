@@ -28,6 +28,8 @@ SAMPLE = """# What's new in TensorFold
 
 @pytest.fixture(autouse=True)
 def _cache(tmp_path, monkeypatch):
+    # These cases exercise the unmanaged developer updater; managed images refuse separately.
+    monkeypatch.delenv("TF_FOUNDATION_STATE", raising=False)
     monkeypatch.setattr(update, "CACHE", tmp_path / "update-check.json")
     monkeypatch.setattr(update, "SEEN", tmp_path / "version-seen")
     monkeypatch.setattr("urllib.request.urlopen", _offline)

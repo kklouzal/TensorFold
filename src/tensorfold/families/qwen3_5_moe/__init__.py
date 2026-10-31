@@ -6,6 +6,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ..qwen3_5 import rope_parameters as rope_parameters  # the dense family's text RoPE policy, as CUDA reads it
+from ..qwen3_5.config_metadata import check_metadata as check_metadata
+
 MODEL_TYPES = ("qwen3_5_moe",)
 TITLE = "Qwen3.6 MoE"
 LANES = True
@@ -14,7 +17,9 @@ MODELS = ("TensorFold/Qwen3.6-35B-A3B-MLX-4bit-MTP", "mlx-community/Qwen3.6-35B-
 REQUIRED_FILES = {MODELS[0]: ("mtp-4bit.safetensors",)}
 DRAFTER = "z-lab/Qwen3.6-35B-A3B-DFlash"      # Preserve the fork's implicit Mac drafter pending native MTP selection.
 CUDA_DRAFTER = ""                             # CUDA drafts with the checkpoint's MTP layer.
-DFLASH = DRAFTER
+CUDA_DRAFTER_BITS = True
+CUDA_DRAFT_ROWS = True
+QUANT_METHODS = {"cuda": ("mlx", "compressed-tensors")}
 KERNEL_PACKAGE = "tensorfold.kernels.qwen.dense.v1"
 KERNEL_VERSION = "v1"
 MLX_MODEL_FILE = True
@@ -23,14 +28,43 @@ CUDA_QUANTIZATION = (4, 64)
 CUDA_PREFILL_FP8 = True            # --prefill-fp8: the attention and DeltaNet projections' FP8 prompt kernel
 
 
-def check(model_dir: str | Path) -> None:
-    """One GPU, MLX 4-bit weights in groups of 64."""
+# CUDA reads static YaRN like the dense family: the card's 1,010,000-token reach is --yarn-factor 4 (1,048,576)
+ROPE_BACKENDS = ("cuda",)          # the CLI consults rope_parameters on CUDA only: Mac decoders read RoPE themselves
 
+
+def check(model_dir: str | Path) -> None:
+    """The original affine format or an original CT NVFP4 checkpoint."""
+
+    from tensorfold.cuda.nvfp4.format import is_quantized
     from tensorfold.families import OWN_MODEL_HELP, describe_quantization, quantization, read_config
 
+    if is_quantized(Path(model_dir)):
+        check_vram_experts(model_dir, "auto")
+        return
     if quantization(read_config(model_dir)) != CUDA_QUANTIZATION:
         raise ValueError(f"{TITLE}'s CUDA engine reads MLX 4-bit weights in groups of 64 ({MODELS[0]}); this "
                          f"checkpoint has {describe_quantization(read_config(model_dir))}. {OWN_MODEL_HELP}")
+
+
+def check_vram_experts(model_dir, gib, *, tp=1):
+    """Budget and format gate, usable before the payload has been downloaded."""
+    from tensorfold.families import read_config
+
+    from .ram_experts import check as check_budget
+
+    check_budget(model_dir, gib, tp=tp)
+    raw = read_config(model_dir)
+    quant = raw.get("quantization_config") or {}
+    if (quant.get("quant_method") != "compressed-tensors"
+            or quant.get("format") != "nvfp4-pack-quantized"):
+        raise ValueError("Qwen MoE --vram-experts requires original compressed-tensors NVFP4 weights")
+
+
+def cuda_drafter(model_dir):
+    """Affine keeps native MTP; CT NVFP4 may use the family's separately pulled DFlash model."""
+    from tensorfold.families import quant_method, read_config
+
+    return DRAFTER if quant_method(read_config(model_dir)) == "compressed-tensors" else CUDA_DRAFTER
 
 
 def mtp_file(model_dir: Path) -> Path | None:
@@ -133,10 +167,29 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
     """One GPU: MTP chains verified exactly, or the serial reference when no_drafts is set."""
     # parallel above 1 decodes that many requests together.
 
-    if drafter:
-        raise ValueError(f"{TITLE} drafts with its own MTP layer on CUDA: a separate draft model does not apply")
     if int(tp) != 1:
         raise ValueError(f"{TITLE} runs on one GPU: drop --tp")
+    from tensorfold.cuda.nvfp4.format import is_quantized
+
+    if is_quantized(Path(model_dir)):
+        check_vram_experts(model_dir, options.get("vram_experts", "auto"))
+        if mtp_drafts is not None:
+            raise ValueError("this CT NVFP4 checkpoint uses separate DFlash proposals: --mtp-drafts is for a native MTP head")
+        from .cuda.nvfp4_engine import QwenNvfp4MoeEngine
+
+        return QwenNvfp4MoeEngine(
+            Path(model_dir), Path(drafter) if drafter and not no_drafts else None,
+            context=context, context_explicit=options.get("context_explicit"),
+            allow_copy=not no_drafts, yarn_factor=options.get("yarn_factor"),
+            streams=max(1, int(options.get("parallel") or 1)),
+            **{name: options[name] for name in ("vram_experts", "vram_experts_pin", "drafter_bits",
+                                               "eos_token_ids", "chat_template_file", "chat_template_name")
+               if options.get(name) is not None},
+            max_rows=options.get("draft_rows"))
+    if drafter:
+        raise ValueError(f"{TITLE} affine CUDA drafts with its own MTP layer; a separate draft model does not apply")
+    if any(options.get(name) is not None for name in ("vram_experts", "draft_rows", "drafter_bits")):
+        raise ValueError("Qwen MoE RAM expert pools and external draft controls currently require CT NVFP4 weights")
     from .cuda import DEPTH
     from .cuda.engine import Qwen36Engine
 
@@ -145,4 +198,6 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
     if streams > 1 and not 0 <= depth <= 15:
         raise ValueError(f"--parallel verifies up to 16 rows a stream: --mtp-drafts 0 to 15, not {depth}")
     return Qwen36Engine(Path(model_dir), depth=depth, context=context, context_explicit=options.get("context_explicit"),
-                        streams=streams)
+                        streams=streams, yarn_factor=options.get("yarn_factor"),
+                        **{name: options[name] for name in ("eos_token_ids", "chat_template_file", "chat_template_name")
+                           if options.get(name) is not None})

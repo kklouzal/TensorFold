@@ -19,7 +19,7 @@ def engine_type():
     tree = ast.parse(SOURCE.read_text())
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "FlashNextEngine")
     keep = {"close", "_close_resources", "_begin_request", "_prune_requests", "_end_request", "_retire_request", "generate", "follow",
-            "_limit", "_resume", "supports_logprobs"}
+            "_limit", "context_window", "_resume", "supports_logprobs"}
     body = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in keep]
     unit = ast.Module(body=[ast.ImportFrom(module="__future__", names=[ast.alias(name="annotations")], level=0),
                            ast.ClassDef(name="Engine", bases=[], keywords=[], body=body, decorator_list=[])],
@@ -50,9 +50,10 @@ def engine(scheduler=None):
     e.scheduler = scheduler
     e.w = SimpleNamespace(device="owned-device", meta={"expert_cache": Resource(e.events, "cache-close")})
     plan = Resource(e.events, "plan-close")
-    e.multi = SimpleNamespace(buf=SimpleNamespace(hc_plans=plan), mbuf=None)
+    e.multi = SimpleNamespace(buf=SimpleNamespace(hc_plans=plan), mbuf=None, recover_failed_slots=lambda: None)
     e.e = e.serial = None
     e.tp, e.vision, e.depth, e.max_len, e.cache = 1, None, 4, 2053, []
+    e.capacity_plan = {"context_window": 2048}
     e._serial = lambda *args, **kwargs: {"serial": True}
     e._decode = lambda *args, **kwargs: {"draft": True}
     return e
@@ -89,6 +90,24 @@ class LifetimeControls(unittest.TestCase):
 
     def tearDown(self):
         self.stub.stop()
+
+    def test_failed_slot_retirement_keeps_engine_resources_until_close_retry(self):
+        e = engine()
+        failure = MemoryError("controlled failed-slot retirement")
+
+        def fail():
+            raise failure
+
+        e.multi.recover_failed_slots = fail
+        with self.assertRaises(MemoryError) as caught:
+            e.close()
+        self.assertIs(caught.exception, failure)
+        self.assertFalse(e._closed)
+        self.assertEqual(e.events, [])
+        e.multi.recover_failed_slots = lambda: None
+        e.close()
+        self.assertTrue(e._closed)
+        self.assertEqual(e.events, ["plan-close", "cache-close"])
 
     def test_postclose_rejects_before_limits_or_decoder_dispatch_and_keeps_fixed_owner(self):
         e = engine()
@@ -264,13 +283,13 @@ class LifetimeControls(unittest.TestCase):
     def test_rank_one_follow_uses_the_same_terminal_boundary(self):
         e = engine()
         e.served = 0
-        requests = iter([([1], 1, None, False, 0, [], True, []), None])
+        requests = iter([([1], 1, None, False, 0, [], True, [], False), None])
         e._receive = lambda: next(requests)
         e.follow()
         self.assertEqual(e.served, 1)
         self.assertFalse(e._calls)
         e.close()
-        e._receive = lambda: ([1], 1, None, False, 0, [], True, [])
+        e._receive = lambda: ([1], 1, None, False, 0, [], True, [], False)
         with self.assertRaisesRegex(RuntimeError, "closing or closed"):
             e.follow()
 
@@ -332,7 +351,7 @@ class LifetimeControls(unittest.TestCase):
         for target, event in (("_begin_request", "return"), ("generate", "line"), ("follow", "line")):
             e = engine()
             e.served = 0
-            e._receive = lambda: ([1], 1, None, False, 0, [], True, [])
+            e._receive = lambda: ([1], 1, None, False, 0, [], True, [], False)
             primary = KeyboardInterrupt("controlled registration cancellation")
             injected = False
 

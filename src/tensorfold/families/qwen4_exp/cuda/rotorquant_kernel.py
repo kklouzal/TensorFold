@@ -16,9 +16,10 @@ CODEC 8 uses the same signed Iso128 basis and norm-corrected eight-bit metadata.
 Quantization normalizes each 128-coordinate group by its original FP32 RMS.
 Three-bit groups store 32 low-two-bit bytes followed by 16 high-bit bytes;
 four-bit groups store 64 bytes, even coordinate in the low nibble; six-bit groups
-store 64 low-nibble bytes followed by 32 high-two-bit bytes. RMS is
-stored separately as FP32; CODECs 3/5/6/7 multiply it by the reciprocal RMS of the
-selected centroid vector. Exact zero groups have scale zero and the lower
+store 64 low-nibble bytes followed by 32 high-two-bit bytes; seven-bit groups
+64 low-nibble, 32 middle-two-bit and 16 high-bit bytes; eight-bit groups 128
+index bytes. RMS is stored separately as FP32; CODECs 3/5/6/7/8 multiply it by
+the reciprocal RMS of the selected centroid vector. Exact zero groups have scale zero and the lower
 central centroid index.  Attention keeps decoded K/V in the rotated frame;
 only the final weighted value sum is inverse-rotated.
 
@@ -63,19 +64,16 @@ _C7 = tl.constexpr(CENTROIDS_7)
 _C8 = tl.constexpr(CENTROIDS_8)
 _T3 = tl.constexpr(THRESHOLDS_3)
 _T4 = tl.constexpr(THRESHOLDS_4)
-_T6 = tl.constexpr(THRESHOLDS_6)
 _BINARY_T6 = tl.constexpr(tuple(tuple(THRESHOLDS_6[2 * step * cell + step - 1]
                                       for cell in range(64 // (2 * step)))
                                for step in (32, 16, 8, 4, 2, 1)))
 _BINARY_T7 = tl.constexpr(tuple(tuple(THRESHOLDS_7[2 * step * cell + step - 1]
                                       for cell in range(128 // (2 * step)))
                                for step in (64, 32, 16, 8, 4, 2, 1)))
-_ROWS_8 = tuple(tuple(THRESHOLDS_8[2 * step * cell + step - 1] for cell in range(256 // (2 * step)))
-                for step in (128, 64, 32, 16, 8, 4, 2, 1))
-_BINARY_T8 = tl.constexpr(_ROWS_8)
-# The eight-bit binary-lifting rows as one table, level L's 2^L cells at [2^L - 1, 2^(L + 1) - 1): its float32 device
-# copy (the constants' exact values) gives ``_indices_8`` the boundaries ``_indices(x, 8)`` selects.
-LIFTING_8 = tuple(cell for row in _ROWS_8 for cell in row)
+# The eight-bit binary-lifting rows (as ``_BINARY_T6`` / ``_BINARY_T7``) as one table, level L's 2^L cells at
+# [2^L - 1, 2^(L + 1) - 1): its float32 device copy (the constants' exact values) gives ``_indices_8`` its boundaries.
+LIFTING_8 = tuple(THRESHOLDS_8[2 * step * cell + step - 1]
+                  for step in (128, 64, 32, 16, 8, 4, 2, 1) for cell in range(256 // (2 * step)))
 _COS = tl.constexpr(PLANAR_COS)
 _SIN = tl.constexpr(PLANAR_SIN)
 _QUAT = tl.constexpr(ISO_QUATERNION)
@@ -163,7 +161,7 @@ def rotate(x, M: tl.constexpr, W: tl.constexpr, CODEC: tl.constexpr, INVERSE: tl
     """FP32 ``[M, W]`` fixed transform; W is a multiple of 128."""
 
     tl.static_assert(W % 128 == 0)
-    tl.static_assert(1 <= CODEC <= 8)
+    tl.static_assert(CODEC >= 1 and CODEC <= 8)
     # Six-bit scale policies share exactly the existing signed Iso128 basis.
     BASIS: tl.constexpr = 4 if CODEC == 6 or CODEC == 7 or CODEC == 8 else CODEC
     x = x.to(tl.float32)
@@ -203,7 +201,7 @@ def rotate(x, M: tl.constexpr, W: tl.constexpr, CODEC: tl.constexpr, INVERSE: tl
 
 
 @triton.jit
-def _normalized(x, M: tl.constexpr):
+def _normalized(x):
     """FP32 ``[M,128]`` -> unit-RMS coordinates and original FP32 RMS.
 
     The absmax scale prevents squaring large finite inputs from overflowing.
@@ -231,12 +229,11 @@ def _index_step_6(x, q, LEVEL: tl.constexpr):
 
 
 @triton.jit
-def _index_step_high(x, q, LEVEL: tl.constexpr, BITS: tl.constexpr):
-    """A fresh scoped seven/eight-bit decision with a canonical threshold row."""
+def _index_step_7(x, q, LEVEL: tl.constexpr):
+    """A fresh scoped seven-bit decision with a canonical threshold row."""
 
-    tl.static_assert(BITS == 7 or BITS == 8)
-    step: tl.constexpr = (1 << (BITS - 1)) >> LEVEL
-    row: tl.constexpr = _BINARY_T7[LEVEL] if BITS == 7 else _BINARY_T8[LEVEL]
+    step: tl.constexpr = 64 >> LEVEL
+    row: tl.constexpr = _BINARY_T7[LEVEL]
     boundary = tl.full(x.shape, row[0], tl.float32)
     for cell in tl.static_range(1, len(row)):
         boundary = tl.where(q >= 2 * step * cell, row[cell], boundary)
@@ -264,16 +261,14 @@ def _indices(x, BITS: tl.constexpr):
         q = _index_step_6(x, q, 4)
         q = _index_step_6(x, q, 5)
     else:
-        tl.static_assert(BITS == 7 or BITS == 8)
-        q = _index_step_high(x, q, 0, BITS)
-        q = _index_step_high(x, q, 1, BITS)
-        q = _index_step_high(x, q, 2, BITS)
-        q = _index_step_high(x, q, 3, BITS)
-        q = _index_step_high(x, q, 4, BITS)
-        q = _index_step_high(x, q, 5, BITS)
-        q = _index_step_high(x, q, 6, BITS)
-        if BITS == 8:
-            q = _index_step_high(x, q, 7, BITS)
+        tl.static_assert(BITS == 7)     # eight bits: ``_indices_8``
+        q = _index_step_7(x, q, 0)
+        q = _index_step_7(x, q, 1)
+        q = _index_step_7(x, q, 2)
+        q = _index_step_7(x, q, 3)
+        q = _index_step_7(x, q, 4)
+        q = _index_step_7(x, q, 5)
+        q = _index_step_7(x, q, 6)
     return q
 
 
@@ -318,7 +313,7 @@ def quant_groups_3(x, M: tl.constexpr, CODEC: tl.constexpr):
     """``[M,128]`` -> low plane ``[M,32]``, high plane ``[M,16]``, RMS ``[M]``."""
 
     tl.static_assert(CODEC == 1 or CODEC == 2)
-    unit, rms = _normalized(x.to(tl.float32), M)
+    unit, rms = _normalized(x.to(tl.float32))
     q = _indices(rotate(unit, M, 128, CODEC), 3)
     low = tl.sum(tl.reshape(q & 3, (M, 32, 4)) << (tl.arange(0, 4) * 2)[None, None, :], axis=2)
     high = tl.sum(tl.reshape(q >> 2, (M, 16, 8)) << tl.arange(0, 8)[None, None, :], axis=2)
@@ -329,7 +324,7 @@ def quant_groups_3(x, M: tl.constexpr, CODEC: tl.constexpr):
 def quant_groups_4(x, M: tl.constexpr, CODEC: tl.constexpr):
     """``[M,128]`` -> nibble bytes ``[M,64]`` and FP32 scale ``[M]``."""
 
-    unit, rms = _normalized(x.to(tl.float32), M)
+    unit, rms = _normalized(x.to(tl.float32))
     q = _indices(rotate(unit, M, 128, CODEC), 4)
     if CODEC == 3 or CODEC == 5:
         c = _centroids(q, 4)
@@ -351,7 +346,7 @@ def quant_groups_6(x, M: tl.constexpr, CODEC: tl.constexpr):
     """
 
     tl.static_assert(CODEC == 4 or CODEC == 6 or CODEC == 7)
-    unit, rms = _normalized(x.to(tl.float32), M)
+    unit, rms = _normalized(x.to(tl.float32))
     rotated = rotate(unit, M, 128, CODEC)
     if CODEC == 7:
         alpha = tl.maximum(1.0, tl.math.div_rn(tl.max(tl.abs(rotated), axis=1), _C6[63]))
@@ -372,7 +367,7 @@ def quant_groups_7(x, M: tl.constexpr, CODEC: tl.constexpr):
     """``[M,128]`` -> low4/mid2/high1 planes and original FP32 RMS."""
 
     tl.static_assert(CODEC == 4)
-    unit, rms = _normalized(x.to(tl.float32), M)
+    unit, rms = _normalized(x.to(tl.float32))
     q = _indices(rotate(unit, M, 128, CODEC), 7)
     a, b = tl.split(tl.reshape(q & 15, (M, 64, 2)))
     middle = tl.sum(tl.reshape((q >> 4) & 3, (M, 32, 4)) << (tl.arange(0, 4) * 2)[None, None, :], axis=2)
@@ -382,9 +377,9 @@ def quant_groups_7(x, M: tl.constexpr, CODEC: tl.constexpr):
 
 @triton.jit
 def _indices_8(x, THRESHOLDS):
-    """``_indices(x, 8)``, each level's boundary loaded from ``THRESHOLDS`` (a float32 device copy of ``LIFTING_8``)
-    instead of selected: before level L, q is a multiple of 2 step (step = 128 >> L), so ``_index_step_high``'s
-    boundary is row L's cell q >> (8 - L). The same comparisons and steps, so the same indices."""
+    """Nearest canonical eight-bit centroid indices (exact midpoint chooses lower) by binary lifting as ``_indices``,
+    each level's boundary loaded from ``THRESHOLDS`` (a float32 device copy of ``LIFTING_8``) instead of selected:
+    before level L, q is a multiple of 2 step (step = 128 >> L), so the boundary is row L's cell q >> (8 - L)."""
 
     q = tl.full(x.shape, 0, tl.int32)
     for level in tl.static_range(8):
@@ -417,7 +412,7 @@ def quant_groups_8(x, M: tl.constexpr, CODEC: tl.constexpr, CENTROIDS, THRESHOLD
     float32 device copies of ``CENTROIDS_8`` and ``LIFTING_8``."""
 
     tl.static_assert(CODEC == 4 or CODEC == 8)
-    unit, rms = _normalized(x.to(tl.float32), M)
+    unit, rms = _normalized(x.to(tl.float32))
     code = _indices_8(rotate(unit, M, 128, CODEC), THRESHOLDS).to(tl.uint8)
     if CODEC == 8:
         rms = correct_scale8(code, rms, CENTROIDS, M)

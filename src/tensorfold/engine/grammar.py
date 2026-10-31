@@ -12,15 +12,18 @@ from typing import Any, Sequence
 from tensorfold.server.errors import RequestError
 
 EXTRA = "tensorfold[grammar]"             # the optional dependency that brings xgrammar
-KINDS = ("json", "json_schema", "regex", "choice", "grammar")
+KINDS = ("json", "json_schema", "regex", "choice", "grammar", "tools")   # tools: strict calls (server.strict_tools)
 CACHE_BYTES = 256 << 20                   # compiled grammars kept for repeated schemas
 OBJECT = '{"type": "object"}'             # json_object: any JSON object (OpenAI's contract), not an array
+MAX_SCHEMA_NODES = 2000                    # native recursive schema compiler: quarter of measured stack-crash size
+MAX_GRAMMAR_BYTES = 96 << 20               # the rank/HTTP source envelope
 BLANKS = 32                               # the most blank characters between JSON tokens: pretty-printing, not endless
 
 
 @dataclass(frozen=True)
 class Spec:
-    """A request's structured output: ``kind`` json, json_schema, regex, choice or grammar (EBNF), and its text."""
+    """A request's structured output: ``kind`` json, json_schema, regex, choice, grammar (EBNF) or tools (an xgrammar
+    structural tag for strict function calls), and its text."""
 
     kind: str
     text: str = ""
@@ -35,13 +38,69 @@ def _schema_text(value: Any, where: str) -> str:
     if isinstance(value, str):
         try:
             value = json.loads(value)
+        except RecursionError:
+            raise RequestError(f"{where}: schema JSON nests too deeply") from None
         except json.JSONDecodeError as exc:
             raise RequestError(f"{where} is not valid JSON: {exc.msg}") from None
     if isinstance(value, bool):
         value = {} if value else None
     if not isinstance(value, dict):
         raise RequestError(f"{where} must be a JSON schema object")
-    return json.dumps(value, ensure_ascii=False)
+    _schema_resources(value, where)
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except (RecursionError, ValueError) as exc:
+        raise RequestError(f"{where}: schema data cannot be encoded: {_message(exc)}") from None
+
+
+def _schema_resources(schema: Any, where: str) -> None:
+    """Bound native schema recursion before crossing into xgrammar, including chains hidden in definitions.
+
+    The 2000-node envelope is shared with strict JSON parameters, based on the pinned native compiler's measured
+    8000-node stack crash. Annotation/enum values are data, not schema graph edges. Local refs add no new nodes.
+    """
+
+    stack, seen = [schema], set()
+    while stack:
+        node = stack.pop()
+        if not isinstance(node, dict) or id(node) in seen:
+            continue
+        seen.add(id(node))
+        if len(seen) > MAX_SCHEMA_NODES:
+            raise RequestError(f"{where}: schemas are limited to {MAX_SCHEMA_NODES} subschemas")
+        pattern = node.get("pattern")
+        if isinstance(pattern, str):
+            _regex_resources(pattern, where)
+        for keyword in ("properties", "patternProperties", "$defs", "definitions", "dependentSchemas"):
+            children = node.get(keyword)
+            if isinstance(children, dict):
+                stack.extend(children.values())
+        for keyword in ("items", "additionalProperties", "additionalItems", "contains", "not", "if", "then", "else",
+                        "propertyNames", "unevaluatedProperties", "unevaluatedItems"):
+            child = node.get(keyword)
+            stack.extend(child if isinstance(child, list) else [child])
+        for keyword in ("anyOf", "oneOf", "allOf", "prefixItems"):
+            children = node.get(keyword)
+            if isinstance(children, list):
+                stack.extend(children)
+
+
+def _regex_resources(pattern: str, where: str) -> None:
+    """Reject recursive regex parser exhaustion before the pinned C++ parser can overflow its process stack.
+
+    Use the non-caching parser already required by strict pattern validation on supported CPython 3.11+. Public
+    re.compile would retain untrusted compiled patterns in its count-only process-global cache; re.purge would affect
+    unrelated callers. Syntax differences are deliberately forwarded to the native parser unchanged.
+    """
+
+    from re import _parser
+
+    try:
+        _parser.parse(pattern)
+    except RecursionError:
+        raise RequestError(f"{where}: the pattern nests its groups too deeply") from None
+    except (re.error, OverflowError):
+        pass                                     # native parser owns syntax/feature diagnostics for admitted patterns
 
 
 def _text(value: Any, where: str) -> str:
@@ -70,7 +129,15 @@ def request_spec(body: dict[str, Any]) -> Spec | None:
             js = rf.get("json_schema")
             if not isinstance(js, dict) or js.get("schema") is None:
                 raise RequestError("response_format json_schema needs json_schema.schema (a JSON schema object)")
-            return Spec("json_schema", _schema_text(js["schema"], "response_format json_schema.schema"))
+            text = _schema_text(js["schema"], "response_format json_schema.schema")
+            strict = js.get("strict")
+            if strict is not None and not isinstance(strict, bool):
+                raise RequestError("response_format json_schema.strict must be a boolean or null")
+            if strict is True:
+                from tensorfold.server.strict_tools import validate_response_schema
+
+                validate_response_schema(json.loads(text), "response_format json_schema.schema")
+            return Spec("json_schema", text)
         if kind != "text":
             raise RequestError(f"response_format type must be text, json_object or json_schema, not {kind!r}")
     guided = {"guided_json": ("json_schema", _schema_text), "guided_regex": ("regex", _text),
@@ -119,14 +186,23 @@ class Grammars:
 
     @classmethod
     def for_model(cls, model_dir: str | Path, vocab_size: int, stop_ids: Sequence[int]) -> "Grammars":
-        """From the checkpoint's ``tokenizer.json``: ``vocab_size`` is the logits' width, ``stop_ids`` its eos ids."""
+        """From the served ``tokenizer.json`` (``--tokenizer``'s, else the checkpoint's): ``vocab_size`` is the logits'
+        width, ``stop_ids`` its eos ids."""
 
         try:
             import xgrammar as xgr
             from transformers import PreTrainedTokenizerFast       # xgrammar depends on transformers
         except ImportError:
             raise RequestError(f"structured output needs xgrammar on the server: pip install '{EXTRA}'") from None
-        tok = PreTrainedTokenizerFast(tokenizer_file=str(Path(model_dir) / "tokenizer.json"))
+        from tensorfold.token_metadata import tokenizer_override
+
+        override = tokenizer_override()          # --tokenizer: the text admitted at startup, never the file again
+        if override is not None:
+            from tokenizers import Tokenizer
+
+            tok = PreTrainedTokenizerFast(tokenizer_object=Tokenizer.from_str(override.text))
+        else:
+            tok = PreTrainedTokenizerFast(tokenizer_file=str(Path(model_dir) / "tokenizer.json"))
         return cls(xgr.TokenizerInfo.from_huggingface(tok, vocab_size=int(vocab_size), stop_token_ids=list(stop_ids)))
 
     def compile(self, spec: Spec):
@@ -134,6 +210,12 @@ class Grammars:
 
         c = self.compiler
         try:
+            if not isinstance(spec.text, str) or len(spec.text.encode("utf-8")) > MAX_GRAMMAR_BYTES:
+                raise RequestError(f"{spec.field}: grammar source exceeds the 96 MiB envelope")
+            if spec.kind == "json_schema":
+                _schema_resources(json.loads(spec.text), spec.field)
+            elif spec.kind == "regex":
+                _regex_resources(spec.text, spec.field)
             with self.lock:
                 if spec.kind in ("json", "json_schema"):
                     schema = OBJECT if spec.kind == "json" else spec.text
@@ -143,9 +225,19 @@ class Grammars:
                 if spec.kind == "choice":
                     options = " | ".join(json.dumps(v, ensure_ascii=False) for v in json.loads(spec.text))
                     return c.compile_grammar("root ::= " + options)
+                if spec.kind == "tools":
+                    return c.compile_structural_tag(spec.text)
                 return c.compile_grammar(spec.text)
-        except (RuntimeError, ValueError, TypeError) as exc:
+        except RequestError:
+            raise
+        except (RuntimeError, ValueError, TypeError, RecursionError) as exc:
             raise RequestError(f"{spec.field}: the grammar cannot be enforced: {_message(exc)}") from None
+
+    def accepts(self, compiled, text: str) -> bool:
+        """Whether ``text`` is a complete reply of the compiled grammar (a fresh matcher reads it whole)."""
+
+        m = self.xgr.GrammarMatcher(compiled)
+        return bool(m.accept_string(text)) and bool(m.is_completed())
 
     def constraint(self, compiled, *, think_end: int | None = None, spec: Spec | None = None) -> "Constraint":
         """A fresh reply's grammar state; with ``think_end`` (thinking on) it starts at the token after that one."""
@@ -212,28 +304,59 @@ def compiler(owner, model_dir: str | Path, stop_ids: Sequence[int]) -> Grammars:
     return found
 
 
-def request_constraint(owner, fields: dict[str, Any], think_end: int | None) -> "Constraint | None":
-    """A fresh constraint for a request's grammar fields (``owner`` has ``model_dir`` and ``stop_ids``), or None."""
+def check_stopping(fields: dict[str, Any], spec: Spec | None) -> None:
+    """A grammar's EOS must end generation: suppressing it would release its mask after termination."""
 
-    spec = request_spec(fields)
+    if spec is not None and fields.get("ignore_eos") is True:
+        raise RequestError(f"ignore_eos true cannot be combined with {spec.field}: structured output must stop at "
+                           "its grammar's end-of-sequence token")
+
+
+def request_constraint(owner, fields: dict[str, Any], think_end: int | None, spec: Spec | None = None
+                       ) -> "Constraint | None":
+    """A fresh constraint for a request's grammar fields, or ``spec`` (strict tools' calls), or None (``owner`` has
+    ``model_dir`` and ``stop_ids``)."""
+
+    spec = spec if spec is not None else request_spec(fields)
+    check_stopping(fields, spec)
     if spec is None:
         return None
     grammars = compiler(owner, owner.model_dir, owner.stop_ids)
     return grammars.constraint(grammars.compile(spec), think_end=think_end, spec=spec)
 
 
-FIELDS = ("response_format", "guided_json", "guided_regex", "guided_choice", "guided_grammar", "structured_outputs")
+SPECS = ("response_format", "guided_json", "guided_regex", "guided_choice", "guided_grammar", "structured_outputs")
+# every request field a reply's grammar reads (the HTTP layer hands these to the engine app): the specs above, and
+# strict tools' parallel_tool_calls (one call or many; the tools themselves travel on their own)
+FIELDS = (*SPECS, "parallel_tool_calls")
 
 
 def refusal(body: dict[str, Any], owner=None) -> str | None:
-    """Why the body's grammar cannot run (HTTP 400): malformed, beside a required call, or (``owner``) not compiling."""
+    """Why the body's grammar cannot run (HTTP 400): malformed, beside a required call, or (``owner``) not compiling;
+    an ``owner`` with ``strict_calls`` (the Mac's chat app) also checks the request's strict tools."""
 
-    from tensorfold.server.tools import tool_choice_requires_call
+    from tensorfold.server.tools import active_tool_specs, tool_choice_requires_call
 
     try:
         spec = request_spec(body)
-        if spec is not None and body.get("tools") and tool_choice_requires_call(body.get("tool_choice")):
+        required = tool_choice_requires_call(body.get("tool_choice"))
+        if spec is not None and body.get("tools") and required:
             return f'{spec.field} cannot be combined with tool_choice "required" or a named function: send one'
+        if owner is not None:
+            from tensorfold.server import strict_tools
+
+            try:
+                tools = active_tool_specs(body.get("tools"), body.get("tool_choice"))
+            except ValueError:             # malformed tools: the chat route refuses them itself; others ignore them
+                tools = []
+            if hasattr(owner, "strict_calls"):
+                plan = owner.strict_calls(tools, required=required,
+                                          parallel=body.get("parallel_tool_calls") is not False, beside=spec,
+                                          offered=body.get("tools"))
+                spec = plan.spec if plan is not None else spec
+            elif strict_tools.wanted(tools):
+                return "this server does not enforce strict function tools: send strict false"
+        check_stopping(body, spec)
         if spec is not None and getattr(owner, "model_dir", None) is not None:
             compiler(owner, owner.model_dir, owner.stop_ids).compile(spec)   # cached for the request's own compile
     except RequestError as exc:
@@ -252,10 +375,13 @@ class Window:
 
 
 class Constraint:
-    """One reply's grammar at its chosen tokens: keeps and masks verify rows, follows the chosen tokens."""
+    """One reply's grammar at its chosen tokens: keeps and masks verify rows, follows the chosen tokens.
+
+    The generation owner stops at the grammar's EOS; request admission rejects ignore_eos for active constraints.
+    """
 
     def __init__(self, xgr, compiled, vocab_size: int, *, think_end: int | None = None) -> None:
-        self.xgr = xgr
+        self.xgr, self.compiled = xgr, compiled
         self.m = xgr.GrammarMatcher(compiled)
         self.vocab = int(vocab_size)
         self.words = (self.vocab + 31) // 32
@@ -263,6 +389,34 @@ class Constraint:
         self.active = think_end is None               # with thinking on: from the token after </think>
         self.spec: Spec | None = None                 # what ``pack`` sends another rank
         self._shifts: dict[Any, Any] = {}
+        self._pinned: Any = None                      # host staging for the bits a GPU mask reads
+        self._landed: Any = None                      # the event after the staging buffer's last copy
+
+    def fresh(self) -> "Constraint":
+        """This grammar from its start again, for a reply decoded again from its prompt (a yielded stream's replay)."""
+
+        again = Constraint(self.xgr, self.compiled, self.vocab, think_end=self.think_end)
+        again.spec = self.spec
+        return again
+
+    def retire_device_staging(self) -> None:
+        """Retire disposable mask/DMA storage on its serialized model coordinator.
+
+        The native CPU matcher and its accepted-token state remain owned by
+        this exact constraint. A retained request must call at a quiescent
+        boundary before its CPU continuation can outlive the GPU slot.
+        """
+        import torch
+
+        if self._landed is not None:
+            self._landed.synchronize()
+        for device in self._shifts:
+            if torch.device(device).type == "cuda":
+                completed = torch.cuda.Event()
+                completed.record(torch.cuda.current_stream(device))
+                completed.synchronize()
+        self._shifts.clear()
+        self._pinned = self._landed = None
 
     @property
     def finished(self) -> bool:
@@ -338,11 +492,31 @@ class Constraint:
         if shifts is None:
             shifts = self._shifts[device] = torch.arange(8, dtype=torch.uint8, device=device)
         # token t is bit t % 8 of byte t // 8 (xgrammar's int32 words, little-endian)
-        packed = torch.from_numpy(window.bits).to(device).view(torch.uint8)
+        packed = self._staged(window.bits, device).view(torch.uint8)
         allowed = ((packed.unsqueeze(-1) >> shifts) & 1).view(len(window.rows), -1)[:, offset:offset + width].bool()
         if allowed.shape[1] < width:                  # logits past the grammar's vocabulary: never allowed
             allowed = torch.nn.functional.pad(allowed, (0, width - allowed.shape[1]), value=False)
         return allowed
+
+    def _staged(self, bits, device):
+        """``bits`` on ``device``; to a GPU through a pinned buffer, copied in stream order without the host waiting for
+        the work queued before it (the forward), and rewritten only once its previous copy has landed."""
+
+        import torch
+
+        if torch.device(device).type != "cuda":
+            return torch.from_numpy(bits).to(device)
+        rows, words = bits.shape
+        if self._pinned is None or self._pinned.shape[0] < rows or self._pinned.shape[1] != words:
+            self._pinned = torch.empty((max(rows, 8), words), dtype=torch.int32, pin_memory=True)
+        elif self._landed is not None:
+            self._landed.synchronize()
+        staged = self._pinned[:rows]
+        staged.numpy()[:] = bits
+        out = staged.to(device, non_blocking=True)
+        self._landed = torch.cuda.Event()
+        self._landed.record()
+        return out
 
     def _mask_torch(self, logits, window: Window, offset: int = 0):
         import torch
@@ -397,5 +571,5 @@ def _mask_mlx(logits, window: Window, offset: int = 0):
     return rows.reshape(shape)
 
 
-__all__ = ["Constraint", "EXTRA", "FIELDS", "GrammarError", "Grammars", "KINDS", "Spec", "Window", "compiler",
-           "for_model", "pack", "refusal", "request_constraint", "request_spec", "vocab_size"]
+__all__ = ["Constraint", "EXTRA", "FIELDS", "GrammarError", "Grammars", "KINDS", "SPECS", "Spec", "Window", "compiler",
+           "check_stopping", "for_model", "pack", "refusal", "request_constraint", "request_spec", "vocab_size"]

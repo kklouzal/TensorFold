@@ -1,20 +1,23 @@
 """Actual generic/CUDA/Responses framing; no accelerator/model imports."""
+import importlib.util
+import socket
+import tempfile
+import threading
+import unittest
 from contextlib import redirect_stdout
 from http.client import HTTPMessage
 from io import BytesIO, StringIO
-import importlib.util
 from pathlib import Path
-import socket
-import threading
 from types import SimpleNamespace
-import unittest
 
 from http_import_control import assert_accelerator_free_imports
 
+from tensorfold.cuda.http import make_handler as cuda
 from tensorfold.server import request_body
 from tensorfold.server.errors import RequestError
-from tensorfold.server.http import Server, make_handler as generic
-from tensorfold.cuda.http import make_handler as cuda
+from tensorfold.server.http import Server
+from tensorfold.server.http import make_handler as generic
+from tests.cli_server_fixture import prepared_chat_template
 
 
 def handler(fields, payload=b''):
@@ -59,8 +62,6 @@ def exchange(factory, first, *, decisions=True):
         vision = None
         effective_context_window = 2048
         engine = SimpleNamespace(generate=lambda *, constraint=None: None)
-        # what the GB10 bridge's discovery metadata reads from a served App (no template files: no fingerprint)
-        template = SimpleNamespace(efforts=frozenset(), template=None)
         reasoning_effort = None
         model_dir = Path(__file__).parent / 'no-such-checkpoint'
         tok = SimpleNamespace(to_str=lambda: '{}')
@@ -69,13 +70,16 @@ def exchange(factory, first, *, decisions=True):
             return None
 
         def _prepare(self, body, chat):
-            return SimpleNamespace(prompt=[1, 2, 3])
+            from tensorfold.cuda.server import PreparedRequest
 
-    app = App()
-    app.decisions = (lambda body: {'preserved': body}) if decisions else None
+            return PreparedRequest([1, 2, 3], 1, [], False, None)
+
     connection = Connection()
     try:
-        with redirect_stdout(StringIO()):
+        with tempfile.TemporaryDirectory() as directory, redirect_stdout(StringIO()):
+            app = App()
+            app.template = prepared_chat_template(Path(directory))
+            app.decisions = (lambda body: {'preserved': body}) if decisions else None
             factory(app)(connection, ('127.0.0.1', 0), None)
     finally:
         connected.close()

@@ -1,0 +1,273 @@
+{
+  "schema_version": 1,
+  "date_utc": "2026-10-17",
+  "scope": "Smaller real pretrained NVFP4 model on the user-selected single-GPU host; no application/model/dependency edits or service deployment.",
+  "maintained_source_revision": "41a43d57941409fb05182859f0843a7d3862aeda",
+  "installed_runtime_source_revision": "b551e68f7ae552ba1636fcc1967fd3534747d376",
+  "runtime_image": "sha256:c74633ad4f232c9e5ad7a1601e4043a914eaf73bae7939e4be87e5720303ed2f",
+  "wheel_sha256": "166b060a9bc6297195b30e10107a12f438040824a0e90d9264daac23338508ae",
+  "artifact_identity": "Same ordinary installed serving artifact qualified in verification-desktop-report-20261017.json. The maintained41a tree differs by documented exact-bytecode-neutral EOF cleanup and tests/docs; this change updates documentation only. No new application build is claimed.",
+  "model": {
+    "repository": "surogate/Qwen3.5-9B-NVFP4",
+    "revision": "3410fbc4f4075661f58f6b222d05b6dde646b8c1",
+    "format": "ModelOpt NVFP4",
+    "family": "qwen3_5 dense",
+    "layers": 32,
+    "hidden": 4096,
+    "weight_file_bytes": 9361048680,
+    "weight_sha256": "a1304acf8325cee90075bf8eb7f5e973ef893c7d497ded92e7d720f0e7178749",
+    "full_file_matches_publisher_lfs": true,
+    "header_sha256": "18029f480e3f2eb3b8339c6392574686eaeab990c3be793ab321dffb079fa4be",
+    "tensor_weight_roles": {
+      "weight_tensor_counts_by_dtype": {
+        "BF16": 313,
+        "U8": 248
+      },
+      "F8_weight_tensors": 0,
+      "F8_storage_role": "This export uses F8_E4M3 for NVFP4 block scales; generic startup FP8 capability does not establish an FP8 weight layer."
+    },
+    "read_only_mount": true,
+    "configuration_and_weights_modified": false,
+    "identity_evidence": [
+      "full-weight-identity.json",
+      "model-header.json",
+      "initial-model-inventory.json",
+      "publisher-model-api.json",
+      "model-selection.md"
+    ]
+  },
+  "host": {
+    "platform": "Linux AMD64",
+    "gpu": "NVIDIA RTX PRO 2000 Blackwell",
+    "compute_capability": "12.0",
+    "gpu_memory_mib": 16311,
+    "gpu_count": 1,
+    "system_ram_bytes": 67299979264,
+    "swap_bytes": 0,
+    "power_limit_w": 70,
+    "kernel_driver": "595.91.07",
+    "container_compat_driver": "615.71.09"
+  },
+  "runtime": {
+    "tensorfold": "0.6.6",
+    "python": "3.12.3",
+    "cuda": "13.4.1",
+    "pytorch": "2.16.0.dev20261006+cu134",
+    "triton": "3.9.0+gitaad2a60d",
+    "xgrammar": "0.2.8"
+  },
+  "configuration": {
+    "context": 16384,
+    "parallel_slots": 4,
+    "kv_dtype": "bf16",
+    "drafting": "off",
+    "prefill_fp8": "off",
+    "thinking": "off",
+    "max_tokens_default": 512,
+    "memory_reserve_gib": 2,
+    "absolute_cuda_limit_env": null,
+    "cpus": 6,
+    "max_jobs": 4,
+    "max_http_connections": 32,
+    "max_pending_requests": 8,
+    "network": "none; loopback API inside container",
+    "model_code_trust_enabled": false
+  },
+  "resource_policy": {
+    "user_requested_host_free_gb": 8,
+    "selected_host_floor_bytes": 8589934592,
+    "container_cap": "Initial MemAvailable minus10GiB; 8GiB floor plus2GiB margin; separate exact cap per run below. Memory+swap cap equals RAM cap; host swap absent.",
+    "guard": "Starts before detached launch, samples at250ms, requests owned-container retirement below9GiB; infrastructure errors fail closed.",
+    "device_policy": "No absolute CUDA cap; documented2GiB startup reserve; actual test did not require all VRAM.",
+    "measurement_limit": "Host/device samples describe observed extrema, not a continuous reservation or proof against unrelated external allocators."
+  },
+  "benchmark": {
+    "request": "Write a complete Python module implementing an LRU cache class with get, put, delete, resize and a thread-safe wrapper, with docstrings and a short usage example.",
+    "max_tokens": 512,
+    "temperature": 0,
+    "seed": 7,
+    "top_k": 0,
+    "top_p": 1,
+    "enable_thinking": false,
+    "stop": [
+      "<|im_end|>"
+    ],
+    "observations_per_mode": 3,
+    "completion_tokens_each": 512,
+    "finish_reason_each": "length",
+    "timing": "Engine decode_tps after ordinary constructor warmup: first generation, warm1, warm2. Two benchmark starts (one per mode) ran sequentially, no paired/interleaved comparison, clocks/thermals not locked, source/compiler caches reused.",
+    "interpretation": "Finite observed rates only. The512-token cap truncates code; complete-module correctness is not established. Precision modes have different output contracts and hashes; no quality-preserving speedup/equivalence or causal performance conclusion."
+  },
+  "validation": {
+    "schema_version": 1,
+    "result": "pass",
+    "model_weight_sha256": "a1304acf8325cee90075bf8eb7f5e973ef893c7d497ded92e7d720f0e7178749",
+    "scope": "Actual v2 per-mode benchmarks and complete real v4 HTTP captures, checked by a corrected independent offline contract validator. Original live runner exits remain failures; no single clean monolithic runner pass is claimed.",
+    "input_policy": {
+      "stop": [
+        "<|im_end|>"
+      ],
+      "drafting": "disabled",
+      "context": 16384,
+      "slots": 4
+    },
+    "metric_contract": {
+      "source": "docs/api.md:518-535; src/tensorfold/server/metrics.py:330; tests/test_metrics.py:288",
+      "kv_usage_unknown_is_omitted": true
+    },
+    "modes": {
+      "checkpoint": {
+        "benchmark_capture": "/home/kklouzal/tensorfold-small-nvfp4-20261017/checkpoint-p4-eos-stop-v2/api.json",
+        "benchmark_sha256": "ed8fd85ee451debfd23225b354a0639940218f7f7f76597a63ed09876d6a2ab7",
+        "functional_capture": "/home/kklouzal/tensorfold-small-nvfp4-20261017/checkpoint-p4-eos-stop-v4/api.json",
+        "functional_sha256": "7d423bc7ee9f13e1ff540c9f4cd4270e75fd9b7155ba53144736d24f86058fde",
+        "coding_completion_tokens": [
+          512,
+          512,
+          512
+        ],
+        "coding_token_sha": "253ca1e75134",
+        "engine_decode_tps": [
+          24.06,
+          24.27,
+          24.13
+        ],
+        "benchmark_resources": {
+          "sampled_host_minimum_bytes": 53664681984,
+          "host_samples": 331,
+          "host_floor_bytes": 8589934592,
+          "container_ram_and_swap_bytes": 44312948736,
+          "sampled_gpu_peak_fb_vendor_mb": 8669,
+          "gpu_samples": 82,
+          "gpu_units": "MB as labeled by nvidia-smi dmon",
+          "server_exit": 0,
+          "oom_killed": false,
+          "ownership_resolved": true
+        },
+        "functional_resources": {
+          "sampled_host_minimum_bytes": 53365563392,
+          "host_samples": 101,
+          "host_floor_bytes": 8589934592,
+          "container_ram_and_swap_bytes": 44349792256,
+          "sampled_gpu_peak_fb_vendor_mb": 8841,
+          "gpu_samples": 25,
+          "gpu_units": "MB as labeled by nvidia-smi dmon",
+          "server_exit": 0,
+          "oom_killed": false,
+          "ownership_resolved": true
+        },
+        "functional_http_records": 26,
+        "intra_mode_reproducible": true,
+        "concurrent_vs_solo_equal": true,
+        "strict_json_schema_enforced": true,
+        "unsupported_strict_tools_and_catalog_refused": true,
+        "unknown_kv_metric_omitted": true,
+        "prompt_progress": "not supported by dense backend; not a required check",
+        "xml_strict_function_tools": "unsupported template; refusal verified, no successful tool-call claim"
+      },
+      "full": {
+        "benchmark_capture": "/home/kklouzal/tensorfold-small-nvfp4-20261017/full-p4-eos-stop-v2/api.json",
+        "benchmark_sha256": "7a3a09ab98f18e4a0a5a9c90d764861d387a2b9a57bffd42eaf022563ab978f4",
+        "functional_capture": "/home/kklouzal/tensorfold-small-nvfp4-20261017/full-p4-eos-stop-v4/api.json",
+        "functional_sha256": "a3dd91a9700ecaf7a0cf2f30233b49be3d1745167b42feefed55d773c05c43a8",
+        "coding_completion_tokens": [
+          512,
+          512,
+          512
+        ],
+        "coding_token_sha": "8b1e791ef6ca",
+        "engine_decode_tps": [
+          34.41,
+          34.73,
+          34.73
+        ],
+        "benchmark_resources": {
+          "sampled_host_minimum_bytes": 53558583296,
+          "host_samples": 252,
+          "host_floor_bytes": 8589934592,
+          "container_ram_and_swap_bytes": 44339376128,
+          "sampled_gpu_peak_fb_vendor_mb": 8677,
+          "gpu_samples": 62,
+          "gpu_units": "MB as labeled by nvidia-smi dmon",
+          "server_exit": 0,
+          "oom_killed": false,
+          "ownership_resolved": true
+        },
+        "functional_resources": {
+          "sampled_host_minimum_bytes": 53324820480,
+          "host_samples": 94,
+          "host_floor_bytes": 8589934592,
+          "container_ram_and_swap_bytes": 44294881280,
+          "sampled_gpu_peak_fb_vendor_mb": 8851,
+          "gpu_samples": 23,
+          "gpu_units": "MB as labeled by nvidia-smi dmon",
+          "server_exit": 0,
+          "oom_killed": false,
+          "ownership_resolved": true
+        },
+        "functional_http_records": 26,
+        "intra_mode_reproducible": true,
+        "concurrent_vs_solo_equal": true,
+        "strict_json_schema_enforced": true,
+        "unsupported_strict_tools_and_catalog_refused": true,
+        "unknown_kv_metric_omitted": true,
+        "prompt_progress": "not supported by dense backend; not a required check",
+        "xml_strict_function_tools": "unsupported template; refusal verified, no successful tool-call claim"
+      }
+    }
+  },
+  "checkpoint_stop_policy": {
+    "model_and_generation_eos_id": 248044,
+    "tokenizer_eos_id": 248046,
+    "tokenizer_eos_text": "<|im_end|>",
+    "default_attempt": "Failed strict integer smoke: visible323 followedby chat marker/newline before declared EOS. Raw failure retained.",
+    "selected_policy": "Explicit standard request stop=[\"<|im_end|>\"] from this pinned tokenizer; strict integer323 check then passes. No posthoc text stripping, EOS union, metadata/weight or runtime patch.",
+    "qualification": "Explicitly configured request policy only; default export behavior is not relabeled as passed.",
+    "evidence": "stop-policy-disposition.json"
+  },
+  "capability_findings": {
+    "strict_json_response_format": "Enforced status enum/count integer bounds/additionalProperties=false; unsupported keyword returns400.",
+    "strict_function_tools": "This checkpoint uses JSON-call markup; current strict function compiler supports QwenXML. Required strict tool and actual31-tool catalog are correctly refused with400; flags never relaxed and no toolcall executed.",
+    "catalog": "31 definitions:9 stricttrue,22 explicitstrictfalse; positive fullcatalog/Harness compatibility is not qualified for this template.",
+    "prompt_progress": "Not supported by this dense engine; documented FlashNextparallel feature was incorrectly assumed in early helper. Ordinary SSE/framing/usage verified.",
+    "kv_memory_metric": "Stats kv=null; documented omission ofkv_cache_usage_perc verified, never invented0. Core request/build/queue metrics present."
+  },
+  "verification_provenance": {
+    "type": "Composite live execution and corrected independent capture validation, not a single clean monolithic harness run.",
+    "benchmark": "Six valid same-mode512-token requests from v2 actual GPU runs; raw captures/identities rechecked, no repeated timings needed after family-expectation corrections.",
+    "functional": "All26 HTTP operations per mode executed in v4, including14 successful model generations per mode. Original runner exits1 at final inapplicableKVmetric assertion; complete HTTP captures retained.",
+    "offline_gate": "validate_saved.py verifies exact26path/status sequence, request/config/image identities, all meaningful output/schema/strict-refusal/SSE/concurrency/stat/resource contracts and corrected metrics. Exit0.",
+    "offline_validator_sha256": "f684d944f4365b6bfad89870880fdfd5fbd9cadb7bbcaba20d018e578a507db1",
+    "live_runner_sha256": "dce80d8220f8f121e5790bf75bc8f7cae901dcaf160cbf48574316d8f5983773",
+    "live_api_helper_sha256": "1f4ded5be99ca01ef38c875d89dab6106079cd1ff580c44e873f9efc77783121",
+    "runner_fault_controls_passed": 11,
+    "distinct_d13_d14_review": "Exact runner, helper/family-contract corrections and final offline validator independently reviewed clean; public receipt closing review is separately recorded in the evidence ledgers."
+  },
+  "retained_failures": [
+    "Initial unchanged-export EOS smoke failure",
+    "v2 borrowed FlashNext prompt-progress assertion in each precision mode",
+    "v3 borrowed XML strict-tool-positive assertion in each precision mode",
+    "v4 borrowed unknownKVmetric-presence assertion in each precision mode",
+    "Initial offline parser assumed one dmon columnheader; actual repeated identical headers handled explicitly and original parser failure retained"
+  ],
+  "not_qualified": [
+    "General answer/code quality, perplexity or complete generated-module correctness",
+    "Cross-precision token equality, quality equality or quality-preserving speedup",
+    "512-token four-request aggregate throughput or HTTP tail-latency",
+    "Actual drafting/MTP, singleton-constructor path, full configured16K capacity",
+    "Vision/video, SM89, ARM64/Apple, multiple GPUs",
+    "Successful XMLstrictfunction calls or current31-tool Harness compatibility with this JSON-call template",
+    "Reported full FlashNext ModelOpt RAM-expert/SSD path: this dense model has no experts/ngram tables; checked FlashNext authority exceeds hostRAM before8GiB reserve"
+  ],
+  "operational_state": {
+    "embeddinggemma2": "remains stopped",
+    "application_deployed": false
+  },
+  "evidence_packet": "/home/kklouzal/tensorfold-small-nvfp4-20261017",
+  "evidence_manifest": {
+    "path": "/home/kklouzal/tensorfold-small-nvfp4-20261017/evidence-sha256.json",
+    "sha256": "347ef1fb2b62a51dc26899d703a040d0e1dcbcb1b7080baacbaa4ba9a8b76ad1",
+    "entries": 134,
+    "scope": "Completed evidence snapshot; excludes mutable ledgers/generated caches and later publication/retirement records."
+  }
+}

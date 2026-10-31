@@ -138,12 +138,90 @@ def repaired_choose(values: np.ndarray, ids: np.ndarray, positions: Sequence[int
     return out
 
 
+def candidate_fields(logits: torch.Tensor, count: int, *, id_map=None):
+    """Provisional top-k+1 fields for one owned readback; no library tie-order assumption.
+
+    The producer retains immutable logits and an optional once-validated global-ID map until canonical repair
+    completes. TokenMap/Tensor maps are prepared by the model owner, without a new map readback per launch.
+    """
+    if type(count) is not int or count < 1 or logits.ndim != 2 or logits.shape[1] < 1:
+        raise ValueError("positive candidate count and nonempty score rows required")
+    values, columns = torch.topk(logits, min(logits.shape[1], count + 1), dim=-1, sorted=False)
+    if id_map is None:
+        ids = columns
+    else:
+        mapping = id_map.tensor(logits.device) if isinstance(id_map, TokenMap) else id_map
+        if not isinstance(mapping, torch.Tensor):
+            mapping = torch.tensor(token_ids(mapping, logits.shape[1]), device=logits.device, dtype=torch.int64)
+        ids = mapping[columns]
+    lo, hi = torch.aminmax(logits, dim=-1)
+    flags = (torch.isnan(lo) | torch.isposinf(hi)).to(torch.int64)
+    return values.float(), ids, flags
+
+
+def _canonical_repair_order(values: np.ndarray, ids: np.ndarray, kept: int) -> np.ndarray:
+    """Exact legacy lexsort prefix of one validated immutable complete row.
+
+    Partition only obtains thresholds; its unstable ordering never selects a
+    tied token. Gather from the original arrays to retain every score bit,
+    including signed zeros. Equal score/ID pairs keep original index order.
+    Small rows and near-complete prefixes retain the full-sort policy.
+    """
+    width = len(values)
+    if width < 4096 or kept * 4 >= width:
+        return np.lexsort((ids, -values))[:kept]
+    cutoff = np.partition(values, width - kept)[width - kept]
+    higher = np.flatnonzero(values > cutoff)
+    tied = np.flatnonzero(values == cutoff)
+    need = kept - len(higher)
+    if need < len(tied):
+        tied_ids = ids[tied]
+        boundary = np.partition(tied_ids, need - 1)[need - 1]
+        smaller = tied[tied_ids < boundary]
+        # Source indices are ascending: even duplicate IDs retain lexsort's
+        # stable order, rather than relying on partition's unspecified ties.
+        last = tied[tied_ids == boundary][:need - len(smaller)]
+        chosen = np.concatenate((higher, smaller, last))
+    else:
+        chosen = np.concatenate((higher, tied))
+    return chosen[np.lexsort((ids[chosen], -values[chosen]))]
+
+
+def canonical_candidates(values: np.ndarray, ids: np.ndarray, count: int, full_width: int, full_row: Callable):
+    """Canonical [rows,min(count,V)] support; tied retained edges repair from the immutable complete row.
+
+    Full rows cross the device boundary only when needed to resolve support. The caller owns source/stream
+    dependencies and retains them through every repair; returned arrays own their host storage.
+    """
+    if values.shape != ids.shape or values.ndim != 2 or type(count) is not int or count < 1:
+        raise ValueError("matching candidate rows and a positive retained count required")
+    kept = min(count, full_width)
+    valid_scores(values)
+    repair = set(ambiguous_rows(values, kept, full_width).tolist())
+    out_values = np.empty((len(values), kept), dtype=values.dtype)
+    out_ids = np.empty((len(values), kept), dtype=np.int64)
+    for row in range(len(values)):
+        v, tokens = values[row], ids[row]
+        if row in repair:
+            v, tokens = full_row(row)
+            if v.shape != (full_width,) or tokens.shape != v.shape:
+                raise ValueError("tie repair must return the complete immutable row/global IDs")
+            valid_scores(v[None])
+            order = _canonical_repair_order(v, tokens, kept)
+        else:
+            order = np.lexsort((tokens, -v))[:kept]
+        out_values[row], out_ids[row] = v[order], tokens[order]
+    return out_values, out_ids
+
+
 def sample_rows(logits: torch.Tensor, positions: Sequence[int], sampling: Sampling | None, *,
                 id_map: torch.Tensor | np.ndarray | TokenMap | None = None, with_prob: bool = False):
     """Sample immutable complete rows; keyed choices use real IDs and exact top-k boundary ties.
 
-    ``with_prob`` returns temperature-1 probabilities using the original FP32
-    log-sum-exp followed by FP64 exp. The unsharded draft probability path
+    ``with_prob`` returns temperature-1 probabilities using FP32 log-sum-exp
+    followed by FP64 exp. Stochastic normalization keeps the row maximum separate
+    so extreme common offsets cannot erase the mass; greedy confidence retains
+    its original normalization. The unsharded draft probability path
     retains its complete-row FP64 filtering when top_k is off; ordinary target
     sampling uses fixed-point nucleus mass. A mapped greedy row selects its
     first maximum. Native greedy scores may be finite FP64 values outside
@@ -185,12 +263,18 @@ def sample_rows(logits: torch.Tensor, positions: Sequence[int], sampling: Sampli
     parts = [values.contiguous().view(torch.int32).to(torch.int64), cols,
              score_flags(logits if greedy else scores).to(torch.int64)[:, None]]
     if with_prob:
-        parts.append(torch.logsumexp(scores, dim=-1, keepdim=True).view(torch.int32).to(torch.int64))
+        if greedy:
+            parts.append(torch.logsumexp(scores, dim=-1, keepdim=True).view(torch.int32).to(torch.int64))
+        else:
+            maximum = scores.max(dim=-1, keepdim=True).values
+            centered = scores - maximum
+            parts.extend([maximum.view(torch.int32).to(torch.int64),
+                          torch.logsumexp(centered, dim=-1, keepdim=True).view(torch.int32).to(torch.int64)])
     metadata = torch.cat(parts, dim=1).cpu().numpy()
     if metadata[:, 2 * count].any():
         raise ValueError("sampling scores contain NaN or positive infinity")
     if with_prob:
-        normalizer = metadata[:, 2 * count + 1].astype(np.int32).view(np.float32)
+        normalizer = metadata[:, 2 * count + 1:].astype(np.int32).view(np.float32)
         if not np.isfinite(normalizer).all():
             raise ValueError("FP32 confidence normalization is nonfinite")
     values_np = metadata[:, :count].astype(np.int32).view(np.float32)
@@ -214,7 +298,6 @@ def sample_rows(logits: torch.Tensor, positions: Sequence[int], sampling: Sampli
             else choose_rows(values_np, ids, np.asarray(positions, dtype=np.uint64), sampling)
     if not with_prob:
         return chosen
-    lse = normalizer
     # A repaired choice may be outside the original candidate set. Read its
     # original value without changing the normal candidate probability math.
     probabilities = []
@@ -222,7 +305,9 @@ def sample_rows(logits: torch.Tensor, positions: Sequence[int], sampling: Sampli
         hit = np.nonzero(ids[row] == token)[0]
         value = values_np[row, hit[0]] if len(hit) \
             else complete_rows[row][int(np.nonzero(complete_ids == token)[0][0])]
-        probability = float(np.exp(float(value) - float(lse[row])))
+        difference = (float(value) - float(normalizer[row, 0])) if greedy else \
+            (float(value) - float(normalizer[row, 0])) - float(normalizer[row, 1])
+        probability = float(np.exp(difference))
         if not math.isfinite(probability):
             raise ValueError("FP32 confidence normalization produced a nonfinite probability")
         probabilities.append(probability)
@@ -418,7 +503,7 @@ def dist_gather(words: torch.Tensor) -> torch.Tensor:
 
 def nucleus_rows(logits: torch.Tensor, positions: Sequence[int], sampling: Sampling, *, offset: int = 0,
                  id_map: torch.Tensor | None = None, gather: Callable = one_rank,
-                 probs: list[float] | None = None) -> list[int]:
+                 probs: list[float] | None = None, _effective: bool = False):
     """top_k off: the keyed draw over the top_p nucleus then min_p, cut by fixed-point mass, the same on each shape."""
 
     validate_rows(logits, positions, sampling)
@@ -436,11 +521,11 @@ def nucleus_rows(logits: torch.Tensor, positions: Sequence[int], sampling: Sampl
             id_map = torch.tensor(mapping, dtype=torch.int64, device=logits.device)
         elif id_map.device != logits.device:
             raise ValueError("token map and logits must share a CUDA device")
-    scaled = logits.float().double() / max(float(sampling.temperature), 1e-6)
-    maxima = scaled.max(dim=-1, keepdim=True).values
+    scores = logits.float().double()
+    maxima = scores.max(dim=-1, keepdim=True).values
     header = torch.cat([maxima.view(torch.int64),
                         torch.full_like(maxima, logits.shape[1], dtype=torch.int64),
-                        score_flags(scaled).to(torch.int64)[:, None]], dim=1)
+                        score_flags(scores).to(torch.int64)[:, None]], dim=1)
     gathered = _stacked(gather, header)
     summary = gathered.cpu().numpy()
     if summary[:, :, 2].any():
@@ -452,11 +537,19 @@ def nucleus_rows(logits: torch.Tensor, positions: Sequence[int], sampling: Sampl
     if not np.isfinite(maximum_values).any(axis=0).all():
         raise ValueError("a complete vocabulary row needs at least one finite score")
     top = gathered[:, :, 0].contiguous().view(torch.float64).max(dim=0).values
-    mass = torch.floor(torch.exp(scaled - top[:, None]) * MASS).to(torch.int64)
+    # Center raw logits before temperature scaling, retaining a global zero on every
+    # rank. Absolute log-normalizers/noisy scores can lose all low-order mass/noise.
+    scaled = (scores - top[:, None]) / max(float(sampling.temperature), 1e-6)
+    mass = torch.floor(torch.exp(scaled) * MASS).to(torch.int64)
     got = _shares(gather, scaled, mass, NUCLEUS, offset, id_map)
-    drawn = _draw(got, positions, sampling)
-    if drawn is None:                           # some row's nucleus runs past the candidates: every whole shard
-        drawn = _draw(_shares(gather, scaled, mass, int(got[4].max()), offset, id_map), positions, sampling)
+    support = _support(got, sampling)
+    if support is None:                         # some row's nucleus runs past the candidates: every whole shard
+        support = _support(_shares(gather, scaled, mass, int(got[4].max()), offset, id_map), sampling)
+    if _effective:
+        from tensorfold.engine.rejection import ProbabilityRow
+
+        return [ProbabilityRow(ids, np.exp(values - values[0])) for values, ids, _mass, _total in support]
+    drawn = _draw_support(support, positions, sampling)
     if probs is not None:
         probs.extend(share for _, share in drawn)
     return [token for token, _ in drawn]
@@ -481,13 +574,13 @@ def _shares(gather, scaled, mass, count, offset, id_map):
             both[:, :, 2 * count:3 * count], both[:, :, 3 * count], both[:, :, 3 * count + 1])
 
 
-def _draw(got, positions, s: Sampling) -> list[tuple[int, float]] | None:
-    """Each row's (token, its share of the mass) from every rank's candidates; None if a row needs whole shards."""
+def _support(got, s: Sampling):
+    """Exact fixed-point nucleus/min-p support, preserving the target's score/ID order."""
 
     vals, ids, mass, sums, widths = got
     cut = 0.0 < s.top_p < 1.0
-    drawn = []
-    for r, position in enumerate(positions):
+    support = []
+    for r in range(vals.shape[1]):
         total = sum(int(part) for part in sums[:, r])
         if total <= 0 or total > np.iinfo(np.int64).max:
             raise ValueError("nucleus row mass must fit positive signed64")
@@ -518,10 +611,126 @@ def _draw(got, positions, s: Sampling) -> list[tuple[int, float]] | None:
             keep = min(keep, int((v >= floor).sum()))
         if keep <= 0:
             raise ValueError("sampling policy removed every finite candidate")
-        score = v[:keep] - np.log(-np.log(uniform(s.seed, int(position), i[:keep])))
+        support.append((v[:keep], i[:keep], m[:keep], total))
+    return support
+
+
+def _draw_support(support, positions, s: Sampling):
+    drawn = []
+    for (v, i, m, total), position in zip(support, positions):
+        score = (v - v[0]) - np.log(-np.log(uniform(s.seed, int(position), i)))
         best = int(np.argmax(score))
         drawn.append((int(i[best]), float(m[best]) / total))
     return drawn
+
+
+def _draw(got, positions, s: Sampling) -> list[tuple[int, float]] | None:
+    """Each row's token/mass share; None when complete shard fallback is required."""
+    support = _support(got, s)
+    return None if support is None else _draw_support(support, positions, s)
+
+
+def effective_rows(logits: torch.Tensor, sampling: Sampling, *, id_map=None):
+    """Immutable probabilities of the actual target sampler after its masks/history/filtering.
+
+    Positive top-k retains bounded candidates with exact complete-row tie repair. Top-k off
+    reuses the target's fixed-point support selection, then its FP64 Gumbel categorical law.
+    """
+    from tensorfold.engine.rejection import proposal_row
+
+    validate_rows(logits, list(range(logits.shape[0])), sampling)
+    if sampling is None or sampling.temperature <= 0:
+        raise ValueError("effective probability rows require positive-temperature sampling")
+    rows, width = logits.shape
+    mapping = token_ids(id_map, width) if id_map is not None else None
+    if not sampling.top_k:
+        tensor_map = None if mapping is None else torch.tensor(mapping, device=logits.device, dtype=torch.int64)
+        return nucleus_rows(logits, list(range(rows)), sampling, id_map=tensor_map, _effective=True)
+    count = min(width, sampling.top_k + MARGIN)
+    scores = logits.float()
+    values, columns = torch.topk(scores, count, dim=-1, sorted=False)
+    words = torch.cat([values.contiguous().view(torch.int32).to(torch.int64), columns,
+                       score_flags(scores).to(torch.int64)[:, None]], dim=1).cpu().numpy()
+    if words[:, -1].any():
+        raise ValueError("sampling scores contain NaN or positive infinity")
+    values = words[:, :count].astype(np.int32).view(np.float32)
+    valid_scores(values)
+    ids = mapping[words[:, count:2 * count]] if mapping is not None else words[:, count:2 * count]
+    def full_row(row):
+        return scores[row].cpu().numpy(), mapping if mapping is not None else np.arange(width)
+
+    values, ids = canonical_candidates(values, ids, sampling.top_k, width, full_row)
+    return [proposal_row(values[row], ids[row], sampling) for row in range(rows)]
+
+
+def effective_shards(logits: torch.Tensor, sampling: Sampling, *, plan):
+    """Collective target probabilities under the operation's immutable global-ID shard owner.
+
+    Full-shard extraction is the correctness baseline for positive top-k; no local truncation
+    can lose a tied global boundary. Every rank follows the same collective/error sequence.
+    """
+    from tensorfold.engine.rejection import proposal_row
+
+    validate_rows(logits, list(range(logits.shape[0])), sampling)
+    plan.check(logits)
+    if sampling is None or sampling.temperature <= 0:
+        raise ValueError("effective probability rows require positive-temperature sampling")
+    if not sampling.top_k:
+        return nucleus_rows(logits, list(range(logits.shape[0])), sampling, offset=plan.offset,
+                            id_map=plan.token_map, gather=plan.gather, _effective=True)
+    values, ids, _ = _tp_candidates(plan, logits.float(), plan.max_width, plan.mapping, plan.offset,
+                                   greedy=False, device_map=plan.device_map, sorted_mapping=plan.sorted_mapping)
+    result = []
+    for row in range(logits.shape[0]):
+        v, tokens = values[:, row].reshape(-1), ids[:, row].reshape(-1)
+        real = tokens >= 0
+        valid_scores(v[real][None])
+        result.append(proposal_row(v[real], tokens[real], sampling))
+    return result
+
+
+def effective_workspace(rows: int, width: int, *, world: int = 1, top_k: int = 0) -> dict[str, int]:
+    """Preparation charge for effective target rows, including complete-support/tied-boundary fallback.
+
+    This accounts application-owned arrays, immutable FP64 rows and residual construction. The producing forward
+    owns its source logits and the native admission owns adopted-library/allocator reserves. Top-k-off retains
+    scaled logits/masses beside candidate/gather packets; TP's first implementation reads complete shards.
+    """
+    import sys
+
+    from tensorfold.engine.rejection import ProbabilityRow, residual_workspace
+
+    if any(type(v) is not int or v < 1 for v in (rows, width, world)) or type(top_k) is not int or top_k < 0:
+        raise ValueError("positive probability geometry and nonnegative top-k required")
+    allocated = lambda size: -(-size // 512) * 512
+    example = ProbabilityRow([0], [1.0])
+    row_header = sys.getsizeof(example) + sum(sys.getsizeof(a) + sys.getsizeof(a.base) - a.nbytes
+                                             for a in (example.ids, example.probs))
+    if top_k and world == 1:
+        candidates, kept = min(width, top_k + MARGIN), min(width, top_k)
+        device = sum(allocated(size) for size in [4 * rows * width, *([rows * width] * 3),
+                     4 * rows * candidates, 8 * rows * candidates, 8 * rows * candidates,
+                     8 * rows, 8 * rows * (2 * candidates + 1)])
+        # Ambiguous boundaries copy and sort one complete row at a time, not rows complete vocabularies.
+        host = (8 * rows * (2 * candidates + 1) + 4 * rows * candidates + 12 * rows * kept
+                + rows * (16 * kept + row_header) + (4 + 17 * 8 + 3) * width
+                + kept * (7 * 8 + 1) + residual_workspace(kept, proposal_support=width))
+        return {"device_bytes": device, "host_bytes": host}
+    count = width  # required complete-support or complete-tie fallback, regardless of normal top-k packet width
+    # Raw/centered FP64 logits and integer masses, plus centering/exp expression intermediates; candidate
+    # values/columns/global IDs/masses; packed and gathered packets. Gather
+    # may return a list that _stacked materializes, hence two complete world packets are counted.
+    device = sum(allocated(size) for size in [4 * rows * width, *([8 * rows * width] * 5),
+                 *([rows * width] * 3),
+                 *([8 * rows * count] * 4), 8 * rows * (3 * count + 2),
+                 8 * world * rows * (3 * count + 2), 8 * world * rows * (3 * count + 2),
+                 24 * rows, 24 * world * rows])
+    total = rows * world * count
+    # CPU word packet, decoded/sorted support, FP64 probability rows and explicit preparation arrays. Sparse-q
+    # residual alignment owns at most seven int64/FP64 arrays and one mask for one visited row at a time.
+    residual = world * count * (7 * 8 + 1)
+    host = total * (24 + 24 + 16 + 17 * 8 + 3) + rows * row_header + residual + residual_workspace(world * count)
+    return {"device_bytes": device, "host_bytes": host}
 
 
 class ShardSampler:
@@ -603,7 +812,7 @@ class ShardSampler:
 def _tp_candidates(plan: ShardSampler, scores: torch.Tensor, count: int, mapping: np.ndarray | None,
                    offset: int, *, greedy: bool = False, device_map: torch.Tensor | None = None,
                    sorted_mapping: bool = True, source: torch.Tensor | None = None, with_norm: bool = False,
-                   domain_source: torch.Tensor | None = None):
+                   domain_source: torch.Tensor | None = None, centered_norm: bool = False):
     """Gather equal-sized padded packets; complete source scores stay borrowed through the readback."""
 
     rows, width = scores.shape
@@ -629,11 +838,17 @@ def _tp_candidates(plan: ShardSampler, scores: torch.Tensor, count: int, mapping
     if pad:
         values = torch.cat([values, values.new_full((rows, pad), -float("inf"))], dim=-1)
         ids = torch.cat([ids, ids.new_full((rows, pad), -1)], dim=-1)
-    # Integer transport retains every ID bit; FP32 values and FP32 log-sum-exp
-    # use raw int32 words, without numerical casting or float ID sentinels.
+    # Integer transport retains every ID bit. A stochastic normalizer transports
+    # (maximum, centered log-mass) separately, never their lossy absolute sum.
     parts = [values.contiguous().view(torch.int32).to(torch.int64), ids.to(torch.int64)]
     if with_norm:
-        parts.append(torch.logsumexp(scores, dim=-1, keepdim=True).view(torch.int32).to(torch.int64))
+        if centered_norm:
+            maximum = scores.max(dim=-1, keepdim=True).values
+            anchor = torch.where(torch.isfinite(maximum), maximum, 0.0)
+            parts.extend([maximum.view(torch.int32).to(torch.int64),
+                          torch.logsumexp(scores - anchor, dim=-1, keepdim=True).view(torch.int32).to(torch.int64)])
+        else:
+            parts.append(torch.logsumexp(scores, dim=-1, keepdim=True).view(torch.int32).to(torch.int64))
     domain = scores if domain_source is None else domain_source
     status = score_flags(domain).to(torch.int64)
     native_finite_proof = domain_source is not None
@@ -648,7 +863,9 @@ def _tp_candidates(plan: ShardSampler, scores: torch.Tensor, count: int, mapping
         raise ValueError("a rank's sampling scores contain NaN or positive infinity")
     vals = gathered[:, :, :count].astype(np.int32).view(np.float32)
     ids = gathered[:, :, count:2 * count]
-    norms = gathered[:, :, 2 * count].astype(np.int32).view(np.float32) if with_norm else None
+    norms = gathered[:, :, 2 * count:-1].astype(np.int32).view(np.float32) if with_norm else None
+    if with_norm and not centered_norm:
+        norms = norms[:, :, 0]
     finite = ((gathered[:, :, -1] & 2).any(axis=0) if native_finite_proof
               else np.isfinite(vals).any(axis=(0, 2)))
     if not finite.all():
@@ -685,8 +902,9 @@ def sample_shards(logits: torch.Tensor, positions: Sequence[int], sampling: Samp
     All ranks use the same positions/policy/probability mode. NaN/+inf and
     globally all-masked rows fail after the same collective. A zero-mass local
     shard remains valid. ``probability`` preserves a family's existing host
-    confidence rule; otherwise probabilities use FP32 local log-sum-exps and
-    the original FP64 rank merge. Greedy confidence retains its original
+    confidence rule; otherwise stochastic probabilities use separate FP32 local
+    maxima/centered log-masses and a centered FP64 rank merge. Greedy confidence
+    retains the original absolute normalization and
     per-shard candidate cap, including after exact ID tie repair. Greedy
     domain checks inspect the original representation even when the legacy
     rank merge narrows values to FP32, including derived infinities from
@@ -715,7 +933,7 @@ def sample_shards(logits: torch.Tensor, positions: Sequence[int], sampling: Samp
     values, tokens, norms = _tp_candidates(plan, scores, count, mapping, offset, greedy=greedy, device_map=plan.device_map,
                                          sorted_mapping=plan.sorted_mapping, source=logits if plan.native_greedy else scores,
                                          with_norm=with_prob and probability is None,
-                                         domain_source=logits if greedy else None)
+                                         domain_source=logits if greedy else None, centered_norm=not greedy)
     repair = set()
     if not greedy or count > 1:
         global_k = 1 if greedy else min(int(sampling.top_k), plan.total_width)
@@ -771,9 +989,14 @@ def sample_shards(logits: torch.Tensor, positions: Sequence[int], sampling: Samp
                 raise ValueError("candidate confidence normalization produced an invalid probability")
             probs.append(result[0])
         return chosen, probs
-    lse = norms.astype(np.float64)
-    top = lse.max(axis=0)
-    total = top + np.log(np.exp(lse - top).sum(axis=0))
+    if greedy:
+        lse = norms.astype(np.float64)
+        top = lse.max(axis=0)
+        total = top + np.log(np.exp(lse - top).sum(axis=0))
+    else:
+        maxima, log_mass = norms[:, :, 0].astype(np.float64), norms[:, :, 1].astype(np.float64)
+        top = maxima.max(axis=0)
+        total = np.log(np.exp((maxima - top) + log_mass).sum(axis=0))
     if not np.isfinite(total).all():
         raise ValueError("FP32 confidence normalization is nonfinite across vocabulary shards")
     probs = []
@@ -784,7 +1007,8 @@ def sample_shards(logits: torch.Tensor, positions: Sequence[int], sampling: Samp
         hit = np.nonzero(ids.reshape(-1) == token)[0]
         if not len(hit):
             raise ValueError("selected TP token is absent from its exact score packet")
-        probability = float(np.exp(float(v.reshape(-1)[hit[0]]) - total[row]))
+        difference = float(v.reshape(-1)[hit[0]]) - (0.0 if greedy else top[row])
+        probability = float(np.exp(difference - total[row]))
         if not math.isfinite(probability):
             raise ValueError("FP32 confidence normalization produced a nonfinite probability")
         probs.append(probability)

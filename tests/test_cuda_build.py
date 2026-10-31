@@ -1,6 +1,8 @@
 """CUDA extensions build for the GPU present, whatever architecture list the container sets (#56), and say what a
 silent start does: a first build, or a lock a killed build left."""
 
+import builtins
+import json
 import os
 import threading
 import time
@@ -32,6 +34,64 @@ def test_every_cuda_extension_builds_through_the_helper():
               if p.name != "build.py" and p != cpu_reader
               and "from torch.utils.cpp_extension import load" in p.read_text()]
     assert direct == []
+
+
+@pytest.mark.torch
+@pytest.mark.parametrize("explicit", [False, True])
+def test_cpu_extension_uses_shared_build_policy_without_gpu_discovery(ext, monkeypatch, tmp_path, explicit):
+    def forbidden(*args, **kwargs):
+        pytest.fail("CPU extension consulted GPU architecture or CUDA toolkit")
+
+    monkeypatch.setattr(build, "arch_flags", forbidden)
+    monkeypatch.setattr(build, "_toolkit", forbidden)
+    root = tmp_path / "host-build" if explicit else None
+    options = {"build_directory": root} if explicit else {}
+    assert build.load_cpu("tf_host", ext.sources, extra_cflags=["-O2"], verbose=False, **options) == "module"
+    expected = {"name": "tf_host_cpu", "sources": ext.sources, "extra_cflags": ["-O2"],
+                "verbose": False, "with_cuda": False}
+    if explicit:
+        expected["build_directory"] = str(root / "tf_host_cpu")
+        assert (root / "tf_host_cpu").is_dir()
+    assert ext.calls == [((), expected)]
+    assert ext.said == ["building CUDA extension tf_host_cpu (first start after an install or update; "
+                        "later starts reuse it)"]
+
+
+@pytest.mark.torch
+@pytest.mark.parametrize("invalid", [True, None, 0, 1])
+def test_cpu_extension_refuses_cuda_policy_before_build(ext, invalid):
+    with pytest.raises(ValueError, match="with_cuda=False"):
+        build.load_cpu("tf_host", ext.sources, with_cuda=invalid)
+    assert ext.calls == []
+
+
+@pytest.mark.torch
+def test_cpu_extension_reports_the_actual_cpu_build_lock(ext):
+    directory = ext.dir.parent / "tf_host_cpu"
+    directory.mkdir()
+    lock = directory / "lock"
+    lock.write_text("")
+    assert build.load_cpu("tf_host", ext.sources) == "module"
+    assert len(ext.said) == 1
+    assert str(lock) in ext.said[0] and HINT in ext.said[0]
+
+
+@pytest.mark.torch
+def test_cpu_extension_preserves_build_failure_and_stops_its_timer(ext, monkeypatch):
+    primary = RuntimeError("controlled CPU compile failure")
+    timer = SimpleNamespace(daemon=False, start=lambda: calls.append("start"), cancel=lambda: calls.append("cancel"))
+    calls = []
+    monkeypatch.setattr(build, "_announce", lambda *args: ("cpu-lock", (1, 2)))
+    monkeypatch.setattr(build.threading, "Timer", lambda *args: timer)
+
+    def fail(**kwargs):
+        raise primary
+
+    monkeypatch.setattr(ext.torch, "load", fail)
+    with pytest.raises(RuntimeError) as caught:
+        build.load_cpu("tf_host", ext.sources)
+    assert caught.value is primary
+    assert timer.daemon and calls == ["start", "cancel"]
 
 
 @pytest.mark.torch
@@ -70,6 +130,41 @@ def test_the_container_list_adds_nothing(monkeypatch, tmp_path):
     assert ext._get_cuda_arch_flags(seen["extra_cuda_cflags"]) == []
 
 
+@pytest.mark.torch
+@pytest.mark.parametrize("explicit", [False, True])
+def test_actual_architecture_and_instruction_target_have_distinct_modules_and_build_locks(ext, monkeypatch, tmp_path,
+                                                                                       explicit):
+    root = tmp_path / "explicit" if explicit else None
+    for capability, specific in [((8, 9), False), ((12, 0), False), ((12, 0), True)]:
+        _gpu(monkeypatch, capability)
+        options = {"build_directory": root} if explicit else {}
+        ext.build.load(name="tf_test", sources=ext.sources, arch_specific=specific, **options)
+    records = [kwargs for _, kwargs in ext.calls]
+    assert [row["name"] for row in records] == ["tf_test_sm_89", "tf_test_sm_120", "tf_test_sm_120a"]
+    for row, target in zip(records, ("89", "120", "120a")):
+        assert row["extra_cuda_cflags"] == [f"-gencode=arch=compute_{target},code=sm_{target}"]
+        if explicit:
+            assert Path(row["build_directory"]) == root / row["name"]
+            assert Path(row["build_directory"]).is_dir()
+
+
+@pytest.mark.torch
+def test_one_device_observation_binds_flags_and_module_identity(ext, monkeypatch):
+    import torch
+
+    observations = []
+
+    def capability():
+        observations.append(True)
+        return (8, 9) if len(observations) == 1 else (12, 0)
+
+    monkeypatch.setattr(torch.cuda, "get_device_capability", capability)
+    ext.build.load(name="tf_test", sources=ext.sources)
+    assert observations == [True]
+    kwargs = ext.calls[0][1]
+    assert kwargs["name"] == "tf_test_sm_89" and "code=sm_89" in kwargs["extra_cuda_cflags"][0]
+
+
 @pytest.fixture
 def ext(tmp_path, monkeypatch):
     """Extension ``tf_test`` with its build directory under ``tmp_path`` and torch's build replaced by a recorder."""
@@ -94,12 +189,12 @@ def ext(tmp_path, monkeypatch):
     monkeypatch.setattr(cpp_extension, "_jit_compile", lambda: cpp_extension.FileBaton)
     monkeypatch.setattr(build, "_say", said.append)
     monkeypatch.setattr(build, "_toolkit", lambda: [])               # the pip toolkit has tests of its own
-    return SimpleNamespace(build=build, torch=cpp_extension, dir=Path(directory("tf_test", False)), sources=sources,
+    return SimpleNamespace(build=build, torch=cpp_extension, dir=Path(directory("tf_test_sm_121", False)), sources=sources,
                            calls=calls, said=said)
 
 
 def _built(ext, mtime=None):
-    module = ext.dir / f"tf_test{getattr(ext.torch, 'LIB_EXT', '.so')}"
+    module = ext.dir / f"tf_test_sm_121{getattr(ext.torch, 'LIB_EXT', '.so')}"
     module.write_bytes(b"")
     stamp = time.time() + 60 if mtime is None else mtime
     os.utime(module, (stamp, stamp))
@@ -109,14 +204,14 @@ def _built(ext, mtime=None):
 def test_every_other_argument_reaches_torch_unchanged(ext):
     flags = {"extra_cuda_cflags": ["-O3", "--fmad=false"], "extra_include_paths": ["inc"], "verbose": False}
     assert ext.build.load(name="tf_test", sources=ext.sources, **flags) == "module"
-    assert ext.calls == [((), {"name": "tf_test", "sources": ext.sources, **flags,
+    assert ext.calls == [((), {"name": "tf_test_sm_121", "sources": ext.sources, **flags,
                                "extra_cuda_cflags": ["-O3", "--fmad=false", SM121]})]
 
 
 @pytest.mark.torch
 def test_a_first_build_says_so(ext):
     ext.build.load(name="tf_test", sources=ext.sources, verbose=False)
-    assert ext.said == ["building CUDA extension tf_test (first start after an install or update; "
+    assert ext.said == ["building CUDA extension tf_test_sm_121 (first start after an install or update; "
                         "later starts reuse it)"]
     assert len(ext.calls) == 1
 
@@ -133,7 +228,7 @@ def test_a_built_extension_starts_quietly(ext):
 def test_a_source_newer_than_the_built_module_is_a_build(ext):
     _built(ext, mtime=1.0)
     ext.build.load(name="tf_test", sources=ext.sources, verbose=False)
-    assert [line.split(" (")[0] for line in ext.said] == ["building CUDA extension tf_test"]
+    assert [line.split(" (")[0] for line in ext.said] == ["building CUDA extension tf_test_sm_121"]
 
 
 @pytest.mark.torch
@@ -151,10 +246,11 @@ def test_a_lock_is_named_with_the_fix(ext):
 def test_a_build_directory_argument_is_the_one_checked(ext, tmp_path):
     other = tmp_path / "elsewhere"
     other.mkdir()
-    (other / "lock").write_text("")
+    (other / "tf_test_sm_121").mkdir()
+    (other / "tf_test_sm_121" / "lock").write_text("")
     ext.build.load(name="tf_test", sources=ext.sources, build_directory=str(other), verbose=False)
-    assert str(other / "lock") in ext.said[0]
-    assert ext.calls[0][1]["build_directory"] == str(other)
+    assert str(other / "tf_test_sm_121" / "lock") in ext.said[0]
+    assert ext.calls[0][1]["build_directory"] == str(other / "tf_test_sm_121")
 
 
 @pytest.mark.torch
@@ -233,7 +329,7 @@ def test_the_lock_named_is_the_one_torch_waits_on(tmp_path, monkeypatch):
         return
     _gpu(monkeypatch, (12, 1))
     monkeypatch.setenv("TORCH_EXTENSIONS_DIR", str(tmp_path / "extensions"))
-    lock = tmp_path / "extensions" / "tf_lock_probe" / "lock"      # TORCH_EXTENSIONS_DIR/<name>/lock
+    lock = tmp_path / "extensions" / "tf_lock_probe_sm_121" / "lock"      # TORCH_EXTENSIONS_DIR/<name>/lock
     lock.parent.mkdir(parents=True)
     lock.write_text("")
     source = tmp_path / "tf_lock_probe.cpp"
@@ -284,13 +380,13 @@ def test_advisory_lock_file_is_never_probed_for_wait_or_stale_advice(ext, monkey
     try:
         with monkeypatch.context() as patch:
             patch.setattr(build.os, "stat", no_lock_probe)
-            assert ext.build._announce(ext.torch, "tf_test", ext.sources, None) is None
+            assert ext.build._announce(ext.torch, "tf_test_sm_121", ext.sources, None) is None
         after = os.stat(lock)
         assert (after.st_ino, after.st_mtime_ns) == (identity.st_ino, identity.st_mtime_ns)
         assert lock.read_bytes() == contents
         assert all("wait" not in line and "delete" not in line and HINT not in line for line in ext.said)
         assert ext.said == ([] if built else [
-            "building CUDA extension tf_test (first start after an install or update; later starts reuse it)"
+            "building CUDA extension tf_test_sm_121 (first start after an install or update; later starts reuse it)"
         ])
     finally:
         owner.release()
@@ -362,7 +458,7 @@ def test_real_advisory_torch_build_waits_without_file_baton_advice(tmp_path, mon
         pytest.skip("real advisory lock test requires the advisory-lock Torch runtime")
     _gpu(monkeypatch, (12, 1))
     monkeypatch.setenv("TORCH_EXTENSIONS_DIR", str(tmp_path / "extensions"))
-    lock = tmp_path / "extensions" / "tf_advisory_probe" / "lock"
+    lock = tmp_path / "extensions" / "tf_advisory_probe_sm_121" / "lock"
     lock.parent.mkdir(parents=True)
     source = tmp_path / "tf_advisory_probe.cpp"
     source.write_text("int tf_advisory_probe() { return 0; }\n")
@@ -413,6 +509,7 @@ def _pip_site(tmp_path, nvcc=True):
 
 
 def test_with_no_toolkit_the_pip_one_beside_torch_builds_and_links(tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("TF_FOUNDATION_STATE", raising=False)  # Unmanaged pip-toolkit capability.
     monkeypatch.delenv("CUDA_HOME", raising=False)
     monkeypatch.setenv("PATH", "/usr/bin")
     monkeypatch.delenv("TORCH_EXTENSIONS_DIR", raising=False)
@@ -426,6 +523,7 @@ def test_with_no_toolkit_the_pip_one_beside_torch_builds_and_links(tmp_path, mon
 
 
 def test_a_toolkit_torch_found_or_no_pip_toolkit_changes_nothing(tmp_path, monkeypatch):
+    monkeypatch.delenv("TF_FOUNDATION_STATE", raising=False)  # Unmanaged toolkit discovery.
     monkeypatch.delenv("CUDA_HOME", raising=False)
     home, torch, ext = _pip_site(tmp_path)
     ext.CUDA_HOME = "/usr/local/cuda"
@@ -442,7 +540,8 @@ def _actual_advisory_lock(tmp_path, monkeypatch, cpp_extension):
     directory.mkdir()
     source = tmp_path / "advisory.cpp"
     source.write_text("int fixture() { return 0; }\n")
-    lock = directory / "lock"
+    lock = directory / "tf_advisory_probe_sm_121" / "lock"
+    lock.parent.mkdir()
     actual_lock = cpp_extension.FileLock
     reached_lock, finished = threading.Event(), threading.Event()
     acquired, compiled, ended, said = [], [], [], []
@@ -494,3 +593,203 @@ def _actual_advisory_lock(tmp_path, monkeypatch, cpp_extension):
     assert lock.exists()
     with actual_lock(str(lock), timeout=1):
         pass
+
+
+class _ManagedStream:
+    def __init__(self, raw=b'{}', read_error=None, close_error=None, closing=None):
+        self.raw, self.read_error, self.close_error, self.closing = raw, read_error, close_error, closing
+        self.reads, self.closes = [], 0
+
+    def read(self, count):
+        self.reads.append(count)
+        if self.read_error is not None:
+            raise self.read_error
+        return self.raw
+
+    def close(self):
+        self.closes += 1
+        if self.closing is not None:
+            self.closing()
+        if self.close_error is not None:
+            raise self.close_error
+
+
+class _ManagedPath:
+    def __init__(self, stream):
+        self.stream, self.opens = stream, []
+
+    def open(self, *args, **kwargs):
+        self.opens.append((args, kwargs))
+        return self.stream
+
+
+def _managed_roots(error):
+    if isinstance(error, BaseExceptionGroup):
+        return [root for nested in error.exceptions for root in _managed_roots(nested)]
+    return [error]
+
+
+def test_managed_read_preserves_same_open_and_exact_read_contract():
+    stream = _ManagedStream(raw=b'{"toolchain": {}}')
+    path = _ManagedPath(stream)
+    assert build._read_managed_state(path) == stream.raw
+    assert path.opens == [(("rb",), {})]
+    assert stream.reads == [64 * 2**20 + 1] and stream.closes == 1
+
+
+@pytest.mark.parametrize("primary", [MemoryError("read exhaustion"), KeyboardInterrupt()])
+def test_managed_read_failure_with_successful_close_keeps_exact_root(primary):
+    prior = OSError("native")
+    primary.__cause__ = prior
+    stream = _ManagedStream(read_error=primary)
+    try:
+        build._read_managed_state(_ManagedPath(stream))
+    except BaseException as error:  # noqa: BLE001 - assert exact exhaustion/interruption identity, including KeyboardInterrupt.
+        assert error is primary and BaseException.__cause__.__get__(error) is prior
+    else:
+        pytest.fail("read failure was swallowed")
+    assert stream.closes == 1
+
+
+def test_managed_success_has_no_new_transport_dependency(monkeypatch):
+    original = builtins.__import__
+
+    def guard(name, *args, **kwargs):
+        if name == "tensorfold.cleanup":
+            pytest.fail("successful state read must not import failure transport")
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", guard)
+    stream = _ManagedStream(raw=b'snapshot')
+    assert build._read_managed_state(_ManagedPath(stream)) == b'snapshot'
+    assert stream.closes == 1
+
+
+def test_managed_transport_import_failure_still_keeps_read_primary(monkeypatch):
+    original = builtins.__import__
+    allocation = MemoryError("transport import")
+
+    def fail(name, *args, **kwargs):
+        if name == "tensorfold.cleanup":
+            raise allocation
+        return original(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", fail)
+    primary = RuntimeError("read")
+    stream = _ManagedStream(read_error=primary, close_error=OSError("close"))
+    with pytest.raises(RuntimeError) as caught:
+        build._read_managed_state(_ManagedPath(stream))
+    assert caught.value is primary and BaseException.__cause__.__get__(primary) is allocation
+    assert stream.closes == 1
+
+
+@pytest.mark.parametrize("same_error", [False, True])
+def test_managed_read_and_close_keep_primary_and_native_links(same_error):
+    primary, prior, context = RuntimeError("read"), ValueError("native"), KeyError("context")
+    cleanup = primary if same_error else OSError("close")
+    primary.__cause__, primary.__context__, primary.__suppress_context__ = prior, context, True
+
+    def rewrite_links():
+        primary.__cause__ = ArithmeticError("foreign close changed native link")
+
+    stream = _ManagedStream(read_error=primary, close_error=cleanup, closing=rewrite_links)
+    with pytest.raises(RuntimeError) as caught:
+        build._read_managed_state(_ManagedPath(stream))
+    assert caught.value is primary and stream.closes == 1
+    roots = _managed_roots(BaseException.__cause__.__get__(primary))
+    assert any(error is prior for error in roots)
+    if not same_error:
+        assert any(error is context for error in roots) and any(error is cleanup for error in roots)
+
+
+def test_managed_close_only_is_exact_failure_without_retry():
+    cleanup = OSError("close")
+    stream = _ManagedStream(raw=b'{}', close_error=cleanup)
+    with pytest.raises(OSError) as caught:
+        build._read_managed_state(_ManagedPath(stream))
+    assert caught.value is cleanup and stream.closes == 1
+    frames = []
+    traceback = cleanup.__traceback__
+    while traceback is not None:
+        frames.append(traceback.tb_frame)
+        traceback = traceback.tb_next
+    assert any(frame.f_locals.get("stream") is stream for frame in frames)
+
+
+def test_managed_hostile_exception_getters_cannot_skip_close():
+    class HostileError(RuntimeError):
+        def __getattribute__(self, name):
+            if name in ("__cause__", "__context__", "__suppress_context__"):
+                raise AssertionError("exception hook must not run")
+            return super().__getattribute__(name)
+
+    primary, cleanup = HostileError("read"), OSError("close")
+    stream = _ManagedStream(read_error=primary, close_error=cleanup)
+    try:
+        build._read_managed_state(_ManagedPath(stream))
+    except BaseException as error:  # noqa: BLE001 - inspect the exact primary and cleanup roots without invoking hostile getters.
+        assert error is primary
+        assert any(item is cleanup for item in _managed_roots(BaseException.__cause__.__get__(primary)))
+    else:
+        pytest.fail("owned read/close failures were swallowed")
+    assert stream.closes == 1
+
+
+def _managed_toolkit(monkeypatch, stream):
+    original = build.Path
+    selected = _ManagedPath(stream)
+    monkeypatch.setenv("TF_FOUNDATION_STATE", "selected-managed-state")
+    monkeypatch.setattr(build, "Path", lambda value: selected if value == "selected-managed-state" else original(value))
+    return selected
+
+
+def test_managed_state_cap_refuses_before_json_after_one_close(monkeypatch):
+    stream = _ManagedStream(raw=b' ' * (64 * 2**20 + 1))
+    selected = _managed_toolkit(monkeypatch, stream)
+    with pytest.raises(ValueError, match="managed CUDA foundation state exceeds its bound"):
+        build.pip_toolkit(None, None)
+    assert selected.opens == [(("rb",), {})]
+    assert stream.reads == [64 * 2**20 + 1] and stream.closes == 1
+
+
+def test_managed_state_exact_cap_is_retained(tmp_path, monkeypatch):
+    home = tmp_path / "native-toolkit"
+    (home / "bin").mkdir(parents=True)
+    (home / "bin" / "nvcc").touch()
+    payload = json.dumps({"toolchain": {"cuda_home": str(home)}}).encode()
+    stream = _ManagedStream(raw=payload + b' ' * (64 * 2**20 - len(payload)))
+    _managed_toolkit(monkeypatch, stream)
+    monkeypatch.setenv("CUDA_HOME", str(home))
+    assert build.pip_toolkit(SimpleNamespace(CUDA_HOME=str(home)), None) == []
+    assert stream.closes == 1
+
+
+@pytest.mark.skipif(os.name != "posix", reason="ordinary POSIX symlink fixture")
+def test_managed_state_follows_the_same_path_open_symlink(tmp_path, monkeypatch):
+    home = tmp_path / "native-toolkit"
+    (home / "bin").mkdir(parents=True)
+    (home / "bin" / "nvcc").touch()
+    source = tmp_path / "state.json"
+    source.write_text(json.dumps({"toolchain": {"cuda_home": str(home)}}))
+    selected = tmp_path / "state-link.json"
+    selected.symlink_to(source)
+    monkeypatch.setenv("TF_FOUNDATION_STATE", str(selected))
+    monkeypatch.setenv("CUDA_HOME", str(home))
+    assert build.pip_toolkit(SimpleNamespace(CUDA_HOME=str(home)), None) == []
+    assert selected.is_symlink()
+
+
+def test_managed_invalid_json_and_toolkit_mismatch_keep_existing_failures(tmp_path, monkeypatch):
+    stream = _ManagedStream(raw=b'invalid-json')
+    _managed_toolkit(monkeypatch, stream)
+    with pytest.raises(json.JSONDecodeError):
+        build.pip_toolkit(None, None)
+    assert stream.closes == 1
+    home = tmp_path / "missing-toolkit"
+    home.mkdir()  # A valid declared root reaches the unchanged missing-nvcc refusal.
+    stream = _ManagedStream(raw=json.dumps({"toolchain": {"cuda_home": str(home)}}).encode())
+    _managed_toolkit(monkeypatch, stream)
+    monkeypatch.setenv("CUDA_HOME", str(home))
+    with pytest.raises(RuntimeError, match="managed CUDA foundation requires its selected native toolkit"):
+        build.pip_toolkit(SimpleNamespace(CUDA_HOME=str(home)), None)
+    assert stream.closes == 1

@@ -1,0 +1,341 @@
+{
+  "schema_version": 1,
+  "date_utc": "2026-10-17",
+  "scope": "Local desktop-report remediation, source commit/push; no GB10, Kubernetes or Harness deployment",
+  "baseline_revision": "5daa59115c7dcd8b430de2a2119fcd37d87c5de1",
+  "qualified_runtime_revision": "b551e68f7ae552ba1636fcc1967fd3534747d376",
+  "qualified_cpu_test_revision": "bb64aafed267db5283accaf3ea5d35132bfdcc27",
+  "qualified_cuda_test_revision": "4d7a3f64383ffa75a234b355a339cfb402373c79",
+  "runtime_image": "sha256:c74633ad4f232c9e5ad7a1601e4043a914eaf73bae7939e4be87e5720303ed2f",
+  "initial_verification_image": "sha256:fd7d05ce2a7c3f6ca1e6e2d61a5c40ad7b294dd00af2c1be3d2cf0ddafccbf5e",
+  "corrected_cpu_verification_image": "sha256:03e5824c9f8c9c103ccd3db35ae495b794e2c7747b0bd2b0fce0a2b806aad3b9",
+  "corrected_cuda_verification_image": "sha256:b23795dd95644a44ab1ecd928dc5c9d224cb469055f70d5b83caa79365cedfa9",
+  "wheel_sha256": "166b060a9bc6297195b30e10107a12f438040824a0e90d9264daac23338508ae",
+  "runtime_source_uid": "da04e51f468fd181fdc2bed7c9e69ad4f53202f0e31ac5dd68528948f562c3ff",
+  "artifact_identity": "Corrected verification targets use the maintained Dockerfile and clean committed test captures. Their complete application layers are byte-identical to the serving image, as image-proof.json records. Closing documentation and one separately verified bytecode-neutral terminal whitespace cleanup follow qualification; their raw source difference is explicit below. A future README rebuild changes wheel metadata.",
+  "installed_package": {
+    "source": "b551e68f7ae552ba1636fcc1967fd3534747d376",
+    "package": "/opt/tensorfold-venv/lib/python3.12/site-packages/tensorfold",
+    "matched": 512,
+    "missing_readmes": [
+      "families/README.md",
+      "families/qwen3_5/cuda/README.md",
+      "kernels/README.md"
+    ],
+    "mismatches": [],
+    "native_fd_owner": "/opt/tensorfold-venv/lib/python3.12/site-packages/tensorfold/_fd_owner.abi3.so",
+    "native_fd_owner_sha256": "e8199a960dd762f77555016a004308310e0bdba7a76ce04205be29237c868ff1",
+    "python": "3.12.3",
+    "machine": "x86_64",
+    "packages": {
+      "tensorfold": "0.6.6",
+      "torch": "2.16.0.dev20261006+cu134",
+      "triton": "3.9.0+gitaad2a60d",
+      "xgrammar": "0.2.8",
+      "tokenizers": "0.23.1",
+      "jinja2": "3.1.6",
+      "numpy": "2.1.0",
+      "huggingface-hub": "1.24.0",
+      "nvidia-nccl-cu13": "2.30.7"
+    },
+    "nccl": {
+      "native_version": 23007,
+      "loader_name": "libnccl.so.2",
+      "loaded_paths": [
+        "/opt/tensorfold-venv/lib/python3.12/site-packages/nvidia/nccl/lib/libnccl.so.2"
+      ],
+      "environment": {
+        "TF_NCCL_LIB": null,
+        "TF_COMM_BACKEND": null,
+        "NCCL_P2P_DISABLE": null,
+        "NCCL_SHM_DISABLE": null
+      }
+    }
+  },
+  "host": {
+    "platform": "Linux AMD64",
+    "gpu": "NVIDIA RTX PRO 2000 Blackwell",
+    "gpu_count": 1,
+    "vram_mib": 16311,
+    "compute_capability": "12.0",
+    "ram_kib": 65722636,
+    "swap_kib": 0,
+    "maximum_link": "PCIe Gen3 x8",
+    "power_limit_w": 70,
+    "kernel_driver": "595.91.07",
+    "container_compat_driver": "615.71.09"
+  },
+  "model": {
+    "name": "Qwen3.8-Flash-Next",
+    "format": "EXL3",
+    "revision": "65c895314393431c09050b2e04e250836b3a6eb4",
+    "identity": "11 configuration/tokenizer/index SHA256 and23 file size/mtime/uid/mode records match the previous packet; uid1000/mode0644 and read-only mounts, no new full-weight hash",
+    "identity_evidence": "root/model-input-check.json"
+  },
+  "service_profile": {
+    "parallel": 4,
+    "context": 16384,
+    "kv_dtype": "rotorquant8-norm",
+    "mtp_drafts": 4,
+    "mtp_confidence": 0.5,
+    "vram_experts": "auto",
+    "prefill": "BF16",
+    "ram_bytes": 56000000000,
+    "memory_plus_swap_bytes": 56000000000,
+    "cpus": 6,
+    "shm_bytes": 2147483648,
+    "max_http_connections": 32,
+    "max_pending_requests": 8
+  },
+  "gates": {
+    "installed_cpu": {
+      "passed": 7994,
+      "skipped": 177,
+      "warnings": 2,
+      "failed": 0,
+      "errors": 0,
+      "seconds": 559.47,
+      "exit_code": 0,
+      "log": "installed-cpu/run-b551e68f7ae5-bFWt5Z/cpu.log"
+    },
+    "initial_cuda_nonmatrix": {
+      "passed": 2046,
+      "failed": 3,
+      "skipped": 97,
+      "warnings": 28,
+      "seconds": 1513.33,
+      "exit_code": 1,
+      "log": "gates/cuda.log"
+    },
+    "corrected_cuda_module": {
+      "passed": 12,
+      "failed": 0,
+      "seconds": 6.79,
+      "exit_code": 0,
+      "log": "gates/cuda-corrected.log",
+      "module": "tests/cuda/test_flashnext_exl3_ram_engine.py"
+    },
+    "cuda_coverage_union": {
+      "unique_passed": 2049,
+      "unresolved_failures": 0,
+      "calculation": "2046 -9 overlapping passes +12 corrected-module passes",
+      "scope": "A full initial non-matrix run plus the complete corrected module; not a single clean full-suite rerun. Runtime is unchanged, other CUDA tests are byte-identical."
+    },
+    "three_format_long_context": {
+      "baseline_runtime": "a7b9feed34a814d62bf944de646ac3ed7bf3149e",
+      "current_runtime": "b551e68f7ae552ba1636fcc1967fd3534747d376",
+      "baseline_log": "/home/kklouzal/tensorfold-remediate-20261017/gates/e2e.log",
+      "baseline_sha256": "6256d4c9bb1f2915f36df767f2f687ed0bb087dba24a3ac0983de8a98d50b797",
+      "current_log": "/home/kklouzal/tensorfold-report-remediation-20261017/gates/e2e.log",
+      "current_sha256": "6256d4c9bb1f2915f36df767f2f687ed0bb087dba24a3ac0983de8a98d50b797",
+      "formats": [
+        "rotorquant8-norm",
+        "rotorquant8",
+        "rotorquant6-norm"
+      ],
+      "exact_token_and_kv_hash_lines": [
+        "final rotorquant8-norm tokens [64, 64] 426d56f8d391 kv 455fd43290bc",
+        "final rotorquant8 tokens [64, 64] 426d56f8d391 kv 6d72b797b135",
+        "final rotorquant6-norm tokens [64, 64] 426d56f8d391 kv a4394b71adb9",
+        "final ALL 67a762f3ac80e419"
+      ],
+      "exit_code": 0,
+      "all_equal": true
+    },
+    "trained_api": {
+      "modes": [
+        "pin off/default four full windows",
+        "pin on/two shared full windows"
+      ],
+      "both_exit_zero": true,
+      "both_sigint_shutdown_zero": true,
+      "both_oom_killed": false,
+      "checks": "health/models/errors, tokenize/input_tokens, seeded repeated/serial/drafted token identity, SSE usage/progress, enforced strict tool, unsupported schema400, actual catalog, four concurrent versus solo, final stats/metrics and zero logical request owners",
+      "cross_revision": {
+        "files": {
+          "/home/kklouzal/tensorfold-remediate-20261017/native/api.json": "5fa5c40e5ca1330280467158c1ebe6469609aedb7762e23f702296e0c1f0055a",
+          "/home/kklouzal/tensorfold-report-remediation-20261017/native-off/api.json": "3823398917787ce8b1001a9047dc6a73a2c490cdaa1dc443d56f8fed8e3de475",
+          "/home/kklouzal/tensorfold-report-remediation-20261017/native-on/api.json": "7307f32acafe4dba9b1c395e40d9ca5c72497f66b80c81a8ae78747d798621e4"
+        },
+        "helper_sha256": "574f4f26eb121706ea0d85b2c31e6f0013b81d4c11b30c506633f31966ac84a7",
+        "baseline_runtime": "a7b9feed34a814d62bf944de646ac3ed7bf3149e",
+        "current_runtime": "b551e68f7ae552ba1636fcc1967fd3534747d376",
+        "sequential_reply_count_per_mode": 9,
+        "concurrent_reply_count_per_mode": 4,
+        "sse_reply_count_per_mode": 1,
+        "exact_fixed_sequences_equal": true,
+        "exact_sse_choices_equal": true,
+        "concurrent_identity": "Helper enforces per-prompt solo equality in each mode; completion order is not compared.",
+        "current_policies": [
+          "pin off, default full KV reservation",
+          "pin on, two full KV windows/four slots"
+        ],
+        "performance_claim": null
+      },
+      "catalog_tool_definitions": 31,
+      "catalog_strict_true": 9,
+      "catalog_explicit_strict_false": 22
+    },
+    "installed_harness_child": {
+      "exit_code": 0,
+      "gpu_ranks": 1,
+      "exact_tokenize_tokens": [
+        5,
+        17,
+        99,
+        1
+      ],
+      "health_models_chat": true,
+      "metadata_provenance": true,
+      "launcher_shutdown_status": 143,
+      "two_gpu_qualified": false,
+      "evidence": "ep/installed-harness/harness-receipt.json"
+    },
+    "deployment_controls": {
+      "scope": "Actual host UUID device-request and native CDI GPU visibility plus CUDA arithmetic; Compose configuration and narrow shared-HF boundary controls passed in component evidence."
+    },
+    "diagnostics": {
+      "ruff_affected_python_files": 66,
+      "ruff_select": [
+        "E4",
+        "E7",
+        "E9",
+        "F",
+        "B018"
+      ],
+      "ruff_exit": 0,
+      "cpu_warnings": "Two existing Qwen dense private allocator API FutureWarnings; unchanged baseline source.",
+      "cuda_warnings": "28 existing Qwen MoE test-only private allocator API FutureWarnings; unchanged baseline tests.",
+      "suppression_added": false
+    }
+  },
+  "qualification_observations": {
+    "off": {
+      "host_authority_gib": 28.82,
+      "gpu_pool_gib": 3.05,
+      "resident_cells": 2618,
+      "safe_lease_experts": 2569,
+      "full_windows": 4,
+      "loaded_s": 96.7,
+      "host_available_gib": 20.04,
+      "cgroup_hard_limit_room_gib": 21.11
+    },
+    "on": {
+      "host_authority_gib": 28.82,
+      "gpu_pool_gib": 3.53,
+      "resident_cells": 3038,
+      "safe_lease_experts": 2989,
+      "full_windows": 2,
+      "loaded_s": 93.1,
+      "host_available_gib": 20.46,
+      "cgroup_hard_limit_room_gib": 14.81
+    },
+    "interpretation": "Different registration and KV-capacity policies in two functional qualification starts. These observations are not an isolated performance comparison or fit guarantee."
+  },
+  "repaired_test_failures": {
+    "cpu": "Seven initial failures were old AST/fake-layout fixtures; original assertions/failure injections preserved, complete corrected installed suite passed.",
+    "cuda": "Three old cold-loader cases equated logical two-cell staging payload with the newly rounded backing reservation. Exact payload and backing-budget assertions now separate these quantities; all other byte/type/device/peak checks preserved and whole module passed.",
+    "original_logs_retained": true,
+    "distinct_d13_d14_reviews": "Source b551 and exact test-only corrections bb64/4d independently reviewed clean."
+  },
+  "work_items": [
+    {
+      "id": "WI-1",
+      "result": "Implemented opt-in owned host registration and direct DMA for affine, EXL3 and NVFP4, with admission and explicit retirement. Pageable two-stage baseline remains default.",
+      "evidence": "transfer/disposition.json",
+      "qualification": "Native direct-DMA/lifetime and controlled complete-model single/parallel4 serial/MTP checks; full trained local EXL3 off/on API qualification passed. No reported full affine/other-GPU qualification."
+    },
+    {
+      "id": "WI-2",
+      "result": "Complete prefetch/copy-stream policies were investigated and excluded from production for measured required-region regressions.",
+      "evidence": "transfer/disposition.json",
+      "qualification": "Established 1.74 percent serial-only bounded-prefetch gain is preserved as qualification-blocked for the full reported input; no claim of inferiority in that isolated region."
+    },
+    {
+      "id": "WI-3",
+      "result": "Working device-residency and CUDA-graph prototype excluded from production after corrected complete-model latency regressions.",
+      "evidence": "routing/disposition.json",
+      "qualification": "Native exact maps, bytes and actual serial/MTP graph replay passed; local corrected large-bank latency regressed serial/MTP/concurrent."
+    },
+    {
+      "id": "WI-4",
+      "result": "Implemented actual same-host NCCL asymmetric expert ranks, shard-only followers, bounded transport, original slot combination arithmetic, supervised process and resource retirement.",
+      "qualification": "Actual native one-rank NCCL/session/model serial, MTP, concurrent and resource-release gates passed; installed one-child Harness launcher passed. True distinct-device multi-rank and SM89 execution unavailable on this one-GPU host."
+    },
+    {
+      "id": "WI-5",
+      "result": "Implemented explicit --kv-full-windows and enforced shared growth budget, including failure and retained-prefix lifetime/accounting.",
+      "evidence": "kv/source-coherent.json",
+      "qualification": "Component CPU304/native18 and final installed coverage passed, including trained four-slot/two-window API qualification."
+    },
+    {
+      "id": "WI-6",
+      "result": "Implemented opt-in integrity-checked bounded affine packed-expert persistence with explicit disk quota and atomic publication.",
+      "evidence": "packed/ledger.md",
+      "qualification": "Complete synthetic startup improvement measured; no full72GiB authority startup claim."
+    },
+    {
+      "id": "WI-7",
+      "result": "Implemented ModelOpt NVFP4 RAM experts and format-aware SSD n-gram tables while retaining W4A16 grouped arithmetic. Selected measured common member-plan grouping.",
+      "evidence": "nvfp4/ledger.md",
+      "qualification": "Complete generated-model and component checks; full pretrained ModelOpt input unavailable."
+    },
+    {
+      "id": "WI-8",
+      "result": "Implemented narrow HF2.2 shared-blob admission, explicit UUID/CDI selection, configurable RAM/no-extra-swap, host headroom and mixed-architecture build identity. Existing advisory-lock recovery, vision AV dependency, test basename and fork-update behavior verified rather than duplicated.",
+      "qualification": "Actual host Compose/UUID/CDI visibility and CUDA arithmetic, path boundary and build recovery gates; resource/restart contracts documented."
+    }
+  ],
+  "performance_selection": "See desktop-report-remediation.md and sealed component records. Parallel direct-DMA wall-time gains include observed cache-work differences; byte counts match only in the single-request study. Separate gains are not additive; no pure-transfer causal or friend-machine speed prediction.",
+  "historical_kv_subset": {
+    "passed": 1666,
+    "source_revision": "2dd77a9a794a9d2349c43adf487b12f21a0a5d0f",
+    "scope": "Exactly seven unchanged prep/guard/encoder/merge families; original source/image identity retained. Not a fresh b551 run or a full matrix pass.",
+    "reuse_proof": "d14/kv-reuse-desktop.md"
+  },
+  "not_qualified_here": [
+    "Actual two-or-more distinct-GPU NCCL expert execution/throughput/failure behavior",
+    "SM89 or the mixed RTX5090/RTX4080 pair",
+    "Reported71.92GiB affine authority/512-token protocol",
+    "Full pretrained ModelOpt NVFP4 and vision workload",
+    "Fresh exhaustive256-pair KV matrix",
+    "Apple/new ARM64 execution",
+    "General answer quality, full-context capacity, long-context/tail-latency or combined performance guarantees"
+  ],
+  "operational_state": {
+    "embedding_container": "embeddinggemma2 stopped; user will restart manually",
+    "deployment_performed": false
+  },
+  "evidence_packet": "/home/kklouzal/tensorfold-report-remediation-20261017",
+  "review_proofs": [
+    "d13/ledger.md",
+    "d14/ledger.md",
+    "d14/kv-reuse-desktop.md",
+    "root/cpu-final-proof.json",
+    "root/final-source-proof.json",
+    "corrected-tests/image-proof.json",
+    "corrected-cuda-tests/image-proof.json",
+    "root/window-eof-proof.json"
+  ],
+  "evidence_manifest": {
+    "path": "/home/kklouzal/tensorfold-report-remediation-20261017/evidence-sha256.json",
+    "sha256": "6a3034ae8ea629625b2eee4e1f5f37904dd09cbdb0fdf833f0451580de4076a1",
+    "entries": 9519,
+    "scope": "Completed source captures, build/gate/control/profile/benchmark records in this packet at seal time. Later operational closure files are separate.",
+    "mutable_ledgers_and_generated_caches_excluded": true
+  },
+  "post_qualification_cleanup": {
+    "file": "src/tensorfold/cuda/expert_window.py",
+    "proof": {
+      "python": "3.12.3",
+      "old_sha256": "11bc20aadf3809eda1f872090511392a4a2b51cd86f2af0fe6baf03dafcf9c9d",
+      "new_sha256": "0983ddf362c12f5b99ccc33319b2f2e19e4277bfacc7ad2a00e2a51c294ad7d7",
+      "difference": "one empty terminal line removed",
+      "ast_and_location_attributes_identical": true,
+      "complete_marshaled_code_identical": true,
+      "marshaled_code_sha256": "3df878617983de246a369bc8289b146d1668d13f8992b57cfe3517b3bf3694cf"
+    },
+    "evidence": "root/window-eof-proof.json",
+    "scope": "One empty terminal line only; no execution, line-location, ownership, numerical or resource behavior change."
+  }
+}

@@ -8,29 +8,23 @@ import uuid
 from typing import Any
 
 from tensorfold.server.stopping import StopPolicy
+from tensorfold.server.text import _STRAY_QWEN_CLOSES_RE, _partial_tag
 from tensorfold.server.tools import normalize_qwen_tool_markup, parse_glm_tool_call_block
 from tensorfold.tool_parameters import decode_parameter, parameter_schemas
 
 _CALL_OPEN, _CALL_CLOSE = "<tool_call>", "</tool_call>"
-_STRAY_CLOSES_RE = re.compile(r"(?:\s*</tool_call>)*")
 _TOOL_CALL_BLOCK_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.IGNORECASE | re.DOTALL)
 _TOOL_FUNCTION_BLOCK_RE = re.compile(r"^\s*<function=([^>\s]+)>\s*(.*?)\s*</function>\s*$", re.IGNORECASE | re.DOTALL)
 _TOOL_PARAMETER_BLOCK_RE = re.compile(r"<parameter=([^>\s]+)>\n?(.*?)\n?</parameter>", re.IGNORECASE | re.DOTALL)
-
-
-
-def _partial_tag(text: str, tag: str) -> int:
-    for k in range(min(len(tag) - 1, len(text)), 0, -1):
-        if text.endswith(tag[:k]):
-            return k
-    return 0
 
 
 class StreamDecoder:
     """Decode a shared token window to preserve leading spaces and byte boundaries, deferring incomplete characters."""
 
     def __init__(self, tok, skip: tuple[int, ...] = ()):
-        self.tok, self.skip = tok, frozenset(skip)
+        self.tok = tok
+        self.skip = (frozenset(skip) | getattr(tok, "control_token_ids", frozenset())
+                     | getattr(tok, "unused_token_ids", frozenset()))
         self.ids: list[int] = []
         self.text = ""
         self.prefix = 0             # window start
@@ -55,26 +49,67 @@ class StreamDecoder:
         return self.text + self._decode(self.ids[self.prefix:])[len(before):]
 
 
-
 class StopStrings:
     """A request's ``stop`` strings, decided token by token, so a reply cuts at the same token however its tokens arrive."""
 
     def __init__(self, strings: tuple[str, ...], tok, skip: tuple[int, ...] = ()):
-        self.strings, self.tok, self.skip = strings, tok, frozenset(skip)
+        self.strings, self.tok = strings, tok
+        self.skip = (frozenset(skip) | getattr(tok, "control_token_ids", frozenset())
+                     | getattr(tok, "unused_token_ids", frozenset()))
         # a new match lies in the last (its UTF-8 length) tokens, plus eight as the Mac's ``StopPolicy`` keeps
         self.tail = max((len(s.encode()) for s in strings), default=0) + 8
 
     def hit(self, tokens: list[int]) -> bool:
         """Whether the text through the newest token holds a stop string (earlier tokens were checked already)."""
 
-        ids = [t for t in tokens[-self.tail:] if t not in self.skip]
-        text = self.tok.decode(ids, skip_special_tokens=False)
+        if not self.strings:
+            return False
+        text = self.tok.decode(self.tail_ids(tokens), skip_special_tokens=False)
         return any(stop in text for stop in self.strings)
+
+    def tail_ids(self, tokens, *, start=0, limit=None) -> list[int]:
+        """Bound visible context in tokens[start:] without copying a retained history."""
+        limit = self.tail if limit is None else limit
+        if limit == 0:
+            return []
+        tail = []
+        for index in range(len(tokens) - 1, start - 1, -1):
+            token = tokens[index]
+            if token not in self.skip:
+                tail.append(token)
+                if len(tail) == limit:
+                    break
+        tail.reverse()
+        return tail
 
     def visible(self, text: str, *, partial: bool = False) -> str:
         """The text before the first match; ``partial`` also holds back an end that may begin one (the Mac's rule)."""
 
         return StopPolicy.visible(self, text, partial=partial)
+
+
+def stop_prefix_limit(stops: StopStrings, baseline, prefix: list[int], new: list[int]) -> tuple[int, bool]:
+    """Pure precommit cut, including a stop at the exact end of a verified block.
+
+    ``baseline`` is generated text carried into a gated continuation; ``prefix``
+    is this generation run's output. Keep only the tail used by StopStrings,
+    rather than copying an arbitrarily long generated history on each token.
+    The tokenizer and stop strings are shared immutable request inputs.
+    """
+    if not stops.strings or not any(token not in stops.skip for token in new):
+        return len(new), False
+    tail = stops.tail_ids(prefix)
+    if len(tail) < stops.tail:
+        tail = [*stops.tail_ids(baseline, limit=stops.tail - len(tail)), *tail]
+    for count, token in enumerate(new, 1):
+        if token in stops.skip:
+            continue
+        tail.append(token)
+        if stops.hit(tail):
+            return count, True
+        if len(tail) > stops.tail:
+            del tail[:-stops.tail]
+    return len(new), False
 
 
 def hide_tool_calls(text: str, *, finished: bool) -> str:
@@ -91,7 +126,7 @@ def hide_tool_calls(text: str, *, finished: bool) -> str:
         if end < 0:
             return "".join(out)
         # a doubled closer after a call is part of its markup (the end parser collapses it), not visible text
-        pos = _STRAY_CLOSES_RE.match(text, end + len(_CALL_CLOSE)).end()
+        pos = _STRAY_QWEN_CLOSES_RE.match(text, end + len(_CALL_CLOSE)).end()
         if not finished and _CALL_CLOSE.startswith(text[pos:].lstrip()):
             return "".join(out)          # a doubled closer may still be arriving: hold the whitespace before it too
 

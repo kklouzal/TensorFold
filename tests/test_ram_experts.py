@@ -12,6 +12,7 @@ from tensorfold.cuda import capacity
 from tensorfold.cuda.geometry import indexed_weights
 from tensorfold.families import qwen4_exp
 from tensorfold.families.qwen4_exp import ram_experts
+from tests.cli_server_fixture import cuda_cli_app, cuda_cli_engine
 
 
 def checkpoint(path, *, mtp=True, missing=None, bits=4, group=32):
@@ -107,6 +108,24 @@ def test_expert_count_limit_matches_native_plan_contract(tmp_path):
         ram_experts.layout(tmp_path, 1)
 
 
+@pytest.mark.parametrize("layers", [2**62, 3])
+def test_affine_layer_coverage_rejects_configured_counts_without_expanding_them(tmp_path, layers):
+    text, _ = checkpoint(tmp_path)
+    text["num_hidden_layers"] = layers
+    (tmp_path / "config.json").write_text(json.dumps(text))
+    with pytest.raises(ValueError, match="every configured main expert layer"):
+        ram_experts.layout(tmp_path, 1)
+
+
+def test_affine_layer_coverage_requires_contiguous_ids_inside_the_count(tmp_path, monkeypatch):
+    checkpoint(tmp_path)
+    entries = capacity.headers(tmp_path)
+    changed = {name.replace("model.layers.1.", "model.layers.3."): info for name, info in entries.items()}
+    monkeypatch.setattr(ram_experts, "headers", lambda _: changed)
+    with pytest.raises(ValueError, match="every configured main expert layer"):
+        ram_experts.layout(tmp_path, 1)
+
+
 def test_cli_rejects_unsupported_backends_and_silent_cuda_ssd_flag(tmp_path):
     checkpoint(tmp_path)
     family = NS(title=qwen4_exp.TITLE, model_type="qwen4_exp", package=qwen4_exp)
@@ -142,8 +161,8 @@ def test_vram_option_name_default_and_help_match_gpu_cache_budget(capsys):
 def test_vram_option_reaches_cuda_engine_only_when_set(tmp_path, monkeypatch, budget):
     from tensorfold.cuda import server
     received, retired = [], []
-    engine = NS(max_len=128, close=lambda: retired.append("engine"))
-    app = NS(effective_context_window=128)
+    engine = cuda_cli_engine(max_len=128, close=lambda: retired.append("engine"))
+    app = cuda_cli_app(effective_context_window=128)
     owned_server = NS(server_close=lambda: retired.append("server"), handlers_drained=True)
     handler = object()
     family = NS(title="test", model_type="test", package=NS(cuda_engine=lambda *a, **k:
@@ -311,13 +330,14 @@ def test_invalid_cgroup_membership_cannot_escape_controller_root(monkeypatch, me
 
 
 @pytest.fixture
-def ram_loader(monkeypatch):
+def ram_loader(monkeypatch, tmp_path):
     """CPU-only loader fault injection, including real success-path final cleanup."""
 
     torch = pytest.importorskip("torch")
     from tensorfold.cuda import expert_cache
     from tensorfold.families.qwen4_exp.cuda import exl3, weights
 
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "qwen4_exp", "text_config": {}}))
     calls = []
     reader = NS(has=lambda name: False, layer_names=lambda *a: [],
                 get=lambda name: torch.ones((2, 8)), close=lambda: calls.append("reader close"),
@@ -329,7 +349,7 @@ def ram_loader(monkeypatch):
     rope = NS(inverse_frequencies=lambda framework: torch.zeros(1), metadata=lambda: {})
     cfg = NS(rope=rope, layers=0, quant="mlx", vocab=2)
     monkeypatch.setattr(ram_experts, "check", lambda *a, **k: None)
-    monkeypatch.setattr(ram_experts, "layout", lambda *a, **k: NS(gpu_bytes=2048, entry_bytes=1024))
+    monkeypatch.setattr(ram_experts, "layout", lambda *a, **k: ram_experts.Layout(1024, 2, 2048, 0, 0, 0))
     monkeypatch.setattr(exl3, "is_exl3", lambda *a: False)
     monkeypatch.setattr(weights.Config, "read", lambda *a, **k: cfg)
     monkeypatch.setattr(weights, "_Reader", lambda *a: reader)
@@ -342,6 +362,14 @@ def ram_loader(monkeypatch):
         assert device == "cpu"
     monkeypatch.setattr(torch.cuda, "synchronize", cpu_fence)
     return NS(weights=weights, reader=reader, cache=cache, calls=calls)
+
+
+def test_invalid_quantization_metadata_precedes_reader_and_cache_acquisition(tmp_path, monkeypatch, ram_loader):
+    (tmp_path / "config.json").write_text(json.dumps({"quantization_config": 42}))
+    monkeypatch.setattr(ram_loader.weights, "_Reader", lambda *_: pytest.fail("reader acquired before metadata refusal"))
+    with pytest.raises(ValueError, match="quantization"):
+        ram_loader.weights.load(tmp_path, "cpu", vram_experts=1, mtp=False, draft_vocab=None)
+    assert ram_loader.calls == []
 
 
 def test_reader_initialization_failure_precedes_expert_cache_acquisition(tmp_path, monkeypatch, ram_loader):
@@ -394,3 +422,46 @@ def test_payload_failure_preserves_primary_when_both_cleanups_fail(tmp_path, ram
         ("checkpoint reader cleanup also failed", reader_failure),
         ("expert cache cleanup also failed", cache_failure),
     ]
+
+
+def test_modelopt_sidecar_reaches_the_ram_expert_preflight(tmp_path):
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "qwen4_exp", "text_config": {}}))
+    metadata = {"producer": {"name": "modelopt", "version": "0.46.0"},
+                "quantization": {"quant_algo": "NVFP4", "group_size": 16}}
+    (tmp_path / "hf_quant_config.json").write_text(json.dumps(metadata))
+    assert ram_experts.check(tmp_path, "auto") is None
+    metadata["quantization"]["group_size"] = 32
+    (tmp_path / "hf_quant_config.json").write_text(json.dumps(metadata))
+    with pytest.raises(ValueError, match="groups of 16"):
+        ram_experts.check(tmp_path, "auto")
+
+
+def test_ram_expert_sidecar_cannot_escape_the_checkpoint_boundary(tmp_path):
+    model = tmp_path / "model"; model.mkdir()
+    (model / "config.json").write_text(json.dumps({"model_type": "qwen4_exp"}))
+    foreign = tmp_path / "foreign.json"
+    foreign.write_text(json.dumps({"producer": {"name": "modelopt"},
+                                   "quantization": {"quant_algo": "NVFP4"}}))
+    (model / "hf_quant_config.json").symlink_to(foreign)
+    with pytest.raises(ValueError, match="authorized roots"):
+        ram_experts.check(model, "auto")
+
+
+@pytest.mark.parametrize("headroom", [0, 512 * 2**20])
+def test_auto_pool_charges_selected_margin_and_every_required_allocation(headroom):
+    entry, control = 1024, 32
+    growth, snapshots, workspace = 4096, 2048, 8192
+    available = headroom + growth + snapshots + workspace + 3 * (entry + control) + 17
+    result = ram_experts.auto_pool_bytes(available, entry, 100, control_bytes=control,
+        growth_bytes=growth, snapshot_bytes=snapshots, workspace_bytes=workspace, headroom_bytes=headroom)
+    assert result["slots"] == 3 and result["gpu_bytes"] == 3 * entry
+    assert result["headroom_bytes"] == headroom
+    assert result["reserved_bytes"] == headroom + growth + snapshots + workspace
+    assert result["unused_after_reservations_bytes"] == 17
+    assert result["gpu_bytes"] + result["control_device_bytes"] + result["reserved_bytes"] + 17 == available
+
+
+@pytest.mark.parametrize("headroom", [True, -1, 0.5, float("nan"), "0"])
+def test_auto_pool_rejects_invalid_explicit_headroom(headroom):
+    with pytest.raises(ValueError, match="nonnegative integer"):
+        ram_experts.auto_pool_bytes(2**30, 1024, 100, headroom_bytes=headroom)

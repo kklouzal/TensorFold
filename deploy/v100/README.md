@@ -1,0 +1,793 @@
+# Flash Next on eight V100 GPUs
+
+Optional [prepared serving profiles](../../docs/serving-profiles.md) use
+`--serving-profile-root` and the existing runtime endpoint for in-process
+model/context/KV/method changes. All-rank readiness and request leases guard
+replacement; expected load refusal after retirement remains unavailable until
+an explicit retry. This source behavior still requires actual V100 A-to-B-to-A,
+quality, capacity and performance qualification on the selected runtime stack.
+
+The [adaptive implementation](../../docs/v100-adaptive-validation.md) changes
+GGUF GPU-history admission to computed full-context capacity. Its unique-history
+and compact-Planar4 paths require new native/model/quality/performance
+qualification; historical live receipts below describe their original layouts.
+The [governing specification](../../docs/v100-adaptive-inference-design.md)
+defines the complete stage and acceptance gates.
+
+The revised initial SC117 `IQ3_S` target retains its original mixed GGUF bytes:
+BF16, F32, F16, Q2_0, Q4_K, Q5_K, Q6_K, Q8_0, IQ2_S, IQ3_XXS, IQ3_S,
+IQ4_NL and IQ4_XS. Bounded CPU imports and native row/expert decode accept these
+formats without whole-bank FP16 conversion. The new six-format host controls
+use fixtures produced by unmodified GGML dequantizers at revision
+`b3fa69955ea81c3b60e77e3c1e2224c4a826ffb9`. Actual SM70 decode, integrated model
+quality/performance and the revised full-context/media resource envelope remain
+unqualified. Run `tests/test_gguf_mixed_formats.py` for the host wire controls and
+`tests/cuda/test_sm70_gguf_mixed_formats.py` on an actual V100.
+
+The recurrent importer keeps GGML's stored negative exponential in FP32 rather
+than reconstructing a logarithm. Its projection, convolution, decay/bias and
+output-column plans restore the coupled value-head order before TP partitioning.
+`tests/test_flashnext_gdn_decay.py` checks import bits, all supported TP planning
+geometries and the analytic zero-key recurrence/replay control. Run
+`tests/cuda/test_sm70_gdn_decay.py` on V100 for captured native direct-decay
+controls. These source controls do not transfer historical model-quality results
+to the revised arithmetic; full reference parity remains required.
+
+This AMD64 development profile builds the installed TensorFold wheel with the
+SM70 FP16 provider. Original GGUF encodings remain separate from affine/EXL3/
+NVFP4 readers. The same family engine, scheduler, HTTP server, prefix states,
+sampling and cleanup contracts are used. Full-model validation is recorded in
+[the qualification note](../../docs/v100-flashnext-validation.md); do not infer
+quality or throughput from the component matrix alone.
+
+Choose finite CPU request and HTTP connection limits explicitly. Adaptive GPU
+session capacity does not determine a safe endpoint backlog. The CLI refuses a
+missing `--max-pending-requests` or `--max-http-connections` before loading the
+model; other providers keep their existing optional limits. A full generation
+request limit returns HTTP503 with the existing retry header.
+
+## Current v6 source candidate
+
+The current specification is the normalized maintained copy of the home v6
+design (home SHA256 `7c9f724346866cfb89382ee2e30d60d9d827222c347610783b37683ba04e5a8c`).
+The published composed CPU application is frozen source tree
+`ff1883131180963a1de18bb00c74d6777466dcb9`, local image ID `sha256:fb0ac861483f0bc14bef1f73535d07d358c196c7e9358f76da3390f1434813a8`. Its ordinary installed-wheel
+gate passed 5582 tests and 144 subtests (9 documented skips)
+across 183 modules, with 707 installed code files equal to the frozen source.
+See the [validation record](../../docs/v100-adaptive-validation.md#current-v6-source-and-cpu-evidence).
+The [CPU software receipt](../../docs/verification-v100-adaptive-cpu-20261026.json)
+binds application commit `7d3ddbb9d066fe7451769ad9a36739619ce2d618` to the tested source and image.
+The historical source SDK `413c39b1` and media environment `dc85d796` remain
+component inputs for that checkpoint with their original scope.
+
+This is a CPU/software qualification candidate, not a released V100 serving
+configuration. Current source selects the corrected owned Torch04cf2557 SDK;
+its native CPU failure-path and actual ABI/content controls pass. A fresh
+corrected-stack ordinary application image
+`sha256:e99c7284234376f43634c7103fcd6fe313fee4b61c073ad79965a100b2b1baef`
+from frozen tree `21a12df376313d5e95bbae5e269b32ae31ad2d14` passed 5,582 installed
+checks, nine documented skips and 144 subtests across 183 modules. All 707 code
+files and 2,024 captured inputs matched before/after without a source overlay.
+The [corrected CPU receipt](../../docs/verification-v100-sdk-rebind-cpu-20261026.json)
+binds commit `2c0b4c4a51fbf2f8370fcccd2980c3e3a77ede2b` and actual client/media/source
+identities. The later [portable-policy software checkpoint](../../docs/verification-v100-portable-policy-cpu-20261027.json)
+records a separate 5,707/9/144 run across 187 modules on image `f8f66a9d`, followed
+by a mapping-only producer successor at `a39646d1`/image `6daae245`. That successor
+reuses the exact application wheel and passed 66 affected controls plus actual
+shared-map/software-authority checks; it did not rerun the full 187 modules.
+Actual successor target acceptance after GPU work, compiler issue 6111901 and
+the hardware/model, quality, physical allocation and performance gates remain open.
+
+After `docker load --input /path/to/reviewed-image-archive.tar`,
+`TF_V6_IMAGE` may be the verified local image ID (`sha256:...`). An actual
+registry reference (`repository@sha256:...`) is also accepted when published.
+A Docker image archive is separate from the frozen source archive; its actual
+checksum must be recorded if exported for transfer.
+A local Docker `.Id` is the daemon's immutable local image reference. Do not
+assume it is the OCI config digest or convert it into an invented registry
+RepoDigest. Verify the selected local
+image with `docker image inspect --format '{{.Id}}' "$TF_V6_IMAGE"` before
+using the recipes; pull a real registry reference first when choosing that
+transport. No registry publication is implied by this local image.
+
+The initial artifacts come from
+[`SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF`](https://huggingface.co/SC117/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-GGUF/tree/90a3350cd800ec1fe0d1660a38414ad9e985782f),
+revision `90a3350cd800ec1fe0d1660a38414ad9e985782f`:
+
+| Local artifact at that revision | File bytes | Expected complete-file SHA256 |
+| --- | ---: | --- |
+| `IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00001-of-00002.gguf` | 55,063,448,064 | `40f369eca301ec6ea318dbb671b3132c26a2f0b89aa5458a7051b33215ee296c` |
+| `IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00002-of-00002.gguf` | 28,800,138,432 | `316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113` |
+| `mtp-Qwen3.8-Flash-Next-Q8_0.gguf` | 4,137,429,312 | `713b16d7e97246858ebd9a6dec403b1cfc3407d8a539f65401948e20b38b0f91` |
+| `mmproj-Qwen3.8-Flash-Next-BF16.gguf` | 907,542,944 | `2e788f8c511d8093c7b43cb87b2fd7e14228340318057f8fb20c86df2efe2355` |
+
+Verify complete payloads and directories at installation. Both target shards
+are required. The canonical MTP directory has 34 tensors; import only its
+32 core tensors, containing 2,775,621,632 payload bytes. Its two vocabulary
+copies are descriptive source data. Execution uses the actual retained target
+embedding and output tensors, without additional persistent vocabulary weights.
+MTP uses the declared QSA compression four and complete-group budget 2,048.
+Ordered token-ID compatibility remains required; the unused companion template
+does not replace the selected target template. Older Unsloth shared-Q8 and
+BF16 artifacts remain comparison controls, with separate evidence.
+
+### Explicit endpoint and queue policy
+
+New FIFO admission applies to actual adaptive TP8 unique GPU histories with an
+implemented position profile: target-only, stock MTP or the independently
+selected DFlash path. Enabled DSpark retains legacy admission and rejects
+FIFO-only options. Actual provider/layout/method checks precede device allocation.
+
+| Option | Current contract |
+| --- | --- |
+| `--max-pending-requests` / `--max-http-connections` | Explicit positive request/socket limits for the adaptive endpoint. |
+| `--max-waiting-input-bytes` | Required positive input credit for the new FIFO profile; includes queued and reserved live/readmission input through caller/backend retirement. |
+| `--max-pending-requests-per-principal` | Optional positive unfinished-request cap; requires the global request limit and actual configured API keys. |
+| `--max-waiting-input-bytes-per-principal` | Optional positive authenticated-principal input credit; no inferred value or restriction that it be at most the global byte cap. |
+| `--output-queue-tokens` | Optional positive per-request output credit, including delivery callbacks in flight. Omitted/`None` preserves the existing full-reply mailbox bound. |
+| `--queue-timeout-s` | Optional positive finite queue deadline within the runtime wait range. FIFO alone supplies no hard wait SLO. |
+
+These process settings also participate in prepared-profile identity. They
+cannot be changed by putting constructor overrides in a runtime HTTP request
+or profile JSON. See [serving profiles](../../docs/serving-profiles.md).
+Output credits must preserve already-drawn proposals and allow legal progress
+even below the maximum speculative width; configuring a cap is not evidence
+that producer, cancellation and slow-client gates passed on V100.
+
+### Candidate launch
+
+Supply every resource, context, codec and method choice from the intended
+qualification profile. This Bash recipe introduces no serving-budget values:
+
+```bash
+: "${TF_V6_IMAGE:?Set the verified local sha256 image ID or actual registry digest reference}"
+: "${MODEL_ROOT:?Set the host directory containing the verified local artifacts}"
+: "${GGUF_FILE:?Set the first target shard path under /models}"
+: "${MTP_FILE:?Set the canonical SC117 MTP path under /models}"
+: "${TF_CACHE_DIR:?Set a dedicated host cache directory}"
+: "${TF_RANK_GPUS:?Set eight physical GPU IDs or UUIDs in rank order}"
+: "${TF_CONTEXT:?Set the declared prompt-plus-reply context}"
+: "${TF_PARALLEL:?Set auto or an explicitly qualified session ceiling}"
+: "${TF_KV_FULL_WINDOWS:?Set auto or an explicitly qualified full-window ceiling}"
+: "${TF_KV_DTYPE:?Set the selected supported KV codec}"
+: "${TF_DRAFTS:?Set the enabled stock MTP proposal depth}"
+: "${TF_DRAFT_CONFIDENCE:?Set the declared MTP confidence policy}"
+: "${TF_MAX_PENDING_REQUESTS:?Set the finite unfinished-request limit}"
+: "${TF_MAX_HTTP_CONNECTIONS:?Set the finite HTTP connection limit}"
+: "${TF_MAX_WAITING_INPUT_BYTES:?Set the positive FIFO input credit}"
+: "${TF_PORT:?Set the candidate HTTP port}"
+: "${TF_MODEL_NAME:?Set the served model identity}"
+
+serve_args=("$GGUF_FILE" --backend cuda --host 0.0.0.0 --port "$TF_PORT"
+  --name "$TF_MODEL_NAME" --context "$TF_CONTEXT" --parallel "$TF_PARALLEL"
+  --kv-full-windows "$TF_KV_FULL_WINDOWS" --kv-dtype "$TF_KV_DTYPE"
+  --draft-method mtp --drafter "$MTP_FILE" --mtp-drafts "$TF_DRAFTS"
+  --mtp-confidence "$TF_DRAFT_CONFIDENCE" --no-update-check
+  --max-pending-requests "$TF_MAX_PENDING_REQUESTS"
+  --max-http-connections "$TF_MAX_HTTP_CONNECTIONS"
+  --max-waiting-input-bytes "$TF_MAX_WAITING_INPUT_BYTES")
+if [[ -n ${TF_OUTPUT_QUEUE_TOKENS:-} ]]; then
+  serve_args+=(--output-queue-tokens "$TF_OUTPUT_QUEUE_TOKENS")
+fi
+if [[ -n ${TF_QUEUE_TIMEOUT_S:-} ]]; then
+  serve_args+=(--queue-timeout-s "$TF_QUEUE_TIMEOUT_S")
+fi
+
+docker run --rm --gpus all --ipc host \
+  -p "127.0.0.1:$TF_PORT:$TF_PORT" \
+  -e PYTHONUNBUFFERED=1 -e TENSORFOLD_NO_UPDATE_CHECK=1 \
+  -e TF_GGUF_ASSETS_DIR=/cache/gguf_assets \
+  -v "$MODEL_ROOT:/models:ro" -v "$TF_CACHE_DIR:/cache" \
+  "$TF_V6_IMAGE" /src/tools/launch_cuda_tp.py --gpus "$TF_RANK_GPUS" -- "${serve_args[@]}"
+```
+
+Use the endpoint's existing key-file authentication before enabling either
+principal cap or exposing a non-loopback endpoint. Append the principal options
+with explicit values and mount the restricted key file read-only; do not put
+key contents in recorded command lines. Image/video input additionally requires
+the explicit `--vision --no-graphs --media-profile-manifest` source-bound media
+recipe and its complete processor/decoder/placement/replay resource envelope.
+The text command above does not qualify those media gates.
+
+The maintained Compose profile accepts `TF_MAX_WAITING_INPUT_BYTES` and appends
+that one flag as quoted data. Set it explicitly for a new FIFO profile. Leave it
+unset for legacy DSpark, which must omit FIFO-only flags. A missing value in a
+new FIFO configuration is still refused by ordinary CLI preflight, without an
+inferred fallback. Detailed retention/API launches use explicit argument arrays
+as described below and in the serving-profile guide.
+
+### Retention and logical API storage
+
+All retention inputs unset means request-scoped execution. A GPU tier requires
+`--retention-tier gpu`, `--retained-sessions` and `--retention-lifetime-s`.
+A RAM tier requires all seven declared inputs. Insert this snippet before the
+launch command when testing that explicit tier:
+
+```bash
+serve_args+=(--retention-tier ram
+  --retained-sessions "${TF_RETAINED_SESSIONS:?Set the retained-session limit}"
+  --retention-lifetime-s "${TF_RETENTION_LIFETIME_S:?Set the absolute lifetime}"
+  --retention-ram-bytes "${TF_RETENTION_RAM_BYTES:?Set the global host backing budget}"
+  --retention-chunk-bytes "${TF_RETENTION_CHUNK_BYTES:?Set the transfer chunk bound}"
+  --retention-progress-bytes "${TF_RETENTION_PROGRESS_BYTES:?Set the global host progress budget}"
+  --retention-overlap-bytes "${TF_RETENTION_OVERLAP_BYTES:?Set the per-rank additional GPU overlap budget}")
+```
+
+No field is inferred. Progress validates the pinned/ordinary chunk lower bound;
+additional native, RPC, control, descriptor and State/FD obligations are paid
+in the global source envelope. Two chunks per rank is not the total host cost.
+Overlap may explicitly be zero for serialized copies. Session count, RAM
+backing, GPU slots and queued requests are distinct limits. These are complete-state source
+candidates, not increased GPU compute capacity or process-crash durability.
+Resource finalization binds the actual loaded vocabulary and effective decoder
+to its supported size bounds; an unbounded decoder override cannot supply that promise.
+Native structured-output work has no qualified CPU envelope: RAM-retention
+generation is refused before native constraint compilation, while GPU-tier
+computed-retained operations are refused there. Ordinary nonretained/count-only
+behavior remains separate.
+
+Durable logical API records use paired `--api-record-store` and
+`--api-record-limits` paths, plus the existing explicit HTTP connection cap.
+The limits file must supply the complete versioned
+`tensorfold.api-record-limits` schema; there is no quota/path/retention default.
+Mount its private service-owned database directory read-write and the quota
+file read-only. The store retains JSON and canonical items for standard
+Responses/Conversations references. It does not itself reserve computed model
+state; the separately configured typed retention policy supplies that contract.
+The App binds actual tokenizer, resolved-history/materialization/operation
+limits, route-body bounds and HTTP count before accepting work. See the
+[API reference](../../docs/api.md); no private handle/header protocol is added.
+
+### Testing handoff and open gates
+
+All new unique profiles (no explicit retention, GPU tier and RAM tier) select
+the plain owned synchronous Store and canonical key/value wake path with the
+same process-fixed transport identity. Generic legacy defaults remain separate.
+Source runtime binding is exact CPython 3.12.3/Torch04cf2557/GCC 13 build/ABI and
+recorded GCC 14 runtime content; these checks do not qualify allocator/RSS/NUMA
+or native wall deadlines. The conservative generic graph projection at 96 MiB
+can reject a declared host envelope without proving practical physical RAM
+insufficiency or a qualified session maximum.
+
+The previous native SDK has a retained `getnameinfo` failure finding:
+an incorrect pointer/address cast can access an invalid object and
+corrupt endpoint diagnostics, with a shared-flag race concern. Fault-injected
+native CPU diagnostics reproduced the corruption; data round trips passed,
+without a crash/race/performance claim. Owned-FD nonce provenance remains
+independent of those diagnostic strings. The corrected owned 04cf SDK fixes
+that formatter/flag in canonical source and passes direct native IPv4/IPv6
+formatter/concurrency controls, actual-wheel IPv4 Store/endpoint failure-path
+controls and immutable-image ABI/content checks. Actual IPv6 Store execution is
+unrun on the IPv6-disabled development host. The current application guard
+rejects old5ab; all native size equations and remaining exact guards are retained.
+See the [source foundation record](source-foundation.md) for exact artifacts.
+The complete application CPU gate on the corrected source/media/client stack
+passed at the exact scope recorded above. The later portable and shared-anonymous
+mapping policies have separate software evidence and retain all immutable
+source/provider checks; use the [explicit rebind procedure](source-foundation.md#portable-build-and-host-audit-policy).
+Actual mapping-successor target acceptance after GPU work remains pending.
+Local CPU GREEN does not close that target gate. Compiler issue 6111901 remains
+separate below.
+
+Record final source/image, actual complete asset hashes, GPU UUID/rank mapping,
+driver/runtime/native binaries, host/cgroup/NUMA/locked-memory limits and the
+full command/configuration before device work. Use a fresh evidence directory
+and preserve raw failures. Source/CPU checks and old measured layouts do not
+qualify the revised source, media, retention or output-credit profile.
+
+With the final image selected, ordinary installed-wheel checks can use the
+source-relative fixtures shipped in that image:
+
+```bash
+docker run --rm --network none -e PYTHONPATH=/src "$TF_V6_IMAGE" \
+  -m pytest -c /verification/pytest.ini -q \
+  /src/tests/test_cli_retention_options.py /src/tests/test_flashnext_gguf_mtp.py \
+  /src/tests/test_retention_wake.py
+docker run --rm --gpus all --ipc host "$TF_V6_IMAGE" \
+  -m pytest -c /verification/pytest.ini -q \
+  /verification/tests/cuda/test_flashnext_sm70_family.py \
+  /verification/tests/cuda/test_flashnext_sm70_mtp.py \
+  /verification/tests/cuda/test_flashnext_sm70_collectives.py
+```
+
+The CUDA tests use small component/model fixtures. They are not full SC117
+answers, full-window capacity, required media/retained-state parity, a quality
+comparison or an end-to-end performance result. Inventory and matrix helpers
+under `tools/v100_adaptive_qualification.py` produce observations/test plans;
+`v100_adaptive_exercise.py` is text-only and its retained-slot exercises do not
+certify complete RAM checkpoints. The existing benchmark clients do not supply
+authentication, so they cannot exercise an authenticated-principal region.
+Use authenticated ordinary clients and frozen explicit request data for those
+separate gates.
+
+Actual eight-V100 native/extended Q8 and RotorQuant profiles, SC117 MTP aliases
+and text/visual conditioning, separately selected DFlash, complete retention
+save/restore/failure, principal fairness, slow clients/output credits,
+A-to-B-to-A transitions, native/RSS/NUMA peaks, quality and integrated
+latency/throughput remain required. NVIDIA compiler issue 6111901 also remains
+open for the selected CUDA 12.9 SM70 paths until an applicable supported fix,
+non-applicability proof or validated mitigation is established. Successful
+compilation, a cubin inventory or component smoke tests do not close it.
+See the governing specification's Sections 21–25.
+
+## Selected source foundation and historical reference
+
+The governing specification now selects the coherent
+[source-built CUDA 12.9 stack](source-foundation.md). Its source producer,
+compile receipts and remaining V100 gates are separate from the historical
+wheel-based configuration below. A successful old cu126 import or model test
+does not qualify the new framework/library combination. No serving-time
+dependency fallback is provided.
+
+The additive [CPU media source image](media-foundation.md) builds the exact
+TorchVision/Transformers/PyAV/FFmpeg processor and decoder closure while preserving
+the selected source Torch/native providers. Its software inventory and installed
+controls do not qualify SC117 vision, service media policies, capacity or V100
+execution.
+
+Build the selected development image with the external source artifact context:
+
+```bash
+docker build --network=none \
+  --build-context source_artifacts=/path/to/foundation-state/release \
+  --target verification -f deploy/v100/Dockerfile -t tensorfold-v100:source-development .
+docker run --rm --network none tensorfold-v100:source-development \
+  /opt/tensorfold-pins/source_foundation.py audit
+```
+
+The [source foundation procedure](source-foundation.md) prepares that bundle and
+records the remaining device/compiler/model gates. The following wheel matrix,
+build examples and serving receipts are historical reference information.
+
+The adaptive native source candidate targets the source-built foundation in
+the governing specification. When its protected source installation receipt is
+present, owned SM70 JIT modules use its explicitly ordered CCCL/CUTLASS include
+roots and actual content/flags cache identity. See the
+[preparation and header binding contract](../../docs/execution-profile-manifest.md#opt-in-native-preparation-and-qualification-trials).
+The wheel-based image described below remains the historical reference build;
+its source/CPU or compile checks do not qualify the new source-built stack.
+
+## Historical cu126 reference
+
+The remaining original build/serve commands and measured host configurations
+retain their named historical images and layouts. Their numeric settings are
+not defaults or capacity recommendations for the current v6 candidate.
+
+The native AMD64 CPython 3.12 profile pins the official CUDA **12.9.2** development
+image by child and index digest, with official **Torch 2.14.1+cu126**,
+**TorchVision 0.29.1+cu126** and **Triton 3.8.0** wheels by SHA256. CUDA 12.9.2 is
+the compiler toolkit; Torch's wheel runtime is CUDA 12.6. They are deliberately
+recorded separately. A newer CUDA toolkit alone does not prove that a framework
+wheel contains Volta kernels. The probe requires `sm_70` in Torch's actual
+compiled targets and executes the selected operators on a V100.
+
+The historical cu126 wheels were selected because newer cu128/cu129 PyTorch wheels removed
+Volta. See [PyTorch's packaging notice](https://dev-discuss.pytorch.org/t/dropping-volta-support-from-cuda-12-8-binaries-for-release-2-11/3290)
+and [CUDA 12.9.2 compiler targets](https://docs.nvidia.com/cuda/archive/12.9.2/cuda-compiler-driver-nvcc/index.html#gpu-name-gpuname-arch).
+Triton is retained as a framework dependency; this SM70 provider does not invoke
+Triton kernels. The GB10 managed runtime, native-library policies and CUDA 13.x
+locks are unchanged. This separate development profile is not yet a qualified
+managed production foundation or a complete audit of all family APIs.
+
+The lock files are generated with the existing `deploy/gb10/lock_dependencies.py`
+renderer, using [pins.json](pins.json) and an actual Linux AMD64 pip resolver
+report. Never hand-edit the generated locks. To regenerate, build the resolver
+target, mount a new evidence directory, and resolve the three exact wheel URLs
+in `pins.json` plus the required component/test dependencies with pip's
+`--dry-run --ignore-installed --only-binary=:all: --report`. Pass that report,
+the pins, `architecture="amd64"`, and its raw SHA256 to `render`, then publish
+with `write_locks` into this directory. Preserve the report as private evidence;
+the generated manifest retains its identity and dependency closure.
+
+## Build and check
+
+From the repository root:
+
+```bash
+docker build --target verification -f deploy/v100/Dockerfile.cu126-reference -t tensorfold-v100:verified .
+docker run --rm tensorfold-v100:verified -m pytest -q \
+  tests/test_flashnext_gguf.py tests/test_flashnext_gguf_weights.py \
+  tests/test_gguf_assets.py tests/test_sm70_mtp_weights.py \
+  tests/test_flashnext_tp_control.py tests/test_flashnext_tp_scheduler.py
+docker run --rm --gpus 'device=0' -v tensorfold-v100-cache:/cache \
+  tensorfold-v100:verified -m pytest -q tests/cuda/test_sm70.py \
+  tests/cuda/test_sm70_gguf.py tests/cuda/test_flashnext_sm70_family.py \
+  tests/cuda/test_flashnext_sm70_mtp.py
+docker run --rm --gpus all --ipc host -v tensorfold-v100-cache:/cache \
+  tensorfold-v100:verified -m pytest -q tests/cuda/test_flashnext_sm70_collectives.py \
+  tests/cuda/test_flashnext_sm70_tp_scheduler.py
+docker run --rm --gpus 'device=0' -v tensorfold-v100-cache:/cache \
+  tensorfold-v100:verified /verification/v100_probe.py --probe-gpu
+docker run --rm tensorfold-v100:verified -m pytest -c /verification/pytest.ini -q \
+  /src/tests/test_deployment_pins.py /src/tests/test_verification_public_permissions.py
+```
+
+The last command uses source-relative deployment fixtures while importing the
+installed wheel. Other commands use tests outside the source import path.
+Package data includes all native CUDA/C++ sources. The cache key binds source,
+headers, architecture, compiler, flags and framework ABI; `MAX_JOBS=4` bounds
+native builds. Keep this cache separate from other serving stacks.
+The probe prints a component receipt with the provider, GGUF and GDN native
+binary hashes, compiler identities, SM70 cubins and bounded execution checks.
+Its optional `--checkpoint /models/first-shard.gguf` inventories a read-only
+model mount without loading the full model.
+
+## Serve the original checkpoint
+
+Stop the existing GPU consumer before loading a second full model. Keep its
+container and immutable image for rollback. Replace the example model path with
+the first shard (a metadata-only first shard is supported); all sibling shards
+must be present. The model mount remains read-only.
+
+```bash
+: "${TF_MAX_PENDING_REQUESTS:?Set a positive finite unfinished-request limit}"
+: "${TF_MAX_HTTP_CONNECTIONS:?Set a positive finite HTTP connection limit}"
+docker run -d --name tensorfold-flash-next --gpus all --ipc host \
+  --ulimit memlock=-1:-1 --ulimit stack=67108864 --ulimit core=0 \
+  -p 127.0.0.1:8000:8000 \
+  -e PYTHONUNBUFFERED=1 -e TENSORFOLD_NO_UPDATE_CHECK=1 \
+  -e TF_GGUF_ASSETS_DIR=/cache/gguf_assets \
+  -v tensorfold-v100-cache:/cache -v /path/to/models:/models:ro \
+  tensorfold-v100:verified /src/tools/launch_cuda_tp.py --gpus 0,1,2,3,4,5,6,7 -- \
+  /models/Flash-Next-00001-of-00004.gguf --backend cuda \
+  --host 0.0.0.0 --port 8000 --name flash-next \
+  --max-pending-requests "$TF_MAX_PENDING_REQUESTS" \
+  --max-http-connections "$TF_MAX_HTTP_CONNECTIONS" \
+  --context 4096 --parallel 1 --no-drafts --kv-dtype fp16 --no-update-check
+```
+
+`launch_cuda_tp.py` supervises ordinary CLI rank processes, exposes one GPU to
+each, supplies a shared rendezvous, and retires all ranks on a worker failure or
+termination. Rank zero serves HTTP. Use the existing endpoint authentication
+options before changing the loopback-only host port publication.
+
+GGUF tokenizer/config assets are reconstructed from the checkpoint into the
+cache. The original four files are neither copied nor rewritten. Large routed
+experts retain original packed bytes on GPU; bounded decoded tiles feed FP16
+matmuls with FP32 accumulation. Ordinary projections are decoded once at load.
+PLE remains a bounded, read-only host mapping. At TP8 the actual checkpoint
+retains approximately 12.59 GiB of weight tensors per rank, before cache,
+workspace, framework allocator and communication overhead.
+
+The baseline command deliberately starts with a bounded context. Admission
+uses the smallest rank budget, includes complete quantization blocks at partial
+shards and accounts for replicated KV heads. Increase `--context` and
+`--parallel` only with the resulting capacity and workload evidence. The explicit optimized profile and its graph qualification are described below.
+A graph microtest alone does not establish full-model graph readiness.
+
+For a matching separate stock MTP head, replace `--no-drafts` with
+`--drafter /models/mtp-stock --mtp-drafts 2`. The loader accepts the existing
+floating checkpoint directory or a shared-target GGUF companion entrypoint.
+The current design instead selects `mtp-Qwen3.8-Flash-Next-Q8_0.gguf` from the
+SC117 revision and complete-file identity in the current source recipe above.
+The older Unsloth shared-Q8 artifact remains a comparison control; it does not
+transfer qualification to the canonical SC117 source. Verify size and SHA256 in the
+[specification](../../docs/v100-adaptive-inference-design.md#stock-mtp).
+Reads and decode staging are bounded. Routed GGUF banks retain their packed
+bytes, small projections execute in FP16, and the target embedding/head remain
+shared. This importer explicitly selects QSA compression four and token budget
+2,048, matching the canonical companion's final compression entry. Ordered
+target/draft token IDs must match.
+`/stats.capacity_plan.mtp_import` identifies the import policy. CPU import
+controls are separate from pending SM70 execution, target-conditioned refresh,
+BF16-control comparison, quality, and performance qualification.
+
+Prepare the official BF16 MTP control from only its indexed tensor ranges:
+
+```bash
+PYTHONPATH=src python tools/v100_mtp_prepare.py \
+  --repository Qwen/Qwen3.8-Flash-Next \
+  --revision de4b8e4d43b917e7706784d8bb445c9af86a3540 \
+  --out /models/mtp-stock-bf16
+```
+
+Run this from the checkout in the verification environment, with exclusive
+ownership of the destination. `--source-dir /models/original` instead reads an
+immutable local checkpoint. The tool copies original `mtp.*` bytes with an
+8 MiB transfer bound, emits tensor/file checksums and source-header identities,
+and resumes verified complete tensors from its `.partial` directory. It reads
+source metadata and MTP ranges; complete target shards are unnecessary. Its
+preparation envelope allows up to 16 GiB of selected payload and temporarily
+holds both tensor fragments and the assembled control. The initial official
+control contains 31 tensors and 5,214,301,696 payload bytes. Import preparation
+does not establish QSA execution parity or transfer quality qualification from
+the BF16 control to the quantized companion.
+`--kv-dtype int8`, or mixed `--kv-key-dtype`/`--kv-value-dtype` FP16/INT8 pairs,
+select the existing INT8 H32 codec and its scales; they do not mean FP8 or
+RotorQuant. The `rotorquant-signed128-4` and `rotorquant-signed64-norm4` SM70 paths use
+their existing signed bases, packed four-bit centroid indices and FP32 scales.
+They have separate measured quantization-quality tradeoffs; see below. Other formats fail before allocating model weights
+on SM70.
+
+The maintained [Compose profile](compose.yaml) selects the matching stock MTP
+head, automatic full-window session capacity and an 8,192-token window by default. Set `MODEL_ROOT` to the
+host model directory and `GGUF_FILE` to its container first-shard path, then:
+
+```bash
+MODEL_ROOT=/path/to/models GGUF_FILE=/models/Flash-Next-00001-of-00004.gguf \
+  docker compose -f deploy/v100/compose.yaml up -d
+```
+
+`TF_CONTEXT`, `TF_PARALLEL`, `TF_KV_DTYPE`, `TF_PORT`, `TF_BIND_ADDRESS`,
+`TF_MODEL_NAME`, `MTP_DIRECTORY`, `TF_CACHE_VOLUME` and `TENSORFOLD_V100_IMAGE`
+configure that profile. `TF_PARALLEL` and `TF_KV_FULL_WINDOWS` default to `auto`;
+numeric overrides constrain automatic capacity rather than forcing unsafe
+allocation.
+`TF_MAX_PENDING_REQUESTS` and `TF_MAX_HTTP_CONNECTIONS` are required positive
+integers chosen for the installation, with no inferred numeric default.
+GGUF GPU-history slots reserve their full prompt-plus-reply windows.
+The optional legacy RAM-indexer path requires explicit numeric settings and
+retains its separately documented accounting; it does not inherit unique GPU
+history capacity. Other providers' shared-growth contracts remain separate.
+
+## Implementation and evidence
+
+Native operators cover FP16 RMSNorm/RoPE, mixed-GGUF decode and GDN chain/replay.
+Shared FP16 family paths cover HC, PLE, routing, causal indexed attention and
+cache reads/writes, while preserving FP32 recurrence. Dense/expert adapters
+retain the existing weights and forward interfaces. TP8 uses the ordinary NCCL
+communicator and per-peer control acknowledgements. Concurrent TP uses the
+existing scheduler and per-request state ownership.
+
+Rebuild the image after source changes and validate the installed wheel.
+Independent scalar/FP64 oracles, real checkpoint slices, tiny family execution,
+and full-model answers have separate evidence scopes in the
+[qualification note](../../docs/v100-flashnext-validation.md).
+
+The qualified host deployment uses the same profile with `TF_CONTEXT=237598`,
+`TF_PARALLEL=6` and `TF_KV_DTYPE=int8`. Its checks exercise bounded real prompts,
+not a complete 237,598-token quality benchmark or six simultaneous full windows.
+The operator environment pins image digest
+`sha256:b223074bfe57d6a4c9a706a49b0eb97ecc0ed73d37ff93170ba419470f655d8d`.
+The original service is preserved as a stopped rollback container. During first
+startup, `/dev/sda` reported real SATA/Btrfs errors; see the qualification note.
+
+
+## Select the drafter
+
+Flash Next CUDA accepts `--draft-method auto|mtp|dspark`. `auto` preserves
+checkpoint-based selection; explicit methods reject a checkpoint of the other
+kind before loading the target. `--drafter` supplies the checkpoint directory.
+DSpark currently uses the GGUF SM70 text provider, the complete target vocabulary
+and the existing position-keyed target verifier. Stock MTP and DSpark remain
+separate providers in the same engine and scheduler. `--no-drafts` selects serial
+execution; `--mtp-drafts` controls proposal depth for either provider.
+
+For Compose, keep the stock defaults or set:
+
+```dotenv
+TF_DRAFT_METHOD=dspark
+DRAFTER_DIRECTORY=/models/dspark-checkpoint
+TF_DRAFTS=3
+TF_DRAFT_CONFIDENCE=0
+```
+
+`DRAFTER_DIRECTORY` overrides the legacy `MTP_DIRECTORY` variable; both paths
+refer to directories inside the read-only model mount. DSpark checkpoint metadata
+and tensor shapes are checked before target payload loading. Greedy, confidence0,
+full-depth proposal blocks may use the admitted graph path; stochastic sampling,
+short final blocks and declined graph keys use the ordinary proposal provider.
+The target sampler remains the authority in each case. Experimental throughput
+and outstanding numerical qualification are recorded in the
+[validation note](../../docs/v100-flashnext-validation.md).
+
+
+## Historical replicated-layout operator profile
+
+Set `TENSORFOLD_SM70_PROFILE=optimized` before starting the ordinary CUDA
+launcher, or `TF_SM70_PROFILE=optimized` for Compose. The general default remains
+`reference`. The optimized profile checks the pinned Torch/cuBLAS/workspace and
+Volta identity plus TP8 Flash Next geometry before admission and payload loading.
+Its operator/runtime policy participates in the existing worker agreement.
+These qualification results belong to the original replicated history layout.
+The adaptive unique-history path currently declines graph capture and retains
+its own source/native/model qualification gates.
+It selects canonical `packed_exact` experts (R≤32), original shared Dense math,
+prepared linears, native family operations and the admitted graph paths for
+DSpark and MTP. Native attention is qualified only for local H3/KV1/D256 and
+real query ends65–8192. Other decode windows use the original Torch operator at
+each query's actual end and decline unsupported graphs before binding; the
+allocated KV window and ordinary context limit remain unchanged.
+
+C21 passed both fixed target-distribution suites325/389 independently, with
+full top-1 agreement; see the [quality record](../../docs/v100-flashnext-validation.md).
+Live method/depth performance and final service selection are still in progress.
+
+## Equal full context windows
+
+For adaptive resident GGUF with GPU history on TP1/2/4/8, use
+`--parallel auto --kv-full-windows auto`, or supply an integer ceiling.
+Every selected lane allocates the same complete admitted window, including MTP or DSpark
+auxiliary KV. Normal prefix retirement keeps these allocations. The existing
+4GiB device floor remains, with explicit 2GiB serving workspace and protected
+cache replacement; graph publication cannot spend those reservations.
+
+Compose defaults both `TF_PARALLEL` and `TF_KV_FULL_WINDOWS` to `auto`.
+Counts need not be even or powers of two. The legacy RAM-indexer path uses
+explicit numeric counts with N≥2 and its separate admission policy. Modern
+providers and the one-GPU automatic expert-pool mode retain their existing
+growth/full-window contracts.
+
+Native attention scratch is capped at its qualified8192-token dispatch range,
+while KV remains allocated at the full context limit. Longer queries retain
+original Torch attention. Targeted large-cache/refusal/replay and fallback
+allocation controls passed. Actual full-service allocations and short-prompt
+timing are recorded in the C22/Q4 sections below.
+
+## Measured full-window host configuration (C22)
+
+The context-first candidate on this eight-V100 host uses stock MTP depth3,
+confidence0, INT8 KV and three complete262144-token windows. All eight ranks
+materialized three262148-slot target/MTP caches (8833339008owned cache bytes
+per rank). The R12 concurrent graph workload retained653821400bytes within
+692445232bytes of graph room, with no context or reserve reduction.
+
+After building the pinned image and setting existing model/cache variables:
+
+```bash
+export TF_SM70_PROFILE=optimized TF_CONTEXT=262144 TF_PARALLEL=3
+export TF_KV_FULL_WINDOWS=3 TF_KV_DTYPE=int8 TF_DRAFT_METHOD=mtp
+export DRAFTER_DIRECTORY=/models/mtp-stock TF_DRAFTS=3 TF_DRAFT_CONFIDENCE=0
+docker compose -f deploy/v100/compose.yaml up -d
+```
+
+DSpark remains maintained and selectable. Its best depth in the bounded2/3/7
+screen was3: use `TF_DRAFT_METHOD=dspark`,
+`DRAFTER_DIRECTORY=/models/dspark-shadowpa-3f74bdfa`, `TF_DRAFTS=3`,
+`TF_PARALLEL=2`, `TF_KV_FULL_WINDOWS=2`, and `TF_CONTEXT=262140`.
+The model root must contain the matching pinned checkpoint. Actual memory
+admission, native profile pins and rank agreement remain authoritative; these
+counts are specific to this checkpoint/host/configuration. Full-window cache
+allocation is not a full262K generation or numerical-quality benchmark.
+
+For the same128-input/512-output quiet greedy screen, MTP D3 measured
+52.86/53.29/58.93decode tokens/s; DSpark D3 measured50.41/53.92/54.67.
+MTP retained127prompt tokens on its final repeated prompt; DSpark's two-slot
+configuration evicted that prefix. These are configuration screens, not an
+isolated-method causal gain or a statistical equivalence claim.100single-request
+decode tokens/s remains unmet. All final full-window API cases and plain service restoration/verification
+passed; the [validation record](../../docs/v100-flashnext-validation.md)
+tracks their final status.
+
+The plain shipping service is healthy on port8000 with three equal262144-token
+windows. Its128-input/512-output quiet decode measured54.04/54.42/59.78tokens/s;
+all complete benchmark outputs and three simultaneous responses matched the
+qualified candidate. Existing C3 remains stopped for rollback. The finite
+closeouts are complete;100single-request tokens/s remains unmet.
+
+## RotorQuant Q4 validation
+
+Use `--kv-dtype rotorquant-signed128-4` for both sides, or combine it with
+`--kv-key-dtype` / `--kv-value-dtype` to select independent FP16/INT8/Q4 sides.
+The descriptor and codec identity are unchanged from the existing fork format.
+The V100 implementation uses FP16 working Q/K/V operands with FP32 reductions
+and inverse value rotation; it does not invoke Triton or reinterpret INT4 bytes.
+Native/same-format live checks and actual four-window allocations passed;
+full714quantization comparisons and quiet throughput are reported below.
+The result is not INT8 quality equivalence.
+
+### Q4 configuration and acceptance
+
+Build/select a Q4-capable verified image first. The old C22 INT8 rollback
+image rejects Q4; an existing host `.env` can otherwise keep that old image
+pinned. The signed128 Q4 live configuration has four equal full native windows:
+
+```bash
+export TENSORFOLD_V100_IMAGE=local/tensorfold-v100:rotor-q4-r5
+export TF_SM70_PROFILE=optimized TF_KV_DTYPE=rotorquant-signed128-4
+export TF_CONTEXT=262144 TF_PARALLEL=4 TF_KV_FULL_WINDOWS=4
+export TF_DRAFT_METHOD=mtp DRAFTER_DIRECTORY=/models/mtp-stock
+export TF_DRAFTS=3 TF_DRAFT_CONFIDENCE=0
+docker compose -f deploy/v100/compose.yaml up -d
+```
+
+Each rank materialized four262148-slot caches (context plus speculation),
+8069964032owned bytes, with4GiBdevice floor and2GiBworkspace preserved.
+Use `TF_KV_DTYPE=rotorquant-signed64-norm4` for the existing norm-preserving
+variant. Both formats force cold preparation in serial and concurrent serving
+until prompt-prefix reuse meets same-format identity checks. Request-local KV
+caching, MTP, cache precision, copy/resize and mixed-side interfaces remain.
+Repeated prompts therefore have cold TTFT rather than the INT8 prefix-hit cost.
+
+Signed128 Q4 passed21serial/draft pairs,4concurrent replies,SSE,cancellation and
+recovery. Short128-input/512-output greedy decode measured51.2476/50.2409/
+50.2750tokens/s, with coldprefill1.6512/1.6418/1.6255s. These are descriptive
+configuration screens; format/output/cache state differs from the INT8 screen,
+so no isolated speed gain/equivalence or global optimum is claimed.
+The broader quality suite measuredPPLratio1.006522/top1agreement.974293 for
+signed128, versus1.008041/.976864 for signed64norm; old numerical comparison
+gates failed for both. Their native implementation gates passed separately.
+Production selection remains subject to the user's quality/latency preference.
+
+The canonical live procedure compares against fresh replies in the SAMEformat,
+not old INT8 IDs, and explicitly enforces the current prefix capability:
+
+```bash
+python tools/v100_rotorquant_live.py --url http://127.0.0.1:8001 \
+  --cases-dir /path/to/frozen-request-data --output-dir /path/to/new-results \
+  --parallel 4 --tokens 128 --context 262144 \
+  --kv-dtype rotorquant-signed128-4 --prefix-reuse cold
+```
+
+For source-relative tool tests inside the verification image (installed wheel
+imports, matching `/src` fixtures), use:
+
+```bash
+docker run --rm -e PYTHONPATH=/src tensorfold-v100:verified -m pytest \
+  -c /verification/pytest.ini -q /src/tests/test_v100_rotorquant_quality.py \
+  /src/tests/test_v100_rotorquant_live.py
+```
+
+A `/verification/tests` invocation alone lacks the tool-source fixtures; do not
+repair installed code to compensate. Build from canonical source and preserve
+the source/image identities reported by the quality and live tools.
+
+Q4 DSpark was also checked through real requests. Three full262140windows
+left too little graph room for the longer corpus and the cohort was retired.
+The bounded compatible configuration uses3equal245713-token windows with
+1GiBgraph allowance, preservingtheexisting4GiBfloor/2GiBworkspace, and passed
+all27serial/draft/concurrent/SSE/cancel/recovery checks. It is not a claim of
+three simultaneous full262KDSpark workloads or of better output quality.
+
+## NUMA-local indexer archive
+
+`--indexer-history ram` replaces full raw GPU indexer history with a bounded
+GPU ring and staging buffers plus a lossless FP16 archive in local system RAM.
+`--indexer-history gpu` is the default. Attention KV and all pooled indexer
+keys remain on the GPU. The archive is independent of the selected KV format
+and drafter. TP8 stock-MTP live checks passed four full INT8 windows and eight
+260,060-token Q4 windows, including frozen same-format output comparisons,
+concurrency, SSE, cancellation and recovery. These are allocation and bounded
+workload checks; full-context payloads and RAM/DSpark remain unqualified.
+The host currently runs INT8 with GPU history and three full native windows;
+the preceding throughput measurements use their named configurations.
+
+Each rank resolves its actual GPU UUID/PCI device to a NUMA node, binds owned
+anonymous allocations before first write, verifies every backing page, and
+registers only bounded transfer stages. CPU archive copies run on that node's
+CPUs. Missing placement capabilities fail explicitly. CPU affinity alone does
+not establish memory locality. On this host GPUs0–3 attach to node0 and
+GPUs4–7 to node1; runtime discovery also supports CUDA ordinal remapping.
+
+Docker's ordinary default seccomp policy blocks the required NUMA operations.
+Generate the narrow override from a temporary CPU-only container using this
+host's actual default policy and the intended immutable TensorFold image:
+
+```bash
+docker run -d --name tf-numa-default --network none \
+  --entrypoint /bin/sleep "$TF_IMAGE" 300
+sudo python3 tools/generate_numa_seccomp.py --container tf-numa-default \
+  --output-directory /absolute/new/numa-profile
+docker rm -f tf-numa-default
+```
+
+The generated profile preserves the captured filter and grants only static
+node binding without migration, policy queries and self page-location queries.
+It requires neither extra capabilities nor unconfined seccomp. Regenerate and
+requalify after changes to Docker/runtime defaults, capabilities or CPU/node
+allowances. Keep the selected node in the container's allowed memory set.
+
+For a direct run, add `--security-opt
+seccomp=/absolute/new/numa-profile/seccomp.json` to Docker and
+`--indexer-history ram` to the TensorFold command. For Compose:
+
+```bash
+export TF_INDEXER_HISTORY=ram
+export TF_PARALLEL=4 TF_KV_FULL_WINDOWS=4
+export TF_NUMA_SECCOMP=/absolute/new/numa-profile/seccomp.json
+docker compose -f deploy/v100/compose.yaml \
+  -f deploy/v100/compose.numa.yaml up -d
+```
+
+Use an archive-capable image built from the matching canonical source. The
+optional override is unnecessary for GPU-history mode. Startup reports host
+archive/pinned staging reservations separately from GPU cache storage. Preserve
+the existing device floor and workspace while selecting equal context windows;
+saved raw-history bytes alone do not establish how many full windows fit.
+
+With automatic graphs and every RAM window already materialized, startup may
+refine graph room from the minimum physical spare across ranks after the same
+device floor and future workspace/copy/snapshot promises. The original header
+receipt is retained beside `observed_graph_admission`. Explicit graph ceilings
+and GPU-history behavior retain their existing admission policy. This does not
+make all graph shapes fit or guarantee unchanged throughput.

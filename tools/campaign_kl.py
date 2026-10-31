@@ -1,0 +1,907 @@
+"""Teacher-forced next-token distributions of a TensorFold CUDA configuration, and KL / greedy agreement between two.
+
+The HTTP server returns log-probabilities only for engines with ``supports_logprobs`` (Flash Next) and at most 20 per
+token, so this tool measures in process: it runs ``tensorfold serve`` with the exact flags under test, intercepts the
+CLI's final ``serve`` call (the engine and App are built exactly as in production, then no HTTP request is served),
+and replaces the CUDA target sampler while it teacher-forces fixed token sequences through the serial path
+(``draft=False``). At each forced position it records the full-vocabulary log-softmax of the logits the engine
+handed its sampler: the top-K ids and log-probabilities, the forced token's log-probability, the entropy and, given a
+reference dump, the log-probabilities at the reference's top-K ids.
+
+  dump     [--build] --eval EVAL.json --out OUT.npz [--reference REF.npz] -- SERVE_ARGS...
+  compare  REF.npz CAND.npz [--out RESULT.json]
+  subset   GOLDEN.npz EVAL.json OUT_DIR [--max-prompt-tokens N]   (a golden reference cut to the shorter items)
+  append   BASE.npz BASE_EVAL.json NEW.npz NEW_EVAL.json OUT_DIR   (a golden reference extended by new items)
+  calibrate GOLDEN.npz BASE.npz NAME=VARIANT.npz ... [--out CALIBRATION.json]   (non-inferiority margins)
+  gate     GOLDEN.npz OLD.npz NEW.npz [--calibration CALIBRATION.json] [--out RESULT.json]
+           (exit 0 pass, 1 fail, 3 incomplete or uncalibrated, 4 error: a refusal, never a verdict)
+
+``dump --build`` first writes EVAL.json when it is missing: chat prompts rendered by the served template (fixed short
+prompts, corpus-backed mid items in both thinking modes and long ones) and each prompt's continuation sampled by this
+configuration (model-card sampling per thinking mode, fixed seeds). Run it once with the reference configuration;
+every candidate dumps the same EVAL.json. New items join an eval set through ``append`` once a golden session scored
+them, never by rebuilding or rescoring the existing ones.
+
+Precision limits (stated with every comparison): KL(ref || cand) is computed exactly on the reference's top-K ids and
+with the remaining mass of both distributions merged into one tail bucket. That coarse-grained KL is a lower bound of
+the true KL (data processing inequality); the reported tail mass p_T bounds what it cannot see. Log-probabilities are
+computed in float32 from the engine's own logits dtype (recorded), so they carry that dtype's rounding. Each tail
+mass is a float32 log-sum-exp over the ids outside the reference's top-K, taken in the dump: one minus a float32 sum
+of the top-K probabilities would cancel to rounding noise (about 1e-7) when the tail is that small, and a noise-sized
+or clipped tail can push the bound far above the true KL. The bound therefore holds to float32 log-softmax rounding,
+about 1e-7 nats per position. Only the serial (one-row) path is measured; drafted verification is covered by the
+drafted-vs-serial identity gate. Positions are conditioned on the reference continuation (teacher forcing), not on
+each configuration's own samples.
+"""
+
+from __future__ import annotations
+
+import argparse
+import contextlib
+import hashlib
+import itertools
+import json
+import math
+import os
+from pathlib import Path
+import sys
+import time
+import traceback
+
+if __package__:
+    from .campaign_bench import LONG_PREFILL_TOKENS, TASKS, HotGate, file_sha256
+else:
+    from campaign_bench import LONG_PREFILL_TOKENS, TASKS, HotGate, file_sha256
+
+PROMPTS = (
+    "Write a thread-safe LRU cache in Python with unit tests.",
+    "Explain how a sliding-window rate limiter works and when to prefer a token bucket.",
+    "Compute the expected queue length of an M/M/4 queue at 500 requests/s with 3 ms mean service time.",
+    "Write a shell pipeline that lists the five largest files in a folder as a Markdown table.",
+    "Summarize the causes of the 2008 financial crisis in five bullet points.",
+    "Write a short story about a lighthouse keeper who finds a message in a bottle.",
+    "Write a Go HTTP handler that streams server-sent events and explain its error handling.",
+    "Explain the CAP theorem with a concrete example for each trade-off.",
+    "Translate this to French and explain two idioms: 'It is raining cats and dogs; break a leg.'",
+    "Write a SQL query that finds the top three customers by revenue per month, with window functions.",
+    "Describe how photosynthesis works to a ten-year-old.",
+    "Review this Python for bugs: def avg(xs): return sum(xs) / len(xs) if xs else 0 / 0",
+)
+# eval-v2's further short prompts (items are the bootstrap's independent units): (prompt, thinking)
+EXTRA_PROMPTS = (
+    ("Implement Dijkstra's algorithm in Rust with a binary heap and explain its complexity.", False),
+    (("A train leaves at 9:40 at 72 km/h and a second at 10:05 at 90 km/h on the same track. When does the second "
+      "catch up, and how far from the station?"), True),
+    ("Write a bash script that rotates log files older than seven days into a dated tar.gz archive.", False),
+    ("Prove that the square root of 2 is irrational, then explain where the proof uses unique factorization.", True),
+    ("Explain how a B-tree keeps its balance on insertion, with a small worked example.", False),
+    ("Write a haiku sequence of four poems about a city waking up in winter.", False),
+    ("Design a REST API for a library loan system: resources, endpoints, status codes and one example exchange.",
+     True),
+    ("What is the probability that two of 23 people share a birthday? Derive it and give the number.", True),
+    ("Write a Python decorator that retries a function with exponential backoff and jitter, with tests.", False),
+    ("Compare TCP congestion control in Reno and CUBIC for a long fat network.", True),
+    ("Explain to a new employee how to read a balance sheet, using a bakery as the example.", False),
+    (("Write a TypeScript function that deep-merges two JSON objects without mutating either, with type "
+      "definitions."), False),
+    (("Three boxes are labelled apples, oranges and mixed, and every label is wrong. Which single box do you open "
+      "to relabel them all, and why?"), True),
+    ("Write a short dialogue in Spanish between a customer and a pharmacist, then translate it to English.", False),
+    ("Explain the difference between a mutex, a semaphore and a condition variable, with a bug each one prevents.",
+     True),
+    ("Write a C function that parses an IPv4 address string into a 32-bit integer and rejects malformed input.",
+     False),
+    ("Estimate how many piano tuners work in Chicago. Show every assumption.", True),
+    ("Summarize the plot and themes of Mary Shelley's Frankenstein in two paragraphs.", False),
+    ("Write a SQL schema for a multi-tenant invoicing app and explain how it isolates tenants.", True),
+    ("Explain gradient descent with momentum, and why it helps on ill-conditioned problems.", True),
+    ("Write a cover letter for a junior data analyst position at a public transit agency.", False),
+    (("Refactor this into idiomatic Python and explain each change: for i in range(len(xs)): if xs[i] % 2 == 0: "
+      "ys.append(xs[i] * xs[i])"), False),
+    ("A store sells pens at 3 for $2 and 10 for $6. What is the cheapest way to buy 47 pens?", True),
+    ("Describe the water cycle as a story told by a single water molecule.", False),
+    (("Write a Go worker pool that processes jobs from a channel with a bounded number of goroutines and graceful "
+      "shutdown."), False),
+    ("Is it ever rational to vote in a large election? Lay out the strongest arguments on each side.", True),
+    ("Explain how public-key signatures let a browser trust a website, step by step.", True),
+    ("Write a regular expression that matches ISO 8601 dates with optional times, and test it on five strings.",
+     False),
+)
+SHORT_SETS = {"v1": [(text, False) for text in PROMPTS], "extra": list(EXTRA_PROMPTS)}   # --short sets in order
+LONG_ASK = "Summarize the document above file by file, noting anything unusual."
+# --mid-depths items in turn (multi-chunk prefill): (bench task, thinking)
+MID_ITEMS = (("doc-review", False), ("doc-code", True), ("doc-review", True), ("doc-code", False))
+CALIBRATION_VARIANTS = (4, 6)          # reorder-only variants per calibration (campaign decision): min, max
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# in-process capture
+
+
+def row_stats(torch, logits, top_k: int, forced: int, reference_ids=None) -> dict:
+    """One position's record from its logits row: float32 log-softmax top-K ids and log-probabilities, the log of
+    the mass outside them, the forced token's log-probability, the entropy and, given the reference's top-K ids, the
+    log-probabilities there and the log of the mass outside them (shared by the engine capture and campaign_golden)."""
+
+    lp = torch.log_softmax(logits.float(), dim=-1)
+    values, ids = torch.topk(lp, top_k)
+    entry = {"ids": ids.to(torch.int32).cpu(), "lp": values.cpu(), "tail_lp": _tail(torch, lp, ids),
+             "forced": float(lp[forced]), "entropy": float(-(lp.exp() * lp).sum())}
+    if reference_ids is not None:
+        at = torch.as_tensor(reference_ids, device=lp.device, dtype=torch.int64)
+        entry["at_ref"] = lp.index_select(0, at).cpu()
+        entry["at_ref_tail_lp"] = _tail(torch, lp, at)
+    return entry
+
+
+def _tail(torch, lp, ids) -> float:
+    """log of the probability mass outside ``ids`` (log-sum-exp, no cancellation; -inf when ``ids`` is the whole
+    vocabulary)."""
+
+    outside = torch.ones(lp.shape[0], dtype=torch.bool, device=lp.device)
+    outside[ids.to(torch.int64)] = False
+    return float(torch.logsumexp(lp.masked_fill(~outside, float("-inf")), 0))
+
+
+def save_dump(path: str, rows: list[dict], offsets: list[int], meta: dict) -> None:
+    """The dump format every comparison reads (engine dumps and campaign_golden references)."""
+
+    import numpy as np
+
+    arrays = {"ids": np.stack([r["ids"].numpy() for r in rows]), "lp": np.stack([r["lp"].numpy() for r in rows]),
+              "tail_lp": np.array([r["tail_lp"] for r in rows], dtype=np.float64),
+              "forced": np.array([r["forced"] for r in rows], dtype=np.float64),
+              "entropy": np.array([r["entropy"] for r in rows], dtype=np.float64),
+              "offsets": np.array(offsets, dtype=np.int64)}
+    if "at_ref" in rows[0]:
+        arrays["at_ref"] = np.stack([r["at_ref"].numpy() for r in rows])
+        arrays["at_ref_tail_lp"] = np.array([r["at_ref_tail_lp"] for r in rows], dtype=np.float64)
+    np.savez(path, meta=json.dumps(meta), **arrays)
+
+
+class Capture:
+    """The CUDA sampler stand-in: records each forced position's distribution and returns the forced tokens."""
+
+    def __init__(self, torch, top_k: int):
+        self.torch, self.top_k = torch, top_k
+        self.active = False
+
+    def begin(self, prompt_len: int, forced: list[int], reference_ids=None) -> None:
+        self.prompt_len, self.forced, self.reference_ids = prompt_len, forced, reference_ids
+        self.next, self.rows, self.dtype = 0, [], None
+        self.active = True
+
+    def __call__(self, logits, positions, sampling, *args, **kwargs):
+        if not self.active:
+            raise RuntimeError("target sampler called outside a teacher-forced pass")
+        torch = self.torch
+        out = []
+        self.dtype = str(logits.dtype)
+        for row, position in enumerate(positions):
+            index = int(position) - self.prompt_len
+            if index != self.next or not 0 <= index < len(self.forced):
+                raise RuntimeError(f"sampler position {position} is not the next forced position "
+                                   f"{self.prompt_len + self.next} (rows {len(positions)}): uncovered engine path")
+            self.rows.append(row_stats(torch, logits[row], self.top_k, self.forced[index],
+                                       None if self.reference_ids is None else self.reference_ids[index]))
+            out.append(int(self.forced[index]))
+            self.next += 1
+        return out
+
+    def end(self) -> list[dict]:
+        self.active = False
+        if self.next != len(self.forced):
+            raise RuntimeError(f"teacher-forced pass stopped at {self.next} of {len(self.forced)} positions")
+        return self.rows
+
+
+@contextlib.contextmanager
+def sampler_replaced(replacement):
+    """Point every loaded TensorFold reference to the CUDA ``sample_rows`` at ``replacement`` for the block (this
+    tool's capture, campaign_trace's marker), then restore the original."""
+
+    import tensorfold.cuda.sampling as sampling
+
+    original = sampling.sample_rows
+    modules = [module for name, module in list(sys.modules.items())
+               if name.startswith("tensorfold") and getattr(module, "sample_rows", None) is original]
+    for module in modules:
+        module.sample_rows = replacement
+    try:
+        yield
+    finally:
+        for module in modules:
+            module.sample_rows = original
+
+
+def build_plan(args) -> list[dict]:
+    """The items ``--build`` writes, in order, before anything is rendered: name and thinking mode, the prompt text of
+    a short item, and the ask and prompt depth of a corpus-backed one (``mid``: on its own window from --corpus-start
+    on, else a corpus prefix). Short items are the --short sets' prompts numbered across all SHORT_SETS (names stay
+    unique whichever sets are chosen); mid items cycle through MID_ITEMS (a document review or a document-to-code ask,
+    thinking off or on); long items have thinking off."""
+
+    mids, longs = build_depths(args)
+    chosen = [name for name in args.short.split(",") if name]
+    numbered = enumerate((name, prompt) for name, prompts in SHORT_SETS.items() for prompt in prompts)
+    plan = [{"name": f"short-{i}", "thinking": thinking, "text": text}
+            for i, (name, (text, thinking)) in numbered if name in chosen]
+    for k, depth in enumerate(mids):
+        task, thinking = MID_ITEMS[k % len(MID_ITEMS)]
+        plan.append({"name": f"mid-{depth}-{task}-{'think' if thinking else 'nothink'}", "thinking": thinking,
+                     "ask": TASKS[task], "depth": depth, "mid": True})
+    plan += [{"name": f"long-{depth}", "thinking": False, "ask": LONG_ASK, "depth": depth, "mid": False}
+             for depth in longs]
+    return plan
+
+
+def build_eval(app, args) -> dict:
+    """Prompts rendered by the served template and continuations sampled by this configuration (``args.cards``: card
+    sampling per thinking mode) for the items of build_plan; consecutive mid items take consecutive corpus windows.
+    Every document is the most corpus characters whose rendered prompt stays within its depth; its character range is
+    recorded, and a depth the corpus cannot fill is refused, never written short. eval_set checked the plan (depths
+    within the long-prefill hold, unique names, a card per thinking mode)."""
+
+    corpus = Path(args.corpus).read_text(encoding="utf-8") if args.corpus else None
+
+    def window(start: int, ask: str, depth: int, thinking: bool) -> tuple[str, list[int]]:
+        """The user message (a corpus document from ``start`` on, then ``ask``) and its document's character range."""
+
+        def render(chars: int) -> str:
+            return "<document>\n" + corpus[start:start + chars] + "\n</document>\n\n" + ask
+
+        def tokens(chars: int) -> int:
+            body = {"messages": [{"role": "user", "content": render(chars)}],
+                    "chat_template_kwargs": {"enable_thinking": thinking}}
+            return len(app.prepare(body, True).prompt)
+
+        rest = len(corpus) - start
+        if (empty := tokens(0)) > depth:
+            raise ValueError(f"a {depth}-token item: the empty document already renders {empty} tokens")
+        if rest <= depth * 8 and tokens(rest) <= depth:      # the whole rest fits: the corpus ends before the depth
+            raise ValueError(f"the corpus ({len(corpus)} characters) ends before a {depth}-token document from "
+                             f"character {start}")
+        lo, hi = 0, min(rest, depth * 8)
+        while hi - lo > 64:                          # bisection on characters: the largest document within depth
+            mid = (lo + hi) // 2
+            lo, hi = (mid, hi) if tokens(mid) <= depth else (lo, mid)
+        return render(lo), [start, start + lo]
+
+    items, start = [], args.corpus_start
+    for planned in build_plan(args):
+        fields = {}
+        if "depth" not in planned:
+            content = planned["text"]
+        else:
+            content, fields["document"] = window(start if planned["mid"] else 0, planned["ask"], planned["depth"],
+                                                 planned["thinking"])
+            if planned["mid"]:
+                start = fields["document"][1]        # the next mid window starts where this one ends
+        items.append({"name": planned["name"], "messages": [{"role": "user", "content": content}],
+                      "thinking": planned["thinking"], **fields})
+    engine = app.engine
+    for k, it in enumerate(items):
+        thinking = it.pop("thinking")
+        body = {"messages": it["messages"], "chat_template_kwargs": {"enable_thinking": thinking},
+                **args.cards["think" if thinking else "nothink"], "seed": 7000 + k}
+        prepared = app.prepare(body, True)
+        out: list[int] = []
+        HotGate.wait()                               # a new prompt only from a cool host
+        engine.generate(prepared.prompt, args.answer_tokens, prepared.sampling, lambda new: out.extend(new) or False)
+        it.update(prompt=list(prepared.prompt), answer=out[:args.answer_tokens], sampling=body)
+        print(json.dumps({"item": it["name"], "prompt": len(it["prompt"]), "answer": len(it["answer"])}), flush=True)
+    return {"version": 1, "created_unix_s": int(time.time()), "items": items,
+            "built_by": {"serve_args": args.serve, "source_revision": os.environ.get("TENSORFOLD_SOURCE_REVISION"),
+                         "tool_sha256": file_sha256(__file__),
+                         "corpus_sha256": file_sha256(args.corpus) if args.corpus else None}}
+
+
+def build_depths(args) -> tuple[list[int], list[int]]:
+    """The prompt lengths of the mid and long items ``--build`` writes (none without --corpus)."""
+
+    def depths(text: str) -> list[int]:
+        return [int(d) for d in text.split(",") if d] if args.corpus else []
+
+    return depths(args.mid_depths), depths(args.long_depths)
+
+
+def read_eval(path: Path) -> tuple[dict, str]:
+    """An eval set and the sha256 of the very bytes it was parsed from (the dump records what it teacher-forced)."""
+
+    raw = path.read_bytes()
+    return json.loads(raw), hashlib.sha256(raw).hexdigest()
+
+
+def eval_set(args) -> tuple[dict, str] | None:
+    """The eval set ``dump`` teacher-forces (read_eval), or None when ``--build`` is to write it; checked before the
+    engine loads, so a refusal costs no model load. During the campaign's long-prefill hold (lifted by
+    --allow-long-prefill) an eval set with items above LONG_PREFILL_TOKENS prompt tokens, or a build of mid or long
+    items above it, is refused; so is a build whose item names repeat (names are the items' identities) or whose
+    items use a thinking mode the profile has no card sampling for."""
+
+    path = Path(args.eval)
+    if not path.exists():
+        if not args.build:
+            raise SystemExit(f"{path} does not exist (pass --build with the reference configuration)")
+        if args.mid_depths and not args.corpus:
+            raise SystemExit("--mid-depths needs --corpus")
+        if args.corpus_start < 0:
+            raise SystemExit(f"--corpus-start {args.corpus_start} is not a corpus character index")
+        if unknown := [n for n in args.short.split(",") if n and n not in SHORT_SETS]:
+            raise SystemExit(f"unknown --short sets {unknown} (choose from {', '.join(SHORT_SETS)})")
+        plan = build_plan(args)
+        depths = [it["depth"] for it in plan if "depth" in it]
+        if any(d > LONG_PREFILL_TOKENS for d in depths) and not args.allow_long_prefill:
+            raise SystemExit(f"items of {depths} tokens exceed {LONG_PREFILL_TOKENS}: held by the campaign's "
+                             "long-prefill hold (pass --allow-long-prefill once it is lifted)")
+        names = [it["name"] for it in plan]
+        if repeated := sorted({n for n in names if names.count(n) > 1}):
+            raise SystemExit(f"the build would repeat item names {repeated}: a --long-depths entry given twice, or a "
+                             f"--mid-depths depth twice at the same step of the {len(MID_ITEMS)}-step mid cycle")
+        if missing := sorted({"think" if it["thinking"] else "nothink" for it in plan} - set(args.cards)):
+            raise SystemExit(f"--profile has no card_sampling for {missing}, a mode of the built items (or pass "
+                             "--card)")
+        return None
+    data, digest = read_eval(path)
+    long_items = [it["name"] for it in data["items"] if len(it["prompt"]) > LONG_PREFILL_TOKENS]
+    if long_items and not args.allow_long_prefill:
+        raise SystemExit(f"eval items {long_items} exceed {LONG_PREFILL_TOKENS} prompt tokens: held by the campaign's "
+                         "long-prefill hold (use a subset eval set, campaign_kl.py subset, or --allow-long-prefill "
+                         "once the hold is lifted)")
+    return data, digest
+
+
+def dump(app, args, loaded: tuple[dict, str] | None) -> None:
+    """Teacher-force eval_set's ``loaded`` set (None: build EVAL.json with this configuration first) and save it."""
+
+    import numpy as np
+    import torch
+
+    eval_path = Path(args.eval)
+    if loaded is None:
+        eval_path.write_text(json.dumps(build_eval(app, args)))
+        loaded = read_eval(eval_path)
+    data, eval_sha256 = loaded
+    reference = np.load(args.reference) if args.reference else None
+    capture = Capture(torch, args.top_k)
+    rows, offsets, started = [], [], time.perf_counter()
+    with sampler_replaced(capture):
+        position = 0
+        for item in data["items"]:
+            n = len(item["answer"])
+            ref_ids = reference["ids"][position:position + n] if reference is not None else None
+            if ref_ids is not None and len(ref_ids) != n:
+                raise ValueError("reference dump does not match this eval set")
+            HotGate.wait()                           # a new prompt only from a cool host
+            capture.begin(len(item["prompt"]), item["answer"], ref_ids)
+            app.engine.generate(list(item["prompt"]), n, None, lambda new: False, draft=False, stop_eos=False)
+            rows.extend(capture.end())
+            offsets.append(position)
+            position += n
+            print(json.dumps({"item": item["name"], "positions": n,
+                              "elapsed_s": round(time.perf_counter() - started, 1)}), flush=True)
+    meta = {"eval_sha256": eval_sha256, "serve_args": args.serve,
+            "top_k": args.top_k, "logits_dtype": capture.dtype, "names": [it["name"] for it in data["items"]],
+            "reference": args.reference,
+            "reference_sha256": file_sha256(args.reference) if args.reference else None,
+            "source_revision": os.environ.get("TENSORFOLD_SOURCE_REVISION"),
+            "tool_sha256": file_sha256(__file__)}
+    save_dump(args.out, rows, offsets, meta)
+    print(json.dumps({"out": args.out, "positions": len(rows), **{k: meta[k] for k in ("logits_dtype", "top_k")}}))
+
+
+def with_app(serve_args: list[str], port: int, work) -> None:
+    """Build the engine and App through the production CLI (``tensorfold serve`` with these flags), then call
+    ``work(app)`` in place of serving HTTP; the CLI closes the engine afterwards. The CLI binds its socket on
+    127.0.0.1:``port`` before serving, so the port must be free; no request is accepted on it."""
+
+    from tensorfold import cli
+    from tensorfold.cuda import server
+
+    argv = list(serve_args)
+    for flag, value in (("--host", "127.0.0.1"), ("--port", str(port))):
+        if flag in argv:
+            argv[argv.index(flag) + 1] = value
+        else:
+            argv += [flag, value]
+    done = []
+
+    def hooked(app, host, port, server=None):
+        work(app)
+        done.append(True)
+
+    previous = server.serve
+    server.serve = hooked
+    try:
+        status = cli.main(argv)
+    finally:
+        server.serve = previous
+    if type(status) is not int:
+        raise RuntimeError("the production CLI must return an integer status")
+    if status != 0:
+        raise SystemExit(status)
+    if not done:
+        raise SystemExit("the serve hook never ran")
+
+
+# ---------------------------------------------------------------------------------------------------------------
+# comparison (numpy only)
+
+
+def _load_pair(ref_path: str, cand_path: str):
+    import numpy as np
+
+    ref, cand = np.load(ref_path), np.load(cand_path)
+    ref_meta, cand_meta = json.loads(str(ref["meta"])), json.loads(str(cand["meta"]))
+    if ref_meta["eval_sha256"] != cand_meta["eval_sha256"]:
+        raise ValueError("the dumps were made from different eval sets")
+    if "at_ref" not in cand.files:
+        raise ValueError("the candidate dump needs --reference (log-probabilities at the reference's top-K ids)")
+    if "tail_lp" not in ref.files or "at_ref_tail_lp" not in cand.files:
+        raise ValueError("a dump without log-sum-exp tail masses (made before they were recorded): dump it again")
+    if ref["lp"].shape != cand["at_ref"].shape:
+        raise ValueError("reference and candidate positions differ")
+    if cand_meta.get("reference_sha256") != file_sha256(ref_path):
+        raise ValueError(f"{cand_path} was dumped against another reference than {ref_path} (or before dumps "
+                         "recorded their reference's sha256: dump it again)")
+    return ref, cand, ref_meta, cand_meta
+
+
+def position_kl(ref, cand):
+    """Per position KL(ref || cand) on the reference's top-K ids plus the merged tail bucket, and the reference's
+    tail mass."""
+
+    import numpy as np
+
+    lp_p = ref["lp"].astype(np.float64)
+    lp_q = cand["at_ref"].astype(np.float64)
+    p = np.exp(lp_p)
+    kl_top = (p * (lp_p - lp_q)).sum(-1)
+    tail_p, tail_q = ref["tail_lp"].astype(np.float64), cand["at_ref_tail_lp"].astype(np.float64)
+    p_tail = np.exp(tail_p)
+    # an empty tail (top-K = vocabulary) contributes nothing; log masses never subtract -inf from -inf
+    return kl_top + p_tail * np.subtract(tail_p, tail_q, out=np.zeros_like(tail_p), where=p_tail > 0), p_tail
+
+
+def compare(ref_path: str, cand_path: str) -> dict:
+    import numpy as np
+
+    ref, cand, ref_meta, cand_meta = _load_pair(ref_path, cand_path)
+    kl, p_tail = position_kl(ref, cand)
+    agree = ref["ids"][:, 0] == cand["ids"][:, 0]
+    in_top5 = (cand["ids"][:, :5] == ref["ids"][:, :1]).any(-1)
+    names, offsets = ref_meta["names"], [*ref["offsets"], len(kl)]
+    per_item = {name: {"positions": int(offsets[i + 1] - offsets[i]),
+                       "kl_mean": float(kl[offsets[i]:offsets[i + 1]].mean()),
+                       "top1_agreement": float(agree[offsets[i]:offsets[i + 1]].mean())}
+                for i, name in enumerate(names)}
+    return {"reference": ref_path, "candidate": cand_path, "positions": len(kl), "top_k": ref_meta["top_k"],
+            "logits_dtype": {"reference": ref_meta["logits_dtype"], "candidate": cand_meta["logits_dtype"]},
+            "kl": {"mean": float(kl.mean()), "median": float(np.median(kl)), "p95": float(np.quantile(kl, 0.95)),
+                   "p99": float(np.quantile(kl, 0.99)), "max": float(kl.max()),
+                   "over_0.1": int((kl > 0.1).sum()), "over_1": int((kl > 1).sum()), "kind": "lower bound"},
+            "tail_mass_ref": {"mean": float(p_tail.mean()), "max": float(p_tail.max())},
+            "top1_agreement": float(agree.mean()), "ref_top1_in_cand_top5": float(in_top5.mean()),
+            "nll_forced": {"reference": float(-ref["forced"].mean()), "candidate": float(-cand["forced"].mean())},
+            "entropy_mean": {"reference": float(ref["entropy"].mean()), "candidate": float(cand["entropy"].mean())},
+            "identical_logprobs": bool(np.array_equal(ref["lp"], cand["lp"]) and np.array_equal(ref["ids"], cand["ids"])
+                                       and np.array_equal(ref["tail_lp"], cand["tail_lp"])),
+            "per_item": per_item,
+            "method": "KL(ref||cand) on the reference top-K ids plus one merged tail bucket (float32 log-sum-exp "
+                      "masses): a lower bound of the true KL to float32 log-softmax rounding (~1e-7 nats); serial "
+                      "path; teacher-forced on the reference continuation"}
+
+
+def block_bootstrap(values, offsets, block: int, resamples: int, seed: int):
+    """Means of ``values`` (columns resampled together, rows = positions) over circular blocks of ``block``
+    positions drawn with replacement within the eval items: no block spans two items, so the serial correlation of
+    positions inside a reply is kept, and a block may wrap from an item's end to its start, so every position lies in
+    equally many blocks. An item of at most ``block`` positions is one block, drawn ``block`` times as often. Every
+    position therefore has the same expected weight and the resampled means centre on the sample mean (plain moving
+    blocks under-weight each item's first and last positions and short items). Returns [resamples, columns]."""
+
+    import numpy as np
+
+    if block < 1 or resamples < 1:
+        raise ValueError("bootstrap block and resamples must be positive")
+    values = np.asarray(values, dtype=np.float64)
+    bounds = [*offsets, len(values)]
+    sums, sizes, weights = [], [], []
+    for first, end in itertools.pairwise(bounds):
+        item = values[first:end]
+        if len(item) == 0:
+            continue
+        if len(item) <= block:
+            sums.append(item.sum(0)[None])
+            sizes.append([len(item)])
+            weights.append([block])
+        else:
+            ring = np.concatenate([item, item[:block - 1]])
+            sums.append(np.lib.stride_tricks.sliding_window_view(ring, block, axis=0).sum(-1))
+            sizes.append([block] * len(item))
+            weights.append([1] * len(item))
+    sums, sizes, weights = np.concatenate(sums), np.concatenate(sizes), np.concatenate(weights).astype(np.float64)
+    count = max(1, round(weights.sum() / block))     # blocks per resample: about as many positions as the eval set
+    picks = np.random.default_rng(seed).choice(len(sums), size=(resamples, count), p=weights / weights.sum())
+    return sums[picks].sum(1) / sizes[picks].sum(1)[:, None]
+
+
+def paired(golden_path: str, old_path: str, new_path: str, *, block: int, resamples: int, seed: int) -> dict:
+    """KL(golden || x) and golden top-1 agreement of OLD and NEW, their paired per-position differences and 95%
+    circular-block bootstrap intervals (dumps checked against the golden reference)."""
+
+    import numpy as np
+
+    golden, old, golden_meta, old_meta = _load_pair(golden_path, old_path)
+    if not golden_meta.get("golden"):
+        raise ValueError(f"{golden_path} is not a campaign_golden reference")
+    _, new, _, new_meta = _load_pair(golden_path, new_path)
+    kl_old, p_tail = position_kl(golden, old)
+    kl_new, _ = position_kl(golden, new)
+    for path, values in ((old_path, kl_old), (new_path, kl_new)):
+        # NaN compares false with every bound, so a NaN interval would pass; NaN/-inf log-probabilities (a broken
+        # kernel, zero mass on a golden top-K id) leave the comparison undefined
+        if not np.isfinite(values).all():
+            raise ValueError(f"KL(golden || {path}) is not finite at {int((~np.isfinite(values)).sum())} positions "
+                             "(NaN or -inf log-probabilities in the dump or the golden reference)")
+    top = golden["ids"][:, 0]
+    agree_old = (old["ids"][:, 0] == top).astype(np.float64)
+    agree_new = (new["ids"][:, 0] == top).astype(np.float64)
+    columns = np.stack([kl_old, kl_new, kl_new - kl_old, agree_old, agree_new, agree_new - agree_old], 1)
+    boot = block_bootstrap(columns, golden["offsets"], block, resamples, seed)
+    low, high = np.quantile(boot, [0.025, 0.975], axis=0)
+    names = ("kl_old", "kl_new", "kl_delta", "agreement_old", "agreement_new", "agreement_delta")
+    stats = {name: {"mean": float(columns[:, i].mean()), "ci95": [float(low[i]), float(high[i])]}
+             for i, name in enumerate(names)}
+    return {"golden": golden_path, "golden_sha256": file_sha256(golden_path),
+            "golden_subset_of": golden_meta.get("subset_of"), "old": old_path, "new": new_path,
+            "old_sha256": file_sha256(old_path), "new_sha256": file_sha256(new_path),
+            "positions": len(columns), "golden_source": golden_meta.get("source"),
+            "eval_sha256": golden_meta["eval_sha256"], "old_source": old_meta.get("source_revision"),
+            "new_source": new_meta.get("source_revision"), **stats,
+            "golden_tail_mass": {"mean": float(p_tail.mean()), "max": float(p_tail.max())},
+            "bootstrap": {"block": block, "resamples": resamples, "seed": seed, "numpy": np.__version__,
+                          "kind": "circular blocks within items, equal expected weight per position"}}
+
+
+MARGIN_METHOD = "ci_bound"     # calibration records name their margin rule; a gate refuses any other
+
+
+def margins(rows: dict[str, dict]) -> dict:
+    """Non-inferiority margins from reorder-only variants' paired comparisons with the base: the largest deviation a
+    numerically equivalent build shows at this eval size and confidence, i.e. the largest absolute 95% bound of the
+    KL(golden || x) change (delta_kl) and of the top-1 agreement change (delta_agreement) over the variants."""
+
+    return {"delta_kl": max(abs(b) for r in rows.values() for b in r["kl_delta"]["ci95"]),
+            "delta_agreement": max(abs(b) for r in rows.values() for b in r["agreement_delta"]["ci95"])}
+
+
+def verdict(kl_ci: list[float], agreement_ci: list[float], delta_kl: float, delta_agreement: float) -> tuple[str, list]:
+    """Non-inferiority verdict of one paired comparison: "fail" when an interval lies wholly beyond its margin (lower
+    KL bound > delta_kl, or upper agreement bound < -delta_agreement: a regression is established), "pass" when the
+    upper KL bound <= delta_kl and the lower agreement bound >= -delta_agreement, else "incomplete" (an interval
+    straddles its margin: uncertainty, resolved by more evidence, never a pass). Improvements never fail. Returns the
+    status and the measures that failed or straddled."""
+
+    (kl_low, kl_high), (agree_low, agree_high) = kl_ci, agreement_ci
+    beyond = [n for n, bad in (("kl", kl_low > delta_kl), ("agreement", agree_high < -delta_agreement)) if bad]
+    if beyond:
+        return "fail", beyond
+    straddling = [n for n, bad in (("kl", kl_high > delta_kl), ("agreement", agree_low < -delta_agreement)) if bad]
+    return ("incomplete", straddling) if straddling else ("pass", [])
+
+
+def calibrate(golden_path: str, base_path: str, variants: dict[str, str], *, block: int = 64,
+              resamples: int = 4000, seed: int = 0) -> dict:
+    """Non-inferiority margins (see ``margins``) from 4 to 6 reorder-only variants (the same declared math, another
+    summation order) of the base build, each dumped against the golden reference, fixed before any candidate is seen.
+    Every variant's differences and intervals are recorded, delta_kl also as a percentage of the base's KL (None for
+    a base whose KL is 0), and a leave-one-out check (each variant judged with the margins of the others) counts the
+    gate's false alarms."""
+
+    import numpy as np
+
+    if not CALIBRATION_VARIANTS[0] <= len(variants) <= CALIBRATION_VARIANTS[1]:
+        raise ValueError(f"calibration takes {CALIBRATION_VARIANTS[0]} to {CALIBRATION_VARIANTS[1]} reorder-only "
+                         f"variants, not {len(variants)} (the margins are the largest of their deviations)")
+    base = np.load(base_path)
+    for name, path in variants.items():
+        # positive control: the engine is deterministic, so a bit-identical dump means the patch did not load or
+        # changed no bits; it carries no reorder information
+        if np.array_equal(np.load(path)["at_ref"], base["at_ref"]):
+            raise ValueError(f"variant {name} ({path}) is bit-identical to the base: not a reorder sample")
+    rows = {name: paired(golden_path, base_path, path, block=block, resamples=resamples, seed=seed)
+            for name, path in variants.items()}
+    first = next(iter(rows.values()))
+    found = margins(rows)
+    base_kl = first["kl_old"]["mean"]
+    held_out = {}
+    for name, row in rows.items():
+        others = margins({k: r for k, r in rows.items() if k != name})
+        status, measures = verdict(row["kl_delta"]["ci95"], row["agreement_delta"]["ci95"], others["delta_kl"],
+                                   others["delta_agreement"])
+        held_out[name] = {**others, "status": status, "measures": measures}
+    return {"golden": golden_path, "golden_sha256": first["golden_sha256"], "eval_sha256": first["eval_sha256"],
+            "golden_subset_of": first["golden_subset_of"],
+            "golden_source": first["golden_source"], "base": base_path, "base_sha256": first["old_sha256"],
+            "positions": first["positions"], "bootstrap": first["bootstrap"], "margin_method": MARGIN_METHOD,
+            **found, "delta_kl_pct_of_base_kl": 100 * found["delta_kl"] / base_kl if base_kl > 0 else None,
+            "variants": {name: {k: r[k] for k in ("new", "new_sha256", "new_source", "kl_new", "kl_delta",
+                                                   "agreement_new", "agreement_delta")} for name, r in rows.items()},
+            "base_values": {k: first[k] for k in ("kl_old", "agreement_old")},
+            "leave_one_out": {"variants": held_out,
+                              "false_alarms": sorted(n for n, v in held_out.items() if v["status"] != "pass")},
+            "method": "delta = max over reorder-only variants of the absolute 95% bounds of their paired difference "
+                      "from the base (KL(golden||x) change; golden top-1 agreement change); gate: fail when an "
+                      "interval lies wholly beyond its margin, pass when the KL upper bound <= delta_kl and the "
+                      "agreement lower bound >= -delta_agreement, otherwise incomplete"}
+
+
+def gate(golden_path: str, old_path: str, new_path: str, *, calibration: dict | None = None, block: int = 64,
+         resamples: int = 4000, seed: int = 0) -> dict:
+    """Golden-reference non-inferiority gate of NEW against OLD under the model's calibration record (margins from
+    reorder-only variants, ``margins``; the verdict rule is ``verdict``). Without a calibration the status is
+    "uncalibrated" (intervals reported, no verdict; the CLI exits 3 as for incomplete). A calibration belongs to one
+    golden reference (eval set and positions) and bootstrap setting, and must name MARGIN_METHOD and carry finite
+    non-negative margins (refused otherwise); delta_kl is reported in nats and as a percentage of the calibration
+    base's KL."""
+
+    result = paired(golden_path, old_path, new_path, block=block, resamples=resamples, seed=seed)
+    result["ci_width"] = {k: result[k]["ci95"][1] - result[k]["ci95"][0] for k in ("kl_delta", "agreement_delta")}
+    if calibration is None:
+        result.update(status="uncalibrated", margins=None)
+        return result
+    if calibration.get("margin_method") != MARGIN_METHOD:
+        raise ValueError(f"calibration margin method {calibration.get('margin_method')!r} is not {MARGIN_METHOD!r}: "
+                         "recalibrate (campaign_kl.py calibrate) from the variant dumps")
+    for key in ("golden_sha256", "eval_sha256", "positions"):
+        if calibration[key] != result[key]:
+            raise ValueError(f"calibration {key} does not match this gate's golden reference")
+    for key in ("block", "resamples", "seed"):
+        if calibration["bootstrap"][key] != result["bootstrap"][key]:
+            raise ValueError(f"bootstrap {key} {result['bootstrap'][key]} differs from the calibration's "
+                             f"{calibration['bootstrap'][key]}")
+    delta_kl, delta_agree = calibration["delta_kl"], calibration["delta_agreement"]
+    # the record crossed a file boundary (json reads NaN and Infinity): every comparison with a NaN margin is false and
+    # an infinite one is never exceeded, so either would pass any candidate; calibrate writes finite bounds >= 0
+    if not all(isinstance(m, (int, float)) and 0 <= m < math.inf for m in (delta_kl, delta_agree)):
+        raise ValueError(f"calibration margins delta_kl={delta_kl!r}, delta_agreement={delta_agree!r} are not finite "
+                         "non-negative numbers: recalibrate (campaign_kl.py calibrate) from the variant dumps")
+    status, measures = verdict(result["kl_delta"]["ci95"], result["agreement_delta"]["ci95"], delta_kl, delta_agree)
+    result["margins"] = {"delta_kl": delta_kl, "delta_kl_pct_of_base_kl": calibration["delta_kl_pct_of_base_kl"],
+                         "delta_agreement": delta_agree, "method": calibration["margin_method"],
+                         "calibration_base": calibration["base"], "variants": sorted(calibration["variants"]),
+                         "leave_one_out_false_alarms": calibration["leave_one_out"]["false_alarms"]}
+    result.update(status=status, failed=measures if status == "fail" else [],
+                  straddling=measures if status == "incomplete" else [],
+                  method="non-inferiority against the golden reference: fail when an interval lies wholly beyond "
+                         "its margin (a regression is established); pass iff the upper 95% bound of KL(golden||new) "
+                         "- KL(golden||old) <= delta_kl and the lower bound of the top-1 agreement change >= "
+                         "-delta_agreement; otherwise incomplete (uncertainty, never a pass)")
+    return result
+
+
+def golden_reference(golden_path: str, eval_path: str):
+    """A campaign_golden reference and the eval set it scored: the eval set, the sha256 of the very bytes parsed
+    (read_eval), the dump and its meta; refused unless the reference names exactly that eval set."""
+
+    import numpy as np
+
+    data, eval_sha256 = read_eval(Path(eval_path))
+    golden = np.load(golden_path)
+    meta = json.loads(str(golden["meta"]))
+    if meta.get("eval_sha256") != eval_sha256 or not meta.get("golden"):
+        raise ValueError(f"{golden_path} is not a campaign_golden reference of {eval_path}")
+    return data, eval_sha256, golden, meta
+
+
+def writable_out(out_dir: str, *inputs: str) -> Path:
+    """OUT_DIR of subset or append, refused when its eval.json or golden/kl.npz is one of the ``inputs``: the result
+    would replace a file it is made from (the reference other records name by its sha256)."""
+
+    out = Path(out_dir)
+    sources = {Path(path).resolve() for path in inputs}
+    if any(path.resolve() in sources for path in (out / "eval.json", out / "golden" / "kl.npz")):
+        raise ValueError(f"{out_dir} holds an input's own eval.json or golden/kl.npz: the result would replace it "
+                         "(choose another OUT_DIR)")
+    return out
+
+
+def subset(golden_path: str, eval_path: str, out_dir: str, *, max_prompt_tokens: int) -> dict:
+    """A golden reference and eval set restricted to the items of at most ``max_prompt_tokens`` prompt tokens, sliced
+    from existing ones (no GPU): OUT/eval.json and OUT/golden/{kl.npz, meta.json}, the layout the runner's --kl-from
+    reads. Both record what they were cut from (sha256 of the full golden reference and eval set, item names), so a
+    gate names the set it used; the dumps of a candidate must use this subset's eval.json. OUT must not be the full
+    set's own directory: the subset would replace the files it is cut from."""
+
+    import numpy as np
+
+    out = writable_out(out_dir, golden_path, eval_path)
+    data, eval_sha256, golden, meta = golden_reference(golden_path, eval_path)
+    offsets = [*golden["offsets"], len(golden["lp"])]
+    keep = [i for i, item in enumerate(data["items"]) if len(item["prompt"]) <= max_prompt_tokens]
+    if not keep:
+        raise ValueError(f"no eval item has at most {max_prompt_tokens} prompt tokens")
+    rows = np.concatenate([np.arange(offsets[i], offsets[i + 1]) for i in keep])
+    (out / "golden").mkdir(parents=True, exist_ok=True)
+    names = [data["items"][i]["name"] for i in keep]
+    origin = {"golden_sha256": file_sha256(golden_path), "eval_sha256": eval_sha256,
+              "max_prompt_tokens": max_prompt_tokens, "items": names}
+    (out / "eval.json").write_text(json.dumps({**{k: v for k, v in data.items() if k != "items"},
+                                               "items": [data["items"][i] for i in keep], "subset_of": origin}))
+    sizes = [offsets[i + 1] - offsets[i] for i in keep]
+    arrays = {k: golden[k][rows] for k in golden.files if k not in ("meta", "offsets")}
+    arrays["offsets"] = np.concatenate([[0], np.cumsum(sizes)[:-1]]).astype(np.int64)
+    new_meta = {**meta, "eval_sha256": file_sha256(str(out / "eval.json")), "names": names, "subset_of": origin}
+    np.savez(out / "golden" / "kl.npz", meta=json.dumps(new_meta), **arrays)
+    (out / "golden" / "meta.json").write_text(json.dumps({"golden_dir": meta.get("model_dir"), "subset_of": origin,
+                                                          "source": meta.get("source")}, indent=1))
+    return {"out": str(out), "items": names, "positions": len(rows), **origin}
+
+
+# golden meta fields that fix a reference's numbers: the parts of one reference must agree on all of them
+GOLDEN_CONTRACT = ("source", "architecture", "config_sha256", "top_k", "logits_dtype", "versions", "chunk")
+GOLDEN_PRECISION = ("weights", "compute")
+GOLDEN_SESSION = ("tool_sha256", "load_s", "load")       # one scoring session's facts, kept per part
+
+
+def append(base_golden: str, base_eval: str, new_golden: str, new_eval: str, out_dir: str) -> dict:
+    """An eval set and its golden reference extended by new items that another campaign_golden session scored (no
+    GPU): OUT/eval.json and OUT/golden/{kl.npz, meta.json}, the runner's --kl-from layout. The base rows are copied
+    unchanged, never rescored. Both inputs must be full golden references of their eval sets (subset the result,
+    not the parts) with the same checkpoint, model config, top-K, logits dtype, library versions, prefill chunk and
+    weight/compute precision, and disjoint item names; OUT must hold none of them. ``parts`` lists every scoring
+    session in order (an appended base keeps its own parts) with its hashes, items, tool hash, precision record and
+    eval build record."""
+
+    import numpy as np
+
+    out = writable_out(out_dir, base_golden, base_eval, new_golden, new_eval)
+    loaded = []
+    for golden_path, eval_path in ((base_golden, base_eval), (new_golden, new_eval)):
+        data, eval_sha256, golden, meta = golden_reference(golden_path, eval_path)
+        if "subset_of" in meta or "subset_of" in data:
+            raise ValueError(f"{golden_path} is a subset: append extends full references (subset the result)")
+        part = {"golden_sha256": file_sha256(golden_path), "eval_sha256": eval_sha256, "items": meta["names"],
+                "positions": len(golden["lp"]), "precision": meta.get("precision"), "built_by": data.get("built_by"),
+                **{k: meta.get(k) for k in GOLDEN_SESSION}}
+        loaded.append((data, golden, meta, meta.get("parts") or [part]))
+    (base, base_rows, base_meta, base_parts), (new, new_rows, new_meta, new_parts) = loaded
+    differ = [k for k in GOLDEN_CONTRACT if base_meta.get(k) != new_meta.get(k)]
+    differ += [f"precision.{k}" for k in GOLDEN_PRECISION
+               if (base_meta.get("precision") or {}).get(k) != (new_meta.get("precision") or {}).get(k)]
+    if differ:
+        raise ValueError(f"the golden parts differ in {differ}: they are not one reference")
+    names = base_meta["names"] + new_meta["names"]
+    if len(set(names)) != len(names):
+        raise ValueError(f"item names repeat across the parts: {sorted({n for n in names if names.count(n) > 1})}")
+    if set(base_rows.files) != set(new_rows.files):
+        extra = sorted(set(base_rows.files) ^ set(new_rows.files))
+        raise ValueError(f"the golden parts hold different arrays: {extra}")
+    parts = base_parts + new_parts
+    (out / "golden").mkdir(parents=True, exist_ok=True)
+    (out / "eval.json").write_text(json.dumps({**{k: v for k, v in base.items() if k not in ("items", "parts")},
+                                               "items": base["items"] + new["items"], "parts": parts}))
+    arrays = {k: np.concatenate([base_rows[k], new_rows[k]]) for k in base_rows.files if k not in ("meta", "offsets")}
+    arrays["offsets"] = np.concatenate([base_rows["offsets"], new_rows["offsets"] + len(base_rows["lp"])])
+    meta = {**{k: v for k, v in base_meta.items() if k not in GOLDEN_SESSION},
+            "eval_sha256": file_sha256(str(out / "eval.json")), "names": names, "parts": parts}
+    np.savez(out / "golden" / "kl.npz", meta=json.dumps(meta), **arrays)
+    (out / "golden" / "meta.json").write_text(json.dumps({"golden_dir": base_meta.get("model_dir"), "parts": parts,
+                                                          "source": base_meta.get("source")}, indent=1))
+    return {"out": str(out), "items": names, "positions": len(arrays["lp"]), "parts": parts}
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="command", required=True)
+    d = sub.add_parser("dump")
+    d.add_argument("--eval", required=True)
+    d.add_argument("--out", required=True)
+    d.add_argument("--reference")
+    d.add_argument("--build", action="store_true", help="write --eval first when it is missing")
+    d.add_argument("--corpus", help="corpus file for the mid and long items (with --build)")
+    d.add_argument("--short", default="v1",
+                   help=f"short prompt sets to build, comma-separated from {', '.join(SHORT_SETS)} ('' for none; "
+                        "items are numbered across all sets) (with --build)")
+    d.add_argument("--mid-depths", default="",
+                   help="mid item prompt lengths, e.g. 4096,8192,12288,16384 (with --build and --corpus)")
+    d.add_argument("--corpus-start", type=int, default=0,
+                   help="corpus character where the mid items' consecutive windows start (with --build)")
+    d.add_argument("--long-depths", default="32768", help="long item prompt lengths (with --build)")
+    d.add_argument("--allow-long-prefill", action="store_true",
+                   help=f"build or dump items above {LONG_PREFILL_TOKENS} prompt tokens (held otherwise)")
+    d.add_argument("--answer-tokens", type=int, default=256)
+    d.add_argument("--profile", help="bench profile: --build continuations use its card sampling per thinking mode")
+    d.add_argument("--card", type=json.loads, help="JSON sampling fields for every --build item (overrides --profile)")
+    d.add_argument("--top-k", type=int, default=1024)
+    d.add_argument("--hot-flag", help="the guard's hot-state file (campaign_bench.HotGate; default $TFC_HOT_FLAG)")
+    d.add_argument("--port", type=int, default=8899, help="the CLI binds its HTTP socket here (nothing is served)")
+    d.add_argument("serve", nargs=argparse.REMAINDER, help="-- serve MODEL [production flags]")
+    c = sub.add_parser("compare")
+    c.add_argument("reference")
+    c.add_argument("candidate")
+    c.add_argument("--out")
+    g = sub.add_parser("gate", help="golden-reference gate: GOLDEN OLD NEW (OLD, NEW dumped with --reference GOLDEN)")
+    g.add_argument("golden")
+    g.add_argument("old")
+    g.add_argument("new")
+    g.add_argument("--calibration", help="the model's calibration record (margins); without it: uncalibrated")
+    a = sub.add_parser("append", help="extend a golden reference + eval set by separately scored new items")
+    for name in ("base_golden", "base_eval", "new_golden", "new_eval"):
+        a.add_argument(name)
+    a.add_argument("out_dir", help="writes eval.json and golden/{kl.npz,meta.json}")
+    a.add_argument("--out", help="also write the result summary here")
+    u = sub.add_parser("subset", help="slice a golden reference + eval set to items of at most N prompt tokens")
+    u.add_argument("golden")
+    u.add_argument("eval")
+    u.add_argument("out_dir", help="writes eval.json and golden/{kl.npz,meta.json}; not the full set's directory")
+    u.add_argument("--max-prompt-tokens", type=int, default=LONG_PREFILL_TOKENS)
+    u.add_argument("--out", help="also write the result summary here")
+    k = sub.add_parser("calibrate", help="margins from reorder-only variants: GOLDEN BASE NAME=DUMP ...")
+    k.add_argument("golden")
+    k.add_argument("base")
+    k.add_argument("variants", nargs="+",
+                   help=f"NAME=DUMP of {CALIBRATION_VARIANTS[0]} to {CALIBRATION_VARIANTS[1]} reorder-only variants "
+                        "of BASE (dumped with --reference GOLDEN)")
+    for parser in (g, k):
+        parser.add_argument("--block", type=int, default=64, help="bootstrap block length in positions")
+        parser.add_argument("--resamples", type=int, default=4000)
+        parser.add_argument("--seed", type=int, default=0)
+        parser.add_argument("--out")
+    args = ap.parse_args()
+    if args.command == "dump":
+        HotGate.configure(args.hot_flag)
+        if args.serve and args.serve[0] == "--":
+            args.serve = args.serve[1:]
+        if not args.serve or args.serve[0] != "serve":
+            ap.error("dump needs -- serve MODEL [flags]")
+        if args.card is not None:                    # --card overrides the profile, which is then not read
+            args.cards = {"think": args.card, "nothink": args.card}
+        elif args.profile:                           # a mode it lacks is refused by eval_set if the build uses it
+            args.cards = json.loads(Path(args.profile).read_text())["card_sampling"]
+        else:
+            args.cards = {"think": {}, "nothink": {}}
+        loaded = eval_set(args)                      # refusals before the engine loads
+        with_app(args.serve, args.port, lambda app: dump(app, args, loaded))
+    else:
+        if args.command == "compare":
+            result = compare(args.reference, args.candidate)
+        elif args.command == "append":
+            result = append(args.base_golden, args.base_eval, args.new_golden, args.new_eval, args.out_dir)
+        elif args.command == "subset":
+            result = subset(args.golden, args.eval, args.out_dir, max_prompt_tokens=args.max_prompt_tokens)
+        else:
+            boot = {"block": args.block, "resamples": args.resamples, "seed": args.seed}
+            if args.command == "calibrate":
+                pairs = [v.split("=", 1) for v in args.variants]
+                if any(len(p) != 2 or not all(p) for p in pairs) or len({p[0] for p in pairs}) != len(pairs):
+                    ap.error("calibrate variants must be distinct NAME=DUMP arguments")
+                result = calibrate(args.golden, args.base, dict(pairs), **boot)
+            else:
+                try:
+                    record = json.loads(Path(args.calibration).read_text()) if args.calibration else None
+                    result = gate(args.golden, args.old, args.new, calibration=record, **boot)
+                except Exception as error:  # noqa: BLE001 - CLI boundary: any gate failure is an error (exit 4), not a verdict
+                    traceback.print_exc()
+                    result = {"status": "error", "error": f"{type(error).__name__}: {error}", "golden": args.golden,
+                              "old": args.old, "new": args.new, "calibration": args.calibration}
+        text = json.dumps(result, indent=1)
+        try:
+            if args.out:
+                Path(args.out).write_text(text + "\n")
+        except OSError as error:
+            if args.command != "gate":
+                raise
+            traceback.print_exc()                    # a verdict that cannot be recorded is an error, not a fail
+            print(json.dumps({"status": "error", "error": f"{type(error).__name__}: {error}"}))
+            return 4
+        print(text)
+        if args.command == "gate":
+            # no verdict (incomplete, uncalibrated) is never a pass; an error (exit 4) is neither pass nor fail (C8)
+            return {"pass": 0, "fail": 1, "error": 4}.get(result["status"], 3)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

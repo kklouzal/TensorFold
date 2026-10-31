@@ -6,7 +6,6 @@ import bz2
 import codecs
 from contextlib import contextmanager
 import gzip
-import json
 import os
 import stat
 from dataclasses import dataclass, field
@@ -17,27 +16,14 @@ import numpy as np
 import torch
 
 from tensorfold.cuda import experts as grouped
+from tensorfold.checkpoint_metadata import read_config
+from tensorfold.token_metadata import resolve_eos
 
 from ..host_table import BF16Table, HostTable
 from ..ssd_table import SSDTable
 from ..rope import RopeParameters
 from .ngram import NGram
 from .qmm import Q4
-
-
-def stop_ids(configured: Any, generation: Path) -> tuple[int, ...]:
-    """config.json's end-of-reply ids, then generation_config.json's it lacks (EXL3 packs keep <|im_end|> there)."""
-
-    def ids(value: Any) -> list[int]:
-        return [] if value is None else [int(e) for e in value] if isinstance(value, list) else [int(value)]
-
-    found = ids(configured)
-    if generation.exists():
-        found += ids(json.loads(generation.read_text()).get("eos_token_id"))
-    out = tuple(dict.fromkeys(found))
-    if not out:
-        raise ValueError("no eos_token_id in config.json or generation_config.json")
-    return out
 
 
 @dataclass
@@ -80,14 +66,15 @@ class Config:
     eos: tuple[int, ...]
     group_size: int
     bits: int
-    quant: str = "mlx"                 # "mlx" (affine 4-bit everywhere) or "modelopt" (NVFP4 routed experts)
+    quant: str = "mlx"                 # MLX affine, ModelOpt/NVFP4, EXL3 or original mixed GGUF storage.
     mrope_section: tuple[int, int, int] = (11, 11, 10)   # interleaved t/h/w rotary pairs
     nvfp4_group: int = 16              # the NVFP4 block size (the checkpoint's config_groups weights.group_size)
     rope: RopeParameters | None = None  # immutable startup policy; tiny synthetic fixtures default to native RoPE
+    execution_dtype: str = "bfloat16"   # the selected execution provider, independently of weight/cache storage
 
     @classmethod
-    def read(cls, model_dir: str | Path, *, rope: RopeParameters | None = None) -> "Config":
-        raw = json.loads((Path(model_dir) / "config.json").read_text())
+    def read(cls, model_dir: str | Path, *, rope: RopeParameters | None = None, eos_token_ids=None) -> "Config":
+        raw = read_config(model_dir)
         policy = rope if rope is not None else RopeParameters.from_config(raw)
         t = dict(raw.get("text_config") or raw)
         # unset, the gate is hidden_act (itself "silu" when unset), as transformers' Qwen4ExpConfig resolves it
@@ -96,7 +83,14 @@ class Config:
             raise ValueError(f"output_gate_type {gate!r}: the CUDA backend's DeltaNet kernels support 'sigmoid' only")
         head_dim = int(t.get("head_dim") or t["hidden_size"] // t["num_attention_heads"])
         teos = t.get("eos_token_id")
-        eos = stop_ids(raw.get("eos_token_id", teos), Path(model_dir) / "generation_config.json")
+        ple_eos = t.get("gguf_ple_eos_token_id", teos)
+        metadata_root = Path(model_dir).parent if Path(model_dir).suffix.lower() == ".gguf" else model_dir
+        # The resolved GGUF target profile names its generation role separately
+        # from its scalar EOS identity and PLE segmentation. It needs no text
+        # frontend construction in geometry/weight-only planning.
+        resolved_eos = raw.get("generation_eos_token_ids") if raw.get("gguf_entrypoint") else None
+        eos = resolve_eos(metadata_root, raw.get("eos_token_id", teos), vocab_size=int(t["vocab_size"]),
+                          override=eos_token_ids if eos_token_ids is not None else resolved_eos)
         quant = raw.get("quantization") or raw.get("quantization_config") or {}
         method = str(quant.get("quant_method") or "mlx").lower()
         groups = quant.get("config_groups") or {}
@@ -122,11 +116,12 @@ class Config:
             ngram_base=int(t.get("ngram_vocab_size_base", 20_000_000)),
             ngram_divisor=int(t.get("make_ngram_vocab_size_divisible_by", 128)),
             ngram_shards=int(t.get("split_ngram_parts", 128)), seed=int(t.get("seed", 1234)),
-            ple_eos=int(teos[0] if isinstance(teos, list) else teos) if teos is not None else 0,
+            ple_eos=int(ple_eos[0] if isinstance(ple_eos, list) else ple_eos) if ple_eos is not None else 0,
             eos=eos, group_size=int(quant.get("group_size", 32)), bits=int(quant.get("bits", 4)),
             quant=method, nvfp4_group=group,
             mrope_section=policy.mrope_section,
             rope=policy,
+            execution_dtype=str(raw.get("execution_dtype", "float16" if method == "gguf" else "bfloat16")),
         )
 
     @property
@@ -143,8 +138,8 @@ class Config:
 
     def ngram(self, ple_index: int = 0) -> NGram:
         return NGram(vocab=self.vocab, ngram_size=self.ngram_size, heads_per_ngram=self.heads_per_ngram,
-                     vocab_base=self.ngram_base, divisor=self.ngram_divisor, shards=self.ngram_shards,
-                     seed=self.seed, eos=self.ple_eos, embed_dim=self.ple_dim, ple_index=ple_index)
+                     vocab_base=self.ngram_base, divisor=self.ngram_divisor, seed=self.seed,
+                     eos=self.ple_eos, embed_dim=self.ple_dim, ple_index=ple_index)
 
 
 @dataclass
@@ -161,10 +156,15 @@ class HC:
 class GDNW:
     proj: Q4                  # [qkv | z | b | a] x D
     conv: torch.Tensor        # [conv_dim, taps] bf16
-    a_log: torch.Tensor       # [nv] fp32
+    a_log: torch.Tensor | None  # [nv] FP32 HF A_log; absent for stored GGUF A_neg
     dt_bias: torch.Tensor     # [nv] fp32
     norm: torch.Tensor        # [dv] bf16 (the gated RMSNorm's weight, used as stored)
     out: Q4
+    a_neg: torch.Tensor | None = None  # [nv] FP32 GGUF -exp(A_log), consumed directly
+
+    def __post_init__(self):
+        if (self.a_log is None) == (self.a_neg is None):
+            raise ValueError("GDN weights require exactly one declared decay representation")
 
     @property
     def kernel(self) -> str:
@@ -242,6 +242,11 @@ class Weights:
     draft_ids: torch.Tensor | None = None   # the subset's token ids (this rank's share), in draft-head row order
     x3: Any = None            # an EXL3 checkpoint's shared scratch (``exl3.Scratch``); None for the MLX checkpoint
 
+    dspark: Any = None       # explicit separate draft owner; never an MTPW
+    dflash2: Any = None      # bounded-window DFlash2 owner; target storage is borrowed
+    positions: Any = None    # explicit immutable positional binding; None preserves the existing platform policy
+    draft_filter: torch.Tensor | None = None  # bool exclusions over the actual target head's local vocabulary shard
+
     @property
     def device(self) -> torch.device:
         return self.inv_freq.device
@@ -275,7 +280,8 @@ class Weights:
                 for tensor in x.device_tensors():
                     add(tensor)
 
-        for part in (self.embed, self.layers, self.mixer, self.head, self.mtp, self.draft_head, self.draft_ids):
+        for part in (self.embed, self.layers, self.mixer, self.head, self.mtp, self.draft_head, self.draft_ids,
+                     self.draft_filter, self.dspark, self.dflash2):
             add(part)
         return sum(seen.values()) + (self.x3.nbytes() if self.x3 is not None else 0)
 

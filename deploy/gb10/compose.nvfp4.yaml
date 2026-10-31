@@ -1,0 +1,75 @@
+name: tensorfold-gb10-nvfp4
+
+services:
+  tensorfold:
+    image: ${TENSORFOLD_IMAGE:?Set an immutable qualified runtime image}
+    container_name: qwen38-flash-next-nvfp4
+    entrypoint: [python3, /opt/harness/cuda_entrypoint.py, python3, /opt/harness/tensorfold_harness.py]
+    command:
+      - serve
+      - /model
+      - --backend
+      - cuda
+      - --host
+      - 0.0.0.0
+      - --port
+      - '8888'
+      - --name
+      - Qwen3.8-Flash-Next
+      - --alias
+      - flash-next-gb10
+      - --precision
+      - checkpoint
+      - --parallel
+      - '4'
+      - --context
+      - '0'
+      - --kv-dtype
+      - rotorquant-iso4
+      - --mtp-drafts
+      - '6'
+      - --mtp-confidence
+      - '0.70'
+      - --drafter
+      - none
+      - --ple-on-ssd
+      - --vision
+      - --thinking-budget
+      - '0'
+    environment:
+      HF_HUB_OFFLINE: '1'
+      TENSORFOLD_NO_UPDATE_CHECK: '1'
+      TENSORFOLD_MEMORY_RESERVE_GIB: '8'
+      TENSORFOLD_MTP_COPY: '0'
+      MAX_JOBS: '20'
+      OMP_NUM_THREADS: '20'
+      MKL_NUM_THREADS: '20'
+    volumes:
+      - type: bind
+        source: ${TENSORFOLD_MODEL_PATH:?Set the pinned NVFP4 snapshot directory}
+        target: /model
+        read_only: true
+      - type: bind
+        source: ${TENSORFOLD_CACHE:?Set the writable kernel cache directory}
+        target: /cache
+    devices:
+      - nvidia.com/gpu=${TENSORFOLD_GPU_UUID:?Set the GB10 GPU UUID}
+    cpuset: ${TENSORFOLD_CPUSET:-0-19}
+    network_mode: host
+    ipc: host
+    restart: unless-stopped
+    ulimits:
+      memlock: -1
+      stack: -1
+      nofile: 1048576
+    logging:
+      driver: local
+      options:
+        max-size: 20m
+        max-file: '3'
+    healthcheck:
+      test: [CMD, python3, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8888/health', timeout=5).read()"]
+      interval: 30s
+      timeout: 10s
+      start_period: 15m
+      retries: 3

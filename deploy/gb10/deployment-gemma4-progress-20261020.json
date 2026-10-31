@@ -1,0 +1,335 @@
+{
+  "schema": 1,
+  "verified_utc": "2026-10-20T03:55:22.304868+00:00",
+  "status": "progress_protocol_deployed_and_verified",
+  "scope": "Actual native ARM64 ed242 builds, installed CPU and image-only persistent rollout, plus cold/warm SSE progress protocol; not a full tool-cycle or numerical/performance release qualification.",
+  "change": "Gemma _prefill reports processed=start, including cached tokens, instead of start-cached. The image also retains the already approved CLI thinking default; production explicitly keeps --thinking --thinking-budget0.",
+  "source": {
+    "image_git_commit": "ed24272a6fac018517e96600af9e40f310d91f66",
+    "source_uid": "922374993b656feab34b5a29173d6197c6feeb7b80e33174fa033bf487717786",
+    "build_input_uid": "fa7869c470b68e50447f6aef611e0fbea7ac77355b2d2c9f724c891c8f5edc63",
+    "source_archive_sha256": "325aed30f794d2a85a1931460a1457c21f26e1a6f15749de6247b9c9e3c3271f",
+    "installed_engine_sha256": "33ddc2f8d50b0c0c9b935ccf412fb68fe80ee5a5e9cfd1c4869660708f350a00",
+    "receipt_commit_separate_from_image_commit": true
+  },
+  "images": {
+    "runtime": "sha256:5be0e0faa5565a36796f6f644a2678c20910cb6fcb0df92d3d57d4ad1bac3c65",
+    "verification": "sha256:67833fc6f15adafb425dc347961e2f7a1b522c4252d5d62d855bbe48346a704c"
+  },
+  "build": {
+    "architecture": "arm64",
+    "host": "NVIDIA GB10, SM12.1",
+    "targets_exit_code": {
+      "runtime": 0,
+      "verification": 0
+    },
+    "MAX_JOBS": 10,
+    "named_context_uids": {
+      "foundation_pins": "ee5504ceb9f9450dd35f234c84299143f0fd099d137657ce50fc5171f6d241eb",
+      "foundation_artifacts": "0ab18b4c77514d760df0579a3ef1084b66eaf1e11e21753f9d3b56dc0d1164e0"
+    },
+    "foundation": "Exact existing pinned D19 contexts, locks and native addons; no resolver/dependency/kernel changes."
+  },
+  "deployment": {
+    "container_id": "57b5795d811c243f2fe78d2129d89947613e5e2330481bd79bc1d548f177bbf3",
+    "previous_container_id": "1eb754877a1d0307553eb50b33c6dd415a010cdcd591f3ba897cef343d855c07",
+    "previous_image": "sha256:740a919adceb431c200a364bc157f2117e35c957316b57441fe6e41bfd3759f2",
+    "previous_container_retired": true,
+    "image_only_environment_update": {
+      "old_env_sha256": "3457f464074acb72e530142176259e01ddb0a08fd447489adb8cce0ddadb820c",
+      "new_env_sha256": "f56ebb6c4fd6ffb1336bd1c83bb540b25a21bb1587a495cc58900f6a3199eddf",
+      "changed_keys": [
+        "TENSORFOLD_IMAGE"
+      ],
+      "all_other_lines_byte_equal": true,
+      "new_image_matches_intent": true,
+      "private_env_data_exported": false
+    },
+    "profile_unchanged": true,
+    "cmd": [
+      "serve",
+      "/model",
+      "--backend",
+      "cuda",
+      "--precision",
+      "checkpoint",
+      "--name",
+      "gemma4-26b",
+      "--host",
+      "0.0.0.0",
+      "--port",
+      "8888",
+      "--drafter",
+      "/drafter",
+      "--drafter-bits",
+      "16",
+      "--draft-rows",
+      "5",
+      "--parallel",
+      "1",
+      "--context",
+      "262144",
+      "--kv-dtype",
+      "bf16",
+      "--vision",
+      "--thinking",
+      "--thinking-budget",
+      "0",
+      "--chat-template",
+      "/templates/gemma4-chat-template-google-4d7ae498.jinja"
+    ],
+    "entrypoint": [
+      "python3",
+      "/opt/harness/cuda_entrypoint.py",
+      "python3",
+      "/opt/harness/tensorfold_harness.py"
+    ],
+    "context": 262144,
+    "thinking_enabled": true,
+    "thinking_budget": 0,
+    "drafter_bits": 16,
+    "draft_rows": 5,
+    "parallel": 1,
+    "kv_dtype": "bf16",
+    "vision": true,
+    "cpuset_cpus": "5-9,15-19",
+    "environment_resource_parameters": {
+      "MAX_JOBS": "10",
+      "OMP_NUM_THREADS": "10",
+      "MKL_NUM_THREADS": "10",
+      "TENSORFOLD_MEMORY_RESERVE_GIB": "16"
+    },
+    "restart_policy": {
+      "Name": "unless-stopped",
+      "MaximumRetryCount": 0
+    },
+    "restart_count": 0,
+    "health_status": "healthy",
+    "clock_policy": "No clock or VBoost change in this rollout.",
+    "model_and_cache_mounts_unchanged": true,
+    "template_sha256": "ae53464bf3be25802b3a5b37def7fd89667067d7577049b3b2d74c4d8de4c6d4",
+    "speech_containers_preserved": {
+      "chatterbox-openclaw-minimal-cu133": {
+        "cid": "4a7d482a657a33bbc65087de328f8d399cd1e245995749907412cd45291e8bb2",
+        "image": "sha256:a59c567002952038de0f574d0f4b15a4fa2a2d59adeddaee1e990d31b964b262"
+      },
+      "parakeet-openclaw-minimal-cu133": {
+        "cid": "bfa9d23ea8845dd95238cb1df123af2903458b4484fbdef06bc66fae475804b7",
+        "image": "sha256:5bfa6a4a271e77d5bc7b9132e8b56d9b6716850ef85c5f40d8d1ec08809e4365"
+      }
+    }
+  },
+  "validation": {
+    "current_source_cpu": {
+      "passed": 100,
+      "failed": 0,
+      "skipped": 0,
+      "test_modules": [
+        "tests/test_gemma_cuda_engine.py",
+        "tests/test_server_stats.py",
+        "tests/test_server_watchdog.py"
+      ],
+      "scope": "Canonical source in bounded pinned AMD64 verification container; includes cold/cached/chunked/cancelled prefill."
+    },
+    "fresh_installed_arm64_cpu": {
+      "passed": 100,
+      "failed": 0,
+      "skipped": 0,
+      "verification_image": "sha256:67833fc6f15adafb425dc347961e2f7a1b522c4252d5d62d855bbe48346a704c",
+      "installed_origin": "/opt/tensorfold-venv/lib/python3.12/site-packages/tensorfold/families/gemma4/cuda/engine.py",
+      "engine_sha256": "33ddc2f8d50b0c0c9b935ccf412fb68fe80ee5a5e9cfd1c4869660708f350a00",
+      "network": "none",
+      "gpu": "void",
+      "source_overlay": false,
+      "exit_code": 0,
+      "retirement_proven": true
+    },
+    "live_native_progress": {
+      "passed": true,
+      "region": "Production thinking enabled/unlimited thinking_budget0, greedy, sequential, max_tokens16 response cap, no interleaving; complete [DONE]+EOF consumed.",
+      "runs": [
+        {
+          "request": {
+            "model": "gemma4-26b",
+            "stream": true,
+            "return_progress": true,
+            "temperature": 0,
+            "max_tokens": 16,
+            "thinking_budget": 0,
+            "chat_template_kwargs": {
+              "enable_thinking": true
+            }
+          },
+          "prompt_tokens": 1316,
+          "cached_tokens": 0,
+          "progress": [
+            {
+              "total": 1316,
+              "cache": 0,
+              "processed": 1024,
+              "time_ms": 14
+            },
+            {
+              "total": 1316,
+              "cache": 0,
+              "processed": 1313,
+              "time_ms": 148
+            },
+            {
+              "total": 1316,
+              "cache": 0,
+              "processed": 1316,
+              "time_ms": 204
+            }
+          ],
+          "progress_before_generated_output": true,
+          "terminal_and_eof_consumed": true,
+          "finish_reason": "length",
+          "request_sha256": "2273276ec9ba6195eb2628e777f8f051864887f5d7006c1a5f24d8c35632b0bc",
+          "full_sse_sha256": "670847ecc170a8054ffce0691f799c21e19c8a4e7502c631e25e102d1f133eff"
+        },
+        {
+          "request": {
+            "model": "gemma4-26b",
+            "stream": true,
+            "return_progress": true,
+            "temperature": 0,
+            "max_tokens": 16,
+            "thinking_budget": 0,
+            "chat_template_kwargs": {
+              "enable_thinking": true
+            }
+          },
+          "prompt_tokens": 1333,
+          "cached_tokens": 1316,
+          "progress": [
+            {
+              "total": 1333,
+              "cache": 1316,
+              "processed": 1330,
+              "time_ms": 16
+            },
+            {
+              "total": 1333,
+              "cache": 1316,
+              "processed": 1333,
+              "time_ms": 43
+            }
+          ],
+          "progress_before_generated_output": true,
+          "terminal_and_eof_consumed": true,
+          "finish_reason": "length",
+          "request_sha256": "22ee5e042a4f4a0d8f7eccfb5a486ef7e38d6d369741584cb1e113dd509b5f87",
+          "full_sse_sha256": "ba1c8b0078eaace96db76bdd305f4150412a098d41c25194db804bc2d60160fe"
+        }
+      ],
+      "old_source_counterfactual": {
+        "processed": [
+          14,
+          17
+        ],
+        "cache": 1316,
+        "description": "Derived old start-cached values from the actual warm states; violates cache<=processed. Not a retained old live payload."
+      }
+    },
+    "earlier_budget8_probe_disposition": "Preserved as valid cold protocol runs, not first-run warm coverage. Forced thinking-close resumes replaced the single prefix checkpoint; aggregate internal cached differs from first-run usage/progress. Production budget0 warm04 is the decisive live progress gate.",
+    "harness_integration": {
+      "component_verified_utc": "2026-10-20T04:32:50.962910+00:00",
+      "production_source": "a39d3f1e36bb6f47e9618d6ea48dcdd47189e671",
+      "verifier_test_metadata_commit": "5ef0b35042f62308be59202f9d6548064c1e3a21",
+      "verifier_source_sha256": "feb1154ab571c576bb592a6f530120d7a6cb091125e52e947093025465da38df",
+      "scope": "Two declared isolated real speech-tool cases through the reviewed Harness source against the unchanged live GB10 Gemma image; no universal tool or model-trajectory claim.",
+      "cases": {
+        "live-e2e-02": {
+          "passed": true,
+          "natural_completion": true,
+          "model_requests": 2,
+          "tts_requests": 1,
+          "continuation_audited": true,
+          "nonempty_reasoning_replay_audited": false,
+          "fixture_owner_api_host_retired": true,
+          "report_sha256": "f64ae31bfe55bc92d96959d49cd71e29562600c5818c6b181ce38532592ef133"
+        },
+        "live-positive-01": {
+          "passed": true,
+          "natural_completion": true,
+          "model_requests": 2,
+          "tts_requests": 1,
+          "continuation_audited": true,
+          "nonempty_reasoning_replay_audited": true,
+          "fixture_owner_api_host_retired": true,
+          "report_sha256": "55bee568c36a080fd5c85ef0beca63b3145ebc003535f7aff07a68a36b699d5c"
+        }
+      },
+      "positive_case_reasoning_characters": {
+        "pre_tool_replayed_exactly": 413,
+        "post_tool_separate_from_answer": 120
+      },
+      "boundary_controls": {
+        "passed": 18,
+        "failed": 0,
+        "skipped": 0
+      },
+      "independent_reviews": {
+        "D13": "closed verified exactfeb + both actual cases",
+        "D14": "closed verified exactfeb + both actual cases"
+      },
+      "final_seeded_backend": {
+        "passed": 5612,
+        "failed": 0,
+        "skipped": 30,
+        "seed": 20261020,
+        "exit_code": 0,
+        "skips": "Expected opt-ins remain skipped in this full-suite result; real speech and both model cases passed separately."
+      },
+      "harness_rollout": {
+        "status": "VERIFIED_DEPLOYED",
+        "status_source": "Sealed Harness release receipt: final API, UI, Kubernetes, process, storage, routing, provider and settings checks passed.",
+        "final_release_receipt": "/Warehouse/Harness/review/cloak-voice-name-20261020/release-receipt.json",
+        "final_release_receipt_status": "VERIFIED_DEPLOYED",
+        "final_release_receipt_sha256": "cfe319524bcf52c2cacbf01d38ef8adcfc1f8e4074279bfdfbfa0f91ff610f90",
+        "final_release_receipt_verified_utc": "2026-10-20T04:55:32.544616+00:00",
+        "sealed_release_receipt_copy": "/home/kklouzal/audit-artifacts/tensorfold-progress-ed24272a-arm64/harness-integration-follow-up-v2/release-receipt.json",
+        "manifest_audit_commit": "f717eacbfb90a2e7bf528feffd43a5f64603916e",
+        "production_image_source": "a39d3f1e36bb6f47e9618d6ea48dcdd47189e671",
+        "verification_test_commit": "5ef0b35042f62308be59202f9d6548064c1e3a21"
+      },
+      "gb10_post_rollout_confirmation": {
+        "observed_utc": "2026-10-20T04:49:58.572099+00:00",
+        "container_id": "57b5795d811c243f2fe78d2129d89947613e5e2330481bd79bc1d548f177bbf3",
+        "image": "sha256:5be0e0faa5565a36796f6f644a2678c20910cb6fcb0df92d3d57d4ad1bac3c65",
+        "image_source": "ed24272a6fac018517e96600af9e40f310d91f66",
+        "health": "healthy",
+        "restart_count": 0,
+        "original_profile_cmd_entrypoint_mounts_host_unchanged": true,
+        "thinking_default": true,
+        "thinking_budget": 0,
+        "context": 262144,
+        "template_sha256": "ae53464bf3be25802b3a5b37def7fd89667067d7577049b3b2d74c4d8de4c6d4",
+        "speech_container_ids_images_preserved": true,
+        "check_method": "Docker inspect, metadata hash and GET health/stats only; no generation or service/configuration mutation."
+      },
+      "evidence_manifest": "/home/kklouzal/audit-artifacts/tensorfold-progress-ed24272a-arm64/harness-integration-follow-up-v2/manifest.json",
+      "evidence_manifest_sha256": "5cbd7090f95ef3f55cb5805fd2c4abce475f0ef0cb872fbd5104a36367ac0a91",
+      "historical_failure_preservation": "The original failed/cancelled user run and live-e2e-01 observer failure remain unchanged and are not counted as passes."
+    }
+  },
+  "limitations": [
+    "The absolute prompt-progress contract and two separately declared Harness speech-tool integration cases were verified under their recorded source/image scopes; see validation.harness_integration for the independent Harness release evidence.",
+    "Only the two declared speech-tool cases were exercised. This is not universal tool coverage or a guarantee that every model trajectory terminates. Preserve the failed/cancelled historical run and the initial observer failure unchanged.",
+    "No new numerical, full-context, media-quality or comparative-performance result or winner is claimed.",
+    "The unselected multi-thought parser candidate was preserved as investigation evidence and removed from canonical source; this image contains no such parser change."
+  ],
+  "evidence": {
+    "artifact_root": "/home/kklouzal/audit-artifacts/tensorfold-progress-ed24272a-arm64",
+    "manifest": "rollout-evidence-manifest.json",
+    "manifest_sha256": "4b9b26c503bf4d630b93035ffb1d7d7ce8706b9c09a49b33a4d096c48a397107",
+    "remote_build_root": "/home/kklouzal/tf-campaign/builds/tensorfold-progress-ed24272a-arm64",
+    "installed_cpu_directory": "rollout-evidence/installed-cpu",
+    "deployment_directory": "rollout-evidence/deployment",
+    "live_progress_directory": "rollout-evidence/live-progress-04",
+    "build_proof": "build-verification.json",
+    "build_proof_sha256": "8a20e48b92a11c66b397485cf2bc780612657386634b22bfd822d11e0fed9435",
+    "private_environment_or_user_transcripts_in_receipt": false
+  }
+}

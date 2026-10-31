@@ -33,6 +33,7 @@ from tensorfold.families.qwen3_5.cuda.multi import MultiDecoder  # noqa: E402
 from tensorfold.families.qwen3_5.cuda.prefill import CHUNK, prefill_chunk, prefill_state  # noqa: E402
 from tensorfold.families.qwen3_5.cuda.qmm_fast import prepare  # noqa: E402
 from tensorfold.families.qwen3_5.cuda.weights import Attention, Config, GDN, Layer, QLinear, Weights  # noqa: E402
+from prefix_checks import same_bits  # noqa: E402
 
 V = 512
 NL, NL2 = 198, 271          # Qwen's "\n" and "\n\n"
@@ -96,21 +97,16 @@ def _ids(tokens) -> torch.Tensor:
     return torch.tensor(list(tokens), dtype=torch.int32, device="cuda")
 
 
-def _same_bits(a: torch.Tensor, b: torch.Tensor) -> bool:
-    return (a.dtype == b.dtype and a.shape == b.shape and
-            torch.equal(a.contiguous().reshape(-1).view(torch.uint8), b.contiguous().reshape(-1).view(torch.uint8)))
-
-
 def _assert_same_state(a: State, b: State) -> None:
     assert a.pos == b.pos
     for i in range(len(a.rec)):
         if a.rec[i] is None:
             assert b.rec[i] is None and b.conv[i] is None
             (ka, va), (kb, vb) = a.kv[i], b.kv[i]
-            assert _same_bits(ka[:a.pos], kb[:b.pos]) and _same_bits(va[:a.pos], vb[:b.pos]), f"layer {i} K/V"
+            assert same_bits(ka[:a.pos], kb[:b.pos]) and same_bits(va[:a.pos], vb[:b.pos]), f"layer {i} K/V"
         else:
-            assert _same_bits(a.rec[i], b.rec[i]), f"layer {i} GDN state"
-            assert _same_bits(a.conv[i], b.conv[i]), f"layer {i} conv rows"
+            assert same_bits(a.rec[i], b.rec[i]), f"layer {i} GDN state"
+            assert same_bits(a.conv[i], b.conv[i]), f"layer {i} conv rows"
 
 
 def _shares_kv(kept: State, st: State) -> bool:
@@ -167,7 +163,7 @@ def test_a_cut_chunk_commits_as_one_and_returns_the_state_at_the_cut(w, cut, cac
     ids = _ids(tokens)
     h_one, _ = prefill_chunk(w, ids[cached:], one)
     h_two, _, part = prefill_chunk(w, ids[cached:], two, cut=cut)
-    assert _same_bits(h_one, h_two)
+    assert same_bits(h_one, h_two)
     _assert_same_state(two, one)
     prefill_chunk(w, ids[cached:cached + cut], prefix)
     assert part.pos == cached + cut and _shares_kv(part, two)
@@ -180,7 +176,7 @@ def test_keeping_a_point_leaves_the_prefill_unchanged_and_keeps_the_prefix_state
     (ref, ref_pending), ref_logits = _prefill(monkeypatch, w, prompt)
     for point in sorted({0, 1, 2, 3, n - 1, n, n // 2, n // 2 + 1, CHUNK} & set(range(n + 1))):
         (st, pending, (kept, snap)), logits = _prefill(monkeypatch, w, prompt, keep_at=point)
-        assert _same_bits(logits, ref_logits) and pending == ref_pending, point
+        assert same_bits(logits, ref_logits) and pending == ref_pending, point
         _assert_same_state(st, ref)
         assert kept.pos == point and snap is None and _shares_kv(kept, st)
         if point:
@@ -197,7 +193,7 @@ def test_short_spans_keep_the_same_states(w, size, cached):
     for point in sorted({cached, cached + 1, 63, 64, 65, 150, 299, 300} & set(range(cached, 301))):
         st = _chunked(w, prompt, [(0, cached)] if cached else [])
         h, (kept, _) = prefill_state(w, prompt, st, size=size, keep_at=point)
-        assert _same_bits(h, h_ref)
+        assert same_bits(h, h_ref)
         _assert_same_state(st, ref)
         assert kept.pos == point and _shares_kv(kept, st)
         if point:
@@ -217,7 +213,7 @@ def test_the_next_turn_resumed_one_token_early_equals_a_fresh_prefill(monkeypatc
     (fresh, fresh_pending), fresh_logits = _prefill(monkeypatch, w, second, sampling)
     (st, pending), logits = _prefill(monkeypatch, w, second, sampling, state=kept)
     assert torch.isfinite(fresh_logits.float()).all()
-    assert _same_bits(logits, fresh_logits)
+    assert same_bits(logits, fresh_logits)
     assert pending == fresh_pending == sample_rows(fresh_logits, [len(second)], sampling)[0]
     _assert_same_state(st, fresh)
 
@@ -232,7 +228,7 @@ def test_a_resumed_prefill_keeps_the_prefix_state_too(monkeypatch, w, cached):
     following = prompt[:299] + [NL2] + _prompt(40, seed=7)
     (again, again_pending), again_logits = _prefill(monkeypatch, w, following, state=kept)
     (fresh, fresh_pending), fresh_logits = _prefill(monkeypatch, w, following)
-    assert _same_bits(again_logits, fresh_logits) and again_pending == fresh_pending
+    assert same_bits(again_logits, fresh_logits) and again_pending == fresh_pending
     _assert_same_state(again, fresh)
 
 
@@ -248,7 +244,7 @@ def test_longer_and_repeated_prompts_resume_exactly(monkeypatch, w, sampling, n)
     for following in (prompt + reply[:-1] + _prompt(3, seed=14), prompt + _prompt(5, seed=13), list(prompt)):
         (again, again_pending), again_logits = _prefill(monkeypatch, w, following, sampling, state=kept)
         (fresh, fresh_pending), fresh_logits = _prefill(monkeypatch, w, following, sampling)
-        assert _same_bits(again_logits, fresh_logits) and again_pending == fresh_pending
+        assert same_bits(again_logits, fresh_logits) and again_pending == fresh_pending
         _assert_same_state(again, fresh)
 
 
@@ -263,7 +259,7 @@ def test_the_kept_state_holds_the_buffers_grown_after_the_point(monkeypatch, w, 
                           else (None, None))
     (ref, ref_pending), ref_logits = _prefill(monkeypatch, w, prompt, state=prefix_a)
     (st, pending, (kept, _)), logits = _prefill(monkeypatch, w, prompt, state=prefix_b, keep_at=point)
-    assert _same_bits(logits, ref_logits) and pending == ref_pending
+    assert same_bits(logits, ref_logits) and pending == ref_pending
     _assert_same_state(st, ref)
     if cached:
         assert prefix_b.kv is st.kv and n <= st.kv[3][0].shape[0]          # grown inside the chunk, for both
@@ -273,7 +269,7 @@ def test_the_kept_state_holds_the_buffers_grown_after_the_point(monkeypatch, w, 
     following = prompt[:point] + [NL2] + _prompt(5, seed=16)
     (again, again_pending), again_logits = _prefill(monkeypatch, w, following, state=kept)
     (fresh, fresh_pending), fresh_logits = _prefill(monkeypatch, w, following)
-    assert _same_bits(again_logits, fresh_logits) and again_pending == fresh_pending
+    assert same_bits(again_logits, fresh_logits) and again_pending == fresh_pending
     _assert_same_state(again, fresh)
 
 
@@ -298,7 +294,7 @@ class TapDraft:
 def _same_taps(a, b) -> bool:
     (rows_a, end_a), (rows_b, end_b) = a, b
     return (end_a == end_b and [p for p, _ in rows_a] == [p for p, _ in rows_b]
-            and all(_same_bits(x, y) for (_, x), (_, y) in zip(rows_a, rows_b)))
+            and all(same_bits(x, y) for (_, x), (_, y) in zip(rows_a, rows_b)))
 
 
 @pytest.mark.parametrize("window", [40, 1000])
@@ -312,7 +308,7 @@ def test_the_drafter_ends_as_without_the_point_and_its_snapshot_is_the_prefixs(m
     ref, new = TapDraft(window), TapDraft(window)
     (ref_st, ref_pending), ref_logits = _prefill(monkeypatch, w, prompt, draft=ref)
     (st, pending, (kept, snap)), logits = _prefill(monkeypatch, w, prompt, draft=new, keep_at=point)
-    assert _same_bits(logits, ref_logits) and pending == ref_pending
+    assert same_bits(logits, ref_logits) and pending == ref_pending
     _assert_same_state(st, ref_st)
     assert _same_taps(new.snapshot(), ref.snapshot())
     if point:
@@ -361,7 +357,7 @@ def _generate(engine, prompt, sampling, max_tokens=24, **kwargs):
 @pytest.mark.parametrize("base", [3, 126, 127, 250])
 def test_the_engine_resumes_the_next_turn_exactly(monkeypatch, w, sampling, base):
     """End to end on one GPU: the second turn resumes from the entry at n - 1 (``cached``), its prefill ends in a
-    fresh prefill's state, logits and first token, and its reply is a fresh engine's and the serial reference's. The
+    fresh prefill's state, logits and first token, and its reply is a fresh engine's (and serial's when greedy). The
     entries end one token before their prompts' ends and equal fresh prefills of their tokens."""
 
     first, second = _turns(base, seed=60 + base)
@@ -390,10 +386,11 @@ def test_the_engine_resumes_the_next_turn_exactly(monkeypatch, w, sampling, base
     logits, positions = sampled[0]
     assert positions == [len(second)]
     (fresh, fresh_pending), fresh_logits = _prefill(monkeypatch, w, second, sampling)
-    assert _same_bits(logits, fresh_logits) and pending == fresh_pending == reply[0]
+    assert same_bits(logits, fresh_logits) and pending == fresh_pending == reply[0]
     _assert_same_state(st, fresh)
-    assert reply == _generate(_engine(w), second, sampling)[0] == _generate(_engine(w), second, sampling,
-                                                                           draft=False)[0]
+    assert reply == _generate(_engine(w), second, sampling)[0]
+    if sampling is None:
+        assert reply == _generate(_engine(w), second, sampling, draft=False)[0]
     assert [ids for ids, _, _ in engine.cache.entries] == [first[:-1], second[:-1]]
     for ids, entry, _ in engine.cache.entries:
         _assert_same_state(entry, _prefill(monkeypatch, w, ids)[0][0])
@@ -402,7 +399,7 @@ def test_the_engine_resumes_the_next_turn_exactly(monkeypatch, w, sampling, base
 @pytest.mark.parametrize("sampling", [None, Sampling(77)])
 def test_the_concurrent_decoder_resumes_the_next_turn_exactly(w, sampling):
     """``--parallel N``: the prefix cache holds private states at n - 1; the next turn resumes from one and decodes
-    the serial reference's tokens."""
+    the same decoder's cold-reference tokens (also serial's when greedy)."""
 
     dec = MultiDecoder(w, None, keep=8, context=1 << 14)
     first, second = _turns(140, seed=70)
@@ -414,8 +411,15 @@ def test_the_concurrent_decoder_resumes_the_next_turn_exactly(w, sampling):
         while dec.live():
             dec.finish(dec.round())
         out[tuple(prompt)] = (got, s.cached)
-    st, first_token = prefill(w, second, sampling)
-    want = serial_decode(w, st, first_token, 16, sampling).tokens
+    fresh = MultiDecoder(w, None, keep=8, context=1 << 14)
+    control = Stream(list(second), 16, sampling)
+    fresh.admit(control)
+    while fresh.live():
+        fresh.finish(fresh.round())
+    want = control.out
+    if sampling is None:
+        st, first_token = prefill(w, second, sampling)
+        assert want == serial_decode(w, st, first_token, 16, sampling).tokens
     assert out[tuple(second)] == (want, len(first) - 1)
     assert [ids for ids, _, _ in dec.cache.entries] == [first[:-1], second[:-1]]
     for ids, entry, _ in dec.cache.entries:

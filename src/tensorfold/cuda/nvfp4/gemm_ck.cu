@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #include "../kernels/qmm_frag.cuh"
+#include "epilogue.cuh"
 #include "mma4.cuh"
 #include "swiglu4.cuh"
 
@@ -48,8 +49,8 @@ struct Up {
 template <int MODE, int BM, int BN, int WM, int WN, int STAGES, int KS, bool F32, int EPI = 0>
 __global__ void __launch_bounds__(WM * WN * 32) gemm_kernel(
         const uint8_t* __restrict__ x, const uint8_t* __restrict__ xs, const uint8_t* __restrict__ w,
-        const uint8_t* __restrict__ ws, float alpha, void* __restrict__ out, int M, int N, int K, int mpad, int npad,
-        int group, Up up) {
+        const uint8_t* __restrict__ ws, float alpha, const float* __restrict__ rs, const float* __restrict__ cs,
+        void* __restrict__ out, int M, int N, int K, int mpad, int npad, int group, Up up) {
     using G = Gemm<MODE, BM, BN, WM, WN, STAGES, KS>;
     constexpr bool GU = EPI > 0;
     static_assert(!GU || (MODE == A4 && BM == 128 && BN == 256 && WM == 2 && WN == 4), "128 x 256, 64 x 64 warps");
@@ -175,21 +176,24 @@ __global__ void __launch_bounds__(WM * WN * 32) gemm_kernel(
 #pragma unroll
         for (int j = 0; j < G::NT; ++j) {
             const int col = n0 + wn * (BN / WN) + j * 8 + t * 2;
+            if (col >= N) continue;                        // never stored; no factor read past npad (epilogue.cuh)
 #pragma unroll
             for (int h = 0; h < 2; ++h) {
                 const int row = m0 + wm * (BM / WM) + i * 16 + g + h * 8;
                 if (row >= M) continue;
-                const float v0 = acc[i][j][2 * h] * alpha, v1 = acc[i][j][2 * h + 1] * alpha;
+                const float2 v = epilogue::pair(epilogue::Scales{alpha, rs, cs}, row, col, acc[i][j][2 * h],
+                                                acc[i][j][2 * h + 1]);
+                const float v0 = v.x, v1 = v.y;
                 if (F32) {
                     float* dst = reinterpret_cast<float*>(out) + static_cast<size_t>(row) * N + col;
-                    if (col < N) dst[0] = v0;
+                    dst[0] = v0;
                     if (col + 1 < N) dst[1] = v1;
                 } else {
                     __nv_bfloat16* dst = reinterpret_cast<__nv_bfloat16*>(out) + static_cast<size_t>(row) * N + col;
                     if (col + 1 < N && (N & 1) == 0) {
                         *reinterpret_cast<__nv_bfloat162*>(dst) = __floats2bfloat162_rn(v0, v1);
                     } else {
-                        if (col < N) dst[0] = __float2bfloat16_rn(v0);
+                        dst[0] = __float2bfloat16_rn(v0);
                         if (col + 1 < N) dst[1] = __float2bfloat16_rn(v1);
                     }
                 }
@@ -199,7 +203,8 @@ __global__ void __launch_bounds__(WM * WN * 32) gemm_kernel(
 
 template <int MODE, int BM, int BN, int WM, int WN, int STAGES, int KS, bool F32, int EPI = 0>
 void launch(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, const at::Tensor& ws, double alpha,
-            at::Tensor& out, int M, int N, int K, int mpad, int npad, Up up = {}) {
+            const at::Tensor& rs, const at::Tensor& cs, at::Tensor& out, int M, int N, int K, int mpad, int npad,
+            Up up = {}) {
     using G = Gemm<MODE, BM, BN, WM, WN, STAGES, KS>;
     TORCH_CHECK((K / 64) % KS == 0, "K must hold whole stages");
     static_assert(EPI == 0 || G::SMEM >= swiglu4::XCH, "the stages hold the epilogue's hand-over");
@@ -215,8 +220,9 @@ void launch(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, cons
     kernel<<<rows_t * cols_t, G::THREADS, G::SMEM, at::cuda::getCurrentCUDAStream()>>>(
         reinterpret_cast<const uint8_t*>(x.data_ptr()), xs.defined() ? reinterpret_cast<const uint8_t*>(xs.data_ptr())
         : nullptr, reinterpret_cast<const uint8_t*>(w.data_ptr()), ws.defined() ? reinterpret_cast<const uint8_t*>(
-        ws.data_ptr()) : nullptr, static_cast<float>(alpha), out.defined() ? out.data_ptr() : nullptr, M, N, K, mpad,
-        npad, group, up);
+        ws.data_ptr()) : nullptr, static_cast<float>(alpha), rs.defined() ? rs.data_ptr<float>() : nullptr,
+        cs.defined() ? cs.data_ptr<float>() : nullptr, out.defined() ? out.data_ptr() : nullptr, M, N, K, mpad, npad,
+        group, up);
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 
@@ -224,31 +230,33 @@ void launch(const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, cons
 // (64 x 64 warps, two steps a stage), 3 64 x 128 (32 x 32 warps).
 template <int MODE, bool F32>
 void by_tile(int tile, bool gb10, const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, const at::Tensor& ws,
-             double alpha, at::Tensor& out, int M, int N, int K, int mpad, int npad) {
+             double alpha, const at::Tensor& rs, const at::Tensor& cs, at::Tensor& out, int M, int N, int K, int mpad,
+             int npad) {
     if (tile == 0) tile = !gb10 && M >= 512 && (K / 64) % 2 == 0 ? 2 : 1;
     switch (tile) {
-        case 2: launch<MODE, 128, 256, 2, 4, 2, 2, F32>(x, xs, w, ws, alpha, out, M, N, K, mpad, npad); break;
-        case 3: launch<MODE, 64, 128, 2, 4, 4, 1, F32>(x, xs, w, ws, alpha, out, M, N, K, mpad, npad); break;
-        default: launch<MODE, 128, 128, 2, 4, MODE == A4 ? 4 : 3, 1, F32>(x, xs, w, ws, alpha, out, M, N, K, mpad,
-                                                                              npad);
+        case 2: launch<MODE, 128, 256, 2, 4, 2, 2, F32>(x, xs, w, ws, alpha, rs, cs, out, M, N, K, mpad, npad); break;
+        case 3: launch<MODE, 64, 128, 2, 4, 4, 1, F32>(x, xs, w, ws, alpha, rs, cs, out, M, N, K, mpad, npad); break;
+        default: launch<MODE, 128, 128, 2, 4, MODE == A4 ? 4 : 3, 1, F32>(x, xs, w, ws, alpha, rs, cs, out, M, N, K,
+                                                                              mpad, npad);
     }
 }
 
 }  // namespace
 
 void gemm_cuda(int64_t mode, const at::Tensor& x, const at::Tensor& xs, const at::Tensor& w, const at::Tensor& ws,
-               double alpha, at::Tensor& out, int64_t N, int64_t K, int64_t npad, int64_t tile, bool f32) {
+               double alpha, const at::Tensor& rs, const at::Tensor& cs, at::Tensor& out, int64_t N, int64_t K,
+               int64_t npad, int64_t tile, bool f32) {
     const int M = static_cast<int>(out.size(0)), n = static_cast<int>(N), k = static_cast<int>(K);
     const int mpad = mode == A4 ? static_cast<int>(xs.size(1)) : 0, np = static_cast<int>(npad);
     const int tl = static_cast<int>(tile);
     const auto* props = at::cuda::getCurrentDeviceProperties();
     const bool gb10 = props->major == 12 && props->minor == 1;
     if (mode == A4) {
-        if (f32) by_tile<A4, true>(tl, gb10, x, xs, w, ws, alpha, out, M, n, k, mpad, np);
-        else by_tile<A4, false>(tl, gb10, x, xs, w, ws, alpha, out, M, n, k, mpad, np);
+        if (f32) by_tile<A4, true>(tl, gb10, x, xs, w, ws, alpha, rs, cs, out, M, n, k, mpad, np);
+        else by_tile<A4, false>(tl, gb10, x, xs, w, ws, alpha, rs, cs, out, M, n, k, mpad, np);
     } else {
-        if (f32) by_tile<A8, true>(tl, gb10, x, xs, w, ws, alpha, out, M, n, k, mpad, np);
-        else by_tile<A8, false>(tl, gb10, x, xs, w, ws, alpha, out, M, n, k, mpad, np);
+        if (f32) by_tile<A8, true>(tl, gb10, x, xs, w, ws, alpha, rs, cs, out, M, n, k, mpad, np);
+        else by_tile<A8, false>(tl, gb10, x, xs, w, ws, alpha, rs, cs, out, M, n, k, mpad, np);
     }
 }
 
@@ -263,6 +271,7 @@ void gemm_gu_ck_cuda(const at::Tensor& x, const at::Tensor& xs, const at::Tensor
     at::Tensor none;
     const int m = static_cast<int>(M), k = static_cast<int>(K), mpad = static_cast<int>(xs.size(1));
     const int np = static_cast<int>(npad);
-    if (fp32) launch<A4, 128, 256, 2, 4, 3, 2, false, 2>(x, xs, wg, wsg, alpha_g, none, m, np, k, mpad, np, up);
-    else launch<A4, 128, 256, 2, 4, 3, 2, false, 1>(x, xs, wg, wsg, alpha_g, none, m, np, k, mpad, np, up);
+    if (fp32) launch<A4, 128, 256, 2, 4, 3, 2, false, 2>(x, xs, wg, wsg, alpha_g, none, none, none, m, np, k, mpad, np,
+                                                          up);
+    else launch<A4, 128, 256, 2, 4, 3, 2, false, 1>(x, xs, wg, wsg, alpha_g, none, none, none, m, np, k, mpad, np, up);
 }
