@@ -65,8 +65,14 @@ services:
       XDG_CACHE_HOME: /cache/cu1341-torch216-dev20261006-triton39-aad2a60d/xdg
     volumes:
       - type: bind
-        source: ${HF_CACHE:-/home/kklouzal/.cache/huggingface}
+        source: ${HF_CACHE:-/models/hf}
         target: /root/.cache/huggingface
+      - type: bind
+        source: ${HF_TOKEN_FILE:-/home/kklouzal/.cache/huggingface/token}
+        target: /root/.cache/huggingface/token
+        read_only: true
+        bind:
+          create_host_path: false
       - type: bind
         source: ${KERNEL_CACHE:-/home/kklouzal/services/qwen3.8-flash-next/cache}
         target: /cache
