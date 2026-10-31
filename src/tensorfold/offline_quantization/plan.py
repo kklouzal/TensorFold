@@ -16,53 +16,17 @@ from tensorfold.cuda.capacity import headers, itemsize
 from tensorfold.families.gemma4.assistant_metadata import checked_headers
 from tensorfold.families.gemma4.cuda.e2b_metadata import E2BConfig
 
+from tensorfold.families.gemma4.dense_tensor_contract import TEXT_PREFIX as TEXT, text_tensor_contract
+
 NVFP4_RECIPE = "gemma4-nvfp4-w4a4-local-hessian-v1"
 PRODUCER_COMMIT = "e352caca3c36236fc15adea2627a9d42788380c4"
-TEXT = "model.language_model."
+
 
 
 def _identity(value):
     data = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()
     return hashlib.sha256(data).hexdigest()
 
-
-def _target_shapes(cfg):
-    """Exact text checkpoint storage, including unused shared-tail K/V tensors."""
-    shapes = {TEXT+"embed_tokens.weight": (cfg.vocab, cfg.hidden),
-              TEXT+"embed_tokens_per_layer.weight": (cfg.vocab, cfg.layers*cfg.per_layer_input),
-              TEXT+"norm.weight": (cfg.hidden,),
-              TEXT+"per_layer_model_projection.weight": (cfg.layers*cfg.per_layer_input, cfg.hidden),
-              TEXT+"per_layer_projection_norm.weight": (cfg.per_layer_input,)}
-    active, unused = set(), set()
-    for index, kind in enumerate(cfg.layer_types):
-        prefix = f"{TEXT}layers.{index}."
-        dim = cfg.global_head_dim if kind == "full_attention" else cfg.head_dim
-        matrices = {"self_attn.q_proj": (cfg.heads*dim, cfg.hidden),
-                    "self_attn.k_proj": (cfg.kv_heads*dim, cfg.hidden),
-                    "self_attn.v_proj": (cfg.kv_heads*dim, cfg.hidden),
-                    "self_attn.o_proj": (cfg.hidden, cfg.heads*dim),
-                    "mlp.gate_proj": (cfg.intermediate, cfg.hidden),
-                    "mlp.up_proj": (cfg.intermediate, cfg.hidden),
-                    "mlp.down_proj": (cfg.hidden, cfg.intermediate)}
-        for suffix, shape in matrices.items():
-            name = prefix+suffix+".weight"
-            shapes[name] = shape
-            if index >= cfg.layers-cfg.shared_layers and suffix in ("self_attn.k_proj", "self_attn.v_proj"):
-                unused.add(name)
-            else:
-                active.add(name)
-        shapes[prefix+"per_layer_input_gate.weight"] = (cfg.per_layer_input, cfg.hidden)
-        shapes[prefix+"per_layer_projection.weight"] = (cfg.hidden, cfg.per_layer_input)
-        for suffix in ("input_layernorm", "post_attention_layernorm", "post_feedforward_layernorm",
-                       "pre_feedforward_layernorm", "post_per_layer_input_norm"):
-            shapes[prefix+suffix+".weight"] = (cfg.hidden,)
-        for suffix in ("q_norm", "k_norm"):
-            name = prefix+"self_attn."+suffix+".weight"
-            shapes[name] = (dim,)
-            if suffix == "k_norm" and index >= cfg.layers-cfg.shared_layers:
-                unused.add(name)
-        shapes[prefix+"layer_scalar"] = (1,)
-    return shapes, active, unused
 
 
 def _exclusion(name, role):
@@ -114,7 +78,7 @@ def plan_nvfp4(source: str | Path, *, recipe: str = NVFP4_RECIPE) -> dict:
             raise ValueError("offline NVFP4 planning currently requires dense E4B or its native assistant")
         role = "target"
         inventory = headers(root)
-        expected, active, unused = _target_shapes(cfg)
+        expected, active, unused = text_tensor_contract(cfg)
         actual = {name for name in inventory if name.startswith(TEXT)}
         if actual != set(expected):
             raise ValueError("E4B text tensor inventory differs from the original BF16 contract")

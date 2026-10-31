@@ -47,6 +47,36 @@ and quantization-aware distillation are further pipeline work; this command
 does not execute those methods. Keep the original BF16 checkpoint as the
 reference and export future derived checkpoints to a separate destination.
 
+### E4B mixed-precision candidates
+
+Precision assignments are separate decisions for storage, arithmetic and
+quality. A smaller table does not establish faster inference, and a BF16
+exception may protect numerical behavior or avoid an expensive conversion path.
+The initial planner intentionally chooses the conservative column below.
+
+| Component | Initial assignment | Candidate requiring qualification |
+| --- | --- | --- |
+| Active text attention/MLP projections | Calibrated NVFP4 W4A4 | FP8 or BF16 for projections whose held-out quality requires it |
+| Token embeddings and tied output head | BF16, one shared owner | FP8 table with shared lookup/head storage and separately verified arithmetic |
+| Per-layer embedding tables and associated PLE computation | BF16 | FP8 tables; retain gates, projections and normalization until separately assessed |
+| Vision/audio encoders and modality projectors | Original precision | Explicit modality-aware calibration and quality evaluation before changing precision |
+| Norms, scalars, rotary computation and KV | Original precision | No change in the initial recipe |
+| Assistant core | Planned NVFP4 projections | Target-conditioned calibration, with explicit BF16 exceptions for paths not exercised by ordinary Linear hooks |
+
+The experimental source includes packed projection materialization, a native
+dense loader, FP8 row64 embedding lookup, assistant calibration-frame ownership
+and export hashing. These components have CPU contract tests; they are not yet
+connected to a calibrated E4B export or enabled by `serve`. FP8 row64 storage
+is a TensorFold-specific format, not MXFP8 or a declaration that GB10 executes
+every operation with FP8 tensor cores. Lookup rounds decoded rows to BF16;
+the shared packed GEMM uses its own scale application arithmetic. Both need
+full-model quality and serial/speculative verification.
+
+Candidate selection must retain the same model features and evaluate decode,
+prefill and memory separately on the actual GB10 runtime. Quantization changes
+the target distribution: speculative verification can preserve that quantized
+target's distribution, but does not recover the original BF16 distribution.
+
 The `quants` branch extends the Qwen3.5/3.8 dense family to MLX affine weights at 2, 3, 4, 5, 6 and 8 bits, with group sizes 32, 64 and 128.
 It keeps packed words, scales and biases at their stored precision, including mixed layer formats.
 It does not convert a checkpoint during loading.

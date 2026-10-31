@@ -14,6 +14,11 @@ for dense E4B or its Google assistant. It reports active projections, deliberate
 BF16 exceptions, provenance and mixed-payload estimates. Calibration, conversion,
 packed E4B loading and quantized quality/performance qualification remain pending;
 the planner does not modify the source model or claim a quantized deployment.
+The [mixed-precision candidates](docs/quantization.md#e4b-mixed-precision-candidates)
+keep sensitive tables and multimodal components at their original precision
+initially. Experimental packed-loader and shared FP8-table components have CPU
+contract tests; calibrated full-model integration and GB10 qualification remain
+pending and these components are not enabled by `serve`.
 
 On E4B, omitted API sampling fields remain greedy because the selected checkpoint
 has no `generation_config.json`. The benchmark's `sampled_hf_defaults` region

@@ -1,4 +1,4 @@
-"""CPU-only exact profiles for original BF16 Gemma 4 E2B/E4B checkpoints."""
+"""CPU-only native geometry and original BF16 storage checks for Gemma E2B/E4B."""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -48,6 +48,20 @@ class E2BConfig:
 
     @classmethod
     def from_dict(cls, raw: dict) -> "E2BConfig":
+        """Original BF16 checkpoint boundary; quantized storage is separate."""
+        result = cls.from_architecture(raw)
+        for block in (raw, raw.get("text_config") or raw):
+            if block.get("quantization_config") not in (None, {}) or block.get("quantization") not in (None, {}):
+                raise ValueError("Gemma E2B requires its original unquantized BF16 checkpoint")
+        return result
+
+    @classmethod
+    def from_architecture(cls, raw: dict) -> "E2BConfig":
+        """Native geometry/compute contract, without claiming any storage format.
+
+        Quantized loaders must separately validate every declared tensor schema;
+        this method observes the original config unchanged, including quantizers.
+        """
         if not isinstance(raw, dict) or not is_dense_gemma(raw):
             raise ValueError("Gemma CUDA requires the complete dense E2B or E4B architecture")
         profile = "E2B" if is_e2b(raw) else "E4B"
@@ -64,8 +78,6 @@ class E2BConfig:
                 or raw["audio_config"].get("model_type") != "gemma4_audio"):
             raise ValueError("Gemma E2B requires its native vision and audio tower types")
         for block in (raw, text):
-            if block.get("quantization_config") not in (None, {}) or block.get("quantization") not in (None, {}):
-                raise ValueError("Gemma E2B requires its original unquantized BF16 checkpoint")
             if block.get("dtype", block.get("torch_dtype", "bfloat16")) != "bfloat16":
                 raise ValueError("Gemma E2B execution requires the declared BF16 checkpoint")
         keys = ("hidden_size", "num_hidden_layers", "vocab_size", "num_attention_heads",
