@@ -65,8 +65,9 @@ request, images expanded. `/detokenize` takes `tokens` and returns `prompt`.
 With `--vision`, supported Qwen3.5/3.8 dense checkpoints accept `image_url` content parts alongside text in user
 messages and in tool results (`role: "tool"`), such as an agent's screenshots.
 See [image input](vision.md) for data URLs, public image URLs, limits and cache behavior.
-The Gemma 4 E2B CUDA integration adds native image/video and audio input with
-`--vision`; its [qualification status](recipes/gemma-4-e2b.md) remains explicit.
+The dense Gemma 4 E2B/E4B CUDA frontend adds native image/video and audio input
+with `--vision`; see the [E2B baseline](recipes/gemma-4-e2b.md) and
+[E4B candidate scope](recipes/gemma-4-e4b.md).
 Audio uses user content parts shaped as
 `{"type":"input_audio","input_audio":{"data":"BASE64","format":"wav"}}`
 (or `"mp3"`). The same nested part is accepted in Responses input messages when
@@ -394,8 +395,18 @@ keeps this single-GPU CUDA scope separate from the earlier Flash Next results.
 
 ## Reasoning
 
-On both backends, `reasoning_effort: none` disables thinking; other effort values enable it and reach the chat
-template. The server also reads it from `chat_template_kwargs.reasoning_effort`, where vLLM's clients send it; the
+The selected [DavidAU E4B checkpoint](recipes/gemma-4-e4b.md) unconditionally sets
+`enable_thinking=true` inside its shipped template. TensorFold preserves that
+policy: an explicit thinking-off request, including
+`chat_template_kwargs.enable_thinking: false` or `reasoning_effort: none`, returns
+HTTP 400 rather than silently ignoring it. The separate instruct template in
+that repository is not selected. This fixed policy is checkpoint-specific;
+other templates keep their supported controls. Missing E4B sampling fields stay
+App-greedy; the benchmark's explicit `sampled_hf_defaults` region does not change
+API defaults or establish publisher-recommended sampling.
+
+For templates that support a thinking toggle, `reasoning_effort: none` disables
+thinking; other effort values enable it and reach the chat template on both backends. The server also reads it from `chat_template_kwargs.reasoning_effort`, where vLLM's clients send it; the
 top-level field wins. An unnamed level maps to the nearest level the template names, and a tie takes
 the higher one. GLM-5.3 lists `low`, `high` and `max`, so `max` stays `max`, `medium` is heard as `high`
 and `minimal` as `low`. Qwen3.8 lists `low`, `medium` and `xhigh`, so `high` and `max` are heard as `xhigh`.

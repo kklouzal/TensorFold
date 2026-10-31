@@ -69,10 +69,13 @@ def test_explicit_e4b_drafter_is_rejected_before_any_gpu_or_weight_allocation(tm
     torch = pytest.importorskip("torch")
     from tensorfold.families.gemma4.cuda import e2b_engine
     (tmp_path/"config.json").write_text(json.dumps(e4b_config()))
+    incompatible = tmp_path/"incompatible-E2B"
+    incompatible.mkdir()
+    (incompatible/"config.json").write_text(json.dumps(e2b_config()))
     monkeypatch.setattr(torch.cuda, "set_device", lambda _: pytest.fail("E4B drafter reached GPU"))
     monkeypatch.setattr(e2b_engine, "E2BTarget", lambda *_: pytest.fail("E4B drafter loaded weights"))
-    with pytest.raises(ValueError, match="no admitted compatible DFlash"):
-        e2b_engine.E2BEngine(tmp_path, drafter="incompatible-E2B", no_drafts=disabled)
+    with pytest.raises(ValueError, match="assistant"):
+        e2b_engine.E2BEngine(tmp_path, drafter=str(incompatible), no_drafts=disabled)
 
 
 def test_native_hf_e4b_full_kv_heads_retain_configured_two_heads():

@@ -84,6 +84,7 @@ class Gemma4Engine:
     tp = 1
     graphs = None          # text decode/verify CUDA graph runner (None: every forward eager)
     _clip_sampled_verification_to_room = False
+    _tap_features = True
 
     def __init__(self, model_dir: Path, *, drafter: str = "", drafter_bits: int = 16,
                  depth: int | None = None, context: int | None = None,
@@ -210,6 +211,9 @@ class Gemma4Engine:
     def _taps(self, result, count=None):
         import torch
         return torch.cat([result.taps[layer][:count] for layer in self.head.tap_layers], dim=-1)
+
+    def _append_head(self, state, result, input_ids, count=None, *, prompt=False):
+        self.head.append(state, self._taps(result, count), prompt=prompt)
 
     def _find_prefix(self, prompt, media):
         """The longest checkpoint whose tokens prefix this prompt and leaves a forward or exact logits."""
@@ -351,6 +355,7 @@ class Gemma4Engine:
             eos = self.eos if stop_eos else ()
             stopped = bool(on_tokens([first]))
             active_drafts = bool(draft and self.head is not None)
+            collect_taps = active_drafts and self._tap_features
             stochastic = active_drafts and sampling is not None and sampling.temperature > 0
             while not stopped and len(out) < max_tokens and out[-1] not in eos \
                     and not (constraint is not None and constraint.finished):
@@ -388,9 +393,10 @@ class Gemma4Engine:
                     inputs = window.tokens
                 position = state.position
                 if self.graphs is not None:
-                    result = self.graphs.forward(inputs, state, output_taps=active_drafts)
+                    result = self.graphs.forward(inputs, state, output_taps=collect_taps)
                 else:
-                    result = self.target.forward(inputs, state, output_taps=active_drafts, trusted_tokens=True)
+                    result = self.target.forward(inputs, state, output_taps=collect_taps,
+                                                 trusted_tokens=True)
                 logits = result.logits
                 if constraint is not None:
                     constraint.mask(logits, window)
@@ -412,7 +418,7 @@ class Gemma4Engine:
                     history.extend(chosen)
                 state.rollback(position + len(chosen))
                 if active_drafts:
-                    self.head.append(self._draft, self._taps(result, len(chosen)))
+                    self._append_head(self._draft, result, inputs, len(chosen))
                 if constraint is not None:
                     constraint.advance(chosen)
                 rounds += 1

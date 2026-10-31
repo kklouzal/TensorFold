@@ -4,6 +4,20 @@ TensorFold uses [MLX](https://github.com/ml-explore/mlx) and
 [mlx-lm](https://github.com/ml-explore/mlx-lm), MIT License, Copyright © 2023 Apple Inc.
 They are installed as dependencies.
 
+## Gemma E4B EAGLE3 adapter
+
+The first-layer boundary in `src/tensorfold/families/gemma4/cuda/eagle3.py` and
+the independent reference in `tests/test_gemma_eagle3.py` adapt the ordered
+operations from [Speculators v0.8.0](https://github.com/vllm-project/speculators/tree/894e71f96e0550c3b4cf3915fe6211aab09cadbb),
+`src/speculators/models/eagle3/model_definitions.py`, under the Apache License
+2.0. See [the license text](LICENSES/Apache-2.0.txt). TensorFold supplies its own
+committed recurrent-cache ownership, shifted token/feature alignment,
+vocabulary-offset validation and rejection-sampling integration. Native Llama
+attention, normalization, rotary and MLP operations are provided by the
+installed Transformers dependency. The separately downloaded draft weights
+are not distributed with this source; this code notice does not assign a
+license to those weights.
+
 ## MLX and mlx-lm adaptations
 
 The DeltaNet implementations in `src/tensorfold/kernels/qwen/dense/v1/lane_gdn.py` and

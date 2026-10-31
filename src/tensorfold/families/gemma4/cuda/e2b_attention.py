@@ -16,13 +16,13 @@ from .attention import _online, _fold_step
 CHUNK = 256
 
 
-@triton.jit(do_not_specialize=["R", "LENGTH", "START", "ORIGIN", "BASE", "SPLITS", "MQ", "MK", "MASKED"],
+@triton.jit(do_not_specialize=["R", "LENGTH", "START", "ORIGIN", "BASE", "SPLITS", "MQ", "MK", "MASKED", "KH", "VH"],
             do_not_specialize_on_alignment=["MASK"])
 def _parts(Q, K, V, MASK, PO, PM, PL, H: tl.constexpr, D: tl.constexpr, R,
            LENGTH, START, ORIGIN, BASE, SPLITS, WINDOW: tl.constexpr, QS: tl.constexpr, QH: tl.constexpr,
            KS: tl.constexpr, VS: tl.constexpr, MQ, MK,
            MASKED, BK: tl.constexpr, CH: tl.constexpr, PACK: tl.constexpr,
-           HK: tl.constexpr, KH: tl.constexpr, VH: tl.constexpr):
+           HK: tl.constexpr, KH, VH):
     split = tl.program_id(1)
     # PACK1 is a qualification candidate. The selected incumbent packs two
     # queries; runtime mask dispatch must preserve its single arithmetic graph.

@@ -33,6 +33,7 @@ class E2BSnapshot:
     owner: Any
     limit: int
     attention_mask: Any = None
+    assistant: Any = None
 
 
 @dataclass(frozen=True)
@@ -53,7 +54,7 @@ class E2BState:
     crop. Snapshots are detached owners and restore never mutates the stored one.
     """
 
-    def __init__(self, config, limit: int, *, owner=None):
+    def __init__(self, config, limit: int, *, owner=None, assistant=False):
         text = config.get_text_config()
         if type(limit) is not int or not 0 < limit <= text.max_position_embeddings:
             raise ValueError("Gemma E2B state context must be within the native model limit")
@@ -63,6 +64,10 @@ class E2BState:
         self.poisoned = False
         self.attention_mask = None
         self.cache = self._empty()
+        self.assistant = None
+        if assistant:
+            from .assistant_state import AssistantHistory
+            self.assistant = AssistantHistory(text)
 
     def _empty(self):
         from transformers import DynamicCache
@@ -78,11 +83,23 @@ class E2BState:
         self.position = 0
         self.poisoned = False
         self.attention_mask = None
+        if self.assistant is not None:
+            self.assistant.reset()
 
     def rollback(self, position: int):
         if self.poisoned or type(position) is not int or not 0 <= position <= self.position:
             raise ValueError("Gemma E2B rollback must remain within the tentative target history")
-        self.cache.crop(-(self.position - position))
+        if self.assistant is not None:
+            if self.assistant.pending is None and position != self.position:
+                raise ValueError("assistant history rollback needs a tentative forward or prefix snapshot")
+            try:
+                self.assistant.commit(position)
+                self.cache.crop(-(self.position-position))
+            except BaseException:
+                self.poisoned = True
+                raise
+        else:
+            self.cache.crop(-(self.position - position))
         self.position = position
         if self.attention_mask is not None:
             self.attention_mask = self.attention_mask[:, :position]
@@ -90,15 +107,22 @@ class E2BState:
     def snapshot(self):
         if self.poisoned:
             raise RuntimeError("cannot snapshot failed Gemma E2B state")
+        if self.assistant is not None and self.assistant.pending is not None:
+            raise RuntimeError("cannot snapshot uncommitted assistant target features")
         return E2BSnapshot(self.position, copy.deepcopy(self.cache), self.owner, self.limit,
-                            None if self.attention_mask is None else self.attention_mask.clone())
+                            None if self.attention_mask is None else self.attention_mask.clone(),
+                            None if self.assistant is None else self.assistant.snapshot())
 
     def restore(self, snapshot: E2BSnapshot):
         if (not isinstance(snapshot, E2BSnapshot) or snapshot.owner is not self.owner
                 or snapshot.limit != self.limit or not 0 <= snapshot.position <= self.limit):
             raise ValueError("Gemma E2B snapshot has incompatible position ownership")
+        if (snapshot.assistant is None) != (self.assistant is None):
+            raise ValueError("Gemma assistant snapshot feature ownership differs")
         cache = copy.deepcopy(snapshot.cache)
         mask = None if snapshot.attention_mask is None else snapshot.attention_mask.clone()
+        if self.assistant is not None:
+            self.assistant.restore(snapshot.assistant)
         self.cache = cache
         self.position = snapshot.position
         self.poisoned = False
@@ -109,7 +133,7 @@ class E2BTarget:
     precision = "checkpoint"
     fast_prefill = False
 
-    def __init__(self, model_dir: Path, *, projection: str = "native", fuse_prompt_norms=False):
+    def __init__(self, model_dir: Path, *, projection: str = "native", fuse_prompt_norms=False, tap_layers=None):
         import torch
         import transformers
         from importlib.metadata import version
@@ -118,6 +142,9 @@ class E2BTarget:
 
         self.raw_config = read_config(model_dir)
         self.config = self.cfg = E2BConfig.from_dict(self.raw_config)
+        if tap_layers is not None and (self.config.profile != "E4B" or type(tap_layers) is not tuple
+                                       or tap_layers != (1, 20, 38)):
+            raise ValueError("Gemma target hidden-state taps differ from the admitted EAGLE3 contract")
         require_runtime(torch, transformers.__version__, version("triton"))
         from transformers import Gemma4ForConditionalGeneration
         from .e2b_policy import E2BBlasPolicy
@@ -132,7 +159,7 @@ class E2BTarget:
         self._hooks = []
         self._blas_policy = None
         self._row_policy = E2BRowPolicy(projection, fuse_prompt_norms=fuse_prompt_norms)
-        self.tap_layers = self.config.tap_layers
+        self.tap_layers = self.config.tap_layers if tap_layers is None else tap_layers
         try:
             self._blas_policy = E2BBlasPolicy(torch)
             self.model, info = Gemma4ForConditionalGeneration.from_pretrained(
@@ -165,8 +192,16 @@ class E2BTarget:
                 self._taps[layer] = output.squeeze(0).detach()
         return capture
 
-    def make_state(self, context: int):
-        return E2BState(self.model.config, context, owner=self)
+    def make_state(self, context: int, *, assistant=False):
+        if type(assistant) is not bool or (assistant and self.config.profile != "E4B"):
+            raise ValueError("native assistant state requires the admitted E4B profile")
+        return E2BState(self.model.config, context, owner=self, assistant=assistant)
+
+    def assistant_state(self, state):
+        """Borrow committed official-assistant features until the next target mutation."""
+        if self._closed or not isinstance(state, E2BState) or state.owner is not self or state.assistant is None:
+            raise ValueError("Gemma assistant state belongs to another target or feature contract")
+        return state.assistant.view(state)
 
     @contextmanager
     def native_reference(self):
@@ -360,11 +395,15 @@ class E2BTarget:
             raise ValueError("Gemma E2B forward token is outside the target vocabulary")
         if state.poisoned:
             raise RuntimeError("Gemma E2B state failed; reset or restore it before reuse")
+        if state.assistant is not None and state.assistant.pending is not None:
+            raise RuntimeError("assistant target state requires commit before another forward")
         if state.position + len(ids) > state.limit:
             raise ValueError("Gemma E2B forward exceeds admitted context")
         if model_inputs is not None:
             raise ValueError("Gemma E2B media requires prepare_media and bounded encoded chunks")
         kwargs = self._feature_kwargs(model_inputs)
+        if state.assistant is not None:
+            kwargs["return_shared_kv_states"] = True
         tokens = torch.tensor([ids], dtype=torch.long, device=self.device)
         positions = torch.arange(state.position, state.position + len(ids), device=self.device).unsqueeze(0)
         self._row_policy.prompt = bool(prompt)
@@ -391,10 +430,13 @@ class E2BTarget:
                 out = self.model.model.language_model(
                     inputs_embeds=encoded.embeddings[:, start:end], per_layer_inputs=ple,
                     attention_mask=None if mask is None else mask[:, :end],
-                    position_ids=positions, past_key_values=state.cache, use_cache=True, return_dict=True)
+                    position_ids=positions, past_key_values=state.cache, use_cache=True, return_dict=True,
+                    **({"return_shared_kv_states": True} if state.assistant is not None else {}))
             state.position += len(ids)
             state.attention_mask = None if mask is None else mask[:, :state.position]
             hidden = out.last_hidden_state.squeeze(0)
+            if state.assistant is not None:
+                state.assistant.stage(state.position-len(ids), hidden.detach(), out.shared_kv_states)
             if output_taps and set(self._taps) != set(self.tap_layers):
                 raise RuntimeError("Gemma E2B target did not publish the required decoder outputs")
             logits = self.project_logits(hidden[-1:] if prompt else hidden) if output_logits else None

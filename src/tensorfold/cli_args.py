@@ -125,7 +125,7 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     endpoint.add_argument("--api-key-file", help="restricted key file, one key or label: key per line; # comments")
     endpoint.add_argument("--metrics-open", action="store_true", help="allow /metrics and /stats without an API key")
     endpoint.add_argument("--vision", action="store_true",
-                          help="enable supported multimodal inputs, including Gemma E2B image/video/audio; "
+                          help="enable supported multimodal inputs, including Gemma E2B/E4B image/video/audio; "
                                "Flash Next legacy vision requires one GPU and --parallel 2 or more; "
                                "the explicit SM70 media profile uses TP8")
     endpoint.add_argument("--media-profile-manifest", type=Path, default=None,
@@ -220,10 +220,12 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                        help="draft precision, proposals only (0: bf16). MLX: affine bits, default 4. "
                             "CUDA Qwen MoE DFlash: 0 or 16 (default), 8 (FP8), 4 (NVFP4); requantized drafts "
                             "copy a floating target head or borrow a stored quantized head. CUDA Gemma4 DFlash: "
-                            "16 (default), or 8 (FP8) only with a BF16 tied target head. The target verifies every draft")
+                            "16 (default), or 8 (FP8) only with a BF16 tied target head. "
+                            "Gemma E4B native assistant/EAGLE3 require BF16 (16). The target verifies every draft")
     speed.add_argument("--draft-rows", type=int, default=None,
                        help="maximum target tokens verified per draft block. CUDA Gemma4 MoE DFlash: 2-128 "
                             "(default 16); Gemma4 E2B DFlash2: 2-8 (default 8); "
+                            "E4B native assistant: 2-8 (default 7), EAGLE3: 2-4 (default 4); "
                             "CUDA Qwen MoE NVFP4: default is the draft model's block size")
     speed.add_argument("--mtp-drafts", type=int, default=None,
                        help="most proposals a round (MTP, or the selected DSpark block on Flash Next CUDA; Qwen3.8 Flash Next: 3 on Mac; on CUDA 6, stopping under 70%% "

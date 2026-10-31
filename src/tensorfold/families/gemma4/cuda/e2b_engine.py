@@ -31,6 +31,30 @@ def prefill_boundaries(prompt, turn):
     return tuple(ends)
 
 
+def companion_metadata(directory, target):
+    """CPU-owned discriminator; no unrelated head may borrow target features."""
+    if target.profile == "E2B":
+        from ..e2b_dflash_metadata import checked_headers
+        cfg, _ = checked_headers(directory)
+        kind, width = "dflash2", cfg.hidden
+    else:
+        from tensorfold.checkpoint_metadata import read_config
+        architecture = read_config(directory).get("architectures")
+        if architecture == ["Gemma4AssistantForCausalLM"]:
+            from ..assistant_metadata import checked_headers
+            kind = "assistant"
+        elif architecture == ["Eagle3DraftModel"]:
+            from ..eagle3_metadata import checked_headers
+            kind = "eagle3"
+        else:
+            raise ValueError("Gemma E4B requires its compatible native assistant or EAGLE3 metadata")
+        cfg, _ = checked_headers(directory)
+        width = cfg.backbone_hidden if kind == "assistant" else cfg.hidden
+    if width != target.hidden or cfg.vocab != target.vocab:
+        raise ValueError("Gemma companion target width/vocabulary differs")
+    return kind, cfg
+
+
 def admit(model_dir, cfg, context, explicit, torch, draft_dir, max_rows, media, drafter_bits=16):
     """Account target/draft owners before allocating, using the shared CUDA policy."""
     from tensorfold.cuda.capacity import Geometry, Weights, admit as common, headers, itemsize
@@ -42,11 +66,9 @@ def admit(model_dir, cfg, context, explicit, torch, draft_dir, max_rows, media, 
     draft = None
     draft_bytes = 0
     draft_peak = 0
+    kind = None
     if draft_dir is not None:
-        from ..e2b_dflash_metadata import checked_headers
-        draft, _ = checked_headers(draft_dir)
-        if draft.hidden != cfg.hidden or draft.vocab != cfg.vocab:
-            raise ValueError("Gemma E2B target and DFlash2 widths/vocabulary differ")
+        kind, draft = companion_metadata(draft_dir, cfg)
         draft_bytes, draft_peak = draft.memory_bytes(drafter_bits)
     sampling = effective_workspace(max_rows, cfg.vocab, top_k=0) if draft else {"device_bytes": 0, "host_bytes": 0}
     proposal = chain_workspace(max_rows - 1, cfg.vocab, streams=1, penalized=True) if draft else {"device_bytes": 0, "host_bytes": 0}
@@ -55,6 +77,10 @@ def admit(model_dir, cfg, context, explicit, torch, draft_dir, max_rows, media, 
         slots = min(slots, cfg.max_position)
         cache = cfg.cache_bytes(slots, PREFILL_ROWS)
         companion = draft.state_bytes(slots) if draft else 0
+        if kind == "assistant":
+            # Last native shared SWA window (512, not persistent511) plus
+            # accepted final hidden, including immutable prefix snapshots.
+            companion += min(slots, cfg.window)*cfg.kv_heads*cfg.head_dim*4 + cfg.hidden*2
         # Live request plus bounded immutable prefix/snapshot owners.
         retained = (PREFIX_SNAPSHOTS + 1) * (cache + companion)
         # Conservative math-SDPA owner: scores and probabilities, plus causal mask.
@@ -65,6 +91,8 @@ def admit(model_dir, cfg, context, explicit, torch, draft_dir, max_rows, media, 
         # Main embeddings before/after media replacement are retained through chunked prefill.
         embeddings = slots * cfg.hidden * 4 if media else 0
         draft_work = (draft.block * (draft.vocab * 8 + draft.hidden * 64)) if draft else 0
+        if kind == "assistant":
+            draft_work += min(slots, cfg.window)*cfg.kv_heads*cfg.head_dim*4 + cfg.hidden*2
         return retained + attention + activations + logits + embeddings + draft_work
 
     resident = target_bytes + draft_bytes
@@ -107,10 +135,17 @@ class E2BEngine(Gemma4Engine):
             raise ValueError("Gemma E2B draft depth requires its enabled companion")
         raw = read_config(model_dir)
         cfg = E2BConfig.from_dict(raw)
+        head_kind, head_cfg = None, None
         if cfg.profile == "E4B" and drafter:
-            raise ValueError("Gemma E4B has no admitted compatible DFlash companion; omit --drafter")
+            head_kind, head_cfg = companion_metadata(Path(drafter), cfg)
+            head_cfg.memory_bytes(drafter_bits)
+            if depth is not None and depth >= head_cfg.block:
+                raise ValueError(f"Gemma {head_kind} permits at most {head_cfg.block-1} proposals")
         draft_dir = Path(drafter) if drafter and not no_drafts else None
-        self.max_rows = (8 if depth is None else depth + 1) if draft_dir else 1
+        default_rows = (7 if head_kind == "assistant" else head_cfg.block) if head_cfg else 8
+        self.max_rows = (default_rows if depth is None else depth + 1) if draft_dir else 1
+        self._tap_features = not (draft_dir and head_kind == "assistant")
+        self._head_token_ids = bool(draft_dir and head_kind == "eagle3")
         self.chat_template = prepare_chat_template(model_dir, template_file=chat_template_file,
                                                   template_name=chat_template_name)
         tokenizer = load_tokenizer(model_dir)
@@ -126,17 +161,29 @@ class E2BEngine(Gemma4Engine):
                                    self.max_rows, vision, drafter_bits)
         self.capacity_plan["media_encoder_workspace"] = "checked per request against live remaining pool"
         self.context_window = self.capacity_plan["context_window"]
-        self.target = E2BTarget(model_dir, fuse_prompt_norms=fuse_prompt_norms)
+        target_options = {"tap_layers": head_cfg.tap_layers} if self._head_token_ids else {}
+        self.target = E2BTarget(model_dir, fuse_prompt_norms=fuse_prompt_norms, **target_options)
         self.w = self.target
         self.head = None
         self._draft = None
         try:
+            self._state = (self.target.make_state(self.context_window, assistant=True)
+                           if not self._tap_features else self.target.make_state(self.context_window))
             if draft_dir is not None:
-                from .e2b_draft import E2BDFlash2
-                self.head = E2BDFlash2(draft_dir, self.target.embedding_weight, self.target.head_weight,
-                                      self.context_window, device=self.target.device, bits=drafter_bits)
+                if head_kind == "assistant":
+                    from .assistant import Gemma4AssistantHead
+                    self.head = Gemma4AssistantHead(draft_dir, self.target, self.context_window,
+                                                   device=self.target.device)
+                    self.head.bind_state(self._state)
+                elif head_kind == "eagle3":
+                    from .eagle3 import Gemma4Eagle3Head
+                    self.head = Gemma4Eagle3Head(draft_dir, self.target, self.context_window,
+                                                device=self.target.device)
+                else:
+                    from .e2b_draft import E2BDFlash2
+                    self.head = E2BDFlash2(draft_dir, self.target.embedding_weight, self.target.head_weight,
+                                          self.context_window, device=self.target.device, bits=drafter_bits)
                 self._draft = self.head.make_state()
-            self._state = self.target.make_state(self.context_window)
             self._prefix = None
             self._prefix_lock = threading.Lock()
             self._run_lock = threading.Lock()
@@ -159,6 +206,17 @@ class E2BEngine(Gemma4Engine):
     @staticmethod
     def _media_identity(media):
         return () if media is None else tuple(media.media_key)
+
+    def _taps(self, result, count=None):
+        if not self._tap_features:
+            return result.hidden[:count]
+        return super()._taps(result, count)
+
+    def _append_head(self, state, result, input_ids, count=None, *, prompt=False):
+        if self._head_token_ids:
+            self.head.append(state, self._taps(result, count), token_ids=input_ids[:count], prompt=prompt)
+        else:
+            super()._append_head(state, result, input_ids, count, prompt=prompt)
 
     def _find_prefix(self, prompt, media):
         boundaries = set(prefill_boundaries(prompt, self._turn))
@@ -208,11 +266,12 @@ class E2BEngine(Gemma4Engine):
                     continue
                 self._check_open()
                 result = self.target.forward(
-                    prompt[start:end], state, output_taps=self.head is not None, output_logits=end == len(prompt),
+                    prompt[start:end], state, output_taps=self.head is not None and self._tap_features,
+                    output_logits=end == len(prompt),
                     trusted_tokens=True, prompt=True, encoded=encoded)
                 state.rollback(state.position)  # committed prefill trims recorded sliding history
                 if self.head is not None:
-                    self.head.append(self._draft, self._taps(result), prompt=True)
+                    self._append_head(self._draft, result, prompt[start:end], prompt=True)
                 if end == len(prompt):
                     logits = result.logits
                 elif end == boundary:

@@ -1,16 +1,18 @@
 # TensorFold fork
 
-The dense Gemma CUDA adapter is being extended to the complete BF16 E4B
-checkpoint. Protected GB10 source checks pass native-model prompt logits,
-verification widths 1–8 and cache replay; E4B media, companion selection,
-installed serving and performance qualification remain in progress. The
-currently deployed E2B baseline below retains its own evidence scope.
+The dense Gemma CUDA adapter now loads the complete BF16 E4B checkpoint,
+including image, video and audio inputs. Managed GB10 source-mounted checks pass
+short native-model logits, cache replay and selected media fixtures; companion
+comparison, installed-image serving and performance selection remain in progress.
+The live service remains the E2B baseline below. The
+[E4B recipe](docs/recipes/gemma-4-e4b.md) records the exact checkpoint, forced
+thinking policy and two distinct assistant candidates.
 
-For benchmark preparation on a checkpoint without `generation_config.json`,
-`tools/gemma_e2b_bench.py prepare --generation-policy hf-defaults` records the
-pinned library's conditional sampling values. Its `sampled_hf_defaults` region
-is an explicit sampling test; omitted E4B API sampling settings remain greedy.
-Use `--thinking on` for the DavidAU E4B checkpoint's fixed thinking template.
+On E4B, omitted API sampling fields remain greedy because the selected checkpoint
+has no `generation_config.json`. The benchmark's `sampled_hf_defaults` region
+uses explicit conditional library sampling settings; it is not a publisher
+recommendation. The shipped template fixes thinking on, and explicit requests
+to disable it return HTTP 400. See the [API contract](docs/api.md#reasoning).
 
 Gemma 4 E2B and its DFlash2 companion are deployed on GB10 as a correctness
 baseline with complete BF16 target weights and KV, a BF16 companion, and eight
@@ -673,6 +675,7 @@ The table describes supported integration paths. It is not a promise that every 
 | Qwen3.6-35B-A3B CT NVFP4 | `AEON-7/Qwen3.6-35B-A3B-heretic-NVFP4` | CUDA SM12, one GPU; discrete RAM expert pool when needed | Separate `z-lab/Qwen3.6-35B-A3B-DFlash` v1; [recipe](docs/recipes/qwen3.6-moe.md#original-ct-nvfp4-and-dflash-v1) |
 | Qwen3.8 Flash Next | `Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP` | MLX, CUDA | Included MTP and context copies |
 | GLM-5.3-Flash | `Vontra/GLM-5.3-Flash-MLX-4bit-MTP` | MLX on a 256 GB Mac; CUDA with two ranks | MTP; optional DFlash2 on CUDA |
+| Gemma 4 E4B | `DavidAU/gemma-4-E4B-it-The-DECKARD-V2-Strong-HERETIC-UNCENSORED-Thinking` | CUDA BF16 candidate; [recipe](docs/recipes/gemma-4-e4b.md) | Native Google assistant and EAGLE3 candidates; comparison pending, neither is DFlash |
 | Gemma 4 26B-A4B | `mlx-community/gemma-4-26b-a4b-it-4bit`; CUDA trial: zecanard mixed4/6 or AEON-7 NVFP4 | MLX; initial CUDA trial | Optional `z-lab/gemma-4-26B-A4B-it-DFlash`; CUDA BF16 companion, one stream |
 | DeepSeek-V4-Flash | `mlx-community/DeepSeek-V4-Flash-4bit` | MLX on a 256 GB Mac | `Vontra/DeepSeek-V4-Flash-DSpark-MLX` or `Vontra/DeepSeek-V4-Flash-MTP-MLX` |
 | Qwen3.8-27B NVFP4 | `nvidia/Qwen3.8-27B-NVFP4`; `AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-NVFP4-MIXED` ([recipe](docs/recipes/qwen3.8-27b.md#aeon-mixed-nvfp4-export)) | CUDA, one GPU | DFlash2 and context copies |

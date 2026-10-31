@@ -1,0 +1,76 @@
+{
+  "architectures": [
+    "Eagle3DraftModel"
+  ],
+  "auto_map": {
+    "": "config.Eagle3SpeculatorConfig"
+  },
+  "draft_vocab_size": 32000,
+  "dtype": "bfloat16",
+  "eagle_aux_hidden_state_layer_ids": [
+    2,
+    21,
+    39
+  ],
+  "embed_requires_grad": false,
+  "fc_norm": false,
+  "norm_before_fc": true,
+  "norm_before_residual": true,
+  "norm_output": true,
+  "speculators_config": {
+    "algorithm": "eagle3",
+    "default_proposal_method": "greedy",
+    "proposal_methods": [
+      {
+        "accept_tolerance": 0.0,
+        "proposal_type": "greedy",
+        "speculative_tokens": 3,
+        "verifier_accept_k": 1
+      }
+    ],
+    "verifier": {
+      "architectures": [
+        "Gemma4ForConditionalGeneration"
+      ],
+      "name_or_path": "google/gemma-4-E4B-it"
+    }
+  },
+  "speculators_model_type": "eagle3",
+  "speculators_version": "0.8.0",
+  "target_hidden_size": 2560,
+  "tie_word_embeddings": false,
+  "transformer_layer_config": {
+    "attention_bias": false,
+    "attention_dropout": 0.0,
+    "bos_token_id": 1,
+    "eos_token_id": 2,
+    "head_dim": 256,
+    "hidden_act": "silu",
+    "hidden_size": 2560,
+    "initializer_range": 0.02,
+    "intermediate_size": 10240,
+    "layer_types": [
+      "sliding_attention"
+    ],
+    "max_position_embeddings": 131072,
+    "mlp_bias": false,
+    "model_type": "llama",
+    "num_attention_heads": 8,
+    "num_hidden_layers": 1,
+    "num_key_value_heads": 2,
+    "pad_token_id": null,
+    "pretraining_tp": 1,
+    "rms_norm_eps": 1e-06,
+    "rope_parameters": {
+      "rope_theta": 10000.0,
+      "rope_type": "default"
+    },
+    "sliding_window": 2048,
+    "tie_word_embeddings": false,
+    "use_cache": true,
+    "use_sliding_window": true,
+    "vocab_size": 262144
+  },
+  "transformers_version": "5.16.1",
+  "vocab_size": 262144
+}
