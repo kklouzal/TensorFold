@@ -9,10 +9,24 @@ including namespace, dependency, file-seal and provider audits. Its guarded GPU
 probe later reached the Hessian pass and failed on Triton 3.9's removed block
 pointer API. Those results do not qualify the new owned source candidate below.
 The owned fork's clean source wheel and `d6b54ef6` producer passed CPU
-admission, followed by a small guarded GPU Local-Hessian calibration. Full E4B
-calibration, exported-model compatibility and quality/performance remain
-**not yet verified**. The corrected focused 39-case GPU regression suite passed
-with unchanged production bytes; see [current evidence](EVIDENCE.md).
+admission, followed by a small guarded GPU Local-Hessian calibration. The
+experimental coordinator subsequently completed the full 1,024-sample E4B
+conversion, verified preserved BF16 payloads and exercised the packed target
+with the original BF16 Google assistant in protected development-source runs.
+The corrected focused 39-case GPU regression suite also passed. These are
+separate evidence stages, not installed serving or final quality/performance
+qualification; see [current evidence](EVIDENCE.md).
+
+The public `tensorfold quantize plan` CLI remains planning-only. Execution here
+used experimental coordinator/operator interfaces, not a newly supported public
+conversion command. Runtime checks used original serving image `2a772b06` with
+a source-mounted worktree based on `88277fb5` plus uncommitted integration and
+unselected optimization changes. That commit alone does not reproduce the
+recorded execution. Tested verification widths 1–8, selected 512/4K boundaries,
+rollback, native-head comparisons and request replay/callback checks do not
+replace held-out quality acceptance, quantized native 131,072-token capacity,
+multimodal input, HTTP or immutable installed-image gates. No performance winner
+or live E4B cutover is claimed; the existing E2B service is retained.
 
 The current pin is owned fork commit
 `a851b028ecbd5f843eb1fc05b93cc2d0abed0de3`, distributed in the
@@ -23,7 +37,8 @@ on NVIDIA's or TensorFold's remote Git history. Its NVIDIA upstream is
 `e352caca3c36236fc15adea2627a9d42788380c4`; the generated
 [source record](modelopt-fork/source.json) and [reconstruction instructions](modelopt-fork/README.md)
 preserve the source, patch and local signature scope. The compatibility change
-is a source candidate, **not full-model GPU qualified**. Base dependencies retain genuine
+remains a producer source candidate; its full-conversion execution evidence is
+not full-featured serving qualification. Base dependencies retain genuine
 upstream metadata. Its HF extra supports Transformers `>=5.5,<5.19`, including
 this baseline's `5.17.0`; stable ModelOpt 0.47 excludes 5.17. The full HF extra
 also adds unrelated DeepSpeed/diffusion dependencies, so this role initially

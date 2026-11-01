@@ -8,37 +8,35 @@ The live service remains the E2B baseline below. The
 [E4B recipe](docs/recipes/gemma-4-e4b.md) records the exact checkpoint, forced
 thinking policy and two distinct assistant candidates.
 
-`tensorfold quantize plan ./original-bf16-model` now produces a local,
-header-only [offline NVFP4 plan](docs/quantization.md#offline-nvfp4-planning)
-for dense E4B or its Google assistant. It reports active projections, deliberate
-BF16 exceptions, provenance and mixed-payload estimates. Calibration, conversion,
-packed E4B loading and quantized quality/performance qualification remain pending;
-the planner does not modify the source model or claim a quantized deployment.
-The [mixed-precision candidates](docs/quantization.md#e4b-mixed-precision-candidates)
-keep sensitive tables and multimodal components at their original precision
-initially. Experimental packed-loader and shared FP8-table components have CPU
-contract tests. The dense CUDA engine now has an integration path for manifest-bound
-ModelOpt NVFP4 W4A4 E4B exports: the 258 active text attention/MLP projections
-remain packed; embedding, PLE, tied head, modality towers/projectors and KV remain
-BF16. It reuses the existing request/cache/media/assistant implementation.
-This source integration is not a qualified quantized deployment: integrated
-row-law, multimodal, native-context, HTTP, quality and performance gates remain
-pending. Other FP8 layouts supported by the experimental loader are not enabled
-by this serving path.
-The [containerized producer workflow](deploy/gb10/calibration/README.md) now pins
-an owned ModelOpt source candidate through a TensorFold-hosted incremental Git
-bundle, preserving its NVIDIA upstream provenance. The earlier upstream-only
-producer image `91bc` passed CPU API/integrity checks but failed GPU compilation
-against Triton 3.9. The owned fork's `d6b54ef6` producer passed CPU admission and
-a small guarded GPU Local-Hessian calibration; the corrected 39-case focused
-GPU regression suite also passed. Final 1,024-sample E4B conversion and full
-quality/performance qualification remain pending. The
-short conversion diagnostic passed finalization, raw BF16 preservation and
-short packed prefill/decode execution. Numerical consistency and quality
-qualification remain in progress. The
-serving SDK and live model are unchanged. See the
-[producer evidence](deploy/gb10/calibration/EVIDENCE.md) for the numerical
-regression investigation and its limits.
+`tensorfold quantize plan ./original-bf16-model` remains a local, header-only
+[offline NVFP4 planning command](docs/quantization.md#offline-nvfp4-planning),
+not a public conversion command. It does not change the source model or claim a
+quantized deployment. The separate experimental producer completed a
+1,024-sample E4B Local-Hessian conversion: 258 active text attention/MLP
+projections use calibrated ModelOpt NVFP4 W4A4; embeddings, PLE, tied head,
+modality tensors and KV retain their original precision. All 1,872 retained BF16
+payloads matched the original source byte for byte. The Google companion remains
+BF16; no quantized assistant or FP8-table deployment is claimed.
+
+Protected GB10 development-source checks passed exact target logits/effective
+probabilities across verification widths 1–8 at the tested short and 4K cache
+boundaries, rollback counts 0–8, native assistant six/seven-step comparisons,
+greedy serial/drafted identity, seeded cache replay and callback stopping.
+These runs used original serving SDK image `2a772b06` with a source-mounted
+worktree based on `88277fb5` **plus uncommitted integration/optimization changes**;
+that commit alone and an installed wheel are not qualified by these results.
+The [producer evidence](deploy/gb10/calibration/EVIDENCE.md) records the exercised
+positions, runtime and limits. Final held-out quality acceptance, full
+131,072-token quantized execution, multimodal input qualification, HTTP/installed
+serving and comparative performance selection remain pending. No performance
+winner is selected, and the live E2B service and serving SDK remain unchanged.
+
+The [containerized producer workflow](deploy/gb10/calibration/README.md) preserves
+the owned ModelOpt fork's NVIDIA upstream provenance. Its earlier CPU and small
+GPU checkpoints remain distinct from this full conversion and the later runtime
+checks. Other [mixed-precision candidates](docs/quantization.md#e4b-mixed-precision-candidates),
+including shared FP8 tables, remain experimental and are not enabled by these
+results.
 
 On E4B, omitted API sampling fields remain greedy because the selected checkpoint
 has no `generation_config.json`. The benchmark's `sampled_hf_defaults` region

@@ -1,6 +1,59 @@
 # Producer integration checkpoint
 
-Latest verified stage: owned runtime fork `a851b028` produced wheel
+## Development-source full conversion and runtime checkpoint
+
+The corrected experimental coordinator completed both 1,024-batch calibration
+passes and all 258 Local-Hessian weight refinements, then finalized the mixed
+E4B export with 2,904 tensor identities. Its 258 active text attention/MLP
+projections use NVFP4 W4A4; all 1,872 retained BF16 tensors were independently
+matched byte for byte against the source (8,211,880,916 bytes per tree), including
+media, tables and the 54 retained unused shared-KV tensors. Source assets and
+native config semantics were preserved. This is a derived experimental model;
+it does not establish equivalence to the original BF16 output distribution.
+The public CLI remains planning-only; these results do not add a public
+conversion command or publish a model artifact.
+
+Subsequent protected GB10 SM121 source-mounted execution used the original
+serving SDK image
+`sha256:2a772b064f593ae9a4436562c4c26ceaa60cec55709992cbf966b74b16bc649c`
+without ModelOpt installed. The worktree was based on `88277fb5` with additional
+uncommitted BF16 integration and unselected optimization candidates, including
+P01 scalar preparation. Recorded runtime-source identities, rather than that
+Git revision alone, identify the exercised implementation. No installed-wheel,
+committed-only, or live E4B serving qualification is implied.
+
+The actual packed target and unchanged BF16 Google assistant passed these
+bounded integration checks:
+
+- Bitwise-identical target logits and effective target probabilities at
+  verification widths 1–8 for the tested positions 25, 511, 512 and 513 in a
+  4,096-token context, and 4,095, 4,096 and 4,097 in an 8,192-token context.
+- Rollback acceptance counts 0–8 at the exercised longer boundaries, with
+  committed cache/state consistency checked independently.
+- Exact native-assistant six- and seven-step comparisons using the actual
+  target hidden/shared-KV state.
+- Greedy serial/drafted token identity, same-configuration seeded sampled cache
+  replay and callback-stop behavior in the exercised requests.
+
+Effective-probability checks used top-k 50 at widths 1–8 and full support at
+widths 1 and 8; they do not cover every sampling configuration. Fixed-budget
+32-token generation/replay used depth seven; callback/recovery checks used an
+eight-token budget and stopped the callback request after its first token.
+These checks used `stop_eos=False`, so they are not production-EOS, default-depth
+or API qualification. Separate real-EOS timing screens remain exploratory,
+not qualified performance evidence.
+
+These are checks at recorded inputs and positions, not universal row-invariance
+or full-context proofs. Short direct-Engine performance screens are exploratory;
+no comparative winner or shipping setting has been selected. Final held-out
+quality acceptance, quantized native 131,072-token capacity, multimodal input
+quality, HTTP/client behavior and an immutable installed-image deployment remain
+separate gates. Processor availability and BF16 media preservation alone do not
+qualify multimodal execution. The live E2B baseline remains unchanged.
+
+## Historical producer bootstrap and conversion diagnostics
+
+Historical verified stage: owned runtime fork `a851b028` produced wheel
 `0.48.0rc1.dev268+ga851b028e`, SHA256
 `1c99f1a5b0109104a97bdebefcc78fa496ea5a1b59d3d71ef1498759490723db`.
 Producer image
@@ -30,8 +83,9 @@ image `a0b914aa`, with no skipped, retried or expected-failure cases; outer
 producer, original-provider, resource-guard and retirement checks also passed.
 The run took 1.43 seconds inside pytest, which is a regression-test duration,
 not an inference performance result. The runtime producer remains pinned to
-`a851b028`. The initial 64-sample artifact below is a conversion diagnostic;
-no final 1,024-sample artifact or quantized E4B serving/performance result exists.
+`a851b028`. At that checkpoint the initial 64-sample artifact below was a conversion
+diagnostic; no final 1,024-sample artifact or quantized E4B serving/performance
+result existed. The later full-conversion and runtime scope is recorded above.
 
 The first full E4B attempt completed both 1,024-batch passes and all 258
 Local-Hessian weight refinements, then failed while hashing the recipe for its
@@ -71,8 +125,10 @@ The first original-SDK consumer attempt then rejected ModelOpt's packed
 kernel execution. The loader now excludes validated packed-part names from
 that plain-tensor check while retaining format, shape and payload validation.
 The existing binding test covers both `.weight` and `.weight_packed` forms
-with both unused-tensor policies; 277 focused CPU checks passed. Actual packed
-execution, quality, full-context and performance qualification remain pending.
+with both unused-tensor policies; 277 focused CPU checks passed. At that loader
+checkpoint actual packed execution, quality, full-context and performance
+qualification were pending; later execution checks are recorded above without
+transferring the remaining acceptance gates.
 
 After that loader correction, the original serving SDK image `2a772b06`
 (without ModelOpt installed) consumed all 2,904 tensor hashes and every metadata
