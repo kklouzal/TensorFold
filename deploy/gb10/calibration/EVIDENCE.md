@@ -74,6 +74,25 @@ The existing binding test covers both `.weight` and `.weight_packed` forms
 with both unused-tensor policies; 277 focused CPU checks passed. Actual packed
 execution, quality, full-context and performance qualification remain pending.
 
+After that loader correction, the original serving SDK image `2a772b06`
+(without ModelOpt installed) consumed all 2,904 tensor hashes and every metadata
+hash exactly as recorded by the export manifest. All 258 packed projections
+loaded, and a 25-token prompt, one cached decode step and a fresh full-prefix
+comparison produced finite logits with the expected cache positions. Peak
+Torch allocation was 10,390,502,400 bytes. This is a short execution check,
+not throughput, quality, multimodal or native-context qualification. The
+cached/full-prefix maximum logit difference was 6.162109375 with the same
+argmax; it remains a diagnostic requiring independent comparison.
+
+The unchanged checkpoint-kernel numerical suite subsequently passed all 13
+selected GPU cases, plus its existing FP64 reference functions invoked at
+E4B projection shapes `(4096,2560)` and `(2560,10240)` for both decode and
+prefill. Byte-format, quantized-product and row-independence checks retained
+their original tolerances. Guard and retirement checks passed under the small
+2 GiB CUDA/8 GiB host profile. These primitive results do not establish the
+full model's cached-prefix or speculative-verification invariance. Matched
+BF16 controls and reserved-data quality measurements remain pending.
+
 Historical verified stage: the isolated Git/build-tools image
 `sha256:ee54ef39fa38f8fff5cdde2e9948d1d75bc8f5fe05f1ba428c68c5ca2fc28877`
 passed its original SDK, added OS/Python seals and CPU backend smoke. The public

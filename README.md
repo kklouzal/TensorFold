@@ -25,10 +25,11 @@ bundle, preserving its NVIDIA upstream provenance. The earlier upstream-only
 producer image `91bc` passed CPU API/integrity checks but failed GPU compilation
 against Triton 3.9. The owned fork's `d6b54ef6` producer passed CPU admission and
 a small guarded GPU Local-Hessian calibration; the corrected 39-case focused
-GPU regression suite also passed. Full E4B calibration, export,
-packed reload and quality/performance qualification remain pending. The
-short conversion diagnostic passed finalization and raw BF16 preservation;
-packed execution checks are still under verification. The
+GPU regression suite also passed. Final 1,024-sample E4B conversion and full
+quality/performance qualification remain pending. The
+short conversion diagnostic passed finalization, raw BF16 preservation and
+short packed prefill/decode execution. Numerical consistency and quality
+qualification remain in progress. The
 serving SDK and live model are unchanged. See the
 [producer evidence](deploy/gb10/calibration/EVIDENCE.md) for the numerical
 regression investigation and its limits.
