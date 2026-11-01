@@ -55,6 +55,15 @@ production-like setting had a conditional throughput-ratio interval above one
 B01 remains **unselected**, with no equivalence or inferiority conclusion.
 The immutable production image `1d53fa83` is unchanged.
 
+An experimental **unconnected** Sym8 BF16 operator passed 20 installed CPU
+checks and four actual GPU checks, including full tied-head bit reconstruction,
+GEMV rows 1–8, lookup and changed-input CUDA graph replay. Its actual logical
+packed payload is 830,472,192 bytes versus 1,476,395,008 raw bytes, with no
+fallback groups; this is not a serving, VRAM or throughput gain. Isolated invalid
+ID/metadata probes failed fatally as required. See the
+[qualification receipt](deploy/gb10/gemma26b-sym8-qualification-20261101.json).
+There is no serving/loader or quantization-CLI integration; production is unchanged.
+
 ## CUDA prefill cancellation
 
 Supported CUDA engines poll cancellation at prompt chunk boundaries even when

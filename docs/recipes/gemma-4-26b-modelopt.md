@@ -101,6 +101,26 @@ Student-t intervals with only two process pairs (one degree of freedom).
 The three cycles within a process are correlated; these conditional intervals
 are not simultaneous confidence or a general performance guarantee.
 
+The separate **unconnected** Sym8 prototype (`tensorfold.bf16.sym8.v1`)
+passed 20 installed CPU checks, its owned native build, and four actual GPU
+checks. These covered full original-head CPU bit reconstruction, direct BF16
+GEMV at rows 1–8 against the independent raw B16 operator, raw/packed row lookup,
+and changed-input/ID CUDA graph replay. The actual tied head occupies
+830,472,192 logical packed bytes versus 1,476,395,008 original BF16 bytes, with
+zero raw-fallback groups. This is format/operator evidence, not a serving,
+allocator-residency or tokens/s improvement. The
+[qualification receipt](../../deploy/gb10/gemma26b-sym8-qualification-20261101.json)
+records the source/image, seeded inputs and validation results.
+
+Sym8 retains exact BF16 words through an eight-magnitude palette, packed
+indices and versioned metadata; ineligible groups retain original raw words.
+Its fields must remain immutable and owned through stream retirement and the
+entire lifetime of a captured graph and every future replay. Transfer status
+retains owners on failure; invalid device IDs/metadata are process-fatal,
+not clamped or retried. Separate fresh-worker probes produced the required
+`CUDA_ERROR_ASSERT` failures. No serving, loader, capacity or quantization-CLI
+integration is enabled, and the production image is unchanged.
+
 Video execution is not blanket semantic-quality qualification. Directed
 red-object/rightward-motion and fixed-blue-object questions passed; a generic
 caption was inaccurate, and a thinking-on diagnostic exhausted its 768-token

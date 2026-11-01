@@ -1,0 +1,128 @@
+{
+  "schema": 1,
+  "status": "experimental-unconnected-numerically-qualified",
+  "format": "tensorfold.bf16.sym8.v1",
+  "scope": "CPU pack/streaming bit decode and native CUDA GEMV/lookup/positive graph replay; not serving/model performance qualification",
+  "target": "NVIDIA GB10 SM121 Linux ARM64, selected pinned TensorFold SDK",
+  "model": "llmfan46/gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic-NVFP4",
+  "model_revision": "a9e81e26ed81f541ec1d7314e72c61237a24566f",
+  "table_shape": [
+    262144,
+    2816
+  ],
+  "original_table_bytes": 1476395008,
+  "packed_table_bytes": 830472192,
+  "actual_raw_fallback_groups": 0,
+  "logical_table_reduction_fraction": 0.4375,
+  "actual_model_VRAM_reduction_claim": false,
+  "CPU_tests_passed": 20,
+  "CPU_seconds": 0.22,
+  "source_uid": "f29b8043f11efc1f678f5bc6c13bf5d72db654232b2fcfa1aff1d8508aa6c8d7",
+  "verification_image": "sha256:1eb1999a19c14171125120a28556ebe60fb581424dbce6080d7ff1d7de411abb",
+  "source_sha256": {
+    "src/tensorfold/cuda/b16_sym8.py": "6dbb2625488f8a035317a5a5b87b57d45ce9ff9782efb4e930ac89647b6c669c",
+    "src/tensorfold/cuda/b16_sym8.cpp": "f56be999a247cde175be8681c1881dea7843dc905c13e0031758246743d1dc09",
+    "src/tensorfold/cuda/b16_sym8.cu": "c713654144e58d1a4a786a650c698162ce97b75836f8eec5ee6dcc0132dee2f8",
+    "tests/test_b16_sym8.py": "38644d28d1d7ca1bf5d443086f79a3d3b0454c771134aafd1e0547c671052301",
+    "tests/cuda/test_b16_sym8.py": "f63907da6f972bc04252cc265df28b9fb6e4401aa34e575cbe1452ca1be7ecd2"
+  },
+  "GPU_evidence": {
+    "records": {
+      "build": {
+        "artifact_root": "/home/kklouzal/audit-artifacts/gemma-e4b-development-20261031/quant-assistant-audit/26b-sym8-build-v1",
+        "execution_sha256": "d925664d73d97c718a2a8490f42582f36b76d35e42e77eb93582d922f15a3ac8",
+        "command_sha256": "b141137f1628b09c28e6e33b5da4d061b06dee509f6a0b06bed81dcae8845d3c",
+        "native_child_exit_code": 0,
+        "qualified": true,
+        "seconds": 20.08916897198651,
+        "retired": true,
+        "source_pins_stable": true,
+        "production_health_unchanged": true,
+        "oom_samples": [
+          17
+        ],
+        "minimum_host_available_bytes": 48774184960,
+        "full_log_sha256": "80ac530100b817d56215d75969fef5fc22dabc4594babbfcd7dfd2cfc294560d"
+      },
+      "positive": {
+        "artifact_root": "/home/kklouzal/audit-artifacts/gemma-e4b-development-20261031/quant-assistant-audit/26b-sym8-positive-v1",
+        "execution_sha256": "4c286e3f6c92d54ff14f33ea932e6efa9872a3ba7d0c4461ac3770660e199201",
+        "command_sha256": "981796695454cdc5d948010f08f4ffe1827a083f7673141b9dd980daad46ec08",
+        "native_child_exit_code": 0,
+        "qualified": true,
+        "seconds": 62.1254234490043,
+        "retired": true,
+        "source_pins_stable": true,
+        "production_health_unchanged": true,
+        "oom_samples": [
+          17
+        ],
+        "minimum_host_available_bytes": 47314141184,
+        "full_log_sha256": "6f62c6f896ecb1d751a13d2ff7ff26a64cb34b61e98812393fa2139edf7f94a1"
+      },
+      "bad-id": {
+        "artifact_root": "/home/kklouzal/audit-artifacts/gemma-e4b-development-20261031/quant-assistant-audit/26b-sym8-bad-id-v1",
+        "execution_sha256": "7cae49a94a983fbab396fefb01e0d457658c2757f25c1fb13944ffe61286c2a8",
+        "command_sha256": "7f48a5a1a14c4abff903ac78c8e4f7060d8f6ec21c767a996603e922d7aa8384",
+        "native_child_exit_code": 1,
+        "qualified": true,
+        "seconds": 8.072786998993251,
+        "retired": true,
+        "source_pins_stable": true,
+        "production_health_unchanged": true,
+        "oom_samples": [
+          17
+        ],
+        "minimum_host_available_bytes": 51942371328,
+        "full_log_sha256": "64d15a13e108487d6b6d26313d4ec3c33bec31d8a8f20cac641ff16bb66742f7"
+      },
+      "bad-metadata": {
+        "artifact_root": "/home/kklouzal/audit-artifacts/gemma-e4b-development-20261031/quant-assistant-audit/26b-sym8-bad-metadata-v1",
+        "execution_sha256": "165a8e7fb21ba63efca8a40cb4bc7399bf71f6baebceb0b47329ad3999a53778",
+        "command_sha256": "5c91679496eabe15a1f0a5a3360dded3600302990ec0146e87abe62a98df32a0",
+        "native_child_exit_code": 1,
+        "qualified": true,
+        "seconds": 8.076927235000767,
+        "retired": true,
+        "source_pins_stable": true,
+        "production_health_unchanged": true,
+        "oom_samples": [
+          17
+        ],
+        "minimum_host_available_bytes": 51862765568,
+        "full_log_sha256": "f54bec8b998b63191870cec545851c70d2f945e1b9955ff8fe2163285d12910d"
+      }
+    },
+    "suite": {
+      "name": "pytest",
+      "errors": "0",
+      "failures": "0",
+      "skipped": "0",
+      "tests": "4",
+      "time": "53.279",
+      "timestamp": "2026-11-01T15:23:48.728267+00:00",
+      "hostname": "af8c6c5aa6ac"
+    },
+    "properties": {
+      "actual_head_input_seed": "81632",
+      "actual_head_original_bytes": "1476395008",
+      "actual_sym8_allocated_bytes": "830472192",
+      "actual_raw_fallback_groups": "0"
+    }
+  },
+  "GPU_peak_allocated_bytes": 2317399552,
+  "GPU_peak_reserved_bytes": 2334130176,
+  "oracle_ownership": "Original full BF16 GPU table exists only as the explicit numerical oracle alongside the packed fields. No permanent decoded GPU table is owned by the codec.",
+  "arithmetic": "BF16 operands reconstructed from original words; ordered eight-element FP32 FMA chain, XOR reductions16..1, BF16 RN store; no TF32/Tensor Core arithmetic substitution",
+  "numerical_coverage": [
+    "All65536 BF16 words plus compressed zero/extra-sign/subnormal/NaN payload cases in lookup",
+    "Actual complete738197504-word table compared by streaming CPU bit decoder",
+    "Actual head GEMV M1..8 against independent original b16.matmul",
+    "Scalar/empty/multidimensional lookup and reference row indexing",
+    "Warmed graph GEMV/lookup before and after changed static inputs/IDs",
+    "Separate fresh processes for fatal bad ID and malformed raw metadata, shipping checks under -DNDEBUG"
+  ],
+  "owner_contract": "Fields are borrowed immutable; keep packed descriptor/static inputs/outputs alive through the complete graph lifetime and every future replay. TransferStatus is preallocated before CUDA; unknown transfer/capture/retirement failures are terminal, with retained owners and no retry.",
+  "production": "Unchanged 26B service image1d53/source2f9; codec not connected to loader/serving/CLI/defaults",
+  "performance": "No codec GPU speed or full-model tokens/s improvement measured by this qualification"
+}
