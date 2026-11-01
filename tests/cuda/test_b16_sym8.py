@@ -36,13 +36,13 @@ def upload(weight):
 
 
 
-def graph_replay_bits(packed, raw_oracle, x):
+def graph_replay_bits(packed, raw_oracle, x, *, rows=1):
     """Retain every packed/static owner until the graph is retired/destroyed.
 
     On any native/capture failure Root's --noconftest -x process stops without
     a cleanup CUDA retry. Only the fully successful path drains/destroys graph.
     """
-    static_x = x[:1].clone()
+    static_x = x[:rows].clone()
     static_ids = torch.tensor([0, min(3, len(raw_oracle) - 1)], device='cuda', dtype=torch.int64)
     changed_ids = torch.tensor([1, min(5, len(raw_oracle) - 1)], device='cuda', dtype=torch.int64)
     # Both actual operator paths are warmed before capture on the same owners.
@@ -112,12 +112,13 @@ def test_small_gemv_preserves_native_fma_xor_bits_and_rowlaw():
     packed, status = upload(original)
     raw = original.to('cuda')
     generator = torch.Generator(device='cuda').manual_seed(SMALL_GEMV_SEED)
-    x = torch.empty((8, 64), device='cuda', dtype=torch.bfloat16).uniform_(-.5, .5, generator=generator)
-    for rows in range(1, 9):
+    x = torch.empty((16, 64), device='cuda', dtype=torch.bfloat16).uniform_(-.5, .5, generator=generator)
+    for rows in range(1, 17):
         actual = sym.matmul(x[:rows], packed)
         bits_equal(actual, reference(x[:rows], raw))
         bits_equal(actual, torch.cat([sym.matmul(x[r:r+1], packed) for r in range(rows)]))
     graph_replay_bits(packed, raw, x)
+    graph_replay_bits(packed, raw, x, rows=16)
     torch.cuda.synchronize()
     assert status.safe_to_release
 
@@ -142,12 +143,13 @@ def test_actual_hf_head_gemv_lookup_and_cpu_streaming_bit_oracles(record_propert
         raw_oracle = original.to('cuda')
         generator = torch.Generator(device='cuda').manual_seed(ACTUAL_HEAD_SEED)
         record_property('actual_head_input_seed', ACTUAL_HEAD_SEED)
-        x = torch.empty((8, 2816), device='cuda', dtype=torch.bfloat16).uniform_(-.5, .5, generator=generator)
-        for rows in range(1, 9):
+        x = torch.empty((16, 2816), device='cuda', dtype=torch.bfloat16).uniform_(-.5, .5, generator=generator)
+        for rows in range(1, 17):
             bits_equal(sym.matmul(x[:rows], packed), reference(x[:rows], raw_oracle))
         ids = torch.tensor([[0, 1, 50, 106], [131071, 131072, 262142, 262143]], device='cuda')
         bits_equal(sym.lookup(ids, packed, max_rows=8), raw_oracle[ids])
         graph_replay_bits(packed, raw_oracle, x)  # actual full-head R1 + lookup capture
+        graph_replay_bits(packed, raw_oracle, x, rows=16)
         record_property('actual_head_original_bytes', original.numel() * original.element_size())
         record_property('actual_sym8_allocated_bytes', packed.nbytes)
         record_property('actual_raw_fallback_groups', len(packed.raw))
@@ -158,7 +160,7 @@ def test_actual_hf_head_gemv_lookup_and_cpu_streaming_bit_oracles(record_propert
 def test_native_metadata_refusals_before_output_allocation():
     packed, status = upload(torch.ones((2, 32), dtype=torch.bfloat16, device='cpu'))
     for x in (torch.empty((0, 32), device='cuda', dtype=torch.bfloat16),
-              torch.empty((9, 32), device='cuda', dtype=torch.bfloat16),
+              torch.empty((17, 32), device='cuda', dtype=torch.bfloat16),
               torch.empty((1, 32), device='cuda', dtype=torch.float32),
               torch.empty((1, 32), device='cpu', dtype=torch.bfloat16)):
         with pytest.raises(ValueError):

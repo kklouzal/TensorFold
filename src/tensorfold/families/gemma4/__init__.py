@@ -13,6 +13,9 @@ LANES = True
 MODELS = ("mlx-community/gemma-4-26b-a4b-it-4bit",)
 CUDA_DRAFTER = "z-lab/gemma-4-26B-A4B-it-DFlash"
 CUDA_DRAFTER_BITS = True
+CUDA_LOSSLESS_HEAD = True
+CUDA_SPARK_GLOBAL_GQA = True
+CUDA_SPARK_SAMPLED_Q = True
 CUDA_DRAFT_ROWS = True
 QUANT_METHODS = {"cuda": ("mlx", "compressed-tensors", "modelopt", None), "mlx": ("mlx",)}
 KERNEL_PACKAGE = "tensorfold.kernels.gemma.v1"
@@ -103,6 +106,16 @@ def check_quantization(config: dict, backend: str) -> None:
                              f"{spec.get('bits')}-bit weights. {OWN_MODEL_HELP}")
 
 
+def check_cuda_modelopt_moe_metadata(config: dict, *, flag: str) -> None:
+    """Shared actual-checkpoint boundary for opt-in MoE CUDA features."""
+    from tensorfold.families import quant_method
+
+    text = config.get("text_config") or config
+    if (not isinstance(text, dict) or quant_method(config) != "modelopt"
+            or text.get("enable_moe_block") is not True):
+        raise ValueError(f"{flag} requires Gemma 4 ModelOpt MoE on CUDA; dense Gemma and other formats are unsupported")
+
+
 def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: int = 0,
                 master: str = "", master_port: int = 29551, no_drafts: bool = False,
                 context: int | None = None, **options: Any):
@@ -111,7 +124,8 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
     if tp != 1 or rank != 0:
         raise ValueError("Gemma4 CUDA currently runs on one GPU; use --tp 1 --rank 0")
     allowed = {"context_explicit", "parallel", "draft_rows", "drafter_bits", "vision", "vision_urls",
-               "vision_offload", "eos_token_ids", "chat_template_file", "chat_template_name"}
+               "vision_offload", "eos_token_ids", "chat_template_file", "chat_template_name", "lossless_head",
+               "spark_global_gqa", "spark_sampled_q"}
     unsupported = sorted(set(options) - allowed)
     if unsupported:
         raise ValueError("Gemma4 CUDA does not implement: " + ", ".join(unsupported))
@@ -119,7 +133,16 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         raise ValueError("Gemma4's vision tower stays resident; drop --vision-offload")
     from .cuda.e2b_metadata import is_dense_gemma
     from tensorfold.families import read_config
-    if is_dense_gemma(read_config(model_dir)):
+    raw = read_config(model_dir)
+    head_options = {}
+    for option in ("lossless_head", "spark_global_gqa", "spark_sampled_q"):
+        value = options.get(option, False)
+        if type(value) is not bool:
+            raise ValueError(f"{option} must be a bool")
+        if value:
+            check_cuda_modelopt_moe_metadata(raw, flag="--" + option.replace("_", "-"))
+            head_options[option] = True
+    if is_dense_gemma(raw):
         from .cuda.e2b_engine import E2BEngine
         rows = options.get("draft_rows")
         return E2BEngine(Path(model_dir), drafter=drafter, no_drafts=no_drafts,
@@ -130,8 +153,8 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
                                                            "chat_template_name") if name in options})
     if options.get("vision_urls"):
         raise ValueError("Gemma4 currently accepts embedded images/video; drop --vision-urls")
-    from tensorfold.families import quant_method, read_config
-    if quant_method(read_config(model_dir)) in ("compressed-tensors", "modelopt"):
+    from tensorfold.families import quant_method
+    if quant_method(raw) in ("compressed-tensors", "modelopt"):
         from tensorfold.cuda import precision
         if precision.mode() != precision.CHECKPOINT:
             raise ValueError("Gemma4 native NVFP4 requires --precision checkpoint with calibrated activation math")
@@ -140,7 +163,7 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
     rows = options.get("draft_rows")
     return Gemma4Engine(Path(model_dir), drafter=drafter, no_drafts=no_drafts,
                         depth=None if rows is None else rows - 1, context=context,
-                        streams=options.get("parallel", 1),
+                        streams=options.get("parallel", 1), **head_options,
                         **{name: options[name] for name in ("context_explicit", "drafter_bits", "vision",
                               "eos_token_ids", "chat_template_file", "chat_template_name") if name in options})
 

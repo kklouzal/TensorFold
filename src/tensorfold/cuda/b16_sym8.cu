@@ -132,17 +132,17 @@ at::Tensor sym8_matmul(const at::Tensor& x, const at::Tensor& palette, const at:
                        const at::Tensor& metadata, const at::Tensor& raw, int64_t N, int64_t K) {
     checked(palette, codes, metadata, raw, N, K);
     TORCH_CHECK(x.device() == palette.device() && x.scalar_type() == at::kBFloat16 && x.is_contiguous() && x.dim() == 2 && x.size(1) == K, "Sym8 contiguous same-device BF16[M,K] required");
-    TORCH_CHECK(x.size(0) >= 1 && x.size(0) <= 8, "Sym8 GEMV admits M1..8");
+    TORCH_CHECK(x.size(0) >= 1 && x.size(0) <= 16, "Sym8 GEMV admits M1..16");
     TORCH_CHECK(reinterpret_cast<uintptr_t>(x.data_ptr()) % 16 == 0, "Sym8 input requires16-byte alignment");
     c10::cuda::CUDAGuard guard(x.device());
     const auto* props = at::cuda::getDeviceProperties(x.get_device());
     TORCH_CHECK((N + 3) / 4 <= props->maxGridSize[0], "Sym8 GEMV launch grid exceeds device");
-    const int M = int(x.size(0)), reuse = M == 1 ? 1 : M == 2 ? 2 : M <= 4 ? 4 : 8;
+    const int M = int(x.size(0)), reuse = M == 1 ? 1 : M == 2 ? 2 : M <= 4 ? 4 : M <= 8 ? 8 : 16;
     auto out = at::empty({M, N}, x.options());
     const dim3 grid(unsigned((N + 3) / 4), unsigned((M + reuse - 1) / reuse));
 #define RUN(R) project<R><<<grid, 128, 0, at::cuda::getCurrentCUDAStream()>>>(x.data_ptr<at::BFloat16>(), reinterpret_cast<const uint16_t*>(palette.data_ptr<int16_t>()), codes.data_ptr<uint8_t>(), reinterpret_cast<const uint32_t*>(metadata.data_ptr<int32_t>()), reinterpret_cast<const uint16_t*>(raw.data_ptr<int16_t>()), out.data_ptr<at::BFloat16>(), M, int(N), int(K), uint32_t(raw.size(0)))
     if (reuse == 1) { RUN(1); } else if (reuse == 2) { RUN(2); }
-    else if (reuse == 4) { RUN(4); } else { RUN(8); }
+    else if (reuse == 4) { RUN(4); } else if (reuse == 8) { RUN(8); } else { RUN(16); }
 #undef RUN
     C10_CUDA_KERNEL_LAUNCH_CHECK();
     return out;

@@ -55,14 +55,51 @@ production-like setting had a conditional throughput-ratio interval above one
 B01 remains **unselected**, with no equivalence or inferiority conclusion.
 The immutable production image `1d53fa83` is unchanged.
 
-An experimental **unconnected** Sym8 BF16 operator passed 20 installed CPU
+The initial standalone experimental Sym8 BF16 operator passed 20 installed CPU
 checks and four actual GPU checks, including full tied-head bit reconstruction,
 GEMV rows 1–8, lookup and changed-input CUDA graph replay. Its actual logical
 packed payload is 830,472,192 bytes versus 1,476,395,008 raw bytes, with no
 fallback groups; this is not a serving, VRAM or throughput gain. Isolated invalid
 ID/metadata probes failed fatally as required. See the
 [qualification receipt](deploy/gb10/gemma26b-sym8-qualification-20261101.json).
-There is no serving/loader or quantization-CLI integration; production is unchanged.
+The installed lossless-head integration also passed exact whole-Engine text,
+cache, cancellation and image checks. Its table saved 645,922,816 logical bytes;
+observed peak allocated memory fell by 626,524,160 bytes. The limited comparison
+was 1.03–2.87% slower, not a tokens/s win. The owner accepted that small measured
+tradeoff for the head-memory saving and requested it for both drafter evaluations
+and the eventual deployment; this does not authorize larger future regressions.
+See the [integration receipt](deploy/gb10/gemma26b-sym8-integration-20261101.json).
+Source CLI now offers explicit `--lossless-head` for Gemma ModelOpt MoE CUDA,
+with default off. The latest SDK capture, source UID `4bf0ba0a…`
+(runtime `b2a…`, verification `fd7…`), passed 474 installed CPU checks in
+5.64 seconds without CUDA initialization; model/drafter gates remain separate.
+It performs lossless runtime storage preparation, not checkpoint quantization.
+Production image `1d53fa83` remains unchanged until the new deployment passes.
+
+ModelOpt MoE source admits an explicitly supplied DFlash companion with normal
+metadata/tap and capacity checks; automatic drafting remains off. On baseline
+source `04f9…`, 128 forced-history target comparisons passed: widths 1–16,
+eager/graph versus serial, including a 64k prefix and complete selected
+probability bytes, hidden states, taps and logical KV. This does not qualify
+complete drafter generation, rejection/cache behavior or performance.
+
+The DF8 private head built from bounded raw Sym8 chunks passed two actual GPU
+checks in 62.80 seconds: FP8 payload/scales, FP32 logits at rows 1–16 and raw-row
+lookup matched the original BF16-source quantization reference bitwise. Peak
+allocated memory was 4.733 GB in that operator test. No model-q, cache/replay or
+throughput selection follows from this primitive gate.
+
+Sparkulator's recorded cold-64k native-head oracle passed 108 stage comparisons
+and proposal-prefix IDs at counts 2/4/6/15. It uses its own assistant weights/head
+and final normalized main hidden state. Live bridge, restore/cache and media
+integration remain pending. Default-off `--spark-global-gqa` has passed forced
+efficient-provider checks at 64k/131k (16 bitwise observations). The new SDK's
+recorded-64k whole-head GQA gate also passed 108 bitwise field comparisons in
+20.134 seconds; live Engine/cache/media, actual-q and performance gates remain
+pending. `--spark-sampled-q` reuses bounded actual-q sampling with target p
+unchanged, but its model-law/cache/performance gates also remain pending.
+Production image `1d53fa83` is unchanged; these are experimental checkpoints,
+not completed drafter selection or a universal speed claim.
 
 ## CUDA prefill cancellation
 

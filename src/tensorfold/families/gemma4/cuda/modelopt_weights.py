@@ -118,8 +118,10 @@ def validate_headers(raw, headers, *, vision=False):
     return c
 
 
-def storage_bounds(c, headers, *, vision=False):
+def storage_bounds(c, headers, *, vision=False, lossless_head=False):
     """Logical owners plus largest bounded load/validation scratch, not allocator peaks."""
+    if type(lossless_head) is not bool:
+        raise ValueError("lossless_head must be a bool")
     experts, plain = tensor_contract(c)
     native = set(plain) | ({name for name in headers if name.startswith(VISION)} if vision else set())
     native_bytes = sum(math.prod(headers[name]["shape"]) * 2 for name in native)
@@ -135,12 +137,26 @@ def storage_bounds(c, headers, *, vision=False):
         for name, item in headers.items()
         if name != "__metadata__"
     )
-    return {
+    bounds = {
         "resident": native_bytes + expert_bytes,
         "device_staging": max(pack_peak, finite_peak),
         "host_staging": largest_source + 2 * (64 << 20) + (1 << 20) + 8 * len(experts) + 3 * 4096,
         "mapped": 0,
     }
+    if lossless_head:
+        from tensorfold.cuda.b16_sym8_layout import header_bounds
+        name = CT_PREFIX + 'embed_tokens.weight'
+        head = header_bounds(tuple(headers[name]['shape']))
+        bounds['resident'] += head['max_valid_encoded_bytes'] - head['raw_source_bytes']
+        # No full head is ever uploaded or validated as a GPU BF16 tensor.
+        other_finite = max((5 * math.prod(headers[key]['shape']) + 5 for key in native if key != name), default=0)
+        bounds['device_staging'] = max(pack_peak, other_finite)
+        # CPU source + encoded source coexist through upload. Sum the finite
+        # and pack bounds without inferred phase/allocator reuse credit.
+        bounds['host_staging'] += (head['max_valid_encoded_bytes'] + head['pack_temporary_bytes']
+                                   + head['cpu_finite_chunk_bytes'])
+        bounds['lossless_head'] = head
+    return bounds
 
 
 class _PayloadReader:
@@ -292,7 +308,7 @@ def _finish(primary, drain_error, close_error, status):
         raise
 
 
-def load(model_dir, device="cuda", *, vision=False, status=None):
+def load(model_dir, device="cuda", *, vision=False, status=None, lossless_head=False):
     """Strict resident mixed ModelOpt checkpoint loader with one retirement owner."""
     import hashlib
     import torch
@@ -305,6 +321,8 @@ def load(model_dir, device="cuda", *, vision=False, status=None):
     from .nvfp4_experts import Workspace, geglu
     from .modelopt_experts import ModelOptExperts
 
+    if type(lossless_head) is not bool:
+        raise ValueError("lossless_head must be a bool")
     if status is None:
         status = ModelOptLoadStatus()
     if type(status) is not ModelOptLoadStatus or status.transferred or status.owners or not status.safe_to_release:
@@ -329,6 +347,7 @@ def load(model_dir, device="cuda", *, vision=False, status=None):
     status.owners["layers"] = layers
     primary = drain_error = close_error = None
     dev = None
+    head_transfer = head_cpu = head_encoded = gpu_head = chunk = None
     try:
         source = SafeTensors([])
         status.owners["reader"] = source
@@ -363,6 +382,9 @@ def load(model_dir, device="cuda", *, vision=False, status=None):
             result=None,
             embed=None,
             norm=None,
+            head_cpu=None,
+            head_encoded=None,
+            head_transfer=None,
         )
         dev = torch.device(device)
         if dev.type != "cuda" or not available():
@@ -380,8 +402,37 @@ def load(model_dir, device="cuda", *, vision=False, status=None):
             payload.native_wrappers[name] = wrapper
             return wrapper
 
-        embed = plain(CT_PREFIX + "embed_tokens")
-        status.owners["embed"] = embed
+        if lossless_head:
+            from tensorfold.cuda.b16_sym8 import pack, to_cuda, TransferStatus, Sym8Table
+            from tensorfold.cuda.b16_sym8_layout import PACK_CHUNK_GROUPS
+            # Existing reader consumes the original BF16 bytes on CPU only.
+            # Preserve old finite semantics in bounded chunks before packing.
+            head_name = CT_PREFIX + 'embed_tokens.weight'
+            head_cpu = payload.get(head_name, 'cpu')
+            status.owners['head_cpu'] = head_cpu
+            for at in range(0, head_cpu.numel(), PACK_CHUNK_GROUPS * 32):
+                chunk = head_cpu.reshape(-1)[at:at + PACK_CHUNK_GROUPS * 32]
+                if not bool(torch.isfinite(chunk).all()):
+                    raise ValueError(f'{head_name}: native BF16 payload must be finite')
+            chunk = None
+            head_encoded = pack(head_cpu, chunk_groups=PACK_CHUNK_GROUPS)
+            status.owners['head_encoded'] = head_encoded
+            head_transfer = TransferStatus()
+            status.owners['head_transfer'] = head_transfer
+            status.gpu_work_started = True
+            status.safe_to_release = False
+            gpu_head = to_cuda(head_encoded, device=dev, status=head_transfer)
+            embed = Sym8Table(gpu_head, c.max_position)
+            status.owners['embed'] = embed
+            # Upload's explicit fence retired CPU sources. Only one GPU table
+            # remains; neither native_owners nor wrappers retains a raw mirror.
+            payload.native_owners[head_name] = None
+            payload.native_wrappers[head_name.removesuffix('.weight')] = embed
+            status.owners['head_cpu'] = status.owners['head_encoded'] = None
+            head_cpu = head_encoded = gpu_head = None
+        else:
+            embed = plain(CT_PREFIX + "embed_tokens")
+            status.owners["embed"] = embed
         norm = native(CT_PREFIX + "norm.weight")
         status.owners["norm"] = norm
         workspace = Workspace()
@@ -452,12 +503,23 @@ def load(model_dir, device="cuda", *, vision=False, status=None):
             "convention": "ModelOpt direct input/weight globals, unchanged packed bytes, BF16 native exceptions",
             "omitted_vision_consumed_on_cpu": not vision,
         }
+        if lossless_head:
+            result.consumption_receipt['lossless_head'] = {
+                'schema': embed.layout, 'packed_bytes': embed.nbytes(),
+                'source_dtype': 'BF16', 'source_unchanged': True,
+                'compute': 'original BF16 operands / ordered FP32 FMA-XOR / BF16 output',
+                'authority': 'one packed table for embedding and output projection',
+            }
     except BaseException as error:
         primary = error
         _native_cause = BaseException.__cause__.__get__(primary)
         _native_context = BaseException.__context__.__get__(primary)
     finally:
-        if status.gpu_work_started:
+        unsafe_head = (head_transfer is not None and head_transfer.started
+                       and not head_transfer.safe_to_release)
+        # A failed nested transfer is terminal. Never retry its CUDA fence or
+        # reader retirement from this outer loader boundary.
+        if status.gpu_work_started and not unsafe_head:
             try:
                 torch.cuda.synchronize(dev)
                 status.safe_to_release = True
@@ -475,6 +537,7 @@ def load(model_dir, device="cuda", *, vision=False, status=None):
                 result = embed = norm = tower = projector = bank = experts = workspace = pending_layer = None
                 layers = None
             source = payload = None
+            head_cpu = head_encoded = head_transfer = gpu_head = chunk = None
         # Unknown retirement retains BOTH named locals and reliable status slots;
         # no original CUDA owner is cleared or retried under terminal state.
     authority = primary if primary is not None else drain_error if drain_error is not None else close_error

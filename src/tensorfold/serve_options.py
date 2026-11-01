@@ -366,6 +366,22 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
             and not getattr(family.package, "CUDA_DRAFTER_BITS", False):
         raise ValueError(f"--drafter-bits: {family.title} on CUDA runs its draft model at one fixed precision; drop "
                          "the flag")
+    head_config = None
+    for option, capability in (("lossless_head", "CUDA_LOSSLESS_HEAD"),
+                               ("spark_global_gqa", "CUDA_SPARK_GLOBAL_GQA"),
+                               ("spark_sampled_q", "CUDA_SPARK_SAMPLED_Q")):
+        value = getattr(args, option, False)
+        flag = "--" + option.replace("_", "-")
+        if type(value) is not bool:
+            raise ValueError(f"{flag} must be a boolean")
+        if value:
+            if backend != "cuda" or not getattr(family.package, capability, False):
+                raise ValueError(f"{flag} requires Gemma 4 ModelOpt MoE on CUDA")
+            if head_config is None:
+                from tensorfold.families import read_config
+
+                head_config = read_config(config_dir if config_dir is not None else args.model)
+            family.package.check_cuda_modelopt_moe_metadata(head_config, flag=flag)
     fp8 = getattr(family.package, "CUDA_PREFILL_FP8", False) and backend == "cuda"
     if getattr(args, "prefill_fp8", None) and not fp8:              # asked for by name, not a default
         raise ValueError(f"--prefill-fp8 picks FP8 prompt kernels on CUDA; {family.title} on "

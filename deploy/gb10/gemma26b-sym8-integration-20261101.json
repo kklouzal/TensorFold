@@ -1,0 +1,469 @@
+{
+  "schema": 1,
+  "date": "2026-11-01",
+  "target": {
+    "repository": "llmfan46/gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic-NVFP4",
+    "revision": "a9e81e26ed81f541ec1d7314e72c61237a24566f"
+  },
+  "platform": "NVIDIA GB10 SM12.1 ARM64",
+  "source_uid": "ec90ad6e590a0aca19136878e9c600e8a6d7f0f59d90dfe2da52a635ddded727",
+  "runtime_image": "sha256:ed3bcaee1a8630d3f13770a25ee2c111aa35bad7f5996ccb2f8d383ac2a37ecd",
+  "verification_image": "sha256:132570db9af50071ddac63124cd7932e36d2d3c69735caec1c4ac3489d2022f3",
+  "scope": "One raw text process plus separate corrected rawsmoke, one packed fullprocess; actual65536ThinkingTrue in131072 window; descriptive pairedpoints, noCI/independent8-sample inference",
+  "workload": {
+    "configured_context": 131072,
+    "actual_prompt_tokens": 65536,
+    "thinking": true,
+    "reply_budget": 64,
+    "sampling": [
+      "greedy",
+      "temperature1/top-k64/top-p0.95/prompt-derived seed"
+    ],
+    "prompt_fixture": "Two deterministic native-rendered code/prose histories cropped first63488+last2048 IDs; synthetic shape/equality workload, not retrieval-quality proof.",
+    "input_sha256": "1d819508af7483f6bedaab240ec223850ed4925ebe046a9373097703c3a5765f"
+  },
+  "verification": {
+    "fulltext_12plus12_generations_exact_IDs_policy_seed_EOS_prefillSHA_dtype": true,
+    "measured4cold4replay_each_exact_cache0_65536_noDraft": true,
+    "allactual64outputs_normalEOS": true,
+    "all_callback_return_and_drain_metrics_recomputed_exact": true,
+    "cancel1024_and_media283prompt64output_exact": true,
+    "complete47033inventory_same_hash_readers_closed_CPUstagingownerscleared": true,
+    "soleSym8authority_no_rawGPUmirror": "Pinned source+actualSym8Table/boundembedding/consumptionreceipt/status proof; not heap scan.",
+    "context": "131072 configured;65536actualhistory; notnative262144timingproof."
+  },
+  "memory": {
+    "bare_raw_authority_bytes": 1476395008,
+    "bare_packed_authority_bytes": 830472192,
+    "bare_saved_bytes": 645922816,
+    "encoded_fraction": 0.5625,
+    "measured_peak_allocated_bytes": {
+      "raw": 22902305792,
+      "sym8": 22275781632
+    },
+    "measured_peak_reserved_bytes": {
+      "raw": 23139975168,
+      "sym8": 22542286848
+    },
+    "admission_estimates": {
+      "raw": {
+        "budget_bytes": 37140488192,
+        "weight_bytes_estimate": 18782360732,
+        "loading_bytes_estimate": 5302753285,
+        "serving_peak_bytes_estimate": 28734251988,
+        "host_loading_staging_bytes_estimate": 1611765760
+      },
+      "sym8": {
+        "budget_bytes": 37087789056,
+        "weight_bytes_estimate": 19210179676,
+        "loading_bytes_estimate": 3642742794,
+        "serving_peak_bytes_estimate": 29162070932,
+        "host_loading_staging_bytes_estimate": 3524777989
+      }
+    },
+    "interpretation": "Header-only worstvalidpacked bytes1,904,213,952 exceedactual830,472,192; forecastresidentincreases427,818,944 conservatively whileactualauthoritysaves645,922,816. Actualpeakdeltas neednotmatchbaretablebytes becausegraph/allocator/runtimeowners differ. Not afullmodelresidentestimatefromtablealone.",
+    "observed_peak_allocated_saved_bytes": 626524160,
+    "observed_peak_reserved_saved_bytes": 597688320
+  },
+  "loading": {
+    "raw_first_text_ns": 197024862260,
+    "raw_cached_smoke_ns": 32177757788,
+    "packed_full_ns": 69045194616,
+    "interpretation": "Rawfirst197.0s contained coldcompilation/cache effects; rawsmoke32.2s and packed69.0s are observedseparately. Do not claimpackedfasterstartup thanrawfirst; packedCPUfinite/encoding cost retained."
+  },
+  "cells": {
+    "code64k/greedy/cold": {
+      "raw": {
+        "actual_tokens": 64,
+        "ttft_ns": 45404300458,
+        "commit_decode_tps": 32.64497489818027,
+        "postfirst_through_drain_tps": 32.64333886864012,
+        "body_ns": 47334240687,
+        "completed_wall_ns": 47334250095,
+        "peak_allocated": 22901255168,
+        "peak_reserved": 23139975168,
+        "host_before": {
+          "maxrss_bytes": 2349207552,
+          "cgroup_current_bytes": 1925058560
+        },
+        "host_after": {
+          "maxrss_bytes": 2349207552,
+          "cgroup_current_bytes": 1925046272
+        }
+      },
+      "sym8": {
+        "actual_tokens": 64,
+        "ttft_ns": 45449557175,
+        "commit_decode_tps": 32.13847753741946,
+        "postfirst_through_drain_tps": 32.13675470106548,
+        "body_ns": 47409920079,
+        "completed_wall_ns": 47409929359,
+        "peak_allocated": 22274731008,
+        "peak_reserved": 22542286848,
+        "host_before": {
+          "maxrss_bytes": 3225866240,
+          "cgroup_current_bytes": 2523017216
+        },
+        "host_after": {
+          "maxrss_bytes": 3225866240,
+          "cgroup_current_bytes": 2523000832
+        }
+      },
+      "ratios_Sym8_over_raw": {
+        "ttft_ns": 1.0009967495709324,
+        "commit_decode_tps": 0.9844846760538007,
+        "postfirst_through_drain_tps": 0.9844812392012599,
+        "body_ns": 1.0015988297456895,
+        "completed_wall_ns": 1.0015988267237383
+      }
+    },
+    "code64k/greedy/replay": {
+      "raw": {
+        "actual_tokens": 64,
+        "ttft_ns": 20316913,
+        "commit_decode_tps": 32.48979381990766,
+        "postfirst_through_drain_tps": 32.48792696292398,
+        "body_ns": 1959489518,
+        "completed_wall_ns": 1959498815,
+        "peak_allocated": 22900730880,
+        "peak_reserved": 23139975168,
+        "host_before": {
+          "maxrss_bytes": 2349207552,
+          "cgroup_current_bytes": 1925005312
+        },
+        "host_after": {
+          "maxrss_bytes": 2349207552,
+          "cgroup_current_bytes": 1925267456
+        }
+      },
+      "sym8": {
+        "actual_tokens": 64,
+        "ttft_ns": 19392198,
+        "commit_decode_tps": 32.04096799261348,
+        "postfirst_through_drain_tps": 32.0391870462727,
+        "body_ns": 1985725505,
+        "completed_wall_ns": 1985734225,
+        "peak_allocated": 22274206720,
+        "peak_reserved": 22542286848,
+        "host_before": {
+          "maxrss_bytes": 3225866240,
+          "cgroup_current_bytes": 2522955776
+        },
+        "host_after": {
+          "maxrss_bytes": 3225866240,
+          "cgroup_current_bytes": 2522955776
+        }
+      },
+      "ratios_Sym8_over_raw": {
+        "ttft_ns": 0.9544854575102034,
+        "commit_decode_tps": 0.9861856363329962,
+        "postfirst_through_drain_tps": 0.9861874869035692,
+        "body_ns": 1.013389194868865,
+        "completed_wall_ns": 1.0133888368796997
+      }
+    },
+    "code64k/production-seeded/cold": {
+      "raw": {
+        "actual_tokens": 64,
+        "ttft_ns": 45250855763,
+        "commit_decode_tps": 32.763844888309244,
+        "postfirst_through_drain_tps": 32.76227924817845,
+        "body_ns": 47173790371,
+        "completed_wall_ns": 47173798899,
+        "peak_allocated": 22902305792,
+        "peak_reserved": 23139975168,
+        "host_before": {
+          "maxrss_bytes": 2349207552,
+          "cgroup_current_bytes": 1925218304
+        },
+        "host_after": {
+          "maxrss_bytes": 2349207552,
+          "cgroup_current_bytes": 1925214208
+        }
+      },
+      "sym8": {
+        "actual_tokens": 64,
+        "ttft_ns": 45406508489,
+        "commit_decode_tps": 31.96110565185551,
+        "postfirst_through_drain_tps": 31.959364425012513,
+        "body_ns": 47377753740,
+        "completed_wall_ns": 47377761708,
+        "peak_allocated": 22275781632,
+        "peak_reserved": 22542286848,
+        "host_before": {
+          "maxrss_bytes": 3225866240,
+          "cgroup_current_bytes": 2523164672
+        },
+        "host_after": {
+          "maxrss_bytes": 3225866240,
+          "cgroup_current_bytes": 2523164672
+        }
+      },
+      "ratios_Sym8_over_raw": {
+        "ttft_ns": 1.0034397741959893,
+        "commit_decode_tps": 0.9754992358439541,
+        "postfirst_through_drain_tps": 0.975492705587308,
+        "body_ns": 1.0043236586968298,
+        "completed_wall_ns": 1.0043236460442095
+      }
+    },
+    "code64k/production-seeded/replay": {
+      "raw": {
+        "actual_tokens": 64,
+        "ttft_ns": 13288702,
+        "commit_decode_tps": 32.53147698852592,
+        "postfirst_through_drain_tps": 32.5296983237085,
+        "body_ns": 1949972742,
+        "completed_wall_ns": 1949980502,
+        "peak_allocated": 22901781504,
+        "peak_reserved": 23139975168,
+        "host_before": {
+          "maxrss_bytes": 2349207552,
+          "cgroup_current_bytes": 1925419008
+        },
+        "host_after": {
+          "maxrss_bytes": 2349207552,
+          "cgroup_current_bytes": 1925419008
+        }
+      },
+      "sym8": {
+        "actual_tokens": 64,
+        "ttft_ns": 12820046,
+        "commit_decode_tps": 31.599290896864993,
+        "postfirst_through_drain_tps": 31.59790963035763,
+        "body_ns": 2006614504,
+        "completed_wall_ns": 2006622824,
+        "peak_allocated": 22275257344,
+        "peak_reserved": 22542286848,
+        "host_before": {
+          "maxrss_bytes": 3225866240,
+          "cgroup_current_bytes": 2523103232
+        },
+        "host_after": {
+          "maxrss_bytes": 3225866240,
+          "cgroup_current_bytes": 2523103232
+        }
+      },
+      "ratios_Sym8_over_raw": {
+        "ttft_ns": 0.9647327481645687,
+        "commit_decode_tps": 0.9713451039437984,
+        "postfirst_through_drain_tps": 0.9713557536230898,
+        "body_ns": 1.0290474634747484,
+        "completed_wall_ns": 1.0290476350619429
+      }
+    },
+    "prose64k/greedy/cold": {
+      "raw": {
+        "actual_tokens": 64,
+        "ttft_ns": 45162319218,
+        "commit_decode_tps": 32.64616259857808,
+        "postfirst_through_drain_tps": 32.64427042173081,
+        "body_ns": 47092204837,
+        "completed_wall_ns": 47092213781,
+        "peak_allocated": 22901255168,
+        "peak_reserved": 23139975168,
+        "host_before": {
+          "maxrss_bytes": 2349207552,
+          "cgroup_current_bytes": 1925349376
+        },
+        "host_after": {
+          "maxrss_bytes": 2349207552,
+          "cgroup_current_bytes": 1925345280
+        }
+      },
+      "sym8": {
+        "actual_tokens": 64,
+        "ttft_ns": 45288550851,
+        "commit_decode_tps": 31.94284815624022,
+        "postfirst_through_drain_tps": 31.941103233933124,
+        "body_ns": 47260922568,
+        "completed_wall_ns": 47260931064,
+        "peak_allocated": 22274731008,
+        "peak_reserved": 22542286848,
+        "host_before": {
+          "maxrss_bytes": 3225866240,
+          "cgroup_current_bytes": 2523295744
+        },
+        "host_after": {
+          "maxrss_bytes": 3225866240,
+          "cgroup_current_bytes": 2523295744
+        }
+      },
+      "ratios_Sym8_over_raw": {
+        "ttft_ns": 1.0027950653373374,
+        "commit_decode_tps": 0.9784564436872439,
+        "postfirst_through_drain_tps": 0.9784597058315754,
+        "body_ns": 1.003582710378161,
+        "completed_wall_ns": 1.003582700184464
+      }
+    },
+    "prose64k/greedy/replay": {
+      "raw": {
+        "actual_tokens": 64,
+        "ttft_ns": 12750488,
+        "commit_decode_tps": 32.695863127892714,
+        "postfirst_through_drain_tps": 32.69447310534505,
+        "body_ns": 1939675343,
+        "completed_wall_ns": 1939681679,
+        "peak_allocated": 22900730880,
+        "peak_reserved": 23139975168,
+        "host_before": {
+          "maxrss_bytes": 2349207552,
+          "cgroup_current_bytes": 1925267456
+        },
+        "host_after": {
+          "maxrss_bytes": 2349207552,
+          "cgroup_current_bytes": 1925267456
+        }
+      },
+      "sym8": {
+        "actual_tokens": 64,
+        "ttft_ns": 12593916,
+        "commit_decode_tps": 32.163019516223116,
+        "postfirst_through_drain_tps": 32.16124625429579,
+        "body_ns": 1971465774,
+        "completed_wall_ns": 1971473230,
+        "peak_allocated": 22274206720,
+        "peak_reserved": 22542286848,
+        "host_before": {
+          "maxrss_bytes": 3225866240,
+          "cgroup_current_bytes": 2523213824
+        },
+        "host_after": {
+          "maxrss_bytes": 3225866240,
+          "cgroup_current_bytes": 2523213824
+        }
+      },
+      "ratios_Sym8_over_raw": {
+        "ttft_ns": 0.9877203131362502,
+        "commit_decode_tps": 0.9837030266004805,
+        "postfirst_through_drain_tps": 0.9836906118862615,
+        "body_ns": 1.0163895628795443,
+        "completed_wall_ns": 1.0163900867571167
+      }
+    },
+    "prose64k/production-seeded/cold": {
+      "raw": {
+        "actual_tokens": 64,
+        "ttft_ns": 45210054798,
+        "commit_decode_tps": 31.819076127063873,
+        "postfirst_through_drain_tps": 31.817223332363582,
+        "body_ns": 47190105564,
+        "completed_wall_ns": 47190114445,
+        "peak_allocated": 22902305792,
+        "peak_reserved": 23139975168,
+        "host_before": {
+          "maxrss_bytes": 2349207552,
+          "cgroup_current_bytes": 1925443584
+        },
+        "host_after": {
+          "maxrss_bytes": 2349207552,
+          "cgroup_current_bytes": 1924984832
+        }
+      },
+      "sym8": {
+        "actual_tokens": 64,
+        "ttft_ns": 45342442832,
+        "commit_decode_tps": 31.492911606948418,
+        "postfirst_through_drain_tps": 31.49116082479599,
+        "body_ns": 47342996766,
+        "completed_wall_ns": 47343004207,
+        "peak_allocated": 22275781632,
+        "peak_reserved": 22542286848,
+        "host_before": {
+          "maxrss_bytes": 3225866240,
+          "cgroup_current_bytes": 2523123712
+        },
+        "host_after": {
+          "maxrss_bytes": 3225866240,
+          "cgroup_current_bytes": 2523656192
+        }
+      },
+      "ratios_Sym8_over_raw": {
+        "ttft_ns": 1.002928287404019,
+        "commit_decode_tps": 0.9897494031940784,
+        "postfirst_through_drain_tps": 0.9897520124819965,
+        "body_ns": 1.0032398995546354,
+        "completed_wall_ns": 1.003239868430033
+      }
+    },
+    "prose64k/production-seeded/replay": {
+      "raw": {
+        "actual_tokens": 64,
+        "ttft_ns": 13129402,
+        "commit_decode_tps": 32.15798150095678,
+        "postfirst_through_drain_tps": 32.156343234302554,
+        "body_ns": 1972298915,
+        "completed_wall_ns": 1972307395,
+        "peak_allocated": 22901781504,
+        "peak_reserved": 23139975168,
+        "host_before": {
+          "maxrss_bytes": 2349207552,
+          "cgroup_current_bytes": 1925414912
+        },
+        "host_after": {
+          "maxrss_bytes": 2349207552,
+          "cgroup_current_bytes": 1924956160
+        }
+      },
+      "sym8": {
+        "actual_tokens": 64,
+        "ttft_ns": 13185408,
+        "commit_decode_tps": 31.583642692481536,
+        "postfirst_through_drain_tps": 31.582341322384014,
+        "body_ns": 2007962954,
+        "completed_wall_ns": 2007971018,
+        "peak_allocated": 22275257344,
+        "peak_reserved": 22542286848,
+        "host_before": {
+          "maxrss_bytes": 3225866240,
+          "cgroup_current_bytes": 2524344320
+        },
+        "host_after": {
+          "maxrss_bytes": 3225866240,
+          "cgroup_current_bytes": 2523820032
+        }
+      },
+      "ratios_Sym8_over_raw": {
+        "ttft_ns": 1.0042656931366714,
+        "commit_decode_tps": 0.9821400852395492,
+        "postfirst_through_drain_tps": 0.9821496521623694,
+        "body_ns": 1.0180824715405778,
+        "completed_wall_ns": 1.0180821828739328
+      }
+    }
+  },
+  "conclusions": {
+    "standalone": "NOobservedstandalone decodegain: all8pairedpointTPSratios below1, range[0.9713451039437984, 0.9897494031940784]. One processperarm, fixedraw-firstorder andcorrelatedcold/replay outputs confoundcausalattribution; not astatisticallyqualifieduniversalregression/equivalence. PrimitiveR1gainmustnotbeextrapolatedtomodelTPS.",
+    "selection": "The deployment owner accepted the observed standalone decode tradeoff for the verified memory saving. Keep lossless_head enabled for both drafter evaluations and the final deployment; this is an authorized resource tradeoff, not evidence of superior decode throughput. Measure combined drafter performance separately.",
+    "batch_interactions": "Rawb16 row_block alreadyusesR16forwideheadM>8; currentSym8project<R> likewise decodesweights outsideitsR-rowFMAloop. Bothreuseweightloads, soSym8hasnoexclusive reuseadvantage. BatchedM2..16 compute/register/decoding/working-set tradeoff remains relevant toactualspeculativeverification; no speedconclusionfromM16numericalgates orcurrentstandaloneM1data.",
+    "limits": "Sameec90B01botharms, not oldproduction2f9 wholepackagecomparison; fewrecordedrequests notshipping performancewinner. Mediaidentityverified but mediaelapsedhasdifferenthistoryandisnotmatchedP3."
+  },
+  "evidence": {
+    "analysis_sha256": "37b4ed69d949737afd639e50a4a01e0e155acc55531f577a6d4ad87ef0fe0fa0",
+    "raw_reference_sha256": "e3746c6cc42bc760850727b0bbc724c0ab2d379006000d13ab9716f0195c6022",
+    "raw_reference_kind": "explicit phased qualification; original text job failed only at subsequent invalid PIL image fixture, retained unchanged; separate same-source native ImageInput cancel-to-media phase passed",
+    "raw_components": [
+      {
+        "sha256": "9508dd56cc81c6287dc136f7263bf7c7e26ed0eb587f4ae04de82d90d5adb49a",
+        "actual_component_status": "failed",
+        "actual_exit_code": 1,
+        "retirement_complete": true,
+        "helper_sha256": "3fb9d1676001532689fcc5ff598a202e14e2e84d7dc347d894e6301ad7e6452a",
+        "source_uid": "ec90ad6e590a0aca19136878e9c600e8a6d7f0f59d90dfe2da52a635ddded727",
+        "load_ns": 197024862260
+      },
+      {
+        "sha256": "d35be2b85513c0eea77a8dd416cdfc88cfcf484ecbebf0abaf2de35ee79de66d",
+        "actual_component_status": "qualification-complete",
+        "actual_exit_code": 0,
+        "retirement_complete": true,
+        "helper_sha256": "3eab21a1da817efa9178ba9eda92e17eb33bc02c5cb05999dbdd1b5dd2e91998",
+        "source_uid": "ec90ad6e590a0aca19136878e9c600e8a6d7f0f59d90dfe2da52a635ddded727",
+        "load_ns": 32177757788
+      }
+    ],
+    "packed_full_result_sha256": "ecf7ced26ef3cdc28791d77be8ffc1661a0e62dcaece1769424d652fc9e07324"
+  },
+  "deployment_status": "Codec selected by explicit user-accepted memory/observed-speed tradeoff; production image remains unchanged pending drafter qualification and final rollout. Public CLI and subsequent source increments need their own installed checks."
+}

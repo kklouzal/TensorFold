@@ -122,7 +122,14 @@ class Gemma4Target:
             self._embedding = weights.embed.embedding
         elif policy in ("ct_nvfp4", "modelopt_nvfp4"):
             self._norm, self._geglu, self._route = ct_rms_norm, glue.geglu, self._route_ct
-            self._embedding = lambda ids: torch.nn.functional.embedding(ids, weights.embed.weight)
+            from tensorfold.cuda.b16_sym8_layout import SCHEMA
+            if self._plain_prompt and getattr(weights.embed, 'layout', None) == SCHEMA:
+                from tensorfold.cuda.b16_sym8 import Sym8Table
+                if type(weights.embed) is not Sym8Table:
+                    raise ValueError('lossless head requires the actual owned Sym8 table')
+                self._embedding = weights.embed.embedding
+            else:
+                self._embedding = lambda ids: torch.nn.functional.embedding(ids, weights.embed.weight)
         else:
             raise ValueError(f"unknown Gemma4 numerical policy: {policy}")
         # The BF16 root's exact value, for the fused CT router (read once at construction).

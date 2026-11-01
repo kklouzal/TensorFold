@@ -91,7 +91,14 @@ class Gemma4Engine:
                  context_explicit: bool | None = None, streams: int = 1,
                  no_drafts: bool = False, vision: bool = False, eos_token_ids=None,
                  chat_template_file=None, chat_template_name=None,
-                 prepare_global_prompt: bool = False) -> None:
+                 prepare_global_prompt: bool = False, lossless_head: bool = False,
+                 spark_global_gqa: bool = False, spark_sampled_q: bool = False) -> None:
+        if type(spark_sampled_q) is not bool:
+            raise ValueError("spark_sampled_q must be a bool")
+        if type(spark_global_gqa) is not bool:
+            raise ValueError("spark_global_gqa must be a bool")
+        if type(lossless_head) is not bool:
+            raise ValueError("lossless_head must be a bool")
         if type(prepare_global_prompt) is not bool:
             raise ValueError("prepare_global_prompt must be a bool")
         if type(streams) is not int or streams != 1:
@@ -109,30 +116,55 @@ class Gemma4Engine:
         from tensorfold.token_metadata import load_tokenizer, resolve_eos
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.families import quant_method
-        from .capacity import admit
+        from .capacity import admit, companion_kind
         from .forward import Gemma4Target
         from .weights import Gemma4Weights
 
         raw = read_config(model_dir)
         method = quant_method(raw)
+        draft_dir = Path(drafter) if drafter and not no_drafts else None
+        kind = companion_kind(draft_dir) if draft_dir is not None else None
+        self._head_kind = kind
+        if spark_sampled_q and (kind != 'sparkulator' or method != 'modelopt'):
+            raise ValueError('Spark sampled q requires the actual Sparkulator/ModelOpt pair')
+        if spark_global_gqa and (kind != 'sparkulator' or method != 'modelopt'):
+            raise ValueError('Spark global GQA requires the actual Sparkulator/ModelOpt pair')
+        if spark_global_gqa and (type(context) is not int or not 0 < context <= 131072):
+            raise ValueError('Spark global GQA requires an explicit context up to131072')
+        if spark_global_gqa:
+            from ..sparkulator_metadata import validate_global_gqa_torch
+            validate_global_gqa_torch(torch)
+        spark_cfg = None
+        if kind == 'sparkulator':
+            from ..sparkulator_metadata import SparkulatorConfig
+            spark_cfg = SparkulatorConfig.from_dict(read_config(draft_dir))
+            if drafter_bits != 16:
+                raise ValueError('Sparkulator baseline requires bits16')
+        if lossless_head and method != 'modelopt':
+            raise ValueError('lossless_head is a ModelOpt-only investigation candidate')
         if prepare_global_prompt and method != 'modelopt':
             raise ValueError('prepared prompt KV is a ModelOpt-only investigation candidate')
         if method == 'modelopt':
             from tensorfold.cuda import precision
             if precision.mode() != precision.CHECKPOINT:
                 raise ValueError('Gemma4 ModelOpt MoE requires checkpoint activation math')
-            if drafter and not no_drafts:
-                raise ValueError('Gemma4 ModelOpt MoE currently requires standalone --no-drafts')
         torch.cuda.set_device(0)
         self.chat_template = prepare_chat_template(model_dir, template_file=chat_template_file,
                                                    template_name=chat_template_name)
-        draft_dir = Path(drafter) if drafter and not no_drafts else None
-        self.max_rows = (1 if method == 'modelopt' and draft_dir is None else
+        self.max_rows = (spark_cfg.block if spark_cfg is not None and depth is None else
+                         1 if method == 'modelopt' and draft_dir is None else
                          16 if depth is None else depth + 1)
+        if spark_sampled_q and self.max_rows > 16:
+            raise ValueError('Spark sampled q verification currently admits at most16 rows')
+        if lossless_head and self.max_rows > 16:
+            raise ValueError('lossless target head verification currently admits at most16 rows')
         self.capacity_plan = admit(model_dir, context, context_explicit, drafter_dir=draft_dir,
                                    vision=vision, max_rows=self.max_rows, streams=streams, keep=PREFIX_SNAPSHOTS,
                                    drafter_bits=drafter_bits,
-                                   **({"prepare_global_prompt": True} if prepare_global_prompt else {}))
+                                   **({"prepare_global_prompt": True} if prepare_global_prompt else {}),
+                                   **({"lossless_head": True} if lossless_head else {}),
+                                   **({"spark_global_gqa": True} if spark_global_gqa else {}),
+                                   **({"spark_sampled_q": True} if spark_sampled_q else {}))
         self.context_window = self.capacity_plan["context_window"]
         self.max_rows = min(self.max_rows, self.context_window)
         text = raw.get("text_config") or raw
@@ -145,7 +177,8 @@ class Gemma4Engine:
             from .modelopt_weights import load, ModelOptLoadStatus
             self._modelopt_load_status = ModelOptLoadStatus()
             try:
-                self.w = load(model_dir, vision=vision, status=self._modelopt_load_status)
+                self.w = load(model_dir, vision=vision, status=self._modelopt_load_status,
+                              **({"lossless_head": True} if lossless_head else {}))
             except BaseException as primary:
                 if not self._modelopt_load_status.safe_to_release:
                     self._retain_modelopt_failure(primary)
@@ -166,20 +199,31 @@ class Gemma4Engine:
                 media = processor_geometry(model_dir)
                 longest = max(media.image_soft_tokens, media.video_soft_tokens)
             forward_rows = widest_forward(self.max_rows, longest)
-            if draft_dir is not None:
-                # Before any cache: the companion's load transients (BF16 sources of FP8 copies) are admission staging.
+            if draft_dir is not None and kind != 'sparkulator':
+                # Before any cache: the companion's load transients are admission staging.
                 from .dflash import DFlash
                 self.head = DFlash(draft_dir, self.target, context_limit=self.context_window,
                                    block=self.max_rows, bits=drafter_bits, rows=forward_rows)
-            # The single request lane's caches are allocated once for the admitted context.
+            # Spark borrows this exact main state; its native loading status is
+            # caller-owned before construction, including an unreturned head.
             self._state = self.target.make_state(self.context_window, rows=forward_rows)
+            if kind == 'sparkulator':
+                from .sparkulator import Sparkulator, LoadStatus
+                self._spark_load_status = LoadStatus()
+                self.head = Sparkulator(draft_dir, self.target, self.context_window,
+                                        block=self.max_rows, status=self._spark_load_status,
+                                        **({"global_gqa": True} if spark_global_gqa else {}),
+                                        **({"sampled_q": True} if spark_sampled_q else {}))
+                self.head.bind_state(self._state)
             self._draft = self.head.make_state() if self.head is not None else None
+            self._tap_features = not (self.head is not None and
+                                     getattr(self.head, 'feature_source', 'taps') == 'final_hidden')
             from .graphs import Graphs
             # Text decode/verify rounds replay CUDA graphs over the engine-lifetime state; prefill stays eager. Every
             # row count's smallest-grid graph is captured now (before the load event below orders serving after it).
             # Larger attention grids capture on first use; their outputs and pool are covered by admission.
             self.graphs = Graphs(self.target, self._state, max_rows=self.max_rows)
-            self.graphs.prepare(taps=(False, True) if self.head is not None else (False,))
+            self.graphs.prepare(taps=(False, True) if self.head is not None and self._tap_features else (False,))
             # Absent from a tokenizer: only whole-prompt checkpoints are kept.
             self._turn = load_tokenizer(model_dir).token_to_id(TURN_MARKER)
             self._prefix = None
@@ -200,7 +244,7 @@ class Gemma4Engine:
             # serving snapshots need large blocks that these fragments cannot satisfy (admission counts no cache).
             torch.cuda.empty_cache()
         except BaseException as primary:
-            if method == 'modelopt':
+            if method == 'modelopt' or kind == 'sparkulator':
                 # Unknown constructor/graph retirement is terminal for this
                 # candidate process; retain actual owners, never retry CUDA.
                 self._retain_modelopt_failure(primary)
@@ -248,6 +292,11 @@ class Gemma4Engine:
         self.drain()
         with self._prefix_lock:
             self._prefix = None
+        if getattr(self, '_head_kind', None) == 'sparkulator' and self.head is not None:
+            # The stream is known retired. Native head close owns no retry or
+            # main-cache mutation; derived bridge storage may now be released.
+            self.head.close()
+            self._draft = None
 
     def _check_open(self) -> None:
         with self._closed_lock:
@@ -255,6 +304,8 @@ class Gemma4Engine:
                 raise RuntimeError("Gemma4 engine is closed")
 
     def _taps(self, result, count=None):
+        if getattr(self.head, 'feature_source', 'taps') == 'final_hidden':
+            return result.hidden[:count]
         import torch
         return torch.cat([result.taps[layer][:count] for layer in self.head.tap_layers], dim=-1)
 
@@ -329,10 +380,10 @@ class Gemma4Engine:
                         take = torch.tensor([i for _, i in visual], device=self.target.device)
                         embeddings.index_copy_(0, at, encoded.features.index_select(0, take))
                 result = self.target.forward(ids, state, embeddings=embeddings, vision_blocks=blocks,
-                                             output_logits=False, output_taps=self.head is not None,
+                                             output_logits=False, output_taps=self.head is not None and self._tap_features,
                                              trusted_tokens=True, prompt=True)
                 if self.head is not None:
-                    self.head.append(self._draft, self._taps(result), prompt=True)
+                    self._append_head(self._draft, result, ids, prompt=True)
                 if end == len(prompt):
                     logits = self.target.project_logits(result.hidden[-1:])
                 elif end == boundary:

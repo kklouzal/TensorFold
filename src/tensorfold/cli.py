@@ -371,6 +371,11 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
     options.update(_model_overrides(args))
     if getattr(args, "draft_method", "auto") != "auto":
         options["draft_method"] = args.draft_method
+    for option, capability in (("lossless_head", "CUDA_LOSSLESS_HEAD"),
+                               ("spark_global_gqa", "CUDA_SPARK_GLOBAL_GQA"),
+                               ("spark_sampled_q", "CUDA_SPARK_SAMPLED_Q")):
+        if getattr(args, option, False) and getattr(family.package, capability, False):
+            options[option] = True
     if getattr(family.package, "CUDA_DRAFTER_BITS", False) and getattr(args, "drafter_bits", None) is not None:
         options["drafter_bits"] = args.drafter_bits
     if getattr(args, "draft_rows", None) is not None:

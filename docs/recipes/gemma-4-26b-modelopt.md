@@ -118,13 +118,94 @@ Its fields must remain immutable and owned through stream retirement and the
 entire lifetime of a captured graph and every future replay. Transfer status
 retains owners on failure; invalid device IDs/metadata are process-fatal,
 not clamped or retried. Separate fresh-worker probes produced the required
-`CUDA_ERROR_ASSERT` failures. No serving, loader, capacity or quantization-CLI
-integration is enabled, and the production image is unchanged.
+`CUDA_ERROR_ASSERT` failures. The subsequent installed integration passed four warmups and eight whole-Engine
+text comparisons exactly, plus phased image, cancellation and cache checks.
+The table saved 645,922,816 logical bytes; measured peak allocated memory fell
+by 626,524,160 bytes. Observed decode was 1.03–2.87% slower, not faster, in a
+limited process comparison. The owner accepted this small measured tradeoff for
+head-memory savings and requested lossless heads for both drafter evaluations
+and final deployment. This is not blanket acceptance of larger regressions.
+The [integration receipt](../../deploy/gb10/gemma26b-sym8-integration-20261101.json)
+retains image/source identities, conditions and comparison limits.
+
+The source CLI now exposes `--lossless-head` for Gemma ModelOpt MoE CUDA
+(default off). It supplies one packed table for embedding and projection while
+preserving separate scaling and softcap; no `.weight` facade or decoded GPU
+mirror is created. Header admission uses generic valid-format bounds, not the
+measured all-compressed size. CPU raw/encoded preparation owners are charged;
+unsafe nested transfer prevents outer retirement retries. The R16 primitive
+gates passed; full speculative execution remains a separate gate. This prepares
+runtime storage without modifying or quantizing the checkpoint. The production image remains
+unchanged until the replacement is qualified.
+
+The latest installed SDK capture is source UID `4bf0ba0a…` (runtime `b2a…`,
+verification `fd7…`): 474 CPU checks passed in 5.64 seconds without CUDA
+initialization. This is installed source/API evidence, separate from actual
+model and optional-candidate gates below.
+
+A separate source increment permits explicit BF16 z-lab DFlash opt-in for the
+ModelOpt target after complete companion metadata, matching dimensions/taps and
+normal admission. The existing five-layer decoder, six target layer outputs,
+committed append/cache snapshots and actual-q verification are reused. No
+companion is selected automatically, and the standalone production command
+above is unchanged. FP8 proposal copies with a lossless target head remain
+a separate prototype: the existing FP8 backend builds a private proposal head
+from bounded, unscaled Sym8 lookup chunks using the existing quantizer. Original
+target storage/probabilities remain unchanged; no full decoded GPU main-head
+mirror is retained. New chunk owners and the intentional FP8 proposal copy are
+charged. Two actual GPU tests passed on the new `4bf0ba0a…` SDK in 62.80 seconds
+(82.146 seconds including the outer worker): FP8 payload/scales, FP32 logits
+for rows 1–16 and raw lookup matched the original BF16-source reference bitwise.
+Operator peak allocated memory was 4.733 GB; this is not whole-model residency
+or a throughput result. Actual model-q cache/replay and performance gates
+remain pending; BF16 remains the baseline. Lossless target verification is
+explicitly bounded to 16 rows.
+
+Baseline `04f9…` completed 128 actual target row-law comparisons, including
+64k history: widths 1–16 in eager and graph modes matched the serial oracle
+for hidden/logits, six taps, logical KV/state and complete selected probability
+bytes. Rejection rollback, complete drafter cache/replay and fair 64k
+end-to-end comparisons remain separate pending gates. No draft performance or
+quality claim follows from removing the previous startup restriction.
+
+Sparkulator is selected separately by its native assistant metadata. It retains
+its own trained BF16 assistant table/head and exactly decoded CT INT4 baseline
+projections, rather than borrowing the main table. The engine supplies scaled
+main embeddings and accepted final normalized hidden rows, binds the actual
+main state after allocation, and suppresses unused target tap collection.
+Admission includes live derived donor KV, hidden-only snapshots and conservative
+native SDPA repeat/FP32 workspace. A recorded cold-64k native-head oracle passed
+108 bitwise stage comparisons
+(pre-projection, native hidden/logits and post-projection), with proposal-prefix
+IDs matching at counts 2/4/6/15. This does not establish live bridge/history,
+restore/cache or media behavior; those and the fair 64k comparison remain
+pending. No configured window is reduced merely to make the baseline fit;
+resource refusal is recorded.
 
 Video execution is not blanket semantic-quality qualification. Directed
 red-object/rightward-motion and fixed-blue-object questions passed; a generic
 caption was inaccurate, and a thinking-on diagnostic exhausted its 768-token
 budget without a final answer. These limits remain recorded.
+
+Two additional source prototypes remain default off. `--spark-global-gqa`
+selects only the global Spark attention wrapper, with actual ModelOpt26B target
+geometry and an explicit context no greater than 131,072; other heads/pairs are
+refused before weights. The selected profile charges its separate bounded
+workspace while the native default retains its full MATH repeat/upcast bound
+(16 GiB at 131k plus the declared small owners). Forced efficient-SDPA provider
+checks at 64k and 131k passed all 16 bitwise observations. The new `4bf0ba0a…`
+SDK's recorded-64k whole-head GQA gate passed 108 bitwise field comparisons in
+20.134 seconds. Live Engine/cache/media, actual-q and model-performance gates
+remain pending.
+
+`--spark-sampled-q` selects the existing recurrent proposal sampler, with
+verification width at most 16. It uses proposal temperature factor 1 and caps
+q top-k at 256 (or the smaller positive target top-k), without changing target
+p or its original sampling identity. Admission adds one-step effective-sampler
+workspace and immutable q probabilities/IDs/headers beside target extraction;
+no phase-reuse credit is assumed. Greedy requests retain the native delta-q
+path. Actual cache/replay, law and end-to-end performance gates remain pending;
+neither source option changes current production.
 
 The earlier AEON dense 31B attempt is not the current deployment target. Its
 publisher checkpoint contained a nonfinite scale; no NaN repair or weight-block

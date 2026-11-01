@@ -16,10 +16,8 @@ from pathlib import Path
 
 import torch
 
-SCHEMA = 'tensorfold.bf16.sym8.v1'
-SENTINEL = 0xffffff
-MAX_DIM = (1 << 31) - 257
-MAX_I64 = (1 << 63) - 1
+from .b16_sym8_layout import (SCHEMA, SENTINEL, MAX_I64,
+                               geometry as _geometry, allocation_bytes as _allocation_bytes)
 
 
 @dataclass(frozen=True, init=False)
@@ -80,26 +78,6 @@ class TransferStatus:
     fields: list = field(default_factory=lambda: [None] * 4)
     result: PackedSym8 | None = None
 
-
-def _geometry(shape):
-    if (type(shape) is not tuple or len(shape) != 2 or any(type(v) is not int for v in shape)
-            or not 0 < shape[0] <= MAX_DIM or not 0 < shape[1] <= MAX_DIM or shape[1] % 32):
-        raise ValueError('positive signed32 dimensions and K multiple32 required')
-    n, k = shape
-    if n * k > MAX_I64 // 2:
-        raise ValueError('original BF16 byte count exceeds signed64')
-    return n * (k // 32)
-
-
-
-def _allocation_bytes(groups, raw_count):
-    if (type(groups) is not int or groups <= 0 or type(raw_count) is not int
-            or not 0 <= raw_count <= min(groups, SENTINEL)):
-        raise ValueError('valid group count and24-bit raw pool required')
-    size = 36 * groups + 64 * raw_count
-    if size > MAX_I64:
-        raise ValueError('encoded byte count exceeds signed64')
-    return size
 
 
 def _validate(packed, *, cuda):
@@ -330,12 +308,12 @@ def _ext():
 
 
 def matmul(x, packed):
-    """Direct BF16 GEMV/smallM<=8 with original b16 FP32 FMA/XOR order."""
+    """Direct BF16 GEMV/smallM<=16 with original b16 FP32 FMA/XOR order."""
     _validate(packed, cuda=True)
     if (not isinstance(x, torch.Tensor) or x.dtype != torch.bfloat16 or x.ndim != 2
             or x.device != packed.palette.device or not x.is_contiguous()
-            or not 1 <= x.shape[0] <= 8 or x.shape[1] != packed.shape[1]):
-        raise ValueError('contiguous same-device BF16[M1..8,K] required')
+            or not 1 <= x.shape[0] <= 16 or x.shape[1] != packed.shape[1]):
+        raise ValueError('contiguous same-device BF16[M1..16,K] required')
     return _ext().matmul(x, packed.palette, packed.codes, packed.metadata, packed.raw, *packed.shape)
 
 
@@ -353,3 +331,61 @@ def lookup(ids, packed, *, max_rows):
             or not ids.is_contiguous() or ids.numel() > max_rows):
         raise ValueError('bounded same-device contiguous int32/int64 IDs required')
     return _ext().lookup(ids, packed.palette, packed.codes, packed.metadata, packed.raw, *packed.shape)
+
+
+@dataclass(frozen=True, init=False)
+class Sym8Table:
+    """One packed GPU authority for raw embedding lookup AND BF16 projection.
+
+    No .weight facade or decoded mirror. Admitted callers bound lookup row
+    counts before this callback; this table also enforces native context size.
+    """
+    packed: PackedSym8
+    lookup_limit: int
+    layout: str = SCHEMA
+
+    def __init__(self, packed, lookup_limit):
+        try:
+            _validate(packed, cuda=True)
+            if type(lookup_limit) is not int or not 0 < lookup_limit <= MAX_I64 // packed.shape[1] // 2:
+                raise ValueError('positive admitted lookup limit required')
+            object.__setattr__(self, 'packed', packed)
+            object.__setattr__(self, 'lookup_limit', lookup_limit)
+            object.__setattr__(self, 'layout', SCHEMA)
+        except BaseException as primary:
+            _native_cause = BaseException.__cause__.__get__(primary)
+            _native_context = BaseException.__context__.__get__(primary)
+            try:
+                dict.clear(object.__getattribute__(self, '__dict__'))
+            except BaseException as cleanup:
+                try:
+                    from tensorfold.cleanup import raise_failures
+                    raise_failures(primary, [cleanup])
+                except BaseException as transport:
+                    if transport is not primary:
+                        raise primary from transport
+                    raise
+            raise
+        finally:
+            packed = None
+
+    @property
+    def n(self):
+        return self.packed.shape[0]
+
+    @property
+    def k(self):
+        return self.packed.shape[1]
+
+    @property
+    def device(self):
+        return self.packed.palette.device
+
+    def nbytes(self):
+        return self.packed.nbytes
+
+    def embedding(self, ids):
+        return lookup(ids, self.packed, max_rows=self.lookup_limit)
+
+    def __call__(self, hidden):
+        return matmul(hidden, self.packed)

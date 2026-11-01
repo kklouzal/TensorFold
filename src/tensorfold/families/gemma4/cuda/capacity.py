@@ -50,8 +50,18 @@ def expert_workspace(cfg, rows: int) -> int:
     return total
 
 
+
+def companion_kind(directory):
+    """Select a declared companion family; each reader validates its schema."""
+    from tensorfold.checkpoint_metadata import read_config
+    raw = read_config(directory)
+    if raw.get('model_type') == 'gemma4_assistant' or raw.get('architectures') == ['Gemma4AssistantForCausalLM']:
+        return 'sparkulator'
+    return 'dflash'  # existing strict DFlash metadata reader refuses other schemas
+
+
 def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=False,
-          max_rows=16, streams=1, keep=1, drafter_bits=16, prepare_global_prompt=False):
+          max_rows=16, streams=1, keep=1, drafter_bits=16, prepare_global_prompt=False, lossless_head=False, spark_global_gqa=False, spark_sampled_q=False):
     import torch
     from tensorfold.checkpoint_metadata import read_config
     from tensorfold.families import quant_method
@@ -60,6 +70,17 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
                         widest_forward)
     from .weights import Config, tensor_contract, validate_tensor_metadata
 
+    if type(spark_sampled_q) is not bool:
+        raise ValueError("spark_sampled_q must be a bool")
+    if type(spark_global_gqa) is not bool:
+        raise ValueError("spark_global_gqa must be a bool")
+    if spark_global_gqa:
+        from ..sparkulator_metadata import validate_global_gqa_torch
+        validate_global_gqa_torch(torch)
+    if type(lossless_head) is not bool:
+        raise ValueError("lossless_head must be a bool")
+    if lossless_head and max_rows > 16:
+        raise ValueError("lossless target head verification currently admits at most16 rows")
     if type(prepare_global_prompt) is not bool:
         raise ValueError("prepare_global_prompt must be a bool")
     raw = read_config(model_dir)
@@ -69,6 +90,8 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
     native = method == "compressed-tensors"
     modelopt = method == "modelopt"
     bounds = None
+    if lossless_head and not modelopt:
+        raise ValueError("lossless_head is a ModelOpt-only investigation candidate")
     if prepare_global_prompt and not modelopt:
         raise ValueError("prepared prompt KV is a ModelOpt-only investigation candidate")
     if native:
@@ -82,10 +105,9 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
     elif modelopt:
         from .modelopt_weights import validate_headers, storage_bounds
         cfg = validate_headers(raw, entries, vision=vision)
-        bounds = storage_bounds(cfg, entries, vision=vision)
+        bounds = storage_bounds(cfg, entries, vision=vision,
+                                **({"lossless_head": True} if lossless_head else {}))
         names = set()  # Mixed native/prepared storage is authoritative in bounds.
-        if drafter_dir is not None:
-            raise ValueError("Gemma4 ModelOpt MoE currently requires standalone --no-drafts")
     else:
         cfg = Config.from_dict(raw)
         where = {name: (None, None, None, info['dtype'], info['shape']) for name, info in entries.items()}
@@ -131,12 +153,44 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
         # Check live host allowance without charging the shared UMA pool twice.
         admit_host_commitment(host_staging)
 
-    draft = None
-    if drafter_dir is not None:
+    draft = spark = None
+    kind = companion_kind(drafter_dir) if drafter_dir is not None else None
+    if spark_sampled_q and (kind != 'sparkulator' or not modelopt):
+        raise ValueError('Spark sampled q requires the actual Sparkulator/ModelOpt pair')
+    if spark_sampled_q and not 2 <= max_rows <= 16:
+        raise ValueError('Spark sampled q verification currently admits2..16 rows')
+    if spark_global_gqa and (kind != 'sparkulator' or not modelopt):
+        raise ValueError('Spark global GQA requires the actual Sparkulator/ModelOpt pair')
+    if spark_global_gqa and (type(context) is not int or not 0 < context <= 131072):
+        raise ValueError('Spark global GQA requires an explicit context up to131072')
+    if kind == "sparkulator":
+        from ..sparkulator_metadata import checked_headers
+        spark, _ = checked_headers(Path(drafter_dir))
+        if drafter_bits != 16:
+            raise ValueError("Sparkulator baseline requires bits16")
+        if (cfg.hidden, cfg.layers, cfg.vocab, cfg.kv_heads, cfg.global_kv_heads, cfg.head_dim,
+                cfg.global_head_dim, cfg.window) != (2816, 30, 262144, 8, 2, 256, 512, 1024):
+            raise ValueError("Sparkulator main target cache geometry differs")
+        if cfg.max_position > spark.max_position:
+            raise ValueError("Sparkulator context cannot cover the main native window")
+        head_resident, head_peak = spark.memory_bytes(drafter_bits)
+        resident += head_resident
+        head_stage = head_peak - head_resident
+        from tensorfold.cuda.capacity import admit_host_commitment, unified
+        if unified(torch):
+            head_stage += spark.host_loading_bytes
+        staging = max(staging, head_stage)
+        host_staging = max(host_staging, spark.host_loading_bytes)
+        admit_host_commitment(host_staging)
+    elif drafter_dir is not None:
         from ..dflash_metadata import checked_headers
         draft, draft_entries = checked_headers(Path(drafter_dir))
         if (draft.hidden, draft.target_layers, draft.vocab) != (cfg.hidden, cfg.layers, cfg.vocab):
             raise ValueError('Gemma DFlash companion dimensions disagree with the target')
+        if modelopt:
+            from .weights import TAP_LAYERS
+            if draft.tap_layers != tuple(i for i in TAP_LAYERS if i < cfg.layers):
+                raise ValueError('Gemma DFlash target taps disagree with the ModelOpt target')
         bf16 = {name: math.prod(info['shape']) * itemsize(info, name) for name, info in draft_entries.items()}
         staging = max(staging, 3 * max(bf16.values()))
         if drafter_bits == 8:
@@ -149,8 +203,17 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
             resident += sum(size for name, size in bf16.items() if name not in matrices)
             resident += sum(resident_bytes('fp8', n, k) for n, k in shapes)
             resident += resident_bytes('fp8', cfg.vocab, cfg.hidden)
+            extra_head_chunk = 0
+            if lossless_head:
+                from tensorfold.cuda.requant import CHUNK_ROWS
+                head_rows = min(CHUNK_ROWS, cfg.vocab, cfg.max_position)
+                # NEW lookup IDs8 + rawBF16 K*2 + returned FP8 K + F32scale4.
+                # Retain existing complete quantization/fragment/source bound;
+                # claim no released-source/allocator reuse credit.
+                extra_head_chunk = head_rows * (3 * cfg.hidden + 12)
             staging = max(staging, sum(bf16.values())
-                          + max(staging_bytes('fp8', n, k) for n, k in [*shapes, (cfg.vocab, cfg.hidden)]))
+                          + max(staging_bytes('fp8', n, k) for n, k in [*shapes, (cfg.vocab, cfg.hidden)])
+                          + extra_head_chunk)
         else:
             resident += sum(bf16.values())
 
@@ -162,9 +225,18 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
     # Producer logits are already in workspace/graph geometry; charge only the sampler's additional owners here.
     # Without a companion the engine retains sample_rows and never enters sampled rejection verification.
     sampling = (effective_workspace(streams * max_rows, cfg.vocab, top_k=0)
-                if draft is not None else {"device_bytes": 0, "host_bytes": 0})
+                if draft is not None or spark is not None else {"device_bytes": 0, "host_bytes": 0})
     proposals = (chain_workspace(max_rows - 1, cfg.vocab, streams=streams, penalized=True)
-                 if draft is not None else {"device_bytes": 0, "host_bytes": 0})
+                 if draft is not None or spark is not None else {"device_bytes": 0, "host_bytes": 0})
+
+    q_extra = {"device_bytes": 0, "host_bytes": 0}
+    retained_q = 0
+    if spark_sampled_q:
+        # Same existing recurrent helper and immutable record as E4B. Spark's
+        # explicit q policy caps support at256; target sampling/p is unchanged.
+        from .e2b_engine import assistant_q_host_bytes
+        q_extra = effective_workspace(1, cfg.vocab, top_k=min(cfg.vocab, 256))
+        retained_q = assistant_q_host_bytes(max_rows - 1, min(cfg.vocab, 256), proposal_policy=True)
 
     def workspace(slots):
         # One layer's simultaneous activation/route tensors and retained taps.
@@ -179,7 +251,11 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
         if native or modelopt:
             scratch += expert_workspace(cfg, rows)
         from .weights import TAP_LAYERS
-        scratch += graph_workspace(cfg, max_rows, slots, len([i for i in TAP_LAYERS if i < cfg.layers]))
+        scratch += graph_workspace(cfg, max_rows, slots, 0 if spark is not None else
+                                   len([i for i in TAP_LAYERS if i < cfg.layers]))
+        if spark is not None:
+            scratch += spark.workspace_bytes(min(slots, spark.max_position),
+                                             **({"global_gqa": True} if spark_global_gqa else {}))
         if vision:
             v = raw['vision_config']
             patches = max(media_geometry.image_patches, media_geometry.video_patches)
@@ -197,12 +273,29 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
         # One fixed target scratch pair: not multiplied by prefix owners.
         prepared = (slots * cfg.global_kv_heads * cfg.global_head_dim * 4
                     if prepare_global_prompt else 0)
-        return (streams + keep) * (target + companion) + streams * workspace(slots) + prepared
+        retained = (streams + keep) * (target + companion)
+        if spark is not None:
+            # Derived full KV belongs only to the live bridge, never snapshots.
+            retained += (streams * spark.state_bytes(min(slots, spark.max_position))
+                         + keep * spark.snapshot_bytes(min(slots, spark.max_position)))
+        return retained + streams * workspace(slots) + prepared
 
-    if bounds is None:
+    if bounds is None and spark is None:
         host_staging = staging
-    return common(model_dir, context, context_explicit, torch, Geometry(geometry, 0),
+    result = common(model_dir, context, context_explicit, torch, Geometry(geometry, 0),
                   lambda name, info: (0, 0),
                   weight_estimator=lambda _: (Weights(resident, staging), host_staging),
-                  device_workspace_bytes=sampling["device_bytes"] + proposals["device_bytes"],
-                  host_workspace_bytes=sampling["host_bytes"] + proposals["host_bytes"])
+                  device_workspace_bytes=sampling["device_bytes"] + proposals["device_bytes"] + q_extra["device_bytes"],
+                  host_workspace_bytes=sampling["host_bytes"] + proposals["host_bytes"]
+                                       + q_extra["host_bytes"] + retained_q)
+
+    if lossless_head:
+        result['lossless_head'] = bounds['lossless_head']
+    if spark_global_gqa:
+        result['spark_global_gqa'] = {'scope': 'optional forced-efficient global attention only',
+                                      'context': result['context_window'], 'unqualified_prototype': True}
+    if spark_sampled_q:
+        result['spark_sampled_q'] = {'proposal_support_max': min(cfg.vocab, 256),
+                                     'retained_q_host_bytes': retained_q,
+                                     'one_step_workspace': q_extra, 'unqualified_prototype': True}
+    return result

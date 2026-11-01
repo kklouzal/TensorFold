@@ -220,11 +220,12 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                        help="draft precision, proposals only (0: bf16). MLX: affine bits, default 4. "
                             "CUDA Qwen MoE DFlash: 0 or 16 (default), 8 (FP8), 4 (NVFP4); requantized drafts "
                             "copy a floating target head or borrow a stored quantized head. CUDA Gemma4 DFlash: "
-                            "16 (default), or 8 (FP8) only with a BF16 tied target head. "
+                            "16 (default), or experimental 8 (FP8) with an original BF16 or lossless Sym8 tied head; "
+                            "FP8 adds a private proposal-head copy. "
                             "Gemma E4B native assistant/EAGLE3 require BF16 (16). The target verifies every draft")
     speed.add_argument("--draft-rows", type=int, default=None,
                        help="maximum target tokens verified per draft block. CUDA Gemma4 MoE DFlash: 2-128 "
-                            "(default 16); Gemma4 E2B DFlash2: 2-8 (default 8); "
+                            "(default 16), restricted to 2-16 with --lossless-head; Gemma4 E2B DFlash2: 2-8 (default 8); "
                             "E4B native assistant: 2-8 (default 7), EAGLE3: 2-4 (default 4); "
                             "CUDA Qwen MoE NVFP4: default is the draft model's block size")
     speed.add_argument("--mtp-drafts", type=int, default=None,
@@ -322,6 +323,12 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                       help="Flash Next CUDA: key-cache format; overrides the key side of --kv-dtype")
     cuda.add_argument("--kv-value-dtype", choices=FLASH_NEXT_KV_DTYPES, default=None,
                       help="Flash Next CUDA: value-cache format; overrides the value side of --kv-dtype")
+    cuda.add_argument("--spark-global-gqa", action="store_true", default=False,
+                      help="experimental Gemma 4 ModelOpt Sparkulator global grouped-query attention on CUDA; requires explicit --context <= 131072")
+    cuda.add_argument("--spark-sampled-q", action="store_true", default=False,
+                      help="experimental Gemma 4 ModelOpt Sparkulator sampled proposals on CUDA; target sampling is unchanged")
+    cuda.add_argument("--lossless-head", action="store_true", default=False,
+                      help="Gemma 4 ModelOpt MoE on CUDA: losslessly pack the tied BF16 embedding/output head")
     cuda.add_argument("--prefill-fp8", action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS,
                       help="prompt matmuls take FP8 (e4m3) activations, one scale a row, where the checkpoint has an "
                            "FP8 prompt kernel (Qwen3.8 27B and Qwen3.6 MLX 4-bit, NVFP4 checkpoints' FP8 and MXFP8 "

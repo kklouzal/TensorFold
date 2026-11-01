@@ -75,7 +75,7 @@ class RecordedSampledChain:
 @torch.inference_mode()
 def sampled_assistant_chain(model, embedding_module, hidden, shared_kv_states, attention_mask,
                             anchor, count, position, sampling, history=None, *, enabled=False,
-                            temperature_factor=1.0, proposal_top_k=None):
+                            temperature_factor=1.0, proposal_top_k=None, max_count=7):
     """Draw q through the existing exact effective categorical sampler.
 
     Inputs are borrowed from the caller's exclusive committed target state.
@@ -90,8 +90,10 @@ def sampled_assistant_chain(model, embedding_module, hidden, shared_kv_states, a
         raise ValueError("Stochastic Gemma assistant q is an explicit opt-in candidate")
     if not isinstance(sampling, Sampling) or sampling.temperature <= 0:
         raise ValueError("Stochastic Gemma assistant q requires positive-temperature Sampling")
-    if type(count) is not int or not 1 <= count <= 7:
-        raise ValueError("Stochastic Gemma assistant permits one through seven proposals")
+    if type(max_count) is not int or not 1 <= max_count <= 15:
+        raise ValueError("Stochastic Gemma assistant maximum must be1..15")
+    if type(count) is not int or not 1 <= count <= max_count:
+        raise ValueError("Stochastic Gemma assistant count exceeds its admitted maximum")
     vocab = model.config.get_text_config().vocab_size
     if type(anchor) is not int or not 0 <= anchor < vocab:
         raise ValueError("Stochastic Gemma assistant anchor is outside the vocabulary")

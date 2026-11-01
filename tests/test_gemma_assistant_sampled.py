@@ -112,3 +112,39 @@ def test_default_proposal_policy_is_same_target_object_and_topk_zero_valid():
     proposal=candidate.make_proposal_sampling(target,.75,0,vocab=64)
     assert proposal.temperature==.75 and proposal.top_k==0 and proposal.seed==target.seed
     assert target.top_k==50 and target.temperature==1
+
+
+@torch.inference_mode()
+@pytest.mark.parametrize('count', [8, 15])
+def test_explicit_extended_recurrence_laws_draws_prefixes_and_legacy_limit(cpu_effective_rows, count):
+    head, held = tiny()
+    embedding = head.target.model.get_input_embeddings()
+    policy = Sampling(seed=62941, temperature=1, top_k=50, top_p=.95)
+    hidden, previous, expected, laws = held['last_hidden_state'], 11, [], []
+    for index in range(count):
+        result = head.model(inputs_embeds=torch.cat((embedding(torch.tensor([[previous]])), hidden), -1),
+                            position_ids=torch.tensor([[9]]), shared_kv_states=held['shared_kv_states'],
+                            attention_mask=held['attention_mask'], use_cache=False)
+        row = proposal_row(result.logits.float().numpy().reshape(-1).astype(np.float64), np.arange(64), policy)
+        previous = draw(row, policy.seed, 10 + index)
+        expected.append(previous)
+        laws.append(row)
+        hidden = result.last_hidden_state
+    args = (head.model, embedding, held['last_hidden_state'], held['shared_kv_states'],
+            held['attention_mask'], 11, count, 9, policy)
+    with pytest.raises(ValueError, match='admitted maximum'):
+        candidate.sampled_assistant_chain(*args, enabled=True)  # legacy default stays seven
+    packet = candidate.sampled_assistant_chain(*args, enabled=True, max_count=15).sample(0, count, policy, 10)
+    assert packet.tokens == tuple(expected) and packet.q_rows == tuple(laws)
+    replay = candidate.sampled_assistant_chain(*args, enabled=True, max_count=15).sample(0, count, policy, 10)
+    assert replay == packet
+    assert policy == Sampling(seed=62941, temperature=1, top_k=50, top_p=.95)
+
+
+@pytest.mark.parametrize('maximum', [0, 16, True, 1.5])
+def test_invalid_extended_maximum_fails_before_model(maximum):
+    head, held = tiny()
+    with pytest.raises(ValueError, match='maximum'):
+        candidate.sampled_assistant_chain(head.model, head.target.model.get_input_embeddings(),
+            held['last_hidden_state'], held['shared_kv_states'], held['attention_mask'],
+            11, 1, 9, Sampling(seed=1), enabled=True, max_count=maximum)

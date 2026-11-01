@@ -81,15 +81,15 @@ def test_host_cgroup_refusal_precedes_device_admission(monkeypatch, tmp_path):
         capacity.admit(tmp_path, 128, True, max_rows=1)
 
 
-def test_modelopt_explicit_drafter_refused_before_cuda(monkeypatch, tmp_path):
+def test_modelopt_noncheckpoint_math_refused_before_cuda(monkeypatch, tmp_path):
     import torch
     from tensorfold.checkpoint_metadata import read_config
     from tensorfold.cuda import precision
     monkeypatch.setattr(sys.modules[read_config.__module__], 'read_config', lambda _: raw_modelopt())
-    monkeypatch.setattr(precision, 'mode', lambda: precision.CHECKPOINT)
+    monkeypatch.setattr(precision, 'mode', lambda: precision.FULL)
     monkeypatch.setattr(torch.cuda, 'set_device', lambda *a: pytest.fail('CUDA touched'))
-    with pytest.raises(ValueError, match='standalone'):
-        Gemma4Engine(tmp_path, drafter='incompatible')
+    with pytest.raises(ValueError, match='checkpoint activation'):
+        Gemma4Engine(tmp_path, drafter='incompatible', drafter_bits=8)
 
 
 def test_modelopt_plain_prompt_and_decode_do_not_quantize_activation_groups(monkeypatch):

@@ -26,6 +26,7 @@ import triton.language as tl
 
 from tensorfold.cleanup import rollback
 from tensorfold.cuda import speculative
+from tensorfold.cuda.b16_sym8_layout import SCHEMA as SYM8_SCHEMA
 from tensorfold.cuda.direct_read import SafeTensors
 from tensorfold.cuda.requant import Head, prefix, requantize
 from tensorfold.cuda.tensor_file import checkpoint_path
@@ -97,6 +98,40 @@ def _project8(x: torch.Tensor, linear, *, prompt: bool = False) -> torch.Tensor:
     return linear.prefill(x) if prompt or x.shape[0] > 16 else linear(x)
 
 
+def _sym8_fp8_head(table, *, softcap):
+    """DF-only private FP8 copy from exact RAW Sym8 rows, never scaled rows.
+
+    Named locals own every pending buffer through each successful fence. Any
+    unexpected failure escapes without cleanup/drain retry; Engine retains the
+    native exception frames and complete constructor owner until teardown.
+    """
+    from tensorfold.cuda.b16_sym8 import Sym8Table
+    from tensorfold.cuda.b16_sym8_layout import SCHEMA
+    from tensorfold.cuda.requant import CHUNK_ROWS, requant_rows
+    from tensorfold.cuda.nvfp4.linear import Fp8Linear
+    if (type(table) is not Sym8Table or table.layout != SCHEMA or table.k % 64
+            or table.device.type != 'cuda'):
+        raise ValueError('DF FP8 proposal copy requires the actual raw Sym8 table')
+    chunk = min(CHUNK_ROWS, table.n, table.lookup_limit)
+    codes = scales = ids = raw_rows = part_codes = part_scales = linear = result = None
+    # All destinations are final private FP8 source fields, not a BF16 mirror.
+    codes = torch.empty((table.n, table.k), dtype=torch.float8_e4m3fn, device=table.device)
+    scales = torch.empty((table.n,), dtype=torch.float32, device=table.device)
+    for begin in range(0, table.n, chunk):
+        end = min(table.n, begin + chunk)
+        ids = torch.arange(begin, end, dtype=torch.int64, device=table.device)
+        raw_rows = table.embedding(ids)
+        part_codes, part_scales = requant_rows(raw_rows)
+        codes[begin:end].copy_(part_codes)
+        scales[begin:end].copy_(part_scales)
+        torch.cuda.synchronize(table.device)
+        ids = raw_rows = part_codes = part_scales = None
+    linear = Fp8Linear.from_checkpoint(codes, scales)
+    result = Head(linear, 'fp8', softcap=softcap)
+    torch.cuda.synchronize(table.device)
+    return result
+
+
 class DraftState:
     """One lane's committed companion context: persistent per-layer K/V and its length.
 
@@ -145,7 +180,12 @@ class DFlash:
         if type(bits) is not int or bits not in (8, 16):
             raise ValueError("Gemma DFlash proposal weights are BF16 (16) or private FP8 row-scaled copies (8)")
         head = getattr(getattr(target, "weights", None), "embed", None)
-        if bits == 8 and getattr(getattr(head, "weight", None), "dtype", None) != torch.bfloat16:
+        lossless = getattr(head, 'layout', None) == SYM8_SCHEMA
+        if bits == 8 and lossless:
+            from tensorfold.cuda.b16_sym8 import Sym8Table
+            if type(head) is not Sym8Table:
+                raise ValueError('DF FP8 proposal copy requires the actual raw Sym8 table')
+        elif bits == 8 and getattr(getattr(head, "weight", None), "dtype", None) != torch.bfloat16:
             raise ValueError("Gemma DFlash FP8 proposals need the target's BF16 tied head")
         cfg, _ = checked_headers(draft_dir)
         if ((target.config.hidden, target.config.layers, target.config.vocab)
@@ -209,7 +249,8 @@ class DFlash:
                                     else partial(_project, weight=weight[:kv_width]))
             del weight, copy
         if bits == 8:
-            self.project_logits = Head(head, "fp8", softcap=target.config.softcap)
+            self.project_logits = (_sym8_fp8_head(head, softcap=target.config.softcap) if lossless else
+                                   Head(head, "fp8", softcap=target.config.softcap))
         self.weights = loaded
         # Transformers5.6 Qwen3 default RoPE constructs the exponent in FP32.
         # Reusing Flash Next's FP64 default construction would change frequencies.
