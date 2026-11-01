@@ -30,8 +30,8 @@ image `a0b914aa`, with no skipped, retried or expected-failure cases; outer
 producer, original-provider, resource-guard and retirement checks also passed.
 The run took 1.43 seconds inside pytest, which is a regression-test duration,
 not an inference performance result. The runtime producer remains pinned to
-`a851b028`. No calibrated E4B artifact
-or quantized E4B serving/performance result exists at this checkpoint.
+`a851b028`. The initial 64-sample artifact below is a conversion diagnostic;
+no final 1,024-sample artifact or quantized E4B serving/performance result exists.
 
 The first full E4B attempt completed both 1,024-batch passes and all 258
 Local-Hessian weight refinements, then failed while hashing the recipe for its
@@ -60,6 +60,19 @@ CPU preflight against the actual emitted 2,904 tensor headers passed the full
 258-projection/54-unused geometry contract with corrected config held in memory;
 the failed stage itself was not repaired or published. Raw BF16 payload equality,
 successful finalization and consumer execution remain separate gates.
+
+The fresh 64-sample v3 conversion passed producer, SDK, guard and retirement
+checks and finalized a 2,904-tensor manifest. An independent CPU audit matched
+all 1,872 preserved BF16 tensors byte for byte against the source
+(8,211,880,916 payload bytes per tree), including media, tables and the 54
+retained unused tensors; assets and native config semantics also matched.
+The first original-SDK consumer attempt then rejected ModelOpt's packed
+`.weight` name as if it were a plain BF16 parameter, before payload binding or
+kernel execution. The loader now excludes validated packed-part names from
+that plain-tensor check while retaining format, shape and payload validation.
+The existing binding test covers both `.weight` and `.weight_packed` forms
+with both unused-tensor policies; 277 focused CPU checks passed. Actual packed
+execution, quality, full-context and performance qualification remain pending.
 
 Historical verified stage: the isolated Git/build-tools image
 `sha256:ee54ef39fa38f8fff5cdde2e9948d1d75bc8f5fe05f1ba428c68c5ca2fc28877`

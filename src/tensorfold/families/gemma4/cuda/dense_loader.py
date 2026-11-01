@@ -176,24 +176,23 @@ def _bind_native(model, cfg, inventory, specs, source, device, policy, unused_po
         if alias not in native or canonical not in native or native[alias].shape != native[canonical].shape:
             raise ValueError("native dense model lacks its expected tied head")
         expected = set(native)-{alias}
+        packed_names = set()
         for module, spec in specs.items():
             owner = model.get_submodule(module)
             if (not isinstance(owner, nn.Linear) or owner.bias is not None
                     or (owner.out_features, owner.in_features) != spec.shape):
                 raise ValueError(f"{module}: native projection geometry differs")
             expected.remove(module+".weight")
-            expected.update(module+"."+suffix for suffix, _, _ in spec.parts)
+            packed_names.update(module+"."+suffix for suffix, _, _ in spec.parts)
+        expected.update(packed_names)
         if unused_policy == "retained-original-bf16":
             expected.update(unused)
         if set(inventory) != expected:
             raise ValueError("quantized checkpoint differs from complete native parameter/buffer inventory")
         for name in expected:
-            if name in unused:
-                shape = contract[name]
-            elif name in native:
-                shape = tuple(native[name].shape)
-            else:
-                continue  # packed parts were validated against their precise native shape
+            if name in packed_names:
+                continue  # ModelOpt retains .weight as the packed payload name.
+            shape = contract[name] if name in unused else tuple(native[name].shape)
             if inventory[name]["dtype"] != "BF16" or tuple(inventory[name]["shape"]) != tuple(shape):
                 raise ValueError(f"{name}: retained native tensor must match original BF16 geometry")
         if metadata is not None:

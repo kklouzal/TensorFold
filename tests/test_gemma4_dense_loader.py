@@ -58,7 +58,8 @@ class Source:
 
 @torch.inference_mode()
 @pytest.mark.parametrize('retained', [False, True])
-def test_native_tiny_model_bind_all_buffers_tied_identity_and_projection_without_mirror(retained):
+@pytest.mark.parametrize('weight_name', ['weight_packed', 'weight'])
+def test_native_tiny_model_bind_all_buffers_tied_identity_and_projection_without_mirror(retained, weight_name):
     torch.manual_seed(171)
     previous = torch.get_default_dtype()
     try:
@@ -73,12 +74,12 @@ def test_native_tiny_model_bind_all_buffers_tied_identity_and_projection_without
     values = {name: value.clone() for name, value in reference.state_dict().items() if name != 'lm_head.weight'}
     key = 'model.language_model.layers.0.mlp.gate_proj'
     values.pop(key+'.weight')
-    values[key+'.weight_packed'] = torch.zeros(128,32,dtype=torch.uint8)
+    values[key+'.'+weight_name] = torch.zeros(128,32,dtype=torch.uint8)
     values[key+'.weight_scale'] = torch.ones(128,4).to(torch.float8_e4m3fn)
     values[key+'.weight_scale_2'] = torch.ones(())
     metadata = LinearMetadata({'quant_method':'modelopt','config_groups':{'g':{
         'targets':[key],'weights':{'num_bits':4,'type':'float','group_size':16},'input_activations':None}}})
-    parts = {'weight_packed':('U8',[128,32]),'weight_scale':('F8_E4M3',[128,4]),'weight_scale_2':('F32',[])}
+    parts = {weight_name:('U8',[128,32]),'weight_scale':('F8_E4M3',[128,4]),'weight_scale_2':('F32',[])}
     descriptor = PackedProjectionSpec.from_header(key, parts, metadata, expected_shape=(128,64))
     cfg = geometry()
     contract, _, unused = text_tensor_contract(cfg)
