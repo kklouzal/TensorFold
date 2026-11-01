@@ -85,6 +85,22 @@ output/logit comparisons were exact, and long-prompt TTFT improved, but the
 highest-priority decode comparison remained inconclusive. Production uses the
 raw-attention path.
 
+B01 pairs equal-width BF16 local K/V and shared gate/up projections using the
+existing B16 pair operators, original weights and arithmetic. It passed 23 CPU
+checks, four actual GPU checks and 128 exact whole-Engine output comparisons.
+A four-process screen at the configured 131,072-token window covered greedy
+and seeded temperature-1/top-k64/top-p0.95 requests. All eight decode point
+estimates improved by 0.458–1.649%; only the short-code production-like setting
+had a conditional throughput-ratio interval above one: ratio 1.004576,
+interval [1.000053133, 1.009119458]. The other seven remained inconclusive.
+This limited screen establishes neither equivalence nor inferiority; B01
+remains **unselected** and has not changed production image `1d53fa83`.
+The [screen receipt](../../deploy/gb10/gemma26b-b16-pair-screen-20261101.json)
+retains per-process medians, image/source identities and marginal 95% paired-log
+Student-t intervals with only two process pairs (one degree of freedom).
+The three cycles within a process are correlated; these conditional intervals
+are not simultaneous confidence or a general performance guarantee.
+
 Video execution is not blanket semantic-quality qualification. Directed
 red-object/rightward-motion and fixed-blue-object questions passed; a generic
 caption was inaccurate, and a thinking-on diagnostic exhausted its 768-token

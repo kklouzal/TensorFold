@@ -16,6 +16,7 @@ import triton
 import triton.language as tl
 
 from tensorfold.cuda.nvfp4 import checkpoint
+from tensorfold.families.qwen3_5.cuda import b16
 
 from . import attention, glue
 from .state import State, sliding_slots
@@ -109,6 +110,11 @@ class Gemma4Target:
         # keeps its own bits). MLX affine projections have one row-invariant kernel for every row count.
         self._native = weights.numerics == "ct_nvfp4"
         self._plain_prompt = weights.numerics == "modelopt_nvfp4"
+        if self._plain_prompt:
+            # Explicit equal-width roles only: retain the independent global
+            # Q/K route and all CT/MLX projection dispatch. No weight copies.
+            self._project_qkv = self._project_modelopt_qkv
+            self._project_gate_up = self._project_b16_pair
         self.device = weights.norm.device
         policy = weights.numerics
         if policy == "mlx":
@@ -311,6 +317,25 @@ class Gemma4Target:
             return [lin.prefill(x) for lin in lins]
         return [lin(x) for lin in lins]
 
+    # Legacy roles use exactly the same bound implementation as _project.
+    # ModelOpt alone replaces these bindings once at construction.
+    _project_qkv = _project
+    _project_gate_up = _project
+
+    def _project_b16_pair(self, x, lins, prompt: bool):
+        """Validated ModelOpt shared gate/up or local K/V, same input/width.
+
+        Plain BF16 metadata is established by the loader; pair outputs retain
+        each independent b16 projection's own accumulation/rounding contract.
+        """
+        pair = b16.prompt_pair if prompt else b16.matmul_pair
+        return pair(x, lins[0].weight, lins[1].weight)
+
+    def _project_modelopt_qkv(self, x, lins, prompt: bool):
+        q = lins[0].prefill(x) if prompt else lins[0](x)
+        k, v = self._project_b16_pair(x, (lins[1], lins[2]), prompt)
+        return q, k, v
+
     def _layers(self, h, state: State, rows: int, chunks: int, block_starts, block_ends, longest: int,
                 output_logits: bool, output_taps: bool, prompt: bool):
         c = self.config
@@ -325,7 +350,7 @@ class Gemma4Target:
         for i, layer in enumerate(layers):
             sliding, index = state.slot[i]
             if sliding:
-                q_raw, k_raw, v_raw = self._project(normed, (layer.q, layer.k, layer.v), prompt)
+                q_raw, k_raw, v_raw = self._project_qkv(normed, (layer.q, layer.k, layer.v), prompt)
                 keys, values = state.keys[index], state.values[index]
                 q = attention.prep_sliding(q_raw, k_raw, v_raw, layer.q_norm, layer.k_norm,
                                            self._inverse[i], state.pos, keys, values, eps=c.eps,
@@ -348,7 +373,7 @@ class Gemma4Target:
             # Fused glue (glue.py): the same norms, adds and BF16 boundaries as the unfused chain.
             h, dense_in, expert_in = glue.attention_tail(h, attended, layer.attention_norm, layer.mlp_norm,
                                                          layer.expert_norm, c.eps, mlx)
-            gate, up = self._project(dense_in, (layer.gate, layer.up), prompt)
+            gate, up = self._project_gate_up(dense_in, (layer.gate, layer.up), prompt)
             dense = self._project(self._geglu(gate, up), (layer.down,), prompt)[0]
             picks, routing = self._route(h, layer)
             routed = layer.experts.forward(expert_in, picks, routing)

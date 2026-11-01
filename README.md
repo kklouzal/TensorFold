@@ -45,6 +45,16 @@ and stationary blue circle. The generic caption was inaccurate, and a greedy
 thinking request exhausted its 768-token budget without a final answer; these
 limitations remain recorded rather than being called a general quality pass.
 
+The B01 development candidate pairs equal-width BF16 local K/V and shared
+gate/up through existing B16 operators. It passed 23 CPU checks, four actual GPU
+checks and 128 exact whole-Engine output comparisons. A four-process, 131k
+screen covered greedy and seeded temperature-1/top-k64/top-p0.95 requests:
+eight decode point estimates improved by 0.458–1.649%, but only the short-code
+production-like setting had a conditional throughput-ratio interval above one
+(1.004576, interval [1.000053133, 1.009119458]); the other seven were inconclusive.
+B01 remains **unselected**, with no equivalence or inferiority conclusion.
+The immutable production image `1d53fa83` is unchanged.
+
 ## CUDA prefill cancellation
 
 Supported CUDA engines poll cancellation at prompt chunk boundaries even when

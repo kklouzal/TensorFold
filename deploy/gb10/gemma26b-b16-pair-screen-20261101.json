@@ -1,0 +1,861 @@
+{
+  "schema": 1,
+  "status": "research-unselected",
+  "model": "llmfan46/gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic-NVFP4",
+  "revision": "a9e81e26ed81f541ec1d7314e72c61237a24566f",
+  "hardware": "NVIDIA GB10 SM121, single GPU",
+  "configured_context": 131072,
+  "vision": true,
+  "drafts": false,
+  "KV": "BF16",
+  "prepared_global_prompt": false,
+  "candidate": "Existing BF16 pair operators for local K/V and shared gate/up; 205 to 150 non-head projection launches, no weight copies or new kernel",
+  "candidate_forward_sha256": "1a415a1ffca9ee33ee9abf8311b4d5ffe678b0bcff83dca60e564f5bf311ebcd",
+  "analysis_sha256": "4af461bca346c26bc374446c1318750015fff47bba3ae3f66ecf6ac1ee19a7ca",
+  "analysis_protocol_sha256": "1e44b0b0cd4c64c30db10482bba567dae33fdf33b95273ba12bb676c796b358a",
+  "measurement_scope": "Intermediate Engine callback timings; not HTTP/SSE or full native 262144-token qualification",
+  "order": [
+    "O1",
+    "N1",
+    "N2",
+    "O2"
+  ],
+  "fresh_starts_per_arm": 2,
+  "cycles_per_process": 3,
+  "uncertainty": "Predeclared two-sided 95-percent Student-t interval on the two paired-process log ratios, df=1, critical=cot(pi*0.05/2). These small-sample parametric intervals are screening diagnostics conditional on independent approximately normal log effects, not assumption-free confidence or equivalence proof; disclose n=2 and drift limitations. Within-process rows are never pooled as 96 independent observations.",
+  "verification": {
+    "rows": 128,
+    "measured": 96,
+    "excluded_warmup": 32,
+    "all_metrics_recomputed_exact": true,
+    "all_cache0_draftsFalse_realEOS": true,
+    "all_lifecycles_qualified_retired_source_stable_production_count5_OOM17": true,
+    "token_counts": {
+      "64": 128
+    }
+  },
+  "sources": [
+    {
+      "slot": "O1",
+      "result_path": "/home/kklouzal/audit-artifacts/gemma-e4b-development-20261031/quant-assistant-audit/26b-b01-O1-v1/raw/screen/result.json",
+      "result_sha256": "086e61eaf6b5551c5e38e2e351604a1082804d9e83de3a5b6f419839fdf7a31b",
+      "execution_path": "/home/kklouzal/audit-artifacts/gemma-e4b-development-20261031/quant-assistant-audit/26b-b01-O1-v1/execution.json",
+      "execution_sha256": "5bcd6e440dd1ff75e671ce588fe19755870683590528ab829ca58eb3ed541ad9",
+      "helper_sha256": "97db082bc2324f9ea625c6a6d98d202cb3cb1f58d41bfe98e1b9bfa5c81f18e2",
+      "source_uid": "2f9d0c1ef280377b0976dcc3e23dbb6c20cb078247e99de6d94d14f194099948",
+      "image": "sha256:1d53fa836eb9e98c0c6dc04a2ba9e7295cab0f9a035fe0c4be14a587309ebe29"
+    },
+    {
+      "slot": "N1",
+      "result_path": "/home/kklouzal/audit-artifacts/gemma-e4b-development-20261031/quant-assistant-audit/26b-b01-N1-v1/raw/screen/result.json",
+      "result_sha256": "462528c84e2de844fa02752054ce0b7087188ecbf748923a0b62a23a69e83867",
+      "execution_path": "/home/kklouzal/audit-artifacts/gemma-e4b-development-20261031/quant-assistant-audit/26b-b01-N1-v1/execution.json",
+      "execution_sha256": "46a37b6a9e986467cf46fe1fb04b1eb004530773337bd91e45c0554db9d3e04a",
+      "helper_sha256": "97db082bc2324f9ea625c6a6d98d202cb3cb1f58d41bfe98e1b9bfa5c81f18e2",
+      "source_uid": "a078566025dac65553fb1d960b55280d48b23177a68d7ee6ad43837d2a68507a",
+      "image": "sha256:825ddeece009ef4f136ea1f824fc252efb5dff5a48054628ee291c1e8d37aad9"
+    },
+    {
+      "slot": "N2",
+      "result_path": "/home/kklouzal/audit-artifacts/gemma-e4b-development-20261031/quant-assistant-audit/26b-b01-N2-v1/raw/screen/result.json",
+      "result_sha256": "0288220e547708c079f943684fa60fe5b066f38265c3871af25897e3cd397bce",
+      "execution_path": "/home/kklouzal/audit-artifacts/gemma-e4b-development-20261031/quant-assistant-audit/26b-b01-N2-v1/execution.json",
+      "execution_sha256": "b1962cfc93a262a8ee15b53bc233d997cee61e363abcdb59ba00e3d444a48d66",
+      "helper_sha256": "97db082bc2324f9ea625c6a6d98d202cb3cb1f58d41bfe98e1b9bfa5c81f18e2",
+      "source_uid": "a078566025dac65553fb1d960b55280d48b23177a68d7ee6ad43837d2a68507a",
+      "image": "sha256:825ddeece009ef4f136ea1f824fc252efb5dff5a48054628ee291c1e8d37aad9"
+    },
+    {
+      "slot": "O2",
+      "result_path": "/home/kklouzal/audit-artifacts/gemma-e4b-development-20261031/quant-assistant-audit/26b-b01-O2-v1/raw/screen/result.json",
+      "result_sha256": "2922a6a6907adf26ad0f564793370758c50148e98c143113a426de620724e383",
+      "execution_path": "/home/kklouzal/audit-artifacts/gemma-e4b-development-20261031/quant-assistant-audit/26b-b01-O2-v1/execution.json",
+      "execution_sha256": "7ce5ec95f0c9ea59cb42fddd8c7279fae02fb32b809e8e6d9afe69887b832b52",
+      "helper_sha256": "97db082bc2324f9ea625c6a6d98d202cb3cb1f58d41bfe98e1b9bfa5c81f18e2",
+      "source_uid": "2f9d0c1ef280377b0976dcc3e23dbb6c20cb078247e99de6d94d14f194099948",
+      "image": "sha256:1d53fa836eb9e98c0c6dc04a2ba9e7295cab0f9a035fe0c4be14a587309ebe29"
+    }
+  ],
+  "resources": {
+    "O1": {
+      "startup_load_ns": 32457400996,
+      "total_operator_seconds": 232.34144416399067,
+      "CUDA_peak_allocated": {
+        "n": 24,
+        "min": 20731478016,
+        "median": 21230884608.0,
+        "max": 22232409088
+      },
+      "CUDA_peak_reserved": {
+        "n": 24,
+        "min": 22473080832,
+        "median": 22473080832.0,
+        "max": 22473080832
+      },
+      "host_SELF_maxrss_bytes_observed": 2280255488,
+      "cgroup_current_bytes_observed": {
+        "n": 64,
+        "min": 1832562688,
+        "median": 1844293632.0,
+        "max": 1844658176
+      },
+      "host_available_min_bytes_outerguardian": 29845282816,
+      "startup_limit": "N1 first extension compilation was excluded from timed requests but is included in observed startup; compiler cache states differ, not matched cold-start evidence."
+    },
+    "N1": {
+      "startup_load_ns": 193639857421,
+      "total_operator_seconds": 396.4985483039927,
+      "CUDA_peak_allocated": {
+        "n": 24,
+        "min": 20731478016,
+        "median": 21230884608.0,
+        "max": 22232409088
+      },
+      "CUDA_peak_reserved": {
+        "n": 24,
+        "min": 22473080832,
+        "median": 22473080832.0,
+        "max": 22473080832
+      },
+      "host_SELF_maxrss_bytes_observed": 2341679104,
+      "cgroup_current_bytes_observed": {
+        "n": 64,
+        "min": 1992634368,
+        "median": 2001999872.0,
+        "max": 2002292736
+      },
+      "host_available_min_bytes_outerguardian": 26908655616,
+      "startup_limit": "N1 first extension compilation was excluded from timed requests but is included in observed startup; compiler cache states differ, not matched cold-start evidence."
+    },
+    "N2": {
+      "startup_load_ns": 31676144377,
+      "total_operator_seconds": 230.3454583810235,
+      "CUDA_peak_allocated": {
+        "n": 24,
+        "min": 20731002880,
+        "median": 21229639424.0,
+        "max": 22231491584
+      },
+      "CUDA_peak_reserved": {
+        "n": 24,
+        "min": 22473080832,
+        "median": 22473080832.0,
+        "max": 22473080832
+      },
+      "host_SELF_maxrss_bytes_observed": 2270957568,
+      "cgroup_current_bytes_observed": {
+        "n": 64,
+        "min": 1816764416,
+        "median": 1820049408.0,
+        "max": 1820258304
+      },
+      "host_available_min_bytes_outerguardian": 29181923328,
+      "startup_limit": "N1 first extension compilation was excluded from timed requests but is included in observed startup; compiler cache states differ, not matched cold-start evidence."
+    },
+    "O2": {
+      "startup_load_ns": 32372821229,
+      "total_operator_seconds": 232.3430971709895,
+      "CUDA_peak_allocated": {
+        "n": 24,
+        "min": 20731002880,
+        "median": 21229639424.0,
+        "max": 22231491584
+      },
+      "CUDA_peak_reserved": {
+        "n": 24,
+        "min": 22473080832,
+        "median": 22473080832.0,
+        "max": 22473080832
+      },
+      "host_SELF_maxrss_bytes_observed": 2271920128,
+      "cgroup_current_bytes_observed": {
+        "n": 64,
+        "min": 1881800704,
+        "median": 1891422208.0,
+        "max": 1891684352
+      },
+      "host_available_min_bytes_outerguardian": 29214502912,
+      "startup_limit": "N1 first extension compilation was excluded from timed requests but is included in observed startup; compiler cache states differ, not matched cold-start evidence."
+    }
+  },
+  "numerical_operator_gate": {
+    "CPU_passed": 23,
+    "actual_weight_GPU_cases_passed": 4,
+    "GPU_skips": 0,
+    "GPU_oracle_sha256": "c8f719093684c14e3b74c1c769b23d88ab494760fd8b20620bd7deb245b76e6c",
+    "comparison": "Finite BF16 int16-view equality against independent b16 calls, R1..8, prompt tails/1024, partitions, graph replays",
+    "runtime_base": "sha256:2a772b064f593ae9a4436562c4c26ceaa60cec55709992cbf966b74b16bc649c"
+  },
+  "cells": {
+    "short_code/greedy": {
+      "actual_tokens": 64,
+      "sampling": null,
+      "eos": [
+        1,
+        106,
+        50
+      ],
+      "exact_semantics": true,
+      "effects": {
+        "commit_decode_tps": {
+          "paired_ratios_N1_over_O1_N2_over_O2": [
+            1.0050677364973264,
+            1.0104064851265204
+          ],
+          "geomean": 1.007733575380086,
+          "two_sided95_t_df1": [
+            0.9743804350850611,
+            1.0422283970220299
+          ],
+          "marginal_screen_disposition": "inconclusive"
+        },
+        "ttft_ns": {
+          "paired_ratios_N1_over_O1_N2_over_O2": [
+            0.9917096709996949,
+            0.9843221257118391
+          ],
+          "geomean": 0.9880089936065402,
+          "two_sided95_t_df1": [
+            0.9421725817745702,
+            1.0360753330444192
+          ],
+          "marginal_screen_disposition": "inconclusive"
+        },
+        "body_ns": {
+          "paired_ratios_N1_over_O1_N2_over_O2": [
+            0.994806726791129,
+            0.9899315560328525
+          ],
+          "geomean": 0.9923661476513047,
+          "two_sided95_t_df1": [
+            0.9618720658408741,
+            1.0238269786360636
+          ],
+          "marginal_screen_disposition": "inconclusive"
+        }
+      },
+      "process_medians": {
+        "O1": {
+          "commit_decode_tps": 37.49341468342601,
+          "ttft_ns": 85458249,
+          "body_ns": 1766829826,
+          "peak_allocated": 20734714368,
+          "peak_reserved": 22473080832
+        },
+        "N1": {
+          "commit_decode_tps": 37.6834214294266,
+          "ttft_ns": 84749772,
+          "body_ns": 1757654196,
+          "peak_allocated": 20734714368,
+          "peak_reserved": 22473080832
+        },
+        "N2": {
+          "commit_decode_tps": 37.572734641602594,
+          "ttft_ns": 84894854,
+          "body_ns": 1762435538,
+          "peak_allocated": 20733141504,
+          "peak_reserved": 22473080832
+        },
+        "O2": {
+          "commit_decode_tps": 37.18576156693792,
+          "ttft_ns": 86247024,
+          "body_ns": 1780361003,
+          "peak_allocated": 20733141504,
+          "peak_reserved": 22473080832
+        }
+      }
+    },
+    "short_code/production-seeded": {
+      "actual_tokens": 64,
+      "sampling": {
+        "seed": 8111601153387327274,
+        "temperature": 1.0,
+        "top_k": 64,
+        "top_p": 0.95,
+        "min_p": 0.0
+      },
+      "eos": [
+        1,
+        106,
+        50
+      ],
+      "exact_semantics": true,
+      "effects": {
+        "commit_decode_tps": {
+          "paired_ratios_N1_over_O1_N2_over_O2": [
+            1.0042193644749993,
+            1.0049328973587615
+          ],
+          "geomean": 1.004576067565635,
+          "two_sided95_t_df1": [
+            1.0000531327491393,
+            1.0091194582346092
+          ],
+          "marginal_screen_disposition": "gain-consistent"
+        },
+        "ttft_ns": {
+          "paired_ratios_N1_over_O1_N2_over_O2": [
+            0.9869306810121438,
+            0.9916929097359773
+          ],
+          "geomean": 0.9893089298902757,
+          "two_sided95_t_df1": [
+            0.9595119777424057,
+            1.0200312048875713
+          ],
+          "marginal_screen_disposition": "inconclusive"
+        },
+        "body_ns": {
+          "paired_ratios_N1_over_O1_N2_over_O2": [
+            0.9951456095248936,
+            0.995276066562071
+          ],
+          "geomean": 0.9952108359058651,
+          "two_sided95_t_df1": [
+            0.9943823740121022,
+            0.996039988026172
+          ],
+          "marginal_screen_disposition": "gain-consistent"
+        }
+      },
+      "process_medians": {
+        "O1": {
+          "commit_decode_tps": 37.35214123764295,
+          "ttft_ns": 85993004,
+          "body_ns": 1772696499,
+          "peak_allocated": 20735764992,
+          "peak_reserved": 22473080832
+        },
+        "N1": {
+          "commit_decode_tps": 37.50974353544621,
+          "ttft_ns": 84869134,
+          "body_ns": 1764091138,
+          "peak_allocated": 20735764992,
+          "peak_reserved": 22473080832
+        },
+        "N2": {
+          "commit_decode_tps": 37.2714473803673,
+          "ttft_ns": 85502411,
+          "body_ns": 1775700337,
+          "peak_allocated": 20734192128,
+          "peak_reserved": 22473080832
+        },
+        "O2": {
+          "commit_decode_tps": 37.088493648010584,
+          "ttft_ns": 86218637,
+          "body_ns": 1784128441,
+          "peak_allocated": 20734192128,
+          "peak_reserved": 22473080832
+        }
+      }
+    },
+    "short_prose/greedy": {
+      "actual_tokens": 64,
+      "sampling": null,
+      "eos": [
+        1,
+        106,
+        50
+      ],
+      "exact_semantics": true,
+      "effects": {
+        "commit_decode_tps": {
+          "paired_ratios_N1_over_O1_N2_over_O2": [
+            1.0135034803106109,
+            1.0194799996395485
+          ],
+          "geomean": 1.0164873475561527,
+          "two_sided95_t_df1": [
+            0.9792183604516556,
+            1.0551747898856463
+          ],
+          "marginal_screen_disposition": "inconclusive"
+        },
+        "ttft_ns": {
+          "paired_ratios_N1_over_O1_N2_over_O2": [
+            0.9967419795118309,
+            0.9884506092017084
+          ],
+          "geomean": 0.9925876368691008,
+          "two_sided95_t_df1": [
+            0.9412851937405409,
+            1.0466861939580856
+          ],
+          "marginal_screen_disposition": "inconclusive"
+        },
+        "body_ns": {
+          "paired_ratios_N1_over_O1_N2_over_O2": [
+            0.9871426662248043,
+            0.9809094487916757
+          ],
+          "geomean": 0.9840211220321025,
+          "two_sided95_t_df1": [
+            0.9452071579070741,
+            1.0244289418516168
+          ],
+          "marginal_screen_disposition": "inconclusive"
+        }
+      },
+      "process_medians": {
+        "O1": {
+          "commit_decode_tps": 37.23541568616853,
+          "ttft_ns": 83070380,
+          "body_ns": 1775032320,
+          "peak_allocated": 20731478016,
+          "peak_reserved": 22473080832
+        },
+        "N1": {
+          "commit_decode_tps": 37.73822338874412,
+          "ttft_ns": 82799735,
+          "body_ns": 1752210137,
+          "peak_allocated": 20731478016,
+          "peak_reserved": 22473080832
+        },
+        "N2": {
+          "commit_decode_tps": 37.96127547993574,
+          "ttft_ns": 82361621,
+          "body_ns": 1741969555,
+          "peak_allocated": 20731002880,
+          "peak_reserved": 22473080832
+        },
+        "O2": {
+          "commit_decode_tps": 37.23591977611869,
+          "ttft_ns": 83323962,
+          "body_ns": 1775871929,
+          "peak_allocated": 20731002880,
+          "peak_reserved": 22473080832
+        }
+      }
+    },
+    "short_prose/production-seeded": {
+      "actual_tokens": 64,
+      "sampling": {
+        "seed": 1189196914347326152,
+        "temperature": 1.0,
+        "top_k": 64,
+        "top_p": 0.95,
+        "min_p": 0.0
+      },
+      "eos": [
+        1,
+        106,
+        50
+      ],
+      "exact_semantics": true,
+      "effects": {
+        "commit_decode_tps": {
+          "paired_ratios_N1_over_O1_N2_over_O2": [
+            1.006420350999344,
+            1.013067526119936
+          ],
+          "geomean": 1.0097384687252748,
+          "two_sided95_t_df1": [
+            0.9683792685593249,
+            1.0528641084401757
+          ],
+          "marginal_screen_disposition": "inconclusive"
+        },
+        "ttft_ns": {
+          "paired_ratios_N1_over_O1_N2_over_O2": [
+            0.984760708780471,
+            0.9847642974897428
+          ],
+          "geomean": 0.9847625031334721,
+          "two_sided95_t_df1": [
+            0.9847397039600254,
+            0.9847853028347764
+          ],
+          "marginal_screen_disposition": "gain-consistent"
+        },
+        "body_ns": {
+          "paired_ratios_N1_over_O1_N2_over_O2": [
+            0.9931960732373741,
+            0.9878176412495082
+          ],
+          "geomean": 0.9905032066397447,
+          "two_sided95_t_df1": [
+            0.9569161813027133,
+            1.0252691108514698
+          ],
+          "marginal_screen_disposition": "inconclusive"
+        }
+      },
+      "process_medians": {
+        "O1": {
+          "commit_decode_tps": 37.320287222475194,
+          "ttft_ns": 84172353,
+          "body_ns": 1772283039,
+          "peak_allocated": 20732528640,
+          "peak_reserved": 22473080832
+        },
+        "N1": {
+          "commit_decode_tps": 37.559896565839814,
+          "ttft_ns": 82889626,
+          "body_ns": 1760224555,
+          "peak_allocated": 20732528640,
+          "peak_reserved": 22473080832
+        },
+        "N2": {
+          "commit_decode_tps": 37.549922241650826,
+          "ttft_ns": 82632167,
+          "body_ns": 1760894211,
+          "peak_allocated": 20732053504,
+          "peak_reserved": 22473080832
+        },
+        "O2": {
+          "commit_decode_tps": 37.06556697702827,
+          "ttft_ns": 83910604,
+          "body_ns": 1782610613,
+          "peak_allocated": 20732053504,
+          "peak_reserved": 22473080832
+        }
+      }
+    },
+    "long_8192/greedy": {
+      "actual_tokens": 64,
+      "sampling": null,
+      "eos": [
+        1,
+        106,
+        50
+      ],
+      "exact_semantics": true,
+      "effects": {
+        "commit_decode_tps": {
+          "paired_ratios_N1_over_O1_N2_over_O2": [
+            1.0052622971821046,
+            1.011759725442914
+          ],
+          "geomean": 1.008505778761371,
+          "two_sided95_t_df1": [
+            0.9680603967401741,
+            1.0506409612664518
+          ],
+          "marginal_screen_disposition": "inconclusive"
+        },
+        "ttft_ns": {
+          "paired_ratios_N1_over_O1_N2_over_O2": [
+            0.9833622138698964,
+            0.9863711807037541
+          ],
+          "geomean": 0.9848655481609189,
+          "two_sided95_t_df1": [
+            0.9659336103688525,
+            1.0041685448588098
+          ],
+          "marginal_screen_disposition": "inconclusive"
+        },
+        "body_ns": {
+          "paired_ratios_N1_over_O1_N2_over_O2": [
+            0.9872653081696814,
+            0.9891009407146474
+          ],
+          "geomean": 0.9881826982120099,
+          "two_sided95_t_df1": [
+            0.976589282363838,
+            0.9999137433516923
+          ],
+          "marginal_screen_disposition": "gain-consistent"
+        }
+      },
+      "process_medians": {
+        "O1": {
+          "commit_decode_tps": 35.45769310303564,
+          "ttft_ns": 2156276305,
+          "body_ns": 3931719092,
+          "peak_allocated": 21726004224,
+          "peak_reserved": 22473080832
+        },
+        "N1": {
+          "commit_decode_tps": 35.64428202153567,
+          "ttft_ns": 2120400641,
+          "body_ns": 3881649861,
+          "peak_allocated": 21726004224,
+          "peak_reserved": 22473080832
+        },
+        "N2": {
+          "commit_decode_tps": 35.58638682786815,
+          "ttft_ns": 2108560389,
+          "body_ns": 3889568424,
+          "peak_allocated": 21725086720,
+          "peak_reserved": 22473080832
+        },
+        "O2": {
+          "commit_decode_tps": 35.172764771091906,
+          "ttft_ns": 2137694643,
+          "body_ns": 3932428192,
+          "peak_allocated": 21725086720,
+          "peak_reserved": 22473080832
+        }
+      }
+    },
+    "long_8192/production-seeded": {
+      "actual_tokens": 64,
+      "sampling": {
+        "seed": 6769956935537910050,
+        "temperature": 1.0,
+        "top_k": 64,
+        "top_p": 0.95,
+        "min_p": 0.0
+      },
+      "eos": [
+        1,
+        106,
+        50
+      ],
+      "exact_semantics": true,
+      "effects": {
+        "commit_decode_tps": {
+          "paired_ratios_N1_over_O1_N2_over_O2": [
+            1.0054418355104227,
+            1.0140447866081257
+          ],
+          "geomean": 1.0097341489407243,
+          "two_sided95_t_df1": [
+            0.9565317538125425,
+            1.065895666791276
+          ],
+          "marginal_screen_disposition": "inconclusive"
+        },
+        "ttft_ns": {
+          "paired_ratios_N1_over_O1_N2_over_O2": [
+            0.9825511239488837,
+            0.9881271296823492
+          ],
+          "geomean": 0.985335182500745,
+          "two_sided95_t_df1": [
+            0.9505395311036395,
+            1.0214045708825112
+          ],
+          "marginal_screen_disposition": "inconclusive"
+        },
+        "body_ns": {
+          "paired_ratios_N1_over_O1_N2_over_O2": [
+            0.9853251493877991,
+            0.9866841460072238
+          ],
+          "geomean": 0.9860044135616943,
+          "two_sided95_t_df1": [
+            0.9774082601859004,
+            0.9946761687672151
+          ],
+          "marginal_screen_disposition": "gain-consistent"
+        }
+      },
+      "process_medians": {
+        "O1": {
+          "commit_decode_tps": 35.295167090026965,
+          "ttft_ns": 2157111489,
+          "body_ns": 3952804736,
+          "peak_allocated": 21727054848,
+          "peak_reserved": 22473080832
+        },
+        "N1": {
+          "commit_decode_tps": 35.487237583643775,
+          "ttft_ns": 2119472318,
+          "body_ns": 3894797917,
+          "peak_allocated": 21727054848,
+          "peak_reserved": 22473080832
+        },
+        "N2": {
+          "commit_decode_tps": 35.45666865512167,
+          "ttft_ns": 2107446681,
+          "body_ns": 3884301306,
+          "peak_allocated": 21726137344,
+          "peak_reserved": 22473080832
+        },
+        "O2": {
+          "commit_decode_tps": 34.96558448243744,
+          "ttft_ns": 2132768768,
+          "body_ns": 3936722123,
+          "peak_allocated": 21726137344,
+          "peak_reserved": 22473080832
+        }
+      }
+    },
+    "long_32768/greedy": {
+      "actual_tokens": 64,
+      "sampling": null,
+      "eos": [
+        1,
+        106,
+        50
+      ],
+      "exact_semantics": true,
+      "effects": {
+        "commit_decode_tps": {
+          "paired_ratios_N1_over_O1_N2_over_O2": [
+            1.0090060993390393,
+            1.0180836412829777
+          ],
+          "geomean": 1.0135347076897876,
+          "two_sided95_t_df1": [
+            0.9574743940856407,
+            1.0728773636529658
+          ],
+          "marginal_screen_disposition": "inconclusive"
+        },
+        "ttft_ns": {
+          "paired_ratios_N1_over_O1_N2_over_O2": [
+            0.9891908643717697,
+            0.992884763637606
+          ],
+          "geomean": 0.9910360929674781,
+          "two_sided95_t_df1": [
+            0.9678440633971247,
+            1.0147838631327617
+          ],
+          "marginal_screen_disposition": "inconclusive"
+        },
+        "body_ns": {
+          "paired_ratios_N1_over_O1_N2_over_O2": [
+            0.9875847091795581,
+            0.9922918948192585
+          ],
+          "geomean": 0.9899355041447448,
+          "two_sided95_t_df1": [
+            0.9604774924719601,
+            1.0202969981567986
+          ],
+          "marginal_screen_disposition": "inconclusive"
+        }
+      },
+      "process_medians": {
+        "O1": {
+          "commit_decode_tps": 33.75776573890951,
+          "ttft_ns": 14590096602,
+          "body_ns": 16486720445,
+          "peak_allocated": 22231358464,
+          "peak_reserved": 22473080832
+        },
+        "N1": {
+          "commit_decode_tps": 34.06179153061815,
+          "ttft_ns": 14432390269,
+          "body_ns": 16282033016,
+          "peak_allocated": 22231358464,
+          "peak_reserved": 22473080832
+        },
+        "N2": {
+          "commit_decode_tps": 34.140388304908036,
+          "ttft_ns": 14394664718,
+          "body_ns": 16250349383,
+          "peak_allocated": 22230440960,
+          "peak_reserved": 22473080832
+        },
+        "O2": {
+          "commit_decode_tps": 33.53397198474253,
+          "ttft_ns": 14497820135,
+          "body_ns": 16376581798,
+          "peak_allocated": 22230440960,
+          "peak_reserved": 22473080832
+        }
+      }
+    },
+    "long_32768/production-seeded": {
+      "actual_tokens": 64,
+      "sampling": {
+        "seed": 4060582123172852989,
+        "temperature": 1.0,
+        "top_k": 64,
+        "top_p": 0.95,
+        "min_p": 0.0
+      },
+      "eos": [
+        1,
+        106,
+        50
+      ],
+      "exact_semantics": true,
+      "effects": {
+        "commit_decode_tps": {
+          "paired_ratios_N1_over_O1_N2_over_O2": [
+            1.0017133508797902,
+            1.008500501148004
+          ],
+          "geomean": 1.0051011970786399,
+          "two_sided95_t_df1": [
+            0.9628936548492416,
+            1.0491588674214332
+          ],
+          "marginal_screen_disposition": "inconclusive"
+        },
+        "ttft_ns": {
+          "paired_ratios_N1_over_O1_N2_over_O2": [
+            0.985272393415864,
+            0.9913186784508187
+          ],
+          "geomean": 0.9882909121079124,
+          "two_sided95_t_df1": [
+            0.9506152309595808,
+            1.0274597914543813
+          ],
+          "marginal_screen_disposition": "inconclusive"
+        },
+        "body_ns": {
+          "paired_ratios_N1_over_O1_N2_over_O2": [
+            0.9867038179464829,
+            0.9906510368676726
+          ],
+          "geomean": 0.9886754575339547,
+          "two_sided95_t_df1": [
+            0.9639137476553471,
+            1.0140732640317915
+          ],
+          "marginal_screen_disposition": "inconclusive"
+        }
+      },
+      "process_medians": {
+        "O1": {
+          "commit_decode_tps": 33.9042691530812,
+          "ttft_ns": 14622104126,
+          "body_ns": 16475127004,
+          "peak_allocated": 22232409088,
+          "peak_reserved": 22473080832
+        },
+        "N1": {
+          "commit_decode_tps": 33.96235906246328,
+          "ttft_ns": 14406755529,
+          "body_ns": 16256070716,
+          "peak_allocated": 22232409088,
+          "peak_reserved": 22473080832
+        },
+        "N2": {
+          "commit_decode_tps": 33.795239949679726,
+          "ttft_ns": 14384130894,
+          "body_ns": 16234578980,
+          "peak_allocated": 22231491584,
+          "peak_reserved": 22473080832
+        },
+        "O2": {
+          "commit_decode_tps": 33.51038488449899,
+          "ttft_ns": 14510097718,
+          "body_ns": 16387787804,
+          "peak_allocated": 22231491584,
+          "peak_reserved": 22473080832
+        }
+      }
+    }
+  },
+  "conclusions": {
+    "selection": "B01 remains UNSELECTED for the complete default policy: one marginal conditional-n2 decode gain-consistent cell, seven inconclusive cells, zero regression-consistent cells. This is neither equivalence nor inferiority. Do not round away short_code/production-seeded lower bound1.0000531327491393, but it does not qualify the other seven required regions or provide simultaneous eight-cell confidence.",
+    "next_source_disposition": "Keep production2f9 baseline unchanged; retain candidate a078 and exact evidence as an unselected credible research increment. No data-dependent extra repetitions or fitted margin. Any follow-up needs a named unresolved mechanism and separately declared sensitive design; simple nonsignificance does not authorize deleting/rejecting the candidate.",
+    "scope": "Direct Engine callbacks only; four frozen text prompts, greedy and fixed seededT1K64P.95, coldprefix, 64maximum normalEOS, 131072 configured context; not HTTP/SSE/general quality/full262k or concurrent-session proof.",
+    "decode_gain_consistent_cells": [
+      "short_code/production-seeded"
+    ],
+    "decode_inconclusive_cells": [
+      "short_code/greedy",
+      "short_prose/greedy",
+      "short_prose/production-seeded",
+      "long_8192/greedy",
+      "long_8192/production-seeded",
+      "long_32768/greedy",
+      "long_32768/production-seeded"
+    ],
+    "decode_regression_consistent_cells": [],
+    "all16paired_decode_point_ratios_above1": true,
+    "observed_resource_disposition": "All four qualified/retired/source-stable and production counters5 unchanged/OOM17. Peak CUDA reserved22,473,080,832bytes allstarts; matched process-group maxallocated equal: O1=N122,232,409,088 and N2=O222,231,491,584. Observed RSS and host minima retained individually, not universal memory bounds. N1 load193.64s includes first compilation versus31.68s cachedN2; startup caches were not matched cold."
+  },
+  "raw_evidence_root": "/home/kklouzal/audit-artifacts/gemma-e4b-development-20261031/quant-assistant-audit",
+  "note": "All raw callbacks/IDs/fingerprints and complete commands/logs retained in the named host audit packets. Public receipt reports observations and conditional small-sample intervals; no universal speedup, equivalence, or production cutover claim."
+}
