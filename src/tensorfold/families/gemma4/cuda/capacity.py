@@ -282,7 +282,7 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
 
     if bounds is None and spark is None:
         host_staging = staging
-    result = common(model_dir, context, context_explicit, torch, Geometry(geometry, 0),
+    result = common(model_dir, context, context_explicit, torch, Geometry(geometry, 0, maximum_slots=131072 if spark_global_gqa else None),
                   lambda name, info: (0, 0),
                   weight_estimator=lambda _: (Weights(resident, staging), host_staging),
                   device_workspace_bytes=sampling["device_bytes"] + proposals["device_bytes"] + q_extra["device_bytes"],

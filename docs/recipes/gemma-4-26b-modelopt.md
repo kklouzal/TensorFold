@@ -195,7 +195,10 @@ workspace while the native default retains its full MATH repeat/upcast bound
 (16 GiB at 131k plus the declared small owners). Forced efficient-SDPA provider
 checks at 64k and 131k passed all 16 bitwise observations. The new `4bf0ba0a…`
 SDK's recorded-64k whole-head GQA gate passed 108 bitwise field comparisons in
-20.134 seconds. Live Engine/cache/media, actual-q and model-performance gates
+20.134 seconds. A subsequent Engine startup refused before weights because the
+planner probed beyond the selected 131k profile. The source correction bounds
+that search without changing the model native window or workspace formula;
+installed verification is pending. Live Engine/cache/media, actual-q and model-performance gates
 remain pending.
 
 `--spark-sampled-q` selects the existing recurrent proposal sampler, with

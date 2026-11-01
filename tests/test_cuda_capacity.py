@@ -638,3 +638,45 @@ def test_cuda_override_is_selected_before_an_unused_caller_default(monkeypatch):
 
     monkeypatch.setenv("TENSORFOLD_CUDA_MEMORY_RESERVE_GIB", "0")
     assert capacity.cuda_reserve_bytes(256 * 2**20, default=512 * 2**20) == 0
+
+
+def test_profile_ceiling_bounds_search_without_relabelling_native():
+    from tensorfold.cuda.capacity import Geometry, Weights, choose, make_plan
+    from tensorfold.cuda.geometry import with_fixed
+
+    queried = []
+    def bounded(slots):
+        assert 0 < slots <= 131072
+        queried.append(slots)
+        return slots * 2
+
+    geometry = with_fixed(Geometry(bounded, 0, maximum_slots=131072), 17)
+    plan = make_plan(262144, 131072, True, 10**9, Weights(0, 0), geometry)
+    assert choose(plan) == plan.fitting == plan.largest == 131072
+    assert plan.native == plan.receipt(131072)["native_window"] == 262144
+    assert plan.receipt(131072)["profile_maximum_slots"] == 131072
+    assert max(queried) == 131072
+    with pytest.raises(ValueError, match="profile maximum"):
+        geometry.needed(131073)
+    too_large = make_plan(262144, 262144, True, 10**9, Weights(0, 0), geometry)
+    with pytest.raises(ValueError, match="largest fitting"):
+        choose(too_large)
+    legacy = make_plan(262144, 131072, True, 10**9, Weights(0, 0), Geometry(lambda n: n, 0))
+    assert legacy.largest == legacy.native == 262144
+    assert "profile_maximum_slots" not in legacy.receipt(131072)
+
+
+def test_profile_slot_ceiling_accounts_for_reserve():
+    from tensorfold.cuda.capacity import Geometry, Weights, make_plan
+
+    geometry = Geometry(lambda slots: slots, 8, maximum_slots=131072)
+    plan = make_plan(262144, 131064, True, 10**9, Weights(0, 0), geometry)
+    assert plan.fitting == plan.largest == 131064
+
+
+@pytest.mark.parametrize("maximum", [True, 0, -1, 1.5])
+def test_geometry_profile_ceiling_rejects_invalid_boundary(maximum):
+    from tensorfold.cuda.capacity import Geometry
+
+    with pytest.raises(ValueError, match="maximum slots"):
+        Geometry(lambda slots: slots, 0, maximum_slots=maximum)

@@ -310,3 +310,19 @@ def test_disabled_gqa_never_queries_qualified_torch_guard(monkeypatch, tmp_path)
         _factory(factory_patch, tmp_path)
     spark_admission(monkeypatch)
     capacity.admit(tmp_path, 65536, True, max_rows=7, drafter_dir=tmp_path/'spark')
+
+
+def test_gqa_geometry_plans_requested_window_with_larger_native(monkeypatch, tmp_path):
+    spark_admission(monkeypatch)
+    from tensorfold.cuda.capacity import make_plan, choose
+
+    result = capacity.admit(tmp_path, 131072, True, max_rows=7,
+                            drafter_dir=tmp_path/'spark', spark_global_gqa=True)
+    geometry = result['geometry']
+    assert geometry.maximum_slots == 131072
+    # The real profile raises if common planning probes an unsupported slot count.
+    plan = make_plan(262144, 131072, True, 10**15, result['weights'], geometry)
+    assert choose(plan) == plan.largest == 131072
+    assert plan.native == 262144
+    baseline = capacity.admit(tmp_path, 131072, True, max_rows=7, drafter_dir=tmp_path/'spark')
+    assert baseline['geometry'].maximum_slots is None

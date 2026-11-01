@@ -95,7 +95,10 @@ and final normalized main hidden state. Live bridge, restore/cache and media
 integration remain pending. Default-off `--spark-global-gqa` has passed forced
 efficient-provider checks at 64k/131k (16 bitwise observations). The new SDK's
 recorded-64k whole-head GQA gate also passed 108 bitwise field comparisons in
-20.134 seconds; live Engine/cache/media, actual-q and performance gates remain
+20.134 seconds. A subsequent Engine startup exposed an unsupported-slot planner
+probe; the source fix bounds searches to the selected profile while preserving
+the model native window. Its installed checks and live Engine/cache/media,
+actual-q and performance gates remain
 pending. `--spark-sampled-q` reuses bounded actual-q sampling with target p
 unchanged, but its model-law/cache/performance gates also remain pending.
 Production image `1d53fa83` is unchanged; these are experimental checkpoints,

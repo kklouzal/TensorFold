@@ -128,7 +128,8 @@ def with_fixed(geometry: Geometry, extra: int, *, label: str = "additional_works
         values[label] = values.get(label, 0) + extra
         return values
     return Geometry(lambda slots: geometry.bytes_at(slots) + extra, geometry.reserve, geometry.minimum_slots,
-                    breakdown if geometry.breakdown_at is not None else None)
+                    breakdown if geometry.breakdown_at is not None else None,
+                    maximum_slots=geometry.maximum_slots)
 
 
 def indexed_weights(world: int, mtp: bool, mapped_tables: bool = True):

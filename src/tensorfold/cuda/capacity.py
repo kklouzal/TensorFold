@@ -44,9 +44,19 @@ class Geometry:
     reserve: int
     minimum_slots: int = 0
     breakdown_at: Callable[[int], dict[str, int]] | None = None
+    maximum_slots: int | None = None  # profile domain, independent of the checkpoint native window
+
+    def __post_init__(self):
+        if self.maximum_slots is not None and (type(self.maximum_slots) is not int
+                                               or self.maximum_slots <= 0
+                                               or self.maximum_slots < self.minimum_slots):
+            raise ValueError("geometry maximum slots must be positive and cover minimum slots")
 
     def needed(self, window: int) -> int:
-        return int(self.bytes_at(max(self.minimum_slots, window + self.reserve)))
+        slots = max(self.minimum_slots, window + self.reserve)
+        if self.maximum_slots is not None and slots > self.maximum_slots:
+            raise ValueError("cache slots exceed the selected geometry profile maximum")
+        return int(self.bytes_at(slots))
 
 
 def fit_sessions(window: int, budget: int, weights: Weights,
@@ -120,6 +130,8 @@ class Plan:
                 "full_mapped_working_set_bytes_estimate": self.weights.resident +
                 max(self.weights.staging, self.geometry.needed(window)) + self.weights.mapped,
                 "mapped_pages_reclaimable": True, "mapped_tables_resident": self.keeps_tables}
+        if self.geometry.maximum_slots is not None:
+            receipt["profile_maximum_slots"] = self.geometry.maximum_slots
         if self.geometry.breakdown_at is not None:
             receipt["resource_ledger_bytes"] = self.geometry.breakdown_at(
                 max(self.geometry.minimum_slots, window + self.geometry.reserve))
@@ -584,6 +596,8 @@ def make_plan(native: int, requested: int | None, explicit: bool, budget: int,
     upper = min(target, native) if native > 0 else target
 
     def fit(ceiling: int, top: int = upper) -> int:
+        if geometry.maximum_slots is not None:
+            top = min(top, max(0, geometry.maximum_slots - geometry.reserve))
         low, high = 0, 0 if weights.resident + weights.staging > budget else top
         while low < high:
             middle = (low + high + 1) // 2
@@ -744,7 +758,9 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
                 draft_geometry = draft_geometry(config(draft_dir)) if callable(draft_geometry) else draft_geometry
                 main = geometry
                 geometry = Geometry(lambda slots: main.bytes_at(slots) + draft_geometry.bytes_at(slots),
-                                    main.reserve, main.minimum_slots)
+                                    main.reserve, main.minimum_slots,
+                                    maximum_slots=min((n for n in (main.maximum_slots, draft_geometry.maximum_slots)
+                                                       if n is not None), default=None))
         serving_workspace = device_workspace_bytes + (host_workspace_bytes if unified(torch) else 0)
         if session_geometry is not None:
             def session_factory(count):
@@ -755,7 +771,8 @@ def admit(model_dir: str | Path, requested: int | None, explicit: bool | None, t
         if serving_workspace:
             base_geometry = geometry
             geometry = Geometry(lambda slots: base_geometry.bytes_at(slots) + serving_workspace,
-                                base_geometry.reserve, base_geometry.minimum_slots)
+                                base_geometry.reserve, base_geometry.minimum_slots,
+                                maximum_slots=base_geometry.maximum_slots)
         host_needed = host_resident + host_extra_staging + max(host_staging, host_workspace_bytes)
         allowance = host_cgroup_bytes() if host_resident or host_extra_staging or host_workspace_bytes or session_geometry is not None else None
         if host_resident or host_extra_staging or host_workspace_bytes:
