@@ -69,8 +69,10 @@ class Workspace:
 class Experts:
     """Immutable native bank; slot outputs and plans live in the model's shared workspace."""
 
+    direct_input = False  # CT default; a distinct ModelOpt adapter declares its own convention.
+
     def __init__(self, bank: ExpertsA4, workspace: Workspace | None = None):
-        if (not isinstance(bank, ExpertsA4) or bank.direct_input
+        if (not isinstance(bank, ExpertsA4) or bank.direct_input != self.direct_input
                 or bank.swiglu is not geglu or not bank.capturable):
             raise ValueError("Gemma NVFP4 requires an original CT-calibrated resident native A4 bank")
         self.bank = bank

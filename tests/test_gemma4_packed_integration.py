@@ -66,7 +66,7 @@ def test_metadata_refuses_other_storage_before_runtime(patch):
         E2BConfig.from_checkpoint(raw)
 
 
-def test_header_estimate_covers_prepared_core_and_cpu_placeholders(monkeypatch):
+def test_header_estimate_covers_prepared_core_without_cpu_model_placeholders(monkeypatch):
     raw, inventory = packed_fixture()
     setup_headers(monkeypatch, raw, inventory)
     import transformers
@@ -89,7 +89,8 @@ def test_header_estimate_covers_prepared_core_and_cpu_placeholders(monkeypatch):
                   if n not in unused and n.rsplit('.', 1)[0] not in packed)
     prepared = sum(((n+63)//64)*64*k*9//16 for n, k in plan.projection_shapes)
     assert plan.resident == noncore + prepared + plan.native_buffer_bound
-    assert plan.host_staging >= noncore + sum(2*math.prod(contract[n]) for n in active)
+    # Native parameter skeleton is META, not a full CPU BF16 model mirror.
+    assert 2*(64 << 20) <= plan.host_staging < noncore
     assert plan.device_staging > 0
     assert plan.workspace(512) >= plan.workspace(8) > 0
 
@@ -279,6 +280,8 @@ def test_actual_loader_status_records_retirement_without_exception_annotations(m
     import transformers
     from tensorfold.families.gemma4.cuda import e2b_runtime
     raw, _ = packed_fixture()
+    # This status test models the owned-manifest protocol, not publisher input.
+    (tmp_path/dense_loader.MANIFEST).write_text('{}')
     cfg = E2BConfig.from_checkpoint(raw)
     status = dense_loader.DenseLoadStatus()
     primary = RuntimeError('bind failed')

@@ -92,19 +92,29 @@ class ForwardResult:
 
 
 class Gemma4Target:
-    def __init__(self, weights: Gemma4Weights):
+    _plain_prompt = False
+    _global_prompt_scratch = None
+
+    def __init__(self, weights: Gemma4Weights, *, prepare_global_prompt: bool = False,
+                 prompt_context: int | None = None):
+        if type(prepare_global_prompt) is not bool:
+            raise ValueError("prepare_global_prompt must be a bool")
+        if prepare_global_prompt and (weights.numerics != "modelopt_nvfp4"
+                or type(prompt_context) is not int or not 0 < prompt_context <= weights.config.max_position):
+            raise ValueError("prepared prompt KV requires ModelOpt arithmetic and an admitted context")
         self.weights, self.config = weights, weights.config
         attention.check_geometry(self.config)
         # CT native projections: prompt rows on the prompt GEMM, and projections sharing an input quantize it
         # once when their original input multipliers are equal (matmul_group proves it per call, each output
         # keeps its own bits). MLX affine projections have one row-invariant kernel for every row count.
         self._native = weights.numerics == "ct_nvfp4"
+        self._plain_prompt = weights.numerics == "modelopt_nvfp4"
         self.device = weights.norm.device
         policy = weights.numerics
         if policy == "mlx":
             self._norm, self._geglu, self._route = rms_norm, _geglu_mlx, self._route_mlx
             self._embedding = weights.embed.embedding
-        elif policy == "ct_nvfp4":
+        elif policy in ("ct_nvfp4", "modelopt_nvfp4"):
             self._norm, self._geglu, self._route = ct_rms_norm, glue.geglu, self._route_ct
             self._embedding = lambda ids: torch.nn.functional.embedding(ids, weights.embed.weight)
         else:
@@ -126,8 +136,22 @@ class Gemma4Target:
             inv[rotated // 2:] = 0
             self._inverse.append(inv)
 
+        if prepare_global_prompt:
+            # Fixed target-owned scratch, shared by ordered global layers and
+            # never retained in per-request or prefix snapshots.
+            shape = (prompt_context, c.global_kv_heads, c.global_head_dim)
+            keys = values = None
+            try:
+                keys = torch.empty(shape, dtype=torch.bfloat16, device=self.device)
+                values = torch.empty_like(keys)
+                self._global_prompt_scratch = (keys, values)
+            finally:
+                keys = values = None
+
     def make_state(self, context: int, rows: int = 16) -> State:
         """Persistent caches for one sequence whose forwards carry at most ``rows`` rows."""
+        if self._global_prompt_scratch is not None and context != self._global_prompt_scratch[0].shape[0]:
+            raise ValueError("prepared prompt KV state must use the admitted scratch context")
         return State(self.config, self.device, context, min(rows, context))
 
     def raw_embed_tokens(self, ids: torch.Tensor) -> torch.Tensor:
@@ -152,7 +176,7 @@ class Gemma4Target:
         return picks, (probabilities * layer.expert_scale[picks]).to(h.dtype)
 
     def _route_ct(self, h, layer):
-        # Publisher GateLinear preprocessing is the unweighted CT RMS norm, root_size then learned scale, each in
+        # Native GateLinear preprocessing is unweighted FP32 RMS norm then BF16 root_size/learned scale, each in
         # BF16; its original BF16 matrix emits FP32 logits. Softmax over every expert, the top-k (stable descending,
         # IDs in 0..E-1 as INT32), renormalized over the selected probabilities, times the per-expert scale. Two fused
         # row-invariant kernels; no intermediate leaves the GPU.
@@ -283,7 +307,7 @@ class Gemma4Target:
             outs = checkpoint.matmul_group(x, lins, prompt_rows=prompt)
             if outs is not None:
                 return outs
-        if prompt and self._native:
+        if prompt and (self._native or self._plain_prompt):
             return [lin.prefill(x) for lin in lins]
         return [lin(x) for lin in lins]
 
@@ -313,8 +337,13 @@ class Gemma4Target:
                 raw, inv = state.raw[index], state.inv[index]
                 q = attention.prep_full(q_raw, k_raw, layer.q_norm, self._inverse[i], state.pos, raw, inv,
                                         eps=c.eps, round_normalized=mlx)
-                out = attention.full(q, raw, inv, layer.k_norm, self._inverse[i], state.pos, chunks=chunks,
-                                     round_normalized=mlx)
+                if prompt and self._global_prompt_scratch is not None:
+                    out = attention.full_prepared(
+                        q, raw, inv, layer.k_norm, self._inverse[i], state.pos, chunks=chunks,
+                        length=state.position + rows, round_normalized=mlx, scratch=self._global_prompt_scratch)
+                else:
+                    out = attention.full(q, raw, inv, layer.k_norm, self._inverse[i], state.pos, chunks=chunks,
+                                         round_normalized=mlx)
             attended = self._project(out.reshape(rows, -1), (layer.o,), prompt)[0]
             # Fused glue (glue.py): the same norms, adds and BF16 boundaries as the unfused chain.
             h, dense_in, expert_in = glue.attention_tail(h, attended, layer.attention_norm, layer.mlp_norm,

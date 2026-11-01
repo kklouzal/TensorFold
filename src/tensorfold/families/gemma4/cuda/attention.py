@@ -244,10 +244,43 @@ def _key(row, cols, inv, held, KW, ROUND: tl.constexpr):
     return _scaled(_normalized(row, cols, inv, held), tl.load(KW + cols)[None, :], ROUND)
 
 
+@triton.jit(do_not_specialize=["LENGTH"])
+def _prepare_global(RAW, INV, KW, FREQ, KP, VP, LENGTH,
+                    HK: tl.constexpr, D: tl.constexpr, ROT: tl.constexpr,
+                    UW: tl.constexpr, BK: tl.constexpr, ROUND: tl.constexpr):
+    """Materialize the existing tile's exact element operations once per key.
+
+    One target-owned pair is reused across layers on the exclusive stream.
+    Only [0,LENGTH) is initialized/visible; unused capacity is never read.
+    """
+    key = tl.program_id(0) * BK + tl.arange(0, BK)
+    hk = tl.program_id(1)
+    held = key < LENGTH
+    row = RAW + (key[:, None] * HK + hk) * D
+    inv = tl.load(INV + key * HK + hk, mask=held, other=0.0)[:, None]
+    ca, cb, c0, c1, c2 = _global_columns(D, ROT, UW)
+    ka = _key(row, ca, inv, held, KW, ROUND)
+    kb = _key(row, cb, inv, held, KW, ROUND)
+    angle = key.to(tl.float32)[:, None] * tl.load(FREQ + ca)[None, :]
+    c, sn = tl.cos(angle), tl.sin(angle)
+    dst = KP + (key[:, None] * HK + hk) * D
+    tl.store(dst + ca[None, :], (ka * c - kb * sn).to(tl.bfloat16), held[:, None])
+    tl.store(dst + cb[None, :], (ka * sn + kb * c).to(tl.bfloat16), held[:, None])
+    tl.store(dst + c0[None, :], _key(row, c0, inv, held, KW, ROUND).to(tl.bfloat16), held[:, None])
+    tl.store(dst + c1[None, :], _key(row, c1, inv, held, KW, ROUND).to(tl.bfloat16), held[:, None])
+    tl.store(dst + c2[None, :], _key(row, c2, inv, held, KW, ROUND).to(tl.bfloat16), held[:, None])
+    dst = VP + (key[:, None] * HK + hk) * D
+    tl.store(dst + ca[None, :], _normalized(row, ca, inv, held).to(tl.bfloat16), held[:, None])
+    tl.store(dst + cb[None, :], _normalized(row, cb, inv, held).to(tl.bfloat16), held[:, None])
+    tl.store(dst + c0[None, :], _normalized(row, c0, inv, held).to(tl.bfloat16), held[:, None])
+    tl.store(dst + c1[None, :], _normalized(row, c1, inv, held).to(tl.bfloat16), held[:, None])
+    tl.store(dst + c2[None, :], _normalized(row, c2, inv, held).to(tl.bfloat16), held[:, None])
+
+
 @triton.jit
-def _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, chunk, hk, pos, ok, hi,
+def _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, KP, VP, chunk, hk, pos, ok, hi,
                   HK: tl.constexpr, D: tl.constexpr, ROT: tl.constexpr, UW: tl.constexpr,
-                  CH: tl.constexpr, BK: tl.constexpr, ROUND: tl.constexpr):
+                  CH: tl.constexpr, BK: tl.constexpr, ROUND: tl.constexpr, PREPARED: tl.constexpr):
     """One chunk's online softmax over raw K=V tiles: K = RoPE(bf16(x*inv*w)) and V = bf16(x*inv).
 
     Each column part is rebuilt where it is consumed (scores first, values after the softmax update, the
@@ -267,15 +300,23 @@ def _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, chunk, hk, pos, ok, hi
         held = key < hi
         row = RAW + (key[:, None] * HK + hk) * D
         inv = tl.load(INV + key * HK + hk, mask=held, other=0.0)[:, None]
-        ka = _key(row, ca, inv, held, KW, ROUND)
-        kb = _key(row, cb, inv, held, KW, ROUND)
-        angle = key.to(tl.float32)[:, None] * tl.load(FREQ + ca)[None, :]
-        c, s = tl.cos(angle), tl.sin(angle)
-        scores = tl.dot(qa, tl.trans((ka * c - kb * s).to(tl.bfloat16)))
-        scores = tl.dot(qb, tl.trans((ka * s + kb * c).to(tl.bfloat16)), scores)
-        scores = tl.dot(q0, tl.trans(_key(row, c0, inv, held, KW, ROUND).to(tl.bfloat16)), scores)
-        scores = tl.dot(q1, tl.trans(_key(row, c1, inv, held, KW, ROUND).to(tl.bfloat16)), scores)
-        scores = tl.dot(q2, tl.trans(_key(row, c2, inv, held, KW, ROUND).to(tl.bfloat16)), scores)
+        if PREPARED:
+            kp = KP + (key[:, None] * HK + hk) * D
+            scores = tl.dot(qa, tl.trans(tl.load(kp + ca[None, :], mask=held[:, None], other=0.0)))
+            scores = tl.dot(qb, tl.trans(tl.load(kp + cb[None, :], mask=held[:, None], other=0.0)), scores)
+            scores = tl.dot(q0, tl.trans(tl.load(kp + c0[None, :], mask=held[:, None], other=0.0)), scores)
+            scores = tl.dot(q1, tl.trans(tl.load(kp + c1[None, :], mask=held[:, None], other=0.0)), scores)
+            scores = tl.dot(q2, tl.trans(tl.load(kp + c2[None, :], mask=held[:, None], other=0.0)), scores)
+        else:
+            ka = _key(row, ca, inv, held, KW, ROUND)
+            kb = _key(row, cb, inv, held, KW, ROUND)
+            angle = key.to(tl.float32)[:, None] * tl.load(FREQ + ca)[None, :]
+            c, s = tl.cos(angle), tl.sin(angle)
+            scores = tl.dot(qa, tl.trans((ka * c - kb * s).to(tl.bfloat16)))
+            scores = tl.dot(qb, tl.trans((ka * s + kb * c).to(tl.bfloat16)), scores)
+            scores = tl.dot(q0, tl.trans(_key(row, c0, inv, held, KW, ROUND).to(tl.bfloat16)), scores)
+            scores = tl.dot(q1, tl.trans(_key(row, c1, inv, held, KW, ROUND).to(tl.bfloat16)), scores)
+            scores = tl.dot(q2, tl.trans(_key(row, c2, inv, held, KW, ROUND).to(tl.bfloat16)), scores)
         valid = (key[None, :] <= pos[:, None]) & ok[:, None]
         scores = tl.where(valid, scores, -float("inf"))
         tile_max = tl.max(scores, 1)
@@ -284,21 +325,29 @@ def _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, chunk, hk, pos, ok, hi
         alpha = tl.where(active, tl.where(m == -float("inf"), 0.0, tl.exp(m - next_m)), 1.0)
         prob = tl.where(valid & active[:, None], tl.exp(scores - next_m[:, None]), 0.0)
         p16 = prob.to(tl.bfloat16)
-        oa = oa * alpha[:, None] + tl.dot(p16, _normalized(row, ca, inv, held).to(tl.bfloat16))
-        ob = ob * alpha[:, None] + tl.dot(p16, _normalized(row, cb, inv, held).to(tl.bfloat16))
-        o0 = o0 * alpha[:, None] + tl.dot(p16, _normalized(row, c0, inv, held).to(tl.bfloat16))
-        o1 = o1 * alpha[:, None] + tl.dot(p16, _normalized(row, c1, inv, held).to(tl.bfloat16))
-        o2 = o2 * alpha[:, None] + tl.dot(p16, _normalized(row, c2, inv, held).to(tl.bfloat16))
+        if PREPARED:
+            vp = VP + (key[:, None] * HK + hk) * D
+            oa = oa * alpha[:, None] + tl.dot(p16, tl.load(vp + ca[None, :], mask=held[:, None], other=0.0))
+            ob = ob * alpha[:, None] + tl.dot(p16, tl.load(vp + cb[None, :], mask=held[:, None], other=0.0))
+            o0 = o0 * alpha[:, None] + tl.dot(p16, tl.load(vp + c0[None, :], mask=held[:, None], other=0.0))
+            o1 = o1 * alpha[:, None] + tl.dot(p16, tl.load(vp + c1[None, :], mask=held[:, None], other=0.0))
+            o2 = o2 * alpha[:, None] + tl.dot(p16, tl.load(vp + c2[None, :], mask=held[:, None], other=0.0))
+        else:
+            oa = oa * alpha[:, None] + tl.dot(p16, _normalized(row, ca, inv, held).to(tl.bfloat16))
+            ob = ob * alpha[:, None] + tl.dot(p16, _normalized(row, cb, inv, held).to(tl.bfloat16))
+            o0 = o0 * alpha[:, None] + tl.dot(p16, _normalized(row, c0, inv, held).to(tl.bfloat16))
+            o1 = o1 * alpha[:, None] + tl.dot(p16, _normalized(row, c1, inv, held).to(tl.bfloat16))
+            o2 = o2 * alpha[:, None] + tl.dot(p16, _normalized(row, c2, inv, held).to(tl.bfloat16))
         l = l * alpha + tl.sum(prob, 1)
         m = next_m
     return m, l, oa, ob, o0, o1, o2
 
 
 @triton.jit
-def _global(Q, RAW, INV, KW, FREQ, POS, PO, PM, PL, OUT, R, SPLITS,
+def _global(Q, RAW, INV, KW, FREQ, KP, VP, POS, PO, PM, PL, OUT, R, SPLITS,
             H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr, ROT: tl.constexpr,
             UW: tl.constexpr, CH: tl.constexpr, BK: tl.constexpr, SEQUENTIAL: tl.constexpr,
-            ROUND: tl.constexpr):
+            ROUND: tl.constexpr, PREPARED: tl.constexpr):
     """Parallel: program (query tile, KV head, chunk) writes one partial. Sequential:
     program (query tile, KV head) folds every chunk in order and writes the output."""
     t, hk = tl.program_id(0), tl.program_id(1)
@@ -319,8 +368,8 @@ def _global(Q, RAW, INV, KW, FREQ, POS, PO, PM, PL, OUT, R, SPLITS,
         o1 = tl.zeros((16, UW), tl.float32)
         o2 = tl.zeros((16, UW), tl.float32)
         for chunk in range(0, (hi + CH - 1) // CH):
-            cm, cl, pa, pb, p0, p1, p2 = _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, chunk, hk, pos, ok,
-                                                      hi, HK, D, ROT, UW, CH, BK, ROUND)
+            cm, cl, pa, pb, p0, p1, p2 = _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, KP, VP, chunk, hk, pos, ok,
+                                                      hi, HK, D, ROT, UW, CH, BK, ROUND, PREPARED)
             m2, l2, oa = _fold_step(m, l, oa, cm, cl, pa)
             ob = _fold_step(m, l, ob, cm, cl, pb)[2]
             o0 = _fold_step(m, l, o0, cm, cl, p0)[2]
@@ -336,8 +385,8 @@ def _global(Q, RAW, INV, KW, FREQ, POS, PO, PM, PL, OUT, R, SPLITS,
     else:
         chunk = tl.program_id(2)
         if chunk * CH < hi:
-            m, l, oa, ob, o0, o1, o2 = _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, chunk, hk, pos, ok,
-                                                     hi, HK, D, ROT, UW, CH, BK, ROUND)
+            m, l, oa, ob, o0, o1, o2 = _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, KP, VP, chunk, hk, pos, ok,
+                                                     hi, HK, D, ROT, UW, CH, BK, ROUND, PREPARED)
             base = (r * H + head) * SPLITS + chunk
             prow = PO + base[:, None] * D
             tl.store(prow + ca[None, :], oa, mask=ok[:, None])
@@ -448,7 +497,8 @@ def sliding(q, keys, values, pos, block_starts, block_ends, *, window: int, slot
     return out
 
 
-def full(q, raw, inv, k_norm, inverse, pos, *, chunks: int, round_normalized: bool, sequential: bool | None = None):
+def full(q, raw, inv, k_norm, inverse, pos, *, chunks: int, round_normalized: bool,
+         sequential: bool | None = None, prepared=None):
     """Causal full attention over shared raw K=V rows.
 
     ``chunks`` bounds the absolute chunks of the forward's last row (a graph
@@ -458,20 +508,43 @@ def full(q, raw, inv, k_norm, inverse, pos, *, chunks: int, round_normalized: bo
     _, hk, _ = raw.shape
     g = h // hk
     tiles = -(-rows * g // QUERY_TILE)
+    kp, vp = (raw, raw) if prepared is None else prepared
     if sequential is None:
         sequential = rows >= SEQUENTIAL_ROWS
     out = torch.empty_like(q)
     common = dict(H=h, HK=hk, D=d, G=g, ROT=ROTATED, UW=(d - 2 * ROTATED) // 3, CH=GLOBAL_CHUNK, BK=GLOBAL_TILE,
-                  ROUND=round_normalized, **LAUNCH)
+                  ROUND=round_normalized, PREPARED=prepared is not None, **LAUNCH)
     if sequential:
-        _global[(tiles, hk, 1)](q, raw, inv, k_norm, inverse, pos, out, out, out, out, rows, 1, SEQUENTIAL=True,
+        _global[(tiles, hk, 1)](q, raw, inv, k_norm, inverse, kp, vp, pos, out, out, out, out, rows, 1, SEQUENTIAL=True,
                                 **common)
         return out
     po = torch.empty((rows, h, chunks, d), dtype=torch.float32, device=q.device)
     pm = torch.empty((rows, h, chunks), dtype=torch.float32, device=q.device)
     pl = torch.empty_like(pm)
-    _global[(tiles, hk, chunks)](q, raw, inv, k_norm, inverse, pos, po, pm, pl, out, rows, chunks,
+    _global[(tiles, hk, chunks)](q, raw, inv, k_norm, inverse, kp, vp, pos, po, pm, pl, out, rows, chunks,
                                  SEQUENTIAL=False, **common)
     _merge[(rows, h, d // MERGE_COLUMNS)](po, pm, pl, out, pos, chunks, H=h, D=d, DS=MERGE_COLUMNS,
                                           CH=GLOBAL_CHUNK, GLOBAL=True, num_warps=1, enable_fp_fusion=False)
     return out
+
+
+def full_prepared(q, raw, inv, k_norm, inverse, pos, *, chunks: int, length: int,
+                  round_normalized: bool, scratch):
+    """Prompt candidate: materialize current layer once, consume on same stream.
+
+    The target owns fixed full-context scratch. No view survives this call's
+    consumption or enters prefix snapshots. Decode always uses raw attention.
+    """
+    keys, values = scratch
+    if (type(length) is not int or not 0 < length <= raw.shape[0]
+            or keys.shape != raw.shape or values.shape != raw.shape
+            or keys.dtype != torch.bfloat16 or values.dtype != torch.bfloat16
+            or keys.device != raw.device or values.device != raw.device
+            or not keys.is_contiguous() or not values.is_contiguous()):
+        raise ValueError('prepared full attention needs fixed BF16 device scratch and a valid initialized prefix')
+    _, hk, d = raw.shape
+    _prepare_global[(-(-length // GLOBAL_TILE), hk)](
+        raw, inv, k_norm, inverse, keys, values, length, HK=hk, D=d, ROT=ROTATED,
+        UW=(d - 2 * ROTATED) // 3, BK=GLOBAL_TILE, ROUND=round_normalized, **LAUNCH)
+    return full(q, raw, inv, k_norm, inverse, pos, chunks=chunks,
+                round_normalized=round_normalized, prepared=scratch)

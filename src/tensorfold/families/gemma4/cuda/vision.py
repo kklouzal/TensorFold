@@ -10,6 +10,7 @@ prefill because sliding attention is bidirectional inside each visual block.
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+import hashlib
 import math
 from pathlib import Path
 import threading
@@ -256,8 +257,18 @@ def _video_batch(pixels: np.ndarray, positions: np.ndarray, counts: Sequence[int
     return pixels.reshape(frames, *pixels.shape[2:]), positions.reshape(frames, *positions.shape[2:])
 
 
+def _video_identity(video):
+    if video.timestamp_seconds is None:
+        return video.content_hash  # Preserve existing CFR cache identity.
+    digest = hashlib.sha256(b"tensorfold-gemma-video-pts-v1\0" + video.content_hash.encode())
+    digest.update(np.asarray(video.timestamp_seconds, dtype=">f8").tobytes())
+    return digest.hexdigest()
+
+
 class GemmaVisionProcessor:
     """Local standard Transformers processor; decoding and resource limits stay external."""
+
+    preserve_video_timestamps = True
 
     def __init__(self, raw: dict, processor: Any, size_function: Any, geometry: ProcessorGeometry | None = None):
         self.config = validate_vision_config(raw)
@@ -381,9 +392,23 @@ class GemmaVisionProcessor:
         if videos:
             from transformers.video_utils import VideoMetadata
 
+            class ActualPTS(VideoMetadata):
+                @property
+                def timestamps(self):
+                    return list(self.actual_times)
+
+            metadata = []
+            for video in videos:
+                # VideoInput already validates finite, ordered, frame-aligned
+                # presentation times. Keep the native CFR contract when absent.
+                metadata_type = VideoMetadata if video.timestamp_seconds is None else ActualPTS
+                item = metadata_type(total_num_frames=max(video.indices) + 1, fps=video.fps,
+                                     frames_indices=list(video.indices))
+                if video.timestamp_seconds is not None:
+                    item.actual_times = video.timestamp_seconds
+                metadata.append(item)
             kwargs.update(videos=[np.array(video.frames, copy=True) for video in videos], do_sample_frames=False,
-                          video_metadata=[VideoMetadata(total_num_frames=max(video.indices) + 1, fps=video.fps,
-                                                        frames_indices=list(video.indices)) for video in videos])
+                          video_metadata=metadata)
         with self._processor_lock:
             result = self.processor(**kwargs)
         ids = np.asarray(result["input_ids"])
@@ -426,7 +451,7 @@ class GemmaVisionProcessor:
             raise ValueError("Gemma processed images/frames have no matching prompt placeholders")
         blocks = media_blocks(tokens, self.image_token, self.video_token, [(f.kind, f.soft_tokens) for f in frames])
         return PreparedGemmaVision(tokens, tuple(frames), blocks, tuple(i.content_hash for i in images),
-                                   tuple(v.content_hash for v in videos))
+                                   tuple(_video_identity(v) for v in videos))
 
 
 def _norm(x, weight, eps: float):
@@ -464,6 +489,11 @@ class GemmaCudaVision:
     No global mutable scratch, input mutation, cross-request feature cache or
     hidden CPU model fallback exists here.
     """
+
+    # Responses embedded video normalizes to the same bounded video_url route
+    # as Chat; no URL/file-id or audio capability is implied by this declaration.
+    responses_video = True
+    preserve_video_timestamps = GemmaVisionProcessor.preserve_video_timestamps
 
     def __init__(self, raw: dict, weights: Mapping[str, Any], projector: Any,
                  frontend: GemmaVisionProcessor | None = None):

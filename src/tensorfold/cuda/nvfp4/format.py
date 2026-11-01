@@ -82,8 +82,12 @@ class LinearMetadata:
     def __init__(self, block):
         self.policy = LinearQuantization(block)
         self.reciprocal = block.get("quant_method") == "compressed-tensors"
+        self.awq = block.get("quant_method") == "modelopt" and block.get("quant_algo") == "NVFP4_AWQ"
+        if self.awq and (block.get("pre_quant_scale", True) is not True
+                         or block.get("has_zero_point", False) is not False):
+            raise ValueError("NVFP4_AWQ requires explicit input scaling and symmetric weights")
 
-    def validate(self, name, tensors, *, checkpoint: bool):
+    def validate(self, name, tensors, *, checkpoint: bool, allow_pre_quant_scale: bool = False):
         """Return (stored kind, declared activation bits or None), before payload reads.
 
         ``checkpoint=False`` is an explicit/stored-weight math policy; it may
@@ -98,6 +102,13 @@ class LinearMetadata:
             raise ValueError(f"{name}: linear weight must have a positive two-dimensional shape")
         n, k = shape[0], shape[1] * (2 if kind == "nvfp4" else 1)
         spec = self.policy.resolve(name)
+        pre_scale = tensors.get("pre_quant_scale")
+        awq = self.awq and kind == "nvfp4" and spec is not None
+        if ((awq and not allow_pre_quant_scale)
+                or (pre_scale is not None and not (awq and allow_pre_quant_scale))):
+            raise ValueError(f"{name}: AWQ pre_quant_scale requires an explicit input-transform consumer")
+        if pre_scale is not None and pre_scale != ("BF16", [k]):
+            raise ValueError(f"{name}: AWQ pre_quant_scale must be original BF16[K]")
         if spec is None:
             if kind != "bf16" and (checkpoint or self.policy.excluded(name)):
                 raise ValueError(f"{name}: stored {kind} weights have no matching quantization declaration")
@@ -125,7 +136,8 @@ class LinearMetadata:
             declared = spec.get("weights") or {}
             if (declared.get("dynamic", False) is not False or declared.get("symmetric", True) is not True
                     or declared.get("actorder") is not None or declared.get("zp_dtype") is not None
-                    or spec.get("pre_quant_scale") or spec.get("has_zero_point") or spec.get("lora_rank")):
+                    or (spec.get("pre_quant_scale") and not (awq and allow_pre_quant_scale))
+                    or spec.get("has_zero_point") or spec.get("lora_rank")):
                 raise ValueError(f"{name}: unsupported transformed/asymmetric weight quantization metadata")
         if kind == "nvfp4":
             if k % 16 or tensors.get("weight_scale") != ("F8_E4M3", [n, k // 16]):

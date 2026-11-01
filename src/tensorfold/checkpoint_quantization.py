@@ -64,12 +64,12 @@ def _per_token(group, algo, layers):
 
 def _algorithm(name, group_size, where):
     """Recognized ModelOpt algorithms; unsupported arithmetic remains explicit."""
-    if name in ("NVFP4", "W4A16_NVFP4"):
+    if name in ("NVFP4", "NVFP4_AWQ", "W4A16_NVFP4"):
         gs = 16 if group_size is None else group_size
         if type(gs) is not int or gs <= 0:
             raise ValueError(f"{where}: group_size must be a positive integer")
         weight = {"dynamic": False, "num_bits": 4, "type": "float", "group_size": gs}
-        activation = deepcopy(weight) if name == "NVFP4" else None
+        activation = deepcopy(weight) if name in ("NVFP4", "NVFP4_AWQ") else None
     elif name == "FP8":
         weight = {"dynamic": False, "num_bits": 8, "type": "float"}
         activation = deepcopy(weight)
@@ -89,7 +89,12 @@ def _algorithm(name, group_size, where):
         activation = deepcopy(PER_TOKEN)
     else:
         raise ValueError(f"{where}: unsupported ModelOpt quant_algo {name!r}")
-    return {"weights": weight, "input_activations": activation}
+    result = {"weights": weight, "input_activations": activation}
+    if name == "NVFP4_AWQ":
+        # This is an input transform, not a different packed-weight encoding.
+        # Keep it in the scheme so consumers cannot silently read plain NVFP4.
+        result["pre_quant_scale"] = True
+    return result
 
 
 def _scheme(group, where):
@@ -136,6 +141,9 @@ def _block(value, where):
         result["config_groups"] = {name: _scheme(group, f"{where}.config_groups.{name}")
                                    for name, group in _object(groups, f"{where}.config_groups").items()}
     algo = result.get("quant_algo")
+    if method == "modelopt" and algo == "NVFP4_AWQ" and "pre_quant_scale" in result:
+        if result["pre_quant_scale"] is not True:
+            raise ValueError(f"{where}: NVFP4_AWQ conflicts with pre_quant_scale declaration")
     if method == "modelopt" and algo is not None:
         if not isinstance(algo, str) or not algo:
             raise ValueError(f"{where}: quant_algo must be a nonempty string")
@@ -235,7 +243,8 @@ class _Pattern:
                 end = True
             elif regex and char == ".":
                 if i + 1 < len(text) and text[i + 1] == "*":
-                    self.tokens.append(("regex_star", "")); i += 1
+                    self.tokens.append(("regex_star", ""))
+                    i += 1
                 else:
                     self.tokens.append(("regex_any", ""))
             elif (regex and char in "*+?{}()[]|^$") or (not regex and char in "[]"):
@@ -259,14 +268,17 @@ class _Pattern:
             if j < len(self.tokens) and (self.tokens[j][0] == "any"
                                            or self.tokens[j][0] == "regex_any" and value[i] != "\n"
                                            or self.tokens[j] == ("literal", value[i])):
-                i += 1; j += 1
+                i += 1
+                j += 1
             elif j < len(self.tokens) and self.tokens[j][0] in ("star", "regex_star"):
                 regex_star = self.tokens[j][0] == "regex_star"
-                j += 1; star, restart = j, i
+                j += 1
+                star, restart = j, i
             elif star >= 0:
                 if regex_star and value[restart] == "\n":
                     return False
-                restart += 1; i, j = restart, star
+                restart += 1
+                i, j = restart, star
             else:
                 return False
         while j < len(self.tokens) and self.tokens[j][0] in ("star", "regex_star"):
@@ -332,6 +344,9 @@ class LinearQuantization:
 
     @staticmethod
     def _agrees(group, expected):
+        if ("pre_quant_scale" in expected
+                and group.get("pre_quant_scale", expected["pre_quant_scale"]) is not expected["pre_quant_scale"]):
+            return False
         for field in ("weights", "input_activations"):
             got, want = group.get(field), expected.get(field)
             if (got is None) != (want is None):

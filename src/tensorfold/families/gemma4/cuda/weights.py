@@ -225,7 +225,7 @@ class Gemma4Weights:
     raw_config: dict
     vision: dict | None = None
     projector: Any = None
-    numerics: str = "mlx"
+    numerics: str = "mlx"  # mlx, ct_nvfp4, or mixed BF16/expert-only modelopt_nvfp4
 
     @classmethod
     def load(cls, model_dir: str | Path, device: str = "cuda", *, vision: bool = False) -> "Gemma4Weights":

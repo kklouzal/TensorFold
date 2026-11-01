@@ -34,7 +34,7 @@ def capture_media(operation, app):
     for item in operation.added:
         parts = _parts(item)
         if any(part.get("type") == "input_file" for part in parts) and not video_capable(app):
-            raise RequestError("video input_file requires the admitted SM70 temporal media runtime")
+            raise RequestError("video input_file requires an admitted video-capable runtime")
         with store._lock:
             row = store._connection.execute("SELECT body,execution FROM items WHERE owner=? AND id=?", (principal, item["id"])).fetchone()
             if row is not None:

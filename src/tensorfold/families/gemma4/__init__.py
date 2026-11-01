@@ -31,7 +31,7 @@ def check(model_dir: str | Path) -> None:
     if is_dense_gemma(config):
         E2BConfig.from_checkpoint(config)
         return
-    if quant_method(config) == "compressed-tensors":
+    if quant_method(config) in ("compressed-tensors", "modelopt"):
         check_metadata(config, "cuda")
         return
     text = config.get("text_config") or config
@@ -61,11 +61,20 @@ def check_metadata(config: dict, backend: str) -> None:
     from .cuda.e2b_metadata import E2BConfig, is_dense_gemma
     if is_dense_gemma(config):
         if backend != "cuda":
-            raise ValueError("Gemma E2B/E4B is implemented by the CUDA backend")
+            raise ValueError("Gemma dense E2B/E4B/31B is implemented by the CUDA backend")
         E2BConfig.from_checkpoint(config)
         return
     if backend == "cuda" and quant_method(config) == "modelopt":
-        raise ValueError("Gemma4 ModelOpt serving requires the dense E4B NVFP4 profile")
+        from .cuda.weights import Config
+        from tensorfold.cuda.nvfp4.format import config_block
+        Config.from_dict(config)
+        block = config_block(config)
+        if (not block or block.get('quant_algo') != 'NVFP4' or block.get('kv_cache_scheme') is not None
+                or block.get('has_zero_point', False) is not False
+                or block.get('transform_config') or block.get('sparsity_config') or block.get('pre_quant_scale')
+                or block.get('lora_rank')):
+            raise ValueError('Gemma4 MoE ModelOpt requires untransformed NVFP4 with BF16 KV and native BF16 exceptions')
+        return
     if backend == "cuda" and quant_method(config) is None:
         raise ValueError("Unquantized Gemma4 CUDA support requires the complete dense E2B/E4B architecture")
     if backend == "cuda" and quant_method(config) == "compressed-tensors":
@@ -122,10 +131,10 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
     if options.get("vision_urls"):
         raise ValueError("Gemma4 currently accepts embedded images/video; drop --vision-urls")
     from tensorfold.families import quant_method, read_config
-    if quant_method(read_config(model_dir)) == "compressed-tensors":
+    if quant_method(read_config(model_dir)) in ("compressed-tensors", "modelopt"):
         from tensorfold.cuda import precision
         if precision.mode() != precision.CHECKPOINT:
-            raise ValueError("Gemma4 CT NVFP4 requires --precision checkpoint with native calibrated activation math")
+            raise ValueError("Gemma4 native NVFP4 requires --precision checkpoint with calibrated activation math")
     from .cuda.engine import Gemma4Engine
 
     rows = options.get("draft_rows")
@@ -158,7 +167,8 @@ def cuda_drafter(model_dir):
     raw = read_config(model_dir)
     if is_dense_gemma(raw):
         return "rasyosef/gemma-4-E2B-it-dflash2" if E2BConfig.from_checkpoint(raw).profile == "E2B" else ""
-    return CUDA_DRAFTER
+    from tensorfold.families import quant_method
+    return "" if quant_method(raw) == "modelopt" else CUDA_DRAFTER
 
 
 def engine_settings(model: Any) -> dict[str, Any]:

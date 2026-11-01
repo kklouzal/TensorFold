@@ -1,7 +1,8 @@
 """Packed-only projection boundary for the dense Gemma loader.
 
 Native HF text attention/MLP callers invoke projection modules; they do not read
-projection `.weight`. Embeddings, tied heads, PLE and media remain native BF16.
+projection `.weight`. PLE linears follow their declared schema; embeddings,
+tied heads and media remain native BF16.
 Install only after meta-model plain tensors have been placed. Packed tensors
 and their prepared operator are immutable, borrowed by one exclusive inference
 lane and retired by its model owner AFTER all consumers drain. There is no BF16
@@ -32,6 +33,11 @@ class PackedProjectionSpec:
     reciprocal_globals: bool
     parts: tuple[tuple[str, str, tuple[int, ...]], ...]
 
+    @property
+    def pre_quant_scale(self) -> bool:
+        """Optional explicit AWQ input transform; folded predecessors need no buffer."""
+        return any(suffix == "pre_quant_scale" for suffix, _, _ in self.parts)
+
     @classmethod
     def from_header(cls, name: str, parts: Mapping, metadata: LinearMetadata, *, expected_shape):
         if (not isinstance(name, str) or not name or not isinstance(metadata, LinearMetadata)
@@ -45,7 +51,7 @@ class PackedProjectionSpec:
                     or any(type(size) is not int or size < 1 for size in value[1])):
                 raise ValueError(f"{name}: malformed packed tensor header")
             normalized[suffix] = value[0], list(value[1])
-        kind, bits = metadata.validate(name, normalized, checkpoint=True)
+        kind, bits = metadata.validate(name, normalized, checkpoint=True, allow_pre_quant_scale=True)
         if kind not in ("nvfp4", "fp8", "fp8channel", "fp8block"):
             raise ValueError(f"{name}: unsupported dense packed representation {kind}")
         if metadata.reciprocal and kind != "nvfp4":
@@ -72,6 +78,8 @@ class PackedProjectionSpec:
                 raise ValueError(f"{name}: FP8 block metadata must explicitly declare128x128")
         if bits is not None and kind != "fp8channel":
             allowed.add("input_global_scale" if metadata.reciprocal else "input_scale")
+        if "pre_quant_scale" in normalized:
+            allowed.add("pre_quant_scale")
         if set(normalized) != allowed:
             raise ValueError(f"{name}: packed tensor inventory differs from declared compute/storage")
         return cls(name, (n, k), kind, bits, metadata.reciprocal,
@@ -86,7 +94,7 @@ class PackedProjection(nn.Module):
     Moving/loading a prepared module would desynchronize operator aliases, so
     placement and storage replacement require construction of a fresh owner.
     """
-    def __init__(self, spec: PackedProjectionSpec, operation, prompt_policy):
+    def __init__(self, spec: PackedProjectionSpec, operation, prompt_policy, *, pre_quant_scale=None):
         storage = tensor = None
         try:
             super().__init__()
@@ -96,6 +104,17 @@ class PackedProjection(nn.Module):
                         "fp8channel": Fp8Linear, "fp8block": Fp8BlockLinear}[spec.kind]
             if type(operation) is not expected or (operation.n, operation.k) != spec.shape:
                 raise ValueError("prepared projection operator differs from declared storage/shape")
+            if spec.pre_quant_scale != (pre_quant_scale is not None):
+                raise ValueError("prepared AWQ input-transform presence differs from declared storage")
+            if pre_quant_scale is not None:
+                if (spec.kind != "nvfp4" or not isinstance(pre_quant_scale, torch.Tensor)
+                        or pre_quant_scale.dtype != torch.bfloat16 or tuple(pre_quant_scale.shape) != (operation.k,)
+                        or pre_quant_scale.device != operation.words.device or not pre_quant_scale.is_contiguous()):
+                    raise ValueError("prepared AWQ input scale requires contiguous same-device BF16[K]")
+                # Validate once before this immutable module publishes/uses the
+                # transform. Weight packing does not consume its values.
+                if not bool((torch.isfinite(pre_quant_scale) & (pre_quant_scale > 0)).all()):
+                    raise ValueError("AWQ pre_quant_scale must be finite positive")
             if spec.kind == "nvfp4":
                 if (operation.act is None) != (spec.activation_bits is None):
                     raise ValueError("NVFP4 operator activation math differs from metadata")
@@ -127,6 +146,7 @@ class PackedProjection(nn.Module):
                 if not tensor.is_contiguous():
                     raise ValueError("prepared projection storage must be contiguous")
                 self.register_buffer(name, tensor)
+            self.register_buffer("pre_quant_scale", pre_quant_scale)
             self._operation = operation
             self.train(False)
         except BaseException:
@@ -135,7 +155,7 @@ class PackedProjection(nn.Module):
             self._operation = None
             raise
         finally:
-            operation = storage = tensor = None
+            operation = storage = tensor = pre_quant_scale = None
 
     @property
     def device(self):
@@ -206,7 +226,7 @@ class PackedProjection(nn.Module):
                     act = scalar("input_global_scale" if spec.reciprocal_globals else "input_scale",
                                  spec.reciprocal_globals) if spec.activation_bits is not None else None
                     operation = Fp8Linear.from_checkpoint(weight, scalar("weight_scale"), act=act)
-            return cls(spec, operation, prompt_policy)
+            return cls(spec, operation, prompt_policy, pre_quant_scale=parts.get("pre_quant_scale"))
         finally:
             operation = parts = weight = scales = value = None
 
@@ -220,6 +240,11 @@ class PackedProjection(nn.Module):
         if value.numel() == 0:
             return value.new_empty(shape)
         rows = value.reshape(-1, self.in_features).contiguous()
+        if self.pre_quant_scale is not None:
+            # ModelOpt0.42 TensorQuantizer applies this BEFORE FP4 activation
+            # quantization. BF16 operands require a separately rounded BF16
+            # product; never fold it into FP32 calibration or packed weights.
+            rows = rows * self.pre_quant_scale
         # FP8BlockLinear.prefill follows a separate process precision flag.
         # Preserve this descriptor's W8A16 contract by using its exact lane op.
         output = (self._operation.prefill(rows) if self._prompt_policy.prompt and self.spec.kind != "fp8block"

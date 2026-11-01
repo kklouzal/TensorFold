@@ -1,49 +1,105 @@
 # TensorFold fork
 
+## GB10 standalone Gemma 4 26B-A4B deployment: 2026-11-01
+
+Production on port `8888` runs
+[`llmfan46/gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic-NVFP4`](docs/recipes/gemma-4-26b-modelopt.md)
+revision `a9e81e26ed81f541ec1d7314e72c61237a24566f`, **without a drafter**.
+Only routed experts use native ModelOpt NVFP4 W4A4. Attention, shared MLP,
+routers, tied embeddings/head, vision and KV retain BF16. Native image/video,
+tools, schema output, Responses, streaming and both thinking settings are enabled;
+the model has no audio tower. The server defaults thinking on and retains the
+publisher's sampling defaults: temperature 1, top-k 64, top-p 0.95 and EOS
+`[1, 106, 50]`.
+
+The configured **131,072-token** window preserves the prior production contract.
+An actual 131,056-token prompt plus 16 output tokens completed. Native model
+metadata remains 262,144; the exploratory full-window request exceeded its
+600-second HTTP timeout, so native-window latency/capacity is not qualified by
+that attempt. No model weights were modified or invalid values replaced.
+
+Image `1d53fa83` contains the whole owned application wheel from source UID
+`2f9d0c1e…` and the unchanged allocator adapter. All 760 installed code files
+matched the captured source; runtime foundation dependencies were preserved.
+The capture includes task integration code beyond its Git base: use the source
+UID and [deployment record](deploy/gb10/deployment-gemma4-26b-a4b-20261101.json)
+to identify it. Both weight shards matched publisher SHA256; all FP8 scales,
+FP32 calibration globals and retained BF16 tensors passed finite checks.
+
+The candidate passed 14 API checks, configured-window execution and nonstream
+running-before-output cancellation/counter/idle/recovery checks. Production
+health, all four aliases, consumed chat generation and Responses passed after
+cutover. The old E4B container/image/model/cache remain stopped for rollback.
+Unrelated image/audio/speech services were preserved.
+
+Controlled greedy 64-token exploratory runs observed roughly **33–38 decode
+tokens/s** across short code/prose and 8k/32k inputs with a configured 262k
+window; these are not a production-131k throughput or universal fastest claim.
+An experimental prepared-attention path matched 63 GPU operator cases and all
+144 whole-model request outputs/prefill fingerprints, and shortened long TTFT,
+but decode-first performance remained inconclusive. It stays **disabled**.
+
+Native vision comparisons matched six first/last-frame feature boundaries
+bitwise. A directed motion question correctly identified the moving red square
+and stationary blue circle. The generic caption was inaccurate, and a greedy
+thinking request exhausted its 768-token budget without a final answer; these
+limitations remain recorded rather than being called a general quality pass.
+
 ## CUDA prefill cancellation
 
-Supported CUDA engines now poll client cancellation at prompt chunk boundaries
-for nonstream requests as well as streams. The 248 focused CPU server checks
-passed; actual updated-image prefill disconnect and retirement checks remain
-pending. Already submitted CUDA work still has to retire before release.
+Supported CUDA engines poll cancellation at prompt chunk boundaries even when
+nonstream clients have no progress writer. The 248 focused CPU checks and the
+updated-image accepted/running cancellation and recovery checks passed. The
+black-box check does not independently establish when a GPU chunk first ran or
+instant physical retirement. Submitted CUDA work must still retire safely.
 
-The dense Gemma CUDA adapter now loads the complete BF16 E4B checkpoint,
-including image, video and audio inputs. Managed GB10 source-mounted checks pass
-short native-model logits, cache replay and selected media fixtures; companion
-comparison, installed-image serving and performance selection remain in progress.
-The live service remains the E2B baseline below. The
-[E4B recipe](docs/recipes/gemma-4-e4b.md) records the exact checkpoint, forced
-thinking policy and two distinct assistant candidates.
+## Dense 31B exploratory adapter
 
-`tensorfold quantize plan ./original-bf16-model` remains a local, header-only
-[offline NVFP4 planning command](docs/quantization.md#offline-nvfp4-planning),
-not a public conversion command. It does not change the source model or claim a
-quantized deployment. The separate experimental producer completed a
-1,024-sample E4B Local-Hessian conversion: 258 active text attention/MLP
-projections use calibrated ModelOpt NVFP4 W4A4; embeddings, PLE, tied head,
-modality tensors and KV retain their original precision. All 1,872 retained BF16
-payloads matched the original source byte for byte. The Google companion remains
-BF16; no quantized assistant or FP8-table deployment is claimed.
+The standard AEON NVFP4-AWQ 31B source adapter remains exploratory. Its pinned
+published weights contain 60 nonfinite FP8 scales across 35 layers. The
+publisher's workaround zeros 960 weights; it was not enabled. The attempted GPU
+load rejected invalid scales, and the user selected 26B-A4B instead. See the
+[31B development record](docs/recipes/gemma-4-31b.md); no 31B serving qualification
+or repaired-checkpoint quality claim is made.
 
-Protected GB10 development-source checks passed exact target logits/effective
-probabilities across verification widths 1–8 at the tested short and 4K cache
-boundaries, rollback counts 0–8, native assistant six/seven-step comparisons,
-greedy serial/drafted identity, seeded cache replay and callback stopping.
-These runs used original serving SDK image `2a772b06` with a source-mounted
-worktree based on `88277fb5` **plus uncommitted integration/optimization changes**;
-that commit alone and an installed wheel are not qualified by these results.
-The [producer evidence](deploy/gb10/calibration/EVIDENCE.md) records the exercised
-positions, runtime and limits. Final held-out quality acceptance, full
-131,072-token quantized execution, multimodal input qualification, HTTP/installed
-serving and comparative performance selection remain pending. No performance
-winner is selected, and the live E2B service and serving SDK remain unchanged.
+## Historical GB10 E4B deployment: 2026-11-01
 
-The [containerized producer workflow](deploy/gb10/calibration/README.md) preserves
-the owned ModelOpt fork's NVIDIA upstream provenance. Its earlier CPU and small
-GPU checkpoints remain distinct from this full conversion and the later runtime
-checks. Other [mixed-precision candidates](docs/quantization.md#e4b-mixed-precision-candidates),
-including shared FP8 tables, remain experimental and are not enabled by these
-results.
+The prior service on port `8888` used the mixed-precision E4B DECKARD V2
+checkpoint with Google's unchanged BF16 assistant: three proposals/four
+verification rows, BF16 KV, native 131,072-token context, image/video/audio input
+and checkpoint-fixed thinking. Both client aliases `gemma4-26b` and
+`gemma4-e2b` are preserved. The former E2B container, image and cache are stopped
+and retained for rollback; unrelated image/audio/speech services are unchanged.
+The E4B container is now also stopped and retained as the immediate 26B rollback.
+
+The immutable installed runtime is image `2326daf1`, built as a complete owned
+wheel from source UID `98ce434f…` plus the recorded allocator adapter. The capture
+includes uncommitted integration code; a Git commit alone does not identify the
+runtime. **P01 scalar preparation was archived/reverted before capture and is
+not in production.** The [deployment record](deploy/gb10/deployment-gemma4-e4b-20261101.json)
+and [E4B recipe](docs/recipes/gemma-4-e4b.md) give exact identities and settings.
+
+Installed-image checks exercised 131,056 prompt tokens plus 16 output tokens,
+with actual drafting, while the old E2B was still running. This was a capacity
+exercise, not long-context retrieval quality or throughput evidence. Image,
+audio and video requests executed with serial/drafted reply-hash parity;
+**the video fixture's motion answer was wrong**, so execution parity is not a
+video-quality pass. Schema, tools, Responses, SSE, tokenization, cancellation
+and recovery, thinking-off rejection and post-cutover alias/health checks passed.
+Final quality acceptance, broader workloads and comparative optimization remain
+open. Three proposals are the balanced deployment choice from exploratory
+measurements, not a universal fastest-setting claim. Optimization continues.
+
+`tensorfold quantize plan ./original-bf16-model` remains a header-only
+[planning command](docs/quantization.md#offline-nvfp4-planning), not a public
+conversion command. The separate experimental producer completed the
+1,024-sample E4B conversion used here: 258 active attention/MLP projections use
+calibrated ModelOpt NVFP4 W4A4; embeddings, PLE, tied head, modality tensors and
+KV retain their original precision. All 1,872 retained BF16 payloads matched
+the source byte for byte. No quantized assistant or FP8-table deployment is
+claimed. The [producer evidence](deploy/gb10/calibration/EVIDENCE.md) retains the
+earlier development-source checks and failures; the dated deployment record
+separately describes the subsequent installed runtime.
 
 On E4B, omitted API sampling fields remain greedy because the selected checkpoint
 has no `generation_config.json`. The benchmark's `sampled_hf_defaults` region
@@ -51,7 +107,7 @@ uses explicit conditional library sampling settings; it is not a publisher
 recommendation. The shipped template fixes thinking on, and explicit requests
 to disable it return HTTP 400. See the [API contract](docs/api.md#reasoning).
 
-Gemma 4 E2B and its DFlash2 companion are deployed on GB10 as a correctness
+The retained Gemma 4 E2B/DFlash2 rollback image was deployed as a correctness
 baseline with complete BF16 target weights and KV, a BF16 companion, and eight
 verification rows. The protected installed image passed CPU, native processor
 and HTTP/Harness checks, including image, video and audio input. Native

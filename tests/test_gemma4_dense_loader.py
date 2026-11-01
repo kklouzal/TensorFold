@@ -242,3 +242,199 @@ def test_sidecar_binding_uses_same_finite_inventory_before_topology_and_at_manif
                'checkpoint_path':lambda root,name:type('Path',(),{'exists':lambda self:True,'name':name})()}
     exec(compile(ast.fix_missing_locations(ast.Module(body=[assignment],type_ignores=[])),'<actual-loader-initial-metadata>','exec'),namespace)
     assert len(namespace['initial_metadata'])==5 and len(names)==5
+
+
+def test_publisher_file_hash_binds_derived_tensor_hash_and_actual_consumed_bytes(tmp_path):
+    value, _, inventory = checkpoint(tmp_path)
+    path = tmp_path/'model.safetensors'
+    source = _VerifiedTensors(tmp_path, inventory, None,
+                             file_hashes={path.name: hashlib.sha256(path.read_bytes()).hexdigest()},
+                             file_sizes={path.name: path.stat().st_size})
+    try:
+        assert source.verified_files == {}  # payload work deferred until native topology validation
+        assert torch.equal(source.tensor('weight', 'cpu'), value)
+        assert source.verified_files[path.name] == hashlib.sha256(path.read_bytes()).hexdigest()
+        assert source.consumed['weight'] == hashlib.sha256(value.view(torch.uint8).numpy().tobytes()).hexdigest()
+    finally:
+        source.close()
+
+
+def test_publisher_wrong_full_file_identity_fails_before_any_consumption(tmp_path):
+    _, _, inventory = checkpoint(tmp_path)
+    path = tmp_path/'model.safetensors'
+    source = _VerifiedTensors(tmp_path, inventory, None,
+                             file_hashes={path.name: '0'*64}, file_sizes={path.name: path.stat().st_size})
+    try:
+        with pytest.raises(ValueError, match='whole-file SHA256'):
+            source.tensor('weight', 'cpu')
+        assert not source.consumed and source.device_touched is None
+    finally:
+        source.close()
+
+
+def test_publisher_verified_digest_still_refuses_changed_tensor_upload(tmp_path):
+    _, _, inventory = checkpoint(tmp_path)
+    path = tmp_path/'model.safetensors'
+    source = _VerifiedTensors(tmp_path, inventory, None,
+                             file_hashes={path.name: hashlib.sha256(path.read_bytes()).hexdigest()},
+                             file_sizes={path.name: path.stat().st_size})
+    try:
+        source.hashes = source._publisher_hashes(source.file_hashes, source.file_sizes)
+        data = bytearray(path.read_bytes())
+        data[-1] ^= 1
+        path.write_bytes(data)
+        with pytest.raises(ValueError, match='payload hash mismatch'):
+            source.tensor('weight', 'cpu')
+        assert not source.consumed
+    finally:
+        source.close()
+
+
+def test_manifest_absence_does_not_allow_arbitrary_publisher_config(tmp_path):
+    checkpoint(tmp_path)
+    (tmp_path/'config.json').write_text('{"model_type":"gemma4"}')
+    (tmp_path/'hf_quant_config.json').write_text('{"producer":{"name":"modelopt"}}')
+    with pytest.raises(ValueError, match='authorized publisher metadata pin'):
+        _manifest(tmp_path, headers(tmp_path))
+
+
+def test_real_native_meta_skeleton_initializes_only_small_buffer_values():
+    from transformers import Gemma4Config
+    from tensorfold.families.gemma4.cuda.dense_loader import _native_skeleton
+    text = Gemma4TextConfig(hidden_size=64, intermediate_size=128, num_hidden_layers=4,
+                           num_attention_heads=4, num_key_value_heads=2, head_dim=16,
+                           global_head_dim=32, num_kv_shared_layers=2, sliding_window=8,
+                           hidden_size_per_layer_input=8, vocab_size_per_layer_input=128,
+                           vocab_size=128, max_position_embeddings=128, enable_moe_block=False,
+                           use_double_wide_mlp=False, attention_k_eq_v=False,
+                           layer_types=['sliding_attention','full_attention']*2)
+    raw = Gemma4Config(text_config=text.to_dict(), vision_config=None, audio_config=None).to_dict()
+    candidate = _native_skeleton(raw)
+    assert all(p.device.type == 'meta' for p in candidate.parameters())
+    values = dict(candidate.named_buffers())
+    nonpersistent = {name: value for name, value in values.items() if name not in candidate.state_dict()}
+    assert nonpersistent and all(v.device.type == 'cpu' for v in nonpersistent.values())
+    assert all(torch.isfinite(v).all() for v in nonpersistent.values())
+    assert candidate.model.language_model.embed_tokens.embed_scale.item() == 8.0
+    assert candidate.model.language_model.embed_tokens_per_layer.embed_scale.item() == torch.tensor(8**.5, dtype=torch.bfloat16).item()
+
+
+def test_publisher_hashed_header_cannot_relabel_stale_same_shape_tensor_offsets(tmp_path):
+    path = tmp_path/'model.safetensors'
+    def encode(swapped):
+        entries = {'a': {'dtype':'BF16','shape':[1],'data_offsets':[2,4] if swapped else [0,2]},
+                   'b': {'dtype':'BF16','shape':[1],'data_offsets':[0,2] if swapped else [2,4]}}
+        raw = json.dumps(entries,separators=(',',':')).encode()
+        return struct.pack('<Q',len(raw))+raw+torch.tensor([1.,2.],dtype=torch.bfloat16).view(torch.uint8).numpy().tobytes()
+    trusted = encode(False)
+    stale = encode(True)
+    assert len(trusted) == len(stale)
+    path.write_bytes(stale)
+    source = _VerifiedTensors(tmp_path,headers(tmp_path),None,
+                             file_hashes={path.name:hashlib.sha256(trusted).hexdigest()},
+                             file_sizes={path.name:len(trusted)})
+    try:
+        path.write_bytes(trusted)
+        with pytest.raises(ValueError,match='hashed header differs'):
+            source.tensor('a','cpu')
+        assert not source.consumed and source.device_touched is None
+    finally:
+        source.close()
+
+
+def test_meta_skeleton_media_buffer_branches_match_public_native_cpu_components():
+    from transformers import Gemma4Config, Gemma4AudioConfig, Gemma4VisionConfig
+    from transformers.models.gemma4.modeling_gemma4 import (
+        Gemma4AudioRelPositionalEncoding, Gemma4AudioAttention,
+        Gemma4TextRotaryEmbedding, Gemma4VisionRotaryEmbedding,
+    )
+    from tensorfold.families.gemma4.cuda.dense_loader import _native_skeleton
+    text = Gemma4TextConfig(hidden_size=64,intermediate_size=128,num_hidden_layers=2,
+                           num_attention_heads=4,num_key_value_heads=2,head_dim=16,global_head_dim=32,
+                           num_kv_shared_layers=0,sliding_window=8,hidden_size_per_layer_input=0,
+                           vocab_size_per_layer_input=128,vocab_size=128,max_position_embeddings=128,
+                           enable_moe_block=False,use_double_wide_mlp=False,attention_k_eq_v=False,
+                           layer_types=['sliding_attention','full_attention'])
+    vision = Gemma4VisionConfig(hidden_size=64,intermediate_size=128,num_hidden_layers=1,
+                               num_attention_heads=4,num_key_value_heads=4,head_dim=16,global_head_dim=16,
+                               position_embedding_size=64)
+    audio = Gemma4AudioConfig(hidden_size=64,num_hidden_layers=1,num_attention_heads=4,
+                             subsampling_conv_channels=[4,4],output_proj_dims=64)
+    raw = Gemma4Config(text_config=text.to_dict(),vision_config=vision.to_dict(),audio_config=audio.to_dict()).to_dict()
+    previous = torch.get_default_dtype()
+    candidate = _native_skeleton(raw)
+    assert torch.get_default_dtype() == previous
+    assert all(p.device.type == 'meta' for p in candidate.parameters())
+    seen = set()
+    try:
+        torch.set_default_dtype(torch.bfloat16)
+        with torch.device('cpu'), no_init_weights():
+            for module in candidate.modules():
+                if isinstance(module, Gemma4VisionRotaryEmbedding):
+                    reference = Gemma4VisionRotaryEmbedding(module.config,device='cpu')
+                    seen.add('vision')
+                elif isinstance(module, Gemma4TextRotaryEmbedding):
+                    reference = Gemma4TextRotaryEmbedding(module.config,device='cpu')
+                    seen.add('text')
+                elif isinstance(module, Gemma4AudioRelPositionalEncoding):
+                    reference = Gemma4AudioRelPositionalEncoding(candidate.config.audio_config)
+                    seen.add('audio-relative')
+                elif isinstance(module, Gemma4AudioAttention):
+                    # Same tiny public component constructor, not a whole CPU
+                    # model or a copied sine/softcap/reference algorithm.
+                    reference = Gemma4AudioAttention(candidate.config.audio_config,layer_idx=0)
+                    seen.add('audio-softcap')
+                else:
+                    continue
+                for name in module._non_persistent_buffers_set:
+                    actual, expected = module._buffers[name], reference._buffers[name]
+                    assert actual.device.type == 'cpu' and actual.dtype == expected.dtype
+                    assert torch.equal(actual,expected), (type(module).__name__,name)
+    finally:
+        torch.set_default_dtype(previous)
+    assert seen == {'text','vision','audio-relative','audio-softcap'}
+
+
+def test_owned_manifest_extra_publisher_fields_cannot_override_tensor_sha(tmp_path):
+    from tensorfold.families.gemma4.cuda.dense_loader import _verified_source
+    _, _, inventory = checkpoint(tmp_path)
+    path = tmp_path/'model.safetensors'
+    manifest = {'source_kind':'publisher-pinned','tensor_sha256':{'weight':'0'*64},
+                'file_sha256':{path.name:hashlib.sha256(path.read_bytes()).hexdigest()},
+                'file_sizes':{path.name:path.stat().st_size}}
+    source = _verified_source(tmp_path,inventory,manifest,'actual-owned-manifest-sha')
+    try:
+        with pytest.raises(ValueError,match='payload hash mismatch'):
+            source.tensor('weight','cpu')
+        assert not source.consumed and source.verified_files == {}
+    finally:
+        source.close()
+
+
+def test_owned_manifest_appearing_after_initial_absence_cannot_bypass_publisher_pins(tmp_path,monkeypatch):
+    from pathlib import Path
+    from tensorfold.families.gemma4.cuda import dense_loader as loader
+    raw = json.loads((Path(__file__).parent/'fixtures/gemma4_e4b_quant_plan_config.json').read_text())
+    raw['quantization_config'] = {'quant_method':'modelopt','quant_algo':'NVFP4','group_size':16}
+    _, _, inventory = checkpoint(tmp_path)
+    (tmp_path/'config.json').write_text(json.dumps(raw))
+    (tmp_path/'hf_quant_config.json').write_text('{}')
+    model_file = tmp_path/'model.safetensors'
+    owned = {'schema_version':1,'tensor_sha256':{'weight':'0'*64},
+             'metadata_sha256':{name:hashlib.sha256((tmp_path/name).read_bytes()).hexdigest()
+                                for name in ('config.json','hf_quant_config.json')},
+             'unused_shared_kv_policy':'omitted','source_kind':'publisher-pinned',
+             'file_sha256':{model_file.name:hashlib.sha256(model_file.read_bytes()).hexdigest()},
+             'file_sizes':{model_file.name:model_file.stat().st_size}}
+    def observe_headers(_):
+        # This occurs after the loader snapshots absent MANIFEST authority.
+        (tmp_path/loader.MANIFEST).write_text(json.dumps(owned))
+        return inventory
+    monkeypatch.setattr(loader,'read_config',lambda _:raw)
+    monkeypatch.setattr(loader,'headers',observe_headers)
+    status = loader.DenseLoadStatus()
+    assert not (tmp_path/loader.MANIFEST).exists()
+    with pytest.raises(ValueError,match='authorized publisher metadata pin'):
+        loader.load_dense_quantized(tmp_path,device='cuda:0',prompt_policy=None,status=status)
+    assert (tmp_path/loader.MANIFEST).exists()
+    assert status.safe_to_release and status.model is status.source is None

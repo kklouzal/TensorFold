@@ -51,7 +51,7 @@ def expert_workspace(cfg, rows: int) -> int:
 
 
 def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=False,
-          max_rows=16, streams=1, keep=1, drafter_bits=16):
+          max_rows=16, streams=1, keep=1, drafter_bits=16, prepare_global_prompt=False):
     import torch
     from tensorfold.checkpoint_metadata import read_config
     from tensorfold.families import quant_method
@@ -60,10 +60,17 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
                         widest_forward)
     from .weights import Config, tensor_contract, validate_tensor_metadata
 
+    if type(prepare_global_prompt) is not bool:
+        raise ValueError("prepare_global_prompt must be a bool")
     raw = read_config(model_dir)
     entries = headers(model_dir)
     media_geometry = None
-    native = quant_method(raw) == "compressed-tensors"
+    method = quant_method(raw)
+    native = method == "compressed-tensors"
+    modelopt = method == "modelopt"
+    bounds = None
+    if prepare_global_prompt and not modelopt:
+        raise ValueError("prepared prompt KV is a ModelOpt-only investigation candidate")
     if native:
         from .nvfp4_weights import CT_PARTS, ct_tensor_contract, validate_headers
         cfg = validate_headers(raw, entries, vision=vision)
@@ -72,6 +79,13 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
         names.update(name + '.' + suffix for name in matrices for suffix in CT_PARTS)
         if vision:
             names.update(name for name in entries if name.startswith(('model.vision_tower.', 'model.embed_vision.')))
+    elif modelopt:
+        from .modelopt_weights import validate_headers, storage_bounds
+        cfg = validate_headers(raw, entries, vision=vision)
+        bounds = storage_bounds(cfg, entries, vision=vision)
+        names = set()  # Mixed native/prepared storage is authoritative in bounds.
+        if drafter_dir is not None:
+            raise ValueError("Gemma4 ModelOpt MoE currently requires standalone --no-drafts")
     else:
         cfg = Config.from_dict(raw)
         where = {name: (None, None, None, info['dtype'], info['shape']) for name, info in entries.items()}
@@ -106,6 +120,16 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
                 padding += (-(rows) % 128) * (group_bytes // rows)
     resident = sum(sizes.values()) + padding
     staging = 3 * max(sizes.values(), default=0)
+    host_staging = staging
+    if bounds is not None:
+        from tensorfold.cuda.capacity import admit_host_commitment, unified
+        resident = bounds["resident"]
+        host_staging = bounds["host_staging"]
+        staging = bounds["device_staging"]
+        if unified(torch):
+            staging += host_staging
+        # Check live host allowance without charging the shared UMA pool twice.
+        admit_host_commitment(host_staging)
 
     draft = None
     if drafter_dir is not None:
@@ -152,7 +176,7 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
         scratch += rows * cfg.heads * sliding_slots(cfg.window, rows, group, longest) * (cfg.head_dim + 2) * 4
         chunks = -(-min(slots, cfg.max_position) // GLOBAL_CHUNK)
         scratch += (SEQUENTIAL_ROWS - 1) * cfg.heads * chunks * (cfg.global_head_dim + 2) * 4
-        if native:
+        if native or modelopt:
             scratch += expert_workspace(cfg, rows)
         from .weights import TAP_LAYERS
         scratch += graph_workspace(cfg, max_rows, slots, len([i for i in TAP_LAYERS if i < cfg.layers]))
@@ -170,10 +194,15 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
             # DraftState K and V (the engine's proposal block is at most max_rows).
             companion = sum(companion_rings(draft.layer_types, draft.sliding_window, max_rows, rows,
                                             min(slots, cfg.max_position))) * draft.kv_heads * draft.head_dim * 4
-        return (streams + keep) * (target + companion) + streams * workspace(slots)
+        # One fixed target scratch pair: not multiplied by prefix owners.
+        prepared = (slots * cfg.global_kv_heads * cfg.global_head_dim * 4
+                    if prepare_global_prompt else 0)
+        return (streams + keep) * (target + companion) + streams * workspace(slots) + prepared
 
+    if bounds is None:
+        host_staging = staging
     return common(model_dir, context, context_explicit, torch, Geometry(geometry, 0),
                   lambda name, info: (0, 0),
-                  weight_estimator=lambda _: (Weights(resident, staging), staging),
+                  weight_estimator=lambda _: (Weights(resident, staging), host_staging),
                   device_workspace_bytes=sampling["device_bytes"] + proposals["device_bytes"],
                   host_workspace_bytes=sampling["host_bytes"] + proposals["host_bytes"])

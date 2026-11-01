@@ -16,13 +16,20 @@ from torch import nn
 class E2BRowPolicy:
     """One target lane exclusively sets this mode for the whole model forward."""
 
-    def __init__(self, projection="native", *, fuse_prompt_norms=False):
+    def __init__(self, projection="native", *, fuse_prompt_norms=False, prompt_sdpa_gqa=False,
+                 attention_query_rows=2):
         if projection not in ("native", "padded", "route"):
             raise ValueError("Gemma E2B canonical projection must be native, padded or fixed-route")
         self.projection = projection
         if type(fuse_prompt_norms) is not bool:
             raise ValueError("Gemma E2B prompt norm fusion must be boolean")
         self.fuse_prompt_norms = fuse_prompt_norms
+        if type(prompt_sdpa_gqa) is not bool:
+            raise ValueError("Gemma prompt SDPA GQA selection must be boolean")
+        self.prompt_sdpa_gqa = prompt_sdpa_gqa
+        if type(attention_query_rows) is not int or attention_query_rows not in (2, 4):
+            raise ValueError("Gemma canonical attention query packing must be2 or4")
+        self.attention_query_rows = attention_query_rows
         self.prompt = True
         self.position = 0
         self.reference_depth = 0
@@ -31,7 +38,7 @@ class E2BRowPolicy:
     def native_reference(self):
         """Caller owns the drained exclusive lane; raw HF forwards only.
 
-        Keep fusion configured but override it explicitly. Nesting restores
+        Keep prompt candidates configured but override them explicitly. Nesting restores
         the immediate enclosing reference mode, even after a failed oracle.
         """
         previous = self.prompt, self.position

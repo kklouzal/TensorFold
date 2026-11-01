@@ -51,10 +51,8 @@ def prepare_images(frontend, messages, render, *, context_limit=None, limits: Im
         raise RequestError('image input requires a supported vision checkpoint served with --vision')
     allow_urls = bool(getattr(frontend, 'allow_urls', False))
     videos = bool(getattr(frontend, 'videos', False))       # a frontend that encodes video frames too
-    if bool(getattr(frontend, 'audio', False)):
-        prepare = getattr(frontend, 'prepare_messages', None)
-        if not callable(prepare):
-            raise RuntimeError('audio frontend must own bounded multimodal message preparation')
+    prepare = getattr(frontend, 'prepare_messages', None)
+    if callable(prepare):
         slot = image_slot()
         if not MANY_IMAGES.acquire(timeout=IMAGE_WAIT_S):
             slot.release()
@@ -68,6 +66,8 @@ def prepare_images(frontend, messages, render, *, context_limit=None, limits: Im
             MANY_IMAGES.release()
             slot.release()
         return RenderedPrompt(list(prepared.token_ids), vision=prepared)
+    if bool(getattr(frontend, 'audio', False)):
+        raise RuntimeError('audio frontend must own bounded multimodal message preparation')
     # The SM70 admitted source frontend must branch before the existing eager
     # decode path. No envelope or resource defaults are inferred from flags.
     envelope = getattr(frontend, 'media_envelope', None)
@@ -121,7 +121,9 @@ def prepare_images(frontend, messages, render, *, context_limit=None, limits: Im
         if clips:
             from tensorfold.vision.videos import load_videos
 
-            budget["videos"] = load_videos(clips, frontend.video_size, allow_urls=allow_urls)
+            video_options = ({"preserve_timestamps": True}
+                             if bool(getattr(frontend, 'preserve_video_timestamps', False)) else {})
+            budget["videos"] = load_videos(clips, frontend.video_size, allow_urls=allow_urls, **video_options)
         prepared = frontend.prepare(render(template), images, max_prompt_tokens=context_limit, **budget)
     except (ImageInputError, ValueError, ImportError) as exc:
         raise refusal(str(exc)) from exc                # an image prompt past the window: context_length_exceeded

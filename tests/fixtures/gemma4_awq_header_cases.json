@@ -1,0 +1,407 @@
+{
+  "scope": "Pinned actual AEON standard AWQ metadata/header excerpts only; no payload or trusted numerical values",
+  "cases": [
+    {
+      "role": "main31b",
+      "source_model_revision": "c9f11f3cbeb8efc93d5afcb5dc1b33abee1f09ba",
+      "source_header_sha256": "e26a56b763d6b15459214c0406d114992bddc4d99bcb939df5edb5c61601b41b",
+      "module": "model.language_model.layers.0.mlp.down_proj",
+      "shape": [
+        5376,
+        21504
+      ],
+      "sidecar": {
+        "producer": {
+          "name": "modelopt",
+          "version": "0.42.0"
+        },
+        "quantization": {
+          "quant_algo": "NVFP4_AWQ",
+          "kv_cache_quant_algo": null,
+          "group_size": 16,
+          "has_zero_point": false,
+          "pre_quant_scale": true,
+          "exclude_modules": [
+            "lm_head",
+            "model.embed_vision*",
+            "model.vision_tower*"
+          ]
+        }
+      },
+      "parts": {
+        "input_scale": [
+          "F32",
+          []
+        ],
+        "weight_scale_2": [
+          "F32",
+          []
+        ],
+        "pre_quant_scale": [
+          "BF16",
+          [
+            21504
+          ]
+        ],
+        "weight_scale": [
+          "F8_E4M3",
+          [
+            5376,
+            1344
+          ]
+        ],
+        "weight": [
+          "U8",
+          [
+            5376,
+            10752
+          ]
+        ]
+      }
+    },
+    {
+      "role": "main31b",
+      "source_model_revision": "c9f11f3cbeb8efc93d5afcb5dc1b33abee1f09ba",
+      "source_header_sha256": "e26a56b763d6b15459214c0406d114992bddc4d99bcb939df5edb5c61601b41b",
+      "module": "model.language_model.layers.0.self_attn.o_proj",
+      "shape": [
+        5376,
+        8192
+      ],
+      "sidecar": {
+        "producer": {
+          "name": "modelopt",
+          "version": "0.42.0"
+        },
+        "quantization": {
+          "quant_algo": "NVFP4_AWQ",
+          "kv_cache_quant_algo": null,
+          "group_size": 16,
+          "has_zero_point": false,
+          "pre_quant_scale": true,
+          "exclude_modules": [
+            "lm_head",
+            "model.embed_vision*",
+            "model.vision_tower*"
+          ]
+        }
+      },
+      "parts": {
+        "input_scale": [
+          "F32",
+          []
+        ],
+        "weight_scale_2": [
+          "F32",
+          []
+        ],
+        "pre_quant_scale": [
+          "BF16",
+          [
+            8192
+          ]
+        ],
+        "weight_scale": [
+          "F8_E4M3",
+          [
+            5376,
+            512
+          ]
+        ],
+        "weight": [
+          "U8",
+          [
+            5376,
+            4096
+          ]
+        ]
+      }
+    },
+    {
+      "role": "main31b",
+      "source_model_revision": "c9f11f3cbeb8efc93d5afcb5dc1b33abee1f09ba",
+      "source_header_sha256": "e26a56b763d6b15459214c0406d114992bddc4d99bcb939df5edb5c61601b41b",
+      "module": "model.language_model.layers.0.mlp.gate_proj",
+      "shape": [
+        21504,
+        5376
+      ],
+      "sidecar": {
+        "producer": {
+          "name": "modelopt",
+          "version": "0.42.0"
+        },
+        "quantization": {
+          "quant_algo": "NVFP4_AWQ",
+          "kv_cache_quant_algo": null,
+          "group_size": 16,
+          "has_zero_point": false,
+          "pre_quant_scale": true,
+          "exclude_modules": [
+            "lm_head",
+            "model.embed_vision*",
+            "model.vision_tower*"
+          ]
+        }
+      },
+      "parts": {
+        "input_scale": [
+          "F32",
+          []
+        ],
+        "weight_scale_2": [
+          "F32",
+          []
+        ],
+        "weight_scale": [
+          "F8_E4M3",
+          [
+            21504,
+            336
+          ]
+        ],
+        "weight": [
+          "U8",
+          [
+            21504,
+            2688
+          ]
+        ]
+      }
+    },
+    {
+      "role": "companion-e4b",
+      "source_model_revision": "cd6d303e2de35fe6b8c3701191dba25d96aae26a",
+      "source_header_sha256": "4c209bda6ce149f796ba577a7e5f7bc043998e8b6fd056420aac5b6584272235",
+      "module": "model.language_model.layers.0.per_layer_input_gate",
+      "shape": [
+        256,
+        2560
+      ],
+      "sidecar": {
+        "producer": {
+          "name": "modelopt",
+          "version": "0.42.0"
+        },
+        "quantization": {
+          "quant_algo": "NVFP4_AWQ",
+          "kv_cache_quant_algo": null,
+          "group_size": 16,
+          "has_zero_point": false,
+          "pre_quant_scale": true,
+          "exclude_modules": [
+            "lm_head",
+            "model.audio_tower*",
+            "model.embed_audio*",
+            "model.embed_vision*",
+            "model.vision_tower*"
+          ]
+        }
+      },
+      "parts": {
+        "input_scale": [
+          "F32",
+          []
+        ],
+        "weight_scale_2": [
+          "F32",
+          []
+        ],
+        "pre_quant_scale": [
+          "BF16",
+          [
+            2560
+          ]
+        ],
+        "weight_scale": [
+          "F8_E4M3",
+          [
+            256,
+            160
+          ]
+        ],
+        "weight": [
+          "U8",
+          [
+            256,
+            1280
+          ]
+        ]
+      }
+    },
+    {
+      "role": "companion-e4b",
+      "source_model_revision": "cd6d303e2de35fe6b8c3701191dba25d96aae26a",
+      "source_header_sha256": "4c209bda6ce149f796ba577a7e5f7bc043998e8b6fd056420aac5b6584272235",
+      "module": "model.language_model.layers.0.per_layer_projection",
+      "shape": [
+        2560,
+        256
+      ],
+      "sidecar": {
+        "producer": {
+          "name": "modelopt",
+          "version": "0.42.0"
+        },
+        "quantization": {
+          "quant_algo": "NVFP4_AWQ",
+          "kv_cache_quant_algo": null,
+          "group_size": 16,
+          "has_zero_point": false,
+          "pre_quant_scale": true,
+          "exclude_modules": [
+            "lm_head",
+            "model.audio_tower*",
+            "model.embed_audio*",
+            "model.embed_vision*",
+            "model.vision_tower*"
+          ]
+        }
+      },
+      "parts": {
+        "input_scale": [
+          "F32",
+          []
+        ],
+        "weight_scale_2": [
+          "F32",
+          []
+        ],
+        "pre_quant_scale": [
+          "BF16",
+          [
+            256
+          ]
+        ],
+        "weight_scale": [
+          "F8_E4M3",
+          [
+            2560,
+            16
+          ]
+        ],
+        "weight": [
+          "U8",
+          [
+            2560,
+            128
+          ]
+        ]
+      }
+    },
+    {
+      "role": "companion-e4b",
+      "source_model_revision": "cd6d303e2de35fe6b8c3701191dba25d96aae26a",
+      "source_header_sha256": "4c209bda6ce149f796ba577a7e5f7bc043998e8b6fd056420aac5b6584272235",
+      "module": "model.language_model.per_layer_model_projection",
+      "shape": [
+        10752,
+        2560
+      ],
+      "sidecar": {
+        "producer": {
+          "name": "modelopt",
+          "version": "0.42.0"
+        },
+        "quantization": {
+          "quant_algo": "NVFP4_AWQ",
+          "kv_cache_quant_algo": null,
+          "group_size": 16,
+          "has_zero_point": false,
+          "pre_quant_scale": true,
+          "exclude_modules": [
+            "lm_head",
+            "model.audio_tower*",
+            "model.embed_audio*",
+            "model.embed_vision*",
+            "model.vision_tower*"
+          ]
+        }
+      },
+      "parts": {
+        "input_scale": [
+          "F32",
+          []
+        ],
+        "weight_scale_2": [
+          "F32",
+          []
+        ],
+        "pre_quant_scale": [
+          "BF16",
+          [
+            2560
+          ]
+        ],
+        "weight_scale": [
+          "F8_E4M3",
+          [
+            10752,
+            160
+          ]
+        ],
+        "weight": [
+          "U8",
+          [
+            10752,
+            1280
+          ]
+        ]
+      }
+    },
+    {
+      "role": "companion-e4b",
+      "source_model_revision": "cd6d303e2de35fe6b8c3701191dba25d96aae26a",
+      "source_header_sha256": "4c209bda6ce149f796ba577a7e5f7bc043998e8b6fd056420aac5b6584272235",
+      "module": "model.language_model.layers.0.mlp.gate_proj",
+      "shape": [
+        10240,
+        2560
+      ],
+      "sidecar": {
+        "producer": {
+          "name": "modelopt",
+          "version": "0.42.0"
+        },
+        "quantization": {
+          "quant_algo": "NVFP4_AWQ",
+          "kv_cache_quant_algo": null,
+          "group_size": 16,
+          "has_zero_point": false,
+          "pre_quant_scale": true,
+          "exclude_modules": [
+            "lm_head",
+            "model.audio_tower*",
+            "model.embed_audio*",
+            "model.embed_vision*",
+            "model.vision_tower*"
+          ]
+        }
+      },
+      "parts": {
+        "input_scale": [
+          "F32",
+          []
+        ],
+        "weight_scale_2": [
+          "F32",
+          []
+        ],
+        "weight_scale": [
+          "F8_E4M3",
+          [
+            10240,
+            160
+          ]
+        ],
+        "weight": [
+          "U8",
+          [
+            10240,
+            1280
+          ]
+        ]
+      }
+    }
+  ]
+}

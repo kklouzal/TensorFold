@@ -34,7 +34,8 @@ else:
 
 EVICTION_TOKENS = [1000]  # Gemma BOS=2; a raw non-BOS entry cannot share even the chat turn checkpoint.
 METRICS = {
-    "prefill_tps": "higher", "decode_tps": "higher", "ttft_client_s": "lower",
+    "prefill_tps": "higher", "decode_tps": "higher", "committed_decode_tps": "higher",
+    "peak_vram_bytes": "lower", "ttft_client_s": "lower",
     "complete_body_tps": "higher", "complete_body_s": "lower",
 }
 IDENTITIES = ("image_id", "source_revision", "model_revision", "launch", "instance_id")
@@ -163,7 +164,7 @@ def prepare(url, model, snapshot, corpus_path, out, *, depths, samples, cycles, 
             "fresh": "ordinary raw non-BOS one-token eviction then actual cached==0 required",
             "warm": "immediate same-body repeat; observed cached>0 required",
             "confidence_unit": "independent start positions aggregated within paired ABBA cycle",
-            "selection": "lexicographic complete_body_s, ttft_client_s, decode_tps per fixed-output region; no regional losses offset",
+            "selection": "user decode-first lexicographic committed_decode_tps, ttft_client_s, peak_vram_bytes; remaining metrics fourth; no regional losses offset",
             "quality": "cold/warm repeat token identity per seeded request; cross-configuration quality gated separately",
         },
     }
@@ -202,6 +203,12 @@ def measured_record(raw, expected_prompt, maximum, phase):
     wall = raw["done"] - raw["sent"]
     if wall <= 0 or raw["first"] is None:
         raise ValueError("response has no valid client emission/complete timing")
+    decode_wall = raw["done"] - raw["first"]
+    if n <= 1 or decode_wall <= 0:
+        raise ValueError("committed decode timing requires multiple tokens and positive post-first duration")
+    peak = stats.get("peak_vram_bytes")
+    if peak is not None and (type(peak) is not int or peak <= 0):
+        raise ValueError("optional peak_vram_bytes must be positive integer bytes")
     return {
         "token_ids": ids, "usage": usage, "stats": stats,
         "content": raw["content"], "reasoning": raw["reasoning"], "finish": raw["finish"],
@@ -209,9 +216,10 @@ def measured_record(raw, expected_prompt, maximum, phase):
         "client": {k: raw[k] - raw["sent"] if raw[k] is not None else None
                    for k in ("headers", "first", "last", "done")},
         "metrics": {"prefill_tps": (prompt - cached) / prefill if prompt > cached else None,
-                    "decode_tps": stats["decode_tps"], "ttft_client_s": raw["first"] - raw["sent"],
+                    "decode_tps": stats["decode_tps"], "committed_decode_tps": (n - 1) / decode_wall,
+                    "peak_vram_bytes": peak, "ttft_client_s": raw["first"] - raw["sent"],
                     "complete_body_tps": n / wall, "complete_body_s": wall},
-        "timing_scope": "engine timings plus client SSE-arrival/complete-body timings; chunks can batch tokens",
+        "timing_scope": "committed_decode_tps=(N-1)/(complete-body minus first-visible-SSE); first-visible may follow special-token commits; corroborate engine decode_tps; not GPU emission timing",
     }
 
 
@@ -362,7 +370,11 @@ def analyze(manifest_path, paths):
     return {"schema": 1, "complete": not issues and not missing, "issues": issues,
             "variant_identities": variant_identities,
             "missing_start_positions": missing, "cells": result,
-            "objective_order": ["complete_body_s", "ttft_client_s", "decode_tps"],
+            "objective_order": ["committed_decode_tps", "ttft_client_s", "peak_vram_bytes"],
+            "objective_coverage_missing": {key: [metric for metric in ("committed_decode_tps", "ttft_client_s", "peak_vram_bytes")
+                                                  if metric not in metrics] for key, metrics in result.items()
+                                           if any(metric not in metrics for metric in ("committed_decode_tps", "ttft_client_s", "peak_vram_bytes"))},
+            "objective_provenance": "new user decode-first ordering; historical measurements retain original declared objective; missing VRAM prevents memory tie-break",
             "regional_regressions": regressions,
             "interpretation": "Paired cycle ratios only; uncertainty is not equivalence or a global-fastest claim."}
 

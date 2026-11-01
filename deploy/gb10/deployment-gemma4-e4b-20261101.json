@@ -1,0 +1,124 @@
+{
+  "schema": 1,
+  "date": "2026-11-01",
+  "status": "production-cutover-verified",
+  "service": {
+    "container": "gemma4-e4b-tf",
+    "port": 8888,
+    "name": "gemma4-e4b",
+    "aliases": [
+      "gemma4-26b",
+      "gemma4-e2b"
+    ],
+    "restart": "unless-stopped",
+    "request_lanes": 1
+  },
+  "artifacts": {
+    "runtime_image": "sha256:2326daf164b0cf0598dcbdde987f07bd499dc1206cec61d0568aa3a76bb78927",
+    "whole-wheel_application_image": "sha256:1f4207ed4ffff5440727f90bee9e37f981c847aa39437652956fec3d36fdb491",
+    "protected_sdk_base_image": "sha256:2a772b064f593ae9a4436562c4c26ceaa60cec55709992cbf966b74b16bc649c"
+  },
+  "source": {
+    "uid": "98ce434fffe1ea3e5497a17399133e8c10f561e1733e86ccdf0622585ae9be18",
+    "revision_label": "d0ad6c24+tree.98ce434fffe1ea3e",
+    "contains_uncommitted_integration": true,
+    "commit_alone_reproduces_runtime": false,
+    "application_source_overlay": false,
+    "p01_scalar_preparation_included": false,
+    "p01_disposition": "archived/reverted before deployment capture"
+  },
+  "allocator": {
+    "adapter_sha256": "0a8bd490d7d27841b2929f19702c592d15f7613235c67a6afa62223b703613a1",
+    "adapter_baked_into_image": true,
+    "protected_cuda_entrypoint_preserved": true,
+    "torch_cuda_ceiling_bytes": 34359738368,
+    "cpu_cgroup_bytes": 21474836480,
+    "additional_cpu_swap_bytes": 0,
+    "host_reserve_bytes": 17179869184,
+    "admission": "normal application admission plus actual allocation ceiling; no blanket 76GiB free-memory requirement"
+  },
+  "models": {
+    "target": {
+      "source_repository": "DavidAU/gemma-4-E4B-it-The-DECKARD-V2-Strong-HERETIC-UNCENSORED-Thinking",
+      "source_revision": "2c91d3253385fe92a898799a93b94ce806b8c840",
+      "canonical_path": "/models/local/gemma4-e4b-deckard-v2-strong-nvfp4-nlh1024-v3",
+      "container_path": "/models/e4b",
+      "read_only": true,
+      "manifest_sha256": "7ba166232ab502830beed25fccd255c4975aa6dc767c20a792367dde20effdb6",
+      "calibration_samples": 1024,
+      "active_nvfp4_w4a4_projections": 258,
+      "retained_bf16_tensors_raw_preserved": 1872,
+      "promotion": "atomic same-filesystem rename; file inodes, sizes and bytes preserved",
+      "original_bf16_source_preserved": true
+    },
+    "companion": {
+      "repository": "google/gemma-4-E4B-it-assistant",
+      "revision": "8d0031ea8c2109e2b1e86bb9368a4539b537f80a",
+      "precision": "BF16",
+      "proposals": 3,
+      "verification_rows": 4
+    }
+  },
+  "configuration": {
+    "context_tokens": 131072,
+    "kv_dtype": "BF16",
+    "vision": true,
+    "inputs": [
+      "text",
+      "image",
+      "video_frames",
+      "audio"
+    ],
+    "output": "text",
+    "thinking": "checkpoint-fixed enabled",
+    "thinking_budget": 0
+  },
+  "installed_capacity_validation": {
+    "prompt_tokens": 131056,
+    "completion_tokens": 16,
+    "total_tokens": 131072,
+    "drafted": 13,
+    "accepted": 10,
+    "old_e2b_running_during_probe": true,
+    "minimum_observed_host_available_bytes": 26937704448,
+    "ignore_eos": true,
+    "scope": "capacity exercise only; not retrieval quality or throughput"
+  },
+  "installed_api_validation": {
+    "schema_answer_4": "passed",
+    "tools": "passed",
+    "responses": "passed",
+    "sse": "passed",
+    "tokenize": "passed",
+    "cancel_and_recovery": "passed",
+    "thinking_disabled_http_status": 400,
+    "media_execution": {
+      "image": "passed",
+      "audio": "passed",
+      "video": "passed"
+    },
+    "media_serial_draft_reply_hash_parity": {
+      "image": true,
+      "audio": true,
+      "video": true
+    },
+    "video_motion_answer_correct": false,
+    "production_alias_answer_4": "passed",
+    "production_health": "passed"
+  },
+  "rollback": {
+    "container": "gemma4-e2b-tf",
+    "preserved_stopped": true,
+    "image_and_cache_retained": true,
+    "launch_configuration_retained": true
+  },
+  "unrelated_services_changed": false,
+  "remaining_work": [
+    "Continue decode/prefill/resource optimization; no universal fastest setting claimed",
+    "Broader held-out quantization and multimodal quality acceptance",
+    "Known video fixture motion error despite serial/drafted parity",
+    "Broader long-context quality and workload coverage beyond this capacity exercise"
+  ],
+  "performance_scope": "depth3 is the balanced deployment choice from exploratory comparisons; no global TPS claim",
+  "public_quantization_cli": "planning only; this deployment used a separate experimental producer"
+}

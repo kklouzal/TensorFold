@@ -17,13 +17,14 @@ def test_owned_attention_preserves_native_glue_and_loaded_parameter_identity(mon
                           sliding_window=8, attention_k_eq_v=False, attention_dropout=0)
     cfg._attn_implementation = "eager"
     native = Gemma4TextAttention(cfg, 0).to(torch.bfloat16).eval()
-    owned = e2b_attention.E2BTextAttention(native, SimpleNamespace(prompt=False, position=0))
+    owned = e2b_attention.E2BTextAttention(native, SimpleNamespace(prompt=False, position=0, attention_query_rows=2))
     assert owned.q_proj.weight is native.q_proj.weight
     assert owned.state_dict().keys() == native.state_dict().keys()
     assert owned.training is native.training
     calls = []
 
-    def reference(query, key, value, mask, *, start, window):
+    def reference(query, key, value, mask, *, start, window, query_rows):
+        assert query_rows == 2
         calls.append((start, window))
         return eager_attention_forward(native, query, key, value, mask, scaling=1.0)[0]
 

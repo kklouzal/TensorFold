@@ -127,7 +127,8 @@ def test_e4b_42_layer_kv2_owned_glue_matches_native_hf_and_rolls_back_shared_cac
     policy = E2BRowPolicy()
     e2b_attention.install_attention(owned.model, policy)
 
-    def independent_core(query, key, value, mask, *, start, window):
+    def independent_core(query, key, value, mask, *, start, window, query_rows):
+        assert query_rows == 2
         assert key.shape[1] == value.shape[1] == 2
         module = SimpleNamespace(head_dim=query.shape[-1], num_key_value_groups=4, training=False)
         return eager_attention_forward(module, query, key, value, mask, scaling=1.0)[0]

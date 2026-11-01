@@ -34,6 +34,7 @@ class E2BSnapshot:
     limit: int
     attention_mask: Any = None
     assistant: Any = None
+    full_static_cache: bool = False
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,7 @@ class E2BEncodedMedia:
     text_embeddings: Any
     embeddings: Any
     attention_mask: Any
+    mm_token_type_ids: Any = None
 
 
 class E2BState:
@@ -54,11 +56,14 @@ class E2BState:
     crop. Snapshots are detached owners and restore never mutates the stored one.
     """
 
-    def __init__(self, config, limit: int, *, owner=None, assistant=False):
+    def __init__(self, config, limit: int, *, owner=None, assistant=False, full_static_cache=False):
         text = config.get_text_config()
         if type(limit) is not int or not 0 < limit <= text.max_position_embeddings:
             raise ValueError("Gemma E2B state context must be within the native model limit")
         self.config, self.limit = config, limit
+        if type(full_static_cache) is not bool:
+            raise ValueError("full donor static-cache selection must be boolean")
+        self.full_static_cache = full_static_cache
         self.owner = object() if owner is None else owner
         self.position = 0
         self.poisoned = False
@@ -70,6 +75,9 @@ class E2BState:
             self.assistant = AssistantHistory(text)
 
     def _empty(self):
+        if self.full_static_cache:
+            from .e2b_full_cache import FullStaticCache
+            return FullStaticCache(self.config, self.limit, owner=self.owner)
         from transformers import DynamicCache
         cache = DynamicCache(config=self.config)
         for layer in cache.layers:
@@ -79,12 +87,16 @@ class E2BState:
         return cache
 
     def reset(self):
-        self.cache = self._empty()
+        if self.full_static_cache:
+            self.poisoned = True
+            self.cache.reset()
+        else:
+            self.cache = self._empty()
         self.position = 0
-        self.poisoned = False
         self.attention_mask = None
         if self.assistant is not None:
             self.assistant.reset()
+        self.poisoned = False
 
     def rollback(self, position: int):
         if self.poisoned or type(position) is not int or not 0 <= position <= self.position:
@@ -94,6 +106,12 @@ class E2BState:
                 raise ValueError("assistant history rollback needs a tentative forward or prefix snapshot")
             try:
                 self.assistant.commit(position)
+                self.cache.crop(-(self.position-position))
+            except BaseException:
+                self.poisoned = True
+                raise
+        elif self.full_static_cache:
+            try:
                 self.cache.crop(-(self.position-position))
             except BaseException:
                 self.poisoned = True
@@ -109,16 +127,46 @@ class E2BState:
             raise RuntimeError("cannot snapshot failed Gemma E2B state")
         if self.assistant is not None and self.assistant.pending is not None:
             raise RuntimeError("cannot snapshot uncommitted assistant target features")
-        return E2BSnapshot(self.position, copy.deepcopy(self.cache), self.owner, self.limit,
-                            None if self.attention_mask is None else self.attention_mask.clone(),
-                            None if self.assistant is None else self.assistant.snapshot())
+        cache = mask = assistant = None
+        try:
+            cache = self.cache.snapshot() if self.full_static_cache else copy.deepcopy(self.cache)
+            mask = None if self.attention_mask is None else self.attention_mask.clone()
+            assistant = None if self.assistant is None else self.assistant.snapshot()
+            return E2BSnapshot(self.position, cache, self.owner, self.limit, mask, assistant, self.full_static_cache)
+        except BaseException:
+            cache = mask = assistant = None
+            raise
 
     def restore(self, snapshot: E2BSnapshot):
         if (not isinstance(snapshot, E2BSnapshot) or snapshot.owner is not self.owner
-                or snapshot.limit != self.limit or not 0 <= snapshot.position <= self.limit):
+                or snapshot.limit != self.limit or type(snapshot.position) is not int
+                or not 0 <= snapshot.position <= self.limit):
             raise ValueError("Gemma E2B snapshot has incompatible position ownership")
+        if type(snapshot.full_static_cache) is not bool or snapshot.full_static_cache != self.full_static_cache:
+            raise ValueError("Gemma snapshot cache policy differs from the live state")
         if (snapshot.assistant is None) != (self.assistant is None):
             raise ValueError("Gemma assistant snapshot feature ownership differs")
+        if self.full_static_cache:
+            from .e2b_full_cache import FullCacheSnapshot
+            if not isinstance(snapshot.cache, FullCacheSnapshot) or snapshot.cache.position != snapshot.position:
+                raise ValueError("Gemma full donor snapshot position differs from the outer state")
+            # Prepare ALL other allocating owners before touching live slabs.
+            mask = None if snapshot.attention_mask is None else snapshot.attention_mask.clone()
+            prepared = None
+            if self.assistant is not None:
+                prepared = type(self.assistant)(self.config.get_text_config())
+                prepared.restore(snapshot.assistant)
+            self.poisoned = True
+            try:
+                self.cache.restore(snapshot.cache)
+                self.position = snapshot.position
+                self.attention_mask = mask
+                self.assistant = prepared
+                self.poisoned = False
+            except BaseException:
+                prepared = mask = None
+                raise
+            return
         cache = copy.deepcopy(snapshot.cache)
         mask = None if snapshot.attention_mask is None else snapshot.attention_mask.clone()
         if self.assistant is not None:
@@ -133,7 +181,8 @@ class E2BTarget:
     precision = "checkpoint"
     fast_prefill = False
 
-    def __init__(self, model_dir: Path, *, projection: str = "native", fuse_prompt_norms=False, tap_layers=None):
+    def __init__(self, model_dir: Path, *, projection: str = "native", fuse_prompt_norms=False, tap_layers=None,
+                 prompt_sdpa_gqa=False, attention_query_rows=2, full_static_cache=False):
         import torch
         import transformers
         from importlib.metadata import version
@@ -146,6 +195,15 @@ class E2BTarget:
         packed = config_block(self.raw_config) is not None
         if packed and projection != "native":
             raise ValueError("packed E4B requires checkpoint arithmetic; BF16 projection overrides are incompatible")
+        if type(full_static_cache) is not bool:
+            raise ValueError("full donor static-cache selection must be boolean")
+        if full_static_cache and self.config.profile != "E4B":
+            raise ValueError("static full donors currently require the qualified E4B profile")
+        self.full_static_cache = full_static_cache
+        if type(attention_query_rows) is not int or attention_query_rows not in (2, 4):
+            raise ValueError("Gemma canonical attention query packing must be2 or4")
+        if attention_query_rows == 4 and self.config.profile != "E4B":
+            raise ValueError("four-query packing requires the E4B two-KV-head profile")
         if tap_layers is not None and (self.config.profile != "E4B" or type(tap_layers) is not tuple
                                        or tap_layers != (1, 20, 38)):
             raise ValueError("Gemma target hidden-state taps differ from the admitted EAGLE3 contract")
@@ -162,8 +220,10 @@ class E2BTarget:
         self._taps: dict[int, Any] = {}
         self._hooks = []
         self._blas_policy = None
+        self._packed_storage = None
         self.consumption_receipt = None
-        self._row_policy = E2BRowPolicy(projection, fuse_prompt_norms=fuse_prompt_norms)
+        self._row_policy = E2BRowPolicy(projection, fuse_prompt_norms=fuse_prompt_norms,
+                                       prompt_sdpa_gqa=prompt_sdpa_gqa, attention_query_rows=attention_query_rows)
         self.tap_layers = self.config.tap_layers if tap_layers is None else tap_layers
         load_status = None
         self._load_status = None
@@ -175,7 +235,7 @@ class E2BTarget:
             if packed:
                 from .dense_engine_storage import inspect_packed_storage
                 from .dense_loader import load_dense_quantized
-                inspect_packed_storage(model_dir)
+                self._packed_storage = inspect_packed_storage(model_dir)
                 materialized = None
                 try:
                     materialized = load_dense_quantized(model_dir, device="cuda:0", prompt_policy=self._row_policy,
@@ -231,7 +291,8 @@ class E2BTarget:
     def make_state(self, context: int, *, assistant=False):
         if type(assistant) is not bool or (assistant and self.config.profile != "E4B"):
             raise ValueError("native assistant state requires the admitted E4B profile")
-        return E2BState(self.model.config, context, owner=self, assistant=assistant)
+        return E2BState(self.model.config, context, owner=self, assistant=assistant,
+                        full_static_cache=self.full_static_cache)
 
     def assistant_state(self, state):
         """Borrow committed official-assistant features until the next target mutation."""
@@ -247,7 +308,7 @@ class E2BTarget:
         an independent BF16-weight oracle.
         No generation, Target.forward or configuration mutation may run in
         parallel. This explicit scope keeps whole-HF golden forwards native
-        even when the production prompt norm candidate is enabled. The caller
+        even when production prompt attention/norm candidates are enabled. The caller
         completes reference CUDA work before handing owners to another stream.
         """
         if self._closed:
@@ -355,6 +416,8 @@ class E2BTarget:
         if (not isinstance(ids, (list, tuple)) or not ids or len(ids) > self.config.max_position
                 or (not trusted_tokens and any(type(x) is not int or not 0 <= x < self.config.vocab for x in ids))):
             raise ValueError("Gemma E2B media requires valid prompt token IDs within native context")
+        if not self.config.has_audio and model_inputs.get('input_features') is not None:
+            raise ValueError('this native Gemma31B checkpoint has no audio encoder')
         audio_lengths = self._audio_lengths(model_inputs)
         self._require_media_workspace(ids, model_inputs, audio_lengths)
         kwargs = self._feature_kwargs(model_inputs)
@@ -405,7 +468,34 @@ class E2BTarget:
         original_mask = model_inputs.get("attention_mask")
         if original_mask is not None and bool(original_mask.all()):
             mask = None
-        return E2BEncodedMedia(tuple(ids), padded, original, embeddings, mask)
+        mm_types = kwargs.get('mm_token_type_ids') if self.config.bidirectional_vision else None
+        if self.config.bidirectional_vision:
+            if mm_types is None or tuple(mm_types.shape) != tuple(tokens.shape):
+                raise ValueError('Gemma31B bidirectional vision requires native mm_token_type_ids')
+        return E2BEncodedMedia(tuple(ids), padded if self.config.per_layer_input else None,
+                               original if self.config.per_layer_input else None, embeddings, mask, mm_types)
+
+    def _require_large_chunk_workspace(self, state, rows):
+        """Whole native visual blocks may exceed the ordinary text chunk size.
+
+        Bound the actual native math-SDPA/cache/activation owners before this
+        exceptional prompt chunk. No allocator-reuse credit or quota reset.
+        """
+        import torch
+        from tensorfold.cuda.capacity import available_bytes
+        total = state.position+rows
+        attention = rows*total*self.config.heads*9
+        activations = rows*(self.config.hidden*40+self.config.intermediate*8)*4
+        cache = self.config.cache_bytes(total, rows)
+        packed = self._packed_storage.workspace(rows) if self._packed_storage is not None else 0
+        repeated = self.config.prompt_kv_repeat_bytes(total, rows)
+        math_acc = self.config.prompt_math_accumulator_bytes(total, rows)
+        needed = attention+activations+cache+packed+repeated+math_acc
+        quota = math.floor(torch.cuda.memory.get_per_process_memory_fraction(0)
+                           * torch.cuda.get_device_properties(0).total_memory)
+        remaining = min(available_bytes(torch), max(0, quota-torch.cuda.memory_reserved(0)))
+        if needed > remaining:
+            raise ValueError('whole bidirectional visual block exceeds remaining decoder workspace')
 
     def project_logits(self, hidden):
         import torch
@@ -439,6 +529,8 @@ class E2BTarget:
             raise ValueError("Gemma E2B forward exceeds admitted context")
         if model_inputs is not None:
             raise ValueError("Gemma E2B media requires prepare_media and bounded encoded chunks")
+        if self.config.profile == '31B' and prompt and len(ids) > 512:
+            self._require_large_chunk_workspace(state, len(ids))
         kwargs = self._feature_kwargs(model_inputs)
         if state.assistant is not None:
             kwargs["return_shared_kv_states"] = True
@@ -462,12 +554,21 @@ class E2BTarget:
                 if tuple(ids) != encoded.token_ids[start:end]:
                     raise ValueError("Gemma E2B media chunk does not belong to the prepared prompt")
                 # Identity PLE sees padded original token IDs, never replaced media embeddings.
-                ple = self.model.model.language_model.get_per_layer_inputs(
-                    encoded.padded_ids[:, start:end], encoded.text_embeddings[:, start:end])
+                ple = None
+                if self.config.per_layer_input:
+                    ple = self.model.model.language_model.get_per_layer_inputs(
+                        encoded.padded_ids[:, start:end], encoded.text_embeddings[:, start:end])
                 mask = encoded.attention_mask
+                forward_mask = None if mask is None else mask[:, :end]
+                if self.config.bidirectional_vision:
+                    # Public native HF multimodal mask builder owns image/video
+                    # block semantics; full-prefix types preserve absolute IDs.
+                    forward_mask = self.model.create_masks_for_generate(
+                        self.model.config, encoded.embeddings[:, start:end], forward_mask,
+                        state.cache, positions, mm_token_type_ids=encoded.mm_token_type_ids[:, :end])
                 out = self.model.model.language_model(
                     inputs_embeds=encoded.embeddings[:, start:end], per_layer_inputs=ple,
-                    attention_mask=None if mask is None else mask[:, :end],
+                    attention_mask=forward_mask,
                     position_ids=positions, past_key_values=state.cache, use_cache=True, return_dict=True,
                     **({"return_shared_kv_states": True} if state.assistant is not None else {}))
             state.position += len(ids)

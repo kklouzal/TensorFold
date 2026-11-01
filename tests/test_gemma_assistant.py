@@ -59,10 +59,10 @@ def test_head_metadata_refuses_changed_architecture(field, value):
         AssistantConfig.from_dict(raw)
 
 
-def tiny():
+def tiny(query_heads=2, kv_heads=1):
     torch.manual_seed(1729)
     text = Gemma4TextConfig(hidden_size=16, intermediate_size=32, num_hidden_layers=4,
-        num_attention_heads=2, num_key_value_heads=1, head_dim=8, global_head_dim=16,
+        num_attention_heads=query_heads, num_key_value_heads=kv_heads, head_dim=8, global_head_dim=16,
         vocab_size=64, layer_types=['sliding_attention']*3+['full_attention'],
         num_kv_shared_layers=4, sliding_window=4, hidden_size_per_layer_input=0,
         vocab_size_per_layer_input=0, use_double_wide_mlp=False,
@@ -72,7 +72,7 @@ def tiny():
         num_centroids=8, centroid_intermediate_top_k=2, use_ordered_embeddings=True)
     model = Gemma4AssistantForCausalLM(cfg).to(dtype=torch.bfloat16).eval()
     model.masked_embedding.token_ordering.copy_(torch.randperm(64))
-    shared = {kind: tuple(torch.randn(1,1,n,d,dtype=torch.bfloat16) for _ in range(2))
+    shared = {kind: tuple(torch.randn(1,kv_heads,n,d,dtype=torch.bfloat16) for _ in range(2))
               for kind,n,d in [('sliding_attention',4,8),('full_attention',9,16)]}
     held = dict(position=9,last_hidden_state=torch.randn(1,1,32,dtype=torch.bfloat16),
                 attention_mask=torch.ones(1,9,dtype=torch.long),shared_kv_states=shared)
@@ -85,6 +85,11 @@ def tiny():
     head.model, head.target = model,target
     head.context_limit,head.block,head.device = 64,8,torch.device('cpu')
     head._bound = None
+    head._native_masked_embedding = model.masked_embedding
+    head._attention_policy = None
+    head._device_chain = head._sampled_q = False
+    head._q_temperature_factor,head._q_top_k = 1.0,None
+    head._reference_depth = 0
     head.bind_state(SimpleNamespace(owner=target))
     return head,held
 

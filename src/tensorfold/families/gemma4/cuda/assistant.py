@@ -1,4 +1,4 @@
-"""Native Gemma4 assistant with deterministic proposals and exact delta-q law.
+"""Native Gemma4 assistant with deterministic baseline and private exact-q candidates.
 
 The target exclusively owns committed donor KV, masks and final hidden states.
 An assistant call borrows these only until the next target mutation. Every
@@ -7,6 +7,7 @@ Transformers5.17 SinglePositionMultiTokenCandidateGenerator.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 
 import torch
@@ -64,12 +65,22 @@ class Gemma4AssistantHead:
     tap_layers = ()
     bits = 16
 
-    def __init__(self, assistant_dir: str | Path, target, context_limit, device=None):
+    def __init__(self, assistant_dir: str | Path, target, context_limit, device=None, *,
+                 assistant_attention_gqa=False, assistant_device_chain=False, assistant_sampled_q=False,
+                 assistant_q_temperature_factor=1.0, assistant_q_top_k=None):
+        flags = (assistant_attention_gqa, assistant_device_chain, assistant_sampled_q)
+        if any(type(flag) is not bool for flag in flags):
+            raise ValueError("Gemma assistant candidate selections must be boolean")
+        from .assistant_sampled import validate_proposal_parameters
+        factor, q_top_k = validate_proposal_parameters(assistant_q_temperature_factor, assistant_q_top_k)
+        if not assistant_sampled_q and (factor != 1.0 or q_top_k is not None):
+            raise ValueError("Nondefault assistant proposal parameters require sampled_q=True")
         from safetensors import safe_open
         from transformers import Gemma4AssistantForCausalLM
 
         self.cfg, _ = checked_headers(assistant_dir)
         self.cfg.state_bytes(context_limit)
+        validate_proposal_parameters(factor, q_top_k, vocab=self.cfg.vocab)
         if target.config.hidden != self.cfg.backbone_hidden or target.config.vocab != self.cfg.vocab:
             raise ValueError("Gemma assistant requires the native E4B target geometry")
         self.target, self.context_limit = target, context_limit
@@ -84,19 +95,53 @@ class Gemma4AssistantHead:
         model, loading = Gemma4AssistantForCausalLM.from_pretrained(
             assistant_dir, local_files_only=True, trust_remote_code=False, output_loading_info=True,
             dtype=torch.bfloat16, attn_implementation="sdpa")
+        loaded = native_masked = attention_policy = None
         try:
             if any(loading.get(key) for key in ("missing_keys", "unexpected_keys", "mismatched_keys", "error_msgs")):
                 raise ValueError(f"Gemma assistant checkpoint was not completely consumed: {loading}")
-            self.model = model.eval().to(self.device)
+            loaded = model.eval().to(self.device)
+            native_masked = loaded.masked_embedding
+            if assistant_attention_gqa:
+                from .assistant_attention import install_assistant_attention
+                attention_policy = install_assistant_attention(loaded, enabled=True)
+            if assistant_device_chain:
+                from .assistant_masked import TensorMaskedEmbedder
+                loaded.masked_embedding = TensorMaskedEmbedder(native_masked)
         except BaseException:
-            # Drop this constructor's sole alias; native loader/transfer frames
+            # Retire every constructor-owned alias. Native loader/transfer frames
             # retain their own failure context under library ownership.
-            del model
+            del loaded, native_masked, attention_policy, model
             raise
+        self.model = loaded
+        self._native_masked_embedding = native_masked
+        self._attention_policy = attention_policy
+        self._device_chain = assistant_device_chain
+        self._sampled_q = assistant_sampled_q
+        self._q_temperature_factor, self._q_top_k = factor, q_top_k
+        self._reference_depth = 0
         self.block = self.rows = self.cfg.block
         self.parameter_bytes = self.cfg.parameter_bytes
         self.resident_bytes, self.loading_peak_bytes = self.cfg.memory_bytes()
         self._bound = None
+
+    @contextmanager
+    def native_reference(self):
+        """Exclusive whole-head oracle: original HF masks/head/attention paths.
+
+        The caller drains the exclusive CUDA lane before reference entry/exit.
+        Nested scopes and failures restore all candidate selections and shared
+        Parameter identities without copying weights or target KV.
+        """
+        previous = self.model.masked_embedding
+        self._reference_depth += 1
+        self.model.masked_embedding = self._native_masked_embedding
+        try:
+            scope = nullcontext() if self._attention_policy is None else self._attention_policy.native_reference()
+            with scope:
+                yield self.model
+        finally:
+            self.model.masked_embedding = previous
+            self._reference_depth -= 1
 
     def bind_state(self, state):
         if self._bound is not None:
@@ -140,6 +185,19 @@ class Gemma4AssistantHead:
         if count <= 0:
             return None
         hidden = held["last_hidden_state"]
+        if not self._reference_depth and sampled and self._sampled_q:
+            from .assistant_sampled import sampled_assistant_chain
+            return sampled_assistant_chain(
+                self.model, self.target.model.get_input_embeddings(), hidden,
+                held["shared_kv_states"], held["attention_mask"], anchor, count, position,
+                sampling, history, enabled=True, temperature_factor=self._q_temperature_factor,
+                proposal_top_k=self._q_top_k)
+        if not self._reference_depth and self._device_chain:
+            from .assistant_masked import device_greedy_chain
+            tokens = device_greedy_chain(
+                self.model, self.target.model.get_input_embeddings(), hidden,
+                held["shared_kv_states"], held["attention_mask"], anchor, count, position).readback()
+            return _Chains(tokens, history, sampled)
         token = anchor
         positions = torch.tensor([[position]], device=self.device, dtype=torch.long)
         tokens = []

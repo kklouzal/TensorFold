@@ -15,8 +15,9 @@ from test_gemma4_e2b_metadata import e2b_config  # noqa: E402 - optional runtime
 
 @pytest.mark.parametrize("cleanup_fails", [False, True])
 @pytest.mark.parametrize("fuse_prompt_norms", [False, True])
+@pytest.mark.parametrize("prompt_sdpa_gqa", [False, True])
 def test_late_cuda_stream_failure_closes_target_and_preserves_primary(monkeypatch, tmp_path, cleanup_fails,
-                                                                    fuse_prompt_norms):
+                                                                    fuse_prompt_norms, prompt_sdpa_gqa):
     import tensorfold.checkpoint_metadata as metadata
     import tensorfold.cuda.chat_template as template
     import tensorfold.token_metadata as tokens
@@ -27,8 +28,12 @@ def test_late_cuda_stream_failure_closes_target_and_preserves_primary(monkeypatc
     class Target:
         device = "cuda:0"
 
-        def __init__(self, _path, *, fuse_prompt_norms=False):
+        def __init__(self, _path, *, fuse_prompt_norms=False, prompt_sdpa_gqa=False, attention_query_rows=2,
+                     full_static_cache=False):
             assert fuse_prompt_norms is expected_fusion
+            assert prompt_sdpa_gqa is expected_gqa
+            assert attention_query_rows == 2
+            assert full_static_cache is False
 
         def make_state(self, _context):
             return object()
@@ -50,8 +55,9 @@ def test_late_cuda_stream_failure_closes_target_and_preserves_primary(monkeypatc
     monkeypatch.setattr(e2b_engine, "admit", lambda *args: {"context_window": 32})
     monkeypatch.setattr(e2b_engine, "E2BTarget", Target)
     expected_fusion = fuse_prompt_norms
+    expected_gqa = prompt_sdpa_gqa
     with pytest.raises(RuntimeError) as caught:
-        e2b_engine.E2BEngine(tmp_path, fuse_prompt_norms=fuse_prompt_norms)
+        e2b_engine.E2BEngine(tmp_path, fuse_prompt_norms=fuse_prompt_norms, prompt_sdpa_gqa=prompt_sdpa_gqa)
     assert caught.value is primary
     assert closed == [True]
     if cleanup_fails:
@@ -149,7 +155,8 @@ def test_warm_media_prefix_text_suffix_skips_encoders(media_id):
         state.position += len(ids)
         return SimpleNamespace(logits=logits)
 
-    engine.target = SimpleNamespace(raw_config={"image_token_id": 101, "video_token_id": 102, "audio_token_id": 103},
+    engine.target = SimpleNamespace(config=SimpleNamespace(bidirectional_vision=False),
+                                    raw_config={"image_token_id": 101, "video_token_id": 102, "audio_token_id": 103},
                                     forward=forward, prepare_media=lambda *_: pytest.fail("repeat encoder"))
     prompt = [media_id] + [2] * 511 + [3, 4]
     media = SimpleNamespace(media_key=("same-owned-features",), model_inputs={"attention_mask": torch.ones(1, 514)})
@@ -161,7 +168,8 @@ def test_warm_media_prefix_text_suffix_skips_encoders(media_id):
 def test_token_row_merge_exactly_matches_native_masked_scatter(padding):
     target = object.__new__(E2BTarget)
     target._closed, target.device = False, torch.device("cpu")
-    target.config = SimpleNamespace(hidden=3, vocab=64, max_position=16384)
+    target.config = SimpleNamespace(hidden=3, vocab=64, max_position=16384,
+                                    has_audio=True, per_layer_input=256, bidirectional_vision=False)
     config = SimpleNamespace(image_token_id=10, video_token_id=11, audio_token_id=12,
                              text_config=SimpleNamespace(pad_token_id=0))
     image = torch.tensor([[1, 2, 3], [4, 5, 6]], dtype=torch.bfloat16)

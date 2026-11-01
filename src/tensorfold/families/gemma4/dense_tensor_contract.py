@@ -5,21 +5,25 @@ TEXT_PREFIX = "model.language_model."
 def text_tensor_contract(cfg):
     """Exact text checkpoint storage, including unused shared-tail K/V tensors."""
     shapes = {TEXT_PREFIX+"embed_tokens.weight": (cfg.vocab, cfg.hidden),
-              TEXT_PREFIX+"embed_tokens_per_layer.weight": (cfg.vocab, cfg.layers*cfg.per_layer_input),
-              TEXT_PREFIX+"norm.weight": (cfg.hidden,),
-              TEXT_PREFIX+"per_layer_model_projection.weight": (cfg.layers*cfg.per_layer_input, cfg.hidden),
-              TEXT_PREFIX+"per_layer_projection_norm.weight": (cfg.per_layer_input,)}
+              TEXT_PREFIX+"norm.weight": (cfg.hidden,)}
+    if cfg.per_layer_input:
+        shapes.update({TEXT_PREFIX+"embed_tokens_per_layer.weight": (cfg.vocab, cfg.layers*cfg.per_layer_input),
+                       TEXT_PREFIX+"per_layer_model_projection.weight": (cfg.layers*cfg.per_layer_input, cfg.hidden),
+                       TEXT_PREFIX+"per_layer_projection_norm.weight": (cfg.per_layer_input,)})
     active, unused = set(), set()
     for index, kind in enumerate(cfg.layer_types):
         prefix = f"{TEXT_PREFIX}layers.{index}."
         dim = cfg.global_head_dim if kind == "full_attention" else cfg.head_dim
+        kv_heads = (getattr(cfg, 'global_kv_heads', None) or cfg.kv_heads) if kind == 'full_attention' else cfg.kv_heads
         matrices = {"self_attn.q_proj": (cfg.heads*dim, cfg.hidden),
-                    "self_attn.k_proj": (cfg.kv_heads*dim, cfg.hidden),
-                    "self_attn.v_proj": (cfg.kv_heads*dim, cfg.hidden),
+                    "self_attn.k_proj": (kv_heads*dim, cfg.hidden),
+                    "self_attn.v_proj": (kv_heads*dim, cfg.hidden),
                     "self_attn.o_proj": (cfg.hidden, cfg.heads*dim),
                     "mlp.gate_proj": (cfg.intermediate, cfg.hidden),
                     "mlp.up_proj": (cfg.intermediate, cfg.hidden),
                     "mlp.down_proj": (cfg.hidden, cfg.intermediate)}
+        if kind == 'full_attention' and getattr(cfg, 'attention_k_eq_v', False):
+            del matrices['self_attn.v_proj']
         for suffix, shape in matrices.items():
             name = prefix+suffix+".weight"
             shapes[name] = shape
@@ -27,11 +31,13 @@ def text_tensor_contract(cfg):
                 unused.add(name)
             else:
                 active.add(name)
-        shapes[prefix+"per_layer_input_gate.weight"] = (cfg.per_layer_input, cfg.hidden)
-        shapes[prefix+"per_layer_projection.weight"] = (cfg.hidden, cfg.per_layer_input)
+        if cfg.per_layer_input:
+            shapes[prefix+"per_layer_input_gate.weight"] = (cfg.per_layer_input, cfg.hidden)
+            shapes[prefix+"per_layer_projection.weight"] = (cfg.hidden, cfg.per_layer_input)
         for suffix in ("input_layernorm", "post_attention_layernorm", "post_feedforward_layernorm",
                        "pre_feedforward_layernorm", "post_per_layer_input_norm"):
-            shapes[prefix+suffix+".weight"] = (cfg.hidden,)
+            if suffix != 'post_per_layer_input_norm' or cfg.per_layer_input:
+                shapes[prefix+suffix+".weight"] = (cfg.hidden,)
         for suffix in ("q_norm", "k_norm"):
             name = prefix+"self_attn."+suffix+".weight"
             shapes[name] = (dim,)

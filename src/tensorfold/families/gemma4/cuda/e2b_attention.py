@@ -92,16 +92,19 @@ def _finish(PO, PM, PL, OUT, H: tl.constexpr, D: tl.constexpr, SPLITS):
 
 
 def chronological_attention(query, key, value, mask, *, start: int, window: int, query_rows=2):
-    """Single sequence,8 query heads/1 or2 KV heads, BF16D256/512, scale1/dropout0."""
+    """Single sequence, admitted dense-profile GQA, BF16D256/512, scale1/dropout0."""
     _, heads, rows, dim = query.shape
     kv_heads = key.shape[1]
     length = key.shape[-2]
     if (query.dtype != torch.bfloat16 or key.dtype != query.dtype or value.dtype != query.dtype
-            or query.shape[0] != 1 or heads != 8 or dim not in (256, 512)
-            or kv_heads not in (1, 2) or tuple(key.shape) != (1, kv_heads, length, dim) or value.shape != key.shape
+            or query.shape[0] != 1 or dim not in (256, 512)
+            or not ((heads == 8 and kv_heads in (1,2) and window in (0,512))
+                    or (heads,kv_heads,window,dim) in ((32,16,1024,256),(32,4,0,512)))
+            or tuple(key.shape) != (1, kv_heads, length, dim) or value.shape != key.shape
             or query.stride(-1) != 1 or key.stride(-1) != 1 or value.stride(-1) != 1
-            or window not in (0, 512) or type(start) is not int or start < 0
-            or type(query_rows) is not int or query_rows not in (1, 2)):
+            or type(start) is not int or start < 0
+            or type(query_rows) is not int or query_rows not in (1, 2, 4)
+            or (query_rows == 4 and kv_heads != 2)):
         raise ValueError("Gemma E2B canonical attention geometry differs")
     origin = start + rows - length
     base = max(0, start - window + 1) // CHUNK if window else 0
@@ -150,9 +153,11 @@ class E2BTextAttention(Gemma4TextAttention):
 
     def forward(self, hidden_states, position_embeddings, attention_mask, shared_kv_states,
                 past_key_values=None, **kwargs):
-        if self.policy.prompt:
-            return super().forward(hidden_states, position_embeddings, attention_mask, shared_kv_states,
-                                   past_key_values=past_key_values, **kwargs)
+        prompt = self.policy.prompt
+        if prompt:
+            if not self.policy.prompt_sdpa_gqa or self.policy.reference_depth:
+                return super().forward(hidden_states, position_embeddings, attention_mask, shared_kv_states,
+                                       past_key_values=past_key_values, **kwargs)
         shape = hidden_states.shape[:-1]
         projection_shape = (*shape, -1, self.head_dim)
         cos, sin = position_embeddings
@@ -161,14 +166,31 @@ class E2BTextAttention(Gemma4TextAttention):
         if self.is_kv_shared_layer:
             key, value = shared_kv_states[self.layer_type]
         else:
-            key = self.k_norm(self.k_proj(hidden_states).view(projection_shape))
-            key = apply_rotary_pos_emb(key, cos, sin, unsqueeze_dim=2).transpose(1, 2)
-            value = self.v_norm(self.v_proj(hidden_states).view(projection_shape)).transpose(1, 2)
-            key, value = past_key_values.update(key, value, self.layer_idx)
+            if self.use_alternative_attention:
+                # Native31B full attention reuses RAW K as V. The learned K
+                # norm/RoPE do not apply to V's separate unscaled RMS norm.
+                projected_key = self.k_proj(hidden_states).view(projection_shape)
+                key = self.k_norm(projected_key)
+                key = apply_rotary_pos_emb(key, cos, sin, unsqueeze_dim=2).transpose(1, 2)
+                value = self.v_norm(projected_key).transpose(1, 2)
+            else:
+                # Preserve the original E2B/E4B projection/norm launch order.
+                key = self.k_norm(self.k_proj(hidden_states).view(projection_shape))
+                key = apply_rotary_pos_emb(key, cos, sin, unsqueeze_dim=2).transpose(1, 2)
+                value = self.v_norm(self.v_proj(hidden_states).view(projection_shape)).transpose(1, 2)
+            if past_key_values is not None:
+                key, value = past_key_values.update(key, value, self.layer_idx)
         if self.store_full_length_kv:
             shared_kv_states[self.layer_type] = key, value
-        result = chronological_attention(query, key, value, attention_mask,
-                                         start=self.policy.position, window=self.sliding_window or 0)
+        if prompt:
+            from .e2b_prompt_sdpa import prompt_sdpa_gqa
+            result = prompt_sdpa_gqa(self, query, key, value, attention_mask,
+                                     dropout=self.attention_dropout if self.training else 0.0,
+                                     scaling=self.scaling, is_causal=kwargs.get("is_causal"))
+        else:
+            result = chronological_attention(query, key, value, attention_mask,
+                                             start=self.policy.position, window=self.sliding_window or 0,
+                                             query_rows=self.policy.attention_query_rows)
         return self.o_proj(result.reshape(*shape, -1).contiguous()), None
 
 

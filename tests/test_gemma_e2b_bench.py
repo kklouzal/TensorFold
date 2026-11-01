@@ -23,6 +23,8 @@ def test_uncached_tokens_and_complete_body_are_not_decode_wall_estimates():
     assert out["metrics"]["decode_tps"] == 12.0
     assert out["metrics"]["complete_body_tps"] == pytest.approx(5.0)
     assert out["metrics"]["ttft_client_s"] == 0.5
+    assert out["metrics"]["committed_decode_tps"] == pytest.approx(10.0)
+    assert out["metrics"]["peak_vram_bytes"] is None
 
 
 @pytest.mark.parametrize("phase,cached", [("fresh", 1), ("warm", 0)])
@@ -102,7 +104,7 @@ def test_analysis_uses_cycles_not_correlated_samples_as_ci_units(tmp_path):
             runs.append(path)
     out = bench.analyze(source, runs)
     assert out["complete"]
-    assert out["objective_order"] == ["complete_body_s", "ttft_client_s", "decode_tps"]
+    assert out["objective_order"] == ["committed_decode_tps", "ttft_client_s", "peak_vram_bytes"]
     assert all("/32/" in item["region"] for item in out["regional_regressions"])
     assert len(out["regional_regressions"]) == 4
     result = next(iter(out["cells"].values()))["decode_tps"]
@@ -167,3 +169,12 @@ def test_existing_generation_card_cannot_be_replaced_with_defaults(tmp_path):
     assert card['temperature'] == 0.7
     assert source['sha256'] == bench.digest(tmp_path / 'generation_config.json')
     assert label == 'native'
+
+
+def test_explicit_peak_bytes_do_not_alias_host_available_memory():
+    raw = response()
+    raw['stats']['peak_vram_bytes'] = 123456789
+    assert bench.measured_record(raw, 512, 4, 'fresh')['metrics']['peak_vram_bytes'] == 123456789
+    raw['stats']['peak_vram_bytes'] = 1.5
+    with pytest.raises(ValueError, match='integer bytes'):
+        bench.measured_record(raw, 512, 4, 'fresh')

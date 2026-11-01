@@ -90,7 +90,10 @@ class Gemma4Engine:
                  depth: int | None = None, context: int | None = None,
                  context_explicit: bool | None = None, streams: int = 1,
                  no_drafts: bool = False, vision: bool = False, eos_token_ids=None,
-                 chat_template_file=None, chat_template_name=None) -> None:
+                 chat_template_file=None, chat_template_name=None,
+                 prepare_global_prompt: bool = False) -> None:
+        if type(prepare_global_prompt) is not bool:
+            raise ValueError("prepare_global_prompt must be a bool")
         if type(streams) is not int or streams != 1:
             raise ValueError("Gemma4 CUDA currently requires --parallel 1; concurrent lanes are not qualified")
         if type(drafter_bits) is not int or drafter_bits not in (8, 16):
@@ -110,69 +113,112 @@ class Gemma4Engine:
         from .forward import Gemma4Target
         from .weights import Gemma4Weights
 
+        raw = read_config(model_dir)
+        method = quant_method(raw)
+        if prepare_global_prompt and method != 'modelopt':
+            raise ValueError('prepared prompt KV is a ModelOpt-only investigation candidate')
+        if method == 'modelopt':
+            from tensorfold.cuda import precision
+            if precision.mode() != precision.CHECKPOINT:
+                raise ValueError('Gemma4 ModelOpt MoE requires checkpoint activation math')
+            if drafter and not no_drafts:
+                raise ValueError('Gemma4 ModelOpt MoE currently requires standalone --no-drafts')
         torch.cuda.set_device(0)
         self.chat_template = prepare_chat_template(model_dir, template_file=chat_template_file,
                                                    template_name=chat_template_name)
         draft_dir = Path(drafter) if drafter and not no_drafts else None
-        self.max_rows = 16 if depth is None else depth + 1
+        self.max_rows = (1 if method == 'modelopt' and draft_dir is None else
+                         16 if depth is None else depth + 1)
         self.capacity_plan = admit(model_dir, context, context_explicit, drafter_dir=draft_dir,
                                    vision=vision, max_rows=self.max_rows, streams=streams, keep=PREFIX_SNAPSHOTS,
-                                   drafter_bits=drafter_bits)
+                                   drafter_bits=drafter_bits,
+                                   **({"prepare_global_prompt": True} if prepare_global_prompt else {}))
         self.context_window = self.capacity_plan["context_window"]
         self.max_rows = min(self.max_rows, self.context_window)
-        raw = read_config(model_dir)
         text = raw.get("text_config") or raw
         self.eos = resolve_eos(model_dir, text.get("eos_token_id"),
                                vocab_size=text["vocab_size"], override=eos_token_ids)
-        if quant_method(raw) == "compressed-tensors":
+        if method == "compressed-tensors":
             from .nvfp4_weights import load
             self.w = load(model_dir, vision=vision)
+        elif method == 'modelopt':
+            from .modelopt_weights import load, ModelOptLoadStatus
+            self._modelopt_load_status = ModelOptLoadStatus()
+            try:
+                self.w = load(model_dir, vision=vision, status=self._modelopt_load_status)
+            except BaseException as primary:
+                if not self._modelopt_load_status.safe_to_release:
+                    self._retain_modelopt_failure(primary)
+                raise
         else:
             self.w = Gemma4Weights.load(model_dir, vision=vision)
-        self.target = Gemma4Target(self.w)
-        self.head = None
-        self.vision = None
-        longest = 0
-        if vision:
-            from .vision import GemmaCudaVision, GemmaVisionProcessor, processor_geometry
-            self.vision = GemmaCudaVision(self.w.raw_config, self.w.vision, self.w.projector,
-                                          frontend=GemmaVisionProcessor.from_directory(model_dir))
-            media = processor_geometry(model_dir)
-            longest = max(media.image_soft_tokens, media.video_soft_tokens)
-        forward_rows = widest_forward(self.max_rows, longest)
-        if draft_dir is not None:
-            # Before any cache: the companion's load transients (BF16 sources of FP8 copies) are admission staging.
-            from .dflash import DFlash
-            self.head = DFlash(draft_dir, self.target, context_limit=self.context_window,
-                               block=self.max_rows, bits=drafter_bits, rows=forward_rows)
-        # The single request lane's caches are allocated once for the admitted context.
-        self._state = self.target.make_state(self.context_window, rows=forward_rows)
-        self._draft = self.head.make_state() if self.head is not None else None
-        from .graphs import Graphs
-        # Text decode/verify rounds replay CUDA graphs over the engine-lifetime state; prefill stays eager. Every
-        # row count's smallest-grid graph is captured now (before the load event below orders serving after it).
-        # Larger attention grids capture on first use; their outputs and pool are covered by admission.
-        self.graphs = Graphs(self.target, self._state, max_rows=self.max_rows)
-        self.graphs.prepare(taps=(False, True) if self.head is not None else (False,))
-        # Absent from a tokenizer: only whole-prompt checkpoints are kept.
-        self._turn = load_tokenizer(model_dir).token_to_id(TURN_MARKER)
-        self._prefix = None
-        self._prefix_lock = threading.Lock()
-        self._run_lock = threading.Lock()
-        self._closed_lock = threading.Lock()
-        self._closed = False
-        self._owner = None
-        self._stream = torch.cuda.Stream(device=self.target.device)
-        self.concurrent = False
-        self.scheduler = None
-        # All model uploads/packing occur on the constructing stream. Publish
-        # them before a request can read weights from an independent lane.
-        self._loaded = torch.cuda.Event()
-        self._loaded.record()
-        self._stream.wait_event(self._loaded)
-        # Return load-time staging blocks to the device: the persistent caches are allocated, and the
-        # serving snapshots need large blocks that these fragments cannot satisfy (admission counts no cache).
-        torch.cuda.empty_cache()
+        try:
+            self.target = Gemma4Target(
+                self.w, **({"prepare_global_prompt": True, "prompt_context": self.context_window}
+                           if prepare_global_prompt else {}))
+            self.head = None
+            self.vision = None
+            longest = 0
+            if vision:
+                from .vision import GemmaCudaVision, GemmaVisionProcessor, processor_geometry
+                self.vision = GemmaCudaVision(self.w.raw_config, self.w.vision, self.w.projector,
+                                              frontend=GemmaVisionProcessor.from_directory(model_dir))
+                media = processor_geometry(model_dir)
+                longest = max(media.image_soft_tokens, media.video_soft_tokens)
+            forward_rows = widest_forward(self.max_rows, longest)
+            if draft_dir is not None:
+                # Before any cache: the companion's load transients (BF16 sources of FP8 copies) are admission staging.
+                from .dflash import DFlash
+                self.head = DFlash(draft_dir, self.target, context_limit=self.context_window,
+                                   block=self.max_rows, bits=drafter_bits, rows=forward_rows)
+            # The single request lane's caches are allocated once for the admitted context.
+            self._state = self.target.make_state(self.context_window, rows=forward_rows)
+            self._draft = self.head.make_state() if self.head is not None else None
+            from .graphs import Graphs
+            # Text decode/verify rounds replay CUDA graphs over the engine-lifetime state; prefill stays eager. Every
+            # row count's smallest-grid graph is captured now (before the load event below orders serving after it).
+            # Larger attention grids capture on first use; their outputs and pool are covered by admission.
+            self.graphs = Graphs(self.target, self._state, max_rows=self.max_rows)
+            self.graphs.prepare(taps=(False, True) if self.head is not None else (False,))
+            # Absent from a tokenizer: only whole-prompt checkpoints are kept.
+            self._turn = load_tokenizer(model_dir).token_to_id(TURN_MARKER)
+            self._prefix = None
+            self._prefix_lock = threading.Lock()
+            self._run_lock = threading.Lock()
+            self._closed_lock = threading.Lock()
+            self._closed = False
+            self._owner = None
+            self._stream = torch.cuda.Stream(device=self.target.device)
+            self.concurrent = False
+            self.scheduler = None
+            # All model uploads/packing occur on the constructing stream. Publish
+            # them before a request can read weights from an independent lane.
+            self._loaded = torch.cuda.Event()
+            self._loaded.record()
+            self._stream.wait_event(self._loaded)
+            # Return load-time staging blocks to the device: the persistent caches are allocated, and the
+            # serving snapshots need large blocks that these fragments cannot satisfy (admission counts no cache).
+            torch.cuda.empty_cache()
+        except BaseException as primary:
+            if method == 'modelopt':
+                # Unknown constructor/graph retirement is terminal for this
+                # candidate process; retain actual owners, never retry CUDA.
+                self._retain_modelopt_failure(primary)
+            raise
+
+    def _retain_modelopt_failure(self, primary):
+        from tensorfold.cleanup import rollback
+        _native_cause = BaseException.__cause__.__get__(primary)
+        _native_context = BaseException.__context__.__get__(primary)
+        authority = primary
+        try:
+            def unresolved():
+                raise authority
+            rollback(self, primary, unresolved)
+        except BaseException as transport:
+            if transport is not primary:
+                raise primary from transport
+            raise
 
     @contextmanager
     def _lane(self, background: bool):

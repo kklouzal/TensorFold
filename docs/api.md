@@ -822,7 +822,7 @@ HTTP parsing and slow-client response buffers have a separate transport lifetime
 | `input_text`, assistant output/refusal, function-call/output and plaintext reasoning items | Shared existing chat template/engine; tool-call IDs and assistant phases are retained. |
 | `input_image` data URL | Existing image decoder/processor; the input bytes are self-contained. |
 | `input_image` HTTPS URL | Existing URL security/limits, only with URL fetching enabled. Durable storage preserves the original public URL and separately captures encoded bytes before generation; subsequent turns use that immutable snapshot. SM70 capture reuses its supervised replay worker. |
-| `input_file` with `filename` and base64 `file_data: "data:video/..."` | Local Responses transport only with the admitted SM70 temporal media runtime and durable API store. Internally maps to the existing VideoSource, supervised decoder and pinned temporal processor; no private video field is exposed. |
+| `input_file` with `filename` and base64 `file_data: "data:video/..."` | Enabled for admitted video-capable frontends, including Gemma vision. Embedded video maps to the same bounded decoder/processor route as Chat. The SM70 temporal runtime additionally requires the durable API store and uses its supervised replay decoder. No private video field is exposed; backend-specific model/GPU qualification remains separate. |
 | Uploaded `file_id`, external `file_url`, PDF/document extraction and hosted tools | Explicitly unsupported. |
 
 The `input_file` field names follow the official schema; OpenAI's [hosted file-input guide](https://developers.openai.com/api/docs/guides/file-inputs) lists document

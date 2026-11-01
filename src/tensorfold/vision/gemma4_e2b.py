@@ -53,7 +53,7 @@ class PreparedE2BMedia:
     feature_hash: str
     media_token_ids: tuple[int, ...]
     vocab_size: int = 262_144
-    blocks: tuple = ()                   # E2B uses causal text attention, including media positions
+    blocks: tuple = ()                   # Native bidirectional visual groups, otherwise causal.
 
     @property
     def media_key(self) -> tuple:
@@ -109,6 +109,23 @@ def _video_identity(video: VideoInput) -> str:
     return h.hexdigest()
 
 
+def _vision_blocks(mm_token_type_ids) -> tuple[tuple[int, int], ...]:
+    """Half-open native groups; chunk scheduling must not split these spans."""
+    import torch
+    from transformers.models.gemma4.modeling_gemma4 import get_block_sequence_ids_for_mask
+    groups = get_block_sequence_ids_for_mask(mm_token_type_ids, device=torch.device("cpu"))[0].tolist()
+    spans = []
+    start = 0
+    while start < len(groups):
+        end = start + 1
+        while end < len(groups) and groups[end] == groups[start]:
+            end += 1
+        if groups[start] >= 0:
+            spans.append((start, end))
+        start = end
+    return tuple(spans)
+
+
 class GemmaE2BProcessor:
     """Native image/video/audio processors, with bounded CPU request staging."""
 
@@ -122,25 +139,28 @@ class GemmaE2BProcessor:
                  video_limits: VideoLimits = DEFAULT_VIDEO_LIMITS,
                  audio_limits: AudioLimits = DEFAULT_AUDIO_LIMITS):
         self.raw, self.processor, self.size_function = raw, processor, size_function
+        self.audio = raw.get("audio_config") is not None
         self.processor_fingerprint = fingerprint
         self.allow_urls = allow_urls
         self.image_limits, self.video_limits, self.audio_limits = image_limits, video_limits, audio_limits
         text = raw.get("text_config", raw)
-        if raw.get("model_type") != "gemma4" or not raw.get("audio_config") or not raw.get("vision_config"):
-            raise ValueError("E2B media requires a complete Gemma4 audio/vision checkpoint")
+        if raw.get("model_type") != "gemma4" or not raw.get("vision_config"):
+            raise ValueError("E2B media requires a complete Gemma4 vision checkpoint")
         self.vocab, self.context_limit = text["vocab_size"], text["max_position_embeddings"]
         self.media_token_ids = tuple(raw[name] for name in ("image_token_id", "video_token_id", "audio_token_id"))
         self._processor_lock = threading.Lock()
         for name, expected in zip(("image_token", "video_token", "audio_token"), self.media_token_ids):
+            if name == "audio_token" and not self.audio:
+                continue
             marker = getattr(processor, name, None)
             if (not isinstance(marker, str) or not marker
                     or processor.tokenizer.convert_tokens_to_ids(marker) != expected):
                 raise ValueError("native Gemma processor marker differs from checkpoint: " + name)
-        if processor.feature_extractor.sampling_rate != audio_limits.sample_rate:
+        if self.audio and processor.feature_extractor.sampling_rate != audio_limits.sample_rate:
             raise ValueError("Gemma audio feature sample rate differs from canonical decoder")
         if audio_limits.max_seconds > 30:
             raise ValueError("native Gemma audio supports at most 30 seconds per segment")
-        if processor.audio_seq_length != 750 or processor.audio_ms_per_token != 40:
+        if self.audio and (processor.audio_seq_length != 750 or processor.audio_ms_per_token != 40):
             raise ValueError("unsupported Gemma audio segment/token geometry")
         for component in (processor.image_processor, processor.video_processor):
             if (type(component.patch_size) is not int or component.patch_size <= 0
@@ -194,11 +214,13 @@ class GemmaE2BProcessor:
             "max_visual_tokens": self.image_limits.max_visual_tokens if max_visual_tokens is None else max_visual_tokens,
             "max_images": self.image_limits.max_images,
             "max_video_frames": self.video_limits.max_videos * self.video_limits.max_frames,
+            "max_bidirectional_visual_rows": (min(context, self.image_limits.max_visual_tokens if max_visual_tokens is None else max_visual_tokens)
+                                              if self.raw.get("text_config", {}).get("use_bidirectional_attention") == "vision" else 0),
             "image_patches_per_input": image.max_soft_tokens * image.pooling_kernel_size**2,
             "video_patches_per_frame": video.max_soft_tokens * video.pooling_kernel_size**2,
             "patch_pixels": 3 * image.patch_size**2,
-            "max_audio_samples_per_clip": self.audio_limits.max_samples,
-            "max_padded_audio_samples": context * self.audio_limits.sample_rate * self.processor.audio_ms_per_token // 1000,
+            "max_audio_samples_per_clip": self.audio_limits.max_samples if self.audio else 0,
+            "max_padded_audio_samples": (context * self.audio_limits.sample_rate * self.processor.audio_ms_per_token // 1000) if self.audio else 0,
         }
 
     def prepare_messages(self, messages: list[dict], render: Callable[[list[dict]], str], *,
@@ -210,7 +232,7 @@ class GemmaE2BProcessor:
         limits = self._request_image_limits(image_limits)
         template, sources = split_images(
             messages, limits=limits, allow_urls=self.allow_urls, allow_videos=True,
-            video_limits=self.video_limits, allow_audio=True, audio_limits=self.audio_limits)
+            video_limits=self.video_limits, allow_audio=self.audio, audio_limits=self.audio_limits)
         audio_sources = [s for s in sources if isinstance(s, AudioSource)]
         sample_budget = self.resource_geometry(context)["max_padded_audio_samples"]
         # Each segment needs its BOA/EOA markers even before soft tokens. The
@@ -222,7 +244,8 @@ class GemmaE2BProcessor:
         videos = load_videos([s for s in sources if isinstance(s, VideoSource)], self.video_size,
                              limits=self.video_limits, allow_urls=self.allow_urls, preserve_timestamps=True,
                              minimum_frames=1)
-        audios = load_audios(audio_sources, max_total_samples=sample_budget, limits=self.audio_limits)
+        audios = (load_audios(audio_sources, max_total_samples=sample_budget, limits=self.audio_limits)
+                  if audio_sources else [])
         return self.prepare(render(template), images, videos=videos, audios=audios,
                             max_prompt_tokens=context, max_visual_tokens=max_visual_tokens, image_limits=limits)
 
@@ -241,6 +264,8 @@ class GemmaE2BProcessor:
         import torch
         from transformers.video_utils import VideoMetadata
 
+        if audios and not self.audio:
+            raise ImageInputError("this Gemma checkpoint has no audio input encoder")
         context = self.context_limit if max_prompt_tokens is None else max_prompt_tokens
         limits = self._request_image_limits(image_limits)
         visual_limit = limits.max_visual_tokens if max_visual_tokens is None else max_visual_tokens
@@ -363,10 +388,12 @@ class GemmaE2BProcessor:
             if value.is_floating_point() and not torch.isfinite(value).all():
                 raise ImageInputError("native Gemma processor returned nonfinite feature data")
             kwargs[name] = value.detach().contiguous()
+        blocks = (_vision_blocks(tokenized["mm_token_type_ids"])
+                  if self.raw.get("text_config", {}).get("use_bidirectional_attention") == "vision" else ())
         return PreparedE2BMedia(tokens, MappingProxyType(kwargs), tuple(i.content_hash for i in images),
                                 tuple(_video_identity(v) for v in videos), tuple(a.content_hash for a in audios),
                                 self.processor_fingerprint, _feature_hash(kwargs), self.media_token_ids,
-                                vocab_size=self.vocab)
+                                vocab_size=self.vocab, blocks=blocks)
 
     @staticmethod
     def continued(prepared: PreparedE2BMedia, tokens: Sequence[int]) -> PreparedE2BMedia:

@@ -120,7 +120,7 @@ def test_inline_video_file_uses_identical_internal_video_source_and_declared_cap
     with pytest.raises(RequestError, match="input_file"):
         translate({"input": [standard]}, store, principal="alice", history=[])
     with begin(store, added=[standard]) as operation:
-        with pytest.raises(RequestError, match="SM70"):
+        with pytest.raises(RequestError, match="admitted video-capable runtime"):
             operation.capture_media(generic_app())
 
 

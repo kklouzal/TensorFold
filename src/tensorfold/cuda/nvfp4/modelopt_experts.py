@@ -19,8 +19,8 @@ class ModelOptExpertsA4(ExpertsA4):
 
     direct_input = True
 
-    def __init__(self, fields, width, dims, *, shared_input=False):
-        super().__init__(fields, width, dims, swiglu=swiglu_bf16, shared_input=shared_input)
+    def __init__(self, fields, width, dims, *, shared_input=False, swiglu=swiglu_bf16):
+        super().__init__(fields, width, dims, swiglu=swiglu, shared_input=shared_input)
 
 
 class CachedModelOptExpertsA4(CachedExpertsA4):
@@ -28,8 +28,8 @@ class CachedModelOptExpertsA4(CachedExpertsA4):
 
     direct_input = True
 
-    def __init__(self, fields, cache, layer_id, width, dims):
-        super().__init__(fields[0].shape[0], width, dims, cache=cache, layer_id=layer_id, swiglu=swiglu_bf16)
+    def __init__(self, fields, cache, layer_id, width, dims, *, swiglu=swiglu_bf16):
+        super().__init__(fields[0].shape[0], width, dims, cache=cache, layer_id=layer_id, swiglu=swiglu)
         cache.register(layer_id, tuple(fields))
 
 
@@ -52,7 +52,8 @@ def pack_projection_a4_device(weight, scale):
     return torch.cat((words.view(torch.uint8).reshape(-1), bs.reshape(-1)))
 
 
-def load_modelopt_a4(reader, name, full, *, device, cache=None, owned_ids=None, layer_id=None):
+def load_modelopt_a4(reader, name, full, *, device, cache=None, owned_ids=None, layer_id=None,
+                     swiglu=swiglu_bf16, field_owners=None):
     """Pack original bytes on the selected GPU, one projection at a time.
 
     Resident payloads go straight into final device fields. Only a host-cache
@@ -66,11 +67,16 @@ def load_modelopt_a4(reader, name, full, *, device, cache=None, owned_ids=None, 
     if not ids:
         return None
     geometry = authority_fields_a4(len(ids), full.moe_width, full.hidden)
-    fields = tuple((cache.allocate_authority(shape, dtype=torch.uint8 if dtype == "U8" else torch.float32)
-                    if cache is not None else torch.empty(shape,
-                        dtype=torch.uint8 if dtype == "U8" else torch.float32,
-                        device=device if index < 2 else "cpu"))
-                   for index, (shape, dtype) in enumerate(geometry))
+    fields = [None]*6 if field_owners is None else field_owners
+    if type(fields) is not list or len(fields) != 6 or any(value is not None for value in fields):
+        raise ValueError("preallocated empty six-field owner list required")
+    for index, (shape, dtype) in enumerate(geometry):
+        # Bind each returned tensor immediately in caller-retained slots, before
+        # another allocation/tuple publication can fail with work in flight.
+        fields[index] = (cache.allocate_authority(shape, dtype=torch.uint8 if dtype == "U8" else torch.float32)
+                         if cache is not None else torch.empty(shape,
+                             dtype=torch.uint8 if dtype == "U8" else torch.float32,
+                             device=device if index < 2 else "cpu"))
     maximum_scale = None
     for local, expert in enumerate(ids):
         for projection, n, k, payload, scalar, column in (
@@ -97,10 +103,11 @@ def load_modelopt_a4(reader, name, full, *, device, cache=None, owned_ids=None, 
         raise ValueError(f"{name}: native A4 block scales must be finite unsigned E4M3 bytes in 0x00..0x7e")
     if cache is not None:
         key = len(cache._layers) if layer_id is None else layer_id
-        return CachedModelOptExpertsA4(fields, cache, key, full.moe_width, full.hidden)
+        return CachedModelOptExpertsA4(fields, cache, key, full.moe_width, full.hidden, swiglu=swiglu)
     # Compare the complete prepared FP32 bit inventory, not sampled experts
     # or floating equality. Cache banks retain their general leased quantizer.
     shared_input = uniform_input_bits(fields[4])
-    return ModelOptExpertsA4(tuple(t if index < 2 else t.to(device=device)
-                                   for index, t in enumerate(fields)), full.moe_width, full.hidden,
-                            shared_input=shared_input)
+    for index in range(2,6):
+        fields[index] = fields[index].to(device=device)
+    return ModelOptExpertsA4(tuple(fields), full.moe_width, full.hidden,
+                            shared_input=shared_input, swiglu=swiglu)

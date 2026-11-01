@@ -127,3 +127,28 @@ def test_combined_mlx_metadata_needs_no_standalone_video_file_and_preserves_nati
     assert frontend.processor.chat_template == "{{ messages }}"
     prepared = frontend.prepare("<|image|>", [ImageInput(48, 48, bytes(48 * 48 * 3))], max_prompt_tokens=512)
     assert len(prepared.frames) == 1 and prepared.visual_tokens == 256
+
+
+def test_actual_vfr_timestamps_override_nominal_rate_and_bind_media_identity():
+    raw, processor = standard_processor()
+    frontend = GemmaVisionProcessor(raw,processor,get_aspect_ratio_preserving_size)
+    pixels = np.zeros((4,4,8,3),dtype=np.uint8)
+    actual = VideoInput(pixels,(0,1,2,3),1.0,(0.,0.8,3.2,4.8))
+    prepared = frontend.prepare('<|video|>',[],videos=[actual],max_prompt_tokens=512)
+    decoded = processor.tokenizer.decode(prepared.token_ids,skip_special_tokens=False)
+    import re
+    assert re.findall(r'\d{2}:\d{2}',decoded) == ['00:00','00:00','00:03','00:04']
+    assert len(prepared.blocks) == 4
+    assert all(end-start == frame.soft_tokens for frame,(start,end) in zip(prepared.frames,prepared.blocks))
+    nominal = VideoInput(pixels,(0,1,2,3),1.0)
+    old = frontend.prepare('<|video|>',[],videos=[nominal],max_prompt_tokens=512)
+    assert re.findall(r'\d{2}:\d{2}',processor.tokenizer.decode(old.token_ids)) == ['00:00','00:01','00:02','00:03']
+    assert prepared.token_ids != old.token_ids
+    assert prepared.video_hashes != old.video_hashes
+    assert all(np.array_equal(a.pixels,b.pixels) and np.array_equal(a.positions,b.positions)
+               for a,b in zip(prepared.frames,old.frames))
+    # Different real timelines must not alias even when integer timestamp tokens
+    # happen to coincide. Original no-PTS CFR hashes remain unchanged above.
+    other = VideoInput(pixels,(0,1,2,3),1.0,(0.,0.9,3.3,4.9))
+    changed = frontend.prepare('<|video|>',[],videos=[other],max_prompt_tokens=512)
+    assert changed.token_ids == prepared.token_ids and changed.video_hashes != prepared.video_hashes

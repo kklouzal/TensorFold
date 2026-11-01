@@ -1,0 +1,45 @@
+{
+  "status": "production-validated",
+  "utc": "2026-11-01T10:42:23.926995+00:00",
+  "container": "/gemma4-26b-a4b-tf",
+  "image": "sha256:1d53fa836eb9e98c0c6dc04a2ba9e7295cab0f9a035fe0c4be14a587309ebe29",
+  "source_uid": "2f9d0c1ef280377b0976dcc3e23dbb6c20cb078247e99de6d94d14f194099948",
+  "context": 131072,
+  "native_metadata_context": 262144,
+  "native262k_status": "unqualified: prior rawcapacityHTTP600sec timeout; optimizationpending",
+  "drafter": null,
+  "precision": "checkpointModelOptNVFP4W4A4experts/originalBF16attentionSharedMLPRoutersTiedTablesVisionKV",
+  "model": "llmfan46/gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic-NVFP4",
+  "revision": "a9e81e26ed81f541ec1d7314e72c61237a24566f",
+  "aliases": [
+    "gemma4-26b-a4b",
+    "gemma4-26b",
+    "gemma4-e4b",
+    "gemma4-e2b"
+  ],
+  "restart": "unless-stopped",
+  "qualification": "candidate14API+131056prompt16outputcapacity+acceptedrunningnonstreamcancelcounteridle4recovery; actualproduction4aliases+Responses+health",
+  "prepared_global_prompt": "disabled/unselected: exact63GPU+144modelIDs andlogits; TTFTgainsbutdecode-firstinconclusive",
+  "video_quality": "nativeencoder6firstlastboundariesbitwiseexact; directedredright/bluefixedpassed; genericcaptionwrong andgreedythinking768budgetnoanswerretained",
+  "host": "GB10/SM12.1/LinuxARM64",
+  "endpoint": "http://192.168.1.50:8888/v1",
+  "thinking_default": true,
+  "thinking_per_request": [
+    true,
+    false
+  ],
+  "native_sampling": {
+    "temperature": 1.0,
+    "top_k": 64,
+    "top_p": 0.95,
+    "eos": [
+      1,
+      106,
+      50
+    ]
+  },
+  "rollback": "preserved stoppedgemma4-e4b-tf image2326; localproductionrelease rollback.sh",
+  "build_provenance": "wholeownedwheel/760installedsourcefilesmatchsourceUID; existingsealedTorch2.16dev20261014+cu134/HF5.17/Triton3.9; adapterSHA0a8bd490... unchanged",
+  "performance_scope": "twofresholdraw +twofreshnewpairedprocesses/4frozenregions/64greedyoutputs;33-38decodeTPS observed atconfigured262144; no fastest/current131k benchmarkclaim",
+  "artifacts": "localservices/gemma4-26b-a4b/production-20261101 and audit-artifacts/gemma-e4b-development-20261031"
+}

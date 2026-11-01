@@ -206,6 +206,7 @@ def test_target_public_hf_forward_stages_native_final_hidden_and_donor_kv(assist
     native = Gemma4ForCausalLM(state.config).to(torch.bfloat16).eval()
     owner = object.__new__(E2BTarget)
     owner._closed, owner.device = False, torch.device("cpu")
+    owner.full_static_cache = False
     owner._row_policy = E2BRowPolicy()
     owner.config = SimpleNamespace(profile="E4B", vocab=state.config.vocab_size, softcap=30.0)
     owner.tap_layers = ()
