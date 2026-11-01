@@ -215,6 +215,10 @@ On CUDA, `--parallel auto` serves one request at a time. An explicit `--parallel
 for Qwen3.8-27B on one or two ranks, Flash Next on one rank, Flash Next GGUF/SM70 on TP1/2/4/8,
 and Qwen3.6 on one rank; GLM and Nemotron stay serialized. The GGUF provider uses the same scheduler
 and per-request cancellation. See the [V100 qualification](v100-flashnext-validation.md) for its tested scope.
+For engines with a prefill progress callback, development source also polls
+client cancellation at prompt chunk boundaries, including nonstream requests
+without progress frames. This stops further submissions; already submitted CUDA
+work must still retire before its owners can be released.
 When a client disconnects, its CUDA request stops at the next round, and a request still waiting behind
 another in one-at-a-time serving does not start; serialized two-rank Flash Next, Nemotron and GLM requests finish on
 both ranks. Under an explicit `--parallel N`, a request that has no tokens yet (queued, or its prompt prefilling) is

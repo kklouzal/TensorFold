@@ -1,5 +1,12 @@
 # TensorFold fork
 
+## CUDA prefill cancellation
+
+Supported CUDA engines now poll client cancellation at prompt chunk boundaries
+for nonstream requests as well as streams. The 248 focused CPU server checks
+passed; actual updated-image prefill disconnect and retirement checks remain
+pending. Already submitted CUDA work still has to retire before release.
+
 The dense Gemma CUDA adapter now loads the complete BF16 E4B checkpoint,
 including image, video and audio inputs. Managed GB10 source-mounted checks pass
 short native-model logits, cache replay and selected media fixtures; companion

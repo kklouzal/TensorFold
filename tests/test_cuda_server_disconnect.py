@@ -427,3 +427,62 @@ def test_the_socket_check_reads_descriptors_past_1023():
             high.close()
     finally:
         resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
+
+
+class PrefillPollingEngine(PacedEngine):
+    """A supported chunk boundary, without submitting real CUDA work."""
+
+    def __init__(self):
+        super().__init__()
+        self.disconnected = False
+        self.disconnect_in_prefill = False
+        self.progress_received = []
+
+    def generate(self, prompt, max_tokens, sampling, on_tokens, draft=True, progress=None):
+        self.progress_received.append(progress is not None)
+        if self.disconnect_in_prefill:
+            self.disconnected = True
+        if progress is not None and progress(len(prompt), 0, len(prompt), 12.75):
+            raise RequestCancelled('cancelled at prefill chunk boundary')
+        return super().generate(prompt, max_tokens, sampling, on_tokens, draft=draft)
+
+
+def test_nonstream_disconnect_during_prefill_stops_before_decode_and_recovers(tmp_path):
+    engine = PrefillPollingEngine()
+    engine.disconnect_in_prefill = True
+    app = app_for(tmp_path, engine)
+    with pytest.raises(RequestCancelled, match='prefill chunk'):
+        app.run({'messages': MESSAGES, 'max_tokens': 4}, True, lambda delta: True,
+                cancelled=lambda: engine.disconnected)
+    assert engine.progress_received == [True]
+    assert engine.calls == []  # no decode/output callback was required to detect the disconnect
+    assert not app._turns().busy
+    engine.disconnected = engine.disconnect_in_prefill = False
+    assert app.run({'messages': MESSAGES, 'max_tokens': 4}, True, lambda delta: True,
+                   cancelled=lambda: engine.disconnected)['completion_tokens'] == 4
+
+
+@pytest.mark.parametrize('accept', [True, False])
+def test_prefill_progress_writer_keeps_existing_fields_and_stop_semantics(tmp_path, accept):
+    engine = PrefillPollingEngine()
+    app = app_for(tmp_path, engine)
+    observed = []
+    def progress(fields):
+        observed.append(fields)
+        return accept
+    if accept:
+        assert app.run({'messages': MESSAGES, 'max_tokens': 2}, True, lambda delta: True,
+                       progress=progress)['completion_tokens'] == 2
+    else:
+        with pytest.raises(RequestCancelled, match='prefill chunk'):
+            app.run({'messages': MESSAGES, 'max_tokens': 2}, True, lambda delta: True, progress=progress)
+        assert engine.calls == []
+    assert observed == [{'total': len(app.tok.encode('user:Hi;assistant:').ids), 'cache': 0,
+                         'processed': len(app.tok.encode('user:Hi;assistant:').ids), 'time_ms': 12}]
+
+
+def test_prefill_callback_absent_without_writer_or_cancellation(tmp_path):
+    engine = PrefillPollingEngine()
+    app = app_for(tmp_path, engine)
+    assert app.run({'messages': MESSAGES, 'max_tokens': 2}, True, lambda delta: True)['completion_tokens'] == 2
+    assert engine.progress_received == [False]

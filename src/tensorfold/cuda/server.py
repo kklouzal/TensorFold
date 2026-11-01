@@ -902,11 +902,18 @@ class App:
                 """The first run's prompt progress, until its first token; True: the client has gone."""
                 if out or stopped["client"]:
                     return stopped["client"]
-                if not progress({"total": total, "cache": cache, "processed": processed, "time_ms": int(elapsed_ms)}):
+                if cancelled is not None and cancelled():
+                    stopped["client"] = True
+                    return True
+                if progress is not None and not progress({"total": total, "cache": cache, "processed": processed,
+                                                          "time_ms": int(elapsed_ms)}):
                     stopped["client"] = True
                 return stopped["client"]
 
-            reports = progress is not None and "progress" in inspect.signature(self.engine.generate).parameters
+            # Nonstream clients have no progress writer, but still need the
+            # supported engine's chunk-boundary disconnect poll during prefill.
+            reports = ((progress is not None or cancelled is not None)
+                       and "progress" in inspect.signature(self.engine.generate).parameters)
 
             def generate(ids: list[int], count: int, feed: Callable[[list[int]], bool]) -> Any:
                 nonlocal released
