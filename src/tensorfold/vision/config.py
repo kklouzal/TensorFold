@@ -10,7 +10,7 @@ def validate_vision_config(config, family):
         from tensorfold.families.gemma4.cuda.e2b_metadata import E2BConfig, is_dense_gemma
 
         if is_dense_gemma(config):
-            E2BConfig.from_dict(config)
+            E2BConfig.from_checkpoint(config)
             return config['vision_config']
         from tensorfold.families.gemma4.cuda.vision import validate_vision_config as gemma
         return gemma(config)

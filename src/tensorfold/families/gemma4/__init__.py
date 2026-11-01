@@ -14,7 +14,7 @@ MODELS = ("mlx-community/gemma-4-26b-a4b-it-4bit",)
 CUDA_DRAFTER = "z-lab/gemma-4-26B-A4B-it-DFlash"
 CUDA_DRAFTER_BITS = True
 CUDA_DRAFT_ROWS = True
-QUANT_METHODS = {"cuda": ("mlx", "compressed-tensors", None), "mlx": ("mlx",)}
+QUANT_METHODS = {"cuda": ("mlx", "compressed-tensors", "modelopt", None), "mlx": ("mlx",)}
 KERNEL_PACKAGE = "tensorfold.kernels.gemma.v1"
 KERNEL_VERSION = "v1"
 # the decode projections run another family's matmul kernels
@@ -29,7 +29,7 @@ def check(model_dir: str | Path) -> None:
     config = read_config(model_dir)
     from .cuda.e2b_metadata import E2BConfig, is_dense_gemma
     if is_dense_gemma(config):
-        E2BConfig.from_dict(config)
+        E2BConfig.from_checkpoint(config)
         return
     if quant_method(config) == "compressed-tensors":
         check_metadata(config, "cuda")
@@ -62,8 +62,10 @@ def check_metadata(config: dict, backend: str) -> None:
     if is_dense_gemma(config):
         if backend != "cuda":
             raise ValueError("Gemma E2B/E4B is implemented by the CUDA backend")
-        E2BConfig.from_dict(config)
+        E2BConfig.from_checkpoint(config)
         return
+    if backend == "cuda" and quant_method(config) == "modelopt":
+        raise ValueError("Gemma4 ModelOpt serving requires the dense E4B NVFP4 profile")
     if backend == "cuda" and quant_method(config) is None:
         raise ValueError("Unquantized Gemma4 CUDA support requires the complete dense E2B/E4B architecture")
     if backend == "cuda" and quant_method(config) == "compressed-tensors":
@@ -155,7 +157,7 @@ def cuda_drafter(model_dir):
     from .cuda.e2b_metadata import E2BConfig
     raw = read_config(model_dir)
     if is_dense_gemma(raw):
-        return "rasyosef/gemma-4-E2B-it-dflash2" if E2BConfig.from_dict(raw).profile == "E2B" else ""
+        return "rasyosef/gemma-4-E2B-it-dflash2" if E2BConfig.from_checkpoint(raw).profile == "E2B" else ""
     return CUDA_DRAFTER
 
 

@@ -56,6 +56,24 @@ class E2BConfig:
         return result
 
     @classmethod
+    def from_checkpoint(cls, raw: dict) -> "E2BConfig":
+        """Storage-aware dispatch; payload schemas are validated by the loader.
+
+        Only ModelOpt NVFP4 W4A4 E4B is added to the original BF16 contract.
+        Architecture validation alone never authorizes arbitrary quantization.
+        """
+        from tensorfold.cuda.nvfp4.format import config_block
+        block = config_block(raw)
+        if block is None:
+            return cls.from_dict(raw)
+        result = cls.from_architecture(raw)
+        if (result.profile != "E4B" or block.get("quant_method") != "modelopt"
+                or block.get("kv_cache_scheme") is not None or block.get("transform_config")
+                or block.get("sparsity_config") or block.get("quant_algo") != "NVFP4"):
+            raise ValueError("dense packed inference requires untransformed ModelOpt NVFP4 E4B with BF16 KV")
+        return result
+
+    @classmethod
     def from_architecture(cls, raw: dict) -> "E2BConfig":
         """Native geometry/compute contract, without claiming any storage format.
 

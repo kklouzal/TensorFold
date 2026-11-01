@@ -1,11 +1,11 @@
-"""Packed-only projection boundary for a future dense Gemma loader.
+"""Packed-only projection boundary for the dense Gemma loader.
 
 Native HF text attention/MLP callers invoke projection modules; they do not read
 projection `.weight`. Embeddings, tied heads, PLE and media remain native BF16.
 Install only after meta-model plain tensors have been placed. Packed tensors
 and their prepared operator are immutable, borrowed by one exclusive inference
 lane and retired by its model owner AFTER all consumers drain. There is no BF16
-weight facade, whole-matrix dequantization, calibration or target integration.
+weight facade, whole-matrix dequantization, calibration or dequantized projection mirror.
 """
 from __future__ import annotations
 

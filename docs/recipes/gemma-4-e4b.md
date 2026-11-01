@@ -107,3 +107,35 @@ The [quantization guide](../quantization.md#offline-nvfp4-planning) separates th
 implemented planner from pending conversion, producer-container compatibility,
 packed E4B execution and quantized-model qualification. Original BF16 weights
 remain the quality reference.
+
+## Packed ModelOpt NVFP4 integration candidate
+
+The same dense CUDA engine accepts a complete local E4B export with
+`quant_method=modelopt`, `quant_algo=NVFP4`, native static W4A4 calibration,
+all 258 active text attention/MLP projections packed, and the schema1
+`tensorfold_quantization_manifest.json`. All exported tensor and consumed
+metadata hashes are checked by the existing dense loader before publication.
+The 54 unused shared-tail tensors must follow the manifest's explicit omitted
+or retained-original-BF16 policy. Embeddings, PLE, tied head, media encoders and
+projectors, learned norms, RoPE and KV retain the original BF16/native contract.
+FP8 projection/table variants and transformed/quantized-KV exports are refused.
+Packed preparation is restricted to the original E4B vision/audio allocation
+profile. It checks the complete native META topology against headers before
+allocating real CPU placeholders; no META values initialize the real model.
+
+Use `--precision checkpoint`; this path does not support BF16 projection
+arithmetic overrides or whole-weight dequantization. It shares the original
+single-lane engine, native processor/template, assistant interface and prefix
+lifetime. A target `native_reference()` context preserves the packed weights
+while using native HF attention/norm routing; it is not a BF16-weight oracle.
+
+This is an integration candidate, not an installed or qualified quantized
+service. Short private loader diagnostics do not establish speculative
+verification row-law, model quality, multimodal behavior, native-context
+capacity, HTTP compatibility or a performance winner for this engine path.
+These gates must pass on the integrated source/image before cutover. Header
+capacity estimates include prepared packed buffers, simultaneous packing and
+validation owners, full native CPU parameter placeholders plus initial tied-head
+allocation, and bounded input/output scratch. They grant no allocator-reuse or
+uncommitted-page credit; allocator/driver/metadata overhead still requires live
+host/CUDA admission and independent resource guards.

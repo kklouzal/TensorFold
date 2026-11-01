@@ -65,8 +65,11 @@ The initial planner intentionally chooses the conservative column below.
 
 The experimental source includes packed projection materialization, a native
 dense loader, FP8 row64 embedding lookup, assistant calibration-frame ownership
-and export hashing. These components have CPU contract tests; they are not yet
-connected to a calibrated E4B export or enabled by `serve`. FP8 row64 storage
+and export hashing. The current ModelOpt NVFP4 W4A4 core has an unqualified
+packed-serving integration candidate using the existing dense engine; its
+integrated numerical, quality, media, capacity and HTTP gates remain pending.
+FP8 row64 and assistant calibration-frame roles remain separate experimental
+components with CPU contract tests, not enabled by `serve`. FP8 row64 storage
 is a TensorFold-specific format, not MXFP8 or a declaration that GB10 executes
 every operation with FP8 tensor cores. Lookup rounds decoded rows to BF16;
 the shared packed GEMM uses its own scale application arithmetic. Both need

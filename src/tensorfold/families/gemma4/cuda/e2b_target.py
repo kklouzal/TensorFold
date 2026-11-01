@@ -2,7 +2,7 @@
 
 Transformers owns model math, PLE, modality encoders and shared-KV attention.
 This adapter owns request/cache lifetime, the four draft taps, and bounded
-prefill/decode results. The checkpoint remains BF16 without requantization.
+prefill/decode results. Original BF16 and manifest-verified ModelOpt NVFP4 E4B storage have distinct loading paths.
 """
 from __future__ import annotations
 
@@ -141,7 +141,11 @@ class E2BTarget:
         from .e2b_runtime import require_runtime
 
         self.raw_config = read_config(model_dir)
-        self.config = self.cfg = E2BConfig.from_dict(self.raw_config)
+        self.config = self.cfg = E2BConfig.from_checkpoint(self.raw_config)
+        from tensorfold.cuda.nvfp4.format import config_block
+        packed = config_block(self.raw_config) is not None
+        if packed and projection != "native":
+            raise ValueError("packed E4B requires checkpoint arithmetic; BF16 projection overrides are incompatible")
         if tap_layers is not None and (self.config.profile != "E4B" or type(tap_layers) is not tuple
                                        or tap_layers != (1, 20, 38)):
             raise ValueError("Gemma target hidden-state taps differ from the admitted EAGLE3 contract")
@@ -158,19 +162,38 @@ class E2BTarget:
         self._taps: dict[int, Any] = {}
         self._hooks = []
         self._blas_policy = None
+        self.consumption_receipt = None
         self._row_policy = E2BRowPolicy(projection, fuse_prompt_norms=fuse_prompt_norms)
         self.tap_layers = self.config.tap_layers if tap_layers is None else tap_layers
+        load_status = None
+        self._load_status = None
+        if packed:
+            from .dense_loader import DenseLoadStatus
+            load_status = self._load_status = DenseLoadStatus()
         try:
             self._blas_policy = E2BBlasPolicy(torch)
-            self.model, info = Gemma4ForConditionalGeneration.from_pretrained(
-                str(model_dir), local_files_only=True, trust_remote_code=False,
-                dtype=torch.bfloat16, attn_implementation="sdpa", output_loading_info=True)
-            errors = {k: info.get(k) for k in ("missing_keys", "unexpected_keys", "mismatched_keys", "error_msgs")
-                      if info.get(k)}
-            if errors:
-                raise ValueError(f"Gemma E2B checkpoint was not fully consumed: {errors}")
-            # Public single-device placement, with CPU/GPU overlap in admission.
-            self.model = self.model.eval().requires_grad_(False).to(torch.device("cuda:0"))
+            if packed:
+                from .dense_engine_storage import inspect_packed_storage
+                from .dense_loader import load_dense_quantized
+                inspect_packed_storage(model_dir)
+                materialized = None
+                try:
+                    materialized = load_dense_quantized(model_dir, device="cuda:0", prompt_policy=self._row_policy,
+                                                        status=load_status)
+                    self.model = materialized.model
+                    self.consumption_receipt = materialized.receipt
+                finally:
+                    materialized = None
+            else:
+                self.model, info = Gemma4ForConditionalGeneration.from_pretrained(
+                    str(model_dir), local_files_only=True, trust_remote_code=False,
+                    dtype=torch.bfloat16, attn_implementation="sdpa", output_loading_info=True)
+                errors = {k: info.get(k) for k in ("missing_keys", "unexpected_keys", "mismatched_keys", "error_msgs")
+                          if info.get(k)}
+                if errors:
+                    raise ValueError(f"Gemma E2B checkpoint was not fully consumed: {errors}")
+                # Public single-device placement, with CPU/GPU overlap in admission.
+                self.model = self.model.eval().requires_grad_(False).to(torch.device("cuda:0"))
             self.device = next(self.model.parameters()).device
             self.embedding_weight = self.model.get_input_embeddings().weight
             self.head_weight = self.model.lm_head.weight
@@ -184,6 +207,19 @@ class E2BTarget:
                     self._tap_hook(layer)))
         except BaseException as primary:
             from tensorfold.cleanup import rollback
+            if packed and not load_status.safe_to_release:
+                # Unproved loader retirement: keep this lease and its owners.
+                # Terminal process teardown, never another native cleanup call.
+                retained_primary = primary
+                def unresolved():
+                    raise retained_primary
+                rollback(self, primary, unresolved)
+            if packed:
+                def retire_packed():
+                    if self.model is not None:
+                        torch.cuda.synchronize(0)
+                    self.close()
+                rollback(self, primary, retire_packed)
             rollback(self, primary, self.close)
 
     def _tap_hook(self, layer):
@@ -207,6 +243,8 @@ class E2BTarget:
     def native_reference(self):
         """Yield the native HF oracle under the caller's drained exclusive lane.
 
+        Packed targets retain the same packed weights here; this scope is NOT
+        an independent BF16-weight oracle.
         No generation, Target.forward or configuration mutation may run in
         parallel. This explicit scope keeps whole-HF golden forwards native
         even when the production prompt norm candidate is enabled. The caller

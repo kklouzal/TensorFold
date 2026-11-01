@@ -17,8 +17,14 @@ the planner does not modify the source model or claim a quantized deployment.
 The [mixed-precision candidates](docs/quantization.md#e4b-mixed-precision-candidates)
 keep sensitive tables and multimodal components at their original precision
 initially. Experimental packed-loader and shared FP8-table components have CPU
-contract tests; calibrated full-model integration and GB10 qualification remain
-pending and these components are not enabled by `serve`.
+contract tests. The dense CUDA engine now has an integration path for manifest-bound
+ModelOpt NVFP4 W4A4 E4B exports: the 258 active text attention/MLP projections
+remain packed; embedding, PLE, tied head, modality towers/projectors and KV remain
+BF16. It reuses the existing request/cache/media/assistant implementation.
+This source integration is not a qualified quantized deployment: integrated
+row-law, multimodal, native-context, HTTP, quality and performance gates remain
+pending. Other FP8 layouts supported by the experimental loader are not enabled
+by this serving path.
 The [containerized producer workflow](deploy/gb10/calibration/README.md) now pins
 an owned ModelOpt source candidate through a TensorFold-hosted incremental Git
 bundle, preserving its NVIDIA upstream provenance. The earlier upstream-only

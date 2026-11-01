@@ -1,4 +1,4 @@
-"""Single-lane full BF16 Gemma E2B using TensorFold's existing request sampler."""
+"""Single-lane dense Gemma E2B/E4B using TensorFold's existing request sampler."""
 from __future__ import annotations
 
 from pathlib import Path
@@ -55,14 +55,18 @@ def companion_metadata(directory, target):
     return kind, cfg
 
 
-def admit(model_dir, cfg, context, explicit, torch, draft_dir, max_rows, media, drafter_bits=16):
+def admit(model_dir, cfg, context, explicit, torch, draft_dir, max_rows, media, drafter_bits=16,
+          *, packed_storage=None):
     """Account target/draft owners before allocating, using the shared CUDA policy."""
     from tensorfold.cuda.capacity import Geometry, Weights, admit as common, headers, itemsize
     from tensorfold.cuda.sampling import effective_workspace
     from tensorfold.cuda.speculative import chain_workspace
 
-    entries = headers(model_dir)
-    target_bytes = sum(itemsize(v, k) * math.prod(v["shape"]) for k, v in entries.items())
+    if packed_storage is None:
+        entries = headers(model_dir)
+        target_bytes = sum(itemsize(v, k) * math.prod(v["shape"]) for k, v in entries.items())
+    else:
+        target_bytes = packed_storage.resident
     draft = None
     draft_bytes = 0
     draft_peak = 0
@@ -93,14 +97,31 @@ def admit(model_dir, cfg, context, explicit, torch, draft_dir, max_rows, media, 
         draft_work = (draft.block * (draft.vocab * 8 + draft.hidden * 64)) if draft else 0
         if kind == "assistant":
             draft_work += min(slots, cfg.window)*cfg.kv_heads*cfg.head_dim*4 + cfg.hidden*2
-        return retained + attention + activations + logits + embeddings + draft_work
+        packed_work = packed_storage.workspace(max(PREFILL_ROWS, max_rows)) if packed_storage is not None else 0
+        return retained + attention + activations + logits + embeddings + draft_work + packed_work
 
     resident = target_bytes + draft_bytes
-    peak = max(target_bytes * 2, target_bytes + draft_peak)
+    if packed_storage is None:
+        peak = max(target_bytes * 2, target_bytes + draft_peak)
+        host_loading = max(target_bytes, draft.parameter_bytes if draft else 0)
+    else:
+        from tensorfold.cuda.capacity import unified
+        # CPU placeholders coexist with streaming CUDA binding on UMA. Charge
+        # them without physical-page/reuse credit; host cgroup checks remain.
+        stage = packed_storage.device_staging
+        if unified(torch):
+            stage += packed_storage.host_staging
+        peak = max(target_bytes + stage, target_bytes + draft_peak)
+        host_loading = max(packed_storage.host_staging, draft.parameter_bytes if draft else 0)
+    if packed_storage is not None:
+        from tensorfold.cuda.capacity import admit_host_commitment
+        # Check actual current cgroup/physical allowance before placeholders.
+        # This is an admission check, not another UMA charge/reservation.
+        admit_host_commitment(host_loading)
     return common(
         model_dir, context, explicit, torch, Geometry(geometry, 0), lambda _name, _info: (0, 0),
         weight_estimator=lambda _: (Weights(resident, max(0, peak - resident)),
-                                     max(target_bytes, draft.parameter_bytes if draft else 0)),
+                                     host_loading),
         device_workspace_bytes=sampling["device_bytes"] + proposal["device_bytes"],
         host_workspace_bytes=sampling["host_bytes"] + proposal["host_bytes"])
 
@@ -134,7 +155,15 @@ class E2BEngine(Gemma4Engine):
         if depth is not None and (not drafter or no_drafts):
             raise ValueError("Gemma E2B draft depth requires its enabled companion")
         raw = read_config(model_dir)
-        cfg = E2BConfig.from_dict(raw)
+        cfg = E2BConfig.from_checkpoint(raw)
+        from tensorfold.cuda.nvfp4.format import config_block
+        packed_storage = None
+        if config_block(raw) is not None:
+            from tensorfold.cuda import precision
+            if precision.mode() != precision.CHECKPOINT:
+                raise ValueError("packed E4B requires --precision checkpoint with calibrated W4A4 arithmetic")
+            from .dense_engine_storage import inspect_packed_storage
+            packed_storage = inspect_packed_storage(model_dir)
         head_kind, head_cfg = None, None
         if cfg.profile == "E4B" and drafter:
             head_kind, head_cfg = companion_metadata(Path(drafter), cfg)
@@ -157,8 +186,19 @@ class E2BEngine(Gemma4Engine):
             from tensorfold.vision.gemma4_e2b import GemmaE2BProcessor
             self.vision = GemmaE2BProcessor.from_directory(model_dir, allow_urls=vision_urls)
         torch.cuda.set_device(0)
+        admission_options = {} if packed_storage is None else {"packed_storage": packed_storage}
         self.capacity_plan = admit(model_dir, cfg, context, context_explicit, torch, draft_dir,
-                                   self.max_rows, vision, drafter_bits)
+                                   self.max_rows, vision, drafter_bits, **admission_options)
+        if packed_storage is not None:
+            self.capacity_plan["packed_storage"] = {
+                "resident_bytes_estimate": packed_storage.resident,
+                "device_loading_staging_bytes_estimate": packed_storage.device_staging,
+                "host_loading_staging_bytes_estimate": packed_storage.host_staging,
+                "native_nonpersistent_bytes_bound": packed_storage.native_buffer_bound,
+                "scope": "ModelOpt NVFP4 W4A4 core; BF16 exceptions/KV",
+                "qualification": "integrated numerical/media/native-context/HTTP/quality/performance pending",
+                "bounds": "logical tensor owners; allocator/runtime/metadata overhead is not physical-capacity proof",
+            }
         self.capacity_plan["media_encoder_workspace"] = "checked per request against live remaining pool"
         self.context_window = self.capacity_plan["context_window"]
         target_options = {"tap_layers": head_cfg.tap_layers} if self._head_token_ids else {}
