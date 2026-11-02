@@ -186,6 +186,10 @@ class QwenImageProcessor:
         """Expand image (and video) markers and calculate request-local rotary metadata without touching the GPU.
         A video marker (``<|vision_start|><|video_pad|><|vision_end|>``) becomes one timestamped block a frame group,
         ``<t seconds><|vision_start|>pads<|vision_end|>``, as Qwen3-VL's processor writes it."""
+        from tensorfold.server.prompt_literals import RenderedPrompt, repair_media_tokens, trusted_prompt_text
+
+        logical_prompt = rendered_prompt
+        rendered_prompt = trusted_prompt_text(rendered_prompt)
         if (not images and not videos) or max_visual_tokens < 1:
             raise ValueError("Image preprocessing needs images and a positive visual-token budget")
         if rendered_prompt.count(self.image_token) != len(images):
@@ -233,6 +237,8 @@ class QwenImageProcessor:
                 expanded.append(piece)
         encoded = self.tokenizer("".join(expanded), add_special_tokens=False, return_attention_mask=False)
         tokens = tuple(int(t) for t in encoded["input_ids"])
+        if isinstance(logical_prompt, RenderedPrompt):
+            tokens = tuple(repair_media_tokens(logical_prompt, self.tokenizer.backend_tokenizer, tokens))
         if max_prompt_tokens is not None and len(tokens) > max_prompt_tokens:   # OpenAI's context_length_exceeded
             raise ValueError(f"{CONTEXT_LIMIT} {max_prompt_tokens} tokens: the expanded image prompt has {len(tokens)} "
                              "tokens, which exceeds the context window; reduce image resolution or prompt length")

@@ -19,7 +19,7 @@ from tensorfold.server.errors import CONTEXT_LIMIT, ContextLengthError, RequestE
 from tensorfold.server.decision_requests import DecisionRequests
 from tensorfold.server.prompt_blocks import PromptBlocks, _REQUEST
 from tensorfold.server.request_ids import new_request_id
-from tensorfold.server.request_options import RequestOptions
+from tensorfold.server.request_options import RequestOptions, thinking_budget
 from tensorfold.server.http import served_model_ids
 from tensorfold.server import metrics
 from tensorfold.server.scheduler import ChatJob, Scheduler
@@ -118,6 +118,8 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
         self.model_ids = served_model_ids(served_name, model_aliases)
         self.max_batch_size = int(lanes)
         self.tokenizer = tokenizer
+        from tensorfold.server.prompt_literals import HFPromptRenderer
+        self._prompt_renderer = HFPromptRenderer(tokenizer)
         self.tokenizer_lock = threading.Lock()
         self.default_max_tokens = int(default_max_tokens)
         # prompt + reply tokens a request may use (0: no limit)
@@ -525,7 +527,7 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
                                                       plan.spec if plan is not None else None),
                 vision=rendered.vision,
             )
-            budget = int(fields.get("thinking_budget") or self.thinking_budget) if thinking else 0
+            budget = thinking_budget(fields.get("thinking_budget"), self.thinking_budget) if thinking else 0
             if budget > 0:
                 job.think_close, job.think_end = self._think_close()
                 job.think_budget = budget if job.think_end >= 0 else 0
@@ -614,7 +616,7 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
             answer = text
             if thinking or self.think_markers == CHANNEL_MARKERS:
                 # the prompt opened a think block: reasoning streams as reasoning_content until </think>
-                reasoning_so_far, answer = split_thinking(text, finished=False, markers=self.think_markers)
+                reasoning_so_far, answer = split_thinking(text, finished=False, markers=self.think_markers, expect_thinking=thinking)
                 piece = reasoning_so_far[len(streamed_reasoning) :]
                 if piece:
                     streamed_reasoning = reasoning_so_far
@@ -640,13 +642,24 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
             raw_text = self.tokenizer.decode(content_tokens)
             text = stops.visible(raw_text)
         if thinking or self.think_markers == CHANNEL_MARKERS:
-            reasoning_text, content = split_thinking(text, finished=True, markers=self.think_markers)
+            reasoning_text, content = split_thinking(text, finished=True, markers=self.think_markers, expect_thinking=thinking)
             if plan is not None and content and self.think_markers[1] not in text and not self._strict_accepts(
                     plan, content):
                 reasoning_text, content = text, ""   # a call written in a think block that never closed, ungrammatical
             reasoning = reasoning_text.strip() or None
         else:
             content, reasoning = parse_harmony_output(text)
+        normal_tool_end = bool(collected and collected[-1] in stops.eos_ids
+                               and matched_stop(raw_text, stops.strings) is None)
+        if calls_stream is not None and plan is None and normal_tool_end:
+            for call_delta in calls_stream.feed(content, finished=True):
+                on_delta(call_delta)
+        from tensorfold.server.tools import tool_calls_complete
+
+        complete_tool_frames = (tool_calls_complete(content, tools, finished=normal_tool_end)
+                                if tools and plan is None else True)
+        if calls_stream is not None and plan is None:
+            complete_tool_frames = complete_tool_frames and calls_stream.complete
         shows = (lambda answer: plan.content(answer, finished=True)) if plan is not None else True
         stops.flush(on_delta, content, reasoning, streamed, streamed_reasoning, calls_stream is not None and shows)
         stream = job.stream
@@ -661,6 +674,8 @@ class ChatApp(RequestOptions, PromptBlocks, DecisionRequests):
             "reasoning": reasoning,
             "tool_calls_streamed": bool(calls_stream is not None and calls_stream.streamed),
             "strict_calls": plan,                  # ToolCallPolicy.finish reads strict calls with it
+            "tool_parse_finished": normal_tool_end,  # internal terminal authority, not a wire field
+            "tool_calls_complete": complete_tool_frames,
             "finish_reason": stream.finish_reason if stream is not None else "length",
             "prompt_tokens": len(prompt_ids),
             "cached_tokens": int(job.cached_tokens),

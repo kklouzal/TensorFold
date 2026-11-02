@@ -151,6 +151,76 @@ class HTTPServiceLimits(unittest.TestCase):
                         self.assertLess(payload.index(b'"role": "assistant"'), payload.index(b'source-fixture-output'))
                     self.assertIn(b'data: [DONE]', payload)
                     self.assertEqual(failures, [])
+    def test_cuda_accepted_activity_opens_deferred_stream_and_errors_finish_once(self):
+        CapacityError = _sources()[3]
+        for fail in (False, True):
+            class Activity(_App):
+                def run(self, body, chat, emit, **kwargs):
+                    self._admit()
+                    prepared = self.prepare(body, chat) if kwargs.get('prepared') is None else kwargs['prepared']
+                    assert emit(None)  # accepted queue/prefill tick, no return_progress request
+                    if fail:
+                        raise CapacityError('accepted engine failed later')
+                    return super().run(body, chat, emit, **dict(kwargs, prepared=prepared))
+            handler = _sources()[2](Activity(limit=1))
+            with self.subTest(fail=fail), _running(handler) as (server, failures):
+                status, content_type, payload = self.request(server)
+                self.assertEqual((status, content_type), (200, 'text/event-stream'))
+                self.assertEqual(payload.count(b'"role": "assistant"'), 1)
+                self.assertIn(b': keepalive\n\n', payload)
+                self.assertTrue(payload.endswith(b'data: [DONE]\n\n'))
+                self.assertEqual(payload.count(b'data: [DONE]'), 1)
+                for line in payload.splitlines():
+                    self.assertTrue(not line or line.startswith((b'data:', b':')))
+                if fail:
+                    self.assertIn(b'"error"', payload)
+                    self.assertIn(b'accepted engine failed later', payload)
+                else:
+                    self.assertIn(b'"finish_reason": "stop"', payload)
+                self.assertEqual(failures, [])
+
+    def test_cuda_nonstream_activity_writes_no_sse_and_preencoded_json_keeps_native_headers(self):
+        from io import BytesIO
+        from unittest.mock import patch
+        class Activity(_App):
+            def run(self, body, chat, emit, **kwargs):
+                emit(None)
+                result = super().run(body, chat, emit, **kwargs)
+                result['reasoning'] = ''  # actual App.run contract, explicitly empty
+                return result
+        with _running(_sources()[2](Activity(limit=1))) as (server, failures):
+            client = http.client.HTTPConnection('127.0.0.1', server.server_port, timeout=3)
+            try:
+                client.request('POST', '/v1/chat/completions', json.dumps({'model': 'source-fixture',
+                    'messages': [{'role': 'user', 'content': 'x'}], 'stream': False}))
+                response = client.getresponse()
+                payload = response.read()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(response.getheader('Content-Type'), 'application/json')
+                self.assertNotIn(b': keepalive', payload)
+                message = json.loads(payload)['choices'][0]['message']
+                self.assertEqual(message['content'], 'source-fixture-output')
+                self.assertNotIn('reasoning_content', message)
+            finally:
+                client.close()
+            self.assertEqual(failures, [])
+        kind = _sources()[2](_App(limit=None))
+        owner = object.__new__(kind)
+        owner.wfile, owner.close_connection = BytesIO(), False
+        headers = []
+        owner.send_response = lambda code: headers.append(('status', code))
+        owner.send_header = lambda name, value: headers.append((name, value))
+        owner.end_headers = lambda: None
+        value = {'count': 7, 'text': 'café'}
+        encoded = json.dumps(value).encode()
+        with patch('tensorfold.cuda.http.json.dumps', side_effect=AssertionError('duplicate serializer')):
+            owner._json(200, value, encoded=encoded)
+        self.assertEqual(owner.wfile.getvalue(), encoded)
+        self.assertIn(('Content-Length', str(len(encoded))), headers)
+        self.assertIn(('Content-Type', 'application/json'), headers)
+        with self.assertRaises(TypeError):
+            owner._json(200, value, encoded=bytearray(encoded))
+
     def test_invalid_connection_limits_refuse_before_socket_creation(self):
         Server = _sources()[0]
         for value in (0, -1, True, 1.5, '2'):

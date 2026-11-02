@@ -59,6 +59,7 @@ def exchange(factory, first, *, decisions=True):
         max_batch_size = 1
         exact_mode = {'mode': 'exact'}
         thinking_budget = 0
+        default_thinking = False
         vision = None
         effective_context_window = 2048
         engine = SimpleNamespace(generate=lambda *, constraint=None: None)
@@ -69,7 +70,10 @@ def exchange(factory, first, *, decisions=True):
         def _check_fields(self, body):
             return None
 
-        def _prepare(self, body, chat):
+        def _fixed_thinking(self, tools):
+            return None
+
+        def _prepare(self, body, chat, *, for_generation=True):
             from tensorfold.cuda.server import PreparedRequest
 
             return PreparedRequest([1, 2, 3], 1, [], False, None)

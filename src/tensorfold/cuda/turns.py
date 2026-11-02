@@ -16,21 +16,28 @@ class Turns:
         self.waiting = 0                             # foreground requests waiting for the engine
         self.parked = 0                              # every request in take(), background included
 
-    def take(self, background: bool, cancelled: Callable[[], bool] | None = None) -> None:
-        """Wait for the engine (a background request also for no waiting foreground one); RequestCancelled if gone."""
-
+    def take(self, background: bool, cancelled: Callable[[], bool] | None = None,
+             *, tick: Callable[[], bool] | None = None) -> None:
+        """Wait for the engine; optional keepalive/cancellation IO runs outside its lock."""
         with self.cv:
             self.parked += 1
             self.waiting += not background
-            try:
-                while self.busy or (background and self.waiting):
+        try:
+            while True:
+                with self.cv:
+                    if not self.busy and not (background and self.waiting):
+                        self.busy = True
+                        return
                     self.cv.wait(timeout=1.0)
-                    if cancelled is not None and cancelled():
-                        raise RequestCancelled("the client left before the request started")
-            finally:
+                # A slow/disconnected writer must not hold the engine scheduler
+                # lock or block its owner from giving the turn back.
+                if ((cancelled is not None and cancelled())
+                        or (tick is not None and tick())):
+                    raise RequestCancelled("the client left before the request started")
+        finally:
+            with self.cv:
                 self.parked -= 1
                 self.waiting -= not background
-            self.busy = True
 
     def give(self) -> None:
         with self.cv:

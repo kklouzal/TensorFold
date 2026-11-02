@@ -263,6 +263,10 @@ class GemmaE2BProcessor:
                 image_limits: ImageLimits | None = None) -> PreparedE2BMedia:
         import torch
         from transformers.video_utils import VideoMetadata
+        from tensorfold.server.prompt_literals import RenderedPrompt, repair_media_tokens, trusted_prompt_text
+
+        logical_prompt = rendered_prompt
+        rendered_prompt = trusted_prompt_text(rendered_prompt)
 
         if audios and not self.audio:
             raise ImageInputError("this Gemma checkpoint has no audio input encoder")
@@ -377,6 +381,15 @@ class GemmaE2BProcessor:
         if ids.ndim != 2 or ids.shape[0] != 1 or ids.dtype not in (torch.int32, torch.int64):
             raise ImageInputError("native Gemma processor returned invalid input IDs")
         tokens = tuple(int(i) for i in ids[0].tolist())
+        if isinstance(logical_prompt, RenderedPrompt):
+            tokens = tuple(repair_media_tokens(logical_prompt, self.processor.tokenizer.backend_tokenizer, tokens))
+            ids = torch.tensor([tokens], dtype=ids.dtype)
+            tokenized["input_ids"] = ids
+            if "attention_mask" in tokenized:
+                if not bool((tokenized["attention_mask"] == 1).all()):
+                    raise ImageInputError("protected media input requires the declared unpadded text mask")
+                tokenized["attention_mask"] = torch.ones_like(ids)
+            tokenized["mm_token_type_ids"] = torch.tensor(self.processor.create_mm_token_type_ids(ids), dtype=torch.int64)
         if not tokens or len(tokens) > context:
             raise ImageInputError(f"context length exceeds {context} tokens after native Gemma media expansion")
         if any(not 0 <= token < self.vocab for token in tokens):

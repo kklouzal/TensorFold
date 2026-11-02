@@ -2,7 +2,7 @@
 """Run pinned TensorFold CUDA with exact, generation-free Harness token counting.
 
 Invocation: python3 tensorfold_harness.py serve MODEL [native TensorFold flags]
-Requires installed owned TensorFold 0.6.6 and --thinking-budget 0. Installed packages are unchanged.
+Requires installed owned TensorFold 0.6.6. Launch values are request-overridable defaults. Installed packages are unchanged.
 The additional POST /v1/tokenize route accepts a native chat request and optional
 boolean return_tokens / return_prompt fields. It counts the generation prompt,
 including image expansion, even when that prompt exceeds the served context.
@@ -30,7 +30,7 @@ from typing import Any, Callable
 TENSORFOLD_VERSION = "0.6.6"
 BRIDGE_VERSION = 1
 MAX_BODY_BYTES = 96 * 1024**2
-MAX_RETURN_TOKENS = 16_384
+MAX_RETURN_BYTES = MAX_BODY_BYTES
 PREPARATION_TIMEOUT_S = 60.0
 BODY_TIMEOUT_S = 30.0
 
@@ -43,6 +43,8 @@ CUDA _prepare method, the only context lookup is the direct image preparation
 limit. Removing it here permits oversized history counts without changing App,
 its tokenizer, its engine, or any independent image safety limit.
 """
+
+    render_budget_bytes = MAX_BODY_BYTES
 
     def __init__(self, app: Any):
         self._app = app
@@ -94,7 +96,8 @@ class PreparationGate:
 def count_request(app: Any, body: Any, request_error: type[Exception],
                   capabilities: dict[str, Any] | None = None, *,
                   chat_template_sha256: str | None = None,
-                  provenance: dict[str, Any] | None = None, metadata_by_route=None) -> dict[str, Any]:
+                  provenance: dict[str, Any] | None = None, metadata_by_route=None,
+                  _encoded=False) -> dict[str, Any] | tuple[dict[str, Any], bytes]:
     """Native prompt preparation only: never call run, generate, or engine prefill."""
     if not isinstance(body, dict):
         raise request_error("token counting request body must be a JSON object")
@@ -109,50 +112,116 @@ def count_request(app: Any, body: Any, request_error: type[Exception],
     problem = app._check_fields(body)
     if problem:
         raise request_error(problem)
-    prepared = type(app)._prepare(_PreparationView(app), body, True)
-    if metadata_by_route is not None:
-        capabilities, chat_template_sha256, provenance = metadata_by_route[int(bool(prepared.tools))]
-    count = len(prepared.prompt)
-    response: dict[str, Any] = {
-        "count": count,
-        "model": model,
-        "context_length": app.effective_context_window,
-        "harness_tokenizer_version": BRIDGE_VERSION,
-    }
-    if capabilities is not None:
-        response["capabilities"] = capabilities
-    if chat_template_sha256 is not None:
-        response["chat_template_sha256"] = chat_template_sha256
-    if provenance is not None:
-        response["provenance"] = provenance
-    # Full histories use count-only responses. Diagnostic prompt inspection is
-    # bounded separately so a tokenizer probe cannot return a giant token dump.
-    if body.get("return_tokens") or body.get("return_prompt"):
-        if count > MAX_RETURN_TOKENS:
-            raise request_error(f"prompt inspection is limited to {MAX_RETURN_TOKENS} tokens; request count only")
+    from tensorfold.cleanup import finish, rollback
+
+    prepared = None
+    def close():
+        if prepared is not None:
+            prepared.close()
+    operations = (close,)  # allocated before acquiring prepared media/profile owners
+    try:
+        prepared = type(app)._prepare(_PreparationView(app), body, True, for_generation=False)
+        if metadata_by_route is not None:
+            capabilities, chat_template_sha256, provenance = metadata_by_route[int(bool(prepared.tools))]
+        response: dict[str, Any] = {
+            "count": len(prepared.prompt),
+            "model": model,
+            "context_length": app.effective_context_window,
+            "harness_tokenizer_version": BRIDGE_VERSION,
+        }
+        if capabilities is not None:
+            response["capabilities"] = capabilities
+        if chat_template_sha256 is not None:
+            response["chat_template_sha256"] = chat_template_sha256
+        if provenance is not None:
+            response["provenance"] = provenance
+        # Reuse native IDs; never copy a second list for inspection. Count-only
+        # does not decode a prompt or attach/serialize the token array.
         if body.get("return_tokens"):
             response["tokens"] = prepared.prompt
         if body.get("return_prompt"):
             response["prompt"] = app.tok.decode(prepared.prompt, skip_special_tokens=False)
-    return response
+        encoded = (_encode_count_response(response, request_error)
+                   if _encoded or body.get("return_tokens") or body.get("return_prompt") else None)
+    except BaseException as primary:
+        _native_cause = BaseException.__cause__.__get__(primary)
+        _native_context = BaseException.__context__.__get__(primary)
+        try:
+            rollback(prepared, primary, close)
+        except BaseException as error:
+            if error is not primary:
+                raise primary from error
+            raise
+        raise
+    finish(operations)
+    return (response, encoded) if _encoded else response
 
 
-def capability_metadata(app: Any, *, tools=False) -> tuple[dict[str, Any], str | None, dict[str, Any]]:
-    """Resolve native facts once, before any counting request is admitted.
+def _encode_count_response(response, request_error):
+    """Exact default-JSON byte budget, before any headers/partial response.
 
-The App exposes the template's canonical efforts. Forwarding a thinking keyword
-does not prove the active template consumes it or supports both values, so
-thinking controls/defaults and replay semantics remain absent. Harness derives
-those from the fingerprint of a template whose contract it has pinned.
+    ASCII escaping matches native _json. Check prompt escaping in bounded4Ki
+    chunks BEFORE iterencode can materialize one giant escaped string. Token
+    IDs are native integers: iterencode emits small pieces without another list.
+    """
+    tokens = response.get("tokens")
+    def strings(value):
+        if isinstance(value, str):
+            yield value
+        elif isinstance(value, dict):
+            for key, item in value.items():
+                yield key
+                yield from strings(item)
+        elif isinstance(value, (list, tuple)) and value is not tokens:
+            for item in value:
+                yield from strings(item)
+    for text in strings(response):
+        escaped = 2
+        for start in range(0, len(text), 4096):
+            escaped += len(json.dumps(text[start:start + 4096], ensure_ascii=True)) - 2
+            if escaped > MAX_RETURN_BYTES:
+                raise request_error(f"prompt inspection response exceeds {MAX_RETURN_BYTES} bytes; request count only")
+    data = bytearray()
+    for piece in json.JSONEncoder(ensure_ascii=True, allow_nan=False).iterencode(response):
+        # Each string fragment was bounded above; integer/list fragments stay
+        # small. Check cumulative bytes BEFORE extending the sole output buffer.
+        if len(piece) > MAX_RETURN_BYTES - len(data):
+            raise request_error(f"prompt inspection response exceeds {MAX_RETURN_BYTES} bytes; request count only")
+        data.extend(piece.encode("ascii"))
+    return bytes(data)
+
+
+def _capability_discovery(app):
+    from tensorfold.chat_capabilities import discover_chat_capabilities
+
+    fingerprints = tuple(_template_fingerprint(app, tools=route) for route in (False, True))
+    if any(fingerprint is None for fingerprint, _ in fingerprints):
+        return {}, {"method": "stable_model_render_probes_v1", "status": "unverified_active_compilation"}, fingerprints
+    fixed = tuple(app._fixed_thinking(route) for route in (False, True))
+    common, evidence = discover_chat_capabilities(app.template.render, fixed=fixed)
+    return common, evidence, fingerprints
+
+
+def capability_metadata(app: Any, *, tools=False, discovery=None) -> tuple[dict[str, Any], str | None, dict[str, Any]]:
+    """Resolve native facts and common verified render capabilities at startup.
+
+No model name or pinned template hash establishes support. Actual captured
+text/tool render routes must agree before a control/replay fact is advertised.
+The evidence describes rendering, not whether a model obeys its prompt.
 """
+    common, evidence, fingerprints = _capability_discovery(app) if discovery is None else discovery
     efforts = app.template.selected(tools=tools).efforts
     capabilities: dict[str, Any] = {
         "structured_output": importlib.util.find_spec("xgrammar") is not None
-        and "constraint" in inspect.signature(app.engine.generate).parameters,
+        and "constraint" in inspect.signature(app.engine.generate).parameters
+        and not getattr(app.engine, "refuses_structured_output", None),
         "vision": app.vision is not None,
         "video": bool(getattr(app.vision, "videos", False)),
         "reasoning_efforts": sorted(efforts),
     }
+    capabilities.update(common)
+    if "thinking_control" in common:
+        capabilities["default_thinking"] = app.default_thinking
     if bool(getattr(app.vision, "audio", False)):
         capabilities["audio"] = True
     if app.reasoning_effort is not None:
@@ -168,6 +237,7 @@ those from the fingerprint of a template whose contract it has pinned.
         "server_type": _qualified_type(app),
         "engine_type": _qualified_type(app.engine),
         "tokenizer_type": _qualified_type(app.tok),
+        "capability_discovery": evidence,
     }
     # These identify loaded Python code, not current files or captured engine
     # state. Marshal identities are scoped to the recorded Python/format build.
@@ -184,7 +254,7 @@ those from the fingerprint of a template whose contract it has pinned.
     provenance["marshal_version"] = marshal.version
     provenance["tokenizer_sha256"] = hashlib.sha256(app.tok.to_str().encode("utf-8")).hexdigest()
     provenance["tokenizer_identity"] = "runtime_serialization"
-    fingerprint, source_name = _template_fingerprint(app, tools=tools)
+    fingerprint, source_name = fingerprints[int(bool(tools))]
     if fingerprint is not None:
         provenance["template_source"] = source_name
         provenance["template_identity"] = "equivalent_active_compilation"
@@ -261,11 +331,12 @@ def make_handler_factory(native_factory: Callable[[Any], type]) -> Callable[[Any
         from tensorfold.server.cancellation import RequestCancelled, socket_cancellation
         from tensorfold.server.errors import CapacityError, RequestError, error_body, server_error
 
-        if app.thinking_budget != 0:
-            raise ValueError("Harness requires TensorFold --thinking-budget 0; budgets are selected per request")
         native_handler = native_factory(app)
+        inspect.signature(native_handler._json).bind(None, 200, {}, encoded=b"{}")
         gate = PreparationGate()
-        metadata_by_route = (capability_metadata(app), capability_metadata(app, tools=True))
+        discovery = _capability_discovery(app)
+        metadata_by_route = (capability_metadata(app, discovery=discovery),
+                             capability_metadata(app, tools=True, discovery=discovery))
 
         class Handler(native_handler):
             def do_POST(self):
@@ -273,32 +344,52 @@ def make_handler_factory(native_factory: Callable[[Any], type]) -> Callable[[Any
                 if route != "/v1/tokenize":
                     return super().do_POST()
                 gone = socket_cancellation(self.connection, stopping=getattr(self.server, "stopping", None))
+                response_started = False
                 try:
                     with gate.enter(lambda: gone.cancelled, CapacityError, RequestCancelled):
-                        length = request_body.content_length(self, MAX_BODY_BYTES, require_nonempty=True)
-                        previous_timeout = self.connection.gettimeout()
-                        self.connection.settimeout(BODY_TIMEOUT_S)
-                        try:
-                            payload = self.rfile.read(length)
-                        finally:
-                            self.connection.settimeout(previous_timeout)
-                        if len(payload) != length:
-                            self.close_connection = True
-                            raise RequestError("token counting request body ended before Content-Length")
+                        payload = request_body.read_body(
+                            self, limit=MAX_BODY_BYTES, deadline=time.monotonic() + BODY_TIMEOUT_S,
+                            cancelled=lambda: gone.cancelled,
+                        )
+                        if not payload:
+                            raise RequestError("token counting request body must be nonempty")
                         try:
                             body = json.loads(payload, parse_constant=_invalid_json_number)
                         except (UnicodeDecodeError, ValueError, RecursionError) as exc:
                             raise RequestError("token counting request body must be valid UTF-8 JSON") from exc
                         if gone.cancelled:
                             raise RequestCancelled("token counting client disconnected")
-                        result = count_request(app, body, RequestError, metadata_by_route=metadata_by_route)
+                        result, encoded = count_request(app, body, RequestError, metadata_by_route=metadata_by_route,
+                                                        _encoded=True)
                         if gone.cancelled:
                             raise RequestCancelled("token counting client disconnected")
-                    return self._json(200, result)
+                        # Retain the sole preparation/inspection slot through
+                        # serialization/write; slow readers cannot create many
+                        # concurrent96MiB response owners outside the gate.
+                        previous_timeout = self.connection.gettimeout()
+                        self.connection.settimeout(BODY_TIMEOUT_S)
+                        primary = _native_cause = _native_context = None
+                        try:
+                            response_started = True  # no second HTTP reply after an ambiguous write
+                            return self._json(200, result, encoded=encoded)
+                        except BaseException as error:
+                            primary = error
+                            _native_cause = BaseException.__cause__.__get__(error)
+                            _native_context = BaseException.__context__.__get__(error)
+                            raise
+                        finally:
+                            try:
+                                self.connection.settimeout(previous_timeout)
+                            except BaseException as cleanup:
+                                if primary is not None:
+                                    raise primary from cleanup
+                                raise
                 except RequestCancelled:
                     self.close_connection = True
                 except (RequestError, socket.timeout) as exc:
                     self.close_connection = True
+                    if response_started:
+                        return  # the response write owns failure; never append another JSON frame
                     error = RequestError("token counting request body timed out") if isinstance(exc, socket.timeout) else exc
                     return self._json(503 if isinstance(error, CapacityError) else 400, {"error": error_body(error)})
                 except Exception:
@@ -307,6 +398,8 @@ def make_handler_factory(native_factory: Callable[[Any], type]) -> Callable[[Any
                     import traceback
                     print(f"TensorFold token preparation failed: {type(sys.exception()).__name__}", file=sys.stderr)
                     traceback.print_list(traceback.extract_tb(sys.exc_info()[2]), file=sys.stderr)
+                    if response_started:
+                        return
                     return self._json(500, {"error": server_error("TensorFold token preparation failed")})
 
         return Handler
@@ -336,9 +429,9 @@ def main(argv: list[str] | None = None) -> int:
     from tensorfold.server.cancellation import socket_cancellation
 
     try:
-        inspect.signature(request_body.content_length).bind(None, MAX_BODY_BYTES, require_nonempty=True)
+        inspect.signature(request_body.read_body).bind(None, limit=MAX_BODY_BYTES, deadline=0.0, cancelled=None)
         inspect.signature(socket_cancellation).bind(None, stopping=None)
-        inspect.signature(server.App._prepare).bind(None, {}, True)
+        inspect.signature(server.App._prepare).bind(None, {}, True, for_generation=False)
     except (AttributeError, TypeError, ValueError):
         print("Harness tokenizer requires the owned TensorFold request preparation/framing interfaces", file=sys.stderr)
         return 2
@@ -350,9 +443,6 @@ def main(argv: list[str] | None = None) -> int:
         print("usage: tensorfold_harness.py serve MODEL [TensorFold CUDA flags]", file=sys.stderr)
         return 2
     args = cli.build_parser().parse_args(arguments)
-    if args.thinking_budget != 0:
-        print("Harness requires --thinking-budget 0; select thinking budgets in Harness", file=sys.stderr)
-        return 2
     if args.backend == "mlx" or (args.backend == "auto" and sys.platform == "darwin"):
         print("Harness tokenizer launcher supports TensorFold CUDA only", file=sys.stderr)
         return 2

@@ -70,7 +70,8 @@ def template_supported(rendered: str) -> bool:
 TYPES = frozenset({"string", "number", "integer", "boolean", "object", "array", "null"})
 _ANNOTATIONS = frozenset({"title", "description", "default", "examples", "$comment", "deprecated", "readOnly",
                           "writeOnly"})
-_KEYWORDS = _ANNOTATIONS | {"type", "enum", "const", "anyOf", "$ref", "$defs", "definitions", "properties", "required",
+_KEYWORDS = _ANNOTATIONS | {"type", "enum", "const", "anyOf", "oneOf", "minLength", "maxLength", "$ref", "$defs",
+                            "definitions", "properties", "required",
                             "additionalProperties", "items", "minItems", "maxItems", "pattern", "format", "minimum",
                             "maximum", "exclusiveMinimum", "exclusiveMaximum", "multipleOf", "uniqueItems"}
 # OpenAI's strict-mode limits (developers.openai.com/api/docs/guides/structured-outputs#supported-schemas); the nesting
@@ -90,7 +91,7 @@ _LENGTHS = {"minLength", "maxLength"}
 _RANGES = {"minimum", "maximum", "exclusiveMinimum", "exclusiveMaximum"}
 # keywords that constrain one JSON type: xgrammar 0.2.8 applies them only beside an explicit type
 _TYPED = {"pattern", "format", "multipleOf", "items", "minItems", "maxItems", "properties", "required",
-          "additionalProperties", "uniqueItems", *_RANGES}
+          "additionalProperties", "uniqueItems", *_LENGTHS, *_RANGES}
 
 _HEX = "[0-9a-fA-F]"
 _OCTET = "(25[0-5]|(2[0-4]|1?[0-9])?[0-9])"
@@ -164,6 +165,91 @@ def _side(kind: str) -> str:
     return kind if kind in ("string", "null") else "other"
 
 
+def _branches(node: dict[str, Any]) -> list[dict[str, Any]]:
+    return list(node.get("anyOf", node.get("oneOf")) or ())
+
+
+def _schema_json_size(value: Any) -> int:
+    """Exact compact ensure_ascii=False UTF-8 size before schema materialization.
+
+    Container identities memoize physical DAG work, while every occurrence still
+    charges its full serialized size. Strings use bounded independent stdlib
+    JSON fragments: iterencode can otherwise allocate a whole oversized string
+    chunk before a consumer checks it. The owned schema is unchanged throughout.
+    """
+    memo, active = {}, set()
+
+    def checked(size):
+        if size > MAX_GRAMMAR_BYTES:
+            raise _too_large()
+        return size
+
+    def string_size(text):
+        size = 2
+        for start in range(0, len(text), 4096):
+            fragment = json.dumps(text[start:start + 4096], ensure_ascii=False)
+            size = checked(size + len(fragment.encode("utf-8")) - 2)
+        return checked(size)
+
+    node, frames = value, []
+    while True:
+        identity = id(node)
+        if identity in memo:
+            total = memo[identity]
+        elif isinstance(node, str):
+            total = string_size(node)
+        elif isinstance(node, (dict, list, tuple)):
+            if identity in active:
+                raise ValueError("Circular reference detected")
+            active.add(identity)
+            mapping = isinstance(node, dict)
+            # One iterator frame per actual container depth, never a copied
+            # list of all children or Python recursion over annotation data.
+            frames.append([identity, iter(node.items() if mapping else node), 2, False, mapping])
+            total = None
+        else:
+            total = len(json.dumps(node, ensure_ascii=False, separators=(",", ":")).encode("utf-8"))
+        if total is not None:
+            memo[identity] = checked(total)
+            if not frames:
+                return total
+            frames[-1][2] = checked(frames[-1][2] + total)
+        while frames:
+            frame = frames[-1]
+            try:
+                child = next(frame[1])
+            except StopIteration:
+                frames.pop()
+                active.remove(frame[0])
+                total = checked(frame[2])
+                memo[frame[0]] = total
+                if not frames:
+                    return total
+                frames[-1][2] = checked(frames[-1][2] + total)
+                continue
+            overhead = int(frame[3])
+            frame[3] = True
+            if frame[4]:
+                key, child = child
+                if isinstance(key, str):
+                    key_bytes = string_size(key)
+                else:
+                    # Preserve stdlib-supported scalar key conversion;
+                    # schema/annotation keys received over JSON are str.
+                    encoded = json.dumps({key: None}, ensure_ascii=False, separators=(",", ":"))
+                    key_bytes = len(encoded.encode("utf-8")) - 7
+                overhead += key_bytes + 1
+            frame[2] = checked(frame[2] + overhead)
+            node = child
+            break
+
+
+def _schema_json_text(value: Any) -> str:
+    """Materialize only an admitted schema, in the exact encoding passed onward."""
+    _schema_json_size(value)
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+
+
 class _Schema:
     """One tool's ``parameters``: checked against the supported subset, refs resolved within it.
 
@@ -176,6 +262,8 @@ class _Schema:
         self.root, self.where = root, where
         self.properties = self.chars = self.enums = 0
         self._unique = False
+        self._special = False
+        self._oneofs: list[tuple[dict[str, Any], str]] = []
         self._typed_anyof: list[tuple[dict[str, Any], set[str], str]] = []   # checked once all nodes are
         self._types: dict[int, frozenset[str]] = {}       # solved node types by id (the request holds the nodes)
         self._copies: dict[tuple[str, str], tuple[dict[str, Any], set[str], int, int]] = {}   # rebased defs, root
@@ -199,7 +287,8 @@ class _Schema:
                 node = inner
             elif keyword in ("properties", "$defs", "definitions") and parts and isinstance(inner, dict):
                 node = inner.get(parts.pop(0))
-            elif (keyword == "anyOf" and parts and isinstance(inner, list) and parts[0].isascii() and parts[0].isdigit()
+            elif (keyword in ("anyOf", "oneOf") and parts and isinstance(inner, list)
+                  and parts[0].isascii() and parts[0].isdigit()
                   and int(parts[0]) < len(inner)):
                 node = inner[int(parts.pop(0))]
             else:
@@ -212,9 +301,67 @@ class _Schema:
         """The whole schema supported, well formed and within OpenAI's limits (RequestError naming the path)."""
 
         self._check(self.root, self.where, 0, 0)
+        for node, where in self._oneofs:
+            self._disjoint(node["oneOf"], where)
         for node, declared, where in self._typed_anyof:      # types follow refs: every node is checked by now
-            if not all(_within(self.types(b), declared) for b in node["anyOf"]):
+            if not all(_within(self.types(b), declared) for b in _branches(node)):
                 raise _refuse(where, "each anyOf branch must admit only the types listed beside it")
+
+    def _disjoint(self, branches: list[dict[str, Any]], where: str) -> None:
+        """Prove exclusivity before representing oneOf by a grammar union.
+
+        A branch pair must have disjoint JSON types (integer overlaps number),
+        or disjoint finite scalar values on a property both require. Unknown
+        intersections are refused; generation never silently substitutes anyOf.
+        """
+        def resolved(node):
+            seen = set()
+            while "$ref" in node and id(node) not in seen:
+                seen.add(id(node))
+                node = self.resolve(node["$ref"], where)
+            return node
+
+        def finite(node):
+            node = resolved(node)
+            values = [node["const"]] if "const" in node else node.get("enum")
+            if not isinstance(values, list) or not values:
+                return None
+            # Restrict the proof to scalars whose JSON equality is exact here;
+            # notably 1 and 1.0 must not be treated as disjoint spellings.
+            if not all(value is None or type(value) in (str, bool) for value in values):
+                return None
+            return {_canonical(value) for value in values}
+
+        prepared = []
+        for branch in branches:
+            node = resolved(branch)
+            types = {"number" if kind == "integer" else kind for kind in self.types(branch)}
+            fields = {}
+            if types == {"object"}:
+                for key in node.get("required", ()):
+                    values = finite(node["properties"][key])
+                    if values is not None:
+                        fields[key] = values
+            prepared.append((types, fields, finite(node)))
+        # The common finite-literal union needs only an aggregate overlap check,
+        # not one comparison per branch pair. Preserve every admitted literal.
+        if all(values is not None for _, _, values in prepared):
+            seen = set()
+            for _, _, values in prepared:
+                if not seen.isdisjoint(values):
+                    raise _refuse(where, "oneOf branches must be provably disjoint by type or required const/enum property")
+                seen.update(values)
+            return
+        for i, (types, fields, values) in enumerate(prepared):
+            for j in range(i):
+                other_types, other_fields, other_values = prepared[j]
+                if types.isdisjoint(other_types):
+                    continue
+                if values is not None and other_values is not None and values.isdisjoint(other_values):
+                    continue
+                if any(fields[key].isdisjoint(other_fields[key]) for key in fields.keys() & other_fields.keys()):
+                    continue
+                raise _refuse(where, "oneOf branches must be provably disjoint by type or required const/enum property")
 
     def _check(self, node: Any, where: str, depth: int, chain: int) -> None:
         """``node`` and its subschemas; ``depth`` counts property/items levels, ``chain`` anyOf/$defs levels within
@@ -244,8 +391,38 @@ class _Schema:
             raise _refuse(where, "$ref takes no constraints beside it here: put them in the schema it names")
         if ("enum" in node or "const" in node) and own - {"enum", "const", "type"}:
             raise _refuse(where, "enum and const take only type beside them here")
-        if "anyOf" in node:
-            if own - {"anyOf", "type"}:
+        if "anyOf" in node or "oneOf" in node:
+            union = "oneOf" if "oneOf" in node else "anyOf"
+            if "oneOf" in node:
+                # Each exclusive union becomes part of one compiled parameter
+                # or response. Enforce the existing native-compiler structural
+                # envelope BEFORE any pairwise exclusivity work, including for
+                # direct response_schema_spec callers outside request_spec.
+                pending, count = [node], 0
+                while pending:
+                    current = pending.pop()
+                    count += 1
+                    if count > MAX_SUBSCHEMAS:
+                        raise _refuse(where, f"oneOf schemas are limited to {MAX_SUBSCHEMAS} subschemas")
+                    if not isinstance(current, dict):
+                        continue  # ordinary schema validation names malformed children below
+                    for key in ("anyOf", "oneOf"):
+                        children = current.get(key)
+                        if isinstance(children, list) and len(children) + count > MAX_SUBSCHEMAS:
+                            raise _refuse(where, f"oneOf schemas are limited to {MAX_SUBSCHEMAS} subschemas")
+                    for key in ("properties", "$defs", "definitions"):
+                        children = current.get(key)
+                        if isinstance(children, dict):
+                            pending.extend(children.values())
+                    for key in ("items", "additionalProperties"):
+                        if isinstance(current.get(key), dict):
+                            pending.append(current[key])
+                    for key in ("anyOf", "oneOf"):
+                        if isinstance(current.get(key), list):
+                            pending.extend(current[key])
+                self._oneofs.append((node, where))
+                self._special = True
+            if own - {union, "type"}:
                 raise _refuse(where, "anyOf takes only type beside it here: put the other constraints in each branch")
             if kinds is not None:
                 self._typed_anyof.append((node, declared, where))
@@ -285,9 +462,17 @@ class _Schema:
                 raise _refuse(where, "multipleOf must be a positive number")
             if kinds not in ("integer", ["integer"]) or _RANGES & set(node):
                 raise _refuse(where, "multipleOf is enforced for type integer without minimum or maximum only")
-        for key in ("minItems", "maxItems"):
+        for key in ("minItems", "maxItems", "minLength", "maxLength"):
             if key in node and (type(node[key]) is not int or node[key] < 0):
                 raise _refuse(where, f"{key} must be a non-negative integer")
+        if _LENGTHS & set(node):
+            self._special = True
+            if any(node[key] > 2**31 - 1 for key in _LENGTHS & set(node)):
+                raise _refuse(where, "string length bounds exceed the pinned compiler's signed 32-bit range")
+            if node.get("minLength", 0) > node.get("maxLength", float("inf")):
+                raise _refuse(where, "minLength exceeds maxLength")
+            if {"pattern", "format"} & set(node):
+                raise _refuse(where, "length bounds with pattern or format need an unsupported intersection")
         if "uniqueItems" in node:
             if type(node["uniqueItems"]) is not bool:
                 raise _refuse(where, "uniqueItems must be a boolean")
@@ -305,11 +490,12 @@ class _Schema:
                 for name, sub in node[key].items():
                     self.chars += len(name)
                     self._check(sub, f"{where}.{key}.{name}", depth, chain + 1)
-        if "anyOf" in node:
-            if not isinstance(node["anyOf"], list) or not node["anyOf"]:
+        if "anyOf" in node or "oneOf" in node:
+            union = "oneOf" if "oneOf" in node else "anyOf"
+            if not isinstance(node[union], list) or not node[union]:
                 raise _refuse(where, "anyOf must be a non-empty list of schemas")
-            for i, sub in enumerate(node["anyOf"]):
-                self._check(sub, f"{where}.anyOf[{i}]", depth, chain + 1)
+            for i, sub in enumerate(node[union]):
+                self._check(sub, f"{where}.{union}[{i}]", depth, chain + 1)
         nested = "properties" in node or "items" in node or isinstance(node.get("additionalProperties"), dict)
         if nested and depth >= MAX_NESTING:
             raise _refuse(where, f"strict schemas nest at most {MAX_NESTING} levels")
@@ -343,7 +529,7 @@ class _Schema:
     def _next(self, node: dict[str, Any]) -> list[dict[str, Any]]:
         """The schemas a checked ``node``'s value must also satisfy: its ref's target, else its anyOf branches."""
 
-        return [self.resolve(node["$ref"], self.where)] if "$ref" in node else list(node.get("anyOf") or ())
+        return [self.resolve(node["$ref"], self.where)] if "$ref" in node else _branches(node)
 
     def types(self, node: dict[str, Any]) -> frozenset[str]:
         """The JSON types a checked ``node`` admits (integer apart from number), refs and anyOf followed.
@@ -371,7 +557,7 @@ class _Schema:
                 if id(m) not in known:
                     readers.setdefault(id(m), []).append(n)
         excluded: dict[int, set[str]] = {id(n): set() for n in order}
-        open_branches = {id(n): dict.fromkeys(TYPES, len(reads[id(n)])) for n in order if "anyOf" in n}
+        open_branches = {id(n): dict.fromkeys(TYPES, len(reads[id(n)])) for n in order if _branches(n)}
         queue: list[tuple[dict[str, Any], str]] = []
 
         def exclude(n: dict[str, Any], t: str) -> None:
@@ -380,7 +566,7 @@ class _Schema:
                 queue.append((n, t))
 
         def lost(n: dict[str, Any], t: str) -> None:     # one more of an anyOf's branches excludes ``t``
-            if "anyOf" not in n:                      # a ref: its target's exclusion is its own
+            if not _branches(n):                      # a ref: its target's exclusion is its own
                 exclude(n, t)
                 return
             open_branches[id(n)][t] -= 1
@@ -415,6 +601,7 @@ class _Schema:
         options: dict[str, dict[str, Any]] = {}     # by grammar text: the same alternative once, in schema order
         done: set[int] = set()
         path: set[int] = set()
+        emitted = 0
         stack: list[tuple[dict[str, Any], str, bool]] = [(node, where, False)]
         while stack:
             n, at, leaving = stack.pop()
@@ -427,15 +614,23 @@ class _Schema:
             if id(n) in done:
                 continue
             path.add(id(n))
+            if len(done) + len(path) > MAX_SUBSCHEMAS:
+                raise _refuse(where, f"a raw parameter is limited to {MAX_SUBSCHEMAS} subschemas")
             stack.append((n, at, True))
             if "$ref" in n:
                 stack.append((self.resolve(n["$ref"], at), at, False))
-            elif "anyOf" in n:
-                stack.extend((b, f"{at}.anyOf[{i}]", False) for i, b in reversed(list(enumerate(n["anyOf"])))
+            elif _branches(n):
+                union = "oneOf" if "oneOf" in n else "anyOf"
+                stack.extend((b, f"{at}.{union}[{i}]", False) for i, b in reversed(list(enumerate(_branches(n))))
                              if "string" in self.admits(b))
             else:
                 for option in _raw_options(n, at):
-                    options.setdefault(json.dumps(option, sort_keys=True), option)
+                    key = json.dumps(option, sort_keys=True)
+                    if key not in options:
+                        emitted += len(key.encode())
+                        if emitted > MAX_GRAMMAR_BYTES:
+                            raise _too_large()
+                        options[key] = option
         found = list(options.values())
         return found[0] if len(found) == 1 else {"type": "or", "elements": found}
 
@@ -446,16 +641,20 @@ class _Schema:
         source schema locates each replacement in its emitted EBNF; it can never replace an actual property or value.
         """
 
-        if not self._unique:
+        if not (self._unique or self._special):
             return {"type": "json_schema", "json_schema": node, "style": "json", "max_whitespace_cnt": BLANKS}
-        from tensorfold.server.strict_grammar import unique_array
+        from tensorfold.server.strict_grammar import string_length, unique_array
 
         local = _Schema(node, where)
-        source = json.dumps(node, ensure_ascii=False, separators=(",", ":"))
+        source = _schema_json_text(node)
         marker = _namespace(source, "__tensorfold_constraint_")
         replacements: list[tuple[str, str]] = []
 
-        def convert(current: dict[str, Any]) -> dict[str, Any]:
+        paths = {"#": "#", "#/": "#"}
+        targets = {}
+
+        def convert(current: dict[str, Any], old_path="#", new_path="#") -> dict[str, Any]:
+            paths[old_path] = new_path
             special = None
             if current.get("uniqueItems") is True and "array" in _own_types(current):
                 item = current.get("items")
@@ -474,28 +673,70 @@ class _Schema:
                 special = unique_array(values, current.get("minItems", 0), current.get("maxItems"), BLANKS)
                 if "null" in _own_types(current):
                     special = special.replace("root ::= ", 'root ::= "null" | ', 1)
-            if special is not None:
-                word = marker + str(len(replacements))
-                replacements.append((word, special))
-                return {"const": word}
+            if _LENGTHS & set(current) and "string" in _own_types(current):
+                special = string_length(current.get("minLength", 0), current.get("maxLength"))
+                if "null" in _own_types(current):
+                    special = special.replace("root ::= ", 'root ::= "null" | ', 1)
             out = dict(current)
             for keyword, key, child in _subschemas(current):
+                target_keyword = "anyOf" if keyword == "oneOf" else keyword
+                suffix = "/" + keyword + ("/" + str(key).replace("~", "~0").replace("/", "~1") if key is not None else "")
+                target_suffix = "/" + target_keyword + ("/" + str(key).replace("~", "~0").replace("/", "~1") if key is not None else "")
                 if key is None:
-                    out[keyword] = convert(child)
+                    out[keyword] = convert(child, old_path + suffix, new_path + target_suffix)
                 else:
                     if out[keyword] is current[keyword]:
                         out[keyword] = dict(current[keyword]) if isinstance(current[keyword], dict) else list(
                             current[keyword])
-                    out[keyword][key] = convert(child)
+                    out[keyword][key] = convert(child, old_path + suffix, new_path + target_suffix)
+            if "oneOf" in out:
+                out["anyOf"] = out.pop("oneOf")
+            if special is not None:
+                word = marker + str(len(replacements))
+                replacements.append((word, special))
+                # Retain schema edges as inert siblings of const so references
+                # into an adapted node still resolve to their converted target.
+                edges = {edge for edge, _, _ in _subschemas(out)}
+                out = {key: value for key, value in out.items() if key in edges}
+                out["const"] = word
+            targets[new_path] = out
             return out
 
         converted = convert(node)
+        aliases = {}
+        alias_prefix = _namespace(source, "__tensorfold_reference_")
+        stack = [converted]
+        while stack:
+            current = stack.pop()
+            if "$ref" in current:
+                target = paths.get(current["$ref"], current["$ref"])
+                # The pinned converter cannot follow array indices in JSON
+                # pointers. Publish each such schema under one fresh dictionary
+                # definition; keep the original target, never reinterpret it.
+                if "/anyOf/" in target or "/oneOf/" in target:
+                    aliases.setdefault(target, alias_prefix + str(len(aliases)))
+                    current["$ref"] = "#/$defs/" + aliases[target]
+                else:
+                    current["$ref"] = target
+            stack.extend(sub for _, _, sub in _subschemas(current))
+        if aliases:
+            projected = {**converted, "$defs": {**converted.get("$defs", {}),
+                         **{name: targets[target] for target, name in aliases.items()}}}
+            # Both parent dictionaries are fresh, so the existing acyclic
+            # targets cannot point back to them. JSON refs remain strings.
+            # Share these unchanged owned targets instead of recursively
+            # copying annotation data; charge every serialized occurrence.
+            _schema_json_size(projected)
+            converted = projected
         if not replacements:
-            return {"type": "json_schema", "json_schema": node, "style": "json", "max_whitespace_cnt": BLANKS}
+            return {"type": "json_schema", "json_schema": converted, "style": "json", "max_whitespace_cnt": BLANKS}
+        native_source = _schema_json_text(converted)
         try:
             import xgrammar as xgr
 
-            text = str(xgr.Grammar.from_json_schema(converted, max_whitespace_cnt=BLANKS))
+            # A public string input bypasses the library's own unbounded dict
+            # serialization; the admitted UTF-8 encoding is the consumer input.
+            text = str(xgr.Grammar.from_json_schema(native_source, max_whitespace_cnt=BLANKS))
         except ImportError:
             from tensorfold.engine.grammar import EXTRA
 
@@ -521,7 +762,10 @@ class _Schema:
                 # definitions; a marker it never emits needs neither substitution nor retained helper rules.
                 continue
             text = text.replace(literal, rename["root"])
-            text += "\n" + "\n".join(lines)
+            addition = "\n" + "\n".join(lines)
+            if len(text.encode()) + len(addition.encode()) > MAX_GRAMMAR_BYTES:
+                raise _too_large()
+            text += addition
         return {"type": "grammar", "grammar": text}
 
     def json(self, node: dict[str, Any], where: str) -> tuple[dict[str, Any], int]:
@@ -577,22 +821,15 @@ class _Schema:
         return self._copies[key]
 
 
-def validate_response_schema(root: dict[str, Any], where: str) -> None:
-    """Reject schemas whose requested strict response-format constraints the pinned compiler cannot enforce.
-
-    Tool-specific grammar substitutions are not applied to response formats; those capabilities are explicitly
-    refused here. Ordinary non-strict/guided schemas keep their existing compiler behavior.
-    """
-
+def response_schema_spec(root: dict[str, Any], where: str) -> Spec:
+    """The checked strict response schema, using the same owned adapters as tools."""
     root = {key: value for key, value in root.items() if key != "$schema"}
     schema = _Schema(root, where)
     schema.check()
-    stack = [root]
-    while stack:
-        node = stack.pop()
-        if node.get("uniqueItems") is True:
-            raise _refuse(where, "uniqueItems cannot be enforced in strict response_format schemas")
-        stack.extend(sub for _, _, sub in _subschemas(node))
+    adapted = schema.json_format(root, where)
+    if adapted["type"] == "grammar":
+        return Spec("grammar", adapted["grammar"], where)
+    return Spec("json_schema", _schema_json_text(adapted["json_schema"]), where)
 
 
 def _unescape(part: str) -> str:
@@ -641,6 +878,11 @@ def _raw_options(node: dict[str, Any], where: str) -> list[dict[str, Any]]:
         if any(VALUE_END in v for v in literals):
             raise _refuse(where, f"a string parameter's value cannot contain {VALUE_END}")
         return [_const(v) for v in dict.fromkeys(literals)]
+    if _LENGTHS & set(node):
+        from tensorfold.server.strict_grammar import string_length
+
+        return [{"type": "grammar", "grammar": string_length(node.get("minLength", 0), node.get("maxLength"),
+                                                             exclude=VALUE_END)}]
     if "pattern" in node:
         tree = _regex(node["pattern"], where)
         if all(_may_match(tree, ch) for ch in VALUE_END):
@@ -658,7 +900,7 @@ def _subschemas(node: dict[str, Any]) -> list[tuple[str, Any, Any]]:
     found = []
     for keyword in ("properties", "$defs", "definitions"):
         found += [(keyword, name, sub) for name, sub in (node.get(keyword) or {}).items()]
-    found += [("anyOf", i, sub) for i, sub in enumerate(node.get("anyOf") or ())]
+    found += [(keyword, i, sub) for keyword in ("anyOf", "oneOf") for i, sub in enumerate(node.get(keyword) or ())]
     found += [(keyword, None, node[keyword]) for keyword in ("items", "additionalProperties")
               if isinstance(node.get(keyword), dict)]
     return found
@@ -689,8 +931,9 @@ def _rebase(node: dict[str, Any]) -> dict[str, Any]:
     for keyword in ("properties", "$defs", "definitions"):
         if keyword in node:
             out[keyword] = {name: _rebase(sub) for name, sub in node[keyword].items()}
-    if "anyOf" in node:
-        out["anyOf"] = [_rebase(sub) for sub in node["anyOf"]]
+    for keyword in ("anyOf", "oneOf"):
+        if keyword in node:
+            out[keyword] = [_rebase(sub) for sub in node[keyword]]
     for keyword in ("items", "additionalProperties"):
         if isinstance(node.get(keyword), dict):
             out[keyword] = _rebase(node[keyword])
@@ -813,6 +1056,13 @@ _NAME = re.compile(r"[^\s<>]+")
 class Plan:
     """A request's call grammar (``spec``, an ``engine.grammar.Spec``) and its reader, from the active tools."""
 
+    opener = OPEN  # selected by the exact rendered template probe; scalar XML inherits it
+
+    @property
+    def thinking_headers(self):
+        """Reserved offered-name intent headers; a bare opener is still reasoning."""
+        return tuple(FUNCTION + name + NAME_END for name in self.tools)
+
     def __init__(self, tools: Sequence[dict[str, Any]], *, required: bool, parallel: bool,
                  offered: Sequence[Any] | None = None) -> None:
         """``tools``: the active ones (after ``tool_choice``); ``offered``: the request's list, for error paths."""
@@ -822,6 +1072,7 @@ class Plan:
         tags = []
         index = {id(t): k for k, t in reversed(list(enumerate(offered or ())))}    # a tool's first place in the request
         copied = 0                                       # grammar characters of definitions copied into parameters
+        emitted = 0
         for i, spec in enumerate(tools):
             where = f"tools[{index.get(id(spec), i)}].function"
             name = tool_spec_name(spec)
@@ -846,7 +1097,11 @@ class Plan:
                     _const(PARAMETER), {"type": "regex", "pattern": "[^ \\t\\r\\n<>]+"}, _const(NAME_END),
                     {"type": "any_text", "excludes": [VALUE_END]}, _const(VALUE_CLOSE))}
             self.tools[name] = tool
-            tags.append({"type": "tag", "begin": f"{FUNCTION}{name}{NAME_END}", "content": content, "end": CLOSE})
+            tag = {"type": "tag", "begin": f"{FUNCTION}{name}{NAME_END}", "content": content, "end": CLOSE}
+            emitted += len(json.dumps(tag, ensure_ascii=False, separators=(",", ":")).encode())
+            if emitted > MAX_GRAMMAR_BYTES:
+                raise _too_large()
+            tags.append(tag)
         if self.required:
             blanks = {"type": "regex", "pattern": f"[ \\t\\r\\n]{{0,{BLANKS}}}"}
             body = _seq(blanks, {"type": "tags_with_separator", "tags": tags, "separator": SEPARATOR,
@@ -863,7 +1118,7 @@ class Plan:
     def _strict(name: str, parameters: dict[str, Any], where: str) -> tuple[Tool, dict[str, Any], int]:
         """A strict tool, its parameters' grammar, and how many characters of its definitions that grammar copies."""
 
-        if {"anyOf", "$ref", "enum", "const"} & set(parameters):
+        if {"anyOf", "oneOf", "$ref", "enum", "const"} & set(parameters):
             raise _refuse(where, "a strict tool's parameters must be an object schema (not anyOf, $ref, enum or const)")
         if parameters.get("type", "object") != "object":
             raise _refuse(where, 'a strict tool\'s parameters must have type "object"')
@@ -872,6 +1127,7 @@ class Plan:
         schema.check()
         required = set(top.get("required") or ())
         params, parts, copied = [], [], 0
+        emitted = 0
         for key, sub in (top.get("properties") or {}).items():
             at = f"{where}.properties.{key}"
             if not _NAME.fullmatch(key):
@@ -890,6 +1146,9 @@ class Plan:
                 value = schema.json_format(own, at)
                 mode, copied = JSON, copied + copies
             part = _seq(_const(f"{PARAMETER}{key}{NAME_END}"), value, _const(VALUE_CLOSE))
+            emitted += len(json.dumps(part, ensure_ascii=False, separators=(",", ":")).encode())
+            if emitted > MAX_GRAMMAR_BYTES:
+                raise _too_large()
             parts.append(part if key in required else {"type": "optional", "content": part})
             params.append(Param(key, key in required, mode))
         content = _seq(*parts) if parts else _const("")

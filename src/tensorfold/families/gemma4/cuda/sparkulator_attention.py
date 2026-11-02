@@ -1,4 +1,4 @@
-"""Unconnected Spark global-GQA candidate; native reference remains available.
+"""Optional Spark global GQA; native reference remains available.
 
 The caller owns one exclusive head lane. Only the global shared-KV layer is
 replaced; local attention retains its native provider and allocation contract.
@@ -52,7 +52,7 @@ class SparkGlobalAttention(E2BTextAttention):
 
 
 def install_spark_global_attention(model, *, enabled=False):
-    """Prepare only; no production factory currently selects this candidate.
+    """Prepare optional global proposal policy before weight publication.
 
     Wrapping borrows original native parameters. Construct before publication so
     allocation failure leaves the original model intact. Native-reference scopes

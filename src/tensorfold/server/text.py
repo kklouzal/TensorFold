@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from tensorfold.engine.call_gate import CALL_MARKS as _CALLS
+from tensorfold.markup_lex import CALL_MARKS as _CALLS, markup_regions, partial_call_suffix, unquoted_find
 from tensorfold.server.messages import _normalize_tool_call_arguments, late_system_role, normalize_messages
 
 _THINK_END = "</think>"
@@ -25,13 +25,17 @@ def _partial_tag(text: str, tag: str) -> int:
     return 0
 
 
-def split_thinking(text: str, *, finished: bool, markers: tuple[str, str] = THINK_MARKERS) -> tuple[str, str]:
+def split_thinking(text: str, *, finished: bool, markers: tuple[str, str] = THINK_MARKERS,
+                   expect_thinking: bool = False) -> tuple[str, str]:
     """(reasoning, answer) of a thinking reply; while it streams, a tail that could begin a marker is held back."""
 
+    if markers == CHANNEL_MARKERS:
+        from tensorfold.server.gemma_values import split_gemma_thinking
+        return split_gemma_thinking(text, finished=finished, expect_thinking=expect_thinking)
     # Gemma 4 can open its thought channel after visible text. Strip that block wherever it opens.
     opener, closer = markers
     if opener and not text.startswith(opener):
-        start = text.find(opener)
+        start = unquoted_find(text, opener)
         if start > 0:                                        # a thought channel opened after some visible text
             prefix = text[:start]
             prefix = prefix[: len(prefix) - _partial_tag(prefix, opener)]   # drop a stray/doubled partial opener
@@ -43,10 +47,10 @@ def split_thinking(text: str, *, finished: bool, markers: tuple[str, str] = THIN
         return "", text                                      # a finished reply that never opened the block
     if opener:
         text = text[len(opener):].lstrip("\n")
-    end = text.find(closer)
+    end = unquoted_find(text, closer)
     if end >= 0:
         return text[:end], text[end + len(closer):].lstrip("\n")
-    call = min((at for at in (text.find(opener) for opener, _ in _CALLS) if at >= 0), default=-1)
+    call = next((region.start for region in markup_regions(text) if region.kind == 'call'), -1)
     if call >= 0:
         # a call written before the block closes: held while the block may still close, the answer if the reply ends
         if not finished:
@@ -77,29 +81,24 @@ def think_markers(tokenizer: Any) -> tuple[str, str]:
     return CHANNEL_MARKERS if isinstance(close, int) and close >= 0 and close != unk else THINK_MARKERS
 
 
-def hide_tool_calls(text: str, *, finished: bool) -> str:
-    """Hide tool-call blocks and partial opening tags while streaming so visible text only grows and calls arrive as deltas."""
-
-    out: list[str] = []
-    pos = 0
-    while True:
-        found = [(text.find(opener, pos), opener, closer) for opener, closer in _CALLS]
-        found = [f for f in found if f[0] >= 0]
-        if not found:
-            tail = text[pos:]
-            held = 0 if finished else max(_partial_tag(tail, opener) for opener, _ in _CALLS)
-            out.append(tail[: len(tail) - held])
-            return "".join(out)
-        start, opener, closer = min(found)
-        out.append(text[pos:start])
-        end = text.find(closer, start + len(opener))
-        if end < 0:
-            return "".join(out)
-        pos = end + len(closer)
-        if closer == _CALLS[0][1]:
-            pos = _STRAY_QWEN_CLOSES_RE.match(text, pos).end()
-            if not finished and closer.startswith(text[pos:].lstrip()):
-                return "".join(out)          # a doubled closer may still be arriving: hold the whitespace before it
+def hide_tool_calls(text: str, *, finished: bool, openers=None) -> str:
+    """Hide lexical call frames; code and quoted values remain exact visible data."""
+    parts, at, last_close = [], 0, None
+    for region in markup_regions(text, finished=finished):
+        if region.kind == 'call' and (openers is None or region.opener.lower() in openers):
+            parts.append(text[at:region.start])
+            at, last_close = region.end, region.closer
+    tail = text[at:]
+    spans = markup_regions(tail)
+    opaque = bool(spans and spans[-1].end == len(tail) and spans[-1].kind != 'call')
+    if not finished and not opaque:
+        if last_close is not None and last_close.lower().startswith(tail.lstrip().lower()):
+            tail = ''
+        else:
+            held = partial_call_suffix(tail, openers)
+            tail = tail[:len(tail) - held]
+    parts.append(tail)
+    return ''.join(parts)
 
 
 def render_prompt_ids(
@@ -111,6 +110,7 @@ def render_prompt_ids(
     add_generation_prompt: bool = True,
     reasoning_effort: str | None = None,
     late_system: str | None = None,
+    renderer: Any = None,
 ) -> list[int]:
     """Render chat tokens; Qwen3.8 thinking effort ``medium`` preserves the system block, while default ``xhigh`` adds an instruction."""
 
@@ -126,13 +126,11 @@ def render_prompt_ids(
         kwargs["reasoning_effort"] = reasoning_effort
     if tools:
         kwargs["tools"] = tools
-    try:
-        rendered = tokenizer.apply_chat_template(messages, **kwargs)
-    except TypeError:
-        kwargs.pop("tools", None)
-        rendered = tokenizer.apply_chat_template(messages, **kwargs)
-    if isinstance(rendered, str):
-        rendered = tokenizer.encode(rendered)
+    from tensorfold.server.prompt_literals import encode_hf_prompt, render_hf_prompt
+
+    # Native values enter the selected HF template unchanged; output origins
+    # survive filters/slicing so newly-created request controls remain data.
+    rendered = encode_hf_prompt(tokenizer, render_hf_prompt(tokenizer, messages, renderer=renderer, **kwargs))
     ids = [int(t) for t in rendered]
     if not enable_thinking and add_generation_prompt:
         ids = _close_open_think(tokenizer, ids)

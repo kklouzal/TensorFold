@@ -25,8 +25,9 @@ class DecisionRequests:
         try:
             with self.tokenizer_lock:
                 history = render_prompt_ids(self.tokenizer, messages, enable_thinking=False,
-                                            add_generation_prompt=False)
-                other = render_prompt_ids(self.tokenizer, probe, enable_thinking=False)
+                                            add_generation_prompt=False, renderer=getattr(self, "_prompt_renderer", None))
+                other = render_prompt_ids(self.tokenizer, probe, enable_thinking=False,
+                                          renderer=getattr(self, "_prompt_renderer", None))
         except Exception:  # noqa: BLE001 - a template quirk must not fail the request
             return 0, (), 0
         prefix = 0 < len(history) < len(prompt_ids) and prompt_ids[:len(history)] == history
@@ -42,7 +43,8 @@ class DecisionRequests:
 
         try:
             with self.tokenizer_lock:
-                prepared = prepare(self.tokenizer, body, context_len=self.context_window or None)
+                prepared = prepare(self.tokenizer, body, context_len=self.context_window or None,
+                                   renderer=getattr(self, "_prompt_renderer", None))
         except DecisionError as exc:
             raise RequestError(str(exc)) from exc
         text = _render_text(body.get("input"))

@@ -146,16 +146,13 @@ def test_native_validation_is_retained(bridge, app, body, problem):
 
 
 @pytest.mark.parametrize("inspection", ["return_tokens", "return_prompt"])
-def test_inspection_limit_leaves_count_only_available(bridge, app, inspection):
-    body = request(bridge.MAX_RETURN_TOKENS - 1, **{inspection: True})
-    assert bridge.count_request(app, body, RequestError)["count"] == bridge.MAX_RETURN_TOKENS
-    oversized = request(bridge.MAX_RETURN_TOKENS, **{inspection: True})
-    with pytest.raises(RequestError, match="prompt inspection is limited"):
-        bridge.count_request(app, oversized, RequestError)
-    oversized.pop(inspection)
-    result = bridge.count_request(app, oversized, RequestError)
-    assert result["count"] == bridge.MAX_RETURN_TOKENS + 1
-    assert "tokens" not in result and "prompt" not in result
+def test_inspection_budget_is_serialized_bytes_not_an_arbitrary_token_limit(bridge, app, inspection, monkeypatch):
+    body = request(20_000, **{inspection: True})
+    assert bridge.count_request(app, body, RequestError)["count"] == 20_001
+    monkeypatch.setattr(bridge, "MAX_RETURN_BYTES", 100)
+    with pytest.raises(RequestError, match="response exceeds 100 bytes"):
+        bridge.count_request(app, request(100, **{inspection: True}), RequestError)
+    assert bridge.count_request(app, request(20_000), RequestError)["count"] == 20_001
 
 
 class CpuVision:
@@ -291,18 +288,23 @@ def test_metadata_identifies_the_active_template_and_canonical_efforts(bridge, t
                            "{% elif reasoning_effort == 'xhigh' %} deep{% endif %}")
     app = served_app(tmp_path, template, reasoning_effort="high")
     capabilities, fingerprint, provenance = bridge.capability_metadata(app)
-    # Exact: thinking-control, default-thinking and reasoning-replay facts stay absent.
+    # Both actual render routes consume the switch; neither consumes replayed reasoning.
     assert capabilities == {
         "structured_output": importlib.util.find_spec("xgrammar") is not None,
         "vision": False, "video": False,
         "reasoning_efforts": ["low", "medium", "xhigh"],
         "default_reasoning_effort": "xhigh",            # the template's nearest named level, ties upward
+        "thinking_control": {"keyword": "enable_thinking", "on_value": True, "off_value": False, "top_level": False},
+        "default_thinking": False,
     }
     assert fingerprint == sha256(template)
 
     def code_sha256(function):
         return hashlib.sha256(marshal.dumps(function.__code__)).hexdigest()
 
+    evidence = provenance.pop("capability_discovery")
+    assert evidence["method"] == "stable_model_render_probes_v1" and len(evidence["routes"]) == 2
+    assert all(route["thinking_control"] for route in evidence["routes"])
     assert provenance == {
         "server_version": "0.6.6", "bridge_version": bridge.BRIDGE_VERSION,
         "server_type": "tensorfold.cuda.server.App",
@@ -406,7 +408,9 @@ class NativeHandler:
     def do_POST(self):
         return "native route"
 
-    def _json(self, status, result):
+    def _json(self, status, result, *, encoded=None):
+        if encoded is not None:
+            assert type(encoded) is bytes and json.loads(encoded) == result
         return status, result
 
 
@@ -497,7 +501,7 @@ def test_captured_template_does_not_authorize_invalid_tokenizer_metadata(tmp_pat
     (b"{}", {"Content-Length": "invalid"}, "Content-Length must contain a decimal byte count"),
     (b"{}", {"Content-Length": str(96 * 1024**2 + 1)}, "exceeds the 96 MiB limit"),
     (b"{}", {"Content-Length": "3"}, "ended before Content-Length"),
-    (b"{}", {"Content-Length": "2", "Transfer-Encoding": "chunked"}, "Transfer-Encoding is unsupported; use Content-Length"),
+    (b"{}", {"Content-Length": "2", "Transfer-Encoding": "chunked"}, "Content-Length and Transfer-Encoding cannot be combined"),
     (b"[}", {"Content-Length": "2"}, "valid UTF-8 JSON"),
     (b"\xff", {"Content-Length": "1"}, "valid UTF-8 JSON"),
     (b"{\"x\":NaN}", {"Content-Length": "9"}, "valid UTF-8 JSON"),
@@ -509,10 +513,12 @@ def test_tokenize_http_boundary_refusals(bridge, app, payload, headers, problem)
     assert problem in result["error"]["message"]
 
 
-def test_harness_factory_requires_request_selected_thinking_budget(bridge, app):
-    app.thinking_budget = 1
-    with pytest.raises(ValueError, match="thinking-budget 0"):
-        bridge.make_handler_factory(lambda ignored: object)(app)
+def test_harness_factory_accepts_positive_launch_defaults(bridge, app):
+    app.thinking_budget = 2048
+    factory = bridge.make_handler_factory(lambda ignored: NativeHandler)
+    payload = json.dumps(request()).encode()
+    status, result = handler_post(bridge, app, payload, {"Content-Length": str(len(payload))}, handler_type=factory(app))
+    assert status == 200 and result["count"] == 4
 
 
 def test_launcher_pin_matches_owned_package_source(bridge):
@@ -597,7 +603,7 @@ def test_launcher_refuses_incoherent_owned_interfaces_before_dispatch(
     from tensorfold.cuda import server
     from tensorfold.server import request_body, cancellation
     if boundary == 'framing':
-        monkeypatch.setattr(request_body, 'content_length', lambda handler, limit: 0)
+        monkeypatch.setattr(request_body, 'read_body', lambda handler, limit: b'{}')
     elif boundary == 'cancellation':
         monkeypatch.setattr(cancellation, 'socket_cancellation', lambda connection: None)
     else:
@@ -611,7 +617,6 @@ def test_launcher_refuses_incoherent_owned_interfaces_before_dispatch(
 
 @pytest.mark.parametrize('backend,arguments,message', [
     ('cuda', ['models'], 'usage:'),
-    ('cuda', ['serve', 'controlled-model', '--thinking-budget', '1'], 'thinking-budget 0'),
     ('mlx', ['serve', 'controlled-model', '--backend', 'mlx'], 'CUDA only'),
 ])
 def test_exact_installed_launcher_preserves_supported_command_guards(
@@ -701,3 +706,126 @@ def test_a_failed_preparation_is_a_spec_server_error_without_request_data(bridge
     status, result = handler_post(bridge, app, payload, {"Content-Length": str(len(payload))})
     check_error(result)
     assert status == 500 and result["error"]["type"] == "server_error" and "private-prompt" not in json.dumps(result)
+
+
+def test_chunked_token_counting_uses_same_envelope_and_bounded_shared_framing(bridge, app):
+    payload = json.dumps(request(return_tokens=True)).encode()
+    wire = f'{len(payload):x};fact=valid\r\n'.encode() + payload + b'\r\n0\r\nX-Fact: yes\r\n\r\n'
+    status, result = handler_post(bridge, app, wire, {'Transfer-Encoding': 'chunked'})
+    assert status == 200 and result['tokens'] == [4, 4, 4, 1]
+    assert result['harness_tokenizer_version'] == 1 and result['model'] == 'served'
+    assert result['context_length'] == 8
+
+
+def test_inspection_escaping_bound_precedes_giant_json_fragment_and_encoded_matches(bridge, monkeypatch):
+    monkeypatch.setattr(bridge, 'MAX_RETURN_BYTES', 100)
+    with pytest.raises(RequestError, match='response exceeds'):
+        bridge._encode_count_response({'prompt': '💡' * 20}, RequestError)
+    value = {'tokens': [0, 262143], 'prompt': 'café\n"\\', 'model': 'served'}
+    encoded = bridge._encode_count_response(value, RequestError)
+    assert type(encoded) is bytes and encoded == json.dumps(value).encode()
+    assert len(encoded) <= 100
+
+
+def test_prepared_owner_closed_and_native_id_list_reused(bridge, app, monkeypatch):
+    from tensorfold.cuda.server import PreparedRequest
+    prepared, closed = [], []
+    original, close = App._prepare, PreparedRequest.close
+    def prepare(view, body, chat, **kwargs):
+        assert kwargs == {'for_generation': False}
+        result = original(view, body, chat, **kwargs)
+        prepared.append(result)
+        return result
+    def retire(value):
+        closed.append(value)
+        close(value)
+    monkeypatch.setattr(App, '_prepare', prepare)
+    monkeypatch.setattr(PreparedRequest, 'close', retire)
+    result, encoded = bridge.count_request(app, request(return_tokens=True), RequestError, _encoded=True)
+    assert result['tokens'] is prepared[0].prompt and closed == prepared
+    assert json.loads(encoded) == result
+    monkeypatch.setattr(bridge, 'MAX_RETURN_BYTES', 1)
+    with pytest.raises(RequestError, match='response exceeds'):
+        bridge.count_request(app, request(return_tokens=True), RequestError)
+    assert closed == prepared
+
+
+def test_discovery_uses_both_real_routes_and_current_tool_turn_reasoning(bridge, tmp_path):
+    source = ("{% if enable_thinking %}thinking{% endif %}"
+              "{% set ns = namespace(last=-1) %}{% for m in messages %}{% if m.role == 'user' %}"
+              "{% set ns.last = loop.index0 %}{% endif %}{% endfor %}"
+              "{% for m in messages %}{{ m.content }}{% if m.reasoning_content is defined and loop.index0 > ns.last %}"
+              "{{ m.reasoning_content }}{% endif %}{% endfor %}")
+    app = served_app(tmp_path, {'default': source, 'tool_use': 'tools ' + source})
+    for tools in (False, True):
+        caps = bridge.capability_metadata(app, tools=tools)[0]
+        assert caps['thinking_control']['keyword'] == 'enable_thinking'
+        assert caps['reasoning_replay_field'] == 'reasoning_content' and caps['preserve_reasoning'] is False
+    app.engine.refuses_structured_output = 'unqualified model region'
+    assert bridge.capability_metadata(app)[0]['structured_output'] is False
+
+
+def test_positive_launch_budget_dispatch_stays_default_not_prohibition(bridge, matching_install, monkeypatch):
+    from tensorfold import cli
+    calls = []
+    monkeypatch.setattr(cli, 'main', lambda args: calls.append(args) or 17)
+    arguments = ['serve', 'controlled-model', '--backend', 'cuda', '--thinking-budget', '2048']
+    assert bridge.main(arguments) == 17 and calls == [arguments]
+
+
+def test_count_and_metadata_do_not_wait_for_busy_engine_lane(bridge, app):
+    lock = threading.Lock()
+    done, failures, results = threading.Event(), [], []
+    app.engine._run_lock = lock
+    def count():
+        try:
+            results.append(bridge.count_request(app, request(), RequestError))
+            bridge.capability_metadata(app)
+        except BaseException as error:
+            failures.append(error)
+        finally:
+            done.set()
+    worker = threading.Thread(target=count)
+    with lock:
+        worker.start()
+        assert done.wait(2), 'CPU counting/discovery waited for the engine lane'
+    worker.join(2)
+    assert not worker.is_alive() and failures == [] and results[0]['count'] == 4
+
+
+def test_response_timeout_never_appends_second_http_json_reply(bridge, app):
+    calls = []
+    class Failing(NativeHandler):
+        def _json(self, status, result, *, encoded=None):
+            calls.append(status)
+            raise socket.timeout('controlled response write timeout')
+    factory = bridge.make_handler_factory(lambda ignored: Failing)
+    payload = json.dumps(request()).encode()
+    assert handler_post(bridge, app, payload, {'Content-Length': str(len(payload))}, handler_type=factory(app)) is None
+    assert calls == [200]
+
+
+def test_count_failure_preserves_primary_and_prepared_owner_if_close_fails(bridge, app, monkeypatch):
+    from tensorfold.cuda.server import PreparedRequest
+    primary, cleanup = RequestError('inspection validation'), OSError('prepared close')
+    def encode(*args, **kwargs):
+        raise primary
+    def close(value):
+        raise cleanup
+    monkeypatch.setattr(bridge, '_encode_count_response', encode)
+    monkeypatch.setattr(PreparedRequest, 'close', close)
+    with pytest.raises(RequestError) as caught:
+        bridge.count_request(app, request(return_tokens=True), RequestError)
+    assert caught.value is primary and primary.__cause__ is cleanup
+    assert primary._tensorfold_retained_owners
+
+
+def test_count_validates_schema_without_compiling_generation_grammar(bridge, app, monkeypatch):
+    calls = []
+    def forbidden():
+        calls.append('compile')
+        raise AssertionError('count entered generation grammar compiler')
+    monkeypatch.setattr(app, '_grammars', forbidden)
+    body = request(response_format={'type': 'json_object'})
+    assert bridge.count_request(app, body, RequestError)['count'] == 4
+    assert calls == []

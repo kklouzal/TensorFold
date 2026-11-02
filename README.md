@@ -1,8 +1,8 @@
 # TensorFold fork
 
-## GB10 standalone Gemma 4 26B-A4B deployment: 2026-11-01
+## GB10 Gemma 4 26B-A4B deployment checkpoints
 
-Production on port `8888` runs
+The 2026-11-01 standalone production checkpoint on port `8888` ran
 [`llmfan46/gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic-NVFP4`](docs/recipes/gemma-4-26b-modelopt.md)
 revision `a9e81e26ed81f541ec1d7314e72c61237a24566f`, **without a drafter**.
 Only routed experts use native ModelOpt NVFP4 W4A4. Attention, shared MLP,
@@ -53,7 +53,7 @@ eight decode point estimates improved by 0.458–1.649%, but only the short-code
 production-like setting had a conditional throughput-ratio interval above one
 (1.004576, interval [1.000053133, 1.009119458]); the other seven were inconclusive.
 B01 remains **unselected**, with no equivalence or inferiority conclusion.
-The immutable production image `1d53fa83` is unchanged.
+Production image `1d53fa83` was retained for that checkpoint.
 
 The initial standalone experimental Sym8 BF16 operator passed 20 installed CPU
 checks and four actual GPU checks, including full tied-head bit reconstruction,
@@ -74,7 +74,7 @@ with default off. The latest SDK capture, source UID `4bf0ba0a…`
 (runtime `b2a…`, verification `fd7…`), passed 474 installed CPU checks in
 5.64 seconds without CUDA initialization; model/drafter gates remain separate.
 It performs lossless runtime storage preparation, not checkpoint quantization.
-Production image `1d53fa83` remains unchanged until the new deployment passes.
+Production image `1d53fa83` was retained while the replacement's gates were pending.
 
 ModelOpt MoE source admits an explicitly supplied DFlash companion with normal
 metadata/tap and capacity checks; automatic drafting remains off. On baseline
@@ -101,8 +101,28 @@ the model native window. Its installed checks and live Engine/cache/media,
 actual-q and performance gates remain
 pending. `--spark-sampled-q` reuses bounded actual-q sampling with target p
 unchanged, but its model-law/cache/performance gates also remain pending.
-Production image `1d53fa83` is unchanged; these are experimental checkpoints,
-not completed drafter selection or a universal speed claim.
+These are historical experimental checkpoints, not a universal speed claim.
+The operator subsequently selected DFlash FP8 at depth 4 (`--draft-rows 5`)
+with the lossless head enabled for the Gemma 4 26B A4B ModelOpt deployment,
+and stopped further tuning. The selected configuration retains 131,072 context,
+BF16 KV, native vision, thinking controls and the served model aliases. Its
+replacement image must pass the Harness remediation and installed/live release
+checks; the earlier source-specific measurements do not qualify a later image.
+
+## Model-owned Harness discovery and counting
+
+The owned launcher selects the checkpoint's template metadata by default;
+`--chat-template` is an optional override. Thinking/replay discovery renders both
+default and tool-use routes and advertises only stable common facts, without
+model-name or known-template-hash inference. Launch values remain defaults and
+request values win. `/v1/tokenize` keeps Harness envelope version 1, shares CPU
+preparation with generation, accepts bounded fixed-length/chunked bodies and
+uses a 96 MiB serialized inspection budget rather than a 16K-token ceiling.
+Prepared owners and the sole count slot cover serialization through response
+writing. These source changes require the selected-model and installed endpoint
+checks in the release record; they do not establish model output quality or
+universal tokenizer workspace bounds. See [API contracts](docs/api.md) and the
+[launcher deployment notes](deploy/gb10/README.md).
 
 ## CUDA prefill cancellation
 
@@ -1069,7 +1089,7 @@ Use `http://127.0.0.1:8080/v1` as an OpenAI-compatible client base URL and an ID
 | `/v1/conversations`, `/v1/conversations/{id}/items` | Standard conversation and item lifecycle when an explicit durable API record store and quotas are configured; logical retention is independent of GPU/checkpoint retention. |
 | `POST /v1/tokenize` | CUDA Harness extension: native chat prompt counting without generation, including supported image expansion. Successful replies also carry Harness model-discovery metadata: canonical reasoning efforts, the active chat template's fingerprint and loaded-code provenance. |
 
-Structured output uses xgrammar: supported `response_format` JSON/schema fields, `guided_json`, `guided_regex`, `guided_choice`, `guided_grammar`, and `structured_outputs` aliases. It works with supported draft verification. Malformed/uncompilable constraints, a missing dependency, or incompatible required-tool/grammar combinations are refused before generation. OpenAI function tools with `"strict": true` use the same mechanism for compatible Qwen XML templates: every call holds to its tool's schema, thinking stays free, and unsupported constraints return HTTP 400. Optional properties and finite string-enum uniqueness are supported extensions; string-length constraints remain unsupported. Requested strict response schemas are also checked before compilation. See [strict function tools](docs/api.md#strict-function-tools) for the enforced subset, resource limits and source-specific verification. A minimal constrained request is:
+Structured output uses xgrammar: supported `response_format` JSON/schema fields, `guided_json`, `guided_regex`, `guided_choice`, `guided_grammar`, and `structured_outputs` aliases. It works with supported draft verification. Malformed/uncompilable constraints, a missing dependency, or incompatible required-tool/grammar combinations are refused before generation. OpenAI function tools with `"strict": true` use the same mechanism for compatible Qwen XML templates: every call holds to its tool's schema, thinking stays free, and unsupported constraints return HTTP 400. Optional properties, finite string-enum uniqueness, decoded-character string-length bounds and provably disjoint `oneOf` branches have owned source adapters. The same adapters serve requested strict response schemas; unsupported intersections are refused rather than dropped. Release records distinguish source checks, installed-container checks and actual serving qualification for these adapters. See [strict function tools](docs/api.md#strict-function-tools) for the enforced subset, resource limits and source-specific verification. A minimal constrained request is:
 
 ```bash
 curl -fsS http://127.0.0.1:8080/v1/chat/completions \

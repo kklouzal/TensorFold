@@ -24,9 +24,64 @@ def parameter_schemas(tools: Sequence[dict[str, Any]] | None) -> dict[str, dict[
     return result
 
 
+_JSON_TYPES = frozenset({'string', 'array', 'object', 'boolean', 'integer', 'number', 'null'})
+
+
+def _parameter_types(schema: dict[str, Any]) -> frozenset[str] | None:
+    """Conservative type bounds, not a replacement JSON Schema validator.
+
+    Compositions union their branch types; an explicit enclosing type narrows
+    that bound. Unknown branches remain unknown. Iterative traversal handles
+    deep compositions and refuses cyclic programmatic schemas without guessing.
+    """
+    if not isinstance(schema, dict):
+        return None
+    pending, active, resolved = [(schema, False)], set(), {}
+    while pending:
+        node, finish = pending.pop()
+        identity = id(node)
+        if not finish:
+            if identity in resolved:
+                continue
+            if identity in active:
+                return None
+            active.add(identity)
+            pending.append((node, True))
+            for name in ('anyOf', 'oneOf'):
+                if name not in node:
+                    continue
+                branches = node[name]
+                if not isinstance(branches, list) or not branches or any(not isinstance(b, dict) for b in branches):
+                    return None
+                pending.extend((branch, False) for branch in reversed(branches))
+            continue
+        allowed = None
+        if 'type' in node:
+            kind = node['type']
+            kinds = [kind] if isinstance(kind, str) else kind
+            if (not isinstance(kinds, list) or not kinds
+                    or any(not isinstance(k, str) or k not in _JSON_TYPES for k in kinds)):
+                return None
+            # JSON Schema number includes integer: intersect semantic domains,
+            # not disjoint spelling labels, when an enclosing type narrows a union.
+            allowed = frozenset(kinds) | ({'integer'} if 'number' in kinds else set())
+        for name in ('anyOf', 'oneOf'):
+            if name in node:
+                branches = [resolved[id(branch)] for branch in node[name]]
+                if all(branch is not None for branch in branches):
+                    union = frozenset().union(*branches)
+                    allowed = union if allowed is None else allowed & union
+                # An unknown branch cannot widen an explicit enclosing type.
+        resolved[identity] = allowed
+        active.remove(identity)
+    return resolved[id(schema)]
+
+
 def typed_parameter(schema: dict[str, Any]) -> bool:
-    kind = schema.get("type")
-    return isinstance(kind, str) and kind in {"array", "object", "boolean", "integer", "number", "null"}
+    kinds = _parameter_types(schema)
+    # XML writes strings without a JSON delimiter. If both raw text and a
+    # converted value are admitted, preserve the text instead of guessing.
+    return bool(kinds) and 'string' not in kinds
 
 
 def closed_json(text: str) -> str | None:
@@ -71,19 +126,21 @@ def _python_literal(text: str) -> Any:
 def decode_parameter(value: str, schema: dict[str, Any], *, python: bool = True) -> Any:
     """``value`` as the schema's type when it spells one, else the text; ``python`` also reads Python's spelling."""
 
-    if not typed_parameter(schema):
+    kinds = _parameter_types(schema)
+    if not kinds or 'string' in kinds:
         return value
-    kind = schema["type"]
-    valid = {
+    predicates = {
         "array": lambda v: isinstance(v, list),
         "object": lambda v: isinstance(v, dict),
         "boolean": lambda v: isinstance(v, bool),
         "integer": lambda v: type(v) is int,
         "number": lambda v: type(v) in (int, float),
         "null": lambda v: v is None,
-    }[kind]
+    }
+    def valid(parsed):
+        return any(predicates[kind](parsed) for kind in kinds)
     # a model can end an object or array value one closer short (#87): the value closed is what it meant
-    for text in (value, closed_json(value) if kind in ("array", "object") else None):
+    for text in (value, closed_json(value) if kinds & {"array", "object"} else None):
         if text is None:
             continue
         try:

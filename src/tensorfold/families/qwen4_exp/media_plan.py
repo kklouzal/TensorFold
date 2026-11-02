@@ -164,9 +164,13 @@ class QwenMediaPlanner:
                                                (self.video_marker, names[0], names[1])) + ")")
 
     def __call__(self, rendered, probes, *, max_prompt_tokens, max_visual_tokens):
+        from tensorfold.server.prompt_literals import RenderedPrompt, repair_media_tokens, trusted_prompt_text
+
+        logical_prompt = rendered
+        rendered = trusted_prompt_text(rendered)
         contract = self.contract
-        if (type(rendered) is not str or len(rendered) > self.max_rendered_bytes
-                or len(rendered.encode("utf-8")) > self.max_rendered_bytes
+        if (type(rendered) is not str or len(logical_prompt) > self.max_rendered_bytes
+                or len(logical_prompt.encode("utf-8")) > self.max_rendered_bytes
                 or type(max_prompt_tokens) is not int or max_prompt_tokens <= 0
                 or max_visual_tokens is not None and (type(max_visual_tokens) is not int or max_visual_tokens <= 0)):
             raise ValueError("media planning input differs from its admitted source/order/work contract")
@@ -210,13 +214,16 @@ class QwenMediaPlanner:
                     piece = Qwen3VLProcessor.replace_video_token(
                         holder, {"video_grid_thw": grid, "video_metadata": [metadata]}, 0)
                 used += 1
-            byte_count += len(piece.encode("utf-8"))
+            byte_count += (logical_prompt.expanded_text_bytes(piece) if isinstance(logical_prompt, RenderedPrompt)
+                           else len(piece.encode("utf-8")))
             if byte_count > self.max_expanded_bytes:
                 raise ValueError("expanded media text exceeds its admitted byte bound")
             expanded.append(piece)
         if used != len(probes):
             raise ValueError("immutable media source has no rendered marker")
         ids = tuple(self.tokenizer.encode("".join(expanded), add_special_tokens=False).ids)
+        if isinstance(logical_prompt, RenderedPrompt):
+            ids = tuple(repair_media_tokens(logical_prompt, self.tokenizer, ids))
         if len(ids) > row_limit:
             raise ValueError("expanded media input exceeds the selected context window")
         return contract._finish(ids, probes)

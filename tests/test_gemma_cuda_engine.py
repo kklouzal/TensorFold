@@ -622,3 +622,16 @@ def test_graph_startup_prepares_the_smallest_grid_even_when_the_context_caps_it(
     graphs.forward = forward
     assert graphs.prepare() == 6 and state.position == 0
     assert calls == [(rows, smallest, taps) for rows in range(1, 4) for taps in (False, True)]
+
+
+def test_gate_continuation_preserves_original_prompt_checkpoints(monkeypatch):
+    engine = _engine(monkeypatch)
+    prompt = [3, 5, 8, 2]
+    engine.generate(prompt, 3, None, lambda _: False)
+    original = engine._prefix
+    assert original.tokens == tuple(prompt)
+    continued = [*prompt, 4, 6, 9]
+    engine.generate(continued, 2, None, lambda _: False, cache_prompt=False)
+    assert engine._prefix is original and engine._prefix.tokens == tuple(prompt)
+    result = engine.generate(prompt, 1, None, lambda _: False)
+    assert result['cached'] == len(prompt)

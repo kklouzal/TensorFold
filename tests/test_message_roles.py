@@ -44,3 +44,49 @@ def test_normalizing_twice_changes_nothing():
     once = normalize_messages(messages, late_system="user")
     assert normalize_messages(once, late_system="user") == once
     assert normalize_messages(normalize_messages(messages), late_system="user") == once
+
+
+_GATHER_SYSTEMS = jinja2.Environment().from_string(
+    "{% for m in messages if m.role == 'system' %}<system>{{ m.content }}{% endfor %}"
+    "{% for m in messages if m.role != 'system' %}<{{ m.role }}>{{ m.content }}{% endfor %}")
+
+
+def test_hoisted_late_system_is_rejected_even_though_marker_is_present():
+    seen = []
+    def gather(messages):
+        seen.extend(messages)
+        return render(_GATHER_SYSTEMS, messages)
+    assert late_system_role(gather) == 'user'
+    rendered = render(_GATHER_SYSTEMS, seen)
+    assert seen[3]['content'] in rendered
+    assert rendered.index(seen[3]['content']) < rendered.index(seen[1]['content'])
+    history = [{'role': 'system', 'content': 'opening'}, {'role': 'user', 'content': 'before'},
+               {'role': 'assistant', 'content': 'answer'}]
+    later = history + [{'role': 'system', 'content': 'late'}, {'role': 'user', 'content': 'after'}]
+    assert render(_GATHER_SYSTEMS, normalize_messages(later, late_system='user')).startswith(
+        render(_GATHER_SYSTEMS, normalize_messages(history, late_system='user')))
+
+
+def test_probe_requires_all_unique_surrounding_turns_in_relative_order():
+    assert late_system_role(lambda messages: ''.join(m['content'] for m in messages)) == 'system'
+    assert late_system_role(lambda messages: ''.join(m['content'] for m in reversed(messages))) == 'user'
+    assert late_system_role(lambda messages: messages[3]['content']) == 'user'
+    assert late_system_role(lambda messages: ''.join(m['content'] * 2 for m in messages)) == 'user'
+
+
+@pytest.mark.parametrize('primary', [MemoryError('probe allocation'), ValueError('unexpected template setup defect'),
+                                   RuntimeError('unexpected renderer defect')])
+def test_probe_does_not_persist_fallback_policy_after_resource_or_unexpected_failure(primary):
+    def fail(messages):
+        raise primary
+    with pytest.raises(type(primary)) as caught:
+        late_system_role(fail)
+    assert caught.value is primary
+
+
+def test_probe_only_handles_declared_template_refusal_not_opaque_nontext_result():
+    def unsupported(messages):
+        raise jinja2.TemplateError('late system history unsupported')
+    assert late_system_role(unsupported) == 'user'
+    with pytest.raises(TypeError, match='rendered text'):
+        late_system_role(lambda messages: {'not': 'rendered text'})

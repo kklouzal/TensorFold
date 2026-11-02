@@ -36,7 +36,8 @@ class PreparedQuestion:
     label_ids: list[int]
 
 
-def prepare(tokenizer: Any, body: dict[str, Any], *, context_len: int | None = None) -> list[PreparedQuestion]:
+def prepare(tokenizer: Any, body: dict[str, Any], *, context_len: int | None = None,
+            renderer: Any = None) -> list[PreparedQuestion]:
     """Render every question and check that each answer label is one token."""
 
     _validate_body(body)
@@ -46,7 +47,7 @@ def prepare(tokenizer: Any, body: dict[str, Any], *, context_len: int | None = N
     prepared = []
     for index, question in enumerate(body["questions"]):
         try:
-            prepared.append(_prepare_question(tokenizer, text, question, context_len=context_len))
+            prepared.append(_prepare_question(tokenizer, text, question, context_len=context_len, renderer=renderer))
         except DecisionError as exc:
             ident = question.get("id") if isinstance(question, dict) else None
             where = repr(ident) if isinstance(ident, str) and ident else f"at position {index}"
@@ -127,10 +128,10 @@ def _validate_body(body: dict[str, Any]) -> None:
 
 
 def _prepare_question(
-    tokenizer: Any, text: str, question: dict[str, Any], *, context_len: int | None,
+    tokenizer: Any, text: str, question: dict[str, Any], *, context_len: int | None, renderer=None,
 ) -> PreparedQuestion:
     kind, names, labels, content = _wording(text, question)
-    prompt, prompt_ids = _chat_prompt(tokenizer, content)
+    prompt, prompt_ids = _chat_prompt(tokenizer, content, renderer=renderer)
     return _finish(
         question["id"], kind, names, labels, prompt, prompt_ids, context_len,
         lambda rendered: _encode(tokenizer, rendered),
@@ -260,28 +261,34 @@ def _question_line(question: dict[str, Any]) -> str:
     return f"Question: {text}"
 
 
-def _chat_prompt(tokenizer: Any, content: str) -> tuple[str, list[int]]:
-    messages = [{"role": "user", "content": content}]
+def _chat_prompt(tokenizer: Any, content: str, *, renderer=None) -> tuple[str, list[int]]:
+    from tensorfold.server.messages import _normalize_tool_call_arguments, normalize_messages
+    from tensorfold.server.prompt_literals import (PromptEncodingError, append_trusted,
+                                                   render_hf_prompt, trusted_prompt_text)
+
+    messages = _normalize_tool_call_arguments(normalize_messages([{"role": "user", "content": content}]))
     kwargs: dict[str, Any] = {"tokenize": False, "add_generation_prompt": True, "enable_thinking": False}
     try:
-        text = tokenizer.apply_chat_template(messages, **kwargs)
-    except TypeError:
-        kwargs.pop("enable_thinking")
-        text = tokenizer.apply_chat_template(messages, **kwargs)
-    if not isinstance(text, str):
-        raise DecisionError("the chat template did not return text")
+        text = render_hf_prompt(tokenizer, messages, renderer=renderer, **kwargs)
+        if not isinstance(text, str):
+            raise DecisionError("the chat template did not return text")
+    except PromptEncodingError as exc:
+        raise DecisionError(f"the chat template could not encode literal content: {exc}") from exc
     try:
-        prompt_ids = render_prompt_ids(tokenizer, messages, enable_thinking=False)
+        # The common rendering path normalizes/protects its own original values.
+        prompt_ids = render_prompt_ids(tokenizer, [{"role": "user", "content": content}], enable_thinking=False,
+                                       renderer=renderer)
+        encoded = _encode(tokenizer, text)
     except Exception as exc:
         raise DecisionError(f"the chat template failed: {exc}") from exc
-    encoded = _encode(tokenizer, text)
     if prompt_ids != encoded:
         if prompt_ids[: len(encoded)] == encoded:
-            text += tokenizer.decode(prompt_ids[len(encoded):])
+            text = append_trusted(text, tokenizer.decode(prompt_ids[len(encoded):]))
             encoded = _encode(tokenizer, text)
         if prompt_ids != encoded:
             raise DecisionError("this tokenizer does not encode the rendered chat text back to the same ids")
-    if text.rfind("<think>") > text.rfind("</think>"):
+    trusted = trusted_prompt_text(text)
+    if trusted.rfind("<think>") > trusted.rfind("</think>"):
         raise DecisionError("the chat template leaves a reasoning block open at the answer position")
     return text, prompt_ids
 
@@ -289,7 +296,8 @@ def _chat_prompt(tokenizer: Any, content: str) -> tuple[str, list[int]]:
 def _label_ids(encode: Any, prompt: str, prompt_ids: list[int], labels: list[str]) -> list[int]:
     found = []
     for label in labels:
-        ids = [int(token) for token in encode(prompt + label)]
+        from tensorfold.server.prompt_literals import append_trusted
+        ids = [int(token) for token in encode(append_trusted(prompt, label))]
         if len(ids) != len(prompt_ids) + 1 or ids[:-1] != prompt_ids or ids[-1] in found:
             raise DecisionError(
                 f"the answer label {label!r} is not one distinct token after the chat prompt for this tokenizer, "
@@ -330,6 +338,9 @@ def _softmax(logits: list[float], temperature: float) -> list[float]:
 
 
 def _encode(tokenizer: Any, text: str) -> list[int]:
+    from tensorfold.server.prompt_literals import RenderedPrompt, encode_hf_prompt
+    if isinstance(text, RenderedPrompt):
+        return encode_hf_prompt(tokenizer, text)
     return [int(token) for token in tokenizer.encode(text, add_special_tokens=False)]
 
 

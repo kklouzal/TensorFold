@@ -60,6 +60,7 @@ class _Grammar:
         self.schema = xml._Schema(parameters, where)
         self.schema.check()
         self.rules, self.nodes, self.pending = {}, {}, []
+        self.import_bytes = 0
         self.any = {}
         self.rules["number"] = r'"-"? ("0" | [1-9] [0-9]*) ("." [0-9]+)? ([eE] [+-]? [0-9]+)?'
         self.rules["integer"] = r'"-"? ("0" | [1-9] [0-9]*)'
@@ -106,6 +107,9 @@ class _Grammar:
         rename = {name: prefix + name for name in names}
         token = re.compile(r'"(?:[^"\\]|\\.)*"|\[(?:[^\]\\]|\\.)*\]|[A-Za-z_][A-Za-z_0-9-]*')
         lines = token.sub(lambda m: rename.get(m[0], m[0]), source)
+        self.import_bytes += len(lines.encode())
+        if self.import_bytes > xml.MAX_GRAMMAR_BYTES:
+            raise xml._too_large()
         self.rules[prefix + "entry"] = rename["root"]
         # Imported source is already a verified native grammar, not untrusted
         # input concatenated into one of our productions.
@@ -137,8 +141,9 @@ class _Grammar:
     def build(self, node, at):
         if "$ref" in node:
             return self.node(self.schema.resolve(node["$ref"], at), at)
-        if "anyOf" in node:
-            return " | ".join(self.node(sub, f"{at}.anyOf[{i}]") for i, sub in enumerate(node["anyOf"]))
+        if xml._branches(node):
+            union = "oneOf" if "oneOf" in node else "anyOf"
+            return " | ".join(self.node(sub, f"{at}.{union}[{i}]") for i, sub in enumerate(xml._branches(node)))
         if "const" in node or "enum" in node:
             values = [node["const"]] if "const" in node else node["enum"]
             return " | ".join(dict.fromkeys(self.literal(value, at) for value in values))
@@ -155,7 +160,11 @@ class _Grammar:
                 alternatives.append(self.native({"type": kind, **constraints}) if constraints else kind)
             elif kind == "string":
                 pattern = node.get("pattern", xml.FORMATS.get(node.get("format")))
-                if pattern is None:
+                if xml._LENGTHS & set(node):
+                    from tensorfold.server.strict_grammar import string_length
+                    content = self.imported(string_length(node.get("minLength", 0), node.get("maxLength"),
+                                                          exclude=GEMMA_STRING))
+                elif pattern is None:
                     content = "string_0"
                 else:
                     tree = xml._regex(pattern, at)
@@ -263,12 +272,19 @@ class Plan(xml.Plan):
 
     ``null`` is the selected template's null word (``template_null``).
     """
+    opener = GEMMA_OPEN
+
+    @property
+    def thinking_headers(self):
+        return tuple(GEMMA_OPEN + "call:" + name + "{" for name in self.tools)
+
     def __init__(self, tools, *, required, parallel, null, offered=None):
         if null not in GEMMA_NULLS:
             raise ValueError(f"a Gemma null word is one of {GEMMA_NULLS}")
         self.required, self.parallel, self.tools, self.null = bool(required), bool(parallel), {}, null
         positions = {id(tool): i for i, tool in reversed(list(enumerate(offered or ())))}
         tags = []
+        emitted = 0
         for i, tool in enumerate(tools):
             where = f"tools[{positions.get(id(tool), i)}].function"
             name = tool_spec_name(tool)
@@ -282,15 +298,20 @@ class Plan(xml.Plan):
                 raise xml._refuse(where + ".parameters", "must be a JSON schema object")
             strict = xml.strict_flag(tool, where)
             if strict:
-                if {"anyOf", "$ref", "enum", "const"} & set(parameters) or parameters.get("type", "object") != "object":
+                if ({"anyOf", "oneOf", "$ref", "enum", "const"} & set(parameters)
+                        or parameters.get("type", "object") != "object"):
                     raise xml._refuse(where + ".parameters", "a strict tool's parameters must be an object schema")
                 top = {"type": "object", **{k: v for k, v in parameters.items() if k != "$schema"}}
                 grammar = _Grammar(top, where + ".parameters", null)
             else:
                 grammar = _Grammar({"type": "object"}, where + ".parameters", null)
             self.tools[name] = xml.Tool(name, strict)
-            tags.append({"type": "tag", "begin": GEMMA_OPEN + "call:" + name,
-                         "content": {"type": "grammar", "grammar": grammar.text}, "end": GEMMA_CLOSE})
+            tag = {"type": "tag", "begin": GEMMA_OPEN + "call:" + name,
+                   "content": {"type": "grammar", "grammar": grammar.text}, "end": GEMMA_CLOSE}
+            emitted += len(json.dumps(tag, ensure_ascii=False, separators=(",", ":")).encode())
+            if emitted > xml.MAX_GRAMMAR_BYTES:
+                raise xml._too_large()
+            tags.append(tag)
         if required:
             blanks = {"type": "regex", "pattern": f"[ \\t\\r\\n]{{0,{xml.BLANKS}}}"}
             body = xml._seq(blanks, {"type": "tags_with_separator", "tags": tags, "separator": "",

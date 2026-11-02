@@ -173,7 +173,7 @@ def test_the_budget_closes_the_think_block_where_the_lane_engine_does(tmp_path, 
 
 
 @pytest.mark.parametrize("request_budget, server_budget, cut", [
-    (None, 4, 4), (0, 4, 4), (6, 4, 6), (-1, 4, None), (None, 0, None), (3, 0, 3)])
+    (None, 4, 4), (0, 4, None), (6, 4, 6), (-1, 4, None), (None, 0, None), (3, 0, 3)])
 def test_the_request_budget_else_the_server_default(tmp_path, request_budget, server_budget, cut):
     engine = ChainEngine()
     fields = {} if request_budget is None else {"thinking_budget": request_budget}
@@ -336,3 +336,25 @@ def test_the_budget_matches_the_lane_engine(tmp_path):
             prepared = server.PreparedRequest(list(prompt), count, [], True, None, think_budget=budget)
             result = app.run({"return_token_ids": True}, True, lambda delta: True, prepared=prepared)
             assert result["stats"]["token_ids"] == want, (budget, width)
+
+
+@pytest.mark.parametrize('explicit,default,expected', [(None, 4, 4), (0, 4, 0), (8, 4, 8), (-1, 4, -1)])
+def test_budget_resolution_preserves_absence_and_explicit_zero(explicit, default, expected):
+    from tensorfold.server.request_options import thinking_budget
+    assert thinking_budget(explicit, default) == expected
+
+
+@pytest.mark.parametrize('explicit', [False, True, 1.5, '0'])
+def test_budget_resolver_requires_already_parsed_integer(explicit):
+    from tensorfold.server.request_options import thinking_budget
+    from tensorfold.server.errors import RequestError
+    with pytest.raises(RequestError):
+        thinking_budget(explicit, 4)
+
+
+def test_budget_explicit_null_inherits_but_zero_does_not(tmp_path):
+    app = app_for(tmp_path, ChainEngine(), budget=4)
+    body = {'messages': [{'role': 'user', 'content': 'Hi'}]}
+    assert app.prepare(body, True).think_budget == 4
+    assert app.prepare({**body, 'thinking_budget': None}, True).think_budget == 4
+    assert app.prepare({**body, 'thinking_budget': 0}, True).think_budget == 0

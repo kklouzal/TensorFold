@@ -1,59 +1,37 @@
-import re
 from typing import Any
 
 from tensorfold.server.errors import RequestError
 
 
 class _ToolTextFilter:
-    """Hide tool envelopes while retaining only a partial tag between prose deltas."""
+    """Quote-aware cumulative presentation for one admitted bounded reply.
 
+    Retains the admitted raw reply and its visible prefix (each bounded by
+    that request's output allowance), not an
+    independent/unbounded stream. One lexical interpretation is shared by
+    incremental and final tool presentation instead of repairing emitted bytes.
+    """
     def __init__(self):
-        self.pending = ""
-        self.hidden = None
+        self.text = ''
+        self.shown = ''
 
     def feed(self, text: str) -> str:
-        self.pending += text
-        out = []
-        while self.pending:
-            if self.hidden:
-                close = f"</{self.hidden}>"
-                end = self.pending.lower().find(close)
-                if end < 0:
-                    self.pending = self.pending[-(len(close) - 1):]
-                    break
-                self.pending = self.pending[end + len(close):]
-                self.hidden = None
-                continue
-            start = self.pending.find("<")
-            if start < 0:
-                out.append(self.pending)
-                self.pending = ""
-                break
-            out.append(self.pending[:start])
-            self.pending = self.pending[start:]
-            end = self.pending.find(">")
-            if end < 0:
-                name = self.pending[1:]
-                prefix, separator, suffix = name.partition(":")
-                possible = (not name or re.fullmatch(r"[A-Za-z_][\w.-]*", name)
-                            or (separator and re.fullmatch(r"[A-Za-z_][\w.-]*", prefix)
-                                and "tool_call".startswith(suffix.lower())))
-                if possible:
-                    break
-                out.append("<")
-                self.pending = self.pending[1:]
-                continue
-            name = self.pending[1:end]
-            if re.fullmatch(r"(?:[A-Za-z_][\w.-]*:)?tool_call", name, flags=re.I):
-                self.hidden = name.lower()
-            else:
-                out.append(self.pending[:end + 1])
-            self.pending = self.pending[end + 1:]
-        return "".join(out)
+        from tensorfold.server.text import hide_tool_calls
+        self.text += text
+        visible = hide_tool_calls(self.text, finished=False)
+        if not visible.startswith(self.shown):
+            raise ValueError('tool presentation regressed after committed output')
+        fresh = visible[len(self.shown):]
+        self.shown = visible
+        return fresh
 
     def finish(self) -> str:
-        tail = "" if self.hidden else self.pending
-        self.pending = ""
+        from tensorfold.server.text import hide_tool_calls
+        visible = hide_tool_calls(self.text, finished=True)
+        if not visible.startswith(self.shown):
+            raise ValueError('final tool presentation regressed after committed output')
+        tail = visible[len(self.shown):]
+        self.text, self.shown = '', ''
         return tail
 
 
@@ -102,12 +80,18 @@ class ToolCallPolicy:
         if not tools:
             return reply
         text, plan = str(reply.get("content") or ""), reply.get("strict_calls")
+        # Direct complete-reply callers retain that contract; an engine reply
+        # supplies actual terminal authority so a cap/user stop cannot resolve
+        # ambiguous raw quoted values into calls.
+        finished = reply.get("tool_parse_finished", True)
         content, calls = (plan.parse(text, max_calls=self.max_calls) if plan is not None
-                          else parse(text, tools, max_calls=self.max_calls))
+                          else parse(text, tools, max_calls=self.max_calls, finished=finished))
         calls = calls or reply.get("tool_calls")
         if not calls:
             return {**reply, "content": self.content(content)} if self.single else reply
-        result = {**reply, "content": self.content(content), "tool_calls": self.limit(calls), "finish_reason": "tool_calls"}
+        result = {**reply, "content": self.content(content), "tool_calls": self.limit(calls)}
+        if plan is not None or reply.get("tool_calls_complete", True):
+            result["finish_reason"] = "tool_calls"
         if self.single:
             result["tool_calls_streamed"] = False
         return result

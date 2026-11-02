@@ -182,3 +182,53 @@ def test_a_held_back_tail_after_leading_spaces_is_streamed(tmp_path):
     streamed, _ = reply_events(tmp_path, "  See <")
     content, _, finish = stream_summary(streamed)
     assert content == "  See <" and finish == "stop"
+
+
+@pytest.mark.parametrize('finished', [False, True])
+def test_missing_envelope_completion_uses_only_the_approved_eos_repair(finished):
+    from tensorfold.server.tools import tool_calls_complete
+
+    text = CASES['missing_final_closer'][0]
+    streamer = ToolCallStreamer(TOOLS)
+    deltas = []
+    for cut in range(len(text) + 1):
+        deltas += streamer.feed(text[:cut])
+    assert not streamer.complete
+    deltas += streamer.feed(text, finished=finished)
+    assert streamer.complete is finished
+    assert tool_calls_complete(text, TOOLS, finished=finished) is finished
+    content, calls = parse_tool_calls_from_content(text, TOOLS, finished=finished)
+    assert calls_of(calls) == (LS if finished else [])
+    assert assembled(delta['tool_calls'][0] for delta in deltas) == LS
+    if not finished:
+        assert text == content
+
+
+def test_eos_repair_does_not_complete_an_open_value_or_junk_between_functions():
+    from tensorfold.server.tools import tool_calls_complete
+
+    for text in (UNCHANGED['truncated_mid_value'], UNCHANGED['prose_between_unclosed_functions']):
+        streamer = ToolCallStreamer(TOOLS)
+        streamer.feed(text, finished=True)
+        assert not streamer.complete
+        assert not tool_calls_complete(text, TOOLS, finished=True)
+        assert parse_tool_calls_from_content(text, TOOLS)[1] is None
+
+
+@pytest.mark.parametrize('step', [1, 7, 10000])
+@pytest.mark.parametrize('repeat', [False, True])
+def test_eos_multi_function_missing_envelope_repair_never_replays_published_arguments(step, repeat):
+    text = CASES['two_functions_one_envelope'][0][:-len('</tool_call>')]
+    expected = CASES['two_functions_one_envelope'][1]
+    if repeat:
+        text = '<tool_call>\n' + text
+    streamer, deltas = ToolCallStreamer(TOOLS), []
+    for end in range(1, len(text) + 1, step):
+        deltas += streamer.feed(text[:end])
+    deltas += streamer.feed(text)
+    before = assembled(delta['tool_calls'][0] for delta in deltas)
+    terminal = streamer.feed(text, finished=True)
+    assert not terminal  # approved repair changes completion metadata, never prior deltas/cursor bytes
+    assert streamer.complete and streamer.index == 1
+    assert assembled(delta['tool_calls'][0] for delta in deltas + terminal) == before == expected
+    assert calls_of(parse_tool_calls_from_content(text, TOOLS)[1]) == expected

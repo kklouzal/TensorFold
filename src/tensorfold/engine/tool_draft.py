@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any, Sequence
 
+from tensorfold.markup_lex import markup_regions, xml_parameter_value_end
 from tensorfold.tool_parameters import decode_parameter, parameter_schemas, typed_parameter
 
 _OPEN = "<tool_call>"
@@ -261,6 +262,13 @@ class ToolCallStreamer:
         self.lead = False       # the framing newline after <parameter=NAME> has not arrived yet
         self.held = ""
         self.streamed = False
+        self._completed = 0
+        self._envelope_start = 0
+
+    @property
+    def complete(self) -> bool:
+        """Every emitted offered head has an actual closing envelope."""
+        return self._completed == self.index + 1
 
     def _args(self, fragment: str) -> dict[str, Any]:
         return {"tool_calls": [{"index": self.index, "function": {"arguments": fragment}}]}
@@ -271,17 +279,19 @@ class ToolCallStreamer:
 
         return json.dumps(text, ensure_ascii=False)[1:-1]
 
-    def feed(self, text: str) -> list[dict[str, Any]]:
+    def feed(self, text: str, *, finished: bool = False) -> list[dict[str, Any]]:
         import uuid
 
         out: list[dict[str, Any]] = []
         while self.state != "abort":
             rest = text[self.pos:]
             if self.state == "outside":
-                j = rest.find(_OPEN)
-                if j < 0:
+                region = next((region for region in markup_regions(text, finished=finished) if region.kind == 'call'
+                               and region.opener.lower() == _OPEN and region.start >= self.pos), None)
+                if region is None:
                     break
-                self.pos += j + len(_OPEN)
+                self._envelope_start = region.start
+                self.pos = region.payload_start
                 self.state = "call"
             elif self.state == "call":
                 doubled = re.match(r"\s*<tool_call>", rest)
@@ -316,6 +326,7 @@ class ToolCallStreamer:
                                           + self._esc_key(m.group(1).strip()) + (':' if self.typed else ':"')))
                     self.args_open = True
                     self.pos += m.end()
+                    self.value_start = self.pos
                     self.state = "value"
                     self.lead = not m.group(0).endswith("\n")
                     self.held = ""
@@ -328,7 +339,16 @@ class ToolCallStreamer:
                     continue
                 break
             elif self.state == "value":
-                end = rest.find(self._TAIL)
+                absolute_end = xml_parameter_value_end(text, self.value_start, finished=finished)
+                end = absolute_end - self.pos if absolute_end >= 0 else -1
+                first = self.value_start
+                while first < len(text) and text[first].isspace():
+                    first += 1
+                if end < 0 and first < len(text) and text[first] in "{[\"'":
+                    # A delimiter-looking suffix may still belong to a future
+                    # completed quoted value. Keep its bytes until resolved or
+                    # normal finality, never commit then retract an argument.
+                    break
                 chunk = rest[:end] if end >= 0 else rest[:max(0, len(rest) - len(self._TAIL))]
                 self.pos += len(chunk)
                 piece = self.held + chunk
@@ -362,7 +382,28 @@ class ToolCallStreamer:
                         continue
                     break
                 self.pos += m.end()
+                self._completed = self.index + 1
                 self.state = "outside"
+        if finished and self.state == "closing":
+            # A normal EOS may use the SAME approved missing-envelope repair
+            # as the final decoder. Arguments are already closed at this state;
+            # do not replay or rewrite emitted deltas or repair an open value.
+            from tensorfold.server.tools import normalize_qwen_tool_markup
+
+            fragment = text[self._envelope_start:]
+            original = markup_regions(fragment, finished=True)
+            if len(original) == 1 and original[0].kind == 'call' and not original[0].complete:
+                repaired = normalize_qwen_tool_markup(fragment, finished=True)
+                frames = markup_regions(repaired, finished=True)
+                residue, cursor = [], 0
+                for frame in frames:
+                    residue.append(repaired[cursor:frame.start])
+                    cursor = frame.end
+                residue.append(repaired[cursor:])
+                if frames and all(frame.kind == 'call' and frame.complete for frame in frames) and not ''.join(residue).strip():
+                    self._completed = self.index + 1
+                    self.pos = len(text)
+                    self.state = "outside"
         return out
 
     def _esc_key(self, key: str) -> str:

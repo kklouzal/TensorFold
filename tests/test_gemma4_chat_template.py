@@ -1,6 +1,7 @@
-"""Google's current Gemma 4 chat template as the GB10 Gemma4 profile serves it (no GPU, no weights).
+"""Optional pinned Google Gemma 4 template reference (no GPU, no weights).
 
-The profile passes ``deploy/gb10/gemma4-chat-template-google-4d7ae498.jinja`` with ``--chat-template``: the bytes of
+The deployment defaults to model-owned metadata; these tests explicitly select
+``deploy/gb10/gemma4-chat-template-google-4d7ae498.jinja`` via optional ``--chat-template``: the bytes of
 ``chat_template.jinja`` at google/gemma-4-26B-A4B-it revision 4d7ae4984b7db7de8f8457170b3f1a419ee76d52 (last changed
 by 35b4173cf6211bf5ee1f4c3c8d97cf2a0d89c122). Renders are compared with Hugging Face's own ``render_jinja_template``
 (the apply_chat_template path) as an independent oracle; the server's reply parsing is checked on the prompts this
@@ -95,16 +96,15 @@ def template(model_dir):
     return prepare_chat_template(model_dir, template_file=TEMPLATE)
 
 
-def test_shipped_bytes_are_the_pinned_google_template_and_the_profile_selects_them():
+def test_pinned_google_reference_is_not_a_forced_deployment_default():
     assert hashlib.sha256(TEMPLATE.read_bytes()).hexdigest() == SHA256
     compose = (ROOT / "deploy" / "gb10" / "compose.gemma4.yaml").read_text()
     yaml = pytest.importorskip("yaml")
     service = yaml.safe_load(compose)["services"]["tensorfold"]
     command = service["command"]
-    target = command[command.index("--chat-template") + 1]
-    mounts = [v for v in service["volumes"] if v.get("target") == target]
-    assert target == "/templates/" + NAME and command.count("--chat-template") == 1
-    assert mounts == [{"type": "bind", "source": "./" + NAME, "target": target, "read_only": True}]
+    assert "--chat-template" not in command
+    assert not any(v.get("target") == "/templates/" + NAME for v in service["volumes"])
+
 
 
 def test_explicit_file_is_the_only_selected_source_for_both_routes(template):
@@ -178,7 +178,10 @@ def test_prompt_suffix_alone_opens_the_reply_channel():
 def test_reply_inside_a_prompt_opened_channel():
     reply = "Weighing it.\n" + THOUGHT_CLOSE + "It is 15 C."
     assert split_gemma_thinking(reply, finished=True, opened=True) == ("Weighing it.\n", "It is 15 C.")
-    assert split_gemma_thinking(reply, finished=True) == ("", reply)      # the defect a prompt-opened channel needs
+    # Without a proved open thought, a stray close is framing, not visible answer data.
+    assert split_gemma_thinking(reply, finished=True) == ("", "Weighing it.\nIt is 15 C.")
+    assert split_gemma_thinking("<|channel>thought\nNative EOS", finished=True) == ("Native EOS", "")
+    assert split_gemma_thinking("Known unframed reason", finished=True, reasoning_only=True) == ("Known unframed reason", "")
     assert split_gemma_thinking("Weighing it.\n<chan", finished=False, opened=True) == ("Weighing it.\n", "")
     assert split_gemma_thinking("Out of tokens", finished=True, opened=True) == ("Out of tokens", "")
     call = '<|tool_call>call:get_weather{city:<|"|>Paris<|"|>}<tool_call|>'
@@ -316,3 +319,25 @@ def test_cuda_strict_call_uses_this_templates_null(tmp_path, stream):
     compiled = grammars.compile(plan([tool("set_flag", schema)], required=True, parallel=False).spec)
     good = "<|tool_call>call:set_flag{enabled:true,note:null}<tool_call|>"
     assert grammars.accepts(compiled, good) and not grammars.accepts(compiled, good.replace("null", "None"))
+
+
+@pytest.mark.parametrize('arguments', ['[1, 2]', 'null', 'not json', [1, 2], None, 42])
+def test_native_template_preserves_malformed_replayed_arguments(template, arguments):
+    import copy
+
+    messages = [
+        {'role': 'user', 'content': 'Check Paris.'},
+        {'role': 'assistant', 'content': None, 'tool_calls': [
+            {'id': 'bad', 'type': 'function', 'function': {'name': 'get_weather', 'arguments': arguments}}]},
+        {'role': 'tool', 'tool_call_id': 'bad', 'content': 'Invalid arguments; retry.'},
+        {'role': 'user', 'content': 'Try again.'},
+    ]
+    original = copy.deepcopy(messages)
+    rendered = template.render(messages, tools=[WEATHER], enable_thinking=False)
+    assert '_invalid_arguments:' in rendered
+    assert 'Invalid arguments; retry.' in rendered and 'Try again.' in rendered
+    # Native parsing recovers the original failed value instead of silently replacing it with {}.
+    from tensorfold.server.gemma_values import gemma_envelopes, gemma_json
+    payload = gemma_envelopes(rendered)[0][2]
+    assert json.loads(gemma_json(payload[payload.index('{'):])) == {'_invalid_arguments': arguments}
+    assert messages == original

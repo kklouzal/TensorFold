@@ -11,7 +11,7 @@ import io
 import math
 
 MAX_MESSAGE_BYTES = 96 << 20
-MAX_GRAMMAR_ITEMS = MAX_MESSAGE_BYTES + 2
+MAX_GRAMMAR_ITEMS = MAX_MESSAGE_BYTES + 5  # aggregate source/activation envelope unchanged
 
 
 def bounded_json(body, *, separators=None):
@@ -36,9 +36,16 @@ def ints(values, maximum, *, lower=0, upper=(1 << 31) - 1, empty=False):
 def grammar(values, vocab):
     from tensorfold.engine.grammar import KINDS
 
-    ints(values, MAX_GRAMMAR_ITEMS, empty=True)
-    if values:
-        if len(values) < 2 or values[0] not in range(len(KINDS)) or not 0 <= values[1] <= vocab:
+    extended = type(values) is list and bool(values) and values[0] == -2
+    ints(values, MAX_GRAMMAR_ITEMS, lower=-2 if extended else 0, empty=True)
+    if extended:
+        from tensorfold.engine.grammar import activation_wire
+        try:
+            activation_wire(values, vocab)
+        except RuntimeError as exc:
+            raise ValueError("rank grammar activation is invalid") from exc
+    elif values:
+        if len(values)-2 > MAX_MESSAGE_BYTES or len(values) < 2 or values[0] not in range(len(KINDS)) or not 0 <= values[1] <= vocab:
             raise ValueError("rank grammar header is invalid")
         if any(values[index] > 255 for index in range(2, len(values))):
             raise ValueError("rank grammar payload must be UTF-8 bytes")

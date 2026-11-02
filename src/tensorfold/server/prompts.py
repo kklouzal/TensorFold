@@ -151,13 +151,15 @@ def prepare_prompt(app, messages, tools, thinking, prompt, fields):
     effort = app.effort_for(fields.get('reasoning_effort'))
 
     def render(template):
+        from tensorfold.server.prompt_literals import render_hf_prompt
+
         kwargs = dict(add_generation_prompt=True, tokenize=False, enable_thinking=thinking)
         if tools:
             kwargs['tools'] = tools
         if thinking and effort:
             kwargs['reasoning_effort'] = effort
         with app.tokenizer_lock:
-            return app.tokenizer.apply_chat_template(template, **kwargs)
+            return render_hf_prompt(app.tokenizer, template, renderer=getattr(app, "_prompt_renderer", None), **kwargs)
 
     return prepare_images(getattr(app, 'vision', None), messages, render, context_limit=app.context_window or None,
                           limits=getattr(app, 'image_limits', DEFAULT_LIMITS))

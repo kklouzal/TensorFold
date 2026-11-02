@@ -62,6 +62,10 @@ class GLMImageProcessor:
 
     def prepare(self, rendered_prompt: str, images: Sequence[Any], *, max_visual_tokens: int = 4096,
                 max_prompt_tokens: int | None = None) -> PreparedGLMVisionPrompt:
+        from tensorfold.server.prompt_literals import RenderedPrompt, repair_media_tokens, trusted_prompt_text
+
+        logical_prompt = rendered_prompt
+        rendered_prompt = trusted_prompt_text(rendered_prompt)
         if not images or max_visual_tokens < 1:
             raise ValueError("GLM image preprocessing needs images and a positive visual-token budget")
         if rendered_prompt.count(self.image_marker) != len(images):
@@ -101,6 +105,8 @@ class GLMImageProcessor:
         expanded = parts[0] + "".join(self.image_marker * n + suffix for n, suffix in zip(counts, parts[1:]))
         encoded = self.tokenizer(expanded, add_special_tokens=False, return_attention_mask=False)
         token_ids = tuple(int(t) for t in encoded["input_ids"])
+        if isinstance(logical_prompt, RenderedPrompt):
+            token_ids = tuple(repair_media_tokens(logical_prompt, self.tokenizer.backend_tokenizer, token_ids))
         if max_prompt_tokens is not None and len(token_ids) > max_prompt_tokens:   # OpenAI's context_length_exceeded
             raise ValueError(f"{CONTEXT_LIMIT} {max_prompt_tokens} tokens: the expanded image prompt has "
                              f"{len(token_ids)} tokens, which exceeds the context window; reduce image resolution or "

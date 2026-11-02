@@ -1,4 +1,4 @@
-"""Schemas without a usable ``type`` stay untyped: decode_parameter keeps the text and nothing raises."""
+"""Schemas without an unambiguous non-string type stay untyped: decode_parameter keeps the text and nothing raises."""
 
 import pytest
 
@@ -7,7 +7,6 @@ from tensorfold.tool_parameters import decode_parameter, typed_parameter
 
 @pytest.mark.parametrize("schema,value", [
     ({}, "None"),                          # no type at all
-    ({"type": ["integer", "null"]}, "5"),   # a list where a type name belongs
     ({"type": "weird"}, "None"),            # a name the type dict does not name
     ({"type": "string"}, "7.5"),            # a scalar type that takes no decode path
 ])

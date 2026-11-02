@@ -6,7 +6,9 @@ Fixed-length-only callers reject Transfer-Encoding; read_body also supports chun
 unread body failure or premature EOF closes the connection before another
 request can consume its bytes. Completed valid bodies preserve keepalive.
 """
+import math
 import re
+import time
 
 from .errors import RequestError
 
@@ -117,15 +119,100 @@ def _chunked(handler, limit: int, *, discard: bool) -> bytes:
             _refuse(handler, 'invalid chunk terminator')
 
 
-def read_body(handler, *, limit: int = LIMIT) -> bytes:
-    """Read exactly one bounded fixed-length or chunked frame; close on incomplete consumption."""
+class _DeadlineReader:
+    """One HTTP body borrows the binary reader, with checks between single I/O.
+
+    read1 performs at most one raw read (BufferedReader and BytesIO contract).
+    Framing lines consume one byte per read: the existing aggregate64KiB framing
+    cap bounds that work and avoids reading/persisting the next request's bytes.
+    Payload reads are64KiB. Cancellation is checked before/after each actual
+    read; idle reads are bounded by the remaining absolute deadline. A timed-out
+    socket file is never retried (its buffering may no longer be usable).
+    """
+    def __init__(self, handler, deadline, cancelled):
+        self.reader, self.connection = handler.rfile, handler.connection
+        self.deadline, self.cancelled = deadline, cancelled
+        if not callable(getattr(self.reader, 'read1', None)):
+            raise ValueError('deadline body consumption requires a binary read1 stream')
+
+    def _check(self):
+        if self.cancelled is not None and self.cancelled():
+            from .cancellation import RequestCancelled
+            raise RequestCancelled('request body cancelled')
+        remaining = None if self.deadline is None else self.deadline - time.monotonic()
+        if remaining is not None and remaining <= 0:
+            raise TimeoutError('request body deadline exceeded')
+        return remaining
+
+    def _once(self, size):
+        remaining = self._check()
+        if remaining is not None:
+            self.connection.settimeout(remaining)
+        value = self.reader.read1(size)
+        self._check()
+        return value
+
+    def read(self, size):
+        result = bytearray()
+        while len(result) < size:
+            value = self._once(min(size - len(result), _BLOCK_SIZE))
+            if not value:
+                break
+            result.extend(value)
+        return bytes(result)
+
+    def readline(self, size):
+        result = bytearray()
+        while len(result) < size:
+            value = self._once(1)
+            if not value:
+                break
+            result.extend(value)
+            if value == b'\n':
+                break
+        return bytes(result)
+
+
+def read_body(handler, *, limit: int = LIMIT, deadline=None, cancelled=None) -> bytes:
+    """Consume one bounded frame. Optional deadline is absolute monotonic seconds.
+
+    Default callers keep their original reader/timeout behavior. An opted-in
+    caller owns exclusive HTTP body consumption and supplies a read1 reader and
+    socket connection. Both bindings/timeouts restore before returning/raising.
+    Any incomplete/ambiguous/deadline/cancel failure closes the connection.
+    """
+    original = previous_timeout = None
+    primary = _native_cause = _native_context = None
     try:
+        if deadline is not None or cancelled is not None:
+            if deadline is not None and (type(deadline) not in (int, float) or not math.isfinite(deadline)):
+                raise ValueError('body deadline must be finite monotonic seconds')
+            if cancelled is not None and not callable(cancelled):
+                raise ValueError('body cancellation must be callable')
+            reader = _DeadlineReader(handler, deadline, cancelled)
+            reader._check()
+            previous_timeout = handler.connection.gettimeout()
+            original = handler.rfile
+            handler.rfile = reader
         if handler.headers.get_all('Transfer-Encoding'):
             return _chunked(handler, limit, discard=False)
         return read(handler, limit)
-    except BaseException:
+    except BaseException as error:
+        primary = error
+        _native_cause = BaseException.__cause__.__get__(error)
+        _native_context = BaseException.__context__.__get__(error)
         handler.close_connection = True
         raise
+    finally:
+        if original is not None:
+            handler.rfile = original
+            try:
+                handler.connection.settimeout(previous_timeout)
+            except BaseException as cleanup:
+                handler.close_connection = True
+                if primary is not None:
+                    raise primary from cleanup
+                raise
 
 
 def _discard_exact(handler, remaining: int) -> None:

@@ -103,7 +103,7 @@ def test_unfinished_native_call_retains_text_and_streamed_evidence(cut):
         assert reader.streamed and reader.deltas
 
 
-@pytest.mark.parametrize("sub", [{"type": "string", "minLength": 1}, {"type": "string", "pattern": ".*"},
+@pytest.mark.parametrize("sub", [{"type": "string", "minLength": -1}, {"type": "string", "pattern": ".*"},
                                   {"const": GEMMA_STRING}, {"type": "object", "properties": {"bad,key": {}}}])
 def test_unsupported_constraints_and_unrepresentable_literals_refuse(sub):
     with pytest.raises(RequestError):
@@ -149,7 +149,11 @@ def test_finished_initial_partial_thought_opener_is_held_without_hiding_invalid_
     assert split_gemma_thinking("<|channel>", finished=True) == ("", "")
     assert split_gemma_thinking(" \n<|channel>tho", finished=True) == ("", " \n")
     invalid = "invalid answer<|channel>"
-    assert split_gemma_thinking(invalid, finished=True) == ("", invalid)
+    # Presentation strips stray framing, while preserving the invalid answer.
+    # Structured-output validation consumes Core's raw answer, never this cleaner.
+    assert split_gemma_thinking(invalid, finished=True) == ("", "invalid answer")
+    with pytest.raises(json.JSONDecodeError):
+        json.loads(split_gemma_thinking(invalid, finished=True)[1])
     native = '<|tool_call>call:f{x:<|"|>literal<|channel>'
     assert split_gemma_thinking(native, finished=True) == ("", native)
 
@@ -231,25 +235,36 @@ def test_native_schema_grammar_holds_types_enums_nested_values_and_required_keys
         assert not grammars.accepts(compiled, bad), bad
 
 
+def _historical_gemma_prefix_oracle(grammars, compiled, text, *, finished):
+    """Independent string-prefix reference, not the live token-boundary machine.
+
+    Retain the pre-remediation stray-marker reproducer and opaque-value cases:
+    parse the text, then ask a fresh native matcher about the entire answer.
+    No production App/helper or mutable generation constraint participates.
+    """
+    reasoning, answer = split_gemma_thinking(text, finished=finished, opened=False)
+    matcher = grammars.xgr.GrammarMatcher(compiled)
+    if not matcher.accept_string(answer):
+        raise xml.CallMarkupError("the Gemma answer left its strict tool grammar")
+    return reasoning, answer
+
+
 def test_strict_whole_answer_prefix_cannot_be_bypassed_with_stray_or_literal_channel_marker(grammars):
-    from tensorfold.cuda.server import App
     declared = {"type": "object", "properties": {"x": {"type": "string"}},
                 "required": ["x"], "additionalProperties": False}
     native = plan(declared)
-    prepared = SimpleNamespace(grammar=(native.spec, grammars.compile(native.spec)), thinking=True, thought_open=False)
-    result = App.__new__(App)
-    result.tok, result.grammars, result.engine = GemmaTokenizer(), grammars, SimpleNamespace(eos=(STOP,))
+    compiled = grammars.compile(native.spec)
     good = render({"x": "valid"})
     invalid = "<|tool_call>call:f{x:None}<tool_call|><channel|>" + good
     with pytest.raises(xml.CallMarkupError, match="strict tool grammar"):
-        result._thought(prepared, invalid, True)
+        _historical_gemma_prefix_oracle(grammars, compiled, invalid, finished=True)
     with pytest.raises(xml.CallMarkupError, match="strict tool grammar"):
-        result._thought(prepared, invalid, False)
+        _historical_gemma_prefix_oracle(grammars, compiled, invalid, finished=False)
     literal = render({"x": "literal<|channel>thought\nvalue<channel|>end"})
-    assert result._thought(prepared, literal, True) == ("", literal)
+    assert _historical_gemma_prefix_oracle(grammars, compiled, literal, finished=True) == ("", literal)
     reasoning = "<|channel>thought\nreason<channel|>" + literal
-    assert result._thought(prepared, reasoning, True) == ("reason", literal)
-    assert result._thought(prepared, "<|channel>", True) == ("", "")
+    assert _historical_gemma_prefix_oracle(grammars, compiled, reasoning, finished=True) == ("reason", literal)
+    assert _historical_gemma_prefix_oracle(grammars, compiled, "<|channel>", finished=True) == ("", "")
 
 
 def test_native_recursive_refs_optional_keys_additional_schemas_numeric_and_formats(grammars):
@@ -328,7 +343,7 @@ def test_cuda_http_truncated_native_call_keeps_stop_or_length(tmp_path, grammars
 def test_cuda_http_unsupported_schema_refuses_before_engine_or_sse(tmp_path, grammars, stream):
     from tests.test_cuda_admission import http_server, post
     result = app(tmp_path, "should not run", grammars)
-    bad = {"type": "object", "properties": {"x": {"type": "string", "minLength": 1}}}
+    bad = {"type": "object", "properties": {"x": {"type": "string", "minLength": -1}}}
     with http_server(result) as port:
         status, response = post(port, _body(stream, tools=[tool("f", bad)]), True)
     assert status == 400 and "minLength" in response and not result.engine.calls

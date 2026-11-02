@@ -6,11 +6,9 @@ import re
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from tensorfold.markup_lex import CALL_MARKS, structural_marker
+
 _ANSWER, _LEAD, _NAME, _DONE = range(4)
-# Shared markup authority for gate discovery and server reply processing:
-# Qwen, Gemma 4, and DeepSeek-V4's DSML block, in their existing order.
-CALL_MARKS = (("<tool_call>", "</tool_call>"), ("<|tool_call>", "<tool_call|>"),
-              ("<｜DSML｜tool_calls>", "</｜DSML｜tool_calls>"))
 
 
 def call_format(rendered: str, name: str, openers: Sequence[str]) -> tuple[str, str, str] | None:
@@ -49,21 +47,27 @@ class CallGate:
     def __init__(self, opener: int, blank: Callable[[int], bool], *, think_open: int = -1, think_end: int = -1,
                  armed: bool = True, text: Callable[[int], str] | None = None,
                  encode: Callable[[str], list[int]] | None = None, lead: str = "", names: Sequence[str] = (),
-                 tail: str = "") -> None:
+                 tail: str = "", decode=None) -> None:
         self.opener, self.blank = int(opener), blank
+        self.decode, self._written = decode, []
         self.think_open, self.think_end = int(think_open), int(think_end)
+        self.think_closer = (decode([self.think_end], skip_special_tokens=False)
+                             if decode is not None and self.think_end >= 0 else None)
         self.text, self.encode = text, encode
         self.lead, self.names, self.tail = lead, [n for n in names if n], tail
+        native_opener = decode([self.opener], skip_special_tokens=False) if decode is not None and self.opener >= 0 else ""
+        self.thinking_headers = tuple(native_opener + lead + name + tail for name in self.names) if lead and tail else ()
         # (armed, phase, text of the lead or name so far); unarmed: the prompt left a think block open
         self.state: tuple[bool, int, str] = (bool(armed), _ANSWER, "")
 
     @classmethod
     def after_prompt(cls, prompt: Sequence[int], opener: int, blank: Callable[[int], bool], *, think_open: int = -1,
-                     think_end: int = -1, **named: Any) -> CallGate:
+                     think_end: int = -1, thinking: bool = False, **named: Any) -> CallGate:
         """A gate held while ``prompt`` leaves a think block open (its last opener after its last end)."""
 
         last = {int(t): i for i, t in enumerate(prompt) if int(t) in (think_open, think_end)}
-        held = min(think_open, think_end) >= 0 and last.get(think_open, -1) > last.get(think_end, -1)
+        held = (think_end >= 0 and thinking) or (min(think_open, think_end) >= 0
+                   and last.get(think_open, -1) > last.get(think_end, -1))
         return cls(opener, blank, think_open=think_open, think_end=think_end, armed=not held, **named)
 
     @property
@@ -80,13 +84,16 @@ class CallGate:
     def _ends(self, char: str) -> bool:
         return char.isspace() or (char == self.tail if self.tail else char in "<>{}\"'(),")
 
-    def _step(self, state: tuple[bool, int, str], token: int) -> tuple[tuple[bool, int, str], list[int] | None]:
+    def _step(self, state: tuple[bool, int, str], token: int, prefix=()) -> tuple[tuple[bool, int, str], list[int] | None]:
         """(the state after ``token``, or the tokens that replace it when it breaks the call)."""
 
         armed, phase, seen = state
         if phase == _ANSWER:
             if not armed:
-                return (token == self.think_end, _ANSWER, ""), None
+                closed = token == self.think_end and (self.decode is None or structural_marker(
+                    self.decode([*self._written, *prefix, token], skip_special_tokens=False), self.think_closer,
+                    call_headers=self.thinking_headers))
+                return (closed, _ANSWER, ""), None
             if token == self.think_open:
                 return (False, _ANSWER, ""), None
             if token == self.opener:
@@ -118,10 +125,12 @@ class CallGate:
         """(index in the next committed ``tokens`` a fix replaces, the fix: its first token there, the rest forced)."""
 
         state = self.state
+        prefix = []
         for i, token in enumerate(int(t) for t in tokens):
             if state[1] == _DONE:
                 return None
-            state, fix = self._step(state, token)
+            state, fix = self._step(state, token, prefix)
+            prefix.append(token)
             if fix:
                 return i, fix
         return None
@@ -132,34 +141,66 @@ class CallGate:
         if not self.done:
             state, fix = self._step(self.state, int(token))
             self.state = state if fix is None else (state[0], _DONE, "")     # off script: stop constraining
+            if self.done or self.state[0]:
+                self._written.clear()
+            elif self.decode is not None:
+                self._written.append(int(token))
+
+    def force_think_close(self):
+        if not self.done and self.state[1] == _ANSWER:
+            self.state = (True, _ANSWER, "")
+            self._written.clear()
 
 
 class ThinkBudget:
     """The lane engine's thinking budget: the ``budget``-th token of a reply still thinking becomes ``close``."""
 
-    def __init__(self, budget: int, close: Sequence[int], think_end: int) -> None:
+    def __init__(self, budget: int, close: Sequence[int], think_end: int, *, stop_ids=(), decode=None) -> None:
         self.budget, self.close, self.think_end = int(budget), [int(t) for t in close], int(think_end)
         self.count, self.open = 0, True
+        self.stop_ids = frozenset(stop_ids)
+        self.decode, self.intent, self._confirmed_stop = decode, None, None
+        self.think_closer = decode([self.think_end], skip_special_tokens=False) if decode is not None else None
+        self._written = []
 
     def cut(self, tokens: Sequence[int]) -> tuple[int, list[int]] | None:
         """(index in the next committed ``tokens`` the close replaces, the close), as ``CallGate.cut``."""
 
         if not self.open:
             return None
+        confirmed = self.intent.confirmation_index(tokens) if self.intent is not None else None
+        self._confirmed_stop = None
         for i, token in enumerate(tokens):
+            if (int(token) in self.stop_ids or i == confirmed
+                    or self.intent is None and self._closed(int(token), tokens[:i])):
+                self._confirmed_stop = self.count + i
+                return None
             if self.count + i + 1 >= self.budget:
                 return i, list(self.close)
-            if int(token) == self.think_end:
-                return None
         return None
 
+    def _closed(self, token, prefix=()):
+        return token == self.think_end and (self.decode is None or structural_marker(
+            self.decode([*self._written, *prefix, token], skip_special_tokens=False), self.think_closer))
+
+    def force_think_close(self):
+        self.open = False
+        self._written.clear()
+
     def observe(self, token: int) -> None:
+        index = self.count
         self.count += 1
-        self.open = self.open and int(token) != self.think_end
+        if self.open and (index == self._confirmed_stop or int(token) in self.stop_ids
+                          or self.intent is None and self._closed(int(token))):
+            self.open = False
+            self._written.clear()
+        elif self.open and self.decode is not None:
+            self._written.append(int(token))
 
 
 def generate_gated(generate: Callable[[list[int], int, Callable[[list[int]], bool]], Any], prompt: Sequence[int],
-                   max_tokens: int, gates: Sequence[Any], on_tokens: Callable[[list[int]], bool]) -> Any:
+                   max_tokens: int, gates: Sequence[Any], on_tokens: Callable[[list[int]], bool], *,
+                   on_think_close: Callable[[int], None] | None = None) -> Any:
     """Decode with ``gates``: at a cut go on from the prompt, reply and fix, or (a ``replay`` gate) run the prompt again."""
 
     reply: list[int] = []
@@ -177,13 +218,24 @@ def generate_gated(generate: Callable[[list[int], int, Callable[[list[int]], boo
             new = list(new[k:])
             if not new:
                 return False
-        hits = [(hit, getattr(gate, "replay", False)) for gate in gates if (hit := gate.cut(new)) is not None]
+        hits = [(hit, getattr(gate, "replay", False), gate) for gate in gates if (hit := gate.cut(new)) is not None]
+        forced_at = None
         if hits:
-            (at, fix), replay = min(hits, key=lambda h: (h[0][0], h[1]))   # the earliest; a fix before a replay
+            (at, fix), replay, selected = min(hits, key=lambda h: (h[0][0], h[1]))   # the earliest; a fix before a replay
             new, state["cut"], state["replay"] = [*new[:at], *fix][:max_tokens - len(reply)], True, replay
-        for token in new:
+            if isinstance(selected, ThinkBudget) and selected.think_end in fix:
+                close_at = at + fix.index(selected.think_end)
+                if close_at < len(new):
+                    forced_at = close_at
+                    if on_think_close is not None:
+                        on_think_close(len(reply) + close_at)
+        for index, token in enumerate(new):
             for gate in gates:
                 gate.observe(token)
+            if index == forced_at:
+                for gate in gates:
+                    if isinstance(gate, (ThinkBudget, CallGate)):
+                        gate.force_think_close()
         reply.extend(new)
         state["stopped"] = bool(on_tokens(new))
         return state["stopped"] or state["cut"]

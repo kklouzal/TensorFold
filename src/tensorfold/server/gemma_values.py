@@ -2,13 +2,14 @@
 from __future__ import annotations
 
 import json
+from bisect import bisect_right
 import math
 import re
 from typing import Any
 
 from tensorfold.server.text import _partial_tag
+from tensorfold.markup_lex import GEMMA_STRING, CALL_MARKS, markup_regions
 
-GEMMA_STRING = '<|"|>'
 GEMMA_OPEN, GEMMA_CLOSE = "<|tool_call>", "<tool_call|>"
 GEMMA_KEY = re.compile(r"[A-Za-z_][\w.-]*")
 THOUGHT_OPEN, THOUGHT_CLOSE = "<|channel>thought", "<channel|>"
@@ -89,109 +90,212 @@ def gemma_json(text: str) -> str:
 
 
 def gemma_envelopes(text: str) -> list[tuple[int, int, str]]:
-    """Complete Gemma envelopes, ignoring delimiter text inside native strings."""
-
-    found, cursor = [], 0
-    while (start := text.find(GEMMA_OPEN, cursor)) >= 0:
-        at, quoted = start + len(GEMMA_OPEN), False
-        while at < len(text):
-            if text.startswith(GEMMA_STRING, at):
-                quoted = not quoted
-                at += len(GEMMA_STRING)
-            elif not quoted and text.startswith(GEMMA_CLOSE, at):
-                cursor = at + len(GEMMA_CLOSE)
-                found.append((start, cursor, text[start + len(GEMMA_OPEN):at].strip()))
-                break
-            else:
-                at += 1
-        else:
-            break
-    return found
+    """Complete native frames outside code/quoted data; repeated framing counted once."""
+    return [(region.start, region.end, text[region.payload_start:region.payload_end].strip())
+            for region in markup_regions(text, finished=True) if region.kind == 'call'
+            and region.opener == GEMMA_OPEN and region.complete]
 
 
 def hide_gemma_calls(text: str, *, finished: bool) -> str:
-    """Visible text outside complete calls; hold an unfinished envelope during SSE."""
+    """Hide only lexical native calls, never quoted examples or opaque strings."""
     parts, at = [], 0
-    for start, end, _ in gemma_envelopes(text):
-        parts.append(text[at:start])
-        at = end
+    for region in markup_regions(text, finished=finished):
+        if region.kind == 'call' and region.opener == GEMMA_OPEN:
+            parts.append(text[at:region.start])
+            at = region.end
     tail = text[at:]
-    opening = tail.find(GEMMA_OPEN)
-    if opening >= 0:
-        tail = tail[:opening]
-    elif not finished:
-        tail = tail[:len(tail) - _partial_tag(tail, GEMMA_OPEN)]
+    protected = markup_regions(tail)
+    quoted_tail = bool(protected and protected[-1].end == len(tail) and protected[-1].kind != 'call')
+    if not finished and not quoted_tail:
+        if at and GEMMA_CLOSE.startswith(tail.lstrip()):
+            tail = ''
+        else:
+            held = max(_partial_tag(tail, GEMMA_OPEN), _partial_tag(tail, GEMMA_CLOSE))
+            tail = tail[:len(tail) - held]
     parts.append(tail)
-    return "".join(parts)
+    return ''.join(parts)
 
 
 def prompt_opens_thought(prompt: str) -> bool:
-    """Whether a rendered prompt ends inside the thought channel it opens.
-
-    Google's current template ends a thinking generation prompt after tool
-    results with ``<|channel>thought\\n``. Only the prompt's own suffix decides:
-    content earlier in the prompt cannot open the reply's channel.
-    """
+    """Only a prompt's own literal thought suffix opens the response channel."""
     return prompt.rstrip().endswith(THOUGHT_OPEN)
 
 
-def split_gemma_thinking(text: str, *, finished: bool, opened: bool = False) -> tuple[str, str]:
-    """Structural thought channels; native tool values may contain marker text literally.
+_CONTROL = ('<|channel>', '<channel|>', '<|turn>', '<turn|>', '<|think|>')
 
-    ``opened``: the prompt opened the channel (``prompt_opens_thought``), so the
-    reply begins inside it and its first close ends the reasoning.
+
+def _safe_join(parts):
+    """Removing reasoning/framing cannot manufacture a new executable call opener."""
+    text = ''.join(part[0] for part in parts)
+    boundaries, total = [], 0
+    for previous, current in zip(parts, parts[1:]):
+        total += len(previous[0])
+        if previous[2] != current[1]:
+            boundaries.append(total)
+    split = set()
+    for region in markup_regions(text):
+        if region.kind != 'call':
+            continue
+        first = bisect_right(boundaries, region.start)
+        for boundary in boundaries[first:]:
+            if boundary >= region.start + len(region.opener):
+                break
+            split.add(boundary)
+    for boundary in sorted(split, reverse=True):
+        text = text[:boundary] + ' ' + text[boundary:]
+    return text
+
+
+def _clean_controls(text, *, finished):
+    parts, at = [], 0
+    for region in markup_regions(text):
+        plain = text[at:region.start]
+        parts.append(_clean_plain(plain))
+        parts.append(text[region.start:region.end])
+        at = region.end
+    parts.append(_clean_plain(text[at:]))
+    result = ''.join(parts)
+    protected = markup_regions(result)
+    opaque_tail = bool(protected and protected[-1].end == len(result))
+    if not finished and not opaque_tail:
+        held = max((_partial_tag(result, marker) for marker in (*_CONTROL, '</think>', *(o for o, _ in CALL_MARKS))), default=0)
+        result = result[:len(result) - held]
+    return result
+
+
+def _clean_plain(text):
+    while True:
+        before = text
+        for marker in _CONTROL:
+            start = text.find(marker)
+            while start >= 0:
+                left, right = text[:start], text[start + len(marker):]
+                # A framing boundary must not concatenate unrelated text into
+                # a tool opener; separating adjacent non-whitespace is faithful
+                # to that boundary rather than creating executable syntax.
+                space = ' ' if left and right and not left[-1].isspace() and not right[0].isspace() else ''
+                text = left + space + right
+                start = text.find(marker)
+        if text == before:
+            return text
+
+
+def split_gemma_thinking(text: str, *, finished: bool, opened: bool = False,
+                         expect_thinking: bool = False, reasoning_only: bool = False) -> tuple[str, str]:
+    """Partition presentation without touching quoted code or native tool data.
+
+    Known unclosed reasoning remains reasoning, including native EOS. Unknown
+    malformed channels and unframed expected-thinking prefixes are withheld
+    while ambiguous, never emitted then retroactively moved between fields.
+    ``reasoning_only`` is a caller-proved phase, not an invented prompt opener.
     """
-    if opened:
-        text = THOUGHT_OPEN + text
-    opens, closes, calls = [], [], []
-    at, quoted, call = 0, False, None
-    while (at := text.find("<", at)) >= 0:
-        if call is not None and text.startswith(GEMMA_STRING, at):
-            quoted = not quoted
-            at += len(GEMMA_STRING)
-        elif quoted:
-            at += 1
-        elif text.startswith(GEMMA_OPEN, at):
-            if call is None:
-                call = at
-            at += len(GEMMA_OPEN)
-        elif text.startswith(GEMMA_CLOSE, at):
-            if call is not None:
-                calls.append((call, at + len(GEMMA_CLOSE)))
-                call = None
-            at += len(GEMMA_CLOSE)
-        elif call is None and text.startswith(THOUGHT_OPEN, at):
-            opens.append(at)
-            at += len(THOUGHT_OPEN)
-        elif call is None and text.startswith(THOUGHT_CLOSE, at):
-            closes.append(at)
-            at += len(THOUGHT_CLOSE)
+    # A stopped initial thought-name prefix is framing, not an unknown answer.
+    # This applies only before any non-whitespace data; opaque code/tool values
+    # and noninitial invalid answers retain their independent lexical treatment.
+    initial = text.lstrip()
+    if (finished and not opened and not reasoning_only and initial.startswith('<|channel>')
+            and THOUGHT_OPEN.startswith(initial)):
+        return '', text[:len(text) - len(initial)]
+    regions = markup_regions(text, finished=finished)
+    starts = {region.start: region for region in regions}
+    protected = [(region.start, region.end) for region in regions]
+    def outside(position):
+        return not any(start <= position < end for start, end in protected)
+    closes = [m.start() for m in re.finditer(re.escape(THOUGHT_CLOSE), text) if outside(m.start())]
+    reason, answer, pending = [], [], []
+    mode = 'reason' if opened or reasoning_only else 'answer'
+    unframed = expect_thinking and mode == 'answer'
+    at = 0
+    def emit(piece):
+        if reasoning_only or mode == 'reason':
+            reason.append((piece, at, at + len(piece)))
+        elif mode == 'unknown' or unframed:
+            pending.append((piece, at, at + len(piece)))
         else:
-            at += 1
-    if not opens:
-        held = _partial_tag(text, THOUGHT_OPEN) if call is None else 0
-        if finished and text[:len(text) - held].strip():
-            held = 0
-        # A normal token cutoff can occur after the channel token but before
-        # the word thought. Only an initial proper opener prefix is held at
-        # completion; arbitrary text and native call-string data remain answer.
-        return "", text[:len(text) - held]
-    opening = opens[0]
-    start = opening + len(THOUGHT_OPEN)
-    while start < len(text) and text[start] == "\n":
-        start += 1
-    close = next((position for position in closes if position >= start), None)
-    if close is not None:
-        return text[start:close], text[:opening] + text[close + len(THOUGHT_CLOSE):].lstrip("\n")
-    first_call = next((position for position, _ in calls if position >= start), None)
-    if first_call is None and call is not None and call >= start:
-        first_call = call
-    if first_call is not None:
-        if finished and any(position == first_call for position, _ in calls):
-            return text[start:first_call], text[:opening] + text[first_call:]
-        return text[start:first_call] if not finished else text[start:], text[:opening]
-    held = 0 if finished else max(_partial_tag(text, marker) for marker in (THOUGHT_CLOSE, GEMMA_OPEN))
-    return text[start:len(text) - held], text[:opening]
+            answer.append((piece, at, at + len(piece)))
+    while at < len(text):
+        region = starts.get(at)
+        if region is not None:
+            if region.kind == 'call' and not reasoning_only and (mode != 'answer' or unframed):
+                later_close = any(position >= region.end for position in closes)
+                if not later_close and finished and region.complete:
+                    if pending:
+                        reason.extend(pending)
+                        pending.clear()
+                    mode, unframed = 'answer', False
+                elif not later_close and not finished:
+                    # A later real thought close can still make this a mention.
+                    break
+            emit(text[region.start:region.end])
+            at = region.end
+            continue
+        if text.startswith('<|channel>', at):
+            body = at + len('<|channel>')
+            # A repeated header can still change its name as deltas arrive.
+            # Never publish that name as reasoning and retract it at newline.
+            if not finished and text.find('\n', body) < 0 and text.find(THOUGHT_CLOSE, body) < 0:
+                break
+            known = text.startswith('thought', body)
+            if known:
+                body += len('thought')
+                while body < len(text) and text[body] in '\r\n':
+                    body += 1
+            else:
+                newline = text.find('\n', body)
+                closer = text.find(THOUGHT_CLOSE, body)
+                if newline >= 0 and (closer < 0 or newline < closer):
+                    body = newline + 1
+            if mode == 'answer' and pending:
+                answer.extend(pending)
+                pending.clear()
+            if mode == 'unknown' and known:
+                reason.extend(pending)
+                pending.clear()
+            mode = 'reason' if reasoning_only or mode == 'reason' or known else 'unknown'
+            unframed = False
+            at = body
+            continue
+        if text.startswith(THOUGHT_CLOSE, at):
+            if mode == 'unknown' or unframed:
+                reason.extend(pending)
+                pending.clear()
+            mode, unframed = ('reason' if reasoning_only else 'answer'), False
+            at += len(THOUGHT_CLOSE)
+            while at < len(text) and text[at] in '\r\n':
+                at += 1
+            continue
+        if text.startswith('</think>', at):
+            line = text.rfind('\n', 0, at) + 1
+            end = text.find('\n', at)
+            complete_line = end >= 0 or finished
+            end = len(text) if end < 0 else end
+            if complete_line and text[line:end].strip() == '</think>':
+                if mode == 'unknown' or unframed:
+                    reason.extend(pending)
+                    pending.clear()
+                mode, unframed = ('reason' if reasoning_only else 'answer'), False
+                at = end + (1 if end < len(text) else 0)
+                continue
+            if not complete_line and text[line:end].strip() == '</think>':
+                break
+        if text.startswith('<|think|>', at):
+            if mode == 'answer' and pending:
+                answer.extend(pending)
+                pending.clear()
+            mode, unframed = 'reason', False
+            at += len('<|think|>')
+            continue
+        marker = next((marker for marker in ('<|turn>', '<turn|>') if text.startswith(marker, at)), None)
+        if marker is not None:
+            at += len(marker)
+            continue
+        emit(text[at])
+        at += 1
+    if finished and pending:
+        (reason if reasoning_only else answer).extend(pending)
+    r = _clean_controls(_safe_join(reason), finished=finished)
+    a = '' if reasoning_only else _clean_controls(_safe_join(answer), finished=finished)
+    return r, a
 
 
 class GemmaJSONStream:

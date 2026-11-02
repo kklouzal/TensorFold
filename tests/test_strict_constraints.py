@@ -93,9 +93,9 @@ def test_large_enums_obey_the_published_string_character_budget():
 
 
 @pytest.mark.parametrize("schema,words", [
-    ({"type": "array", "uniqueItems": True, "items": {"type": "string", "enum": ["a", "b"]}}, "uniqueItems"),
-    ({"type": "string", "maxLength": 3}, "maxLength"),
-    ({"oneOf": [{"type": "integer"}, {"type": "string"}]}, "oneOf"),
+    ({"type": "array", "uniqueItems": True, "items": {"type": "integer"}}, "uniqueItems"),
+    ({"type": "string", "maxLength": -1}, "maxLength"),
+    ({"oneOf": [{"type": "integer"}, {"type": "number"}]}, "oneOf"),
     ({"type": "number", "multipleOf": 0.5}, "multipleOf"),
     ({"type": "integer", "enum": [1, 3], "minimum": 2}, "take only type"),
     ({"$ref": "#/$defs/n", "$defs": {"n": {"type": "integer"}}, "minimum": 2}, "$ref takes no constraints"),

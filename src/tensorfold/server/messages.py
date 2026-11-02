@@ -5,6 +5,8 @@ from typing import Any, Callable
 
 from tensorfold.server.errors import RequestError
 
+MESSAGE_ROLES = ("system", "developer", "user", "assistant", "tool")
+
 _MEDIA = ("image", "images", "image_url", "input_image", "audio", "input_audio", "video", "video_url")
 _IMAGE_ROLES = ("user", "tool")    # a tool result may carry images (an agent's screenshots): templates render them
 
@@ -19,19 +21,34 @@ def validate_modalities(body: dict[str, Any]) -> None:
         raise RequestError("this server accepts and produces text only; image, audio and video are unsupported")
 
 
-_PROBE = "tensorfold-late-system-probe"
+_LATE_SYSTEM_PROBES = ("tf_probe_prior_user_82a1", "tf_probe_prior_assistant_73b2",
+                       "tf_probe_late_system_64c3", "tf_probe_following_user_55d4")
 
 
-def late_system_role(render: Callable[[list[dict[str, Any]]], Any]) -> str:
-    """``system`` when ``render`` (a chat template, as text) keeps a later system message in place, else ``user``."""
+def late_system_role(render: Callable[[list[dict[str, Any]]], str]) -> str:
+    """Keep late system only when actual rendered conversation order survives.
 
-    probe = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"},
-             {"role": "assistant", "content": "a"}, {"role": "system", "content": _PROBE},
-             {"role": "user", "content": "v"}]
+    Hoisting all system text into an opening header preserves marker presence
+    but changes the earlier prompt. Distinct surrounding turns detect that.
+    Only an explicit Jinja template refusal establishes unsupported history;
+    resource exhaustion and unexpected renderer defects propagate unchanged.
+    """
+    from jinja2 import TemplateError
+
+    before_user, before_assistant, late, following = _LATE_SYSTEM_PROBES
+    probe = [{"role": "system", "content": "An initial instruction."},
+             {"role": "user", "content": before_user}, {"role": "assistant", "content": before_assistant},
+             {"role": "system", "content": late}, {"role": "user", "content": following}]
     try:
-        return "system" if _PROBE in str(render(probe)) else "user"
-    except Exception:  # noqa: BLE001 - a template that rejects the probe cannot render later system messages
+        text = render(probe)
+    except TemplateError:
         return "user"
+    if not isinstance(text, str):
+        raise TypeError("late-system probe requires rendered text")
+    if any(text.count(marker) != 1 for marker in _LATE_SYSTEM_PROBES):
+        return "user"
+    positions = [text.index(marker) for marker in _LATE_SYSTEM_PROBES]
+    return "system" if all(left < right for left, right in zip(positions, positions[1:])) else "user"
 
 
 _VISUAL = ("image_url", "image", "video_url", "video")      # a video part reaches here only where videos are on
@@ -49,7 +66,7 @@ def normalize_messages(messages: list[dict[str, Any]], *, late_system: str = "sy
         if not isinstance(message, dict):
             raise RequestError("each message must be an object")
         role = message.get("role")
-        if role not in ("system", "developer", "user", "assistant", "tool"):
+        if role not in MESSAGE_ROLES:
             raise RequestError("message role must be system, developer, user, assistant or tool")
         if any(message.get(k) for k in _MEDIA):
             raise RequestError("this server accepts text only; image, audio and video inputs are unsupported")

@@ -77,6 +77,11 @@ class Selected(unittest.TestCase):
         base = ast.parse((ROOT / 'tests/fixtures/deepseek_v4/original_prompts.py').read_bytes())
         now = ast.parse((ROOT / 'src/tensorfold/families/deepseek_v4/prompts.py').read_bytes())
         now.body = [node for node in now.body if not (isinstance(node, ast.ImportFrom) and node.module == 'rendering')]
+        # The new origin boundary is independently tested; the pre-existing
+        # native rendering/apply_chat_template implementation must stay exact.
+        wrapper = next(node for node in now.body if isinstance(node, ast.ClassDef) and node.name == 'DeepSeekTokenizer')
+        wrapper.body = [node for node in wrapper.body if not (isinstance(node, ast.FunctionDef)
+                                                            and node.name == 'render_prompt_literals')]
         body = next(node for node in now.body if isinstance(node, ast.FunctionDef) and node.name == 'render')
         body.body = [node for node in body.body if not (isinstance(node, ast.Assign) and ast.unparse(node.targets[0]) == 'encoder'
                      or isinstance(node, ast.If) and ast.unparse(node.test).startswith('len(msgs) >= 64'))]

@@ -97,7 +97,8 @@ def count_chat(app: Any, chat: dict[str, Any]) -> int:
         effort = heard_effort(fields.get("reasoning_effort"), app.reasoning_effort, app.effort_levels)
         with app.tokenizer_lock:
             count = len(render_prompt_ids(app.tokenizer, msgs, tools=tools, enable_thinking=thinking,
-                                          reasoning_effort=effort, late_system=app.late_system))
+                                          reasoning_effort=effort, late_system=app.late_system,
+                                          renderer=getattr(app, "_prompt_renderer", None)))
     window = int(getattr(app, "context_window", 0) or 0)
     if window and count >= window:
         raise ContextLengthError(f"{CONTEXT_LIMIT} {window} tokens, but the rendered prompt has {count} tokens and "
@@ -131,7 +132,8 @@ def tokenize(app: Any, body: Any) -> dict[str, Any]:
             with app.tokenizer_lock:
                 ids = render_prompt_ids(app.tokenizer, messages, tools=tools, enable_thinking=thinking,
                                         reasoning_effort=app.effort_for(fields.get("reasoning_effort")),
-                                        add_generation_prompt=generation, late_system=app.late_system)
+                                        add_generation_prompt=generation, late_system=app.late_system,
+                                        renderer=getattr(app, "_prompt_renderer", None))
     else:
         text = body.get("prompt")
         if not isinstance(text, str):

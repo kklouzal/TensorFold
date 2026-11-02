@@ -8,7 +8,8 @@ import uuid
 from typing import Any
 
 from tensorfold.tool_parameters import decode_parameter, parameter_schemas
-from tensorfold.server.gemma_values import gemma_envelopes, gemma_json
+from tensorfold.server.gemma_values import GEMMA_OPEN, gemma_json
+from tensorfold.markup_lex import markup_regions, xml_function_frames, xml_parameter_fields
 
 def tool_spec_name(tool: dict[str, Any]) -> str:
     function = tool.get("function") if isinstance(tool, dict) else None
@@ -87,50 +88,39 @@ def active_tool_specs(tools: Any, tool_choice: Any) -> list[dict[str, Any]]:
     return specs
 
 
-_TOOL_CALL_BLOCK_RE = re.compile(
-    r"<tool_call>\s*(.*?)\s*</tool_call>",
-    re.IGNORECASE | re.DOTALL,
-)
-_NAMESPACED_TOOL_CALL_BLOCK_RE = re.compile(
-    r"<([A-Za-z_][\w.-]*):tool_call>\s*(.*?)\s*</\1:tool_call>",
-    re.IGNORECASE | re.DOTALL,
-)
 _TOOL_FUNCTION_BLOCK_RE = re.compile(
     r"^\s*<function=([^>\s]+)>\s*(.*?)\s*</function>\s*$",
     re.IGNORECASE | re.DOTALL,
 )
-# Remove only one framing newline per side; preserve value whitespace so resent history matches generated tokens.
-_TOOL_PARAMETER_BLOCK_RE = re.compile(
-    r"<parameter=([^>\s]+)>\n?(.*?)\n?</parameter>",
-    re.IGNORECASE | re.DOTALL,
-)
-_REPEATED_CALL_OPEN_RE = re.compile(r"<tool_call>(?:\s*<tool_call>)+", re.IGNORECASE)
-_REPEATED_CALL_CLOSE_RE = re.compile(r"</tool_call>(?:\s*</tool_call>)+", re.IGNORECASE)
-_QWEN_ENVELOPE_RE = re.compile(r"<tool_call>.*?</tool_call>", re.IGNORECASE | re.DOTALL)
-_FUNCTION_BOUNDARY_RE = re.compile(r"(</function>)\s*(?=<function=)", re.IGNORECASE)
-# complete functions and whitespace only: a function body never runs past its own closer
-_COMPLETE_FUNCTIONS_RE = re.compile(r"(?:\s*<function=[^>\s]+>(?:(?!</function>).)*</function>)+\s*",
-                                    re.IGNORECASE | re.DOTALL)
-_LAST_CALL_OPEN_RE = re.compile(r".*<tool_call>", re.IGNORECASE | re.DOTALL)    # greedy: through the last opener
 
 
-def normalize_qwen_tool_markup(text: str) -> str:
-    """Repair the Qwen tool-call envelope slips a model writes, so a call it meant is parsed rather than shown as text.
+def normalize_qwen_tool_markup(text: str, *, finished: bool = True) -> str:
+    """Repair framing slips only, outside code/quoted/native argument data.
 
-    A doubled ``<tool_call>`` opener or ``</tool_call>`` closer collapses to one; an envelope holding several
-    complete ``<function=…>…</function>`` blocks becomes one envelope per function (one call each, as vLLM's
-    qwen3_coder parser reads them); and a reply (callers pass finished ones) whose last envelope holds only complete
-    functions gains the closer it left out. Text without an opener is returned unchanged.
+    Repeated envelopes are one frame; distinct complete functions remain
+    distinct calls. Argument bytes are never repaired or interpreted here.
     """
-    if "<tool_call>" not in text.lower():
-        return text
-    text = _REPEATED_CALL_CLOSE_RE.sub("</tool_call>", _REPEATED_CALL_OPEN_RE.sub("<tool_call>", text))
-    last = _LAST_CALL_OPEN_RE.match(text)            # on the text itself: lower() may change its length (U+0130)
-    body = last.end() if last is not None else len(text)
-    if "</tool_call>" not in text[body:].lower() and _COMPLETE_FUNCTIONS_RE.fullmatch(text, body):
-        text = text.rstrip() + "\n</tool_call>"
-    return _QWEN_ENVELOPE_RE.sub(
-        lambda m: _FUNCTION_BOUNDARY_RE.sub(r"\1\n</tool_call>\n<tool_call>\n", m.group(0)), text)
+    parts, at = [], 0
+    for region in markup_regions(text, finished=finished):
+        if region.kind != 'call' or region.opener.lower() != '<tool_call>':
+            continue
+        parts.append(text[at:region.start])
+        body = text[region.payload_start:region.payload_end]
+        functions = xml_function_frames(body, finished=finished)
+        if functions and any(xml_parameter_fields(_TOOL_FUNCTION_BLOCK_RE.fullmatch(fn).group(2), finished=finished)[1].strip()
+                             for fn in functions):
+            functions = None
+        repeated = (region.payload_start != region.start + len(region.opener)
+                    or region.complete and region.end != region.payload_end + len(region.closer))
+        if functions and (len(functions) > 1 or not region.complete) and (region.complete or finished):
+            parts.append('\n'.join('<tool_call>\n' + fn.strip() + '\n</tool_call>' for fn in functions))
+        elif repeated:
+            parts.append('<tool_call>' + body + ('</tool_call>' if region.complete else ''))
+        else:
+            parts.append(text[region.start:region.end])
+        at = region.end
+    parts.append(text[at:])
+    return ''.join(parts)
 
 
 # Gemma 4: <|tool_call>call:NAME{key:value,...}<tool_call|>, and the 26B's bare :NAME{...}. Keys bare, strings between <|"|>.
@@ -139,10 +129,6 @@ _GEMMA_CALL_RE = re.compile(r"^(?:call)?:([\w.-]+)\s*(\{.*\})$", re.DOTALL)
 _DSML_BLOCK_RE = re.compile(r"<｜DSML｜tool_calls>(.*?)</｜DSML｜tool_calls>", re.DOTALL)
 _DSML_INVOKE_RE = re.compile(r'<｜DSML｜invoke name="([^"]*)">(.*?)</｜DSML｜invoke>', re.DOTALL)
 _DSML_PARAM_RE = re.compile(r'<｜DSML｜parameter name="([^"]*)" string="(true|false)">(.*?)</｜DSML｜parameter>', re.DOTALL)
-_JSON_FENCE_RE = re.compile(
-    r"^\s*```(?:json)?\s*(.*?)\s*```\s*$",
-    re.IGNORECASE | re.DOTALL,
-)
 _MISSING = object()
 
 
@@ -248,8 +234,7 @@ def _parse_tool_call_payload(block: str, schemas: dict[str, dict[str, Any]] | No
         if not name_text:
             raise ValueError("tool_call is missing a function name")
         arguments = _tool_json_object(arguments)
-        if complete:
-            json.dumps(arguments, allow_nan=False)
+        json.dumps(arguments, allow_nan=False)
         return name_text, arguments
 
     match = _TOOL_FUNCTION_BLOCK_RE.match(block)
@@ -260,12 +245,12 @@ def _parse_tool_call_payload(block: str, schemas: dict[str, dict[str, Any]] | No
     name = match.group(1).strip()
     arguments: dict[str, Any] = {}
     body = match.group(2)
-    if complete and _TOOL_PARAMETER_BLOCK_RE.sub("", body).strip():
+    fields, residue = xml_parameter_fields(body)
+    if complete and residue.strip():
         return None
-    for param_match in _TOOL_PARAMETER_BLOCK_RE.finditer(body):
-        key = param_match.group(1).strip()
+    for key, value in fields:
         schema = (schemas or {}).get(name.lower(), {}).get(key, {})
-        arguments[key] = decode_parameter(param_match.group(2), schema)
+        arguments[key] = decode_parameter(value, schema)
     if not name:
         raise ValueError("tool_call is missing a function name")
     return name, arguments
@@ -295,11 +280,6 @@ def _parse_dsml_calls(block: str) -> list[tuple[str, dict[str, Any]]] | None:
     return calls if calls and not block[at:].strip() else None
 
 
-def _strip_json_fence(text: str) -> str:
-    match = _JSON_FENCE_RE.match(text)
-    if match is None:
-        return text
-    return match.group(1).strip()
 
 
 def _openai_tool_call(raw_name: str, arguments: dict[str, Any], known: dict[str, str]) -> dict[str, Any]:
@@ -321,7 +301,7 @@ def _openai_tool_call(raw_name: str, arguments: dict[str, Any], known: dict[str,
 
 
 def _parse_bare_json_tool_calls(text: str, known: dict[str, str], *, max_calls: int | None = None) -> list[dict[str, Any]] | None:
-    stripped = _strip_json_fence(text.strip())
+    stripped = text.strip()
     if not stripped or stripped[0] not in "[{":
         return None
     try:
@@ -350,49 +330,51 @@ def _parse_bare_json_tool_calls(text: str, known: dict[str, str], *, max_calls: 
     return calls or None
 
 
-def _envelopes(text: str) -> list[tuple[int, int, str]]:
-    """(start, end, payload) of each tool-call block in order; a block inside an earlier one is part of it."""
+def _envelopes(text: str, *, finished=True) -> list[tuple[int, int, str]]:
+    """Complete actual lexical frames; code, strings and nested data stay opaque."""
+    return [(region.start, region.end,
+             text[region.start:region.end] if region.opener == '<｜DSML｜tool_calls>'
+             else text[region.payload_start:region.payload_end].strip())
+            for region in markup_regions(text, finished=finished) if region.kind == 'call' and region.complete]
 
-    found = sorted([(m.start(), m.end(), m.group(1).strip()) for m in _TOOL_CALL_BLOCK_RE.finditer(text)]
-                   + [(m.start(), m.end(), m.group(2).strip()) for m in _NAMESPACED_TOOL_CALL_BLOCK_RE.finditer(text)]
-                   + gemma_envelopes(text)
-                   + [(m.start(), m.end(), m.group(0)) for m in _DSML_BLOCK_RE.finditer(text)])
-    kept: list[tuple[int, int, str]] = []
-    for envelope in found:
-        if not kept or envelope[0] >= kept[-1][1]:
-            kept.append(envelope)
-    return kept
+
+def tool_calls_complete(text: str, tools, *, finished: bool = True) -> bool:
+    """No offered named frame remains open at this actual parse boundary.
+
+    Partial names/bare openers and quoted examples are not call intent. This
+    reports lifecycle only; argument validity remains with the actual decoder.
+    """
+    if finished:
+        text = normalize_qwen_tool_markup(text, finished=True)
+    known = {tool_spec_name(tool).lower() for tool in tools or []}
+    for region in markup_regions(text, finished=finished):
+        if region.kind != 'call' or region.complete:
+            continue
+        body = text[region.payload_start:region.payload_end].lstrip()
+        if region.opener == GEMMA_OPEN:
+            match = re.match(r'^(?:call)?:([\w.-]+)\s*\{', body)
+            if match is not None and match[1].lower() in known:
+                return False
+        elif region.opener == '<｜DSML｜tool_calls>':
+            match = re.match(r'^<｜DSML｜invoke name="([^"]+)">', body)
+            if match is not None and match[1].lower() in known:
+                return False
+        elif any(body.lower().startswith('<function=' + name + '>') for name in known):
+            return False
+    return True
 
 
 def parse_tool_calls_from_content(
     text: str,
     tools: list[dict[str, Any]],
-    *, max_calls: int | None = None,
+    *, max_calls: int | None = None, finished: bool = True,
 ) -> tuple[str, list[dict[str, Any]] | None]:
     if not tools:
         return text, None
     known = {tool_spec_name(tool).lower(): tool_spec_name(tool) for tool in tools}
     schemas = parameter_schemas(tools)
-    native, at, in_qwen = [], 0, False
-    for envelope in gemma_envelopes(text):
-        marks = list(re.finditer(r"</?tool_call>", text[at:envelope[0]], re.IGNORECASE))
-        if marks:
-            in_qwen = not marks[-1][0].startswith("</")
-        if not in_qwen:
-            native.append(envelope)
-        at = envelope[1]          # literal Qwen tags inside Gemma values never change the enclosing format
-    if native:
-        # Native strings may contain Qwen markup literally. Repair only the
-        # surrounding text, preserving every byte inside a Gemma envelope.
-        parts, at = [], 0
-        for start, end, _ in native:
-            parts.extend((normalize_qwen_tool_markup(text[at:start]), text[start:end]))
-            at = end
-        parts.append(normalize_qwen_tool_markup(text[at:]))
-        text = "".join(parts)
-    else:
-        text = normalize_qwen_tool_markup(text)
-    envelopes = _envelopes(text)
+    text = normalize_qwen_tool_markup(text, finished=finished)
+    envelopes = _envelopes(text, finished=finished)
     if not envelopes:
         bare_calls = _parse_bare_json_tool_calls(text, known, max_calls=max_calls)
         if bare_calls is not None:

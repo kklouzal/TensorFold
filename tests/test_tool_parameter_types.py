@@ -67,6 +67,6 @@ def test_parameter_type_matches_schema_in_both_paths(kind, value, expected, step
     deltas = []
     for n in range(1, len(text) + 1, step):
         deltas += streamer.feed(text[:n])
-    deltas += streamer.feed(text)
+    deltas += streamer.feed(text, finished=True)
     args = "".join(d["tool_calls"][0]["function"].get("arguments", "") for d in deltas)
     assert json.loads(args) == {"questions": expected}

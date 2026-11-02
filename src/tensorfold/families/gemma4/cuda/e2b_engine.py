@@ -379,7 +379,9 @@ class E2BEngine(Gemma4Engine):
     def generate(self, prompt: list[int], max_tokens: int, sampling,
                  on_tokens: Callable[[list[int]], bool | None], draft: bool = True,
                  stop_eos: bool = True, *, vision=None, constraint=None,
-                 background: bool = False, progress=None, penalties=None) -> dict[str, Any]:
+                 background: bool = False, progress=None, penalties=None, cache_prompt: bool = True) -> dict[str, Any]:
+        if type(cache_prompt) is not bool:
+            raise ValueError("cache_prompt must be a bool")
         if self._assistant_sampled_q and draft and self.head is not None and self.head._reference_depth == 0:
             from tensorfold.engine.exact_sampling import Sampling
             if isinstance(sampling, Sampling) and sampling.temperature > 0:
@@ -387,7 +389,8 @@ class E2BEngine(Gemma4Engine):
                 make_proposal_sampling(sampling, *self._assistant_q_parameters, vocab=self.target.config.vocab)
         return super().generate(prompt, max_tokens, sampling, on_tokens, draft=draft, stop_eos=stop_eos,
                                 vision=vision, constraint=constraint, background=background,
-                                progress=progress, penalties=penalties)
+                                progress=progress, penalties=penalties,
+                                **({"cache_prompt": False} if not cache_prompt else {}))
 
     @staticmethod
     def _media_identity(media):
@@ -418,7 +421,7 @@ class E2BEngine(Gemma4Engine):
                     return checkpoint
             return None
 
-    def _prefill(self, prompt, vision, progress, started):
+    def _prefill(self, prompt, vision, progress, started, *, cache_prompt=True):
         identity = self._media_identity(vision)
         blocks = tuple(vision.blocks) if vision is not None and self.target.config.bidirectional_vision else ()
         hit = (self._find_prefix(prompt, identity, blocks=blocks) if blocks else self._find_prefix(prompt, identity))
@@ -461,7 +464,7 @@ class E2BEngine(Gemma4Engine):
                     self._append_head(self._draft, result, prompt[start:end], prompt=True)
                 if end == len(prompt):
                     logits = result.logits
-                elif end == boundary:
+                elif end == boundary and cache_prompt:
                     kept.append(self._checkpoint(state))
                 start = end
                 if progress is not None and progress(len(prompt), cached, start,
@@ -475,7 +478,7 @@ class E2BEngine(Gemma4Engine):
             raise
         if logits is None:
             raise RuntimeError("Gemma E2B prefill produced no next-token logits")
-        if cached < len(prompt):
+        if cached < len(prompt) and cache_prompt:
             with self._prefix_lock:
                 self._prefix = None
                 kept.append(self._checkpoint(state, logits))

@@ -203,10 +203,10 @@ def test_a_plan_reads_each_parameters_mode():
 
 
 @pytest.mark.parametrize("schema, words", [
-    ({"type": "object", "properties": {"s": {"type": "string", "maxLength": 3}}}, "do not support maxLength"),
-    ({"type": "object", "properties": {"s": {"type": "string", "minLength": 1}}}, "put length limits"),
+    ({"type": "object", "properties": {"s": {"type": "string", "maxLength": -1}}}, "maxLength must be a non-negative integer"),
+    ({"type": "object", "properties": {"s": {"type": "string", "minLength": -1}}}, "minLength must"),
     ({"type": "object", "properties": {"s": {"type": "array", "uniqueItems": True}}}, "uniqueItems needs"),
-    ({"type": "object", "properties": {"s": {"oneOf": [{"type": "integer"}]}}}, "do not support oneOf"),
+    ({"type": "object", "properties": {"s": {"oneOf": [{"type": "integer"}, {"type": "number"}]}}}, "oneOf branches must"),
     ({"type": "object", "properties": {"s": {"allOf": [{"type": "integer"}]}}}, "do not support allOf"),
     ({"type": "object", "properties": {"s": {"type": "integer", "not": {"const": 1}}}}, "do not support not"),
     ({"type": "object", "properties": {"s": {"type": "number", "multipleOf": 0.5}}}, "type integer without"),
@@ -313,12 +313,18 @@ def test_hostile_schemas_cost_linear_work_and_are_refused_explicitly(monkeypatch
         assert plan.tools["f"].params[0].mode == mode and len(resolved) <= 8 * 81, len(resolved)
         if mode == "raw":
             assert value(plan) == {"type": "regex", "pattern": "^a+$"}
-    # 3,000 chained references (past Python's recursion limit): followed without recursion
+    # The largest raw chain in the shared 2,000-node envelope still follows
+    # more than 1,000 alternating ref/union edges without Python recursion.
     resolved.clear()
     one = lambda k: {"anyOf": [{"$ref": f"#/$defs/d{k + 1}"}, {"const": f"c{k}"}]}             # noqa: E731
-    plan = st.Plan([tool("f", _defs_chain(3000, one, {"const": "end"}))], required=False, parallel=True)
-    assert plan.tools["f"].params[0].mode == "raw" and len(resolved) <= 4 * 3001, len(resolved)
-    assert {e["value"] for e in value(plan)["elements"]} == {"end", *(f"c{k}" for k in range(3000))}
+    admitted = (st.MAX_SUBSCHEMAS - 2) // 3  # initial ref + three nodes per step + terminal const
+    plan = st.Plan([tool("f", _defs_chain(admitted, one, {"const": "end"}))], required=False, parallel=True)
+    assert plan.tools["f"].params[0].mode == "raw" and len(resolved) <= 4 * (admitted + 1), len(resolved)
+    assert {e["value"] for e in value(plan)["elements"]} == {"end", *(f"c{k}" for k in range(admitted))}
+    resolved.clear()
+    with pytest.raises(RequestError, match=r"properties\.x: a raw parameter is limited to 2000 subschemas"):
+        st.Plan([tool("f", _defs_chain(3000, one, {"const": "end"}))], required=False, parallel=True)
+    assert len(resolved) <= 4 * 3001, len(resolved)
     # a JSON parameter's grammar holds at most MAX_SUBSCHEMAS subschemas, its definitions included: xgrammar 0.2.8
     # compiles a reference chain recursively and overflowed its stack on longer ones
     ref = lambda k: {"$ref": f"#/$defs/d{k + 1}"}                                               # noqa: E731
@@ -455,7 +461,7 @@ def test_a_tool_without_strict_keeps_the_lenient_arguments_and_errors_name_the_r
     calls = plan.parse(repeated)[1]
     assert calls[0]["function"]["arguments"] == '{"n":6,"s":"x"}'              # the last value, as the lenient parser
     assert [(s["name"], s["arguments"]) for s in _streamed(plan, repeated)] == [("loose", '{"n":6,"s":"x"}')]
-    bad = [tool("ok"), tool("f", {"type": "object", "properties": {"s": {"type": "string", "maxLength": 3}}})]
+    bad = [tool("ok"), tool("f", {"type": "object", "properties": {"s": {"type": "string", "maxLength": -1}}})]
     with pytest.raises(RequestError, match=r"^tools\[1\]\.function\.parameters"):
         st.Plan(bad[1:], required=True, parallel=True, offered=bad)          # a named tool_choice's one active tool
 
@@ -900,19 +906,39 @@ def test_thinking_stays_free_and_a_valid_call_in_an_open_think_block_is_promoted
     assert status == 200 and message["reasoning_content"].startswith("hmm <tool_call> 9 days")
     assert json.loads(message["tool_calls"][0]["function"]["arguments"]) == ARGS
     assert free.calls[0]["constraint"].think_end == MarkupTokenizer.ids["</think>"]
-    # a call written without closing the think block: the answer when the grammar accepts it, else reasoning
-    for body, called in ((CALL, True), (CALL.replace("\n3\n", "\n9\n"), False)):
-        with http_server(_app(tmp_path, ScriptEngine("plan: " + body), grammars)) as port:
+    # A confirmed offered-name header is now an explicit strict intent boundary,
+    # unlike the ambiguous bare opener above. Its first argument is p-masked;
+    # the independent whole-prefix oracle still rejects the old raw invalid9.
+    invalid = CALL.replace("\n3\n", "\n9\n")
+    assert not grammars.accepts(grammars.compile(st.Plan(TOOLS[:3], required=False, parallel=True).spec), invalid)
+    class Observed(ScriptEngine):
+        likes = {**ScriptEngine.likes, ord("3"): 1.25}
+        def __init__(self, script):
+            super().__init__(script)
+            self.actual = []
+        def generate(self, prompt, max_tokens, sampling, on_tokens, draft=True, constraint=None):
+            def published(tokens):
+                self.actual.extend(tokens)
+                return on_tokens(tokens)
+            return super().generate(prompt, max_tokens, sampling, published, draft=draft, constraint=constraint)
+    for body in (CALL, invalid):
+        engine = Observed("plan: " + body)
+        with http_server(_app(tmp_path, engine, grammars)) as port:
             status, text = post(port, _body(False, **thinking), True)
         message = json.loads(text)["choices"][0]["message"]
-        assert status == 200 and bool(message.get("tool_calls")) == called, message
-        if not called:
-            assert "9" in message["reasoning_content"] and not message.get("content")
+        assert status == 200 and message.get("tool_calls"), message
+        arguments = json.loads(message["tool_calls"][0]["function"]["arguments"])
+        assert arguments == ARGS and conforms(arguments, WEATHER)
+        raw = MarkupTokenizer().decode(engine.actual)
+        assert re.findall(r"<parameter=days>\n(.*?)\n</parameter>", raw, re.DOTALL) == ["3"]
+        # Actual published days bytes were masked to3, not repaired by the
+        # parser. Other9 digits (e.g. an unrelated UUID) are legitimate data.
+
 
 
 @pytest.mark.parametrize("body, words", [
-    (_body(False, tools=[tool("f", {"type": "object", "properties": {"s": {"type": "string", "maxLength": 3}}})]),
-     "do not support maxLength"),
+    (_body(False, tools=[tool("f", {"type": "object", "properties": {"s": {"type": "string", "maxLength": -1}}})]),
+     "maxLength must be a non-negative integer"),
     (_body(False, response_format={"type": "json_object"}), "cannot be combined with strict function tools"),
     (_body(False, tools=[tool("f", strict="yes")]), "strict must be a boolean"),
 ])
@@ -1040,8 +1066,8 @@ def test_the_mac_refusal_checks_strict_tools_before_a_stream(grammars):
     assert grammar.refusal(body, owner) is None and grammar.refusal(body) is None
     assert "cannot be combined with strict" in grammar.refusal({**body, "response_format": {"type": "json_object"}},
                                                                owner)
-    bad = {**body, "tools": [tool("f", {"type": "object", "properties": {"s": {"type": "string", "maxLength": 2}}})]}
-    assert "do not support maxLength" in grammar.refusal(bad, owner)
+    bad = {**body, "tools": [tool("f", {"type": "object", "properties": {"s": {"type": "string", "maxLength": -1}}})]}
+    assert "maxLength must be a non-negative integer" in grammar.refusal(bad, owner)
     assert "Qwen XML tool calls" in grammar.refusal(body, _mac_owner(grammars, QWEN_CALLS.replace("'\\n</par", "'</par")))
     assert "does not enforce strict" in grammar.refusal(body, object())
     assert grammar.refusal({**body, "tools": [tool("f", strict=False)]}, object()) is None
@@ -1062,7 +1088,10 @@ def test_the_mac_policy_reads_strict_calls_with_their_plan_and_flush_shows_their
     assert done["finish_reason"] == "tool_calls" and done["content"] == "Let me look."
     assert json.loads(done["tool_calls"][0]["function"]["arguments"]) == ARGS
     lenient = ToolCallPolicy({}).finish({**reply, "strict_calls": None}, TOOLS, parse_tool_calls_from_content)
-    assert json.loads(lenient["tool_calls"][0]["function"]["arguments"]) != ARGS    # a value holding </parameter>
+    # Nullable string/null is ambiguous in unquoted lenient XML: preserve the
+    # literal "null". The strict plan has its own declared nullable wire mode.
+    # All unambiguous values, including the nested delimiter string, stay exact.
+    assert json.loads(lenient["tool_calls"][0]["function"]["arguments"]) == {**ARGS, "note": "null"}
     sent = []
     StopPolicy({}, None, None, frozenset()).flush(sent.append, "Hi" + CALL + " bye", None, "Hi", "",
                                                   lambda answer: plan.content(answer, finished=True))

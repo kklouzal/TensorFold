@@ -486,3 +486,87 @@ def test_prefill_callback_absent_without_writer_or_cancellation(tmp_path):
     app = app_for(tmp_path, engine)
     assert app.run({'messages': MESSAGES, 'max_tokens': 2}, True, lambda delta: True)['completion_tokens'] == 2
     assert engine.progress_received == [False]
+
+
+@pytest.mark.parametrize('stream', [False, True])
+def test_prefill_ticks_keep_stream_alive_without_progress_frames(tmp_path, monkeypatch, stream):
+    from types import SimpleNamespace
+    import itertools
+    ticks = itertools.count(time.perf_counter(), 2)
+    monkeypatch.setattr(server, 'time', SimpleNamespace(perf_counter=lambda: next(ticks)))
+    observed = []
+    class PrefillEngine:
+        eos = (0,)
+        concurrent = False
+        def generate(self, prompt, max_tokens, sampling, on_tokens, draft=True, progress=None):
+            assert progress is not None
+            assert progress(len(prompt), 0, len(prompt), 1000) is False
+            on_tokens([X])
+            return {'cached': 0}
+    app = app_for(tmp_path, PrefillEngine())
+    app.run({'messages': MESSAGES, 'max_tokens': 1, 'stream': stream}, True,
+            lambda delta: observed.append(delta) or True, cancelled=lambda: False)
+    if stream:
+        assert observed[0] is None
+    else:
+        assert None not in observed
+
+
+def test_callback_memoryerror_is_held_until_engine_returns_without_escape(tmp_path):
+    engine = PacedEngine('x')
+    app = app_for(tmp_path, engine)
+    primary = MemoryError('bounded output publication failure')
+    def emit(delta):
+        raise primary
+    with pytest.raises(MemoryError) as failure:
+        app.run({'messages': MESSAGES, 'max_tokens': 4}, True, emit)
+    assert failure.value is primary
+    assert engine.calls[0]['raised'] is None and engine.calls[0]['done'] is True
+    assert engine.calls[0]['returned'] == [True]
+
+
+def test_callback_primary_survives_postengine_bookkeeping_failure(tmp_path, monkeypatch):
+    engine = PacedEngine('x')
+    app = app_for(tmp_path, engine)
+    primary, secondary, native = MemoryError('output publication'), MemoryError('stats publication'), RuntimeError('root')
+    primary.__cause__ = native
+    def emit(delta):
+        raise primary
+    def timings(*args):
+        raise secondary
+    monkeypatch.setattr(server, 'timings', timings)
+    with pytest.raises(MemoryError) as failure:
+        app.run({'messages': MESSAGES, 'max_tokens': 4}, True, emit)
+    assert failure.value is primary and primary.__cause__ is secondary
+    assert engine.calls[0]['raised'] is None and engine.calls[0]['done'] is True
+    trace = primary.__traceback__
+    retained = False
+    while trace is not None:
+        if trace.tb_frame.f_code.co_name == 'run':
+            retained |= trace.tb_frame.f_locals.get('_callback_native_cause') is native
+        trace = trace.tb_next
+    assert retained  # native root is held by the actual owning App frame, not just this test
+
+
+def test_engine_primary_survives_postengine_bookkeeping_failure(tmp_path, monkeypatch):
+    primary, secondary, native = RuntimeError('native generation'), MemoryError('stats publication'), ValueError('root')
+    primary.__cause__ = native
+    class FailedEngine:
+        eos = (0,)
+        def generate(self, prompt, max_tokens, sampling, on_tokens, draft=True):
+            raise primary
+    app = app_for(tmp_path, FailedEngine())
+    def timings(*args):
+        raise secondary
+    monkeypatch.setattr(server, 'timings', timings)
+    with pytest.raises(RuntimeError) as failure:
+        app.run({'messages': MESSAGES, 'max_tokens': 4}, True, lambda delta: True)
+    assert failure.value is primary and primary.__cause__ is secondary
+    trace = primary.__traceback__
+    retained = False
+    while trace is not None:
+        if trace.tb_frame.f_code.co_name == 'run':
+            retained |= trace.tb_frame.f_locals.get('_callback_native_cause') is native
+        trace = trace.tb_next
+    assert retained
+    assert not app._turns().busy

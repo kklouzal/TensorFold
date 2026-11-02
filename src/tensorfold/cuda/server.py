@@ -20,7 +20,7 @@ from tensorfold.server.messages import validate_modalities
 from tensorfold.server.probabilities import TokenBytes, probability_options
 from tensorfold.server.request_ids import new_request_id
 from tensorfold.server.request_options import (
-    PENALTY_FIELDS, drop_penalties, fixed_thinking, heard_effort, parse_numbers, thinking_fields,
+    PENALTY_FIELDS, drop_penalties, fixed_thinking, heard_effort, parse_numbers, thinking_fields, thinking_budget,
 )
 from tensorfold.server.request_limits import RequestLimit, optional_limit
 from tensorfold.server.segments import SegmentEncoder
@@ -32,7 +32,7 @@ from tensorfold.server.tool_policy import ToolCallPolicy
 from tensorfold.engine.call_gate import CallGate, ThinkBudget, call_format, generate_gated
 from tensorfold.engine.tool_draft import ToolCallStreamer
 from tensorfold.server.tools import (
-    active_tool_specs, normalize_qwen_tool_markup, parse_tool_calls_from_content, tool_choice_requires_call,
+    active_tool_specs, normalize_qwen_tool_markup, parse_tool_calls_from_content, tool_choice_requires_call, tool_calls_complete,
 )
 
 from tensorfold.cuda import health
@@ -365,6 +365,7 @@ class App:
         from jinja2.exceptions import TemplateError
 
         from tensorfold.server.decisions import DecisionError, build_response, prompts_for
+        from tensorfold.server.prompt_literals import PromptEncodingError
 
         if not hasattr(self.engine, "score_labels"):
             raise RequestError("this model's CUDA engine does not score decision labels")
@@ -376,7 +377,10 @@ class App:
                 raise DecisionError(f"the chat template failed: {exc}") from exc
 
         def encode(text: str) -> list[int]:
-            return [int(token) for token in self.tok.encode(text, add_special_tokens=False).ids]
+            try:
+                return [int(token) for token in self.template.encode(self.tok, text, segments=self.segments)]
+            except PromptEncodingError as exc:
+                raise DecisionError(f"the chat template could not encode literal content: {exc}") from exc
 
         try:
             prepared = prompts_for(body, render, encode, context_len=self.effective_context_window)
@@ -405,9 +409,12 @@ class App:
                     raise RequestError(f"{name} must be an integer token count") from exc
         return max(1, int(body.get("max_tokens") or body.get("max_completion_tokens") or self.max_tokens))
 
-    def _prepare(self, body: dict[str, Any], chat: bool, *, for_generation=True) -> PreparedRequest:
+    def _prepare(self, body: dict[str, Any], chat: bool, *, for_generation=True,
+                 add_generation_prompt: bool = True) -> PreparedRequest:
         from jinja2.exceptions import TemplateError
 
+        if type(add_generation_prompt) is not bool:
+            raise RequestError("add_generation_prompt must be a boolean")
         validate_modalities(body)
         policy = ToolCallPolicy(body)
         ignore_eos, stop = stop_options(body)
@@ -439,13 +446,13 @@ class App:
             kwargs["reasoning_effort"] = effort
         budget = parse_numbers({"thinking_budget": body.get("thinking_budget")})["thinking_budget"]
         penalties = self.penalties_for(body)
-        budget = int(budget or getattr(self, "thinking_budget", 0)) if chat and thinking else 0     # 0: the default
+        budget = thinking_budget(budget, getattr(self, "thinking_budget", 0)) if chat and thinking else 0
         spec = grammar.request_spec(body)
         if for_generation and (spec is not None or tools and strict_tools.wanted(tools)):
             reason = self._retained_constraint_refusal()
             if reason is not None:
                 raise RequestError(reason)
-        calls = self._strict_calls(body, tools, spec, policy)
+        calls = self._strict_calls(body, tools, spec, policy, for_generation=for_generation)
         spec = calls.spec if calls is not None else spec
         grammar.check_stopping(body, spec)
         top = probability_options(body, supported=bool(getattr(self.engine, "supports_logprobs", False)))
@@ -455,7 +462,7 @@ class App:
                                    "stop strings or structured output")
             if not hasattr(self, "_probability_decoder"):
                 self._probability_decoder = TokenBytes(self.tok)
-        compiled = (spec, self._grammars().compile(spec)) if spec is not None else None
+        compiled = (spec, self._grammars().compile(spec)) if spec is not None and for_generation else None
         thought_open = False
         if chat:
             if not isinstance(body.get("messages"), list):
@@ -465,14 +472,18 @@ class App:
             def render(messages: list[dict[str, Any]], **images: bool) -> str:   # text renders as it always has
                 nonlocal thought_open
                 try:
+                    ceiling = getattr(self, "render_budget_bytes", None)
                     text = self.template.render(messages, tools=tools, enable_thinking=thinking, extra=kwargs,
+                                                **({"max_render_bytes": ceiling} if ceiling is not None else {}),
+                                                **({"add_generation_prompt": False} if not add_generation_prompt else {}),
                                                 **images)
                 except TemplateError as exc:     # the checkpoint's template refuses the request (``raise_exception``)
                     raise RequestError(f"the chat template rejected the request: {exc}") from exc
                 if self.thinking_markers == CHANNEL_MARKERS:
                     from tensorfold.server.gemma_values import prompt_opens_thought
 
-                    thought_open = prompt_opens_thought(text)
+                    from tensorfold.server.prompt_literals import trusted_prompt_text
+                    thought_open = prompt_opens_thought(trusted_prompt_text(text))
                 return text
 
             if has_images(body["messages"]):
@@ -496,8 +507,11 @@ class App:
                         rollback(rendered.vision, primary, lambda: retire(rendered.vision))
                     raise
             text = render(body["messages"])
-            prompt = (self.segments.encode(text) if self.segments is not None
-                      else self.tok.encode(text, add_special_tokens=False).ids)
+            from tensorfold.server.prompt_literals import PromptEncodingError
+            try:
+                prompt = self.template.encode(self.tok, text, segments=self.segments)
+            except PromptEncodingError as exc:
+                raise RequestError(f"the chat template could not encode literal content: {exc}") from exc
         elif isinstance(body.get("prompt"), list):       # token ids (vLLM's and OpenAI's form): served as given
             prompt = self.token_ids(body["prompt"])
         else:
@@ -513,16 +527,16 @@ class App:
                                thought_open=thought_open, penalties=penalties)
 
     def _strict_calls(self, body: dict[str, Any], tools: list[dict[str, Any]], spec: Any,
-                      policy: ToolCallPolicy) -> "strict_tools.Plan | None":
+                      policy: ToolCallPolicy, *, for_generation: bool = True) -> "strict_tools.Plan | None":
         """The call grammar of a request whose active tools ask for strict arguments, else None (RequestError: 400)."""
 
         if not tools or not strict_tools.wanted(tools):
             return None
         if spec is not None:
             raise RequestError(f"{spec.field} cannot be combined with strict function tools: send one")
-        if "constraint" not in inspect.signature(self.engine.generate).parameters:
+        if for_generation and "constraint" not in inspect.signature(self.engine.generate).parameters:
             raise RequestError("this model's engine does not enforce strict function tools: send strict false")
-        if getattr(self.engine, "refuses_structured_output", None):
+        if for_generation and getattr(self.engine, "refuses_structured_output", None):
             raise RequestError(self.engine.refuses_structured_output)
         if getattr(self, "_strict_markup", None) is None:          # (plan factory, why not), read once
             try:
@@ -568,27 +582,6 @@ class App:
         return self._strict_markup[0](tools, required=tool_choice_requires_call(body.get("tool_choice")),
                                       parallel=not policy.single, offered=body.get("tools"))
 
-    def _thought(self, prepared: PreparedRequest, text: str, finished: bool) -> tuple[str, str]:
-        """A strict reply's (reasoning, answer): a call written in a think block that never closed is the answer only
-        when the reply's grammar accepts it (as if the grammar had held it)."""
-
-        if self.thinking_markers == CHANNEL_MARKERS:
-            from tensorfold.server.gemma_values import split_gemma_thinking
-
-            reasoning, answer = split_gemma_thinking(text, finished=finished, opened=prepared.thought_open)
-            # Generation may precede its first channel close. Validate every
-            # visible answer prefix before publishing tool deltas, including a
-            # direct call and any content before a structural thought block.
-            grammars = self._grammars()
-            matcher = grammars.xgr.GrammarMatcher(prepared.grammar[1])
-            if not matcher.accept_string(answer):
-                raise strict_tools.CallMarkupError("the Gemma answer left its strict tool grammar")
-            return reasoning, answer
-        reasoning, answer = split_thinking(text, finished=finished, markers=self.thinking_markers)
-        if finished and answer and self.thinking_markers[1] not in text and not self._grammars().accepts(prepared.grammar[1], answer):
-            return text, ""
-        return reasoning, answer
-
     def token_ids(self, value: Any, field: str = "prompt") -> list[int]:
         """Token ids as a request gives them (a list, or a list holding one list); RequestError outside the
         vocabulary."""
@@ -609,17 +602,11 @@ class App:
         strings = flag(body, "return_token_strs", False)
         if "messages" in body:
             fields = dict(body)
-            if "add_generation_prompt" in body:
-                kwargs = body.get("chat_template_kwargs")
-                kwargs = {} if kwargs is None else kwargs
-                if not isinstance(kwargs, dict):
-                    raise RequestError("chat_template_kwargs must be a JSON object or null")
-                fields["chat_template_kwargs"] = {**kwargs,
-                                                  "add_generation_prompt": flag(body, "add_generation_prompt", True)}
             def release_prepared_media():
                 prepared.release_media()
 
-            prepared = self._prepare(fields, True, for_generation=False)
+            prepared = self._prepare(fields, True, for_generation=False,
+                                     add_generation_prompt=flag(body, "add_generation_prompt", True))
             try:
                 ids = prepared.prompt
             except BaseException as primary:
@@ -771,31 +758,68 @@ class App:
             out: list[int] = []
             sent = {"reasoning": 0, "content": 0}
             stopped = {"client": False, "stop": False}
-            failed: list[Exception] = []
+            failed: list[Exception | None] = [None]  # preallocated callback failure cell; no append on exhaustion
             stream = StreamDecoder(self.tok, ends)
             # streamed calls go out as argument deltas while written (as on the Mac); one-call requests keep the end parser
             strict = prepared.calls
             calls_stream = ((strict.reader() if strict is not None else ToolCallStreamer(tools))
-                            if tools and not policy.single and body.get("stream") and (strict is not None or not gemma) else None)
+                            if tools and not policy.single and body.get("stream")
+                            and (prepared.grammar is None or strict is not None)
+                            and (strict is not None or not gemma) else None)
             answer_raw = [""]
+            grammar_state = [None]  # request-owned boundary, independent of producer/rank matcher copies
+            forced_close = [None]  # at most one explicit budget event in this logical reply
+            answer_stream = StreamDecoder(self.tok, ends, literal=True) if prepared.grammar is not None else None
+            answer_fed = [0]
+
+            def normal_tool_end() -> bool:
+                return not stopped["stop"] and bool(out and out[-1] in ends)
 
             def visible(finished: bool) -> tuple[str, str]:
                 raw = stream.final() if finished else stream.text
                 # stop strings match the generated text, reasoning included, before it is split (as on the Mac)
                 raw = stops.visible(raw, partial=not finished) if stops.strings else raw
-                if split_reasoning and strict is not None:
-                    reasoning, answer = self._thought(prepared, raw, finished)
+                if prepared.grammar is not None and grammar_state[0] is not None:
+                    from tensorfold.token_metadata import decode_presentation
+                    offset = grammar_state[0].answer_offset
+                    if offset is None:
+                        pending = grammar_state[0].pending_answer_offset
+                        prefix = (decode_presentation(self.tok, [t for t in out[:pending] if t not in ends])
+                                  if pending is not None and not finished else raw)
+                        answer = ""
+                    else:
+                        close_at = grammar_state[0].thinking_close_offset
+                        prefix_end = close_at if close_at is not None else offset
+                        prefix = decode_presentation(self.tok, [t for t in out[:prefix_end] if t not in ends])
+                        answer_stream.add(out[offset + answer_fed[0]:])
+                        answer_fed[0] = max(0, len(out) - offset)
+                        answer = answer_stream.final() if finished else answer_stream.text
+                    if split_reasoning:
+                        if gemma:
+                            from tensorfold.server.gemma_values import split_gemma_thinking
+                            reasoning = split_gemma_thinking(prefix, finished=finished,
+                                opened=prepared.thought_open, expect_thinking=thinking, reasoning_only=True)[0]
+                        else:
+                            reasoning = split_thinking(prefix, finished=finished, markers=markers)[0]
+                        # Gemma's known-phase cleaner already retains unframed
+                        # reasoning. Empty can be framing-only: never reinsert
+                        # raw headers or poison cumulative streamed-field lengths.
+                        if not gemma and offset is None and not reasoning:
+                            reasoning = prefix
+                    else:
+                        reasoning = ""
                 elif split_reasoning:
                     if gemma:
                         from tensorfold.server.gemma_values import split_gemma_thinking
 
-                        reasoning, answer = split_gemma_thinking(raw, finished=finished, opened=prepared.thought_open)
+                        reasoning, answer = split_gemma_thinking(raw, finished=finished, opened=prepared.thought_open,
+                                                                 expect_thinking=thinking)
                     else:
                         reasoning, answer = split_thinking(raw, finished=finished, markers=markers)
                     if finished and tools and not gemma and not answer:
                         # the end parser's split (below): a call missing only its closer, in a block that never closed,
                         # ends the reasoning where it starts, so its markup is the call and never reasoning_content
-                        fixed = split_thinking(normalize_qwen_tool_markup(raw), finished=True, markers=markers)
+                        fixed = split_thinking(normalize_qwen_tool_markup(raw, finished=normal_tool_end()), finished=True, markers=markers)
                         if fixed[1]:
                             reasoning, answer = fixed
                 else:
@@ -803,11 +827,11 @@ class App:
                 answer_raw[0] = answer
                 if strict is not None:
                     answer = strict.content(answer, finished=finished)
-                elif tools and gemma:
+                elif tools and gemma and prepared.grammar is None:
                     from tensorfold.server.gemma_values import hide_gemma_calls
 
                     answer = hide_gemma_calls(answer, finished=finished)
-                elif tools:
+                elif tools and prepared.grammar is None:
                     answer = (policy.content(answer, finished=finished) if policy.single
                               else hide_tool_calls(answer, finished=finished))
                 return reasoning, answer
@@ -816,7 +840,7 @@ class App:
 
             def on_tokens(new: list[int]) -> bool:
                 # True stops the engine after this round; engines that finish on both ranks keep calling and get True
-                if stopped["client"] or stopped["stop"] or failed:
+                if stopped["client"] or stopped["stop"] or failed[0] is not None:
                     return True
                 try:
                     if not new:                # a tick while the request waits or its prompt fills: keepalive, client check
@@ -834,6 +858,12 @@ class App:
                         new = kept
                     else:
                         out.extend(new)
+                    if grammar_state[0] is not None:
+                        for token in new:
+                            if grammar_state[0].observed == forced_close[0]:
+                                grammar_state[0].force_think_close(token)
+                            else:
+                                grammar_state[0].advance([token])
                     stream.add(new)
                     reasoning, answer = visible(False)
                     delta: dict[str, Any] = {}
@@ -848,6 +878,11 @@ class App:
                             # Callback acceptance follows canonical token commit.
                             # HTTP's callback includes write+flush, not peer receipt.
                             sent["reasoning"], sent["content"] = len(reasoning), len(answer)
+                    if (not delta and body.get("stream")
+                            and time.perf_counter() - last_ping[0] >= 1.0):
+                        last_ping[0] = time.perf_counter()
+                        if not emit(None):
+                            stopped["client"] = True
                     if calls_stream is not None and not stopped["client"]:
                         for call_delta in calls_stream.feed(answer_raw[0]):   # never the reasoning
                             if not emit(call_delta):
@@ -858,13 +893,27 @@ class App:
                     if serving[0] is not None:
                         serving[0].saw()
                 except Exception as exc:        # noqa: BLE001  raised after generate returns, never into the engine
-                    failed.append(exc)
+                    if failed[0] is None:
+                        failed[0] = exc
                     return True
                 return stopped["client"] or stopped["stop"]
 
+            last_ping = [time.perf_counter()]
+
+            def pulse() -> bool:
+                """Existing SSE comments only; no new bytes/protocol for nonstream replies."""
+                now = time.perf_counter()
+                if body.get("stream") and now - last_ping[0] >= 1.0:
+                    last_ping[0] = now
+                    stopped_here = on_tokens([])
+                    if failed[0] is not None:
+                        raise failed[0]  # queue callback has no active engine/native frame
+                    return stopped_here
+                return stopped["client"]
+
             draft = body.get("draft", True) is not False
             required = tools and strict is None and tool_choice_requires_call(body.get("tool_choice"))
-            gate = self._call_gate(prompt, tools) if required else None      # strict calls: the grammar requires them
+            gate = self._call_gate(prompt, tools, thinking=thinking) if required else None      # strict calls: the grammar requires them
 
             options: dict[str, Any] = {} if draft else {"draft": False}
             probabilities = None
@@ -905,6 +954,13 @@ class App:
                 if cancelled is not None and cancelled():
                     stopped["client"] = True
                     return True
+                # Empty callback is already the SSE keepalive contract. Poll it
+                # independently of opt-in progress frames, and never throw IO
+                # into a running engine: on_tokens retains that failure.
+                if body.get("stream") and time.perf_counter() - last_ping[0] >= 1.0:
+                    last_ping[0] = time.perf_counter()
+                    if on_tokens([]):
+                        return True
                 if progress is not None and not progress({"total": total, "cache": cache, "processed": processed,
                                                           "time_ms": int(elapsed_ms)}):
                     stopped["client"] = True
@@ -912,7 +968,7 @@ class App:
 
             # Nonstream clients have no progress writer, but still need the
             # supported engine's chunk-boundary disconnect poll during prefill.
-            reports = ((progress is not None or cancelled is not None)
+            reports = ((progress is not None or cancelled is not None or body.get("stream"))
                        and "progress" in inspect.signature(self.engine.generate).parameters)
 
             def generate(ids: list[int], count: int, feed: Callable[[list[int]], bool]) -> Any:
@@ -921,11 +977,16 @@ class App:
                     release()
                     waited = time.perf_counter()
                     try:
-                        turns.take(True, cancelled)
+                        turns.take(True, cancelled, **({"tick": pulse} if body.get("stream") else {}))
                         released = False                # ownership returns only after take succeeds
                     finally:
                         queued[0] += time.perf_counter() - waited
                 extra = dict(options)
+                if cached and "cache_prompt" in inspect.signature(self.engine.generate).parameters:
+                    # Budget/call continuations are the SAME logical request.
+                    # Do not replace its reusable original prompt checkpoints
+                    # with a prompt containing generated/forced reply tokens.
+                    extra["cache_prompt"] = False
                 if stops.strings and "token_limit" in inspect.signature(self.engine.generate).parameters:
                     # A verified block can contain a stop before its final token.
                     # Resolve that boundary before any recurrent/KV commit. This
@@ -937,9 +998,29 @@ class App:
                     extra["token_limit"] = lambda new, prefix: stop_prefix_limit(stops, baseline, prefix, new)
                 if prepared.grammar is not None:    # response_format: a fresh grammar state, after </think> when thinking
                     spec, compiled = prepared.grammar
-                    # a run after the thinking budget's close (it ends at </think> under a grammar) starts in the grammar
-                    end = None if think_end is None or think_end in ids[len(prompt):] else think_end
-                    extra["constraint"] = self._grammars().constraint(compiled, think_end=end, spec=spec)
+                    # Reconstruct exactly this subrun's already committed reply,
+                    # not merely whether a close occurred. Partial structured
+                    # answers and forced tool prefixes must keep matcher state.
+                    opener = (self.tok.token_to_id(strict.opener) if strict is not None and think_end is not None else None)
+                    constraint = self._grammars().constraint(compiled, think_end=think_end, spec=spec,
+                        decode=self.tok.decode,
+                        **({"answer_start": opener, "answer_opener": strict.opener,
+                            "answer_headers": strict.thinking_headers} if opener is not None else {}))
+                    if grammar_state[0] is None:
+                        grammar_state[0] = constraint.fresh_boundary()
+                    if budget is not None:
+                        budget.intent = grammar_state[0]
+                    prior = ids[len(prompt):]
+                    for index, token in enumerate(prior):
+                        if index == forced_close[0]:
+                            constraint.force_think_close(token)
+                        else:
+                            constraint.advance([token])
+                    if prior and constraint.answer_offset == len(prior):
+                        # A budget continuation starts at the empty answer root.
+                        # Preserve that established active-root rank wire contract.
+                        constraint = self._grammars().constraint(compiled, spec=spec)
+                    extra["constraint"] = constraint
                 if prepared.vision is not None:          # a gate's continuation keeps the images, positions extended
                     same = list(ids) == list(prepared.vision.token_ids)
                     if same:
@@ -967,7 +1048,7 @@ class App:
             if turns is not None:
                 waited = time.perf_counter()
                 try:
-                    turns.take(background, cancelled)
+                    turns.take(background, cancelled, **({"tick": pulse} if body.get("stream") else {}))
                 except RequestCancelled:
                     # No engine turn was acquired, but this admitted request still has an outcome and queue time.
                     with health.of(self).running(len(prompt), out, arrived) as request:
@@ -985,24 +1066,51 @@ class App:
             try:
                 # running until its reply is made, then counted with how it ended; /health reads ``out``; rounds never call in
                 with health.of(self).running(len(prompt), out, arrived) as request:
+                    generation_primary = None
                     try:
                         if cancelled is not None and cancelled():            # the client left while this request waited
                             raise RequestCancelled("the client left before the request started")
                         serving[0] = request
                         try:
-                            stats = request.stats = generate_gated(generate, prompt, max_tokens, gates, on_tokens)
+                            def forced(index):
+                                if forced_close[0] is not None:
+                                    raise RuntimeError("a logical reply cannot force its thinking close twice")
+                                forced_close[0] = index
+                            stats = request.stats = generate_gated(generate, prompt, max_tokens, gates, on_tokens,
+                                                                    on_think_close=forced)
                         finally:
                             serving[0] = None
+                    except BaseException as generation_error:
+                        generation_primary = generation_error
+                        raise
                     finally:
-                        release()
-                        request.stats = {**(request.stats or {}),
-                                         **timings(request.stats or {}, len(out), queued[0], prepare_s, arrived,
-                                                   request.first)}
-                    if failed:
+                        callback_primary = failed[0] if failed[0] is not None else generation_primary
+                        _callback_native_cause = (BaseException.__cause__.__get__(callback_primary)
+                                                  if callback_primary is not None else None)
+                        _callback_native_context = (BaseException.__context__.__get__(callback_primary)
+                                                    if callback_primary is not None else None)
+                        try:
+                            release()
+                            request.stats = {**(request.stats or {}),
+                                             **timings(request.stats or {}, len(out), queued[0], prepare_s, arrived,
+                                                       request.first)}
+                        except BaseException as bookkeeping:
+                            if callback_primary is not None and bookkeeping is not callback_primary:
+                                raise callback_primary from bookkeeping
+                            raise
+                    if failed[0] is not None:
                         raise failed[0]
                     if stopped["client"]:                                        # as the Mac server: nothing more is written
                         raise RequestCancelled("the client left during the reply")
                     reasoning, answer = visible(True)
+                    if calls_stream is not None and strict is None and normal_tool_end():
+                        # Only a normal actual terminal resolves malformed-JSON
+                        # raw fallback. Never finalize on cancel/error/reply cap
+                        # or a user stop that can cut a still-valid call short.
+                        for call_delta in calls_stream.feed(answer_raw[0], finished=True):
+                            if not emit(call_delta):
+                                stopped["client"] = True
+                                raise RequestCancelled("the client left during the terminal tool reply")
                     final: dict[str, Any] = {}
                     if len(reasoning) > sent["reasoning"]:
                         final["reasoning_content"] = reasoning[sent["reasoning"]:]
@@ -1010,20 +1118,23 @@ class App:
 
                     raw_text = decode_presentation(self.tok, [t for t in out if t not in ends])
                     text = stops.visible(raw_text)
+                    calls_complete = True
                     if strict is not None:          # a strict reply's calls follow its grammar exactly: read as written
-                        raw_answer = self._thought(prepared, text, True)[1] if split_reasoning else text
+                        raw_answer = answer_raw[0] if prepared.grammar is not None else text
                         content, calls, calls_complete = strict.parse_finished(raw_answer, max_calls=policy.max_calls)
-                    elif tools:
+                    elif tools and prepared.grammar is None:
                         if not gemma:
-                            text = normalize_qwen_tool_markup(text)    # Qwen's historical envelope repair
+                            text = normalize_qwen_tool_markup(text, finished=normal_tool_end())
                         if split_reasoning and gemma:
                             from tensorfold.server.gemma_values import split_gemma_thinking
 
-                            raw_answer = split_gemma_thinking(text, finished=True, opened=prepared.thought_open)[1]
+                            raw_answer = split_gemma_thinking(text, finished=True, opened=prepared.thought_open,
+                                                              expect_thinking=thinking)[1]
                         else:
                             raw_answer = split_thinking(text, finished=True, markers=markers)[1] if split_reasoning else text
                         parse = parse_tool_calls_from_content if gemma else parse_tool_calls
-                        content, calls = parse(raw_answer, tools, max_calls=policy.max_calls)
+                        content, calls = parse(raw_answer, tools, max_calls=policy.max_calls, finished=normal_tool_end())
+                        calls_complete = tool_calls_complete(raw_answer, tools, finished=normal_tool_end())
                         shown = policy.content(content)
                         # a one-call request whose only call could not be parsed shows its markup rather than an empty reply
                         content = shown if calls or shown.strip() else content
@@ -1042,7 +1153,8 @@ class App:
                     # An emitted head is not a completed strict call. Retain all
                     # prior calls/partial deltas, but report the actual stop/budget
                     # outcome when any opened strict call remained unfinished.
-                    finished_calls = (calls or (streamed and ended)) and (strict is None or calls_complete)
+                    stream_complete = calls_stream is None or strict is not None or calls_stream.complete
+                    finished_calls = bool(calls or (streamed and ended)) and calls_complete and stream_complete
                     finish = request.outcome = "tool_calls" if finished_calls else ("stop" if ended else "length")
             finally:
                 release()
@@ -1063,7 +1175,9 @@ class App:
                     "stop_sequence": matched_stop(raw_text, stops.strings),
                     **({"logprobs": logprobs} if logprobs is not None else {}),
                     "prompt_tokens": len(prompt), "completion_tokens": len(out), "cached_tokens": (cached or [0])[0],
-                    "reasoning_tokens": reasoning_count(out, self.tok.token_to_id(markers[1]) if chat and thinking else None),
+                    "reasoning_tokens": (min(len(out), grammar_state[0].answer_offset)
+                        if chat and thinking and grammar_state[0] is not None and grammar_state[0].answer_offset is not None
+                        else reasoning_count(out, self.tok.token_to_id(markers[1]) if chat and thinking else None)),
                     "stats": stats, "calls_streamed": streamed}
         except BaseException as error:
             _media_primary = error
@@ -1114,9 +1228,10 @@ class App:
         close = [*self.tok.encode("\n", add_special_tokens=False).ids, think_end]
         if prepared.grammar is None:
             close += self.tok.encode("\n\n", add_special_tokens=False).ids
-        return ThinkBudget(prepared.think_budget, close, think_end)
+        return ThinkBudget(prepared.think_budget, close, think_end, stop_ids=self.engine.eos,
+                           decode=self.tok.decode)
 
-    def _call_gate(self, prompt: list[int], tools: list[dict[str, Any]]) -> CallGate:
+    def _call_gate(self, prompt: list[int], tools: list[dict[str, Any]], *, thinking: bool = False) -> CallGate:
         """The gate a required tool call needs, from this template's call markup and the rendered prompt."""
 
         if not hasattr(self, "_form"):
@@ -1148,6 +1263,7 @@ class App:
         think = [-1 if token is None else token for token in think]
         names = [str((t.get("function") or t).get("name") or "") for t in tools] if lead is not None else []
         return CallGate.after_prompt(prompt, self.tok.token_to_id(opener), blank, think_open=think[0],
+                                     thinking=thinking, decode=self.tok.decode,
                                      think_end=think[1], text=text, lead=lead or "", names=names, tail=tail or "",
                                      encode=lambda t: list(self.tok.encode(t, add_special_tokens=False).ids))
 

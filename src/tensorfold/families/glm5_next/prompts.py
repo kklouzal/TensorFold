@@ -45,6 +45,20 @@ class GlmTokenizer:
     def __getattr__(self, name: str) -> Any:
         return getattr(self._inner, name)
 
+    def render_prompt_literals(self, messages, **kwargs):
+        """Preserve the native wrapper's post-render transformation and origins."""
+        from tensorfold.server.prompt_literals import RenderedPrompt, render_hf_prompt
+        from tensorfold.server.prompt_origin import trusted
+
+        kwargs.setdefault("clear_thinking", self._clear)
+        rendered = render_hf_prompt(self._inner, messages, **kwargs)
+        if kwargs.get("enable_thinking", True) is not False:
+            return rendered
+        text = rendered.origin.replace(EFFORT_LINE, "", 1)
+        if text.endswith(OPENED):
+            text += trusted("</think>")
+        return RenderedPrompt(text, rendered.literals, control_literals=rendered.control_literals)
+
     def apply_chat_template(self, messages: Any, *args: Any, tokenize: bool = True, **kwargs: Any) -> Any:
         kwargs.setdefault("clear_thinking", self._clear)
         if kwargs.get("enable_thinking", True) is not False:

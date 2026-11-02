@@ -52,8 +52,13 @@ def make_handler(app: App):
         def log_message(self, fmt, *args):    # one line a request (none for a successful poll), as on the Mac
             print(f"[tensorfold] {self.address_string()} {fmt % args}", flush=True)
 
-        def _json(self, code: int, payload: dict[str, Any]) -> None:
-            data = json.dumps(payload).encode()
+        def _json(self, code: int, payload: dict[str, Any], *, encoded: bytes | None = None) -> None:
+            # Owned serializers may supply a complete immutable JSON snapshot,
+            # encoded AFTER all payload augmentation. Headers/auth/metrics and
+            # write failure handling remain exactly the native path below.
+            if encoded is not None and type(encoded) is not bytes:
+                raise TypeError("preencoded JSON must be owned bytes")
+            data = json.dumps(payload).encode() if encoded is None else encoded
             try:
                 self.send_response(code)
                 self.send_header("Content-Type", "application/json")
@@ -242,12 +247,16 @@ def make_handler(app: App):
                         pass
 
                 def emit(delta: dict[str, Any] | None) -> bool:
-                    """Write one delta (None: an SSE comment that keeps an open stream's connection alive)."""
+                    """Write output or accepted activity (None opens SSE and writes a keepalive comment)."""
                     try:
                         if delta is None:
-                            if opened:                   # deferred headers stay deferred: a refusal can still be a 503
-                                self.wfile.write(b": keepalive\n\n")
-                                self.wfile.flush()
+                            # App emits accepted queue/prefill activity only
+                            # after preparation/admission. Open deferred SSE
+                            # here; later failures use the existing SSE error
+                            # +DONE path rather than a contradictory late503.
+                            write(None)
+                            self.wfile.write(b": keepalive\n\n")
+                            self.wfile.flush()
                             return True
                         write(chunk(delta))
                         return True

@@ -574,35 +574,42 @@ For the current Python deployment, use the old `5b6627ba…` image and
 The earlier recipe and Harness launch scripts manage their captured images;
 use this fork's Compose configuration for the new deployment.
 
-The Harness endpoint counts the native rendered prompt and image expansion
-without generation. It permits counting a history beyond the served context,
-while retaining generation admission and independent image safety checks.
-It requires `--thinking-budget 0`; callers select budgets per request. Returned
-token/prompt inspection is capped at 16,384 tokens, and count-only responses
-support larger histories. HTTP preparation has a bounded queue and cancellation.
+The Harness endpoint counts the native rendered prompt and supported media expansion
+without generation or the engine lane. It permits histories beyond the served
+context while retaining request validation and independent media safety checks.
+Launch thinking values remain defaults: positive launch budgets are supported,
+and explicit request `thinking_budget: 0` means unlimited. The model directory's
+own template is selected by default; `--chat-template` remains an optional operator
+override. `compose.gemma4.yaml` no longer forces the bundled Google reference.
 
-Each successful counting reply also carries the metadata Harness discovers
-models from, resolved once when the handler is built; changing the template or
-model state requires a restart. `capabilities.reasoning_efforts` lists the
-efforts the initialized template names, and `default_reasoning_effort` appears
-only when `--reasoning-effort` resolves to one of them. `chat_template_sha256`
-hashes the UTF-8 encoding of the template source, read with ChatTemplate's own
-precedence (`chat_template.jinja`, then `tokenizer_config.json`) and text
-decoding. It is reported only when that source compiles, in the active Jinja
-environment, to the active root and block code with the same defaults and
-referenced bindings; changed, invalid or unreadable source omits it.
-`provenance` labels that identity `equivalent_active_compilation` and records
-the server, engine and tokenizer types, loaded tokenizer serialization and
-Python bytecode hashes with their Python and marshal versions. The bytecode
-hashes distinguish installed Python implementations; they do not identify engine
-state or non-Python code. Thinking controls, default-thinking and
-reasoning-replay facts stay absent: forwarding a keyword to Jinja proves neither
-that the template consumes it nor that it can turn thinking off. Harness obtains
-those from the contract it pins for the fingerprinted template. Without a
-fingerprint Harness has pinned, Harness establishes no thinking control and
-refuses requests that select thinking on or off, including its compaction,
-memory, goal-ledger and skill-learning requests. The contract follows Harness's
-`deploy/tensorfold/README.md`.
+Each successful reply preserves `harness_tokenizer_version: 1`, the requested
+served model/alias, count and context window. Default/tool-use capability probes
+run against the actual public renderer at handler construction, twice per sample.
+Only common verified on/off and reasoning-replay facts are advertised. Replay
+probes distinguish older non-tool reasoning from the current tool-call turn;
+unknown, unstable, fixed or conflicting evidence does not become a switch/replay
+claim. `preserve_reasoning: false` means current-turn replay, not no replay;
+`reasoning_replay_field` is present only when its input field is observed working.
+The probes establish rendering behavior, not model output quality.
+
+The active source fingerprint and per-route effort/provenance metadata remain
+captured rather than re-read from checkpoint files. Provenance identifies loaded
+Python bytecode, tokenizer serialization and render-probe evidence; it is not a
+native-kernel or retained-state identity. Changing active model/template state
+requires a restart and new discovery evidence.
+
+Counting accepts fixed-length or bounded chunked HTTP/1.1 framing (96 MiB body,
+64 KiB aggregate chunk metadata), rejecting Content-Length/Transfer-Encoding
+ambiguity. An absolute 30-second body deadline checks each actual `read1`,
+including headers and trailers; cancellation checks occur between I/O. A timed-out
+socket reader is not retried. Inspection is bounded by 96 MiB serialized JSON
+bytes instead of 16,384 tokens. JSON is fully encoded before headers, using one
+bounded output buffer and bounded string-escaping pieces. The single preparation
+slot remains owned through serialization/write and prepared-media closure.
+Count-only avoids diagnostic decode/token-array serialization. Native tokenizer
+workspace still follows the selected model/library; these limits are not a
+universal opaque-library allocation proof. Queue, framing, cleanup, real-model
+rendering and installed HTTP verification remain explicit release gates.
 
 YaRN is an optional CUDA text-RoPE policy for Flash Next. The CLI option
 `--yarn-factor 2 --context 524288` requests a 2× window without modifying the

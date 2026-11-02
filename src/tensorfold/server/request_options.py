@@ -52,6 +52,14 @@ def parse_numbers(fields: dict[str, Any]) -> dict[str, Any]:
     return parsed
 
 
+def thinking_budget(explicit: int | None, default: int = 0) -> int:
+    """Absent/null inherit launch; explicit zero is unlimited, never 'unset'."""
+    value = default if explicit is None else explicit
+    if type(value) is not int:
+        raise RequestError("thinking_budget must be an integer or null")
+    return value
+
+
 EFFORTS = ("none", "minimal", "low", "medium", "high", "xhigh", "max")
 
 

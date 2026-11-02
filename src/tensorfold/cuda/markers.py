@@ -26,6 +26,23 @@ class TemplateTokens:
                                              add_generation_prompt=add_generation_prompt, **kwargs)
         return self.tok.encode(text, add_special_tokens=False).ids if tokenize else text
 
+    def render_prompt_literals(self, messages, *, renderer=None, **kwargs):
+        """Probe the actual captured renderer, preserving its native control IDs.
+
+        This owned diagnostic facade is not an HF tokenizer. Its already encoded
+        result uses the same model-owned origin contract as request generation.
+        """
+        kwargs.pop("tokenize", None)
+        generation = kwargs.pop("add_generation_prompt", False)
+        thinking = kwargs.pop("enable_thinking", False)
+        tools = kwargs.pop("tools", [{"type": "function", "function": {"name": "tf_template_probe",
+            "parameters": {"type": "object", "properties": {}}}}] if self.tools else None)
+        text = self.template.render(messages, tools=tools, enable_thinking=thinking, extra=kwargs,
+                                    add_generation_prompt=generation)
+        ids = self.template.encode(self.tok, text)
+        object.__setattr__(text, "_preencoded", (self, tuple(ids)))
+        return text
+
 
 def snapshot_points(openers: Sequence[int], assistant: Sequence[int], *,
                     turn: bool = False) -> Callable[[Sequence[int]], list[int]]:

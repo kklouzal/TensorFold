@@ -11,7 +11,11 @@ from typing import Any
 from tensorfold.chat_metadata import MissingChatTemplate, TemplateSource, resolve_chat_templates
 from tensorfold.server.messages import _normalize_tool_call_arguments, late_system_role, normalize_messages
 from tensorfold.server.request_options import effort_levels
-from tensorfold.token_metadata import resolve_token_roles
+from tensorfold.server.prompt_literals import (MAX_RENDER_BYTES, PromptEncodingError, PromptLiterals,
+                                              RenderedPrompt, bounded_render)
+from tensorfold.server.prompt_origin import origin_environment, trust_message_roles, trust_policy_strings, trusted
+from tensorfold.token_metadata import resolve_token_roles, tokenizer_override
+from tensorfold.checkpoint_metadata import read_json
 
 from .tensor_file import _regular_stream, checkpoint_path
 
@@ -48,6 +52,7 @@ class ChatTemplate:
         env.filters["tojson"] = tojson
         env.globals["raise_exception"] = raise_exception
         env.globals["strftime_now"] = lambda fmt: datetime.now().strftime(fmt)
+        env = origin_environment(env)
         compiled, routes = {}, []
         probe_tools = [{"type": "function", "function": {"name": "tf_template_probe",
                         "parameters": {"type": "object", "properties": {}}}}]
@@ -62,6 +67,10 @@ class ChatTemplate:
         self._routes = tuple(routes)
         active = self._routes[0]
         self.template, self.efforts, self.late_system = active.template, active.efforts, active.late_system
+        override = tokenizer_override()
+        tokenizer_data = json.loads(override.text) if override is not None else (read_json(model_dir, "tokenizer.json") or {})
+        self.literals = PromptLiterals(tokenizer_data, [route.source.source for route in self._routes],
+                                       self.specials.values())
 
     def selected(self, *, tools=False):
         """The captured compilation used by this request route; no metadata I/O or compilation."""
@@ -73,16 +82,37 @@ class ChatTemplate:
 
     def render(self, messages: list[dict[str, Any]], *, tools: list[dict[str, Any]] | None,
                enable_thinking: bool, extra: dict[str, Any] | None = None, allow_images: bool = False,
-               allow_audio: bool = False) -> str:
+               allow_audio: bool = False, max_render_bytes: int = MAX_RENDER_BYTES,
+               add_generation_prompt: bool = True) -> str:
         active = self.selected(tools=tools)
         messages = _normalize_tool_call_arguments(normalize_messages(messages, late_system=active.late_system,
                                                                      allow_images=allow_images,
                                                                      allow_audio=allow_audio,
                                                                      audio_placeholders=allow_audio))
-        kwargs = dict(self.specials, messages=messages, tools=tools or None, add_generation_prompt=True,
-                      enable_thinking=enable_thinking)
-        kwargs.update(extra or {})
-        return active.template.render(**kwargs)
+        try:
+            if extra is not None and not isinstance(extra, dict):
+                raise PromptEncodingError("chat template kwargs must be a mapping")
+            if set(extra or {}) & {"messages", "tools", "add_generation_prompt"}:
+                raise PromptEncodingError("chat template kwargs cannot replace prepared messages, tools or generation mode")
+            if type(add_generation_prompt) is not bool:
+                raise PromptEncodingError("generation prompt mode must be a boolean")
+            values, _ = self.literals.protect({"messages": messages, "tools": tools or None,
+                                              "extra": extra or {}}, max_bytes=max_render_bytes)
+            kwargs = dict({key: trusted(value) for key, value in self.specials.items()},
+                          messages=trust_message_roles(values["messages"]), tools=values["tools"],
+                          add_generation_prompt=add_generation_prompt, enable_thinking=enable_thinking)
+            kwargs.update(values["extra"])
+            trust_policy_strings(kwargs)
+            text = bounded_render(active.template, kwargs, max_render_bytes)
+            return RenderedPrompt(text, self.literals.literals)
+        except (PromptEncodingError, UnicodeError) as exc:
+            from jinja2.exceptions import TemplateError
+
+            raise TemplateError(str(exc)) from exc
+
+    def encode(self, tokenizer, text, *, segments=None):
+        """Count and generate from the same provenance-aware token sequence."""
+        return self.literals.encode(tokenizer, text, segments=segments)
 
 
 def prepare_chat_template(model_dir, *, template_file=None, template_name=None):

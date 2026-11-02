@@ -464,10 +464,18 @@ def test_cuda_decisions_scores_through_the_template():
     from tensorfold.cuda.turns import Turns
 
     class Template:
+        def __init__(self):
+            self.encoded = []
+
         def render(self, messages, *, tools, enable_thinking, extra=None):
             assert enable_thinking is False
             assert tools is None
             return messages[0]["content"] + "\n"
+
+        def encode(self, tokenizer, rendered, *, segments=None):
+            assert segments is None
+            self.encoded.append(rendered)
+            return tokenizer.encode(rendered, add_special_tokens=False).ids
 
     class Tok:
         def encode(self, text, add_special_tokens=False):
@@ -481,6 +489,7 @@ def test_cuda_decisions_scores_through_the_template():
     app = object.__new__(App)
     app.template = Template()
     app.tok = Tok()
+    app.segments = None
     app.engine = Engine()
     app.context_window = 0
     app.turns = Turns()
@@ -488,6 +497,8 @@ def test_cuda_decisions_scores_through_the_template():
     assert payload["answers"]["team"]["choice"] == "technical"
     assert payload["usage"]["completion_tokens"] == 0
     assert app.engine.seen[1] == [ord("A"), ord("B")]
+    rendered = app.template.encoded[0]
+    assert app.template.encoded == [rendered, rendered + "A", rendered + "B"]
 
     missing = object.__new__(App)
     missing.engine = object()
@@ -537,3 +548,19 @@ def _cuda_post(factory, app, body, path="/v1/decisions"):
     factory(app)(connection, ("127.0.0.1", 0), None)
     headers, response = bytes(connection.output).split(b"\r\n\r\n", 1)
     return int(headers.split()[1]), response.decode()
+
+
+def test_native_renderer_typeerror_is_not_retried_with_changed_thinking_policy(monkeypatch):
+    from tensorfold.server import decisions, prompt_literals
+
+    primary = TypeError('native template/source failure')
+    calls = []
+    def render(tokenizer, messages, **kwargs):
+        calls.append(kwargs)
+        raise primary
+    monkeypatch.setattr(prompt_literals, 'render_hf_prompt', render)
+    with pytest.raises(TypeError) as failure:
+        decisions._chat_prompt(_Tokenizer(), 'same request')
+    assert failure.value is primary
+    assert calls == [{'renderer': None, 'tokenize': False,
+                      'add_generation_prompt': True, 'enable_thinking': False}]

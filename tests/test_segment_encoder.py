@@ -37,7 +37,7 @@ def chat(rng):
     return (rng.choice(PIECES) if rng.random() < 0.2 else "") + text + (f"{OPEN}assistant\n" if rng.random() < .7 else "")
 
 
-@pytest.mark.parametrize("limit", [30, 20_000, LIMIT])                # bytes: one entry, a few, all of them
+@pytest.mark.parametrize("limit", [30, 20_000, LIMIT])                # bytes: none, a few, all of them
 def test_segments_equal_the_whole_text_with_any_cache_bound(limit):
     tok, rng = bpe(), random.Random(7)
     enc = SegmentEncoder(tok, OPEN, limit)
@@ -48,7 +48,15 @@ def test_segments_equal_the_whole_text_with_any_cache_bound(limit):
         other = chat(rng)
         assert enc.encode(other) == tok.encode(other, add_special_tokens=False).ids, turn
     assert enc.held == sum(_size(text, ids) for text, ids in enc.cache.items())
-    assert enc.held <= max(limit, max(_size(text, ids) for text, ids in enc.cache.items()))
+    assert enc.held <= limit
+
+
+def test_oversized_segment_is_encoded_but_not_retained():
+    tok = bpe()
+    encoder = SegmentEncoder(tok, OPEN, 64)
+    text = OPEN + "user\n" + "hello world " * 1000 + END
+    assert encoder.encode(text) == tok.encode(text, add_special_tokens=False).ids
+    assert encoder.held <= 64 and not encoder.cache
 
 
 def test_threads_share_the_cache_and_each_gets_its_own_text():

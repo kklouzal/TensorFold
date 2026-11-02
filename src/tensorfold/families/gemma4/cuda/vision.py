@@ -358,6 +358,10 @@ class GemmaVisionProcessor:
     def prepare(self, rendered_prompt: str, images: Sequence[Any], *, videos: Sequence[Any] = (),
                 max_prompt_tokens: int | None, max_visual_tokens: int = 4096,
                 max_image_tokens: int | None = None) -> PreparedGemmaVision:
+        from tensorfold.server.prompt_literals import RenderedPrompt, repair_media_tokens, trusted_prompt_text
+
+        logical_prompt = rendered_prompt
+        rendered_prompt = trusted_prompt_text(rendered_prompt)
         if (not images and not videos) or type(max_visual_tokens) is not int or max_visual_tokens <= 0:
             raise ValueError("Gemma preprocessing needs media and a positive visual-token budget")
         if max_prompt_tokens is not None and (type(max_prompt_tokens) is not int or max_prompt_tokens <= 0):
@@ -415,6 +419,8 @@ class GemmaVisionProcessor:
         if ids.ndim != 2 or ids.shape[0] != 1 or not np.issubdtype(ids.dtype, np.integer):
             raise ValueError("Gemma processor returned invalid prompt token IDs")
         tokens = tuple(int(i) for i in ids[0])
+        if isinstance(logical_prompt, RenderedPrompt):
+            tokens = tuple(repair_media_tokens(logical_prompt, self.processor.tokenizer.backend_tokenizer, tokens))
         if max_prompt_tokens is not None and len(tokens) > max_prompt_tokens:
             raise ValueError(f"context length exceeds {max_prompt_tokens} tokens after Gemma media expansion")
         by_kind = {"image": [], "video": []}

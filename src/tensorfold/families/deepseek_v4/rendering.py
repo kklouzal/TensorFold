@@ -53,7 +53,7 @@ def _eligible(messages, count):
     return True
 
 
-def _create_encoder(_upstream):
+def _create_encoder(_upstream, *, origin=None):
 
     def _render_message(index: int, messages: _upstream.List[_upstream.Dict[str, _upstream.Any]], thinking_mode: str, drop_thinking: bool=True, reasoning_effort: _upstream.Optional[str]=None, *, _last_user_index: int) -> str:
         """
@@ -123,12 +123,12 @@ def _create_encoder(_upstream):
                                 if b.get('type') == 'text':
                                     text_parts.append(b.get('text', ''))
                                 else:
-                                    text_parts.append(f"[Unsupported {b.get('type')}]")
-                            tool_content = '\n\n'.join(text_parts)
+                                    text_parts.append(f"[Unsupported {b.get('type')}]" if origin is None else origin.unsupported(b.get('type')))
+                            tool_content = '\n\n'.join(text_parts) if origin is None else origin.join('\n\n', text_parts)
                         parts.append(_upstream.tool_output_template.format(content=tool_content))
                     else:
-                        parts.append(f'[Unsupported {block_type}]')
-                prompt += '\n\n'.join(parts)
+                        parts.append(f'[Unsupported {block_type}]' if origin is None else origin.unsupported(block_type))
+                prompt += '\n\n'.join(parts) if origin is None else origin.join('\n\n', parts)
             else:
                 prompt += content or ''
         elif role == 'latest_reminder':
@@ -140,7 +140,7 @@ def _create_encoder(_upstream):
             tc_content = ''
             if tool_calls:
                 tc_list = [_upstream.tool_call_template.format(dsml_token=_upstream.dsml_token, name=tc.get('name'), arguments=_upstream.encode_arguments_to_dsml(tc)) for tc in tool_calls]
-                tc_content += '\n\n' + _upstream.tool_calls_template.format(dsml_token=_upstream.dsml_token, tool_calls='\n'.join(tc_list), tc_block_name=_upstream.tool_calls_block_name)
+                tc_content += '\n\n' + _upstream.tool_calls_template.format(dsml_token=_upstream.dsml_token, tool_calls='\n'.join(tc_list) if origin is None else origin.join('\n', tc_list), tc_block_name=_upstream.tool_calls_block_name)
             summary_content = content or ''
             rc = reasoning_content or ''
             prev_has_task = index - 1 >= 0 and messages[index - 1].get('task') is not None
@@ -218,7 +218,7 @@ def _create_encoder(_upstream):
             num_to_render = len(messages)
             context_len = len(context)
         _renderer, _render_kwargs = (_upstream.render_message, {})
-        if _eligible(full_messages, num_to_render):
+        if origin is not None or _eligible(full_messages, num_to_render):
             _renderer = _render_message
             _render_kwargs = {'_last_user_index': _upstream.find_last_user_index(full_messages)}
         for idx in range(num_to_render):

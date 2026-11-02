@@ -48,6 +48,41 @@ class DeepSeekTokenizer:
 
         return (), tuple(int(i) for i in self._inner.encode(ASSISTANT, add_special_tokens=False))
 
+    def render_prompt_literals(self, messages, tools=None, add_generation_prompt=True,
+                               enable_thinking=False, thinking_mode=None, reasoning_effort=None, renderer=None, **_):
+        """Keep Python encoder authority while tracking semantic input origins."""
+        import json
+        from tensorfold.server.prompt_literals import PromptEncodingError, PromptLiterals, RenderedPrompt, native_tokenizer
+        from tensorfold.server.prompt_origin import trusted
+        from .literal_prompts import encode, reserved_tokens
+
+        backend = native_tokenizer(self._inner)
+        if backend is None:
+            raise PromptEncodingError("DeepSeek tokenizer does not expose ordinary literal encoding")
+        msgs = [copy.deepcopy(message) for message in messages]
+        for message in msgs:
+            if message.get("role") == "assistant" and message.get("content") is None:
+                message["content"] = ""
+        if tools:
+            if not msgs or msgs[0].get("role") != "system":
+                msgs.insert(0, {"role": "system", "content": ""})
+            msgs[0]["tools"] = [tool if "function" in tool else {"type": "function", "function": tool} for tool in tools]
+        thinking = thinking_mode == "thinking" if thinking_mode is not None else bool(enable_thinking)
+        effort = EFFORTS.get(str(reasoning_effort)) if thinking and reasoning_effort else None
+        source = ["DeepSeek-V4 native Python encoder 60d8d70"]
+        reserved = reserved_tokens(backend)
+        protection = (renderer.protection(backend, source, reserved) if renderer is not None else
+                      PromptLiterals(json.loads(backend.to_str()), source, reserved))
+        values, _ = protection.protect(msgs)
+        text = encode(values, thinking_mode="thinking" if thinking else "chat", reasoning_effort=effort)
+        prefix = ASSISTANT + ("<think>" if thinking else "</think>")
+        last = messages[-1].get("role") if messages else None
+        if add_generation_prompt and last == "assistant":
+            text += trusted(prefix)
+        elif not add_generation_prompt and last != "assistant" and text.endswith(prefix):
+            text = text[:-len(prefix)]
+        return RenderedPrompt(text, protection.literals)
+
     def apply_chat_template(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None,
                             add_generation_prompt: bool = True, tokenize: bool = True, enable_thinking: bool = False,
                             thinking_mode: str | None = None, reasoning_effort: str | None = None,

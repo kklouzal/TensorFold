@@ -39,6 +39,7 @@ class PromptBlocks:
                 enable_thinking=thinking,
                 reasoning_effort=effort,
                 late_system=self.late_system,
+                renderer=getattr(self, "_prompt_renderer", None),
             )
             history = render_prompt_ids(
                 self.tokenizer,
@@ -48,6 +49,7 @@ class PromptBlocks:
                 reasoning_effort=effort,
                 add_generation_prompt=False,
                 late_system=self.late_system,
+                renderer=getattr(self, "_prompt_renderer", None),
             )
         history_len = len(history) if 0 < len(history) < len(prompt) and prompt[: len(history)] == history else 0
         if not history_len and len(prompt) > 1 and history == prompt:
@@ -78,6 +80,7 @@ class PromptBlocks:
                     enable_thinking=self.enable_thinking if thinking is None else bool(thinking),
                     reasoning_effort=effort,
                     late_system=self.late_system,
+                    renderer=getattr(self, "_prompt_renderer", None),
                 )
         except Exception:  # noqa: BLE001 - a template quirk must not fail the request
             return 0

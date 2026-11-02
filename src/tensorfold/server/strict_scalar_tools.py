@@ -52,6 +52,10 @@ def _may_spell_none(format):
     if kind == "regex":
         tree = xml._regex(format["pattern"], "tools")
         return all(xml._may_match(tree, char) for char in "None")
+    if kind == "grammar":
+        # A counted raw string may include None. Preserve the existing
+        # conservative nullable-collision policy, never guess from EBNF text.
+        return True
     raise RuntimeError("unexpected checked raw parameter format")
 
 
@@ -67,9 +71,10 @@ def _scalar_format(schema, node, where):
         if "$ref" in current:
             pending.append((schema.resolve(current["$ref"], at), at))
             continue
-        if "anyOf" in current:
-            pending.extend((part, f"{at}.anyOf[{index}]")
-                           for index, part in reversed(list(enumerate(current["anyOf"]))))
+        if xml._branches(current):
+            union = "oneOf" if "oneOf" in current else "anyOf"
+            pending.extend((part, f"{at}.{union}[{index}]")
+                           for index, part in reversed(list(enumerate(xml._branches(current)))))
             continue
         kinds = schema.types(current)
         for value, word in _WORDS:

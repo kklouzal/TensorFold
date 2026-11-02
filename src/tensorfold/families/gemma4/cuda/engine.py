@@ -338,7 +338,7 @@ class Gemma4Engine:
         at = next((i for i in range(len(prompt) - 1, cached, -1) if prompt[i] == self._turn), 0)
         return 0 if any(begin < at < stop for begin, stop in blocks) else at
 
-    def _prefill(self, prompt, vision, progress, started):
+    def _prefill(self, prompt, vision, progress, started, *, cache_prompt=True):
         import torch
         media = _media_key(vision)
         hit = self._find_prefix(prompt, media)
@@ -386,7 +386,7 @@ class Gemma4Engine:
                     self._append_head(self._draft, result, ids, prompt=True)
                 if end == len(prompt):
                     logits = self.target.project_logits(result.hidden[-1:])
-                elif end == boundary:
+                elif end == boundary and cache_prompt:
                     kept.append(self._checkpoint(state))
                 start = end
                 if progress is not None and progress(len(prompt), cached, start,
@@ -400,7 +400,7 @@ class Gemma4Engine:
             raise
         if logits is None:
             raise RuntimeError("Gemma4 prefill produced no next-token logits")
-        if cached < len(prompt):
+        if cached < len(prompt) and cache_prompt:
             # All reads of the old entry have been issued on the same stream. Admission
             # reserves PREFIX_SNAPSHOTS: the old entry's two plus this prompt's boundary
             # checkpoint; evicting first keeps the whole-prompt snapshot within them.
@@ -414,7 +414,9 @@ class Gemma4Engine:
     def generate(self, prompt: list[int], max_tokens: int, sampling,
                  on_tokens: Callable[[list[int]], bool | None], draft: bool = True,
                  stop_eos: bool = True, *, vision=None, constraint=None,
-                 background: bool = False, progress=None, penalties=None) -> dict[str, Any]:
+                 background: bool = False, progress=None, penalties=None, cache_prompt: bool = True) -> dict[str, Any]:
+        if type(cache_prompt) is not bool:
+            raise ValueError("cache_prompt must be a bool")
         import torch
         from tensorfold.cuda.sampling import effective_rows, sample_rows
         from tensorfold.engine.penalties import History
@@ -431,7 +433,8 @@ class Gemma4Engine:
         queued = time.perf_counter()
         with self._lane(background) as stream, torch.cuda.stream(stream), torch.inference_mode():
             started = time.perf_counter()
-            state, logits, cached = self._prefill(prompt, vision, progress, started)
+            state, logits, cached = self._prefill(prompt, vision, progress, started,
+                                                  **({"cache_prompt": False} if not cache_prompt else {}))
             # Grammar masking is in place; immutable prefix logits are never
             # handed to it, including an exact full-prompt cache hit.
             logits = logits.clone() if constraint is not None else logits

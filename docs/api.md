@@ -44,11 +44,29 @@ Prefer a restricted file over command-line keys, which can appear in the operati
 | `POST /v1/responses/input_tokens` | A Responses request's input tokens, rendered as its chat completion runs them; no text is generated |
 | `POST /v1/decisions` | Choice, score, and yes/no probabilities from the next-token logits; no text is generated |
 
-Harness uses the container's `tensorfold_harness.py` compatibility entrypoint with `--thinking-budget 0`. Its `/v1/tokenize` accepts chat requests and returns integer `count`, the requested served `model`, positive `context_length`, and `harness_tokenizer_version: 1`, with optional bounded prompt/token inspection. It prepares the same prompt as generation without running the engine; oversized histories can be counted while generation context admission and independent image/video safety limits remain intact. The native CLI's vLLM response above has a different metadata contract.
+Harness uses the container's `tensorfold_harness.py` compatibility entrypoint. Launch thinking settings are defaults; an explicit request overrides them, including `thinking_budget: 0` for unlimited reasoning. Its `/v1/tokenize` accepts chat requests and returns integer `count`, the requested served `model` (including an alias), positive `context_length`, and `harness_tokenizer_version: 1`. It uses generation's CPU rendering/token boundaries without running the engine or waiting for its lane; histories beyond the served context can be counted. Independent media safety checks remain active. The native CLI's vLLM response above has a different metadata contract.
+
+The launcher accepts bounded Content-Length or HTTP/1.1 chunked bodies up to 96 MiB; ambiguous framing is rejected. The body has an absolute 30-second read deadline checked between single I/O operations. Optional `return_tokens` / `return_prompt` inspection has a 96 MiB **serialized JSON byte** budget, rather than a fixed token ceiling. One bounded preparation slot covers body consumption, preparation, owner closure, serialization and response writing. Count-only responses do not attach token arrays or decode a diagnostic prompt; native preparation still materializes its prompt IDs. These are input/output and concurrency bounds, not a generic tokenizer-workspace guarantee.
+
+Discovery probes the actual captured default and `tool_use` renderers at startup. Common `thinking_control`, `reasoning_replay_field` and `preserve_reasoning` facts are declared only when stable probes establish agreement on both routes; unsupported, fixed, unstable or conflicting facts are omitted. Fingerprints identify captured source, without a model-name or known-hash capability whitelist. Render facts do not promise model obedience. Installed endpoint and selected-model verification is recorded separately from source implementation.
+
+Late system-message discovery checks distinct prior-user, assistant, late-system
+and following-user markers in rendered order. A template that hoists system text
+into an opening header, drops/duplicates a marker or explicitly rejects the
+history uses the existing user-role fallback for later instructions. Unexpected
+renderer/resource failures propagate instead of silently caching that fallback.
+This is a rendering probe; it does not change the selected template or Harness.
 
 On MLX, a completions body containing a nonempty `messages` list uses chat handling. CUDA completions
 take a string `prompt` (`add_special_tokens`, default false) or a list of token IDs, run as given. Both servers serve
 one prompt a request: a batch of several prompts receives HTTP 400.
+
+In chat requests, literal control-token spellings in message content, tool
+arguments/results and replayed reasoning remain ordinary model text. The same
+protected prompt IDs are used for generation and counting; no U+200B is inserted
+into the logical text. Native template framing retains its control-token role.
+The raw completions and raw tokenization interfaces above deliberately retain
+their native prompt-syntax contract.
 
 `model` names the served ID (`--name`) or an `--alias`, as `/v1/models` lists them; a request that omits it (or sends
 null) is served as `--name`. Any other ID receives HTTP 404 with OpenAI's `model_not_found` error on every generation
@@ -120,7 +138,7 @@ For decisions, `chat_template_kwargs` may be omitted, null, or an object contain
 | `ignore_eos` | Disable model end-of-sequence stopping; the reply limit still applies. Incompatible with active structured output or strict tools (HTTP 400 before generation). | Both |
 | `stop` | Stop at a string or any string in a list; omit the matched text from the response | Both |
 | `reasoning_effort` | `none`, `minimal`, `low`, `medium`, `high`, `xhigh` or `max` | Both |
-| `thinking_budget` | Token-count limit inside reasoning | Both |
+| `thinking_budget` | Token-count limit inside reasoning; omitted/null inherits the launch default, explicit `0` is unlimited | Both |
 | `priority` | `background` yields to foreground requests | Both |
 | `service_tier` | `flex` is `priority: "background"` when the request sends no `priority`; other tiers change nothing | Both |
 | `return_progress` | With `stream`, llama.cpp's `prompt_progress` frames while the prompt prefills (see Responses) | CUDA Flash Next `--parallel`, Gemma 4 |
@@ -219,6 +237,13 @@ For engines with a prefill progress callback, development source also polls
 client cancellation at prompt chunk boundaries, including nonstream requests
 without progress frames. This stops further submissions; already submitted CUDA
 work must still retire before its owners can be released.
+Development source emits existing SSE keepalive comments at accepted serial-queue,
+supported prefill and withheld-output checkpoints, independently of
+`return_progress`, with at least one second between these added comments. A tick
+can open an accepted stream's headers; subsequent failures use the existing SSE
+error frame and `[DONE]`. Preparation/admission refusals remain ordinary HTTP
+errors. Nonstreaming replies remain one JSON response, with no keepalive bytes.
+These source changes still require installed/API qualification before deployment.
 When a client disconnects, its CUDA request stops at the next round, and a request still waiting behind
 another in one-at-a-time serving does not start; serialized two-rank Flash Next, Nemotron and GLM requests finish on
 both ranks. Under an explicit `--parallel N`, a request that has no tokens yet (queued, or its prompt prefilling) is
@@ -331,25 +356,39 @@ The grammar holds only the calls and what `tool_choice` asks; prose is the model
   only its scalar spellings to JSON. Streamed deltas add up to the same argument string. A call cut short by
   `max_tokens` or a stop string stays text; streaming clients may already have received its partial call deltas.
   On CUDA, an unfinished strict call reports `length` or `stop`, including when an earlier call completed, and never claims
-  a `tool_calls` finish. Earlier completed calls remain available. A call written inside a think block that never
-  closes becomes the answer only when the grammar accepts the whole answer, and otherwise stays reasoning.
+  a `tool_calls` finish. Earlier completed calls remain available. In development
+  source, the selected offered-name call header outside code or quoted data
+  confirms strict intent even inside open reasoning. Its tentative bytes are
+  withheld until confirmation; the whole header then belongs to the answer and
+  arguments are grammar-masked. A bare opener or quoted example is not a call.
 
 The supported schemas are [OpenAI's strict-mode
 subset](https://developers.openai.com/api/docs/guides/structured-outputs#supported-schemas): types (or a list of
-them), `enum`, `const`, `anyOf`, `properties`, `required`, `additionalProperties`, `items`, `minItems`/`maxItems`,
+them), `enum`, `const`, `anyOf`, provably disjoint `oneOf`, `minLength`/`maxLength`, `properties`, `required`, `additionalProperties`, `items`, `minItems`/`maxItems`,
 `pattern` (matched whole, as `response_format` does), `format` (`date-time`, `time`, `date`, `duration`, `email`,
 `hostname`, `ipv4`, `ipv6`, `uuid`), `minimum`/`maximum` and their exclusive forms, `multipleOf` on integers, `$defs`
 with local `$ref` to a subschema and recursion, and annotations (`title`, `description`, `default`, `examples`,
 `$comment`, `deprecated`, `readOnly`, `writeOnly`). Beyond OpenAI's subset, optional properties and `uniqueItems` on
-arrays over at most ten distinct string enum values are accepted. Such arrays use an exact grammar for the remaining
+arrays over at most ten distinct string enum values are accepted for strict tools and strict response schemas. Such arrays use an exact grammar for the remaining
 enum values, preserve every ordering, and obey their item-count bounds. Arbitrary uniqueness constraints are refused.
 A call
 never adds parameters its tool does not declare; a nested object adds properties only as its `additionalProperties`
 allows (none when it is absent). HTTP 400 names the keyword and its path for anything else, including
-`minLength`/`maxLength`, general `uniqueItems`, `oneOf`, `allOf`, `not`,
+general `uniqueItems`, unproved or overlapping `oneOf`, `allOf`, `not`,
 `if`/`then`/`else`, `patternProperties`, `prefixItems`, `multipleOf` on numbers and references to other documents, and
 past OpenAI's limits (10 nesting levels, 5,000 properties, 1,000 enum values, 120,000 characters of names and values;
 an enum with more than 250 values has at most 15,000 string characters).
+String bounds count decoded Unicode characters, not bytes or UTF-16 units. JSON escapes remain available; a
+surrogate-pair escape counts once, while an unpaired surrogate escape follows the server JSON decoder's one-character
+semantics. Raw XML and Gemma strings count their actual characters and retain their delimiter exclusions. Length bounds
+must be non-negative integers in the pinned compiler's signed 32-bit range. Combining length with `pattern`/`format`,
+or with literal constraints, is refused until that intersection can be enforced. The Python-scalar XML profile also
+conservatively refuses nullable counted raw strings when their language may collide with its `None` null word.
+`oneOf` branches must be pairwise disjoint by JSON type (integer overlaps number), finite string/boolean/null values, or a common
+required property with disjoint string/boolean/null constants or enums. An unproved intersection is HTTP 400;
+`oneOf` never silently becomes `anyOf`. These new source adapters still require their pinned-container acceptance
+checks and are not yet a deployed capability.
+
 The server also bounds what OpenAI leaves open: `anyOf` and `$defs` nest at most 10 levels in one another, a JSON
 parameter's schema holds at most 2,000 subschemas with the definitions it refers to (xgrammar 0.2.8 compiles
 references recursively; a chain of 8,000 overflowed an 8 MB thread stack and killed the process), a `pattern` must be
@@ -373,8 +412,8 @@ the requested constraint. Ordinary unconstrained requests, non-strict tools and 
 retain normal `ignore_eos` behavior.
 
 `response_format.json_schema.strict: true` is checked against the same enforceable subset before compilation;
-unsupported constraints return HTTP 400. The finite-enum uniqueness extension belongs to strict function tools:
-strict response schemas still refuse `uniqueItems: true`. Non-strict and `guided_*` schemas retain xgrammar's native
+unsupported constraints return HTTP 400. The bounded finite-string-enum uniqueness extension uses the same owned grammar in strict function tools and strict
+response schemas; arbitrary `uniqueItems: true` remains explicitly unsupported. Non-strict and `guided_*` schemas retain xgrammar's native
 keyword behavior. All JSON-schema compilation is limited to 2,000 subschemas, regex group nesting is admitted before
 the native parser, and grammar source is capped at 96 MiB. These are resource admission limits, not compile-time or
 memory-use guarantees for every admitted grammar.
@@ -435,12 +474,26 @@ Google's current template does this after tool results with thinking on. The rep
 A tool call written before the think block closes is the reply's tool call when the reply ends inside the block,
 on both backends; the reasoning stops where the call starts, and streamed reasoning never carries the call's markup.
 A call only mentioned while thinking, with the block closed after it, stays reasoning.
+The strict CUDA path instead recognizes the selected offered-name header as
+an explicit answer transition and constrains the following arguments. Code
+and quoted data are opaque to that transition. Structured-answer bytes after
+the actual transition bypass presentation cleanup, including literal markup
+inside JSON strings. Thinking without an opener still waits for an actual or
+explicit-budget close; unframed output without a close is a model framing case,
+not permission to invent a close or weaken the grammar. A native EOS inside
+thinking remains a reasoning-only stop.
 
-`thinking_budget` (the request's; absent or 0 takes `--thinking-budget`) replaces the reply's budget-th token,
+`thinking_budget` (omitted/null takes `--thinking-budget`; explicit `0` is unlimited) replaces the reply's budget-th token,
 while it is still thinking, with a newline, the closing think marker and a blank line, then continues the answer.
 The cut depends on token count, so serial and drafted decoding use the same cut. A model that closes the block
-earlier is left alone. The MLX engine forces the close inside its rounds; CUDA stops the engine at the cut and
-decodes on from the reply, as for a required tool call.
+earlier is left alone, and a native EOS is never replaced by a CUDA budget close.
+An explicitly requested CUDA budget close is authoritative even if the model left
+code open. The MLX engine forces the close inside its rounds; CUDA stops the
+engine at the cut and decodes on from the reply, as for a required tool call.
+Gemma CUDA continuations retain the original request's reusable prompt
+checkpoints rather than publishing generated/forced reply text as a new prompt.
+The existing negative unlimited-budget convention is retained. Physical MLX
+verification and the new installed CUDA/API gates remain pending.
 
 ## Context and errors
 
