@@ -25,6 +25,9 @@ def test_native_checkpoint_is_readable_only_by_its_cuda_backend(tmp_path):
 
 def test_admission_retains_one_bf16_tied_head_and_original_native_payloads(tmp_path, monkeypatch):
     raw, headers = fixture()
+    from tensorfold.engine.penalties import bias_workspace
+    from tensorfold.families.gemma4.cuda.weights import Config
+    bias = bias_workspace(16, Config.from_dict(raw).vocab)
     metadata = ModuleType("tensorfold.checkpoint_metadata")
     metadata.read_config = lambda directory: raw
     runtime = ModuleType("torch")
@@ -36,11 +39,12 @@ def test_admission_retains_one_bf16_tied_head_and_original_native_payloads(tmp_p
     def admitted(directory, context, explicit, torch, geometry, rule, *, weight_estimator,
                  device_workspace_bytes, host_workspace_bytes):
         captured["weights"], captured["host_staging"] = weight_estimator(directory)
-        assert device_workspace_bytes == host_workspace_bytes == 0  # no companion: no rejection workspace
+        assert device_workspace_bytes == bias['device_bytes']
+        assert host_workspace_bytes == bias['host_bytes']  # no companion rejection workspace
         return {"context_window": context}
 
     monkeypatch.setattr(common, "admit", admitted)
-    assert capacity.admit(tmp_path, 128, True) == {"context_window": 128}
+    assert capacity.admit(tmp_path, 128, True) == {"context_window": 128, "logit_bias_workspace": bias}
     # All original fields are consumed, with no duplicated tied output head,
     # float expansion of the native experts, or affine scales/biases invented.
     original = sum(math.prod(v["shape"]) * common.SIZES[v["dtype"]]

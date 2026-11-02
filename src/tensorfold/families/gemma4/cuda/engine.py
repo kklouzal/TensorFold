@@ -172,7 +172,14 @@ class Gemma4Engine:
                                vocab_size=text["vocab_size"], override=eos_token_ids)
         if method == "compressed-tensors":
             from .nvfp4_weights import load
-            self.w = load(model_dir, vision=vision)
+            from .modelopt_weights import ModelOptLoadStatus
+            self._ct_load_status = ModelOptLoadStatus()
+            try:
+                self.w = load(model_dir, vision=vision, status=self._ct_load_status)
+            except BaseException as primary:
+                if not self._ct_load_status.safe_to_release:
+                    self._retain_modelopt_failure(primary)
+                raise
         elif method == 'modelopt':
             from .modelopt_weights import load, ModelOptLoadStatus
             self._modelopt_load_status = ModelOptLoadStatus()
@@ -244,7 +251,7 @@ class Gemma4Engine:
             # serving snapshots need large blocks that these fragments cannot satisfy (admission counts no cache).
             torch.cuda.empty_cache()
         except BaseException as primary:
-            if method == 'modelopt' or kind == 'sparkulator':
+            if method in ('modelopt', 'compressed-tensors') or kind == 'sparkulator':
                 # Unknown constructor/graph retirement is terminal for this
                 # candidate process; retain actual owners, never retry CUDA.
                 self._retain_modelopt_failure(primary)

@@ -76,6 +76,13 @@ with default off. The latest SDK capture, source UID `4bf0ba0a…`
 It performs lossless runtime storage preparation, not checkpoint quantization.
 Production image `1d53fa83` was retained while the replacement's gates were pending.
 
+The requested AEON compressed-tensors replacement keeps its original exact BF16
+embedding/output head. Its head exceeds the Sym8 raw-pool format limit and would
+expand by at least 408 MiB, so that codec is not selected for this checkpoint.
+Original CT calibrated attention/shared-MLP/expert arithmetic and BF16 routers
+and vision remain intact. Existing ModelOpt lossless support is unchanged.
+See the [AEON validation scope](docs/recipes/gemma-4-26b-modelopt.md#aeon-compressed-tensors-replacement-under-validation).
+
 ModelOpt MoE source admits an explicitly supplied DFlash companion with normal
 metadata/tap and capacity checks; automatic drafting remains off. On baseline
 source `04f9…`, 128 forced-history target comparisons passed: widths 1–16,

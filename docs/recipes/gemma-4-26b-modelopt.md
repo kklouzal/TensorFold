@@ -214,3 +214,51 @@ The earlier AEON dense 31B attempt is not the current deployment target. Its
 publisher checkpoint contained a nonfinite scale; no NaN repair or weight-block
 scrubbing was enabled. See the [historical 31B investigation](gemma-4-31b.md)
 and [preserved E4B rollback deployment](gemma-4-e4b.md).
+
+## AEON compressed-tensors replacement under validation
+
+The 2026-11-02 replacement is `AEON-7/Gemma-4-26B-A4B-it-Uncensored-NVFP4`,
+with the same z-lab DFlash companion. Its pinned headers use the existing CT
+NVFP4 layout, original BF16 tied embedding/head, routers and vision tower;
+attention and shared MLP projections use calibrated CT NVFP4 rather than the
+ModelOpt checkpoint's BF16 exceptions. Native context remains 262,144. Actual
+publisher generation EOS IDs are `[1, 106, 50]`; the card's historical extra
+channel-stop workaround is not applied.
+
+The AEON candidate uses its original exact BF16 tied embedding/output head;
+`--lossless-head` remains a ModelOpt-only option. Actual AEON preparation rejected
+the Sym8 24-bit raw-pool limit. Even without that limit its fallback count proves
+at least 408 MiB expansion over the native table, so the CT codec extension was
+withdrawn and its failure evidence retained. No replacement codec is introduced.
+DFlash retains its raw embedding callback and one target softcap. The model's
+actual publisher EOS IDs are retained without the card's extra channel-stop
+workaround. Loader retirement improvements preserve pending native owners on
+unknown CUDA failure and report primary failures without a cleanup retry.
+
+This checkpoint's full payload matched its publisher SHA, and the actual header
+inventory passed CT/vision validation. It now serves port `8888` in image
+`8da9dff3…`, source UID `6f3e809f…`, with BF16 KV, the configured 131,072-token
+window and private FP8 DFlash at depth four. The deployment explicitly binds the
+owned Google template `gemma4-chat-template-google-4d7ae498.jinja`; its SHA256 is
+`ae53464bf3be25802b3a5b37def7fd89667067d7577049b3b2d74c4d8de4c6d4`.
+The native AEON template and checkpoint remain unchanged. This override preserves
+the existing OpenAI tool-history and current-turn reasoning replay contract.
+
+Installed-source checks passed 2,356 CPU cases with five MLX skips and twelve
+explicit off-target SM70 deselections. The actual candidate passed text, SSE,
+tools, structured output, thinking controls, image/video execution, Responses,
+greedy serial/speculative equality and sampled cache replay. Four consumed
+production alias generations and an observed-running nonstream cancellation,
+counter/idle/recovery check passed after cutover. A synthetic ignore-EOS request
+completed 131,056 prompt tokens plus sixteen outputs in 142.93 seconds; this is
+capacity evidence, not retrieval quality or representative throughput. The short
+SSE cancellation diagnostic completed generation before cancellation-counter
+publication and remains inconclusive. The independent bounded target-row probe
+is a separate gate.
+
+The [operational receipt](../../deploy/gb10/deployment-gemma4-aeon26b-20261102.json)
+records exact images, source/configuration identities, checks and remaining
+limits. The prior ModelOpt container, image, model and cache remain stopped and
+preserved for rollback. Earlier results above retain their original checkpoint
+and image scope; native 262,144-token execution and general media quality are not
+qualified by this replacement.

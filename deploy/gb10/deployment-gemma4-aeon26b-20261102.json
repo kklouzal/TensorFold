@@ -1,0 +1,151 @@
+{
+  "schema_version": 1,
+  "status": "production-healthy; bounded row-law qualification pending",
+  "utc": "2026-11-02T20:30:54.421263+00:00",
+  "host": "GB10 / SM 12.1 / native Linux ARM64",
+  "endpoint": "http://192.168.1.50:8888/v1",
+  "container_name": "gemma4-26b-a4b-tf",
+  "container_id": "099563af009a992e6c1997ecea0961a197448e40e34e126e5c98be50aea9f288",
+  "image": "sha256:8da9dff365b2b532e9acddda9621518a5e84a2dc1704b6895a0d3bdb4ee20c86",
+  "raw_application_image": "sha256:f6dd4c440a25d8edc20b3dd03e088b9cecc6cf2f9a80159e3e9329fc1931f75a",
+  "verification_image": "sha256:701a7f817b2e1428f329ddc2dc5fc7d08563a756610b5131a052f3afc9611275",
+  "source_uid": "6f3e809fc52a0d4610054f45ce1e777548b6486c1a5316570925965914348a80",
+  "source_git_base": "83d21e98dd392d9ecf94b72f05dd95c72e532abe",
+  "source_capture_id": "83d21e98+tree.6f3e809fc52a0d46",
+  "source_scope": "Whole owned application captured from canonical source, including explicitly recorded uncommitted prototypes; no clean-Git claim. Later operational documentation is separate from this immutable build snapshot.",
+  "source_manifest_sha256": "971e73641fd0b929dcb691f1aaea6240429f12d667748f09ad33b800714827d0",
+  "production_compose_sha256": "ac61891cb364566bb02619b84682e502ab55892efb0cbf8766d57808d64fbd6a",
+  "model": {
+    "id": "AEON-7/Gemma-4-26B-A4B-it-Uncensored-NVFP4",
+    "revision": "90c8601b1a439497bc15d8fba9e52990b45ea0cb",
+    "file_bytes": 16423500564,
+    "file_sha256": "7ee814fc08ed1a9f3ab17c57d7f723eb043c054be9e30402b070fcf04a67b136",
+    "arithmetic": "Original calibrated compressed-tensors NVFP4 attention, shared MLP and experts; BF16 routers, original tied embedding/output table and vision/projector. Checkpoint payload unchanged.",
+    "head": "Original exact BF16; Sym8 rejected by its 24-bit raw-pool limit and would expand by at least 408 MiB. No replacement codec or weight repair."
+  },
+  "drafter": {
+    "id": "z-lab/gemma-4-26B-A4B-it-DFlash",
+    "revision": "77d4202772dfe50b2396ec7bac9cfffc7b9e7057",
+    "file_sha256": "7313aab43989496a6ce51e6e95ed353b9b1bfab722ffc5699d2138c14e96ead4",
+    "bits": 8,
+    "depth": 4,
+    "verify_rows": 5,
+    "embedding_policy": "Raw embedding callback, one target softcap; original main target law unchanged."
+  },
+  "context": 131072,
+  "native_metadata_context": 262144,
+  "aliases": [
+    "gemma4-26b-a4b",
+    "gemma4-26b",
+    "gemma4-e2b",
+    "gemma4-e4b"
+  ],
+  "kv": "BF16",
+  "vision": true,
+  "audio": "Unsupported; valid WAV request rejected with HTTP 400.",
+  "thinking_default": true,
+  "thinking_budget": 0,
+  "sampling_defaults": {
+    "temperature": 1,
+    "top_k": 64,
+    "top_p": 0.95,
+    "eos_token_ids": [
+      1,
+      106,
+      50
+    ]
+  },
+  "template": {
+    "source": "Explicit per-deployment Google reference override; native AEON template retained in checkpoint unchanged.",
+    "file": "deploy/gb10/gemma4-chat-template-google-4d7ae498.jinja",
+    "sha256": "ae53464bf3be25802b3a5b37def7fd89667067d7577049b3b2d74c4d8de4c6d4",
+    "container_path": "/templates/gemma4-chat-template-google-4d7ae498.jinja",
+    "reason": "Native AEON template drops reasoning_content and frames OpenAI tool history differently. Explicit reference supports the existing tool/replay contract. Token-domain compatibility and selected actual rendering/provenance were verified."
+  },
+  "resource_contract": {
+    "cuda_allocator_limit_bytes": 42949672960,
+    "cuda_limit_readback_bytes": 42949672960,
+    "cpu_memory_limit_bytes": 21474836480,
+    "extra_container_swap_bytes": 0,
+    "host_available_floor_bytes": 17179869184,
+    "runtime": "runc with explicit CDI GPU UUID",
+    "model_mount_read_only": true,
+    "native_cache": "Separate from old ModelOpt process; final candidate terminal before same-image production reuse."
+  },
+  "verification": {
+    "focused_source_cpu": {
+      "passed": 119,
+      "seconds": 4.46
+    },
+    "installed_cpu": {
+      "passed": 2356,
+      "skipped": 5,
+      "skip_scope": "Apple MLX cases",
+      "deselected": 12,
+      "deselection_scope": "Exact off-target SM70 geometry cases",
+      "seconds": 76.16,
+      "installed_python_inventory_and_hashes": "Exact before and after; no source overlay; CUDA uninitialized."
+    },
+    "static_checks": "Affected source/tests plus required deployment pins passed Ruff; git diff --check passed.",
+    "review": "Two independent task-scoped source/cleanup reviews closed; raw CT failure owners and native primary failure retained without a second CUDA fence.",
+    "candidate_api": {
+      "passed_checks": [
+        "health",
+        "actual-draft-route-and-greedy-parity",
+        "alias-routing",
+        "sampled-target-policy-cache-sse",
+        "active-logit-bias-and-validation",
+        "thinking-False",
+        "thinking-True",
+        "tokenize-and-actual-template-provenance",
+        "context-recall",
+        "sse",
+        "responses-history",
+        "schema-reasoning-sse-literal-parity",
+        "strict-tools-reasoning-sse-no-companion",
+        "image-chat-responses-execution",
+        "video-chat-responses-execution",
+        "audio-unsupported400"
+      ],
+      "inconclusive": [
+        "Short 256-token SSE disconnect completed generation before cancellation counter publication; failed diagnostic retained."
+      ],
+      "not_run_after_abort": [
+        "Original helper after-cancel check; independent production recovery subsequently passed."
+      ]
+    },
+    "post_cutover": "Four consumed alias generations passed; healthy/idle state verified.",
+    "observed_running_disconnect64k": "Passed nonstream request observed running before output, cancellation counter, idle and recovery. These server outcomes do not independently prove a GPU chunk executed before disconnect or physical CUDA retirement.",
+    "configured_capacity": {
+      "prompt_tokens": 131056,
+      "output_tokens": 16,
+      "total_tokens": 131072,
+      "ignore_eos": true,
+      "prefill_seconds": 142.1966,
+      "decode_seconds": 0.5238,
+      "gate_wall_seconds": 142.93,
+      "result": "Passed execution capacity; not retrieval quality or representative throughput."
+    },
+    "row_law": "Pending independent bounded shipping DF8/depth4 worker.",
+    "media_scope": "Native image/video Chat and Responses execution and storage passed; no general semantic-quality claim.",
+    "native_262144": "Not exercised in this pivot; configured 131072 window preserved.",
+    "performance_scope": "No new optimization sweep or cross-model speed selection. Qualification timings retain their actual workloads and cache state."
+  },
+  "rollback": {
+    "container_id": "964141bf03abc30f62522961bea33fc7b24ba959f01ef2a283ec78ec7a1d99a8",
+    "retained_name": "gemma4-26b-a4b-tf-rollback-modelopt-20261102-before-aeon",
+    "image": "sha256:9e363e55b227ee8b8478a48dae46c559bcc62da4cc646c7f2ed3ce28dc751fdd",
+    "release": "harness-remediated-20261102-v4",
+    "state": "Stopped, retained with original model/image/cache/configuration."
+  },
+  "evidence_root": "/home/kklouzal/audit-artifacts/gemma-aeon26b-pivot-20261102",
+  "release_root": "/home/kklouzal/services/gemma4-26b-a4b/aeon-20261102-v3",
+  "evidence_sha256": {
+    "build-result.json": "b85dd574cad9fd4325e81d1a2cf0f8541b7bb8a56c0b28c9f768d6d369018026",
+    "installed-cpu-v1/junit.xml": "79b1c80bcd179b876ed2d750193af4af005441d0ba5bf9aaaa5ba3cb160abdc0",
+    "qa-live-v3/summary.json": "81df80a66dc7ab26b86587ce5c7238179f8b0d6bf7a07974fe14ce82d0e23b33",
+    "post-cutover-aliases.json": "8cd16a4c11ad96100298ea8e29ec9784201c7044aaacdf3fe28cbf5bf90b375d",
+    "production-disconnect-v1/summary.json": "fe570352b1497a5bf169076926a792ecf9da5b017c1366f87ec5a335f5af7314",
+    "production-capacity-v1/summary.json": "c17f115ad5f2ccb92b55caae1d00b228f54f1b91db8ee381cf1208b8afbc26ea"
+  }
+}

@@ -159,11 +159,10 @@ def _calibrations(reader, native: dict) -> dict[str, tuple[float, float, float]]
     return result
 
 
-def load(model_dir: str | Path, device: str = "cuda", *, vision: bool = False) -> Gemma4Weights:
+def load(model_dir: str | Path, device: str = "cuda", *, vision: bool = False, status=None) -> Gemma4Weights:
     """Load original CT payloads once, selecting calibrated FP4xFP4 on SM12.x."""
     import torch
     from tensorfold.checkpoint_metadata import read_config, read_json
-    from tensorfold.cleanup import rollback
     from tensorfold.cuda.direct_read import SafeTensors
     from tensorfold.cuda.nvfp4.checkpoint import available
     from tensorfold.cuda.nvfp4.linear import Fp4Linear
@@ -171,6 +170,12 @@ def load(model_dir: str | Path, device: str = "cuda", *, vision: bool = False) -
     from tensorfold.families.qwen3_5.cuda.weights import Plain
     from .nvfp4_experts import Workspace, load_experts
     from .head import select_head
+    from .modelopt_weights import ModelOptLoadStatus, _finish
+
+    if status is None:
+        status = ModelOptLoadStatus()
+    if type(status) is not ModelOptLoadStatus or status.transferred or status.owners or not status.safe_to_release:
+        raise ValueError("fresh caller-owned CT load status required")
 
     root = Path(model_dir)
     raw = read_config(root)
@@ -183,8 +188,15 @@ def load(model_dir: str | Path, device: str = "cuda", *, vision: bool = False) -
                 not isinstance(k, str) or not isinstance(v, str) for k, v in mapping.items()):
             raise ValueError("Gemma4 NVFP4 requires a string safetensors weight_map")
         files = [checkpoint_path(root, name) for name in sorted(set(mapping.values()))]
-    reader = SafeTensors([])
+    reader = None
+    dev = result = embed = norm = tower = projector = workspace = None
+    layers = []
+    fields = payloads = experts = None
+    read_failed = [False]
+    primary = drain_error = close_error = None
     try:
+        reader = SafeTensors([])
+        status.owners['reader'] = reader
         for file in files:
             shard = SafeTensors([file], reader=reader.reader)
             if set(shard.where).intersection(reader.where):
@@ -204,39 +216,104 @@ def load(model_dir: str | Path, device: str = "cuda", *, vision: bool = False) -
             raise ValueError("Gemma4 NVFP4 requires native calibrated activation math on the selected SM12.x device")
         native, _ = ct_tensor_contract(c)
         calibrated = _calibrations(reader, native)
+        payloads = [None, None]
+        layers = [None] * c.layers
+        status.owners.update(payloads=payloads, layers=layers, embed=None, workspace=None, result=None,
+                             read_failed=read_failed)
         def read(name, device=dev):
-            return reader.get(name, device)
+            status.gpu_work_started = True
+            status.safe_to_release = False
+            try:
+                value = reader.get(name, device)
+            except BaseException:
+                # Reader._to_device may already have failed copied.synchronize.
+                # No caller can prove retirement from that exception: latch
+                # before any transport, retain its destination/staging frames,
+                # and never perform a second CUDA fence or reader close.
+                read_failed[0] = True
+                raise
+            payloads[0 if name.endswith("weight_packed") else 1] = value
+            return value
         def linear(name):
             weight, act, inverse = calibrated[name]
-            return Fp4Linear.from_checkpoint(read(name + ".weight_packed"), read(name + ".weight_scale"),
-                                             weight, act=act, act_inverse=inverse)
+            packed = read(name + ".weight_packed")
+            scales = read(name + ".weight_scale")
+            result = Fp4Linear.from_checkpoint(packed, scales, weight, act=act, act_inverse=inverse)
+            payloads[:] = [None, None]
+            return result
         embed = select_head(Plain(read(CT_PREFIX + "embed_tokens.weight")))
+        status.owners['embed'] = embed
         norm = read(CT_PREFIX + "norm.weight")
-        layers = []
         workspace = Workspace()
+        status.owners['workspace'] = workspace
+        fields = dict.fromkeys(Layer.__dataclass_fields__)
+        status.owners['layer_fields'] = fields
+        status.owners['pending_experts'] = None
         for i in range(c.layers):
             p = f"{CT_PREFIX}layers.{i}."
             experts = load_experts(read, p + "experts", count=c.experts, width=c.moe_width, dims=c.hidden, device=dev,
                                    calibrated=calibrated, workspace=workspace)
-            layers.append(Layer(
-                q=linear(p + "self_attn.q_proj"), k=linear(p + "self_attn.k_proj"),
-                v=linear(p + "self_attn.v_proj") if c.sliding(i) else None,
-                o=linear(p + "self_attn.o_proj"), gate=linear(p + "mlp.gate_proj"), up=linear(p + "mlp.up_proj"),
-                down=linear(p + "mlp.down_proj"), router=_Router(read(p + "router.proj.weight")), experts=experts,
-                input_norm=read(p + "input_layernorm.weight"), attention_norm=read(p + "post_attention_layernorm.weight"),
-                mlp_norm=read(p + "pre_feedforward_layernorm.weight"), expert_norm=read(p + "pre_feedforward_layernorm_2.weight"),
-                dense_output_norm=read(p + "post_feedforward_layernorm_1.weight"),
-                expert_output_norm=read(p + "post_feedforward_layernorm_2.weight"),
-                output_norm=read(p + "post_feedforward_layernorm.weight"), q_norm=read(p + "self_attn.q_norm.weight"),
-                k_norm=read(p + "self_attn.k_norm.weight"), router_scale=read(p + "router.scale"),
-                expert_scale=read(p + "router.per_expert_scale"), scalar=read(p + "layer_scalar")))
-        tower = {name.removeprefix("model."): read(name) for name in headers
-                 if name.startswith("model.vision_tower.")} if vision else None
+            status.owners['pending_experts'] = experts
+            fields['experts'] = experts
+            for key, name in (('q', 'self_attn.q_proj'), ('k', 'self_attn.k_proj'), ('o', 'self_attn.o_proj'),
+                              ('gate', 'mlp.gate_proj'), ('up', 'mlp.up_proj'), ('down', 'mlp.down_proj')):
+                fields[key] = linear(p + name)
+            fields['v'] = linear(p + 'self_attn.v_proj') if c.sliding(i) else None
+            fields['router'] = _Router(read(p + 'router.proj.weight'))
+            for key, name in (('input_norm', 'input_layernorm.weight'), ('attention_norm', 'post_attention_layernorm.weight'),
+                              ('mlp_norm', 'pre_feedforward_layernorm.weight'), ('expert_norm', 'pre_feedforward_layernorm_2.weight'),
+                              ('dense_output_norm', 'post_feedforward_layernorm_1.weight'),
+                              ('expert_output_norm', 'post_feedforward_layernorm_2.weight'),
+                              ('output_norm', 'post_feedforward_layernorm.weight'), ('q_norm', 'self_attn.q_norm.weight'),
+                              ('k_norm', 'self_attn.k_norm.weight'), ('router_scale', 'router.scale'),
+                              ('expert_scale', 'router.per_expert_scale'), ('scalar', 'layer_scalar')):
+                fields[key] = read(p + name)
+            layers[i] = Layer(**fields)
+            for key in fields:
+                fields[key] = None
+            status.owners['pending_experts'] = None
+            payloads[:] = [None, None]
+        tower = None
+        if vision:
+            tower = dict.fromkeys(name.removeprefix('model.') for name in headers if name.startswith('model.vision_tower.'))
+            status.owners['tower'] = tower
+            for name in tower:
+                tower[name] = read('model.' + name)
         projector = Plain(read("model.embed_vision.embedding_projection.weight")) if vision else None
         result = Gemma4Weights(c, embed, norm, layers, norm.device, raw, tower, projector, numerics="ct_nvfp4")
         result.precision = "checkpoint"
-    except BaseException as primary:
-        rollback(reader, primary, reader.close)
+        status.owners['result'] = result
+    except BaseException as error:
+        primary = error
+        _native_cause = BaseException.__cause__.__get__(primary)
+        _native_context = BaseException.__context__.__get__(primary)
+    finally:
+        if status.gpu_work_started and not read_failed[0]:
+            try:
+                torch.cuda.synchronize(dev)
+                status.safe_to_release = True
+            except BaseException as error:
+                drain_error = error
+        if reader is not None and status.safe_to_release:
+            try:
+                reader.close()
+            except BaseException as error:
+                close_error = error
+        if status.safe_to_release and close_error is None:
+            status.owners.clear()
+        if status.safe_to_release:
+            if primary is not None or close_error is not None:
+                result = embed = norm = tower = projector = workspace = layers = None
+            fields = payloads = experts = None
+            reader = None
+    authority = primary if primary is not None else drain_error if drain_error is not None else close_error
+    _native_cause = BaseException.__cause__.__get__(authority) if authority is not None else None
+    _native_context = BaseException.__context__.__get__(authority) if authority is not None else None
+    try:
+        _finish(primary, drain_error, close_error, status)
+    except BaseException as transport:
+        if authority is not None and transport is not authority:
+            raise authority from transport
         raise
-    reader.close()
+    status.transferred = True
     return result
