@@ -56,6 +56,278 @@ def test_timed_wrapper_keeps_complete_ids_and_drains_both_ends(monkeypatch):
     assert stats["decode_tps"] == 2 / 1.5
 
 
+def test_fixed_budget_wrapper_explicitly_disables_eos(monkeypatch):
+    seen = []
+
+    class Engine:
+        def drain(self):
+            pass
+
+        def generate(self, prompt, count, sampling, callback, *, draft, stop_eos):
+            seen.append(stop_eos)
+            callback([1, 2])
+            return {"decode_s": 1.0}
+
+    output, _ = bench._run(Engine(), [5], 2, None, True, stop_eos=False)
+    assert output == [1, 2] and seen == [False]
+
+
+def test_exact_pair_guard_rejects_other_authorities_and_wrapper_types(monkeypatch):
+    class Rows:
+        def __init__(self, incumbent, weight, reuse_rows):
+            self.incumbent, self.weight, self.reuse_rows = incumbent, weight, reuse_rows
+
+    monkeypatch.setitem(sys.modules, "tensorfold.families.gemma4.cuda.head", SimpleNamespace(_RowsHead=Rows))
+    incumbent, weight = object(), object()
+    reference = Rows(incumbent, weight, 16)
+    bench._check_exact_pair(reference, Rows(incumbent, weight, 8))
+    for replacement in (Rows(object(), weight, 8), Rows(incumbent, object(), 8),
+                        Rows(incumbent, weight, 4), SimpleNamespace(**vars(reference))):
+        with pytest.raises(ValueError, match="same-authority"):
+            bench._check_exact_pair(reference, replacement)
+
+
+def test_exact_pair_rebind_preserves_detached_prefix_and_retires_old_graphs(monkeypatch):
+    class Rows:
+        def __init__(self, incumbent, weight, reuse_rows):
+            self.incumbent, self.weight, self.reuse_rows = incumbent, weight, reuse_rows
+
+    incumbent, weight = object(), object()
+    reference, candidate = Rows(incumbent, weight, 16), Rows(incumbent, weight, 8)
+    snapshot = ("detached target KV", "detached companion KV", "singleton logits")
+    prefix = SimpleNamespace(snapshot=snapshot)
+    engine = SimpleNamespace(w=SimpleNamespace(embed=reference), _prefix=prefix,
+                             _state=SimpleNamespace(reset=lambda: None), _draft=SimpleNamespace(reset=lambda: None),
+                             _stream=object(), max_rows=5, head=object(), target=object(), drain=lambda: None)
+
+    class OldGraph:
+        span = 1
+        graphs = {}
+
+    engine.graphs = OldGraph()
+    old = weakref.ref(engine.graphs)
+
+    class Graphs:
+        def __init__(self, target, state, *, max_rows, span):
+            assert old() is None
+            assert engine._prefix is prefix and prefix.snapshot is snapshot
+
+        def prepare(self, *, taps):
+            assert taps == (False, True)
+            return 10
+
+    monkeypatch.setitem(sys.modules, "tensorfold.families.gemma4.cuda.head", SimpleNamespace(_RowsHead=Rows))
+    monkeypatch.setitem(sys.modules, "tensorfold.families.gemma4.cuda.graphs", SimpleNamespace(Graphs=Graphs))
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(inference_mode=nullcontext,
+                        cuda=SimpleNamespace(stream=lambda _: nullcontext())))
+    result = bench._bind_head(engine, candidate, preserve_exact_prefix=True)
+    assert result["changed"] and result["prepared_graphs"] == 10
+    assert engine.w.embed is candidate and engine._prefix is prefix and prefix.snapshot is snapshot
+
+
+@pytest.mark.parametrize("corrupt", ["ids", "cached", "rounds", "drafted", "accepted", "min_rows", "drafts"])
+def test_pair_request_rejects_output_cache_and_proposal_counter_drift(corrupt):
+    output = [1, 2]
+    reference = {"cached": 65536, "drafts": True, "rounds": 3, "drafted": 12, "accepted": 2, "min_rows": 5}
+    stats = dict(reference)
+    bench._check_pair_request(output, stats, output, reference, 65536, 2)
+    expected = list(output)
+    if corrupt == "ids":
+        output[-1] = 3
+    elif corrupt == "drafts":
+        stats[corrupt] = False
+    else:
+        stats[corrupt] -= 1
+    with pytest.raises(RuntimeError):
+        bench._check_pair_request(output, stats, expected, reference, 65536, 2)
+
+
+def test_pair_protocol_is_balanced_target_only_and_reuses_exact_prefix(monkeypatch, tmp_path):
+    prefix, proposal = object(), {"head": "same-private-FP8"}
+    reference, candidate = object(), object()
+    heads = {"reference": reference, "reuse8": candidate}
+    engine = SimpleNamespace(w=SimpleNamespace(embed=reference), _prefix=prefix)
+    prompt, output = [7] * 65536, [9] * 256
+    stats = {"cached": 65536, "drafts": True, "rounds": 100, "drafted": 400,
+             "accepted": 155, "min_rows": 5, "decode_s": 2.0}
+    records, screens = [], []
+
+    class Hidden:
+        shape = (5, 2816)
+
+        def __getitem__(self, rows):
+            return rows.stop
+
+    def bind(engine, head, *, preserve_exact_prefix):
+        assert preserve_exact_prefix and engine._prefix is prefix
+        engine.w.embed = head
+        return {"changed": True}
+
+    def run(engine, ids, tokens, sampling, draft, *, stop_eos):
+        assert ids is prompt and tokens == 256 and draft and not stop_eos
+        assert engine._prefix is prefix
+        return list(output), dict(stats)
+
+    def capture(engine, ids, tokens, sampling, *, stop_eos, terminal_on_failure):
+        assert not stop_eos and terminal_on_failure
+        return {"serial": output, "dflash": output}, {"target": Hidden(), "dflash": object()}, {
+            "serial": stats, "dflash": stats}
+
+    def screen(heads, inputs, pairs, loops):
+        assert tuple(inputs) == ("target",)
+        screens.append(inputs["target"])
+        return "reuse8", {}
+
+    monkeypatch.setattr(bench, "_bind_head", bind)
+    monkeypatch.setattr(bench, "_run", run)
+    monkeypatch.setattr(bench, "_capture", capture)
+    monkeypatch.setattr(bench, "_screen", screen)
+    monkeypatch.setattr(bench, "_proposal_identity", lambda engine: proposal)
+    monkeypatch.setattr(bench, "_memory", lambda: {"allocated_bytes": 1})
+    monkeypatch.setattr(bench, "_record", lambda path, value: records.append(value))
+    args = SimpleNamespace(code_tokens=256, chat_tokens=256, head_pairs=2, head_loops=2,
+                           request_pairs=6, out=tmp_path / "evidence.jsonl")
+    bench._pair_requests(engine, heads, [{"name": "code64k", "ids": prompt, "ids_sha256": "fixture"}], args, None)
+    measured = [record for record in records if record["kind"] == "pair_integrated"]
+    assert len(measured) == 24 and screens == [1, 2, 3, 4, 5]
+    for block in range(6):
+        names = [record["head"] for record in measured if record["block"] == block]
+        assert names == (["reference", "reuse8", "reuse8", "reference"] if block % 2 == 0 else
+                         ["reuse8", "reference", "reference", "reuse8"])
+    assert engine._prefix is prefix
+
+
+def test_pair_cli_refuses_missing_pins_before_engine_import(tmp_path):
+    with pytest.raises(SystemExit):
+        bench.main([str(tmp_path), "--drafter", str(tmp_path), "--artifact-id", "test", "--out", str(tmp_path / "out"),
+                    "--pair-r8-r16"])
+
+
+def test_pair_inputs_reject_mismatched_payload_before_metadata_or_model_reads(tmp_path):
+    path = tmp_path / "inputs.json"
+    path.write_text('{"untrusted": true}')
+    args = SimpleNamespace(input_manifest=path, input_manifest_sha256=bench.PAIR_INPUT_SHA)
+    with pytest.raises(ValueError, match="SHA256 differs"):
+        bench._pair_inputs(args)
+
+
+def test_pair_capture_failure_restores_hooks_without_cuda_drain_retry(monkeypatch):
+    primary = RuntimeError("GPU completion unknown")
+    target_call, draft_call, graph_call = object(), object(), object()
+    drains = []
+    engine = SimpleNamespace(target=SimpleNamespace(project_logits=target_call),
+                             head=SimpleNamespace(project_logits=draft_call),
+                             graphs=SimpleNamespace(forward=graph_call), drain=lambda: drains.append(1))
+
+    def fail(*args, **kwargs):
+        raise primary
+
+    monkeypatch.setattr(bench, "_run", fail)
+    with pytest.raises(RuntimeError) as caught:
+        bench._capture(engine, [1], 256, None, stop_eos=False, terminal_on_failure=True)
+    assert caught.value is primary and drains == []
+    assert engine.target.project_logits is target_call
+    assert engine.head.project_logits is draft_call
+    assert engine.graphs.forward is graph_call
+
+
+def test_pair_capture_transport_entry_failure_preserves_native_primary_and_owner(monkeypatch):
+    import tensorfold.cleanup as cleanup
+
+    primary, native, entry = RuntimeError("GPU failed"), OSError("native cause"), MemoryError("transport entry")
+    primary.__cause__ = native
+    drains = []
+    engine = SimpleNamespace(target=SimpleNamespace(project_logits=object()),
+                             head=SimpleNamespace(project_logits=object()),
+                             graphs=SimpleNamespace(forward=object()), drain=lambda: drains.append(1))
+
+    def fail(*args, **kwargs):
+        raise primary
+
+    def fail_transport(*args, **kwargs):
+        raise entry
+
+    monkeypatch.setattr(bench, "_run", fail)
+    monkeypatch.setattr(cleanup, "raise_failures", fail_transport)
+    caught = None
+    try:
+        bench._capture(engine, [1], 256, None, stop_eos=False, terminal_on_failure=True)
+    except RuntimeError as error:
+        caught = error
+    assert caught is primary and primary.__cause__ is entry and drains == []
+    traceback = primary.__traceback__
+    owned = False
+    while traceback is not None:
+        frame = traceback.tb_frame
+        if frame.f_code is bench._capture.__code__:
+            owned = frame.f_locals["native_cause"] is native and frame.f_locals["engine"] is engine
+            assert frame.f_locals["primary"] is primary
+        traceback = traceback.tb_next
+    assert owned
+
+
+def test_pair_capture_clone_survives_failure_before_dictionary_publication(monkeypatch):
+    """Inject at the clone-owned/publication boundary without CUDA allocation."""
+    primary = MemoryError("capture dictionary publication")
+    returned = []
+
+    class Clone:
+        shape = (1, 2)
+
+    class Hidden:
+        shape = (1, 2)
+
+        def detach(self):
+            return self
+
+        def clone(self):
+            value = Clone()
+            returned.append(weakref.ref(value))
+            return value
+
+    hidden = Hidden()
+    drains = []
+    engine = SimpleNamespace(target=SimpleNamespace(project_logits=lambda hidden: None),
+                             head=SimpleNamespace(project_logits=lambda hidden: None),
+                             graphs=SimpleNamespace(forward=lambda *args: None), drain=lambda: drains.append(1))
+
+    def run(engine, *args, **kwargs):
+        engine.target.project_logits(hidden)
+        raise AssertionError("fault injection did not reach the publication boundary")
+
+    def trace(frame, event, arg):
+        if (event == "line" and frame.f_code.co_name == "remember"
+                and frame.f_code.co_filename == bench.__file__
+                and frame.f_locals.get("pending") is not None
+                and frame.f_locals["captured"][frame.f_locals["kind"]] is None):
+            raise primary
+        return trace
+
+    monkeypatch.setitem(sys.modules, "torch", SimpleNamespace(
+        cuda=SimpleNamespace(is_current_stream_capturing=lambda: False)))
+    monkeypatch.setattr(bench, "_run", run)
+    previous = sys.gettrace()
+    caught = None
+    try:
+        sys.settrace(trace)
+        try:
+            bench._capture(engine, [1], 256, None, stop_eos=False, terminal_on_failure=True)
+        except MemoryError as error:
+            caught = error
+    finally:
+        sys.settrace(previous)
+    assert caught is primary and drains == [] and len(returned) == 1 and returned[0]() is not None
+    traceback = primary.__traceback__
+    owned = False
+    while traceback is not None:
+        frame = traceback.tb_frame
+        if frame.f_code is bench._capture.__code__:
+            assert frame.f_locals["captured"]["target"] is None
+            owned = frame.f_locals["pending"] is returned[0]() and frame.f_locals["engine"] is engine
+        traceback = traceback.tb_next
+    assert owned
+
+
 def test_draft_only_restricts_timing_without_changing_reference_capture_policy():
     assert bench._timed_modes(True, 0) == (True,)
     assert bench._timed_modes(True, 1) == (True,)

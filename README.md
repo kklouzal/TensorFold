@@ -1512,6 +1512,12 @@ sampling per thinking mode, depths and the per-prompt request schedule); the KL 
   sequence at the same sampling mode and proposal geometry. Serial sequences also remain equal across proposal
   widths. Greedy serial/drafted identity and direct head-score bit checks remain required; sampled serial and
   drafted sequences, or sampled drafted sequences at different widths, may differ under rejection sampling.
+  Its explicit `--pair-r8-r16` diagnostic binds the pinned AEON 26B checkpoint, FP8 DFlash at depth four,
+  the Google template override and frozen 64K thinking-enabled inputs. Six mirrored paired blocks compare
+  the existing R16 head with R8 while retaining only this same-authority pair's detached prompt snapshot
+  across graph reconstruction. Full outputs, proposal counters, cache hits, transition costs and process
+  memory are recorded. The target-only head screen does not select a winner; fixed 256-token ignore-EOS
+  results require separate normal-EOS validation before promotion.
 - `tools/gemma4_cuda_proposal_qualify.py --plan PLAN --out NEW_DIRECTORY` compares the finite Gemma proposal
   policies on an operator-sealed 48/8,451-token prompt pair. Its plan binds the immutable image, source hashes,
   inputs, sampling and request order. Probability-byte and complete-sequence proofs run separately from timing;
