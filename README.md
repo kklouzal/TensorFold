@@ -1076,6 +1076,11 @@ The original FP32-metadata formats use TensorFold-owned scalar Gaussian Lloyd-Ma
 
 Use `http://127.0.0.1:8080/v1` as an OpenAI-compatible client base URL and an ID returned by `/v1/models`. The [API reference](docs/api.md) defines request fields, supported extensions and errors.
 
+Source now applies request-local `logit_bias` on the supported single-GPU CUDA penalty paths, including greedy
+and speculative target scores. IDs must be canonical and in the output vocabulary; adjustments must be finite
+between -100 and 100. Empty/zero bias is off; unsupported engines and Metal refuse active bias. Finite negative
+bias is suppression rather than an unconditional ban. Container and live qualification of this increment is pending.
+
 | Endpoint | Purpose |
 | --- | --- |
 | `GET /health` | Readiness, effective configuration and configured admission counters. |

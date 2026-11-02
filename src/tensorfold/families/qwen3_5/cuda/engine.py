@@ -103,6 +103,12 @@ class Qwen27Engine:
                 proposal_vocab = sum(b - a for a, b in draft_spans(int(text["vocab_size"])))
                 rejection_resident_host = 8 * -(-proposal_vocab // proposal_world)  # prepared immutable ID map
 
+        from tensorfold.engine.penalties import bias_workspace
+        bias = (bias_workspace(each, int(config(model_dir)["vocab_size"]), streams=streams)
+                if tp == 1 else {"device_bytes": 0, "host_bytes": 0})
+        rejection_device += bias["device_bytes"]
+        rejection_host += bias["host_bytes"]
+
         self.torch = torch
         self.tp, self.rank, self.max_rows, self.allow_copy = tp, rank, max_rows, allow_copy
         self.vision = None
@@ -176,6 +182,7 @@ class Qwen27Engine:
                                    **({"context_limit": yarn.context_limit, "original_context": yarn.native_context}
                                       if yarn is not None else {}))
         self.context_window = self.capacity_plan["context_window"]
+        self.capacity_plan["logit_bias_workspace"] = bias
         if companion_limit is not None and self.context_window > companion_limit:
             raise ValueError(f"DFlash2 declares at most {companion_limit} positions; admitted context "
                              f"{self.context_window} exceeds its limit. Use --drafter none/--no-drafts for extended "

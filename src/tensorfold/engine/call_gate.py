@@ -49,7 +49,7 @@ class CallGate:
                  encode: Callable[[str], list[int]] | None = None, lead: str = "", names: Sequence[str] = (),
                  tail: str = "", decode=None) -> None:
         self.opener, self.blank = int(opener), blank
-        self.decode, self._written = decode, []
+        self.decode, self._written, self.intent = decode, [], None
         self.think_open, self.think_end = int(think_open), int(think_end)
         self.think_closer = (decode([self.think_end], skip_special_tokens=False)
                              if decode is not None and self.think_end >= 0 else None)
@@ -90,9 +90,11 @@ class CallGate:
         armed, phase, seen = state
         if phase == _ANSWER:
             if not armed:
-                closed = token == self.think_end and (self.decode is None or structural_marker(
-                    self.decode([*self._written, *prefix, token], skip_special_tokens=False), self.think_closer,
-                    call_headers=self.thinking_headers))
+                closed = token == self.think_end and (
+                    self.intent.confirmation_index([*prefix, token]) == len(prefix) if self.intent is not None else
+                    self.decode is None or structural_marker(
+                        self.decode([*self._written, *prefix, token], skip_special_tokens=False), self.think_closer,
+                        call_headers=self.thinking_headers))
                 return (closed, _ANSWER, ""), None
             if token == self.think_open:
                 return (False, _ANSWER, ""), None
@@ -167,6 +169,8 @@ class ThinkBudget:
         """(index in the next committed ``tokens`` the close replaces, the close), as ``CallGate.cut``."""
 
         if not self.open:
+            return None
+        if self.intent is not None and not self.intent.budget_relevant(tokens):
             return None
         confirmed = self.intent.confirmation_index(tokens) if self.intent is not None else None
         self._confirmed_stop = None

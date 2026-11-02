@@ -243,13 +243,13 @@ def test_a_responses_refusal_names_its_input_field(tmp_path):
 
 # fields the server accepts and ignores (owner decision 2026-10-15): the prompt and sampling are those of the request
 # without them, and the reply is an ordinary one (penalties are applied since 2026-10-18: tests/test_penalties_server.py)
-IGNORED = {"logit_bias": {"50256": -100}, "verbosity": "low", "web_search_options": {"search_context_size": "low"},
+IGNORED = {"verbosity": "low", "web_search_options": {"search_context_size": "low"},
            "moderation": {"model": "omni-moderation-latest"}, "functions": [{"name": "f", "parameters": {}}],
            "function_call": "auto", "prediction": {"type": "content", "content": "Hi"}, "store": True,
            "metadata": {"a": "b"}, "user": "u", "safety_identifier": "s", "prompt_cache_key": "k",
            "prompt_cache_retention": "24h", "service_tier": "priority",
            "stream_options": {"include_obfuscation": True}}
-COMPLETION_IGNORED = {"echo": True, "suffix": "!", "best_of": 3, "logit_bias": {"1": 5}, "user": "u"}
+COMPLETION_IGNORED = {"echo": True, "suffix": "!", "best_of": 3, "user": "u"}
 
 
 def test_cuda_accepts_and_ignores_the_fields_it_does_not_run(tmp_path):
@@ -386,7 +386,8 @@ def test_input_tokens_refuses_a_prompt_the_context_cannot_hold_on_both_servers(t
 def test_input_tokens_answers_an_unexpected_failure(tmp_path):
     app = app_for(tmp_path)
 
-    def broken(body, chat):
+    def broken(body, chat, *, _for_generation):
+        assert _for_generation is False
         raise LookupError("the template looked up nothing")
 
     app.prepare = broken

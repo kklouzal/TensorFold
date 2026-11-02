@@ -16,6 +16,37 @@ _INTEGER_FIELDS = {"seed", "top_k", "thinking_budget", "max_tokens", "max_comple
 PENALTY_FIELDS = {"presence_penalty": 0.0, "frequency_penalty": 0.0, "repetition_penalty": 1.0}
 
 
+def parse_logit_bias(value: Any, vocab_size: int | None = None) -> tuple[tuple[int, float], ...]:
+    """Canonical global token IDs and finite additive biases; null/empty/zero are off.
+
+    A supplied vocabulary is the actual output matrix domain, not the number
+    of merely added tokenizer pieces. Unsupported backends can syntax-check
+    without that geometry, then explicitly refuse active bias.
+    """
+    if value is None:
+        return ()
+    if not isinstance(value, dict):
+        raise RequestError("logit_bias must be an object mapping canonical token IDs to finite numbers")
+    if vocab_size is not None and len(value) > vocab_size:
+        raise RequestError("logit_bias has more token IDs than the output vocabulary")
+    result = []
+    for key, bias in value.items():
+        if not isinstance(key, str) or re.fullmatch(r"0|[1-9][0-9]*", key) is None:
+            raise RequestError("logit_bias keys must be canonical nonnegative decimal token IDs")
+        try:
+            token = int(key)
+        except ValueError:
+            raise RequestError("logit_bias token ID is too large") from None
+        if vocab_size is not None and not 0 <= token < vocab_size:
+            raise RequestError(f"logit_bias token ID {key} is outside the output vocabulary [0, {vocab_size})")
+        if (isinstance(bias, bool) or not isinstance(bias, (int, float))
+                or not -100 <= bias <= 100 or not math.isfinite(bias)):
+            raise RequestError("logit_bias values must be finite numbers between -100 and 100")
+        if bias != 0:
+            result.append((token, float(bias)))
+    return tuple(sorted(result))
+
+
 def drop_penalties(sampling: dict[str, Any]) -> dict[str, Any]:
     """Remove the penalty defaults from ``sampling`` (for a backend that cannot apply them); return the active ones."""
 

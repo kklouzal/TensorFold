@@ -51,6 +51,8 @@ def modelopt_pair(monkeypatch):
 
 
 def test_validated_bf16_opt_in_admits_companion_weight_state_and_rejection_rows(monkeypatch, tmp_path):
+    from tensorfold.engine.penalties import bias_workspace
+
     cfg, draft, headers = modelopt_pair(monkeypatch)
     assert draft.layers == 5 and len(headers) == 58 and draft.tap_layers == (1,)
     serial = capacity.admit(tmp_path, 32, True, max_rows=1)
@@ -58,8 +60,14 @@ def test_validated_bf16_opt_in_admits_companion_weight_state_and_rejection_rows(
     expected = sum(2 * math.prod(info['shape']) for info in headers.values())
     assert drafted['weights'].resident - serial['weights'].resident == expected
     assert drafted['geometry'].needed(32) > serial['geometry'].needed(32)
-    assert drafted['sampling_device'] > 0 and drafted['sampling_host'] > 0
-    assert serial['sampling_device'] == serial['sampling_host'] == 0
+    serial_bias = bias_workspace(1, cfg.vocab)
+    drafted_bias = bias_workspace(16, cfg.vocab)
+    assert serial['logit_bias_workspace'] == serial_bias
+    assert drafted['logit_bias_workspace'] == drafted_bias
+    assert serial['sampling_device'] == serial_bias['device_bytes']
+    assert serial['sampling_host'] == serial_bias['host_bytes']
+    assert drafted['sampling_device'] - drafted_bias['device_bytes'] > 0
+    assert drafted['sampling_host'] - drafted_bias['host_bytes'] > 0
 
 
 def test_mismatched_taps_refused_before_common_allocation(monkeypatch, tmp_path):

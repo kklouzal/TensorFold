@@ -46,14 +46,18 @@ def test_admission_accounts_for_largest_declared_processor_pool(component, tmp_p
         # The boundary stands in for physical admission, not the family formula.
         # Real config/header validation, processor policy and geometry all run.
         assert torch is runtime
-        assert device_workspace_bytes == host_workspace_bytes == 0  # no companion: sampled rejection is unreachable
+        vocab = (raw.get("text_config") or raw)["vocab_size"]
+        assert device_workspace_bytes == 76 * vocab  # R16 bias map copies/gather; no rejection q/p owners
+        assert host_workspace_bytes >= 12 * vocab
         weights, _ = weight_estimator(directory)
-        return weights, geometry
+        return {"weights": weights, "geometry": geometry}
 
     monkeypatch.setattr(common, "admit", admitted)
-    small_weights, small = capacity.admit(tmp_path, 128, True, vision=True)
+    small_plan = capacity.admit(tmp_path, 128, True, vision=True)
+    small_weights, small = small_plan["weights"], small_plan["geometry"]
     options[component]["max_soft_tokens"] = 1120
-    large_weights, large = capacity.admit(tmp_path, 128, True, vision=True)
+    large_plan = capacity.admit(tmp_path, 128, True, vision=True)
+    large_weights, large = large_plan["weights"], large_plan["geometry"]
 
     assert small_weights == large_weights
     assert large.needed(128) > small.needed(128)
@@ -92,13 +96,16 @@ def test_drafter_admission_counts_bf16_or_private_fp8_copies(tmp_path, monkeypat
     def admitted(directory, context, explicit, torch, geometry, rule, *, weight_estimator,
                  device_workspace_bytes, host_workspace_bytes):
         runtime_workspace.append((device_workspace_bytes, host_workspace_bytes))
-        return weight_estimator(directory)[0], geometry
+        return {"weights": weight_estimator(directory)[0], "geometry": geometry}
 
     monkeypatch.setattr(common, "admit", admitted)
 
-    alone, plain = capacity.admit(tmp_path, 128, True)
-    bf16, with_bf16 = capacity.admit(tmp_path, 128, True, drafter_dir=draft_dir)
-    fp8, with_fp8 = capacity.admit(tmp_path, 128, True, drafter_dir=draft_dir, drafter_bits=8)
+    alone_plan = capacity.admit(tmp_path, 128, True)
+    bf16_plan = capacity.admit(tmp_path, 128, True, drafter_dir=draft_dir)
+    fp8_plan = capacity.admit(tmp_path, 128, True, drafter_dir=draft_dir, drafter_bits=8)
+    alone, plain = alone_plan["weights"], alone_plan["geometry"]
+    bf16, with_bf16 = bf16_plan["weights"], bf16_plan["geometry"]
+    fp8, with_fp8 = fp8_plan["weights"], fp8_plan["geometry"]
     shapes = draft.shapes().values()
     assert bf16.resident - alone.resident == sum(2 * math.prod(s) for s in shapes)
 
@@ -118,7 +125,9 @@ def test_drafter_admission_counts_bf16_or_private_fp8_copies(tmp_path, monkeypat
     # Complete effective distributions alone own int64 IDs+FP64 probabilities at every simultaneous verify row.
     # Admission must charge the full supported top-k0 policy, not just the card's bounded top64 packet.
     vocab = text["vocab_size"]
-    assert runtime_workspace[0] == (0, 0)  # the unchanged serial sampler does not retain rejection p/q rows
+    assert runtime_workspace[0] == (alone_plan["logit_bias_workspace"]["device_bytes"],
+                                     alone_plan["logit_bias_workspace"]["host_bytes"])
+    assert runtime_workspace[0][0] == 76 * vocab  # R16 bias bound; no rejection p/q rows
     assert runtime_workspace[1] == runtime_workspace[2]
     assert runtime_workspace[1][1] >= 16 * 16 * vocab
     assert all(full > serial for full, serial in zip(runtime_workspace[1], runtime_workspace[0]))

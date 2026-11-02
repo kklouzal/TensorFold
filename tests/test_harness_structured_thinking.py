@@ -101,35 +101,40 @@ def test_lenient_ambiguous_quote_uses_same_terminal_authority_for_stream_and_fin
             json.loads(partial)  # partial prefixes may remain; no premature completed raw fallback
 
 
-@pytest.mark.parametrize('ending', ['answer', 'thought-eos', 'header-eos'])
+@pytest.mark.parametrize('ending', ['answer', 'thought-eos', 'header-eos', 'backtick', 'direct', 'omitted'])
 def test_native_gemma_framing_only_callbacks_never_leak_or_slice_reasoning(tmp_path, ending):
     """Native header/recorded body IDs; sparse decoder isolates presentation, not model matching."""
     from tensorfold.cuda import server
     from tensorfold.engine.grammar import AnswerBoundary, Spec
 
     pieces = {100: '<|channel>', 45518: 'thought', 107: '\n', 818: 'The', 2430: ' user',
-              563: ' is', 10980: ' asking', 101: '<channel|>', 200: '{"ok":true}', 106: '<eos>'}
+              563: ' is', 10980: ' asking', 101: '<channel|>', 200: '{"ok":true}', 106: '<eos>',
+              201: 'The character ` starts code.', 202: 'The answer.'}
     class Tok:
         control_token_ids = unused_token_ids = frozenset()
         def decode(self, ids, **kwargs):
             return ''.join(pieces[int(t)] for t in ids)
         def token_to_id(self, text):
-            return 101 if text == '<channel|>' else None
+            return {'<channel|>': 101, '<|channel>': 100}.get(text)
         def id_to_token(self, token):
             return pieces[token]
     class Constraint(AnswerBoundary):
         def fresh_boundary(self):
-            return AnswerBoundary(self.vocab, think_end=self.think_end, decode=self.decode)
+            return AnswerBoundary(self.vocab, think_end=self.think_end, decode=self.decode,
+                                  think_starts=self.think_starts, thought_open=self.initial_thought_open)
     class Grammars:
         def constraint(self, compiled, *, think_end=None, decode=None, **kwargs):
-            return Constraint(262144, think_end=think_end, decode=decode)
-    chunks = [[100], [45518]]  # the framing-only callbacks which previously leaked
+            return Constraint(262144, think_end=think_end, decode=decode,
+                              think_starts=kwargs.get('think_starts', ()), thought_open=kwargs.get('thought_open', False))
+    chunks = [] if ending in ('direct', 'omitted') else [[100], [45518]]
     reason = ''
-    if ending != 'header-eos':
-        chunks.append([107, 818, 2430, 563, 10980, 107])
-        reason = 'The user is asking\n'
-    if ending == 'answer':
-        chunks.append([101, 200])
+    if ending not in ('header-eos', 'direct'):
+        chunks.append([107, 201] if ending == 'backtick' else [107, 818, 2430, 563, 10980, 107])
+        reason = 'The character ` starts code.' if ending == 'backtick' else 'The user is asking\n'
+        if ending == 'omitted':
+            reason = '\n' + reason  # no channel header owns this actual leading newline
+    if ending in ('answer', 'backtick', 'direct', 'omitted'):
+        chunks.append([200] if ending == 'direct' else [101, 202 if ending == 'backtick' else 200])
     chunks.append([106])
     ids = [token for chunk in chunks for token in chunk]
     class Engine:
@@ -158,9 +163,11 @@ def test_native_gemma_framing_only_callbacks_never_leak_or_slice_reasoning(tmp_p
             observed = emitted
     assert results[0]['stats']['token_ids'] == results[1]['stats']['token_ids'] == ids
     assert results[0]['reasoning'] == results[1]['reasoning'] == reason
-    expected_answer = '{"ok":true}' if ending == 'answer' else ''
+    expected_answer = 'The answer.' if ending == 'backtick' else '{"ok":true}' if ending in ('answer', 'direct', 'omitted') else ''
     assert results[0]['content'] == results[1]['content'] == expected_answer
     assert ''.join((delta or {}).get('reasoning_content', '') for delta in observed) == reason
     assert ''.join((delta or {}).get('content', '') for delta in observed) == expected_answer
     assert not any('<|channel>' in (delta or {}).get('reasoning_content', '') for delta in observed)
     assert results[1]['finish'] == 'stop'  # native EOS is not promoted or force-closed
+    expected_reason_tokens = 0 if ending == 'direct' else ids.index(101)+1 if 101 in ids else len(ids)
+    assert results[0]['reasoning_tokens'] == results[1]['reasoning_tokens'] == expected_reason_tokens

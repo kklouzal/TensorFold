@@ -129,6 +129,7 @@ For decisions, `chat_template_kwargs` may be omitted, null, or an object contain
 | `max_tokens`, `max_completion_tokens` | Explicit reply limit; rejected if prompt plus reply exceeds the window | Both |
 | `temperature`, `top_p`, `top_k`, `min_p` | Sampling overrides; zero `temperature` or zero `top_p` is greedy | Both |
 | `presence_penalty`, `frequency_penalty`, `repetition_penalty` | OpenAI presence/frequency and vLLM repetition penalties ([penalties](#penalties)); greedy replies are penalized too | CUDA Gemma 4, Qwen dense and Qwen3.6 MoE CT NVFP4 on one GPU; others 400 |
+| `logit_bias` | Request-local token-ID to additive score map; finite values -100 to 100, before sampling ([penalties](#penalties)) | Same supported single-GPU CUDA penalty paths; active bias elsewhere 400 |
 | `seed` | Sampling key; otherwise derived from the prompt (and `TENSORFOLD_SEED_SALT`) | Both |
 | `stream` | Server-sent events; the last event carries usage | Both |
 | `stream_options.include_usage` | Usage in its own final event with `"choices": []`, not on the finish event | Both |
@@ -145,7 +146,7 @@ For decisions, `chat_template_kwargs` may be omitted, null, or an object contain
 
 `n` must be 1; multiple choices receive HTTP 400.
 
-These fields are accepted and ignored: the reply is the one the request would get without them. Chat: `logit_bias`, `verbosity`, `functions` and `function_call`,
+These fields are accepted and ignored: the reply is the one the request would get without them. Chat: `verbosity`, `functions` and `function_call`,
 `web_search_options`, `moderation` (no moderation result is returned), `prediction`, `store`, `metadata`, `user`,
 `safety_identifier`, `prompt_cache_key`, `prompt_cache_retention` and `stream_options.include_obfuscation`;
 `tool_choice: {"type": "allowed_tools", ...}` runs as `auto` over every offered tool (the Responses API applies the
@@ -194,6 +195,18 @@ implementation checkpoint and outstanding installed/native/model gates; historic
 do not qualify the migrated implementation.
 
 ### Penalties
+
+`logit_bias` follows the [additive OpenAI score convention](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create):
+an object such as `{"123": -100, "456": 2.5}` maps canonical decimal token IDs in the actual output vocabulary to
+finite adjustments in [-100, 100]. TensorFold adds them in float32 after repetition/frequency/presence penalties and
+before temperature, top-k, top-p, min-p, greedy argmax and effective target-p extraction. Null, an empty map or only
+zero adjustments is off. A negative finite value is strong suppression, **not a universal hard ban**; the effect
+depends on other scores, temperature and numerical underflow. Grammar masks remain hard masks. Speculative rejection
+uses this actual processed target p; an already drawn proposal/q is never rewritten. A candidate path that processes
+history before its own draw includes the same adjustment in its recorded actual q. Cached raw logits remain reusable
+by an unbiased request, and continuation preserves the request's bias. Unsupported engines/TP and Metal refuse active
+bias rather than ignore it. Responses forwards this TensorFold request extension to the same chat path.
+Source support is implemented; container regression and installed live qualification remain pending for this increment.
 
 `presence_penalty` and `frequency_penalty` (each -2 to 2; 0 is off) follow the OpenAI definition over the tokens the
 reply has generated so far, reasoning included: a token's score loses `frequency_penalty` times its count plus

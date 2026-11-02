@@ -1,6 +1,12 @@
 from typing import Any
 
 from tensorfold.server.errors import RequestError
+from tensorfold.engine.grammar import SPECS
+
+
+def visible_tool_prose(text: str, *, calls: bool | None = None) -> str:
+    """Withhold ambiguous whitespace; known no-call output remains exact data."""
+    return '' if calls is not False and text.isspace() else text
 
 
 class _ToolTextFilter:
@@ -43,6 +49,10 @@ class ToolCallPolicy:
             raise RequestError("parallel_tool_calls must be a boolean")
         self.single = not parallel
         self._text = _ToolTextFilter() if self.single else None
+        self._literal_data = any(body.get(key) is not None for key in SPECS)
+        self._prose_pending = []
+        self._prose_started = False
+        self._prose_calls = None
 
     @property
     def max_calls(self) -> int | None:
@@ -51,24 +61,45 @@ class ToolCallPolicy:
     def limit(self, calls):
         return calls[:1] if self.single and calls else calls
 
+    def _prose(self, text):
+        if self._prose_started or not text:
+            return text
+        if text.isspace():
+            self._prose_pending.append(text)
+            return ''
+        self._prose_pending.append(text)
+        result = ''.join(self._prose_pending)
+        self._prose_pending = []
+        self._prose_started = True
+        return result
+
     def delta(self, delta):
-        if self.single:
-            if isinstance(delta, str):
-                return self._text.feed(delta)
-            if isinstance(delta, dict):
-                result = {k: v for k, v in delta.items() if k != "tool_calls"}
-                if isinstance(result.get("content"), str):
-                    content = self._text.feed(result.pop("content"))
-                    if content:
-                        result["content"] = content
-                return result
+        if self._literal_data:
+            return delta
+        if isinstance(delta, str):
+            return self._prose(self._text.feed(delta) if self.single else delta)
+        if isinstance(delta, dict):
+            if not self.single and (self._prose_started or not isinstance(delta.get('content'), str)):
+                return delta
+            result = {key: value for key, value in delta.items() if not self.single or key != 'tool_calls'}
+            if isinstance(result.get('content'), str):
+                text = result.pop('content')
+                content = self._prose(self._text.feed(text) if self.single else text)
+                if content:
+                    result['content'] = content
+            return result
         return delta
 
     def flush(self) -> str:
-        return self._text.finish() if self.single else ""
+        if self._literal_data:
+            return ''
+        tail = self._prose(self._text.finish()) if self.single else ''
+        pending = ''.join(self._prose_pending) if self._prose_calls is not True else ''
+        self._prose_pending = []
+        return tail + pending
 
     def content(self, text: str, *, finished: bool = True) -> str:
-        if self.single:
+        if self.single and not self._literal_data:
             filtered = _ToolTextFilter()
             return filtered.feed(text) + (filtered.finish() if finished else "")
         return text
@@ -77,7 +108,7 @@ class ToolCallPolicy:
         """The reply's calls, read by ``parse`` (the lenient parsers), or by the reply's ``strict_calls``
         (``server.strict_tools.Plan``) when its grammar wrote them."""
 
-        if not tools:
+        if not tools or self._literal_data:
             return reply
         text, plan = str(reply.get("content") or ""), reply.get("strict_calls")
         # Direct complete-reply callers retain that contract; an engine reply
@@ -87,9 +118,11 @@ class ToolCallPolicy:
         content, calls = (plan.parse(text, max_calls=self.max_calls) if plan is not None
                           else parse(text, tools, max_calls=self.max_calls, finished=finished))
         calls = calls or reply.get("tool_calls")
+        self._prose_calls = bool(calls)
         if not calls:
             return {**reply, "content": self.content(content)} if self.single else reply
-        result = {**reply, "content": self.content(content), "tool_calls": self.limit(calls)}
+        result = {**reply, "content": visible_tool_prose(self.content(content), calls=True),
+                  "tool_calls": self.limit(calls)}
         if plan is not None or reply.get("tool_calls_complete", True):
             result["finish_reason"] = "tool_calls"
         if self.single:

@@ -155,3 +155,90 @@ def test_boundary_decoder_cannot_silently_erase_native_close():
         grammar.AnswerBoundary(len(TOKENS), think_end=END, decode=lambda *a, **k: '')
     with pytest.raises(grammar.GrammarError, match='callable'):
         grammar.AnswerBoundary(len(TOKENS), think_end=END, decode=False)
+
+
+@pytest.fixture
+def native_composite():
+    words = [*TOKENS, '<|channel>', 'thought', 'The character ` starts code.']
+    def native_decode(ids, **kwargs):
+        return ''.join(words[int(t)] for t in ids)
+    owner = grammar.Grammars(xgr.TokenizerInfo(words, xgr.VocabType.RAW, vocab_size=len(words),
+                                              stop_token_ids=[0]), decode=native_decode)
+    spec = grammar.Spec('regex', re.escape('{"x":1}'))
+    def make(opened=False):
+        return owner.constraint(owner.compile(spec), think_end=END, spec=spec, think_starts=(16,),
+                                thought_open=opened, stop_ids=(0,))
+    return owner, make
+
+
+def allowed(c, token):
+    values = torch.zeros(1, c.vocab, device='cpu', dtype=torch.float32)
+    c.mask(values)
+    return bool(torch.isfinite(values[0, token]))
+
+
+def test_composite_direct_schema_eos_only_after_actual_accepting_prefix(native_composite):
+    _, make = native_composite
+    c = make()
+    assert not allowed(c, 0)
+    assert allowed(c, WHY)  # still a valid free-prefix -> REAL close alternative
+    c.advance([LEFT, KEY, COLON, ONE, RIGHT])
+    assert allowed(c, 0)
+    c.advance([0])
+    assert c.finished and not c.opened_thought
+
+
+def test_composite_omitted_opener_real_close_remains_supported(native_composite):
+    _, make = native_composite
+    c = make()
+    c.advance([WHY])
+    assert not allowed(c, 0)  # impossible direct output is not certified by EOS
+    c.advance([END])
+    assert c.active and c.answer_offset == 2
+    assert allowed(c, LEFT) and not allowed(c, WHY)
+    c.advance([LEFT, KEY, COLON, ONE, RIGHT, 0])
+    assert c.finished
+
+
+def test_native_actual_open_close_overrides_backtick_but_preserves_open_eos(native_composite):
+    owner, make = native_composite
+    c = make()
+    c.advance([16, 17, 18])
+    assert c.opened_thought and allowed(c, 0)
+    observer = c.fresh_boundary()
+    observer.advance([16, 17, 18, END])
+    c.advance([END])
+    assert c.active and observer.active and c.answer_offset == observer.answer_offset == 4
+    restored = owner.follow(grammar.pack(make(opened=True)))
+    assert restored.opened_thought and allowed(restored, 0)
+
+
+def test_composite_preview_restores_direct_candidate(native_composite):
+    _, make = native_composite
+    c = make()
+    before = allowed(c, 0)
+    c.window([WHY, LEFT, KEY, COLON], [-1, 0, 1, 2])
+    assert allowed(c, 0) is before and c.observed == 0 and c.direct_valid
+
+
+def test_native_direct_json_marker_values_are_data_not_phase(native_composite):
+    owner, _ = native_composite
+    spec = grammar.Spec('regex', re.escape('{"x":"<|channel></think>"}'))
+    c = owner.constraint(owner.compile(spec), think_end=END, spec=spec, think_starts=(16,), stop_ids=(0,))
+    c.advance([LEFT, KEY, COLON, 13, 16, END, 13, RIGHT])
+    assert not c.opened_thought and c.answer_offset is None and allowed(c, 0)
+    c.advance([0])
+    assert c.finished
+
+
+def test_native_direct_prose_before_tool_is_not_relabelled_as_reasoning(native_composite):
+    owner, _ = native_composite
+    spec = grammar.Spec('regex', re.escape('why<tool_call>{"x":1}</tool_call>'))
+    c = owner.constraint(owner.compile(spec), think_end=END, spec=spec, think_starts=(16,), stop_ids=(0,),
+                         answer_start=OPEN, answer_opener='<tool_call>', answer_headers=('<tool_call>{',))
+    tokens = [WHY, OPEN, LEFT, KEY, COLON, ONE, RIGHT, CLOSE]
+    c.advance(tokens)
+    observer = c.fresh_boundary()
+    observer.advance(tokens)
+    assert not c.opened_thought and not observer.opened_thought
+    assert c.answer_offset is observer.answer_offset is None and allowed(c, 0)

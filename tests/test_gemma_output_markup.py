@@ -31,7 +31,13 @@ def test_quoted_code_and_json_string_markers_are_exact_data(marker, quote):
     raw = quote.format(marker)
     assert split_gemma_thinking(raw, finished=True) == ('', raw)
     known = THOUGHT_OPEN + '\n' + raw
-    assert split_gemma_thinking(known, finished=True) == (raw, '')
+    if marker == THOUGHT_CLOSE:
+        # A native thought close is authority within an opened thought, even
+        # if prose/Markdown left a quote open; answer data stays opaque below.
+        before, after = raw.split(THOUGHT_CLOSE, 1)
+        assert split_gemma_thinking(known, finished=True) == (before, after.lstrip("\r\n"))
+    else:
+        assert split_gemma_thinking(known, finished=True) == (raw, '')
 
 
 @pytest.mark.parametrize('raw,expected', [
@@ -149,3 +155,86 @@ def test_strict_header_intent_does_not_turn_bare_openers_into_calls(opener, head
         assert structural_call_header(wrapper.format(header), opener, headers) is None
         assert pending_call_header(wrapper.format(header[:len(opener)]), opener, headers) is None
     assert structural_call_header('Reason ' + opener + 'call:unoffered{', opener, headers) is None
+
+
+@pytest.mark.parametrize('thought', [
+    'The character ` starts code.', 'An unmatched "quotation',
+    'An opened ```python\nvalue', 'An opened ~~~text\nvalue',
+])
+@pytest.mark.parametrize('opened', [False, True])
+@pytest.mark.parametrize('tool', [False, True])
+def test_native_close_ends_opened_thought_despite_prose_quotes_without_touching_answer_data(thought, opened, tool):
+    from tensorfold.server.tools import parse_tool_calls_from_content
+
+    answer = ('<|tool_call>call:echo{text:<|"|>literal `<channel|>` and "quotes"<|"|>}<tool_call|>' if tool
+              else 'The answer. ```json\n{"literal":"<channel|>"}\n```')
+    raw = ('' if opened else THOUGHT_OPEN + '\n') + thought + THOUGHT_CLOSE + answer
+    assert split_gemma_thinking(raw, finished=True, opened=opened, expect_thinking=True) == (thought, answer)
+    previous = ('', '')
+    for end in range(len(raw) + 1):
+        current = split_gemma_thinking(raw[:end], finished=False, opened=opened, expect_thinking=True)
+        assert all(now.startswith(before) for before, now in zip(previous, current))
+        previous = current
+    assert all(final.startswith(before) for final, before in zip((thought, answer), previous))
+    if tool:
+        tools = [{'type': 'function', 'function': {'name': 'echo', 'parameters': {
+            'type': 'object', 'properties': {'text': {'type': 'string'}}}}}]
+        _, calls = parse_tool_calls_from_content(answer, tools)
+        import json
+        assert json.loads(calls[0]['function']['arguments']) == {'text': 'literal `<channel|>` and "quotes"'}
+    # No actual native close: even real EOS still cannot promote thought prose.
+    unclosed = ('' if opened else THOUGHT_OPEN + '\n') + thought
+    assert split_gemma_thinking(unclosed, finished=True, opened=opened, expect_thinking=True) == (thought, '')
+
+
+def test_close_spelling_in_never_opened_answer_code_remains_literal_content():
+    raw = 'Answer with `<channel|>` and ```json\n{"x":"<channel|>"}\n```'
+    assert split_gemma_thinking(raw, finished=True, expect_thinking=True) == ('', raw)
+
+
+def test_nameless_json_after_bare_call_opener_cannot_shield_real_thought_close():
+    raw = THOUGHT_OPEN + '\n<tool_call>{"x":5}' + THOUGHT_CLOSE + 'Answer'
+    expected = ('<tool_call>{"x":5}', 'Answer')
+    assert split_gemma_thinking(raw, finished=True, expect_thinking=True) == expected
+    previous = ('', '')
+    for end in range(len(raw) + 1):
+        current = split_gemma_thinking(raw[:end], finished=False, expect_thinking=True)
+        assert all(now.startswith(before) for before, now in zip(previous, current))
+        previous = current
+    assert all(final.startswith(before) for final, before in zip(expected, previous))
+
+
+@pytest.mark.parametrize('body', [
+    '{"name":"echo","arguments":{"text":"<channel|>"}}',
+    '{"arguments":{"text":"<channel|>"},"name":"echo"}',
+    '{"function":{"arguments":{"text":"<channel|>"},"name":"echo"}}',
+])
+def test_genuine_wrapped_json_call_keeps_argument_close_opaque_regardless_property_order(body):
+    call = '<tool_call>' + body + '</tool_call>'
+    raw = THOUGHT_OPEN + '\nReason. ' + call
+    assert split_gemma_thinking(raw, finished=True) == ('Reason. ', call)
+    previous = ('', '')
+    for end in range(len(raw) + 1):
+        current = split_gemma_thinking(raw[:end], finished=False)
+        assert all(now.startswith(before) for before, now in zip(previous, current))
+        previous = current
+    assert split_gemma_thinking(raw + THOUGHT_CLOSE + 'Answer', finished=True) == ('Reason. ' + call, 'Answer')
+
+
+@pytest.mark.parametrize('opener,body,closer', [
+    ('<tool_call>', ' \n{"name":"echo","arguments":{"text":"ok"}}', '</tool_call>'),
+    ('<tool_call>', ' \n<function=echo><parameter=text>ok</parameter></function>', '</tool_call>'),
+    ('<|tool_call>', ' \ncall:echo{text:<|"|>ok<|"|>}', '<tool_call|>'),
+])
+@pytest.mark.parametrize('repeat', [False, True])
+def test_undecided_empty_and_whitespace_call_headers_stay_withheld_until_disproved_or_complete(opener, body, closer, repeat):
+    call = opener + (' \n' + opener if repeat else '') + body + closer
+    raw = THOUGHT_OPEN + '\nReason. ' + call
+    previous = ('', '')
+    for end in range(len(raw) + 1):
+        current = split_gemma_thinking(raw[:end], finished=False)
+        assert all(now.startswith(before) for before, now in zip(previous, current))
+        previous = current
+    assert split_gemma_thinking(raw, finished=True) == ('Reason. ', call)
+    disproved = THOUGHT_OPEN + '\n' + opener + ' 9 days' + THOUGHT_CLOSE + 'Answer'
+    assert split_gemma_thinking(disproved, finished=True) == (opener + ' 9 days', 'Answer')

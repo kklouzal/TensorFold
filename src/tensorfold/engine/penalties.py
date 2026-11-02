@@ -1,4 +1,4 @@
-"""Presence, frequency and repetition penalties (OpenAI / vLLM semantics), applied before the keyed sampler.
+"""Penalties and additive logit bias, applied before the keyed sampler.
 
 For each row of next-token scores ``z`` (the model's final logits) with ``c[t]`` = how often token ``t`` occurs in
 the reply generated so far and ``prompt`` = the distinct tokens of the request's prompt:
@@ -8,7 +8,8 @@ the reply generated so far and ``prompt`` = the distinct tokens of the request's
       float32 with ``/ r`` a multiply by the float32 reciprocal ``1 / r``; where an extreme ``r`` takes that product
       out of float32's finite range, which would hand vLLM's sampler +-inf or NaN, a finite score saturates at
       float32's largest magnitude and a zero stays zero, so penalties never turn a score into a non-score);
-  then frequency and presence (OpenAI API; vLLM ``apply_penalties``): ``z[t] -= f * c[t] + p * (c[t] > 0)``.
+  then frequency and presence (OpenAI API; vLLM ``apply_penalties``): ``z[t] -= f * c[t] + p * (c[t] > 0)``;
+  then request-local bias: ``z[t] += bias[t]`` in float32. Finite -100 is strong suppression, not an absolute ban.
 
 vLLM applies these to the float32 logits before temperature, min-p, top-k and top-p (``Sampler``), and so does
 TensorFold, ahead of its keyed draw; greedy requests take the argmax of the penalized scores. Ranges follow vLLM
@@ -22,13 +23,37 @@ when they are float32), ``candidates`` a drafter's host candidate rows.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import math
 from typing import Sequence
 
 import numpy as np
 
 F32_MAX = float(np.finfo(np.float32).max)
+I64_MAX = int(np.iinfo(np.int64).max)
+
+
+def bias_workspace(rows: int, vocab: int, *, streams: int = 1) -> dict[str, int]:
+    """Additional bias owners, conservatively summed without reuse credit.
+
+    All IDs are distinct and in the output vocabulary, so map length <= vocab.
+    Host includes the immutable policy, sort staging and candidate lookup arrays;
+    incoming JSON and adopted allocator overhead retain their existing admission.
+    """
+    if any(type(value) is not int or value < 1 for value in (rows, vocab, streams)):
+        raise ValueError("positive bias workspace geometry required")
+    import sys
+
+    pointer = sys.getsizeof((None,)) - sys.getsizeof(())
+    policy = sys.getsizeof((0, 0.0)) + sys.getsizeof(vocab - 1) + sys.getsizeof(0.0) + pointer
+    # search result8 + clipped positions8 + gathered ids8 + hit mask1 +
+    # gathered values4 + selected values4 + biased result4, each rows*vocab.
+    lookup = 37 * rows * vocab
+    # Three vocab-pointer staging arrays cover the append/sort/tuple phases;
+    # fixed list over-allocation slots and collection headers are explicit.
+    staging = 3 * pointer * vocab + 6 * pointer + 3 * sys.getsizeof([]) + sys.getsizeof(())
+    return {"device_bytes": streams * vocab * (12 + 4 * rows),
+            "host_bytes": streams * (12 * vocab + policy * vocab + lookup + staging)}
 
 
 def _factors(repetition: float) -> tuple[np.float32, np.float32]:
@@ -47,6 +72,7 @@ class Penalties:
     # tokens of the engine's prompt that are the request's prompt; any after them are reply tokens a gated
     # continuation re-reads as prompt (call_gate), counted as reply
     prompt_length: int | None = None
+    bias: tuple[tuple[int, float], ...] = ()  # sorted immutable (global token id, additive logit adjustment)
 
     def __post_init__(self) -> None:
         for name in ("presence", "frequency", "repetition"):
@@ -59,10 +85,25 @@ class Penalties:
             raise ValueError("repetition penalty must be greater than 0")
         if self.prompt_length is not None and (type(self.prompt_length) is not int or self.prompt_length < 0):
             raise ValueError("penalty prompt length must be a nonnegative integer")
+        if not isinstance(self.bias, tuple):
+            raise ValueError("logit bias must be an immutable tuple")
+        previous = -1
+        for item in self.bias:
+            if not isinstance(item, tuple) or len(item) != 2:
+                raise ValueError("logit bias entries must be immutable token/value pairs")
+            token, value = item
+            if type(token) is not int or token <= previous or token > I64_MAX:
+                raise ValueError("logit bias token IDs must be nonnegative, distinct and sorted")
+            if (isinstance(value, bool) or not isinstance(value, (int, float))
+                    or not -100 <= value <= 100 or not math.isfinite(value)):
+                raise ValueError("logit bias values must be finite numbers between -100 and 100")
+            previous = token
+        if any(value == 0 or type(value) is not float for _, value in self.bias):
+            object.__setattr__(self, "bias", tuple((token, float(value)) for token, value in self.bias if value != 0))
 
     @property
     def active(self) -> bool:
-        return self.presence != 0.0 or self.frequency != 0.0 or self.repetition != 1.0
+        return self.presence != 0.0 or self.frequency != 0.0 or self.repetition != 1.0 or bool(self.bias)
 
 
 def penalize(values: np.ndarray, counts: np.ndarray, in_prompt: np.ndarray, p: Penalties) -> np.ndarray:
@@ -78,8 +119,14 @@ def penalize(values: np.ndarray, counts: np.ndarray, in_prompt: np.ndarray, p: P
         scaled = np.where(np.isfinite(values), np.where(values == 0, values, np.clip(scaled, -F32_MAX, F32_MAX)),
                           values)         # finite scores saturate, zeros stay, -inf masks stay masks
         values = np.where(in_prompt | seen, scaled, values)
-    return (values - np.float32(p.frequency) * counts - np.float32(p.presence) * seen.astype(np.float32)
-            ).astype(np.float32)
+    values = (values - np.float32(p.frequency) * counts - np.float32(p.presence) * seen.astype(np.float32)
+              ).astype(np.float32)
+    if p.bias:
+        ids = np.asarray([token for token, _ in p.bias], np.int64)
+        if ids[-1] >= values.shape[-1]:
+            raise ValueError("logit bias token ID exceeds the score vocabulary")
+        values[..., ids] += np.asarray([value for _, value in p.bias], np.float32)
+    return values
 
 
 class History:
@@ -87,12 +134,17 @@ class History:
 
     ``extend`` after every committed token (the first sampled one included). Not thread-safe: the request's decode
     loop owns it. ``_ids`` (sorted distinct penalized ids), ``_counts`` (reply counts) and ``_in_prompt`` stay aligned.
+    Bias tables are request-owned CPU arrays, never changes to cached model logits or an already drawn q row.
     """
 
     def __init__(self, penalties: Penalties, prompt: Sequence[int]):
         if not penalties.active:
             raise ValueError("a penalty history needs an active penalty")
         self.penalties = penalties
+        if penalties.bias:
+            self._bias_ids = np.asarray([token for token, _ in penalties.bias], np.int64)
+            self._bias_values = np.asarray([value for _, value in penalties.bias], np.float32)
+            self._candidate_penalties = replace(penalties, bias=())
         cut = len(prompt) if penalties.prompt_length is None else penalties.prompt_length
         if cut > len(prompt):
             raise ValueError("penalty prompt length exceeds the engine prompt")
@@ -136,7 +188,26 @@ class History:
         counts, in_prompt = self._lookup(ids)
         for token in path:
             counts = counts + (ids == token)
-        return penalize(values, counts, in_prompt, self.penalties)
+        if not self.penalties.bias:
+            return penalize(values, counts, in_prompt, self.penalties)
+        scores = penalize(values, counts, in_prompt, self._candidate_penalties)
+        at = np.searchsorted(self._bias_ids, ids).clip(max=len(self._bias_ids) - 1)
+        return scores + np.where(self._bias_ids[at] == ids, self._bias_values[at], np.float32(0))
+
+    def _apply_bias(self, logits):
+        if self.penalties.bias:
+            import torch
+
+            if int(self._bias_ids[-1]) >= logits.shape[1]:
+                raise ValueError("logit bias token ID exceeds the score vocabulary")
+            ids = torch.from_numpy(self._bias_ids).to(logits.device)
+            values = torch.from_numpy(self._bias_values).to(logits.device)
+            # Ordinary FP32 pointwise addition is required: the target's CUDA
+            # index_add_ flushes subnormals even for unique destinations.
+            adjusted = logits.index_select(1, ids)
+            adjusted.add_(values[None, :])
+            logits.index_copy_(1, ids, adjusted)
+        return logits
 
     def apply(self, logits, tokens: Sequence[int] = (), parents: Sequence[int] | None = None, *,
               copy: bool = False):
@@ -160,6 +231,16 @@ class History:
         # the distinct drafts, each draft row's index among them (``slot``) and each draft's column (``at``): its
         # column among the penalized ids, else a new one after them
         drafted, slot = np.unique(np.asarray(tokens[1:], dtype=np.int64), return_inverse=True)
+        if self.penalties.presence == 0 and self.penalties.frequency == 0 and self.penalties.repetition == 1:
+            # Bias is independent of history counts, but shape/token/path
+            # validation and the caller's requested immutable copy still apply.
+            if len(drafted) and (drafted[0] < 0 or drafted[-1] >= logits.shape[1]):
+                raise ValueError("penalty input tokens exceed the score vocabulary")
+            if len(drafted) and parents is not None:
+                for row in range(1, rows):
+                    if int(parents[row]) >= row:
+                        raise ValueError("tree parents must precede their rows")
+            return self._apply_bias(logits)
         at = np.searchsorted(self._ids, drafted)
         old = at < known
         old[old] = self._ids[at[old]] == drafted[old]
@@ -167,7 +248,7 @@ class History:
         at[~old] = known + np.arange(len(extra))
         cols = np.concatenate([self._ids, extra]) if len(extra) else self._ids
         if not len(cols):
-            return logits
+            return self._apply_bias(logits)
         # rows [0, rows): each row's counts; row ``rows``: the prompt flags (repetition)
         table = np.zeros((rows + 1, len(cols)), dtype=np.float32)
         table[:rows, :known] = self._counts
@@ -200,7 +281,7 @@ class History:
         if p.presence != 0.0:
             z = z - p.presence * seen.float()
         logits.index_copy_(1, ids, z)
-        return logits
+        return self._apply_bias(logits)
 
 
-__all__ = ["History", "Penalties", "penalize"]
+__all__ = ["History", "Penalties", "penalize", "bias_workspace"]

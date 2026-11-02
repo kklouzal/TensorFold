@@ -28,11 +28,11 @@ from tensorfold.server.stopping import matched_stop, stop_options
 from tensorfold.server import failure_capture
 from tensorfold.server.thinking_notes import ended_thinking, ended_thinking_note, unanswered
 from tensorfold.server.token_routes import flag, token_ids
-from tensorfold.server.tool_policy import ToolCallPolicy
+from tensorfold.server.tool_policy import ToolCallPolicy, visible_tool_prose
 from tensorfold.engine.call_gate import CallGate, ThinkBudget, call_format, generate_gated
 from tensorfold.engine.tool_draft import ToolCallStreamer
 from tensorfold.server.tools import (
-    active_tool_specs, normalize_qwen_tool_markup, parse_tool_calls_from_content, tool_choice_requires_call, tool_calls_complete,
+    active_tool_specs, normalize_qwen_tool_markup, parse_tool_calls_from_content, tool_choice_requires_call, tool_calls_complete, tool_spec_name,
 )
 
 from tensorfold.cuda import health
@@ -708,13 +708,29 @@ class App:
         the engine has no penalty path (penalties apply under greedy decoding too, as in vLLM)."""
 
         from tensorfold.engine.penalties import Penalties
+        from tensorfold.server.request_options import parse_logit_bias
+        from tensorfold.server.token_routes import _vocab
 
         fields = parse_numbers({k: body[k] for k in PENALTY_FIELDS if body.get(k) is not None})
         value = {k: float(fields.get(k, self.sampling.get(k, off))) for k, off in PENALTY_FIELDS.items()}
-        penalties = Penalties(value["presence_penalty"], value["frequency_penalty"], value["repetition_penalty"])
+        raw_bias = body.get("logit_bias")
+        vocab = None
+        if isinstance(raw_bias, dict) and raw_bias:
+            config = getattr(getattr(self.engine, "target", None), "config", None)
+            if config is None:
+                config = getattr(getattr(self.engine, "w", None), "config", None)
+            vocab = getattr(config, "vocab", None)
+            if type(vocab) is not int or vocab <= 0:
+                vocab = _vocab(self.tok)
+            if type(vocab) is not int or vocab <= 0:
+                raise RequestError("logit_bias requires the model's output vocabulary metadata")
+        bias = parse_logit_bias(raw_bias, vocab)
+        penalties = Penalties(value["presence_penalty"], value["frequency_penalty"], value["repetition_penalty"], bias=bias)
         if not penalties.active:
             return None
         if not applies_penalties(self.engine):
+            if bias:
+                raise RequestError("this model's engine does not apply logit_bias; omit active bias")
             raise RequestError("this model's engine does not apply presence, frequency or repetition penalties: "
                                "send them as 0, 0 and 1 (or omit them)")
         return penalties
@@ -767,9 +783,16 @@ class App:
                             and (prepared.grammar is None or strict is not None)
                             and (strict is not None or not gemma) else None)
             answer_raw = [""]
+            native_starts = tuple(t for t in (self.tok.token_to_id("<|channel>"), self.tok.token_to_id("<|think|>"))
+                                  if t is not None) if gemma else ()
             grammar_state = [None]  # request-owned boundary, independent of producer/rank matcher copies
+            if gemma and prepared.grammar is None:
+                grammar_state[0] = grammar.AnswerBoundary(None, think_end=self.tok.token_to_id(markers[1]),
+                    think_starts=native_starts, thought_open=prepared.thought_open, decode=self.tok.decode,
+                    answer_headers=tuple("<|tool_call>call:" + tool_spec_name(t) + "{" for t in tools))
             forced_close = [None]  # at most one explicit budget event in this logical reply
-            answer_stream = StreamDecoder(self.tok, ends, literal=True) if prepared.grammar is not None else None
+            answer_stream = (StreamDecoder(self.tok, ends, literal=prepared.grammar is not None)
+                             if prepared.grammar is not None or gemma else None)
             answer_fed = [0]
 
             def normal_tool_end() -> bool:
@@ -779,7 +802,7 @@ class App:
                 raw = stream.final() if finished else stream.text
                 # stop strings match the generated text, reasoning included, before it is split (as on the Mac)
                 raw = stops.visible(raw, partial=not finished) if stops.strings else raw
-                if prepared.grammar is not None and grammar_state[0] is not None:
+                if grammar_state[0] is not None:
                     from tensorfold.token_metadata import decode_presentation
                     offset = grammar_state[0].answer_offset
                     if offset is None:
@@ -787,6 +810,14 @@ class App:
                         prefix = (decode_presentation(self.tok, [t for t in out[:pending] if t not in ends])
                                   if pending is not None and not finished else raw)
                         answer = ""
+                        if gemma and not grammar_state[0].opened_thought:
+                            # An ambiguous prefix stays buffered until a real
+                            # close or normal finality proves direct content.
+                            prefix = ""
+                            if finished:
+                                answer_stream.add(out[answer_fed[0]:])
+                                answer_fed[0] = len(out)
+                                answer = answer_stream.final()
                     else:
                         close_at = grammar_state[0].thinking_close_offset
                         prefix_end = close_at if close_at is not None else offset
@@ -794,6 +825,9 @@ class App:
                         answer_stream.add(out[offset + answer_fed[0]:])
                         answer_fed[0] = max(0, len(out) - offset)
                         answer = answer_stream.final() if finished else answer_stream.text
+                    if gemma and prepared.grammar is None and answer:
+                        from tensorfold.server.gemma_values import _clean_controls
+                        answer = _clean_controls(answer, finished=finished)
                     if split_reasoning:
                         if gemma:
                             from tensorfold.server.gemma_values import split_gemma_thinking
@@ -834,6 +868,8 @@ class App:
                 elif tools and prepared.grammar is None:
                     answer = (policy.content(answer, finished=finished) if policy.single
                               else hide_tool_calls(answer, finished=finished))
+                if tools and (prepared.grammar is None or strict is not None):
+                    answer = visible_tool_prose(answer)
                 return reasoning, answer
 
             serving: list[Any] = [None]
@@ -927,6 +963,11 @@ class App:
             shaped = prepared.grammar is not None or prepared.think_budget > 0
             think_end = self.tok.token_to_id(markers[1]) if chat and thinking and shaped else None
             budget = self._think_budget(prepared, think_end)
+            if gemma and grammar_state[0] is not None:
+                if budget is not None:
+                    budget.intent = grammar_state[0]
+                if gate is not None:
+                    gate.intent = grammar_state[0]
             # background: the request's own priority (OpenAI's service_tier "flex" when it sends none), else
             # --name-priority's default for its id; title requests always
             if "priority" in body:
@@ -1004,6 +1045,8 @@ class App:
                     opener = (self.tok.token_to_id(strict.opener) if strict is not None and think_end is not None else None)
                     constraint = self._grammars().constraint(compiled, think_end=think_end, spec=spec,
                         decode=self.tok.decode,
+                        **({"think_starts": native_starts, "thought_open": prepared.thought_open,
+                            "stop_ids": self.engine.eos} if gemma and think_end is not None else {}),
                         **({"answer_start": opener, "answer_opener": strict.opener,
                             "answer_headers": strict.thinking_headers} if opener is not None else {}))
                     if grammar_state[0] is None:
@@ -1140,6 +1183,10 @@ class App:
                         content = shown if calls or shown.strip() else content
                     else:
                         content, calls = answer, None
+                    if tools and (prepared.grammar is None or strict is not None):
+                        if not calls and not content and answer_raw[0].isspace():
+                            content = answer_raw[0]  # restore held model-only whitespace after no-call proof
+                        content = visible_tool_prose(content, calls=bool(calls))
                     # the calls already sent as deltas; the handler sends the rest (a call the streamer could not follow)
                     streamed = calls_stream.index + 1 if calls_stream is not None and calls_stream.streamed else 0
                     if streamed > len(calls or ()):
@@ -1177,6 +1224,7 @@ class App:
                     "prompt_tokens": len(prompt), "completion_tokens": len(out), "cached_tokens": (cached or [0])[0],
                     "reasoning_tokens": (min(len(out), grammar_state[0].answer_offset)
                         if chat and thinking and grammar_state[0] is not None and grammar_state[0].answer_offset is not None
+                        else 0 if gemma and grammar_state[0] is not None and not grammar_state[0].opened_thought
                         else reasoning_count(out, self.tok.token_to_id(markers[1]) if chat and thinking else None)),
                     "stats": stats, "calls_streamed": streamed}
         except BaseException as error:

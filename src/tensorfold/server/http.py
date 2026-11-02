@@ -590,6 +590,11 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                 else:
                     messages = [{"role": "user", "content": self._legacy_prompt_to_text(body.get("prompt", ""))}]
                     tools = []
+                from tensorfold.server.request_options import parse_logit_bias
+
+                if parse_logit_bias(body.get("logit_bias"), token_routes._vocab(getattr(app, "tokenizer", None))):
+                    raise RequestError("logit_bias is applied by supported CUDA engines only; omit active bias "
+                                       "on the Metal backend")
                 if body.get("presence_penalty") or body.get("frequency_penalty") \
                         or body.get("repetition_penalty") not in (None, 1, 1.0):
                     raise RequestError("presence, frequency and repetition penalties are applied by the CUDA engines "

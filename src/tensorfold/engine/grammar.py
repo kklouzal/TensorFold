@@ -249,12 +249,13 @@ class Grammars:
 
     def constraint(self, compiled, *, think_end: int | None = None, spec: Spec | None = None,
                    answer_start: int | None = None, answer_opener: str | None = None,
-                   answer_headers=(), decode=None) -> "Constraint":
+                   answer_headers=(), decode=None, think_starts=(), thought_open=False, stop_ids=()) -> "Constraint":
         """A fresh reply's grammar state; with ``think_end`` (thinking on) it starts at the token after that one."""
 
         c = Constraint(self.xgr, compiled, self.vocab_size, think_end=think_end, answer_start=answer_start,
                        answer_opener=answer_opener, answer_headers=answer_headers,
-                       decode=self.decode if decode is None else decode)
+                       decode=self.decode if decode is None else decode, think_starts=think_starts, thought_open=thought_open,
+                       stop_ids=stop_ids)
         c.spec = spec
         return c
 
@@ -267,8 +268,9 @@ class Grammars:
             kind, end, answer, meta, text = activation_wire(values, self.vocab_size)
             spec = Spec(KINDS[kind], text)
             return self.constraint(self.compile(spec), think_end=end-1 if end else None, spec=spec,
-                                   answer_start=answer-1, answer_opener=meta["opener"],
-                                   answer_headers=meta["headers"])
+                                   answer_start=answer-1 if answer else None, answer_opener=meta["opener"],
+                                   answer_headers=meta["headers"], think_starts=meta.get("starts", ()),
+                                   thought_open=meta.get("opened", False), stop_ids=meta.get("stops", ()))
         if not 0 <= int(values[0]) < len(KINDS):
             raise GrammarError("unknown grammar wire version/kind")
         spec = Spec(KINDS[int(values[0])], bytes(int(v) for v in values[2:]).decode())
@@ -281,14 +283,17 @@ def pack(constraint: "Constraint | None") -> list[int]:
     if constraint is None:
         return []
     spec, end = constraint.spec, constraint.think_end
-    if constraint.answer_start is not None:
-        meta = json.dumps({"opener": constraint.answer_opener, "headers": constraint.answer_headers},
-                          ensure_ascii=False, separators=(",", ":")).encode()
+    if constraint.answer_start is not None or constraint.think_starts or constraint.initial_thought_open:
+        fields = {"opener": constraint.answer_opener, "headers": constraint.answer_headers}
+        if constraint.think_starts or constraint.initial_thought_open:
+            fields.update(starts=constraint.think_starts, opened=constraint.initial_thought_open,
+                          stops=constraint.stop_ids)
+        meta = json.dumps(fields, ensure_ascii=False, separators=(",", ":")).encode()
         text = spec.text.encode()
         if len(meta) + len(text) > MAX_GRAMMAR_BYTES:
             raise GrammarError("grammar activation metadata/source exceeds its 96 MiB wire envelope")
         return [-2, KINDS.index(spec.kind), 0 if end is None else int(end)+1,
-                constraint.answer_start+1, len(meta), *meta, *text]
+                0 if constraint.answer_start is None else constraint.answer_start+1, len(meta), *meta, *text]
     return [KINDS.index(spec.kind), 0 if end is None else int(end) + 1, *spec.text.encode()]
 
 
@@ -298,7 +303,7 @@ def activation_wire(values, vocab):
             or any(type(v) is not int for v in values) or values[0] != -2):
         raise GrammarError("invalid grammar activation wire")
     _, kind, end, answer, size = values[:5]
-    if (kind not in range(len(KINDS)) or not 0 <= end <= vocab or not 0 < answer <= vocab
+    if (kind not in range(len(KINDS)) or not 0 <= end <= vocab or not 0 <= answer <= vocab
             or not 0 < size <= MAX_GRAMMAR_BYTES or 5+size > len(values)
             or any(not 0 <= v <= 255 for v in values[5:])):
         raise GrammarError("invalid grammar activation fields")
@@ -307,12 +312,21 @@ def activation_wire(values, vocab):
         text = bytes(values[5+size:]).decode()
     except (ValueError, TypeError, RecursionError) as exc:
         raise GrammarError("invalid grammar activation UTF8/JSON") from exc
-    if (not isinstance(meta, dict) or set(meta) != {"opener", "headers"}
-            or not isinstance(meta["opener"], str) or not meta["opener"] or len(meta["opener"].encode()) > 256
-            or not isinstance(meta["headers"], list) or not meta["headers"]
-            or any(not isinstance(h, str) or not h.startswith(meta["opener"])
-                   or len(h) <= len(meta["opener"]) for h in meta["headers"])):
+    if not isinstance(meta, dict) or set(meta) not in ({"opener", "headers"}, {"opener", "headers", "starts", "opened", "stops"}):
         raise GrammarError("invalid offered-header activation metadata")
+    if not isinstance(meta["headers"], list):
+        raise GrammarError("invalid offered headers")
+    if answer:
+        if (not isinstance(meta["opener"], str) or not meta["opener"] or len(meta["opener"].encode()) > 256
+                or not meta["headers"] or any(not isinstance(h, str) or not h.startswith(meta["opener"])
+                or len(h) <= len(meta["opener"]) for h in meta["headers"])):
+            raise GrammarError("invalid offered-header activation metadata")
+    elif meta["opener"] is not None or meta["headers"]:
+        raise GrammarError("native thought-only metadata cannot declare a tool header")
+    if "starts" in meta and (not isinstance(meta["starts"], list) or type(meta["opened"]) is not bool
+            or not isinstance(meta["stops"], list) or any(type(t) is not int or not 0 <= t < vocab
+                                                       for t in [*meta["starts"], *meta["stops"]])):
+        raise GrammarError("invalid native thought phase metadata")
     return kind, end, answer, meta, text
 
 
@@ -432,6 +446,7 @@ class _BoundaryStep:
     seed: tuple[int, ...] = ()
     start: int | None = None
     pending: int | None = None
+    opened: bool = False
 
 
 class AnswerBoundary:
@@ -442,9 +457,14 @@ class AnswerBoundary:
     are validated with the selected native grammar before any role promotion.
     """
     def __init__(self, vocab, *, think_end=None, answer_start=None, answer_opener=None,
-                 answer_headers=(), decode=None, prefix_valid=None):
-        self.vocab = int(vocab)
-        if answer_start is not None and (type(answer_start) is not int or not 0 <= answer_start < self.vocab
+                 answer_headers=(), decode=None, prefix_valid=None, think_starts=(), thought_open=False):
+        self.vocab = None if vocab is None else int(vocab)
+        if type(thought_open) is not bool or any(type(t) is not int or t < 0
+                or self.vocab is not None and t >= self.vocab for t in think_starts):
+            raise GrammarError("invalid native thought opener metadata")
+        self.think_starts, self.initial_thought_open = tuple(think_starts), thought_open
+        self.opened_thought = thought_open
+        if answer_start is not None and (type(answer_start) is not int or not 0 <= answer_start or self.vocab is not None and answer_start >= self.vocab
                                          or answer_start == think_end):
             raise GrammarError("invalid grammar answer activation token")
         if answer_start is not None and (not isinstance(answer_opener, str) or not answer_opener
@@ -479,17 +499,35 @@ class AnswerBoundary:
                 return index
         return None
 
-    def _boundary_step(self, token, active, path=()):
+    def _boundary_step(self, token, active, path=(), opened=None):
+        opened = self.opened_thought if opened is None else opened
         if active:
             return _BoundaryStep(True, (token,))
         if token == self.think_end:
+            impossible_direct = (self.think_starts and self._prefix_valid is not None
+                and not self._prefix_valid([*self._thinking_tokens, *path]))
+            if opened or impossible_direct:
+                # Real native close controls reasoning, not Markdown/prose
+                # quoting. Only a confirmed native tool payload stays opaque.
+                from tensorfold.markup_lex import markup_regions
+                text = self.decode([*self._thinking_tokens, *path, token], skip_special_tokens=False)
+                point = len(text) - len(self.think_closer)
+                if not any(r.kind == "call" and r.start <= point < r.end
+                           for r in markup_regions(text, call_headers=self.answer_headers)):
+                    return _BoundaryStep(True)
             if self.decode is None:
                 return _BoundaryStep(True)
             from tensorfold.markup_lex import structural_marker
             text = self.decode([*self._thinking_tokens, *path, token], skip_special_tokens=False)
             if structural_marker(text, self.think_closer, call_headers=self.answer_headers):
                 return _BoundaryStep(True)
-        if self.answer_start is not None and (token == self.answer_start or self.pending_answer_offset is not None
+        if token in self.think_starts and self.decode is not None:
+            from tensorfold.markup_lex import structural_marker
+            text = self.decode([*self._thinking_tokens, *path, token], skip_special_tokens=False)
+            marker = self.decode([token], skip_special_tokens=False)
+            if structural_marker(text, marker, call_headers=self.answer_headers):
+                return _BoundaryStep(False, opened=True)
+        if self.answer_start is not None and (not self.think_starts or opened) and (token == self.answer_start or self.pending_answer_offset is not None
                                               or self.answer_start in path):
             from tensorfold.markup_lex import structural_call_header, pending_call_header
             tokens = [*self._thinking_tokens, *path, token]
@@ -505,6 +543,8 @@ class AnswerBoundary:
         return _BoundaryStep(False)
 
     def _commit_boundary(self, token, step):
+        if step.opened:
+            self.opened_thought = True
         if step.active and not self.active:
             self.thinking_close_offset = self.observed if token == self.think_end and step.start is None else None
             self.answer_offset = (step.start if step.start is not None else
@@ -529,17 +569,32 @@ class AnswerBoundary:
             self._commit_boundary(token, step)
 
     def confirmation_index(self, tokens):
-        """Preview the first actual transition without changing published observer state."""
         if self.active:
             return 0
         path = []
+        opened = self.opened_thought
         for index, value in enumerate(tokens):
             token = int(value)
-            step = self._boundary_step(token, False, path)
+            step = self._boundary_step(token, False, path, opened)
             if step.active and (step.start is None or self._prefix_valid is not None and self._prefix_valid(step.seed)):
                 return index
+            opened = opened or step.opened
             path.append(token)
         return None
+
+    def budget_relevant(self, tokens):
+        if not self.think_starts or self.opened_thought:
+            return True
+        path = []
+        for value in tokens:
+            token = int(value)
+            step = self._boundary_step(token, False, path)
+            if step.opened:
+                return True
+            path.append(token)
+        # A viable direct answer is not invented thinking. An impossible direct
+        # prefix can only complete through the real-close alternative.
+        return self._prefix_valid is not None and not self._prefix_valid([*self._thinking_tokens, *path])
 
     def force_think_close(self, token):
         if self.active or int(token) != self.think_end:
@@ -556,11 +611,17 @@ class Constraint(AnswerBoundary):
 
     def __init__(self, xgr, compiled, vocab_size: int, *, think_end: int | None = None,
                  answer_start: int | None = None, answer_opener: str | None = None,
-                 answer_headers=(), decode=None) -> None:
+                 answer_headers=(), decode=None, think_starts=(), thought_open=False, stop_ids=()) -> None:
         self.xgr, self.compiled = xgr, compiled
         self.m = xgr.GrammarMatcher(compiled)
         super().__init__(vocab_size, think_end=think_end, answer_start=answer_start,
-                         answer_opener=answer_opener, answer_headers=answer_headers, decode=decode)
+                         answer_opener=answer_opener, answer_headers=answer_headers, decode=decode,
+                         think_starts=think_starts, thought_open=thought_open)
+        self.stop_ids = tuple(stop_ids)
+        self.direct_m = (xgr.GrammarMatcher(compiled) if think_starts and not thought_open and think_end is not None else None)
+        self.direct_valid = self.direct_m is not None
+        if self.direct_m is not None and (not self.stop_ids or any(type(t) is not int or not 0 <= t < self.vocab for t in self.stop_ids)):
+            raise GrammarError("native composite grammar requires the actual engine stop IDs")
         self.words = (self.vocab + 31) // 32
         self.spec: Spec | None = None                 # what ``pack`` sends another rank
         self._shifts: dict[Any, Any] = {}
@@ -572,7 +633,8 @@ class Constraint(AnswerBoundary):
 
         again = Constraint(self.xgr, self.compiled, self.vocab, think_end=self.think_end,
                            answer_start=self.answer_start, answer_opener=self.answer_opener,
-                           answer_headers=self.answer_headers, decode=self.decode)
+                           answer_headers=self.answer_headers, decode=self.decode, think_starts=self.think_starts,
+                           thought_open=self.initial_thought_open, stop_ids=self.stop_ids)
         again.spec = self.spec
         return again
 
@@ -583,7 +645,8 @@ class Constraint(AnswerBoundary):
             return all(matcher.accept_token(int(token)) for token in tokens)
         return AnswerBoundary(self.vocab, think_end=self.think_end, answer_start=self.answer_start,
                               answer_opener=self.answer_opener, answer_headers=self.answer_headers,
-                              decode=self.decode, prefix_valid=prefix_valid)
+                              decode=self.decode, prefix_valid=prefix_valid, think_starts=self.think_starts,
+                              thought_open=self.initial_thought_open)
 
     def retire_device_staging(self) -> None:
         """Retire disposable mask/DMA storage on its serialized model coordinator.
@@ -608,7 +671,8 @@ class Constraint(AnswerBoundary):
     def finished(self) -> bool:
         """The grammar has taken its stop token: the reply is complete."""
 
-        return self.active and self.m.is_terminated()
+        return (self.active and self.m.is_terminated() or
+                self.direct_valid and self.direct_m is not None and self.direct_m.is_terminated())
 
     def window(self, tokens: Sequence[int], parents: Sequence[int]) -> Window:
         """The rows an accepted path can use (row 0 the pending token, parents first), each constrained row's bits."""
@@ -623,7 +687,7 @@ class Constraint(AnswerBoundary):
     def _window(self, tokens: list[int], parents: list[int]) -> Window:
         import numpy as np                            # xgrammar fills any DLPack array: one bitmask for torch and MLX
 
-        if self.finished or (not self.active
+        if self.finished or (not self.active and self.direct_m is None
                              and self.pending_answer_offset is None
                              and self.think_end not in tokens[1:] and self.answer_start not in tokens[1:]):
             return Window(tokens, parents)            # the reply has ended, or no row reaches the grammar
@@ -638,24 +702,34 @@ class Constraint(AnswerBoundary):
 
         path = []
 
-        def visit(r: int, active: bool) -> None:
+        def visit(r: int, active: bool, direct_valid: bool, opened: bool) -> None:
             if active:
                 m.fill_next_token_bitmask(bits, r)
                 filled.append(r)
+            elif self.direct_m is not None and not opened and not (direct_valid and self.direct_m.is_completed()):
+                # Union language: free prefix can still reach REAL close+schema,
+                # but EOS cannot certify invalid direct output as a success.
+                unsigned = bits.view(np.uint32)
+                for eos in self.stop_ids:
+                    unsigned[r, eos // 32] &= np.uint32(0xffffffff ^ (1 << (eos % 32)))
+                filled.append(r)
             for c in children[r]:
-                step, consumed, valid = self._transition(tokens[c], active, path)
+                step, consumed, valid, next_direct, direct_count = self._transition(tokens[c], active, path, direct_valid, opened)
                 if valid:
-                    if not (step.active and m.is_terminated()):
+                    ended = (step.active and m.is_terminated()) or (self.direct_m is not None and tokens[c] in self.stop_ids)
+                    if not ended:
                         kept[c] = True
                         if not step.active:
                             path.append(tokens[c])
-                        visit(c, step.active)
+                        visit(c, step.active, next_direct, opened or step.opened)
                         if not step.active:
                             path.pop()
                     if consumed:
                         m.rollback(consumed)
+                    if direct_count:
+                        self.direct_m.rollback(direct_count)
 
-        visit(0, self.active)
+        visit(0, self.active, self.direct_valid, self.opened_thought)
         index = [r for r in range(n) if kept[r]]
         new = {r: i for i, r in enumerate(index)}
         window = Window([tokens[r] for r in index], [-1] + [new[parents[r]] for r in index[1:]])
@@ -724,18 +798,27 @@ class Constraint(AnswerBoundary):
             rows[index] = rows[index].masked_fill(~allowed, float("-inf"))
         return logits
 
-    def _transition(self, token: int, active: bool, path=()):
-        step = self._boundary_step(token, active, path)
+    def _transition(self, token: int, active: bool, path=(), direct_valid=None, opened=None):
+        direct_valid = self.direct_valid if direct_valid is None else direct_valid
+        opened = self.opened_thought if opened is None else opened
+        step = self._boundary_step(token, active, path, opened)
+        if not active and self.direct_m is not None and token == self.think_end and not direct_valid:
+            step = _BoundaryStep(True)
         consumed = 0
         for value in step.seed:
             if not self.m.accept_token(value):
                 if consumed:
                     self.m.rollback(consumed)
                 if step.start is not None:
-                    return _BoundaryStep(False), 0, True
-                return step, 0, False
+                    return _BoundaryStep(False), 0, True, False, 0
+                return step, 0, False, direct_valid, 0
             consumed += 1
-        return step, consumed, True
+        direct_count = 0
+        next_direct = direct_valid and not step.active and not step.opened
+        if next_direct and self.direct_m is not None:
+            next_direct = bool(self.direct_m.accept_token(token))
+            direct_count = int(next_direct)
+        return step, consumed, True, next_direct, direct_count
 
     def advance(self, tokens: Sequence[int]) -> None:
         """Follow actual chosen tokens; free thinking ends only by close or the declared tool opener."""
@@ -743,9 +826,10 @@ class Constraint(AnswerBoundary):
             for token in tokens:
                 if self.finished:
                     return
-                step, _, valid = self._transition(int(token), self.active)
+                step, _, valid, next_direct, _ = self._transition(int(token), self.active)
                 if not valid:
                     raise GrammarError(f"the reply's grammar rejected chosen token {int(token)}")
+                self.direct_valid = next_direct
                 self._commit_boundary(int(token), step)
         except GrammarError:
             raise

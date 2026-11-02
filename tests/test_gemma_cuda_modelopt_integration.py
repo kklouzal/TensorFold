@@ -55,8 +55,8 @@ def _capacity_boundary(monkeypatch, *, uma):
     monkeypatch.setattr(capacity, 'expert_workspace', lambda *a: 12345)
     def admitted(directory, context, explicit, runtime, geometry, rule, **kwargs):
         weight, host = kwargs['weight_estimator'](directory)
-        return SimpleNamespace(weight=weight, host=host, geometry=geometry,
-                               sampling=(kwargs['device_workspace_bytes'], kwargs['host_workspace_bytes']))
+        return dict(weight=weight, host=host, geometry=geometry,
+                    sampling=(kwargs['device_workspace_bytes'], kwargs['host_workspace_bytes']))
     monkeypatch.setattr(common, 'admit', admitted)
     return observed
 
@@ -65,10 +65,14 @@ def _capacity_boundary(monkeypatch, *, uma):
 def test_mixed_storage_bounds_and_no_double_uma_host_charge(monkeypatch, tmp_path, uma, staging):
     observed = _capacity_boundary(monkeypatch, uma=uma)
     result = capacity.admit(tmp_path, 128, True, max_rows=1)
-    assert (result.weight.resident, result.weight.staging, result.host) == (1000, staging, 300)
+    assert (result['weight'].resident, result['weight'].staging, result['host']) == (1000, staging, 300)
     assert observed == [300]
-    assert result.sampling == (0, 0)  # native serial sampler; no rejection q/p owners
-    assert result.geometry.needed(128) > 12345
+    vocab = Config.from_dict(raw_modelopt()).vocab
+    assert result['sampling'] == (result['logit_bias_workspace']['device_bytes'],
+                                  result['logit_bias_workspace']['host_bytes'])
+    assert result['sampling'][0] == 16 * vocab  # R1 bias copies/gather; no rejection q/p owners
+    assert result['sampling'][1] >= 12 * vocab
+    assert result['geometry'].needed(128) > 12345
 
 
 def test_host_cgroup_refusal_precedes_device_admission(monkeypatch, tmp_path):

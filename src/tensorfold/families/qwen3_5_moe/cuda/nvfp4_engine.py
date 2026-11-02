@@ -94,6 +94,10 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
                   else {"device_bytes": 0, "host_bytes": 0})
         self.rejection_workspace = {key: target_workspace[key] + max(proposals[key], copies[key])
                                     for key in ("device_bytes", "host_bytes")}
+        from tensorfold.engine.penalties import bias_workspace
+        bias = bias_workspace(rows, text["vocab_size"], streams=streams)
+        for key in self.rejection_workspace:
+            self.rejection_workspace[key] += bias[key]
         self.chat_template = prepare_chat_template(model_dir, template_file=chat_template_file,
                                                    template_name=chat_template_name)
         torch.cuda.set_device(0)
@@ -168,6 +172,7 @@ class QwenNvfp4MoeEngine(Qwen27Engine):
             **({"context_limit": yarn.context_limit, "original_context": yarn.native_context} if yarn is not None
                else {}))
         self.context_window = self.capacity_plan["context_window"]
+        self.capacity_plan["logit_bias_workspace"] = bias
         if draft_config is not None and self.context_window > draft_config.rope.context_limit:
             raise ValueError("target context exceeds this DFlash checkpoint's declared rotary context "
                              f"({draft_config.rope.context_limit}): lower --context, or serve without the drafter "

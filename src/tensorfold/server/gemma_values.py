@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 from bisect import bisect_right
+from dataclasses import replace
 import math
 import re
 from typing import Any
@@ -196,12 +197,72 @@ def split_gemma_thinking(text: str, *, finished: bool, opened: bool = False,
     if (finished and not opened and not reasoning_only and initial.startswith('<|channel>')
             and THOUGHT_OPEN.startswith(initial)):
         return '', text[:len(text) - len(initial)]
-    regions = markup_regions(text, finished=finished)
-    starts = {region.start: region for region in regions}
-    protected = [(region.start, region.end) for region in regions]
-    def outside(position):
-        return not any(start <= position < end for start, end in protected)
-    closes = [m.start() for m in re.finditer(re.escape(THOUGHT_CLOSE), text) if outside(m.start())]
+    def call_payload(region):
+        if region.kind != 'call':
+            return None
+        raw_body = text[region.payload_start:region.payload_end]
+        body = raw_body.lstrip()
+        body_start = region.payload_start + len(raw_body) - len(body)
+        if not region.complete and not finished:
+            repeat, repeat_prefix = body, region.opener
+            if region.opener.lower() == '<tool_call>':
+                repeat, repeat_prefix = repeat.lower(), repeat_prefix.lower()
+            pending_header = not body or repeat_prefix.startswith(repeat)
+            if region.opener == GEMMA_OPEN:
+                pending_header = (pending_header or 'call:'.startswith(body) or ':'.startswith(body)
+                                  or re.fullmatch(r'(?:call)?:[\w.-]*\s*', body) is not None)
+            elif region.opener == '<｜DSML｜tool_calls>':
+                lead = '<｜DSML｜invoke name="'
+                pending_header = (pending_header or lead.startswith(body)
+                                  or re.fullmatch(r'<｜DSML｜invoke name="[^"<>]*', body) is not None)
+            else:
+                pending_header = (pending_header or '<function='.startswith(body.lower())
+                                  or re.fullmatch(r'<function=[^<>\s]*', body, re.IGNORECASE) is not None)
+            if pending_header:
+                # A bare opener can still acquire a wrapped/named payload.
+                # Publishing it as thought now would retract on the next delta.
+                return region.start, region.end
+        if body.startswith(('{', '[')):
+            try:
+                value, end = json.JSONDecoder().raw_decode(body)
+            except ValueError:
+                # A partial wrapped call may still acquire its name/arguments;
+                # hold it while ambiguous, never retroactively move sent data.
+                return (region.start, region.end) if not region.complete and not finished else None
+            pending = [value]
+            while pending:
+                item = pending.pop()
+                if isinstance(item, list):
+                    pending.extend(item)
+                elif isinstance(item, dict):
+                    function = item.get('function')
+                    named = (function.get('name') or function.get('tool') or function.get('function')
+                             if isinstance(function, dict) else
+                             item.get('name') or item.get('tool') or function or item.get('call'))
+                    if named:
+                        return body_start, body_start + end
+            return None
+        if region.opener == GEMMA_OPEN:
+            actual = re.match(r'(?:call)?:[\w.-]+\s*\{', body) is not None
+        elif region.opener == '<｜DSML｜tool_calls>':
+            actual = re.match(r'<｜DSML｜invoke name="[^"]+">', body) is not None
+        else:
+            actual = re.match(r'<function=[^>\s]+>', body, re.IGNORECASE) is not None
+        return (region.start, region.end) if actual else None
+
+    def scan(start):
+        regions = [replace(region, start=region.start + start, end=region.end + start,
+                           payload_start=region.payload_start + start, payload_end=region.payload_end + start)
+                   for region in markup_regions(text[start:], finished=finished)]
+        # Ordinary quotes/Markdown in a proved thought cannot consume native101.
+        # Real call payloads retain their independent quoted-data boundaries.
+        payloads = [payload for region in regions if (payload := call_payload(region)) is not None]
+        closes = [match.start() for match in re.finditer(re.escape(THOUGHT_CLOSE), text[start:])]
+        closes = [position + start for position in closes
+                  if not any(left <= position + start < right for left, right in payloads)]
+        return {region.start: region for region in regions}, closes
+
+    starts, closes = scan(0)
     reason, answer, pending = [], [], []
     mode = 'reason' if opened or reasoning_only else 'answer'
     unframed = expect_thinking and mode == 'answer'
@@ -216,6 +277,22 @@ def split_gemma_thinking(text: str, *, finished: bool, opened: bool = False,
     while at < len(text):
         region = starts.get(at)
         if region is not None:
+            if mode == 'reason':
+                payload = call_payload(region)
+                close = text.find(THOUGHT_CLOSE, at, region.end)
+                while close >= 0 and payload is not None and payload[0] <= close < payload[1]:
+                    close = text.find(THOUGHT_CLOSE, close + len(THOUGHT_CLOSE), region.end)
+                if close >= 0:
+                    emit(text[at:close])
+                    at = close
+                    continue
+                if payload is None:
+                    held = _partial_tag(text[at:region.end], THOUGHT_CLOSE) if not finished else 0
+                    emit(text[at:region.end - held])
+                    at = region.end
+                    if held:
+                        break
+                    continue
             if region.kind == 'call' and not reasoning_only and (mode != 'answer' or unframed):
                 later_close = any(position >= region.end for position in closes)
                 if not later_close and finished and region.complete:
@@ -263,6 +340,9 @@ def split_gemma_thinking(text: str, *, finished: bool, opened: bool = False,
             at += len(THOUGHT_CLOSE)
             while at < len(text) and text[at] in '\r\n':
                 at += 1
+            # Thought Markdown/quotes do not carry into the answer's own
+            # independent lexical phase after a real native close.
+            starts, closes = scan(at)
             continue
         if text.startswith('</think>', at):
             line = text.rfind('\n', 0, at) + 1

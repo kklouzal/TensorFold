@@ -228,6 +228,8 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
                 if draft is not None or spark is not None else {"device_bytes": 0, "host_bytes": 0})
     proposals = (chain_workspace(max_rows - 1, cfg.vocab, streams=streams, penalized=True)
                  if draft is not None or spark is not None else {"device_bytes": 0, "host_bytes": 0})
+    from tensorfold.engine.penalties import bias_workspace
+    bias = bias_workspace(max_rows, cfg.vocab, streams=streams)
 
     q_extra = {"device_bytes": 0, "host_bytes": 0}
     retained_q = 0
@@ -285,9 +287,11 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
     result = common(model_dir, context, context_explicit, torch, Geometry(geometry, 0, maximum_slots=131072 if spark_global_gqa else None),
                   lambda name, info: (0, 0),
                   weight_estimator=lambda _: (Weights(resident, staging), host_staging),
-                  device_workspace_bytes=sampling["device_bytes"] + proposals["device_bytes"] + q_extra["device_bytes"],
+                  device_workspace_bytes=sampling["device_bytes"] + proposals["device_bytes"]
+                                         + q_extra["device_bytes"] + bias["device_bytes"],
                   host_workspace_bytes=sampling["host_bytes"] + proposals["host_bytes"]
-                                       + q_extra["host_bytes"] + retained_q)
+                                       + q_extra["host_bytes"] + retained_q + bias["host_bytes"])
+    result['logit_bias_workspace'] = bias
 
     if lossless_head:
         result['lossless_head'] = bounds['lossless_head']

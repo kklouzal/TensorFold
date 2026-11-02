@@ -115,6 +115,7 @@ def admit(model_dir, cfg, context, explicit, torch, draft_dir, max_rows, media, 
     from tensorfold.cuda.capacity import Geometry, Weights, admit as common, headers, itemsize
     from tensorfold.cuda.sampling import effective_workspace
     from tensorfold.cuda.speculative import chain_workspace
+    from tensorfold.engine.penalties import bias_workspace
 
     if packed_storage is None:
         entries = headers(model_dir)
@@ -130,6 +131,7 @@ def admit(model_dir, cfg, context, explicit, torch, draft_dir, max_rows, media, 
         draft_bytes, draft_peak = draft.memory_bytes(drafter_bits)
     sampling = effective_workspace(max_rows, cfg.vocab, top_k=0) if draft else {"device_bytes": 0, "host_bytes": 0}
     proposal = chain_workspace(max_rows - 1, cfg.vocab, streams=1, penalized=True) if draft else {"device_bytes": 0, "host_bytes": 0}
+    bias = bias_workspace(max_rows, cfg.vocab)
     retained_q = 0
     if assistant_sampled_q:
         if kind != "assistant":
@@ -194,12 +196,14 @@ def admit(model_dir, cfg, context, explicit, torch, draft_dir, max_rows, media, 
         # Check actual current cgroup/physical allowance before placeholders.
         # This is an admission check, not another UMA charge/reservation.
         admit_host_commitment(host_loading)
-    return common(
+    result = common(
         model_dir, context, explicit, torch, Geometry(geometry, 0), lambda _name, _info: (0, 0),
         weight_estimator=lambda _: (Weights(resident, max(0, peak - resident)),
                                      host_loading),
-        device_workspace_bytes=sampling["device_bytes"] + proposal["device_bytes"],
-        host_workspace_bytes=sampling["host_bytes"] + proposal["host_bytes"] + retained_q)
+        device_workspace_bytes=sampling["device_bytes"] + proposal["device_bytes"] + bias["device_bytes"],
+        host_workspace_bytes=sampling["host_bytes"] + proposal["host_bytes"] + retained_q + bias["host_bytes"])
+    result["logit_bias_workspace"] = bias
+    return result
 
 
 class E2BEngine(Gemma4Engine):

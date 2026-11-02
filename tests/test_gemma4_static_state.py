@@ -163,14 +163,20 @@ def test_static_admission_uses_live_recording_and_compact_prefix_restore_owner_b
     cfg=E2BConfig.from_dict(e4b_config())
     monkeypatch.setattr(capacity,"headers",lambda _: {"fake":{"shape":[1],"dtype":"BF16"}})
     geometry=[]
+    bias_charges=[]
 
     def admitted(*args,**kwargs):
         geometry.append(args[4])
+        bias_charges.append((kwargs["device_workspace_bytes"],kwargs["host_workspace_bytes"]))
         return {"context_window":131072}
 
     monkeypatch.setattr(capacity,"admit",admitted)
-    e2b_engine.admit(tmp_path,cfg,131072,True,torch,None,1,False)
-    e2b_engine.admit(tmp_path,cfg,131072,True,torch,None,1,False,full_static_cache=True)
+    normal=e2b_engine.admit(tmp_path,cfg,131072,True,torch,None,1,False)
+    held=e2b_engine.admit(tmp_path,cfg,131072,True,torch,None,1,False,full_static_cache=True)
+    assert normal["logit_bias_workspace"] == held["logit_bias_workspace"]
+    assert bias_charges == [(normal["logit_bias_workspace"]["device_bytes"],
+                             normal["logit_bias_workspace"]["host_bytes"])]*2
+    assert bias_charges[0][0] == 16*cfg.vocab and bias_charges[0][1] >= 12*cfg.vocab
     dynamic,static=geometry
     # Default reserves live511+prefill512 rows for every snapshot. Static
     # snapshots hold committed511 only, plus ONE prepared511-row restore owner.
