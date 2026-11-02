@@ -253,8 +253,20 @@ counter/idle/recovery check passed after cutover. A synthetic ignore-EOS request
 completed 131,056 prompt tokens plus sixteen outputs in 142.93 seconds; this is
 capacity evidence, not retrieval quality or representative throughput. The short
 SSE cancellation diagnostic completed generation before cancellation-counter
-publication and remains inconclusive. The independent bounded target-row probe
-is a separate gate.
+publication and remains inconclusive. The independent installed-image target-row
+probe passed all seventy eager/graph versus serial comparisons at widths one
+through five, with prefixes spanning the 1,024-token main window and 2,048-token
+drafter window. Hidden states, logits, taps, logical KV and selected probability
+bytes matched. Five bounded greedy/sample/cache requests also passed for the
+actual private FP8 drafter at depth four; this is not a performance comparison.
+
+Fourteen directed production regressions passed for native channel-close token
+101 after backticks, plain/SSE identity, never-opened thought content with plain,
+tool and strict-schema requests, active logit bias/cache restoration, and strict
+or ordinary required tools. The tools/backtick fixture needed 839 generated
+tokens before its natural close: its legacy 700-token run remains recorded as
+budget-limited, while the same assertions passed in the normal 4,096-token reply
+envelope. No server thinking setting or checkpoint was changed to force a close.
 
 The [operational receipt](../../deploy/gb10/deployment-gemma4-aeon26b-20261102.json)
 records exact images, source/configuration identities, checks and remaining

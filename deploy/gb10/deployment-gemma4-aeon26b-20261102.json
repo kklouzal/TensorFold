@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "status": "production-healthy; bounded row-law qualification pending",
-  "utc": "2026-11-02T20:30:54.421263+00:00",
+  "status": "production-validated",
+  "utc": "2026-11-02T20:41:35.781101+00:00",
   "host": "GB10 / SM 12.1 / native Linux ARM64",
   "endpoint": "http://192.168.1.50:8888/v1",
   "container_name": "gemma4-26b-a4b-tf",
@@ -126,10 +126,70 @@
       "gate_wall_seconds": 142.93,
       "result": "Passed execution capacity; not retrieval quality or representative throughput."
     },
-    "row_law": "Pending independent bounded shipping DF8/depth4 worker.",
+    "row_law": {
+      "status": "passed",
+      "image": "sha256:f6dd4c440a25d8edc20b3dd03e088b9cecc6cf2f9a80159e3e9329fc1931f75a",
+      "source_uid": "6f3e809fc52a0d4610054f45ce1e777548b6486c1a5316570925965914348a80",
+      "prefixes": [
+        25,
+        1023,
+        1024,
+        1025,
+        2047,
+        2048,
+        2049
+      ],
+      "widths": [
+        1,
+        2,
+        3,
+        4,
+        5
+      ],
+      "modes": [
+        "eager",
+        "graph"
+      ],
+      "serial_comparisons": 70,
+      "fields": "Exact hidden states, complete logits, six target taps, logical KV and represented production/full-support selected probabilities.",
+      "generation_checks": [
+        "greedy-serial",
+        "greedy-draft",
+        "greedy-replay",
+        "sampled-draft",
+        "sampled-replay"
+      ],
+      "generation_contract": "Five bounded 32-token ignore-EOS requests; greedy serial/draft/replay identity and sampled own-cache replay, with positive DF8 proposals. No acceptance threshold or sampled serial identity claim.",
+      "wall_seconds": 191.58693981502438,
+      "worker_exit_code": 0,
+      "retirement_complete": true,
+      "scope": "Shipping raw BF16 CT target plus private FP8 DFlash depth4 at selected short/SWA1024/DF2048 boundaries; no 64k row-law or global quality/performance claim."
+    },
     "media_scope": "Native image/video Chat and Responses execution and storage passed; no general semantic-quality claim.",
     "native_262144": "Not exercised in this pivot; configured 131072 window preserved.",
-    "performance_scope": "No new optimization sweep or cross-model speed selection. Qualification timings retain their actual workloads and cache state."
+    "performance_scope": "No new optimization sweep or cross-model speed selection. Qualification timings retain their actual workloads and cache state.",
+    "reasoning_regressions": {
+      "status": "passed",
+      "recorded_cases": 14,
+      "http_requests": 15,
+      "coverage": [
+        "Native token101 hard-close after backticks, plain and tools",
+        "Exact plain/SSE reasoning, answer and token identities",
+        "Never-opened thought: plain, tools and strict schema retain content",
+        "Active negative bias and unbiased-cache restoration",
+        "Strict and non-strict required tools; no whitespace-only companion content"
+      ],
+      "normal_reply_envelope": 4096,
+      "tools_backtick_completion_tokens": 839,
+      "legacy_700_token_observation": "The tools variant reached its 700-token length limit entirely in reasoning, with no native close; retained as budget-limited, not a channel-leakage failure. The unchanged assertions passed when given the selected normal 4096-token envelope.",
+      "wall_seconds": 22.994342432008125
+    },
+    "remaining_limits": [
+      "Native 262144-token window not exercised; deployed window remains 131072.",
+      "Image/video execution is verified; general semantic media quality is not assessed.",
+      "The short SSE cancellation-counter fixture was inconclusive because its full generation completed; observed-running nonstream cancellation/idle/recovery passed.",
+      "No matched cross-model performance selection or new optimization sweep."
+    ]
   },
   "rollback": {
     "container_id": "964141bf03abc30f62522961bea33fc7b24ba959f01ef2a283ec78ec7a1d99a8",
@@ -146,6 +206,11 @@
     "qa-live-v3/summary.json": "81df80a66dc7ab26b86587ce5c7238179f8b0d6bf7a07974fe14ce82d0e23b33",
     "post-cutover-aliases.json": "8cd16a4c11ad96100298ea8e29ec9784201c7044aaacdf3fe28cbf5bf90b375d",
     "production-disconnect-v1/summary.json": "fe570352b1497a5bf169076926a792ecf9da5b017c1366f87ec5a335f5af7314",
-    "production-capacity-v1/summary.json": "c17f115ad5f2ccb92b55caae1d00b228f54f1b91db8ee381cf1208b8afbc26ea"
-  }
+    "production-capacity-v1/summary.json": "c17f115ad5f2ccb92b55caae1d00b228f54f1b91db8ee381cf1208b8afbc26ea",
+    "rowlaw-worker-v1/operator/result.json": "7b842d27883513c766f1d4512f2859a2b8b3294f19fcdf122d732624182a7cd5",
+    "rowlaw-worker-v1/execution.json": "1425b2eae43f2c9e19073b347021cd89126a40a49d23d357ed1ca795f12b8ee0",
+    "reasoning-regressions-v2/summary.json": "094949fa768061f4056b7e61cd15baf8bb235c5c8f16c16264cfb3a7aae44704"
+  },
+  "source_checkpoint": "176250bfcb023814d07e3073b0b2245fe081ee8c",
+  "current_runtime_source_matches_immutable_capture": true
 }
