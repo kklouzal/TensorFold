@@ -76,11 +76,16 @@ with default off. The latest SDK capture, source UID `4bf0ba0a…`
 It performs lossless runtime storage preparation, not checkpoint quantization.
 Production image `1d53fa83` was retained while the replacement's gates were pending.
 
-The requested AEON compressed-tensors replacement keeps its original exact BF16
+The AEON compressed-tensors baseline keeps its original exact BF16
 embedding/output head. Its head exceeds the Sym8 raw-pool format limit and would
 expand by at least 408 MiB, so that codec is not selected for this checkpoint.
 Original CT calibrated attention/shared-MLP/expert arithmetic and BF16 routers
 and vision remain intact. Existing ModelOpt lossless support is unchanged.
+The separate `--delta4-head` flag now activates the existing lossless Delta4
+table on Gemma CT NVFP4 MoE CUDA, at fixed reuse16 and default off. It is mutually
+exclusive with ModelOpt's `--lossless-head`. The owner accepted the observed
+decode/CPU-startup tradeoff and authorized deployment; this is not a claim of
+independent confirmation or a completed cutover.
 See the [AEON validation scope](docs/recipes/gemma-4-26b-modelopt.md#aeon-compressed-tensors-replacement-under-validation).
 
 ModelOpt MoE source admits an explicitly supplied DFlash companion with normal
@@ -938,7 +943,8 @@ Caps bound owner counts, not arbitrary total payload bytes. Generated token buff
 | `--execution-profile-manifest FILE` | Opt-in GGUF SM70 content/runtime binding and verified execution-profile receipts. Hashes actual inputs once; normal startup does not do this work. See the [manifest contract](docs/execution-profile-manifest.md). |
 | `--no-drafts` | Off; opt in to the same-engine serial reference. |
 | `--drafter auto\|none\|MODEL` | `auto`: a supported family drafter when already pulled. Dense Qwen CUDA needs the drafter pulled or explicit `--no-drafts`. |
-| `--drafter-bits N` | MLX default `4`, with `0` retaining BF16 draft linears. CUDA Qwen CT NVFP4 defaults to BF16 (`0` or `16`); explicit `8` (FP8) or `4` (NVFP4) requantizes draft linears and copies a floating target head, for proposals only. Qwen borrows a checkpoint's quantized target head without another copy. CUDA Gemma4 DFlash takes `16` (BF16, default), or `8` only with a BF16 tied target head: private FP8 copies of its companion projections and head. Gemma FP8 prepares its selected prompt and lane providers during initialization after validating those copies; build failures abort startup. Gemma affine checkpoints with a quantized tied head retain `16`. Target verification preserves reply semantics. A CUDA engine with one draft precision refuses the flag. |
+| `--drafter-bits N` | MLX default `4`, with `0` retaining BF16 draft linears. CUDA Qwen CT NVFP4 defaults to BF16 (`0` or `16`); explicit `8` (FP8) or `4` (NVFP4) requantizes draft linears and copies a floating target head, for proposals only. Qwen borrows a checkpoint's quantized target head without another copy. CUDA Gemma4 DFlash takes `16` (BF16, default), or `8` with an original or losslessly packed BF16 tied target head: private FP8 copies of its companion projections and head. Gemma FP8 prepares its selected prompt and lane providers during initialization after validating those copies; build failures abort startup. Gemma affine checkpoints with a quantized tied head retain `16`. Target verification preserves reply semantics. A CUDA engine with one draft precision refuses the flag. |
+| `--delta4-head` | Gemma CT NVFP4 MoE on CUDA only: lossless tied BF16 Delta4 storage using fixed reuse16, default off. Preserves the existing drafter/vision/template/context selections. Cannot combine with ModelOpt's separate `--lossless-head`; no graph, clipping or cache candidate is enabled. |
 | `--draft-rows N` | CUDA Gemma4 MoE with DFlash: 2–128 rows, default 16, with `--parallel 1`. E2B DFlash2: 2–8 rows, default 8, one lane; [correctness baseline and validation scope](docs/recipes/gemma-4-e2b.md). CUDA Qwen CT NVFP4: unset uses the secondary's metadata block width. With a secondary, explicit width is 2–128 on one stream, at most 16 with `--parallel`; without one, width 1 is also valid. |
 | `--mtp-drafts N` | Family-specific; Flash Next defaults to 3 on MLX and up to 6 on CUDA. Startup 0 retains legacy structural-disable behavior under `auto`; explicit `--draft-method mtp` requires a positive allocated maximum. Adaptive runtime `proposal_limit: 0` keeps enabled MTP warm. |
 | `--mtp-confidence P` | Flash Next CUDA default `0.70`; range 0–1, stops later low-confidence drafts. |
@@ -1518,10 +1524,10 @@ sampling per thinking mode, depths and the per-prompt request schedule); the KL 
   across graph reconstruction. Full outputs, proposal counters, cache hits, transition costs and process
   memory are recorded. The target-only head screen does not select a winner; fixed 256-token ignore-EOS
   results require separate normal-EOS validation before promotion.
-- The CT Gemma constructor also has a default-off `delta4_head` investigation with bounded
-  `delta4_reuse=1/2/4/8/16`. One owned lossless BF16 table supplies raw embedding lookup and the original
+- The CT Gemma constructor has a default-off `delta4_head` path with bounded internal
+  `delta4_reuse=1/2/4/8/16`; public `--delta4-head` uses fixed16. One owned lossless BF16 table supplies raw embedding lookup and the original
   ordered vocabulary projection; the DFlash FP8 copy still comes from unscaled original rows. This is
-  not a public CLI selection or a production winner. Header admission reserves worst-case escapes and
+  an explicit CT MoE CUDA CLI option, separate from ModelOpt Sym8. Header admission reserves worst-case escapes and
   CPU/upload overlap, while the loader reports actual packed bytes and retains no raw GPU table.
   The immutable GB10 `f913d5f0` capture passed installed CPU, native word/lookup/tiling/FP8/graph,
   isolated failure, and same-image full-model equivalence gates. Recorded process CUDA allocation

@@ -2,9 +2,13 @@
 
 ## Experimental Delta4 tied-table integration
 
-The new CT-only constructor investigation is default-off (`delta4_head=False`),
-with an explicit bounded `delta4_reuse` choice1/2/4/8/16. It is not a public
-CLI/default selection, an alternative activation precision, or a production
+The CT-only path is default-off (`delta4_head=False`), with bounded internal
+`delta4_reuse` choice1/2/4/8/16. Public `--delta4-head` activates the existing path
+at fixed reuse16 on Gemma CT NVFP4 MoE CUDA; it does not select an alternative
+activation precision. The owner accepted the observed decode/CPU-startup tradeoff
+and authorized deployment without making independent confirmation a prerequisite.
+CLI wiring leaves backend math unchanged; new-image public CLI/API verification
+and the actual cutover remain executor gates. This is not a global performance
 winner. The existing raw R16 CT path and ModelOpt/Sym8 investigation remain
 separate and unchanged by default.
 

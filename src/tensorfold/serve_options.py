@@ -123,6 +123,9 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
     """Refuse KV cache, draft rule, image, tokenizer, share, slot and precision options the backend or family can't
     serve."""
 
+    if getattr(args, 'delta4_head', False) and getattr(args, 'lossless_head', False):
+        raise ValueError('--delta4-head and --lossless-head are mutually exclusive')
+
     if getattr(args, "max_pending_requests_per_principal", None) is not None and backend != "cuda":
         raise ValueError("--max-pending-requests-per-principal currently requires the CUDA server")
     family_manifest = getattr(args, "family_manifest", None)
@@ -368,6 +371,7 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
                          "the flag")
     head_config = None
     for option, capability in (("lossless_head", "CUDA_LOSSLESS_HEAD"),
+                               ("delta4_head", "CUDA_DELTA4_HEAD"),
                                ("spark_global_gqa", "CUDA_SPARK_GLOBAL_GQA"),
                                ("spark_sampled_q", "CUDA_SPARK_SAMPLED_Q")):
         value = getattr(args, option, False)
@@ -375,13 +379,17 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         if type(value) is not bool:
             raise ValueError(f"{flag} must be a boolean")
         if value:
+            model_format = 'CT NVFP4' if option == 'delta4_head' else 'ModelOpt'
             if backend != "cuda" or not getattr(family.package, capability, False):
-                raise ValueError(f"{flag} requires Gemma 4 ModelOpt MoE on CUDA")
+                raise ValueError(f"{flag} requires Gemma 4 {model_format} MoE on CUDA")
             if head_config is None:
                 from tensorfold.families import read_config
 
                 head_config = read_config(config_dir if config_dir is not None else args.model)
-            family.package.check_cuda_modelopt_moe_metadata(head_config, flag=flag)
+            if option == 'delta4_head':
+                family.package.check_cuda_delta4_moe_metadata(head_config, flag=flag)
+            else:
+                family.package.check_cuda_modelopt_moe_metadata(head_config, flag=flag)
     fp8 = getattr(family.package, "CUDA_PREFILL_FP8", False) and backend == "cuda"
     if getattr(args, "prefill_fp8", None) and not fp8:              # asked for by name, not a default
         raise ValueError(f"--prefill-fp8 picks FP8 prompt kernels on CUDA; {family.title} on "

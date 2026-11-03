@@ -225,15 +225,28 @@ ModelOpt checkpoint's BF16 exceptions. Native context remains 262,144. Actual
 publisher generation EOS IDs are `[1, 106, 50]`; the card's historical extra
 channel-stop workaround is not applied.
 
-The AEON candidate uses its original exact BF16 tied embedding/output head;
+The AEON baseline uses its original exact BF16 tied embedding/output head;
 `--lossless-head` remains a ModelOpt-only option. Actual AEON preparation rejected
 the Sym8 24-bit raw-pool limit. Even without that limit its fallback count proves
 at least 408 MiB expansion over the native table, so the CT codec extension was
-withdrawn and its failure evidence retained. No replacement codec is introduced.
+withdrawn and its failure evidence retained. This Sym8 result is distinct from
+the subsequently qualified lossless Delta4 path below.
 DFlash retains its raw embedding callback and one target softcap. The model's
 actual publisher EOS IDs are retained without the card's extra channel-stop
 workaround. Loader retirement improvements preserve pending native owners on
 unknown CUDA failure and report primary failures without a cleanup retry.
+
+Native `tensorfold serve ... --delta4-head` now enables the existing CT-only
+lossless Delta4 tied table at fixed reuse16 (default off). Keep the same model,
+`--drafter-bits 8 --draft-rows 5 --context 131072 --vision` and owned Google
+template arguments; append only `--delta4-head` to activate the table. The flag
+is not supported by ModelOpt/dense Gemma or MLX and conflicts with the separate
+ModelOpt Sym8 `--lossless-head`. It does not enable persistent caches, shared
+prompt/trig tables, DFlash graphs or clipping. The owner accepted the observed
+2-4% decode versus CPU-peak/startup tradeoff and requested deployment; independent
+confirmation is not a cutover prerequisite. Public CLI/new-image API validation
+and the actual production replacement are separate executor steps; the historical
+image records below do not claim that replacement has already occurred.
 
 This checkpoint's full payload matched its publisher SHA, and the actual header
 inventory passed CT/vision validation. It now serves port `8888` in image

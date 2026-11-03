@@ -14,6 +14,7 @@ MODELS = ("mlx-community/gemma-4-26b-a4b-it-4bit",)
 CUDA_DRAFTER = "z-lab/gemma-4-26B-A4B-it-DFlash"
 CUDA_DRAFTER_BITS = True
 CUDA_LOSSLESS_HEAD = True
+CUDA_DELTA4_HEAD = True
 CUDA_SPARK_GLOBAL_GQA = True
 CUDA_SPARK_SAMPLED_Q = True
 CUDA_DRAFT_ROWS = True
@@ -116,6 +117,19 @@ def check_cuda_modelopt_moe_metadata(config: dict, *, flag: str) -> None:
         raise ValueError(f"{flag} requires Gemma 4 ModelOpt MoE on CUDA; dense Gemma and other formats are unsupported")
 
 
+def check_cuda_delta4_moe_metadata(config: dict, *, flag: str) -> None:
+    """Delta4's existing loader supports CT NVFP4 MoE, separately from Sym8."""
+    from tensorfold.families import quant_method
+
+    text = config.get('text_config') or config
+    block = config.get('quantization_config') or {}
+    if (config.get('model_type') not in MODEL_TYPES or not isinstance(text, dict)
+            or text.get('enable_moe_block') is not True or quant_method(config) != 'compressed-tensors'
+            or not isinstance(block, dict)
+            or block.get('format') != 'nvfp4-pack-quantized'):
+        raise ValueError(f'{flag} requires Gemma 4 CT NVFP4 MoE on CUDA; dense Gemma and other formats are unsupported')
+
+
 def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: int = 0,
                 master: str = "", master_port: int = 29551, no_drafts: bool = False,
                 context: int | None = None, **options: Any):
@@ -125,16 +139,24 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         raise ValueError("Gemma4 CUDA currently runs on one GPU; use --tp 1 --rank 0")
     allowed = {"context_explicit", "parallel", "draft_rows", "drafter_bits", "vision", "vision_urls",
                "vision_offload", "eos_token_ids", "chat_template_file", "chat_template_name", "lossless_head",
-               "spark_global_gqa", "spark_sampled_q"}
+               "spark_global_gqa", "spark_sampled_q", "delta4_head"}
     unsupported = sorted(set(options) - allowed)
     if unsupported:
         raise ValueError("Gemma4 CUDA does not implement: " + ", ".join(unsupported))
     if options.get("vision_offload"):
         raise ValueError("Gemma4's vision tower stays resident; drop --vision-offload")
+    delta4_head = options.get('delta4_head', False)
+    if type(delta4_head) is not bool:
+        raise ValueError('delta4_head must be a bool')
+    if delta4_head and options.get('lossless_head', False):
+        raise ValueError('--delta4-head and --lossless-head are mutually exclusive')
     from .cuda.e2b_metadata import is_dense_gemma
     from tensorfold.families import read_config
     raw = read_config(model_dir)
     head_options = {}
+    if delta4_head:
+        check_cuda_delta4_moe_metadata(raw, flag='--delta4-head')
+        head_options['delta4_head'] = True
     for option in ("lossless_head", "spark_global_gqa", "spark_sampled_q"):
         value = options.get(option, False)
         if type(value) is not bool:

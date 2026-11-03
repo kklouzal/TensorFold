@@ -220,7 +220,7 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                        help="draft precision, proposals only (0: bf16). MLX: affine bits, default 4. "
                             "CUDA Qwen MoE DFlash: 0 or 16 (default), 8 (FP8), 4 (NVFP4); requantized drafts "
                             "copy a floating target head or borrow a stored quantized head. CUDA Gemma4 DFlash: "
-                            "16 (default), or experimental 8 (FP8) with an original BF16 or lossless Sym8 tied head; "
+                            "16 (default), or experimental 8 (FP8) with an original BF16 or lossless Sym8/Delta4 tied head; "
                             "FP8 adds a private proposal-head copy. "
                             "Gemma E4B native assistant/EAGLE3 require BF16 (16). The target verifies every draft")
     speed.add_argument("--draft-rows", type=int, default=None,
@@ -329,6 +329,9 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                       help="experimental Gemma 4 ModelOpt Sparkulator sampled proposals on CUDA; target sampling is unchanged")
     cuda.add_argument("--lossless-head", action="store_true", default=False,
                       help="Gemma 4 ModelOpt MoE on CUDA: losslessly pack the tied BF16 embedding/output head")
+    cuda.add_argument("--delta4-head", action="store_true", default=False,
+                      help="Gemma 4 CT NVFP4 MoE on CUDA: lossless Delta4 tied BF16 head with fixed reuse16; "
+                           "cannot combine with --lossless-head")
     cuda.add_argument("--prefill-fp8", action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS,
                       help="prompt matmuls take FP8 (e4m3) activations, one scale a row, where the checkpoint has an "
                            "FP8 prompt kernel (Qwen3.8 27B and Qwen3.6 MLX 4-bit, NVFP4 checkpoints' FP8 and MXFP8 "
