@@ -18,6 +18,28 @@ the numerical contract before comparing speed. Quantization options have their
 own explicit quality tradeoffs; changing an optimization must not silently
 change the user's selected precision or sampling policy.
 
+## DFlash logits graph investigation
+
+The subsequent default-off `dflash_graph=True` constructor candidate changes
+companion logits execution separately from prompt consumption. It retains one
+replaceable graph, preserves fresh owning FP32 returns, and adds a conservative
+tensor-payload admission estimate. Tested capture source `2c3d7b0e`, runtime
+`d83610b5` and verification `5a9521b5` passed 519 source CPU tests (15 documented
+CUDA skips), 188 installed CPU tests and 37 native GPU tests without skips.
+Same-image OFF/ON matched all 11 progressive real prefills through committed
+position131071, 17 proposal/logit/q/state probes, two target-teacher comparisons
+and 13 generation cases, with all required witnesses and no gaps; both workers
+retired safely. These immutable image/source identities precede this
+documentation-only update; runtime/test bytes remain unchanged. Earlier07d
+evidence is not inherited.
+
+HTTP/media/cancellation and usable full-window reply-room qualification remain
+pending. Production traffic during correctness (requests147 to152) excludes
+performance inference, and private completed-cache copies confound startup
+comparisons. Allocator observations are not total physical UMA residency or
+capacity proof. No speed, execution-neutrality, production deployment or winner
+is claimed. See [DFlash graph scope and contracts](gemma4-dflash-graphs.md).
+
 ## Persistent Gemma CT prompt-consumption investigation
 
 After canonical checkpoint257ee662, the separate default-off

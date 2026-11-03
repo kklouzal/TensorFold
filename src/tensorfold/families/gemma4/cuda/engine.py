@@ -85,6 +85,7 @@ class Gemma4Engine:
     graphs = None          # text decode/verify CUDA graph runner (None: every forward eager)
     _clip_sampled_verification_to_room = False
     _tap_features = True
+    _dflash_graph = False
 
     def __init__(self, model_dir: Path, *, drafter: str = "", drafter_bits: int = 16,
                  depth: int | None = None, context: int | None = None,
@@ -93,7 +94,10 @@ class Gemma4Engine:
                  chat_template_file=None, chat_template_name=None,
                  prepare_global_prompt: bool = False, lossless_head: bool = False,
                  spark_global_gqa: bool = False, spark_sampled_q: bool = False, global_trig: bool = False,
-                 global_trig_prompt: bool = True, delta4_head: bool = False, delta4_reuse: int = 16, global_cache: str = "none", global_cache_prompt: bool = False) -> None:
+                 global_trig_prompt: bool = True, delta4_head: bool = False, delta4_reuse: int = 16, global_cache: str = "none", global_cache_prompt: bool = False, dflash_graph: bool = False) -> None:
+        if type(dflash_graph) is not bool:
+            raise ValueError('dflash_graph must be a bool')
+        self._dflash_graph = dflash_graph
         from .state import check_global_cache
         check_global_cache(global_cache, prompt=global_cache_prompt,
                            prepared_prompt=prepare_global_prompt, trig=global_trig)
@@ -130,7 +134,7 @@ class Gemma4Engine:
         from tensorfold.token_metadata import load_tokenizer, resolve_eos
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.families import quant_method
-        from .capacity import admit, companion_kind
+        from .capacity import admit, check_dflash_graph, companion_kind
         from .forward import Gemma4Target
         from .weights import Gemma4Weights
 
@@ -174,6 +178,7 @@ class Gemma4Engine:
         self.max_rows = (spark_cfg.block if spark_cfg is not None and depth is None else
                          1 if method == 'modelopt' and draft_dir is None else
                          16 if depth is None else depth + 1)
+        check_dflash_graph(dflash_graph, drafter_bits, self.max_rows, kind)
         if spark_sampled_q and self.max_rows > 16:
             raise ValueError('Spark sampled q verification currently admits at most16 rows')
         if lossless_head and self.max_rows > 16:
@@ -188,7 +193,8 @@ class Gemma4Engine:
                                    **({"lossless_head": True} if lossless_head else {}),
                                    **({"delta4_head": True} if delta4_head else {}),
                                    **({"spark_global_gqa": True} if spark_global_gqa else {}),
-                                   **({"spark_sampled_q": True} if spark_sampled_q else {}))
+                                   **({"spark_sampled_q": True} if spark_sampled_q else {}),
+                                   **({'dflash_graph': True} if dflash_graph else {}))
         self.context_window = self.capacity_plan["context_window"]
         self.max_rows = min(self.max_rows, self.context_window)
         text = raw.get("text_config") or raw
@@ -239,7 +245,8 @@ class Gemma4Engine:
                 # Before any cache: the companion's load transients are admission staging.
                 from .dflash import DFlash
                 self.head = DFlash(draft_dir, self.target, context_limit=self.context_window,
-                                   block=self.max_rows, bits=drafter_bits, rows=forward_rows)
+                                   block=self.max_rows, bits=drafter_bits, rows=forward_rows,
+                                   **({'dflash_graph': True} if dflash_graph else {}))
             # Spark borrows this exact main state; its native loading status is
             # caller-owned before construction, including an unreturned head.
             self._state = self.target.make_state(self.context_window, rows=forward_rows)
@@ -307,9 +314,24 @@ class Gemma4Engine:
             raise RuntimeError("Gemma4 generation cannot reenter its active request callback")
         with self._run_lock:
             self._check_open()
+            if self._dflash_graph:
+                # Resolve the expected exception before any operation in this
+                # lane; import failure must not replace a later native fault.
+                from tensorfold.server.cancellation import RequestCancelled
             self._owner = threading.get_ident()
             try:
                 yield self._stream
+            except BaseException as primary:
+                if self._dflash_graph:
+                    # Request parameters are validated before entering this
+                    # mutable GPU lane. Normal cooperative cancellation remains
+                    # recoverable; an unexpected operation/readback fault may
+                    # be the first observation of an asynchronous CUDA failure.
+                    if not isinstance(primary, RequestCancelled):
+                        graph = self.head._logits_graph
+                        if graph.failure is None:
+                            graph.failure = primary
+                raise
             finally:
                 self._owner = None
 
@@ -318,7 +340,17 @@ class Gemma4Engine:
         if self._owner == threading.get_ident():
             raise RuntimeError("cannot drain Gemma4 from its active request callback")
         with self._run_lock:
-            self._stream.synchronize()
+            graph = self.head._logits_graph if self._dflash_graph else None
+            if graph is not None and (not graph.closed or graph.failure is not None):
+                graph.check_live()
+            try:
+                self._stream.synchronize()
+            except BaseException as primary:
+                # Final appends can fault after the last sampling readback.
+                # Never retry retirement after its first failed observation.
+                if graph is not None and graph.failure is None:
+                    graph.failure = primary
+                raise
 
     def close(self) -> None:
         if self._owner == threading.get_ident():
@@ -333,11 +365,15 @@ class Gemma4Engine:
             # main-cache mutation; derived bridge storage may now be released.
             self.head.close()
             self._draft = None
+        if self._dflash_graph and self.head is not None:
+            self.head._logits_graph.close()
 
     def _check_open(self) -> None:
         with self._closed_lock:
             if self._closed:
                 raise RuntimeError("Gemma4 engine is closed")
+        if self._dflash_graph:
+            self.head._logits_graph.check_live()
 
     def _taps(self, result, count=None):
         if getattr(self.head, 'feature_source', 'taps') == 'final_hidden':

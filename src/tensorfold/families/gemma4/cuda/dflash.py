@@ -17,6 +17,7 @@ one request lane; its storage is allocated once for the admitted context.
 
 from __future__ import annotations
 
+import gc
 from functools import partial
 from pathlib import Path
 
@@ -35,10 +36,88 @@ from tensorfold.families.qwen3_5.cuda import b16
 
 from ..dflash_metadata import checked_headers, positive
 from . import attention
+from .capacity import DFLASH_FULL_CHUNK as FULL_CHUNK, check_dflash_graph
 from .forward import rms_norm
 from .state import PREFILL_ROWS, companion_rings, sliding_slots
 
-FULL_CHUNK = 1024        # companion full-layer key chunk (no invariance contract: proposals are verified)
+
+class _LogitsGraph:
+    """One graph generation, serialized by its DFlash caller on one stream.
+
+    A geometry/state transition retires the old pool before capturing another.
+    Only private outputs borrow that pool; callers receive an owning clone.
+    Unknown native failures retain the entire generation and exception frames.
+    """
+
+    def __init__(self, head):
+        self.head = head
+        self.ids = torch.empty((head.block,), dtype=torch.int32, device=head.device)
+        self.state = self.key = self.graph = self.output = self.pool = None
+        self.failure = None
+        self.closed = False
+
+    def check_live(self):
+        if self.failure is not None:
+            raise RuntimeError('DFlash logits graph failed; retain its owner for process containment') from self.failure
+        if self.closed:
+            raise RuntimeError('DFlash logits graph is closed')
+
+    def close(self):
+        """The engine has drained its exclusive stream before releasing graph storage."""
+        if self.closed:
+            return
+        self.check_live()
+        self.closed = True
+        self.state = self.key = self.graph = self.output = self.pool = self.ids = None
+
+    def forward(self, state, anchor, length, slots):
+        self.check_live()
+        try:
+            key = (length, slots)
+            changed = self.state is not state or self.key != key
+            stream = torch.cuda.current_stream(self.head.device)
+            if changed:
+                # A previous result's owning clone may still be consumed on this
+                # stream. Complete it before retiring its source graph/pool.
+                stream.synchronize()
+                self.state = self.key = self.graph = self.output = self.pool = None
+                self.state = state
+            ids = self.ids[:length]
+            ids.fill_(self.head.mask_id)
+            ids[0] = anchor
+            state.pos.fill_(state.length)
+
+            def run():
+                return self.head._logits_staged(state, self.head.raw_embed_tokens(ids), length, slots)
+
+            if changed:
+                self.pool = torch.cuda.graph_pool_handle()
+                self.graph = torch.cuda.CUDAGraph()
+                # The retained side stream is ordered both ways, including on
+                # failure through the retained Python exception frame.
+                warm = torch.cuda.Stream(device=self.head.device)
+                warm.wait_stream(stream)
+                with torch.cuda.stream(warm):
+                    run()
+                stream.wait_stream(warm)
+                warm.synchronize()
+                enabled = gc.isenabled()
+                gc.disable()
+                try:
+                    with torch.cuda.graph(self.graph, pool=self.pool, capture_error_mode='thread_local'):
+                        self.output = run()
+                finally:
+                    if enabled:
+                        gc.enable()
+                self.key = key
+            self.graph.replay()
+            return self.output.clone()
+        except BaseException as error:
+            # Publish to the existing field without entering another helper
+            # that could fail before retaining the original native authority.
+            if self.failure is None:
+                self.failure = error
+            raise
 
 
 @triton.jit
@@ -178,7 +257,11 @@ class DraftState:
 class DFlash:
     """One shared companion; each lane owns a DraftState of accepted K/V only."""
 
-    def __init__(self, draft_dir, target, *, context_limit, block=None, bits=16, rows=PREFILL_ROWS):
+    _logits_graph = None
+
+    def __init__(self, draft_dir, target, *, context_limit, block=None, bits=16, rows=PREFILL_ROWS,
+                 dflash_graph=False):
+        check_dflash_graph(dflash_graph, bits, 2 if block is None else block, 'dflash')
         if type(bits) is not int or bits not in (8, 16):
             raise ValueError("Gemma DFlash proposal weights are BF16 (16) or private FP8 row-scaled copies (8)")
         head = getattr(getattr(target, "weights", None), "embed", None)
@@ -205,6 +288,7 @@ class DFlash:
             raise ValueError("Gemma DFlash blocks require 2 through128 rows, matching target tree verification")
         if self.block > cfg.sliding_window:
             raise ValueError("Gemma DFlash sliding blocks must fit the declared sliding window")
+        check_dflash_graph(dflash_graph, bits, self.block, 'dflash')
         if (cfg.heads % cfg.kv_heads or attention.QUERY_TILE % (cfg.heads // cfg.kv_heads)
                 or cfg.head_dim not in (64, 128, 256)):
             raise ValueError("Gemma DFlash attention needs a query group dividing 16 and head width 64/128/256")
@@ -267,8 +351,11 @@ class DFlash:
 
             _prompt_ext()
             _ext()
+        self._logits_graph = _LogitsGraph(self) if dflash_graph else None
 
     def make_state(self) -> DraftState:
+        if self._logits_graph is not None:
+            self._logits_graph.check_live()
         return DraftState(self.config, self.device, self.window, self.rows, self.block)
 
     def _publish(self, fused, state, layer, query: torch.Tensor | None):
@@ -289,6 +376,8 @@ class DFlash:
         The lane projection and prompt GEMM have different bits, so row count cannot determine a prompt's role.
         Decode appends retain the existing fast lane projection for at most16 rows.
         """
+        if self._logits_graph is not None:
+            self._logits_graph.check_live()
         cfg = self.config
         if (not isinstance(taps, torch.Tensor) or taps.ndim != 2 or taps.shape[1] != len(self.tap_layers) * self.hidden
                 or taps.dtype != torch.bfloat16 or taps.device != self.device
@@ -317,6 +406,8 @@ class DFlash:
     @torch.no_grad()
     def logits(self, state: DraftState, anchor: int, count: int) -> torch.Tensor | None:
         """Softcapped FP32 companion logits [n, vocab] for block rows 1..n, n <= ``count``."""
+        if self._logits_graph is not None:
+            self._logits_graph.check_live()
         cfg = self.config
         if type(count) is not int or not 0 <= count <= 127:
             raise ValueError("Gemma DFlash proposal count must be an integer from zero through127")
@@ -325,11 +416,18 @@ class DFlash:
             return None
         if type(anchor) is not int or not 0 <= anchor < cfg.vocab:
             raise ValueError("Gemma DFlash anchors must be native target-vocabulary token IDs")
+        slots = (state.length + length - 1) // FULL_CHUNK + 1
+        if self._logits_graph is not None:
+            return self._logits_graph.forward(state, anchor, length, slots)
         ids = torch.full((length,), self.mask_id, dtype=torch.int32, device=self.device)
         ids[0] = anchor
         x = self.raw_embed_tokens(ids)
-        start = state.length
-        state.pos.fill_(start)
+        state.pos.fill_(state.length)
+        return self._logits_staged(state, x, length, slots)
+
+    def _logits_staged(self, state, x, length, full_slots):
+        """The original arithmetic with position supplied by the persistent device scalar."""
+        cfg = self.config
         # Noncausal layers see the whole block: every row shares [start, start + length).
         block_start = state.pos.repeat(length)
         block_end = block_start + length
@@ -347,7 +445,7 @@ class DFlash:
                 slots = sliding_slots(window, length, group, length if noncausal else 0)
             else:
                 window, chunk = 0, FULL_CHUNK
-                slots = (start + length - 1) // chunk + 1
+                slots = full_slots
             out = attention.sliding(q, state.keys[layer], state.values[layer], state.pos, block_start, block_end,
                                     window=window, slots=slots, blocks=noncausal, scale=scale, chunk=chunk)
             x = x + self.linears[base + "self_attn.o_proj.weight"](out.reshape(length, -1))

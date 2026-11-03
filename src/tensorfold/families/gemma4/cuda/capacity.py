@@ -11,6 +11,54 @@ from pathlib import Path
 
 
 GRAPH_SPAN = 16      # graphs.Graphs' smallest full-attention grid (chunks); larger grids double up to the context's
+DFLASH_FULL_CHUNK = 1024
+
+
+def check_dflash_graph(enabled, bits, rows, kind):
+    if type(enabled) is not bool:
+        raise ValueError('dflash_graph must be a bool')
+    if enabled and (kind != 'dflash' or type(bits) is not int or bits != 8
+                    or type(rows) is not int or not 2 <= rows <= 16):
+        raise ValueError('dflash_graph requires an enabled FP8 DFlash block of2..16 rows')
+
+
+def dflash_graph_workspace(cfg, rows: int, slots: int) -> int:
+    """One replaceable logits graph's conservative tensor-payload estimate.
+
+    Sum all allocation requests without transient reuse credit, including the
+    fresh owning return. This is not physical graph-pool/allocator residency.
+    Native FP8 lane projections have no activation quantizer or expert plan;
+    optional noncluster split-K scratch is charged even on cluster-capable GPUs.
+    """
+    from .state import sliding_slots
+
+    check_dflash_graph(True, 8, rows, 'dflash')
+    if type(slots) is not int or slots < 1:
+        raise ValueError('DFlash graph context must be a positive integer')
+    length = min(rows, slots)
+    total = rows * 4  # fixed owner IDs
+    if length < 2:
+        return total
+    total += length * cfg.hidden * 2 + length * 8  # embedding and block start/end
+    q = cfg.heads * cfg.head_dim
+    kvq = (2 * cfg.kv_heads + cfg.heads) * cfg.head_dim
+
+    def split_scratch(n):
+        # qmm.split_k stops immediately once ceil(N/64)>=192. Otherwise
+        # charge its largest eight-way scratch, without relying on clusters.
+        return 0 if n >= 192 * 64 else 8 * length * n * 4
+
+    for kind, causal in zip(cfg.layer_types, cfg.causal_layers):
+        splits = (sliding_slots(cfg.sliding_window, length, cfg.heads // cfg.kv_heads,
+                                0 if causal else length) if kind == 'sliding_attention'
+                  else -(-slots // DFLASH_FULL_CHUNK))
+        total += length * (6 * cfg.hidden + kvq + 2 * q + 4 * cfg.width) * 2
+        total += length * cfg.heads * splits * (cfg.head_dim + 2) * 4
+        total += sum(split_scratch(n) for n in (kvq, cfg.hidden, 2 * cfg.width, cfg.hidden))
+    total += (length - 1) * cfg.hidden * 2
+    total += 5 * (length - 1) * cfg.vocab * 4  # head, divide/tanh/multiply, owning clone
+    total += split_scratch(cfg.vocab)  # overbounds the head's length-1 rows
+    return total
 
 
 def graph_workspace(cfg, max_rows: int, slots: int, taps: int) -> int:
@@ -61,7 +109,7 @@ def companion_kind(directory):
 
 
 def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=False,
-          max_rows=16, streams=1, keep=1, drafter_bits=16, prepare_global_prompt=False, lossless_head=False, spark_global_gqa=False, spark_sampled_q=False, global_trig=False, delta4_head=False, global_cache="none", global_cache_prompt=False):
+          max_rows=16, streams=1, keep=1, drafter_bits=16, prepare_global_prompt=False, lossless_head=False, spark_global_gqa=False, spark_sampled_q=False, global_trig=False, delta4_head=False, global_cache="none", global_cache_prompt=False, dflash_graph=False):
     import torch
     from tensorfold.checkpoint_metadata import read_config
     from tensorfold.families import quant_method
@@ -72,6 +120,7 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
 
     check_global_cache(global_cache, prompt=global_cache_prompt,
                        prepared_prompt=prepare_global_prompt, trig=global_trig)
+    check_dflash_graph(dflash_graph, drafter_bits, max_rows, 'dflash' if drafter_dir is not None else None)
     if type(global_trig) is not bool:
         raise ValueError("global_trig must be a bool")
     if type(spark_sampled_q) is not bool:
@@ -189,6 +238,7 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
 
     draft = spark = None
     kind = companion_kind(drafter_dir) if drafter_dir is not None else None
+    check_dflash_graph(dflash_graph, drafter_bits, max_rows, kind)
     if spark_sampled_q and (kind != 'sparkulator' or not modelopt):
         raise ValueError('Spark sampled q requires the actual Sparkulator/ModelOpt pair')
     if spark_sampled_q and not 2 <= max_rows <= 16:
@@ -292,6 +342,8 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
         if spark is not None:
             scratch += spark.workspace_bytes(min(slots, spark.max_position),
                                              **({"global_gqa": True} if spark_global_gqa else {}))
+        if dflash_graph:
+            scratch += dflash_graph_workspace(draft, max_rows, min(slots, cfg.max_position))
         if vision:
             v = raw['vision_config']
             patches = max(media_geometry.image_patches, media_geometry.video_patches)
@@ -336,6 +388,11 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
                   host_workspace_bytes=sampling["host_bytes"] + proposals["host_bytes"]
                                        + q_extra["host_bytes"] + retained_q + bias["host_bytes"])
     result['logit_bias_workspace'] = bias
+    if dflash_graph:
+        result['dflash_graph'] = {'entries': 1, 'max_rows': max_rows,
+                                 'payload_workspace_bytes': dflash_graph_workspace(
+                                     draft, max_rows, result['context_window']),
+                                 'unqualified_prototype': True}
 
     if lossless_head:
         result['lossless_head'] = bounds['lossless_head']

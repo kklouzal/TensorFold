@@ -1555,6 +1555,19 @@ sampling per thinking mode, depths and the per-prompt request schedule); the KL 
   times balanced ABBA/BAAB blocks with the complete prompt cached. It does not precondition every position by
   generating the identical completion first; timed sample counts and correctness gates remain unchanged.
 
+- Gemma has a separate default-off internal `dflash_graph=True` constructor candidate for private-FP8
+  DFlash blocks2..16. It captures only unchanged companion logits, retains one replaceable exact-geometry
+  graph and returns a fresh owning FP32 clone; actual-q/readback/draws/accepted append remain outside.
+  Header admission charges graph tensor payloads and the return copy. Tested capture source `2c3d7b0e`
+  / runtime `d83610b5` passed 519 source CPU tests (15 documented CUDA skips), 188 installed CPU tests
+  and 37 native GPU tests without skips. Same-image graph OFF/ON matched 11 real prefills through
+  committed131071, 17 probes, two target-teacher comparisons and 13 generation cases with no witness gaps;
+  both workers retired safely. These image identities precede this documentation-only update;
+  runtime/test bytes are unchanged. HTTP/media/cancellation, usable full-window reply room and controlled
+  performance remain pending. Production traffic during correctness and private-cache reuse exclude
+  speed/startup comparisons; no production deployment or winner is selected.
+  See [DFlash graph ownership and pending gates](docs/gemma4-dflash-graphs.md).
+
 ### Logs, metrics, shutdown and restart
 
 ```bash
