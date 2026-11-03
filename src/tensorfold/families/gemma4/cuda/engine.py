@@ -93,9 +93,10 @@ class Gemma4Engine:
                  chat_template_file=None, chat_template_name=None,
                  prepare_global_prompt: bool = False, lossless_head: bool = False,
                  spark_global_gqa: bool = False, spark_sampled_q: bool = False, global_trig: bool = False,
-                 global_trig_prompt: bool = True, delta4_head: bool = False, delta4_reuse: int = 16, global_cache: str = "none") -> None:
+                 global_trig_prompt: bool = True, delta4_head: bool = False, delta4_reuse: int = 16, global_cache: str = "none", global_cache_prompt: bool = False) -> None:
         from .state import check_global_cache
-        check_global_cache(global_cache)
+        check_global_cache(global_cache, prompt=global_cache_prompt,
+                           prepared_prompt=prepare_global_prompt, trig=global_trig)
         if type(delta4_head) is not bool:
             raise ValueError('delta4_head must be a bool')
         if type(delta4_reuse) is not int or delta4_reuse not in (1, 2, 4, 8, 16):
@@ -182,7 +183,8 @@ class Gemma4Engine:
                                    drafter_bits=drafter_bits,
                                    **({"prepare_global_prompt": True} if prepare_global_prompt else {}),
                                    **({"global_trig": True} if global_trig else {}),
-                                   **({"global_cache": global_cache} if global_cache != "none" else {}),
+                                   **({"global_cache": global_cache, "global_cache_prompt": global_cache_prompt}
+                                      if global_cache != "none" else {}),
                                    **({"lossless_head": True} if lossless_head else {}),
                                    **({"delta4_head": True} if delta4_head else {}),
                                    **({"spark_global_gqa": True} if spark_global_gqa else {}),
@@ -221,7 +223,8 @@ class Gemma4Engine:
                 **({"prompt_context": self.context_window} if prepare_global_prompt or global_trig else {}),
                 **({"prepare_global_prompt": True} if prepare_global_prompt else {}),
                 **({"global_trig": True, "global_trig_prompt": global_trig_prompt} if global_trig else {}),
-                **({"global_cache": global_cache} if global_cache != "none" else {}))
+                **({"global_cache": global_cache, "global_cache_prompt": global_cache_prompt}
+                   if global_cache != "none" else {}))
             self.head = None
             self.vision = None
             longest = 0

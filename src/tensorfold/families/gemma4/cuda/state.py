@@ -68,9 +68,13 @@ class Snapshot:
     _layers: tuple[Any, Any, Any, Any]
 
 
-def check_global_cache(mode: str) -> None:
+def check_global_cache(mode: str, *, prompt: bool = False, prepared_prompt=False, trig=False) -> None:
     if type(mode) is not str or mode not in ("none", "k", "kv"):
         raise ValueError('global_cache must be none, k, or kv')
+    if type(prompt) is not bool:
+        raise ValueError('global_cache_prompt must be a bool')
+    if prompt and (mode == "none" or prepared_prompt or trig):
+        raise ValueError('global_cache_prompt requires k/kv without shared prepared prompt or trig tables')
 
 
 def derived_capacity_bytes(config: Config, context: int, mode: str) -> int:

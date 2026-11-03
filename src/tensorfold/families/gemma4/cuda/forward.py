@@ -97,10 +97,13 @@ class Gemma4Target:
     _global_prompt_scratch = None
     _global_trig = None
     _global_cache = "none"
+    _global_cache_prompt = False
 
     def __init__(self, weights: Gemma4Weights, *, prepare_global_prompt: bool = False,
-                 prompt_context: int | None = None, global_trig: bool = False, global_trig_prompt: bool = True, global_cache: str = "none"):
-        check_global_cache(global_cache)
+                 prompt_context: int | None = None, global_trig: bool = False, global_trig_prompt: bool = True, global_cache: str = "none", global_cache_prompt: bool = False):
+        check_global_cache(global_cache, prompt=global_cache_prompt,
+                           prepared_prompt=prepare_global_prompt, trig=global_trig)
+        self._global_cache_prompt = global_cache_prompt
         if global_cache != "none" and weights.numerics != "ct_nvfp4":
             raise ValueError('persistent global cache requires native CT arithmetic')
         self._global_cache = global_cache
@@ -441,12 +444,12 @@ class Gemma4Target:
                                         eps=c.eps, round_normalized=mlx)
                 if self._global_cache != "none":
                     # Incremental policy: all appends, including media/prompt rows,
-                    # publish derived words. Only decode/verify consumes them.
+                    # publish derived words. Prompt consumption is a separate opt-in.
                     attention.prepare_global_cache(
                         raw, inv, layer.k_norm, self._inverse[i], state.derived_keys[index],
                         None if state.derived_values is None else state.derived_values[index],
                         rows=rows, pos=state.pos)
-                if not prompt and self._global_cache != "none":
+                if self._global_cache != "none" and (not prompt or self._global_cache_prompt):
                     cached = ({"prepared_keys": state.derived_keys[index]} if self._global_cache == "k"
                               else {"prepared": (state.derived_keys[index], state.derived_values[index])})
                     out = attention.full(q, raw, inv, layer.k_norm, self._inverse[i], state.pos, chunks=chunks,

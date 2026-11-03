@@ -18,12 +18,43 @@ the numerical contract before comparing speed. Quantization options have their
 own explicit quality tradeoffs; changing an optimization must not silently
 change the user's selected precision or sampling policy.
 
+## Persistent Gemma CT prompt-consumption investigation
+
+After canonical checkpoint257ee662, the separate default-off
+`global_cache_prompt=True` option uses already-appended K/KV for prompt/prefill.
+No added persistent buffers or full-history workspace are introduced. Redundant
+shared prepared-prompt/trig combinations are refused only when this option is
+enabled. Fresh GB10 source `07d1664f`, runtime `f9e04667` and verification
+`40296aeb` passed 489 source CPU tests (15 documented CUDA skips), 158 installed
+CPU tests and all 36 GPU component tests without skips. Fresh NONE, K/KV
+decode-only and K/KV prompt-enabled model processes matched full valid prefill
+raw/inverse/sliding/companion state and saved-logit fingerprints on the two64K
+cases, plus complete numerical/q/replay/generation gates across all three cases.
+Prompt on/off pairs retain identical application-controlled persistent-State
+bytes; allocator observations are not total physical UMA RAM proof.
+
+New prompt-enabled KV individual API/media, 14 directed regressions, tool history,
+cache transitions, usable131056+16 greedy/seeded replay and strong active
+cancellation/recovery gates passed. K independently passed media/Responses
+parity, full-context/replay, cache and active cancellation/recovery. The original
+short-SSE cancellation-counter assertion remains failed/incomplete, not waived.
+Wire/server cancellation is not independent physical GPU-retirement proof, and
+media execution is not general vision-semantic quality. Both shadows retired
+safely; production is unchanged.
+
+P3 remains unmeasured for this new feature. Traffic invalidated the earlier6a1a
+comparison; new07d V4 six-config/twelve-process scripts have source reviews and
+34 CPU controls only, with no timing launch or quiet-window permission assumed.
+No integrated speed, equivalence or winner is claimed. Earlier6a1a/3867 results
+retain their original scope; later documentation-only changes are not a new
+image. See the [full source/image scope](gemma4-persistent-global-cache.md#prompt-consumption-qualification-07d1664f).
+
 ## Persistent Gemma CT global cache investigation
 
 The default-off constructor K-only/K+V candidates retain raw-only snapshots and
 allocate derived buffers only for live States. They prepare every append and
-consume derived attention only for decode/verification; persistent prompt use
-remains open. Immutable GB10 source `6a1a9716` / runtime image `38670db4`
+consume derived attention only for decode/verification when the separate prompt
+option is off. Immutable GB10 source `6a1a9716` / runtime image `38670db4`
 passed 459 source CPU tests (15 documented CUDA skips), 128 installed CPU tests,
 34 GPU component tests without skips, and fresh NONE/K/KV full-model equivalence
 with Delta4 R16, raw attention and FP8 DFlash depth four. These overlapping

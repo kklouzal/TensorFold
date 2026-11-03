@@ -191,11 +191,14 @@ def test_all_execution_entries_prepare_before_work(monkeypatch, entry):
 
 @pytest.mark.parametrize('mode', ['k', 'kv'])
 @pytest.mark.parametrize('prompt', [False, True])
-def test_append_all_rows_consume_only_decode(monkeypatch, mode, prompt):
-    cfg = replace(config(), layers=1, layer_types=('full_attention',))
-    state = State(cfg, 'cpu', 128, rows=5, global_cache=mode, cache_owner=object())
+@pytest.mark.parametrize('consume_prompt', [False, True])
+@pytest.mark.parametrize('rows', [3, 17, 1024])
+def test_append_all_rows_and_explicit_prompt_consumption(monkeypatch, mode, prompt, consume_prompt, rows):
+    cfg = replace(config(), layers=1, layer_types=('full_attention',), max_position=2048)
+    state = State(cfg, 'cpu', 2048, rows=rows, global_cache=mode, cache_owner=object())
     state.position = 31
     target = owned_target(mode, state)
+    target._global_cache_prompt = consume_prompt
     target.config = cfg
     layer = SimpleNamespace(input_norm=None, q=None, k=None, q_norm=None, k_norm=None)
     target.weights = SimpleNamespace(numerics='ct_nvfp4', layers=[layer])
@@ -205,7 +208,7 @@ def test_append_all_rows_consume_only_decode(monkeypatch, mode, prompt):
     monkeypatch.setattr(attention, 'prep_full', lambda *args, **kw: calls.append('raw'))
 
     def append(*args, **kwargs):
-        assert kwargs['rows'] == 3 and kwargs['pos'] is state.pos
+        assert kwargs['rows'] == rows and kwargs['pos'] is state.pos
         assert args[4].data_ptr() == state.derived_keys[0].data_ptr()
         assert (args[5] is not None) == (mode == 'kv')
         calls.append('append')
@@ -215,7 +218,7 @@ def test_append_all_rows_consume_only_decode(monkeypatch, mode, prompt):
 
     def consume(*args, **kwargs):
         assert calls == ['raw', 'append']
-        if prompt:
+        if prompt and not consume_prompt:
             assert 'prepared' not in kwargs and 'prepared_keys' not in kwargs
         elif mode == 'k':
             assert kwargs['prepared_keys'].data_ptr() == state.derived_keys[0].data_ptr()
@@ -227,7 +230,7 @@ def test_append_all_rows_consume_only_decode(monkeypatch, mode, prompt):
     monkeypatch.setattr(attention, 'prepare_global_cache', append)
     monkeypatch.setattr(attention, 'full', consume)
     with pytest.raises(Stop):
-        target._layers(torch.zeros((3, cfg.hidden)), state, 3, 1, None, None, 0, False, False, prompt)
+        target._layers(torch.zeros((rows, cfg.hidden)), state, rows, 3, None, None, 0, False, False, prompt)
 
 
 @pytest.mark.parametrize('entry', ['forward', 'forward_staged'])
@@ -246,3 +249,52 @@ def test_raw_target_cannot_advance_derived_state_then_return_it_stale(entry):
         run()
     assert state.position == 0 and state.global_cache_ready and not state.poisoned
     owner.prepare_global_cache(state)  # legitimate owner remains usable, no stale rows were published
+
+
+@pytest.mark.parametrize('value', [None, 1, 'true'])
+def test_prompt_policy_strict_bool_before_runtime(value, tmp_path):
+    with pytest.raises(ValueError, match='global_cache_prompt must be a bool'):
+        Gemma4Engine(tmp_path, global_cache='k', global_cache_prompt=value)
+    with pytest.raises(ValueError, match='global_cache_prompt must be a bool'):
+        Gemma4Target(None, global_cache='k', global_cache_prompt=value)
+    with pytest.raises(ValueError, match='global_cache_prompt must be a bool'):
+        capacity.admit(tmp_path, 128, True, global_cache='k', global_cache_prompt=value)
+
+
+@pytest.mark.parametrize('kwargs', [
+    {'global_cache': 'none'},
+    {'global_cache': 'k', 'prepare_global_prompt': True},
+    {'global_cache': 'kv', 'prepare_global_prompt': True},
+    {'global_cache': 'k', 'global_trig': True},
+    {'global_cache': 'kv', 'global_trig': True},
+])
+def test_prompt_policy_rejects_missing_or_redundant_owners(kwargs, tmp_path):
+    with pytest.raises(ValueError, match='requires k/kv without shared prepared prompt or trig tables'):
+        Gemma4Engine(tmp_path, global_cache_prompt=True, **kwargs)
+    with pytest.raises(ValueError, match='requires k/kv without shared prepared prompt or trig tables'):
+        Gemma4Target(None, global_cache_prompt=True, **kwargs)
+    with pytest.raises(ValueError, match='requires k/kv without shared prepared prompt or trig tables'):
+        capacity.admit(tmp_path, 128, True, global_cache_prompt=True, **kwargs)
+
+
+@pytest.mark.parametrize('mode', ['k', 'kv'])
+def test_prompt_policy_constructor_and_admission_have_no_added_buffers(monkeypatch, tmp_path, mode):
+    from tensorfold.families.gemma4.cuda import nvfp4_weights
+    import tensorfold.families as families
+    cfg = config()
+    weights = SimpleNamespace(numerics='ct_nvfp4', config=cfg, norm=torch.ones(cfg.hidden),
+                              embed=SimpleNamespace(weight=torch.empty((1, cfg.hidden))))
+    old = Gemma4Target(weights, global_cache=mode)
+    new = Gemma4Target(weights, global_cache=mode, global_cache_prompt=True)
+    a, b = old.make_state(128, rows=17), new.make_state(128, rows=17)
+    assert a.nbytes == b.nbytes and new._global_cache_prompt and not old._global_cache_prompt
+    assert new._global_prompt_scratch is None and new._global_trig is None
+    _capacity_boundary(monkeypatch, uma=True)
+    monkeypatch.setattr(families, 'quant_method', lambda _: 'compressed-tensors')
+    monkeypatch.setattr(nvfp4_weights, 'validate_headers', lambda *a, **kw: cfg)
+    monkeypatch.setattr(nvfp4_weights, 'ct_tensor_contract', lambda _: ({}, {}))
+    for keep in (0, 3):
+        prior = capacity.admit(tmp_path, 128, True, global_cache=mode, keep=keep)
+        current = capacity.admit(tmp_path, 128, True, global_cache=mode, global_cache_prompt=True, keep=keep)
+        assert prior['geometry'].needed(128) == current['geometry'].needed(128)
+        assert prior['weight'] == current['weight'] and prior['host'] == current['host']

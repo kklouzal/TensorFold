@@ -172,3 +172,99 @@ def test_cached_to_raw_target_handoff_rejects_before_mutation(mode):
     actual = owner.forward([4], state)
     same(actual.hidden, expected.hidden)
     assert torch.equal(actual.logits, expected.logits)
+
+
+def prompt_body(mode, consume_prompt):
+    """Real production _layers dispatch with the maintained tiny affine body.
+
+    The body keeps its affine projection/router helpers, while attention uses CT
+    ROUND=False storage arithmetic. It is a dispatch/attention integration oracle,
+    not a native NVFP4 checkpoint or vision-encoder qualification.
+    """
+    from test_gemma_cuda_target import target
+    model = target()
+    model.weights.numerics = 'ct_nvfp4'
+    model._global_cache = mode
+    model._global_cache_owner = object() if mode != 'none' else None
+    model._global_cache_prompt = consume_prompt
+    return model
+
+
+@pytest.mark.parametrize('mode', ['k', 'kv'])
+def test_prompt_consumes_real_cached_readers_partitions_media_restore_and_graphs(monkeypatch, mode):
+    raw_model = prompt_body('none', False)
+    prior_model = prompt_body(mode, False)
+    model = prompt_body(mode, True)
+    models = (raw_model, prior_model, model)
+    states = [one.make_state(2304, rows=1024) for one in models]
+    assert states[1].nbytes == states[2].nbytes
+    tokens = [(i * 7 + 3) % 128 for i in range(2304)]
+    original = attention.full
+    calls = []
+
+    def traced(q, *args, **kwargs):
+        calls.append((q.shape[0], 'prepared_keys' in kwargs, 'prepared' in kwargs))
+        return original(q, *args, **kwargs)
+
+    monkeypatch.setattr(attention, 'full', traced)
+
+    def compare(results):
+        for actual in results[1:]:
+            same(actual.hidden, results[0].hidden)
+            same(actual.logits, results[0].logits)
+            assert actual.taps.keys() == results[0].taps.keys()
+            for key in actual.taps:
+                same(actual.taps[key], results[0].taps[key])
+        p = states[0].position
+        for state in states[1:]:
+            assert state.position == p
+            same(state.raw[:, :p], states[0].raw[:, :p])
+            assert torch.equal(state.inv[:, :p].view(torch.int32), states[0].inv[:, :p].view(torch.int32))
+            index = state._ring_index(p)
+            same(state.keys.index_select(1, index), states[0].keys.index_select(1, index))
+            same(state.values.index_select(1, index), states[0].values.index_select(1, index))
+
+    def prompt(rows, media=False):
+        start = states[0].position
+        ids = tokens[start:start + rows]
+        blocks = ((start + 6, start + 10),) if media else ()
+        embeddings = None
+        if media:
+            embeddings = raw_model.embed_tokens(torch.tensor(ids, device='cuda')).clone()
+            embeddings[6:10].fill_(.25)
+        results = []
+        for one, state in zip(models, states):
+            calls.clear()
+            results.append(one.forward(ids, state, prompt=True, embeddings=embeddings, vision_blocks=blocks))
+            assert calls == [(rows, one is model and mode == 'k', one is model and mode == 'kv')]
+        compare(results)
+
+    # Both <=16 parallel and >=17 sequential readers, and absolute32/512 boundaries.
+    for rows in (17, 15, 480, 512):
+        prompt(rows)
+    prompt(1024, media=True)
+    snapshot = states[0].snapshot()  # authoritative raw snapshot can restore every local cache owner
+    graphs = [Graphs(one, state, max_rows=5, span=1) for one, state in zip(models, states)]
+
+    def decode():
+        start = states[0].position
+        results = [graph.forward(tokens[start:start + 5], state, output_taps=True)
+                   for graph, state in zip(graphs, states)]
+        compare(results)
+
+    decode()
+    for state in states:
+        state.rollback(2050)
+    tokens[2050:2067] = [(i * 13 + 91) % 128 for i in range(17)]
+    prompt(17)  # overwrite rejected suffix before prompt consumption
+    for one, state in zip(models, states):
+        state.restore(snapshot)
+        if one is not raw_model:
+            state.derived_keys.fill_(float('nan'))
+            if state.derived_values is not None:
+                state.derived_values.fill_(float('nan'))
+            assert not state.global_cache_ready
+    decode()  # same captured key; regeneration must precede replay
+    for state in states:
+        state.restore(snapshot)
+    prompt(17, media=True)  # eager prompt entry also rebuilds restored prefixes

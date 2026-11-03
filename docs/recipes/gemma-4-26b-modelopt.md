@@ -289,3 +289,14 @@ incomplete after traffic invalidation; no speed or total physical-RAM gain and
 no winner is claimed. The [candidate contract and qualification scope](../gemma4-persistent-global-cache.md)
 retain exact identities, limits and pending P3/confirmation. ModelOpt defaults
 and the existing trig/shared prepared-prompt investigations remain distinct.
+
+
+The subsequent default-off `global_cache_prompt=True` constructor candidate
+consumes those same active K/KV buffers during prefill, with no added persistent
+bytes. It rejects redundant shared prepared-prompt/trig combinations. The fresh
+`07d1664f` / `f9e04667` capture passed same-source five-variant numerical/prefill-state
+qualification and scoped prompt-enabled K/KV service/media/cancel/131k checks.
+The original short-SSE counter assertion remains failed; separate observed-active
+checks passed. P3 remains unmeasured/traffic-blocked, no winner/default/deployment
+changes follow, and earlier checkpoints retain their own identities. See the
+[exact prompt qualification](../gemma4-persistent-global-cache.md#prompt-consumption-qualification-07d1664f).

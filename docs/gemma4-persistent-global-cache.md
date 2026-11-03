@@ -14,8 +14,8 @@ paths. Original raw BF16 projections and FP32 inverse RMS remain authoritative.
 Each State owns fixed per-global-layer BF16 derived K, and optionally V. The
 initial policy prepares every append, including prompt and visual rows, then uses
 derived attention only for decode/verification. Prompt attention retains its
-existing raw/trig or shared prepared-prompt choice. Persistent prompt consumption
-and deferred end-of-prompt preparation remain separate open candidates. Existing
+existing raw/trig or shared prepared-prompt choice. Prompt consumption is a separate default-off investigation below; deferred
+end-of-prompt preparation remains open. Existing
 trig tables and shared prompt scratch are retained and charged separately, with
 no implicit aliasing/reuse credit.
 
@@ -56,6 +56,32 @@ Maintained controls are `tests/test_gemma_persistent_global_cache.py` and
 uses fixed BF16 projection lookups to exercise actual State/eager/graph entries;
 it is not an NVFP4 full-model replacement or qualification.
 
+
+## New prompt-consumption candidate after checkpoint257ee662
+
+`global_cache_prompt=True` is a separate default-off constructor investigation
+for either `global_cache="k"` or `"kv"`. It consumes the already-appended cache
+for prompt/prefill through the same existing parallel/sequential readers; K-only
+retains original raw-normalized V. It adds no persistent buffers or full-history
+preparation workspace. Original append, normalization, BF16 casts, RoPE, column,
+dot/softmax/fold/masks, restore, media and graph contracts remain unchanged.
+
+Enabling it without K/KV, with `prepare_global_prompt=True`, or with
+`global_trig=True` is refused before allocation: those owners would be redundant
+and unused by this consumer. Previous decode-only combinations remain available
+when this new flag is false. No CLI/default/deployment selection changes.
+The new constructor/dispatch checks have not been established performance neutral.
+
+New-source CPU/GPU/full-model and scoped service quality have passed as recorded
+below; quiet performance remains unmeasured. Maintained controls compare original
+raw, prior decode-only
+and new prompt consumers, including real `_layers` dispatch at17/1024 rows,
+32/512 append boundaries, changed rejected suffixes, raw prefix restore before
+eager and captured graph use, and local bidirectional media blocks. The GPU body
+uses maintained tiny affine projection/router helpers with CT attention-storage
+arithmetic; it is not native NVFP4 full-model or vision-encoder qualification.
+The following named checkpoint results qualify only the earlier decode-only
+feature/source; none are inherited as prompt-consumption evidence.
 
 ## Qualification checkpoint, 2026-11-03
 
@@ -141,8 +167,9 @@ active client traffic.
 A meaningful quiet measurement opportunity, both raw-endpoint semantic checks,
 and independent whole-process confirmation remain required. The conditional
 memory-versus-small-prefill tradeoff supplies no numeric slowdown tolerance or
-decode-regression permission. Persistent prompt consumption and deferred
-preparation remain open candidates, and the final package still needs its
+decode-regression permission. Prompt consumption was still open at this named
+6a1a checkpoint; its later07d quality scope below does not prove speed. Deferred
+preparation remains open, and the final package still needs its
 bridge against actual production before promotion.
 
 Detailed source/build/control/quality and interrupted-run receipts are local
@@ -150,3 +177,57 @@ audit evidence under `gemma-aeon26b-optimization-20261102`; they are not bundled
 as a public performance-validation receipt. The maintained validation summary
 links here so old named-checkpoint pending labels do not imply a later image
 was tested by inheritance.
+
+
+## Prompt-consumption qualification, 07d1664f
+
+The new immutable GB10 capture is source
+`07d1664fc5a72334c7dca750f450ec7fd3de008725c01d289a0fb1a19dacc952`, runtime image
+`sha256:f9e046670587d1093b2cc24e1fb5d355893f499f308fa2da17d7e2c672fe9964`,
+verification image
+`sha256:40296aeb34cc10d1490b05c83ca2089c464f39e6744cabd01a0c1346f467c975`.
+It retains the CUDA13.4.3/SM12.1 and AEON90c/DFlash77d target identities above.
+Source CPU checks passed489 tests with15 documented CUDA skips; installed CPU
+passed158 and actual GPU components passed36 with no skips. Counts overlap and
+are not added. The two new GPU prompt cases exercise their internal mode/shape
+matrix; affine component bodies alone do not establish full-model correctness.
+
+Fresh independent NONE, K-decode, KV-decode, K-prompt and KV-prompt processes all
+used Delta4R16/depth4FP8/context131072, without shared prompt scratch/trig. All
+three native-short/code64K/prose64K generation/greedy/seeded-own-replay cases
+passed against fresh same-source NONE. The two long cases additionally passed
+complete teacher/effective-p and actual-q checks, and matched every valid
+raw/inverse/sliding and companion
+prefill fingerprint plus saved next-token logits, without hashing uninitialized
+tails or adding a State snapshot. Prompt on/off pairs retain exactly the same
+persistent-State byte count (K1.25GiB, KV2.5GiB derived storage); loaded allocator
+counts also matched within each pair. This is not a physical-memory or speed
+claim. Cold NONE and privately cloned warm candidate caches do not establish
+startup performance.
+
+A new prompt-enabled KV shadow passed16 individual API/media gates, all14
+directed reasoning/tool/bias regressions, tool history and cache transitions.
+The full helper remains failed/incomplete on its original short-SSE cancellation
+counter assertion; the summary was not rewritten. Separate observed-active
+visible decode and interior prefill probes required counter advance, idle and a
+consumed recovery request, and passed. K independently passed exact current-KV
+image/video Chat+Responses semantic/usage and stored-GET parity, audio400,
+cache/serial-ID transitions, active cancellation/recovery and full-context gates;
+unchanged native App/Harness protocol evidence is explicitly reused.
+
+Both modes exercised131056 native-framed prompt tokens plus16 usable reply
+slots at the unchanged131072 limit: greedy normal EOS and replay, seeded T1
+ignore-EOS16/length, ordinary EOS and exact own-replay IDs/cache behavior. This
+is synthetic capacity/usable-answer evidence, not general retrieval or vision
+accuracy; cancellation observations do not independently prove physical CUDA
+retirement. Both private shadows subsequently retired safely. No old6a1a
+numerical or service proof was silently inherited by this new capture.
+
+Performance remains open. New V4 six-configuration/twelve-process code is
+source-reviewed and passed34 CPU controls, but has not run timings. No quiet
+measurement window is assumed from idle polling. Earlier failed/partial V2/V3
+attempts remain preserved, with no mixed-version promotion. A complete matched
+series, both raw-A endpoint comparisons and independent confirmation are still
+required; no speed, equivalence, selected winner or production cutover is
+claimed. Defaults remain off. These later documentation edits preserve the
+runtime/test bytes of the immutable07d image and are not a newly built image.

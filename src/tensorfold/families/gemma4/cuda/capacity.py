@@ -61,7 +61,7 @@ def companion_kind(directory):
 
 
 def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=False,
-          max_rows=16, streams=1, keep=1, drafter_bits=16, prepare_global_prompt=False, lossless_head=False, spark_global_gqa=False, spark_sampled_q=False, global_trig=False, delta4_head=False, global_cache="none"):
+          max_rows=16, streams=1, keep=1, drafter_bits=16, prepare_global_prompt=False, lossless_head=False, spark_global_gqa=False, spark_sampled_q=False, global_trig=False, delta4_head=False, global_cache="none", global_cache_prompt=False):
     import torch
     from tensorfold.checkpoint_metadata import read_config
     from tensorfold.families import quant_method
@@ -70,7 +70,8 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
                         widest_forward)
     from .weights import Config, tensor_contract, validate_tensor_metadata
 
-    check_global_cache(global_cache)
+    check_global_cache(global_cache, prompt=global_cache_prompt,
+                       prepared_prompt=prepare_global_prompt, trig=global_trig)
     if type(global_trig) is not bool:
         raise ValueError("global_trig must be a bool")
     if type(spark_sampled_q) is not bool:

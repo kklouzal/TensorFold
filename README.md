@@ -1539,6 +1539,14 @@ sampling per thinking mode, depths and the per-prompt request schedule); the KL 
   remains failed; separate observed-active cancellation/recovery checks passed. The matched performance
   sequence is incomplete after production traffic invalidated an attempt, so no end-to-end gain,
   equivalence or winner is claimed. See the [exact scope and lifecycle](docs/gemma4-persistent-global-cache.md).
+  A newer default-off `global_cache_prompt=True` option consumes these same active buffers during
+  prefill without new persistent bytes; it rejects redundant shared prompt scratch/trig owners.
+  Fresh source `07d1664f` / image `f9e04667` passed 489 source CPU tests (15 documented CUDA skips),
+  158 installed tests, 36 GPU component tests, all five same-head full-model variants and scoped
+  prompt-enabled K/KV service quality. The original short-SSE counter probe remains failed; independent
+  observed-active cancellation/recovery passed. P3 remains unmeasured/traffic-blocked and no winner is
+  selected. [Exact qualification and limits](docs/gemma4-persistent-global-cache.md#prompt-consumption-qualification-07d1664f).
+
 - `tools/gemma4_cuda_proposal_qualify.py --plan PLAN --out NEW_DIRECTORY` compares the finite Gemma proposal
   policies on an operator-sealed 48/8,451-token prompt pair. Its plan binds the immutable image, source hashes,
   inputs, sampling and request order. Probability-byte and complete-sequence proofs run separately from timing;
