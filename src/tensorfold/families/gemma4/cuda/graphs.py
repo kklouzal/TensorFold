@@ -79,6 +79,10 @@ class Graphs:
         if not 1 <= rows <= self.max_rows:
             raise ValueError("Gemma4 graph forwards carry 1..max_rows rows")
         state.check(rows)
+        if self.target._global_cache != "none":
+            # Python executes before every replay; captured staged code alone
+            # cannot notice that raw-only snapshot restore invalidated derived rows.
+            self.target.prepare_global_cache(state)
         start = state.position
         chunks = self.chunks(start + rows)
         key = (rows, chunks, bool(output_taps))

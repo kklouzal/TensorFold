@@ -1525,10 +1525,20 @@ sampling per thinking mode, depths and the per-prompt request schedule); the KL 
   CPU/upload overlap, while the loader reports actual packed bytes and retains no raw GPU table.
   The immutable GB10 `f913d5f0` capture passed installed CPU, native word/lookup/tiling/FP8/graph,
   isolated failure, and same-image full-model equivalence gates. Recorded process CUDA allocation
-  counters were lower; API/media/full-context and uncontaminated performance gates remain pending.
-  This is not a total physical RAM or speed claim. The later documentation-only checkpoint is not a
-  newly tested image. See the measured scope and identities in the
-  [experimental Delta4 scope](docs/gemma4-cuda-validation.md#experimental-delta4-tied-table-integration).
+  counters were lower. The later `6a1a9716`/`38670db4` capture also passed the new-source component,
+  same-head full-model and scoped K/KV service quality gates described below. This is not a total
+  physical RAM or speed claim; documentation-only checkpoint changes are not a newly tested image.
+  See the historical [Delta4 numerical/memory scope](docs/gemma4-cuda-validation.md#experimental-delta4-tied-table-integration)
+  and the [later quality and incomplete performance scope](docs/gemma4-persistent-global-cache.md#qualification-checkpoint-2026-11-03).
+- CT Gemma has a separate default-off constructor investigation, `global_cache="k"` or `"kv"`,
+  retaining raw snapshots and fixed live derived global caches. Its initial policy prepares every append
+  and consumes derived data only for decode/verification. No CLI, deployment or winner is selected;
+  source `6a1a9716` passed installed CPU, 34 GPU component tests and fresh same-head NONE/K/KV
+  full-model equivalence. Private KV service checks and independent K full-context, cache, cancellation
+  and media follow-up passed with their recorded limits. The original short-SSE cancellation check
+  remains failed; separate observed-active cancellation/recovery checks passed. The matched performance
+  sequence is incomplete after production traffic invalidated an attempt, so no end-to-end gain,
+  equivalence or winner is claimed. See the [exact scope and lifecycle](docs/gemma4-persistent-global-cache.md).
 - `tools/gemma4_cuda_proposal_qualify.py --plan PLAN --out NEW_DIRECTORY` compares the finite Gemma proposal
   policies on an operator-sealed 48/8,451-token prompt pair. Its plan binds the immutable image, source hashes,
   inputs, sampling and request order. Probability-byte and complete-sequence proofs run separately from timing;

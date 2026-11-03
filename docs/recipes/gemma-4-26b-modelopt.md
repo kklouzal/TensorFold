@@ -274,3 +274,18 @@ limits. The prior ModelOpt container, image, model and cache remain stopped and
 preserved for rollback. Earlier results above retain their original checkpoint
 and image scope; native 262,144-token execution and general media quality are not
 qualified by this replacement.
+
+
+## Separate persistent CT global-cache investigation
+
+The native CT AEON target has default-off constructor-only K and K/V cache
+candidates, with original raw authority and raw-only snapshots. They are
+unselected and have no public CLI flag. The immutable `6a1a9716` / `38670db4`
+capture passed same-head NONE/K/KV numerical/full-model gates and scoped private
+K/KV service quality, including usable 131,072-context boundary/replay checks.
+The original short-SSE cancellation assertion remains failed, with separate
+observed-active cancellation/recovery evidence. Quiet matched performance is
+incomplete after traffic invalidation; no speed or total physical-RAM gain and
+no winner is claimed. The [candidate contract and qualification scope](../gemma4-persistent-global-cache.md)
+retain exact identities, limits and pending P3/confirmation. ModelOpt defaults
+and the existing trig/shared prepared-prompt investigations remain distinct.

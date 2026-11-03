@@ -61,15 +61,16 @@ def companion_kind(directory):
 
 
 def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=False,
-          max_rows=16, streams=1, keep=1, drafter_bits=16, prepare_global_prompt=False, lossless_head=False, spark_global_gqa=False, spark_sampled_q=False, global_trig=False, delta4_head=False):
+          max_rows=16, streams=1, keep=1, drafter_bits=16, prepare_global_prompt=False, lossless_head=False, spark_global_gqa=False, spark_sampled_q=False, global_trig=False, delta4_head=False, global_cache="none"):
     import torch
     from tensorfold.checkpoint_metadata import read_config
     from tensorfold.families import quant_method
     from tensorfold.cuda.capacity import Geometry, Weights, admit as common, headers
-    from .state import (GLOBAL_CHUNK, SEQUENTIAL_ROWS, capacity_bytes, companion_rings, sliding_slots,
+    from .state import (GLOBAL_CHUNK, SEQUENTIAL_ROWS, capacity_bytes, check_global_cache, companion_rings, derived_capacity_bytes, sliding_slots,
                         widest_forward)
     from .weights import Config, tensor_contract, validate_tensor_metadata
 
+    check_global_cache(global_cache)
     if type(global_trig) is not bool:
         raise ValueError("global_trig must be a bool")
     if type(spark_sampled_q) is not bool:
@@ -96,6 +97,8 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
         raise ValueError('Delta4 tied table is a CT-only investigation candidate')
     modelopt = method == "modelopt"
     bounds = None
+    if global_cache != "none" and not native:
+        raise ValueError('persistent global cache requires native CT arithmetic')
     if global_trig and not native:
         raise ValueError('global trig requires CT arithmetic')
     if lossless_head and not modelopt:
@@ -313,7 +316,9 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
         # One immutable FP32 cos/sin pair, shared by global layers and all
         # retained prefixes. This is target residency, never per-State storage.
         trig = slots * ROTATED * 8 if global_trig else 0
-        return retained + streams * workspace(slots) + prepared + trig
+        # Raw snapshots retain no derived tensors. Only live States own them.
+        derived = streams * derived_capacity_bytes(cfg, min(slots, cfg.max_position), global_cache)
+        return retained + streams * workspace(slots) + prepared + trig + derived
 
     if bounds is None and spark is None:
         host_staging = max(host_staging, staging) if delta4_head else staging

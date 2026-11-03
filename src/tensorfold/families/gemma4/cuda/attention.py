@@ -247,15 +247,18 @@ def _key(row, cols, inv, held, KW, ROUND: tl.constexpr):
 @triton.jit(do_not_specialize=["LENGTH"])
 def _prepare_global(RAW, INV, KW, FREQ, KP, VP, LENGTH,
                     HK: tl.constexpr, D: tl.constexpr, ROT: tl.constexpr,
-                    UW: tl.constexpr, BK: tl.constexpr, ROUND: tl.constexpr):
+                    UW: tl.constexpr, BK: tl.constexpr, ROUND: tl.constexpr,
+                    POS=None, APPEND: tl.constexpr = False, VALUES: tl.constexpr = True):
     """Materialize the existing tile's exact element operations once per key.
 
-    One target-owned pair is reused across layers on the exclusive stream.
-    Only [0,LENGTH) is initialized/visible; unused capacity is never read.
+    The caller owns destinations: shared prompt scratch or per-layer active
+    caches. Prefix mode writes [0,LENGTH); append mode writes LENGTH rows from
+    the device position. Unwritten capacity is never exposed to consumption.
     """
-    key = tl.program_id(0) * BK + tl.arange(0, BK)
+    offset = tl.program_id(0) * BK + tl.arange(0, BK)
+    key = offset + tl.load(POS) if APPEND else offset
     hk = tl.program_id(1)
-    held = key < LENGTH
+    held = offset < LENGTH
     row = RAW + (key[:, None] * HK + hk) * D
     inv = tl.load(INV + key * HK + hk, mask=held, other=0.0)[:, None]
     ca, cb, c0, c1, c2 = _global_columns(D, ROT, UW)
@@ -269,12 +272,13 @@ def _prepare_global(RAW, INV, KW, FREQ, KP, VP, LENGTH,
     tl.store(dst + c0[None, :], _key(row, c0, inv, held, KW, ROUND).to(tl.bfloat16), held[:, None])
     tl.store(dst + c1[None, :], _key(row, c1, inv, held, KW, ROUND).to(tl.bfloat16), held[:, None])
     tl.store(dst + c2[None, :], _key(row, c2, inv, held, KW, ROUND).to(tl.bfloat16), held[:, None])
-    dst = VP + (key[:, None] * HK + hk) * D
-    tl.store(dst + ca[None, :], _normalized(row, ca, inv, held).to(tl.bfloat16), held[:, None])
-    tl.store(dst + cb[None, :], _normalized(row, cb, inv, held).to(tl.bfloat16), held[:, None])
-    tl.store(dst + c0[None, :], _normalized(row, c0, inv, held).to(tl.bfloat16), held[:, None])
-    tl.store(dst + c1[None, :], _normalized(row, c1, inv, held).to(tl.bfloat16), held[:, None])
-    tl.store(dst + c2[None, :], _normalized(row, c2, inv, held).to(tl.bfloat16), held[:, None])
+    if VALUES:
+        dst = VP + (key[:, None] * HK + hk) * D
+        tl.store(dst + ca[None, :], _normalized(row, ca, inv, held).to(tl.bfloat16), held[:, None])
+        tl.store(dst + cb[None, :], _normalized(row, cb, inv, held).to(tl.bfloat16), held[:, None])
+        tl.store(dst + c0[None, :], _normalized(row, c0, inv, held).to(tl.bfloat16), held[:, None])
+        tl.store(dst + c1[None, :], _normalized(row, c1, inv, held).to(tl.bfloat16), held[:, None])
+        tl.store(dst + c2[None, :], _normalized(row, c2, inv, held).to(tl.bfloat16), held[:, None])
 
 
 @triton.jit
@@ -314,7 +318,7 @@ class GlobalTrig:
 @triton.jit
 def _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, KP, VP, COS, SIN, chunk, hk, pos, ok, hi,
                   HK: tl.constexpr, D: tl.constexpr, ROT: tl.constexpr, UW: tl.constexpr,
-                  CH: tl.constexpr, BK: tl.constexpr, ROUND: tl.constexpr, PREPARED: tl.constexpr, TRIG: tl.constexpr):
+                  CH: tl.constexpr, BK: tl.constexpr, ROUND: tl.constexpr, PREPARED: tl.constexpr, TRIG: tl.constexpr, KEYS_ONLY: tl.constexpr):
     """One chunk's online softmax over raw K=V tiles: K = RoPE(bf16(x*inv*w)) and V = bf16(x*inv).
 
     Each column part is rebuilt where it is consumed (scores first, values after the softmax update, the
@@ -334,7 +338,7 @@ def _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, KP, VP, COS, SIN, chun
         held = key < hi
         row = RAW + (key[:, None] * HK + hk) * D
         inv = tl.load(INV + key * HK + hk, mask=held, other=0.0)[:, None]
-        if PREPARED:
+        if PREPARED or KEYS_ONLY:
             kp = KP + (key[:, None] * HK + hk) * D
             scores = tl.dot(qa, tl.trans(tl.load(kp + ca[None, :], mask=held[:, None], other=0.0)))
             scores = tl.dot(qb, tl.trans(tl.load(kp + cb[None, :], mask=held[:, None], other=0.0)), scores)
@@ -385,7 +389,7 @@ def _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, KP, VP, COS, SIN, chun
 def _global(Q, RAW, INV, KW, FREQ, KP, VP, COS, SIN, POS, PO, PM, PL, OUT, R, SPLITS,
             H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr, ROT: tl.constexpr,
             UW: tl.constexpr, CH: tl.constexpr, BK: tl.constexpr, SEQUENTIAL: tl.constexpr,
-            ROUND: tl.constexpr, PREPARED: tl.constexpr, TRIG: tl.constexpr):
+            ROUND: tl.constexpr, PREPARED: tl.constexpr, TRIG: tl.constexpr, KEYS_ONLY: tl.constexpr):
     """Parallel: program (query tile, KV head, chunk) writes one partial. Sequential:
     program (query tile, KV head) folds every chunk in order and writes the output."""
     t, hk = tl.program_id(0), tl.program_id(1)
@@ -407,7 +411,7 @@ def _global(Q, RAW, INV, KW, FREQ, KP, VP, COS, SIN, POS, PO, PM, PL, OUT, R, SP
         o2 = tl.zeros((16, UW), tl.float32)
         for chunk in range(0, (hi + CH - 1) // CH):
             cm, cl, pa, pb, p0, p1, p2 = _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, KP, VP, COS, SIN, chunk, hk, pos, ok,
-                                                      hi, HK, D, ROT, UW, CH, BK, ROUND, PREPARED, TRIG)
+                                                      hi, HK, D, ROT, UW, CH, BK, ROUND, PREPARED, TRIG, KEYS_ONLY)
             m2, l2, oa = _fold_step(m, l, oa, cm, cl, pa)
             ob = _fold_step(m, l, ob, cm, cl, pb)[2]
             o0 = _fold_step(m, l, o0, cm, cl, p0)[2]
@@ -424,7 +428,7 @@ def _global(Q, RAW, INV, KW, FREQ, KP, VP, COS, SIN, POS, PO, PM, PL, OUT, R, SP
         chunk = tl.program_id(2)
         if chunk * CH < hi:
             m, l, oa, ob, o0, o1, o2 = _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, KP, VP, COS, SIN, chunk, hk, pos, ok,
-                                                     hi, HK, D, ROT, UW, CH, BK, ROUND, PREPARED, TRIG)
+                                                     hi, HK, D, ROT, UW, CH, BK, ROUND, PREPARED, TRIG, KEYS_ONLY)
             base = (r * H + head) * SPLITS + chunk
             prow = PO + base[:, None] * D
             tl.store(prow + ca[None, :], oa, mask=ok[:, None])
@@ -536,7 +540,7 @@ def sliding(q, keys, values, pos, block_starts, block_ends, *, window: int, slot
 
 
 def full(q, raw, inv, k_norm, inverse, pos, *, chunks: int, round_normalized: bool,
-         sequential: bool | None = None, prepared=None, trig: GlobalTrig | None = None):
+         sequential: bool | None = None, prepared=None, trig: GlobalTrig | None = None, prepared_keys=None):
     """Causal full attention over shared raw K=V rows.
 
     ``chunks`` bounds the absolute chunks of the forward's last row (a graph
@@ -547,6 +551,12 @@ def full(q, raw, inv, k_norm, inverse, pos, *, chunks: int, round_normalized: bo
     g = h // hk
     tiles = -(-rows * g // QUERY_TILE)
     kp, vp = (raw, raw) if prepared is None else prepared
+    if prepared_keys is not None:
+        if (prepared is not None or trig is not None or round_normalized
+                or prepared_keys.shape != raw.shape or prepared_keys.dtype != torch.bfloat16
+                or prepared_keys.device != raw.device or not prepared_keys.is_contiguous()):
+            raise ValueError('prepared keys require the matching CT global cache contract')
+        kp = prepared_keys
     if trig is not None and (type(trig) is not GlobalTrig or trig.inverse is not inverse
             or trig.context != raw.shape[0] or trig.cos.device != q.device
             or round_normalized or prepared is not None):
@@ -556,7 +566,8 @@ def full(q, raw, inv, k_norm, inverse, pos, *, chunks: int, round_normalized: bo
         sequential = rows >= SEQUENTIAL_ROWS
     out = torch.empty_like(q)
     common = dict(H=h, HK=hk, D=d, G=g, ROT=ROTATED, UW=(d - 2 * ROTATED) // 3, CH=GLOBAL_CHUNK, BK=GLOBAL_TILE,
-                  ROUND=round_normalized, PREPARED=prepared is not None, TRIG=trig is not None, **LAUNCH)
+                  ROUND=round_normalized, PREPARED=prepared is not None, TRIG=trig is not None,
+                  KEYS_ONLY=prepared_keys is not None, **LAUNCH)
     if sequential:
         _global[(tiles, hk, 1)](q, raw, inv, k_norm, inverse, kp, vp, cos, sin, pos, out, out, out, out, rows, 1, SEQUENTIAL=True,
                                 **common)
@@ -591,3 +602,19 @@ def full_prepared(q, raw, inv, k_norm, inverse, pos, *, chunks: int, length: int
         UW=(d - 2 * ROTATED) // 3, BK=GLOBAL_TILE, ROUND=round_normalized, **LAUNCH)
     return full(q, raw, inv, k_norm, inverse, pos, chunks=chunks,
                 round_normalized=round_normalized, prepared=scratch)
+
+
+def prepare_global_cache(raw, inv, k_norm, inverse, keys, values, *, rows: int, pos=None):
+    """Publish exact CT-derived rows into fixed State-owned arrays on its stream.
+
+    With pos, rows is an append count and the trusted caller has checked the
+    device position plus rows against State.context. Without pos, rebuild [0,rows).
+    Shapes/dtypes/ownership are established once by State/Target, not per append.
+    """
+    if not rows:
+        return
+    _, hk, d = raw.shape
+    _prepare_global[(-(-rows // GLOBAL_TILE), hk)](
+        raw, inv, k_norm, inverse, keys, keys if values is None else values, rows,
+        HK=hk, D=d, ROT=ROTATED, UW=(d - 2 * ROTATED) // 3, BK=GLOBAL_TILE, ROUND=False,
+        POS=pos, APPEND=pos is not None, VALUES=values is not None, **LAUNCH)

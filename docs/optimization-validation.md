@@ -18,6 +18,40 @@ the numerical contract before comparing speed. Quantization options have their
 own explicit quality tradeoffs; changing an optimization must not silently
 change the user's selected precision or sampling policy.
 
+## Persistent Gemma CT global cache investigation
+
+The default-off constructor K-only/K+V candidates retain raw-only snapshots and
+allocate derived buffers only for live States. They prepare every append and
+consume derived attention only for decode/verification; persistent prompt use
+remains open. Immutable GB10 source `6a1a9716` / runtime image `38670db4`
+passed 459 source CPU tests (15 documented CUDA skips), 128 installed CPU tests,
+34 GPU component tests without skips, and fresh NONE/K/KV full-model equivalence
+with Delta4 R16, raw attention and FP8 DFlash depth four. These overlapping
+suites are separate evidence, not an additive test total. Full lookup/private
+FP8 fields, teacher words/effective p, actual q, greedy identity, seeded replay,
+cache ownership and poisoned-derived/raw-restore regeneration passed.
+
+Private KV service API/media checks, directed reasoning/tool/bias regressions,
+cache transitions, active decode/prefill cancellation plus recovery, and usable
+131,056-prompt-token + 16-output-slot greedy/seeded replay checks passed their
+individual contracts. K independently passed full-context, cache, cancellation
+and exact KV media-response/usage parity; unchanged App/Harness protocol evidence
+is explicitly reused rather than described as a complete K API-suite rerun.
+The original short-SSE cancellation-counter case remains failed/unproven; its
+stronger observed-active diagnostics are separate results. Media execution is
+not general vision-semantic quality; audio remains unsupported.
+
+P3 remains incomplete. One V2 comparison failed on tuple/list graph-key
+representation despite identical retained JSON projections; the defect was
+corrected in a separately reviewed private V3 operator, preserving the failed
+run. A fresh V3 sequence then stopped during B warmup when actual production
+traffic invalidated it. No complete eight-process/final-A comparison exists,
+and no integrated gain, equivalence or production winner is selected. The
+[qualification checkpoint](gemma4-persistent-global-cache.md#qualification-checkpoint-2026-11-03)
+records full identities, allocator/physical-memory distinctions and remaining
+gates. These results retain their immutable image scope; later documentation
+changes do not constitute a new tested image.
+
 ## Adaptive V100 software evidence, 2026-10-26
 
 The published composed CPU checkpoint is frozen source tree `ff1883131180963a1de18bb00c74d6777466dcb9`

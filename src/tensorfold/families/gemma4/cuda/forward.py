@@ -19,7 +19,7 @@ from tensorfold.cuda.nvfp4 import checkpoint
 from tensorfold.families.qwen3_5.cuda import b16
 
 from . import attention, glue
-from .state import State, sliding_slots
+from .state import State, check_global_cache, sliding_slots
 from .weights import Gemma4Weights, TAP_LAYERS
 
 
@@ -96,9 +96,15 @@ class Gemma4Target:
     _plain_prompt = False
     _global_prompt_scratch = None
     _global_trig = None
+    _global_cache = "none"
 
     def __init__(self, weights: Gemma4Weights, *, prepare_global_prompt: bool = False,
-                 prompt_context: int | None = None, global_trig: bool = False, global_trig_prompt: bool = True):
+                 prompt_context: int | None = None, global_trig: bool = False, global_trig_prompt: bool = True, global_cache: str = "none"):
+        check_global_cache(global_cache)
+        if global_cache != "none" and weights.numerics != "ct_nvfp4":
+            raise ValueError('persistent global cache requires native CT arithmetic')
+        self._global_cache = global_cache
+        self._global_cache_owner = object() if global_cache != "none" else None
         if type(global_trig_prompt) is not bool:
             raise ValueError("global_trig_prompt must be a bool")
         self._global_trig_prompt = global_trig_prompt
@@ -193,7 +199,37 @@ class Gemma4Target:
             raise ValueError("prepared prompt KV state must use the admitted scratch context")
         if self._global_trig is not None and context != self._global_trig.context:
             raise ValueError("global trig state must use the admitted table context")
+        if self._global_cache != "none":
+            return State(self.config, self.device, context, min(rows, context),
+                         global_cache=self._global_cache, cache_owner=self._global_cache_owner)
         return State(self.config, self.device, context, min(rows, context))
+
+    def prepare_global_cache(self, state: State) -> None:
+        """Rebuild restored raw authority before eager use or captured replay.
+
+        Called on the exclusive owner stream. Derived arrays never enter raw
+        snapshots. No replay/capture may consume an invalid derived prefix.
+        """
+        if (state.global_cache != self._global_cache or state.cache_owner is not self._global_cache_owner):
+            raise ValueError('derived global State belongs to another target preparation contract')
+        if state.poisoned:
+            raise RuntimeError('cannot prepare a poisoned Gemma4 state; restore or replace it')
+        if state.global_cache_ready:
+            return
+        if self.device.type == 'cuda' and torch.cuda.is_current_stream_capturing():
+            raise RuntimeError('prepare restored global caches before starting graph capture')
+        try:
+            for i, layer in enumerate(self.weights.layers):
+                sliding, index = state.slot[i]
+                if not sliding:
+                    attention.prepare_global_cache(
+                        state.raw[index], state.inv[index], layer.k_norm, self._inverse[i],
+                        state.derived_keys[index],
+                        None if state.derived_values is None else state.derived_values[index], rows=state.position)
+            state.global_cache_ready = True
+        except BaseException:
+            state.poisoned = True
+            raise
 
     def raw_embed_tokens(self, ids: torch.Tensor) -> torch.Tensor:
         """Unscaled tied embedding rows for the official Torch DFlash contract."""
@@ -278,8 +314,9 @@ class Gemma4Target:
         proves IDs in range for this unchanged tensor. Invalid API input leaves
         state untouched; a failed GPU forward poisons it.
         """
-        if state.config != self.config or torch.device(state.device) != self.device:
-            raise ValueError("Gemma4 state belongs to another target")
+        if (state.config != self.config or torch.device(state.device) != self.device
+                or state.global_cache != self._global_cache):
+            raise ValueError("Gemma4 state belongs to another target/cache policy")
         if not isinstance(tokens, torch.Tensor):
             tokens = torch.tensor(tokens, dtype=torch.int64, device=self.device)
         if tokens.dtype not in (torch.int32, torch.int64) or tokens.device != self.device or tokens.ndim not in (1, 2):
@@ -299,6 +336,8 @@ class Gemma4Target:
         start = state.position
         block_starts, block_ends, longest = self._blocks(rows, start, vision_blocks)
         try:
+            if self._global_cache != "none":
+                self.prepare_global_cache(state)
             h = self.embed_tokens(tokens) if embeddings is None else embeddings
             state.pos.fill_(start)
             chunks = (start + rows - 1) // attention.GLOBAL_CHUNK + 1
@@ -327,6 +366,7 @@ class Gemma4Target:
         A failed launch poisons the state. Returns (hidden, logits or None, taps).
         """
         if (state.config != self.config or torch.device(state.device) != self.device
+                or state.global_cache != self._global_cache
                 or not isinstance(tokens, torch.Tensor) or tokens.ndim != 1
                 or tokens.dtype not in (torch.int32, torch.int64) or tokens.device != self.device):
             raise ValueError("Gemma4 staged forward needs this target's state and a device-local 1-D token buffer")
@@ -336,6 +376,8 @@ class Gemma4Target:
                 or chunks > -(-state.context // attention.GLOBAL_CHUNK)):
             raise ValueError("Gemma4 staged full-attention grid must cover the last row within the admitted context")
         try:
+            if self._global_cache != "none":
+                self.prepare_global_cache(state)
             return self._layers(self.embed_tokens(tokens), state, rows, chunks, None, None, 0, output_logits,
                                 output_taps, False)
         except BaseException:
@@ -397,7 +439,19 @@ class Gemma4Target:
                 raw, inv = state.raw[index], state.inv[index]
                 q = attention.prep_full(q_raw, k_raw, layer.q_norm, self._inverse[i], state.pos, raw, inv,
                                         eps=c.eps, round_normalized=mlx)
-                if prompt and self._global_prompt_scratch is not None:
+                if self._global_cache != "none":
+                    # Incremental policy: all appends, including media/prompt rows,
+                    # publish derived words. Only decode/verify consumes them.
+                    attention.prepare_global_cache(
+                        raw, inv, layer.k_norm, self._inverse[i], state.derived_keys[index],
+                        None if state.derived_values is None else state.derived_values[index],
+                        rows=rows, pos=state.pos)
+                if not prompt and self._global_cache != "none":
+                    cached = ({"prepared_keys": state.derived_keys[index]} if self._global_cache == "k"
+                              else {"prepared": (state.derived_keys[index], state.derived_values[index])})
+                    out = attention.full(q, raw, inv, layer.k_norm, self._inverse[i], state.pos, chunks=chunks,
+                                         round_normalized=False, **cached)
+                elif prompt and self._global_prompt_scratch is not None:
                     out = attention.full_prepared(
                         q, raw, inv, layer.k_norm, self._inverse[i], state.pos, chunks=chunks,
                         length=state.position + rows, round_normalized=mlx, scratch=self._global_prompt_scratch)

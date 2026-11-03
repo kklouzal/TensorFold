@@ -10,7 +10,9 @@ RoPE'd K and normalized V. A forward publishes its rows before attending, so the
 ring retains window - 1 earlier keys plus the widest forward (``rows``).
 Full-attention layers share K and V: only raw key rows and their FP32
 reciprocal RMS are stored, one row per position. Snapshots own detached copies,
-so branches never alias mutable cache storage.
+so branches never alias mutable cache storage. Optional target-bound derived K
+or K/V arrays belong only to the active State and never enter snapshots. Raw
+restore invalidates their prefix; the target must rebuild it before consumption.
 """
 
 from __future__ import annotations
@@ -66,18 +68,37 @@ class Snapshot:
     _layers: tuple[Any, Any, Any, Any]
 
 
+def check_global_cache(mode: str) -> None:
+    if type(mode) is not str or mode not in ("none", "k", "kv"):
+        raise ValueError('global_cache must be none, k, or kv')
+
+
+def derived_capacity_bytes(config: Config, context: int, mode: str) -> int:
+    """Live derived bytes only; snapshots retain the independent raw authority."""
+    check_global_cache(mode)
+    copies = 0 if mode == "none" else 1 if mode == "k" else 2
+    return sum(not config.sliding(i) for i in range(config.layers)) * context * config.global_kv_heads \
+        * config.global_head_dim * 2 * copies
+
+
 def ring_slots(config: Config, context: int, rows: int) -> int:
     return min(-(-(config.window + rows) // RING_ALIGN) * RING_ALIGN, -(-context // RING_ALIGN) * RING_ALIGN)
 
 
 class State:
-    def __init__(self, config: Config, device, context: int, rows: int = 16) -> None:
+    def __init__(self, config: Config, device, context: int, rows: int = 16, *,
+                 global_cache: str = "none", cache_owner=None) -> None:
         import torch
+        check_global_cache(global_cache)
+        if global_cache != "none" and cache_owner is None:
+            raise ValueError('derived global State requires its target preparation owner')
         if type(context) is not int or not 1 <= context <= config.max_position:
             raise ValueError("Gemma4 state context must fit the checkpoint's position limit")
         if type(rows) is not int or not 1 <= rows <= context:
             raise ValueError("Gemma4 forward rows must be positive and fit the admitted context")
         self.config, self.device, self.context, self.rows = config, device, context, rows
+        self.global_cache, self.cache_owner = global_cache, cache_owner
+        self.global_cache_ready = True   # Empty prefix. Restore invalidates derived data.
         self.position = 0
         self.high_water = 0
         self.poisoned = False
@@ -93,12 +114,16 @@ class State:
         self.raw = torch.empty((len(full), context, config.global_kv_heads, config.global_head_dim), dtype=bf16,
                                device=device)
         self.inv = torch.empty((len(full), context, config.global_kv_heads), dtype=torch.float32, device=device)
+        self.derived_keys = torch.empty_like(self.raw) if global_cache != "none" else None
+        self.derived_values = torch.empty_like(self.raw) if global_cache == "kv" else None
         # Device copy of the forward's first position: kernels and graphs read it.
         self.pos = torch.zeros((1,), dtype=torch.int32, device=device)
 
     @property
     def nbytes(self) -> int:
-        return sum(t.numel() * t.element_size() for t in (self.keys, self.values, self.raw, self.inv, self.pos))
+        return sum(t.numel() * t.element_size() for t in
+                   (self.keys, self.values, self.raw, self.inv, self.pos, self.derived_keys, self.derived_values)
+                   if t is not None)
 
     def check(self, rows: int) -> None:
         if self.poisoned:
@@ -111,6 +136,7 @@ class State:
     def reset(self) -> None:
         """Begin a new sequence in place; stale slots are never read before being rewritten."""
         self.position = self.high_water = 0
+        self.global_cache_ready = True
         self.poisoned = False
 
     def _ring_index(self, position: int):
@@ -143,6 +169,7 @@ class State:
         self.inv[:, :p].copy_(inv)
         # The restored ring holds exactly the snapshot's slots, so it inherits its rollback bound.
         self.position, self.high_water = p, snapshot.high_water
+        self.global_cache_ready = self.global_cache == "none" or p == 0
         self.poisoned = False
 
     def advance(self, rows: int) -> None:
@@ -162,7 +189,11 @@ class State:
 
 
 def capacity_bytes(config: Config, context: int, rows: int = 16) -> int:
-    """Persistent KV residency of one State; forward scratch and snapshots are additional."""
+    """Raw-authority KV bytes; live derived_capacity_bytes and forward scratch are additional.
+
+    The same raw-only geometry bounds detached snapshots; derived arrays are
+    charged separately only for live States, never multiplied by snapshot keep.
+    """
     ring = ring_slots(config, context, rows)
     total = 0
     for i in range(config.layers):
