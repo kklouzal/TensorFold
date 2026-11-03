@@ -2,6 +2,25 @@
 
 ## GB10 Gemma 4 26B-A4B deployment checkpoints
 
+Current production on port `8888` is the native CLI Delta4 deployment from
+2026-11-03: container `d1436c99`, image `98f6b664`, source UID `eecb4bbf` and
+source commit `93ab8ba2`. It explicitly enables `--delta4-head` at reuse16,
+retaining FP8 DFlash/depth4, BF16 KV, the 131072 window, vision, thinking and the
+owned Google template. `production-current` points to
+`deploy-delta4-cli-20261103-v1`; prior container `099563af`/image `8da9dff3`
+is retained stopped for rollback, and both speech services remain healthy.
+The image predates this documentation update; runtime and test bytes are unchanged.
+
+Qualification passed 408 source and 214 installed CPU checks, 14 probe controls,
+actual typed Delta4/R16/load/drain, 16 individual native CLI API/media checks,
+14 directed shadow checks and independent active decode/prefill cancellation
+and recovery. Post-cutover directed tools/bias/reasoning and plain/SSE math
+checks passed. The original weak short-SSE counter probe remains failed, so its
+overall API packet is not reported as wholly passed. The owner accepted the
+CPU-peak/startup tradeoff and deployed before independent performance confirmation;
+the earlier 07d/f9 exploratory 2-4% points are not confirmed gains for this image.
+See the [deployment scope](docs/gemma4-cuda-validation.md#experimental-delta4-tied-table-integration).
+
 The 2026-11-01 standalone production checkpoint on port `8888` ran
 [`llmfan46/gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic-NVFP4`](docs/recipes/gemma-4-26b-modelopt.md)
 revision `a9e81e26ed81f541ec1d7314e72c61237a24566f`, **without a drafter**.
@@ -81,11 +100,11 @@ embedding/output head. Its head exceeds the Sym8 raw-pool format limit and would
 expand by at least 408 MiB, so that codec is not selected for this checkpoint.
 Original CT calibrated attention/shared-MLP/expert arithmetic and BF16 routers
 and vision remain intact. Existing ModelOpt lossless support is unchanged.
-The separate `--delta4-head` flag now activates the existing lossless Delta4
+The separate `--delta4-head` flag activates the existing lossless Delta4
 table on Gemma CT NVFP4 MoE CUDA, at fixed reuse16 and default off. It is mutually
 exclusive with ModelOpt's `--lossless-head`. The owner accepted the observed
-decode/CPU-startup tradeoff and authorized deployment; this is not a claim of
-independent confirmation or a completed cutover.
+decode/CPU-startup tradeoff and authorized the completed 2026-11-03 native CLI
+cutover described above; independent performance confirmation remains separate.
 See the [AEON validation scope](docs/recipes/gemma-4-26b-modelopt.md#aeon-compressed-tensors-replacement-under-validation).
 
 ModelOpt MoE source admits an explicitly supplied DFlash companion with normal

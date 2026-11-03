@@ -244,20 +244,34 @@ is not supported by ModelOpt/dense Gemma or MLX and conflicts with the separate
 ModelOpt Sym8 `--lossless-head`. It does not enable persistent caches, shared
 prompt/trig tables, DFlash graphs or clipping. The owner accepted the observed
 2-4% decode versus CPU-peak/startup tradeoff and requested deployment; independent
-confirmation is not a cutover prerequisite. Public CLI/new-image API validation
-and the actual production replacement are separate executor steps; the historical
-image records below do not claim that replacement has already occurred.
+confirmation was not a cutover prerequisite. Production now runs this native
+CLI selection in container `d1436c99`, image `98f6b664`, source UID `eecb4bbf`,
+source commit `93ab8ba2`. These image/source identities precede this docs-only
+update; runtime/test bytes remain unchanged. `production-current` points to
+`deploy-delta4-cli-20261103-v1`; old container `099563af`/image `8da9dff3` and
+its volumes remain stopped for rollback. No confirmed shipping-image speed gain
+or global fastest/exhaustion claim follows from the earlier 07d/f9 pilot.
+
+The new capture passed 408 source and 214 installed CPU checks, 14 probe controls and
+actual typed Delta4/R16/load/drain verification. Ordinary native CLI shadow
+testing passed 16 individual API/media checks, 14 directed regressions and strong
+observed-active decode/prefill cancellation and recovery. Its original weak
+short-SSE counter assertion remains failed/incomplete, so the overall API packet
+is not labeled fully passed. Post-cutover 14 directed tools/bias/reasoning and
+exact plain/SSE math checks passed. Both speech services remain healthy.
 
 This checkpoint's full payload matched its publisher SHA, and the actual header
-inventory passed CT/vision validation. It now serves port `8888` in image
-`8da9dff3…`, source UID `6f3e809f…`, with BF16 KV, the configured 131,072-token
+inventory passed CT/vision validation. The preceding 2026-11-02 deployment used
+image `8da9dff3…`, source UID `6f3e809f…`. Current `98f6b664` serves port `8888`
+with BF16 KV, the configured 131,072-token
 window and private FP8 DFlash at depth four. The deployment explicitly binds the
 owned Google template `gemma4-chat-template-google-4d7ae498.jinja`; its SHA256 is
 `ae53464bf3be25802b3a5b37def7fd89667067d7577049b3b2d74c4d8de4c6d4`.
 The native AEON template and checkpoint remain unchanged. This override preserves
 the existing OpenAI tool-history and current-turn reasoning replay contract.
 
-Installed-source checks passed 2,356 CPU cases with five MLX skips and twelve
+The following checks retain the preceding 8da9/6f3 capture's scope, separate from
+the current Delta4 cutover above. Installed-source checks passed 2,356 CPU cases with five MLX skips and twelve
 explicit off-target SM70 deselections. The actual candidate passed text, SSE,
 tools, structured output, thinking controls, image/video execution, Responses,
 greedy serial/speculative equality and sampled cache replay. Four consumed

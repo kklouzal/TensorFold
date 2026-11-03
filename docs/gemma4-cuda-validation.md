@@ -7,10 +7,38 @@ The CT-only path is default-off (`delta4_head=False`), with bounded internal
 at fixed reuse16 on Gemma CT NVFP4 MoE CUDA; it does not select an alternative
 activation precision. The owner accepted the observed decode/CPU-startup tradeoff
 and authorized deployment without making independent confirmation a prerequisite.
-CLI wiring leaves backend math unchanged; new-image public CLI/API verification
-and the actual cutover remain executor gates. This is not a global performance
-winner. The existing raw R16 CT path and ModelOpt/Sym8 investigation remain
+CLI wiring leaves backend math unchanged. The 2026-11-03 native CLI cutover is
+complete and healthy on port 8888: container
+`d1436c99ede93c41cd3b403895c6957b73be7c4717c1427daa781604e6bb8714`,
+image `sha256:98f6b664df48775bd92df3e615387904538f4ee8efa7daa1933202d369e6f807`,
+source UID `eecb4bbf61d1a8ba9b0d648eb7776a20f844309574ed88b33f4bcd92b992d0de`,
+source commit `93ab8ba241da2ce195626332832d135b1552cf46`.
+These deployed build identities precede this documentation-only update;
+runtime/test bytes remain unchanged. The existing raw R16 CT path and ModelOpt/Sym8 investigation remain
 separate and unchanged by default.
+
+The ordinary native command explicitly adds only `--delta4-head`/reuse16,
+preserving DFlash8/depth4, context131072, BF16 KV, vision, thinking/aliases and
+the owned Google template. DFlash graphs, clipping, shared/persistent caches and
+trig remain off. `production-current` selects `deploy-delta4-cli-20261103-v1`;
+old container `099563af`/image `8da9dff3` and its volumes remain stopped for rollback.
+Both speech services retained their original running instances.
+
+The new source passed 408 CPU checks and 214 installed checks, plus 14 probe CPU
+controls and actual native typed Delta4/R16/no-raw-facade/loader-retirement,
+capacity and generation/drain checks. Ordinary native CLI shadow testing passed
+16 individual API/media actions, 14 directed regressions and independent
+observed-active decode/prefill cancellation and recovery. The original weak
+short-SSE cancellation-counter assertion remains failed/incomplete; the API
+packet's overall flag remains false. After cutover, 14 directed production
+tools/bias/reasoning checks and exact plain/SSE math output passed.
+
+The final receipt `delta4-cli-cutover-v1/deployment-final.json` has SHA256
+`97f6f6c09ba759d1d1d5cd854b1cbb86f37794f5bea278776b3fef82c38167be`.
+The user accepted CPU peak/startup costs and explicitly authorized deployment
+before independent confirmation. Performance evidence remains the stopped 07d/f9
+exploratory screen; no confirmed shipping-image gain, global fastest result or
+exhaustion follows. Earlier source/image results below retain their own scope.
 
 One owned `tensorfold.bf16.delta4.v1` descriptor stores64-word groups in100 base
 bytes plus128 raw bytes when the exponent span exceeds15. Encoding preserves
@@ -86,11 +114,12 @@ Concurrent client traffic and a production restart of unknown cause also
 confound host-memory and startup/timing comparisons. No speed conclusion is
 drawn from these correctness runs.
 
-API/media, ordinary EOS, full131K execution, tools/schema/streaming/reasoning/
-bias/cancellation and uncontaminated end-to-end performance remain pending.
-The feature remains default-off and unselected; any memory-versus-small-prefill
-tradeoff requires the complete results. No numeric tolerance or decode-regression
-authority is inferred. A final selected source/image still needs its own bridge.
+Those original f913 numerical/resource runs did not establish API/media or shipping
+performance. The later eecb/98f6 native CLI/API qualification and user-authorized
+cutover are recorded above; earlier counts and image identities are not relabeled.
+The parser remains default off, with production explicitly selecting Delta4R16.
+Independent shipping-image performance confirmation and further optimization
+remain open; no numeric prefill tolerance or decode-regression margin is invented.
 
 ## Sampled proposal CPU repair, 2026-10-21
 
