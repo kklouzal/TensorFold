@@ -159,7 +159,8 @@ def _calibrations(reader, native: dict) -> dict[str, tuple[float, float, float]]
     return result
 
 
-def load(model_dir: str | Path, device: str = "cuda", *, vision: bool = False, status=None) -> Gemma4Weights:
+def load(model_dir: str | Path, device: str = "cuda", *, vision: bool = False, status=None,
+         delta4_head: bool = False, delta4_reuse: int = 16) -> Gemma4Weights:
     """Load original CT payloads once, selecting calibrated FP4xFP4 on SM12.x."""
     import torch
     from tensorfold.checkpoint_metadata import read_config, read_json
@@ -170,6 +171,13 @@ def load(model_dir: str | Path, device: str = "cuda", *, vision: bool = False, s
     from tensorfold.families.qwen3_5.cuda.weights import Plain
     from .nvfp4_experts import Workspace, load_experts
     from .head import select_head
+
+    if type(delta4_head) is not bool:
+        raise ValueError('delta4_head must be a bool')
+    if type(delta4_reuse) is not int or delta4_reuse not in (1, 2, 4, 8, 16):
+        raise ValueError('Delta4 reuse rows must be1/2/4/8/16')
+    if not delta4_head and delta4_reuse != 16:
+        raise ValueError('Delta4 reuse investigation requires delta4_head')
     from .modelopt_weights import ModelOptLoadStatus, _finish
 
     if status is None:
@@ -192,6 +200,7 @@ def load(model_dir: str | Path, device: str = "cuda", *, vision: bool = False, s
     dev = result = embed = norm = tower = projector = workspace = None
     layers = []
     fields = payloads = experts = None
+    head_cpu = head_encoded = head_transfer = gpu_head = None
     read_failed = [False]
     primary = drain_error = close_error = None
     try:
@@ -220,6 +229,8 @@ def load(model_dir: str | Path, device: str = "cuda", *, vision: bool = False, s
         layers = [None] * c.layers
         status.owners.update(payloads=payloads, layers=layers, embed=None, workspace=None, result=None,
                              read_failed=read_failed)
+        if delta4_head:
+            status.owners.update(head_cpu=None, head_encoded=None, head_transfer=None, gpu_head=None)
         def read(name, device=dev):
             status.gpu_work_started = True
             status.safe_to_release = False
@@ -241,7 +252,33 @@ def load(model_dir: str | Path, device: str = "cuda", *, vision: bool = False, s
             result = Fp4Linear.from_checkpoint(packed, scales, weight, act=act, act_inverse=inverse)
             payloads[:] = [None, None]
             return result
-        embed = select_head(Plain(read(CT_PREFIX + "embed_tokens.weight")))
+        if delta4_head:
+            from tensorfold.cuda.b16_delta4 import pack, to_cuda, TransferStatus
+            from .head import Delta4Table
+
+            # This new CPU-owned read never uploads or retains a raw GPU table.
+            head_cpu = reader.get(CT_PREFIX + 'embed_tokens.weight', 'cpu')
+            status.owners['head_cpu'] = head_cpu
+            head_encoded = pack(head_cpu)
+            status.owners['head_encoded'] = head_encoded
+            head_transfer = TransferStatus()
+            status.owners['head_transfer'] = head_transfer
+            try:
+                gpu_head = to_cuda(head_encoded, device=dev, status=head_transfer)
+            finally:
+                status.gpu_work_started = head_transfer.started
+                status.safe_to_release = head_transfer.safe_to_release
+                if head_transfer.started and not head_transfer.safe_to_release:
+                    # Includes failed copy/fence ENTRY: retain actual transfer
+                    # owners and forbid an outer fence/reader-close retry.
+                    read_failed[0] = True
+            status.owners['gpu_head'] = gpu_head
+            embed = Delta4Table(gpu_head, c.max_position, reuse_rows=delta4_reuse)
+            # Transfer's successful fence retired all CPU source consumers.
+            head_cpu = head_encoded = None
+            status.owners['head_cpu'] = status.owners['head_encoded'] = None
+        else:
+            embed = select_head(Plain(read(CT_PREFIX + "embed_tokens.weight")))
         status.owners['embed'] = embed
         norm = read(CT_PREFIX + "norm.weight")
         workspace = Workspace()
@@ -281,6 +318,11 @@ def load(model_dir: str | Path, device: str = "cuda", *, vision: bool = False, s
                 tower[name] = read('model.' + name)
         projector = Plain(read("model.embed_vision.embedding_projection.weight")) if vision else None
         result = Gemma4Weights(c, embed, norm, layers, norm.device, raw, tower, projector, numerics="ct_nvfp4")
+        if delta4_head:
+            result.consumption_receipt = {'delta4_head': {
+                'schema': embed.layout, 'packed_bytes': embed.nbytes(), 'raw_source_bytes': c.vocab * c.hidden * 2,
+                'raw_escape_blocks': len(embed.packed.raw), 'raw_gpu_table_retained': False,
+                'reuse_rows': delta4_reuse, 'selection': 'experimental; no performance policy selected'}}
         result.precision = "checkpoint"
         status.owners['result'] = result
     except BaseException as error:
@@ -305,6 +347,7 @@ def load(model_dir: str | Path, device: str = "cuda", *, vision: bool = False, s
             if primary is not None or close_error is not None:
                 result = embed = norm = tower = projector = workspace = layers = None
             fields = payloads = experts = None
+            head_cpu = head_encoded = head_transfer = gpu_head = None
             reader = None
     authority = primary if primary is not None else drain_error if drain_error is not None else close_error
     _native_cause = BaseException.__cause__.__get__(authority) if authority is not None else None

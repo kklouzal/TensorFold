@@ -278,9 +278,43 @@ def _prepare_global(RAW, INV, KW, FREQ, KP, VP, LENGTH,
 
 
 @triton.jit
-def _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, KP, VP, chunk, hk, pos, ok, hi,
+def _global_trig(FREQ, COS, SIN, LENGTH: tl.constexpr, ROT: tl.constexpr, BK: tl.constexpr):
+    key = tl.program_id(0) * BK + tl.arange(0, BK)
+    ca = tl.arange(0, ROT)
+    angle = key.to(tl.float32)[:, None] * tl.load(FREQ + ca)[None, :]
+    tl.store(COS + key[:, None] * ROT + ca[None, :], tl.cos(angle), mask=(key < LENGTH)[:, None])
+    tl.store(SIN + key[:, None] * ROT + ca[None, :], tl.sin(angle), mask=(key < LENGTH)[:, None])
+
+
+class GlobalTrig:
+    """Target-owned immutable FP32 tables bound to one frequency tensor and context.
+
+    Frequencies and table payloads must never change, including between captured
+    graph replays. The target retains this owner for the entire graph lifetime.
+    No state/snapshot owns or copies these position-only derived values.
+    """
+
+    def __init__(self, inverse, context: int):
+        if (type(context) is not int or not 0 < context < 2**31 // ROTATED
+                or inverse.dtype != torch.float32 or inverse.ndim != 1
+                or inverse.numel() < ROTATED or not inverse.is_contiguous()
+                or inverse.device.type != 'cuda'):
+            raise ValueError('global trig tables require contiguous CUDA FP32 frequencies and a valid context')
+        self.inverse, self.context = inverse, context
+        self.cos = torch.empty((context, ROTATED), dtype=torch.float32, device=inverse.device)
+        self.sin = torch.empty_like(self.cos)
+        _global_trig[(-(-context // GLOBAL_TILE),)](
+            inverse, self.cos, self.sin, LENGTH=context, ROT=ROTATED, BK=GLOBAL_TILE, **LAUNCH)
+
+    @property
+    def nbytes(self):
+        return self.context * ROTATED * 8
+
+
+@triton.jit
+def _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, KP, VP, COS, SIN, chunk, hk, pos, ok, hi,
                   HK: tl.constexpr, D: tl.constexpr, ROT: tl.constexpr, UW: tl.constexpr,
-                  CH: tl.constexpr, BK: tl.constexpr, ROUND: tl.constexpr, PREPARED: tl.constexpr):
+                  CH: tl.constexpr, BK: tl.constexpr, ROUND: tl.constexpr, PREPARED: tl.constexpr, TRIG: tl.constexpr):
     """One chunk's online softmax over raw K=V tiles: K = RoPE(bf16(x*inv*w)) and V = bf16(x*inv).
 
     Each column part is rebuilt where it is consumed (scores first, values after the softmax update, the
@@ -310,8 +344,12 @@ def _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, KP, VP, chunk, hk, pos
         else:
             ka = _key(row, ca, inv, held, KW, ROUND)
             kb = _key(row, cb, inv, held, KW, ROUND)
-            angle = key.to(tl.float32)[:, None] * tl.load(FREQ + ca)[None, :]
-            c, s = tl.cos(angle), tl.sin(angle)
+            if TRIG:
+                c = tl.load(COS + key[:, None] * ROT + ca[None, :], mask=held[:, None], other=0.0)
+                s = tl.load(SIN + key[:, None] * ROT + ca[None, :], mask=held[:, None], other=0.0)
+            else:
+                angle = key.to(tl.float32)[:, None] * tl.load(FREQ + ca)[None, :]
+                c, s = tl.cos(angle), tl.sin(angle)
             scores = tl.dot(qa, tl.trans((ka * c - kb * s).to(tl.bfloat16)))
             scores = tl.dot(qb, tl.trans((ka * s + kb * c).to(tl.bfloat16)), scores)
             scores = tl.dot(q0, tl.trans(_key(row, c0, inv, held, KW, ROUND).to(tl.bfloat16)), scores)
@@ -344,10 +382,10 @@ def _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, KP, VP, chunk, hk, pos
 
 
 @triton.jit
-def _global(Q, RAW, INV, KW, FREQ, KP, VP, POS, PO, PM, PL, OUT, R, SPLITS,
+def _global(Q, RAW, INV, KW, FREQ, KP, VP, COS, SIN, POS, PO, PM, PL, OUT, R, SPLITS,
             H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr, ROT: tl.constexpr,
             UW: tl.constexpr, CH: tl.constexpr, BK: tl.constexpr, SEQUENTIAL: tl.constexpr,
-            ROUND: tl.constexpr, PREPARED: tl.constexpr):
+            ROUND: tl.constexpr, PREPARED: tl.constexpr, TRIG: tl.constexpr):
     """Parallel: program (query tile, KV head, chunk) writes one partial. Sequential:
     program (query tile, KV head) folds every chunk in order and writes the output."""
     t, hk = tl.program_id(0), tl.program_id(1)
@@ -368,8 +406,8 @@ def _global(Q, RAW, INV, KW, FREQ, KP, VP, POS, PO, PM, PL, OUT, R, SPLITS,
         o1 = tl.zeros((16, UW), tl.float32)
         o2 = tl.zeros((16, UW), tl.float32)
         for chunk in range(0, (hi + CH - 1) // CH):
-            cm, cl, pa, pb, p0, p1, p2 = _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, KP, VP, chunk, hk, pos, ok,
-                                                      hi, HK, D, ROT, UW, CH, BK, ROUND, PREPARED)
+            cm, cl, pa, pb, p0, p1, p2 = _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, KP, VP, COS, SIN, chunk, hk, pos, ok,
+                                                      hi, HK, D, ROT, UW, CH, BK, ROUND, PREPARED, TRIG)
             m2, l2, oa = _fold_step(m, l, oa, cm, cl, pa)
             ob = _fold_step(m, l, ob, cm, cl, pb)[2]
             o0 = _fold_step(m, l, o0, cm, cl, p0)[2]
@@ -385,8 +423,8 @@ def _global(Q, RAW, INV, KW, FREQ, KP, VP, POS, PO, PM, PL, OUT, R, SPLITS,
     else:
         chunk = tl.program_id(2)
         if chunk * CH < hi:
-            m, l, oa, ob, o0, o1, o2 = _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, KP, VP, chunk, hk, pos, ok,
-                                                     hi, HK, D, ROT, UW, CH, BK, ROUND, PREPARED)
+            m, l, oa, ob, o0, o1, o2 = _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, KP, VP, COS, SIN, chunk, hk, pos, ok,
+                                                     hi, HK, D, ROT, UW, CH, BK, ROUND, PREPARED, TRIG)
             base = (r * H + head) * SPLITS + chunk
             prow = PO + base[:, None] * D
             tl.store(prow + ca[None, :], oa, mask=ok[:, None])
@@ -498,7 +536,7 @@ def sliding(q, keys, values, pos, block_starts, block_ends, *, window: int, slot
 
 
 def full(q, raw, inv, k_norm, inverse, pos, *, chunks: int, round_normalized: bool,
-         sequential: bool | None = None, prepared=None):
+         sequential: bool | None = None, prepared=None, trig: GlobalTrig | None = None):
     """Causal full attention over shared raw K=V rows.
 
     ``chunks`` bounds the absolute chunks of the forward's last row (a graph
@@ -509,19 +547,24 @@ def full(q, raw, inv, k_norm, inverse, pos, *, chunks: int, round_normalized: bo
     g = h // hk
     tiles = -(-rows * g // QUERY_TILE)
     kp, vp = (raw, raw) if prepared is None else prepared
+    if trig is not None and (type(trig) is not GlobalTrig or trig.inverse is not inverse
+            or trig.context != raw.shape[0] or trig.cos.device != q.device
+            or round_normalized or prepared is not None):
+        raise ValueError('global trig table belongs to a different frequency/context/arithmetic contract')
+    cos, sin = (pos, pos) if trig is None else (trig.cos, trig.sin)
     if sequential is None:
         sequential = rows >= SEQUENTIAL_ROWS
     out = torch.empty_like(q)
     common = dict(H=h, HK=hk, D=d, G=g, ROT=ROTATED, UW=(d - 2 * ROTATED) // 3, CH=GLOBAL_CHUNK, BK=GLOBAL_TILE,
-                  ROUND=round_normalized, PREPARED=prepared is not None, **LAUNCH)
+                  ROUND=round_normalized, PREPARED=prepared is not None, TRIG=trig is not None, **LAUNCH)
     if sequential:
-        _global[(tiles, hk, 1)](q, raw, inv, k_norm, inverse, kp, vp, pos, out, out, out, out, rows, 1, SEQUENTIAL=True,
+        _global[(tiles, hk, 1)](q, raw, inv, k_norm, inverse, kp, vp, cos, sin, pos, out, out, out, out, rows, 1, SEQUENTIAL=True,
                                 **common)
         return out
     po = torch.empty((rows, h, chunks, d), dtype=torch.float32, device=q.device)
     pm = torch.empty((rows, h, chunks), dtype=torch.float32, device=q.device)
     pl = torch.empty_like(pm)
-    _global[(tiles, hk, chunks)](q, raw, inv, k_norm, inverse, kp, vp, pos, po, pm, pl, out, rows, chunks,
+    _global[(tiles, hk, chunks)](q, raw, inv, k_norm, inverse, kp, vp, cos, sin, pos, po, pm, pl, out, rows, chunks,
                                  SEQUENTIAL=False, **common)
     _merge[(rows, h, d // MERGE_COLUMNS)](po, pm, pl, out, pos, chunks, H=h, D=d, DS=MERGE_COLUMNS,
                                           CH=GLOBAL_CHUNK, GLOBAL=True, num_warps=1, enable_fp_fusion=False)
@@ -533,7 +576,7 @@ def full_prepared(q, raw, inv, k_norm, inverse, pos, *, chunks: int, length: int
     """Prompt candidate: materialize current layer once, consume on same stream.
 
     The target owns fixed full-context scratch. No view survives this call's
-    consumption or enters prefix snapshots. Decode always uses raw attention.
+    consumption or enters prefix snapshots. Decode uses the separate raw/trig path.
     """
     keys, values = scratch
     if (type(length) is not int or not 0 < length <= raw.shape[0]

@@ -61,7 +61,7 @@ def companion_kind(directory):
 
 
 def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=False,
-          max_rows=16, streams=1, keep=1, drafter_bits=16, prepare_global_prompt=False, lossless_head=False, spark_global_gqa=False, spark_sampled_q=False):
+          max_rows=16, streams=1, keep=1, drafter_bits=16, prepare_global_prompt=False, lossless_head=False, spark_global_gqa=False, spark_sampled_q=False, global_trig=False, delta4_head=False):
     import torch
     from tensorfold.checkpoint_metadata import read_config
     from tensorfold.families import quant_method
@@ -70,6 +70,8 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
                         widest_forward)
     from .weights import Config, tensor_contract, validate_tensor_metadata
 
+    if type(global_trig) is not bool:
+        raise ValueError("global_trig must be a bool")
     if type(spark_sampled_q) is not bool:
         raise ValueError("spark_sampled_q must be a bool")
     if type(spark_global_gqa) is not bool:
@@ -79,6 +81,8 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
         validate_global_gqa_torch(torch)
     if type(lossless_head) is not bool:
         raise ValueError("lossless_head must be a bool")
+    if type(delta4_head) is not bool:
+        raise ValueError('delta4_head must be a bool')
     if lossless_head and max_rows > 16:
         raise ValueError("lossless target head verification currently admits at most16 rows")
     if type(prepare_global_prompt) is not bool:
@@ -88,12 +92,16 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
     media_geometry = None
     method = quant_method(raw)
     native = method == "compressed-tensors"
+    if delta4_head and not native:
+        raise ValueError('Delta4 tied table is a CT-only investigation candidate')
     modelopt = method == "modelopt"
     bounds = None
+    if global_trig and not native:
+        raise ValueError('global trig requires CT arithmetic')
     if lossless_head and not modelopt:
         raise ValueError("lossless_head is a ModelOpt-only investigation candidate")
-    if prepare_global_prompt and not modelopt:
-        raise ValueError("prepared prompt KV is a ModelOpt-only investigation candidate")
+    if prepare_global_prompt and not (native or modelopt):
+        raise ValueError("prepared prompt KV requires CT or ModelOpt arithmetic")
     if native:
         from .nvfp4_weights import CT_PARTS, ct_tensor_contract, validate_headers
         cfg = validate_headers(raw, entries, vision=vision)
@@ -123,6 +131,11 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
             names.update(vision_shapes(raw))
             names.update('embed_vision.embedding_projection' + suffix
                          for suffix in ('.weight', '.scales', '.biases'))
+    if global_trig:
+        from .attention import ROTATED, check_geometry
+        check_geometry(cfg)
+        if all(cfg.sliding(i) for i in range(cfg.layers)):
+            raise ValueError('global trig requires at least one full-attention layer')
     if vision:
         from .vision import processor_geometry
         media_geometry = processor_geometry(model_dir)
@@ -143,6 +156,23 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
     resident = sum(sizes.values()) + padding
     staging = 3 * max(sizes.values(), default=0)
     host_staging = staging
+    delta4_bounds = None
+    delta4_cpu_peak = 0
+    delta4_uma = False
+    if delta4_head:
+        from tensorfold.cuda.b16_delta4 import header_bounds
+        from tensorfold.cuda.capacity import admit_host_commitment, unified
+
+        delta4_bounds = header_bounds((cfg.vocab, cfg.hidden))
+        resident += delta4_bounds['max_valid_encoded_bytes'] - delta4_bounds['raw_source_bytes']
+        # Do not replace a data-dependent escape bound with the AEON census.
+        # CPU source+encoded/temporaries and reader staging coexist until the
+        # upload fence; source retirement receives no speculative reuse credit.
+        delta4_cpu_peak = (delta4_bounds['raw_source_bytes'] + delta4_bounds['max_valid_encoded_bytes']
+                          + delta4_bounds['pack_temporary_bytes'] + 2 * (64 << 20) + 2 * 4096)
+        host_staging = max(host_staging, delta4_cpu_peak)
+        delta4_uma = unified(torch)
+        admit_host_commitment(delta4_cpu_peak)
     if bounds is not None:
         from tensorfold.cuda.capacity import admit_host_commitment, unified
         resident = bounds["resident"]
@@ -204,7 +234,7 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
             resident += sum(resident_bytes('fp8', n, k) for n, k in shapes)
             resident += resident_bytes('fp8', cfg.vocab, cfg.hidden)
             extra_head_chunk = 0
-            if lossless_head:
+            if lossless_head or delta4_head:
                 from tensorfold.cuda.requant import CHUNK_ROWS
                 head_rows = min(CHUNK_ROWS, cfg.vocab, cfg.max_position)
                 # NEW lookup IDs8 + rawBF16 K*2 + returned FP8 K + F32scale4.
@@ -280,10 +310,18 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
             # Derived full KV belongs only to the live bridge, never snapshots.
             retained += (streams * spark.state_bytes(min(slots, spark.max_position))
                          + keep * spark.snapshot_bytes(min(slots, spark.max_position)))
-        return retained + streams * workspace(slots) + prepared
+        # One immutable FP32 cos/sin pair, shared by global layers and all
+        # retained prefixes. This is target residency, never per-State storage.
+        trig = slots * ROTATED * 8 if global_trig else 0
+        return retained + streams * workspace(slots) + prepared + trig
 
     if bounds is None and spark is None:
-        host_staging = staging
+        host_staging = max(host_staging, staging) if delta4_head else staging
+    if delta4_uma:
+        # Charge the CPU encoding owners once to UMA device staging only
+        # after later companion staging is known. Host accounting retains its
+        # independent CPU bound rather than importing that UMA sum again.
+        staging += delta4_cpu_peak
     result = common(model_dir, context, context_explicit, torch, Geometry(geometry, 0, maximum_slots=131072 if spark_global_gqa else None),
                   lambda name, info: (0, 0),
                   weight_estimator=lambda _: (Weights(resident, staging), host_staging),
@@ -295,6 +333,8 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
 
     if lossless_head:
         result['lossless_head'] = bounds['lossless_head']
+    if delta4_head:
+        result['delta4_head'] = delta4_bounds
     if spark_global_gqa:
         result['spark_global_gqa'] = {'scope': 'optional forced-efficient global attention only',
                                       'context': result['context_window'], 'unqualified_prototype': True}

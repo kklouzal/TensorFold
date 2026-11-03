@@ -8,6 +8,7 @@ there is no new weight authority, quantization, scratch cache or runtime flag.
 from __future__ import annotations
 
 from functools import partial
+from dataclasses import dataclass
 
 import torch
 
@@ -69,3 +70,74 @@ def prepare_head(incumbent: Plain, *, reuse_rows: int) -> Plain:
     if not _qualified(incumbent):
         raise ValueError("Gemma exact head reuse requires original contiguous CUDA BF16[262144,2816] on GB10SM12.1")
     return _RowsHead(incumbent, reuse_rows)
+
+
+@dataclass(frozen=True, init=False)
+class Delta4Table:
+    """Experimental exact tied lookup/head authority, with no raw .weight.
+
+    Reuse is a bounded investigation choice, provisionally16; no performance
+    policy is selected. Packed storage is immutable for all graph borrowers.
+    Long-row projections use the same native ordered1/2/4/8/16-row tiles,
+    preserving the17+ direct-head contract without a second GEMM arithmetic.
+    """
+
+    packed: object
+    lookup_limit: int
+    reuse_rows: int
+    layout: str
+
+    def __init__(self, packed, lookup_limit, *, reuse_rows=16):
+        try:
+            from tensorfold.cuda.b16_delta4 import MAX_I64, SCHEMA, _validate
+
+            _validate(packed, cuda=True)
+            if type(lookup_limit) is not int or not 0 < lookup_limit <= MAX_I64 // packed.shape[1] // 2:
+                raise ValueError('positive admitted Delta4 lookup row bound required')
+            if type(reuse_rows) is not int or reuse_rows not in (1, 2, 4, 8, 16):
+                raise ValueError('Delta4 reuse rows must be1/2/4/8/16')
+            object.__setattr__(self, 'packed', packed)
+            object.__setattr__(self, 'lookup_limit', lookup_limit)
+            object.__setattr__(self, 'reuse_rows', reuse_rows)
+            object.__setattr__(self, 'layout', SCHEMA)
+        except BaseException as primary:
+            _native_cause = BaseException.__cause__.__get__(primary)
+            _native_context = BaseException.__context__.__get__(primary)
+            try:
+                dict.clear(object.__getattribute__(self, '__dict__'))
+            except BaseException as cleanup:
+                try:
+                    from tensorfold.cleanup import raise_failures
+                    raise_failures(primary, [cleanup])
+                except BaseException as transport:
+                    if transport is not primary:
+                        raise primary from transport
+                    raise
+            raise
+        finally:
+            packed = None
+
+    @property
+    def n(self):
+        return self.packed.shape[0]
+
+    @property
+    def k(self):
+        return self.packed.shape[1]
+
+    @property
+    def device(self):
+        return self.packed.low.device
+
+    def nbytes(self):
+        return self.packed.nbytes
+
+    def embedding(self, ids):
+        from tensorfold.cuda.b16_delta4_vector import lookup
+
+        return lookup(ids.contiguous(), self.packed, max_rows=self.lookup_limit)
+
+    def __call__(self, hidden):
+        from tensorfold.cuda.b16_delta4_vector import matmul_rows
+
+        return matmul_rows(hidden.to(dtype=torch.bfloat16).contiguous(), self.packed, rows=self.reuse_rows)

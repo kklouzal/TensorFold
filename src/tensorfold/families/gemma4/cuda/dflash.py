@@ -27,6 +27,7 @@ import triton.language as tl
 from tensorfold.cleanup import rollback
 from tensorfold.cuda import speculative
 from tensorfold.cuda.b16_sym8_layout import SCHEMA as SYM8_SCHEMA
+from tensorfold.cuda.b16_delta4 import SCHEMA as DELTA4_SCHEMA
 from tensorfold.cuda.direct_read import SafeTensors
 from tensorfold.cuda.requant import Head, prefix, requantize
 from tensorfold.cuda.tensor_file import checkpoint_path
@@ -98,20 +99,21 @@ def _project8(x: torch.Tensor, linear, *, prompt: bool = False) -> torch.Tensor:
     return linear.prefill(x) if prompt or x.shape[0] > 16 else linear(x)
 
 
-def _sym8_fp8_head(table, *, softcap):
-    """DF-only private FP8 copy from exact RAW Sym8 rows, never scaled rows.
+def _packed_fp8_head(table, *, softcap):
+    """DF-only private FP8 copy from exact RAW packed rows, never scaled rows.
 
     Named locals own every pending buffer through each successful fence. Any
     unexpected failure escapes without cleanup/drain retry; Engine retains the
     native exception frames and complete constructor owner until teardown.
     """
     from tensorfold.cuda.b16_sym8 import Sym8Table
-    from tensorfold.cuda.b16_sym8_layout import SCHEMA
+    from .head import Delta4Table
     from tensorfold.cuda.requant import CHUNK_ROWS, requant_rows
     from tensorfold.cuda.nvfp4.linear import Fp8Linear
-    if (type(table) is not Sym8Table or table.layout != SCHEMA or table.k % 64
+    if (not ((type(table) is Sym8Table and table.layout == SYM8_SCHEMA)
+             or (type(table) is Delta4Table and table.layout == DELTA4_SCHEMA)) or table.k % 64
             or table.device.type != 'cuda'):
-        raise ValueError('DF FP8 proposal copy requires the actual raw Sym8 table')
+        raise ValueError('DF FP8 proposal copy requires an actual owned packed raw BF16 table')
     chunk = min(CHUNK_ROWS, table.n, table.lookup_limit)
     codes = scales = ids = raw_rows = part_codes = part_scales = linear = result = None
     # All destinations are final private FP8 source fields, not a BF16 mirror.
@@ -180,11 +182,13 @@ class DFlash:
         if type(bits) is not int or bits not in (8, 16):
             raise ValueError("Gemma DFlash proposal weights are BF16 (16) or private FP8 row-scaled copies (8)")
         head = getattr(getattr(target, "weights", None), "embed", None)
-        lossless = getattr(head, 'layout', None) == SYM8_SCHEMA
+        lossless = getattr(head, 'layout', None) in (SYM8_SCHEMA, DELTA4_SCHEMA)
         if bits == 8 and lossless:
             from tensorfold.cuda.b16_sym8 import Sym8Table
-            if type(head) is not Sym8Table:
-                raise ValueError('DF FP8 proposal copy requires the actual raw Sym8 table')
+            from .head import Delta4Table
+            if not ((type(head) is Sym8Table and head.layout == SYM8_SCHEMA)
+                    or (type(head) is Delta4Table and head.layout == DELTA4_SCHEMA)):
+                raise ValueError('DF FP8 proposal copy requires an actual owned packed raw BF16 table')
         elif bits == 8 and getattr(getattr(head, "weight", None), "dtype", None) != torch.bfloat16:
             raise ValueError("Gemma DFlash FP8 proposals need the target's BF16 tied head")
         cfg, _ = checked_headers(draft_dir)
@@ -249,7 +253,7 @@ class DFlash:
                                     else partial(_project, weight=weight[:kv_width]))
             del weight, copy
         if bits == 8:
-            self.project_logits = (_sym8_fp8_head(head, softcap=target.config.softcap) if lossless else
+            self.project_logits = (_packed_fp8_head(head, softcap=target.config.softcap) if lossless else
                                    Head(head, "fp8", softcap=target.config.softcap))
         self.weights = loaded
         # Transformers5.6 Qwen3 default RoPE constructs the exponent in FP32.

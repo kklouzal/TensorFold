@@ -1,5 +1,93 @@
 # Gemma4 native NVFP4 on GB10, 2026-10-18
 
+## Experimental Delta4 tied-table integration
+
+The new CT-only constructor investigation is default-off (`delta4_head=False`),
+with an explicit bounded `delta4_reuse` choice1/2/4/8/16. It is not a public
+CLI/default selection, an alternative activation precision, or a production
+winner. The existing raw R16 CT path and ModelOpt/Sym8 investigation remain
+separate and unchanged by default.
+
+One owned `tensorfold.bf16.delta4.v1` descriptor stores64-word groups in100 base
+bytes plus128 raw bytes when the exponent span exceeds15. Encoding preserves
+every BF16 bit, including signed zeros and exceptional payloads. The maintained
+path imports no protected untracked prototype module. Those original files
+remain an independent historical oracle, not a release dependency.
+
+CT loading reads the original tied table on CPU, packs it in bounded512-row
+chunks, and uploads only the encoded fields. The caller-owned transfer status
+retains every source/destination and original failure until successful retirement
+or terminal process teardown. A failed copy/fence forbids any outer CUDA fence,
+reader-close or alias-release retry. The successful model owns one packed GPU
+table for both lookup and projection, without a `.weight` facade or incumbent
+raw allocation. Native lookup returns unscaled BF16 rows; existing target
+sqrt(hidden) scaling, ordered FP32 FMA/XOR/final-BF16 projection and single
+softcap stay at their original boundaries. Private FP8 DFlash construction uses
+the same row quantizer on bounded original-word lookup chunks.
+
+Ordinary engine prefill uses `output_logits=False` and projects only the final
+hidden row. Its1024-row chunks still need large embedding lookup. The direct
+head's17+ row contract uses bounded native ordered tiles, without a new prompt
+TensorCore arithmetic. Packed addresses remain fixed throughout graph lifetime;
+State/KV/prefix snapshot formats and cache identity are unchanged.
+
+Admission reserves worst-case valid escapes and the complete CPU encoding/
+reader/upload overlap, including UMA accounting. It never assumes the favorable
+AEON census from headers. For the pinned90c8601b original tied table, the earlier
+standalone census found1,476,395,008 raw bytes and1,158,125,312 packed bytes, a
+potential318,269,696-byte payload reduction. That is not a measured integrated
+VRAM saving: allocator granularity, graph pools, private FP8 copies, constructor
+transients and steady/peak retained memory require actual measurement.
+
+### Qualification checkpoint, 2026-11-03 UTC
+
+These results belong to an immutable dirty application capture, not to a later
+documentation-only tree or an unbuilt image:
+
+| Identity | Value |
+| --- | --- |
+| Application source UID | `f913d5f0974bc5701492361d7e4962d2c84ee3e69cafc049c28f82a978234c71` |
+| Runtime image | `43bc1cc12cbf2ed83efe9d0f09563b211013858ba88c49437e7642202d565872` |
+| Verification image | `73d349f84f7be5d1dbbd19957a94b41498586d5d3d44b797fafae1321faf8b8e` |
+| Hardware/runtime | GB10 SM12.1, CUDA13.4.3 / nvcc13.4.92, PyTorch2.16.0.dev20261014+cu134 |
+| Main/draft revisions | AEON `90c8601b1a439497bc15d8fba9e52990b45ea0cb` / DFlash `77d4202772dfe50b2396ec7bac9cfffc7b9e7057` |
+
+The final source checks passed508 CPU tests with15 existing CUDA-only skips;
+the final test-only alias-release correction passed45 affected tests. The
+installed wheel passed102 CPU tests with immutable test-support provenance.
+All16 actual GPU positives passed without skips: literal BF16 words, lookup,
+projection reuse and long-row tiles, alignment/refusals, full pinned head,
+FP8-copy and graph replay. Eight fresh poisoned contexts independently proved
+the native malformed-metadata and lower/upper-ID assertions, retaining actual
+owners until exact-container SIGKILL; no CUDA recovery was attempted.
+
+Fresh RAW and explicit Delta4R16 processes then passed full-model equivalence
+with raw attention, BF16 target/KV, FP8 DFlash depth4, vision enabled and the
+same Google template. Context was configured at131072; the exercised long
+prefixes contained65536 tokens, with fixed256-output ignore-EOS generation and
+a native short case. Every original unscaled vocabulary word, full private FP8
+code and scale fields, teacher hidden/logit/tap/effective-probability manifests,
+actual proposal distributions, complete output IDs, counters and cache fields
+matched. The candidate had one typed packed authority, no raw-weight facade,
+and retired loader owners.
+
+At each recorded stage, process Torch allocated and peak-allocated counters
+were319,526,912 bytes (304.724609MiB) lower than RAW; reserved and peak-reserved
+counters were314,572,800 bytes (300MiB) lower. The logical table difference was
+318,269,696 bytes (303.525635MiB). CPU resident high-water usage increased, while
+current RSS varied by stage. These are separate observations, not a net
+physical GPU/RAM saving claim. RAW included cold native compilation; the
+candidate used a verified private copy of its completed compatible cache.
+Concurrent client traffic and a production restart of unknown cause also
+confound host-memory and startup/timing comparisons. No speed conclusion is
+drawn from these correctness runs.
+
+API/media, ordinary EOS, full131K execution, tools/schema/streaming/reasoning/
+bias/cancellation and uncontaminated end-to-end performance remain pending.
+The feature remains default-off and unselected; any memory-versus-small-prefill
+tradeoff requires the complete results. No numeric tolerance or decode-regression
+authority is inferred. A final selected source/image still needs its own bridge.
+
 ## Sampled proposal CPU repair, 2026-10-21
 
 The original installed image `5be0e0fa` spent substantial sampled decoding time repairing tied BF16 draft

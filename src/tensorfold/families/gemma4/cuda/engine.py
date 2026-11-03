@@ -92,7 +92,18 @@ class Gemma4Engine:
                  no_drafts: bool = False, vision: bool = False, eos_token_ids=None,
                  chat_template_file=None, chat_template_name=None,
                  prepare_global_prompt: bool = False, lossless_head: bool = False,
-                 spark_global_gqa: bool = False, spark_sampled_q: bool = False) -> None:
+                 spark_global_gqa: bool = False, spark_sampled_q: bool = False, global_trig: bool = False,
+                 global_trig_prompt: bool = True, delta4_head: bool = False, delta4_reuse: int = 16) -> None:
+        if type(delta4_head) is not bool:
+            raise ValueError('delta4_head must be a bool')
+        if type(delta4_reuse) is not int or delta4_reuse not in (1, 2, 4, 8, 16):
+            raise ValueError('Delta4 reuse rows must be1/2/4/8/16')
+        if not delta4_head and delta4_reuse != 16:
+            raise ValueError('Delta4 reuse investigation requires delta4_head')
+        if type(global_trig_prompt) is not bool:
+            raise ValueError("global_trig_prompt must be a bool")
+        if type(global_trig) is not bool:
+            raise ValueError("global_trig must be a bool")
         if type(spark_sampled_q) is not bool:
             raise ValueError("spark_sampled_q must be a bool")
         if type(spark_global_gqa) is not bool:
@@ -122,6 +133,10 @@ class Gemma4Engine:
 
         raw = read_config(model_dir)
         method = quant_method(raw)
+        if delta4_head and method != 'compressed-tensors':
+            raise ValueError('Delta4 tied table is a CT-only investigation candidate')
+        if global_trig and method != 'compressed-tensors':
+            raise ValueError('global trig requires CT arithmetic')
         draft_dir = Path(drafter) if drafter and not no_drafts else None
         kind = companion_kind(draft_dir) if draft_dir is not None else None
         self._head_kind = kind
@@ -142,8 +157,8 @@ class Gemma4Engine:
                 raise ValueError('Sparkulator baseline requires bits16')
         if lossless_head and method != 'modelopt':
             raise ValueError('lossless_head is a ModelOpt-only investigation candidate')
-        if prepare_global_prompt and method != 'modelopt':
-            raise ValueError('prepared prompt KV is a ModelOpt-only investigation candidate')
+        if prepare_global_prompt and method not in ('compressed-tensors', 'modelopt'):
+            raise ValueError('prepared prompt KV requires CT or ModelOpt arithmetic')
         if method == 'modelopt':
             from tensorfold.cuda import precision
             if precision.mode() != precision.CHECKPOINT:
@@ -162,7 +177,9 @@ class Gemma4Engine:
                                    vision=vision, max_rows=self.max_rows, streams=streams, keep=PREFIX_SNAPSHOTS,
                                    drafter_bits=drafter_bits,
                                    **({"prepare_global_prompt": True} if prepare_global_prompt else {}),
+                                   **({"global_trig": True} if global_trig else {}),
                                    **({"lossless_head": True} if lossless_head else {}),
+                                   **({"delta4_head": True} if delta4_head else {}),
                                    **({"spark_global_gqa": True} if spark_global_gqa else {}),
                                    **({"spark_sampled_q": True} if spark_sampled_q else {}))
         self.context_window = self.capacity_plan["context_window"]
@@ -175,7 +192,8 @@ class Gemma4Engine:
             from .modelopt_weights import ModelOptLoadStatus
             self._ct_load_status = ModelOptLoadStatus()
             try:
-                self.w = load(model_dir, vision=vision, status=self._ct_load_status)
+                self.w = load(model_dir, vision=vision, status=self._ct_load_status,
+                              **({'delta4_head': True, 'delta4_reuse': delta4_reuse} if delta4_head else {}))
             except BaseException as primary:
                 if not self._ct_load_status.safe_to_release:
                     self._retain_modelopt_failure(primary)
@@ -194,8 +212,10 @@ class Gemma4Engine:
             self.w = Gemma4Weights.load(model_dir, vision=vision)
         try:
             self.target = Gemma4Target(
-                self.w, **({"prepare_global_prompt": True, "prompt_context": self.context_window}
-                           if prepare_global_prompt else {}))
+                self.w,
+                **({"prompt_context": self.context_window} if prepare_global_prompt or global_trig else {}),
+                **({"prepare_global_prompt": True} if prepare_global_prompt else {}),
+                **({"global_trig": True, "global_trig_prompt": global_trig_prompt} if global_trig else {}))
             self.head = None
             self.vision = None
             longest = 0

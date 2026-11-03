@@ -855,7 +855,7 @@ The table describes supported integration paths. It is not a promise that every 
 | Qwen3.8 Flash Next | `Vontra/Qwen3.8-Flash-Next-MLX-4bit-MTP` | MLX, CUDA | Included MTP and context copies |
 | GLM-5.3-Flash | `Vontra/GLM-5.3-Flash-MLX-4bit-MTP` | MLX on a 256 GB Mac; CUDA with two ranks | MTP; optional DFlash2 on CUDA |
 | Gemma 4 E4B | `DavidAU/gemma-4-E4B-it-The-DECKARD-V2-Strong-HERETIC-UNCENSORED-Thinking` | CUDA BF16 candidate; [recipe](docs/recipes/gemma-4-e4b.md) | Native Google assistant and EAGLE3 candidates; comparison pending, neither is DFlash |
-| Gemma 4 26B-A4B | `mlx-community/gemma-4-26b-a4b-it-4bit`; CUDA trial: zecanard mixed4/6 or AEON-7 NVFP4 | MLX; initial CUDA trial | Optional `z-lab/gemma-4-26B-A4B-it-DFlash`; CUDA BF16 companion, one stream |
+| Gemma 4 26B-A4B | `mlx-community/gemma-4-26b-a4b-it-4bit`; CUDA trial: zecanard mixed4/6 or AEON-7 NVFP4 | MLX; initial CUDA trial | Optional `z-lab/gemma-4-26B-A4B-it-DFlash`; BF16 companion or prepared FP8 in the qualified GB10 CT profile, one stream |
 | DeepSeek-V4-Flash | `mlx-community/DeepSeek-V4-Flash-4bit` | MLX on a 256 GB Mac | `Vontra/DeepSeek-V4-Flash-DSpark-MLX` or `Vontra/DeepSeek-V4-Flash-MTP-MLX` |
 | Qwen3.8-27B NVFP4 | `nvidia/Qwen3.8-27B-NVFP4`; `AEON-7/Qwen3.8-27B-AEON-ULTIMATE-UNCENSORED-NVFP4-MIXED` ([recipe](docs/recipes/qwen3.8-27b.md#aeon-mixed-nvfp4-export)) | CUDA, one GPU | DFlash2 and context copies |
 | Qwen3.8-27B EXL3, experimental | `turboderp/Qwen3.8-27B-exl3`, branches `3.00bpw` / `4.00bpw` | CUDA | DFlash2 and context copies |
@@ -866,7 +866,7 @@ The table describes supported integration paths. It is not a promise that every 
 
 Dense Qwen reads affine 2/3/4/5/6/8-bit checkpoints, including mixed layers and groups 32/64/128; newer paths retain their documented hardware-qualification limits. Flash Next's affine path requires 4-bit/group-32 weights. Its EXL3 path reads per-tensor codebook widths; supported NVFP4 exports and block-scaled FP8 linears have separate checks. Flash Next without an MTP head needs `--no-drafts` on CUDA, or the matching separate stock head on the GGUF SM70 path. Nemotron CUDA uses 4-bit/group-64 weights and requires its MTP head unless serial decoding is selected.
 
-GLM reads affine 4-bit/group-64 and supported mixed-bit MLX conversions; CUDA also has the experimental `Mia-AiLab/GLM-5.3-Flash-EXL3-TR3-4bpw` path. Its optional `incoai/GLM-5.3-Flash-DFlash2` has non-commercial terms. Gemma on MLX uses 4-bit/group-32 or 64 with an 8-bit router. The initial CUDA paths read original affine mixed4/6 group-64 projections with a 6-bit tied head, or AEON compressed-tensors NVFP4 with calibrated FP4 activations on SM12.x and its original BF16 tied head. Both use BF16 KV and BF16 DFlash; other layouts are refused. DeepSeek uses affine 4-bit/group-64 plus MXFP4 experts and the converted DSpark/MTP heads. Model weights and draft models keep their own licenses. Consult [quantized checkpoints](docs/quantization.md), [third-party notices](THIRD_PARTY_NOTICES.md) and the [family recipes](docs/recipes/README.md).
+GLM reads affine 4-bit/group-64 and supported mixed-bit MLX conversions; CUDA also has the experimental `Mia-AiLab/GLM-5.3-Flash-EXL3-TR3-4bpw` path. Its optional `incoai/GLM-5.3-Flash-DFlash2` has non-commercial terms. Gemma on MLX uses 4-bit/group-32 or 64 with an 8-bit router. The CUDA paths read original affine mixed4/6 group-64 projections with a 6-bit tied head, or AEON compressed-tensors NVFP4 with calibrated FP4 activations on SM12.x and its original BF16 tied head by default. Both use BF16 KV. The original affine checkpoint requires BF16 DFlash; the qualified GB10 CT profile prepares FP8 drafting with `--drafter-bits 8`, while the general CLI default remains `16`. Unsupported checkpoint/layout combinations are refused. DeepSeek uses affine 4-bit/group-64 plus MXFP4 experts and the converted DSpark/MTP heads. Model weights and draft models keep their own licenses. Consult [quantized checkpoints](docs/quantization.md), [third-party notices](THIRD_PARTY_NOTICES.md) and the [family recipes](docs/recipes/README.md).
 
 ### Exact speculative decoding and concurrency
 
@@ -1518,6 +1518,17 @@ sampling per thinking mode, depths and the per-prompt request schedule); the KL 
   across graph reconstruction. Full outputs, proposal counters, cache hits, transition costs and process
   memory are recorded. The target-only head screen does not select a winner; fixed 256-token ignore-EOS
   results require separate normal-EOS validation before promotion.
+- The CT Gemma constructor also has a default-off `delta4_head` investigation with bounded
+  `delta4_reuse=1/2/4/8/16`. One owned lossless BF16 table supplies raw embedding lookup and the original
+  ordered vocabulary projection; the DFlash FP8 copy still comes from unscaled original rows. This is
+  not a public CLI selection or a production winner. Header admission reserves worst-case escapes and
+  CPU/upload overlap, while the loader reports actual packed bytes and retains no raw GPU table.
+  The immutable GB10 `f913d5f0` capture passed installed CPU, native word/lookup/tiling/FP8/graph,
+  isolated failure, and same-image full-model equivalence gates. Recorded process CUDA allocation
+  counters were lower; API/media/full-context and uncontaminated performance gates remain pending.
+  This is not a total physical RAM or speed claim. The later documentation-only checkpoint is not a
+  newly tested image. See the measured scope and identities in the
+  [experimental Delta4 scope](docs/gemma4-cuda-validation.md#experimental-delta4-tied-table-integration).
 - `tools/gemma4_cuda_proposal_qualify.py --plan PLAN --out NEW_DIRECTORY` compares the finite Gemma proposal
   policies on an operator-sealed 48/8,451-token prompt pair. Its plan binds the immutable image, source hashes,
   inputs, sampling and request order. Probability-byte and complete-sequence proofs run separately from timing;

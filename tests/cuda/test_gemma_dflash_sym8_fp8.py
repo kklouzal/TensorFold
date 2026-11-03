@@ -14,7 +14,7 @@ from safetensors import safe_open
 
 from tensorfold.cuda.b16_sym8 import pack, to_cuda, TransferStatus, Sym8Table
 from tensorfold.cuda.requant import Head, requantize
-from tensorfold.families.gemma4.cuda.dflash import _sym8_fp8_head
+from tensorfold.families.gemma4.cuda.dflash import _packed_fp8_head
 
 
 def check(original, seed):
@@ -23,7 +23,7 @@ def check(original, seed):
     # A small lookup_limit also forces multiple chunks for the synthetic case;
     # actual native table uses its configured262144 limit and16k source chunks.
     table = Sym8Table(packed, min(262144, max(2, original.shape[0] // 3)))
-    actual = _sym8_fp8_head(table, softcap=30.)
+    actual = _packed_fp8_head(table, softcap=30.)
     raw_oracle = original.to('cuda')
     expected = Head(requantize(raw_oracle, 'fp8'), 'fp8', softcap=30.)
     assert torch.equal(actual.linear.w8, expected.linear.w8)

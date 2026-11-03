@@ -7,7 +7,7 @@ import torch
 from tensorfold.cuda import b16_sym8 as sym
 from tensorfold.cuda.b16_sym8_layout import SCHEMA
 from tensorfold.cuda.requant import requantize
-from tensorfold.families.gemma4.cuda.dflash import _sym8_fp8_head
+from tensorfold.families.gemma4.cuda.dflash import _packed_fp8_head
 
 
 def factory_fixture(monkeypatch, *, fail_lookup=None, fail_fence=False):
@@ -48,7 +48,7 @@ def factory_fixture(monkeypatch, *, fail_lookup=None, fail_fence=False):
 
 def test_chunked_copy_matches_existing_raw_source_fp8_codes_scales(monkeypatch):
     table, original, calls, _ = factory_fixture(monkeypatch)
-    result = _sym8_fp8_head(table, softcap=30.)
+    result = _packed_fp8_head(table, softcap=30.)
     expected = requantize(original, 'fp8')
     assert torch.equal(result.linear.w8, expected.w8)
     assert torch.equal(result.linear.cols.view(torch.int32), expected.cols.view(torch.int32))
@@ -62,11 +62,11 @@ def test_native_failure_never_retries_a_fence_and_retains_actual_frame_owners(mo
     table, _, calls, primary = factory_fixture(monkeypatch, fail_lookup=1 if kind == 'lookup' else None,
                                                fail_fence=kind == 'fence')
     with pytest.raises(RuntimeError) as caught:
-        _sym8_fp8_head(table, softcap=30.)
+        _packed_fp8_head(table, softcap=30.)
     assert caught.value is primary and isinstance(primary.__cause__, ValueError)
     assert len([row for row in calls if row[0] == 'fence']) == (1 if kind == 'fence' else 0)
     tb = primary.__traceback__
-    while tb is not None and tb.tb_frame.f_code.co_name != '_sym8_fp8_head':
+    while tb is not None and tb.tb_frame.f_code.co_name != '_packed_fp8_head':
         tb = tb.tb_next
     assert tb is not None and tb.tb_frame.f_locals['codes'] is not None
     assert tb.tb_frame.f_locals['scales'] is not None
@@ -74,5 +74,5 @@ def test_native_failure_never_retries_a_fence_and_retains_actual_frame_owners(mo
 
 
 def test_layout_label_without_actual_owned_type_is_refused():
-    with pytest.raises(ValueError, match='actual raw Sym8'):
-        _sym8_fp8_head(SimpleNamespace(layout=SCHEMA, k=64), softcap=30.)
+    with pytest.raises(ValueError, match='actual owned packed raw BF16'):
+        _packed_fp8_head(SimpleNamespace(layout=SCHEMA, k=64), softcap=30.)

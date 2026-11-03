@@ -20,13 +20,13 @@ def test_one_scratch_pair_not_multiplied_by_prefix_snapshots(monkeypatch, tmp_pa
     candidate = capacity.admit(tmp_path, 128, True, max_rows=1, keep=3, prepare_global_prompt=True)
     # The synthetic profile has one global KV head, width128. One BF16 K+V
     # pair spans the admitted context; neither layers nor snapshots multiply it.
-    assert candidate.geometry.needed(128) - baseline.geometry.needed(128) == 128 * 1 * 128 * 4
-    assert candidate.weight == baseline.weight and candidate.host == baseline.host
+    assert candidate['geometry'].needed(128) - baseline['geometry'].needed(128) == 128 * 1 * 128 * 4
+    assert candidate['weight'] == baseline['weight'] and candidate['host'] == baseline['host']
 
 
 def test_target_refuses_unadmitted_or_wrong_arithmetic_scratch_before_tensors():
     from tensorfold.families.gemma4.cuda.forward import Gemma4Target
-    weights = SimpleNamespace(numerics='ct_nvfp4', config=SimpleNamespace(max_position=128))
+    weights = SimpleNamespace(numerics='mlx', config=SimpleNamespace(max_position=128))
     with pytest.raises(ValueError, match='admitted context'):
         Gemma4Target(weights, prepare_global_prompt=True, prompt_context=128)
     weights.numerics = 'modelopt_nvfp4'

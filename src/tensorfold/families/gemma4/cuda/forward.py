@@ -95,14 +95,23 @@ class ForwardResult:
 class Gemma4Target:
     _plain_prompt = False
     _global_prompt_scratch = None
+    _global_trig = None
 
     def __init__(self, weights: Gemma4Weights, *, prepare_global_prompt: bool = False,
-                 prompt_context: int | None = None):
+                 prompt_context: int | None = None, global_trig: bool = False, global_trig_prompt: bool = True):
+        if type(global_trig_prompt) is not bool:
+            raise ValueError("global_trig_prompt must be a bool")
+        self._global_trig_prompt = global_trig_prompt
+        if type(global_trig) is not bool:
+            raise ValueError("global_trig must be a bool")
+        if global_trig and (weights.numerics != "ct_nvfp4"
+                or type(prompt_context) is not int or not 0 < prompt_context <= weights.config.max_position):
+            raise ValueError("global trig requires CT arithmetic and an admitted context")
         if type(prepare_global_prompt) is not bool:
             raise ValueError("prepare_global_prompt must be a bool")
-        if prepare_global_prompt and (weights.numerics != "modelopt_nvfp4"
+        if prepare_global_prompt and (weights.numerics not in ("ct_nvfp4", "modelopt_nvfp4")
                 or type(prompt_context) is not int or not 0 < prompt_context <= weights.config.max_position):
-            raise ValueError("prepared prompt KV requires ModelOpt arithmetic and an admitted context")
+            raise ValueError("prepared prompt KV requires CT or ModelOpt arithmetic and an admitted context")
         self.weights, self.config = weights, weights.config
         attention.check_geometry(self.config)
         # CT native projections: prompt rows on the prompt GEMM, and projections sharing an input quantize it
@@ -123,7 +132,13 @@ class Gemma4Target:
         elif policy in ("ct_nvfp4", "modelopt_nvfp4"):
             self._norm, self._geglu, self._route = ct_rms_norm, glue.geglu, self._route_ct
             from tensorfold.cuda.b16_sym8_layout import SCHEMA
-            if self._plain_prompt and getattr(weights.embed, 'layout', None) == SCHEMA:
+            from tensorfold.cuda.b16_delta4 import SCHEMA as DELTA4_SCHEMA
+            if self._native and getattr(weights.embed, 'layout', None) == DELTA4_SCHEMA:
+                from .head import Delta4Table
+                if type(weights.embed) is not Delta4Table:
+                    raise ValueError('Delta4 target requires its actual owned tied table')
+                self._embedding = weights.embed.embedding
+            elif self._plain_prompt and getattr(weights.embed, 'layout', None) == SCHEMA:
                 from tensorfold.cuda.b16_sym8 import Sym8Table
                 if type(weights.embed) is not Sym8Table:
                     raise ValueError('lossless head requires the actual owned Sym8 table')
@@ -149,6 +164,17 @@ class Gemma4Target:
             inv[rotated // 2:] = 0
             self._inverse.append(inv)
 
+        if global_trig:
+            # Config defines one immutable theta/dimension/fraction for every global
+            # layer. Bind those layers to the same frequency identity and table.
+            full = [i for i in range(c.layers) if not c.sliding(i)]
+            if not full:
+                raise ValueError("global trig requires at least one full-attention layer")
+            inverse = self._inverse[full[0]]
+            for i in full:
+                self._inverse[i] = inverse
+            self._global_trig = attention.GlobalTrig(inverse, prompt_context)
+
         if prepare_global_prompt:
             # Fixed target-owned scratch, shared by ordered global layers and
             # never retained in per-request or prefix snapshots.
@@ -165,6 +191,8 @@ class Gemma4Target:
         """Persistent caches for one sequence whose forwards carry at most ``rows`` rows."""
         if self._global_prompt_scratch is not None and context != self._global_prompt_scratch[0].shape[0]:
             raise ValueError("prepared prompt KV state must use the admitted scratch context")
+        if self._global_trig is not None and context != self._global_trig.context:
+            raise ValueError("global trig state must use the admitted table context")
         return State(self.config, self.device, context, min(rows, context))
 
     def raw_embed_tokens(self, ids: torch.Tensor) -> torch.Tensor:
@@ -375,7 +403,10 @@ class Gemma4Target:
                         length=state.position + rows, round_normalized=mlx, scratch=self._global_prompt_scratch)
                 else:
                     out = attention.full(q, raw, inv, layer.k_norm, self._inverse[i], state.pos, chunks=chunks,
-                                         round_normalized=mlx)
+                                         round_normalized=mlx,
+                                         **({"trig": self._global_trig}
+                                            if self._global_trig is not None and (not prompt or self._global_trig_prompt)
+                                            else {}))
             attended = self._project(out.reshape(rows, -1), (layer.o,), prompt)[0]
             # Fused glue (glue.py): the same norms, adds and BF16 boundaries as the unfused chain.
             h, dense_in, expert_in = glue.attention_tail(h, attended, layer.attention_norm, layer.mlp_norm,

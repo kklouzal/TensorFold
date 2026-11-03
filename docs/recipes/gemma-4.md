@@ -67,6 +67,33 @@ The example's five rows permit four DFlash proposals. A bounded GB10 comparison 
 Measured on an M4 Pro with 64 GB (273 GB/s) and MLX 0.31.2, with `mlx-community/gemma-4-26b-a4b-it-4bit`.
 Packages: `src/tensorfold/families/gemma4/` and `src/tensorfold/kernels/gemma/v1/`.
 
+## Experimental exact Delta4 tied table
+
+The native CT constructor accepts `delta4_head=False` by default. Explicit
+`delta4_head=True` is an internal investigation that replaces the original
+BF16 embedding/output allocation with one exact packed authority; it does not
+change checkpoint calibration, target arithmetic, KV, vision or the tokenizer.
+`delta4_reuse` is an explicitly bounded constructor choice from1/2/4/8/16,
+provisionally16, with no measured policy selected. There is no corresponding
+public CLI flag and no change to the ModelOpt-only `lossless_head` path.
+
+The owned Delta4 CPU encoder/descriptor/validator is independent of the protected
+private prototype files. Lookup returns original unscaled BF16 words; the target
+keeps its existing BF16 sqrt(hidden) multiplication and applies its final logit
+softcap once. FP8 DFlash construction reads bounded raw lookup chunks and retains
+the existing quantization recipe. Original raw GPU storage is not retained.
+Ordinary prefill projects only its final hidden row; large prompt lookup and
+the existing17+ direct-head API use the same original numerical contracts,
+without adding a different prompt-head GEMM.
+
+This remains unselected. The immutable GB10 `f913d5f0` capture passed installed
+CPU, native/failure, word/FP8/graph and same-image full-model equivalence gates.
+Its process CUDA allocation observations are scoped to that image; they do not
+establish total physical RAM savings or speed. API/media, ordinary EOS, full
+context and uncontaminated end-to-end prefill/decode gates remain pending. A
+later documentation-only checkpoint is not a newly tested image. See the
+[validation scope](../gemma4-cuda-validation.md#experimental-delta4-tied-table-integration).
+
 ## What decides the speed
 
 - 30 layers: 25 sliding-window attention (window 1,024; 16 query heads over 8 KV heads, head dim 256) and 5
