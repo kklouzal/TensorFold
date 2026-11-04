@@ -36,7 +36,7 @@ from tensorfold.families.qwen3_5.cuda import b16
 
 from ..dflash_metadata import checked_headers, positive
 from . import attention
-from .capacity import DFLASH_FULL_CHUNK as FULL_CHUNK, check_dflash_graph, check_dflash_head_a8
+from .capacity import DFLASH_FULL_CHUNK as FULL_CHUNK, check_dflash_graph, check_dflash_head_a8, check_dflash_head_w4a16
 from .forward import rms_norm
 from .state import PREFILL_ROWS, companion_rings, sliding_slots
 
@@ -213,6 +213,55 @@ def _packed_fp8_head(table, *, softcap):
     return result
 
 
+def _cpu_nvfp4_head(model_dir, device, shape, *, softcap):
+    """Original owned CPU BF16 -> one whole-tensor CPU recipe -> owned W4A16 head.
+
+    CPU source/quantization finishes before GPU uploads. No FP8 source,
+    per-chunk global scale, target-table mutation or full BF16 GPU mirror.
+    Named destinations survive unknown native failures in constructor frames.
+    """
+    from tensorfold.cuda.requant import nvfp4_rows
+    from tensorfold.cuda.nvfp4.linear import Fp4Linear
+
+    # Finish the preceding FP8-transformer conversion before claiming this
+    # CPU allocation phase is disjoint. A failed fence escapes, never retries.
+    torch.cuda.synchronize(device)
+    from tensorfold.checkpoint_metadata import read_json
+    model_dir = Path(model_dir)
+    name = 'model.language_model.embed_tokens.weight'
+    index = read_json(model_dir, 'model.safetensors.index.json')
+    mapping = None if index is None else index.get('weight_map')
+    if index is not None and (not isinstance(mapping, dict) or not mapping
+            or any(not isinstance(key, str) or not isinstance(value, str) for key, value in mapping.items())
+            or name not in mapping):
+        raise ValueError('W4A16 original head requires its authoritative safetensors weight_map')
+    file = checkpoint_path(model_dir, 'model.safetensors' if mapping is None else mapping[name])
+    reader = SafeTensors([file])
+    original = codes = scales = global_scale = gpu_codes = gpu_scales = linear = result = None
+    try:
+        original = reader.get(name)
+        if original.device.type != 'cpu' or original.dtype != torch.bfloat16 or tuple(original.shape) != tuple(shape):
+            raise ValueError('W4A16 private head requires the original BF16 CPU checkpoint head')
+        codes, scales, global_scale = nvfp4_rows(original)
+        original = None
+    except BaseException as primary:
+        try:
+            reader.close()
+        except BaseException as cleanup:
+            raise primary from cleanup
+        raise
+    else:
+        reader.close()
+    # The quantizer's returned fields own storage independently of the owned CPU
+    # source. CPU temporaries/source are retired before this GPU packing phase.
+    gpu_codes = codes.to(device=device)
+    gpu_scales = scales.to(device=device)
+    linear = Fp4Linear.from_checkpoint(gpu_codes, gpu_scales, float(global_scale), act=None)
+    result = Head(linear, 'nvfp4', softcap=softcap)
+    torch.cuda.synchronize(device)
+    return result
+
+
 class DraftState:
     """One lane's committed companion context: persistent per-layer K/V and its length.
 
@@ -260,9 +309,12 @@ class DFlash:
     _logits_graph = None
 
     def __init__(self, draft_dir, target, *, context_limit, block=None, bits=16, rows=PREFILL_ROWS,
-                 dflash_graph=False, dflash_head_native_a8=False):
+                 dflash_graph=False, dflash_head_native_a8=False, dflash_head_w4a16=False, head_source_dir=None):
         check_dflash_graph(dflash_graph, bits, 2 if block is None else block, 'dflash')
         check_dflash_head_a8(dflash_head_native_a8, bits, 2 if block is None else block, 'dflash', dflash_graph)
+        check_dflash_head_w4a16(dflash_head_w4a16, bits, 'dflash', dflash_graph, dflash_head_native_a8)
+        if dflash_head_w4a16 and head_source_dir is None:
+            raise ValueError('W4A16 private head requires its authoritative original target checkpoint')
         if type(bits) is not int or bits not in (8, 16):
             raise ValueError("Gemma DFlash proposal weights are BF16 (16) or private FP8 row-scaled copies (8)")
         head = getattr(getattr(target, "weights", None), "embed", None)
@@ -343,7 +395,9 @@ class DFlash:
                                     else partial(_project, weight=weight[:kv_width]))
             del weight, copy
         if bits == 8:
-            self.project_logits = (_packed_fp8_head(head, softcap=target.config.softcap) if lossless else
+            self.project_logits = (_cpu_nvfp4_head(head_source_dir, self.device, (cfg.vocab, cfg.hidden),
+                                                  softcap=target.config.softcap) if dflash_head_w4a16 else
+                                   _packed_fp8_head(head, softcap=target.config.softcap) if lossless else
                                    Head(head, "fp8", softcap=target.config.softcap))
             if dflash_head_native_a8:
                 self.project_logits = TokenFp8Head(self.project_logits)

@@ -52,6 +52,16 @@ SM121 GPU oracles without skips on accepted EECB's byte-identical 777-file
 runtime inventory; this is not a new build or a new full-model/P3 gain.
 No N32 production deployment or performance gain is claimed. See [kernel contracts](docs/cuda-kernel-contracts.md).
 
+**Private W4A16 head prototype (default off, unqualified):** internal
+`dflash_head_w4a16=True` copies only the original BF16 CPU checkpoint head
+through one unchanged whole-tensor NVFP4 recipe, then existing W4A16 packing
+and owning FP32/single-softcap Head. Companion transformer projections remain
+FP8; target Delta4, embeddings, vision and BF16 KV stay unchanged. This is not
+native activation-calibrated W4A4 or a public CLI option. Canonical-source checks passed430 CPU tests with17 explicit CUDA-only skips,
+plus static/diff checks. This is source-only evidence; installed-wheel, native
+(including two K2816 supplemental cases), actual-q/model and complete-request
+performance gates remain pending. No gain or production activation is claimed. See [ownership and admission](docs/cuda-kernel-contracts.md#private-dflash-w4a16-head-prototype).
+
 **Native A8 DFlash head investigation (default not selected):** a default-off internal
 constructor policy can run only the private FP8 proposal vocabulary head with
 existing dynamic per-token E4M3 activations and explicit FP32 output/single

@@ -1,7 +1,8 @@
 """Load-time requantized copies of BF16 weights: one path for drafter proposals and for gated target layers.
 
-A drafter's projections and its copy of the target head never change output (the target verifies every token), so they
-may run requantized; target layers (heads, later other BF16 projections) may only behind the lossy-class quality gates.
+A drafter's requantized projections/head preserve the verified target law and greedy target IDs; sampled seeded
+coupling and proposal quality/work may change, so actual normalized proposal q must reach rejection sampling.
+They may run requantized; target layers (heads, later other BF16 projections) may only behind the lossy-class quality gates.
 Both use this module, which builds copies on the existing kernels of ``tensorfold.cuda.nvfp4.linear``:
 
   ``fp8``    E4M3 codes and one FP32 scale an output row, ``s_n = max_k |W[n, k]| / 448`` (an all-zero row keeps 1),

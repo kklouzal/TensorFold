@@ -94,7 +94,11 @@ class Gemma4Engine:
                  chat_template_file=None, chat_template_name=None,
                  prepare_global_prompt: bool = False, lossless_head: bool = False,
                  spark_global_gqa: bool = False, spark_sampled_q: bool = False, global_trig: bool = False,
-                 global_trig_prompt: bool = True, delta4_head: bool = False, delta4_reuse: int = 16, global_cache: str = "none", global_cache_prompt: bool = False, dflash_graph: bool = False, dflash_head_native_a8: bool = False) -> None:
+                 global_trig_prompt: bool = True, delta4_head: bool = False, delta4_reuse: int = 16, global_cache: str = "none", global_cache_prompt: bool = False, dflash_graph: bool = False, dflash_head_native_a8: bool = False, dflash_head_w4a16: bool = False) -> None:
+        if type(dflash_head_w4a16) is not bool:
+            raise ValueError('dflash_head_w4a16 must be a bool')
+        if dflash_head_w4a16 and (drafter_bits != 8 or not drafter or no_drafts or dflash_graph or dflash_head_native_a8):
+            raise ValueError('W4A16 private head requires enabled FP8 DFlash without draft graph/native A8')
         if type(dflash_head_native_a8) is not bool:
             raise ValueError('dflash_head_native_a8 must be a bool')
         if dflash_head_native_a8 and (drafter_bits != 8 or not drafter or no_drafts or depth != 4 or dflash_graph):
@@ -138,7 +142,7 @@ class Gemma4Engine:
         from tensorfold.token_metadata import load_tokenizer, resolve_eos
         from tensorfold.checkpoint_metadata import read_config
         from tensorfold.families import quant_method
-        from .capacity import admit, check_dflash_graph, check_dflash_head_a8, companion_kind
+        from .capacity import admit, check_dflash_graph, check_dflash_head_a8, check_dflash_head_w4a16, companion_kind
         from .forward import Gemma4Target
         from .weights import Gemma4Weights
 
@@ -184,6 +188,7 @@ class Gemma4Engine:
                          16 if depth is None else depth + 1)
         check_dflash_graph(dflash_graph, drafter_bits, self.max_rows, kind)
         check_dflash_head_a8(dflash_head_native_a8, drafter_bits, self.max_rows, kind, dflash_graph)
+        check_dflash_head_w4a16(dflash_head_w4a16, drafter_bits, kind, dflash_graph, dflash_head_native_a8)
         if spark_sampled_q and self.max_rows > 16:
             raise ValueError('Spark sampled q verification currently admits at most16 rows')
         if lossless_head and self.max_rows > 16:
@@ -200,7 +205,8 @@ class Gemma4Engine:
                                    **({"spark_global_gqa": True} if spark_global_gqa else {}),
                                    **({"spark_sampled_q": True} if spark_sampled_q else {}),
                                    **({'dflash_graph': True} if dflash_graph else {}),
-                                   **({'dflash_head_native_a8': True} if dflash_head_native_a8 else {}))
+                                   **({'dflash_head_native_a8': True} if dflash_head_native_a8 else {}),
+                                   **({'dflash_head_w4a16': True} if dflash_head_w4a16 else {}))
         self.context_window = self.capacity_plan["context_window"]
         self.max_rows = min(self.max_rows, self.context_window)
         text = raw.get("text_config") or raw
@@ -253,7 +259,8 @@ class Gemma4Engine:
                 self.head = DFlash(draft_dir, self.target, context_limit=self.context_window,
                                    block=self.max_rows, bits=drafter_bits, rows=forward_rows,
                                    **({'dflash_graph': True} if dflash_graph else {}),
-                                   **({'dflash_head_native_a8': True} if dflash_head_native_a8 else {}))
+                                   **({'dflash_head_native_a8': True} if dflash_head_native_a8 else {}),
+                                   **({'dflash_head_w4a16': True, 'head_source_dir': model_dir} if dflash_head_w4a16 else {}))
             # Spark borrows this exact main state; its native loading status is
             # caller-owned before construction, including an unreturned head.
             self._state = self.target.make_state(self.context_window, rows=forward_rows)

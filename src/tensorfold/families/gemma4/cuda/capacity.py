@@ -31,6 +31,38 @@ def check_dflash_head_a8(enabled, bits, rows, kind, dflash_graph=False):
         raise ValueError('native A8 proposal head requires FP8 DFlash depth4 with dflash_graph disabled')
 
 
+def check_dflash_head_w4a16(enabled, bits, kind, dflash_graph=False, native_a8=False):
+    if type(enabled) is not bool:
+        raise ValueError('dflash_head_w4a16 must be a bool')
+    if enabled and (kind != 'dflash' or type(bits) is not int or bits != 8 or dflash_graph or native_a8):
+        raise ValueError('W4A16 private head requires FP8 DFlash without draft graph/native A8')
+
+
+def dflash_head_w4a16_memory(hidden: int, vocab: int, rows: int) -> dict[str, int]:
+    """Separate CPU quantization and GPU upload/packing owners; no source alias credit."""
+    from tensorfold.cuda.requant import NVFP4_CHUNK_ROWS, resident_bytes, staging_bytes
+    from tensorfold.cuda.direct_read import ALIGN
+    if any(type(value) is not int or value < 1 for value in (hidden, vocab, rows)) or hidden % 64:
+        raise ValueError('W4A16 head requires positive dimensions and hidden multiple64')
+    resident = resident_bytes('nvfp4', vocab, hidden)
+    cpu_fields = vocab * hidden // 2 + vocab * hidden // 16 + 4
+    source = 2 * vocab * hidden
+    # Reader._to_host may hold aligned backing plus a full clone for an
+    # arbitrary valid offset. The backing is < source+3ALIGN; no offset restriction.
+    read_peak = 2 * source + 3 * ALIGN
+    cpu_peak = source + cpu_fields + min(vocab, NVFP4_CHUNK_ROWS) * hidden * 19
+    host_peak = max(read_peak, cpu_peak)
+    # Existing staging bound contains the final packed destination: subtract it
+    # once when adding to final resident weights. CPU source/temps retire first.
+    gpu_peak = staging_bytes('nvfp4', vocab, hidden)
+    return {'resident_bytes': resident, 'cpu_read_peak_bytes': read_peak,
+            'cpu_quantization_peak_bytes': cpu_peak, 'host_loading_peak_bytes': host_peak,
+            'cpu_upload_bytes': cpu_fields, 'gpu_packing_peak_bytes': gpu_peak,
+            'device_extra_bytes': max(0, gpu_peak - resident),
+            'unified_extra_bytes': max(0, host_peak - resident, cpu_fields + gpu_peak - resident),
+            'logits_softcap_bytes': 3 * rows * vocab * 4}
+
+
 def dflash_head_a8_workspace(hidden: int, vocab: int, rows: int) -> dict[str, int]:
     """Per-call eager owners, without allocator reuse credit.
 
@@ -131,7 +163,7 @@ def companion_kind(directory):
 
 
 def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=False,
-          max_rows=16, streams=1, keep=1, drafter_bits=16, prepare_global_prompt=False, lossless_head=False, spark_global_gqa=False, spark_sampled_q=False, global_trig=False, delta4_head=False, global_cache="none", global_cache_prompt=False, dflash_graph=False, dflash_head_native_a8=False):
+          max_rows=16, streams=1, keep=1, drafter_bits=16, prepare_global_prompt=False, lossless_head=False, spark_global_gqa=False, spark_sampled_q=False, global_trig=False, delta4_head=False, global_cache="none", global_cache_prompt=False, dflash_graph=False, dflash_head_native_a8=False, dflash_head_w4a16=False):
     import torch
     from tensorfold.checkpoint_metadata import read_config
     from tensorfold.families import quant_method
@@ -145,6 +177,8 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
     check_dflash_graph(dflash_graph, drafter_bits, max_rows, 'dflash' if drafter_dir is not None else None)
     check_dflash_head_a8(dflash_head_native_a8, drafter_bits, max_rows,
                          'dflash' if drafter_dir is not None else None, dflash_graph)
+    check_dflash_head_w4a16(dflash_head_w4a16, drafter_bits, 'dflash' if drafter_dir is not None else None,
+                           dflash_graph, dflash_head_native_a8)
     if type(global_trig) is not bool:
         raise ValueError("global_trig must be a bool")
     if type(spark_sampled_q) is not bool:
@@ -170,6 +204,10 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
     if delta4_head and not native:
         raise ValueError('Delta4 tied table is a CT-only investigation candidate')
     modelopt = method == "modelopt"
+    if dflash_head_w4a16:
+        info = entries.get('model.language_model.embed_tokens.weight')
+        if not (native or modelopt) or info is None or info['dtype'] != 'BF16' or len(info['shape']) != 2:
+            raise ValueError('W4A16 private head requires an original BF16 CT/ModelOpt checkpoint head')
     bounds = None
     if global_cache != "none" and not native:
         raise ValueError('persistent global cache requires native CT arithmetic')
@@ -266,10 +304,12 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
         if tuple(torch.cuda.get_device_capability()) != (12, 1):
             raise ValueError('native A8 proposal head prototype requires SM121')
 
+    head_w4_work = None
     draft = spark = None
     kind = companion_kind(drafter_dir) if drafter_dir is not None else None
     check_dflash_graph(dflash_graph, drafter_bits, max_rows, kind)
     check_dflash_head_a8(dflash_head_native_a8, drafter_bits, max_rows, kind, dflash_graph)
+    check_dflash_head_w4a16(dflash_head_w4a16, drafter_bits, kind, dflash_graph, dflash_head_native_a8)
     if spark_sampled_q and (kind != 'sparkulator' or not modelopt):
         raise ValueError('Spark sampled q requires the actual Sparkulator/ModelOpt pair')
     if spark_sampled_q and not 2 <= max_rows <= 16:
@@ -317,18 +357,32 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
             matrices = {name for name, info in draft_entries.items() if len(info['shape']) == 2}
             resident += sum(size for name, size in bf16.items() if name not in matrices)
             resident += sum(resident_bytes('fp8', n, k) for n, k in shapes)
-            resident += resident_bytes('fp8', cfg.vocab, cfg.hidden)
-            extra_head_chunk = 0
-            if lossless_head or delta4_head:
-                from tensorfold.cuda.requant import CHUNK_ROWS
-                head_rows = min(CHUNK_ROWS, cfg.vocab, cfg.max_position)
-                # NEW lookup IDs8 + rawBF16 K*2 + returned FP8 K + F32scale4.
-                # Retain existing complete quantization/fragment/source bound;
-                # claim no released-source/allocator reuse credit.
-                extra_head_chunk = head_rows * (3 * cfg.hidden + 12)
-            staging = max(staging, sum(bf16.values())
-                          + max(staging_bytes('fp8', n, k) for n, k in [*shapes, (cfg.vocab, cfg.hidden)])
-                          + extra_head_chunk)
+            if dflash_head_w4a16:
+                info = entries['model.language_model.embed_tokens.weight']
+                if tuple(info['shape']) != (cfg.vocab, cfg.hidden):
+                    raise ValueError('W4A16 original head shape differs from target metadata')
+                from tensorfold.cuda.capacity import admit_host_commitment, unified
+                head_w4_work = dflash_head_w4a16_memory(cfg.hidden, cfg.vocab, max_rows - 1)
+                resident += head_w4_work['resident_bytes']
+                # Transformer FP8 conversion and CPU head quantization/packing
+                # are successive construction phases, not a cross-product max.
+                staging = max(staging, sum(bf16.values()) + max(staging_bytes('fp8', n, k) for n, k in shapes),
+                              head_w4_work['unified_extra_bytes'] if unified(torch) else head_w4_work['device_extra_bytes'])
+                host_staging = max(host_staging, head_w4_work['host_loading_peak_bytes'])
+                admit_host_commitment(head_w4_work['host_loading_peak_bytes'])
+            else:
+                resident += resident_bytes('fp8', cfg.vocab, cfg.hidden)
+                extra_head_chunk = 0
+                if lossless_head or delta4_head:
+                    from tensorfold.cuda.requant import CHUNK_ROWS
+                    head_rows = min(CHUNK_ROWS, cfg.vocab, cfg.max_position)
+                    # NEW lookup IDs8 + rawBF16 K*2 + returned FP8 K + F32scale4.
+                    # Retain existing complete quantization/fragment/source bound;
+                    # claim no released-source/allocator reuse credit.
+                    extra_head_chunk = head_rows * (3 * cfg.hidden + 12)
+                staging = max(staging, sum(bf16.values())
+                              + max(staging_bytes('fp8', n, k) for n, k in [*shapes, (cfg.vocab, cfg.hidden)])
+                              + extra_head_chunk)
         else:
             resident += sum(bf16.values())
 
@@ -371,6 +425,8 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
             scratch += expert_workspace(cfg, rows)
         if dflash_head_native_a8:
             scratch = max(scratch, head_a8_work['logits_softcap_bytes']) + head_a8_work['activation_bytes']
+        if head_w4_work is not None:
+            scratch = max(scratch, head_w4_work['logits_softcap_bytes'])
         from .weights import TAP_LAYERS
         scratch += graph_workspace(cfg, max_rows, slots, 0 if spark is not None else
                                    len([i for i in TAP_LAYERS if i < cfg.layers]))
@@ -423,6 +479,9 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
                   host_workspace_bytes=sampling["host_bytes"] + proposals["host_bytes"]
                                        + q_extra["host_bytes"] + retained_q + bias["host_bytes"])
     result['logit_bias_workspace'] = bias
+    if head_w4_work is not None:
+        result['dflash_head_w4a16'] = {'memory': head_w4_work, 'owning_logits_dtype': 'float32',
+                                    'source': 'original-owned-CPU-BF16', 'unqualified_prototype': True}
     if dflash_head_native_a8:
         result['dflash_head_native_a8'] = {
             'max_rows': max_rows - 1, 'workspace': head_a8_work,

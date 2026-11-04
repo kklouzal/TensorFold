@@ -568,3 +568,48 @@ The exact production container was restored unchanged; the internal option stays
 default off, with no CLI or HTTP activation. No production speed/memory gain or
 new deployment capability is claimed. Other candidates and narrow-policy checks
 remain open.
+
+## Private DFlash W4A16 head prototype
+
+The default-off internal Engine/DFlash/admission option `dflash_head_w4a16`
+selects only the proposal vocabulary head. Other companion matrices remain
+FP8, and target Delta4/lookup/vision/KV/math do not change. Existing
+`SafeTensors.get(..., cpu)` returns a typed view of an OWNED full CPU byte
+allocation, not mmap. The authoritative original model directory/index selects
+`model.language_model.embed_tokens.weight`; BF16 dtype/shape are admitted
+before model allocation. One complete CPU `nvfp4_rows` call computes ONE
+tensor-wide FP32 global scale. It never re-quantizes FP8 fields or invents
+activation calibration. `Fp4Linear(act=None)` uses W4A16 reconstructed BF16
+MMA, with existing `Head` allocating FP32 logits and applying one softcap30.
+No kernel, quantizer, native ABI, CLI or SDK path is added.
+
+A successful pre-CPU fence finishes preceding transformer FP8 conversion;
+unknown fence/native errors escape without retry. CPU source and quantizer
+temporaries retire before final code/scale upload, while CPU destination fields
+stay live through upload/packing completion. Reader close preserves a primary
+CPU failure; native failure frames retain actual uploaded operands.
+
+Admission distinguishes read, CPU quantization and GPU packing phases. For
+N262144/K2816, the returned CPU source is1408MiB; a valid unaligned direct read
+can temporarily hold backing plus clone, bounded by2816MiB+3*4096B. CPU
+quantization is2013MiB+4B, including396MiB returned fields and bounded4096-row
+FP32 temporaries. GPU packing uses the existing1111MiB bound; its final396MiB
+head is subtracted once from additional staging. The existing two block-scale
+copy terms (n*k/8 bytes) dominate the three packing dummy terms (3*n*k/32),
+without adding another guessed full bank. UMA admission takes the maximum of
+these staged lifetimes; allocator/physical peaks still require measurement.
+New head logical storage396MiB versus705MiB FP8 is not a measured RAM saving.
+Owning FP32 output/two softcap intermediates remain charged (12MiB atM4).
+
+Only enabled FP8 DFlash without draft graphs/native-A8 is admitted; the original
+BF16 CT/ModelOpt checkpoint head and shared existing native provider constraints
+remain authoritative. Defaults omit new forwarded kwargs and plan metadata.
+Target law/greedy committed IDs must remain exact. Sampled seeded coupling,
+proposal quality and work may change: actual normalized new q must flow through
+unchanged rejection/residual verification. Same-policy cache/seed/rollback,
+grammar/EOS/cancellation and actual target-p on identical histories require
+qualification. Canonical-source verification passed430 CPU tests with17 explicit CUDA-only
+skips, all-F static checks and diff validation. Installed-wheel/native
+(including the two new K2816 cases), actual-model/actual-q and P3 gates remain
+pending. This source-only checkpoint neither qualifies a built image nor
+claims production selection or a gain.
