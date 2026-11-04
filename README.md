@@ -40,7 +40,7 @@ runtime inventory; this is not a new build or a new full-model/P3 gain.
 Production and its flags are unchanged; no N32 production deployment or
 performance gain is claimed. See [kernel contracts](docs/cuda-kernel-contracts.md).
 
-**Native A8 DFlash head prototype (performance pending):** a default-off internal
+**Native A8 DFlash head investigation (default not selected):** a default-off internal
 constructor policy can run only the private FP8 proposal vocabulary head with
 existing dynamic per-token E4M3 activations and explicit FP32 output/single
 softcap. Its code/column-scale tensors alias the original private copy; target
@@ -52,8 +52,15 @@ the existing rejection law: cross-policy greedy target IDs remain an oracle,
 but greedy work counts may change; cross-policy sampled IDs/q/counters need not
 match. The private b4 candidate passed 407 source and 407 installed CPU checks
 (15 existing CUDA-only skips each), all 35 SM121 component checks without skips,
-and the bounded OFF/ON full-model policy-quality bridge. Matched performance
-qualification remains pending; no speed gain or production activation is claimed.
+and the bounded OFF/ON full-model policy-quality bridge. The same-image GB10
+OFF–ON–ON–OFF pilot completed, with two fresh processes per policy. On the
+Shared512/Delta4-R16/DFlash-D4 base, cached T1 code/prose throughput had
+descriptive geometric-mean losses of 2.207%/4.940%, with losses in both halves
+and identical observed Torch memory maxima;
+the broad ON default was not selected. Scoped T0-code/T1-short pilot changes
+were +0.674%/+0.956%; these are not established wins or regional offsets.
+Narrower policy evidence remains open. There is no CLI or HTTP activation,
+and current production remains unchanged.
 See [kernel contracts](docs/cuda-kernel-contracts.md).
 
 The 2026-11-01 standalone production checkpoint on port `8888` ran

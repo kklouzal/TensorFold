@@ -482,7 +482,7 @@ encoder equals bit for bit, and checks `_indices_8` at every midpoint and its FP
 expected indices.
 
 
-## Private DFlash native-A8 head prototype: performance pending
+## Private DFlash native-A8 head investigation: default not selected
 
 The default-off internal `dflash_head_native_a8` Engine/DFlash/admission option
 selects only a new `requant.TokenFp8Head`. It aliases the already-constructed
@@ -538,6 +538,33 @@ component checks without skips. Both fresh OFF/ON processes passed three fixed
 teacher/proposal cases, 12 cold/hit generation checks and targeted grammar,
 penalty, EOS and cooperative-stop/recovery checks; fixed-history target teachers,
 payloads and greedy committed IDs matched under the policy contracts above.
-The exact production container was restored unchanged. Matched complete-request
-P3 qualification remains pending; no speed or memory saving, production
-activation or new CLI capability is claimed.
+The same b4/image8ed/verification213 candidate completed a GB10 SM121 four-process
+OFF–ON–ON–OFF pilot on Shared512/Delta4-R16/N64/DFlash-D4, target graphs enabled,
+BF16 KV and context131072. Each process completed six compiler warmups, 42 full
+workload warmups and 42 measured 256-token requests across greedy/sampled
+code64k, prose64k and native short prompts. Two same-policy comparisons and four
+cross-policy greedy committed-ID comparisons passed. Private report `8b44b0ce`,
+final packet `917f2aac` and closeout `f75deaa2` retain raw costs, work, cold/hit
+state, both halves, startup, memory, endpoint drift and the independent D13 audit.
+The inputs were AEON-7 Gemma NVFP4 revision
+`90c8601b1a439497bc15d8fba9e52990b45ea0cb` and z-lab FP8 DFlash revision
+`77d4202772dfe50b2396ec7bac9cfffc7b9e7057`, with CUDA allocation capped at40GiB,
+CPU memory/swap20GiB and the production ten-core CPU set without a CPU quota.
+Compiler preparation was untimed; production was stopped during measurement.
+
+The broad ON default was not selected: cached sampled code/prose post-first
+drained throughput had descriptive geometric-mean losses of 2.207%/4.940%,
+with losses in both halves and identical
+observed Torch allocation/reservation/peak maxima. Cold results and whole-request
+latencies were mixed. Scoped greedy-code and sampled-short cached pilot changes
+were +0.674%/+0.956% in both halves; these are not established wins and do not
+offset required-region losses. There are only two fresh processes per policy;
+requests/seeds are correlated, callback packets are batches and observed maxima
+are not worst-case bounds. No confidence, equivalence or global-optimality claim
+is made. A T0-only sampling-flag policy remains blocked on admission/readiness and
+integrated regional evidence; text/length-based sampled-short routing is outside
+the declared support contract. Retain those hypotheses and historical evidence.
+The exact production container was restored unchanged; the internal option stays
+default off, with no CLI or HTTP activation. No production speed/memory gain or
+new deployment capability is claimed. Other candidates and narrow-policy checks
+remain open.
