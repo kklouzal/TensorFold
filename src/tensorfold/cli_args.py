@@ -332,6 +332,9 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     cuda.add_argument("--delta4-head", action="store_true", default=False,
                       help="Gemma 4 CT NVFP4 MoE on CUDA: lossless Delta4 tied BF16 head with fixed reuse16; "
                            "cannot combine with --lossless-head")
+    cuda.add_argument("--prepare-global-prompt", action="store_true", default=False,
+                      help="Gemma 4 CT NVFP4 or ModelOpt MoE on CUDA: share one context-sized full-attention "
+                           "prompt scratch pair across layers; charged by admission, default off")
     cuda.add_argument("--prefill-fp8", action=argparse.BooleanOptionalAction, default=argparse.SUPPRESS,
                       help="prompt matmuls take FP8 (e4m3) activations, one scale a row, where the checkpoint has an "
                            "FP8 prompt kernel (Qwen3.8 27B and Qwen3.6 MLX 4-bit, NVFP4 checkpoints' FP8 and MXFP8 "

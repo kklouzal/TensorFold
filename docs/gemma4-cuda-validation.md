@@ -240,3 +240,69 @@ The current source combines persistent Gemma KV, sliding/global attention and pr
 The shared Qwen CT chain runner uses its fixed attention buffers for prefill and decoding. Switching conversations moves still-kept prefixes to private buffers only when the stream's memory budget admits the copy beside a resumed conversation's buffers; otherwise those other prefixes are evicted. Resumed prefixes remain live through copy-in, and the runner refuses inconsistent sharing before changing buffers. This eliminates a duplicate full attention cache without weakening prefix-cache independence.
 
 Final integration qualification is pending. Earlier native tests, golden v1s comparisons and engine timings apply to their recorded source revisions and host configuration; they do not qualify this composition or the GB10's new VBoost 0 setting. Required remaining gates include native ARM64/SM12.1 tests, multi-chunk calibrated quality comparisons, deterministic/cache-independent model checks, greedy drafted/serial identity, full-context prefill and decode with admission/peak-memory traces, and repeated HTTP comparisons at the declared sampling settings. The existing production image's known long-prompt KV-growth failure is retained as historical evidence and does not qualify long-context serving.
+
+
+## Shared global-prompt scratch CLI
+
+Accepted Shared512 is deployed through the maintained native CLI on2026-11-04:
+container `ffd9c363af4f59a46139dc7b8d8e6fff900ce233ab1562d3a6d3f743ad59cda5`, source UID `7ac9307b39430169cf60a15db6d1d3ce47f455dd9758f70ae7cabd8bc20309d1`,
+runtime image `58a280bb171adefcabdbeabc4fc9f6fc96dea33447a38ea0d4c730b3f00c5315`.
+Production became NativeReady/healthy after starting at
+`2026-11-04T14:37:39.75804538Z` (observed PID1843019, configuration fingerprint928d1572…);
+previous `d1436c99` is retained stopped for rollback. `production-current`
+points to `deploy-shared-prompt-cli-20261104-v1`; both speech services remain healthy.
+
+The explicit production options include `--prepare-global-prompt --delta4-head`
+with existing reuse16/private FP8 DFlash/depth4, BF16 KV,131072 context,
+AEON90c860/DFlash77d420, thinking, vision and owned Google template/settings.
+The new flag forwards existing `prepare_global_prompt=True` through native
+CLI/server/family validation to Gemma4Engine. It defaults off for other
+launches; other families/backends, dense Gemma and affine formats are refused.
+CT NVFP4 and ModelOpt MoE retain their existing header/admission/native math.
+No additional hardware/context/precision requirement or candidate activation
+is introduced by this frontend exposure.
+
+Source tests passed441 without skips/warnings; all-F/diff checks and combined
+review passed. Owned runtime/verification builds preserved the SDK. The runtime
+passed115 installed checks and its777 installed source files matched the
+capture, without a source overlay. All14 directed new-production checks and16
+individual full API/cache/media functional checks passed. The seventeenth
+known short-SSE cancellation-counter assertion failed again; aggregate is
+false/exit1. Preserve that failure: it is neither dismissed as flaky/false
+positive nor represented as complete API/cancellation qualification. Strong
+older observed-active shadow checks and the P0 cooperative-stop/recovery proof
+remain evidence only for their recorded sources/workloads; no new strong HTTP
+cancellation pass is inferred here.
+
+Actual `/v1/stats` planner values (bytes, estimates rather than physical memory):
+
+| Planner field | Prior Delta4/R16 | Shared512 + Delta4/R16 | Difference |
+|---|---:|---:|---:|
+| Cache workspace |13,102,320,516|13,639,191,428|536,870,912|
+| Serving peak |31,842,231,432|32,379,102,344|536,870,912|
+| Startup peak |27,514,210,564|27,514,210,564|0|
+
+The source/CLI/admitted-context/NativeReady proof implies one BF16 pair of
+shape131072×2×512 for keys and values:536870912 bytes total, once across
+layers. This is a structural allocation inference; HTTP has no dedicated
+scratch-byte readback and planner values are not measured allocator residency,
+physical RAM/VRAM saving or runtime peaks. It is prompt workspace, not a
+persistent derived KV cache. Prior source-bound model/integrated Shared evidence
+supports unchanged target words/output/cache semantics; the owner accepted its
+prefill/retained-memory tradeoff. No new performance confirmation, statistical
+equivalence or global-optimum claim follows from deployment.
+
+The tested/captured CLI source and image identities precede this docs-only
+status update. Runtime/CLI/test bytes remain those verified before cutover;
+these later prose edits do not imply a rebuild or change the running image.
+
+Private immutable evidence manifest: `shared-prompt-cli-deployment-final-v1.json`,
+SHA256 `4b6eb49960dc8debdb986eab96a79836c41bc8aca223b180bbeb061990675a07`.
+It links the source/installed/source-transfer/build and actual deployment checks.
+The directed14 summary `shared-prompt-cli-production-directed-v1/summary.json`
+is SHA256 `3a4b3fc33b7dc2cd6769ad94142a7119ed76e7230bf51a095fd7d559dfcc3631`.
+The complete API packet summary is SHA256
+`dd337443771055fb578c0f0f0f62e5e35cec210f8c52de5c31a59c0707bb91d7`;
+its aggregatefalse/exit1 and failed seventeenth probe are retained alongside
+all16 passing individual functional results. These are bounded deployment
+records, not a new benchmark or a claim that every API/cancellation gate passed.

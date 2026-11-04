@@ -2,24 +2,37 @@
 
 ## GB10 Gemma 4 26B-A4B deployment checkpoints
 
-Current production on port `8888` is the native CLI Delta4 deployment from
-2026-11-03: container `d1436c99`, image `98f6b664`, source UID `eecb4bbf` and
-source commit `93ab8ba2`. It explicitly enables `--delta4-head` at reuse16,
-retaining FP8 DFlash/depth4, BF16 KV, the 131072 window, vision, thinking and the
-owned Google template. `production-current` points to
-`deploy-delta4-cli-20261103-v1`; prior container `099563af`/image `8da9dff3`
-is retained stopped for rollback, and both speech services remain healthy.
-The running image predates the source prototype below; deployed runtime and test bytes remain unchanged.
+Current production on port `8888` is the accepted Shared512 + Delta4 native
+CLI deployment from 2026-11-04: container `ffd9c363`, image `58a280bb`, source UID
+`7ac9307b`. It explicitly enables `--prepare-global-prompt --delta4-head` with
+reuse16, preserving private FP8 DFlash/depth4, BF16 KV, the131072 window,
+vision, thinking, owned Google template and serving settings. `production-current`
+selects `deploy-shared-prompt-cli-20261104-v1`. Previous container `d1436c99`/image `98f6b664` is retained
+stopped for rollback; both speech services remain healthy. NativeReady and
+actual CLI arguments establish activation of the existing shared-prompt path.
 
-Qualification passed 408 source and 214 installed CPU checks, 14 probe controls,
-actual typed Delta4/R16/load/drain, 16 individual native CLI API/media checks,
-14 directed shadow checks and independent active decode/prefill cancellation
-and recovery. Post-cutover directed tools/bias/reasoning and plain/SSE math
-checks passed. The original weak short-SSE counter probe remains failed, so its
-overall API packet is not reported as wholly passed. The owner accepted the
-CPU-peak/startup tradeoff and deployed before independent performance confirmation;
-the earlier 07d/f9 exploratory 2-4% points are not confirmed gains for this image.
-See the [deployment scope](docs/gemma4-cuda-validation.md#experimental-delta4-tied-table-integration).
+The frontend change passed441 source CPU checks without skips/warnings,
+all-F static/diff checks and combined review. The new same-SDK image passed115
+installed checks and exact777-file source inventory. On the new production,
+all14 directed checks and16 individual full API/cache/media functional checks
+passed. The seventeenth known short-SSE cancellation-counter assertion failed
+again: its aggregate remains false/exit1 and the failure is retained. This is
+not blanket API qualification or a fresh strong observed-active HTTP
+cancellation pass. Earlier strong shadow cancellation and P0 cooperative-stop
+checks retain only their recorded source/workload scope.
+
+The owner accepted the Shared512 prefill/retained-memory tradeoff and directed
+immediate deployment. `/v1/stats` planner estimates increased cache workspace
+and serving peak by536870912 bytes each; startup estimate is unchanged.
+The one512 MiB BF16 K/V pair is inferred structurally from verified source,
+CLITrue forwarding, admitted131072 context and NativeReady, not measured by
+an HTTP scratch-byte field or as physical VRAM. No new throughput, equivalence,
+VRAM-saving or global-optimality claim follows. The CLI flag defaults off for
+other launches and only supports Gemma4 CT NVFP4/ModelOpt MoE CUDA; it does not
+enable trig, persistent cache, draft graphs, clipping or native-A8 proposals.
+See [deployment evidence and estimates](docs/gemma4-cuda-validation.md#shared-global-prompt-scratch-cli).
+The recorded image/source artifacts predate this documentation-only status
+update; these prose edits do not describe a new build.
 
 **Expert N32 experiment closed without selection:** the separate immutable
 `b21b70f8` candidate passed native compilation and the corrected 30-test SM121
@@ -37,8 +50,7 @@ plan-order, intermediate quantizer and Gemma word/replay oracles remain as N64
 baseline coverage. Post-cleanup checks passed 227 CPU tests and all 26 retained
 SM121 GPU oracles without skips on accepted EECB's byte-identical 777-file
 runtime inventory; this is not a new build or a new full-model/P3 gain.
-Production and its flags are unchanged; no N32 production deployment or
-performance gain is claimed. See [kernel contracts](docs/cuda-kernel-contracts.md).
+No N32 production deployment or performance gain is claimed. See [kernel contracts](docs/cuda-kernel-contracts.md).
 
 **Native A8 DFlash head investigation (default not selected):** a default-off internal
 constructor policy can run only the private FP8 proposal vocabulary head with
@@ -1006,6 +1018,7 @@ Caps bound owner counts, not arbitrary total payload bytes. Generated token buff
 | `--drafter auto\|none\|MODEL` | `auto`: a supported family drafter when already pulled. Dense Qwen CUDA needs the drafter pulled or explicit `--no-drafts`. |
 | `--drafter-bits N` | MLX default `4`, with `0` retaining BF16 draft linears. CUDA Qwen CT NVFP4 defaults to BF16 (`0` or `16`); explicit `8` (FP8) or `4` (NVFP4) requantizes draft linears and copies a floating target head, for proposals only. Qwen borrows a checkpoint's quantized target head without another copy. CUDA Gemma4 DFlash takes `16` (BF16, default), or `8` with an original or losslessly packed BF16 tied target head: private FP8 copies of its companion projections and head. Gemma FP8 prepares its selected prompt and lane providers during initialization after validating those copies; build failures abort startup. Gemma affine checkpoints with a quantized tied head retain `16`. Target verification preserves reply semantics. A CUDA engine with one draft precision refuses the flag. |
 | `--delta4-head` | Gemma CT NVFP4 MoE on CUDA only: lossless tied BF16 Delta4 storage using fixed reuse16, default off. Preserves the existing drafter/vision/template/context selections. Cannot combine with ModelOpt's separate `--lossless-head`; no graph, clipping or cache candidate is enabled. |
+| `--prepare-global-prompt` | Gemma 4 CT NVFP4 or ModelOpt MoE on CUDA: one admitted context-sized shared BF16 global-prompt K/V scratch pair, default off. At the AEON131072 profile this is512 MiB. Does not enable trig, persistent cache, draft graphs or clipping. |
 | `--draft-rows N` | CUDA Gemma4 MoE with DFlash: 2–128 rows, default 16, with `--parallel 1`. E2B DFlash2: 2–8 rows, default 8, one lane; [correctness baseline and validation scope](docs/recipes/gemma-4-e2b.md). CUDA Qwen CT NVFP4: unset uses the secondary's metadata block width. With a secondary, explicit width is 2–128 on one stream, at most 16 with `--parallel`; without one, width 1 is also valid. |
 | `--mtp-drafts N` | Family-specific; Flash Next defaults to 3 on MLX and up to 6 on CUDA. Startup 0 retains legacy structural-disable behavior under `auto`; explicit `--draft-method mtp` requires a positive allocated maximum. Adaptive runtime `proposal_limit: 0` keeps enabled MTP warm. |
 | `--mtp-confidence P` | Flash Next CUDA default `0.70`; range 0–1, stops later low-confidence drafts. |

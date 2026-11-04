@@ -372,6 +372,7 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
     head_config = None
     for option, capability in (("lossless_head", "CUDA_LOSSLESS_HEAD"),
                                ("delta4_head", "CUDA_DELTA4_HEAD"),
+                               ("prepare_global_prompt", "CUDA_PREPARE_GLOBAL_PROMPT"),
                                ("spark_global_gqa", "CUDA_SPARK_GLOBAL_GQA"),
                                ("spark_sampled_q", "CUDA_SPARK_SAMPLED_Q")):
         value = getattr(args, option, False)
@@ -379,7 +380,8 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         if type(value) is not bool:
             raise ValueError(f"{flag} must be a boolean")
         if value:
-            model_format = 'CT NVFP4' if option == 'delta4_head' else 'ModelOpt'
+            model_format = ('CT NVFP4' if option == 'delta4_head' else
+                            'CT NVFP4 or ModelOpt' if option == 'prepare_global_prompt' else 'ModelOpt')
             if backend != "cuda" or not getattr(family.package, capability, False):
                 raise ValueError(f"{flag} requires Gemma 4 {model_format} MoE on CUDA")
             if head_config is None:
@@ -388,6 +390,8 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
                 head_config = read_config(config_dir if config_dir is not None else args.model)
             if option == 'delta4_head':
                 family.package.check_cuda_delta4_moe_metadata(head_config, flag=flag)
+            elif option == 'prepare_global_prompt':
+                family.package.check_cuda_prepared_global_prompt_metadata(head_config, flag=flag)
             else:
                 family.package.check_cuda_modelopt_moe_metadata(head_config, flag=flag)
     fp8 = getattr(family.package, "CUDA_PREFILL_FP8", False) and backend == "cuda"

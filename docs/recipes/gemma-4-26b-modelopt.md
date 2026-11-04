@@ -327,3 +327,29 @@ The original short-SSE counter assertion remains failed; separate observed-activ
 checks passed. P3 remains unmeasured/traffic-blocked, no winner/default/deployment
 changes follow, and earlier checkpoints retain their own identities. See the
 [exact prompt qualification](../gemma4-persistent-global-cache.md#prompt-consumption-qualification-07d1664f).
+
+
+### Optional shared global-prompt workspace
+
+Gemma 4 native CT NVFP4 and ModelOpt MoE CUDA serving accepts
+`--prepare-global-prompt`, default off. It forwards the existing admitted shared
+BF16 full-attention prompt K/V scratch path; affine and dense Gemma are
+unsupported. Workspace scales with the admitted context, not layers. The
+accepted AEON131072/Delta4R16/FP8-DFlash-D4 GB10 profile uses one512 MiB pair and
+retains unchanged target arithmetic; its prefill/retained-memory tradeoff was
+accepted separately. Other context/model shapes must use their actual header
+admission. This option is independent of ModelOpt's `--lossless-head` and does
+not turn on other experimental graph/cache/precision choices. The accepted AEON Shared512 +Delta4/R16 +DF8/D4 profile is now deployed via
+ordinary native CLI with both `--prepare-global-prompt --delta4-head`, on source
+`7ac9307b…`/image `58a280bb…`, container `ffd9c363`. Existing model/drafter,
+131072 context, thinking, vision and Google template/settings are preserved;
+old `d1436c99` remains rollback. Source441 and installed115/777-source checks,
+all14 directed production checks and16 individual API/cache/media functional
+checks passed. The known seventeenth short-SSE cancellation-counter test failed
+again, leaving aggregatefalse/exit1; no blanket API or new strong HTTP
+cancellation qualification is claimed. See the [exact deployment scope and
+planner estimates](../gemma4-cuda-validation.md#shared-global-prompt-scratch-cli).
+The512 MiB pair is inferred from source/CLI/context/NativeReady, not an HTTP
+physical-VRAM measurement. This documents an accepted prefill/retained-memory
+tradeoff, not a new P3 result. The CLI/image artifacts predate this docs-only
+status refresh. Other launches remain default off.
