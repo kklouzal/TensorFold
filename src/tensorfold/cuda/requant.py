@@ -22,6 +22,7 @@ caller may free the source afterwards. ``resident_bytes`` / ``staging_bytes`` gi
 from __future__ import annotations
 
 import math
+from dataclasses import replace
 
 import torch
 
@@ -168,6 +169,40 @@ class Head:
     def __call__(self, x: torch.Tensor) -> torch.Tensor:
         out = torch.empty((x.shape[0], self.n), dtype=torch.float32, device=x.device)
         logits = self.linear(x, out)
+        if self.softcap is not None:
+            logits = torch.tanh(logits / self.softcap) * self.softcap
+        return logits
+
+
+
+class TokenFp8Head:
+    """Private proposal-only A8 head over an existing immutable FP8 copy.
+
+    A new descriptor owns references to the same fragment bytes/channel scales;
+    the original Head and its W8A16 descriptor are never mutated or requantized.
+    Every call returns owning FP32 logits with exactly one original softcap.
+    """
+
+    def __init__(self, source: Head):
+        if type(source) is not Head or type(source.linear) is not Fp8Linear:
+            raise ValueError('native A8 proposal head requires an existing private FP8 Head')
+        linear = source.linear
+        if (linear.token or linear.act is not None or linear.groups is not None
+                or linear.cols is None or linear.scale != 1.0):
+            raise ValueError('native A8 proposal head requires unchanged per-channel FP8 weights')
+        self.linear = replace(linear, token=True)
+        self.softcap, self.n = source.softcap, source.n
+
+    def nbytes(self) -> int:
+        return self.linear.nbytes()
+
+    def __call__(self, x: torch.Tensor) -> torch.Tensor:
+        if (not isinstance(x, torch.Tensor) or x.ndim != 2 or not 1 <= x.shape[0] <= 4 or x.shape[1] != self.linear.k
+                or x.dtype != torch.bfloat16 or x.device != self.linear.w8.device):
+            raise ValueError('native A8 proposal head requires1..4 matching BF16 rows on its weight device')
+        from tensorfold.cuda.nvfp4 import checkpoint
+
+        logits = checkpoint.matmul(checkpoint.A8, x, self.linear, f32=True)
         if self.softcap is not None:
             logits = torch.tanh(logits / self.softcap) * self.softcap
         return logits

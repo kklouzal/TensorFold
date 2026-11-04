@@ -1,7 +1,7 @@
 """Gemma DFlash companion on CUDA against independent Torch equations; persistent context lifecycle.
 
-Proposals never change output (the target verifies every token), so the
-companion contract is: the official equations within BF16/FP32 reduction-order
+Proposal policy may change sampled coupling and greedy work; the target
+verification law and same-policy reproducibility remain required. The companion contract is: the official equations within BF16/FP32 reduction-order
 tolerance, deterministic proposals, and committed context that only target
 -accepted taps change.
 """
@@ -598,3 +598,83 @@ def test_penalized_streams_propose_the_argmax_of_their_penalized_rows(tmp_path):
     assert chains.finish(0, 3, history)[0] == want
     with pytest.raises(ValueError):
         chains.finish(0, 3)
+
+
+@pytest.mark.parametrize('failure_at', [None, 'a8-adapter', 'a8-provider', 'a8-sm-count'])
+def test_native_a8_constructor_prepares_selected_provider_and_retains_failure(monkeypatch, failure_at):
+    """Metadata/ownership ordering only; real head-shape math has a CUDA gate."""
+    from tensorfold.cuda.nvfp4 import checkpoint, linear
+    small = DraftConfig.from_dict(raw())
+    class Metadata:
+        hidden, vocab = 2816, 262144
+        def __getattr__(self, name):return getattr(small, name)
+    cfg = Metadata()
+    arrays = {name: torch.ones(shape, dtype=torch.bfloat16) for name, shape in small.shapes().items()}
+    target = NS(device=torch.device('cpu'), tap_layers=cfg.tap_layers,
+        config=NS(hidden=cfg.hidden, layers=cfg.target_layers, vocab=cfg.vocab, softcap=30.0),
+        weights=NS(embed=NS(weight=torch.ones((8, 64), dtype=torch.bfloat16))),
+        raw_embed_tokens=object(), project_logits=object())
+    events=[];private=object();native=object();primary=KeyboardInterrupt('new provider failed')
+    primary.__cause__=ValueError('original native context')
+    def step(name):
+        events.append(name)
+        if failure_at==name:raise primary
+    class Reader:
+        def __init__(self, paths):step('open')
+        def get(self, name):return arrays[name]
+        def close(self):step('close')
+    def adapt(source):
+        assert source is private;step('a8-adapter');return native
+    monkeypatch.setattr(dflash,'checked_headers',lambda directory:(cfg,{}))
+    monkeypatch.setattr(dflash,'checkpoint_path',lambda directory,name:directory/name)
+    monkeypatch.setattr(dflash,'SafeTensors',Reader)
+    monkeypatch.setattr(dflash,'requantize',lambda *args:object())
+    monkeypatch.setattr(dflash,'prefix',lambda value,rows:value)
+    monkeypatch.setattr(dflash,'Head',lambda *args,**kwargs:private)
+    monkeypatch.setattr(dflash,'TokenFp8Head',adapt)
+    monkeypatch.setattr(torch.cuda,'get_device_capability',lambda *args:(12,1))
+    monkeypatch.setattr(linear,'_prompt_ext',lambda:step('prompt'))
+    monkeypatch.setattr(linear,'_ext',lambda:step('lane'))
+    monkeypatch.setattr(checkpoint,'_ext',lambda:step('a8-provider'))
+    monkeypatch.setattr(checkpoint,'sm_count',lambda:step('a8-sm-count'))
+    order=['open','close','a8-adapter','prompt','lane','a8-provider','a8-sm-count']
+    if failure_at is None:
+        draft=dflash.DFlash('metadata-only',target,context_limit=256,bits=8,block=5,rows=128,dflash_head_native_a8=True)
+        assert draft.project_logits is native and draft._logits_graph is None and events==order
+    else:
+        with pytest.raises(KeyboardInterrupt) as caught:
+            dflash.DFlash('metadata-only',target,context_limit=256,bits=8,block=5,rows=128,dflash_head_native_a8=True)
+        assert caught.value is primary and isinstance(primary.__cause__,ValueError)
+        assert events==order[:order.index(failure_at)+1]
+        frame=primary.__traceback__
+        while frame is not None and frame.tb_frame.f_code.co_name!='__init__':frame=frame.tb_next
+        assert frame is not None and 'self' in frame.tb_frame.f_locals
+        assert events.count('close')==1
+
+
+@pytest.mark.parametrize('penalized', [False, True])
+def test_native_a8_head_propose_packet_consumes_actual_fp32_policy_logits(monkeypatch, penalized):
+    from tensorfold.cuda.nvfp4 import checkpoint
+    from tensorfold.cuda.requant import TokenFp8Head, requantize
+    from tensorfold.cuda.speculative import Chains
+    from tensorfold.engine.exact_sampling import Sampling
+    from tensorfold.engine.penalties import History, Penalties
+    linear=requantize(torch.ones((128,64),dtype=torch.bfloat16),'fp8')
+    adapter=TokenFp8Head(Head(linear,'fp8',softcap=30.0))
+    hidden=torch.ones((4,64),dtype=torch.bfloat16)
+    actual_logits=torch.linspace(-5,5,4*128).reshape(4,128)
+    def product(mode,x,linear,out=None,f32=False):
+        assert mode==checkpoint.A8 and f32 is True
+        return actual_logits[:len(x)].clone()
+    monkeypatch.setattr(checkpoint,'matmul',product)
+    draft=dflash.DFlash.__new__(dflash.DFlash)
+    draft.logits=lambda state,anchor,count:adapter(hidden[:count])
+    history=History(Penalties(presence=1.0),[127]) if penalized else None
+    policy=Sampling(seed=43,temperature=.7,top_k=64,top_p=.95)
+    first=draft.propose(object(),2,4,history,sampled=True,sampling=policy).sample(0,4,policy,37,history)
+    repeated=draft.propose(object(),2,4,history,sampled=True,sampling=policy).sample(0,4,policy,37,history)
+    expected=torch.tanh(actual_logits/30.0)*30.0
+    reference=Chains(expected,[history],4,sampled=True,sampling=policy).sample(0,4,policy,37,history)
+    wrong=Chains(torch.zeros_like(expected),[history],4,sampled=True,sampling=policy).sample(0,4,policy,37,history)
+    assert first==repeated==reference and first!=wrong
+    assert len(first.tokens)==len(first.q_rows)==4 and first.first_position==37

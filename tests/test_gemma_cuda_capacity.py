@@ -131,3 +131,43 @@ def test_drafter_admission_counts_bf16_or_private_fp8_copies(tmp_path, monkeypat
     assert runtime_workspace[1] == runtime_workspace[2]
     assert runtime_workspace[1][1] >= 16 * 16 * vocab
     assert all(full > serial for full, serial in zip(runtime_workspace[1], runtime_workspace[0]))
+
+
+def test_native_a8_eager_admission_owns_quantizer_and_softcap_without_graph_or_weight_double_charge(tmp_path, monkeypatch):
+    """Real header/geometry path, sparse metadata file only; no GPU allocation."""
+    import json
+    import struct
+    from types import SimpleNamespace
+    from tensorfold.families.gemma4.dflash_metadata import DraftConfig
+
+    raw = tiny_config();text = raw['text_config']
+    text.update(hidden_size=2816, vocab_size=262144)
+    _, where = inventory(raw)
+    target_headers = {name:{'dtype':value[3],'shape':value[4]} for name,value in where.items()}
+    directory=tmp_path/'draft';directory.mkdir()
+    draft_raw={**draft_config(),'hidden_size':2816,'vocab_size':262144,
+        'num_target_layers':text['num_hidden_layers'],'head_dim':64,'block_size':5,
+        'dflash_config':{'target_layer_ids':[0,1],'mask_token_id':4}}
+    draft=DraftConfig.from_dict(draft_raw)
+    offset=0;header={}
+    for name,shape in draft.shapes().items():
+        size=math.prod(shape)*2;header[name]={'dtype':'BF16','shape':list(shape),'data_offsets':[offset,offset+size]};offset+=size
+    encoded=json.dumps(header).encode();(directory/'config.json').write_text(json.dumps(draft_raw))
+    with (directory/'model.safetensors').open('wb') as stream:
+        stream.write(struct.pack('<Q',len(encoded))+encoded);stream.truncate(8+len(encoded)+offset)
+    metadata=ModuleType('tensorfold.checkpoint_metadata');metadata.read_config=lambda path:raw
+    runtime=ModuleType('torch');runtime.cuda=SimpleNamespace(get_device_capability=lambda:(12,1))
+    monkeypatch.setitem(sys.modules,'tensorfold.checkpoint_metadata',metadata);monkeypatch.setitem(sys.modules,'torch',runtime)
+    original=common.headers;monkeypatch.setattr(common,'headers',lambda path:original(path) if path==directory else target_headers)
+    monkeypatch.setattr(common,'admit',lambda *args,**kwargs:{'geometry':args[4],
+        'weights':kwargs['weight_estimator'](args[0])[0],'context_window':128})
+    plain=capacity.admit(tmp_path,128,True,drafter_dir=directory,drafter_bits=8,max_rows=5)
+    native=capacity.admit(tmp_path,128,True,drafter_dir=directory,drafter_bits=8,max_rows=5,dflash_head_native_a8=True)
+    assert native['weights']==plain['weights'] and 'dflash_head_native_a8' not in plain and 'dflash_graph' not in native
+    work=native['dflash_head_native_a8']['workspace']
+    assert work=={'activation_bytes':33808,'logits_softcap_bytes':12582912}
+    delta=native['geometry'].needed(128)-plain['geometry'].needed(128)
+    assert work['activation_bytes']<=delta<=sum(work.values())
+    runtime.cuda.get_device_capability=lambda:(12,0)
+    with pytest.raises(ValueError,match='SM121'):
+        capacity.admit(tmp_path,128,True,drafter_dir=directory,drafter_bits=8,max_rows=5,dflash_head_native_a8=True)

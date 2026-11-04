@@ -30,13 +30,13 @@ from tensorfold.cuda import speculative
 from tensorfold.cuda.b16_sym8_layout import SCHEMA as SYM8_SCHEMA
 from tensorfold.cuda.b16_delta4 import SCHEMA as DELTA4_SCHEMA
 from tensorfold.cuda.direct_read import SafeTensors
-from tensorfold.cuda.requant import Head, prefix, requantize
+from tensorfold.cuda.requant import Head, TokenFp8Head, prefix, requantize
 from tensorfold.cuda.tensor_file import checkpoint_path
 from tensorfold.families.qwen3_5.cuda import b16
 
 from ..dflash_metadata import checked_headers, positive
 from . import attention
-from .capacity import DFLASH_FULL_CHUNK as FULL_CHUNK, check_dflash_graph
+from .capacity import DFLASH_FULL_CHUNK as FULL_CHUNK, check_dflash_graph, check_dflash_head_a8
 from .forward import rms_norm
 from .state import PREFILL_ROWS, companion_rings, sliding_slots
 
@@ -260,8 +260,9 @@ class DFlash:
     _logits_graph = None
 
     def __init__(self, draft_dir, target, *, context_limit, block=None, bits=16, rows=PREFILL_ROWS,
-                 dflash_graph=False):
+                 dflash_graph=False, dflash_head_native_a8=False):
         check_dflash_graph(dflash_graph, bits, 2 if block is None else block, 'dflash')
+        check_dflash_head_a8(dflash_head_native_a8, bits, 2 if block is None else block, 'dflash', dflash_graph)
         if type(bits) is not int or bits not in (8, 16):
             raise ValueError("Gemma DFlash proposal weights are BF16 (16) or private FP8 row-scaled copies (8)")
         head = getattr(getattr(target, "weights", None), "embed", None)
@@ -292,6 +293,11 @@ class DFlash:
         if (cfg.heads % cfg.kv_heads or attention.QUERY_TILE % (cfg.heads // cfg.kv_heads)
                 or cfg.head_dim not in (64, 128, 256)):
             raise ValueError("Gemma DFlash attention needs a query group dividing 16 and head width 64/128/256")
+        if dflash_head_native_a8:
+            if (cfg.hidden, cfg.vocab) != (2816, 262144):
+                raise ValueError('native A8 proposal head requires hidden2816/vocabulary262144')
+            if tuple(torch.cuda.get_device_capability(target.device)) != (12, 1):
+                raise ValueError('native A8 proposal head prototype requires SM121')
         self.rows = positive(rows, "context rows")
         # Kernel offsets are int32: cached key rows and full-layer chunk partials must index below 2**31.
         slots = max(companion_rings(cfg.layer_types, cfg.sliding_window, self.block, self.rows, self.window))
@@ -339,6 +345,8 @@ class DFlash:
         if bits == 8:
             self.project_logits = (_packed_fp8_head(head, softcap=target.config.softcap) if lossless else
                                    Head(head, "fp8", softcap=target.config.softcap))
+            if dflash_head_native_a8:
+                self.project_logits = TokenFp8Head(self.project_logits)
         self.weights = loaded
         # Transformers5.6 Qwen3 default RoPE constructs the exponent in FP32.
         # Reusing Flash Next's FP64 default construction would change frequencies.
@@ -351,6 +359,11 @@ class DFlash:
 
             _prompt_ext()
             _ext()
+            if dflash_head_native_a8:
+                from tensorfold.cuda.nvfp4 import checkpoint
+
+                checkpoint._ext()
+                checkpoint.sm_count()
         self._logits_graph = _LogitsGraph(self) if dflash_graph else None
 
     def make_state(self) -> DraftState:

@@ -344,3 +344,35 @@ def test_header_admission_adds_one_graph_generation_without_snapshot_multiplier(
         assert graph['geometry'].needed(128) - plain['geometry'].needed(128) == expected
         assert graph['dflash_graph']['entries'] == 1
         assert graph['dflash_graph']['payload_workspace_bytes'] == expected
+
+
+@pytest.mark.parametrize('enabled,bits,rows,kind,graph', [
+    (1, 8, 5, 'dflash', False), (True, 16, 5, 'dflash', False),
+    (True, 8, 4, 'dflash', False), (True, 8, 5, None, False),
+    (True, 8, 5, 'sparkulator', False), (True, 8, 5, 'dflash', True),
+])
+def test_native_a8_head_region_refused_before_runtime(enabled, bits, rows, kind, graph):
+    with pytest.raises(ValueError):capacity.check_dflash_head_a8(enabled, bits, rows, kind, graph)
+
+
+def test_native_a8_head_default_off_and_eager_payload_contract():
+    capacity.check_dflash_head_a8(False, 16, 128, None, True)
+    capacity.check_dflash_head_a8(True, 8, 5, 'dflash', False)
+    payload = capacity.dflash_head_a8_workspace(2816, 262144, 4)
+    assert payload == {'activation_bytes': 4 * (2816 * 2 + 2816 + 4),
+                       'logits_softcap_bytes': 3 * 4 * 262144 * 4}
+    assert payload['activation_bytes'] == 33808 and payload['logits_softcap_bytes'] == 12582912
+    for bad in (0, -1, True):
+        with pytest.raises(ValueError):capacity.dflash_head_a8_workspace(2816, 262144, bad)
+
+
+@pytest.mark.parametrize('options', [
+    {'dflash_head_native_a8': 1},
+    {'dflash_head_native_a8': True},
+    {'dflash_head_native_a8': True, 'drafter': 'not-read', 'drafter_bits': 16, 'depth': 4},
+    {'dflash_head_native_a8': True, 'drafter': 'not-read', 'drafter_bits': 8, 'depth': 3},
+    {'dflash_head_native_a8': True, 'drafter': 'not-read', 'drafter_bits': 8, 'depth': 4, 'dflash_graph': True},
+])
+def test_native_a8_engine_unsupported_option_refuses_before_checkpoint_read(options):
+    with pytest.raises(ValueError, match='native_a8|native A8'):
+        Gemma4Engine('nonexistent-must-not-be-read', **options)

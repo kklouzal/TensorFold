@@ -174,3 +174,83 @@ def test_nvfp4_accounting():
 
     assert resident_bytes("nvfp4", 1000, 256) == 1024 * 128 + 1024 * 16
     assert staging_bytes("nvfp4", 248320, 2048) > resident_bytes("nvfp4", 248320, 2048)
+
+
+def _token_head_source(cap=30.0):
+    linear = requant.requantize(torch.arange(128 * 64).reshape(128, 64).bfloat16() / 4096, 'fp8')
+    return requant.Head(linear, 'fp8', softcap=cap)
+
+
+def test_token_head_aliases_immutable_fp8_payload_without_mutating_or_repacking(monkeypatch):
+    source = _token_head_source()
+    codes, scales = source.linear.w8.clone(), source.linear.cols.clone()
+    def forbidden(*args, **kwargs):
+        pytest.fail('an existing private FP8 head must not be quantized or packed again')
+    monkeypatch.setattr(requant, 'requantize', forbidden)
+    monkeypatch.setattr(requant.Fp8Linear, 'from_checkpoint', forbidden)
+    native = requant.TokenFp8Head(source)
+    assert native.linear is not source.linear and native.linear.token and not source.linear.token
+    assert native.linear.w8 is source.linear.w8 and native.linear.cols is source.linear.cols
+    assert native.nbytes() == source.nbytes() and native.softcap == source.softcap == 30.0
+    assert torch.equal(source.linear.w8, codes) and torch.equal(source.linear.cols.view(torch.int32), scales.view(torch.int32))
+    assert requant.KINDS == ('fp8', 'nvfp4')
+
+
+@pytest.mark.parametrize('cap', [None, 30.0])
+def test_token_head_explicit_fp32_owning_output_and_single_softcap(monkeypatch, cap):
+    from tensorfold.cuda.nvfp4 import checkpoint
+    source = _token_head_source(cap)
+    native = requant.TokenFp8Head(source)
+    x = torch.ones((4, 64), dtype=torch.bfloat16)
+    values = torch.linspace(-90, 90, 4 * 128).reshape(4, 128)
+    calls = []
+    def product(mode, rows, linear, out=None, f32=False):
+        assert mode == checkpoint.A8 and rows is x and linear is native.linear
+        assert f32 is True and out is None
+        result = values.clone();calls.append(result)
+        return result
+    monkeypatch.setattr(checkpoint, 'matmul', product)
+    first, second = native(x), native(x)
+    expected = values if cap is None else torch.tanh(values / cap) * cap
+    assert first.dtype == second.dtype == torch.float32 and first.shape == (4, 128)
+    assert torch.equal(first.view(torch.int32), expected.view(torch.int32))
+    assert first.data_ptr() != second.data_ptr()
+    if cap is not None:
+        assert first.data_ptr() != calls[0].data_ptr()
+        assert not torch.equal(first, torch.tanh(expected / cap) * cap)
+
+
+@pytest.mark.parametrize('change', ['token', 'act', 'groups', 'cols', 'scale'])
+def test_token_head_refuses_an_incompatible_existing_copy(change):
+    source = _token_head_source()
+    setattr(source.linear, change, {'token': True, 'act': 1.0, 'groups': torch.ones(1),
+                                   'cols': None, 'scale': 2.0}[change])
+    with pytest.raises(ValueError, match='unchanged per-channel'):
+        requant.TokenFp8Head(source)
+    with pytest.raises(ValueError, match='existing private FP8 Head'):
+        requant.TokenFp8Head(object())
+
+
+@pytest.mark.parametrize('rows,width,dtype', [(0, 64, torch.bfloat16), (5, 64, torch.bfloat16),
+                                            (1, 63, torch.bfloat16), (1, 64, torch.float32)])
+def test_token_head_bad_input_refuses_before_native_work(monkeypatch, rows, width, dtype):
+    from tensorfold.cuda.nvfp4 import checkpoint
+    native = requant.TokenFp8Head(_token_head_source())
+    monkeypatch.setattr(checkpoint, 'matmul', lambda *args, **kwargs: pytest.fail('invalid head input reached native work'))
+    with pytest.raises(ValueError, match='matching BF16 rows'):
+        native(torch.zeros((rows, width), dtype=dtype))
+
+
+def test_token_head_does_not_clamp_nonfinite_logits_or_retry_native_failure(monkeypatch):
+    from tensorfold.cuda.nvfp4 import checkpoint
+    native = requant.TokenFp8Head(_token_head_source())
+    x = torch.ones((1, 64), dtype=torch.bfloat16)
+    monkeypatch.setattr(checkpoint, 'matmul', lambda *args, **kwargs: torch.full((1, 128), float('nan')))
+    assert torch.isnan(native(x)).all()
+    primary = RuntimeError('native A8 head failed');primary.__cause__ = ValueError('original native cause')
+    calls = []
+    def failed(*args, **kwargs):
+        calls.append('native');raise primary
+    monkeypatch.setattr(checkpoint, 'matmul', failed)
+    with pytest.raises(RuntimeError) as caught:native(x)
+    assert caught.value is primary and isinstance(primary.__cause__, ValueError) and calls == ['native']

@@ -175,3 +175,39 @@ def test_expert_quantize_is_the_shared_recipe_per_expert():
     # loaders pass views: gate_up[:, :ni] (row slices) and a rank's down[:, :, lo:hi] (strided rows)
     for view in (torch.cat([w, w], 1)[:, :96], torch.cat([w, w], 2)[:, :, 128:]):
         assert all(torch.equal(a, b) for a, b in zip(nvx.quantize(view), (words, scales, g)))
+
+
+@pytest.mark.parametrize('rows', [1, 2, 3, 4])
+def test_native_a8_proposal_head_actual_hidden_width_owns_fp32_and_preserves_weight_words(rows):
+    from tensorfold.cuda.requant import TokenFp8Head
+    from tensorfold.cuda.nvfp4 import checkpoint
+    from tests.cuda.test_nvfp4_checkpoint import _channel_lin, _err, _token_ref, _token_rows
+
+    # Reuse independent token-quantizer/product oracles; no new numerical margin.
+    linear, weight, scales = _channel_lin(128, 2816, 804, token=False)
+    source = Head(linear, 'fp8', softcap=30.0)
+    before = (linear.w8.clone(), linear.cols.clone())
+    native = TokenFp8Head(source)
+    x = _token_rows(rows, 2816, 805)
+    uncapped = checkpoint.matmul(checkpoint.A8, x, native.linear, f32=True)
+    reference, absum = _token_ref(x, weight, scales)
+    assert _err(uncapped, reference, absum) < 1
+    first, second = native(x), native(x)
+    assert first.dtype == torch.float32 and first.shape == (rows, 128) and first.data_ptr() != second.data_ptr()
+    expected = torch.tanh(uncapped / 30.0) * 30.0
+    assert torch.equal(first.view(torch.int32), expected.view(torch.int32))
+    assert torch.equal(first.view(torch.int32), second.view(torch.int32))
+    assert native.linear.w8 is linear.w8 and native.linear.cols is linear.cols and not linear.token
+    assert torch.equal(linear.w8, before[0]) and torch.equal(linear.cols.view(torch.int32), before[1].view(torch.int32))
+
+
+@pytest.mark.parametrize('bad', [float('nan'), float('inf'), -float('inf')])
+def test_native_a8_head_nonfinite_source_cannot_publish_a_valid_proposal(bad):
+    from tensorfold.cuda.requant import TokenFp8Head
+    from tensorfold.cuda.speculative import Chains
+    from tensorfold.engine.exact_sampling import Sampling
+    source=Head(requantize(torch.ones((128,2816),device='cuda',dtype=torch.bfloat16),'fp8'),'fp8',softcap=30.0)
+    x=torch.ones((1,2816),device='cuda',dtype=torch.bfloat16);x[0,0]=bad
+    logits=TokenFp8Head(source)(x)
+    policy=Sampling(seed=13,temperature=1.,top_k=64,top_p=.95)
+    with pytest.raises(ValueError):Chains(logits,[None],1,sampled=True,sampling=policy).sample(0,1,policy,7)

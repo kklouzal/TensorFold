@@ -40,6 +40,22 @@ runtime inventory; this is not a new build or a new full-model/P3 gain.
 Production and its flags are unchanged; no N32 production deployment or
 performance gain is claimed. See [kernel contracts](docs/cuda-kernel-contracts.md).
 
+**Native A8 DFlash head prototype (performance pending):** a default-off internal
+constructor policy can run only the private FP8 proposal vocabulary head with
+existing dynamic per-token E4M3 activations and explicit FP32 output/single
+softcap. Its code/column-scale tensors alias the original private copy; target
+weights/math and other companion projections are unchanged. Initial scope is
+SM121, FP8 DFlash/depth4, hidden2816/vocabulary262144, with DFlash graph disabled;
+there is no CLI flag or production activation. Eager activation/output admission
+and provider readiness are part of the prototype. Changed proposal q must feed
+the existing rejection law: cross-policy greedy target IDs remain an oracle,
+but greedy work counts may change; cross-policy sampled IDs/q/counters need not
+match. The private b4 candidate passed 407 source and 407 installed CPU checks
+(15 existing CUDA-only skips each), all 35 SM121 component checks without skips,
+and the bounded OFF/ON full-model policy-quality bridge. Matched performance
+qualification remains pending; no speed gain or production activation is claimed.
+See [kernel contracts](docs/cuda-kernel-contracts.md).
+
 The 2026-11-01 standalone production checkpoint on port `8888` ran
 [`llmfan46/gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic-NVFP4`](docs/recipes/gemma-4-26b-modelopt.md)
 revision `a9e81e26ed81f541ec1d7314e72c61237a24566f`, **without a drafter**.

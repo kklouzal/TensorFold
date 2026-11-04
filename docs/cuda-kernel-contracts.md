@@ -480,3 +480,64 @@ construction and never written, without checking them again. `tests/cuda/test_fl
 selecting eight-bit encoder (its selection chain `_indices8_selected`) as the oracle whose codes and scales the table
 encoder equals bit for bit, and checks `_indices_8` at every midpoint and its FP32 neighbours against independently
 expected indices.
+
+
+## Private DFlash native-A8 head prototype: performance pending
+
+The default-off internal `dflash_head_native_a8` Engine/DFlash/admission option
+selects only a new `requant.TokenFp8Head`. It aliases the already-constructed
+private FP8 head's fragment bytes and FP32 column scales through a new token
+metadata descriptor. It neither mutates the old descriptor nor re-quantizes,
+reorders or replaces target Delta4 bytes. Ordinary `Head`, other private linears,
+accepted-KV append and `requant.KINDS` retain their original behavior/history.
+
+The adapter calls existing `checkpoint.matmul(A8, ..., f32=True)` and returns
+owning FP32 logits with one original softcap. Generic token `Fp8Linear.__call__`
+uses BF16-default output, even with a supplied FP32 buffer, and is not this head
+contract. Existing `quant8_token` and native FP8 lane math/ABI remain authoritative;
+no kernel or calibration changes are introduced. Inputs are BF16 M1–4 rows on
+the weight device; the initial Engine policy requires an actual FP8 DFlash D4
+companion, hidden2816/vocabulary262144 and SM121. Unsupported opt-ins and
+DFlash-graph combinations fail explicitly; defaults and target graphs remain
+unchanged. The loader prepares the checkpoint provider and device shape metadata
+before ready. Untimed candidate-image qualification exercised the actual
+N262144/K2816 head shape in the OFF/ON full-model bridge.
+
+Eager admission charges M*(3K+4) activation bytes (possible BF16 normalization,
+E4M3 codes and FP32 row scales), plus a bound of three simultaneous FP32
+head/softcap tensors. At M4/K2816/V262144 these are33808 and12582912 bytes.
+The head/logit arithmetic bound takes a maximum with target transient arithmetic,
+not a sum: `Chains._readback` synchronously completes publication and clears its
+GPU source/owners, then `Engine.generate` sets `chains=None` before target
+verification. Earlier target results borrow retained graph outputs, whose
+separate graph-payload admission remains charged. Quantizer allowance is added
+conservatively without allocator-reuse credit. N262144 chooses splitK1, hence no
+new native partial buffer. No activation cache or borrowed reusable output is
+introduced; logical payload accounting is not physical allocator/VRAM evidence.
+DFlash graph remains unsupported until its no-quantizer estimator and capture
+ownership are separately adapted/qualified. Unknown native failures preserve
+actual owners/exception frames; no profiler/fence/native retry is added.
+
+Only proposal policy changes. Actual normalized q, filters and path-aware
+penalties flow through the existing immutable `ChainPacket` and rejection/
+positive-residual algorithm. Target p is unchanged for identical histories;
+changed histories are not expected to have identical p. Cross-policy greedy
+committed IDs must agree, but proposal acceptance, rounds and drafted work may
+change even for greedy requests. Sampled IDs/q/counters are not cross-policy
+equality oracles. Same-policy seed/cache/rollback reproducibility, grammar,
+EOS/room and failure contracts remain required.
+
+Use existing independent token-quantizer/product and FP32-cancellation oracles
+plus targeted alias/output/softcap/readiness/admission and actual-q integration
+checks. Existing empirical product envelopes are not universal error bounds;
+no tolerance is weakened. CPU source/control, actual SM121 native components,
+focused full-model proposal-law quality and matched complete-request P3 gates
+are separate. Private source b4/image8ed/verification213 passed 407 source and
+407 installed CPU checks (15 existing CUDA-only skips each) and all 35 SM121
+component checks without skips. Both fresh OFF/ON processes passed three fixed
+teacher/proposal cases, 12 cold/hit generation checks and targeted grammar,
+penalty, EOS and cooperative-stop/recovery checks; fixed-history target teachers,
+payloads and greedy committed IDs matched under the policy contracts above.
+The exact production container was restored unchanged. Matched complete-request
+P3 qualification remains pending; no speed or memory saving, production
+activation or new CLI capability is claimed.

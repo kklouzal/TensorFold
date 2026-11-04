@@ -22,6 +22,28 @@ def check_dflash_graph(enabled, bits, rows, kind):
         raise ValueError('dflash_graph requires an enabled FP8 DFlash block of2..16 rows')
 
 
+
+def check_dflash_head_a8(enabled, bits, rows, kind, dflash_graph=False):
+    if type(enabled) is not bool:
+        raise ValueError('dflash_head_native_a8 must be a bool')
+    if enabled and (kind != 'dflash' or type(bits) is not int or bits != 8
+                    or type(rows) is not int or rows != 5 or dflash_graph):
+        raise ValueError('native A8 proposal head requires FP8 DFlash depth4 with dflash_graph disabled')
+
+
+def dflash_head_a8_workspace(hidden: int, vocab: int, rows: int) -> dict[str, int]:
+    """Per-call eager owners, without allocator reuse credit.
+
+    Head output and two live softcap intermediates coexist. Private proposal
+    logits/quantizer owners retire after readback, before target verification;
+    their arithmetic workspace takes a maximum with target transient work.
+    """
+    if any(type(value) is not int or value < 1 for value in (hidden, vocab, rows)):
+        raise ValueError('native A8 head workspace requires positive integer dimensions')
+    return {'activation_bytes': rows * (3 * hidden + 4),
+            'logits_softcap_bytes': 3 * rows * vocab * 4}
+
+
 def dflash_graph_workspace(cfg, rows: int, slots: int) -> int:
     """One replaceable logits graph's conservative tensor-payload estimate.
 
@@ -109,7 +131,7 @@ def companion_kind(directory):
 
 
 def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=False,
-          max_rows=16, streams=1, keep=1, drafter_bits=16, prepare_global_prompt=False, lossless_head=False, spark_global_gqa=False, spark_sampled_q=False, global_trig=False, delta4_head=False, global_cache="none", global_cache_prompt=False, dflash_graph=False):
+          max_rows=16, streams=1, keep=1, drafter_bits=16, prepare_global_prompt=False, lossless_head=False, spark_global_gqa=False, spark_sampled_q=False, global_trig=False, delta4_head=False, global_cache="none", global_cache_prompt=False, dflash_graph=False, dflash_head_native_a8=False):
     import torch
     from tensorfold.checkpoint_metadata import read_config
     from tensorfold.families import quant_method
@@ -121,6 +143,8 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
     check_global_cache(global_cache, prompt=global_cache_prompt,
                        prepared_prompt=prepare_global_prompt, trig=global_trig)
     check_dflash_graph(dflash_graph, drafter_bits, max_rows, 'dflash' if drafter_dir is not None else None)
+    check_dflash_head_a8(dflash_head_native_a8, drafter_bits, max_rows,
+                         'dflash' if drafter_dir is not None else None, dflash_graph)
     if type(global_trig) is not bool:
         raise ValueError("global_trig must be a bool")
     if type(spark_sampled_q) is not bool:
@@ -236,9 +260,16 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
         # Check live host allowance without charging the shared UMA pool twice.
         admit_host_commitment(host_staging)
 
+    if dflash_head_native_a8:
+        if (cfg.hidden, cfg.vocab) != (2816, 262144):
+            raise ValueError('native A8 proposal head requires hidden2816/vocabulary262144')
+        if tuple(torch.cuda.get_device_capability()) != (12, 1):
+            raise ValueError('native A8 proposal head prototype requires SM121')
+
     draft = spark = None
     kind = companion_kind(drafter_dir) if drafter_dir is not None else None
     check_dflash_graph(dflash_graph, drafter_bits, max_rows, kind)
+    check_dflash_head_a8(dflash_head_native_a8, drafter_bits, max_rows, kind, dflash_graph)
     if spark_sampled_q and (kind != 'sparkulator' or not modelopt):
         raise ValueError('Spark sampled q requires the actual Sparkulator/ModelOpt pair')
     if spark_sampled_q and not 2 <= max_rows <= 16:
@@ -324,6 +355,8 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
         q_extra = effective_workspace(1, cfg.vocab, top_k=min(cfg.vocab, 256))
         retained_q = assistant_q_host_bytes(max_rows - 1, min(cfg.vocab, 256), proposal_policy=True)
 
+    head_a8_work = dflash_head_a8_workspace(cfg.hidden, cfg.vocab, max_rows - 1) if dflash_head_native_a8 else None
+
     def workspace(slots):
         # One layer's simultaneous activation/route tensors and retained taps.
         scratch = rows * (32 * cfg.hidden + 16 * cfg.top_k * cfg.moe_width) * 2
@@ -336,6 +369,8 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
         scratch += (SEQUENTIAL_ROWS - 1) * cfg.heads * chunks * (cfg.global_head_dim + 2) * 4
         if native or modelopt:
             scratch += expert_workspace(cfg, rows)
+        if dflash_head_native_a8:
+            scratch = max(scratch, head_a8_work['logits_softcap_bytes']) + head_a8_work['activation_bytes']
         from .weights import TAP_LAYERS
         scratch += graph_workspace(cfg, max_rows, slots, 0 if spark is not None else
                                    len([i for i in TAP_LAYERS if i < cfg.layers]))
@@ -388,6 +423,10 @@ def admit(model_dir, context, context_explicit, *, drafter_dir=None, vision=Fals
                   host_workspace_bytes=sampling["host_bytes"] + proposals["host_bytes"]
                                        + q_extra["host_bytes"] + retained_q + bias["host_bytes"])
     result['logit_bias_workspace'] = bias
+    if dflash_head_native_a8:
+        result['dflash_head_native_a8'] = {
+            'max_rows': max_rows - 1, 'workspace': head_a8_work,
+            'owning_logits_dtype': 'float32', 'unqualified_prototype': True}
     if dflash_graph:
         result['dflash_graph'] = {'entries': 1, 'max_rows': max_rows,
                                  'payload_workspace_bytes': dflash_graph_workspace(
