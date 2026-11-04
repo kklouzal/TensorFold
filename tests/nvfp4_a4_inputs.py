@@ -133,3 +133,13 @@ def individual_reference(ctx, x, picks, *, prefill):
             hidden = silu * u
             outputs[row, slot] = native(checkpoint.A4, hidden, down, f32=not prefill)[0]
     return outputs
+
+
+def plan_order_positions(members):
+    """Invert nonempty plan-order members after proving original-slot bijection."""
+    if not members or any(type(member) is not int for member in members) or sorted(members) != list(range(len(members))):
+        raise ValueError('plan members must permute every original flattened slot exactly once')
+    positions = [0] * len(members)
+    for plan_position, original_slot in enumerate(members):
+        positions[original_slot] = plan_position
+    return positions

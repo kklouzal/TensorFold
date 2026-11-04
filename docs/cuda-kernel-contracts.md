@@ -400,6 +400,24 @@ K, added in slice order); Gemma's fuses the CT RMS/root/scale input and is follo
 by one softmax/top-k/renormalize/per-expert-scale kernel (stable descending order,
 lower ID on ties).
 
+The unqualified Gemma original-CT/common-input source prototype selects N32
+output columns and two warps only for 1–5-row, SK1, tanh-GELU, 16-pair-item
+calls. `output_tile` is distinct from the plan's 16/64-pair row tile. Shared
+Python/native calls default to N64/four warps; ModelOpt, non-common inputs and
+larger rows retain it. The ABI is `tensorfold_nvfp4_experts_a4_v6`; explicit N32
+outside its admitted contract is rejected before launch. N32 reads an aligned
+1024-byte word half and 128-byte scale half from the original N64 payload, so
+packing, scratch owners, routing, graph addresses and admission are unchanged.
+The same K-group/MMA chains, BF16 boundaries and per16 quantizer/shuffle order
+apply. Compile-time shared rings use9216/4608bytes for fused-up/down N32 versus
+18432/9216bytes for N64; launch dynamic shared bytes remain zero. Lower static
+shared storage does not establish improved occupancy or performance. Immutable
+candidate `b21b70f8` passed CPU/installed checks, SM121 ABI-v6 compilation/import,
+and the corrected full 30-test exact-word/quantizer/independent-operator/replay
+component suite without skips. Full-model and integrated working-base
+qualification remain pending; no deployed behavior or performance result is
+changed by this source prototype or this later documentation update.
+
 The maintained independent oracle packs original checkpoint projections through
 the individual linear implementation and computes each routed pair separately.
 An additional scalar CPU activation quantizer checks encoded bytes, including

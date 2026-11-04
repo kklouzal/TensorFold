@@ -111,7 +111,9 @@ class Experts:
         if picks.data_ptr() != buf.pick.data_ptr() or picks.stride() != buf.pick.stride():
             buf.pick[:rows].copy_(picks)            # the router wrote elsewhere (picks_for gives the buffer)
         buf.route(rows)
-        self.bank.run_plan(x.contiguous(), buf, prefill=True)
+        # Private unqualified N32 candidate: keep all other native consumers on N64.
+        output_tile = 32 if rows <= 5 and not self.direct_input and self.bank.shared_input else 64
+        self.bank.run_plan(x.contiguous(), buf, prefill=True, output_tile=output_tile)
         out = torch.empty((rows, self.dims), dtype=torch.bfloat16, device=self.device)
         _combine[(rows, triton.cdiv(self.dims, 256))](
             buf.y, buf.pick, weights, out, N=self.dims, R=slots, RS=triton.next_power_of_2(slots), BLOCK=256,

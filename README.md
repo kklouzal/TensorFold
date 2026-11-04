@@ -9,7 +9,7 @@ retaining FP8 DFlash/depth4, BF16 KV, the 131072 window, vision, thinking and th
 owned Google template. `production-current` points to
 `deploy-delta4-cli-20261103-v1`; prior container `099563af`/image `8da9dff3`
 is retained stopped for rollback, and both speech services remain healthy.
-The image predates this documentation update; runtime and test bytes are unchanged.
+The running image predates the source prototype below; deployed runtime and test bytes remain unchanged.
 
 Qualification passed 408 source and 214 installed CPU checks, 14 probe controls,
 actual typed Delta4/R16/load/drain, 16 individual native CLI API/media checks,
@@ -20,6 +20,25 @@ overall API packet is not reported as wholly passed. The owner accepted the
 CPU-peak/startup tradeoff and deployed before independent performance confirmation;
 the earlier 07d/f9 exploratory 2-4% points are not confirmed gains for this image.
 See the [deployment scope](docs/gemma4-cuda-validation.md#experimental-delta4-tied-table-integration).
+
+**Unqualified source prototype:** Gemma original-CT common-input expert calls
+with 1–5 rows now have an experimental N32/two-warp output tile, preserving
+original N64-packed bytes and the existing SK1/BF16 arithmetic. The shared native
+API defaults to N64; ModelOpt, non-common inputs and larger rows retain N64.
+This source change is absent from the deployed image above. Maintained CPU
+and installed checks, native compilation, and exact GPU word/quantizer/replay
+checks passed on immutable candidate `b21b70f8` (`b0f0dabd` runtime,
+`b0dfc221` verification): 325 source and 237 installed CPU passes, each with one
+explicit GPU-assisted loader skip; 48 focused oracle CPU and 30 SM121 GPU
+component passes without skips using corrected immutable fixture `8d5ec338`.
+The original plan-order test-oracle failure is
+preserved; the corrected oracle retains exact byte/word assertions. Full-model
+quality and integrated performance remain pending; no gain or production
+selection is claimed. These documentation updates do not identify a new build.
+Candidate
+full-model comparisons must use the accepted working base of Delta4/R16,
+Shared512 and DFlash depth4, with proposal graphs, clipping, trig and persistent
+caches disabled. See [kernel contracts](docs/cuda-kernel-contracts.md).
 
 The 2026-11-01 standalone production checkpoint on port `8888` ran
 [`llmfan46/gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic-NVFP4`](docs/recipes/gemma-4-26b-modelopt.md)
