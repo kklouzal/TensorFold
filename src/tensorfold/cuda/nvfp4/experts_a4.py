@@ -109,7 +109,7 @@ class ExpertsA4:
     def nbytes(self):
         return sum(t.numel() * t.element_size() for t in self.fields)
 
-    def run_plan(self, x, buf, *, prefill, output_tile=64):
+    def run_plan(self, x, buf, *, prefill):
         """Fill routed slots of ``buf.y[:rows]`` from the device plan ``buf.plan``.
 
         ``buf`` holds ``rows`` (capacity), ``slots``, ``pick`` [rows, slots]
@@ -117,8 +117,6 @@ class ExpertsA4:
         or 64 pairs (``plan_tile``), and ``y`` [rows, slots, dims] (BF16 when
         ``prefill``, else FP32). Plan items whose cell equals ``count`` (a
         resident shared expert) are skipped; their slots are the caller's.
-        ``output_tile`` selects output columns, independently of the plan item
-        size: default64, or the narrow CT/common/GELU/SK1 1..5-row candidate32.
         Three launches: activation codes (one per row for a proven shared input
         global), gate/up GEMMs + activation + down quantization (fused_up), and
         the down GEMM; each streams an expert's weights once per item. Shape-only
@@ -127,6 +125,8 @@ class ExpertsA4:
         call per buffer allocates and initializes retained scratch, so it must
         run eagerly before any CUDA graph capture over ``buf``.
         """
+        from tensorfold.cuda.kernels import qmm
+
         rows, slots = x.shape[0], buf.slots
         plan = buf.plan
         if plan.tile not in (16, 64):
@@ -134,14 +134,7 @@ class ExpertsA4:
         activation = getattr(self.swiglu, "activation", None)
         if activation not in (0, 1):
             raise ValueError("native A4 device plans fuse a declared SiLU or tanh GELU activation")
-        if type(output_tile) is not int or output_tile not in (32, 64):
-            raise ValueError("native A4 output_tile must be32or64")
-        if output_tile == 32 and not (prefill is True and 1 <= rows <= 5 and plan.tile == 16
-                                      and not self.direct_input and self.shared_input and activation == 1):
-            raise ValueError("N32 requires CT common-input GELU SK1 16-pair items and1..5rows")
         self._check(x, buf.pick[:rows], buf.y[:rows], prefill=prefill)
-        from tensorfold.cuda.kernels import qmm
-
         # The buffer, not every expert bank, owns reusable shape-specific
         # storage. Allocate all retained tensors before publishing the tuple.
         key = (self.dims, self.width)
@@ -194,10 +187,10 @@ class ExpertsA4:
             ext.quantize_plan(x, items, plan.counts, members, fields[4], codes, scales, slots, direct, plan.tile)
         ext.fused_up(codes, scales, fields[0], fields[2], fields[4], fields[5], items, plan.counts, members, dc, ds,
                      self.width, self.dims, 1 if prefill else qmm.split_k(self.width, self.dims), slots, common, direct,
-                     plan.tile, activation, output_tile)
+                     plan.tile, activation)
         ext.down_plan(dc, ds, self.native_down, fields[3], fields[5], items, plan.counts, members, buf.y[:rows],
                       self.dims, self.width, 1 if prefill else qmm.split_k(self.dims, self.width), slots, direct,
-                      plan.tile, output_tile)
+                      plan.tile)
 
     @contextmanager
     def lease(self, ids):

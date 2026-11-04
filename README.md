@@ -21,24 +21,24 @@ CPU-peak/startup tradeoff and deployed before independent performance confirmati
 the earlier 07d/f9 exploratory 2-4% points are not confirmed gains for this image.
 See the [deployment scope](docs/gemma4-cuda-validation.md#experimental-delta4-tied-table-integration).
 
-**Unqualified source prototype:** Gemma original-CT common-input expert calls
-with 1–5 rows now have an experimental N32/two-warp output tile, preserving
-original N64-packed bytes and the existing SK1/BF16 arithmetic. The shared native
-API defaults to N64; ModelOpt, non-common inputs and larger rows retain N64.
-This source change is absent from the deployed image above. Maintained CPU
-and installed checks, native compilation, and exact GPU word/quantizer/replay
-checks passed on immutable candidate `b21b70f8` (`b0f0dabd` runtime,
-`b0dfc221` verification): 325 source and 237 installed CPU passes, each with one
-explicit GPU-assisted loader skip; 48 focused oracle CPU and 30 SM121 GPU
-component passes without skips using corrected immutable fixture `8d5ec338`.
-The original plan-order test-oracle failure is
-preserved; the corrected oracle retains exact byte/word assertions. Full-model
-quality and integrated performance remain pending; no gain or production
-selection is claimed. These documentation updates do not identify a new build.
-Candidate
-full-model comparisons must use the accepted working base of Delta4/R16,
-Shared512 and DFlash depth4, with proposal graphs, clipping, trig and persistent
-caches disabled. See [kernel contracts](docs/cuda-kernel-contracts.md).
+**Expert N32 experiment closed without selection:** the separate immutable
+`b21b70f8` candidate passed native compilation and the corrected 30-test SM121
+component suite, the paired focused full-model quality bridge, and eight semantic
+comparisons across the four-process pilot. Its initial plan-order test-oracle failure remains preserved. The
+four-process performance pilot, on Shared512 + Delta4/R16 + DFlash depth4,
+showed lower cached primary throughput in all six regions in both paired
+halves: the N32/N64 aggregate points ranged from −0.078% to −0.478%. Cold-prefix
+primary points were also lower (−0.52% to −1.22%); startup/prefill observations
+were mixed and Torch memory counters were identical. These are exploratory
+n=2 observations per arm, without a formal confidence/equivalence claim.
+N32 was not selected: source runtime files are restored exactly to accepted
+`2200ff86`/EECB N64 bytes, with no N32 selector or ABI retained. Independent
+plan-order, intermediate quantizer and Gemma word/replay oracles remain as N64
+baseline coverage. Post-cleanup checks passed 227 CPU tests and all 26 retained
+SM121 GPU oracles without skips on accepted EECB's byte-identical 777-file
+runtime inventory; this is not a new build or a new full-model/P3 gain.
+Production and its flags are unchanged; no N32 production deployment or
+performance gain is claimed. See [kernel contracts](docs/cuda-kernel-contracts.md).
 
 The 2026-11-01 standalone production checkpoint on port `8888` ran
 [`llmfan46/gemma-4-26B-A4B-it-qat-q4_0-uncensored-heretic-NVFP4`](docs/recipes/gemma-4-26b-modelopt.md)

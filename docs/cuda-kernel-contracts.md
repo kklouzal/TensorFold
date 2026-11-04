@@ -400,23 +400,28 @@ K, added in slice order); Gemma's fuses the CT RMS/root/scale input and is follo
 by one softmax/top-k/renormalize/per-expert-scale kernel (stable descending order,
 lower ID on ties).
 
-The unqualified Gemma original-CT/common-input source prototype selects N32
-output columns and two warps only for 1–5-row, SK1, tanh-GELU, 16-pair-item
-calls. `output_tile` is distinct from the plan's 16/64-pair row tile. Shared
-Python/native calls default to N64/four warps; ModelOpt, non-common inputs and
-larger rows retain it. The ABI is `tensorfold_nvfp4_experts_a4_v6`; explicit N32
-outside its admitted contract is rejected before launch. N32 reads an aligned
-1024-byte word half and 128-byte scale half from the original N64 payload, so
-packing, scratch owners, routing, graph addresses and admission are unchanged.
-The same K-group/MMA chains, BF16 boundaries and per16 quantizer/shuffle order
-apply. Compile-time shared rings use9216/4608bytes for fused-up/down N32 versus
-18432/9216bytes for N64; launch dynamic shared bytes remain zero. Lower static
-shared storage does not establish improved occupancy or performance. Immutable
-candidate `b21b70f8` passed CPU/installed checks, SM121 ABI-v6 compilation/import,
-and the corrected full 30-test exact-word/quantizer/independent-operator/replay
-component suite without skips. Full-model and integrated working-base
-qualification remain pending; no deployed behavior or performance result is
-changed by this source prototype or this later documentation update.
+The separate N32/two-warp candidate preserved the original N64-packed source
+and passed the corrected full 30-test SM121 component suite, the paired focused
+full-model quality bridge, and eight semantic comparisons across the four-process pilot. Its initial grouped-plan test-oracle
+layout failure remains preserved. The exploratory four-process pilot (n=2 per
+arm) had lower cached primary throughput in all six required regions in both
+paired halves, with aggregate N32/N64 points −0.078% to −0.478%, and lower
+cold-prefix primary points; this is not formal confidence or equivalence
+proof. No N32 performance win or deployment was selected.
+
+Current source is restored to the exact accepted N64/four-warp runtime and
+`tensorfold_nvfp4_experts_a4_v5` ABI. There is no output-tile selector or N32
+runtime path. The 16/64-pair planner item policy, original packed banks,
+SK1/BF16 Gemma math, calibration, graph owners and admission remain unchanged.
+Retained baseline tests independently check grouped-order intermediate down
+codes/scales, per-slot and combined BF16 words, and actual-shape Gemma GELU
+replay with changed routing. Intermediate scratch uses grouped plan indices;
+`members` maps these to original flattened row/slot IDs. Tests validate its
+bijection and invert only this address mapping; expected values still come
+from independent checkpoint linears and the CPU CT quantizer.
+Post-cleanup validation passed 227 CPU checks and all 26 retained SM121 GPU
+oracles without skips using accepted EECB's byte-identical 777-file runtime
+inventory, not a new SDK/application build or a new full-model/P3 gain.
 
 The maintained independent oracle packs original checkpoint projections through
 the individual linear implementation and computes each routed pair separately.

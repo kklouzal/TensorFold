@@ -11,10 +11,10 @@ void expert_a4_quant_plan_cuda(const at::Tensor&, const at::Tensor&, const at::T
     const at::Tensor&, at::Tensor&, at::Tensor&, int64_t, bool, int64_t);
 void expert_a4_fused_up_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
     const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, at::Tensor&,
-    at::Tensor&, int64_t, int64_t, int64_t, int64_t, bool, bool, int64_t, int64_t, int64_t);
+    at::Tensor&, int64_t, int64_t, int64_t, int64_t, bool, bool, int64_t, int64_t);
 void expert_a4_down_plan_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
     const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, at::Tensor&,
-    int64_t, int64_t, int64_t, int64_t, bool, int64_t, int64_t);
+    int64_t, int64_t, int64_t, int64_t, bool, int64_t);
 
 static void tensor(const at::Tensor& value, const at::Tensor& on, at::ScalarType type, int rank,
                    const char* name) {
@@ -169,7 +169,7 @@ static void plan_common(const at::Tensor& blob, const at::Tensor& items, const a
 void fused_up(const at::Tensor& codes, const at::Tensor& scales, const at::Tensor& blob, const at::Tensor& weight,
     const at::Tensor& input, const at::Tensor& down_input, const at::Tensor& items, const at::Tensor& counts,
     const at::Tensor& members, at::Tensor down_codes, at::Tensor down_scales, int64_t n, int64_t k, int64_t sk,
-    int64_t slots, bool common, bool direct, int64_t tile, int64_t act, int64_t output_tile) {
+    int64_t slots, bool common, bool direct, int64_t tile, int64_t act) {
     plan_common(blob, items, counts, members, n, k, sk, slots, tile);
     tensor(codes, blob, at::kByte, 3, "codes");
     tensor(scales, blob, at::kByte, 3, "scales");
@@ -179,8 +179,6 @@ void fused_up(const at::Tensor& codes, const at::Tensor& scales, const at::Tenso
     expert_field(input, blob, at::kFloat, 2, "input calibration");
     expert_field(down_input, blob, at::kFloat, 2, "down input calibration");
     const auto p = members.size(0), cells = blob.size(0);
-    TORCH_CHECK(output_tile == 64 || (output_tile == 32 && !direct && common && act == 1 && sk == 1 &&
-                tile == 16 && p / slots >= 1 && p / slots <= 5 && n / 32 <= 65535), "N32 requires CT common-input GELU SK1 16-pair items and1..5rows");
     TORCH_CHECK(act == 0 || act == 1, "fused native A4: SiLU (0) or tanh GELU (1)");
     TORCH_CHECK(blob.size(1) == 2 && weight.size(0) == cells && weight.size(1) == 2 && input.sizes() == weight.sizes() &&
                 down_input.size(0) == cells && down_input.size(1) == 1, "fused native A4: gate/up blob and calibrations");
@@ -195,13 +193,13 @@ void fused_up(const at::Tensor& codes, const at::Tensor& scales, const at::Tenso
                 "fused native A4: pair-major down codes/scales");
     c10::cuda::CUDAGuard guard(blob.device());
     expert_a4_fused_up_cuda(codes, scales, blob, weight, input, down_input, items, counts, members, down_codes,
-                            down_scales, n, k, sk, slots, common, direct, tile, act, output_tile);
+                            down_scales, n, k, sk, slots, common, direct, tile, act);
 }
 
 // Down GEMM of a device plan into every original (row, slot) output: FP32 decode or BF16 prompt slots.
 void down_plan(const at::Tensor& codes, const at::Tensor& scales, const at::Tensor& blob, const at::Tensor& weight,
     const at::Tensor& input, const at::Tensor& items, const at::Tensor& counts, const at::Tensor& members,
-    at::Tensor out, int64_t n, int64_t k, int64_t sk, int64_t slots, bool direct, int64_t tile, int64_t output_tile) {
+    at::Tensor out, int64_t n, int64_t k, int64_t sk, int64_t slots, bool direct, int64_t tile) {
     plan_common(blob, items, counts, members, n, k, sk, slots, tile);
     tensor(codes, blob, at::kByte, 3, "codes");
     tensor(scales, blob, at::kByte, 3, "scales");
@@ -219,15 +217,12 @@ void down_plan(const at::Tensor& codes, const at::Tensor& scales, const at::Tens
                 out.stride(0) >= 0 && out.stride(0) / out.size(1) >= out.stride(1) &&
                 (out.scalar_type() == at::kBFloat16 || out.scalar_type() == at::kFloat),
                 "native A4 down: separate BF16/FP32 slots covering every original row slot");
-    TORCH_CHECK(output_tile == 64 || (output_tile == 32 && !direct && sk == 1 && tile == 16 &&
-                out.scalar_type() == at::kBFloat16 && out.size(0) >= 1 && out.size(0) <= 5 && n / 32 <= 65535),
-                "N32 requires CT BF16 SK1 16-pair items and1..5rows");
     const auto limit = std::numeric_limits<int64_t>::max() / out.element_size();
     const auto row_span = extend_span(n, out.size(1), out.stride(1), limit, "nativeA4 output slots");
     extend_span(row_span, out.size(0), out.stride(0), limit, "nativeA4 output rows");
     c10::cuda::CUDAGuard guard(blob.device());
     expert_a4_down_plan_cuda(codes, scales, blob, weight, input, items, counts, members, out, n, k, sk, slots, direct,
-                             tile, output_tile);
+                             tile);
 }
 
 PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
@@ -245,9 +240,9 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           pybind11::arg("counts"), pybind11::arg("members"), pybind11::arg("down_codes"),
           pybind11::arg("down_scales"), pybind11::arg("n"), pybind11::arg("k"), pybind11::arg("sk"),
           pybind11::arg("slots"), pybind11::arg("common"), pybind11::arg("direct"), pybind11::arg("tile"),
-          pybind11::arg("act"), pybind11::arg("output_tile") = 64);
+          pybind11::arg("act"));
     m.def("down_plan", &down_plan, pybind11::arg("codes"), pybind11::arg("scales"), pybind11::arg("blob"),
           pybind11::arg("weight"), pybind11::arg("input"), pybind11::arg("items"), pybind11::arg("counts"),
           pybind11::arg("members"), pybind11::arg("out"), pybind11::arg("n"), pybind11::arg("k"), pybind11::arg("sk"),
-          pybind11::arg("slots"), pybind11::arg("direct"), pybind11::arg("tile"), pybind11::arg("output_tile") = 64);
+          pybind11::arg("slots"), pybind11::arg("direct"), pybind11::arg("tile"));
 }

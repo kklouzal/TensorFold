@@ -204,7 +204,7 @@ def test_retained_workspace_never_exceeds_the_admitted_expert_workspace():
 
 @pytest.mark.parametrize('rows', [1, 2, 3, 4, 5])
 @pytest.mark.parametrize('width,dims', [(64, 128), (704, 2816)])
-def test_n32_matches_n64_down_encoding_independent_linears_and_gemma_combine(rows, width, dims):
+def test_grouped_down_encoding_matches_independent_linears_and_gemma_combine(rows, width, dims):
     source = Context(count=3, width=width, dims=dims, uniform=True)
     adapter = load_experts(source.read, PREFIX + '.experts', count=3, width=width, dims=dims,
                            device='cuda:0', calibrated=_prepared(source))
@@ -216,15 +216,8 @@ def test_n32_matches_n64_down_encoding_independent_linears_and_gemma_combine(row
     buf = PlanBuffers(rows, 3, 3, dims, 'cuda', prefill=True)
     buf.pick.copy_(picks)
     buf.route(rows)
-    bank.run_plan(x, buf, prefill=True)  # shared API default remains N64
-    baseline = buf.y.clone()
+    bank.run_plan(x, buf, prefill=True)
     held = buf.a4_scratch[(dims, width)]
-    expected_codes, expected_scales = held[2].clone(), held[3].clone()
-    addresses = tuple(t.data_ptr() for t in held)
-    bank.run_plan(x, buf, prefill=True, output_tile=32)
-    assert torch.equal(buf.y.view(torch.uint8), baseline.view(torch.uint8))
-    assert torch.equal(held[2], expected_codes) and torch.equal(held[3], expected_scales)
-    assert tuple(t.data_ptr() for t in buf.a4_scratch[(dims, width)]) == addresses
     # Separate checkpoint linears + CPU quantizer independently check every
     # down-code/scale byte across both halves of every original N64 tile.
     original = Context(count=3, width=width, dims=dims, uniform=True)
@@ -234,10 +227,12 @@ def test_n32_matches_n64_down_encoding_independent_linears_and_gemma_combine(row
     plan_positions = plan_order_positions(buf.plan.members[:rows * 3].cpu().tolist())
     for row in range(rows):
         for slot, expert in enumerate((2, 0, 1)):
-            gate, up, _ = prepared[expert]
+            gate, up, down = prepared[expert]
             g = checkpoint.prompt(checkpoint.A4, x[row:row + 1], gate)
             u = checkpoint.prompt(checkpoint.A4, x[row:row + 1], up)
             hidden = torch.nn.functional.gelu(g, approximate='tanh') * u
+            expected_slot = checkpoint.prompt(checkpoint.A4, hidden, down)
+            assert torch.equal(buf.y[row, slot].view(torch.uint8), expected_slot[0].view(torch.uint8))
             raw = float(original.payload[f'{PREFIX}.experts.{expert}.down_proj.input_global_scale'][0])
             codes, scales = ct_quant_reference(hidden.cpu(), raw)
             at = plan_positions[row * 3 + slot]
@@ -250,7 +245,7 @@ def test_n32_matches_n64_down_encoding_independent_linears_and_gemma_combine(row
     assert torch.equal(serial.view(torch.uint8), got.view(torch.uint8))
 
 
-def test_n32_graph_replay_keeps_owners_and_uses_changed_routing_and_inputs():
+def test_gemma_actual_shape_graph_replays_new_routes_with_stable_workspace():
     source = Context(count=4, width=704, dims=2816, uniform=True)
     adapter = load_experts(source.read, PREFIX + '.experts', count=4, width=704, dims=2816,
                            device='cuda:0', calibrated=_prepared(source))
@@ -260,12 +255,12 @@ def test_n32_graph_replay_keeps_owners_and_uses_changed_routing_and_inputs():
     buf = PlanBuffers(rows, slots, 4, 2816, 'cuda', prefill=True)
     buf.pick.copy_(torch.tensor([[2, 0, 1]], device='cuda').expand(rows, -1))
     buf.route(rows)
-    bank.run_plan(x, buf, prefill=True, output_tile=32)
+    bank.run_plan(x, buf, prefill=True)
     retained = tuple(t.data_ptr() for t in buf.a4_scratch[(2816, 704)])
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
         buf.route(rows)
-        bank.run_plan(x, buf, prefill=True, output_tile=32)
+        bank.run_plan(x, buf, prefill=True)
     for seed in (11, 12, 13):
         generator = torch.Generator().manual_seed(seed)
         x.copy_((torch.randn(rows, 2816, generator=generator) * .4).to('cuda', torch.bfloat16))
@@ -280,51 +275,3 @@ def test_n32_graph_replay_keeps_owners_and_uses_changed_routing_and_inputs():
         assert torch.equal(scales, buf.a4_scratch[(2816, 704)][3])
         assert retained == tuple(t.data_ptr() for t in buf.a4_scratch[(2816, 704)])
     torch.cuda.synchronize()
-
-
-@pytest.mark.parametrize('common,rows,tile', [(False, 1, 16), (True, 6, 16), (True, 1, 64)])
-def test_explicit_n32_rejects_unsupported_bank_rows_or_plan_item_size(common, rows, tile):
-    source = Context(count=3, width=64, dims=128, uniform=common)
-    bank = load_experts(source.read, PREFIX + '.experts', count=3, width=64, dims=128,
-                        device='cuda:0', calibrated=_prepared(source)).bank
-    x = torch.zeros((rows, 128), device='cuda', dtype=torch.bfloat16)
-    buf = PlanBuffers(rows, 3, 3, 128, 'cuda', prefill=True)
-    buf.pick.copy_(torch.tensor([[2, 0, 1]], device='cuda').expand(rows, -1))
-    buf.route(rows)
-    buf.plan.tile = tile
-    with pytest.raises(ValueError, match='N32'):
-        bank.run_plan(x, buf, prefill=True, output_tile=32)
-
-
-def test_native_output_tile_default64_and_n32_boundary_rejections():
-    source = Context(count=3, width=64, dims=128, uniform=True)
-    bank = load_experts(source.read, PREFIX + '.experts', count=3, width=64, dims=128,
-                        device='cuda:0', calibrated=_prepared(source)).bank
-    x = torch.full((1, 128), .5, dtype=torch.bfloat16, device='cuda')
-    buf = PlanBuffers(1, 3, 3, 128, 'cuda', prefill=True)
-    buf.pick.copy_(torch.tensor([[2, 0, 1]], device='cuda'))
-    buf.route(1)
-    bank.run_plan(x, buf, prefill=True)
-    held = buf.a4_scratch[(128, 64)]
-    codes = held[0].view(-1)[:64].view(1, 1, 64)
-    scales = held[1].view(-1)[:8].view(1, 1, 8)
-    fields, plan = bank.fields, buf.plan
-    items = plan.items[:3]
-    args = [codes, scales, fields[0], fields[2], fields[4], fields[5], items, plan.counts, plan.members,
-            held[2], held[3], 64, 128, 1, 3, True, False, 16, 1]
-    expected = (held[2].clone(), held[3].clone(), buf.y.clone())
-    _ext().fused_up(*args)  # omitted trailing argument is the native ABI's N64 default
-    assert torch.equal(held[2], expected[0]) and torch.equal(held[3], expected[1])
-    down = [held[2], held[3], bank.native_down, fields[3], fields[5], items, plan.counts, plan.members,
-            buf.y, 128, 64, 1, 3, False, 16]
-    _ext().down_plan(*down)
-    assert torch.equal(buf.y.view(torch.uint8), expected[2].view(torch.uint8))
-    for index, value in ((15, False), (16, True), (17, 64), (18, 0)):
-        unsupported = list(args)
-        unsupported[index] = value
-        with pytest.raises(RuntimeError, match='N32'):
-            _ext().fused_up(*unsupported, output_tile=32)
-    unsupported = list(down)
-    unsupported[8] = torch.empty_like(buf.y, dtype=torch.float32)
-    with pytest.raises(RuntimeError, match='N32'):
-        _ext().down_plan(*unsupported, output_tile=32)

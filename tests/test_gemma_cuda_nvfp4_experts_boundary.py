@@ -120,64 +120,6 @@ def test_shared_packer_rejects_bad_devices_dtype_and_partial_tiles_before_kernel
         ns['pack_projection_a4'](weight, scale)
 
 
-@pytest.mark.parametrize('rows,common,direct,want', [
-    (1, True, False, 32), (2, True, False, 32), (3, True, False, 32),
-    (4, True, False, 32), (5, True, False, 32), (6, True, False, 64),
-    (5, False, False, 64), (5, True, True, 64),
-])
-def test_output_tile_dispatch_keeps_modelopt_and_other_rows_on_default(rows, common, direct, want):
-    ns, _ = _namespace()
-    calls = []
-
-    class Ready(Tensor):
-        def contiguous(self):
-            return self
-
-        def data_ptr(self):
-            return 1
-
-        def stride(self):
-            return self.shape[1], 1
-
-    picks = Ready((rows, 3), dtype='i32')
-    buf = SimpleNamespace(pick=picks, y=Ready((rows, 3, 2816)), route=lambda n: calls.append(('route', n)))
-    workspace = SimpleNamespace(buffers=lambda *a: buf)
-    bank = Bank(ns['geglu'], direct=direct)
-    bank.shared_input = common
-    bank.run_plan = lambda x, b, **kw: calls.append(('run', kw))
-    adapter_type = type('DirectAdapter', (ns['Experts'],), {'direct_input': True}) if direct else ns['Experts']
-    ns['torch'].empty = lambda shape, **kw: Ready(shape)
-    ns['triton'] = SimpleNamespace(cdiv=lambda a, b: (a + b - 1) // b, next_power_of_2=lambda n: 4)
-
-    class Combine:
-        def __getitem__(self, grid):
-            return lambda *a, **kw: None
-
-    ns['_combine'] = Combine()
-    adapter = adapter_type(bank, workspace)
-    adapter.forward(Ready((rows, 2816)), picks, Ready((rows, 3), dtype='f32'))
-    assert calls == [('route', rows), ('run', {'prefill': True, 'output_tile': want})]
-
-
-@pytest.mark.parametrize('tile,prefill,rows,common,direct,activation', [
-    (True, True, 1, True, False, 1), (16, True, 1, True, False, 1),
-    (32, False, 1, True, False, 1), (32, True, 6, True, False, 1),
-    (32, True, 1, False, False, 1), (32, True, 1, True, True, 1),
-    (32, True, 1, True, False, 0),
-])
-def test_explicit_unsupported_n32_rejected_before_native_or_allocation(tile, prefill, rows, common, direct, activation):
-    ns = _definitions(ROOT / 'cuda/nvfp4/experts_a4.py', {'ExpertsA4'}, {'run': None, 'contextmanager': lambda f: f})
-    bank = object.__new__(ns['ExpertsA4'])
-    bank.swiglu = SimpleNamespace(activation=activation)
-    bank.shared_input, bank.direct_input = common, direct
-    buf = SimpleNamespace(slots=3, plan=SimpleNamespace(tile=16))
-    x = SimpleNamespace(shape=(rows, 128))
-    with pytest.raises(ValueError, match='output_tile|N32'):
-        bank.run_plan(x, buf, prefill=prefill, output_tile=tile)
-
-
-
-
 @pytest.mark.parametrize('members,grouped,original', [
     ([1, 2, 0], ('expert0-row0', 'expert1-row0', 'expert2-row0'),
      ('expert2-row0', 'expert0-row0', 'expert1-row0')),
