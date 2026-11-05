@@ -52,25 +52,22 @@ SM121 GPU oracles without skips on accepted EECB's byte-identical 777-file
 runtime inventory; this is not a new build or a new full-model/P3 gain.
 No N32 production deployment or performance gain is claimed. See [kernel contracts](docs/cuda-kernel-contracts.md).
 
-**Private W4A16 head prototype (default off; broad D4 use not selected):**
-`dflash_head_w4a16=True` converts only the original BF16 CPU checkpoint head
-through the existing whole-tensor NVFP4 recipe and W4A16 packing, with owning
-FP32 logits/single softcap; companion transformer projections remain FP8.
-Source and installed checks passed430 CPU tests with17 explicit CUDA-only
-skips, all5 native cases passed, and the actual paired model-law gate passed.
-The matched OFF–ON–ON–OFF GB10 screen (two fresh processes per policy) found
-repeated regressions in cached T1 code (−2.146%) and cold T1 short (−1.570%)
-despite gains elsewhere. Broad all-request D4 ON is therefore not selected.
-Torch allocated/peak fell309 MiB and reserved/peak636 MiB; these are allocator
-observations, not total physical memory. Startup and CPU memory increased.
-The prototype/oracles remain for narrower-policy/depth investigation; no CLI
-activation or production change follows. See [scope and complete tradeoffs](docs/gemma4-cuda-validation.md#private-w4a16-head-d4-screen)
-and [ownership/admission](docs/cuda-kernel-contracts.md#private-dflash-w4a16-head-prototype).
-Subsequent SM121 checks passed the existing K2816 product, softcap and row
-invariance oracles at rows2 and3, with unchanged kernel code and tolerances.
-Depth2/3 subsequently passed model-law qualification with genuine q2/p3 and
-q3/p4, depth-relative teachers, and18 generation/replay paths per depth.
-Their matched performance comparison remains pending.
+**Private W4A16 head: user-accepted mixed trade, deployment wiring pending.**
+The audited D4 screen on Shared512/Delta4-R16/N64/DF8-D4 improved all T0
+cold/cached primary rates in both halves (cached code/prose/short
++6.915/+2.475/+2.514%). Cached T1 code was lower by2.146% and cold T1 short
+by1.570%; other cells and lifecycle costs retain their recorded mixed scope.
+The owner explicitly accepted this disclosed overall trade and directed
+promotion before further tuning. This is not all-region superiority or a new
+blanket regression tolerance. `--dflash-head-w4a16` now exposes the existing
+head-only implementation for Gemma4 CT NVFP4/ModelOpt MoE CUDA with enabled
+DFlash and `--drafter-bits 8`; public default is off and omitted false kwargs
+preserve prior launches. It does not enable A8, clipping, draft graphs or change
+target/transformer/vision/KV math. Source/installed/component/model/P3 evidence
+for the prior internal policy is retained; the new frontend bridge's checks,
+build and actual production readback remain pending. The currently recorded
+production checkpoint above remains authoritative until cutover is verified.
+See [CLI policy and qualification](docs/gemma4-cuda-validation.md#w4a16-private-head-cli).
 
 **Native A8 DFlash head investigation (default not selected):** a default-off internal
 constructor policy can run only the private FP8 proposal vocabulary head with

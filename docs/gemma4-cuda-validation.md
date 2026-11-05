@@ -50,7 +50,10 @@ with requests/seeds correlated (T0 seeds repeat deterministic work).
 
 Cold T1 short primary throughput also regressed1.570%, repeated in both
 halves, as did the cached T1 code regression. Gains in other regions do not
-offset these losses: broad all-request D4 ON is **not selected**. Observed
+offset these losses under the initial constrained objective: broad all-request
+D4 ON was initially **not selected**. The user subsequently accepted this
+specific disclosed trade and directed promotion; see the [current CLI policy](#w4a16-private-head-cli).
+This does not establish all-region superiority or erase the losses. Observed
 Torch allocated/peak allocated fell309 MiB and reserved/peak reserved636 MiB;
 these are allocator observations, not total physical memory savings. The two
 ON constructor-and-drain intervals increased3.671s and4.375s against their
@@ -380,3 +383,23 @@ The complete API packet summary is SHA256
 its aggregatefalse/exit1 and failed seventeenth probe are retained alongside
 all16 passing individual functional results. These are bounded deployment
 records, not a new benchmark or a claim that every API/cancellation gate passed.
+
+## W4A16 private-head CLI
+
+The native `--dflash-head-w4a16` option forwards explicit true to the existing
+head-only Engine policy. It requires CUDA Gemma4 CT NVFP4 or ModelOpt MoE,
+an enabled DFlash companion, `--drafter-bits 8` and an admitted original BF16
+checkpoint head. Dense/affine/other families, disabled drafting and wrong
+precision fail before model loading; existing header admission owns source
+dtype/shape/index checks. DefaultFalse is omitted when forwarding. No target
+quantization, native SDK/kernel, activation calibration or new dispatch policy
+is introduced. Other production flags/settings remain separately explicit.
+
+The user accepted the audited broad D4 trade: cached T0 code/prose/short
++6.915/+2.475/+2.514% (both halves positive), with real cached T1 code−2.146%
+and cold T1 short−1.570%. Report38f2/final5235/review77bb describe the complete
+prior internal-policy scope; they do not establish all-region superiority or
+equivalence. This specific accepted trade is not permission to hide later
+regressions. The new CLI bridge's source/installed/deployment gates are pending;
+no cutover is claimed by this source change. Existing FP8 fallback/rollback
+artifacts remain retained, while normal new launches still default off.

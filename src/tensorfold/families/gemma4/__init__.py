@@ -16,6 +16,7 @@ CUDA_DRAFTER_BITS = True
 CUDA_LOSSLESS_HEAD = True
 CUDA_DELTA4_HEAD = True
 CUDA_PREPARE_GLOBAL_PROMPT = True
+CUDA_DFLASH_HEAD_W4A16 = True
 CUDA_SPARK_GLOBAL_GQA = True
 CUDA_SPARK_SAMPLED_Q = True
 CUDA_DRAFT_ROWS = True
@@ -156,12 +157,18 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         raise ValueError("Gemma4 CUDA currently runs on one GPU; use --tp 1 --rank 0")
     allowed = {"context_explicit", "parallel", "draft_rows", "drafter_bits", "vision", "vision_urls",
                "vision_offload", "eos_token_ids", "chat_template_file", "chat_template_name", "lossless_head",
-               "spark_global_gqa", "spark_sampled_q", "delta4_head", "prepare_global_prompt"}
+               "spark_global_gqa", "spark_sampled_q", "delta4_head", "prepare_global_prompt", "dflash_head_w4a16"}
     unsupported = sorted(set(options) - allowed)
     if unsupported:
         raise ValueError("Gemma4 CUDA does not implement: " + ", ".join(unsupported))
     if options.get("vision_offload"):
         raise ValueError("Gemma4's vision tower stays resident; drop --vision-offload")
+    dflash_head_w4a16 = options.get('dflash_head_w4a16', False)
+    if type(dflash_head_w4a16) is not bool:
+        raise ValueError('dflash_head_w4a16 must be a bool')
+    if dflash_head_w4a16 and (not drafter or no_drafts or type(options.get('drafter_bits',16)) is not int
+                            or options.get('drafter_bits',16)!=8):
+        raise ValueError('--dflash-head-w4a16 requires enabled DFlash and --drafter-bits 8')
     prepare_global_prompt = options.get('prepare_global_prompt', False)
     if type(prepare_global_prompt) is not bool:
         raise ValueError('prepare_global_prompt must be a bool')
@@ -174,6 +181,9 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
     from tensorfold.families import read_config
     raw = read_config(model_dir)
     head_options = {}
+    if dflash_head_w4a16:
+        check_cuda_prepared_global_prompt_metadata(raw, flag='--dflash-head-w4a16')
+        head_options['dflash_head_w4a16'] = True
     if prepare_global_prompt:
         check_cuda_prepared_global_prompt_metadata(raw, flag='--prepare-global-prompt')
         head_options['prepare_global_prompt'] = True

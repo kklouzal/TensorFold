@@ -617,10 +617,14 @@ T0 committed IDs match. Cross-policy T1 IDs/q/work need not match.
 
 The matched GB10 D4 screen completed OFF–ON–ON–OFF, two fresh processes per
 policy, with strict two same-policy and four cross-T0 comparisons. Broad
-all-request ON is not selected: cached T1 code and cold T1 short repeatedly
-regressed despite other regional gains. Lower observed Torch allocated and
+all-request ON was initially not selected under the constrained objective:
+cached T1 code and cold T1 short repeatedly regressed despite other regional
+gains. The user subsequently accepted this specific disclosed overall trade
+and directed promotion via `--dflash-head-w4a16`; see the [current CLI policy](gemma4-cuda-validation.md#w4a16-private-head-cli). Lower observed Torch allocated and
 reserved peaks do not prove a physical-memory reduction; CPU memory/startup
 costs remain charged. See [the source/image/workload pins and regional results](gemma4-cuda-validation.md#private-w4a16-head-d4-screen).
-Defaults and production remain unchanged. The prototype and independent
-oracles remain because narrower policies and other depths are still credible
+The public flag defaults off; the new frontend/build/cutover gates remain
+pending at this source checkpoint. No new production activation or all-region
+superiority is claimed here. The implementation and independent oracles remain
+because narrower policies and other depths are still credible
 candidates; this screen establishes neither global inferiority nor exhaustion.

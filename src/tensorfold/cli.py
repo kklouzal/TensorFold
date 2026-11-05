@@ -374,6 +374,7 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
     for option, capability in (("lossless_head", "CUDA_LOSSLESS_HEAD"),
                                ("delta4_head", "CUDA_DELTA4_HEAD"),
                                ("prepare_global_prompt", "CUDA_PREPARE_GLOBAL_PROMPT"),
+                               ("dflash_head_w4a16", "CUDA_DFLASH_HEAD_W4A16"),
                                ("spark_global_gqa", "CUDA_SPARK_GLOBAL_GQA"),
                                ("spark_sampled_q", "CUDA_SPARK_SAMPLED_Q")):
         if getattr(args, option, False) and getattr(family.package, capability, False):

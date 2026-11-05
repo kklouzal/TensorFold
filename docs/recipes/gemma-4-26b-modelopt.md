@@ -353,3 +353,15 @@ The512 MiB pair is inferred from source/CLI/context/NativeReady, not an HTTP
 physical-VRAM measurement. This documents an accepted prefill/retained-memory
 tradeoff, not a new P3 result. The CLI/image artifacts predate this docs-only
 status refresh. Other launches remain default off.
+
+### Accepted private W4A16 head option
+
+After qualifying this launch's original BF16 tied-head metadata, add
+`--dflash-head-w4a16 --drafter-bits 8` to an enabled Gemma4 DFlash CUDA launch.
+The flag defaults off; it changes only the private proposal head. Keep the
+selected model/drafter revisions, context, BF16 KV, vision/thinking/template,
+Shared512 and Delta4/R16 settings unchanged when reproducing the accepted GB10
+D4 policy. It does not activate clipping, A8 or proposal graphs. The user
+explicitly accepted the mixed measured trade, including the2.146% cached T1
+code loss; it is not a universal speed claim. The new public frontend's
+installed build/readback is pending; see the [validation scope](../gemma4-cuda-validation.md#w4a16-private-head-cli).
