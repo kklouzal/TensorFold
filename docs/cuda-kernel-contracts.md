@@ -669,14 +669,15 @@ with W4D4/N64. See [screen evidence and
 limits](gemma4-cuda-validation.md#fused-expert-up-n128-candidate).
 
 
-### Isolated eight-warp NT2 source investigation
+### Row-two eight-warp NT2 source investigation
 
-This new default-off internal constructor experiment is unqualified. The actual
+The new row-two wiring of this default-off internal experiment is unqualified. The actual
 CT Gemma704/2816/128-expert SM121 profile may request
 `expert_up_n128_8warp=True`; all ordinary/default profiles retain N64. The
-Gemma target resolves this immutable preparation policy and passes explicit
-prompt/decode roles. Only common-input CT GELU, SK1, plan16, rows1..5 are
-eligible. There is no public CLI flag. Native direct unsupported requests reject
+Gemma target selects it only when the immutable policy is true, the call is
+nonprompt and its actual row count is two. All other target calls preserve the
+original three-argument N64 dispatch. The native reference controls still admit
+common-input CT GELU, SK1, plan16, rows1..5. There is no public CLI flag. Native direct unsupported requests reject
 before launch; other supported default models/devices retain their paths.
 
 ABIv7 uses explicit `up_tile=64, up_warps=4` defaults and retains both
@@ -692,9 +693,14 @@ Each output retains the original ascending K groups, alpha, BF16 gate/up casts,
 GELU/product and per16 CT quantizer operations, and down/combine remain exact
 references. The independent original-linears/CPU-quantizer/grouped-order oracle
 and changed-input/routing graph replay cover both4/8-warp modes; no tolerance is
-changed. Actual source checks passed461 tests with six explicit CUDA-required
-skips and three unchanged scalar-pack cases carried by exact source identity;
-static and diff checks passed. Compiler/SASS registers/shared/spills, native
-numeric/lifetime execution and real-trained-bank N64/4warp/8warp chain comparisons
-remain required before integrated P0/P3 or any selection. No
-register reduction, achieved occupancy or performance gain is established.
+changed. The preceding broad source6dea/imageef88 passed461 source checks
+(six CUDA-required skips and three exact-source scalar-pack carries), static
+checks and63 native cases with zero skips. Same-v7 real-trained-bank chain
+comparisons retained exact words in all three modes. Eight-warp M2 latency was
+lower3.2502%/4.6215% than N64 in the two rotations; M3–M5 were higher in both,
+so broad activation is not selected. This eager whole-chain diagnostic includes
+pick staging and excludes routing; it is not an integrated serving or occupancy
+claim. Native/selector/oracle bytes remain unchanged in the row-two increment.
+Its source checks, actual clip-on full-model/M2 dispatch proof and matched P3
+against accepted ae8d/b579 remain required before selection. Row2-only four-warp
+N128 remains open and deferred.

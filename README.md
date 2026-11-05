@@ -119,17 +119,20 @@ runtime and the26 independent N64 oracles were restored to the accepted baseline
 prototype source, tests, failures and results remain archived. Accepted W4D4/N64
 production now uses the separately qualified clipping CLI imageae8d/b579. See [results and limits](docs/gemma4-cuda-validation.md#fused-expert-up-n128-candidate).
 
-**Isolated eight-warp NT2 investigation (default off, unqualified):** the internal
+**Row-two eight-warp NT2 investigation (default off, unqualified wiring):** the internal
 `expert_up_n128_8warp=False` constructor policy preserves N64 by default. Its
-explicit SM121/CT704/2816 opt-in changes only eligible decode/verification
-expert-up calls to an eight-warp N128 mapping; prompt, N64 and down kernels
-keep four warps. Native ABIv7 also retains callable four-warp N128 and N64
-controls. Source checks passed461 tests, with six explicit CUDA-required skips
-and three unchanged scalar-pack cases carried by exact source identity; static
-and diff checks passed. Native compilation/resources, exact words/replay,
-trained-bank chain timings and integrated model/performance gates remain pending.
-There is no CLI activation, deployment, occupancy or speed claim. Row2-only
-four-warp N128 remains an open, deferred candidate.
+explicit SM121/CT704/2816 opt-in now selects eight-warp N128 only for nonprompt
+calls with exactly two rows; every other target call retains its original N64
+dispatch. Native ABIv7 and its all-width four/eight-warp independent oracles are
+unchanged. The preceding broad source6dea/imageef88 passed63 native cases with
+zero skips and exact trained-bank chain words. Its two diagnostic rotations
+showed M2 chain latency lower3.2502%/4.6215% versus same-image N64, while M3–M5
+were higher in both rotations; broad activation is not selected. These eager
+router-excluded diagnostics establish no serving gain or achieved occupancy.
+The new row-two wiring still requires source checks, actual clip-on model/M2
+dispatch proof and matched performance against accepted ae8d/b579 production.
+There is no CLI activation or deployment. Row2-only four-warp N128 remains an
+open, deferred candidate.
 
 **Native A8 DFlash head investigation (default not selected):** a default-off internal
 constructor policy can run only the private FP8 proposal vocabulary head with

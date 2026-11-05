@@ -481,7 +481,7 @@ class Gemma4Target:
             gate, up = self._project_gate_up(dense_in, (layer.gate, layer.up), prompt)
             dense = self._project(self._geglu(gate, up), (layer.down,), prompt)[0]
             picks, routing = self._route(h, layer)
-            if self._expert_up_n128_8warp:
+            if self._expert_up_n128_8warp and not prompt and rows == 2:
                 routed = layer.experts.forward(expert_in, picks, routing, prompt=prompt, n128_warps=8)
             else:
                 routed = layer.experts.forward(expert_in, picks, routing)

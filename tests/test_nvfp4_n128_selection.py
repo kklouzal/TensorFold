@@ -67,15 +67,21 @@ def test_ct_prompt_adapter_is_explicit_and_legacy_default_conservative():
     assert eval(compile(ast.Expression(body=expression),'actual-ct-role','eval'),{'prompt':False}) is True
 
 
-def test_forward_optin_only_on_owned_ct_boundary_default_call_is_unchanged():
+@pytest.mark.parametrize('rows',[1,2,3,4,5,6,16,129])
+@pytest.mark.parametrize('prompt',[False,True])
+@pytest.mark.parametrize('enabled',[False,True])
+def test_actual_target_dispatch_is_row2_only_and_other_calls_are_original_n64(rows,prompt,enabled):
     tree=ast.parse((ROOT/'families/gemma4/cuda/forward.py').read_text())
-    branch=next(n for n in ast.walk(tree) if isinstance(n,ast.If) and ast.unparse(n.test)=='self._expert_up_n128_8warp')
-    for enabled in (False,True):
-        calls=[]
-        layer=SimpleNamespace(experts=SimpleNamespace(forward=lambda *args,**kwargs:calls.append(kwargs)))
-        scope={'self':SimpleNamespace(_expert_up_n128_8warp=enabled),'layer':layer,'expert_in':None,'picks':None,'routing':None,'prompt':False}
-        exec(compile(ast.fix_missing_locations(ast.Module(body=[branch],type_ignores=[])),'actual-forward-boundary','exec'),scope)
-        assert calls==([{'prompt':False,'n128_warps':8}] if enabled else [{}])
+    branch=next(n for n in ast.walk(tree) if isinstance(n,ast.If)
+        and any(isinstance(t,ast.Attribute) and t.attr=='_expert_up_n128_8warp' for t in ast.walk(n.test)))
+    calls=[]
+    layer=SimpleNamespace(experts=SimpleNamespace(forward=lambda *args,**kwargs:calls.append((args,kwargs))))
+    inputs=(object(),object(),object())
+    scope={'self':SimpleNamespace(_expert_up_n128_8warp=enabled),'layer':layer,'expert_in':inputs[0],
+        'picks':inputs[1],'routing':inputs[2],'prompt':prompt,'rows':rows}
+    exec(compile(ast.fix_missing_locations(ast.Module(body=[branch],type_ignores=[])),'actual-forward-boundary','exec'),scope)
+    expected={'prompt':False,'n128_warps':8} if enabled and not prompt and rows==2 else {}
+    assert calls==[(inputs,expected)]
 
 
 def test_default_mode_is_n64_and_invalid_modes_are_rejected():
