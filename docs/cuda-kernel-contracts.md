@@ -409,9 +409,10 @@ paired halves, with aggregate N32/N64 points −0.078% to −0.478%, and lower
 cold-prefix primary points; this is not formal confidence or equivalence
 proof. No N32 performance win or deployment was selected.
 
-Current source is restored to the exact accepted N64/four-warp runtime and
-`tensorfold_nvfp4_experts_a4_v5` ABI. There is no output-tile selector or N32
-runtime path. The 16/64-pair planner item policy, original packed banks,
+At the N32 closeout, source was restored to the accepted N64/four-warp runtime
+and `tensorfold_nvfp4_experts_a4_v5` ABI; no N32 runtime path remains. The separate
+default-off eight-warp NT2 investigation below uses a newv7 ABI without changing
+the selected serving image. The 16/64-pair planner item policy, original packed banks,
 SK1/BF16 Gemma math, calibration, graph owners and admission remain unchanged.
 Retained baseline tests independently check grouped-order intermediate down
 codes/scales, per-slot and combined BF16 words, and actual-shape Gemma GELU
@@ -659,9 +660,41 @@ five cached decode losses repeated in both halves, all six cached aggregates
 were negative, and Torch memory counters were unchanged. Cold T0-prose decode
 +0.347%, long-prefix prefill time improvements0.09–0.27% and startup benefits
 remain evidence rather than being discarded. No global inferiority,
-equivalence or noise claim follows. Canonical six runtime files and26 retained
-independent N64 oracles are restored byte-for-byte to accepted preprototype
+equivalence or noise claim follows. At that closeout, six canonical runtime files
+and26 retained independent N64 oracles were restored byte-for-byte to accepted preprototype
 `c8318787`; only N128-only CPU selector controls are removed. The complete
 prototype, native ABI v6, tests and failures remain in Git/build/immutable audit
-captures. Production stays on accepted723 W4D4/N64. See [screen evidence and
+captures. Production now uses the separately qualified ae8d clipping CLI image
+with W4D4/N64. See [screen evidence and
 limits](gemma4-cuda-validation.md#fused-expert-up-n128-candidate).
+
+
+### Isolated eight-warp NT2 source investigation
+
+This new default-off internal constructor experiment is unqualified. The actual
+CT Gemma704/2816/128-expert SM121 profile may request
+`expert_up_n128_8warp=True`; all ordinary/default profiles retain N64. The
+Gemma target resolves this immutable preparation policy and passes explicit
+prompt/decode roles. Only common-input CT GELU, SK1, plan16, rows1..5 are
+eligible. There is no public CLI flag. Native direct unsupported requests reject
+before launch; other supported default models/devices retain their paths.
+
+ABIv7 uses explicit `up_tile=64, up_warps=4` defaults and retains both
+four-warp N128 and eight-warp N128 controls. Only NT2 may use eight warps.
+Its SPW2 mapping gives each warp one complete16-column down-quantization block.
+The staging copy stride follows that CTA's warp count, so its144 chunks are
+covered once; noncopying threads still commit/wait on their own empty groups
+and participate in CTA barriers. Global N64/down `TILE_WARPS=4` is unchanged.
+Width704 retains five full128 tiles plus a final64 tail. Absent-panel addresses
+are not formed; MMA and epilogue tail guards stay warp-uniform.
+
+Each output retains the original ascending K groups, alpha, BF16 gate/up casts,
+GELU/product and per16 CT quantizer operations, and down/combine remain exact
+references. The independent original-linears/CPU-quantizer/grouped-order oracle
+and changed-input/routing graph replay cover both4/8-warp modes; no tolerance is
+changed. Actual source checks passed461 tests with six explicit CUDA-required
+skips and three unchanged scalar-pack cases carried by exact source identity;
+static and diff checks passed. Compiler/SASS registers/shared/spills, native
+numeric/lifetime execution and real-trained-bank N64/4warp/8warp chain comparisons
+remain required before integrated P0/P3 or any selection. No
+register reduction, achieved occupancy or performance gain is established.

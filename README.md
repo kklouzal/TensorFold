@@ -2,19 +2,21 @@
 
 ## GB10 Gemma 4 26B-A4B deployment checkpoints
 
-Current production on port `8888` is the accepted head-only W4A16 DFlash D4
-policy: container `4b15d567`, image `2dff55cd`, source UID `723221fd`, config
-fingerprint `d95ecbff`, restored2026-11-05T04:55:07Z. The ordinary native CLI
+Current production on port `8888` is the accepted W4A16 DFlash D4 policy with
+sampled-verification clipping: container `3cc80341`, image `b579387b`, source UID
+`ae8d40be`, config fingerprint `1e7d619d`, restored2026-11-05T14:58:36Z. The ordinary native CLI
 explicitly enables `--dflash-head-w4a16 --drafter-bits 8` alongside
-`--prepare-global-prompt --delta4-head` (reuse16). Companion transformer FP8,
+`--prepare-global-prompt --delta4-head --clip-sampled-verification` (reuse16).
+Companion transformer FP8,
 BF16 KV,131072 context, original model/drafter revisions, aliases, port, vision,
-thinking and Google template are preserved; clipping, A8 and proposal graphs
-remain disabled. `production-current` selects `deploy-w4a16-head-cli-20261104-v1`.
-The former Shared/FP8 container `ffd9c363` is stopped and retained as rollback;
+thinking and Google template are preserved; A8 and proposal graphs remain disabled.
+`production-current` selects `deploy-w4-clipping-20261105-v1`. The prior W4
+container `4b15d567` and earlier Shared/FP8 container `ffd9c363` remain stopped
+and retained for rollback;
 both speech services remain healthy. NativeReady, math4 and actual header/CLI
 readback establish activation of the existing policy.
 
-The bridge passed441 existing source checks and31 new flag checks, static/diff
+The earlier723 W4 CLI bridge passed441 existing source checks and31 new flag checks, static/diff
 checks and combined review; the new same-SDK installed image passed462 checks
 and exact777-file inventory. All14 directed production checks passed. A full
 API/cache/media suite then passed16 individual checks and failed its seventeenth
@@ -85,7 +87,7 @@ W4D4 remains deployed. The D3/D2 sampled-short loss ends higher-depth
 exploration under the predeclared adjacent rule, without a global inferiority
 claim. See [regional results and limits](docs/gemma4-cuda-validation.md#w4a16-depth-2-and-3-screen).
 
-**Sampled-verification clipping (accepted trade; CLI bridge pending validation/cutover):**
+**Sampled-verification clipping (accepted and deployed):**
 `--clip-sampled-verification` explicitly enables the existing per-instance policy
 for Gemma4 MoE CUDA with DFlash. Default off/omitted preserves prior launches;
 unsupported families/backends, dense E2B and disabled DFlash are rejected.
@@ -96,7 +98,15 @@ regressed0.052156%/0.172528%; cached prose+0.042425% had mixed halves. The owner
 accepted this specific trade, including cold-prose whole-request+0.188945%
 and prefill+0.305197% duration costs, +194560 Torch allocated bytes and mixed
 startup. No causal T0 gain, memory saving, equivalence or universal superiority
-is claimed. See [scope and qualification](docs/gemma4-cuda-validation.md#sampled-verification-clipping-accepted-trade).
+is claimed. The public CLI bridge passed650 installed checks and exact777-file
+inventory on the newae8d/b579 image; only five Python CLI/constructor files
+changed, with native/sampler and772 other runtime files unchanged. Actual
+production room-one sampled verification,14 directed checks, math4, aliases,
+pointer and speech health passed; deployment receipt050a/READY1a3b and D13a3be
+retain the exact cutover proof. The image predates this documentation update.
+These checks do not relabel the earlier723 full-API aggregate failure or its
+observed-active cancellation witness as new-image coverage.
+See [scope and qualification](docs/gemma4-cuda-validation.md#sampled-verification-clipping-accepted-trade).
 
 **Fused expert-up N128 screen (not selected):** the four-warp CT specialization
 passed source385, installed277 and native57 checks plus corrected exact
@@ -104,10 +114,22 @@ full-model parity. Its four-process matched screen lost five cached decode
 regions in both halves; all six cached geometric means were negative. Cold
 T0-prose decode improved0.347% and long-prefix prefill time improved0.09–0.27%,
 with better startup observations but no Torch memory gain. These benefits do
-not justify this design's decode trade under the current objective. Canonical
-runtime and the26 independent N64 oracles are restored to the accepted baseline;
+not justify this design's decode trade under the current objective. At that closeout, canonical
+runtime and the26 independent N64 oracles were restored to the accepted baseline;
 prototype source, tests, failures and results remain archived. Accepted W4D4/N64
-production723221fd/2dff55cd remains healthy. See [results and limits](docs/gemma4-cuda-validation.md#fused-expert-up-n128-candidate).
+production now uses the separately qualified clipping CLI imageae8d/b579. See [results and limits](docs/gemma4-cuda-validation.md#fused-expert-up-n128-candidate).
+
+**Isolated eight-warp NT2 investigation (default off, unqualified):** the internal
+`expert_up_n128_8warp=False` constructor policy preserves N64 by default. Its
+explicit SM121/CT704/2816 opt-in changes only eligible decode/verification
+expert-up calls to an eight-warp N128 mapping; prompt, N64 and down kernels
+keep four warps. Native ABIv7 also retains callable four-warp N128 and N64
+controls. Source checks passed461 tests, with six explicit CUDA-required skips
+and three unchanged scalar-pack cases carried by exact source identity; static
+and diff checks passed. Native compilation/resources, exact words/replay,
+trained-bank chain timings and integrated model/performance gates remain pending.
+There is no CLI activation, deployment, occupancy or speed claim. Row2-only
+four-warp N128 remains an open, deferred candidate.
 
 **Native A8 DFlash head investigation (default not selected):** a default-off internal
 constructor policy can run only the private FP8 proposal vocabulary head with
