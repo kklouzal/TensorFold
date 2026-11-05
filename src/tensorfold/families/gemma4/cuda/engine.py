@@ -94,9 +94,7 @@ class Gemma4Engine:
                  chat_template_file=None, chat_template_name=None,
                  prepare_global_prompt: bool = False, lossless_head: bool = False,
                  spark_global_gqa: bool = False, spark_sampled_q: bool = False, global_trig: bool = False,
-                 global_trig_prompt: bool = True, delta4_head: bool = False, delta4_reuse: int = 16, global_cache: str = "none", global_cache_prompt: bool = False, dflash_graph: bool = False, dflash_head_native_a8: bool = False, dflash_head_w4a16: bool = False, clip_sampled_verification: bool = False, fused_moe_tail: bool = False) -> None:
-        if type(fused_moe_tail) is not bool:
-            raise ValueError('fused_moe_tail must be a bool')
+                 global_trig_prompt: bool = True, delta4_head: bool = False, delta4_reuse: int = 16, global_cache: str = "none", global_cache_prompt: bool = False, dflash_graph: bool = False, dflash_head_native_a8: bool = False, dflash_head_w4a16: bool = False, clip_sampled_verification: bool = False) -> None:
         if type(clip_sampled_verification) is not bool:
             raise ValueError('clip_sampled_verification must be a bool')
         if clip_sampled_verification and (not drafter or no_drafts):
@@ -154,11 +152,6 @@ class Gemma4Engine:
 
         raw = read_config(model_dir)
         method = quant_method(raw)
-        if fused_moe_tail:
-            from .weights import Config
-            cfg = Config.from_dict(raw)
-            if method != 'compressed-tensors' or (cfg.hidden, cfg.moe_width, cfg.experts, cfg.top_k) != (2816, 704, 128, 8):
-                raise ValueError('fused MoE tail requires native CT128x704x2816/top8 experts')
         if delta4_head and method != 'compressed-tensors':
             raise ValueError('Delta4 tied table is a CT-only investigation candidate')
         if global_cache != 'none' and method != 'compressed-tensors':
@@ -254,7 +247,6 @@ class Gemma4Engine:
         try:
             self.target = Gemma4Target(
                 self.w,
-                **({'fused_moe_tail': True} if fused_moe_tail else {}),
                 **({"prompt_context": self.context_window} if prepare_global_prompt or global_trig else {}),
                 **({"prepare_global_prompt": True} if prepare_global_prompt else {}),
                 **({"global_trig": True, "global_trig_prompt": global_trig_prompt} if global_trig else {}),

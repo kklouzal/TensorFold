@@ -634,31 +634,62 @@ room-one/math/aliases/pointer/speech checks (receipt `ef73`) before analysis.
 
 ## Ordered combine to MoE tail prototype
 
-The internal `fused_moe_tail=False` Engine/Target policy is a correctness-first
-prototype, not selected or deployed. Opt-in is restricted to CT native
-128-expert, hidden2816, intermediate704, top8 geometry; only nonprompt rows1–5
-use borrowed slots. Prompt/generic/default paths retain standalone combine and
-tail. No public flag, native ABI, SDK or precision change is introduced.
+The archived sourcec137/runtime0a6/verify384 prototype fused ordered expert-slot
+combine into the MoE tail for CT128-expert/704/2816/top8 decode M1–5. It passed
+source444 checks with six explicit CUDA-required skips (the expert CUDA module
+was outside that source batch), installed709 checks/exact777 inventory, and
+59 actual component cases with exact both-output byte words, changed-route
+replay/workspace lifetime and actual compiler-resource checks. No native C++
+ABI, SDK or precision change was made. Initial dependency-origin guard failure,
+pre-execution ownership repair and the first STOP-transport rejection remain
+preserved with their original statuses; they are not numerical passes or
+silently reclassified CUDA failures.
 
-One foundational ordered-combine helper preserves ascending expert IDs (slot
-ties stable), FP32 routing weights, BF16 product storage and BF16 rounding after
-every addition. The fused mode retains the MoE-tail B4096/eight-warp norm/cast
-chain and disabled FP fusion. Padded routed lanes are explicitly zero before
-normalization, matching the old masked reload without a new finite-input
-restriction. Borrowed slot/pick buffers remain model-owned and stable for graph
-replay; the immediate same-stream tail consumes them before the next bank can
-reuse the workspace. No borrowed result escapes as the layer output.
+The finite diagnostic used one process on GB10, synthetic resident BF16
+slots/residual/dense/norm/scalar data, FP32 routing and INT32 picks. Four banks
+of30 residual-dependent tails formed each120-tail CUDA graph; each M1–5 used
+four warm replays per arm and eight ABBA blocks with32 graph replays per timed
+CUDA-event sample. All160 samples completed. Both output words for every
+layer were checked outside all timed intervals after warmup and each block.
 
-The current source723/W4D4/clipOFF diagnostic3302 kernel-event inventory records
-4.4–5.7ms total combine GPU work per cached256-output request. This is a small
-opportunity ceiling under instrumentation, not a predicted end-to-end gain,
-physical VRAM saving or per-layer CPU launch saving during graph replay.
-Cold-prefix totals include prefill. Source CPU qualification passed444 tests
-with six explicit CUDA-required skips, CUDA uninitialized, all-F static, full
-deployment Ruff and diff checks passing (gatebc1168e3). New GPU comparisons
-were strengthened to exact byte-view word identity, including signed zero;
-independent goldens and rounding mutants are unchanged. Actual GPU/component
-correctness, compiler resources, both-output words, changed-route replay,
-workspace lifetime, model qualification and P3 remain pending. No model/P3 campaign is
-authorized by this source prototype alone; current accepted production is
-unchanged.
+| M | Retained combine→tail graph ms, median | Fused graph ms, median | Paired eight-block geometric latency change |
+| --- | ---: | ---: | ---: |
+| 1 | 0.399453 | 0.532358 | +33.0555% |
+| 2 | 0.442979 | 0.652937 | +46.8274% |
+| 3 | 0.521235 | 0.939424 | +84.7388% |
+| 4 | 0.661323 | 1.080607 | +62.4660% |
+| 5 | 0.725472 | 1.120780 | +52.6218% |
+
+Positive latency change is slower. Every M and all eight paired blocks were
+slower, including both first-four and last-four block groups. This current
+variant is **not advanced to model/P3**. Correlated single-process operator
+samples do not establish token rates, actual-model critical-path effects,
+cache-distribution realism, equivalence or global inferiority. The rotating
+input budget was128MiB; graphs, owners and outputs were retained until the
+successful per-M fence. Memory observations describe combined process/graph
+state and cumulative Torch peaks, not per-arm or physical VRAM savings.
+
+The earlier source723/W4D4/clipOFF profile3302 recorded only4.4–5.7ms combine
+GPU work per cached256-output request; it never predicted end-to-end or CPU
+launch savings. Cold-prefix totals included prefill. The unfavorable graph
+screen does not establish a causal explanation or justify blind grid tuning;
+a later alternative requires a new bounded source/profile contract.
+
+Canonical four runtime files are restored byte-for-byte to accepted
+b85235c7/bea34487 behavior. Fusion-only wiring/borrow tests are removed, while
+all26 independent native N64 cases, existing glue ROUND/norm tests and the
+new independent Torch ordered-BF16/cancellation/FP32-routing/uint8 oracle for
+legacy combine remain. Git4123602a/1430d492, c137 images/build capture,
+immutable fixtures, component59, raw screen samples and failure history remain
+available. Cleanup is not a runtime performance claim and requires no rebuild,
+GPU run or production restart when restored777 identity is verified.
+
+Accepted b579/ae8 N64/W4D4/clipping-ON production was restored healthy at
+2026-11-05T21:26:31.501396705Z with room-one/math/aliases/pointer/services
+checks (restore0599b667). Operator report
+`expert-fused-moe-tail-screen-v1/descriptive-report-v2.json` SHA256
+`4db1f8e4660f827db763a27746413b93c99e2195fda567edac41fc4b8a09235e`
+preserves all raw ratios and descriptive metric definitions. Component binding
+527150b3/resources e460 and cleanup `expert-fused-moe-tail-cleanup-v1` retain
+their separate evidence scopes. No model/P3 run or production selection of
+this fusion occurred; exploration beyond this finite variant remains open.

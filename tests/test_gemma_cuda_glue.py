@@ -77,7 +77,7 @@ def ordered_slots_reference(y, picks, weights):
 
 
 @pytest.mark.parametrize('rows', [1, 2, 3, 4, 5])
-def test_fused_slot_tail_keeps_ordered_rounding_and_both_output_words(rows):
+def test_legacy_combine_keeps_independent_ordered_bf16_rounding_words(rows):
     from tensorfold.families.gemma4.cuda.nvfp4_experts import _combine
     import triton
 
@@ -110,15 +110,3 @@ def test_fused_slot_tail_keeps_ordered_rounding_and_both_output_words(rows):
     assert not torch.equal(wrong_accum.to(torch.bfloat16)[:, 1], independent[:, 1])
     assert not torch.equal(wrong_weight[:, 2], independent[:, 2])
     assert torch.equal(routed.view(torch.uint8), independent.view(torch.uint8))
-    res, dense = rnd(rows, dims, seed=9908, scale=5), rnd(rows, dims, seed=9909, scale=3)
-    wd, wr, wo, wn = (rnd(dims, seed=seed, scale=.2, shift=1) for seed in (9910, 9911, 9912, 9913))
-    scalar = torch.tensor([.87], dtype=torch.bfloat16, device=DEV)
-    expected = glue.moe_tail(res, dense, independent, wd, wr, wo, scalar, wn, EPS, False)
-    retained = glue.moe_tail(res, dense, routed, wd, wr, wo, scalar, wn, EPS, False)
-    actual = glue.moe_tail_slots(res, dense, y, picks, routing, wd, wr, wo, scalar, wn, EPS)
-    assert all(torch.equal(a.view(torch.uint8), b.view(torch.uint8)) and torch.equal(b.view(torch.uint8), c.view(torch.uint8)) for a, b, c in zip(actual, expected, retained))
-    assert all(value.dtype == torch.bfloat16 and tuple(value.shape) == (rows, dims) for value in actual)
-    assert actual[0].data_ptr() != y.data_ptr() and actual[1].data_ptr() != y.data_ptr()
-    serial = [glue.moe_tail_slots(res[i:i + 1], dense[i:i + 1], y[i:i + 1], picks[i:i + 1], routing[i:i + 1],
-        wd, wr, wo, scalar, wn, EPS) for i in range(rows)]
-    assert all(torch.equal(torch.cat([pair[j] for pair in serial]).view(torch.uint8), actual[j].view(torch.uint8)) for j in (0, 1))

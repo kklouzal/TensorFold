@@ -1,20 +1,19 @@
 # TensorFold fork
 
-A private, default-off CT decode prototype fuses ordered expert-slot combine
-into the existing MoE tail for rows1–5 at the AEON128-expert/704/2816/top8
-geometry. It preserves per-product/per-add BF16 rounding and the existing
-normalization chain; it has no public CLI switch. Source444 tests passed with
-six explicit CUDA-required skips; static/deployment checks passed. New GPU
-word-identity tests, component correctness, compiler resources, model quality
-and integrated performance remain pending. Existing profiled
-combine work is only4.4–5.7ms per cached full256 request, not a predicted
-end-to-end gain or host-launch saving. See [prototype boundaries](docs/gemma4-cuda-validation.md#ordered-combine-to-moe-tail-prototype).
+The ordered combine-to-MoE-tail prototype completed exact component59 and
+compiler-resource checks but is **not advanced to model/P3**: its one-process
+synthetic CUDA-graph tail screen had per-M paired geometric latency
+increases of33–85% across M1–5, with all paired blocks slower. The four runtime files are restored to the accepted baseline;
+useful independent legacy-combine BF16-order/FP32-routing/word oracles remain.
+Prototype source, images, raw results and failures are preserved. This is a
+scoped negative diagnostic, not global inferiority or a model-performance
+measurement. See [results and limits](docs/gemma4-cuda-validation.md#ordered-combine-to-moe-tail-prototype).
 
 ## GB10 Gemma 4 26B-A4B deployment checkpoints
 
 Current production on port `8888` is the accepted W4A16 DFlash D4 policy with
 sampled-verification clipping: container `3cc80341`, image `b579387b`, source UID
-`ae8d40be`, config fingerprint `1e7d619d`, restored2026-11-05T14:58:36Z. The ordinary native CLI
+`ae8d40be`, config fingerprint `1e7d619d`, restored2026-11-05T21:26:31Z. The ordinary native CLI
 explicitly enables `--dflash-head-w4a16 --drafter-bits 8` alongside
 `--prepare-global-prompt --delta4-head --clip-sampled-verification` (reuse16).
 Companion transformer FP8,
