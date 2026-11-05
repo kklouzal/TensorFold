@@ -653,8 +653,12 @@ The current source723/W4D4/clipOFF diagnostic3302 kernel-event inventory records
 4.4–5.7ms total combine GPU work per cached256-output request. This is a small
 opportunity ceiling under instrumentation, not a predicted end-to-end gain,
 physical VRAM saving or per-layer CPU launch saving during graph replay.
-Cold-prefix totals include prefill. Compiler resources, exact both-output
-word tests, independent rounding/cancellation oracles, changed-route replay,
-workspace lifetime and source CPU checks are pending. No model/P3 campaign is
+Cold-prefix totals include prefill. Source CPU qualification passed444 tests
+with six explicit CUDA-required skips, CUDA uninitialized, all-F static, full
+deployment Ruff and diff checks passing (gatebc1168e3). New GPU comparisons
+were strengthened to exact byte-view word identity, including signed zero;
+independent goldens and rounding mutants are unchanged. Actual GPU/component
+correctness, compiler resources, both-output words, changed-route replay,
+workspace lifetime, model qualification and P3 remain pending. No model/P3 campaign is
 authorized by this source prototype alone; current accepted production is
 unchanged.
