@@ -85,14 +85,16 @@ W4D4 remains deployed. The D3/D2 sampled-short loss ends higher-depth
 exploration under the predeclared adjacent rule, without a global inferiority
 claim. See [regional results and limits](docs/gemma4-cuda-validation.md#w4a16-depth-2-and-3-screen).
 
-**Fused expert-up N128 candidate (source qualified only):** the bounded CT
-GEGLU2816→704 decode/verification specialization is implemented with explicit
-prompt-role dispatch; prompts, ModelOpt direct input and generic defaults
-retain N64. One source batch passed385 tests with one existing GPU-assisted
-loader skip, CUDA uninitialized, static/deployment/diff checks clear. New
-compilation/resources/native word and route-replay oracles, full-model law and
-matched performance remain pending. This source candidate is not deployed;
-accepted production remains723221fd/2dff55cd. See [candidate scope](docs/gemma4-cuda-validation.md#fused-expert-up-n128-candidate).
+**Fused expert-up N128 screen (not selected):** the four-warp CT specialization
+passed source385, installed277 and native57 checks plus corrected exact
+full-model parity. Its four-process matched screen lost five cached decode
+regions in both halves; all six cached geometric means were negative. Cold
+T0-prose decode improved0.347% and long-prefix prefill time improved0.09–0.27%,
+with better startup observations but no Torch memory gain. These benefits do
+not justify this design's decode trade under the current objective. Canonical
+runtime and the26 independent N64 oracles are restored to the accepted baseline;
+prototype source, tests, failures and results remain archived. Accepted W4D4/N64
+production723221fd/2dff55cd remains healthy. See [results and limits](docs/gemma4-cuda-validation.md#fused-expert-up-n128-candidate).
 
 **Native A8 DFlash head investigation (default not selected):** a default-off internal
 constructor policy can run only the private FP8 proposal vocabulary head with

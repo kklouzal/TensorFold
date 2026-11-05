@@ -471,8 +471,7 @@ class Gemma4Target:
             gate, up = self._project_gate_up(dense_in, (layer.gate, layer.up), prompt)
             dense = self._project(self._geglu(gate, up), (layer.down,), prompt)[0]
             picks, routing = self._route(h, layer)
-            routed = (layer.experts.forward(expert_in, picks, routing, prompt=prompt) if self._native else
-                      layer.experts.forward(expert_in, picks, routing))
+            routed = layer.experts.forward(expert_in, picks, routing)
             # The tail also applies the next layer's input norm (the final norm after the last layer).
             following = layers[i + 1].input_norm if i + 1 < len(layers) else self.weights.norm
             h, normed = glue.moe_tail(h, dense, routed, layer.dense_output_norm, layer.expert_output_norm,

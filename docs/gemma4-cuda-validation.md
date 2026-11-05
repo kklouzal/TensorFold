@@ -491,28 +491,55 @@ Report SHA256 `c5f36920466baf29a0f6e0b52763c62ab931ebd8a658acb648c2cd75ba9b6af4`
 63-link final packet `b90a942b`, actual review `38ebe8dc`, final15-check result
 `5a1a37d1` and exact production restoration `3aecc53e` record this finite scope.
 The depth-screen disposition itself changes no runtime/test behavior or depth
-deployment. The separate N128 source candidate below remains unqualified for production.
+deployment. The separate N128 screen below completed without production selection.
 
 
 ## Fused expert-up N128 candidate
 
-The source candidate specializes only CT (`direct_input=False`) GEGLU,
-width704/dims2816, rows1..5 in the actual decode/verification role. Grouped-plan
-`prefill=True` arithmetic, split-K1 and the BF16 down boundary remain required;
-that arithmetic flag is not a prompt-role classifier. An explicit prompt role
-keeps prompts, including small tails, on N64. ModelOpt direct input and other
-generic paths retain N64; the callable native default remains `up_tile=64`.
-The candidate Gemma CT decode path intentionally chooses128. Native ABI v6
-records the new tile argument; NT2 is instantiated only for the existing
-SINGLE specialization, preserving generic NT1 and independent N64 oracles.
-No source precision/tolerance or SDK change is made.
+The archived four-warp candidate specialized CT (`direct_input=False`) GEGLU,
+width704/dims2816, rows1..5 decode/verification, retaining SK1/BF16 arithmetic
+and explicit prompt-role separation. Source385 checks (one documented existing
+GPU-assisted loader skip), installed277 checks/exact777 inventory, native57
+independent cases and corrected full-model teacher/q/p/IDs/work/cache parity
+passed. Initial metadata/setup failures and the original full-model B1
+live-tuple versus JSON-list penalty-bias rejection remain preserved; lossless
+container normalization fixed that harness boundary without changing kernel
+math, numerical tolerances or the failed records. Fresh B2 passed.
 
-The coherent eight runtime/test paths passed385 source CPU tests and one
-explicit existing CUDA-assisted loader-packing skip, with canonical imports
-and CUDA uninitialized before/after. All-F static, full configured deployment
-Ruff and diff checks passed. This is source qualification only: owned build,
-installed inventory, new SM121704-tail/independent-word and changed-route graph
-cases, compiler/resource limits, full-model equality and matched P3 remain
-pending. The named accepted723221fd/2dff55cd W4D4 production is the reference;
-old N64 results are not relabeled as new N128 proof. No N128 performance gain
-or deployment is claimed. Source freeze `5b73dc06`, CPU gate `96894cde`.
+Four fresh processes ran BASE/CAND | CAND/BASE, each with six compiler32,
+42 full256 warm requests and42 measured requests. All retired safely, and
+same-role/cross-role semantic checks passed before reporting. Primary rates
+measure255 post-first outputs through explicit drain. Two processes per arm
+are exploratory evidence; requests/seeds are correlated, and drift/tails remain
+in the raw report.
+
+| Region | Cached N128/N64 change, halves | Cached geometric mean | Cold decode geometric mean |
+| --- | ---: | ---: | ---: |
+| T0 code64K | -0.338260% / -0.720464% | -0.529546% | -0.683235% |
+| T0 prose64K | -0.219341% / -0.223367% | -0.221354% | +0.347168% |
+| T0 short | -0.633563% / -0.407337% | -0.520515% | -0.130997% |
+| T1 code64K | -0.213179% / -0.404491% | -0.308881% | -0.685053% |
+| T1 prose64K | -0.184264% / +0.083235% | -0.050604% | -0.237648% |
+| T1 short | -0.708961% / -0.443528% | -0.576333% | -0.438038% |
+
+Long-prefix prefill times improved0.09–0.27%; constructor+drain observations in
+cohort order were39.488447/34.624802/33.781945/35.048457s. The four Torch
+allocated/reserved/peak counters and logical capacity maxima were identical;
+these counters do not establish total physical VRAM residency. Cold whole,
+TTFT, callback tails, CPU/cgroup memory and drift remain separately recorded.
+
+**Broad four-warp N128 is not selected.** Five repeated cached losses and the
+sixth negative mixed aggregate do not justify its retained cold/prefill/startup
+benefits under decode > prefill > VRAM > cache > other. This is not global
+inferiority, equivalence or a noise claim. The exact six runtime files and26
+independent N64 oracles are restored to accepted preprototype `c8318787` bytes;
+only N128-specific selector controls are removed. Prototype Git `d0d44a50`,
+build capturea538, immutable fixture and private audit history remain intact.
+No performance gain is claimed from source cleanup, and no rebuild/restart is
+needed for exact runtime restoration. Accepted723/2dff W4D4/N64 production
+was restored healthy at2026-11-05T08:43:20.49196889Z with unchanged configd95.
+
+Audit artifacts: `expert-n128-p3-v1/report-v1/summary.json` SHA256
+`f2caa0b85d7f035ef5965f088440a39da937828559236736a8f454e8817036b8`,
+final packet `55d58aaf`, actual D13 `afb6d61c`, disposition `a00b13d8`;
+cleanup hashes are recorded separately in `expert-n128-cleanup-v1`.

@@ -86,7 +86,7 @@ class Experts:
         """The workspace's INT32 [rows, slots] pick rows, for a router to write in place (no copy in forward)."""
         return self.workspace.buffers(rows, slots, self.count, self.dims, self.device).pick[:rows]
 
-    def forward(self, x: torch.Tensor, picks: torch.Tensor, weights: torch.Tensor, *, prompt: bool = True) -> torch.Tensor:
+    def forward(self, x: torch.Tensor, picks: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
         """INT32 picks are constructed by the router; FP32 weights stay FP32.
 
         Target routing constructs only IDs in0..count-1 (the fused top-k over
@@ -96,8 +96,6 @@ class Experts:
         Fixed prefill=True selects SK1 and BF16 output for serial and verify.
         """
 
-        if type(prompt) is not bool:
-            raise ValueError('Gemma expert prompt role must be a bool')
         if (not isinstance(x, torch.Tensor) or x.dtype != torch.bfloat16 or x.device != self.device or x.ndim != 2
                 or x.shape[0] < 1 or x.shape[1] != self.dims):
             raise ValueError("Gemma NVFP4 experts require nonempty BF16 [rows,hidden] on the bank device")
@@ -113,7 +111,7 @@ class Experts:
         if picks.data_ptr() != buf.pick.data_ptr() or picks.stride() != buf.pick.stride():
             buf.pick[:rows].copy_(picks)            # the router wrote elsewhere (picks_for gives the buffer)
         buf.route(rows)
-        self.bank.run_plan(x.contiguous(), buf, prefill=True, decode=not prompt)
+        self.bank.run_plan(x.contiguous(), buf, prefill=True)
         out = torch.empty((rows, self.dims), dtype=torch.bfloat16, device=self.device)
         _combine[(rows, triton.cdiv(self.dims, 256))](
             buf.y, buf.pick, weights, out, N=self.dims, R=slots, RS=triton.next_power_of_2(slots), BLOCK=256,

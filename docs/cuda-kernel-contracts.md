@@ -652,13 +652,16 @@ useful evidence. No depth selector is introduced. See [the complete screen
 scope](gemma4-cuda-validation.md#w4a16-depth-2-and-3-screen).
 
 
-The separately implemented fused-up N128 source candidate is restricted to
-CT !direct, GEGLU2816→704, rows1..5 decode/verification, with grouped-plan
-prefill arithmetic, SK1/BF16 and explicit prompt-role separation. Small prompt
-tails and generic/ModelOpt paths stay N64. ABI v6 keeps callable `up_tile=64`
-by default; only the candidate CT decode selector chooses128. Source385 CPU
-passes/one existing CUDA-assisted skip and static/deployment checks do not
-qualify the new kernel's arithmetic/resources or performance. Independent
-N64, quantizer, original-linear, grouped-plan, per-slot BF16/final-combine and
-new128/704-tail/changed-route graph oracles remain required. See [candidate
-qualification](gemma4-cuda-validation.md#fused-expert-up-n128-candidate).
+The archived four-warp fused-up N128 CT decode/verification candidate completed
+source385, installed277/exact777, native57 and corrected full-model parity
+qualification. Its matched four-process screen did not justify selection:
+five cached decode losses repeated in both halves, all six cached aggregates
+were negative, and Torch memory counters were unchanged. Cold T0-prose decode
++0.347%, long-prefix prefill time improvements0.09–0.27% and startup benefits
+remain evidence rather than being discarded. No global inferiority,
+equivalence or noise claim follows. Canonical six runtime files and26 retained
+independent N64 oracles are restored byte-for-byte to accepted preprototype
+`c8318787`; only N128-only CPU selector controls are removed. The complete
+prototype, native ABI v6, tests and failures remain in Git/build/immutable audit
+captures. Production stays on accepted723 W4D4/N64. See [screen evidence and
+limits](gemma4-cuda-validation.md#fused-expert-up-n128-candidate).
