@@ -94,7 +94,10 @@ class Gemma4Engine:
                  chat_template_file=None, chat_template_name=None,
                  prepare_global_prompt: bool = False, lossless_head: bool = False,
                  spark_global_gqa: bool = False, spark_sampled_q: bool = False, global_trig: bool = False,
-                 global_trig_prompt: bool = True, delta4_head: bool = False, delta4_reuse: int = 16, global_cache: str = "none", global_cache_prompt: bool = False, dflash_graph: bool = False, dflash_head_native_a8: bool = False, dflash_head_w4a16: bool = False, clip_sampled_verification: bool = False) -> None:
+                 global_trig_prompt: bool = True, delta4_head: bool = False, delta4_reuse: int = 16, global_cache: str = "none", global_cache_prompt: bool = False, dflash_graph: bool = False, dflash_head_native_a8: bool = False, dflash_head_w4a16: bool = False, clip_sampled_verification: bool = False,
+                 expert_up_n128_row2: bool = False) -> None:
+        if type(expert_up_n128_row2) is not bool:
+            raise ValueError('expert_up_n128_row2 must be a bool')
         if type(clip_sampled_verification) is not bool:
             raise ValueError('clip_sampled_verification must be a bool')
         if clip_sampled_verification and (not drafter or no_drafts):
@@ -152,6 +155,12 @@ class Gemma4Engine:
 
         raw = read_config(model_dir)
         method = quant_method(raw)
+        if expert_up_n128_row2:
+            from .weights import Config
+            c = Config.from_dict(raw)
+            if (method != 'compressed-tensors' or (c.hidden, c.moe_width, c.experts) != (2816, 704, 128)
+                    or torch.cuda.get_device_capability(0) != (12, 1)):
+                raise ValueError('row-two N128 requires the CT704/2816/128-expert SM121 profile')
         if delta4_head and method != 'compressed-tensors':
             raise ValueError('Delta4 tied table is a CT-only investigation candidate')
         if global_cache != 'none' and method != 'compressed-tensors':
@@ -251,7 +260,8 @@ class Gemma4Engine:
                 **({"prepare_global_prompt": True} if prepare_global_prompt else {}),
                 **({"global_trig": True, "global_trig_prompt": global_trig_prompt} if global_trig else {}),
                 **({"global_cache": global_cache, "global_cache_prompt": global_cache_prompt}
-                   if global_cache != "none" else {}))
+                   if global_cache != "none" else {}),
+                **({'expert_up_n128_row2': True} if expert_up_n128_row2 else {}))
             self.head = None
             self.vision = None
             longest = 0

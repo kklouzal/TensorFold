@@ -13,6 +13,14 @@ from .grouped_a4 import _ext, run
 from .host_layout import authority_fields_a4
 
 
+def up_output_tile(*, decode, rows, common, direct, activation, width, dims, plan_tile):
+    """The single investigated CT decode specialization; other regions keep N64."""
+    if type(decode) is not bool:
+        raise ValueError('native A4 decode role must be a bool')
+    return 128 if (decode and 1 <= rows <= 5 and common and not direct and activation == 1
+                   and width == 704 and dims == 2816 and plan_tile == 16) else 64
+
+
 def pack_projection_a4(weight, scale):
     """Exact CPU/CUDA bit permutation into words followed by E4M3 block scales.
 
@@ -109,7 +117,7 @@ class ExpertsA4:
     def nbytes(self):
         return sum(t.numel() * t.element_size() for t in self.fields)
 
-    def run_plan(self, x, buf, *, prefill):
+    def run_plan(self, x, buf, *, prefill, decode=False):
         """Fill routed slots of ``buf.y[:rows]`` from the device plan ``buf.plan``.
 
         ``buf`` holds ``rows`` (capacity), ``slots``, ``pick`` [rows, slots]
@@ -127,6 +135,8 @@ class ExpertsA4:
         """
         from tensorfold.cuda.kernels import qmm
 
+        if type(decode) is not bool:
+            raise ValueError('native A4 decode role must be a bool')
         rows, slots = x.shape[0], buf.slots
         plan = buf.plan
         if plan.tile not in (16, 64):
@@ -187,7 +197,8 @@ class ExpertsA4:
             ext.quantize_plan(x, items, plan.counts, members, fields[4], codes, scales, slots, direct, plan.tile)
         ext.fused_up(codes, scales, fields[0], fields[2], fields[4], fields[5], items, plan.counts, members, dc, ds,
                      self.width, self.dims, 1 if prefill else qmm.split_k(self.width, self.dims), slots, common, direct,
-                     plan.tile, activation)
+                     plan.tile, activation, up_output_tile(decode=decode and prefill, rows=rows, common=common,
+                         direct=direct, activation=activation, width=self.width, dims=self.dims, plan_tile=plan.tile))
         ext.down_plan(dc, ds, self.native_down, fields[3], fields[5], items, plan.counts, members, buf.y[:rows],
                       self.dims, self.width, 1 if prefill else qmm.split_k(self.dims, self.width), slots, direct,
                       plan.tile)

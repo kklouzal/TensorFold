@@ -3,7 +3,7 @@
 The ordered combine-to-MoE-tail prototype completed exact component59 and
 compiler-resource checks but is **not advanced to model/P3**: its one-process
 synthetic CUDA-graph tail screen had per-M paired geometric latency
-increases of33–85% across M1–5, with all paired blocks slower. The four runtime files are restored to the accepted baseline;
+increases of33–85% across M1–5, with all paired blocks slower. At that closeout, the four runtime files were restored to the accepted baseline;
 useful independent legacy-combine BF16-order/FP32-routing/word oracles remain.
 Prototype source, images, raw results and failures are preserved. This is a
 scoped negative diagnostic, not global inferiority or a model-performance
@@ -13,7 +13,7 @@ measurement. See [results and limits](docs/gemma4-cuda-validation.md#ordered-com
 
 Current production on port `8888` is the accepted W4A16 DFlash D4 policy with
 sampled-verification clipping: container `3cc80341`, image `b579387b`, source UID
-`ae8d40be`, config fingerprint `1e7d619d`, restored2026-11-05T21:26:31Z. The ordinary native CLI
+`ae8d40be`, config fingerprint `1e7d619d`, restored2026-11-05T22:21:11Z. The ordinary native CLI
 explicitly enables `--dflash-head-w4a16 --drafter-bits 8` alongside
 `--prepare-global-prompt --delta4-head --clip-sampled-verification` (reuse16).
 Companion transformer FP8,
@@ -138,12 +138,32 @@ long-prefix prefill duration increased0.084–0.372% in both halves, with identi
 Torch memory counters. T0 code improved0.390367% in both halves, but its full256
 warm request had no M2 exposure, so that gain is retained without causal credit
 to NT2. Other mixed regions remain uncertain. Row-two eight-warp is not selected;
-this establishes no global inferiority, equivalence or noise claim. The seven
-runtime files and maintained26 independent N64 oracles are restored to accepted
+this establishes no global inferiority, equivalence or noise claim. At that closeout, the seven
+runtime files and maintained26 independent N64 oracles were restored to accepted
 bea344 bytes, with only experiment-specific CPU controls removed. Accepted
 production remains ae8d/b579 W4D4/N64 with clipping enabled. Historical Git,
 images, fixtures, failures and results remain intact; row-two four-warp N128
-remains open and deferred. See [results and limits](docs/gemma4-cuda-validation.md#eight-warp-and-row-two-nt2-candidates).
+remained open at that closeout. See [results and limits](docs/gemma4-cuda-validation.md#eight-warp-and-row-two-nt2-candidates).
+
+**Row-two four-warp N128 investigation (default off, unqualified):** the internal
+`expert_up_n128_row2=False` policy preserves N64 by default. The CT704/2816/
+128-expert SM121 opt-in selects the retained four-warp N128 kernel only for
+nonprompt Target calls with exactly two actual rows. Other rows, prompt calls
+and omitted policy retain their original N64 call. No eight-warp path or public
+CLI is added. Historical same-v7 trained-bank M2 chain latency was lower1.2219%/
+4.0423% than N64 in two rotations; that is not serving evidence. Broad four-warp
+and row-two eight-warp results retain their separate negative/mixed scopes.
+Current source checks passed496 tests with five CUDA-required skips; static,
+full Ruff and diff checks passed. Installed/provider-native, actual clip-on M2
+model/dispatch and matched accepted-production performance gates remain pending;
+historical native57/63 passes do not qualify the new image. See [scope](docs/gemma4-cuda-validation.md#row-two-four-warp-n128-investigation).
+
+**Raw-global attention launch screen (four warps retained):** all exact causal,
+serial, graph-position and controlled-sensitivity/input-restoration checks passed
+before timing. Eight warps were slower10.95–32.73% across M1–5, including ordered
+merge, with every paired block slower. This synthetic SM121/64K operator result
+is not a full-model throughput or occupancy claim; no model/P3 advance occurred.
+[Evidence and limits](docs/gemma4-cuda-validation.md#raw-global-four-versus-eight-warps).
 
 **Native A8 DFlash head investigation (default not selected):** a default-off internal
 constructor policy can run only the private FP8 proposal vocabulary head with

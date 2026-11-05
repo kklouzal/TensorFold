@@ -618,11 +618,11 @@ Mixed cells are uncertain, not equivalent or automatically noise.
 **Row-two eight-warp is not selected for current production.** Under decode >
 prefill > VRAM > cache > other, these results do not justify replacement of
 accepted W4D4/N64/clip-on ae8d/b579. This is not a global inferiority claim.
-Seven runtime files and26 maintained independent N64 oracles are restored to
+At that closeout, seven runtime files and26 maintained independent N64 oracles were restored to
 accepted bea344 bytes; only experimental selector CPU controls are removed.
 All prototype Git/images/fixtures/native63/raw results and failures remain
 preserved, including the pre-model producer-guard refusal and its metadata-only
-correction. Row-two four-warp N128 remains open and deferred. No gain is claimed
+correction. Row-two four-warp N128 remained open at that closeout. No gain is claimed
 from source restoration, and no rebuild/restart is needed for byte-exact reuse.
 
 Audit: `expert-n128-row2-p3-v1/report-v1/summary.json` SHA256
@@ -675,7 +675,7 @@ launch savings. Cold-prefix totals included prefill. The unfavorable graph
 screen does not establish a causal explanation or justify blind grid tuning;
 a later alternative requires a new bounded source/profile contract.
 
-Canonical four runtime files are restored byte-for-byte to accepted
+At that closeout, four canonical runtime files were restored byte-for-byte to accepted
 b85235c7/bea34487 behavior. Fusion-only wiring/borrow tests are removed, while
 all26 independent native N64 cases, existing glue ROUND/norm tests and the
 new independent Torch ordered-BF16/cancellation/FP32-routing/uint8 oracle for
@@ -693,3 +693,54 @@ preserves all raw ratios and descriptive metric definitions. Component binding
 527150b3/resources e460 and cleanup `expert-fused-moe-tail-cleanup-v1` retain
 their separate evidence scopes. No model/P3 run or production selection of
 this fusion occurred; exploration beyond this finite variant remains open.
+
+
+## Raw-global four versus eight warps
+
+Actual installed attention math and ordered merge were reused directly, with
+only `_global` launch metadata changing four/eight warps. SM121 used the actual
+AEON H16/globalHK2/G8/D512 config,64K history and131072 admitted context. All35
+causal/serial,20 graph advance/backward and five controlled stale-position/input-
+restoration checks passed before160 finite graph samples including merge.
+
+| Query rows | Eight/four latency paired geometric change |
+| --- | ---: |
+| 1 | +10.948635% |
+| 2 | +11.695224% |
+| 3 | +22.139827% |
+| 4 | +20.064186% |
+| 5 | +32.734240% |
+
+Every paired block was slower. Four warps remain selected; no model/P3 advance
+occurred. These are synthetic normalized projections and correlated operator
+samples, not trained-request throughput, critical-path shares or achieved
+occupancy. The earlier random-sensitivity guard failure and scalar-int32 byte-
+view API defect remain preserved; corrected source6616 passed exact words and
+restored original inputs before timing. Exact accepted production was restored
+healthy with room-one/math/aliases/pointer/services checks (restore6a2b).
+`gemma-raw-global-warp8-v1/descriptive-report-v1.json` retains raw metrics,
+resources and scope; the source LAUNCH remains four warps.
+
+## Row-two four-warp N128 investigation
+
+This new private opt-in restricts the retained four-warp NT2 implementation to
+actual nonprompt Target rows==2; defaults, prompt and other row counts retain
+N64. It adds no eight-warp implementation or public CLI. Historical same-v7
+trained-bank chain report211784 measured M2 four/N64 latency lower1.2219%/
+4.0423% in its two rotations, with exact output words. This does not establish
+a serving gain or rank the candidate from the rejected row-two eight-warp
+screen: that screen had low/zero M2 exposure in several full workloads and
+mixed regional results.
+
+Historical a538/v6 native57 and6dea/v7 native63 retain their original source,
+image and provider identities. Current-source checks passed496 tests with five
+explicit CUDA-required skips; static, full Ruff and diff checks passed. Installed
+checks, new provider compile/resources and native exact-word/replay checks remain
+pending.
+Full-model qualification must witness actual M2 execution with clipping enabled,
+plus unchanged default/prompt/M1/M3/M4/M5 dispatch, teacher/q/p/greedy/sampled
+IDs/work/cache/replay semantics. Any subsequent matched full-request comparison
+uses accepted ae8d/b579 v5, all six cached/cold regions, whole-request/TTFT/tails,
+allocator/startup observations and actual M2 exposure. No arbitrary gain margin,
+performance equivalence, new-image qualification or production selection is
+claimed. All earlier negative results and other open candidates remain intact.

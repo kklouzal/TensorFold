@@ -688,9 +688,37 @@ accompanied mixed other regions. The repeated T0-code gain had zero full256 warm
 M2 exposure and cannot be credited to NT2. See [all regional points and
 limits](gemma4-cuda-validation.md#eight-warp-and-row-two-nt2-candidates).
 
-At this closeout seven runtime files and the maintained26 independent N64
-oracles are restored byte-for-byte to accepted bea344/ae8d/b579, including the
+At that closeout seven runtime files and the maintained26 independent N64
+oracles were restored byte-for-byte to accepted bea344/ae8d/b579, including the
 v5 native ABI and original Target/caller signatures. Only experiment-specific
-CPU selector controls are removed. No eight-warp constructor policy or native
+CPU selector controls were removed. No eight-warp constructor policy or native
 path remains in current canonical runtime. This restoration changes no deployed
-image and claims no speed gain; row-two four-warp N128 remains open and deferred.
+image and claims no speed gain; row-two four-warp N128 remained open at that closeout.
+
+
+### Row-two four-warp N128 investigation
+
+A new default-off private `expert_up_n128_row2` Engine/Target policy recovers
+only the retained four-warp NT2 implementation. Engine preflight and the direct
+Target boundary require CT704/2816/128-expert SM121; invalid flag types and
+unsupported profiles reject before affected storage/weight preparation. The
+Target branch requires true policy, nonprompt role and exactly two actual rows;
+it passes `prompt=False` to the CT expert adapter. All other calls omit the new
+keyword and retain the original three-argument N64 path. No public CLI exists.
+
+Native v6 keeps `up_tile=64` by default and a callable four-warp N128 reference
+for its already-supported common CT GELU/SK1/plan16/rows1..5 region. No eight-warp
+kernel is recovered. N64/down retain four warps, original packed banks, exact
+K-group/alpha/BF16/GELU/per16-quantization and ordered-combine contracts. Width704
+still has five complete128 tiles plus a final64 panel, with uniform tail guards.
+
+The five native/adapter implementation files originate from historical a538/v6;
+new Target/Engine wiring belongs to the current application source. Historical
+native57 and later same-v7 native63/real-chain evidence retain their identities;
+a new provider and actual clip-on M2 dispatch must be qualified. Independent
+original-linears/CPU-CT-quantizer, grouped-order down-code/scale, BF16 per-slot/
+combine and changed-input/routing graph oracles are retained. The source gate
+passed 496 CPU checks with five CUDA-required skips; the installed package then
+passed 471 CPU checks with the same five skips, with all 777 runtime files verified.
+Current native-provider, model and P3 gates remain pending. No performance or
+deployment claim follows.
