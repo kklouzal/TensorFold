@@ -623,8 +623,16 @@ gains. The user subsequently accepted this specific disclosed overall trade
 and directed promotion via `--dflash-head-w4a16`; see the [current CLI policy](gemma4-cuda-validation.md#w4a16-private-head-cli). Lower observed Torch allocated and
 reserved peaks do not prove a physical-memory reduction; CPU memory/startup
 costs remain charged. See [the source/image/workload pins and regional results](gemma4-cuda-validation.md#private-w4a16-head-d4-screen).
-The public flag defaults off; the new frontend/build/cutover gates remain
-pending at this source checkpoint. No new production activation or all-region
-superiority is claimed here. The implementation and independent oracles remain
+The public flag defaults off. The accepted policy is now active on
+`4b15d567`/image `2dff55cd`/source `723221fd`/config `d95ecbff`, with native
+CLI/header readback, NativeReady, math4 and14 directed production checks.
+The bridge passed441 existing source plus31 new flag checks; installed462
+and exact777 inventory/static/diff/combined review are clear. Full API
+verification is pending: initial idle was refused due user traffic before
+tests (exit1 retained), not a model failure or an aggregate pass. No fresh
+strong HTTP cancellation or all-region superiority is claimed. The previous
+Shared/FP8 service is stopped and retained for rollback, settings/speech
+preserved. Returned planner estimates are not physical-memory measurements.
+This docs-only status update does not change the recorded image/source. The implementation and independent oracles remain
 because narrower policies and other depths are still credible
 candidates; this screen establishes neither global inferiority nor exhaustion.

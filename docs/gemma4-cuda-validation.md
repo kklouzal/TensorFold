@@ -400,6 +400,24 @@ The user accepted the audited broad D4 trade: cached T0 code/prose/short
 and cold T1 short−1.570%. Report38f2/final5235/review77bb describe the complete
 prior internal-policy scope; they do not establish all-region superiority or
 equivalence. This specific accepted trade is not permission to hide later
-regressions. The new CLI bridge's source/installed/deployment gates are pending;
-no cutover is claimed by this source change. Existing FP8 fallback/rollback
-artifacts remain retained, while normal new launches still default off.
+regressions. The CLI bridge passed441 existing source and31 new flag checks;
+the same-SDK installed image passed462 checks and exact777-file inventory,
+with static/diff and combined reviews clear. Actual production now runs
+container `4b15d567`, image `2dff55cd`, source `723221fd`, configuration
+`d95ecbff`, started2026-11-05T02:17:39Z, with NativeReady, math4 and all14
+directed production checks passing. Original model/drafter revisions,
+context131072/BF16KV, aliases/port, vision/thinking/Google template, Shared512,
+Delta4R16/N64/DF8D4 and disabled clipping/A8/proposalgraph remain preserved.
+The active pointer selects `deploy-w4a16-head-cli-20261104-v1`; the previous
+Shared/FP8 container `ffd9c363` is stopped and retained as rollback, with speech
+services unchanged. New launches still default off unless the flag is explicit.
+
+Full API/cache/media verification remains pending: v1 refused its initial-idle
+precondition due actual user traffic before any tests, retaining exit1 as a
+procedure boundary, not a model failure/pass. No aggregate full-API or fresh
+strong HTTP cancellation pass is claimed. Current checkpoint SHA256
+`d5401c7317a03575778e01513b683351b423ff477c7846834240f9f5c0829962`,
+actual review `f0f40a84` and closeout `1cc74288` record this scope. Capacity
+deltas returned by stats are planner estimates, not physical RAM proof.
+The image/source/test artifacts predate this docs-only status update; no new
+build or benchmark is implied.

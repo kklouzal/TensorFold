@@ -2,27 +2,31 @@
 
 ## GB10 Gemma 4 26B-A4B deployment checkpoints
 
-Current production on port `8888` is the accepted Shared512 + Delta4 native
-CLI deployment from 2026-11-04: container `ffd9c363`, image `58a280bb`, source UID
-`7ac9307b`. It explicitly enables `--prepare-global-prompt --delta4-head` with
-reuse16, preserving private FP8 DFlash/depth4, BF16 KV, the131072 window,
-vision, thinking, owned Google template and serving settings. `production-current`
-selects `deploy-shared-prompt-cli-20261104-v1`. Previous container `d1436c99`/image `98f6b664` is retained
-stopped for rollback; both speech services remain healthy. NativeReady and
-actual CLI arguments establish activation of the existing shared-prompt path.
+Current production on port `8888` is the accepted head-only W4A16 DFlash D4
+policy: container `4b15d567`, image `2dff55cd`, source UID `723221fd`, config
+fingerprint `d95ecbff`, started2026-11-05T02:17:39Z. The ordinary native CLI
+explicitly enables `--dflash-head-w4a16 --drafter-bits 8` alongside
+`--prepare-global-prompt --delta4-head` (reuse16). Companion transformer FP8,
+BF16 KV,131072 context, original model/drafter revisions, aliases, port, vision,
+thinking and Google template are preserved; clipping, A8 and proposal graphs
+remain disabled. `production-current` selects `deploy-w4a16-head-cli-20261104-v1`.
+The former Shared/FP8 container `ffd9c363` is stopped and retained as rollback;
+both speech services remain healthy. NativeReady, math4 and actual header/CLI
+readback establish activation of the existing policy.
 
-The frontend change passed441 source CPU checks without skips/warnings,
-all-F static/diff checks and combined review. The new same-SDK image passed115
-installed checks and exact777-file source inventory. On the new production,
-all14 directed checks and16 individual full API/cache/media functional checks
-passed. The seventeenth known short-SSE cancellation-counter assertion failed
-again: its aggregate remains false/exit1 and the failure is retained. This is
-not blanket API qualification or a fresh strong observed-active HTTP
-cancellation pass. Earlier strong shadow cancellation and P0 cooperative-stop
-checks retain only their recorded source/workload scope.
+The bridge passed441 existing source checks and31 new flag checks, static/diff
+checks and combined review; the new same-SDK installed image passed462 checks
+and exact777-file inventory. All14 directed production checks passed. Full
+API/cache/media verification is **pending**: its first attempt refused the
+initial-idle precondition because actual user traffic was active, before its
+tests began. That exit1 is retained as a procedure boundary, not a model
+failure or a pass. No blanket full-API qualification or fresh strong HTTP
+cancellation pass is claimed. Earlier API/cancellation evidence retains only
+its original image/workload scope; in particular, the previous Shared cutover's
+known seventeenth short-SSE counter failure remains preserved.
 
-The owner accepted the Shared512 prefill/retained-memory tradeoff and directed
-immediate deployment. `/v1/stats` planner estimates increased cache workspace
+At the earlier Shared512 cutover, the owner accepted its prefill/retained-memory
+tradeoff. That historical `/v1/stats` comparison increased estimated cache workspace
 and serving peak by536870912 bytes each; startup estimate is unchanged.
 The one512 MiB BF16 K/V pair is inferred structurally from verified source,
 CLITrue forwarding, admitted131072 context and NativeReady, not measured by
@@ -52,7 +56,7 @@ SM121 GPU oracles without skips on accepted EECB's byte-identical 777-file
 runtime inventory; this is not a new build or a new full-model/P3 gain.
 No N32 production deployment or performance gain is claimed. See [kernel contracts](docs/cuda-kernel-contracts.md).
 
-**Private W4A16 head: user-accepted mixed trade, deployment wiring pending.**
+**Private W4A16 head: user-accepted mixed trade, deployed.**
 The audited D4 screen on Shared512/Delta4-R16/N64/DF8-D4 improved all T0
 cold/cached primary rates in both halves (cached code/prose/short
 +6.915/+2.475/+2.514%). Cached T1 code was lower by2.146% and cold T1 short
@@ -64,9 +68,10 @@ head-only implementation for Gemma4 CT NVFP4/ModelOpt MoE CUDA with enabled
 DFlash and `--drafter-bits 8`; public default is off and omitted false kwargs
 preserve prior launches. It does not enable A8, clipping, draft graphs or change
 target/transformer/vision/KV math. Source/installed/component/model/P3 evidence
-for the prior internal policy is retained; the new frontend bridge's checks,
-build and actual production readback remain pending. The currently recorded
-production checkpoint above remains authoritative until cutover is verified.
+for the prior internal policy is retained. The new frontend build, installed
+checks and actual production readback are complete as recorded above; full
+API verification awaits its natural-idle precondition. This documentation-only
+status update does not describe another image build.
 See [CLI policy and qualification](docs/gemma4-cuda-validation.md#w4a16-private-head-cli).
 
 **Native A8 DFlash head investigation (default not selected):** a default-off internal

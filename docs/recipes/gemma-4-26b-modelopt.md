@@ -364,4 +364,12 @@ Shared512 and Delta4/R16 settings unchanged when reproducing the accepted GB10
 D4 policy. It does not activate clipping, A8 or proposal graphs. The user
 explicitly accepted the mixed measured trade, including the2.146% cached T1
 code loss; it is not a universal speed claim. The new public frontend's
-installed build/readback is pending; see the [validation scope](../gemma4-cuda-validation.md#w4a16-private-head-cli).
+installed build/readback is complete: production `4b15d567`, image `2dff55cd`,
+source `723221fd`, config `d95ecbff`, NativeReady/math4/14 directed checks.
+The pointer selects `deploy-w4a16-head-cli-20261104-v1`; prior Shared/FP8
+`ffd9c363` is stopped and retained as rollback with speech/settings preserved.
+Source441-existing+31-new and installed462/exact777 checks passed. Full API
+verification awaits natural idle: its first attempt refused active user traffic
+before tests, preserving exit1 as procedure-only evidence, not a model failure
+or aggregate pass/fresh strong HTTP cancellation qualification. Planner
+estimates are not physical RAM; see the [validation scope](../gemma4-cuda-validation.md#w4a16-private-head-cli).
