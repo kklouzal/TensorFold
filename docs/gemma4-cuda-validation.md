@@ -412,12 +412,107 @@ The active pointer selects `deploy-w4a16-head-cli-20261104-v1`; the previous
 Shared/FP8 container `ffd9c363` is stopped and retained as rollback, with speech
 services unchanged. New launches still default off unless the flag is explicit.
 
-Full API/cache/media verification remains pending: v1 refused its initial-idle
-precondition due actual user traffic before any tests, retaining exit1 as a
-procedure boundary, not a model failure/pass. No aggregate full-API or fresh
-strong HTTP cancellation pass is claimed. Current checkpoint SHA256
-`d5401c7317a03575778e01513b683351b423ff477c7846834240f9f5c0829962`,
-actual review `f0f40a84` and closeout `1cc74288` record this scope. Capacity
-deltas returned by stats are planner estimates, not physical RAM proof.
-The image/source/test artifacts predate this docs-only status update; no new
-build or benchmark is implied.
+The initial full API attempt refused its idle precondition before testing.
+A later single suite started at natural idle and passed16 functional/API/cache/
+media checks, then failed `cancel-retirement`: aggregate passed/complete are
+false, exit1 is retained. Its raw stream already contained the normal256-token
+`length` completion before the client stopped parsing; it therefore did not
+exercise an observed-active disconnect. This establishes neither a server
+cancellation defect nor a cancellation pass. A separate stronger active witness then passed: visible thinking output and
+running health at six generated tokens, well below4096, before disconnect;
+cancellation counter0→1 and idle within the bounded cleanup contract; consumed
+recovery4 with normal EOS and final idle. Its summary SHA256 is
+`c92917b9bb2d3aa78a88b636bbddd4c6a8ef86534c8276a8508ad34a904d3d34`.
+This is wire/server evidence, not independent GPU-inflight or physical-retirement
+proof. The original full-suite assertion and aggregate remain failed and unchanged.
+Fresh suite summary SHA256 is
+`9a13d4f3fd629bfeec2b4e345616ea67ffd7e0f813334579788d8a178e378537`.
+The earlier checkpoint `d5401c73`, actual review `f0f40a84` and closeout
+`1cc74288` remain dated records of the preceding state. Capacity deltas returned
+by stats are planner estimates, not physical RAM proof. The image/source/test
+artifacts predate this docs-only status update; no new build is implied.
+
+
+## W4A16 depth 2 and 3 screen
+
+The deployed723221fd runtime/image2dff55cd on GB10 SM121 was compared with
+all heads W4A16: accepted D4, then D2, D3, D3, D2, D4. Three genuine current-
+runtime cache producers each completed6 compiler and42 full256-token workloads;
+each of the six fresh CPU-unrestricted measured processes rebuilt its own
+CUDA graphs through6 compiler and42 full warmups before42 measurements.
+The actual current69f4 compiler context was copied with its original keys;
+old5d2 model-law evidence retained its original identity and transferred only
+through the audited four-frontend source delta. No old warm producer was relabeled.
+
+All three same-policy and12 cross-policy T0-ID checks passed. Same-policy
+q/p, outputs, work and cache witnesses were exact; cross-depth T1 q/IDs/work
+were allowed to differ and all actual work remained charged. Accepted W4D4
+production was restored and checked before report analysis.
+
+The following cached primary rates are geometric means of two process-level
+six-hit medians (tokens/s), using unchanged e51 metrics. Seeds within a process
+are correlated; there are two fresh processes/config, not12 independent replicates.
+
+| Region | D4 | D2 | D3 | D2/D4 | D3/D4 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| T0/code64k | 71.952 | 68.877 | 73.699 | -4.274% | +2.429% |
+| T0/prose64k | 86.967 | 79.564 | 88.732 | -8.513% | +2.030% |
+| T0/short-native | 121.824 | 100.712 | 115.873 | -17.330% | -4.885% |
+| T1/code64k | 68.766 | 68.894 | 74.372 | +0.187% | +8.152% |
+| T1/prose64k | 83.916 | 74.485 | 84.133 | -11.238% | +0.259% |
+| T1/short-native | 106.493 | 97.519 | 96.978 | -8.427% | -8.935% |
+
+Neither D2 nor D3 is selected for broad production. D3's cached T0-short and
+T1-short losses repeated in both halves (geometric deltas−4.885%/−8.935%);
+its cold T1-prose primary rate fell17.004% in both halves and whole-request
+duration rose1.947%. Cached T1 prose was mixed (−0.075%/+0.595%), despite its
++0.259% geometric point. D2's small repeated cached T1-code gain (+0.187%)
+coexisted with cold-code loss and five other cached-cell losses. Gains do not
+offset the required-region conflicts under this screen's objective; they are
+preserved as scoped evidence, without a generic prompt/length classifier.
+
+Cold D3 T1-short decode improved8.454% and whole-request duration fell7.584%,
+while TTFT rose1.164%; those distinct costs are retained. All other cold/whole/
+TTFT, callback tails, raw work and end/start drift remain in the full report.
+D3/D2 cached T1-short was lower in both halves (−0.696490%/−0.412556%,
+geometric−0.554624%): the zero-margin adjacent rule stops higher-depth
+exploration. D4 was the incumbent reference, not a new upward exploration;
+no D5, equivalence, noise or global depth-inferiority claim follows.
+
+Observed Torch allocated maxima were lower than D4 by16,200,704 bytes for D2
+and8,709,120 for D3; peak-reserved maxima were20,971,520 bytes lower for both.
+These allocator observations do not prove total physical-memory savings and
+cannot offset the regional losses. Constructor-plus-drain seconds were
+D4[34.434,35.096], D2[32.314,34.026], D3[32.214,32.828]; CPU high-water marks
+were mixed. Per-request graph keys/dispatch and48 warm q/p witnesses/process
+were retained, with no measured main-graph growth or causal timing attribution.
+
+Report SHA256 `c5f36920466baf29a0f6e0b52763c62ab931ebd8a658acb648c2cd75ba9b6af4`,
+63-link final packet `b90a942b`, actual review `38ebe8dc`, final15-check result
+`5a1a37d1` and exact production restoration `3aecc53e` record this finite scope.
+The depth-screen disposition itself changes no runtime/test behavior or depth
+deployment. The separate N128 source candidate below remains unqualified for production.
+
+
+## Fused expert-up N128 candidate
+
+The source candidate specializes only CT (`direct_input=False`) GEGLU,
+width704/dims2816, rows1..5 in the actual decode/verification role. Grouped-plan
+`prefill=True` arithmetic, split-K1 and the BF16 down boundary remain required;
+that arithmetic flag is not a prompt-role classifier. An explicit prompt role
+keeps prompts, including small tails, on N64. ModelOpt direct input and other
+generic paths retain N64; the callable native default remains `up_tile=64`.
+The candidate Gemma CT decode path intentionally chooses128. Native ABI v6
+records the new tile argument; NT2 is instantiated only for the existing
+SINGLE specialization, preserving generic NT1 and independent N64 oracles.
+No source precision/tolerance or SDK change is made.
+
+The coherent eight runtime/test paths passed385 source CPU tests and one
+explicit existing CUDA-assisted loader-packing skip, with canonical imports
+and CUDA uninitialized before/after. All-F static, full configured deployment
+Ruff and diff checks passed. This is source qualification only: owned build,
+installed inventory, new SM121704-tail/independent-word and changed-route graph
+cases, compiler/resource limits, full-model equality and matched P3 remain
+pending. The named accepted723221fd/2dff55cd W4D4 production is the reference;
+old N64 results are not relabeled as new N128 proof. No N128 performance gain
+or deployment is claimed. Source freeze `5b73dc06`, CPU gate `96894cde`.

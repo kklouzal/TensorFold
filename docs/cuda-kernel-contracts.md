@@ -627,12 +627,38 @@ The public flag defaults off. The accepted policy is now active on
 `4b15d567`/image `2dff55cd`/source `723221fd`/config `d95ecbff`, with native
 CLI/header readback, NativeReady, math4 and14 directed production checks.
 The bridge passed441 existing source plus31 new flag checks; installed462
-and exact777 inventory/static/diff/combined review are clear. Full API
-verification is pending: initial idle was refused due user traffic before
-tests (exit1 retained), not a model failure or an aggregate pass. No fresh
-strong HTTP cancellation or all-region superiority is claimed. The previous
+and exact777 inventory/static/diff/combined review are clear. The later full
+API suite passed16 checks and failed its cancellation-counter assertion;
+aggregatefalse/exit1 remain preserved. The stream had already completed256
+tokens before the client stopped parsing, so no active abort was witnessed.
+A separate thinking-enabled4096-budget witness passed with live progress6,
+running health, counter0→1 plus idle, and consumed recovery4. This closes only
+its bounded wire/server cancellation contract; it does not rewrite the failed
+full-suite result or prove physical GPU retirement/all-region superiority. The previous
 Shared/FP8 service is stopped and retained for rollback, settings/speech
 preserved. Returned planner estimates are not physical-memory measurements.
 This docs-only status update does not change the recorded image/source. The implementation and independent oracles remain
 because narrower policies and other depths are still credible
 candidates; this screen establishes neither global inferiority nor exhaustion.
+
+
+The subsequent current-runtime W4 depth2/3 screen passed genuine own-depth
+warm q/p/work validation, all six complete processes and15 finite semantic
+checks. Neither depth is selected for broad production: repeated short-case
+losses and D3 cold sampled-prose loss remain. The adjacent D3/D2 sampled-short
+loss ends higher-depth exploration under the declared rule. Accepted W4D4
+remains deployed; the independent depth oracles and raw regional gains remain
+useful evidence. No depth selector is introduced. See [the complete screen
+scope](gemma4-cuda-validation.md#w4a16-depth-2-and-3-screen).
+
+
+The separately implemented fused-up N128 source candidate is restricted to
+CT !direct, GEGLU2816→704, rows1..5 decode/verification, with grouped-plan
+prefill arithmetic, SK1/BF16 and explicit prompt-role separation. Small prompt
+tails and generic/ModelOpt paths stay N64. ABI v6 keeps callable `up_tile=64`
+by default; only the candidate CT decode selector chooses128. Source385 CPU
+passes/one existing CUDA-assisted skip and static/deployment checks do not
+qualify the new kernel's arithmetic/resources or performance. Independent
+N64, quantizer, original-linear, grouped-plan, per-slot BF16/final-combine and
+new128/704-tail/changed-route graph oracles remain required. See [candidate
+qualification](gemma4-cuda-validation.md#fused-expert-up-n128-candidate).

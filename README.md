@@ -4,7 +4,7 @@
 
 Current production on port `8888` is the accepted head-only W4A16 DFlash D4
 policy: container `4b15d567`, image `2dff55cd`, source UID `723221fd`, config
-fingerprint `d95ecbff`, started2026-11-05T02:17:39Z. The ordinary native CLI
+fingerprint `d95ecbff`, restored2026-11-05T04:55:07Z. The ordinary native CLI
 explicitly enables `--dflash-head-w4a16 --drafter-bits 8` alongside
 `--prepare-global-prompt --delta4-head` (reuse16). Companion transformer FP8,
 BF16 KV,131072 context, original model/drafter revisions, aliases, port, vision,
@@ -16,14 +16,16 @@ readback establish activation of the existing policy.
 
 The bridge passed441 existing source checks and31 new flag checks, static/diff
 checks and combined review; the new same-SDK installed image passed462 checks
-and exact777-file inventory. All14 directed production checks passed. Full
-API/cache/media verification is **pending**: its first attempt refused the
-initial-idle precondition because actual user traffic was active, before its
-tests began. That exit1 is retained as a procedure boundary, not a model
-failure or a pass. No blanket full-API qualification or fresh strong HTTP
-cancellation pass is claimed. Earlier API/cancellation evidence retains only
-its original image/workload scope; in particular, the previous Shared cutover's
-known seventeenth short-SSE counter failure remains preserved.
+and exact777-file inventory. All14 directed production checks passed. A full
+API/cache/media suite then passed16 individual checks and failed its seventeenth
+cancellation-counter assertion; aggregate passed/complete remain false and
+exit1 is retained. The raw stream had already completed its256-token length
+limit before the client stopped parsing, so that attempt did not witness an
+active cancellation. A separate4096-budget thinking-enabled witness observed six generated tokens
+and running health before disconnect, cancellation counter0→1 plus idle, and
+a consumed recovery answer4. It passed its bounded wire/server contract;
+the original full-suite aggregate remains false, without a physical GPU-retirement claim.
+The earlier idle-precondition refusal and historical failures are preserved.
 
 At the earlier Shared512 cutover, the owner accepted its prefill/retained-memory
 tradeoff. That historical `/v1/stats` comparison increased estimated cache workspace
@@ -69,10 +71,28 @@ DFlash and `--drafter-bits 8`; public default is off and omitted false kwargs
 preserve prior launches. It does not enable A8, clipping, draft graphs or change
 target/transformer/vision/KV math. Source/installed/component/model/P3 evidence
 for the prior internal policy is retained. The new frontend build, installed
-checks and actual production readback are complete as recorded above; full
-API verification awaits its natural-idle precondition. This documentation-only
+checks and actual production readback are complete as recorded above; the
+full API failure and separate cancellation witness are scoped above. This documentation-only
 status update does not describe another image build.
 See [CLI policy and qualification](docs/gemma4-cuda-validation.md#w4a16-private-head-cli).
+
+**W4A16 depth2/3 screen (not selected for broad production):** the current
+723221fd runtime completed three full cache preparations and six fresh
+processes in D4–D2–D3–D3–D2–D4 order, with all15 semantic checks passing.
+D3 retained gains in several long-context cells but repeatedly lost short
+workloads and cold sampled prose; D2 lost five of six cached cells. Accepted
+W4D4 remains deployed. The D3/D2 sampled-short loss ends higher-depth
+exploration under the predeclared adjacent rule, without a global inferiority
+claim. See [regional results and limits](docs/gemma4-cuda-validation.md#w4a16-depth-2-and-3-screen).
+
+**Fused expert-up N128 candidate (source qualified only):** the bounded CT
+GEGLU2816→704 decode/verification specialization is implemented with explicit
+prompt-role dispatch; prompts, ModelOpt direct input and generic defaults
+retain N64. One source batch passed385 tests with one existing GPU-assisted
+loader skip, CUDA uninitialized, static/deployment/diff checks clear. New
+compilation/resources/native word and route-replay oracles, full-model law and
+matched performance remain pending. This source candidate is not deployed;
+accepted production remains723221fd/2dff55cd. See [candidate scope](docs/gemma4-cuda-validation.md#fused-expert-up-n128-candidate).
 
 **Native A8 DFlash head investigation (default not selected):** a default-off internal
 constructor policy can run only the private FP8 proposal vocabulary head with
