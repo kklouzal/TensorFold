@@ -94,7 +94,11 @@ class Gemma4Engine:
                  chat_template_file=None, chat_template_name=None,
                  prepare_global_prompt: bool = False, lossless_head: bool = False,
                  spark_global_gqa: bool = False, spark_sampled_q: bool = False, global_trig: bool = False,
-                 global_trig_prompt: bool = True, delta4_head: bool = False, delta4_reuse: int = 16, global_cache: str = "none", global_cache_prompt: bool = False, dflash_graph: bool = False, dflash_head_native_a8: bool = False, dflash_head_w4a16: bool = False) -> None:
+                 global_trig_prompt: bool = True, delta4_head: bool = False, delta4_reuse: int = 16, global_cache: str = "none", global_cache_prompt: bool = False, dflash_graph: bool = False, dflash_head_native_a8: bool = False, dflash_head_w4a16: bool = False, clip_sampled_verification: bool = False) -> None:
+        if type(clip_sampled_verification) is not bool:
+            raise ValueError('clip_sampled_verification must be a bool')
+        if clip_sampled_verification and (not drafter or no_drafts):
+            raise ValueError('clipped sampled verification requires enabled DFlash')
         if type(dflash_head_w4a16) is not bool:
             raise ValueError('dflash_head_w4a16 must be a bool')
         if dflash_head_w4a16 and (drafter_bits != 8 or not drafter or no_drafts or dflash_graph or dflash_head_native_a8):
@@ -156,6 +160,11 @@ class Gemma4Engine:
             raise ValueError('global trig requires CT arithmetic')
         draft_dir = Path(drafter) if drafter and not no_drafts else None
         kind = companion_kind(draft_dir) if draft_dir is not None else None
+        if clip_sampled_verification:
+            if kind != 'dflash':
+                raise ValueError('clipped sampled verification requires a DFlash companion')
+            # Resolve once during preparation; omitted policy preserves subclass defaults.
+            self._clip_sampled_verification_to_room = True
         self._head_kind = kind
         if spark_sampled_q and (kind != 'sparkulator' or method != 'modelopt'):
             raise ValueError('Spark sampled q requires the actual Sparkulator/ModelOpt pair')

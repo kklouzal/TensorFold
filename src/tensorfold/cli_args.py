@@ -332,6 +332,9 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
     cuda.add_argument("--delta4-head", action="store_true", default=False,
                       help="Gemma 4 CT NVFP4 MoE on CUDA: lossless Delta4 tied BF16 head with fixed reuse16; "
                            "cannot combine with --lossless-head")
+    cuda.add_argument("--clip-sampled-verification", action="store_true", default=False,
+                      help="Gemma 4 MoE on CUDA with DFlash: clip sampled target verification to remaining output room; "
+                           "retain the full proposal sampling packet (explicit opt-in)")
     cuda.add_argument("--dflash-head-w4a16", action="store_true", default=False,
                       help="Gemma 4 CT NVFP4 or ModelOpt MoE on CUDA: original-BF16 private W4A16 proposal head; "
                            "requires enabled DFlash and --drafter-bits 8, default off; sampled coupling may change")

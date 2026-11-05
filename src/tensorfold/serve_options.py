@@ -374,6 +374,7 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
                                ("delta4_head", "CUDA_DELTA4_HEAD"),
                                ("prepare_global_prompt", "CUDA_PREPARE_GLOBAL_PROMPT"),
                                ("dflash_head_w4a16", "CUDA_DFLASH_HEAD_W4A16"),
+                               ("clip_sampled_verification", "CUDA_CLIP_SAMPLED_VERIFICATION"),
                                ("spark_global_gqa", "CUDA_SPARK_GLOBAL_GQA"),
                                ("spark_sampled_q", "CUDA_SPARK_SAMPLED_Q")):
         value = getattr(args, option, False)
@@ -381,10 +382,13 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         if type(value) is not bool:
             raise ValueError(f"{flag} must be a boolean")
         if value:
-            model_format = ('CT NVFP4' if option == 'delta4_head' else
+            model_format = ('' if option == 'clip_sampled_verification' else 'CT NVFP4' if option == 'delta4_head' else
                             'CT NVFP4 or ModelOpt' if option in ('prepare_global_prompt','dflash_head_w4a16') else 'ModelOpt')
             if backend != "cuda" or not getattr(family.package, capability, False):
                 raise ValueError(f"{flag} requires Gemma 4 {model_format} MoE on CUDA")
+            if option == 'clip_sampled_verification' and (getattr(args, 'no_drafts', False)
+                    or getattr(args, 'draft_method', 'auto') == 'none'):
+                raise ValueError('--clip-sampled-verification requires enabled DFlash')
             if option == 'dflash_head_w4a16' and (getattr(args,'no_drafts',False)
                     or getattr(args,'draft_method','auto')=='none' or type(getattr(args,'drafter_bits',None)) is not int
                     or args.drafter_bits!=8):
@@ -393,7 +397,9 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
                 from tensorfold.families import read_config
 
                 head_config = read_config(config_dir if config_dir is not None else args.model)
-            if option == 'delta4_head':
+            if option == 'clip_sampled_verification':
+                family.package.check_cuda_clipped_verification_metadata(head_config, flag=flag)
+            elif option == 'delta4_head':
                 family.package.check_cuda_delta4_moe_metadata(head_config, flag=flag)
             elif option == 'dflash_head_w4a16':
                 family.package.check_cuda_prepared_global_prompt_metadata(head_config, flag=flag)

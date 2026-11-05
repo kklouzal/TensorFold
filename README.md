@@ -85,6 +85,19 @@ W4D4 remains deployed. The D3/D2 sampled-short loss ends higher-depth
 exploration under the predeclared adjacent rule, without a global inferiority
 claim. See [regional results and limits](docs/gemma4-cuda-validation.md#w4a16-depth-2-and-3-screen).
 
+**Sampled-verification clipping (accepted trade; CLI bridge pending validation/cutover):**
+`--clip-sampled-verification` explicitly enables the existing per-instance policy
+for Gemma4 MoE CUDA with DFlash. Default off/omitted preserves prior launches;
+unsupported families/backends, dense E2B and disabled DFlash are rejected.
+Full proposal sampling/readback remains intact. On the exact GB10 AEON/zlab
+Shared512/R16/N64/W4D4 source723/2dff matched quartet, cold T1 prose/short
+primary decode improved1.063165%/1.151823% in both halves. Cached T1 code/short
+regressed0.052156%/0.172528%; cached prose+0.042425% had mixed halves. The owner
+accepted this specific trade, including cold-prose whole-request+0.188945%
+and prefill+0.305197% duration costs, +194560 Torch allocated bytes and mixed
+startup. No causal T0 gain, memory saving, equivalence or universal superiority
+is claimed. See [scope and qualification](docs/gemma4-cuda-validation.md#sampled-verification-clipping-accepted-trade).
+
 **Fused expert-up N128 screen (not selected):** the four-warp CT specialization
 passed source385, installed277 and native57 checks plus corrected exact
 full-model parity. Its four-process matched screen lost five cached decode
@@ -1061,6 +1074,7 @@ Caps bound owner counts, not arbitrary total payload bytes. Generated token buff
 | `--no-drafts` | Off; opt in to the same-engine serial reference. |
 | `--drafter auto\|none\|MODEL` | `auto`: a supported family drafter when already pulled. Dense Qwen CUDA needs the drafter pulled or explicit `--no-drafts`. |
 | `--drafter-bits N` | MLX default `4`, with `0` retaining BF16 draft linears. CUDA Qwen CT NVFP4 defaults to BF16 (`0` or `16`); explicit `8` (FP8) or `4` (NVFP4) requantizes draft linears and copies a floating target head, for proposals only. Qwen borrows a checkpoint's quantized target head without another copy. CUDA Gemma4 DFlash takes `16` (BF16, default), or `8` with an original or losslessly packed BF16 tied target head: private FP8 copies of its companion projections and head. Gemma FP8 prepares its selected prompt and lane providers during initialization after validating those copies; build failures abort startup. Gemma affine checkpoints with a quantized tied head retain `16`. Target verification preserves reply semantics. A CUDA engine with one draft precision refuses the flag. |
+| `--clip-sampled-verification` | Gemma4 non-dense CUDA with enabled DFlash: explicitly clip sampled target verification to remaining room, preserving full proposal sampling. Default off; no precision/geometry/classifier change. |
 | `--delta4-head` | Gemma CT NVFP4 MoE on CUDA only: lossless tied BF16 Delta4 storage using fixed reuse16, default off. Preserves the existing drafter/vision/template/context selections. Cannot combine with ModelOpt's separate `--lossless-head`; no graph, clipping or cache candidate is enabled. |
 | `--prepare-global-prompt` | Gemma 4 CT NVFP4 or ModelOpt MoE on CUDA: one admitted context-sized shared BF16 global-prompt K/V scratch pair, default off. At the AEON131072 profile this is512 MiB. Does not enable trig, persistent cache, draft graphs or clipping. |
 | `--draft-rows N` | CUDA Gemma4 MoE with DFlash: 2–128 rows, default 16, with `--parallel 1`. E2B DFlash2: 2–8 rows, default 8, one lane; [correctness baseline and validation scope](docs/recipes/gemma-4-e2b.md). CUDA Qwen CT NVFP4: unset uses the secondary's metadata block width. With a secondary, explicit width is 2–128 on one stream, at most 16 with `--parallel`; without one, width 1 is also valid. |

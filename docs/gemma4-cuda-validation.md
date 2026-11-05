@@ -543,3 +543,33 @@ Audit artifacts: `expert-n128-p3-v1/report-v1/summary.json` SHA256
 `f2caa0b85d7f035ef5965f088440a39da937828559236736a8f454e8817036b8`,
 final packet `55d58aaf`, actual D13 `afb6d61c`, disposition `a00b13d8`;
 cleanup hashes are recorded separately in `expert-n128-cleanup-v1`.
+
+
+## Sampled-verification clipping accepted trade
+
+The owner accepted the current W4D4/N64 mixed trade, superseding earlier broad
+clipping nonselection only for this measured profile. Four fresh processes
+OFF/ON | ON/OFF used GB10 AEON26+zlab, source723/image2dff, context131072,
+Shared512/Delta4R16/N64/DF8D4, original64K code/prose+short T0/T1, full256
+outputs, cold/hit and matched warm/capture sequences. P0 pair54ba, strict
+quartet finalpacket30acae17/reportcbf38f2b/D139f02b2af bind the evidence.
+Cold T1 prose/short primary decode improved1.063165%/1.151823%, both halves;
+cached T1 code/short regressed0.052156%/0.172528%, while cached prose+0.042425%
+had mixed halves. Cold-prose full-request and prefill durations worsened
+0.188945%/0.305197%. T0 fluctuations receive no causal credit. The extra194560
+Torch allocated bytes are a cost, not a memory saving; startup is mixed.
+Two processes per arm are descriptive evidence, not equivalence/CI/global
+superiority. Ordered graph-key histories are observed insertion order, not
+proof of performance causation.
+
+The maintained `--clip-sampled-verification` bridge is explicit/default-off.
+It forwards only true and prepares the existing instance policy after actual
+DFlash companion classification, before weights/allocation. False/unset keeps
+the existing class/subclass policy untouched. Dense E2B and other families or
+backends are refused; no format/precision/geometry restriction is invented.
+Generation/rejection, full q sampling/readback, target math and native kernels
+are unchanged. Only the pre-existing physical verification width/work change
+is activated; accepted/drafted ratios are not proposal-quality gains. Source,
+installed CLI, owned build and production cutover qualification for this bridge
+remain pending; measured723/2dff evidence does not claim new-image HTTP/startup
+performance. A8, proposal graphs, trig and persistent cache remain off.

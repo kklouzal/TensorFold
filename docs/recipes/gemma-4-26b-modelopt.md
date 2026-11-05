@@ -376,3 +376,23 @@ with reasoning-visible progress6/4096, running health, counter0→1 plus idle,
 and consumed recovery4. The earlier idle refusal and original failed aggregate
 remain preserved; no blanket API or physical GPU-retirement claim follows. Planner
 estimates are not physical RAM; see the [validation scope](../gemma4-cuda-validation.md#w4a16-private-head-cli).
+
+
+### Explicit sampled-verification clipping
+
+For the accepted AEON/zlab Shared512/Delta4R16/N64/W4D4 deployment, add
+`--clip-sampled-verification` alongside the existing
+`--dflash-head-w4a16 --drafter-bits 8 --prepare-global-prompt --delta4-head`
+options. Keep models/revisions, context131072, BF16 KV, DF8/D4, vision,
+thinking/template, target graphs and port unchanged. This independent flag is
+default off, requires Gemma4 non-dense CUDA with enabled DFlash, and does not
+enable A8/proposal graphs/trig/persistent caching. It retains the full proposal
+packet while limiting target verification to remaining output room.
+
+The owner accepted the specific source723/2dff GB10 trade: cold sampled prose
+and short decode+1.063165%/+1.151823%, versus cached sampled code/short
+-0.052156%/-0.172528%, additional194560 Torch allocated bytes and mixed
+startup; cold prose full-request/prefill durations worsen0.188945%/0.305197%.
+This is not all-region superiority or a memory saving. See the [evidence and
+pending bridge qualification](../gemma4-cuda-validation.md#sampled-verification-clipping-accepted-trade).
+Current build/installed/cutover checks for the new public bridge are pending.

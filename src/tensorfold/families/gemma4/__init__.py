@@ -17,6 +17,7 @@ CUDA_LOSSLESS_HEAD = True
 CUDA_DELTA4_HEAD = True
 CUDA_PREPARE_GLOBAL_PROMPT = True
 CUDA_DFLASH_HEAD_W4A16 = True
+CUDA_CLIP_SAMPLED_VERIFICATION = True
 CUDA_SPARK_GLOBAL_GQA = True
 CUDA_SPARK_SAMPLED_Q = True
 CUDA_DRAFT_ROWS = True
@@ -148,6 +149,14 @@ def check_cuda_prepared_global_prompt_metadata(config: dict, *, flag: str) -> No
         raise ValueError(f'{flag} requires Gemma 4 CT NVFP4 or ModelOpt MoE on CUDA; affine and dense formats are unsupported')
 
 
+def check_cuda_clipped_verification_metadata(config: dict, *, flag: str) -> None:
+    """Clipping uses the existing non-dense Gemma CUDA DFlash loop."""
+    from .cuda.e2b_metadata import is_dense_gemma
+
+    if config.get('model_type') not in MODEL_TYPES or is_dense_gemma(config):
+        raise ValueError(f'{flag} requires Gemma 4 MoE on CUDA with enabled DFlash')
+
+
 def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: int = 0,
                 master: str = "", master_port: int = 29551, no_drafts: bool = False,
                 context: int | None = None, **options: Any):
@@ -157,12 +166,17 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         raise ValueError("Gemma4 CUDA currently runs on one GPU; use --tp 1 --rank 0")
     allowed = {"context_explicit", "parallel", "draft_rows", "drafter_bits", "vision", "vision_urls",
                "vision_offload", "eos_token_ids", "chat_template_file", "chat_template_name", "lossless_head",
-               "spark_global_gqa", "spark_sampled_q", "delta4_head", "prepare_global_prompt", "dflash_head_w4a16"}
+               "spark_global_gqa", "spark_sampled_q", "delta4_head", "prepare_global_prompt", "dflash_head_w4a16", "clip_sampled_verification"}
     unsupported = sorted(set(options) - allowed)
     if unsupported:
         raise ValueError("Gemma4 CUDA does not implement: " + ", ".join(unsupported))
     if options.get("vision_offload"):
         raise ValueError("Gemma4's vision tower stays resident; drop --vision-offload")
+    clip_sampled_verification = options.get('clip_sampled_verification', False)
+    if type(clip_sampled_verification) is not bool:
+        raise ValueError('clip_sampled_verification must be a bool')
+    if clip_sampled_verification and (not drafter or no_drafts):
+        raise ValueError('--clip-sampled-verification requires enabled DFlash')
     dflash_head_w4a16 = options.get('dflash_head_w4a16', False)
     if type(dflash_head_w4a16) is not bool:
         raise ValueError('dflash_head_w4a16 must be a bool')
@@ -181,6 +195,9 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
     from tensorfold.families import read_config
     raw = read_config(model_dir)
     head_options = {}
+    if clip_sampled_verification:
+        check_cuda_clipped_verification_metadata(raw, flag="--clip-sampled-verification")
+        head_options["clip_sampled_verification"] = True
     if dflash_head_w4a16:
         check_cuda_prepared_global_prompt_metadata(raw, flag='--dflash-head-w4a16')
         head_options['dflash_head_w4a16'] = True
