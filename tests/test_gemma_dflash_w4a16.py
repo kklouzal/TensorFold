@@ -215,7 +215,7 @@ def test_actual_dflash_constructor_selects_only_head_and_prepares_existing_provi
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='native W4A16 product needs CUDA')
-@pytest.mark.parametrize('rows',[1,4])
+@pytest.mark.parametrize('rows',[1,2,3,4])
 def test_actual_k2816_native_fp32_head_single_cap_and_row_invariance(rows):
     # Independent decoded-product coverage is retained in tests/cuda/test_requant_cuda.py;
     # this supplemental case targets the real K and owning F32/cap adapter boundary.

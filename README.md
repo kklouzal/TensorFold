@@ -66,6 +66,9 @@ observations, not total physical memory. Startup and CPU memory increased.
 The prototype/oracles remain for narrower-policy/depth investigation; no CLI
 activation or production change follows. See [scope and complete tradeoffs](docs/gemma4-cuda-validation.md#private-w4a16-head-d4-screen)
 and [ownership/admission](docs/cuda-kernel-contracts.md#private-dflash-w4a16-head-prototype).
+Subsequent SM121 checks passed the existing K2816 product, softcap and row
+invariance oracles at rows2 and3, with unchanged kernel code and tolerances.
+Full-model depth2/3 qualification remains pending.
 
 **Native A8 DFlash head investigation (default not selected):** a default-off internal
 constructor policy can run only the private FP8 proposal vocabulary head with
