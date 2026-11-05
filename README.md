@@ -68,7 +68,9 @@ activation or production change follows. See [scope and complete tradeoffs](docs
 and [ownership/admission](docs/cuda-kernel-contracts.md#private-dflash-w4a16-head-prototype).
 Subsequent SM121 checks passed the existing K2816 product, softcap and row
 invariance oracles at rows2 and3, with unchanged kernel code and tolerances.
-Full-model depth2/3 qualification remains pending.
+Depth2/3 subsequently passed model-law qualification with genuine q2/p3 and
+q3/p4, depth-relative teachers, and18 generation/replay paths per depth.
+Their matched performance comparison remains pending.
 
 **Native A8 DFlash head investigation (default not selected):** a default-off internal
 constructor policy can run only the private FP8 proposal vocabulary head with
