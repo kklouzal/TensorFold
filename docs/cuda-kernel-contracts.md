@@ -608,8 +608,19 @@ Target law/greedy committed IDs must remain exact. Sampled seeded coupling,
 proposal quality and work may change: actual normalized new q must flow through
 unchanged rejection/residual verification. Same-policy cache/seed/rollback,
 grammar/EOS/cancellation and actual target-p on identical histories require
-qualification. Canonical-source verification passed430 CPU tests with17 explicit CUDA-only
-skips, all-F static checks and diff validation. Installed-wheel/native
-(including the two new K2816 cases), actual-model/actual-q and P3 gates remain
-pending. This source-only checkpoint neither qualifies a built image nor
-claims production selection or a gain.
+qualification. Canonical-source and installed-wheel verification each passed430
+CPU tests with17 explicit CUDA-only skips; all5 native cases passed, including
+the two K2816 supplemental cases. The actual OFF/ON model-law gate passed:
+actual normalized q and target p on each arm's own history are retained,
+same-policy reproducibility/cache/rollback remains strict, and cross-policy
+T0 committed IDs match. Cross-policy T1 IDs/q/work need not match.
+
+The matched GB10 D4 screen completed OFF–ON–ON–OFF, two fresh processes per
+policy, with strict two same-policy and four cross-T0 comparisons. Broad
+all-request ON is not selected: cached T1 code and cold T1 short repeatedly
+regressed despite other regional gains. Lower observed Torch allocated and
+reserved peaks do not prove a physical-memory reduction; CPU memory/startup
+costs remain charged. See [the source/image/workload pins and regional results](gemma4-cuda-validation.md#private-w4a16-head-d4-screen).
+Defaults and production remain unchanged. The prototype and independent
+oracles remain because narrower policies and other depths are still credible
+candidates; this screen establishes neither global inferiority nor exhaustion.

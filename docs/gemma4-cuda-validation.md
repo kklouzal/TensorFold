@@ -1,5 +1,79 @@
 # Gemma4 native NVFP4 on GB10, 2026-10-18
 
+## Private W4A16 head D4 screen
+
+The default-off internal `dflash_head_w4a16` prototype passed source and
+installed-wheel430 CPU checks (17 explicit CUDA-only skips in each suite),
+all5 native cases, and the actual paired OFF/ON model-law qualification.
+The head uses original BF16 checkpoint bytes, existing whole-tensor NVFP4
+quantization and `Fp4Linear(act=None)` with FP32 logits/single softcap;
+OFF retains the selected private FP8 head. No public CLI or default changes.
+
+The exploratory OFF–ON | ON–OFF screen used NVIDIA GB10 (SM121), source UID
+`5d2c930b5e483c93d92f2d30d2dcd53e808b2a1357a1dc339228d5642dfaa485`,
+runtime image
+`sha256:8e4757e14a4a7c31775e74275f4765767533029136432749a87c0b454b93b0b2`
+and verification image
+`sha256:e983dda7c32ec10a2101240a960225fa9380cafa79e36ceb96ecc47a70c4a12f`.
+Target `AEON-7/Gemma-4-26B-A4B-it-Uncensored-NVFP4` revision
+`90c8601b1a439497bc15d8fba9e52990b45ea0cb` and drafter
+`z-lab/gemma-4-26B-A4B-it-DFlash` revision
+`77d4202772dfe50b2396ec7bac9cfffc7b9e7057` were fixed.
+Both arms used Shared512 MiB prompt scratch, Delta4/R16, N64, private FP8
+transformer, DFlash8/depth4, target graphs, BF16 KV, context131072, vision,
+thinking and the owned Google template. Draft graphs, clipping, persistent
+cache, trig and native-A8 were off. Each fresh process had its own compatible
+compiler-cache copy, six32-token compiler warmups and42 full256-token untimed
+warm requests before42 measured requests. The six regions were T0 and T1
+(temperature1/top-k64/top-p0.95), each on short-native/code64k/prose64k;
+one logical-cold prefix plus six seeded cache hits per region consumed all256
+outputs with EOS ignored. Logical cold prefix does not mean cold compiler
+cache. Production was stopped, both speech services remained resident, and
+all workers used CPU quota0/cpuset10,20 GiB CPU memory,40 GiB CUDA cap and
+16 GiB resource floor. All four processes retired safely with valid stopped
+receipts; two same-policy and four cross-policy T0-ID checks passed.
+
+Primary throughput is255 post-first outputs divided by the drained interval
+from first callback, not an Engine rounded decode timer. The following are
+descriptive geometric means of the two paired-half ON/OFF ratios for six-hit
+median throughput; the two processes per policy are the replication units,
+with requests/seeds correlated (T0 seeds repeat deterministic work).
+
+| Region | Cached primary throughput change |
+| --- | ---: |
+| T0 code64k | +6.915% |
+| T0 prose64k | +2.475% |
+| T0 short-native | +2.514% |
+| T1 code64k | −2.146% |
+| T1 prose64k | +2.780% |
+| T1 short-native | +9.182% |
+
+Cold T1 short primary throughput also regressed1.570%, repeated in both
+halves, as did the cached T1 code regression. Gains in other regions do not
+offset these losses: broad all-request D4 ON is **not selected**. Observed
+Torch allocated/peak allocated fell309 MiB and reserved/peak reserved636 MiB;
+these are allocator observations, not total physical memory savings. The two
+ON constructor-and-drain intervals increased3.671s and4.375s against their
+paired OFF processes, and CPU memory was higher. Cold TTFT was mixed. The
+report retains all cold/hit, work, startup, memory, callback-batch tails and
+endpoint drift evidence without correction or pooled regional offsets.
+No CI, equivalence, noise dismissal, winner or global-inferiority claim is
+made. Narrower request policies and other depths remain credible; prototype,
+oracles and all failures are preserved rather than treating this screen as
+exhaustive selection.
+
+Private audit evidence under
+`/home/kklouzal/audit-artifacts/gemma-aeon26b-optimization-20261102`:
+`df-w4a16-report-v1/summary.json` SHA256
+`38f2bb292e054164ae92682c20b75ca52028cee572da0c95825283e4af2b1c31`;
+`df-w4a16-pilot-final-packet-v1.json` SHA256
+`5235ebe506dafbdb1df3d3323a471bdde86f83c71d5aff573721061febf6db50`;
+`df-w4a16-actual-report-d13-review-v1.json` SHA256
+`77bb26dcfa2296ed6f168e4356f7f6e3ed5335f03f168c3dbeaae548ddd1c248`.
+These are local retained receipts, not public benchmark downloads. The accepted
+production remains FFD9/58a/7ac/config928d, restored healthy at
+2026-11-05T00:21:58.133243316Z; the candidate was not deployed.
+
 ## Experimental Delta4 tied-table integration
 
 The CT-only path is default-off (`delta4_head=False`), with bounded internal
