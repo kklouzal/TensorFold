@@ -96,21 +96,11 @@ class Gemma4Target:
     _plain_prompt = False
     _global_prompt_scratch = None
     _global_trig = None
-    _expert_up_n128_8warp = False
     _global_cache = "none"
     _global_cache_prompt = False
 
     def __init__(self, weights: Gemma4Weights, *, prepare_global_prompt: bool = False,
-                 prompt_context: int | None = None, global_trig: bool = False, global_trig_prompt: bool = True, global_cache: str = "none", global_cache_prompt: bool = False, expert_up_n128_8warp: bool = False):
-        if type(expert_up_n128_8warp) is not bool:
-            raise ValueError('expert_up_n128_8warp must be a bool')
-        if expert_up_n128_8warp:
-            if (weights.numerics != 'ct_nvfp4' or
-                    (weights.config.hidden, weights.config.moe_width, weights.config.experts) != (2816, 704, 128)):
-                raise ValueError('eight-warp NT2 requires actual CT Gemma704/2816/128 experts')
-            if tuple(torch.cuda.get_device_capability(weights.norm.device)) != (12, 1):
-                raise ValueError('eight-warp NT2 experiment requires actual GB10 SM121')
-        self._expert_up_n128_8warp = expert_up_n128_8warp
+                 prompt_context: int | None = None, global_trig: bool = False, global_trig_prompt: bool = True, global_cache: str = "none", global_cache_prompt: bool = False):
         check_global_cache(global_cache, prompt=global_cache_prompt,
                            prepared_prompt=prepare_global_prompt, trig=global_trig)
         self._global_cache_prompt = global_cache_prompt
@@ -481,10 +471,7 @@ class Gemma4Target:
             gate, up = self._project_gate_up(dense_in, (layer.gate, layer.up), prompt)
             dense = self._project(self._geglu(gate, up), (layer.down,), prompt)[0]
             picks, routing = self._route(h, layer)
-            if self._expert_up_n128_8warp and not prompt and rows == 2:
-                routed = layer.experts.forward(expert_in, picks, routing, prompt=prompt, n128_warps=8)
-            else:
-                routed = layer.experts.forward(expert_in, picks, routing)
+            routed = layer.experts.forward(expert_in, picks, routing)
             # The tail also applies the next layer's input norm (the final norm after the last layer).
             following = layers[i + 1].input_norm if i + 1 < len(layers) else self.weights.norm
             h, normed = glue.moe_tail(h, dense, routed, layer.dense_output_norm, layer.expert_output_norm,

@@ -164,10 +164,9 @@ __device__ __forceinline__ void stage_wait() { asm volatile("cp.async.wait_group
 
 // One 64-column block's packed words (128 x 16 B) then its E4M3 scales (16 x 16 B) for one 64-input group, copied by
 // the CTA's threads into ``dst`` (one ring buffer of BTILE bytes).
-template <int WARPS = TILE_WARPS>
 __device__ __forceinline__ void stage_tile(uint8_t* dst, const uint8_t* words, const uint8_t* bscales) {
     const uint32_t base = static_cast<uint32_t>(__cvta_generic_to_shared(dst));
-    for (int c = threadIdx.x; c < BTILE / 16; c += WARPS * 32)
+    for (int c = threadIdx.x; c < BTILE / 16; c += TILE_WARPS * 32)
         stage_copy(base + c * 16, c < 128 ? words + c * 16 : bscales + (c - 128) * 16);
 }
 
@@ -329,25 +328,23 @@ __device__ __forceinline__ float activate(float gate, float up) {
     return __bfloat162float(__float2bfloat16_rn(__fmul_rn(act, up)));
 }
 
-// down_kernel's ordered chain for gate/up over NT adjacent original N64 panels per CTA (both projections staged),
+// down_kernel's chain form for the gate and up projections of one 64-column block in one CTA (both staged per group),
 // then the BF16 activation/product and the down projection's FP4 block quantization in the epilogue: each warp's
 // 16-column groups give one down block per row, written as the paired codes/scales the down GEMM reads.
-template <bool DIRECT, bool COMMON, int MT, int ACT, bool SINGLE, int NT, int WARPS = TILE_WARPS>
-__global__ void __launch_bounds__(WARPS * 32) fused_up_kernel(const uint8_t* codes, const uint8_t* scales,
+template <bool DIRECT, bool COMMON, int MT, int ACT, bool SINGLE>
+__global__ void __launch_bounds__(TILE_WARPS * 32) fused_up_kernel(const uint8_t* codes, const uint8_t* scales,
     const uint8_t* blob, int64_t blob_bytes, const float* weight, const float* input, const float* down_input,
     int64_t blob_stride, int64_t weight_stride, int64_t input_stride, int64_t down_stride, int cells,
     const int* items, int item_count, int pairs, uint8_t* down_codes, uint8_t* down_scales, int n, int k, int slices,
     const int* counts, const int* members, int slots, int code_rows) {
-    static_assert(NT == 1 || NT == 2, "one or two original N64 panels");
-    static_assert(WARPS == 4 || (NT == 2 && WARPS == 8), "only isolated NT2 admits eight warps");
     // One m16 tile a warp (WM 1): with both projections' accumulators, 2-tile warps cost occupancy (measured
     // 2.02 -> 2.68 ms for a 4096-row Qwen layer on sm_120), unlike down_kernel.
-    constexpr int WM = 1, WGN = WARPS * WM / MT, SPW = 8 * NT / WGN;
-    static_assert(MT % WM == 0 && (MT / WM) * WGN == WARPS && (8 * NT) % WGN == 0, "staged A4 warp layout");
+    constexpr int WM = 1, WGN = TILE_WARPS * WM / MT, SPW = 8 / WGN;
+    static_assert(MT % WM == 0 && (MT / WM) * WGN == TILE_WARPS && 8 % WGN == 0, "staged A4 warp layout");
     static_assert(SPW % 2 == 0, "a warp owns whole 16-column down blocks");
-    __shared__ __align__(16) uint8_t stage[STAGES][2][NT][BTILE];
+    __shared__ __align__(16) uint8_t stage[STAGES][2][BTILE];
     const int lane = threadIdx.x & 31, warp = threadIdx.x >> 5, g = lane >> 2, t = lane & 3;
-    const int item = blockIdx.x, block = blockIdx.y * NT;
+    const int item = blockIdx.x, block = blockIdx.y;
     const int active_items = counts[0];
     if (active_items < 0 || active_items > item_count) { __trap(); return; }
     if (item >= active_items) return;
@@ -360,17 +357,11 @@ __global__ void __launch_bounds__(WARPS * 32) fused_up_kernel(const uint8_t* cod
     const int kg_count = k / 64, per = kg_count / slices;
     const uint8_t* w = blob + static_cast<int64_t>(cell) * blob_stride;
     const auto load = [&](int kg, int buffer) {
+        const int64_t tile = static_cast<int64_t>(block) * kg_count + kg;
 #pragma unroll
-        for (int panel = 0; panel < NT; ++panel) {
-            // CTA-uniform final64 tail: no address for an absent N64 panel is formed.
-            if constexpr (NT == 2) { if (block + panel >= n / 64) continue; }
-            const int64_t tile = static_cast<int64_t>(block + panel) * kg_count + kg;
-#pragma unroll
-            for (int p = 0; p < 2; ++p) {
-                const uint8_t* wp = w + p * blob_bytes;
-                stage_tile<WARPS>(stage[buffer][p][panel], wp + tile * 2048,
-                           wp + static_cast<int64_t>(n) * k / 2 + tile * 256);
-            }
+        for (int p = 0; p < 2; ++p) {
+            const uint8_t* wp = w + p * blob_bytes;
+            stage_tile(stage[buffer][p], wp + tile * 2048, wp + static_cast<int64_t>(n) * k / 2 + tile * 256);
         }
     };
     int lo[WM];
@@ -453,15 +444,12 @@ __global__ void __launch_bounds__(WARPS * 32) fused_up_kernel(const uint8_t* cod
             if (kg + 1 < kg_count) load_a(kg + 1, next, next_sa);
 #pragma unroll
             for (int p = 0; p < 2; ++p) {
+                const uint8_t* staged = stage[kg % STAGES][p];
 #pragma unroll
                 for (int j = 0; j < SPW; ++j) {
                     const int s = sub0 + j;
-                    const int panel = NT == 1 ? 0 : s / 8, sub = NT == 1 ? s : s % 8;
-                    // Warp-uniform: inactive tail fragments never read unstaged B/scales or execute MMA.
-                    if constexpr (NT == 2) { if (block + panel >= n / 64) continue; }
-                    const uint8_t* staged = stage[kg % STAGES][p][panel];
-                    const uint2 b = reinterpret_cast<const uint2*>(staged)[sub * 32 + lane];
-                    const uint32_t sb = reinterpret_cast<const uint32_t*>(staged + 2048)[sub * 8 + g];
+                    const uint2 b = reinterpret_cast<const uint2*>(staged)[s * 32 + lane];
+                    const uint32_t sb = reinterpret_cast<const uint32_t*>(staged + 2048)[s * 8 + g];
 #pragma unroll
                     for (int i = 0; i < WM; ++i) mma4::mma_fp4(acc[p][i][j], a[p][i], b.x, b.y, sa[p][i], sb);
                 }
@@ -505,7 +493,6 @@ __global__ void __launch_bounds__(WARPS * 32) fused_up_kernel(const uint8_t* cod
 #pragma unroll
         for (int j = 0; j < SPW; j += 2) {
             const int column = (block * 8 + sub0 + j) * 8;      // first of this warp's 16 columns: one down block
-            if constexpr (NT == 2) { if (column >= n) continue; }  // warp-uniform before shuffles/stores
 #pragma unroll
             for (int h = 0; h < 2; ++h) {
                 // Lane t holds columns {2t, 2t+1} and {8+2t, 9+2t} of row lo + 8h: four of the block's sixteen.
@@ -602,21 +589,13 @@ void expert_a4_quant_plan_cuda(const at::Tensor& x, const at::Tensor& items, con
 void expert_a4_fused_up_cuda(const at::Tensor& codes, const at::Tensor& scales, const at::Tensor& blob,
     const at::Tensor& weight, const at::Tensor& input, const at::Tensor& down_input, const at::Tensor& items,
     const at::Tensor& counts, const at::Tensor& members, at::Tensor& down_codes, at::Tensor& down_scales, int64_t n,
-    int64_t k, int64_t sk, int64_t slots, bool common, bool direct, int64_t tile, int64_t act, int64_t up_tile, int64_t up_warps) {
-    const auto launch = [&](auto mode, auto shared, auto mt, auto activation, auto nt, auto warps) {
-        const auto kernel = [&]() {
-            if constexpr (decltype(nt)::value == 2) {
-                // Native admission proves SK1; do not instantiate an unreachable N128 split-K variant.
-                return fused_up_kernel<decltype(mode)::value, decltype(shared)::value,
-                                       decltype(mt)::value, decltype(activation)::value, true, 2, decltype(warps)::value>;
-            } else {
-                return sk == 1 ? fused_up_kernel<decltype(mode)::value, decltype(shared)::value,
-                                                decltype(mt)::value, decltype(activation)::value, true, 1>
-                               : fused_up_kernel<decltype(mode)::value, decltype(shared)::value,
-                                                decltype(mt)::value, decltype(activation)::value, false, 1>;
-            }
-        }();
-        kernel<<<dim3(items.size(0), (n + 64 * decltype(nt)::value - 1) / (64 * decltype(nt)::value)), decltype(warps)::value * 32, 0,
+    int64_t k, int64_t sk, int64_t slots, bool common, bool direct, int64_t tile, int64_t act) {
+    const auto launch = [&](auto mode, auto shared, auto mt, auto activation) {
+        const auto kernel = sk == 1 ? fused_up_kernel<decltype(mode)::value, decltype(shared)::value,
+                                                      decltype(mt)::value, decltype(activation)::value, true>
+                                    : fused_up_kernel<decltype(mode)::value, decltype(shared)::value,
+                                                      decltype(mt)::value, decltype(activation)::value, false>;
+        kernel<<<dim3(items.size(0), n / 64), TILE_WARPS * 32, 0,
             at::cuda::getCurrentCUDAStream()>>>(codes.data_ptr<uint8_t>(), scales.data_ptr<uint8_t>(),
             blob.data_ptr<uint8_t>(), blob.size(2), weight.data_ptr<float>(), input.data_ptr<float>(),
             down_input.data_ptr<float>(), blob.stride(0), weight.stride(0), input.stride(0), down_input.stride(0),
@@ -627,22 +606,15 @@ void expert_a4_fused_up_cuda(const at::Tensor& codes, const at::Tensor& scales, 
     using T = std::true_type;
     using F = std::false_type;
     const auto by_act = [&](auto mode, auto shared, auto mt) {
-        if (act == 0) launch(mode, shared, mt, std::integral_constant<int, 0>{}, std::integral_constant<int, 1>{}, std::integral_constant<int, 4>{});
-        else launch(mode, shared, mt, std::integral_constant<int, 1>{}, std::integral_constant<int, 1>{}, std::integral_constant<int, 4>{});
+        if (act == 0) launch(mode, shared, mt, std::integral_constant<int, 0>{});
+        else launch(mode, shared, mt, std::integral_constant<int, 1>{});
     };
     const auto by_tile = [&](auto mode, auto shared) {
         if (tile == 16) by_act(mode, shared, std::integral_constant<int, 1>{});
         else by_act(mode, shared, std::integral_constant<int, 4>{});
     };
     const auto by_common = [&](auto mode) { if (common) by_tile(mode, T{}); else by_tile(mode, F{}); };
-    if (up_tile == 128) {
-        if (up_warps == 8)
-            launch(F{}, T{}, std::integral_constant<int, 1>{}, std::integral_constant<int, 1>{},
-                   std::integral_constant<int, 2>{}, std::integral_constant<int, 8>{});
-        else
-            launch(F{}, T{}, std::integral_constant<int, 1>{}, std::integral_constant<int, 1>{},
-                   std::integral_constant<int, 2>{}, std::integral_constant<int, 4>{});
-    } else if (direct) by_common(T{}); else by_common(F{});
+    if (direct) by_common(T{}); else by_common(F{});
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }
 

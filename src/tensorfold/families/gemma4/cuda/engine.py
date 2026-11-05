@@ -94,9 +94,7 @@ class Gemma4Engine:
                  chat_template_file=None, chat_template_name=None,
                  prepare_global_prompt: bool = False, lossless_head: bool = False,
                  spark_global_gqa: bool = False, spark_sampled_q: bool = False, global_trig: bool = False,
-                 global_trig_prompt: bool = True, delta4_head: bool = False, delta4_reuse: int = 16, global_cache: str = "none", global_cache_prompt: bool = False, dflash_graph: bool = False, dflash_head_native_a8: bool = False, dflash_head_w4a16: bool = False, clip_sampled_verification: bool = False, expert_up_n128_8warp: bool = False) -> None:
-        if type(expert_up_n128_8warp) is not bool:
-            raise ValueError('expert_up_n128_8warp must be a bool')
+                 global_trig_prompt: bool = True, delta4_head: bool = False, delta4_reuse: int = 16, global_cache: str = "none", global_cache_prompt: bool = False, dflash_graph: bool = False, dflash_head_native_a8: bool = False, dflash_head_w4a16: bool = False, clip_sampled_verification: bool = False) -> None:
         if type(clip_sampled_verification) is not bool:
             raise ValueError('clip_sampled_verification must be a bool')
         if clip_sampled_verification and (not drafter or no_drafts):
@@ -154,8 +152,6 @@ class Gemma4Engine:
 
         raw = read_config(model_dir)
         method = quant_method(raw)
-        if expert_up_n128_8warp and method != 'compressed-tensors':
-            raise ValueError('eight-warp NT2 requires original CT Gemma MoE')
         if delta4_head and method != 'compressed-tensors':
             raise ValueError('Delta4 tied table is a CT-only investigation candidate')
         if global_cache != 'none' and method != 'compressed-tensors':
@@ -194,8 +190,6 @@ class Gemma4Engine:
             if precision.mode() != precision.CHECKPOINT:
                 raise ValueError('Gemma4 ModelOpt MoE requires checkpoint activation math')
         torch.cuda.set_device(0)
-        if expert_up_n128_8warp and tuple(torch.cuda.get_device_capability()) != (12, 1):
-            raise ValueError('eight-warp NT2 experiment requires actual GB10 SM121')
         self.chat_template = prepare_chat_template(model_dir, template_file=chat_template_file,
                                                    template_name=chat_template_name)
         self.max_rows = (spark_cfg.block if spark_cfg is not None and depth is None else
@@ -253,7 +247,6 @@ class Gemma4Engine:
         try:
             self.target = Gemma4Target(
                 self.w,
-                **({"expert_up_n128_8warp": True} if expert_up_n128_8warp else {}),
                 **({"prompt_context": self.context_window} if prepare_global_prompt or global_trig else {}),
                 **({"prepare_global_prompt": True} if prepare_global_prompt else {}),
                 **({"global_trig": True, "global_trig_prompt": global_trig_prompt} if global_trig else {}),

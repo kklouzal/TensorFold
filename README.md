@@ -119,20 +119,22 @@ runtime and the26 independent N64 oracles were restored to the accepted baseline
 prototype source, tests, failures and results remain archived. Accepted W4D4/N64
 production now uses the separately qualified clipping CLI imageae8d/b579. See [results and limits](docs/gemma4-cuda-validation.md#fused-expert-up-n128-candidate).
 
-**Row-two eight-warp NT2 investigation (default off, unqualified wiring):** the internal
-`expert_up_n128_8warp=False` constructor policy preserves N64 by default. Its
-explicit SM121/CT704/2816 opt-in now selects eight-warp N128 only for nonprompt
-calls with exactly two rows; every other target call retains its original N64
-dispatch. Native ABIv7 and its all-width four/eight-warp independent oracles are
-unchanged. The preceding broad source6dea/imageef88 passed63 native cases with
-zero skips and exact trained-bank chain words. Its two diagnostic rotations
-showed M2 chain latency lower3.2502%/4.6215% versus same-image N64, while M3–M5
-were higher in both rotations; broad activation is not selected. These eager
-router-excluded diagnostics establish no serving gain or achieved occupancy.
-The new row-two wiring still requires source checks, actual clip-on model/M2
-dispatch proof and matched performance against accepted ae8d/b579 production.
-There is no CLI activation or deployment. Row2-only four-warp N128 remains an
-open, deferred candidate.
+**Eight-warp NT2 investigation (not selected):** source6dea/imageef88 passed63
+native cases and exact real-trained-bank chain checks. M2 chain latency was
+lower in both rotations, but M3–M5 were higher; broad activation was not selected.
+A subsequent row-two-only candidate passed exact clip-on full-model and actual
+M2 dispatch checks, then the matched accepted-v5 BASE/CAND/CAND/BASE screen.
+Cached T1 code/prose throughput fell0.328606%/0.096298% in both paired halves;
+long-prefix prefill duration increased0.084–0.372% in both halves, with identical
+Torch memory counters. T0 code improved0.390367% in both halves, but its full256
+warm request had no M2 exposure, so that gain is retained without causal credit
+to NT2. Other mixed regions remain uncertain. Row-two eight-warp is not selected;
+this establishes no global inferiority, equivalence or noise claim. The seven
+runtime files and maintained26 independent N64 oracles are restored to accepted
+bea344 bytes, with only experiment-specific CPU controls removed. Accepted
+production remains ae8d/b579 W4D4/N64 with clipping enabled. Historical Git,
+images, fixtures, failures and results remain intact; row-two four-warp N128
+remains open and deferred. See [results and limits](docs/gemma4-cuda-validation.md#eight-warp-and-row-two-nt2-candidates).
 
 **Native A8 DFlash head investigation (default not selected):** a default-off internal
 constructor policy can run only the private FP8 proposal vocabulary head with

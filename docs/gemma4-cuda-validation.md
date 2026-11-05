@@ -531,8 +531,8 @@ TTFT, callback tails, CPU/cgroup memory and drift remain separately recorded.
 **Broad four-warp N128 is not selected.** Five repeated cached losses and the
 sixth negative mixed aggregate do not justify its retained cold/prefill/startup
 benefits under decode > prefill > VRAM > cache > other. This is not global
-inferiority, equivalence or a noise claim. The exact six runtime files and26
-independent N64 oracles are restored to accepted preprototype `c8318787` bytes;
+inferiority, equivalence or a noise claim. At that closeout, the exact six runtime files and26
+independent N64 oracles were restored to accepted preprototype `c8318787` bytes;
 only N128-specific selector controls are removed. Prototype Git `d0d44a50`,
 build capturea538, immutable fixture and private audit history remain intact.
 No performance gain is claimed from source cleanup, and no rebuild/restart is
@@ -569,7 +569,64 @@ the existing class/subclass policy untouched. Dense E2B and other families or
 backends are refused; no format/precision/geometry restriction is invented.
 Generation/rejection, full q sampling/readback, target math and native kernels
 are unchanged. Only the pre-existing physical verification width/work change
-is activated; accepted/drafted ratios are not proposal-quality gains. Source,
-installed CLI, owned build and production cutover qualification for this bridge
-remain pending; measured723/2dff evidence does not claim new-image HTTP/startup
-performance. A8, proposal graphs, trig and persistent cache remain off.
+is activated; accepted/drafted ratios are not proposal-quality gains. The bridge
+passed its source gates and650 installed checks with an exact777-file inventory
+on owned ae8d/b579. Actual production activation passed room-one sampled
+verification,14 directed checks, math4, aliases, pointer and speech health;
+closeout050a/READY1a3b and D13a3be retain the cutover evidence. The measured723/2dff
+performance remains historical and does not establish new-image HTTP throughput
+or startup performance. A8, proposal graphs, trig and persistent cache remain off.
+
+
+## Eight-warp and row-two NT2 candidates
+
+The isolated eight-warp NT2 source6dea/imageef88 prototype passed63 native
+cases with zero skips and full-word real-trained-bank chain comparisons.
+Same-image N64/four-warp/eight-warp diagnostics used60 real groups, all30 trained
+expert banks and two rotations totaling120 measured events per role. Eight-warp M2 latency was
+lower3.2502%/4.6215% than N64; M3–M5 were higher in both rotations. These eager
+whole-chain events include fixture-pick staging and exclude routing; they do
+not establish serving gain, occupancy or independent process uncertainty.
+Broad eight-warp activation was not selected.
+
+The subsequent row-two-only candidate retained the kernels/oracles and changed
+only Target dispatch: opt-in AND nonprompt AND actual rows==2. Exact clip-on
+full-model/own-q/p/teacher/IDs/work/cache/replay and actual M2 dispatch passed.
+Four fresh processes ran accepted ae8d/b579 v5 BASE/CAND/CAND/BASE, each with
+42 full256 warm and42 measured requests; all four safely retired and eight
+finite semantic comparisons passed. Primary points use each process's six-hit
+median and the geometric mean of two process rates per policy.
+
+| Region | Cached throughput halves | Geometric change |
+| --- | ---: | ---: |
+| T0 code64K | +0.283621% / +0.497226% | +0.390367% |
+| T0 prose64K | -0.051114% / +0.092132% | +0.020483% |
+| T0 short | -0.416043% / +0.617584% | +0.099436% |
+| T1 code64K | -0.464044% / -0.192985% | -0.328606% |
+| T1 prose64K | -0.124489% / -0.068099% | -0.096298% |
+| T1 short | -0.536525% / +0.359303% | -0.089615% |
+
+Long-prefix prefill duration increased0.084–0.372%, with both paired halves
+higher. The four Torch allocated/reserved/peak counters were identical; these
+are not physical UMA equality or saving proofs. Cold/whole-request/TTFT/tails
+and process drift remain in the report. Constructor observations include the
+untimed dispatch observer and are not shipping startup evidence. The full256
+warm T0 code/prose requests had zero M2 exposure; cold T1 prose/short also had
+zero exposure, so their retained apparent gains cannot be credited to NT2.
+Mixed cells are uncertain, not equivalent or automatically noise.
+
+**Row-two eight-warp is not selected for current production.** Under decode >
+prefill > VRAM > cache > other, these results do not justify replacement of
+accepted W4D4/N64/clip-on ae8d/b579. This is not a global inferiority claim.
+Seven runtime files and26 maintained independent N64 oracles are restored to
+accepted bea344 bytes; only experimental selector CPU controls are removed.
+All prototype Git/images/fixtures/native63/raw results and failures remain
+preserved, including the pre-model producer-guard refusal and its metadata-only
+correction. Row-two four-warp N128 remains open and deferred. No gain is claimed
+from source restoration, and no rebuild/restart is needed for byte-exact reuse.
+
+Audit: `expert-n128-row2-p3-v1/report-v1/summary.json` SHA256
+`16de6dc9184438ac85ac755a408195966bfb0b091e2888516b136bf6f3ddcde7`,
+final packet `a691c9ed`, final audit `d0e`; restoration evidence is retained in
+`expert-n128-row2-cleanup-v1`. Exact production was restored healthy with
+room-one/math/aliases/pointer/speech checks (receipt `ef73`) before analysis.
