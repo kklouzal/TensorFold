@@ -630,3 +630,31 @@ Audit: `expert-n128-row2-p3-v1/report-v1/summary.json` SHA256
 final packet `a691c9ed`, final audit `d0e`; restoration evidence is retained in
 `expert-n128-row2-cleanup-v1`. Exact production was restored healthy with
 room-one/math/aliases/pointer/speech checks (receipt `ef73`) before analysis.
+
+
+## Ordered combine to MoE tail prototype
+
+The internal `fused_moe_tail=False` Engine/Target policy is a correctness-first
+prototype, not selected or deployed. Opt-in is restricted to CT native
+128-expert, hidden2816, intermediate704, top8 geometry; only nonprompt rows1–5
+use borrowed slots. Prompt/generic/default paths retain standalone combine and
+tail. No public flag, native ABI, SDK or precision change is introduced.
+
+One foundational ordered-combine helper preserves ascending expert IDs (slot
+ties stable), FP32 routing weights, BF16 product storage and BF16 rounding after
+every addition. The fused mode retains the MoE-tail B4096/eight-warp norm/cast
+chain and disabled FP fusion. Padded routed lanes are explicitly zero before
+normalization, matching the old masked reload without a new finite-input
+restriction. Borrowed slot/pick buffers remain model-owned and stable for graph
+replay; the immediate same-stream tail consumes them before the next bank can
+reuse the workspace. No borrowed result escapes as the layer output.
+
+The current source723/W4D4/clipOFF diagnostic3302 kernel-event inventory records
+4.4–5.7ms total combine GPU work per cached256-output request. This is a small
+opportunity ceiling under instrumentation, not a predicted end-to-end gain,
+physical VRAM saving or per-layer CPU launch saving during graph replay.
+Cold-prefix totals include prefill. Compiler resources, exact both-output
+word tests, independent rounding/cancellation oracles, changed-route replay,
+workspace lifetime and source CPU checks are pending. No model/P3 campaign is
+authorized by this source prototype alone; current accepted production is
+unchanged.

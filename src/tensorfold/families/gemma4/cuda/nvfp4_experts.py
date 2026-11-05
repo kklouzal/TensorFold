@@ -7,6 +7,8 @@ weight globals. Every row uses the same single K chain and BF16 down boundary.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 import torch
 import torch.nn.functional as F
 import triton
@@ -14,6 +16,23 @@ import triton.language as tl
 
 from tensorfold.cuda.nvfp4.experts_a4 import ExpertsA4, PlanBuffers, pack_projection_a4, uniform_input_bits
 from tensorfold.cuda.nvfp4.host_layout import authority_fields_a4
+
+
+from .glue import _ordered_combine
+
+
+@dataclass(frozen=True)
+class BorrowedExpertSlots:
+    """One same-stream lease until the immediate tail enqueue, never a result/cache.
+
+    The PlanBuffers owner persists for graph replay. Its contents can change at
+    the next expert invocation, so the target consumes these views before that
+    invocation and retains routing through the consumer's launch.
+    """
+    owner: PlanBuffers
+    y: torch.Tensor
+    picks: torch.Tensor
+    routing: torch.Tensor
 
 
 def geglu(gate: torch.Tensor, up: torch.Tensor) -> torch.Tensor:
@@ -29,19 +48,7 @@ geglu.activation = 1                    # the fused native-A4 epilogue's tanh GE
 def _combine(Y, IDS, WEIGHTS, OUT, N: tl.constexpr, R: tl.constexpr, RS: tl.constexpr, BLOCK: tl.constexpr):
     row = tl.program_id(0)
     n = tl.program_id(1) * BLOCK + tl.arange(0, BLOCK)
-    slots = tl.arange(0, RS)
-    ids = tl.load(IDS + row * R + slots, mask=slots < R, other=2147483647)
-    total = tl.full((BLOCK,), 0, tl.float32)
-    for _ in tl.static_range(R):
-        expert = tl.min(ids, 0)
-        slot = tl.min(tl.where(ids == expert, slots, 2147483647), 0)
-        ids = tl.where(slots == slot, 2147483647, ids)
-        y = tl.load(Y + (row * R + slot) * N + n, mask=n < N, other=0).to(tl.float32)
-        weight = tl.load(WEIGHTS + row * R + slot)
-        weighted = (y * weight).to(tl.bfloat16).to(tl.float32)
-        # HF visits ascending expert IDs and index_adds into a BF16 result.
-        # Round every addition; an FP32 slot sum is a different contract.
-        total = (total + weighted).to(tl.bfloat16).to(tl.float32)
+    total = _ordered_combine(Y, IDS, WEIGHTS, row, n, N, R, RS)
     tl.store(OUT + row * N + n, total.to(tl.bfloat16), mask=n < N)
 
 
@@ -86,7 +93,7 @@ class Experts:
         """The workspace's INT32 [rows, slots] pick rows, for a router to write in place (no copy in forward)."""
         return self.workspace.buffers(rows, slots, self.count, self.dims, self.device).pick[:rows]
 
-    def forward(self, x: torch.Tensor, picks: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+    def _run_slots(self, x: torch.Tensor, picks: torch.Tensor, weights: torch.Tensor):
         """INT32 picks are constructed by the router; FP32 weights stay FP32.
 
         Target routing constructs only IDs in0..count-1 (the fused top-k over
@@ -112,11 +119,25 @@ class Experts:
             buf.pick[:rows].copy_(picks)            # the router wrote elsewhere (picks_for gives the buffer)
         buf.route(rows)
         self.bank.run_plan(x.contiguous(), buf, prefill=True)
+        return buf, weights, rows, slots
+
+    def forward(self, x: torch.Tensor, picks: torch.Tensor, weights: torch.Tensor) -> torch.Tensor:
+        buf, weights, rows, slots = self._run_slots(x, picks, weights)
         out = torch.empty((rows, self.dims), dtype=torch.bfloat16, device=self.device)
         _combine[(rows, triton.cdiv(self.dims, 256))](
             buf.y, buf.pick, weights, out, N=self.dims, R=slots, RS=triton.next_power_of_2(slots), BLOCK=256,
             num_warps=4, enable_fp_fusion=False)
         return out
+
+
+    def forward_slots(self, x: torch.Tensor, picks: torch.Tensor, weights: torch.Tensor) -> BorrowedExpertSlots:
+        """Private CT decode M1..5 only; shipping validation precedes native work."""
+        if (self.direct_input or (self.count, self.width, self.dims) != (128, 704, 2816)
+                or not isinstance(x, torch.Tensor) or x.ndim != 2 or not 1 <= x.shape[0] <= 5
+                or not isinstance(picks, torch.Tensor) or picks.ndim != 2 or picks.shape[1] != 8):
+            raise ValueError('fused MoE tail slots require CT128x704x2816 decode rows1..5/top8')
+        buf, routing, rows, _ = self._run_slots(x, picks, weights)
+        return BorrowedExpertSlots(buf, buf.y[:rows], buf.pick[:rows], routing)
 
 
 def load_experts(read, name: str, *, count: int, width: int, dims: int, device, calibrated,

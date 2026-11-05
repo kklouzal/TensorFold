@@ -1,5 +1,13 @@
 # TensorFold fork
 
+A private, default-off CT decode prototype fuses ordered expert-slot combine
+into the existing MoE tail for rows1–5 at the AEON128-expert/704/2816/top8
+geometry. It preserves per-product/per-add BF16 rounding and the existing
+normalization chain; it has no public CLI switch. Source/native correctness,
+resources and integrated performance remain unqualified. Existing profiled
+combine work is only4.4–5.7ms per cached full256 request, not a predicted
+end-to-end gain or host-launch saving. See [prototype boundaries](docs/gemma4-cuda-validation.md#ordered-combine-to-moe-tail-prototype).
+
 ## GB10 Gemma 4 26B-A4B deployment checkpoints
 
 Current production on port `8888` is the accepted W4A16 DFlash D4 policy with

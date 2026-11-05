@@ -93,6 +93,7 @@ class ForwardResult:
 
 
 class Gemma4Target:
+    _fused_moe_tail = False
     _plain_prompt = False
     _global_prompt_scratch = None
     _global_trig = None
@@ -100,7 +101,16 @@ class Gemma4Target:
     _global_cache_prompt = False
 
     def __init__(self, weights: Gemma4Weights, *, prepare_global_prompt: bool = False,
-                 prompt_context: int | None = None, global_trig: bool = False, global_trig_prompt: bool = True, global_cache: str = "none", global_cache_prompt: bool = False):
+                 prompt_context: int | None = None, global_trig: bool = False, global_trig_prompt: bool = True, global_cache: str = "none", global_cache_prompt: bool = False, fused_moe_tail: bool = False):
+        if type(fused_moe_tail) is not bool:
+            raise ValueError('fused_moe_tail must be a bool')
+        if fused_moe_tail:
+            from .nvfp4_experts import Experts
+            c = weights.config
+            if (weights.numerics != 'ct_nvfp4' or (c.hidden, c.moe_width, c.experts, c.top_k) != (2816, 704, 128, 8)
+                    or any(type(layer.experts) is not Experts for layer in weights.layers)):
+                raise ValueError('fused MoE tail requires native CT128x704x2816/top8 experts')
+        self._fused_moe_tail = fused_moe_tail
         check_global_cache(global_cache, prompt=global_cache_prompt,
                            prepared_prompt=prepare_global_prompt, trig=global_trig)
         self._global_cache_prompt = global_cache_prompt
@@ -471,11 +481,18 @@ class Gemma4Target:
             gate, up = self._project_gate_up(dense_in, (layer.gate, layer.up), prompt)
             dense = self._project(self._geglu(gate, up), (layer.down,), prompt)[0]
             picks, routing = self._route(h, layer)
-            routed = layer.experts.forward(expert_in, picks, routing)
-            # The tail also applies the next layer's input norm (the final norm after the last layer).
+            # The tail consumes borrowed slots before the next layer may reuse their buffer.
             following = layers[i + 1].input_norm if i + 1 < len(layers) else self.weights.norm
-            h, normed = glue.moe_tail(h, dense, routed, layer.dense_output_norm, layer.expert_output_norm,
-                                      layer.output_norm, layer.scalar, following, c.eps, mlx)
+            if self._fused_moe_tail and not prompt and 1 <= rows <= 5:
+                borrowed = layer.experts.forward_slots(expert_in, picks, routing)
+                h, normed = glue.moe_tail_slots(h, dense, borrowed.y, borrowed.picks, borrowed.routing,
+                    layer.dense_output_norm, layer.expert_output_norm, layer.output_norm, layer.scalar,
+                    following, c.eps)
+                borrowed = None
+            else:
+                routed = layer.experts.forward(expert_in, picks, routing)
+                h, normed = glue.moe_tail(h, dense, routed, layer.dense_output_norm, layer.expert_output_norm,
+                    layer.output_norm, layer.scalar, following, c.eps, mlx)
             if output_taps and i in self.tap_layers:
                 taps[i] = h
         hidden = normed
