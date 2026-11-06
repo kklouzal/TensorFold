@@ -113,7 +113,10 @@ class Experts:
         if picks.data_ptr() != buf.pick.data_ptr() or picks.stride() != buf.pick.stride():
             buf.pick[:rows].copy_(picks)            # the router wrote elsewhere (picks_for gives the buffer)
         buf.route(rows)
-        self.bank.run_plan(x.contiguous(), buf, prefill=True, decode=not prompt)
+        if prompt:
+            self.bank.run_plan(x.contiguous(), buf, prefill=True)
+        else:
+            self.bank.run_plan(x.contiguous(), buf, prefill=True, decode=True)
         out = torch.empty((rows, self.dims), dtype=torch.bfloat16, device=self.device)
         _combine[(rows, triton.cdiv(self.dims, 256))](
             buf.y, buf.pick, weights, out, N=self.dims, R=slots, RS=triton.next_power_of_2(slots), BLOCK=256,

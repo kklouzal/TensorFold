@@ -195,10 +195,13 @@ class ExpertsA4:
             codes = scratch[0].view(-1)[:2 * pairs * (self.dims // 2)].view(2, pairs, self.dims // 2)
             scales = scratch[1].view(-1)[:2 * pairs * (self.dims // 16)].view(2, pairs, self.dims // 16)
             ext.quantize_plan(x, items, plan.counts, members, fields[4], codes, scales, slots, direct, plan.tile)
+        up_tile = 64
+        if decode and prefill:
+            up_tile = up_output_tile(decode=True, rows=rows, common=common, direct=direct,
+                                     activation=activation, width=self.width, dims=self.dims, plan_tile=plan.tile)
         ext.fused_up(codes, scales, fields[0], fields[2], fields[4], fields[5], items, plan.counts, members, dc, ds,
                      self.width, self.dims, 1 if prefill else qmm.split_k(self.width, self.dims), slots, common, direct,
-                     plan.tile, activation, up_output_tile(decode=decode and prefill, rows=rows, common=common,
-                         direct=direct, activation=activation, width=self.width, dims=self.dims, plan_tile=plan.tile))
+                     plan.tile, activation, up_tile)
         ext.down_plan(dc, ds, self.native_down, fields[3], fields[5], items, plan.counts, members, buf.y[:rows],
                       self.dims, self.width, 1 if prefill else qmm.split_k(self.dims, self.width), slots, direct,
                       plan.tile)

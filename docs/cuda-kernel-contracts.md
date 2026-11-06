@@ -712,13 +712,25 @@ kernel is recovered. N64/down retain four warps, original packed banks, exact
 K-group/alpha/BF16/GELU/per16-quantization and ordered-combine contracts. Width704
 still has five complete128 tiles plus a final64 panel, with uniform tail guards.
 
-The five native/adapter implementation files originate from historical a538/v6;
-new Target/Engine wiring belongs to the current application source. Historical
-native57 and later same-v7 native63/real-chain evidence retain their identities;
-a new provider and actual clip-on M2 dispatch must be qualified. Independent
-original-linears/CPU-CT-quantizer, grouped-order down-code/scale, BF16 per-slot/
-combine and changed-input/routing graph oracles are retained. The source gate
-passed 496 CPU checks with five CUDA-required skips; the installed package then
-passed 471 CPU checks with the same five skips, with all 777 runtime files verified.
-Current native-provider, model and P3 gates remain pending. No performance or
-deployment claim follows.
+The a411/ba1a variant subsequently completed actual native57, exact clip-on
+full-model teacher/q/p/IDs/work/cache/replay and the full four-process matched
+screen. Root did not select that variant: five of six cached point estimates
+were negative, including repeated T0 prose/short losses. Cold T1-short decode
++0.533685% remains recorded, but its zero M2 exposure prevents attribution.
+Report652274fe and dispositionea17b524 retain the complete trade and history;
+accepted ae8d/b579 production is unchanged.
+
+The next source-only change keeps the native kernels, ABI, grouped planning,
+Engine/Target wiring and independent N64/N128 oracles untouched. After existing
+strict decode and prefill validation, `run_plan` starts with named `up_tile=64`
+and calls the unchanged pure selector only when `decode and prefill` is true,
+passing literal `decode=True`. The named value goes to the same fused-up
+argument; all remaining arguments, quantization/down calls and error boundaries
+are unchanged. The CT adapter's validated default `prompt=True` uses the
+original `run_plan(..., prefill=True)` call; explicit false passes `decode=True`.
+No dictionary, wrapper or runtime observer is introduced. An untimed future
+witness must read actual `run_plan` return-local `up_tile`; skipped default
+selector events are expected. Source547 checks passed with five explicit
+CUDA-required skips; all-F/static, full Ruff and diff checks passed (gatee08c6a89).
+Build, installed inventory/current-provider, affected model and P3 qualification
+remain pending; source reasoning does not establish a measured gain.

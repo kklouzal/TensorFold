@@ -145,18 +145,22 @@ production remains ae8d/b579 W4D4/N64 with clipping enabled. Historical Git,
 images, fixtures, failures and results remain intact; row-two four-warp N128
 remained open at that closeout. See [results and limits](docs/gemma4-cuda-validation.md#eight-warp-and-row-two-nt2-candidates).
 
-**Row-two four-warp N128 investigation (default off, unqualified):** the internal
-`expert_up_n128_row2=False` policy preserves N64 by default. The CT704/2816/
-128-expert SM121 opt-in selects the retained four-warp N128 kernel only for
-nonprompt Target calls with exactly two actual rows. Other rows, prompt calls
-and omitted policy retain their original N64 call. No eight-warp path or public
-CLI is added. Historical same-v7 trained-bank M2 chain latency was lower1.2219%/
-4.0423% than N64 in two rotations; that is not serving evidence. Broad four-warp
-and row-two eight-warp results retain their separate negative/mixed scopes.
-Current source checks passed496 tests with five CUDA-required skips; static,
-full Ruff and diff checks passed. Installed/provider-native, actual clip-on M2
-model/dispatch and matched accepted-production performance gates remain pending;
-historical native57/63 passes do not qualify the new image. See [scope](docs/gemma4-cuda-validation.md#row-two-four-warp-n128-investigation).
+**Row-two four-warp N128 (prior variant not selected):** sourcea411/imageba1a
+completed native57, exact clip-on model/dispatch qualification and a mirrored
+four-process screen. Five of six cached point estimates were negative;
+T0 prose/short lost in both halves. Cold T1 short decode improved0.533685%
+but had zero M2 exposure, so this receives no causal credit to N128. Accepted
+ae8d/b579 production stays unchanged; raw gains, costs and history remain.
+
+A separate source-only candidate now skips the redundant pure selector when
+validated `decode && prefill` is false and omits the adapter's false decode
+keyword on its default prompt path. Native arguments, math, N64/N128 support,
+strict role checks and default behavior are preserved. Source547 checks passed
+with five explicit CUDA-required skips; all-F/static, full Ruff and diff checks
+passed. Build, installed inventory/current provider, affected model and P3
+qualification remain pending. No measured
+speed or causal gain follows from fewer Python calls; graph replay bypasses
+this Python path. See [scope and evidence](docs/gemma4-cuda-validation.md#row-two-four-warp-n128-investigation).
 
 **Raw-global attention launch screen (four warps retained):** all exact causal,
 serial, graph-position and controlled-sensitivity/input-restoration checks passed

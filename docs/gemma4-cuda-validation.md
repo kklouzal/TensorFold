@@ -723,24 +723,45 @@ resources and scope; the source LAUNCH remains four warps.
 
 ## Row-two four-warp N128 investigation
 
-This new private opt-in restricts the retained four-warp NT2 implementation to
-actual nonprompt Target rows==2; defaults, prompt and other row counts retain
-N64. It adds no eight-warp implementation or public CLI. Historical same-v7
-trained-bank chain report211784 measured M2 four/N64 latency lower1.2219%/
-4.0423% in its two rotations, with exact output words. This does not establish
-a serving gain or rank the candidate from the rejected row-two eight-warp
-screen: that screen had low/zero M2 exposure in several full workloads and
-mixed regional results.
+The a411/ba1a private policy used the retained v6 four-warp NT2 implementation
+only for actual nonprompt Target rows==2. The native57 component, fresh accepted
+reference/candidate exact full-model P0, actual M1..5/default/prompt dispatch,
+clipping room-two/full-q witness, and mirrored BASE/CAND | CAND/BASE screen
+completed. Source checks496/five CUDA-required skips and installed471/exact777
+belong to that prior revision. No numerical relaxation or new public CLI was
+introduced. Historical same-v7 trained-bank chain gains remain separate from
+this serving comparison.
 
-Historical a538/v6 native57 and6dea/v7 native63 retain their original source,
-image and provider identities. Current-source checks passed496 tests with five
-explicit CUDA-required skips; static, full Ruff and diff checks passed. Installed
-checks, new provider compile/resources and native exact-word/replay checks remain
-pending.
-Full-model qualification must witness actual M2 execution with clipping enabled,
-plus unchanged default/prompt/M1/M3/M4/M5 dispatch, teacher/q/p/greedy/sampled
-IDs/work/cache/replay semantics. Any subsequent matched full-request comparison
-uses accepted ae8d/b579 v5, all six cached/cold regions, whole-request/TTFT/tails,
-allocator/startup observations and actual M2 exposure. No arbitrary gain margin,
-performance equivalence, new-image qualification or production selection is
-claimed. All earlier negative results and other open candidates remain intact.
+The six cached candidate/reference geometric changes were T0 code+0.092804%,
+prose-0.042820%, short-0.338115%; T1 code-0.413883%, prose-0.143931%,
+short-0.031598%. T0 prose/short losses repeated in both halves; other paired
+halves and all cold/whole-request/TTFT/tails remain in report
+`expert-n128-four-row2-p3-v1/report-v1/summary.json` SHA256
+`652274fe65c01e75e8aa0e3473d187f1be87228a5dc548efc4709727ae7fbc94`.
+Cold T1 short decode improved0.533685% in both halves, whole-request duration
+fell0.510397%, while prefill/TTFT durations rose0.436404%/0.343286%. That
+cold workload had zero observed M2 exposure, so none of those changes is
+causally credited to the specialization. Torch allocation/reservation and
+cumulative peaks matched; this is not physical-memory equivalence. Instrumented
+constructor observations do not qualify shipping startup.
+
+Root dispositionea17b524 did not select the current variant and retained
+accepted ae8d/b579 W4D4/N64/clipping-ON production. Two processes per policy
+are descriptive evidence, not equivalence, noise or global inferiority.
+Native/model/raw/report/failure history and useful oracles remain intact.
+
+A bounded subsequent source candidate removes redundant default Python work:
+keep all shipping role/buffer checks, initialize named `up_tile=64`, invoke the
+unchanged selector only for validated decode+prefill, and omit the false decode
+keyword from the CT adapter's default prompt call. Explicit prompt false still
+passes true. Native C++/CUDA/ABI/grouped code, every other native argument,
+Engine/Target, math/rounding and default behavior are unchanged. Future untimed
+native dispatch proof must observe `run_plan`'s named local rather than require
+a default selector call. No runtime telemetry is added. Qualification of this
+new two-Python-file revision has passed547 source CPU checks with five explicit
+CUDA-required skips, all-F/static, full Ruff and diff checks (gatee08c6a89).
+Build, installed inventory, actual current provider observation, affected
+model/dispatch and P3 qualification remain pending. Runtime2/tests2 are unchanged
+by this status-only documentation refresh; no new-image qualification is implied.
+No speedup or causal explanation is claimed from this source hypothesis, and
+no new GPU/model/P3 job is implied by this documentation.
