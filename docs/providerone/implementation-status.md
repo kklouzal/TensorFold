@@ -85,8 +85,9 @@ exclusive dispatch. Paid routing workspace contains these arenas; no extra
 reservation or measured capacity gain is asserted. Rank agreement, state/cache
 arithmetic identity and independently observed execution/coordinate facts bind
 the native policy. The reference default remains unchanged. This private mode
-passes a scoped 49-module source CPU batch of 1,735 tests with one optional
-fixture skip. It still needs actual SM70/model/resource/performance qualification and later
+passes scoped 49-module source and fresh installed CPU batches of 1,735 tests
+each, with one optional fixture skip; all 783 installed runtime files match the
+frozen source. It still needs actual SM70/model/resource/performance qualification and later
 method/administrator-transition coverage; it is not a released one-server
 profile. See [prepared execution](../v100-adaptive-validation.md#prepared-tp8etp4-execution-and-workspace).
 

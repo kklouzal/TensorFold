@@ -850,6 +850,26 @@ failures, bounded hang diagnosis, corrections and final command/results remain
 in `tp8-etp4-prepared-v1` and `tp8-etp4-prepared-execution-v1` under the private
 `providerone-alignment-20261106` audit root.
 
+A fresh installed application passed the same 49-module batch: 1,735 tests with
+one optional skip in 34.87 seconds. All 783 installed runtime files matched the
+786-source-file capture before and after, excluding three source README files.
+All eight changed module origins and the native FD extension resolved from
+installed `site-packages`; no runtime source overlay was used. Foundation audit
+and native FD source/memfd checks passed; CUDA stayed uninitialized. This is
+GB10-SDK CPU/package evidence and does not compile the SM70 CUDA operator or
+qualify the selected V100 SDK ABI.
+
+The source checkpoint is `fcbfe518094ca09217eda219c1384b10c6b59d5d`, source UID
+`a19cd0c14c3eac67e25b7a372dae2a0856f1025fc1e939edc611a3f6f948710d`.
+Runtime image:
+`sha256:a9baaea79550be9eff52c66d95a215fd25083dbfd2660cf84a9030fbf734f0d6`;
+verification image:
+`sha256:527336c3b958177e189a6ceb4c2190137fd7020efdd2be76d17dca5e5bfd8d74`.
+The installed gate is `tp8-etp4-prepared-execution-v1/installed-gate-v1.json`,
+SHA256 `c5741f6f3dbdfdf07869a2fd2369a8a8e2089afe5007f974471252bd2bf6d3c3`.
+The final evidence-only documentation checkpoint leaves those runtime inputs
+unchanged.
+
 Source-level integration and CPU controls do not qualify actual SM70 execution,
 SC117/MTP numerical quality, visual inputs, worst-rank physical peaks, full-context
 capacity or matched useful performance. V100 access and the selected SDK remain

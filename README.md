@@ -21,8 +21,8 @@ A private qualification-only engine path now prepares exclusive native ETP4
 execution across target, prompt and MTP calls. It reuses activation/output
 storage and accounts for the new route arenas within the already-paid routing
 reservation. Reference fallback is refused under this policy; default serving
-keeps the reference path. Its scoped source batch passes 1,735 CPU tests with
-one optional fixture skip. Actual SM70 and full-model qualification remain open.
+keeps the reference path. Scoped source and fresh installed-image batches each
+pass 1,735 CPU tests with one optional fixture skip. Actual SM70 and full-model qualification remain open.
 See [prepared execution and remaining gates](docs/v100-adaptive-validation.md#prepared-tp8etp4-execution-and-workspace).
 
 This is an authority/source-baseline checkpoint, not a package or runtime
