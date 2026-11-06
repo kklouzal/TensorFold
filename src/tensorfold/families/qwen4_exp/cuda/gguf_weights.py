@@ -620,9 +620,47 @@ class Planner:
         return result
 
 
+def _pipeline_inventory(full):
+    """Explicit whole-checkpoint tensor-name ownership, independent of materialization.
+
+    The other stage's coefficients are authorized by this schema, not by a
+    blanket blk-prefix exemption. Each owner still validates its actual plans.
+    """
+    owners = {"token_embd.weight": 0, "output.weight": 1}
+    for suffix in ("down.weight", "up.weight", "norm.weight"):
+        owners["output_hc_" + suffix] = 1
+    common = [stem + suffix for stem in ("hc_attn_", "hc_ffn_")
+              for suffix in ("down.weight", "inject.weight", "up.weight", "norm.weight")]
+    common += ["ffn_" + name + ".weight" for name in (
+        "gate_exps", "up_exps", "down_exps", "gate_shexp", "up_shexp", "down_shexp", "gate_inp", "gate_inp_shexp")]
+    linear = ("attn_qkv.weight", "attn_gate.weight", "ssm_beta.weight", "ssm_alpha.weight",
+              "ssm_conv1d.weight", "ssm_dt.bias", "ssm_norm.weight", "ssm_out.weight", "ssm_a")
+    attention = ("attn_q.weight", "attn_k.weight", "attn_v.weight", "attn_output.weight",
+                 "indexer.q_proj.weight", "indexer.k_proj.weight", "attn_q_norm.weight", "attn_k_norm.weight",
+                 "indexer.q_norm.weight", "indexer.k_norm.weight")
+    ple = ("ple_key.weight", "ple_value.weight", "ple_norm_key.weight", "ple_norm_query.weight",
+           "ple_norm_conv.weight", "ple_conv1d.weight")
+    for index, kind in enumerate(full.layer_types):
+        names = [*common, *(linear if kind == "linear" else attention)]
+        if index in full.ple_layers:
+            names.extend(ple)
+        for name in names:
+            owners[f"blk.{index}." + name] = index // 24
+    if full.ple_layers:
+        owners["per_layer_token_embd.weight"] = 0
+    return owners
+
+
 def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft_vocab=None, draft_ids=None,
-               position_profile=None, mtp_model_dir=None, expert_tensor_parallel_size=None):
+               position_profile=None, mtp_model_dir=None, expert_tensor_parallel_size=None, _pipeline_stage=None):
     """One immutable source of allocation and layout decisions for admission and load."""
+    from ..pipeline_stage import PipelineStage
+
+    if _pipeline_stage is not None:
+        if not isinstance(_pipeline_stage, PipelineStage):
+            raise ValueError("private pipeline import requires its immutable PipelineStage descriptor")
+        if mtp or mtp_model_dir is not None or draft_vocab is not None or draft_ids is not None:
+            raise ValueError("partial pipeline imports cannot attach a method before owner lookup/features are implemented")
     entry = resolve_gguf(path)
     if entry is None:
         raise ValueError("no GGUF checkpoint was selected")
@@ -642,6 +680,17 @@ def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft
     if (type(world) is not int or world not in (1, 2, 4, 8) or type(rank) is not int or rank not in range(world)
             or any(v % world for v in (full.heads, full.nk, full.nv, full.moe_width, full.shared_width, full.vocab))):
         raise ValueError("GGUF Flash Next TP must legally divide heads, expert widths and vocabulary")
+    ownership = None
+    if _pipeline_stage is not None:
+        if world != 8 or full.layers != 48 or len(full.layer_types) != 48:
+            raise ValueError("private pipeline import requires global48 blocks and a TP8 stage")
+        if any(index >= 24 for index in full.ple_layers):
+            raise ValueError("later-stage PLE requires an owner-row service before pipeline allocation")
+        ownership = _pipeline_inventory(full)
+        missing, unknown = set(ownership) - set(checkpoint.tensors), set(checkpoint.tensors) - set(ownership)
+        if missing or unknown:
+            raise ValueError("pipeline whole-checkpoint inventory differs: missing=" + ", ".join(sorted(missing))
+                             + "; unknown=" + ", ".join(sorted(unknown)))
     selected = None
     if mtp:
         selected = draft_token_ids(draft_vocab, full.vocab) if draft_ids is None else draft_ids
@@ -668,6 +717,8 @@ def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft
         raise ValueError("ETP4/2 MoE MTP requires the supported shared-GGUF companion")
     cfg = replace(full, heads=full.heads // world, kv_heads=local_kv, nk=full.nk // world, nv=full.nv // world,
                   moe_width=partition.width, shared_width=full.shared_width // world)
+    if _pipeline_stage is not None and not _pipeline_stage.owns_input:
+        cfg = replace(cfg, ple_layers=[])
     planner = Planner(checkpoint)
 
     def hc(base, inject=True):
@@ -730,6 +781,8 @@ def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft
 
     layers = []
     for i, kind in enumerate(full.layer_types):
+        if _pipeline_stage is not None and i not in _pipeline_stage.layer_ids:
+            continue
         base = f"blk.{i}."
         linear = kind == "linear"
         layer = LayerW(i, linear, hc(base + "hc_attn_"), hc(base + "hc_ffn_"),
@@ -750,10 +803,13 @@ def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft
                              planner.array(base + "ple_norm_query.weight"), planner.array(base + "ple_norm_conv.weight"),
                              planner.array(base + "ple_conv1d.weight", dtype="float16"), ngram)
         layers.append(layer)
-    prototype = Weights(cfg, (planner.matrix("token_embd.weight", packed=True),), layers, hc("output_hc_", False),
-                        planner.matrix("output.weight", rows=range(rank * (full.vocab // world),
-                                                                  (rank + 1) * (full.vocab // world))), None,
-                        around_one=True)
+    input_owner = _pipeline_stage is None or _pipeline_stage.owns_input
+    output_owner = _pipeline_stage is None or _pipeline_stage.owns_output
+    embedding = (planner.matrix("token_embd.weight", packed=True),) if input_owner else None
+    mixer = hc("output_hc_", False) if output_owner else None
+    head = (planner.matrix("output.weight", rows=range(rank * (full.vocab // world),
+                                                     (rank + 1) * (full.vocab // world))) if output_owner else None)
+    prototype = Weights(cfg, embedding, layers, mixer, head, None, around_one=True)
     filter_host = 0
     if selected is not None:
         if shared_mtp:
@@ -773,7 +829,13 @@ def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft
         else:
             prototype.draft_ids = np.array_split(selected, world)[rank]
             prototype.draft_head = planner.matrix("output.weight", rows=prototype.draft_ids)
-    unused = set(checkpoint.tensors) - planner.used
+    complement = set()
+    if ownership is not None:
+        expected_owned = {name for name, owner in ownership.items() if owner == _pipeline_stage.index}
+        if planner.used != expected_owned:
+            raise ValueError("pipeline stage plans do not exactly cover their declared coefficient ownership")
+        complement = set(ownership) - expected_owned
+    unused = set(checkpoint.tensors) - planner.used - complement
     if unused:
         raise ValueError("unmapped GGUF Flash Next tensors: " + ", ".join(sorted(unused)))
     if partition.groups > 1:
@@ -784,6 +846,15 @@ def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft
                           gdn_head_order="restored-key-major-before-tp",
                           draft_host_id_bytes=0 if selected is None else selected.nbytes + (
                               filter_host if shared_mtp else prototype.draft_ids.nbytes))
+    if _pipeline_stage is not None:
+        prototype.meta.update(pipeline_stage=_pipeline_stage.identity(), expert_partition_scope="stage-local",
+            history_layout="unique", attention_degree=4,
+            indexer_history="gpu",
+            pipeline_tensor_ownership={"owned": tuple(sorted(planner.used)), "complement": tuple(sorted(complement)),
+                                       "whole_tensor_count": len(checkpoint.tensors)})
+        from ..pipeline_stage import for_weights
+
+        for_weights(prototype)
     if position_profile is not None:
         prototype.meta["position_profile"] = position_profile
     if checkpoint.metadata.get("tokenizer.ggml.tokens"):
@@ -808,10 +879,11 @@ def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft
 
 def weight_byte_plan(path, tp=None, *, mtp=False, draft_vocab=None, draft_ids=None, prefill_plan=None,
                      position_profile=None, mtp_model_dir=None, expert_tensor_parallel_size=None,
-                     routing_rows=MATMUL_ROWS):
+                     routing_rows=MATMUL_ROWS, _pipeline_stage=None):
     # Separate stock-MTP admission is added by the common engine admission path.
     prototype, planner = model_plan(path, tp, mtp=mtp, draft_vocab=draft_vocab, draft_ids=draft_ids,
         mtp_model_dir=mtp_model_dir,
+        **({"_pipeline_stage": _pipeline_stage} if _pipeline_stage is not None else {}),
         **({"expert_tensor_parallel_size": expert_tensor_parallel_size} if expert_tensor_parallel_size is not None else {}),
         **({"position_profile": position_profile, "rope": position_profile.target.rope}
            if position_profile is not None else {}))
@@ -820,7 +892,7 @@ def weight_byte_plan(path, tp=None, *, mtp=False, draft_vocab=None, draft_ids=No
     draft_filter_bytes = 0 if prototype.draft_filter is None else prototype.draft_filter.nbytes
     resident += draft_id_bytes + draft_filter_bytes
     workspace = DECODE_BYTES + MATMUL_ROWS * max(prototype.cfg.streams * prototype.cfg.hidden,
-                                               prototype.head.n) * 4
+                                               0 if prototype.head is None else prototype.head.n) * 4
     if prefill_plan is not None:
         from .gguf_prefill import PrefillPlan
 
@@ -856,7 +928,9 @@ def weight_byte_plan(path, tp=None, *, mtp=False, draft_vocab=None, draft_ids=No
             "draft_filter_bytes": draft_filter_bytes,
             "draft_id_bytes": draft_id_bytes, "draft_host_id_bytes": prototype.meta["draft_host_id_bytes"],
             "prefill_experts_workspace_bytes": 0 if prefill_plan is None else prefill_plan.workspace_bytes,
-            "execution_dtype": "float16"}
+            "execution_dtype": "float16",
+            **({"pipeline_stage": _pipeline_stage.identity(), "expert_partition_scope": "stage-local",
+                "owned_global_layer_ids": list(_pipeline_stage.layer_ids)} if _pipeline_stage is not None else {})}
 
 
 def _packed(plan, reader, device):
@@ -1026,8 +1100,10 @@ def _bind_mtp_vocabulary(target, prototype, reader, device):
 def load_gguf(path, device="cuda", *, tp=None, mtp=False, rope=None, eos_token_ids=None,
               table_reads=None, ple_on_ssd=False, mtp_model_dir=None, draft_vocab=None, _draft_ids=None,
               _prefill_plan=None, position_profile=None, _position_prepared=None,
-              expert_tensor_parallel_size=None, **kwargs):
+              expert_tensor_parallel_size=None, _pipeline_stage=None, **kwargs):
     """Load original checkpoint bytes into the maintained Flash Next weight graph."""
+    if _pipeline_stage is not None and (mtp or mtp_model_dir is not None or draft_vocab is not None or _draft_ids is not None):
+        raise ValueError("partial pipeline imports require owner lookup/features before any method attachment")
     if mtp and mtp_model_dir is None:
         raise ValueError("this target GGUF contains no MTP head; select --no-drafts until a matching draft is loaded")
     if kwargs.get("vram_experts") is not None or kwargs.get("expert_loader") is not None:
@@ -1044,6 +1120,7 @@ def load_gguf(path, device="cuda", *, tp=None, mtp=False, rope=None, eos_token_i
     prototype, planner = model_plan(path, tp, rope=rope, eos_token_ids=eos_token_ids,
                                     mtp=mtp, draft_vocab=draft_vocab, draft_ids=_draft_ids,
                                     position_profile=position_profile, mtp_model_dir=mtp_model_dir,
+                                    **({"_pipeline_stage": _pipeline_stage} if _pipeline_stage is not None else {}),
                                     **({"expert_tensor_parallel_size": expert_tensor_parallel_size}
                                        if expert_tensor_parallel_size is not None else {}))
     # Even the direct legacy loader computes its exact small CPU vector before
@@ -1086,9 +1163,9 @@ def load_gguf(path, device="cuda", *, tp=None, mtp=False, rope=None, eos_token_i
     materialize = materializer(reader, device, prepare_experts=prepare_experts, load_table=load_table)
 
     try:
-        embedding = GGUFEmbedding(materialize(prototype.embed[0]))
+        embedding = None if prototype.embed is None else (GGUFEmbedding(materialize(prototype.embed[0])),)
         layers = [materialize(layer) for layer in prototype.layers]
-        result = Weights(prototype.cfg, (embedding,), layers, materialize(prototype.mixer),
+        result = Weights(prototype.cfg, embedding, layers, materialize(prototype.mixer),
                          materialize(prototype.head), target_inv.to(device),
                          around_one=True)
         result.meta.update(prototype.meta, ple_tables=tables, rope=prototype.cfg.rope.metadata(),

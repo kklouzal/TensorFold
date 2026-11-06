@@ -46,6 +46,10 @@ class Buffers:
             raise ValueError("issued positional execution requires the admitted unique-history layout")
         wide = c.streams * c.hidden
         self.rows, self.prefill = rows, prefill
+        from ..pipeline_stage import for_weights as pipeline_for_weights
+
+        self.pipeline_stage = pipeline_for_weights(w)
+        head_columns = 0 if self.pipeline_stage is not None and not self.pipeline_stage.owns_output else w.head.n
         self.input_preparation_context = w.meta.get("input_preparation_context")
         if w.positions is not None and self.input_preparation_context is None:
             raise ValueError("bound execution buffers require the model's shared input preparation context")
@@ -76,12 +80,14 @@ class Buffers:
             if role != "mtp":
                 self.target_indexer_coordinate_storage = self.compact_indexer_stage.coordinates
         self.hc_plans = None
-        head_rows = ENDS if prefill else rows
+        head_rows = 0 if head_columns == 0 else ENDS if prefill else rows
         bf, f32 = execution_dtype(w), torch.float32
         self.execution_dtype = bf
         from .padded_linears import create as padded_linears
 
-        self.padded_linears = padded_linears(w, rows, prefill=prefill, dtype=bf)
+        self.padded_linears = padded_linears(w, rows, prefill=prefill, dtype=bf,
+            **({"head_columns": head_columns, "linear_layers": sum(layer.linear for layer in w.layers)}
+               if self.pipeline_stage is not None else {}))
 
         def row_tensor(name, shape, *, dtype=bf, zero=False):
             if self.padded_linears is not None:
@@ -138,7 +144,7 @@ class Buffers:
         self.attn_o = torch.empty((rows, c.heads, c.head_dim), dtype=bf, device=dev)
         self.streams = torch.empty((rows, wide), dtype=bf, device=dev)
         # fp32 logits: the head's fp32 sums reach the sampler unrounded (bf16 steps are 1/8 at logits 16-32)
-        self.logits = row_tensor("logits", (head_rows, w.head.n), dtype=f32)
+        self.logits = row_tensor("logits", (head_rows, head_columns), dtype=f32)
         world = int(w.meta.get("world", 1))
         self.world = world
         if world > 1:                  # tensor parallel: fp32 partials and their rank-ordered gathers
@@ -315,6 +321,11 @@ class State:
         self.kv_key_dtype, self.kv_value_dtype = self.kv_pair.key_dtype, self.kv_pair.value_dtype
         self.kv_working_policy = working_policy
         self.kv_identity = (self.kv_pair.identity, self.kv_working_policy)
+        from ..pipeline_stage import for_weights as pipeline_for_weights
+
+        pipeline = pipeline_for_weights(w)
+        if pipeline is not None:
+            self.kv_identity += (("pipeline-target-span-v1", pipeline.first, pipeline.stop, 48),)
         if logical_context is not None:
             self.kv_identity += (("logical-context-v1", logical_limit),)
         if binding is not None:

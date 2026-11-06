@@ -10,12 +10,13 @@ from tensorfold.cuda.capacity import Geometry
 from tensorfold.cuda.sm70 import family_ops
 from tensorfold.cuda.sm70 import attention_native
 from tensorfold.families.qwen4_exp.cuda import padded_linears
+from tensorfold.families.qwen4_exp.cuda import engine
 
 
 def geometry_wrapper(monkeypatch, streams, each, mtp, native):
-    source = Path(__file__).parents[1] / "src/tensorfold/families/qwen4_exp/cuda/engine.py"
+    source = Path(engine.__file__)
     tree = ast.parse(source.read_text())
-    node = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "gguf_geometry"
+    node = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "sm70_geometry"
                 and any(isinstance(c, ast.Name) and c.id == "padded_bytes" for c in ast.walk(n)))
     monkeypatch.setattr(family_ops, "_NATIVE_FAMILY", native)
     monkeypatch.setattr(family_ops, "_NATIVE_ATTENTION", native)
@@ -31,7 +32,7 @@ def geometry_wrapper(monkeypatch, streams, each, mtp, native):
            "concurrent": streams > 1, "row_envelope": lambda count: count * each,
            "history_placement": None}
     exec(compile(ast.Module(body=[node], type_ignores=[]), str(source), "exec"), env)
-    return env["gguf_geometry"], base, calls, observed
+    return env["sm70_geometry"], base, calls, observed
 
 
 @pytest.mark.parametrize("streams,each,mtp,native", [
@@ -57,7 +58,7 @@ def test_disabled_prepared_and_native_policy_retains_original_geometry(monkeypat
 
 
 def test_padded_policy_is_in_the_existing_rank_settings_digest():
-    source = Path(__file__).parents[1] / "src/tensorfold/families/qwen4_exp/cuda/engine.py"
+    source = Path(engine.__file__)
     tree = ast.parse(source.read_text())
     method = next(n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_same_settings")
     assignment = next(n for n in ast.walk(method) if isinstance(n, ast.Assign)

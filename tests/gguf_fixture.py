@@ -65,7 +65,7 @@ def scalar_reference(raw, kind, width):
     return result
 
 
-def write(path, tensors, metadata):
+def write(path, tensors, metadata, *, sparse_tail=None):
     def string(value):
         data = value.encode()
         return struct.pack("<Q", len(data)) + data
@@ -84,10 +84,12 @@ def write(path, tensors, metadata):
                 return struct.pack("<IIQ", 9, 7, len(item)) + struct.pack("<" + "?" * len(item), *item)
             if item and all(type(v) is float for v in item):
                 return struct.pack("<IIQ", 9, 6, len(item)) + struct.pack("<" + "f" * len(item), *item)
-            return struct.pack("<IIQ", 9, 5, len(item)) + b"".join(struct.pack("<i", i) for i in item)
+            wide = any(not -(2**31) <= i < 2**31 for i in item)
+            kind, code = (11, "q") if wide else (5, "i")
+            return struct.pack("<IIQ", 9, kind, len(item)) + b"".join(struct.pack("<" + code, i) for i in item)
         return struct.pack("<Iq", 11, item)
 
-    header = b"GGUF" + struct.pack("<IQQ", 3, len(tensors), len(metadata))
+    header = b"GGUF" + struct.pack("<IQQ", 3, len(tensors) + int(sparse_tail is not None), len(metadata))
     for name, item in metadata.items():
         header += string(name) + value(item)
     payload = bytearray()
@@ -97,13 +99,29 @@ def write(path, tensors, metadata):
         header += struct.pack("<IQ", kind, len(payload))
         payload.extend(np.asarray(data, np.uint8).tobytes())
         payload.extend(b"\0" * (-len(payload) % 32))
+    tail_bytes = 0
+    if sparse_tail is not None:
+        # Only the real IQ4_NL PLE case needs a sparse extent; never allocate its full table in RAM.
+        name, shape, kind = sparse_tail
+        if kind != 20 or shape[-1] % 32:
+            raise ValueError("sparse fixture tail must be block-aligned IQ4_NL")
+        header += string(name) + struct.pack("<I", len(shape))
+        header += struct.pack("<" + "Q" * len(shape), *reversed(shape))
+        header += struct.pack("<IQ", kind, len(payload))
+        tail_bytes = int(np.prod(shape)) // 32 * 18
     header += b"\0" * (-len(header) % 32)
-    Path(path).write_bytes(header + payload)
+    if sparse_tail is None:
+        Path(path).write_bytes(header + payload)
+    else:
+        with Path(path).open("wb") as stream:
+            stream.write(header)
+            stream.write(payload)
+            stream.truncate(len(header) + len(payload) + tail_bytes)
     return Path(path)
 
 
-def tiny_model(path, *, linear_heads=(8, 16), linear_head_dim=32, experts=2):
-    """Two blocks, with real TP8 width80 and independently packed experts."""
+def tiny_model(path, *, linear_heads=(8, 16), linear_head_dim=32, experts=2, layers=2, attention_interval=2, ple_layer=None):
+    """Bounded blocks, with real TP8 width80 and independently packed experts."""
     prefix = "qwen4exp."
     nk, nv = linear_heads
     conv = (2 * nk + nv) * linear_head_dim
@@ -111,21 +129,33 @@ def tiny_model(path, *, linear_heads=(8, 16), linear_head_dim=32, experts=2):
         "general.architecture": "qwen4exp", "tokenizer.ggml.eos_token_id": 14,
         "tokenizer.ggml.bos_token_id": 13,
         **{prefix + name: item for name, item in {
-            "block_count": 2, "context_length": 256, "embedding_length": 256,
+            "block_count": layers, "context_length": 256, "embedding_length": 256,
             "attention.head_count": 8, "attention.head_count_kv": 2, "attention.key_length": 32,
             "attention.layer_norm_rms_epsilon": 1e-6, "rope.dimension_count": 8,
             "rope.dimension_sections": (1, 1, 2, 0), "rope.freq_base": 10000.0,
             "expert_count": experts, "expert_used_count": 1,
             "expert_feed_forward_length": 640, "expert_shared_feed_forward_length": 640,
             "ssm.conv_kernel": 4, "ssm.state_size": linear_head_dim, "ssm.group_count": nk,
-            "ssm.time_step_rank": nv, "ssm.inner_size": nv * linear_head_dim, "full_attention_interval": 2,
+            "ssm.time_step_rank": nv, "ssm.inner_size": nv * linear_head_dim, "full_attention_interval": attention_interval,
             "hyper_connection.count": 4, "hyper_connection.low_rank": 32,
             "attention.indexer.head_count": 2, "attention.indexer.key_length": 32,
-            "attention.indexer.top_k": 8, "attention.compress_ratios": (0, 4),
+            "attention.indexer.top_k": 8, "attention.compress_ratios": tuple(4 if (i + 1) % attention_interval == 0 else 0 for i in range(layers)),
             "ple.layers": (), "ple.ngram_size": 3, "ple.heads_per_ngram": 8,
             "ple.conv_kernel": 4, "ple.eos_token_id": 13, "embedding_length_per_layer_input": 32,
         }.items()},
     }
+    ngram = None
+    if ple_layer is not None:
+        from tensorfold.families.qwen4_exp.cuda.ngram import NGram
+
+        if type(ple_layer) is not int or not 0 <= ple_layer < layers:
+            raise ValueError("fixture PLE layer is outside its block inventory")
+        ngram = NGram(vocab=32, ngram_size=3, heads_per_ngram=8, vocab_base=20_000_000,
+                      divisor=128, seed=1234, eos=13, embed_dim=512, ple_index=0)
+        fields.update({"qwen4exp.ple.layers": (ple_layer,),
+                       "qwen4exp.ple.layer_multipliers": tuple(map(int, ngram.multipliers)),
+                       "qwen4exp.ple.head_offsets": tuple(map(int, ngram.head_offsets)),
+                       "qwen4exp.ple.head_vocab_sizes": tuple(map(int, ngram.head_sizes))})
     tensors = []
 
     def add(name, shape, kind=8, constant=None):
@@ -145,7 +175,7 @@ def tiny_model(path, *, linear_heads=(8, 16), linear_head_dim=32, experts=2):
     add("token_embd.weight", (32, 256))
     add("output.weight", (32, 256))
     hc("output_hc_", False)
-    for layer in range(2):
+    for layer in range(layers):
         base = f"blk.{layer}."
         hc(base + "hc_attn_")
         hc(base + "hc_ffn_")
@@ -157,7 +187,13 @@ def tiny_model(path, *, linear_heads=(8, 16), linear_head_dim=32, experts=2):
         add(base + "ffn_down_shexp.weight", (256, 640))
         add(base + "ffn_gate_inp.weight", (experts, 256), 0)
         add(base + "ffn_gate_inp_shexp.weight", (256,), 0)
-        if layer == 0:
+        if layer == ple_layer:
+            add(base + "ple_key.weight", (1024, 512))
+            add(base + "ple_value.weight", (256, 512))
+            for name in ("ple_norm_key", "ple_norm_query", "ple_norm_conv"):
+                add(base + name + ".weight", (256,), 0, 1)
+            add(base + "ple_conv1d.weight", (1024, 4), 0, 0)
+        if (layer + 1) % attention_interval:
             add(base + "attn_qkv.weight", (conv, 256))
             add(base + "attn_gate.weight", (nv * linear_head_dim, 256))
             add(base + "ssm_alpha.weight", (nv, 256), 0)
@@ -176,4 +212,6 @@ def tiny_model(path, *, linear_heads=(8, 16), linear_head_dim=32, experts=2):
             add(base + "indexer.k_proj.weight", (32, 256), 30)
             for name in ("attn_q_norm", "attn_k_norm", "indexer.q_norm", "indexer.k_norm"):
                 add(base + name + ".weight", (32,), 0, 1)
-    return write(path, tensors, fields)
+    return write(path, tensors, fields,
+                 **({"sparse_tail": ("per_layer_token_embd.weight", (ngram.rows, ngram.dims), 20)}
+                    if ngram is not None else {}))

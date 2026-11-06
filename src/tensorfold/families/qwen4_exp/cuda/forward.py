@@ -695,6 +695,69 @@ def read_ahead(w: Weights, history: np.ndarray, tokens: Sequence[int]) -> None:
             start(ple.ngram.ids(history, toks))
 
 
+def compute_stage(w: Weights, segs: Sequence[Seg], b: Buffers, *, input_hc=None,
+                  context: int | None = None, ends: Sequence[int] = (), cuts: Sequence[Cut] = (),
+                  logits: bool = True, check: bool = True):
+    """Execute a privately prepared PP2 target stage on already-staged rows.
+
+    Stage zero returns a borrowed ``[rows,4,hidden]`` view of complete HC after
+    the final pending MoE writeback, without readout/head. The caller must retain
+    and not reuse this storage until its bounded transport/copy has completed.
+    Stage one consumes that exact layout and runs the ordinary final readout.
+    This component does not implement transport or a distributed round commit.
+    """
+    from ..pipeline_stage import for_weights
+    from .compact_indexer import validate_target_indexer_frame
+    from .input_preparation import reject_prepared
+
+    try:
+        stage = for_weights(w)
+    except ValueError as error:
+        reject_prepared(b, error)
+    if stage is None or getattr(b, "pipeline_stage", None) != stage:
+        reject_prepared(b, ValueError("stage execution requires matching prepared stage weights and buffers"))
+    if (w.comm is None or w.comm.world != 8 or w.comm.rank != w.meta["rank"]
+            or w.x3 is not None or b.split is not None
+            or getattr(w, "dspark", None) is not None or getattr(w, "dflash2", None) is not None):
+        reject_prepared(b, ValueError("private PP2 stage execution requires its uncaptured TP8 target plan; draft feature transport is pending"))
+    if not segs:
+        reject_prepared(b, ValueError("stage execution requires a nonempty staged row window"))
+    R, c = segs[-1][2], w.cfg
+    if type(R) is not int or not 0 < R <= b.rows:
+        reject_prepared(b, ValueError("stage rows exceed the prepared buffer envelope"))
+    if c.streams != 4 or b.h.dtype != torch.float16 or w.meta.get("indexer_history", "gpu") != "gpu":
+        reject_prepared(b, ValueError("private PP2 stages require four-stream FP16 HC and GPU histories"))
+    if stage.owns_input:
+        if input_hc is not None:
+            reject_prepared(b, ValueError("the input stage owns embedding; it cannot consume a pipeline HC boundary"))
+    elif (not isinstance(input_hc, torch.Tensor) or input_hc.shape != (R, c.streams, c.hidden)
+            or input_hc.dtype != b.h.dtype or input_hc.device != b.h.device
+            or input_hc.requires_grad or not input_hc.is_contiguous()):
+        reject_prepared(b, ValueError("pipeline HC must retain all four streams in the exact staged dtype/device/layout"))
+    validate_target_indexer_frame(b, segs)
+    _kv_begin(segs)
+    if stage.owns_input:
+        _embed(w, b.ids[:R], c.streams, b.h[:R])
+        if b.prefill:
+            image_rows.embed(segs, b, c.streams)
+    else:
+        b.h[:R].copy_(input_hc.view(R, c.streams * c.hidden))
+    pending = None
+    for layer in w.layers:
+        pending = layer_forward(layer, w, segs, b, R, pending, context=context, cuts=cuts)
+    if stage.owns_output:
+        result = finish(w, w.mixer, b, R, pending, logits, ends)
+    else:
+        # GGUF hc_block stores Half before its next readout. Recomputing PSS
+        # on receipt uses those same stored values, without an extra rounding.
+        b.streams[:R].copy_(b.h[:R])
+        _writeback(b.streams, b, R, c, pending)
+        result = b.streams[:R].view(R, c.streams, c.hidden)
+    if check:
+        _kv_check(segs, comm=w.comm)
+    return result
+
+
 def compute(w: Weights, segs: Sequence[Seg], b: Buffers, *, logits: bool = True, context: int | None = None,
             ends: Sequence[int] = (), cuts: Sequence[Cut] = (), features=None, check: bool = True,
             input_embeddings: torch.Tensor | None = None):

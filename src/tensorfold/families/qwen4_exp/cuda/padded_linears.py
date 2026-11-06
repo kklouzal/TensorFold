@@ -10,7 +10,7 @@ _ENABLED = False
 ROWS = 32
 
 
-def field_layout(c, rows, head_width, world):
+def field_layout(c, rows, head_width, world, *, linear_layers=None):
     """(logical shape, element bytes) shared by allocation and admission."""
     wide = c.streams * c.hidden
     attention = c.heads * 2 * c.head_dim + 2 * c.kv_heads * c.head_dim + (c.index_heads + 1) * c.index_dim
@@ -19,22 +19,23 @@ def field_layout(c, rows, head_width, world):
             "ple_emb": c.ple_dim, "ple_keys": wide, "ple_vals": c.hidden}
     half["branch"] = c.hidden
     result = {name: ((rows, width), 2) for name, width in half.items()}
-    result["logits"] = ((rows, head_width), 4)
+    result["logits"] = ((0 if head_width == 0 else rows, head_width), 4)
     if world > 1:
         result["part_branch"] = ((rows, c.hidden), 4)
-    linear = sum(kind == "linear" for kind in c.layer_types)
+    linear = sum(kind == "linear" for kind in c.layer_types) if linear_layers is None else linear_layers
     projection = 2 * c.nk * 128 + 2 * c.nv * 128 + 2 * c.nv
     result["proj"] = ((linear, rows, projection), 2)
     return result
 
 
-def workspace_bytes(c, rows, head_width, world, *, enabled=None, prefill=False):
+def workspace_bytes(c, rows, head_width, world, *, enabled=None, prefill=False, linear_layers=None):
     """Exact additional persistent bytes; original logical Buffers are already charged."""
     enabled = _ENABLED if enabled is None else enabled
     if not enabled or prefill or not 1 <= rows <= ROWS:
         return 0
     extra = 0
-    for shape, size in field_layout(c, rows, head_width, world).values():
+    for shape, size in field_layout(c, rows, head_width, world,
+                                  **({"linear_layers": linear_layers} if linear_layers is not None else {})).values():
         if len(shape) == 2:
             extra += (ROWS - rows) * shape[1] * size
         else:
@@ -45,7 +46,7 @@ def workspace_bytes(c, rows, head_width, world, *, enabled=None, prefill=False):
     return extra
 
 
-def workspace_bytes_from_text(text, rows, world, *, enabled=None, prefill=False):
+def workspace_bytes_from_text(text, rows, world, *, enabled=None, prefill=False, _pipeline_stage=None):
     """The same forecast before weights load, including replicated local KV heads."""
     enabled = _ENABLED if enabled is None else enabled
     if not enabled or prefill or not 1 <= rows <= ROWS:
@@ -61,16 +62,27 @@ def workspace_bytes_from_text(text, rows, world, *, enabled=None, prefill=False)
         ple_dim=int(text.get("ple_embed_dim") or text["hidden_size"]),
         layer_types=["linear" if kind == "linear_attention" else "attention" for kind in text["layer_types"]],
     )
-    return workspace_bytes(c, rows, int(text["vocab_size"]) // world, world, enabled=True)
+    head_width = int(text["vocab_size"]) // world
+    if _pipeline_stage is not None:
+        from ..pipeline_stage import PipelineStage
+
+        if not isinstance(_pipeline_stage, PipelineStage) or world != 8 or len(c.layer_types) != 48:
+            raise ValueError("padded pipeline workspace requires the fixed global48 TP8 stage")
+        c.layer_types = c.layer_types[_pipeline_stage.first:_pipeline_stage.stop]
+        if not _pipeline_stage.owns_output:
+            head_width = 0
+    return workspace_bytes(c, rows, head_width, world, enabled=True)
 
 
 class PaddedLinears:
     """All storage is owned before capture; only bounded reshape/slice views escape."""
 
-    def __init__(self, w, rows):
+    def __init__(self, w, rows, *, head_columns=None, linear_layers=None):
         self.rows, self.device = rows, w.device
         c = w.cfg
-        self.layout = field_layout(c, rows, w.head.n, int(w.meta.get("world", 1)))
+        self.layout = field_layout(c, rows, w.head.n if head_columns is None else head_columns,
+                                   int(w.meta.get("world", 1)),
+                                   **({"linear_layers": linear_layers} if linear_layers is not None else {}))
         self.owners = {}
         self.inputs = []
         self.outputs = []
@@ -139,8 +151,9 @@ class PaddedLinears:
         return None if result is None else result.unsqueeze(0)
 
 
-def create(w, rows, *, prefill, dtype):
+def create(w, rows, *, prefill, dtype, head_columns=None, linear_layers=None):
     if (not _ENABLED or prefill or dtype != torch.float16 or not 1 <= rows <= ROWS
             or w.meta.get("execution_provider") != "sm70" or w.device.type != "cuda"):
         return None
-    return PaddedLinears(w, rows)
+    return PaddedLinears(w, rows, **({"head_columns": head_columns} if head_columns is not None else {}),
+                         **({"linear_layers": linear_layers} if linear_layers is not None else {}))

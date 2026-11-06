@@ -550,6 +550,62 @@ coverage; it does not retrospectively turn those failures into passes or
 establish actual V100 topology, full-model quality, capacity or throughput.
 Production is unchanged and the full ProviderOne delivery gates remain open.
 
+## Private PP2 stage components (A6)
+
+The GGUF loader has a private typed `_pipeline_stage=PipelineStage(index)`
+component interface. The fixed global 48-block target is split into blocks
+0–23 and 24–47, with TP8 and the same selected ETP8/4/2 degree, with groups
+confined to each stage.
+Planning and materialization retain only the selected stage's coefficients;
+the explicit complementary inventory remains checked for missing/unknown
+tensors. Packed encodings, row/column offsets and global `LayerW.index` values
+are preserved. Global Config layer identities are not replaced by 24 local IDs.
+
+The input stage alone owns the target embedding and PLE lookup/table; the output
+stage alone owns final mixing and the target head. The current SC117 PLE is
+`blk.1`. Later-stage PLE placement is refused until an owner-row service exists,
+rather than duplicated or dropped. A real sparse IQ4_NL table control checks
+input-stage lookup/source words and the unchanged global ngram ordinal; it is
+not a full-table hash or model-quality proof. Partial import refuses speculative
+method attachment until the required cross-stage endpoint/service contract is
+implemented. Stage-local expert-partition metadata is explicitly scoped apart
+from the global PP2 stage identity.
+
+Private `compute_stage` executes the owned local layers with the existing
+`layer_forward`, writeback and final readout operators. The first stage applies
+its last pending MoE update and exports borrowed contiguous `[rows,4,hidden]`
+FP16 HC, without a mixer/head. The caller must retain that storage until its
+handoff completes. The second stage consumes all four streams in the exact
+staged dtype/device/layout, then performs final readout. A single hidden vector
+or stream mean is refused. Invalid post-preparation inputs notify the existing
+input-preparation owner before cache/operator work. Captured execution and
+draft-feature transport are not enabled by this component.
+
+State uses 18 local recurrent and six target attention caches while retaining
+absolute global layer IDs. Numerical cache identity includes the stage's global
+block span, so equal local shapes cannot authorize cross-stage copy/restore.
+The input stage allocates no target-logit or candidate storage. Optional padded
+projection allocation and its forecast use 18 local layers without changing
+the global 48-layer Config. Actual coefficient and host-table ledgers come from
+the owned plans, not a division of the full model's runtime buckets by sixteen.
+
+Component source checks passed 165 cases with one optional pinned-companion
+skip; the scoped source regression batch passed 1,556 cases with the same skip.
+Another 44 existing padding/HC/cache controls pass, including a repaired stale
+AST lookup that now examines the active Engine's actual geometry wrapper.
+Final installed-artifact closeout is pending. CPU composition uses an independent
+NumPy Half-storage oracle and deterministic stand-in layer operators while
+retaining actual writeback; it does not qualify CUDA operators or full-model
+numerics. The legacy `compute` body remains unchanged.
+
+This is necessary executable groundwork for the required PP2 path, not complete
+PP2 inference support. There is no public PP2 Engine/CLI flag. Bounded cross-node
+HC/metadata transfer, progressing embedding/lookup/feature services, final-stage
+MTP/DFlash, one unresolved speculative round and coordinated commit/rollback,
+RNG/frontiers/cancellation/publication remain required. Complete stage resource
+admission and actual two-server mesh/RDMA, model quality, capacity and performance
+qualification also remain open. Production is unchanged.
+
 ## Configuration and capacity
 
 For Flash Next GGUF with GPU indexer history, `--parallel auto` computes a

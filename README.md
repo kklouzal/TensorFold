@@ -62,6 +62,14 @@ each pass 1,498 tests with one optional companion-fixture skip. Historical A3/A4
 counts above retain their original meaning; the new coverage does not establish
 V100/model/performance qualification. See [fixture contracts](docs/v100-adaptive-validation.md#restored-fixture-contracts-a5).
 
+Private PP2 components now import only their owned 24-block target slice and
+execute a complete four-stream HC boundary using the existing operators.
+Input embedding/PLE and output mixer/head have separate owners; global block
+identities remain intact. This is internal groundwork, with no PP2 serving flag.
+Cross-server transport, endpoint services, speculative transactions and full
+admission/qualification remain required. See
+[stage import and execution](docs/v100-adaptive-validation.md#private-pp2-stage-components-a6).
+
 The ordered combine-to-MoE-tail prototype completed exact component59 and
 compiler-resource checks but is **not advanced to model/P3**: its one-process
 synthetic CUDA-graph tail screen had per-M paired geometric latency
