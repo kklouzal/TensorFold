@@ -17,7 +17,9 @@ before NCCL/model admission. Expose the intended physical GPU as device zero
 in each rank process. Reusing one GPU across ranks, mixing host kernels or
 using a different GPU SKU is refused. Supported Docker rank containers use the
 shared kernel boot identity, independently of container machine-id. This is
-not an NVLink/P2P, NUMA, numerical or performance qualification.
+not an NVLink/P2P, NUMA, numerical or performance qualification. Source and fresh
+installed CPU controls passed within the documented inherited-fixture limits;
+rebuild from the current source before using this admission behavior.
 
 Optional [prepared serving profiles](../../docs/serving-profiles.md) use
 `--serving-profile-root` and the existing runtime endpoint for in-process

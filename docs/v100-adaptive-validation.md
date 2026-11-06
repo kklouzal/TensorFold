@@ -464,8 +464,41 @@ that virtualize that kernel input need a separately qualified binding. The
 receipt exposes fingerprints rather than raw boot/GPU IDs and remains separate
 from the numerical identity used for prefix/copy/restore compatibility.
 
-Source, installed-artifact and physical-target closeout remain in progress.
-CPU metadata/protocol controls and current-host CPU Store exercises do not
+Source and fresh installed batches each recorded **1,458 passed, 37 failed and
+one skipped** across 36 modules. Source took 28.90 seconds and installed took
+29.61 seconds; both exited 1. All 37 failed cases have matching, nonempty
+per-case diagnostics on pre-change references: the 29 previously disclosed
+provider/`positions` fixtures, seven older graph fixtures missing `comm`, and
+one native-media fixture that omits architecture metadata and patches an old
+resolver owner. That media failure does not demonstrate a runtime mmproj
+selection bug. These remain failures, not passes or equivalence. The optional
+skip requires pinned companion/actual target metadata that was not supplied.
+
+Focused controls passed 221 cases, including three actual CPU Store exchanges
+for canonical, legacy and mixed participation, and six cleanup/refusal cases.
+The Store exercise uses this host's SDK and test-only wait deadlines; it does
+not certify the selected x86 native layout. Required deployment controls passed
+194 cases and static checks passed on eight affected Python files. The focused
+and integrated batches overlap and are not added into a unique-test total.
+
+Fresh artifacts use source checkpoint
+`14c2d24f929523c2e96eb5bb25e18f2a11b4e50c`, source UID
+`fde67a33cde7625f6b2e4571a77b4ca878140937ce9a6eed48baee83ad5b2034`, runtime
+`sha256:ad2e0f366a89bff6f8d7dfa3479773d1fb15f4fdb3b370a5f305a32199ae7c91`
+and verification image
+`sha256:0d658a6a412710958722a8495509ef7c3aea317f069083e22df1dae9b8c2e184`.
+All 780 installed runtime-file hashes matched before and after; all four changed
+module origins were installed `site-packages`. There was no runtime source
+overlay. Current native C identity/memfd checks passed, CUDA stayed uninitialized
+and the source-foundation audit exited zero. The exact logs, references and
+scope are retained in `providerone-alignment-20261106/pp1-stage-binding-v1`.
+Installed gate SHA256:
+`18f321f8116df6c898e55249e692b3596df709cbacf43f4db1e3badac59c6ed7`;
+strict source/reference/installed failure comparison SHA256:
+`bb0703a89c02d82fa232aff35e76df3337e4eb8d64527c64dd768dc175edb0c7`.
+
+Physical-target qualification remains pending. CPU metadata/protocol controls
+and current-host CPU Store exercises do not
 qualify the selected x86 ABI, eight actual V100s, the NVLink/P2P/PCIe/NUMA mesh,
 complete model numerics, capacity or throughput. Unmanaged launches retain their
 existing external failure-containment responsibility. Production is unchanged.

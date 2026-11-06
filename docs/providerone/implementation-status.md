@@ -64,8 +64,11 @@ GPU-history startup: one kernel host, ordered complete rank coverage, distinct
 canonical GPU UUIDs and the specified V100 SXM2 32GB/SM70 observations before
 NCCL and model admission. All SM70 TP8 ranks use the common CPU Store envelope;
 uniform legacy participation skips eligibility and gets no physical-stage
-receipt. Source/installed verification is in progress. This does not establish
-the actual mesh, full model, resident capacity or performance gates below.
+receipt. Source and fresh installed CPU batches each recorded 1,458 passes,
+37 inherited fixture failures and one optional-fixture skip. Strict per-case
+comparisons retain every failure as a failure. This does not establish the actual
+mesh, full model, resident capacity or performance gates below. See the
+[A4 artifact and proof scope](../v100-adaptive-validation.md#pp1-physical-stage-admission-a4).
 
 These are six required cases, not six qualified implementations. TP flags,
 smaller-world tests, KV placement degrees or manifest metadata do not establish

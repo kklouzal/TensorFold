@@ -52,8 +52,9 @@ Canonical SM70 TP8 GPU-history startup now binds one host kernel and eight
 distinct V100 SXM2 32GB device identities before NCCL initialization and model
 admission. All TP8 ranks use one preflight envelope, so mixed canonical/legacy
 participation refuses before dependent waits. This basic identity check does
-not qualify the GPU mesh or model performance. Source/installed closeout is in
-progress; see [physical stage admission](docs/v100-adaptive-validation.md#pp1-physical-stage-admission-a4).
+not qualify the GPU mesh or model performance. Source and fresh installed CPU
+batches each recorded 1,458 passes, 37 inherited fixture failures and one optional
+skip. See [physical stage admission and limits](docs/v100-adaptive-validation.md#pp1-physical-stage-admission-a4).
 
 The ordered combine-to-MoE-tail prototype completed exact component59 and
 compiler-resource checks but is **not advanced to model/P3**: its one-process

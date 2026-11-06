@@ -739,6 +739,9 @@ observation bound at startup, separate from numerical state compatibility and
 from full mesh/model/capacity/performance qualification. The guard has no runtime
 disable or retuning setting. Uniform legacy admission has no such receipt;
 mixed participation is refused before NCCL initialization.
+Source and installed CPU protocol controls cover this guard. Actual eight-V100
+mesh/model qualification remains separate; see
+[the current evidence](v100-adaptive-validation.md#pp1-physical-stage-admission-a4).
 
 The following requests are each standalone, separate from execution settings:
 
