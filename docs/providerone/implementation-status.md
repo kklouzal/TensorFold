@@ -105,6 +105,10 @@ does not implement PP2 serving. It preserves full HC instead of a stream mean,
 global block/PLE identity, local cache ordinals and actual stage coefficient
 ownership. Required MTP/DFlash endpoint/features, one distributed round commit,
 bounded progressing services and complete two-server admission are still open.
+The scoped 42-module source and fresh installed batches each pass 1,600 tests
+with one optional pinned-companion/target-metadata skip. These are CPU component
+controls, including real stage-owned imports; they do not qualify actual
+two-server transport, model quality, resident capacity or performance.
 
 One-server release may proceed only after all three PP1 profiles and required
 SC117 feature gates pass; PP2 remains required work pending its own hardware

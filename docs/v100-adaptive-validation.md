@@ -589,14 +589,36 @@ projection allocation and its forecast use 18 local layers without changing
 the global 48-layer Config. Actual coefficient and host-table ledgers come from
 the owned plans, not a division of the full model's runtime buckets by sixteen.
 
-Component source checks passed 165 cases with one optional pinned-companion
-skip; the scoped source regression batch passed 1,556 cases with the same skip.
-Another 44 existing padding/HC/cache controls pass, including a repaired stale
-AST lookup that now examines the active Engine's actual geometry wrapper.
-Final installed-artifact closeout is pending. CPU composition uses an independent
-NumPy Half-storage oracle and deterministic stand-in layer operators while
-retaining actual writeback; it does not qualify CUDA operators or full-model
-numerics. The legacy `compute` body remains unchanged.
+The complete scoped 42-module source and fresh installed batches each passed
+**1,600 tests with one optional skip**. Source took 31.74 seconds and installed
+took 32.84 seconds; both exited zero. The skip requires optional pinned
+companion/actual target metadata that was not supplied. Required deployment
+controls passed 194 cases, and static checks passed on nine affected Python
+files. Component checks passed 165 cases with the same optional skip, while
+44 existing padding/HC/cache controls pass, including a repaired stale AST
+lookup that now examines the active Engine's actual geometry wrapper. These
+overlapping batches are not added into a unique-test total.
+
+CPU composition uses an independent NumPy Half-storage oracle and deterministic
+stand-in layer operators while retaining actual writeback; it does not qualify
+CUDA operators or full-model numerics. Sensitive writeback/storage tests cover
+the branch, routed-slot and rank/K-slice modes. Actual CPU State/buffer controls
+exercise local cache maps, cross-stage restore refusal and padded projection
+allocation versus forecast. The legacy `compute` body remains unchanged.
+
+Fresh artifacts use source checkpoint
+`8391b599aebc5f6c9af9779e4df0fa8b25d1f663`, source UID
+`298eccd1f28f69a7627d799566503b997f480d5ea4d954cdeefa3c24b29a728c`, runtime
+`sha256:aad3c1c212c78c097a97b51cffba53b10434df97d64ba9db9ce7080ad9fc4ecd`
+and verification image
+`sha256:7508c491bcba9dedab06bd9a89ea9131d8a3a11c86081ae0101bae35e319917c`.
+All 781 installed runtime-file hashes matched before and after; all five
+changed module origins were installed `site-packages`, with no runtime source
+overlay. Current native identity/memfd and foundation checks passed; CUDA stayed
+uninitialized. Exact commands, test inputs and failure/remediation history are
+retained in `providerone-alignment-20261106/pp2-stage-boundary-v1` and the linked
+loader packet `pp2-stage-execution-v1`. Installed gate SHA256:
+`8c872b7c18feebd41e188340ed0eb6e110f43356281176649db656248266c0f5`.
 
 This is necessary executable groundwork for the required PP2 path, not complete
 PP2 inference support. There is no public PP2 Engine/CLI flag. Bounded cross-node

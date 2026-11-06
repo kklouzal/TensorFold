@@ -69,6 +69,9 @@ identities remain intact. This is internal groundwork, with no PP2 serving flag.
 Cross-server transport, endpoint services, speculative transactions and full
 admission/qualification remain required. See
 [stage import and execution](docs/v100-adaptive-validation.md#private-pp2-stage-components-a6).
+Source and fresh installed component/regression batches each pass 1,600 CPU
+tests with one optional-fixture skip; these controls do not qualify CUDA model
+execution or two-server serving.
 
 The ordered combine-to-MoE-tail prototype completed exact component59 and
 compiler-resource checks but is **not advanced to model/P3**: its one-process
