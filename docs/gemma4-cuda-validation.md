@@ -806,29 +806,32 @@ model/P3 proofs remain preserved. Broader candidate exploration is not exhausted
 any next candidate requires its own bounded evidence and authorization.
 
 
-## Private global-attention query width8 investigation
+## Deferred query-width8 prototype
 
-The source prototype adds only a private constexpr query width to existing
-attention kernels; public/default width16 and the selected four-warp launch
-remain unchanged. The candidate is not selected or enabled for model serving.
-Pinned Triton3.9.0+gitfc8d31a5 accepts BF16 dot M8 at the frontend; this is not
-proof of successful lowering, physical MMA dimensions or reduced work.
+The private QT8 candidate is **DEFERRED / UNQUALIFIED** after ProviderOne roadmap
+reprioritization, not rejected for mathematical inferiority or a measured loss.
+Checkpoint `b45198c6529944220cbe573588c11199e423aad6`, source UID `c51ee503`,
+produced private runtime `a9541209` and verification image `32a5d12d`. Source
+checks passed435 cases and installed checks passed435 cases, each with six
+CUDA-required skips and CUDA inactive. Installed inventory/default16 proofs
+established source and interface identity only.
 
-The maintained attention suite retains its independent float64, split-row,
-forced-sequential, visual-block and rollback oracles. New SM121-only private
-checks compare width8/16 output words and defined reachable FP32 partial words
-at M1–5 and causal/chunk boundaries, plus serial/sequential identity and
-position/input-sensitive graph replay. CUDA-hidden source checks protect the
-private defaults and unchanged public/sliding dispatch. CUDA-hidden source checks passed435 CPU cases, with six CUDA-required
-skips and CUDA inactive; static/full Ruff/diff checks and combined review passed.
-The GPU checks remain unrun, and CUDA-hidden results do not qualify target
-behavior. Installed-image checks and actual QT8 compilation/lowering, GPU word/
-replay and performance gates remain pending.
+No successful QT8 GPU catalogue, lowering/resource inspection, exact-word,
+serial/replay or timing result exists; zero QT8 GPU tests executed. The retained
+operator protocol `0e69d5bb` is a procedure, not execution evidence. The failed
+pre-CUDA collection/cache-metadata attempts remain historical failures. The
+latest actual online bootstrap/cache probe (original session9113, receipt
+`ad835fe7`) exited0 and passed SDK entrypoint/cache admission without tensor,
+JIT, pytest, operator or STOP work. It supplies no numerical or speed evidence.
 
-Actual compilation/resource inspection and all word/capture gates precede any
-operator timing. A later bounded screen must include the entire global call
-and its unchanged ordered merge, with matched inputs/resources/order and raw
-results. Extra query programs repeat K/V reconstruction, and logical shape
-savings do not imply a gain. Existing four/eight-warp negative evidence remains
-historical and does not answer this separate query-width candidate. No model,
-request-throughput, memory or performance result is claimed.
+Canonical attention and the original CUDA attention tests are restored exactly
+to pre-prototype `b08380e6`; only the transient query-shape source/fixture-control
+suite is removed. All prototype source, controls, raw failures, receipts, images,
+caches and Git history are retained. Default16/four-warps, original float64,
+row-split, visual, sequential and rollback oracles and unrelated work remain.
+Accepted production `3cc80341`/`b579387b`/source `ae8d40be` was restored healthy
+at2026-11-06T05:35:53.382963622Z with API/pointer/service checks. This cleanup
+changes no selected default16 behavior and requires no new GPU build/restart.
+Cleanup source checks passed418 cases with six explicit CUDA-required skips,
+CUDA inactive, and clean static/full Ruff/diff checks. No new GPU result, QT8
+gain, equivalence or global-optimality claim follows.
