@@ -138,7 +138,7 @@ def test_flash_parallel_decoder_allocations_are_budgeted(monkeypatch, allocation
                                                                           moe=SimpleNamespace(experts=SimpleNamespace(kernel="qmm")))
                                                              for i in range(4)],
                               mtp=SimpleNamespace(), meta={"world": 1}, head=SimpleNamespace(n=1024), comm=None,
-                              draft_ids=None, x3=None)  # grouped Q4 weights: no EXL3 scratch or compiled HC owners
+                              draft_ids=None, x3=None, positions=None)  # Unbound positions; grouped Q4, no EXL3/HC owners.
     slots, depth, keep = 65536, 3, 8
     from tensorfold.cuda.geometry import indexed_prompt_bytes, indexed_stream_geometry, kv_bytes
     from tensorfold.families.qwen4_exp.cuda.prompt_plan import CUTS, POINTS

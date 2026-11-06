@@ -113,6 +113,7 @@ def test_bind_issues_native_role_identity_and_complete_model_domain(tmp_path, mo
     import hashlib
     import json
     from tensorfold.families.qwen4_exp import gguf
+    from tensorfold import gguf_file
     from tensorfold.families.qwen4_exp.cuda import media_runtime
     from tensorfold.token_metadata import tokenizer_identity
     from tensorfold import token_metadata
@@ -140,8 +141,14 @@ def test_bind_issues_native_role_identity_and_complete_model_domain(tmp_path, mo
         files=(SimpleNamespace(logical_name="metadata/tokenizer.json", sha256=source_sha),))
     monkeypatch.setattr(token_metadata, "tokenizer_override", lambda: SimpleNamespace(sha256="a" * 64)
                         if stale_override else None)
-    monkeypatch.setattr(gguf, "resolve_gguf", lambda _: tmp_path / "target.gguf")
-    monkeypatch.setattr(gguf.GGUFCheckpoint, "open", lambda _: SimpleNamespace(metadata={"qwen4exp.ple.image_token_id": 2}))
+    entrypoint = tmp_path / "target.gguf"
+    monkeypatch.setattr(gguf_file, "resolve_gguf", lambda _: entrypoint)
+
+    def checkpoint(path):
+        assert path == entrypoint
+        return SimpleNamespace(metadata={"general.architecture": "qwen4exp", "qwen4exp.ple.image_token_id": 2})
+
+    monkeypatch.setattr(gguf.GGUFCheckpoint, "open", checkpoint)
     published = {}
 
     class Planned(Exception):

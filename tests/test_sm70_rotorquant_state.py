@@ -87,20 +87,32 @@ def test_q4_geometry_fails_before_allocation(head_dim, format_name):
 
 @pytest.mark.parametrize("key,value", PAIRS)
 def test_engine_accepts_only_the_exact_candidate_before_model_or_cuda(monkeypatch, tmp_path, key, value):
+    from gguf_fixture import tiny_model
     from tensorfold.cuda import chat_template
-    from tensorfold.families.qwen4_exp import gguf
     from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
+
+    source = tiny_model(tmp_path / "model.gguf")
 
     class NextStage(Exception):
         pass
 
     def next_stage(*args, **kwargs):
+        assert args[0] == source
         raise NextStage
 
-    monkeypatch.setattr(gguf, "resolve_gguf", lambda path: tmp_path / "model.gguf")
     monkeypatch.setattr(chat_template, "prepare_chat_template", next_stage)
     with pytest.raises(NextStage):
-        FlashNextEngine(tmp_path, kv_key_dtype=key, kv_value_dtype=value)
+        FlashNextEngine(source, kv_key_dtype=key, kv_value_dtype=value)
+
+
+@pytest.mark.parametrize("format_name", ["fp16", COMPACT_Q4, COMPACT_ISO4])
+def test_sm70_only_formats_still_refuse_a_non_gguf_source_before_template(monkeypatch, tmp_path, format_name):
+    from tensorfold.cuda import chat_template
+    from tensorfold.families.qwen4_exp.cuda.engine import FlashNextEngine
+
+    monkeypatch.setattr(chat_template, "prepare_chat_template", lambda *a, **kw: pytest.fail("provider guard was bypassed"))
+    with pytest.raises(ValueError, match="GGUF SM70"):
+        FlashNextEngine(tmp_path, kv_key_dtype=format_name, kv_value_dtype=format_name)
 
 
 @pytest.mark.usefixtures("allocations")

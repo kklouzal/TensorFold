@@ -503,6 +503,53 @@ qualify the selected x86 ABI, eight actual V100s, the NVLink/P2P/PCIe/NUMA mesh,
 complete model numerics, capacity or throughput. Unmanaged launches retain their
 existing external failure-containment responsibility. Production is unchanged.
 
+## Restored fixture contracts (A5)
+
+Four stale fixture definitions accounted for the 37 inherited failures above.
+The repair changes test inputs, not runtime behavior or guards:
+
+- Provider-format controls now use a real tiny GGUF target instead of patching
+  an obsolete family resolver alias. Their existing early template sentinel is
+  retained; three added negatives confirm SM70-only formats still reject a
+  non-GGUF provider before reaching that sentinel.
+- Allocation-only weights explicitly declare `positions=None`, matching the
+  actual unbound-position interface. All allocation, ownership and budget
+  assertions remain exercised.
+- Single-rank graph fixtures explicitly declare `comm=None`. The real replay
+  wrapper, event ordering, primary-error and no-successful-submission checks stay.
+- The media fixture patches the actual neutral resolver and supplies the
+  required `qwen4exp` architecture metadata. The real family architecture guard
+  runs, the selected entrypoint is asserted, and vocabulary/role plus stale
+  tokenizer-override checks remain intact.
+
+All 115 original assertion nodes are retained. The affected four-module batch
+passed 563 cases in 6.27 seconds. The complete scoped 36-module source batch
+passed **1,498 tests with one optional skip** in 27.47 seconds; the installed
+batch passed the same cases in 27.32 seconds. Both exited zero. The skip still
+requires optional pinned companion/actual target metadata that was not supplied.
+Required deployment/public-permission checks passed 194 cases, and static
+checks passed on all four changed Python files. Overlapping batches are not
+summed into a unique-test total.
+
+All 783 runtime-source files remain byte-identical to the A4 built capture.
+No rebuild or redeployment was performed. Installed verification reused runtime
+`sha256:ad2e0f366a89bff6f8d7dfa3479773d1fb15f4fdb3b370a5f305a32199ae7c91`
+and verification image
+`sha256:0d658a6a412710958722a8495509ef7c3aea317f069083e22df1dae9b8c2e184`,
+source UID `fde67a33cde7625f6b2e4571a77b4ca878140937ce9a6eed48baee83ad5b2034`.
+All 780 runtime hashes matched before and after; module origins stayed installed,
+with no runtime source overlay. Current native identity/memfd checks and the
+foundation audit passed; CUDA remained uninitialized. Test hashes, commands and
+logs are retained in `providerone-alignment-20261106/fixture-contract-repair-v1`;
+the installed gate SHA256 is
+`853a06bd183ab56f247285a8378a2b7a461bc5fd04beb06a158e102783b59b6f`.
+
+The historical 37 failures and their nonempty reference diagnostics remain
+preserved at their original checkpoints. This restores meaningful CPU software
+coverage; it does not retrospectively turn those failures into passes or
+establish actual V100 topology, full-model quality, capacity or throughput.
+Production is unchanged and the full ProviderOne delivery gates remain open.
+
 ## Configuration and capacity
 
 For Flash Next GGUF with GPU indexer history, `--parallel auto` computes a

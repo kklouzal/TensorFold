@@ -110,7 +110,7 @@ def test_round_replay_marks_completion_after_all_pieces_and_inserts(monkeypatch,
     events = []
     history_spies(monkeypatch, events)
     owner = object.__new__(multi_graphs.RoundGraphs)
-    owner.dec = NS(w=NS(**({"meta": {"indexer_history": backend}} if backend is not None else {})))
+    owner.dec = NS(w=NS(comm=None, **({"meta": {"indexer_history": backend}} if backend is not None else {})))
     b = NS(prefill=False, attn_step=object(), ple_late=None)
     segs = [(object(), 0, 1)]
     pieces = NS(graphs=[Replay(events, "piece0"), Replay(events, "piece1")], inserts=[("select", object())])
@@ -127,7 +127,7 @@ def test_failed_graph_replay_does_not_record_successful_submission(monkeypatch):
     events = []
     history_spies(monkeypatch, events)
     owner = object.__new__(multi_graphs.RoundGraphs)
-    owner.dec = NS(w=NS(meta={"indexer_history": "ram"}))
+    owner.dec = NS(w=NS(meta={"indexer_history": "ram"}, comm=None))
     pieces = NS(graphs=[Replay(events, error=RuntimeError("replay failed"))], inserts=[])
     monkeypatch.setattr(multi_graphs, "_kv_begin", lambda *args: events.append("kv_begin"))
     with pytest.raises(RuntimeError, match="replay failed"):

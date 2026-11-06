@@ -45,6 +45,14 @@ Private receipts are provenance, not dependencies for fresh-checkout tests.
 controls, not completion of the full governing subsystem. Qualification and
 effective deployment require their own exact artifacts, target and receipts.
 
+A5 restores the 37 inherited fixture cases in the scoped regression set. Source
+and installed batches now each pass 1,498 tests with one optional companion
+skip; all 115 original assertion nodes remain and three new non-GGUF provider
+negatives pass. Runtime source and the installed A4 images are unchanged. Earlier
+failure counts remain historical evidence; no actual hardware, model, capacity
+or performance gate is inferred from these repaired CPU controls. See
+[the fixture and artifact scope](../v100-adaptive-validation.md#restored-fixture-contracts-a5).
+
 | Contract surface | Requested | Existing implementation starting point | Qualified evidence | Effective status |
 | --- | --- | --- | --- | --- |
 | Shared API/admission/lifecycle | One shared logical/API owner, bounded FIFO/credits, cancellation/publication and complete computed-state preservation | [admission](../../src/tensorfold/server/admission.py), [Responses](../../src/tensorfold/server/responses.py), [Conversations](../../src/tensorfold/server/conversations.py), [logical records](../../src/tensorfold/server/api_records.py); Qwen prefix/retained catalog and RAM restore | CPU software milestones exist. Logical records alone do not qualify GPU continuation. The concrete ProviderOne integration and actual SC117 workload/failure gates remain open. | Existing named API profiles remain unchanged; no SC117 ProviderOne release is asserted. |

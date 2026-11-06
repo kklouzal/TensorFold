@@ -56,6 +56,12 @@ not qualify the GPU mesh or model performance. Source and fresh installed CPU
 batches each recorded 1,458 passes, 37 inherited fixture failures and one optional
 skip. See [physical stage admission and limits](docs/v100-adaptive-validation.md#pp1-physical-stage-admission-a4).
 
+The A5 fixture repair restores those 37 inherited cases without changing runtime
+code or removing their assertions. The scoped source and installed batches now
+each pass 1,498 tests with one optional companion-fixture skip. Historical A3/A4
+counts above retain their original meaning; the new coverage does not establish
+V100/model/performance qualification. See [fixture contracts](docs/v100-adaptive-validation.md#restored-fixture-contracts-a5).
+
 The ordered combine-to-MoE-tail prototype completed exact component59 and
 compiler-resource checks but is **not advanced to model/P3**: its one-process
 synthetic CUDA-graph tail screen had per-M paired geometric latency
