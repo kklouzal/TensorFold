@@ -94,7 +94,7 @@ def prepare_media_source(engine, profile):
     """Hash the complete input closure once, before loading target/vision data."""
     from tensorfold.cuda.sm70.media_software_binding import issue_media_binding
     from tensorfold.engine.model_identity import capture_shared_model_identity
-    from .execution_identity import _ManifestRefusal, _fatal, _phase, _retire_store, artifact_files, digest
+    from .execution_identity import _ManifestRefusal, _fatal, _phase, _retire_store, _unretired, artifact_files, digest
 
     cohort = SimpleNamespace(rank=engine.rank, tp=engine.tp, multi=None,
                              comm=SimpleNamespace(store=engine._startup_store))
@@ -144,7 +144,8 @@ def prepare_media_source(engine, profile):
         _retire_store(cohort, channel, stages=stages)
         return authority, local["software"]
     except BaseException as error:
-        if not isinstance(error, _ManifestRefusal) or getattr(cohort, "_execution_manifest_uncertain", False):
+        if (not isinstance(error, _ManifestRefusal) or getattr(cohort, "_execution_manifest_uncertain", False)
+                or _unretired(error)):
             engine._abort_comm = True
             _fatal(cohort, error)
         raise

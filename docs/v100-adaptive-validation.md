@@ -426,6 +426,50 @@ long-context capacity, complete-serving performance and all PP2 gates remain
 unqualified. No gain or released target/MTP profile is claimed. Production is
 unchanged.
 
+## PP1 physical stage admission (A4)
+
+Canonical SM70 TP8 GPU-history startup now checks the physical assignment before
+initializing NCCL or admitting/loading model weights. The default gate observes
+device zero in each rank process and requires one host kernel, ordered complete
+eight-rank coverage, canonical distinct GPU UUIDs, the specified V100 SXM2 32GB
+SKU and SM70 capability. Reported positive memory bytes are observed directly;
+the nominal SKU is not turned into an arbitrary usable-memory floor.
+
+All SM70 TP8 ranks enter the same bounded CPU Store preflight, independently of
+their local canonical/legacy admission choice. Mixed participation refuses
+before ranks can split into CPU and NCCL waits. Uniform legacy participation
+skips physical eligibility and returns no stage receipt. Smaller-world and
+selected non-SM70 implementations keep their existing paths. The GPU-history
+target has no new flag to disable the guard or silently fall back to legacy.
+
+The existing startup-owned Store, agreed refusal/retirement phases and managed
+cohort containment are reused. Capture errors are published before dependent
+waits; malformed/oversized transport and uncertain cleanup are fatal. A semantic
+refusal whose key retirement fails now preserves its primary failure, cleanup
+failure and retained owner while marking the stage/draft/media preparation
+cohort unsafe. No new listener, communicator or persistent key registry is
+introduced. Managed replacements borrow their existing Store ownership.
+
+Two phases plus retirement have at most 32 keys; even the existing bootstrap
+allowance fits the current native key budget. Frames are bounded to 8 KiB before
+decode, below the existing constructor value allowance. Expensive checkpoint
+hashing, runtime inventory and topology commands remain opt-in. The optional
+execution-profile path shares the canonical UUID/rank-map validator while
+retaining its existing shared-file/container identity scope.
+
+The default physical-host fingerprint uses the Linux kernel boot ID, not a
+container hostname or machine-id. Two actual Docker containers on this GB10
+host produced the same fingerprint with different machine-id bindings. Runtimes
+that virtualize that kernel input need a separately qualified binding. The
+receipt exposes fingerprints rather than raw boot/GPU IDs and remains separate
+from the numerical identity used for prefix/copy/restore compatibility.
+
+Source, installed-artifact and physical-target closeout remain in progress.
+CPU metadata/protocol controls and current-host CPU Store exercises do not
+qualify the selected x86 ABI, eight actual V100s, the NVLink/P2P/PCIe/NUMA mesh,
+complete model numerics, capacity or throughput. Unmanaged launches retain their
+existing external failure-containment responsibility. Production is unchanged.
+
 ## Configuration and capacity
 
 For Flash Next GGUF with GPU indexer history, `--parallel auto` computes a

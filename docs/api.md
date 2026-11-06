@@ -732,6 +732,14 @@ expert coverage before model loading or retiring the current profile. Source and
 installed CPU controls cover the new reference paths; actual V100 qualification
 and PP2 remain pending.
 
+For canonical SM70 TP8 GPU-history startup, `capacity_plan.physical_stage`
+reports the accepted basic stage identity: schema version, one server, eight
+logical ranks, host fingerprint and per-rank GPU UUID fingerprints. It is an
+observation bound at startup, separate from numerical state compatibility and
+from full mesh/model/capacity/performance qualification. The guard has no runtime
+disable or retuning setting. Uniform legacy admission has no such receipt;
+mixed participation is refused before NCCL initialization.
+
 The following requests are each standalone, separate from execution settings:
 
 - `{"profile_table": TABLE}` registers only profiles backed by already verified

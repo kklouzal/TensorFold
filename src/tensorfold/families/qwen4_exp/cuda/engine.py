@@ -93,6 +93,7 @@ class FlashNextEngine:
         self._owner_preparation = None
         self.position_profile = self.position_method_binding = self._position_prepared = None
         self.coordinate_profile_binding = None
+        self._stage_identity = None
         self._media_inputs_enabled = False  # Only the admitted media-profile parser may enable this.
         self.media_profile = self._media_authority = self._media_software_binding = self._media_numeric_scope = None
         self._startup_reads: list = []
@@ -160,6 +161,7 @@ class FlashNextEngine:
         if indexer_history not in ("gpu", "ram"):
             raise ValueError("indexer history must be gpu or ram")
         self.indexer_history = indexer_history
+        self._stage_identity = None
         # Reject malformed counts without reading checkpoint metadata.
         if kv_full_windows is not None and (type(kv_full_windows) is not int or kv_full_windows < 1):
             check_kv_full_windows(kv_full_windows, streams=streams, vram_experts=vram_experts, tp=tp)
@@ -506,7 +508,9 @@ class FlashNextEngine:
                         or int(text["num_attention_heads"]) // tp != 3 or dim != 256 or not self.kv_pair.symmetric):
                     raise ValueError("native owner preparation requires the homogeneous TP8 H3/D256 GPU-history profile")
                 _format(self.kv_pair.key.bits, self.kv_pair.key.codec)
-        if dflash_plan is not None or media_requested:
+        stage_identity_required = implemented_admission and tp == 8
+        stage_identity_cohort = sm70 and tp == 8
+        if dflash_plan is not None or media_requested or stage_identity_cohort:
             from torch.distributed import TCPStore
             from tensorfold.cuda.comm import create_owned_tcp_store, validate_store_origin
             from .execution_identity import prepare_dflash_pairing
@@ -537,9 +541,15 @@ class FlashNextEngine:
                 from .media_runtime import prepare_media_source
 
                 self._media_authority, self._media_software_binding = prepare_media_source(self, self.media_profile)
-            if self._profile_build is not None:
+            if self._profile_build is not None and not stage_identity_cohort:
                 self._startup_store = self._startup_store_origin = None  # Existing comm retains the managed transport.
         torch.cuda.set_device(0)
+        if stage_identity_cohort:
+            from .stage_topology import prepare_pp1
+
+            self._stage_identity = prepare_pp1(self, torch, required=stage_identity_required)
+            if self._profile_build is not None:
+                self._startup_store = self._startup_store_origin = None  # Managed comm retains its transport.
         if sm70 and adaptive_sessions:
             from tensorfold.cuda.capacity import cuda_reserve_bytes
 
@@ -1187,6 +1197,8 @@ class FlashNextEngine:
             self.capacity_plan["expert_parallel"] = {**self.expert_partition.identity(),
                 "implementation": "reference-owned-rows-f32-v1" if partitioned_experts else "existing-etp8-provider",
                 "qualification": "software controls; per-degree V100 model/numerical/resource/performance gates pending"}
+        if self._stage_identity is not None:
+            self.capacity_plan["physical_stage"] = dict(self._stage_identity)
         if nvfp4_source:
             self.capacity_plan["sm70_weight_preparation"] = self._sm70_weight_preparation
             self.capacity_plan["sm70_weight_manifest"] = self._sm70_weight_manifest_identity

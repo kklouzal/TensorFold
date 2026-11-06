@@ -48,6 +48,13 @@ explicit reference execution. Each integrated batch recorded 1,217 passed,
 explicit limits; this is not a qualified V100 profile or a production change.
 See [PP1 expert partitions](docs/v100-adaptive-validation.md#pp1-expert-partitions-a3).
 
+Canonical SM70 TP8 GPU-history startup now binds one host kernel and eight
+distinct V100 SXM2 32GB device identities before NCCL initialization and model
+admission. All TP8 ranks use one preflight envelope, so mixed canonical/legacy
+participation refuses before dependent waits. This basic identity check does
+not qualify the GPU mesh or model performance. Source/installed closeout is in
+progress; see [physical stage admission](docs/v100-adaptive-validation.md#pp1-physical-stage-admission-a4).
+
 The ordered combine-to-MoE-tail prototype completed exact component59 and
 compiler-resource checks but is **not advanced to model/P3**: its one-process
 synthetic CUDA-graph tail screen had per-M paired geometric latency

@@ -59,6 +59,14 @@ effective deployment require their own exact artifacts, target and receipts.
 
 ## Required SC117 parallelism matrix
 
+A4 adds mandatory basic physical-stage admission for canonical SM70 TP8
+GPU-history startup: one kernel host, ordered complete rank coverage, distinct
+canonical GPU UUIDs and the specified V100 SXM2 32GB/SM70 observations before
+NCCL and model admission. All SM70 TP8 ranks use the common CPU Store envelope;
+uniform legacy participation skips eligibility and gets no physical-stage
+receipt. Source/installed verification is in progress. This does not establish
+the actual mesh, full model, resident capacity or performance gates below.
+
 These are six required cases, not six qualified implementations. TP flags,
 smaller-world tests, KV placement degrees or manifest metadata do not establish
 expert ETP/pipeline execution. Each needs explicit target/MTP partition,

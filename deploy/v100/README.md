@@ -11,6 +11,14 @@ from this source before using the option; these software checks do not qualify
 an eight-V100 deployment. See
 [A3 qualification status](../../docs/v100-adaptive-validation.md#pp1-expert-partitions-a3).
 
+Canonical SM70 TP8 GPU-history startup also requires the basic
+[A4 physical-stage binding](../../docs/v100-adaptive-validation.md#pp1-physical-stage-admission-a4)
+before NCCL/model admission. Expose the intended physical GPU as device zero
+in each rank process. Reusing one GPU across ranks, mixing host kernels or
+using a different GPU SKU is refused. Supported Docker rank containers use the
+shared kernel boot identity, independently of container machine-id. This is
+not an NVLink/P2P, NUMA, numerical or performance qualification.
+
 Optional [prepared serving profiles](../../docs/serving-profiles.md) use
 `--serving-profile-root` and the existing runtime endpoint for in-process
 model/context/KV/method changes. All-rank readiness and request leases guard

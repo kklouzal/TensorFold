@@ -44,7 +44,8 @@ def packet(tmp_path, monkeypatch):
     monkeypatch.setattr(identity, "artifact_files", lambda e: (files, checkpoint))
     monkeypatch.setattr(identity, "_source_files", lambda: {"source/source.py": source})
     monkeypatch.setattr(identity, "_runtime", lambda e, **kw: (
-        "same host", {"fp16_accumulation": False}, {"torch": "pinned"}, {"rank": 0, "uuid": "real-observed"},
+        "same host", {"fp16_accumulation": False}, {"torch": "pinned"},
+        {"rank": 0, "uuid": "00000000-0000-0000-0000-000000000001"},
         {"library/kernel.so": library}))
     controller = AdaptiveController(slots=1, row_budget=1, proposal_limit=0, prefill_tokens=256)
     controller.enable_migration(1)
@@ -264,7 +265,7 @@ def test_query_primary_survives_independent_child_cleanup_failures(monkeypatch):
     assert primary._tensorfold_retained_owners == [child]
 
 
-@pytest.mark.parametrize("divergent", [None, "host", "file", "uuid"])
+@pytest.mark.parametrize("divergent", [None, "host", "file", "uuid", "uuid-alias"])
 def test_rank_zero_hashes_once_only_after_shared_opened_identity_agreement(packet, monkeypatch, divergent):
     from concurrent.futures import ThreadPoolExecutor
     import copy
@@ -315,9 +316,11 @@ def test_rank_zero_hashes_once_only_after_shared_opened_identity_agreement(packe
 
     def runtime(engine, **kwargs):
         host, numerics, observed, topology, libraries = old_runtime(engine, **kwargs)
+        uuid = f"00000000-0000-0000-0000-{1 if divergent in ('uuid', 'uuid-alias') else engine.rank + 1:012x}"
+        if divergent != "uuid-alias" or engine.rank:
+            uuid = "GPU-" + uuid
         return ((host + "other" if divergent == "host" and engine.rank else host), numerics, observed,
-                {**topology, "rank": engine.rank,
-                 "uuid": "same" if divergent == "uuid" else "GPU-" + str(engine.rank)}, libraries)
+                {**topology, "rank": engine.rank, "uuid": uuid}, libraries)
 
     monkeypatch.setattr(identity, "_runtime", runtime)
     captures, capture = [], identity._capture
@@ -334,7 +337,7 @@ def test_rank_zero_hashes_once_only_after_shared_opened_identity_agreement(packe
         futures = [workers.submit(identity.bind_execution_manifest, e, path) for e in engines]
         if divergent:
             for future in futures:
-                with pytest.raises(ValueError, match="one host|distinct GPU"):
+                with pytest.raises(ValueError, match="one (?:physical )?host|distinct (?:physical )?GPU"):
                     future.result(timeout=10)
             assert not captures
         else:
@@ -501,7 +504,8 @@ def _eight_rank_cohort(packet, monkeypatch):
 
     def runtime(engine, **kwargs):
         host, numerics, observed, topology, libraries = original_runtime(engine, **kwargs)
-        return host, numerics, observed, {**topology, "rank": engine.rank, "uuid": "GPU-" + str(engine.rank)}, libraries
+        return host, numerics, observed, {
+            **topology, "rank": engine.rank, "uuid": f"GPU-00000000-0000-0000-0000-{engine.rank + 1:012x}"}, libraries
 
     monkeypatch.setattr(identity, "_runtime", runtime)
     return engines, path, values, poison, faults

@@ -3,7 +3,9 @@
 The supported distributed boundary is one host/container with immutable shared
 checkpoint mounts. Rank zero hashes bytes once; every rank verifies identical
 opened file identities before and after that pass. Paths and cached disk hashes
-alone never establish model identity. Normal startup performs none of this work.
+alone never establish model identity. Those input hashes and expensive probes
+remain opt-in. Normal stage admission reuses the bounded phase machinery and
+the shared rank-mapping validator without performing that content-binding work.
 """
 
 from __future__ import annotations
@@ -224,7 +226,8 @@ def prepare_dflash_pairing(engine, manifest, *, target_config, plan, context):
             "local_hashes_reused": binding.authority.hashes_reused}
         return binding.plan
     except BaseException as error:
-        if not isinstance(error, _ManifestRefusal) or getattr(cohort, "_execution_manifest_uncertain", False):
+        if (not isinstance(error, _ManifestRefusal) or getattr(cohort, "_execution_manifest_uncertain", False)
+                or _unretired(error)):
             engine._abort_comm = True
             _fatal(cohort, error)
         raise
@@ -984,12 +987,13 @@ def _bind_execution_manifest(engine, manifest_path, *, rebind, channel, manifest
     local = context["local"]
 
     def inventory():
-        if any(row["host"] != local["host"] or row["manifest"] != local["manifest"]
+        if any(row["manifest"] != local["manifest"]
                or row["artifacts"] != context["artifact_stats"] for row in ranks):
             raise ValueError("execution profiles require one host and identical immutable shared checkpoint files on every rank")
-        if (len(ranks) != engine.tp or any(row["topology"]["rank"] != rank for rank, row in enumerate(ranks))
-                or len({row["topology"]["uuid"] for row in ranks}) != engine.tp):
-            raise ValueError("execution profiles require the actual distinct GPU UUID to logical-rank mapping")
+        from .stage_topology import validate_rank_mapping
+
+        validate_rank_mapping([{"rank": row["topology"]["rank"], "host": row["host"],
+                                "uuid": row["topology"]["uuid"]} for row in ranks], engine.tp)
         if rebind and any(row["mutable_facts_changed"] for row in ranks):
             engine.multi.controller.invalidate_binding("observed execution inputs or placement changed")
         union = {}

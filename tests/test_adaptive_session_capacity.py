@@ -152,14 +152,16 @@ def test_bounded_verification_rows_do_not_release_resident_state_or_histories():
 @pytest.mark.torch
 @pytest.mark.parametrize("reserve_gib", [0, 3, 4, 5])
 @pytest.mark.parametrize("retention_tier", [None, "gpu", "ram"])
-@pytest.mark.parametrize("etp", [None, 8, 4, 2, "mismatch"])
+@pytest.mark.parametrize("etp", [None, 8, 4, 2, "mismatch", "stage-refusal"])
 def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(monkeypatch, tmp_path, reserve_gib,
                                                                            retention_tier, etp):
-    """Real headers/geometry; isolate only the native ABI dependency.
+    """Real headers/geometry; isolate native ABI and physical-stage prerequisites.
 
     The finite hard_nofile=1024 is an explicit synthetic input, not a claim
     that this host satisfies the selected native ABI. Dedicated actual-ABI
-    tests retain the shipping guard. All resource equations remain real.
+    tests retain the shipping guard. Physical identity has separate real-protocol
+    tests; this observer exercises its ordering, not actual GPU eligibility.
+    All resource equations remain real.
     """
     import json
     import numpy as np
@@ -224,8 +226,25 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
     monkeypatch.setattr(padded_linears, "_ENABLED", False)
     monkeypatch.setattr(gguf_admission, "capacity_options", lambda *a, **kw: {})
     import tensorfold.cuda.comm as comm
+    from tensorfold.families.qwen4_exp.cuda import stage_topology
+
+    order = []
+    startup_store = SimpleNamespace(host="test")
+    monkeypatch.setattr(comm, "create_owned_tcp_store", lambda *args, **kwargs: SimpleNamespace(store=startup_store))
+
+    def prepare_stage(owner, torch, *, required):
+        order.append("physical-stage")
+        assert required is True
+        assert owner._startup_store is startup_store and getattr(owner, "comm", None) is None
+        if etp == "stage-refusal":
+            raise ValueError("synthetic physical-stage refusal")
+        return {"scope": "synthetic prerequisite for real CPU geometry only"}
+
+    monkeypatch.setattr(stage_topology, "prepare_pp1", prepare_stage)
 
     def open_cpu_comm(*args, **kwargs):
+        order.append("nccl")
+        assert order[0] == "physical-stage"
         # Match partial-owner registration without acquiring a native/GPU Comm.
         result = SimpleNamespace(barrier=lambda: None, all_gather=None,
                                  store=SimpleNamespace(host=args[2]), native_state_slots_highwater=0)
@@ -248,6 +267,7 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
         pass
 
     def inspect(*args, **kwargs):
+        order.append("admission")
         assert kwargs["session_ceiling"] == 40
         assert owner.rope == rope
         assert owner._history_placement.degree == 4
@@ -301,11 +321,19 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
     expected = (pytest.raises(Inspected) if reserve_gib >= 4 else pytest.raises(ValueError, match="at least 4 GiB"))
     if etp == "mismatch" and reserve_gib >= 4:
         expected = pytest.raises(RuntimeError, match="expert placement")
+    if etp == "stage-refusal":
+        expected = pytest.raises(ValueError, match="physical-stage refusal")
     with expected:
         owner._initialize(tmp_path, depth=depth, tp=8, rank=0, master="test", graphs=False,
                           kv_dtype="int8", adaptive_sessions=True, session_ceiling=40,
                           execution_rows=execution_rows, max_waiting_input_bytes=4096, retention_policy=policy,
                           **({"expert_tensor_parallel_size": etp} if etp in (2, 4, 8) else {}))
+    if etp == "stage-refusal" or reserve_gib < 4:
+        assert order == ["physical-stage"]
+    elif etp == "mismatch":
+        assert order == ["physical-stage", "nccl"]
+    else:
+        assert order == ["physical-stage", "nccl", "admission"]
 
 
 @pytest.mark.torch
