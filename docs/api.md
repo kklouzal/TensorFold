@@ -727,8 +727,10 @@ CUDA, `--tp 8`, resident expert banks and GPU histories. It derives EP1/2/4 with
 the same PP1 stage; shared experts and nonexpert operators retain TP8. It is not
 a chat-completion field or a `/v1/runtime` execution setting. A change of expert
 degree changes numerical/cache compatibility and requires full qualified profile
-replacement or a drain. The current new ETP4/2 reference paths remain under
-verification; their presence does not qualify V100 serving or PP2.
+replacement or a drain. Prepared manifests reject invalid degrees and incompatible
+expert coverage before model loading or retiring the current profile. Source and
+installed CPU controls cover the new reference paths; actual V100 qualification
+and PP2 remain pending.
 
 The following requests are each standalone, separate from execution settings:
 

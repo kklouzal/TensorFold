@@ -57,7 +57,7 @@ to one stream, while successful checks allow the lane engine to combine requests
 
 ## CUDA
 
-### Prepared PP1 routed-expert degree (under verification)
+### Prepared PP1 routed-expert degree (software checked)
 
 Local Flash Next GGUF TP8 serving accepts the preparation-only option
 `--expert-tensor-parallel-size 8|4|2`. EP is derived as `8/ETP` within the single
@@ -70,8 +70,10 @@ cannot be combined with this option.
 
 Select the degree before startup on every rank, alongside the existing model,
 context, method, FIFO and retention options. This does not enable runtime ETP
-retuning or a PP2 pipeline. New ETP4/2 uses explicit reference execution and
-remains unqualified on actual V100 hardware. See the
+retuning or a PP2 pipeline. Rebuild the image from this source before using the
+new option; historical images below predate it. Source and fresh installed CPU
+checks cover the partition and integration. New ETP4/2 uses explicit reference
+execution and remains unqualified on actual V100 hardware. See the
 [implementation and evidence limits](../v100-adaptive-validation.md#pp1-expert-partitions-a3).
 
 The V100/SM70 provider reads the original mixed-GGUF shards through the same

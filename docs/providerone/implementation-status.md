@@ -67,12 +67,19 @@ ledger and the governing benchmark matrix.
 
 | Profile | Requested execution | Implemented starting point | Qualified | Effective |
 | --- | --- | --- | --- | --- |
-| TP8 × PP1 × ETP8 | One eight-GPU server | Existing all-expert/width80 path retained; explicit prepared selection and all-rank agreement are under A3 verification. | Actual complete SC117/V100 profile unqualified here. | No new released profile established. |
-| TP8 × PP1 × ETP4 | One eight-GPU server | A3 source wires EP2 banks of256 experts, width160, target/shared-GGUF MTP and owned-route reference execution; integrated checks pending. | Actual complete SC117/V100 profile unqualified here. | Pending this case's gates. |
-| TP8 × PP1 × ETP2 | One eight-GPU server | A3 source wires EP4 banks of128 experts, width320, target/shared-GGUF MTP and owned-route reference execution; integrated checks pending. | Actual complete SC117/V100 profile unqualified here. | Pending this case's gates. |
+| TP8 × PP1 × ETP8 | One eight-GPU server | Existing all-expert/width80 arithmetic retained; prepared selection and all-rank agreement have A3 source/installed CPU controls. | Actual complete SC117/V100 profile unqualified here. | No new released profile established. |
+| TP8 × PP1 × ETP4 | One eight-GPU server | A3 source/installed CPU controls cover EP2 banks of256 experts, width160, target/shared-GGUF MTP and owned-route reference execution. | Actual complete SC117/V100 profile unqualified here. | Pending this case's gates. |
+| TP8 × PP1 × ETP2 | One eight-GPU server | A3 source/installed CPU controls cover EP4 banks of128 experts, width320, target/shared-GGUF MTP and owned-route reference execution. | Actual complete SC117/V100 profile unqualified here. | Pending this case's gates. |
 | TP8 × PP2 × ETP8 | Two eight-GPU servers, one TP8 stage/server | Stage/transaction/RDMA/resource integration must be established. | Actual two-server profile unqualified here. | Pending this case's gates. |
 | TP8 × PP2 × ETP4 | Two eight-GPU servers | Exact ETP/stage integration must be established. | Actual two-server profile unqualified here. | Pending this case's gates. |
 | TP8 × PP2 × ETP2 | Two eight-GPU servers | Exact ETP/stage integration must be established. | Actual two-server profile unqualified here. | Pending this case's gates. |
+
+A3's source and fresh installed batches each recorded 1,217 passed, 29 inherited
+fixture failures and one optional-fixture skip. All 29 failed cases have matching
+nonempty diagnostics on the prior source reference; they remain failures, not
+equivalence or target qualification. Physical stage binding, full-model numerical
+quality, maximum capacity and performance gates remain open. See the
+[A3 artifact identities and limits](../v100-adaptive-validation.md#pp1-expert-partitions-a3).
 
 One-server release may proceed only after all three PP1 profiles and required
 SC117 feature gates pass; PP2 remains required work pending its own hardware

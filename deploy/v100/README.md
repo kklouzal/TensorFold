@@ -1,12 +1,14 @@
 # Flash Next on eight V100 GPUs
 
-PP1 routed-expert partitioning is under verification: startup may select
+Source and fresh installed CPU controls cover PP1 routed-expert partitioning. Startup may select
 `--expert-tensor-parallel-size 8|4|2` with local Flash Next GGUF TP8, resident
 expert banks and GPU histories. Every rank must use the same effective degree;
 nonexpert/shared-expert work stays TP8 and shared-GGUF MoE MTP follows the target.
 New ETP4/2 reference execution is not a qualified deployment or a performance
 result. Existing compose defaults retain their current TP8 behavior; the new
-option does not introduce PP2 or the separate RAM expert-follower mode. See
+option does not introduce PP2 or the separate RAM expert-follower mode. Rebuild
+from this source before using the option; these software checks do not qualify
+an eight-V100 deployment. See
 [A3 qualification status](../../docs/v100-adaptive-validation.md#pp1-expert-partitions-a3).
 
 Optional [prepared serving profiles](../../docs/serving-profiles.md) use

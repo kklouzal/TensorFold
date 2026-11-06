@@ -351,7 +351,7 @@ are unchanged.
 
 ## PP1 expert partitions (A3)
 
-The one-server source implementation is under verification. Preparation selects
+Source and fresh installed CPU controls cover the one-server expert-partition implementation. Preparation selects
 ETP8/4/2 inside TP8, deriving EP1/2/4. Fixed contiguous groups own 512/256/128
 SC117 experts, with intermediate shards of 80/160/320 values. Target and
 shared-GGUF MoE MTP use the same partition; nonexpert operators and the shared
@@ -375,11 +375,56 @@ profiles. Explicit ETP1 is refused; the separate rank-zero/RAM expert-follower
 mode does not implement this profile. No PP2 flag or pipeline support is added.
 PP2 remains required work with separate stage, transport and transaction gates.
 
-The first partition/planner increment passed 93 source tests; an isolated CLI
-boundary batch passed 62 before additional negative cases were added. Complete
-source, installed-package and actual V100 qualification remain pending for A3.
-These partial software results do not establish capacity, throughput or a
-released target/MTP profile. Production is unchanged.
+The existing startup cohort agreement now includes effective ETP, global expert
+count and full routed width, so default/explicit ETP8 agree and mixed degrees
+refuse before model admission. Computed-state identities distinguish the
+degree-specific reduction policy from physical rank placement. Prepared manifests
+validate the new selector and expert coverage before retiring the current model;
+ordinary runtime execution updates cannot change this structural choice.
+
+Source and fresh installed batches each recorded **1,217 passed, 29 failed and
+one skipped** across 26 modules. The source batch took 22.73 seconds; the installed
+batch took 22.95 seconds. Both exited 1. Every failed case has matching, nonempty
+exception diagnostics on the unchanged `0db3f178` reference: seven synthetic
+provider fixtures are refused by the existing FP16-GGUF guard, ten by the compact
+Planar/Iso4 provider guard, and twelve older parallel fixtures lack a `positions`
+attribute. These are inherited fixture failures, not passes, equivalence or
+hardware failures. The skip requires optional pinned companion/actual target
+metadata that was not supplied. Required deployment/public-permission controls
+passed 194 cases; static checks passed on all 22 affected Python files.
+
+The bounded resource repair passed 182 tests with one optional-fixture skip.
+Prefill attachment, admission and loading now bind the provider's shared-width
+contract: a partitioned in-place plan cannot understate the legacy provider's
+full-output-copy workspace merely because routed widths match. Prepared-profile
+controls passed 120 cases, including early refusal of invalid ETP degrees and
+expert coverage. The existing AST wiring unit reads the active Engine module;
+its final four cases passed separately after that test-only origin correction.
+These overlapping batches are not summed into a unique-test total.
+
+Fresh artifacts use source checkpoint
+`7e4e8cdc0a8e01ec03ab5c43afcc7a8844c85681`, source UID
+`4362794f2ebaa3f62ea79e0eb410394fc97b9223bd20aa67d472937edb10d651`, runtime
+`sha256:5cea184aeb7c298c767bdabba5dfaf7d8826b0fd9badbd8014ba090a797006b3`
+and verification image
+`sha256:8d47780d6f48aa7f4ec9e41aafae8d2407411e6a371398c3a47faa517ac1996e`.
+All 779 installed runtime-file hashes matched before and after, and all sixteen
+changed module origins were under installed `site-packages`. There was no runtime
+source overlay. The current native helper's C source identity and memfd interface
+were checked; CUDA remained uninitialized and the source-foundation audit exited
+zero. The installed gate and per-case source/reference/installed comparisons are
+retained in `providerone-alignment-20261106/pp1-etp-v1`. The earlier empty-array
+diagnostic-parser artifact is explicitly invalid and preserved as failure
+evidence; the corrected comparisons require nonempty diagnostics for every case.
+The installed gate SHA256 is
+`46147f1f326b7bcce4eaecc8e8e9c1bacaae64d1f2532a83452e4a62ae48cb18`;
+the strict source/reference/installed cause comparison SHA256 is
+`435a8e7369faecfb97f121c7958149f729497a768bad30d461c7717b430cfdb1`.
+
+Actual eight-V100 topology, imported allocations, full-model numerical/quality,
+long-context capacity, complete-serving performance and all PP2 gates remain
+unqualified. No gain or released target/MTP profile is claimed. Production is
+unchanged.
 
 ## Configuration and capacity
 
