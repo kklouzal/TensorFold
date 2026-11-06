@@ -18,7 +18,8 @@ def test_invalid_or_non_etp4_workspace_refuses(rows, slots, width):
         owned_workspace_bytes(rows, slots, width)
 
 
-def test_owned_wrapper_preserves_global_inventory_and_passes_caller_scratch(monkeypatch):
+@pytest.mark.parametrize("output_dtype", ["float16", "float32"])
+def test_owned_wrapper_preserves_global_inventory_and_passes_caller_scratch(monkeypatch, output_dtype):
     from types import SimpleNamespace
     import torch
     from tensorfold.cuda.sm70 import gguf_ops
@@ -31,7 +32,7 @@ def test_owned_wrapper_preserves_global_inventory_and_passes_caller_scratch(monk
     shared = torch.empty_like(x, dtype=torch.float32)
     local = torch.empty_like(picks)
     activation = torch.empty((15, 160), dtype=torch.float16)
-    out = torch.empty((3, 5, 256))
+    out = torch.empty((3, 5, 256), dtype=getattr(torch, output_dtype))
     assert gguf_ops.experts_owned(x, picks, bank, bank, bank, first=256, experts=512, width=160,
         shared=shared, local=local, activation=activation, out=out) is out
     assert len(calls) == 1

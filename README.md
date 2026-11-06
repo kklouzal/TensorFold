@@ -12,7 +12,7 @@ The V100 Compose profile accepts the explicit
 An owned-expert native ETP4 component separates routed and shared widths and
 uses bounded caller-owned scratch; it remains unselected pending target/MTP
 admission and actual SM70/model qualification. The existing reference path stays
-selected. The scoped source controls pass 1,691 CPU tests with one optional
+selected. The scoped source controls pass 1,692 CPU tests with one optional
 fixture skip; this does not establish native CUDA execution. See
 [current contracts and limits](docs/v100-adaptive-validation.md#tp8etp4-one-server-native-component).
 

@@ -1145,16 +1145,20 @@ __global__ void owned_routes(const Index* global, int64_t* local, int64_t count,
         local[at] = id >= first && id < int64_t(first) + experts ? int64_t(id) - first : -1;
     }
 }
-template <typename Index>
+template <typename Index, bool F32>
 __global__ void publish_owned(const Index* global, const int64_t* local, const float* shared,
-                              float* output, int64_t count, int dims, int slots, int global_experts) {
+                              void* output, int64_t count, int dims, int slots, int global_experts) {
     for (int64_t at = int64_t(blockIdx.x) * blockDim.x + threadIdx.x; at < count;
          at += int64_t(gridDim.x) * blockDim.x) {
         const int64_t pair = at / dims;
         const auto id = global[pair];
-        if (id == global_experts) output[at] = shared[(pair / slots) * dims + at % dims];
-        else if (id < 0 || id > global_experts) output[at] = __int_as_float(0x7fffffff);
-        else if (local[pair] < 0) output[at] = 0.0f;
+        float value;
+        if (id == global_experts) value = shared[(pair / slots) * dims + at % dims];
+        else if (id < 0 || id > global_experts) value = __int_as_float(0x7fffffff);
+        else if (local[pair] < 0) value = 0.0f;
+        else continue; // Owned rows already have the reused down kernel's storage rounding.
+        if constexpr (F32) static_cast<float*>(output)[at] = value;
+        else static_cast<__half*>(output)[at] = __float2half_rn(value);
     }
 }
 }
@@ -1190,7 +1194,9 @@ void gguf_experts_owned(const at::Tensor& x, const at::Tensor& picks,
     operand(shared, at::kFloat, device, "shared TP8 results");
     operand(local, at::kLong, device, "owned route scratch");
     operand(activation, at::kHalf, device, "owned activation scratch");
-    operand(output, at::kFloat, device, "owned output");
+    TORCH_CHECK(output.scalar_type() == at::kHalf || output.scalar_type() == at::kFloat,
+                "owned output must be FP16 or FP32");
+    operand(output, output.scalar_type(), device, "owned output");
     TORCH_CHECK(shared.sizes() == x.sizes() && local.sizes() == picks.sizes()
                 && activation.sizes() == at::IntArrayRef({picks.numel(), width})
                 && output.sizes() == at::IntArrayRef({x.size(0), picks.size(1), x.size(1)}),
@@ -1211,8 +1217,17 @@ void gguf_experts_owned(const at::Tensor& x, const at::Tensor& picks,
                          dims, int(width), int(picks.size(1)), experts, true, true, dims == 2560);
     const int64_t count = output.numel();
     const int publish_blocks = int(std::min<int64_t>((count + 127) / 128, 65535));
-    if (picks.scalar_type() == at::kLong)
-        publish_owned<<<publish_blocks, 128, 0, stream>>>(picks.data_ptr<int64_t>(), local.data_ptr<int64_t>(), shared.data_ptr<float>(), output.data_ptr<float>(), count, dims, int(picks.size(1)), int(global_experts));
-    else publish_owned<<<publish_blocks, 128, 0, stream>>>(picks.data_ptr<int32_t>(), local.data_ptr<int64_t>(), shared.data_ptr<float>(), output.data_ptr<float>(), count, dims, int(picks.size(1)), int(global_experts));
+    #define PUBLISH_OWNED(INDEX, FLOAT) \
+        publish_owned<INDEX, FLOAT><<<publish_blocks, 128, 0, stream>>>( \
+            picks.data_ptr<INDEX>(), local.data_ptr<int64_t>(), shared.data_ptr<float>(), \
+            output.data_ptr(), count, dims, int(picks.size(1)), int(global_experts))
+    if (picks.scalar_type() == at::kLong) {
+        if (output.scalar_type() == at::kFloat) PUBLISH_OWNED(int64_t, true);
+        else PUBLISH_OWNED(int64_t, false);
+    } else {
+        if (output.scalar_type() == at::kFloat) PUBLISH_OWNED(int32_t, true);
+        else PUBLISH_OWNED(int32_t, false);
+    }
+    #undef PUBLISH_OWNED
     C10_CUDA_KERNEL_LAUNCH_CHECK();
 }

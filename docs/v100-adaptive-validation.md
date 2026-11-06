@@ -701,8 +701,11 @@ closeout, following the owner's instruction to finish current work and stop.
 The owner prioritized TP8/PP1/ETP4 before further PP2 work. A3's reference
 target/shared-GGUF MTP path already partitions experts into two groups of four
 ranks. Each group owns 256 experts, with local routed width160; shared experts
-retain TP8 width80. Global router IDs, one representation per expert channel,
-FP32 expert slots and the existing ordered full-TP8 partial gather are preserved.
+retain TP8 width80. Global router IDs, one representation per expert channel
+and the existing ordered full-TP8 FP32 partial gather are preserved. Selected
+target/prompt buffers store FP16 expert slots before FP32 weighted reduction;
+the dedicated MTP buffer uses FP32 slots. Those storage boundaries are distinct
+from the subsequent reduction dtype.
 
 An explicit `GGUFExperts.forward_partitioned_native_candidate` component now
 uses device-side global-to-resident route mapping and existing packed native
@@ -713,14 +716,24 @@ existing native diagnostic NaN contract without an out-of-range bank read;
 they are not repaired into a valid expert. This is a component candidate, not
 selected serving dispatch or an established speed/quality equivalence result.
 
+The native component supports direct FP16 and FP32 caller outputs. Shared
+FP32 results round once to FP16 when the caller owns FP16 slot storage, using
+the existing typed down-kernel paths and a typed publication store. No extra
+full-slot FP32 temporary or copy is required merely to bridge output dtypes.
+Native arithmetic/model equivalence still requires its separate device gates.
+
 Callers supply reusable int64 routes and FP16 activations, separately owned by
 target and MTP roles. The native scratch forecast is
 `rows * slots * (8 + 2 * 160)` bytes, with at most 65,535 slots per call. Caller
-FP32 output and shared Dense temporaries remain separately charged. No per-bank
+slot output and shared Dense temporaries remain separately charged. No per-bank
 resident scratch is introduced. Integrated target/MTP worst-rank peak admission
 and a legal prefill policy beyond that call envelope remain selection gates.
 The component does not enable whole-model graphs: unique-history live-row
-execution has its own independent capture restriction.
+execution has its own independent capture restriction. Existing MoE activation
+storage is a possible integration reuse, not an extra allocation promise.
+Reference remap reserves cannot automatically fund persistent native arenas
+while a reference fallback remains reachable; prove an exclusive prepared
+provider or charge the overlapping lifetimes before reusing those reserves.
 
 The V100 Compose profile now forwards an explicitly set
 `TF_EXPERT_TENSOR_PARALLEL_SIZE=4` through its existing Bash argument array to
@@ -736,14 +749,19 @@ scratch. Their exact native arithmetic comparison reuses the existing packed
 provider to test the new mapping/publication boundary; it is not an independent
 full-model numerical or distributed-collective oracle.
 
-The four-module focused CPU batch passed 128 cases in 1.59 seconds. The scoped
-47-module source batch passed 1,691 cases with one optional pinned-companion/
-target-metadata skip in 32.80 seconds, including all A7 regression modules.
+The typed-output four-module focused CPU batch passed 129 cases in 1.57 seconds.
+The scoped 47-module source batch passed 1,692 cases with one optional pinned-
+companion/target-metadata skip in 32.96 seconds, including all A7 regression modules.
 Required deployment/public-permission controls passed 194 cases. Configured
 Ruff, affected F/py312 checks and Python compilation passed. CUDA stayed
 uninitialized; Python compilation does not compile or qualify the native CUDA
 entrypoint. These are canonical-source checks using the freshly built unchanged
 native FD extension, distinct from a fresh installed application check.
+
+The earlier FP32-only component at `033a0509` and its 1,691-case source/installed
+results remain historical evidence in `tp8-etp4-execution-v1`. They do not
+qualify the subsequent typed-output revision. Current commands and results are
+recorded separately in `tp8-etp4-execution-v2`.
 
 Actual SM70 compilation/execution, canonical SC117/MTP model and media quality,
 complete resource/capacity and matched end-to-end performance remain unrun.

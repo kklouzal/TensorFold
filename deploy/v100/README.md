@@ -21,9 +21,10 @@ option. This selects the existing reference provider, not the unqualified native
 candidate below, and does not qualify an eight-V100 deployment.
 
 An explicit owned-expert native ETP4 component now separates routed width160
-from shared-expert TP8 width80. It maps global router IDs on device and retains
-the existing FP32 slot/reduction contract, with caller-owned route/activation
-scratch. It is not selected by ordinary serving or this Compose setting.
+from shared-expert TP8 width80. It maps global router IDs on device and supports
+the caller's FP16 or FP32 slot storage before the existing FP32 partial/reduction
+boundary, with caller-owned route/activation scratch. It is not selected by
+ordinary serving or this Compose setting.
 Target/MTP peak admission, native SM70 compilation/execution, model quality,
 capacity and matched performance remain required before selection. Whole-model
 graphs remain disabled for the reference ETP4 and unique-history paths. See

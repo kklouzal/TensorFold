@@ -32,14 +32,14 @@ def make_bank(*, group=0, dims=256, kinds=(13, 12, 7)):
     return GGUFExperts(*packed, shared, count=512, width=width, dims=dims, partition=part)
 
 
-def inputs(bank, rows, dtype=torch.int64):
+def inputs(bank, rows, dtype=torch.int64, output_dtype=torch.float32):
     torch.manual_seed(735)
     x = torch.randn((rows, bank.dims), device="cuda", dtype=torch.float16) * .1
-    ids = torch.tensor([0, 255, 256, 511, 512], device="cuda", dtype=dtype)
+    ids = torch.tensor([0, 1, 2, 3, 254, 255, 256, 257, 510, 511, 512], device="cuda", dtype=dtype)
     picks = ids.repeat(rows, 1)
     local = torch.empty_like(picks, dtype=torch.int64)
     activation = torch.empty((picks.numel(), bank.width), device="cuda", dtype=torch.float16)
-    out = torch.full((*picks.shape, bank.dims), float("nan"), device="cuda")
+    out = torch.full((*picks.shape, bank.dims), float("nan"), device="cuda", dtype=output_dtype)
     return x, picks, local, activation, out
 
 
@@ -67,12 +67,13 @@ def arithmetic_control(bank, x, picks):
 @pytest.mark.parametrize("group", [0, 1])
 @pytest.mark.parametrize("rows", [1, 3, 17, 33])
 @pytest.mark.parametrize("dtype", [torch.int32, torch.int64])
-def test_global_bounds_foreign_zero_shared_and_tail_reuse_existing_arithmetic(group, rows, dtype):
+@pytest.mark.parametrize("output_dtype", [torch.float16, torch.float32])
+def test_global_bounds_foreign_zero_shared_and_tail_reuse_existing_arithmetic(group, rows, dtype, output_dtype):
     bank = make_bank(group=group)
-    data = inputs(bank, rows, dtype)
+    data = inputs(bank, rows, dtype, output_dtype)
     actual = run(bank, data)
     assert actual is data[-1]
-    expected = arithmetic_control(bank, data[0], data[1])
+    expected = arithmetic_control(bank, data[0], data[1]).to(output_dtype)
     assert torch.equal(actual.view(torch.uint8), expected.view(torch.uint8))
     assert torch.isfinite(actual).all()
     data[1].fill_(256 if group == 0 else 255)
@@ -81,37 +82,42 @@ def test_global_bounds_foreign_zero_shared_and_tail_reuse_existing_arithmetic(gr
 
 
 @pytest.mark.parametrize("kinds", [(8, 20, 7), (12, 13, 20), (13, 12, 7)])
-def test_capture_replays_changed_routes_and_publishes_invalid_without_bank_reads(kinds):
+@pytest.mark.parametrize("output_dtype", [torch.float16, torch.float32])
+def test_capture_replays_changed_routes_and_publishes_invalid_without_bank_reads(kinds, output_dtype):
     bank = make_bank(kinds=kinds)
-    data = inputs(bank, 3)
+    data = inputs(bank, 3, output_dtype=output_dtype)
     run(bank, data)
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
         run(bank, data)
-    data[1].copy_(torch.tensor([[512, 511, 255, 0, 256], [0, 255, 512, 511, 256],
-                              [256, 511, 0, 512, 255]], device="cuda"))
+    # Ten unique routed IDs plus shared, changed independently for every row.
+    data[1].copy_(torch.stack([data[1][row].roll(row + 1) for row in range(3)]))
     data[0].mul_(.5)
     data[-1].fill_(float("nan"))
     data[3].fill_(float("nan"))
     graph.replay()
     torch.cuda.synchronize()
-    expected = arithmetic_control(bank, data[0], data[1])
+    expected = arithmetic_control(bank, data[0], data[1]).to(output_dtype)
     assert torch.equal(data[-1].view(torch.uint8), expected.view(torch.uint8))
-    data[1][0] = torch.tensor([-1, 513, 2**40, 512, 255], device="cuda")
+    data[1][0, :3] = torch.tensor([-1, 513, 2**40], device="cuda")
     graph.replay()
     torch.cuda.synchronize()
     assert torch.isnan(data[-1][0, :3]).all()
     assert torch.isfinite(data[-1][0, 3:]).all()
 
 
-def test_actual_target_down_geometry_and_alias_scratch_refusal():
+@pytest.mark.parametrize("output_dtype", [torch.float16, torch.float32])
+def test_actual_target_down_geometry_and_alias_scratch_refusal(output_dtype):
     bank = make_bank(dims=2560, kinds=(12, 13, 7))
-    data = inputs(bank, 1)
-    assert torch.equal(run(bank, data).view(torch.uint8), arithmetic_control(bank, data[0], data[1]).view(torch.uint8))
+    data = inputs(bank, 1, output_dtype=output_dtype)
+    expected = arithmetic_control(bank, data[0], data[1]).to(output_dtype)
+    assert torch.equal(run(bank, data).view(torch.uint8), expected.view(torch.uint8))
     with pytest.raises(RuntimeError, match="overlap"):
         bank.forward_partitioned_native_candidate(data[0], data[1], local=data[1], activation=data[3], out=data[4])
     with pytest.raises(RuntimeError, match="exact admitted shapes"):
         bank.forward_partitioned_native_candidate(data[0], data[1], local=data[2], activation=data[3][:-1], out=data[4])
+    with pytest.raises(RuntimeError, match="FP16 or FP32"):
+        bank.forward_partitioned_native_candidate(data[0], data[1], local=data[2], activation=data[3], out=data[4].double())
 
 
 def test_two_method_roles_keep_independent_native_scratch_and_outputs():
@@ -127,5 +133,20 @@ def test_two_method_roles_keep_independent_native_scratch_and_outputs():
     assert torch.equal(target_rows[-1], target_result)
     assert torch.equal(companion_rows[-1].view(torch.uint8),
                        arithmetic_control(companion, companion_rows[0], companion_rows[1]).view(torch.uint8))
-    assert gguf_ops.owned_workspace_bytes(3, 5) + gguf_ops.owned_workspace_bytes(1, 5) == sum(
+    assert gguf_ops.owned_workspace_bytes(3, 11) + gguf_ops.owned_workspace_bytes(1, 11) == sum(
         value.numel() * value.element_size() for data in (target_rows, companion_rows) for value in data[2:4])
+
+
+@pytest.mark.parametrize("group", [0, 1])
+@pytest.mark.parametrize("rows", [1, 3, 17, 33])
+def test_half_slots_match_native_fp32_single_storage_cast_including_shared(group, rows):
+    bank = make_bank(group=group)
+    data = inputs(bank, rows, output_dtype=torch.float16)
+    half = run(bank, data).clone()
+    fp32_out = torch.empty_like(data[-1], dtype=torch.float32)
+    fp32_data = (*data[:4], fp32_out)
+    fp32 = run(bank, fp32_data)
+    assert torch.equal(half.view(torch.uint8), fp32.half().view(torch.uint8))
+    foreign = (data[1] < bank.partition.first) | (data[1] >= bank.partition.stop)
+    foreign &= data[1] != 512
+    assert torch.count_nonzero(half[foreign].view(torch.int16)) == 0  # literal positive zero

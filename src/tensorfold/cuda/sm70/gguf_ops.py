@@ -124,7 +124,9 @@ def experts_owned(x, picks, gate, up, down, *, first, experts, width, shared, lo
     """Explicit unselected ETP4 candidate, with caller-owned fixed native scratch.
 
     Foreign global slots become zero; invalid global IDs become NaN without any
-    bank read. NaN is a fatal diagnostic result, not recoverable input repair. Shared results come from the original independent TP8 Dense path.
+    bank read. NaN is a fatal diagnostic result, not recoverable input repair.
+    Shared results come from the original independent TP8 Dense path; publication
+    preserves caller FP16 or FP32 slot storage with one explicit FP16 rounding.
     """
     if x.ndim != 2 or picks.ndim != 2 or picks.shape[0] != x.shape[0]:
         raise ValueError("owned inputs and picks require matching row matrices")
