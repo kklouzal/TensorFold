@@ -155,6 +155,24 @@ separate gates. Commands, initial missing-tool/build-environment failures and
 the final passing controls are retained under
 `providerone-alignment-20261106/native-sdk-v1`.
 
+Actual staging at source checkpoint `3139be4e` verified all 197 destinations,
+1,476,052,040 logical bytes. The maintained CLI was exercised against 196
+verified cache entries and a missing CA package, which it downloaded from the
+explicit snapshot and verified afresh. The receipt SHA256 is
+`b9f86a8e7d79bc8db4b9b2e2fe9c416855a79b908820a9226f6d7702cdfc1b1d`;
+its source-input hashes and original/effective URL mapping are preserved in
+`native-sdk-v1/remote-acquisition-v2`. The preceding full acquisition and Ubuntu
+recovery records remain separately identified. This proves the staged input
+bytes and recovery path, with no SDK or native execution claim.
+
+The subsequent offline source-builder image build completed successfully in
+164.41 seconds from checkpoint `3139be4e`, using the verified local bundle and
+the unchanged generated Dockerfile. Its local image ID is
+`sha256:9344978748e6eac9b9323b332b2feadb71e151ed217e0984466161f1a24dc451`.
+The pinned base was observed as AMD64 with nvcc 12.9.86 and GCC 13.3.0. This
+reproduces the builder environment; framework/NCCL source builds, exported SDK
+audit, native compilation and real V100 qualification remain separate work.
+
 The current build-stage interface is:
 
 ```bash

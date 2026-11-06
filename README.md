@@ -28,7 +28,9 @@ See [prepared execution and remaining gates](docs/v100-adaptive-validation.md#pr
 The V100 source-build workflow can now reacquire its frozen APT/Python inputs
 with verified hashes, durable cache reuse, an explicit Ubuntu snapshot option
 and a staging byte cap.
-This prepares the offline builder; it does not qualify the SDK or native model
+All 197 declared inputs have been staged and verified with the maintained CLI.
+The offline source-builder image also builds successfully. These are dependency
+preparation results; they do not qualify the SDK or native model
 execution. See [input staging](deploy/v100/source-foundation.md#reacquire-the-frozen-build-inputs).
 
 This is an authority/source-baseline checkpoint, not a package or runtime
