@@ -350,6 +350,7 @@ def _runtime(engine, *, previous_topology=None):
                 "runtime_policy": policy, "rope": engine.rope.metadata(),
                 "eos": list(engine.w.cfg.eos), "method": engine.method_geometry.receipt(),
                 "mtp_import": engine.w.meta.get("mtp_import"),
+                "expert_partition": engine.w.meta.get("expert_partition"),
                 "proposal_confidence": engine.confidence}
     pairing = getattr(engine, "_dflash_pairing", None)
     if pairing is not None:

@@ -152,8 +152,9 @@ def test_bounded_verification_rows_do_not_release_resident_state_or_histories():
 @pytest.mark.torch
 @pytest.mark.parametrize("reserve_gib", [0, 3, 4, 5])
 @pytest.mark.parametrize("retention_tier", [None, "gpu", "ram"])
+@pytest.mark.parametrize("etp", [None, 8, 4, 2, "mismatch"])
 def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(monkeypatch, tmp_path, reserve_gib,
-                                                                           retention_tier):
+                                                                           retention_tier, etp):
     """Real headers/geometry; isolate only the native ABI dependency.
 
     The finite hard_nofile=1024 is an explicit synthetic input, not a claim
@@ -235,7 +236,13 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
         return result
 
     monkeypatch.setattr(comm, "open_comm", open_cpu_comm)
-    monkeypatch.setattr(capacity, "gather_ints", lambda t, g, v, world=2: [list(v) for _ in range(world)])
+    def gather_profile(t, g, values, world=2):
+        peers = [list(values) for _ in range(world)]
+        if etp == "mismatch" and len(values) == 7:
+            peers[-1][-3] = 4  # Local default8 differs from one peer before model admission.
+        return peers
+
+    monkeypatch.setattr(capacity, "gather_ints", gather_profile)
 
     class Inspected(Exception):
         pass
@@ -244,6 +251,7 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
         assert kwargs["session_ceiling"] == 40
         assert owner.rope == rope
         assert owner._history_placement.degree == 4
+        assert owner.expert_partition.etp == (8 if etp is None else etp)
         make = kwargs["session_geometry"]
         first, forty = make(text, 1), make(text, 40)
         a, b = first.breakdown_at(262145), forty.breakdown_at(262145)
@@ -290,11 +298,14 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
     owner._startup_store_origin = owner._store_use_libuv = None
     owner._profile_build = None  # __init__ normally establishes this lifecycle before _initialize.
     owner._startup_reads = []
-    expected = pytest.raises(Inspected) if reserve_gib >= 4 else pytest.raises(ValueError, match="at least 4 GiB")
+    expected = (pytest.raises(Inspected) if reserve_gib >= 4 else pytest.raises(ValueError, match="at least 4 GiB"))
+    if etp == "mismatch" and reserve_gib >= 4:
+        expected = pytest.raises(RuntimeError, match="expert placement")
     with expected:
         owner._initialize(tmp_path, depth=depth, tp=8, rank=0, master="test", graphs=False,
                           kv_dtype="int8", adaptive_sessions=True, session_ceiling=40,
-                          execution_rows=execution_rows, max_waiting_input_bytes=4096, retention_policy=policy)
+                          execution_rows=execution_rows, max_waiting_input_bytes=4096, retention_policy=policy,
+                          **({"expert_tensor_parallel_size": etp} if etp in (2, 4, 8) else {}))
 
 
 @pytest.mark.torch

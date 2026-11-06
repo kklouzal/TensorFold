@@ -330,6 +330,14 @@ class State:
             self.kv_identity += (("unique-history-v1", plan.world, plan.global_kv_heads,
                                   plan.target_layers, plan.page_tokens),)
             self.kv_identity += (("compact-indexer-v1", 4, c.index_dim),)
+        route = w.meta.get("expert_partition")
+        if route is not None:
+            from ..expert_partition import ExpertPartition
+
+            partition = ExpertPartition.bound(route, world=w.meta["world"], rank=w.meta["rank"],
+                experts=c.experts, full_width=w.meta["full"].moe_width)
+            self.kv_identity += (("routed-expert-reduction", 1, partition.world, partition.etp,
+                                  partition.groups, "reference-owned-rows-f32-v1"),)
         if self.indexer_history_mode == "ram":
             self.kv_identity += (("indexer-history", "lossless-fp16-ram-archive-v1"),)
         self.kv_key_bits = 0 if self.kv_pair.key.bits == 16 else self.kv_pair.key.bits

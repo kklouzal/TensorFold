@@ -349,6 +349,38 @@ This does not qualify physical V100/SM70 allocations, full-model state/quality,
 capacity, latency or throughput. Selected existing GB10 profiles and production
 are unchanged.
 
+## PP1 expert partitions (A3)
+
+The one-server source implementation is under verification. Preparation selects
+ETP8/4/2 inside TP8, deriving EP1/2/4. Fixed contiguous groups own 512/256/128
+SC117 experts, with intermediate shards of 80/160/320 values. Target and
+shared-GGUF MoE MTP use the same partition; nonexpert operators and the shared
+expert remain TP8. Packed source coefficients retain their original encodings
+and partial-block offsets. A rank stores only its group's routed banks.
+
+New ETP4/2 reference execution filters global routes before local bank lookup,
+initializes nonowner outputs to zero, and uses the existing full-TP rank-ordered
+FP32 gather/consumer. Empty routed groups retain collective participation.
+The shared expert remains independent of routed EP ownership. Owned-row
+compaction and scalar validation include device synchronization and dynamic
+temporary allocations; these are reference implementation costs, not measured
+speedups. The resident, decode/prefill, remapping and companion ledgers must
+cover the selected geometry. Degree-specific floating-point reductions require
+their own numerical and full-model quality qualification.
+
+The public startup option is `--expert-tensor-parallel-size 8|4|2` for local
+Flash Next GGUF, CUDA TP8, resident banks and GPU histories. The Python family
+and engine option is `expert_tensor_parallel_size`. Omission preserves existing
+profiles. Explicit ETP1 is refused; the separate rank-zero/RAM expert-follower
+mode does not implement this profile. No PP2 flag or pipeline support is added.
+PP2 remains required work with separate stage, transport and transaction gates.
+
+The first partition/planner increment passed 93 source tests; an isolated CLI
+boundary batch passed 62 before additional negative cases were added. Complete
+source, installed-package and actual V100 qualification remain pending for A3.
+These partial software results do not establish capacity, throughput or a
+released target/MTP profile. Production is unchanged.
+
 ## Configuration and capacity
 
 For Flash Next GGUF with GPU indexer history, `--parallel auto` computes a

@@ -14,6 +14,7 @@ from dataclasses import asdict, dataclass
 WORKSPACE_BUDGET_BYTES = None
 DECODE_BYTES = 32 << 20
 BLAS_SCRATCH_BYTES = 32 << 20
+_UNCHECKED_SHARED_WIDTH = object()
 POLICY = "gguf-reference-prefill-live-slots-v3"
 
 
@@ -31,10 +32,14 @@ def original_pairs(width, dims):
     return min(16, 1 << (capacity.bit_length() - 1))
 
 
-def _components(width, dims, rows, slots, pairs):
+def _components(width, dims, rows, slots, pairs, shared_width=None):
     decoded = 8 * pairs * width * dims
     tile = 28 * pairs * dims + 40 * pairs * width + 64 * pairs + 8 * (width + dims)
-    shared = 32 * (width + dims) * 16 + rows * (width + dims) * 32 + rows * slots * dims * 4
+    if shared_width is None:
+        shared = 32 * (width + dims) * 16 + rows * (width + dims) * 32 + rows * slots * dims * 4
+    else:
+        # Partitioned routing writes selected slots in place: no full torch.where copy.
+        shared = 32 * (shared_width + dims) * 16 + rows * (shared_width + dims) * 32 + pairs * dims * 4
     return decoded, tile, shared, BLAS_SCRATCH_BYTES
 
 
@@ -46,10 +51,13 @@ class PrefillPlan:
     slots: int
     pairs: int
     budget_bytes: int
+    shared_width: int | None = None
 
     def __post_init__(self):
         for name in ("width", "dims", "rows", "slots", "pairs", "budget_bytes"):
             _positive(getattr(self, name), name)
+        if self.shared_width is not None:
+            _positive(self.shared_width, "shared width")
         allowed = (original_pairs(self.width, self.dims), 32, 64, 128)
         if self.pairs not in allowed:
             raise ValueError("GGUF prefill batch count must be original, 32, 64 or 128")
@@ -60,35 +68,40 @@ class PrefillPlan:
     def decoded_replacement_bytes(self):
         # Python loop replacement can retain old gate/up/down and one newly
         # decoded FP16 bank simultaneously: four banks, not three.
-        return _components(self.width, self.dims, self.rows, self.slots, self.pairs)[0]
+        return _components(self.width, self.dims, self.rows, self.slots, self.pairs, self.shared_width)[0]
 
     @property
     def tile_bytes(self):
         # Index vectors/expanded bank rows, selected input/result rows, two
         # FP32 projections, SwiGLU intermediates and selected FP16 activation.
-        return _components(self.width, self.dims, self.rows, self.slots, self.pairs)[1]
+        return _components(self.width, self.dims, self.rows, self.slots, self.pairs, self.shared_width)[1]
 
     @property
     def shared_bytes(self):
         # The last routed tile remains live while the original shared expert
         # runs fixed-M32 GEMMs. Include full-row intermediates and the FP32
         # torch.where temporary. Caller-owned MoEBuffers.y is charged elsewhere.
-        return _components(self.width, self.dims, self.rows, self.slots, self.pairs)[2]
+        return _components(self.width, self.dims, self.rows, self.slots, self.pairs, self.shared_width)[2]
 
     @property
     def workspace_bytes(self):
-        return sum(_components(self.width, self.dims, self.rows, self.slots, self.pairs))
+        return sum(_components(self.width, self.dims, self.rows, self.slots, self.pairs, self.shared_width))
 
-    def validate(self, *, width, dims, rows=None, slots=None):
+    def validate(self, *, width, dims, rows=None, slots=None, shared_width=_UNCHECKED_SHARED_WIDTH):
         if (width, dims) != (self.width, self.dims):
             raise ValueError("GGUF prefill plan does not match the loaded expert geometry")
+        if shared_width is not _UNCHECKED_SHARED_WIDTH and self.shared_width != shared_width:
+            raise ValueError("GGUF prefill shared width/provider does not match the loaded expert geometry")
         if rows is not None and (type(rows) is not int or not 0 <= rows <= self.rows):
             raise ValueError("GGUF prefill rows exceed the admitted workspace plan")
         if slots is not None and (type(slots) is not int or not 0 < slots <= self.slots):
             raise ValueError("GGUF prefill slots exceed the admitted workspace plan")
 
     def receipt(self):
-        return {**asdict(self), "policy": POLICY,
+        values = asdict(self)
+        if self.shared_width is None:
+            values.pop("shared_width")  # Preserve the existing ETP8 receipt exactly.
+        return {**values, "policy": POLICY,
                 "original_pairs": original_pairs(self.width, self.dims),
                 "nominal_three_decoded_banks_bytes": 6 * self.pairs * self.width * self.dims,
                 "decoded_replacement_bytes": self.decoded_replacement_bytes,
@@ -97,18 +110,18 @@ class PrefillPlan:
                 "caller_output_included": False, "host_bytes": 0, "resident_bytes": 0}
 
 
-def choose(*, width, dims, rows, slots, budget_bytes):
+def choose(*, width, dims, rows, slots, budget_bytes, shared_width=None):
     """Prefer the largest proven batch count that fits an explicit scratch cap."""
     for name, value in (("width", width), ("hidden width", dims), ("rows", rows),
                         ("slots", slots), ("budget", budget_bytes)):
         _positive(value, name)
     for pairs in (128, 64, 32, original_pairs(width, dims)):
-        if sum(_components(width, dims, rows, slots, pairs)) <= budget_bytes:
-            return PrefillPlan(width, dims, rows, slots, pairs, budget_bytes)
+        if sum(_components(width, dims, rows, slots, pairs, shared_width)) <= budget_bytes:
+            return PrefillPlan(width, dims, rows, slots, pairs, budget_bytes, shared_width)
     raise ValueError("GGUF prefill budget cannot fit the original reference provider")
 
 
-def plan(text, *, rows, world):
+def plan(text, *, rows, world, expert_tensor_parallel_size=None):
     """Engine hook: create one immutable plan before admission, or retain default."""
     if WORKSPACE_BUDGET_BYTES is None:
         return None
@@ -118,9 +131,16 @@ def plan(text, *, rows, world):
     shared = _positive(text["shared_expert_intermediate_size"], "shared expert width")
     if width % world or shared != width:
         raise ValueError("GGUF prefill requires equal routed/shared widths divisible by tensor parallelism")
-    return choose(width=width // world, dims=text["hidden_size"], rows=rows,
+    if expert_tensor_parallel_size is None:
+        routed_width = width // world
+    else:
+        from ..expert_partition import ExpertPartition
+
+        routed_width = ExpertPartition(world, 0, text["num_experts"], width, expert_tensor_parallel_size).width
+    return choose(width=routed_width, dims=text["hidden_size"], rows=rows,
                   slots=_positive(text["num_experts_per_tok"], "routed slots") + 1,
-                  budget_bytes=WORKSPACE_BUDGET_BYTES)
+                  budget_bytes=WORKSPACE_BUDGET_BYTES,
+                  **({"shared_width": shared // world} if routed_width != width // world else {}))
 
 
 def call_pairs(plan, rows, slots, *, width=None, dims=None):

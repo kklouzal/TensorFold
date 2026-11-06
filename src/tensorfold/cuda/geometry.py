@@ -249,12 +249,24 @@ def live_kv(t: dict, world: int, window: int) -> int:
     return arena_kv_bytes(attention, int(t["num_key_value_heads"]) // world, hd, window)
 
 
+def routed_expert_width(t: dict, world: int, expert_tensor_parallel_size=None) -> int:
+    """Prepared routed width only; nonexpert and shared dimensions retain TP."""
+    divisor = world if expert_tensor_parallel_size is None else expert_tensor_parallel_size
+    if (type(divisor) is not int or divisor <= 0 or expert_tensor_parallel_size is not None
+            and (world != 8 or divisor not in (2, 4, 8))):
+        raise ValueError("explicit routed expert geometry requires TP8 with ETP8/4/2")
+    full = int(t.get("moe_intermediate_size", t.get("intermediate_size", t["hidden_size"])))
+    if full % divisor:
+        raise ValueError("routed expert width must divide its prepared ETP")
+    return full // divisor
+
+
 def gdn_geometry(t: dict, world: int, reserve: int, *, indexed: bool = False, mtp: bool = False,
                  kv_bits: int = 16, rows: int | None = None, prompt: int = 0, evicts: bool = False,
                  kept: int = 2, prefill_rows: int = PREFILL_ROWS, kv_group: int = 32,
                  kv_scale_bytes: int = 2, kv_status: bool = False,
                  kv_pair: tuple[tuple[int, int, int], tuple[int, int, int]] | None = None,
-                 indexer_raw_device_bytes: int | None = None) -> Geometry:
+                 indexer_raw_device_bytes: int | None = None, expert_tensor_parallel_size=None) -> Geometry:
     """``rows``: widest verify; ``prompt``: chunk rows sharing its scratch; ``kept``: retained prefix states.
     Non-indexed attention uses arenas: ``evicts`` charges one live lineage, otherwise ``kept`` plus the current one.
     Non-indexed ``mtp`` also retains the MoE decoder's separate graph state and ordinary MTP head caches.
@@ -283,7 +295,7 @@ def gdn_geometry(t: dict, world: int, reserve: int, *, indexed: bool = False, mt
     fixed += linear * rows * (width * 2 + nk * dk * 4 + nv * dv * 4 + nv * 8)
     # Bound the concurrent activation arrays, MoE expert rows, logits and split-K scratch.
     slots = int(t.get("num_experts_per_tok", 1)) + 1
-    intermediate = int(t.get("moe_intermediate_size", t.get("intermediate_size", d))) // world
+    intermediate = routed_expert_width(t, world, expert_tensor_parallel_size)
     extent = d * streams + int(t["vocab_size"]) // world + slots * (intermediate + d) + width + h * hd
     fixed += max(16 * rows * extent * 4, prompt * prompt_row_bytes(t, world) if prompt else 0)
     fixed += (2 if mtp else 1) * 32 * rows * 2560 * 4
@@ -344,12 +356,12 @@ def _indexed_prefill_row(t: dict, world: int, h: int, hk: int, hd: int, nv: int,
             + 12 * streams + 64)
 
 
-def indexed_prompt_bytes(t: dict, rows: int, world: int = 1) -> int:
+def indexed_prompt_bytes(t: dict, rows: int, world: int = 1, *, expert_tensor_parallel_size=None) -> int:
     """Flash Next prompt activations and workspace for a piece, using the startup geometry's row bound."""
 
     _, h, hk, hd, _, nv, _, dv, width = _gdn_dims(t, world)
     slots = int(t.get("num_experts_per_tok", 1)) + 1
-    moe = int(t.get("moe_intermediate_size", t.get("intermediate_size", t["hidden_size"]))) // world
+    moe = routed_expert_width(t, world, expert_tensor_parallel_size)
     return rows * _indexed_prefill_row(t, world, h, hk, hd, nv, dv, width, slots, moe)
 
 
@@ -541,7 +553,7 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
                             full_windows: int | None = None, workspace_bytes: int = 0,
                             indexer_raw_device_bytes: int | None = None,
                             execution_rows: int | None = None, history_placement=None, rank: int = 0,
-                            device_metadata_only: bool = False) -> Geometry:
+                            device_metadata_only: bool = False, expert_tensor_parallel_size=None) -> Geometry:
     """Flash Next's concurrent decoder per rank, including each rank's windows and retained snapshots (``keep``, and
     the ``points`` each stream's prompt piece copies out before they are kept), its rounds' static tables and the
     budget of its captured rounds (``graph_bytes``: ``multi_graph_bytes``, 0 without graphs).
@@ -576,7 +588,7 @@ def indexed_stream_geometry(t: dict, streams: int, each: int, keep: int, *, mtp:
     recovery_bytes = (keep + streams * points) * (rec + conv + tail + int(mtp) * hc * d * 2)
     fixed = state_bytes + recovery_bytes  # retained plus a pass's points
     slots = int(t.get("num_experts_per_tok", 1)) + 1
-    moe = int(t.get("moe_intermediate_size", t.get("intermediate_size", d))) // world
+    moe = routed_expert_width(t, world, expert_tensor_parallel_size)
     extent = d * hc + int(t["vocab_size"]) // world + slots * (moe + d) + width + h * hd
     fixed += (1 + mtp) * (linear * rows * width * 2 + 32 * max(rows, 4) * 2560 * 4) + 16 * max(64, rows) * extent * 4
     fixed += prefill_rows * _indexed_prefill_row(t, world, h, hk, hd, nv, dv, width, slots, moe)

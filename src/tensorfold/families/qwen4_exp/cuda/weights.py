@@ -38,7 +38,8 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
          rope: RopeParameters | None = None, vram_experts: float | str | None = None, expert_loader=None,
          vram_experts_pin: str = "off", _pin_future_bytes: int = 0, eos_token_ids=None,
          mtp_model_dir=None, _draft_ids=None, _prefill_plan=None, family_manifest=None,
-         _sm70_plan=None, _sm70_workspace=None, _sm70_weight_plan=None, position_profile=None, _position_prepared=None) -> Weights:
+         _sm70_plan=None, _sm70_workspace=None, _sm70_weight_plan=None, position_profile=None, _position_prepared=None,
+         expert_tensor_parallel_size=None) -> Weights:
     """Load rank ``tp``'s shares; ``draft_vocab`` selects default/file ids or ids below N, None scores all ids."""
 
     import time
@@ -63,6 +64,7 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
                          table_reads=table_reads, ple_on_ssd=ple_on_ssd, vram_experts=vram_experts,
                          expert_loader=expert_loader, mtp_model_dir=mtp_model_dir, draft_vocab=draft_vocab,
                          _draft_ids=_draft_ids, _prefill_plan=_prefill_plan,
+                         **({"expert_tensor_parallel_size": expert_tensor_parallel_size} if expert_tensor_parallel_size is not None else {}),
                          **({"position_profile": position_profile, "_position_prepared": _position_prepared}
                             if position_profile is not None or _position_prepared is not None else {}))
     if position_profile is not None or _position_prepared is not None:

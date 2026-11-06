@@ -721,6 +721,15 @@ controller and retained state. Other bounded execution controls remain available
 Low-level migration mechanisms remain research/reference code, not a new serving
 option or an ordinary live-placement API.
 
+Routed-expert parallelism is also a preparation-time selection:
+`--expert-tensor-parallel-size 8|4|2` requires a local Flash Next GGUF checkpoint,
+CUDA, `--tp 8`, resident expert banks and GPU histories. It derives EP1/2/4 within
+the same PP1 stage; shared experts and nonexpert operators retain TP8. It is not
+a chat-completion field or a `/v1/runtime` execution setting. A change of expert
+degree changes numerical/cache compatibility and requires full qualified profile
+replacement or a drain. The current new ETP4/2 reference paths remain under
+verification; their presence does not qualify V100 serving or PP2.
+
 The following requests are each standalone, separate from execution settings:
 
 - `{"profile_table": TABLE}` registers only profiles backed by already verified

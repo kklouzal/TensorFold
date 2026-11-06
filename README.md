@@ -39,6 +39,13 @@ skips; those target gaps remain unqualified. This is not a measured capacity
 or performance gain or physical V100 qualification. See the
 [fixed initial ownership contract](docs/v100-adaptive-validation.md#fixed-initial-unique-history-a2).
 
+The PP1 expert-partition implementation is under verification. The preparation-only
+`--expert-tensor-parallel-size 8|4|2` option selects routed-expert tensor parallelism
+within a Flash Next GGUF TP8 stage. Nonexpert operators and shared experts remain
+TP8; the MoE MTP companion uses the target's partition. New ETP4/2 paths use
+explicit reference execution. This is not a qualified V100 profile or a production
+change. See [PP1 expert partitions](docs/v100-adaptive-validation.md#pp1-expert-partitions-a3).
+
 The ordered combine-to-MoE-tail prototype completed exact component59 and
 compiler-resource checks but is **not advanced to model/P3**: its one-process
 synthetic CUDA-graph tail screen had per-M paired geometric latency

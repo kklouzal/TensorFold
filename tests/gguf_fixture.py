@@ -102,7 +102,7 @@ def write(path, tensors, metadata):
     return Path(path)
 
 
-def tiny_model(path, *, linear_heads=(8, 16), linear_head_dim=32):
+def tiny_model(path, *, linear_heads=(8, 16), linear_head_dim=32, experts=2):
     """Two blocks, with real TP8 width80 and independently packed experts."""
     prefix = "qwen4exp."
     nk, nv = linear_heads
@@ -115,7 +115,7 @@ def tiny_model(path, *, linear_heads=(8, 16), linear_head_dim=32):
             "attention.head_count": 8, "attention.head_count_kv": 2, "attention.key_length": 32,
             "attention.layer_norm_rms_epsilon": 1e-6, "rope.dimension_count": 8,
             "rope.dimension_sections": (1, 1, 2, 0), "rope.freq_base": 10000.0,
-            "expert_count": 2, "expert_used_count": 1,
+            "expert_count": experts, "expert_used_count": 1,
             "expert_feed_forward_length": 640, "expert_shared_feed_forward_length": 640,
             "ssm.conv_kernel": 4, "ssm.state_size": linear_head_dim, "ssm.group_count": nk,
             "ssm.time_step_rank": nv, "ssm.inner_size": nv * linear_head_dim, "full_attention_interval": 2,
@@ -149,13 +149,13 @@ def tiny_model(path, *, linear_heads=(8, 16), linear_head_dim=32):
         base = f"blk.{layer}."
         hc(base + "hc_attn_")
         hc(base + "hc_ffn_")
-        add(base + "ffn_gate_exps.weight", (2, 640, 256), 12)
-        add(base + "ffn_up_exps.weight", (2, 640, 256), 12)
-        add(base + "ffn_down_exps.weight", (2, 256, 640), 7)
+        add(base + "ffn_gate_exps.weight", (experts, 640, 256), 12)
+        add(base + "ffn_up_exps.weight", (experts, 640, 256), 12)
+        add(base + "ffn_down_exps.weight", (experts, 256, 640), 7)
         add(base + "ffn_gate_shexp.weight", (640, 256))
         add(base + "ffn_up_shexp.weight", (640, 256))
         add(base + "ffn_down_shexp.weight", (256, 640))
-        add(base + "ffn_gate_inp.weight", (2, 256), 0)
+        add(base + "ffn_gate_inp.weight", (experts, 256), 0)
         add(base + "ffn_gate_inp_shexp.weight", (256,), 0)
         if layer == 0:
             add(base + "attn_qkv.weight", (conv, 256))

@@ -304,6 +304,8 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                       help="auto: MLX on macOS, CUDA elsewhere")
     cuda.add_argument("--tp", type=int, choices=(1, 2, 4, 8), default=1,
                       help="tensor-parallel GPUs (one visible GPU per rank process); run the same model/settings on each")
+    cuda.add_argument("--expert-tensor-parallel-size", type=int, choices=(2, 4, 8), default=None,
+                      help="prepared Flash Next GGUF TP8 routed-expert degree; EP=8/ETP, shared experts stay TP8 (PP1 only; V100 qualification pending)")
     cuda.add_argument("--expert-ranks", type=int, choices=(1, 2, 3, 4), default=1,
                       help="Flash Next expert-only NCCL ranks; rank zero owns backbone/state, separate from --tp")
     cuda.add_argument("--expert-shards", default=None, metavar="COUNTS",

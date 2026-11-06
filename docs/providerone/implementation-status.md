@@ -67,9 +67,9 @@ ledger and the governing benchmark matrix.
 
 | Profile | Requested execution | Implemented starting point | Qualified | Effective |
 | --- | --- | --- | --- | --- |
-| TP8 × PP1 × ETP8 | One eight-GPU server | TP8 source exists; complete profile implementation still needs its ownership/status proof. | Actual complete SC117/V100 profile unqualified here. | No new released profile established. |
-| TP8 × PP1 × ETP4 | One eight-GPU server | Exact degree-specific integration/coverage must be established. | Actual complete SC117/V100 profile unqualified here. | Pending this case's gates. |
-| TP8 × PP1 × ETP2 | One eight-GPU server | Exact degree-specific integration/coverage must be established. | Actual complete SC117/V100 profile unqualified here. | Pending this case's gates. |
+| TP8 × PP1 × ETP8 | One eight-GPU server | Existing all-expert/width80 path retained; explicit prepared selection and all-rank agreement are under A3 verification. | Actual complete SC117/V100 profile unqualified here. | No new released profile established. |
+| TP8 × PP1 × ETP4 | One eight-GPU server | A3 source wires EP2 banks of256 experts, width160, target/shared-GGUF MTP and owned-route reference execution; integrated checks pending. | Actual complete SC117/V100 profile unqualified here. | Pending this case's gates. |
+| TP8 × PP1 × ETP2 | One eight-GPU server | A3 source wires EP4 banks of128 experts, width320, target/shared-GGUF MTP and owned-route reference execution; integrated checks pending. | Actual complete SC117/V100 profile unqualified here. | Pending this case's gates. |
 | TP8 × PP2 × ETP8 | Two eight-GPU servers, one TP8 stage/server | Stage/transaction/RDMA/resource integration must be established. | Actual two-server profile unqualified here. | Pending this case's gates. |
 | TP8 × PP2 × ETP4 | Two eight-GPU servers | Exact ETP/stage integration must be established. | Actual two-server profile unqualified here. | Pending this case's gates. |
 | TP8 × PP2 × ETP2 | Two eight-GPU servers | Exact ETP/stage integration must be established. | Actual two-server profile unqualified here. | Pending this case's gates. |

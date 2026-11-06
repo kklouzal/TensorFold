@@ -376,6 +376,9 @@ def prepare(root, name, *, initializer, fixed_options, verify_content=True, expe
         value = options.get(key)
         if value is not None and (type(value) is not int or value < (0 if key == "depth" else 1)):
             raise ValueError(f"serving profile {key} requires an exact supported integer")
+    etp = options.get("expert_tensor_parallel_size")
+    if etp is not None and (type(etp) is not int or etp not in (2, 4, 8)):
+        raise ValueError("serving profile expert_tensor_parallel_size must be 2, 4 or 8")
     if "context_explicit" in raw["options"] and raw["options"]["context_explicit"] is not True:
         raise ValueError("a serving profile's explicit context cannot disable full-context admission")
     options["context_explicit"] = True
@@ -422,6 +425,16 @@ def prepare(root, name, *, initializer, fixed_options, verify_content=True, expe
     check_pair(pair, head_dim=int(text.get("head_dim") or text["hidden_size"] // text["num_attention_heads"]))
     options.update(fixed_options)
     options["context_explicit"] = True
+    if etp is not None:
+        from tensorfold.gguf_file import resolve_gguf
+        from ..expert_partition import ExpertPartition
+
+        if (options.get("tp") != 8 or resolve_gguf(model_dir) is None
+                or options.get("indexer_history", "gpu") != "gpu"
+                or options.get("vram_experts") is not None or options.get("expert_session") is not None):
+            raise ValueError("serving profile expert tensor parallelism requires resident GGUF TP8 GPU histories and expert banks")
+        ExpertPartition(options["tp"], options.get("rank", 0), text["num_experts"],
+                        text["moe_intermediate_size"], etp)
     validate_service_options(model_dir, options)
     positions, binding, numerical = resolve_profile_positions(model_dir, options)
     position_json = _position_document(positions, binding, numerical)

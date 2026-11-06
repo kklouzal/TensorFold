@@ -218,6 +218,14 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
     gguf = resolve_gguf(model_dir) is not None
     family_manifest = options.get("family_manifest")
     sm70 = gguf or family_manifest is not None
+    etp = options.get("expert_tensor_parallel_size")
+    if etp is not None:
+        if type(etp) is not int or etp not in (2, 4, 8):
+            raise ValueError("expert_tensor_parallel_size must be 2, 4 or 8")
+        if (not gguf or type(tp) is not int or tp != 8 or type(rank) is not int or not 0 <= rank < 8
+                or expert_ranks != 1 or expert_shards is not None or vram_experts is not None
+                or options.get("indexer_history", "gpu") != "gpu"):
+            raise ValueError("expert_tensor_parallel_size requires resident Flash Next GGUF TP8 GPU histories and expert banks")
     if gguf and family_manifest is not None:
         raise ValueError("family_manifest selects the explicit SM70 NVFP4 recipe; a GGUF source has its own representation")
     history = options.get("indexer_history", "gpu")
@@ -293,6 +301,8 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
                       "vision": bool(options.get("vision", False)),
                       "vision_urls": bool(options.get("vision_urls", False)), "yarn_factor": yarn_factor,
                       "vram_experts": vram_experts}
+    if etp is not None:
+        engine_options["expert_tensor_parallel_size"] = etp
     if family_manifest is not None:
         engine_options["family_manifest"] = Path(family_manifest)
         if options.get("_prepared_family_plan") is not None:

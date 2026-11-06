@@ -123,6 +123,22 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
     """Refuse KV cache, draft rule, image, tokenizer, share, slot and precision options the backend or family can't
     serve."""
 
+    etp = getattr(args, "expert_tensor_parallel_size", None)
+    if etp is not None:
+        if type(etp) is not int or etp not in (2, 4, 8):
+            raise ValueError("--expert-tensor-parallel-size must be 2, 4 or 8")
+        if (backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next")
+                or type(getattr(args, "tp", None)) is not int or args.tp != 8):
+            raise ValueError("--expert-tensor-parallel-size requires Flash Next GGUF on CUDA with --tp 8")
+        if (getattr(args, "expert_ranks", 1) != 1 or getattr(args, "expert_shards", None) is not None
+                or getattr(args, "vram_experts", None) is not None or getattr(args, "indexer_history", "gpu") != "gpu"):
+            raise ValueError("--expert-tensor-parallel-size requires resident TP8 GPU histories and expert banks")
+        from tensorfold.gguf_file import resolve_gguf
+
+        source = config_dir if config_dir is not None else getattr(args, "model", None)
+        if source is None or resolve_gguf(source) is None:
+            raise ValueError("--expert-tensor-parallel-size requires a local Flash Next GGUF checkpoint")
+
     if getattr(args, 'delta4_head', False) and getattr(args, 'lossless_head', False):
         raise ValueError('--delta4-head and --lossless-head are mutually exclusive')
 

@@ -141,14 +141,16 @@ def _validate(target, directory):
     return file
 
 
-def byte_plan(target, directory, *, tp=(0, 1)):
+def byte_plan(target, directory, *, tp=(0, 1), routing_rows=None):
     """Exact retained FP16/F32 arrays; shared target embedding/head are excluded."""
     from tensorfold.gguf_file import resolve_gguf
 
     if resolve_gguf(directory) is not None:
         from .gguf_mtp_weights import byte_plan as gguf_plan
 
-        return gguf_plan(target, directory, tp=tp)
+        return gguf_plan(target, directory, tp=tp, **({"routing_rows": routing_rows} if routing_rows is not None else {}))
+    if target.meta.get("expert_partition") is not None:
+        raise ValueError("ETP4/2 MoE MTP requires the shared-GGUF companion; floating companion remains ETP8")
     _validate(target, directory)
     c = target.cfg if hasattr(target, "cfg") else target
     _, world = tp
@@ -178,6 +180,8 @@ def attach(w, directory, *, tp=(0, 1)):
 
     rank, world = tp
     c, device = w.cfg, w.device
+    if w.meta.get("expert_partition") is not None:
+        raise ValueError("ETP4/2 MoE MTP requires the shared-GGUF companion; floating companion remains ETP8")
     file = _validate(w, directory)
     full_cfg = read_config(directory)["text_config"]
     global_heads, global_kv = int(full_cfg["num_attention_heads"]), int(full_cfg["num_key_value_heads"])

@@ -38,18 +38,24 @@ def _value(value):
     return 4, struct.pack("<I", value)
 
 
-def fixture(tmp_path, *, world=8, rank=3, mutate=None, vocabulary_copies=False):
+def fixture(tmp_path, *, world=8, rank=3, mutate=None, vocabulary_copies=False, experts=3, etp=None):
     full = SimpleNamespace(hidden=64, layers=4, heads=8, kv_heads=2, head_dim=8,
-                           experts=3, top_k=2, moe_width=64, shared_width=64, streams=4, low=8,
+                           experts=experts, top_k=2, moe_width=64, shared_width=64, streams=4, low=8,
                            index_heads=2, index_dim=8, index_budget=2048, index_ratio=4,
                            rotary_dim=8, rope_theta=10000000.0, vocab=64, eps=1e-6)
     local = SimpleNamespace(**vars(full))
     local.heads //= world
     local.kv_heads = max(1, full.kv_heads // world)
-    local.moe_width //= world
+    local.moe_width //= world if etp is None else etp
     local.shared_width //= world
     target = SimpleNamespace(cfg=local, meta={"full": full}, device=torch.device("cpu"),
                              embed=object(), head=object(), mtp=None)
+    if etp is not None:
+        from tensorfold.families.qwen4_exp.expert_partition import ExpertPartition
+
+        partition = ExpertPartition(world, rank, experts, full.moe_width, etp)
+        if partition.groups > 1:
+            target.meta["expert_partition"] = partition.identity()
     metadata = {"general.architecture": "qwen4exp", "qwen4exp.nextn_shared_target_tensors": True,
                 "qwen4exp.nextn_predict_layers": 1, "qwen4exp.block_count": 5,
                 "qwen4exp.attention.compress_ratios": (0, 0, 0, 4, 0),
@@ -96,9 +102,9 @@ def fixture(tmp_path, *, world=8, rank=3, mutate=None, vocabulary_copies=False):
         if prefix != "nextn.hc_head_":
             add(prefix + "inject.weight", (4, 256), 8)
     for name in ("gate", "up", "down"):
-        add(f"ffn_{name}_exps.weight", (3, 64, 64), 8)
+        add(f"ffn_{name}_exps.weight", (full.experts, 64, 64), 8)
         add(f"ffn_{name}_shexp.weight", (64, 64), 8)
-    add("ffn_gate_inp.weight", (3, 64))
+    add("ffn_gate_inp.weight", (full.experts, 64))
     add("ffn_gate_inp_shexp.weight", (64,))
     add("nextn.enorm.weight", (64,))
     add("nextn.hnorm.weight", (256,))

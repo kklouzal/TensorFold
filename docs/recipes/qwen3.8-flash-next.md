@@ -57,6 +57,23 @@ to one stream, while successful checks allow the lane engine to combine requests
 
 ## CUDA
 
+### Prepared PP1 routed-expert degree (under verification)
+
+Local Flash Next GGUF TP8 serving accepts the preparation-only option
+`--expert-tensor-parallel-size 8|4|2`. EP is derived as `8/ETP` within the single
+eight-rank stage. Routed banks use the corresponding expert subset and
+intermediate slice; shared experts and all nonexpert operators remain TP8.
+The shared-GGUF MoE MTP companion follows the target's selection. ETP4/2 does not
+support the separate floating MTP import. The default omission preserves
+existing profiles; `--expert-ranks` and RAM expert pools are separate modes and
+cannot be combined with this option.
+
+Select the degree before startup on every rank, alongside the existing model,
+context, method, FIFO and retention options. This does not enable runtime ETP
+retuning or a PP2 pipeline. New ETP4/2 uses explicit reference execution and
+remains unqualified on actual V100 hardware. See the
+[implementation and evidence limits](../v100-adaptive-validation.md#pp1-expert-partitions-a3).
+
 The V100/SM70 provider reads the original mixed-GGUF shards through the same
 family engine, with FP16 activations and FP32 recurrent state. It supports
 TP1/2/4/8, including complete-group KV-head replication, and TP concurrency

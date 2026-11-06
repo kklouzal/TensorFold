@@ -37,10 +37,15 @@ def model_plan(target, directory, *, tp=(0, 1)):
     c = target.cfg
     rank, world = tp
     full = target.meta.get("full", c)
+    from ..expert_partition import ExpertPartition
+
+    identity = target.meta.get("expert_partition")
+    partition = (ExpertPartition(world, rank, full.experts, full.moe_width) if identity is None else
+                 ExpertPartition.bound(identity, world=world, rank=rank, experts=full.experts, full_width=full.moe_width))
     if (type(world) is not int or world not in (1, 2, 4, 8)
             or type(rank) is not int or rank not in range(world)
             or full.heads % world or full.moe_width % world or full.shared_width % world
-            or c.heads * world != full.heads or c.moe_width * world != full.moe_width
+            or c.heads * world != full.heads or c.moe_width * partition.etp != full.moe_width
             or c.shared_width * world != full.shared_width):
         raise ValueError("MTP target and tensor-parallel partition disagree")
     if c.index_ratio != 4 or c.index_budget != 2048:
@@ -146,11 +151,14 @@ def model_plan(target, directory, *, tp=(0, 1)):
                       array("indexer.k_norm.weight", (c.index_dim,)),
                       matrix("attn_output.weight", (d, full.heads * hd),
                              columns=((rank * c.heads * hd, c.heads * hd),)))
-    lo, width = rank * c.moe_width, c.moe_width
-    expert_rows = [e * full.moe_width + i for e in range(c.experts) for i in range(lo, lo + width)]
+    lo, width = partition.column, partition.width
+    expert_rows = [e * full.moe_width + i for e in range(partition.first, partition.stop) for i in range(lo, lo + width)]
     gate = matrix("ffn_gate_exps.weight", (c.experts, full.moe_width, d), rows=expert_rows, packed=True)
     up = matrix("ffn_up_exps.weight", (c.experts, full.moe_width, d), rows=expert_rows, packed=True)
-    down = matrix("ffn_down_exps.weight", (c.experts, d, full.moe_width), columns=((lo, width),), packed=True)
+    down_rows = (None if partition.groups == 1 else
+                 [e * d + i for e in range(partition.first, partition.stop) for i in range(d)])
+    down = matrix("ffn_down_exps.weight", (c.experts, d, full.moe_width), rows=down_rows,
+                  columns=((lo, width),), packed=True)
     slo, swidth = rank * c.shared_width, c.shared_width
     shared = (matrix("ffn_gate_shexp.weight", (full.shared_width, d), rows=range(slo, slo + swidth)),
               matrix("ffn_up_shexp.weight", (full.shared_width, d), rows=range(slo, slo + swidth)),
@@ -158,7 +166,7 @@ def model_plan(target, directory, *, tp=(0, 1)):
     router = ConcatPlan((array("ffn_gate_inp.weight", (c.experts, d), transform="half_to_float"),
                          array("ffn_gate_inp_shexp.weight", (d,), transform="half_to_float")))
     layer = LayerW(c.layers, False, hc("hc_attn_", True), hc("hc_ffn_", True), None, attention,
-                   MoEW(router, ExpertPlan(gate, up, down, shared, c.experts, width, d)))
+                   MoEW(router, ExpertPlan(gate, up, down, shared, c.experts, width, d, partition if partition.groups > 1 else None)))
     fusion_shape = (d, 2 * d)
     result = MTPW(array("nextn.enorm.weight", (d,)), array("nextn.hnorm.weight", (wide,)),
                   matrix("nextn.eh_proj.weight", fusion_shape, columns=((0, d),)),
@@ -169,7 +177,9 @@ def model_plan(target, directory, *, tp=(0, 1)):
     unused = set(checkpoint.tensors) - planner.used - vocabulary_copies.keys()
     if unused:
         raise ValueError("unmapped shared MTP tensors: " + ", ".join(sorted(unused)))
-    return result, planner, {"policy": POLICY, "attention": "qsa", "compression_ratio": 4,
+    return result, planner, {"policy": POLICY,
+                             **({"expert_partition": partition.identity()} if partition.groups > 1 else {}),
+                             "attention": "qsa", "compression_ratio": 4,
                              "complete_group_token_budget": 2048,
                              "source_final_compression_ratio": ratios[-1],
                              "source": str(Path(entry).resolve()), "shared_target_embedding_head": True,
@@ -189,14 +199,19 @@ def model_plan(target, directory, *, tp=(0, 1)):
                              "qualification": "import controls only; QSA execution and quality pending"}
 
 
-def byte_plan(target, directory, *, tp=(0, 1)):
+def byte_plan(target, directory, *, tp=(0, 1), routing_rows=MATMUL_ROWS):
     _, planner, receipt = model_plan(target, directory, tp=tp)
     resident = sum(m.resident_bytes for m in planner.matrices) + sum(a.resident_bytes for a in planner.arrays)
     router_host = max((a.transform_host_staging_bytes for a in planner.arrays), default=0)
     c = target.cfg
+    from ..expert_partition import ExpertPartition
+
+    route = target.meta.get("expert_partition")
+    extra = (0 if route is None else ExpertPartition.bound(route, world=tp[1], rank=tp[0],
+             experts=c.experts, full_width=target.meta["full"].moe_width).routing_workspace(routing_rows, c.top_k + 1))
     return {"resident_bytes": resident, "staging_bytes": STAGING_BYTES,
             "host_staging_bytes": max(3 * STAGING_BYTES, router_host),
-            "workspace_bytes": DECODE_BYTES + MATMUL_ROWS * c.streams * c.hidden * 4,
+            "workspace_bytes": DECODE_BYTES + MATMUL_ROWS * c.streams * c.hidden * 4 + extra,
             "world": tp[1], "import": receipt}
 
 

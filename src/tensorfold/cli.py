@@ -386,6 +386,8 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
         options["draft_rows"] = args.draft_rows
     if getattr(args, "expert_ranks", 1) > 1:
         options.update(expert_ranks=args.expert_ranks, expert_shards=args.expert_shards)
+    if getattr(args, "expert_tensor_parallel_size", None) is not None:
+        options["expert_tensor_parallel_size"] = args.expert_tensor_parallel_size
     if getattr(args, "kv_full_windows", None) is not None:
         options["kv_full_windows"] = args.kv_full_windows
     if getattr(args, "serving_profile_root", None) is not None:

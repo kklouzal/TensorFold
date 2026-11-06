@@ -121,6 +121,7 @@ class ExpertPlan:
     count: int
     width: int
     dims: int
+    partition: object | None = None
 
 
 @dataclass(frozen=True)
@@ -349,7 +350,18 @@ class GGUFExperts:
     implementation = "reference"  # Select once, before engine warmup and state/cache preparation.
     packed_rows = 32  # Six depth3 verification windows use24 rows; prompts keep explicit BMM dispatch.
 
-    def __init__(self, gate, up, down, shared, *, count, width, dims):
+    def __init__(self, gate, up, down, shared, *, count, width, dims, partition=None):
+        self.partition = partition
+        if partition is not None:
+            from ..expert_partition import ExpertPartition
+
+            if (not isinstance(partition, ExpertPartition) or partition.groups <= 1
+                    or partition.experts != count or partition.width != width
+                    or gate.n != partition.count * width or up.n != partition.count * width
+                    or down.n != partition.count * dims):
+                raise ValueError("resident expert banks differ from their immutable EP/ETP partition")
+            self.capturable = False  # Reference owned-row compaction has a dynamic result extent.
+            self.implementation = "reference"  # Explicit per-bank profile; never a packed-kernel qualification.
         self.gate, self.up, self.down, self.shared = gate, up, down, tuple(shared)
         self.count, self.width, self.dims = count + 1, width, dims
         self.limit, self.swiglu = 0.0, True
@@ -363,12 +375,17 @@ class GGUFExperts:
 
         if not isinstance(plan, PrefillPlan):
             raise ValueError("GGUF prefill requires an immutable PrefillPlan")
-        plan.validate(width=self.width, dims=self.dims)
+        plan.validate(width=self.width, dims=self.dims,
+                      shared_width=None if self.partition is None else self.shared[0].n)
         if self._prefill_plan is not None:
             raise ValueError("GGUF prefill workspace is already prepared")
         self._prefill_plan = plan
 
     def forward(self, x, picks, out=None):
+        if self.partition is not None:
+            if self.implementation != "reference":
+                raise ValueError("partitioned GGUF experts require the explicit reference implementation")
+            return self.forward_partitioned_reference(x, picks, out)
         if self.implementation not in ("reference", "packed", "packed_splitk4", "packed_blocks", "packed_blocks2w", "packed_exact"):
             raise ValueError("unknown GGUF expert execution implementation")
         if self.implementation == "packed" and x.shape[0] <= self.packed_rows:
@@ -433,6 +450,8 @@ class GGUFExperts:
         return self.forward_reference(x, picks, out)
 
     def forward_reference(self, x, picks, out=None, *, _pairs=None):
+        if self.partition is not None:
+            return self.forward_partitioned_reference(x, picks, out, _pairs=_pairs)
         if (x.ndim != 2 or x.shape[1] != self.dims or x.dtype != torch.float16
                 or picks.ndim != 2 or picks.shape[0] != x.shape[0]
                 or picks.dtype not in (torch.int32, torch.int64) or picks.device != x.device):
@@ -469,6 +488,59 @@ class GGUFExperts:
             result = torch.bmm(activation[:, None], down.transpose(1, 2), out_dtype=torch.float32).squeeze(1)
             target[start:start + count].copy_(result[:count])
         return self._write_shared(x, picks, out)
+
+    def forward_partitioned_reference(self, x, picks, out=None, *, _pairs=None):
+        """Only owned global assignments enter the resident bank; all peers still gather.
+
+        This explicit reference profile pays dynamic nonzero/index-select and
+        scalar-validation synchronization. Its bounded masks/indices belong in
+        admission, and it makes no native-kernel or performance claim.
+        """
+        if (x.ndim != 2 or x.shape[1] != self.dims or x.dtype != torch.float16
+                or picks.ndim != 2 or picks.shape[0] != x.shape[0]
+                or picks.dtype not in (torch.int32, torch.int64) or picks.device != x.device):
+            raise ValueError("GGUF expert input/slot rows have incompatible geometry or dtype")
+        rows, slots = picks.shape
+        if picks.numel() and bool(((picks < 0) | (picks >= self.count)).any()):
+            raise ValueError("global routed/shared expert ID is outside the model inventory")
+        if out is None:
+            out = torch.empty((rows, slots, self.dims), dtype=torch.float32, device=x.device)
+        if (out.shape != (rows, slots, self.dims) or out.dtype not in (torch.float16, torch.float32)
+                or out.device != x.device or not out.is_contiguous()):
+            raise ValueError("GGUF expert output must be [rows,slots,hidden] FP16 or FP32")
+        out.zero_()  # In-place, including empty EP groups; never NaN*0 or stale caller slots.
+        flat = picks.reshape(-1)
+        target = out.reshape(-1, self.dims)
+        part = self.partition
+        owned = ((flat >= part.first) & (flat < part.stop)).nonzero().flatten()
+        pairs = self.pairs if _pairs is None else _pairs
+        width_ids = torch.arange(self.width, device=x.device, dtype=torch.int64)
+        hidden_ids = torch.arange(self.dims, device=x.device, dtype=torch.int64)
+        for start in range(0, owned.numel(), pairs):
+            positions = owned[start:start + pairs]
+            local_ids = flat.index_select(0, positions).to(torch.int64) - part.first
+            inputs = x.index_select(0, positions // slots)
+            gate = self.gate.decode((local_ids[:, None] * self.width + width_ids).reshape(-1))
+            up = self.up.decode((local_ids[:, None] * self.width + width_ids).reshape(-1))
+            gate = gate.reshape(-1, self.width, self.dims)
+            up = up.reshape(-1, self.width, self.dims)
+            gated = torch.bmm(inputs[:, None], gate.transpose(1, 2), out_dtype=torch.float32).squeeze(1)
+            upward = torch.bmm(inputs[:, None], up.transpose(1, 2), out_dtype=torch.float32).squeeze(1)
+            activation = (torch.nn.functional.silu(gated) * upward).half()
+            down = self.down.decode((local_ids[:, None] * self.dims + hidden_ids).reshape(-1))
+            down = down.reshape(-1, self.dims, self.width)
+            result = torch.bmm(activation[:, None], down.transpose(1, 2), out_dtype=torch.float32).squeeze(1)
+            target.index_copy_(0, positions, result.to(out.dtype))
+        shared_positions = (flat == self.count - 1).nonzero().flatten()
+        if shared_positions.numel():
+            gate, up, down = self.shared  # Shared expert remains the original TP8 width, never EP-owned.
+            shared = down.matmul((torch.nn.functional.silu(gate.matmul(x, f32=True))
+                                  * up.matmul(x, f32=True)).half(), f32=True)
+            for start in range(0, shared_positions.numel(), pairs):
+                positions = shared_positions[start:start + pairs]
+                result = shared.index_select(0, positions // slots)
+                target.index_copy_(0, positions, result.to(out.dtype))
+        return out
 
     def device_tensors(self):
         return tuple(t for p in (self.gate, self.up, self.down, *self.shared) for t in p.device_tensors())
@@ -549,7 +621,7 @@ class Planner:
 
 
 def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft_vocab=None, draft_ids=None,
-               position_profile=None, mtp_model_dir=None):
+               position_profile=None, mtp_model_dir=None, expert_tensor_parallel_size=None):
     """One immutable source of allocation and layout decisions for admission and load."""
     entry = resolve_gguf(path)
     if entry is None:
@@ -589,8 +661,13 @@ def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft
         if world % full.kv_heads:
             raise ValueError("GGUF TP must replicate key/value heads in equal rank groups")
         local_kv, first_kv = 1, rank // (world // full.kv_heads)
+    from ..expert_partition import ExpertPartition
+
+    partition = ExpertPartition(world, rank, full.experts, full.moe_width, expert_tensor_parallel_size)
+    if partition.groups > 1 and mtp and not shared_mtp:
+        raise ValueError("ETP4/2 MoE MTP requires the supported shared-GGUF companion")
     cfg = replace(full, heads=full.heads // world, kv_heads=local_kv, nk=full.nk // world, nv=full.nv // world,
-                  moe_width=full.moe_width // world, shared_width=full.shared_width // world)
+                  moe_width=partition.width, shared_width=full.shared_width // world)
     planner = Planner(checkpoint)
 
     def hc(base, inject=True):
@@ -602,18 +679,22 @@ def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft
 
     def moe(base):
         width = full.moe_width
-        lo, hi = rank * cfg.moe_width, (rank + 1) * cfg.moe_width
-        rows = [e * width + i for e in range(full.experts) for i in range(lo, hi)]
+        lo, hi = partition.column, partition.column + partition.width
+        rows = [e * width + i for e in range(partition.first, partition.stop) for i in range(lo, hi)]
         gate = planner.matrix(base + "ffn_gate_exps.weight", rows=rows, packed=True)
         up = planner.matrix(base + "ffn_up_exps.weight", rows=rows, packed=True)
-        down = planner.matrix(base + "ffn_down_exps.weight", columns=((lo, hi - lo),), packed=True)
+        down_rows = (None if partition.groups == 1 else
+                     [e * full.hidden + i for e in range(partition.first, partition.stop) for i in range(full.hidden)])
+        down = planner.matrix(base + "ffn_down_exps.weight", rows=down_rows,
+                              columns=((lo, hi - lo),), packed=True)
         slo, shi = rank * cfg.shared_width, (rank + 1) * cfg.shared_width
         shared = (planner.matrix(base + "ffn_gate_shexp.weight", rows=range(slo, shi)),
                   planner.matrix(base + "ffn_up_shexp.weight", rows=range(slo, shi)),
                   planner.matrix(base + "ffn_down_shexp.weight", columns=((slo, shi - slo),)))
         router = ConcatPlan((planner.array(base + "ffn_gate_inp.weight", transform="half_to_float"),
                              planner.array(base + "ffn_gate_inp_shexp.weight", transform="half_to_float")))
-        return MoEW(router, ExpertPlan(gate, up, down, shared, full.experts, cfg.moe_width, full.hidden))
+        return MoEW(router, ExpertPlan(gate, up, down, shared, full.experts, cfg.moe_width, full.hidden,
+                                     partition if partition.groups > 1 else None))
 
     def gdn(base):
         # GGML's value dimension is tiled [repeat,key_head,DV], not the
@@ -695,6 +776,8 @@ def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft
     unused = set(checkpoint.tensors) - planner.used
     if unused:
         raise ValueError("unmapped GGUF Flash Next tensors: " + ", ".join(sorted(unused)))
+    if partition.groups > 1:
+        prototype.meta["expert_partition"] = partition.identity()
     prototype.meta.update(full=full, rank=rank, world=world, vocab_offset=rank * (full.vocab // world),
                           execution_provider="sm70", execution_dtype="float16", gguf_entrypoint=str(entry),
                           gdn_decay_representation="ggml-stored-negative-exp-fp32",
@@ -724,10 +807,12 @@ def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft
 
 
 def weight_byte_plan(path, tp=None, *, mtp=False, draft_vocab=None, draft_ids=None, prefill_plan=None,
-                     position_profile=None, mtp_model_dir=None):
+                     position_profile=None, mtp_model_dir=None, expert_tensor_parallel_size=None,
+                     routing_rows=MATMUL_ROWS):
     # Separate stock-MTP admission is added by the common engine admission path.
     prototype, planner = model_plan(path, tp, mtp=mtp, draft_vocab=draft_vocab, draft_ids=draft_ids,
         mtp_model_dir=mtp_model_dir,
+        **({"expert_tensor_parallel_size": expert_tensor_parallel_size} if expert_tensor_parallel_size is not None else {}),
         **({"position_profile": position_profile, "rope": position_profile.target.rope}
            if position_profile is not None else {}))
     resident = sum(m.resident_bytes for m in planner.matrices) + sum(a.resident_bytes for a in planner.arrays)
@@ -742,8 +827,17 @@ def weight_byte_plan(path, tp=None, *, mtp=False, draft_vocab=None, draft_ids=No
         if not isinstance(prefill_plan, PrefillPlan):
             raise ValueError("GGUF prefill requires an immutable PrefillPlan")
         prefill_plan.validate(width=prototype.cfg.moe_width, dims=prototype.cfg.hidden,
-                              slots=prototype.cfg.top_k + 1)
+                              slots=prototype.cfg.top_k + 1,
+                              shared_width=prototype.cfg.shared_width
+                              if expert_tensor_parallel_size in (2, 4) else None)
         workspace += max(0, prefill_plan.workspace_bytes - DECODE_BYTES)
+    route = prototype.meta.get("expert_partition")
+    if route is not None:
+        from ..expert_partition import ExpertPartition
+
+        partition = ExpertPartition.bound(route, world=prototype.meta["world"], rank=prototype.meta["rank"],
+            experts=prototype.cfg.experts, full_width=prototype.meta["full"].moe_width)
+        workspace += partition.routing_workspace(routing_rows, prototype.cfg.top_k + 1)
     workspace += prototype.cfg.rotary_dim // 2 * 4  # Shared Weights.nbytes accounts projections separately from RoPE.
     # Each background PLE warm owns one reusable buffer per worker, concurrent
     # with the loader's raw, selected and concatenated source spans. Conservatively
@@ -902,7 +996,7 @@ def materializer(reader, device, *, dense_loader=None, prepare_experts=None, loa
         if isinstance(value, ExpertPlan):
             bank = GGUFExperts(materialize(value.gate), materialize(value.up), materialize(value.down),
                                tuple(materialize(part) for part in value.shared), count=value.count,
-                               width=value.width, dims=value.dims)
+                               width=value.width, dims=value.dims, partition=value.partition)
             if prepare_experts is not None:
                 prepare_experts(bank)
             return bank
@@ -931,7 +1025,8 @@ def _bind_mtp_vocabulary(target, prototype, reader, device):
 
 def load_gguf(path, device="cuda", *, tp=None, mtp=False, rope=None, eos_token_ids=None,
               table_reads=None, ple_on_ssd=False, mtp_model_dir=None, draft_vocab=None, _draft_ids=None,
-              _prefill_plan=None, position_profile=None, _position_prepared=None, **kwargs):
+              _prefill_plan=None, position_profile=None, _position_prepared=None,
+              expert_tensor_parallel_size=None, **kwargs):
     """Load original checkpoint bytes into the maintained Flash Next weight graph."""
     if mtp and mtp_model_dir is None:
         raise ValueError("this target GGUF contains no MTP head; select --no-drafts until a matching draft is loaded")
@@ -948,7 +1043,9 @@ def load_gguf(path, device="cuda", *, tp=None, mtp=False, rope=None, eos_token_i
     started = time.monotonic()
     prototype, planner = model_plan(path, tp, rope=rope, eos_token_ids=eos_token_ids,
                                     mtp=mtp, draft_vocab=draft_vocab, draft_ids=_draft_ids,
-                                    position_profile=position_profile, mtp_model_dir=mtp_model_dir)
+                                    position_profile=position_profile, mtp_model_dir=mtp_model_dir,
+                                    **({"expert_tensor_parallel_size": expert_tensor_parallel_size}
+                                       if expert_tensor_parallel_size is not None else {}))
     # Even the direct legacy loader computes its exact small CPU vector before
     # Reader/device weight retention, rather than discovering range failure at
     # the end of a model import. Selected profiles adopt their prepared bytes.
@@ -965,7 +1062,9 @@ def load_gguf(path, device="cuda", *, tp=None, mtp=False, rope=None, eos_token_i
         if not isinstance(_prefill_plan, PrefillPlan):
             raise ValueError("GGUF prefill requires an immutable PrefillPlan")
         _prefill_plan.validate(width=prototype.cfg.moe_width, dims=prototype.cfg.hidden,
-                               slots=prototype.cfg.top_k + 1)
+                               slots=prototype.cfg.top_k + 1,
+                               shared_width=prototype.cfg.shared_width
+                               if expert_tensor_parallel_size in (2, 4) else None)
     reader, tables = Reader(), PLETables()
     # Same-host TP ranks reuse the kernel's shared read cache. Reader still owns
     # each bounded span; giant quantized banks are never materialized in full RAM.
