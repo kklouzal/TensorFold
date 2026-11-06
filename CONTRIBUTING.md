@@ -6,6 +6,32 @@ Start with the [README](README.md), the model's [recipe](docs/recipes/README.md)
 and the [container guide](deploy/gb10/README.md). Read applicable `AGENTS.md`
 instructions before changing code. Keep unrelated working-tree changes intact.
 
+## Governing implementation contract
+
+Read the [canonical ProviderOne design](ProviderOne%20Implementation%20Docs/ProviderOne_V100_Adaptive_Inference_Design.md)
+(Section1 and the affected contracts) and [current implementation status](docs/providerone/implementation-status.md)
+before selecting work. The five files in `ProviderOne Implementation Docs/`
+are the single maintained canonical bundle; their relative companion links
+remain intact. `docs/v100-adaptive-inference-design.md` is only a pointer.
+Do not introduce a second editable full design, generated mirror or separate
+per-device API stack. The experimental companion is a conditional backlog,
+not proof of implementation or permission to bypass governing exit gates.
+
+Preserve selected profiles during the SC117-first delivery. Record actual
+source/dirty state, installed/native origins, model/recipe/hardware/method and
+requested/implemented/qualified/effective status. A source implementation,
+loader success, historical CPU suite or another device's result cannot qualify
+the current target. Source/status maps must be refreshed when their baseline
+changes. Keep third-party attribution and historical evidence names intact.
+
+This authority checkpoint does not rename packages, native modules, caches,
+entrypoints, deployment images or remotes. Rebranding remains a coherent owned
+implementation/release change with affected installed-artifact and profile
+gates; do not use aliases, an extra legacy serving stack or string replacement
+of historical receipts as a substitute. User `!` drafts and unrelated B16 work
+stay outside this checkpoint. The already-deleted old root full design is
+intentionally retired so a fresh checkout has one governing contract.
+
 ## Documentation and evidence
 
 Update `README.md` in the same change whenever capabilities, supported models

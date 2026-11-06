@@ -1,5 +1,20 @@
 # TensorFold fork
 
+Development is now governed by the [canonical ProviderOne implementation design](ProviderOne%20Implementation%20Docs/ProviderOne_V100_Adaptive_Inference_Design.md)
+and its unchanged companion documents in [ProviderOne Implementation Docs](ProviderOne%20Implementation%20Docs/).
+SC117/V100 is the immediate delivery priority while selected existing profiles,
+including GB10, retain their scoped contracts. The [source-to-contract status map](docs/providerone/implementation-status.md)
+separates requested, source-implemented, qualified and effective behavior.
+
+This is an authority/source-baseline checkpoint, not a package or runtime
+rebrand. Current TensorFold imports, CLI, native names, images and remotes keep
+their actual identities until a coherent, verified transition. Historical
+receipts and names remain evidence at their original source/image/workload;
+older CPU totals do not qualify this checkout. The legacy V100 design path is
+a pointer, not a second full contract. Companion experiments remain conditional
+under the governing design. Existing untracked `!` drafts are not maintained
+authority and are not part of this checkpoint.
+
 The ordered combine-to-MoE-tail prototype completed exact component59 and
 compiler-resource checks but is **not advanced to model/P3**: its one-process
 synthetic CUDA-graph tail screen had per-M paired geometric latency
