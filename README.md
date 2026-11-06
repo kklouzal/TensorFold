@@ -21,8 +21,11 @@ file checks live in `tensorfold.tensor_file`. Flash Next still owns its model
 configuration, architecture admission and decode recipes. Reading another GGUF
 architecture's inventory does not add inference support. The move preserves
 existing format and numerical contracts. Focused boundary controls and static
-checks passed; the broad source batch retains disclosed baseline failures, and
-installed-package verification is pending. No new hardware qualification is claimed. See
+checks passed. A fresh built-image check verified installed neutral-module origins
+and no source overlay: 1,264 tests passed, 12 pre-existing failures remain
+unqualified, and four tests were skipped. This is scoped I/O qualification,
+not an all-green suite or a new hardware/model/performance claim. Production
+was not changed. See
 [the A1 boundary and remaining gates](docs/v100-adaptive-validation.md#neutral-artifact-io-boundary-a1).
 
 The ordered combine-to-MoE-tail prototype completed exact component59 and

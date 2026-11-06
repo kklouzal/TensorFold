@@ -32,10 +32,40 @@ imports, split-header read counts and the existing MTP inventory handoff. The cu
 skipped; all48 failures also occurred in the immutable baseline, and all new
 boundary and corrected resolver cases passed. Static checks passed on 115 Python
 files. This is partial source evidence, not an all-green suite: the existing
-failures remain unqualified. Installed-package checks are pending; earlier suite
-totals do not qualify this source. The change adds no format, supported model, device
-execution, capacity, performance or V100 qualification claim. Selected GB10 and
-other existing profiles retain their original evidence scope and deployment.
+source failures remain historical evidence rather than an all-green result.
+
+A fresh built-image check then recorded **1,264 passed, 12 failed and four
+skipped** in 17.17 seconds. All five new boundary cases passed. The same 778
+installed runtime-file hashes were present before and after the check, with no
+runtime source overlay, neutral-module origins under the active purelib, and the
+old `tensorfold.cuda.tensor_file` module absent. Native construction used the
+current owned C source, exposing `memfd`; rebuilding the native helper resolved
+36 stale-FD failures from the source-test SDK without changing source or tests.
+CUDA remained uninitialized, and the source-foundation check exited zero.
+
+The remaining 12 failures match the baseline causes: four fake-engine fixtures
+lack `_sm70_import_plan`, one fake import blocker rejects the required
+`request_limits` import, and seven cases reject the actual ARM64 SDK where their
+native retained-payload contract requires the x86-64 Torch04cf2557/GCC13 ABI.
+These remain **unqualified failures**, not passes or an equivalence claim. No
+native ABI guard, test assertion or runtime check was weakened.
+
+Exact installed evidence scope:
+
+- Source checkpoint: `7be4925fec5eed762fe7b4b110be9289a8e29d0b`.
+- Built source UID: `23eb2c5a3058ce73e709e348bde358ec06b5d6c49f5fc6d218db12b3c439da89`.
+- Runtime image: `sha256:fce3dc00acc4c5aab8de1a1d26bd57c8be120705f097c4d3ce04169723dac53b`.
+- Verification image: `sha256:c2d6a9ccd4acbdbb92a119e2f4d1f4527033567690d6923b95a8e141badd2421`.
+- Active package origin: `/opt/tensorfold-venv/lib/python3.12/site-packages/tensorfold/__init__.py`.
+- Native C source SHA256: `f85d2c923adfaa14e819250e8def3c3166b8c8624295a37572916e62ad20c1f2`.
+- Installed gate SHA256: `b77dcc5a5fc3cfbd7918e1cecd116f271687210dc381de29f3a02e5f34c8566b`; per-cause triage SHA256: `0f6f5fbe95015f6c3fb95c7c4d8115c5ecf8a510c73c0818e86ea0ca8fd745e1`.
+
+The gate and triage are retained in the private
+`providerone-alignment-20261106` audit packet. This qualifies the affected
+installed I/O boundary only. It adds no format, supported model, device
+execution, capacity, performance or physical V100/SM70 qualification claim.
+Selected GB10 and other existing profiles retain their original evidence scope;
+production was unchanged. Earlier source runs and failures remain preserved.
 
 ## Current v6 source and CPU evidence
 
