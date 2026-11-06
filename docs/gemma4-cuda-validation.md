@@ -723,45 +723,84 @@ resources and scope; the source LAUNCH remains four warps.
 
 ## Row-two four-warp N128 investigation
 
-The a411/ba1a private policy used the retained v6 four-warp NT2 implementation
-only for actual nonprompt Target rows==2. The native57 component, fresh accepted
-reference/candidate exact full-model P0, actual M1..5/default/prompt dispatch,
-clipping room-two/full-q witness, and mirrored BASE/CAND | CAND/BASE screen
-completed. Source checks496/five CUDA-required skips and installed471/exact777
-belong to that prior revision. No numerical relaxation or new public CLI was
-introduced. Historical same-v7 trained-bank chain gains remain separate from
-this serving comparison.
+**Closed without selection.**
 
-The six cached candidate/reference geometric changes were T0 code+0.092804%,
-prose-0.042820%, short-0.338115%; T1 code-0.413883%, prose-0.143931%,
-short-0.031598%. T0 prose/short losses repeated in both halves; other paired
-halves and all cold/whole-request/TTFT/tails remain in report
-`expert-n128-four-row2-p3-v1/report-v1/summary.json` SHA256
-`652274fe65c01e75e8aa0e3473d187f1be87228a5dc548efc4709727ae7fbc94`.
-Cold T1 short decode improved0.533685% in both halves, whole-request duration
-fell0.510397%, while prefill/TTFT durations rose0.436404%/0.343286%. That
-cold workload had zero observed M2 exposure, so none of those changes is
-causally credited to the specialization. Torch allocation/reservation and
-cumulative peaks matched; this is not physical-memory equivalence. Instrumented
-constructor observations do not qualify shipping startup.
+The a411/ba1a private policy used the retained v6 four-warp NT2 primitive only
+for nonprompt Target rows==2. It completed source496/five CUDA-required skips,
+installed471/exact777, actual native57, fresh exact full-model reference/
+candidate P0 and a mirrored quartet. A later e1cc/7c7b variant removed redundant
+default Python selector work and false adapter keywords. Its source547/five
+CUDA-required skips and static checks passed; installed/current-provider
+qualification and explicit native LOAD-byte closure were followed by fresh
+short M1..5/q4p5/penalty/room-two/anchor/dirty-warm/cache checks. Historical full
+model/native proofs retained their own identities: the latter variant did not
+claim a new native57 or fresh12-generation/3-serial campaign. Both quartets ran
+full six compiler32 +42 full256 warm +42 measured requests in each of four
+fresh processes, with safe retirements and all eight finite semantic checks.
 
-Root dispositionea17b524 did not select the current variant and retained
-accepted ae8d/b579 W4D4/N64/clipping-ON production. Two processes per policy
-are descriptive evidence, not equivalence, noise or global inferiority.
-Native/model/raw/report/failure history and useful oracles remain intact.
+Both comparisons used accepted ae8d/b579 W4D4/N64/clipping-ON as reference.
+Cached metrics are each process's six-hit median, with two processes per arm.
+Percentage changes below are candidate/reference throughput; positive is
+faster. Raw cold/cache/whole/TTFT/tails, memory, drift and costs remain separate.
 
-A bounded subsequent source candidate removes redundant default Python work:
-keep all shipping role/buffer checks, initialize named `up_tile=64`, invoke the
-unchanged selector only for validated decode+prefill, and omit the false decode
-keyword from the CT adapter's default prompt call. Explicit prompt false still
-passes true. Native C++/CUDA/ABI/grouped code, every other native argument,
-Engine/Target, math/rounding and default behavior are unchanged. Future untimed
-native dispatch proof must observe `run_plan`'s named local rather than require
-a default selector call. No runtime telemetry is added. Qualification of this
-new two-Python-file revision has passed547 source CPU checks with five explicit
-CUDA-required skips, all-F/static, full Ruff and diff checks (gatee08c6a89).
-Build, installed inventory, actual current provider observation, affected
-model/dispatch and P3 qualification remain pending. Runtime2/tests2 are unchanged
-by this status-only documentation refresh; no new-image qualification is implied.
-No speedup or causal explanation is claimed from this source hypothesis, and
-no new GPU/model/P3 job is implied by this documentation.
+| Region | a411 halves | a411 geometric change | e1cc halves | e1cc geometric change |
+| --- | --- | ---: | --- | ---: |
+| T0 code64K | -0.236485% / +0.423181% | +0.092804% | +0.055276% / -0.309095% | -0.127076% |
+| T0 prose64K | -0.060690% / -0.024947% | -0.042820% | +0.037210% / +0.857902% | +0.446718% |
+| T0 short | -0.431426% / -0.244716% | -0.338115% | -0.010097% / -0.276478% | -0.143376% |
+| T1 code64K | -0.901270% / +0.075901% | -0.413883% | +1.026010% / -0.657725% | +0.180605% |
+| T1 prose64K | -0.376889% / +0.089571% | -0.143931% | -0.934081% / -0.110258% | -0.523022% |
+| T1 short | -0.132634% / +0.069541% | -0.031598% | -1.518877% / -0.371360% | -0.946780% |
+
+Positive cold observations remain evidence. For a411, T1-short decode improved
+0.533685% in both halves and whole-request duration fell0.510397%, while
+prefill/TTFT durations rose0.436404%/0.343286%. That cold workload had zero M2
+exposure, so its gain receives no causal credit to the specialization. For
+e1cc, cold T0-short decode improved0.942411% (+1.212619%/+0.672924% halves)
+and whole-request duration fell0.820387%, while TTFT/prefill durations rose
+2.435649%/2.526104%. Cached T0-prose improved0.446718% in both halves; its
+full256 warm traffic had zero M2 (one M2 frame was compiler32-only). No gain is
+attributed to N128 where exposure is zero. Constructor120 M2 native
+observations stay separate from workload graph-frame counts.
+
+Warmed `Graphs.forward` replay bypasses Target staging/layers and the edited
+Python selector path. The complete e1cc source/image comparison therefore
+does not causally isolate skipping that Python call. All four Torch allocated/
+reserved/peak observations matched; this is neither physical UMA equivalence
+nor memory saving. Instrumented constructor times include observer bookkeeping
+and do not qualify shipping startup. Two processes per arm and correlated
+requests support descriptive results, not noise dismissal, equivalence or
+global N128 inferiority.
+
+Root dispositionsea17b524 and875d1eed retained accepted production: the later
+variant's repeated sampled prose/short and greedy-short losses outweighed its
+retained gains under decode > prefill > VRAM > cache > other. No candidate
+cutover occurred. Exact accepted production was restored healthy at
+2026-11-06T03:42:14.24927315Z with API/room-one/math/aliases/pointer/services
+checks (restore14939017). Report hashes:
+
+- a411: `652274fe65c01e75e8aa0e3473d187f1be87228a5dc548efc4709727ae7fbc94`, packetd496212e, D1385e7940e.
+- e1cc: `59fdc68807132715cce24c1ede2a27ca64096d9db2c9240b4b1f414400ff1aba`, packetf0111d28, D132107afe8.
+
+Prior raw failures and corrections retain original statuses: first full-model
+live-tuple/JSON-list penalty representation refusal, source/fixture corrections,
+metadata/compiler-only guard failures, and stale prelaunch file-count transport
+metadata. No numerical tolerance, source/payload, producer, guard or measurement
+protocol was weakened or rerun to bless those failures. Current P0 composition
+is explicit rather than relabeling old images as fresh execution.
+
+Canonical runtime7 and expert native/boundary tests are restored exactly to
+accepted8034c85 bytes. Only transient N128 selector controls are deleted; all26
+independent native N64 cases, the independent legacy-combine BF16/cancellation/
+FP32-routing/uint8 oracle and existing glue norm/ROUND tests remain. Attention's
+measured SM121 comment is byte-unchanged; the accepted AE8 runtime comparison
+has776 exact files and one AST-identical attention comment difference. Cleanup
+checks passed443 actual CPU cases (418 main plus25 host), five explicit
+CUDA-required skips, all-F static/full deployment Ruff/diff, with CUDA
+uninitialized. Three unchanged slow scalar cases were carried structurally,
+not counted as fresh passes. No
+new image/build/GPU/restart or cleanup speed claim is required by this source
+restoration. Candidate13 before-files, new inline fixtures, original immutable
+native fixtures, Git364200/e1cc, images/captures and all historical numerical/
+model/P3 proofs remain preserved. Broader candidate exploration is not exhausted;
+any next candidate requires its own bounded evidence and authorization.

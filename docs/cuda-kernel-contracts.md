@@ -698,39 +698,36 @@ image and claims no speed gain; row-two four-warp N128 remained open at that clo
 
 ### Row-two four-warp N128 investigation
 
-A new default-off private `expert_up_n128_row2` Engine/Target policy recovers
-only the retained four-warp NT2 implementation. Engine preflight and the direct
-Target boundary require CT704/2816/128-expert SM121; invalid flag types and
-unsupported profiles reject before affected storage/weight preparation. The
-Target branch requires true policy, nonprompt role and exactly two actual rows;
-it passes `prompt=False` to the CT expert adapter. All other calls omit the new
-keyword and retain the original three-argument N64 path. No public CLI exists.
+**Closed without selection.**
 
-Native v6 keeps `up_tile=64` by default and a callable four-warp N128 reference
-for its already-supported common CT GELU/SK1/plan16/rows1..5 region. No eight-warp
-kernel is recovered. N64/down retain four warps, original packed banks, exact
-K-group/alpha/BF16/GELU/per16-quantization and ordered-combine contracts. Width704
-still has five complete128 tiles plus a final64 panel, with uniform tail guards.
+Two finite variants completed their declared qualification and mirrored matched
+screens: a411/ba1a with private row-two four-warp selection, then e1cc/7c7b
+with Python default-work elimination. Reports652274fe and59fdc688 retain all
+regions/paired halves; dispositionsea17b524 and875d1eed did not select either
+complete policy. For the latter, cached sampled prose/short lost in both halves
+(-0.523022%/-0.946780% geometric changes); greedy short also lost in both.
+Observed greedy-prose +0.446718% and cold greedy-short +0.942411% are preserved,
+with whole-request/TTFT costs and no causal credit where M2 exposure is zero.
+Warmed graph replay bypasses the edited per-layer Python path, so those cached
+results do not isolate the removed selector call. No noise, equivalence,
+physical-memory saving or global-inferiority conclusion follows.
 
-The a411/ba1a variant subsequently completed actual native57, exact clip-on
-full-model teacher/q/p/IDs/work/cache/replay and the full four-process matched
-screen. Root did not select that variant: five of six cached point estimates
-were negative, including repeated T0 prose/short losses. Cold T1-short decode
-+0.533685% remains recorded, but its zero M2 exposure prevents attribution.
-Report652274fe and dispositionea17b524 retain the complete trade and history;
-accepted ae8d/b579 production is unchanged.
+Canonical runtime7 files and baseline expert boundary/native tests are restored
+exactly to accepted8034c85 bytes. Native ABI v5/N64 is the maintained path;
+private row-two flags/selector/helper and transient selector controls are
+removed without fallback or compatibility shim. The original26 native N64
+oracles, per-slot CT quantization/ordered BF16 combine checks and useful new
+independent legacy-combine word/cancellation/FP32-routing oracle remain. The
+measured SM121 attention comment and attention implementation, independent glue
+norm/ROUND tests, protected work and other supported roles are unchanged.
 
-The next source-only change keeps the native kernels, ABI, grouped planning,
-Engine/Target wiring and independent N64/N128 oracles untouched. After existing
-strict decode and prefill validation, `run_plan` starts with named `up_tile=64`
-and calls the unchanged pure selector only when `decode and prefill` is true,
-passing literal `decode=True`. The named value goes to the same fused-up
-argument; all remaining arguments, quantization/down calls and error boundaries
-are unchanged. The CT adapter's validated default `prompt=True` uses the
-original `run_plan(..., prefill=True)` call; explicit false passes `decode=True`.
-No dictionary, wrapper or runtime observer is introduced. An untimed future
-witness must read actual `run_plan` return-local `up_tile`; skipped default
-selector events are expected. Source547 checks passed with five explicit
-CUDA-required skips; all-F/static, full Ruff and diff checks passed (gatee08c6a89).
-Build, installed inventory/current-provider, affected model and P3 qualification
-remain pending; source reasoning does not establish a measured gain.
+This restoration preserves original packed banks, ordered K/alpha/BF16/GELU/
+per16-quantization, native arguments, routing and combination semantics. The
+accepted runtime map is776 files byte-exact plus attention with an unchanged
+AST and retained comment-only difference. Cleanup checks passed443 CPU cases with five explicit CUDA-required skips;
+static/full deployment Ruff/diff checks passed. This source proof requires no
+new production image, GPU job or restart and makes no cleanup performance claim.
+Prototype Git364200/e1cc, builds, native57, fixtures, model/dispatch proofs,
+complete raw quartets and all earlier failures remain immutable history. Full
+qualification scopes and retained regional gains are recorded in
+[validation](gemma4-cuda-validation.md#row-two-four-warp-n128-investigation).

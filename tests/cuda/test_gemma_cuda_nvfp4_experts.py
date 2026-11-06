@@ -204,7 +204,7 @@ def test_retained_workspace_never_exceeds_the_admitted_expert_workspace():
 
 @pytest.mark.parametrize('rows', [1, 2, 3, 4, 5])
 @pytest.mark.parametrize('width,dims', [(64, 128), (704, 2816)])
-def test_grouped_down_encoding_matches_independent_linears_and_gemma_combine(rows, width, dims, *, decode=False, check_rejections=False):
+def test_grouped_down_encoding_matches_independent_linears_and_gemma_combine(rows, width, dims):
     source = Context(count=3, width=width, dims=dims, uniform=True)
     adapter = load_experts(source.read, PREFIX + '.experts', count=3, width=width, dims=dims,
                            device='cuda:0', calibrated=_prepared(source))
@@ -216,7 +216,7 @@ def test_grouped_down_encoding_matches_independent_linears_and_gemma_combine(row
     buf = PlanBuffers(rows, 3, 3, dims, 'cuda', prefill=True)
     buf.pick.copy_(picks)
     buf.route(rows)
-    bank.run_plan(x, buf, prefill=True, decode=decode)
+    bank.run_plan(x, buf, prefill=True)
     held = buf.a4_scratch[(dims, width)]
     # Separate checkpoint linears + CPU quantizer independently check every
     # down-code/scale byte across both halves of every original N64 tile.
@@ -239,41 +239,13 @@ def test_grouped_down_encoding_matches_independent_linears_and_gemma_combine(row
             assert torch.equal(held[2][0, at].cpu(), codes[0])
             assert torch.equal(held[3][0, at].cpu(), scales[0])
     want = _reference(original, x, picks, weights)
-    got = adapter.forward(x, picks, weights, prompt=not decode)
+    got = adapter.forward(x, picks, weights)
     assert torch.equal(got.view(torch.uint8), want.view(torch.uint8))
-    serial = torch.cat([adapter.forward(x[r:r + 1], picks[r:r + 1], weights[r:r + 1], prompt=not decode) for r in range(rows)])
+    serial = torch.cat([adapter.forward(x[r:r + 1], picks[r:r + 1], weights[r:r + 1]) for r in range(rows)])
     assert torch.equal(serial.view(torch.uint8), got.view(torch.uint8))
 
 
-    if decode:
-        selected_y=buf.y.clone();selected_codes=held[2].clone();selected_scales=held[3].clone()
-        bank.run_plan(x, buf, prefill=True, decode=False)  # retained actual N64 callable, no global mutation
-        assert torch.equal(selected_y.view(torch.uint8),buf.y.view(torch.uint8))
-        assert torch.equal(selected_codes,held[2]) and torch.equal(selected_scales,held[3])
-        if check_rejections:
-            codes=held[0].view(-1)[:rows*(dims//2)].view(1,rows,dims//2)
-            scales=held[1].view(-1)[:rows*(dims//16)].view(1,rows,dims//16)
-            members=buf.plan.members[:rows*3]
-            items=buf.plan.items[:min(buf.plan.items.shape[0],rows*3)]
-            arguments=[codes,scales,bank.fields[0],bank.fields[2],bank.fields[4],bank.fields[5],
-                items,buf.plan.counts,members,held[2],held[3],width,dims,1,3,True,False,buf.plan.tile,1,128]
-            before_codes=held[2].clone();before_scales=held[3].clone();torch.cuda.synchronize()
-            # All are host-admitted unsupported selector/region requests, never intentional device traps.
-            for index,value in ((19,0),(19,32),(15,False),(16,True),(18,0),(13,2),(11,640)):
-                bad=arguments.copy();bad[index]=value
-                with pytest.raises(RuntimeError):_ext().fused_up(*bad)
-                assert torch.equal(held[2],before_codes) and torch.equal(held[3],before_scales)
-
-
-@pytest.mark.parametrize('rows',[1,2,3,4,5])
-def test_n128_actual_ct_tail_matches_independent_linears_quantizer_and_n64(rows):
-    # Same independently derived original-linear/CPU quantizer oracle, now actual new branch.
-    from tensorfold.cuda.nvfp4.experts_a4 import up_output_tile
-    assert up_output_tile(decode=True,rows=rows,common=True,direct=False,activation=1,width=704,dims=2816,plan_tile=16)==128
-    test_grouped_down_encoding_matches_independent_linears_and_gemma_combine(rows,704,2816,decode=True,check_rejections=rows==5)
-
-
-def test_gemma_actual_shape_graph_replays_new_routes_with_stable_workspace(*, decode=False):
+def test_gemma_actual_shape_graph_replays_new_routes_with_stable_workspace():
     source = Context(count=4, width=704, dims=2816, uniform=True)
     adapter = load_experts(source.read, PREFIX + '.experts', count=4, width=704, dims=2816,
                            device='cuda:0', calibrated=_prepared(source))
@@ -283,12 +255,12 @@ def test_gemma_actual_shape_graph_replays_new_routes_with_stable_workspace(*, de
     buf = PlanBuffers(rows, slots, 4, 2816, 'cuda', prefill=True)
     buf.pick.copy_(torch.tensor([[2, 0, 1]], device='cuda').expand(rows, -1))
     buf.route(rows)
-    bank.run_plan(x, buf, prefill=True, decode=decode)
+    bank.run_plan(x, buf, prefill=True)
     retained = tuple(t.data_ptr() for t in buf.a4_scratch[(2816, 704)])
     graph = torch.cuda.CUDAGraph()
     with torch.cuda.graph(graph):
         buf.route(rows)
-        bank.run_plan(x, buf, prefill=True, decode=decode)
+        bank.run_plan(x, buf, prefill=True)
     for seed in (11, 12, 13):
         generator = torch.Generator().manual_seed(seed)
         x.copy_((torch.randn(rows, 2816, generator=generator) * .4).to('cuda', torch.bfloat16))
@@ -303,7 +275,3 @@ def test_gemma_actual_shape_graph_replays_new_routes_with_stable_workspace(*, de
         assert torch.equal(scales, buf.a4_scratch[(2816, 704)][3])
         assert retained == tuple(t.data_ptr() for t in buf.a4_scratch[(2816, 704)])
     torch.cuda.synchronize()
-
-
-def test_n128_actual_shape_graph_replays_new_inputs_and_picks_against_n64():
-    test_gemma_actual_shape_graph_replays_new_routes_with_stable_workspace(decode=True)

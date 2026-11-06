@@ -34,18 +34,6 @@ class Tensor:
     def element_size(self):
         return 1 if self.dtype == 'u8' else 4
 
-    def contiguous(self):return self
-
-    def data_ptr(self):return id(self)
-
-    def stride(self):
-        from math import prod
-        return tuple(prod(self.shape[i+1:]) for i in range(self.ndim))
-
-    def __getitem__(self,key):
-        shape=(len(range(*key.indices(self.shape[0]))),*self.shape[1:])
-        return Tensor(shape,dtype=self.dtype,device=self.device)
-
 
 class Bank:
     def __init__(self, swiglu, *, direct=False, capturable=True):
@@ -153,40 +141,3 @@ def test_plan_order_lookup_rejects_missing_duplicate_foreign_or_noninteger_slots
     lookup = _definitions(Path(__file__).parent / 'nvfp4_a4_inputs.py', {'plan_order_positions'}, {})['plan_order_positions']
     with pytest.raises(ValueError, match='permute'):
         lookup(members)
-
-
-@pytest.mark.parametrize('selected',[None,True,False])
-def test_actual_forward_keeps_default_kwargs_and_explicit_decode_without_wrapper(selected):
-    events=[];launches=[]
-    def allocate(shape,**kwargs):
-        events.append('out');return Tensor(shape,dtype=kwargs['dtype'],device=kwargs['device'])
-    class Combine:
-        def __getitem__(self,grid):
-            def launch(*args,**kwargs):launches.append((grid,args,kwargs))
-            return launch
-    torch=SimpleNamespace(Tensor=Tensor,bfloat16='bf16',int32='i32',float32='f32',empty=allocate)
-    ns=_definitions(ROOT/'families/gemma4/cuda/nvfp4_experts.py',{'Experts','Workspace'},
-        {'torch':torch,'ExpertsA4':Bank,'PlanBuffers':object,'geglu':object(),
-         '_combine':Combine(),'triton':SimpleNamespace(cdiv=lambda n,d:(n+d-1)//d,next_power_of_2=lambda n:1<<(n-1).bit_length())})
-    bank=Bank(ns['geglu']);calls=[]
-    bank.run_plan=lambda *args,**kwargs:calls.append((args,kwargs))
-    rows=2;buf=SimpleNamespace(pick=Tensor((rows,8),dtype='i32'),y=Tensor((rows,8,2816)),route=lambda n:events.append(('route',n)))
-    workspace=SimpleNamespace(buffers=lambda *args:buf)
-    adapter=ns['Experts'](bank,workspace)
-    x=Tensor((rows,2816));weights=Tensor((rows,8),dtype='f32')
-    options={} if selected is None else {'prompt':selected}
-    result=adapter.forward(x,buf.pick,weights,**options)
-    assert calls==[((x,buf),{'prefill':True,'decode':True} if selected is False else {'prefill':True})]
-    assert events==[('route',rows),'out'] and len(launches)==1
-    grid,args,kwargs=launches[0]
-    assert grid==(rows,11) and args==(buf.y,buf.pick,weights,result)
-    assert kwargs==dict(N=2816,R=8,RS=8,BLOCK=256,num_warps=4,enable_fp_fusion=False)
-
-
-@pytest.mark.parametrize('value',[None,0,1,'true'])
-def test_invalid_prompt_role_precedes_workspace_native_and_allocation(value):
-    ns,calls=_namespace()
-    adapter=ns['Experts'](Bank(ns['geglu']))
-    with pytest.raises(ValueError,match='prompt role'):
-        adapter.forward(Tensor((1,2816)),Tensor((1,8),dtype='i32'),Tensor((1,8),dtype='f32'),prompt=value)
-    assert calls==[]

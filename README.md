@@ -13,7 +13,7 @@ measurement. See [results and limits](docs/gemma4-cuda-validation.md#ordered-com
 
 Current production on port `8888` is the accepted W4A16 DFlash D4 policy with
 sampled-verification clipping: container `3cc80341`, image `b579387b`, source UID
-`ae8d40be`, config fingerprint `1e7d619d`, restored2026-11-05T22:21:11Z. The ordinary native CLI
+`ae8d40be`, config fingerprint `1e7d619d`, restored2026-11-06T03:42:14.24927315Z. The ordinary native CLI
 explicitly enables `--dflash-head-w4a16 --drafter-bits 8` alongside
 `--prepare-global-prompt --delta4-head --clip-sampled-verification` (reuse16).
 Companion transformer FP8,
@@ -145,22 +145,18 @@ production remains ae8d/b579 W4D4/N64 with clipping enabled. Historical Git,
 images, fixtures, failures and results remain intact; row-two four-warp N128
 remained open at that closeout. See [results and limits](docs/gemma4-cuda-validation.md#eight-warp-and-row-two-nt2-candidates).
 
-**Row-two four-warp N128 (prior variant not selected):** sourcea411/imageba1a
-completed native57, exact clip-on model/dispatch qualification and a mirrored
-four-process screen. Five of six cached point estimates were negative;
-T0 prose/short lost in both halves. Cold T1 short decode improved0.533685%
-but had zero M2 exposure, so this receives no causal credit to N128. Accepted
-ae8d/b579 production stays unchanged; raw gains, costs and history remain.
-
-A separate source-only candidate now skips the redundant pure selector when
-validated `decode && prefill` is false and omits the adapter's false decode
-keyword on its default prompt path. Native arguments, math, N64/N128 support,
-strict role checks and default behavior are preserved. Source547 checks passed
-with five explicit CUDA-required skips; all-F/static, full Ruff and diff checks
-passed. Build, installed inventory/current provider, affected model and P3
-qualification remain pending. No measured
-speed or causal gain follows from fewer Python calls; graph replay bypasses
-this Python path. See [scope and evidence](docs/gemma4-cuda-validation.md#row-two-four-warp-n128-investigation).
+**N128 row-two investigations closed without selection:** both the a411
+four-warp variant and e1cc variant with default Python-work elimination
+completed their declared numerical/dispatch and matched request checks. The
+latter lost cached sampled prose/short in both halves (-0.523022%/-0.946780%).
+Its observed greedy-prose +0.446718% and cold greedy-short decode +0.942411%
+remain recorded with their costs and attribution limits. Root retained accepted
+ae8d/b579 W4D4/N64/clipping-ON production. Canonical runtime and boundary tests
+are restored to the accepted baseline; the private selector/role flags and
+transient selector controls are removed. Native N64 and independent glue
+oracles, prototype source/images/fixtures and all results/failures are retained.
+This is scoped nonselection, not global N128 inferiority or exhaustion. See
+[both quartet results and limits](docs/gemma4-cuda-validation.md#row-two-four-warp-n128-investigation).
 
 **Raw-global attention launch screen (four warps retained):** all exact causal,
 serial, graph-position and controlled-sensitivity/input-restoration checks passed

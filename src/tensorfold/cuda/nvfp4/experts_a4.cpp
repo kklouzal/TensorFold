@@ -11,7 +11,7 @@ void expert_a4_quant_plan_cuda(const at::Tensor&, const at::Tensor&, const at::T
     const at::Tensor&, at::Tensor&, at::Tensor&, int64_t, bool, int64_t);
 void expert_a4_fused_up_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
     const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, at::Tensor&,
-    at::Tensor&, int64_t, int64_t, int64_t, int64_t, bool, bool, int64_t, int64_t, int64_t);
+    at::Tensor&, int64_t, int64_t, int64_t, int64_t, bool, bool, int64_t, int64_t);
 void expert_a4_down_plan_cuda(const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&,
     const at::Tensor&, const at::Tensor&, const at::Tensor&, const at::Tensor&, at::Tensor&,
     int64_t, int64_t, int64_t, int64_t, bool, int64_t);
@@ -169,12 +169,8 @@ static void plan_common(const at::Tensor& blob, const at::Tensor& items, const a
 void fused_up(const at::Tensor& codes, const at::Tensor& scales, const at::Tensor& blob, const at::Tensor& weight,
     const at::Tensor& input, const at::Tensor& down_input, const at::Tensor& items, const at::Tensor& counts,
     const at::Tensor& members, at::Tensor down_codes, at::Tensor down_scales, int64_t n, int64_t k, int64_t sk,
-    int64_t slots, bool common, bool direct, int64_t tile, int64_t act, int64_t up_tile) {
+    int64_t slots, bool common, bool direct, int64_t tile, int64_t act) {
     plan_common(blob, items, counts, members, n, k, sk, slots, tile);
-    TORCH_CHECK(up_tile == 64 || up_tile == 128, "fused up output tile must be64/128");
-    TORCH_CHECK(up_tile == 64 || (common && !direct && act == 1 && tile == 16 && sk == 1 &&
-                n == 704 && k == 2816 && codes.size(1) >= 1 && codes.size(1) <= 5),
-                "N128 requires original CT common-input GELU rows1..5 N704/K2816 SK1/plan16");
     tensor(codes, blob, at::kByte, 3, "codes");
     tensor(scales, blob, at::kByte, 3, "scales");
     tensor(down_codes, blob, at::kByte, 3, "down codes");
@@ -197,7 +193,7 @@ void fused_up(const at::Tensor& codes, const at::Tensor& scales, const at::Tenso
                 "fused native A4: pair-major down codes/scales");
     c10::cuda::CUDAGuard guard(blob.device());
     expert_a4_fused_up_cuda(codes, scales, blob, weight, input, down_input, items, counts, members, down_codes,
-                            down_scales, n, k, sk, slots, common, direct, tile, act, up_tile);
+                            down_scales, n, k, sk, slots, common, direct, tile, act);
 }
 
 // Down GEMM of a device plan into every original (row, slot) output: FP32 decode or BF16 prompt slots.
@@ -244,7 +240,7 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
           pybind11::arg("counts"), pybind11::arg("members"), pybind11::arg("down_codes"),
           pybind11::arg("down_scales"), pybind11::arg("n"), pybind11::arg("k"), pybind11::arg("sk"),
           pybind11::arg("slots"), pybind11::arg("common"), pybind11::arg("direct"), pybind11::arg("tile"),
-          pybind11::arg("act"), pybind11::arg("up_tile") = 64);
+          pybind11::arg("act"));
     m.def("down_plan", &down_plan, pybind11::arg("codes"), pybind11::arg("scales"), pybind11::arg("blob"),
           pybind11::arg("weight"), pybind11::arg("input"), pybind11::arg("items"), pybind11::arg("counts"),
           pybind11::arg("members"), pybind11::arg("out"), pybind11::arg("n"), pybind11::arg("k"), pybind11::arg("sk"),
