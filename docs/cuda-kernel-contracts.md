@@ -731,3 +731,37 @@ Prototype Git364200/e1cc, builds, native57, fixtures, model/dispatch proofs,
 complete raw quartets and all earlier failures remain immutable history. Full
 qualification scopes and retained regional gains are recorded in
 [validation](gemma4-cuda-validation.md#row-two-four-warp-n128-investigation).
+
+
+## Private global-attention query-shape prototype
+
+The private Triton helpers `_queries`, `_global_chunk` and `_global` append
+`QUERY_ROWS=16`, the number of `(row, head)` pairs in a program. A direct
+SM121 raw-global operator experiment may explicitly select8 for H16/HK2/G8,
+D512 and M1–5 with grid `ceil(M*G/QUERY_ROWS)`. Public `full()` launches,
+sliding attention, geometry admission and State remain at16; no frontend flag
+or production tactic selects8. The pinned Triton3.9.0+gitfc8d31a5 BF16 dot
+frontend accepts the logical shapes; emitted lowering and performance are
+unproved until actual target compilation and execution.
+
+Query shapes and row/head ownership change together. The five ordered score
+contributions, K/value reconstruction, BF16 boundaries, online updates,
+absolute key chunks and ascending `_merge` fold remain unchanged. Existing
+partial buffers keep their `(row, head, chunk[, column])` indexing, ownership
+and lifetime; there is no new retained workspace. Default16 specializes to
+the prior executable AST. Changing the shape may still change compiler
+lowering, so this structural proof does not establish width8 bit identity.
+
+Partial-word checks compare only chunks consumed by each row's merge:
+`0 <= chunk <= floor((position + row)/512)`. Other allocated partial slots can
+be unwritten. At position511/M2, width16 can write an empty row0/chunk1 partial
+while width8 leaves it unwritten; those bytes are not a comparison oracle.
+The final output, defined reachable partials, serial-row identity and forced
+sequential identity must match exactly before timing. Replay tests must advance
+and restore device positions and expose a stale-input failure sensitively.
+
+Source checks passed435 CPU cases with six CUDA-required skips and CUDA
+inactive; static/full Ruff/diff checks and combined review passed. Status remains
+**UNQUALIFIED**: installed-image checks, actual SM121 compile/lowering inspection,
+GPU exact-word/capture gates and whole-global-plus-merge measurements are pending. The four-warp launch remains selected; no throughput, register,
+spill, occupancy or memory-saving claim follows from the logical width change.

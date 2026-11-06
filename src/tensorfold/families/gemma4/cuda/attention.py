@@ -152,14 +152,15 @@ def _fold_step(m, l, o, cm, cl, co):
 
 
 @triton.jit
-def _queries(t, hk, R, POS, BS, BE, G: tl.constexpr, WINDOW: tl.constexpr, BLOCKS: tl.constexpr):
-    """A program's 16 (row, head) pairs, their visibility bounds and the union key range.
+def _queries(t, hk, R, POS, BS, BE, G: tl.constexpr, WINDOW: tl.constexpr, BLOCKS: tl.constexpr,
+             QUERY_ROWS: tl.constexpr = 16):
+    """A program's QUERY_ROWS (row, head) pairs, their visibility bounds and the union key range.
 
     WINDOW 0 is unbounded (causal from position 0). BLOCKS loads per-row
     bidirectional block bounds [BS, BE); -1 marks a row outside any block.
     """
-    rpt: tl.constexpr = 16 // G
-    qi = tl.arange(0, 16)
+    rpt: tl.constexpr = QUERY_ROWS // G
+    qi = tl.arange(0, QUERY_ROWS)
     r = t * rpt + qi // G
     ok = r < R
     head = hk * G + qi % G
@@ -169,13 +170,13 @@ def _queries(t, hk, R, POS, BS, BE, G: tl.constexpr, WINDOW: tl.constexpr, BLOCK
         be = tl.load(BE + r, mask=ok, other=-1)
         last = tl.maximum(pos + 1, be)
     else:
-        bs = tl.full((16,), -1, tl.int32)
-        be = tl.full((16,), -1, tl.int32)
+        bs = tl.full((QUERY_ROWS,), -1, tl.int32)
+        be = tl.full((QUERY_ROWS,), -1, tl.int32)
         last = pos + 1
     if WINDOW:
         earliest = tl.maximum(pos - WINDOW + 1, 0)
     else:
-        earliest = tl.zeros((16,), tl.int32)
+        earliest = tl.zeros((QUERY_ROWS,), tl.int32)
     lo = tl.min(tl.where(ok, earliest, 2147483647), 0)
     hi = tl.max(tl.where(ok, last, 0), 0)
     return r, ok, head, pos, bs, be, earliest, last, lo, hi
@@ -318,20 +319,21 @@ class GlobalTrig:
 @triton.jit
 def _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, KP, VP, COS, SIN, chunk, hk, pos, ok, hi,
                   HK: tl.constexpr, D: tl.constexpr, ROT: tl.constexpr, UW: tl.constexpr,
-                  CH: tl.constexpr, BK: tl.constexpr, ROUND: tl.constexpr, PREPARED: tl.constexpr, TRIG: tl.constexpr, KEYS_ONLY: tl.constexpr):
+                  CH: tl.constexpr, BK: tl.constexpr, ROUND: tl.constexpr, PREPARED: tl.constexpr, TRIG: tl.constexpr, KEYS_ONLY: tl.constexpr,
+                  QUERY_ROWS: tl.constexpr = 16):
     """One chunk's online softmax over raw K=V tiles: K = RoPE(bf16(x*inv*w)) and V = bf16(x*inv).
 
     Each column part is rebuilt where it is consumed (scores first, values after the softmax update, the
     second read served by the cache), so only one part's tile is live: holding all five parts spills.
     """
     ca, cb, c0, c1, c2 = _global_columns(D, ROT, UW)
-    m = tl.full((16,), -float("inf"), tl.float32)
-    l = tl.zeros((16,), tl.float32)
-    oa = tl.zeros((16, ROT), tl.float32)
-    ob = tl.zeros((16, ROT), tl.float32)
-    o0 = tl.zeros((16, UW), tl.float32)
-    o1 = tl.zeros((16, UW), tl.float32)
-    o2 = tl.zeros((16, UW), tl.float32)
+    m = tl.full((QUERY_ROWS,), -float("inf"), tl.float32)
+    l = tl.zeros((QUERY_ROWS,), tl.float32)
+    oa = tl.zeros((QUERY_ROWS, ROT), tl.float32)
+    ob = tl.zeros((QUERY_ROWS, ROT), tl.float32)
+    o0 = tl.zeros((QUERY_ROWS, UW), tl.float32)
+    o1 = tl.zeros((QUERY_ROWS, UW), tl.float32)
+    o2 = tl.zeros((QUERY_ROWS, UW), tl.float32)
     begin = chunk * CH
     for at in range(begin, tl.minimum(begin + CH, hi), BK):
         key = at + tl.arange(0, BK)
@@ -389,11 +391,12 @@ def _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, KP, VP, COS, SIN, chun
 def _global(Q, RAW, INV, KW, FREQ, KP, VP, COS, SIN, POS, PO, PM, PL, OUT, R, SPLITS,
             H: tl.constexpr, HK: tl.constexpr, D: tl.constexpr, G: tl.constexpr, ROT: tl.constexpr,
             UW: tl.constexpr, CH: tl.constexpr, BK: tl.constexpr, SEQUENTIAL: tl.constexpr,
-            ROUND: tl.constexpr, PREPARED: tl.constexpr, TRIG: tl.constexpr, KEYS_ONLY: tl.constexpr):
+            ROUND: tl.constexpr, PREPARED: tl.constexpr, TRIG: tl.constexpr, KEYS_ONLY: tl.constexpr,
+            QUERY_ROWS: tl.constexpr = 16):
     """Parallel: program (query tile, KV head, chunk) writes one partial. Sequential:
     program (query tile, KV head) folds every chunk in order and writes the output."""
     t, hk = tl.program_id(0), tl.program_id(1)
-    r, ok, head, pos, bs, be, earliest, last, lo, hi = _queries(t, hk, R, POS, POS, POS, G, 0, False)
+    r, ok, head, pos, bs, be, earliest, last, lo, hi = _queries(t, hk, R, POS, POS, POS, G, 0, False, QUERY_ROWS=QUERY_ROWS)
     ca, cb, c0, c1, c2 = _global_columns(D, ROT, UW)
     qrow = Q + (r[:, None] * H + head[:, None]) * D
     qa = tl.load(qrow + ca[None, :], mask=ok[:, None], other=0.0)
@@ -402,16 +405,16 @@ def _global(Q, RAW, INV, KW, FREQ, KP, VP, COS, SIN, POS, PO, PM, PL, OUT, R, SP
     q1 = tl.load(qrow + c1[None, :], mask=ok[:, None], other=0.0)
     q2 = tl.load(qrow + c2[None, :], mask=ok[:, None], other=0.0)
     if SEQUENTIAL:
-        m = tl.full((16,), -float("inf"), tl.float32)
-        l = tl.zeros((16,), tl.float32)
-        oa = tl.zeros((16, ROT), tl.float32)
-        ob = tl.zeros((16, ROT), tl.float32)
-        o0 = tl.zeros((16, UW), tl.float32)
-        o1 = tl.zeros((16, UW), tl.float32)
-        o2 = tl.zeros((16, UW), tl.float32)
+        m = tl.full((QUERY_ROWS,), -float("inf"), tl.float32)
+        l = tl.zeros((QUERY_ROWS,), tl.float32)
+        oa = tl.zeros((QUERY_ROWS, ROT), tl.float32)
+        ob = tl.zeros((QUERY_ROWS, ROT), tl.float32)
+        o0 = tl.zeros((QUERY_ROWS, UW), tl.float32)
+        o1 = tl.zeros((QUERY_ROWS, UW), tl.float32)
+        o2 = tl.zeros((QUERY_ROWS, UW), tl.float32)
         for chunk in range(0, (hi + CH - 1) // CH):
             cm, cl, pa, pb, p0, p1, p2 = _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, KP, VP, COS, SIN, chunk, hk, pos, ok,
-                                                      hi, HK, D, ROT, UW, CH, BK, ROUND, PREPARED, TRIG, KEYS_ONLY)
+                                                      hi, HK, D, ROT, UW, CH, BK, ROUND, PREPARED, TRIG, KEYS_ONLY, QUERY_ROWS=QUERY_ROWS)
             m2, l2, oa = _fold_step(m, l, oa, cm, cl, pa)
             ob = _fold_step(m, l, ob, cm, cl, pb)[2]
             o0 = _fold_step(m, l, o0, cm, cl, p0)[2]
@@ -428,7 +431,7 @@ def _global(Q, RAW, INV, KW, FREQ, KP, VP, COS, SIN, POS, PO, PM, PL, OUT, R, SP
         chunk = tl.program_id(2)
         if chunk * CH < hi:
             m, l, oa, ob, o0, o1, o2 = _global_chunk(qa, qb, q0, q1, q2, RAW, INV, KW, FREQ, KP, VP, COS, SIN, chunk, hk, pos, ok,
-                                                     hi, HK, D, ROT, UW, CH, BK, ROUND, PREPARED, TRIG, KEYS_ONLY)
+                                                     hi, HK, D, ROT, UW, CH, BK, ROUND, PREPARED, TRIG, KEYS_ONLY, QUERY_ROWS=QUERY_ROWS)
             base = (r * H + head) * SPLITS + chunk
             prow = PO + base[:, None] * D
             tl.store(prow + ca[None, :], oa, mask=ok[:, None])

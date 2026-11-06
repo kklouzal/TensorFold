@@ -804,3 +804,31 @@ restoration. Candidate13 before-files, new inline fixtures, original immutable
 native fixtures, Git364200/e1cc, images/captures and all historical numerical/
 model/P3 proofs remain preserved. Broader candidate exploration is not exhausted;
 any next candidate requires its own bounded evidence and authorization.
+
+
+## Private global-attention query width8 investigation
+
+The source prototype adds only a private constexpr query width to existing
+attention kernels; public/default width16 and the selected four-warp launch
+remain unchanged. The candidate is not selected or enabled for model serving.
+Pinned Triton3.9.0+gitfc8d31a5 accepts BF16 dot M8 at the frontend; this is not
+proof of successful lowering, physical MMA dimensions or reduced work.
+
+The maintained attention suite retains its independent float64, split-row,
+forced-sequential, visual-block and rollback oracles. New SM121-only private
+checks compare width8/16 output words and defined reachable FP32 partial words
+at M1–5 and causal/chunk boundaries, plus serial/sequential identity and
+position/input-sensitive graph replay. CUDA-hidden source checks protect the
+private defaults and unchanged public/sliding dispatch. CUDA-hidden source checks passed435 CPU cases, with six CUDA-required
+skips and CUDA inactive; static/full Ruff/diff checks and combined review passed.
+The GPU checks remain unrun, and CUDA-hidden results do not qualify target
+behavior. Installed-image checks and actual QT8 compilation/lowering, GPU word/
+replay and performance gates remain pending.
+
+Actual compilation/resource inspection and all word/capture gates precede any
+operator timing. A later bounded screen must include the entire global call
+and its unchanged ordered merge, with matched inputs/resources/order and raw
+results. Extra query programs repeat K/V reconstruction, and logical shape
+savings do not imply a gain. Existing four/eight-warp negative evidence remains
+historical and does not answer this separate query-width candidate. No model,
+request-throughput, memory or performance result is claimed.

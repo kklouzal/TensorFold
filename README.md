@@ -9,6 +9,14 @@ Prototype source, images, raw results and failures are preserved. This is a
 scoped negative diagnostic, not global inferiority or a model-performance
 measurement. See [results and limits](docs/gemma4-cuda-validation.md#ordered-combine-to-moe-tail-prototype).
 
+A private global-attention query-shape prototype accepts a constexpr width8
+for direct SM121 operator checks; ordinary attention still uses width16.
+Source checks passed435 CPU cases with six CUDA-required skips, CUDA inactive,
+clean static/Ruff/diff checks and combined review. It remains **UNQUALIFIED**:
+installed-image checks, actual compilation/lowering, GPU exact-word/replay checks
+and whole-global-plus-merge timing are pending. No public flag, model tactic
+or performance gain is enabled. See [the bounded contract](docs/cuda-kernel-contracts.md#private-global-attention-query-shape-prototype).
+
 ## GB10 Gemma 4 26B-A4B deployment checkpoints
 
 Current production on port `8888` is the accepted W4A16 DFlash D4 policy with
