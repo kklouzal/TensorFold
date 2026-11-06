@@ -33,7 +33,9 @@ fixed degree-four ownership map. It charges zero dedicated live-migration overla
 and does not enable live attention-degree updates. Prefix/COW, restore, recovery,
 replacement and other workspaces keep their separate charges. Migration mechanisms
 and independent oracles remain optional research, with no new serving flag.
-This is source implementation with verification pending, not a measured capacity
+Affected source and fresh installed-image controls pass. Each broader batch
+recorded 367 passed, four existing ABI/version failures and 12 frontend-version
+skips; those target gaps remain unqualified. This is not a measured capacity
 or performance gain or physical V100 qualification. See the
 [fixed initial ownership contract](docs/v100-adaptive-validation.md#fixed-initial-unique-history-a2).
 

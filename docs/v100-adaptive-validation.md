@@ -306,12 +306,48 @@ changing active/retained state; bounded execution controls remain available.
 The optional transfer algorithms and independent failure/partial-progress oracles
 are preserved, without an opt-in serving flag.
 
-Source/CPU verification is pending for A2. Its synthetic constructor geometry
-controls isolate only the native-ABI dependency with an explicit finite test FD
-limit; the shipping ABI guard and dedicated actual-ABI tests are unchanged. These
-unit controls do not qualify a native ABI, physical V100 allocations, full-model
-state/quality, capacity, latency or throughput. Selected existing GB10 profiles
-and production are unchanged.
+The affected source and fresh installed-image controls passed. Each broader
+batch recorded **367 passed, four failed and 12 skipped**; the installed batch
+took 9.97 seconds and exited 1. All eleven affected test modules and the new A2 cases
+had no failed nodes. Required deployment/public-permission checks passed 194
+cases, and static checks passed on the seven affected Python files. The four
+failures are unchanged dedicated target checks: three require the selected
+x86-64 Torch04cf2557/GCC13 ABI, and one requires tokenizers 0.23.3. The 12 skips
+are frontend-version gates. These remain unqualified target gaps, not an
+all-green suite or an equivalence claim; their guards and tests were not relaxed.
+
+The twelve synthetic constructor geometry cases isolate only
+`retention_resources.require_native_payload_runtime`, supplying an explicitly
+synthetic finite `hard_nofile=1024`. All real headers, native payload equations,
+other ledger terms and device-floor assertions remain exercised. The shipping
+ABI guard and dedicated actual-ABI tests are byte-unchanged; these unit tests
+do not certify an ABI. Actual CPU State constructors exercise prepared fixed
+metadata, while the real constructor observer checks the selected planner.
+Independent rank/page/tail controls cover both six- and twelve-target-layer
+maps and separate MTP ownership. Ordinary Multi initialization and rejected
+runtime requests are exercised without activating migration or publishing a wake.
+
+Fresh installed evidence uses source checkpoint
+`d4469a679cdd7d9286298ec282c7d6405c06b6b9` and built source UID
+`47e568407b78fbcb718da872ccd86f53252c157c301c5d9bd99c38f97873445d`, runtime
+`sha256:645aa9af855129ec459a3676ff2a74e27496c7311c3a8ac0de929a5cc5165ce2`
+and verification image
+`sha256:f5503d631aeb101112bc5f3ed719a22c88dc1a48bf0685f13cf4adb8b7926fcf`.
+All 778 installed runtime-file hashes matched before and after the check, with
+no runtime source overlay. Changed Engine, Multi and server-runtime module
+origins were under `/opt/tensorfold-venv/lib/python3.12/site-packages/tensorfold/`;
+the current native helper was freshly built from C-source SHA256
+`f85d2c923adfaa14e819250e8def3c3166b8c8624295a37572916e62ad20c1f2`.
+The installed gate SHA256 is
+`88603b0a4714c2462cfb1becd2b017f59b9626471211389d7f75b04244d23320`.
+CUDA stayed uninitialized and the
+source-foundation check exited zero. The exact logs and earlier baseline
+failures remain in the private `providerone-alignment-20261106/fixed-history-v1`
+audit packet; historical passes are not relabeled as current target evidence.
+
+This does not qualify physical V100/SM70 allocations, full-model state/quality,
+capacity, latency or throughput. Selected existing GB10 profiles and production
+are unchanged.
 
 ## Configuration and capacity
 
