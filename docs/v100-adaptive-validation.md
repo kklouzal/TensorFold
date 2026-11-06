@@ -763,6 +763,23 @@ results remain historical evidence in `tp8-etp4-execution-v1`. They do not
 qualify the subsequent typed-output revision. Current commands and results are
 recorded separately in `tp8-etp4-execution-v2`.
 
+The fresh typed-output installed application passed the same 47-module batch:
+1,692 passed with one optional skip in 38.65 seconds. All 782 installed runtime
+files matched the 785-source-file frozen capture before and after, excluding
+three source README files from runtime installation. Both changed Python module
+origins and the native FD extension resolved from installed `site-packages`,
+without a runtime source overlay. Foundation audit and native FD source/memfd
+checks passed; CUDA stayed uninitialized. This uses the GB10 SDK for CPU/package
+proof and does not compile the changed SM70 CUDA operator.
+
+The typed source checkpoint is `6b6f7756d8e1d9a093f1f3a39c9306174374d511`,
+source UID `6cce8b14fd79f544f0bc64205c85e0780d80504880dab05c40eedaed375cbcba`.
+Runtime image:
+`sha256:5e8f4b85c8e934c5161a2003b271b0c62b9ac3e500f3badcb15a0d1611aa0b79`;
+verification image:
+`sha256:972e911a4ce282f61f7a05e874a6204dc0da81c9799d30edec4307c89e60b249`.
+Subsequent evidence-only documentation changes do not alter those runtime inputs.
+
 Actual SM70 compilation/execution, canonical SC117/MTP model and media quality,
 complete resource/capacity and matched end-to-end performance remain unrun.
 The current host is GB10; the known dev-01 connection has an RTX PRO2000

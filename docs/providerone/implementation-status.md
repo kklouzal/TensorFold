@@ -74,7 +74,10 @@ TP8 width80, with device route mapping and caller-owned fixed scratch. It is
 unselected: target/MTP peak admission, actual SM70 build/operator/model quality,
 capacity and matched performance remain pending. The maintained V100 Compose
 entrypoint forwards an explicitly set `TF_EXPERT_TENSOR_PARALLEL_SIZE`, leaving
-unset/empty behavior intact. See [the current component and qualification limits](../v100-adaptive-validation.md#tp8etp4-one-server-native-component).
+unset/empty behavior intact. Source and fresh installed CPU controls each pass
+1,692 tests with one optional fixture skip; 782 installed runtime files match
+the frozen source. These controls do not qualify native CUDA or the complete
+TP8/ETP4 profile. See [the current component and qualification limits](../v100-adaptive-validation.md#tp8etp4-one-server-native-component).
 
 A4 adds mandatory basic physical-stage admission for canonical SM70 TP8
 GPU-history startup: one kernel host, ordered complete rank coverage, distinct
