@@ -676,6 +676,19 @@ controls, remediation history and exact commands remain in
 `providerone-alignment-20261106/pp2-hc-transport-root-v1` and
 `pp2-hc-transport-execution-v1`; they are not fresh-checkout test dependencies.
 
+The fresh installed-image batch passed the same **1,670 tests with one optional
+skip**, in 33.48 seconds, with CUDA uninitialized. All 782 installed runtime
+files matched the frozen source before and after; the new transfer module and
+native extension resolved from installed `site-packages`, with no runtime source
+overlay. Foundation audit and current native source/memfd checks passed.
+The source checkpoint is `01751a062ea4449eb1c2d035d4cbf0061a2bf5bf`, source UID
+`6f39b2b73884a2422fc1078c20262c896555814a28a37d3adf09c960946cc106`.
+Runtime image:
+`sha256:a565853c46f50b776ba7110cf4d855e1909a3e82762453adb23c2112f95c1bdc`;
+verification image:
+`sha256:d46a83e54ad789c5a5086176d3ea07f86dd87ca491404182f943c5977f77a459`.
+The final documentation-only checkpoint does not change those runtime inputs.
+
 TP8 fanout, progressing embedding/lookup/features, method endpoint ownership,
 distributed round commit/RNG/frontiers/cancellation/publication and complete
 per-stage resource admission remain required. Actual two-server mesh/RDMA,

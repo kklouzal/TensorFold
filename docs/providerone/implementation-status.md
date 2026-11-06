@@ -119,6 +119,9 @@ fatal failures quarantine resources and notify an available local supervisor.
 This component does not supply cross-server supervision, stage1 TP8 fanout,
 progressing owner services or distributed speculative commit. CUDA/NCCL transfer,
 resource overhead, actual hardware/model quality and performance are unqualified.
+Source and fresh installed-image batches each pass 1,670 CPU tests with one
+optional pinned-companion/target-metadata skip; 782 installed runtime files match
+the frozen source. This does not qualify CUDA transfer or activate PP2 serving.
 
 One-server release may proceed only after all three PP1 profiles and required
 SC117 feature gates pass; PP2 remains required work pending its own hardware

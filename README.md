@@ -75,7 +75,8 @@ and two-server qualification remain pending. See
 Source and fresh installed component/regression batches each pass 1,600 CPU
 tests with one optional-fixture skip; these controls do not qualify CUDA model
 execution or two-server serving. The A7 transfer increment's final scoped source
-batch passes 1,670 tests with the same optional skip. See
+and fresh installed-image batches each pass 1,670 tests with the same optional
+skip; all 782 installed runtime files match the frozen source. See
 [transfer contracts and remaining gates](docs/v100-adaptive-validation.md#private-two-leader-hc-transfer-a7).
 
 The ordered combine-to-MoE-tail prototype completed exact component59 and
