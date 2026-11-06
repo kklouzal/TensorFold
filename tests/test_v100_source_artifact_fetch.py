@@ -108,6 +108,77 @@ class FetchTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'positive native integer'):
             FETCH['load_plan'](directory)
 
+    def test_snapshot_only_changes_explicit_ubuntu_apt_origins(self):
+        directory = Path(__file__).resolve().parents[1] / 'deploy/v100'
+        items, _ = FETCH['load_plan'](directory)
+        selected, policy = FETCH['acquisition_plan'](items, '20261025T000000Z')
+        changed = 0
+        for original, effective in zip(items, selected):
+            self.assertEqual({k: v for k, v in original.items() if k != 'url'},
+                             {k: v for k, v in effective.items() if k != 'url'})
+            if original['url'] != effective['url']:
+                changed += 1
+                self.assertEqual(original['folder'], 'build-debs')
+                self.assertTrue(effective['url'].startswith(
+                    'https://snapshot.ubuntu.com/ubuntu/20261025T000000Z/pool/'))
+            else:
+                self.assertEqual(original['url'], effective['url'])
+        self.assertEqual(changed, 120)
+        self.assertEqual(len(policy['artifacts']), changed)
+        self.assertTrue(any('nvidia.com' in i['url'] for i in selected))
+        # Host alone is insufficient: only /ubuntu/pool/ APT paths are eligible.
+        outside = dict(artifact(folder='build-debs'), url='https://archive.ubuntu.com/not-pool/example.whl')
+        wheel = dict(artifact(), url='https://archive.ubuntu.com/ubuntu/pool/example.whl')
+        for item in (outside, wheel):
+            plan, _ = FETCH['acquisition_plan']([item], '20261025T000000Z')
+            self.assertEqual(plan, [item])
+
+    def test_snapshot_default_preserves_original_plan(self):
+        items = [dict(artifact(folder='build-debs'),
+                      url='https://security.ubuntu.com/ubuntu/pool/example.deb')]
+        selected, policy = FETCH['acquisition_plan'](items)
+        self.assertEqual(selected, items)
+        self.assertIsNone(policy)
+        selected, _ = FETCH['acquisition_plan'](items, '20261025T000000Z')
+        self.assertEqual(selected[0]['url'],
+                         'https://snapshot.ubuntu.com/ubuntu/20261025T000000Z/pool/example.deb')
+
+    def test_snapshot_requires_safe_real_utc_timestamp(self):
+        for stamp in ('../../bad', '20260229T000000Z', '20261301T000000Z',
+                      '20261025T240000Z', '20261025T000060Z', '20261025T000000+0000', True):
+            with self.subTest(stamp=stamp), self.assertRaises(ValueError):
+                FETCH['acquisition_plan']([artifact()], stamp)
+        FETCH['acquisition_plan']([artifact()], '20240229T235959Z')
+
+    def test_cli_snapshot_receipt_keeps_cache_status_and_origin_provenance(self):
+        item = dict(artifact(folder='build-debs', size=7),
+                    url='https://archive.ubuntu.com/ubuntu/pool/example.whl')
+        self.stage([item])
+        original_stage = FETCH['stage']
+        def cached_stage(items, destination, **kwargs):
+            return original_stage(items, destination,
+                                  transport=LocalTransport(failure=AssertionError('no network for cache')),
+                                  **kwargs)
+        identity = {'source-pins.json': {'sha256': 'a' * 64, 'bytes': 10}}
+        output = io.StringIO()
+        argv = ['fetch_source_artifacts.py', '--destination', str(self.root),
+                '--max-total-bytes', '100', '--ubuntu-snapshot', '20261025T000000Z']
+        with patch.dict(FETCH['main'].__globals__, {'load_plan': lambda _: ([item], identity),
+                                                   'stage': cached_stage}):
+            with patch('sys.argv', argv), patch('sys.stdout', output):
+                FETCH['main']()
+        receipt = json.loads(output.getvalue())
+        self.assertEqual(receipt['inputs'], identity)
+        self.assertEqual(receipt['artifacts'][0]['result'], 'cache')
+        policy = receipt['acquisition_policy']
+        self.assertEqual(policy['kind'], 'explicit-ubuntu-snapshot')
+        self.assertEqual(policy['timestamp'], '20261025T000000Z')
+        change = policy['artifacts'][0]
+        self.assertEqual(change['recorded_url'], item['url'])
+        self.assertEqual(change['acquisition_url'], receipt['artifacts'][0]['url'])
+        self.assertEqual(receipt['artifacts'][0]['sha256'], item['sha256'])
+        self.assertEqual(receipt['artifacts'][0]['bytes'], 7)
+
     def test_download_cache_and_cross_folder_hardlink(self):
         transport = LocalTransport()
         items = [artifact(), artifact(folder='lint-wheels')]

@@ -26,7 +26,8 @@ pass 1,735 CPU tests with one optional fixture skip. Actual SM70 and full-model 
 See [prepared execution and remaining gates](docs/v100-adaptive-validation.md#prepared-tp8etp4-execution-and-workspace).
 
 The V100 source-build workflow can now reacquire its frozen APT/Python inputs
-with verified hashes, durable cache reuse and an explicit staging byte cap.
+with verified hashes, durable cache reuse, an explicit Ubuntu snapshot option
+and a staging byte cap.
 This prepares the offline builder; it does not qualify the SDK or native model
 execution. See [input staging](deploy/v100/source-foundation.md#reacquire-the-frozen-build-inputs).
 

@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+from datetime import datetime, timezone
 import hashlib
 import json
 import math
@@ -185,6 +186,38 @@ def load_plan(directory):
     items.append(dict(folder='lint-python', name=urlsplit(lint['url']).path.rsplit('/', 1)[-1],
                       url=lint['url'], sha256=lint['sha256'], bytes=positive(lint['bytes'])))
     return validate_plan(items), inputs
+
+
+def acquisition_plan(items, ubuntu_snapshot=None):
+    """Explicit Ubuntu archive reacquisition; identities and defaults stay frozen.
+
+    The public Ubuntu Snapshot URI is /ubuntu/<UTC timestamp>/pool/... . This
+    selects an acquisition origin, never a new package version or hash fallback.
+    """
+    items = validate_plan(items)
+    if ubuntu_snapshot is None:
+        return items, None
+    if (type(ubuntu_snapshot) is not str
+            or re.fullmatch(r'[0-9]{8}T[0-9]{6}Z', ubuntu_snapshot) is None):
+        raise ValueError('Ubuntu snapshot must be a real UTC YYYYMMDDTHHMMSSZ timestamp')
+    try:
+        datetime.strptime(ubuntu_snapshot, '%Y%m%dT%H%M%SZ').replace(tzinfo=timezone.utc)
+    except ValueError as error:
+        raise ValueError('Ubuntu snapshot must be a real UTC YYYYMMDDTHHMMSSZ timestamp') from error
+    changes, selected = [], []
+    for item in items:
+        recorded = urlsplit(item['url'])
+        effective = dict(item)
+        if (item['folder'] == 'build-debs'
+                and recorded.hostname in {'archive.ubuntu.com', 'security.ubuntu.com'}
+                and recorded.path.startswith('/ubuntu/pool/')):
+            effective['url'] = ('https://snapshot.ubuntu.com/ubuntu/' + ubuntu_snapshot
+                                + recorded.path[len('/ubuntu'):])
+            changes.append({'folder': item['folder'], 'name': item['name'],
+                            'recorded_url': item['url'], 'acquisition_url': effective['url']})
+        selected.append(effective)
+    return validate_plan(selected), {'kind': 'explicit-ubuntu-snapshot',
+                                     'timestamp': ubuntu_snapshot, 'artifacts': changes}
 
 
 class SecureRedirect(HTTPRedirectHandler):
@@ -432,10 +465,15 @@ def main():
     parser.add_argument('--max-total-bytes', type=int, required=True, help='cap logical input bytes, including duplicates/cache')
     parser.add_argument('--timeout-seconds', type=float, default=60, help='maximum individual socket operation time')
     parser.add_argument('--total-seconds', type=float, default=7200, help='cooperative checked/SIGALRM deadline; native calls can delay delivery; use an outer process/container deadline and verify retirement for hard bounds')
+    parser.add_argument('--ubuntu-snapshot', metavar='YYYYMMDDTHHMMSSZ',
+                        help='explicit Ubuntu archive acquisition timestamp; preserves frozen bytes/SHA256, without automatic fallback')
     args = parser.parse_args()
     items, inputs = load_plan(args.source_directory)
+    items, policy = acquisition_plan(items, args.ubuntu_snapshot)
     receipt = stage(items, args.destination, max_total_bytes=args.max_total_bytes,
                     timeout_seconds=args.timeout_seconds, total_seconds=args.total_seconds, inputs=inputs)
+    if policy is not None:
+        receipt['acquisition_policy'] = policy
     print(json.dumps(receipt, sort_keys=True, allow_nan=False))
 
 

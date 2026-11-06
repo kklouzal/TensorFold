@@ -113,6 +113,7 @@ and a private, single-writer state directory mounted at `/work`:
 python3 -I -B /src/deploy/v100/fetch_source_artifacts.py \
   --source-directory /src/deploy/v100 \
   --destination /work/release \
+  --ubuntu-snapshot 20261025T000000Z \
   --max-total-bytes "${TF_SOURCE_INPUT_BYTE_CAP:?Set a positive logical input-byte cap}" \
   --timeout-seconds 60 --total-seconds 7200 > /work/artifact-staging.json
 ```
@@ -136,7 +137,15 @@ Packaging, Torch, native extension or GPU. Staging proves input bytes, not SDK
 build success or device/model qualification. Original producers, pins, locks and
 historical receipts remain unchanged.
 
-Bootstrap staging and existing producer/inventory/install controls passed 82
+The example explicitly selects Ubuntu's 25 October 2026 snapshot because a live
+archive URL in this frozen bundle now returns 404. `--ubuntu-snapshot` changes
+only Ubuntu APT acquisition URLs; names, byte counts and hashes stay pinned.
+NVIDIA and Python inputs retain their recorded URLs. The receipt records each
+original/effective URL and timestamp, including which artifacts were cache hits.
+There is no automatic source or version substitution. See the
+[official snapshot service](https://snapshot.ubuntu.com/) for its UTC URL format.
+
+Bootstrap staging and existing producer/inventory/install controls passed 86
 containerized tests with two selected-SDK-receipt skips; required deployment
 controls passed 194 cases. Configured Ruff passed. The CPU verification image
 uses an explicitly supplied read-only Git 2.43 tool and the producer's declared
