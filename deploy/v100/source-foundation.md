@@ -101,7 +101,52 @@ resolution occurs in the generated image's build steps. Keep the external
 artifact bundle: its pinned URLs support reacquisition, while cached artifacts
 allow reproduction when a package disappears from an upstream archive.
 
-The current stage interface is:
+### Reacquire the frozen build inputs
+
+The generated builder consumes a local offline bundle. When that bundle is not
+available, `fetch_source_artifacts.py` stages the exact tracked APT and Python
+inputs without resolving upgrades or installing packages. Run it in an owned
+Linux Python 3.12 container with the canonical project mounted read-only at `/src`
+and a private, single-writer state directory mounted at `/work`:
+
+```bash
+python3 -I -B /src/deploy/v100/fetch_source_artifacts.py \
+  --source-directory /src/deploy/v100 \
+  --destination /work/release \
+  --max-total-bytes "${TF_SOURCE_INPUT_BYTE_CAP:?Set a positive logical input-byte cap}" \
+  --timeout-seconds 60 --total-seconds 7200 > /work/artifact-staging.json
+```
+
+The byte cap includes cache hits and repeated destination paths. The current
+plan has 197 destinations: 124 Debian packages, 41 build/runtime wheels, 31 lint
+wheels and the pinned lint interpreter archive. Each payload verifies its full
+SHA256 before durable, no-overwrite publication; identical verified payloads
+share storage where the filesystem permits it. Cache hits are fully rehashed
+and synced. Existing conflicting files and unsafe paths refuse staging.
+Successful files remain reusable after an interrupted acquisition; no partial
+payload is accepted as complete. Capture the final JSON receipt only after exit
+zero and before starting the builder.
+
+The in-process deadline uses cooperative checks and SIGALRM. Python can defer
+signal handling during native calls; use an owned outer process/container
+deadline and verify retirement before reusing its destination. This follows the
+[Python signal contract](https://docs.python.org/3.12/library/signal.html#execution-of-python-signal-handlers).
+The stager needs canonical `src/tensorfold/cleanup.py` but no installed project,
+Packaging, Torch, native extension or GPU. Staging proves input bytes, not SDK
+build success or device/model qualification. Original producers, pins, locks and
+historical receipts remain unchanged.
+
+Bootstrap staging and existing producer/inventory/install controls passed 82
+containerized tests with two selected-SDK-receipt skips; required deployment
+controls passed 194 cases. Configured Ruff passed. The CPU verification image
+uses an explicitly supplied read-only Git 2.43 tool and the producer's declared
+`MAX_JOBS=4`; these tool prerequisites do not change source guards. Actual
+pinned-payload acquisition, SDK build and native/device qualification remain
+separate gates. Commands, initial missing-tool/build-environment failures and
+the final passing controls are retained under
+`providerone-alignment-20261106/native-sdk-v1`.
+
+The current build-stage interface is:
 
 ```bash
 docker build --network=none \
