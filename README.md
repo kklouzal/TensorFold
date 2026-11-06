@@ -66,12 +66,17 @@ Private PP2 components now import only their owned 24-block target slice and
 execute a complete four-stream HC boundary using the existing operators.
 Input embedding/PLE and output mixer/head have separate owners; global block
 identities remain intact. This is internal groundwork, with no PP2 serving flag.
-Cross-server transport, endpoint services, speculative transactions and full
-admission/qualification remain required. See
+Endpoint services, speculative transactions and full admission/qualification
+remain required. A private two-leader transfer component now preserves full HC
+and row metadata with bounded ring credits, stream completion and quarantined
+failure ownership. It has no serving integration or public flag; actual CUDA/NCCL
+and two-server qualification remain pending. See
 [stage import and execution](docs/v100-adaptive-validation.md#private-pp2-stage-components-a6).
 Source and fresh installed component/regression batches each pass 1,600 CPU
 tests with one optional-fixture skip; these controls do not qualify CUDA model
-execution or two-server serving.
+execution or two-server serving. The A7 transfer increment's final scoped source
+batch passes 1,670 tests with the same optional skip. See
+[transfer contracts and remaining gates](docs/v100-adaptive-validation.md#private-two-leader-hc-transfer-a7).
 
 The ordered combine-to-MoE-tail prototype completed exact component59 and
 compiler-resource checks but is **not advanced to model/P3**: its one-process

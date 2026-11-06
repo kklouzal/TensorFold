@@ -89,7 +89,7 @@ ledger and the governing benchmark matrix.
 | TP8 × PP1 × ETP8 | One eight-GPU server | Existing all-expert/width80 arithmetic retained; prepared selection and all-rank agreement have A3 source/installed CPU controls. | Actual complete SC117/V100 profile unqualified here. | No new released profile established. |
 | TP8 × PP1 × ETP4 | One eight-GPU server | A3 source/installed CPU controls cover EP2 banks of256 experts, width160, target/shared-GGUF MTP and owned-route reference execution. | Actual complete SC117/V100 profile unqualified here. | Pending this case's gates. |
 | TP8 × PP1 × ETP2 | One eight-GPU server | A3 source/installed CPU controls cover EP4 banks of128 experts, width320, target/shared-GGUF MTP and owned-route reference execution. | Actual complete SC117/V100 profile unqualified here. | Pending this case's gates. |
-| TP8 × PP2 × ETP8 | Two eight-GPU servers, one TP8 stage/server | A6 private 24/24 import and local execution components exist; transport, endpoint/method services, transactions and full admission remain missing. | Actual two-server profile unqualified here. | No PP2 serving path is activated. |
+| TP8 × PP2 × ETP8 | Two eight-GPU servers, one TP8 stage/server | A6 private 24/24 import/local execution and A7 private bounded two-leader HC transfer components exist; TP8 fanout, endpoint/method services, transactions and full admission remain missing. | Actual two-server profile unqualified here. | No PP2 serving path is activated. |
 | TP8 × PP2 × ETP4 | Two eight-GPU servers | Stage-local EP2 import is exercised by A6 components; the complete pipeline and its resource proof remain required. | Actual two-server profile unqualified here. | No PP2 serving path is activated. |
 | TP8 × PP2 × ETP2 | Two eight-GPU servers | Stage-local EP4 import is exercised by A6 components; the complete pipeline and its resource proof remain required. | Actual two-server profile unqualified here. | No PP2 serving path is activated. |
 
@@ -109,6 +109,16 @@ The scoped 42-module source and fresh installed batches each pass 1,600 tests
 with one optional pinned-companion/target-metadata skip. These are CPU component
 controls, including real stage-owned imports; they do not qualify actual
 two-server transport, model quality, resident capacity or performance.
+
+The private [A7 transfer component](../v100-adaptive-validation.md#private-two-leader-hc-transfer-a7)
+owns a separate two-rank communicator/Store, bounded receive slots and exact
+full-HC/position/token payloads. Generation-bound leases retain producer storage
+through send completion and receiver storage through consumer completion.
+Identity agreement and two alternating Store key banks bound rendezvous state;
+fatal failures quarantine resources and notify an available local supervisor.
+This component does not supply cross-server supervision, stage1 TP8 fanout,
+progressing owner services or distributed speculative commit. CUDA/NCCL transfer,
+resource overhead, actual hardware/model quality and performance are unqualified.
 
 One-server release may proceed only after all three PP1 profiles and required
 SC117 feature gates pass; PP2 remains required work pending its own hardware

@@ -628,6 +628,61 @@ RNG/frontiers/cancellation/publication remain required. Complete stage resource
 admission and actual two-server mesh/RDMA, model quality, capacity and performance
 qualification also remain open. Production is unchanged.
 
+## Private two-leader HC transfer (A7)
+
+The private `pipeline_transfer.HCTransport` component exclusively owns a dedicated
+two-rank NCCL communicator and its Store. It does not borrow the stage TP8
+communicator or expose a public PP2 Engine/CLI flag. Both endpoints submit each
+attempt, including refusals, and agree on the complete bounded ordinal,
+profile/epoch, sequence generation, round, row count and token/media/position
+identity references before any native payload operation. Two alternating key
+banks avoid an ever-growing native Store key namespace; coordinated retirement
+prevents premature bank reuse.
+
+The payload is exact contiguous FP16 `[rows,4,2560]` HC, followed by int32
+`[rows,3]` positions and int32 `[rows]` token IDs. No HC mean or conversion is
+introduced. The receiver reserves `slots * max_rows * 20496` tensor bytes;
+NCCL internals, streams/events, allocator overhead and transport registration
+remain separately unqualified. Sender storage is borrowed and must remain
+read-only until the send-completion lease permits reuse. Receiver storage cannot
+be consumed before transfer completion and a subsequent asynchronous-error
+check, and cannot be reused before consumer-stream completion or a completed
+discard. The ring permits only one unresolved round per sequence generation.
+Counter exhaustion refuses new work while allowing existing leases to retire.
+
+Unknown native/event/consumer failures quarantine the owner. Primary errors,
+cleanup failures and previously retained owners remain available for diagnosis;
+resources are retained until successful communicator abort and device retirement.
+The existing launcher notification is entered once on poison when configured;
+it is not a cross-server supervisor. Stream/device restoration occurs only after
+successful scoped work, avoiding additional CUDA calls after an unknown fault.
+Partial constructors publish acquired buffers into retained ownership slots.
+
+Deterministic CPU boundary doubles exercise identity/refusal, finite ring and
+key reuse, producer/consumer ordering, sentinel HC/metadata routing, cancellation,
+stale leases, partial construction and failure retention. These tests are
+component controls, not actual CUDA/NCCL transmission or model numerics.
+The actual local verification SDK stream implementation was inspected for the
+error-restoration contract; this does not qualify the separately pinned V100 SDK.
+
+The final scoped 45-module source batch passed **1,670 tests with one optional
+pinned-companion/target-metadata skip**, in 33.28 seconds. Required deployment and
+public-permission controls passed 194 cases; affected F/py312 and configured Ruff
+checks passed. The batch uses canonical Python source with the freshly built,
+unchanged installed native extension and is distinct from installed-image
+qualification. CUDA remained uninitialized. Earlier focused controls passed 68
+cases before the final two capture-precheck regressions were added. Saved failing
+controls, remediation history and exact commands remain in
+`providerone-alignment-20261106/pp2-hc-transport-root-v1` and
+`pp2-hc-transport-execution-v1`; they are not fresh-checkout test dependencies.
+
+TP8 fanout, progressing embedding/lookup/features, method endpoint ownership,
+distributed round commit/RNG/frontiers/cancellation/publication and complete
+per-stage resource admission remain required. Actual two-server mesh/RDMA,
+CUDA transfer, SC117 quality, capacity and performance remain unqualified.
+Production is unchanged. No further candidate investigation is part of this
+closeout, following the owner's instruction to finish current work and stop.
+
 ## Configuration and capacity
 
 For Flash Next GGUF with GPU indexer history, `--parallel auto` computes a

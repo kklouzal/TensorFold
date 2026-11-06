@@ -9,8 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from tensorfold.cleanup import rollback, raise_failures
-
-ROOT = Path(__file__).resolve().parents[1]
+from tensorfold.cuda import comm
 
 
 class Tensor:
@@ -44,7 +43,7 @@ class Provider:
 
 
 def source(raw=b"x" * 128):
-    path = ROOT / "src/tensorfold/cuda/comm.py"
+    path = Path(comm.__file__)
     tree = ast.parse(path.read_bytes())
     classes = [node for node in tree.body if isinstance(node, ast.ClassDef) and node.name in ("_UniqueId", "NCCL")]
     lib = SimpleNamespace(**{name: Provider(name) for name in
