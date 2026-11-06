@@ -190,11 +190,8 @@ class MultiDecoder:
                      for slot in range(slots)]
         self.states = tuple(self.free)
         self._migration_cursor = 0
-        if (self.controller is not None and self.free[0].history_placement is not None
-                and self.free[0].history_placement.target_layers % 4 == 0
-                and self.free[0].kc[0].arena is not None
-                and all(cache.arena is self.free[0].kc[0].arena for cache in self.free[0].kc)):
-            self.controller.enable_migration(self.free[0].history_placement.degree)
+        # Prepared serving owns one fixed map. Migration mechanisms remain
+        # isolated research helpers, never enabled by ordinary initialization.
         self.failed_slots: list[State] = []          # bounded by slots; exclusive owners until retirement succeeds
         self.slot_bytes = sum(t.numel() * t.element_size() for t in _tensors(self.free[0]))
         self.window_bytes = self.free[0].cache_bytes(capacity)          # one stream's caches at the full window

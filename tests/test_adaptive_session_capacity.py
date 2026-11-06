@@ -154,7 +154,12 @@ def test_bounded_verification_rows_do_not_release_resident_state_or_histories():
 @pytest.mark.parametrize("retention_tier", [None, "gpu", "ram"])
 def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(monkeypatch, tmp_path, reserve_gib,
                                                                            retention_tier):
-    """Real source headers and CPU geometry only; stop before weight retention."""
+    """Real headers/geometry; isolate only the native ABI dependency.
+
+    The finite hard_nofile=1024 is an explicit synthetic input, not a claim
+    that this host satisfies the selected native ABI. Dedicated actual-ABI
+    tests retain the shipping guard. All resource equations remain real.
+    """
     import json
     import numpy as np
     import torch
@@ -163,10 +168,12 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
     from tensorfold.cuda.geometry import PREFILL_ROWS, indexed_prefill_rows
     from tensorfold.cuda.sm70 import attention_qualification, execution_policy, family_ops
     from tensorfold.families.qwen4_exp import gguf
-    from tensorfold.families.qwen4_exp.cuda import engine, exl3_pack, gguf_admission, padded_linears
-    from tensorfold.families.qwen4_exp.cuda.history_placement import MIGRATION_OVERLAP_BYTES, coordinate_source_host_bytes
+    from tensorfold.families.qwen4_exp.cuda import engine, exl3_pack, gguf_admission, padded_linears, retention_resources
+    from tensorfold.families.qwen4_exp.cuda.history_placement import coordinate_source_host_bytes
     from tensorfold.families.qwen4_exp.rope import RopeParameters
     from tensorfold.families.qwen4_exp.cuda.retention_policy import RetentionPolicy
+
+    monkeypatch.setattr(retention_resources, "require_native_payload_runtime", lambda: {"hard_nofile": 1024})
 
     # Explicit test-only grants, not deployment defaults. Admission is observed
     # before model payload or retained-state allocation.
@@ -236,11 +243,12 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
     def inspect(*args, **kwargs):
         assert kwargs["session_ceiling"] == 40
         assert owner.rope == rope
+        assert owner._history_placement.degree == 4
         make = kwargs["session_geometry"]
         first, forty = make(text, 1), make(text, 40)
         a, b = first.breakdown_at(262145), forty.breakdown_at(262145)
         assert first.reserve == forty.reserve == 1
-        assert a["migration_overlap_limit"] == b["migration_overlap_limit"] == MIGRATION_OVERLAP_BYTES
+        assert a["migration_overlap_limit"] == b["migration_overlap_limit"] == 0
         assert b["history"] > a["history"]
         assert a["sm70_native_workspace"] > 0  # Owner buffers remain charged with native kernels disabled.
         assert sum(b.values()) == forty.bytes_at(262145)

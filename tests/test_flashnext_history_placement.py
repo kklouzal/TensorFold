@@ -573,3 +573,51 @@ def test_independent_clone_preserves_actual_pages_without_sharing_migration_prog
     for before, after in zip(state.kc, cloned.kc):
         assert before.owners == after.owners and before.owners is not after.owners
         assert before.page_offsets.data_ptr() != after.page_offsets.data_ptr()
+
+
+
+@pytest.mark.torch
+@pytest.mark.parametrize("target_layers", [6, 12])
+@pytest.mark.parametrize("rows,slot", [(1, 0), (129, 3)])
+def test_prepared_fixed_metadata_reaches_actual_state_on_all_ranks(target_layers, rows, slot):
+    from tests.test_sm70_rotorquant_state import model
+    from tensorfold.families.qwen4_exp.cuda.state import State
+
+    placement = HistoryPlacement(8, 2, target_layers, degree=4)
+    for rank in range(8):
+        w = model(8)
+        w.layers = [NS(index=layer, linear=False) for layer in range(target_layers)]
+        w.meta.update(full=NS(kv_heads=2), rank=rank, execution_provider="sm70",
+                      history_layout="unique", attention_degree=4)
+        assert w.meta["history_layout"] == "unique" and w.meta["attention_degree"] == 4
+        state = State(w, rows, 4, "int8", limit=rows, slot=slot)
+        assert state.history_placement == placement
+        assert state.history_record()["attention_degree"] == 4
+        assert state.cache_bytes() == state.owned_cache_bytes()
+        for layer in range(target_layers + 1):
+            assert state.history_placement.local_rows(slot, layer, rows, rank) == placement.local_rows(slot, layer, rows, rank)
+
+
+@pytest.mark.parametrize("target_layers", [6, 12])
+@pytest.mark.parametrize("rows", [1, 127, 128, 129, 1025, 262148])
+@pytest.mark.parametrize("slot", [0, 3, 23])
+def test_fixed_four_way_worst_rank_pages_include_tails_and_mtp(target_layers, rows, slot):
+    placement = HistoryPlacement(8, 2, target_layers, degree=4)
+    rank_totals = [0] * 8
+    pages = (rows + 127) // 128
+    for layer in range(target_layers + 1):
+        expected = [0] * 8
+        for page in range(pages):
+            for head in range(2):
+                rank = head * 4 + (((slot + layer) % 4) ^ (page % 4))
+                assert placement.kv_owner(slot, layer, head, page) == rank
+                expected[rank] += 128
+        assert sum(expected) == 2 * pages * 128
+        for rank in range(8):
+            assert placement.local_rows(slot, layer, rows, rank) == expected[rank]
+            rank_totals[rank] += expected[rank]
+        assert sum(placement.page_rows(rows, page) for page in range(pages)) == rows
+    # Six-layer stages keep their actual skew; no twelve-layer balance shortcut.
+    assert sum(rank_totals) == (target_layers + 1) * 2 * pages * 128
+    assert max(rank_totals) == max(sum(placement.local_rows(slot, layer, rows, rank)
+                                     for layer in range(target_layers + 1)) for rank in range(8))

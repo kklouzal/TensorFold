@@ -379,7 +379,7 @@ class FlashNextEngine:
             from tensorfold.cuda.geometry import layer_counts
             from .history_placement import HistoryPlacement
 
-            history_placement = HistoryPlacement(8, 2, layer_counts(text)[1])
+            history_placement = HistoryPlacement(8, 2, layer_counts(text)[1], degree=4)
             if graphs:
                 print("[tensorfold] CUDA graphs off: unique history owner execution requires live row bounds", flush=True)
                 graphs = False
@@ -1050,9 +1050,9 @@ class FlashNextEngine:
                     if media_extra:
                         costs["media_mtp_boundary"] = media_extra
                     if history_placement is not None:
-                        from .history_placement import MIGRATION_OVERLAP_BYTES
-
-                        costs["migration_overlap_limit"] = MIGRATION_OVERLAP_BYTES
+                        # Initial ownership is fixed; COW/recovery/restore and
+                        # replacement keep their independent ledger charges.
+                        costs["migration_overlap_limit"] = 0
                     if dspark_plan is not None:
                         costs["draft_history_execution"] = dspark_plan.capacity_bytes(
                             count * total, main_rows=row_envelope(count), prompt_rows=rows0, slots=count)

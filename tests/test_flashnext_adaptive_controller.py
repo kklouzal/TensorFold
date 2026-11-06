@@ -1025,3 +1025,38 @@ def test_synthetic_warmup_is_cleared_from_every_serving_measurement_plane():
     assert not any(reading["work_observations"]["totals"].values())
     assert control.configured == settings and control.epoch == epoch
     assert reading["work_observations"]["indexer_geometry"]["target_caches"] == 12
+
+
+def test_ordinary_multi_constructor_does_not_activate_qualifying_migration(monkeypatch):
+    """Actual initializer with resource-free buffers and an eligible research map."""
+    import torch
+    from tensorfold.families.qwen4_exp.cuda import multi
+    from tensorfold.families.qwen4_exp.cuda.history_placement import HistoryPlacement
+
+    arena = object()
+    placement = HistoryPlacement(8, 2, 12, degree=4)
+    cfg = SimpleNamespace(eos=(0,), index_ratio=4, index_budget=8, index_heads=2)
+    weights = SimpleNamespace(meta={"execution_provider": "sm70"}, cfg=cfg, comm=None,
+                              device=torch.device("cpu"), mtp=None, draft_ids=None,
+                              layers=[SimpleNamespace(linear=False) for _ in range(12)])
+    state = SimpleNamespace(history_placement=placement, kc=[SimpleNamespace(arena=arena)] * 12,
+                            kv_pair=object(), cache_bytes=lambda *args: 0)
+    from tensorfold.families.qwen4_exp.cuda import hc_plans
+
+    monkeypatch.setattr(torch.cuda, "is_available", lambda: False)
+    monkeypatch.setattr(hc_plans, "enroll", lambda *args, **kwargs: None)
+    monkeypatch.setattr(multi.gdn_multi, "Scratch", lambda *args, **kwargs: SimpleNamespace(lin=0))
+    monkeypatch.setattr(multi.gdn_multi, "RoundTables", lambda *args, **kwargs: SimpleNamespace())
+    monkeypatch.setattr(multi.attn_multi, "StepTables", lambda *args, **kwargs: SimpleNamespace())
+    monkeypatch.setattr(multi, "State", lambda *args, **kwargs: state)
+    monkeypatch.setattr(multi, "Buffers", lambda w, rows, *args, **kwargs: SimpleNamespace(rows=rows))
+    monkeypatch.setattr(multi, "converges", lambda w: False)
+    monkeypatch.setattr(multi, "_tensors", lambda value: ())
+    decoder = multi.MultiDecoder(weights, slots=1, capacity=16, depth=0,
+                                 prefill_rows=16, graph_budget=0)
+    assert decoder.controller.migration is None
+    before = decoder.controller.record()
+    with pytest.raises(ValueError, match="no bounded unique-history migration"):
+        decoder.controller.request_migration(2)
+    assert decoder.controller.record() == before
+    assert not decoder.maintenance_pending()

@@ -278,3 +278,21 @@ def test_manifest_install_runs_on_owner_boundary_and_preserves_newer_request():
                 scheduler.request_execution_manifest(invalid)
     finally:
         scheduler.close()
+
+
+@pytest.mark.parametrize("degree", [1, 2, 4])
+def test_fixed_initial_placement_refuses_degree_before_publication_or_wake(degree):
+    app = app_for()
+    decoder = app.engine.scheduler.decoder
+    before = runtime.snapshot(app)
+    streams, kept = decoder.streams, decoder.kept
+
+    def forbidden(_publish):
+        pytest.fail("fixed initial placement must reject before scheduler publication/wake")
+
+    app.engine.scheduler.request_runtime = forbidden
+    with pytest.raises(RequestError, match="fixed initial history placement"):
+        runtime.request(app, {"attention_degree": degree})
+    assert runtime.snapshot(app) == before
+    assert decoder.streams is streams and decoder.kept is kept
+    assert decoder.controller.migration is None

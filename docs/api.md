@@ -679,7 +679,7 @@ Times are seconds, sizes bytes.
 | `load.http_connections_in_use` | Accepted HTTP connections |
 | `load.stream_tokens` | Tokens each live stream's cache holds |
 | `capacity_plan` | Backend startup admission and allocation receipt, or null when unavailable; resident full-window reservations include each tensor-parallel rank's cache capacities and allocated bytes |
-| `runtime` (adaptive engines only) | Host snapshot of configured/pending/effective execution settings, retained/active/queued sessions, actual owner-map generations, bounded migration and profile-manifest status; see the runtime control contract below |
+| `runtime` (adaptive engines only) | Host snapshot of configured/pending/effective execution settings, retained/active/queued sessions, actual fixed owner-map status and profile-manifest status; see the runtime control contract below |
 | `kv.budget_bytes`, `kv.held_bytes` | The memory the stream caches may grow into (less the reserve) and what they hold, kept prefix-cache slots included |
 | `kv.active_bytes`, `kv.usage_ratio` | What the running requests' slots hold beyond their first rows, and its share of the budget (vLLM's KV usage: kept entries count as free, as a request that needs room evicts them; one stream alone may pass 1) |
 | `kv.bytes_per_token`, `kv.free_tokens_estimate` | Cache bytes a token takes; the context the budget less the running requests' share would hold (host memory and the resize copy can still refuse it) |
@@ -714,12 +714,15 @@ existing running and idle state. A zero proposal limit keeps enabled MTP
 conditioning current. Settings become effective at a globally coordinated batch
 boundary, including between bounded prefill chunks.
 
+Initial Flash Next TP8 unique-history serving uses a fixed degree-four map
+selected at preparation. `attention_degree` updates are not supported for this
+initial profile: they are rejected before scheduler publication or wake, preserving
+controller and retained state. Other bounded execution controls remain available.
+Low-level migration mechanisms remain research/reference code, not a new serving
+option or an ordinary live-placement API.
+
 The following requests are each standalone, separate from execution settings:
 
-- `{"attention_degree": 1}`, `2` or `4` requests a supported unique-history
-  placement. Packed pages move in bounded bundles; committed partial maps
-  remain executable. The receipt reports pending/effective placement, epochs
-  and resource blocking. Repeating a blocked target explicitly retries it.
 - `{"profile_table": TABLE}` registers only profiles backed by already verified
   content/evidence. Workload regions must have matching qualification proofs;
   uncovered work uses the admitted static envelope.

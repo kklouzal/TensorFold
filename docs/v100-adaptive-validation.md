@@ -287,6 +287,32 @@ API lifecycle, host/device resource admission and automatic blocked-request
 requeue are later integration work. This checkpoint is neither V100 release
 qualification nor a capacity or throughput claim.
 
+## Fixed initial unique history (A2)
+
+The selected adaptive Flash Next TP8/two-KV-head preparation now constructs an
+explicit degree-four `HistoryPlacement`. That same selected map drives the
+planner, the published weight metadata and each State's ownership. Generic
+degree-one/two/four helpers remain available to isolated research/oracles; their
+internal default is not the serving selection. MTP retains its separately fixed
+four-way striping, and six-layer stages retain their actual worst-rank/tail skew
+rather than inheriting a twelve-layer balance assumption.
+
+The resource ledger retains `migration_overlap_limit` with value zero. This
+removes only the dedicated live-migration liability; prefix/COW, idle recovery,
+restore, replacement, media and other workspace charges remain independent.
+Ordinary Multi initialization does not enable migration. Initial runtime
+`attention_degree` requests refuse before publication or scheduler wake without
+changing active/retained state; bounded execution controls remain available.
+The optional transfer algorithms and independent failure/partial-progress oracles
+are preserved, without an opt-in serving flag.
+
+Source/CPU verification is pending for A2. Its synthetic constructor geometry
+controls isolate only the native-ABI dependency with an explicit finite test FD
+limit; the shipping ABI guard and dedicated actual-ABI tests are unchanged. These
+unit controls do not qualify a native ABI, physical V100 allocations, full-model
+state/quality, capacity, latency or throughput. Selected existing GB10 profiles
+and production are unchanged.
+
 ## Configuration and capacity
 
 For Flash Next GGUF with GPU indexer history, `--parallel auto` computes a
@@ -294,8 +320,9 @@ resident count at the selected context. An integer is an administrator ceiling,
 including counts above 32; it does not force an unsafe allocation. Every chosen
 slot reserves its complete prompt-plus-reply window. The solver uses the
 limiting rank and separate loader/serving/host costs, with a useful shared
-execution envelope, retained recovery, replacement overlap, and bounded
-migration occupancy. It keeps the selected context rather than shortening it to
+execution envelope, retained recovery and replacement overlap. The fixed initial
+unique-history profile has zero dedicated live-migration overlap; it keeps COW,
+restore, recovery and supported replacement liabilities in their own categories. It keeps the selected context rather than shortening it to
 fit a requested session count.
 
 `--kv-full-windows auto` selects that full-context policy on the GGUF GPU-history
@@ -434,14 +461,14 @@ even when publishing another snapshot cannot allocate. Counter exhaustion is
 visible and invalidates completeness instead of silently wrapping; these host snapshots are diagnostic readings, not
 new capacity or performance proofs.
 
-Unique-history placement requests use standalone `{"attention_degree": 2}`
-updates. Migration copies packed bytes through balanced bundles and publishes
-each committed owner-map generation. An expected staging-capacity refusal
-keeps the valid current map, reports blocking and waits for an explicit retry.
-Ambiguous copy/publication failures retain poisoned ownership and staging
-resources for cohort containment. The prototype's 64 MiB allowance charges
-explicit additional tensor storage; allocator slab and driver peak occupancy
-still require V100 measurement before claiming a physical migration bound.
+The historical optional migration prototype accepted standalone
+`{"attention_degree": 2}` updates, copied packed bytes through balanced bundles
+and published committed owner-map generations. Its blocking, partial-map and
+containment oracles remain research/reference evidence. Its 64 MiB/rank candidate
+allowance is not charged or enabled by initial serving; it was never a measured
+physical migration bound. Initial fixed-map serving does not expose these live
+updates. Any future migration adoption must restore its complete intermediate
+resource and lifecycle obligations and pass the governing qualification gates.
 Managed TP launches signal their supervisor on a fatal cohort operation so a
 peer blocked in a collective cannot strand process retirement. Unmanaged
 launches retain their external containment responsibility.

@@ -131,6 +131,8 @@ def request(app: Any, body: Any) -> dict[str, Any]:
     del decoder  # The adaptive controller is host-only; keep no GPU model in HTTP error frames.
     if controller is None:
         raise RequestError("this engine has no adaptive runtime controls")
+    if "attention_degree" in body and getattr(controller, "migration", None) is None:
+        raise RequestError("live attention-degree updates are not enabled for fixed initial history placement")
     if "profile_manifest" in body:
         owner = getattr(scheduler, "request_execution_manifest", None)
         if not callable(owner):
