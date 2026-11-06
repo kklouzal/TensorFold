@@ -118,7 +118,8 @@ def test_generic_gguf_dispatch_rejects_orphan_preparation_before_reader_acquisit
 def test_direct_gguf_loader_adopts_checked_target_vector_without_rebuilding(tmp_path, monkeypatch):
     from pathlib import Path
     from tensorfold.cuda.sm70 import gguf_ops
-    from tensorfold.families.qwen4_exp.gguf import PackedTensor, decode_rows
+    from tensorfold.gguf_file import PackedTensor
+    from tensorfold.families.qwen4_exp.gguf import decode_rows
     from tensorfold.families.qwen4_exp.cuda import gguf_weights
     from tensorfold.families.qwen4_exp.rope import RopeParameters
 

@@ -16,7 +16,7 @@ import json
 import os
 from pathlib import Path
 
-from tensorfold.cuda.tensor_file import read_header_stream
+from tensorfold.tensor_file import read_header_stream
 from tensorfold.engine.snapshot_stream import SnapshotStreams
 
 FIELD = "tensorfold_sha256"

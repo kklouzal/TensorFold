@@ -502,7 +502,7 @@ def test_interrupted_borrow_retirement_cannot_expose_retired_storage(tmp_path, k
 
 def test_replay_hash_reads_only_the_admitted_extent_plus_one(tmp_path, monkeypatch):
     from contextlib import contextmanager
-    from tensorfold.cuda import tensor_file
+    from tensorfold import tensor_file
     store = ReplayStore(tmp_path, envelope())
     lease = store.stage([image_source()], allow_urls=False, cancelled=lambda: False)
     ref = lease.refs[0]

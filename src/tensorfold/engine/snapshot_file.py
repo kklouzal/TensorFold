@@ -20,7 +20,7 @@ import os
 from pathlib import Path
 import tempfile
 
-from tensorfold.cuda.tensor_file import read_header_stream
+from tensorfold.tensor_file import read_header_stream
 from tensorfold.engine.snapshot_integrity import prepare_digest
 from tensorfold.engine.snapshot_stream import SnapshotStreams
 

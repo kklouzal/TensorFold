@@ -10,7 +10,7 @@ from tensorfold.families.qwen4_exp.cuda.gguf_prefill import PrefillPlan
 from tensorfold.families.qwen4_exp.cuda.gguf_weights import (
     GGUFDense, GGUFExperts, GGUFPacked, load_gguf, weight_byte_plan,
 )
-from tensorfold.families.qwen4_exp.gguf import FORMATS
+from tensorfold.gguf_file import FORMATS
 
 pytestmark = pytest.mark.skipif(torch.cuda.get_device_capability() != (7, 0), reason="SM70 GGUF prefill")
 

@@ -123,7 +123,7 @@ class DSparkConfig:
 
     @classmethod
     def read(cls, directory):
-        from tensorfold.cuda.tensor_file import read_metadata_json
+        from tensorfold.tensor_file import read_metadata_json
 
         return cls.from_dict(read_metadata_json(Path(directory) / "config.json"))
 

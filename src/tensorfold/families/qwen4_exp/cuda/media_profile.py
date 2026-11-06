@@ -14,7 +14,7 @@ import os
 from pathlib import Path, PurePosixPath
 from types import MappingProxyType
 
-from tensorfold.cuda.tensor_file import (
+from tensorfold.tensor_file import (
     MAX_HEADER_BYTES, _metadata_object, _regular_stream, checkpoint_path,
 )
 from tensorfold.vision.media_worker import PROCESSOR_ID

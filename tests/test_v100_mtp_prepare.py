@@ -12,7 +12,7 @@ pytestmark = pytest.mark.torch
 
 from safetensors import safe_open  # noqa: E402
 from safetensors.torch import save_file  # noqa: E402
-from tensorfold.cuda.tensor_file import parse_header_bytes, read_header  # noqa: E402
+from tensorfold.tensor_file import parse_header_bytes, read_header  # noqa: E402
 
 spec = importlib.util.spec_from_file_location("v100_mtp_prepare", Path(__file__).parents[1] / "tools/v100_mtp_prepare.py")
 tool = importlib.util.module_from_spec(spec)

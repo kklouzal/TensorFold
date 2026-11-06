@@ -166,7 +166,7 @@ class Session:
             host_epoch = str(uuid.UUID(host.read(64).decode("ascii").strip()))
         digest = hashlib.sha256()
         for name in ("config.json", "model.safetensors.index.json"):
-            from tensorfold.cuda.tensor_file import checkpoint_path
+            from tensorfold.tensor_file import checkpoint_path
             path = checkpoint_path(self.model_dir, name)
             if not path.exists() and name.endswith(".index.json"):
                 continue
@@ -177,7 +177,7 @@ class Session:
                 if len(raw) > 96 << 20:
                     raise ValueError("expert checkpoint metadata exceeds the 96MiB boundary")
                 digest.update(raw)
-        from tensorfold.cuda.tensor_file import checkpoint_path
+        from tensorfold.tensor_file import checkpoint_path
 
         from .reader import checkpoint_inventory
         inventory = checkpoint_inventory(self.model_dir)
@@ -238,7 +238,7 @@ class Session:
         self.low = torch.empty_like(self.output, dtype=torch.bfloat16)
 
     def _check_source(self):
-        from tensorfold.cuda.tensor_file import checkpoint_path
+        from tensorfold.tensor_file import checkpoint_path
         for identity in self.source_identity:
             name, *expected = identity
             st = os.stat(checkpoint_path(self.model_dir, name))

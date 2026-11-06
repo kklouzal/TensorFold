@@ -9,7 +9,7 @@ import pytest
 def test_matching_checkpoint_and_explicit_or_auto_method(tmp_path,monkeypatch,method,architecture,expected):
     import tensorfold.cuda.exl3.format as exl3
     import tensorfold.families.qwen4_exp as family
-    import tensorfold.families.qwen4_exp.gguf as gguf
+    import tensorfold.gguf_file as gguf
     import tensorfold.families.qwen4_exp.cuda.engine as engine
     monkeypatch.setattr(exl3,'is_exl3',lambda _:False)
     monkeypatch.setattr(gguf,'resolve_gguf',lambda _:Path('target.gguf'))
@@ -26,7 +26,7 @@ def test_matching_checkpoint_and_explicit_or_auto_method(tmp_path,monkeypatch,me
 def test_mismatched_method_refuses_before_engine_ownership(tmp_path,monkeypatch,method,architecture):
     import tensorfold.cuda.exl3.format as exl3
     import tensorfold.families.qwen4_exp as family
-    import tensorfold.families.qwen4_exp.gguf as gguf
+    import tensorfold.gguf_file as gguf
     import tensorfold.families.qwen4_exp.cuda.engine as engine
     monkeypatch.setattr(exl3,'is_exl3',lambda _:False)
     monkeypatch.setattr(gguf,'resolve_gguf',lambda _:Path('target.gguf'))
@@ -62,22 +62,23 @@ def test_parser_exposes_configurable_method_and_rejects_unknown():
 def test_dflash2_selection_preserves_one_draft_owner_and_requires_manifest(tmp_path, monkeypatch, method):
     import tensorfold.cuda.exl3.format as exl3
     import tensorfold.families.qwen4_exp as family
-    import tensorfold.families.qwen4_exp.gguf as gguf
+    from gguf_fixture import tiny_model
     import tensorfold.families.qwen4_exp.cuda.engine as engine
 
     monkeypatch.setattr(exl3, 'is_exl3', lambda _: False)
-    monkeypatch.setattr(gguf, 'resolve_gguf', lambda _: Path('target.gguf'))
+    target = tiny_model(tmp_path / 'target.gguf')
     calls = []
     monkeypatch.setattr(engine, 'FlashNextEngine', lambda directory, **kw: calls.append(kw) or NS(options=kw))
     draft = tmp_path / 'draft'
     draft.mkdir()
     (draft / 'config.json').write_text(json.dumps({'architectures': ['DFlash2DraftModel']}))
     with pytest.raises(ValueError, match='pairing'):
-        family.cuda_engine('target', drafter=str(draft), tp=8, mtp_drafts=3,
-                           kv_dtype='fp16', draft_method=method)
+        family.cuda_engine(target, drafter=str(draft), tp=8, mtp_drafts=3,
+                           kv_dtype='fp16', draft_method=method, max_waiting_input_bytes=1024)
     assert not calls
-    result = family.cuda_engine('target', drafter=str(draft), tp=8, mtp_drafts=3,
-                               kv_dtype='fp16', draft_method=method, execution_profile_manifest=tmp_path / 'manifest.json')
+    result = family.cuda_engine(target, drafter=str(draft), tp=8, mtp_drafts=3,
+                               kv_dtype='fp16', draft_method=method, execution_profile_manifest=tmp_path / 'manifest.json',
+                               max_waiting_input_bytes=1024)
     assert result.options['dflash2_model_dir'] == draft
     assert result.options['adaptive_sessions'] is True
     assert not {'mtp_model_dir', 'dspark_model_dir'} & result.options.keys()
@@ -87,7 +88,7 @@ def test_dflash2_selection_preserves_one_draft_owner_and_requires_manifest(tmp_p
 def test_non_gguf_included_mtp_remains_selectable(monkeypatch,method,refuses):
     import tensorfold.cuda.exl3.format as exl3
     import tensorfold.families.qwen4_exp as family
-    import tensorfold.families.qwen4_exp.gguf as gguf
+    import tensorfold.gguf_file as gguf
     import tensorfold.families.qwen4_exp.cuda.engine as engine
     monkeypatch.setattr(exl3,"is_exl3",lambda _:False)
     monkeypatch.setattr(gguf,"resolve_gguf",lambda _:None)
@@ -107,7 +108,7 @@ def test_non_gguf_included_mtp_remains_selectable(monkeypatch,method,refuses):
 def test_none_selects_serial_resources_without_acquiring_any_drafter(tmp_path, monkeypatch, gguf_target):
     import tensorfold.cuda.exl3.format as exl3
     import tensorfold.families.qwen4_exp as family
-    import tensorfold.families.qwen4_exp.gguf as gguf
+    import tensorfold.gguf_file as gguf
     import tensorfold.families.qwen4_exp.cuda.engine as engine
 
     monkeypatch.setattr(exl3, "is_exl3", lambda _: False)
@@ -125,7 +126,7 @@ def test_gguf_preserves_automatic_capacity_intent_and_explicit_session_ceilings(
                                                                             automatic, ceiling):
     import tensorfold.cuda.exl3.format as exl3
     import tensorfold.families.qwen4_exp as family
-    import tensorfold.families.qwen4_exp.gguf as gguf
+    import tensorfold.gguf_file as gguf
     import tensorfold.families.qwen4_exp.cuda.engine as engine
 
     monkeypatch.setattr(exl3, "is_exl3", lambda _: False)
@@ -144,7 +145,7 @@ def test_gguf_preserves_automatic_capacity_intent_and_explicit_session_ceilings(
 def test_full_window_auto_only_selects_implemented_adaptive_gpu_history(monkeypatch, gguf_target, history, allowed):
     import tensorfold.cuda.exl3.format as exl3
     import tensorfold.families.qwen4_exp as family
-    import tensorfold.families.qwen4_exp.gguf as gguf
+    import tensorfold.gguf_file as gguf
     import tensorfold.families.qwen4_exp.cuda.engine as engine
 
     monkeypatch.setattr(exl3, "is_exl3", lambda _: False)
@@ -162,7 +163,7 @@ def test_full_window_auto_only_selects_implemented_adaptive_gpu_history(monkeypa
 def test_explicit_mtp_zero_maximum_does_not_silently_disable_selected_method(monkeypatch):
     import tensorfold.cuda.exl3.format as exl3
     import tensorfold.families.qwen4_exp as family
-    import tensorfold.families.qwen4_exp.gguf as gguf
+    import tensorfold.gguf_file as gguf
     import tensorfold.families.qwen4_exp.cuda.engine as engine
 
     monkeypatch.setattr(exl3, "is_exl3", lambda _: False)
@@ -176,7 +177,7 @@ def test_explicit_mtp_zero_maximum_does_not_silently_disable_selected_method(mon
 def test_gguf_ceiling_rejects_noninteger_or_nonpositive_api_counts(monkeypatch, parallel):
     import tensorfold.cuda.exl3.format as exl3
     import tensorfold.families.qwen4_exp as family
-    import tensorfold.families.qwen4_exp.gguf as gguf
+    import tensorfold.gguf_file as gguf
 
     monkeypatch.setattr(exl3, "is_exl3", lambda _: False)
     monkeypatch.setattr(gguf, "resolve_gguf", lambda _: Path("target.gguf"))
@@ -190,7 +191,7 @@ def test_execution_manifest_is_forwarded_only_to_supported_resident_provider(mon
                                                                            history, allowed):
     import tensorfold.cuda.exl3.format as exl3
     import tensorfold.families.qwen4_exp as family
-    import tensorfold.families.qwen4_exp.gguf as gguf
+    import tensorfold.gguf_file as gguf
     import tensorfold.families.qwen4_exp.cuda.engine as engine
 
     monkeypatch.setattr(exl3, "is_exl3", lambda _: False)

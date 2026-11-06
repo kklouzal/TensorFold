@@ -58,7 +58,7 @@ class Qwen27Engine:
                              "checkpoint, or serve TensorFold/Qwen3.8-27B-MLX-4bit")
         rope = rope_parameters(model_dir, yarn_factor)       # default RoPE, or static YaRN past native positions
         yarn = rope if rope.rope_type == "yarn" else None
-        from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json
+        from tensorfold.tensor_file import checkpoint_path, read_metadata_json
 
         from .draft_tree import COPY_MIN_MATCH, draft_block, draft_limit, draft_spans
 

@@ -17,7 +17,8 @@ import tempfile
 
 from tensorfold.cleanup import rollback
 
-from .gguf import GGUFCheckpoint, metadata_config, resolve_gguf
+from tensorfold.gguf_file import resolve_gguf
+from .gguf import metadata_config, open_checkpoint
 from .frontend_metadata import generation_defaults, semantic_source
 
 
@@ -124,7 +125,7 @@ def prepare(entrypoint: str | Path) -> Path:
     source = resolve_gguf(entrypoint)
     if source is None:
         raise ValueError(f"{entrypoint}: no GGUF checkpoint entrypoint")
-    checkpoint = GGUFCheckpoint.open(source)
+    checkpoint = open_checkpoint(source)
     # The discovery read establishes the complete shard set. Its metadata is
     # not used until a fresh read is bound to all of these source versions.
     paths = checkpoint.paths
@@ -141,7 +142,7 @@ def prepare(entrypoint: str | Path) -> Path:
     temporary_name = tempfile.mkdtemp(prefix=".prepare-", dir=root)
     try:
         temporary = Path(temporary_name)
-        checkpoint = GGUFCheckpoint.open(source)
+        checkpoint = open_checkpoint(source)
         if checkpoint.paths != paths:
             raise ValueError("GGUF source shard set changed during asset preparation")
         metadata = checkpoint.metadata

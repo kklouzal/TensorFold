@@ -9,7 +9,8 @@ import numpy as np
 import pytest
 
 from gguf_fixture import write
-from tensorfold.families.qwen4_exp.gguf import FORMATS, GGUFCheckpoint, PackedTensor, decode_rows
+from tensorfold.gguf_file import FORMATS, GGUFCheckpoint, PackedTensor
+from tensorfold.families.qwen4_exp.gguf import decode_rows
 
 KINDS = (14, 18, 21, 22, 23, 42)
 FIXTURE = Path(__file__).parent / "fixtures/gguf_mixed_ggml.npz"

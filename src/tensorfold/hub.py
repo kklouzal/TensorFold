@@ -85,7 +85,7 @@ def metadata(repo_id: str, *, cache_dir: Any = None, latest: bool = False) -> Pa
     from huggingface_hub import HfApi, constants, snapshot_download
 
     from tensorfold.checkpoint_metadata import read_json
-    from tensorfold.cuda.tensor_file import checkpoint_path
+    from tensorfold.tensor_file import checkpoint_path
 
     found = cached(repo_id, cache_dir=cache_dir)
     if constants.HF_HUB_OFFLINE:

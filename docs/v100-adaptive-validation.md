@@ -14,6 +14,29 @@ performance are separate gates. No new session maximum or throughput result is
 claimed. The specification's 20-Q8/32-Q4 figures are geometry reference points,
 not admission promises or capacity ceilings.
 
+## Neutral artifact I/O boundary (A1)
+
+The source now separates bounded container/file validation from model and device
+selection. `tensorfold.tensor_file` is the unchanged shared stdlib file-boundary
+implementation moved out of the CUDA package, with its owned callers updated.
+`tensorfold.gguf_file` owns the existing GGUF formats, immutable inventories,
+shard/extent validation, packed-byte spans and path resolution. Neither neutral
+module imports a model family or accelerator runtime. Flash Next retains its
+architecture guard, token-ID identity domain, semantic configuration and CPU
+decode oracle. An opened inventory can pass directly to family configuration;
+this avoids reading headers twice and preserves an explicitly selected shard
+as the entrypoint.
+
+Focused controls cover neutral inventory versus family admission, backend-blocked
+imports, split-header read counts and the existing MTP inventory handoff. The current CUDA-hidden source batch recorded 1,228 passed,48 failed and four
+skipped; all48 failures also occurred in the immutable baseline, and all new
+boundary and corrected resolver cases passed. Static checks passed on 115 Python
+files. This is partial source evidence, not an all-green suite: the existing
+failures remain unqualified. Installed-package checks are pending; earlier suite
+totals do not qualify this source. The change adds no format, supported model, device
+execution, capacity, performance or V100 qualification claim. Selected GB10 and
+other existing profiles retain their original evidence scope and deployment.
+
 ## Current v6 source and CPU evidence
 
 Current source implements the standard Responses and durable Conversations

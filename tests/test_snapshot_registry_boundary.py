@@ -14,7 +14,7 @@ from dataclasses import replace
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from tensorfold.engine.snapshot_registry import LayerSchema, Registry, TensorSchema  # noqa: E402
-from tensorfold.cuda.tensor_file import read_header  # noqa: E402 - direct source control
+from tensorfold.tensor_file import read_header  # noqa: E402 - direct source control
 
 
 class Cache:

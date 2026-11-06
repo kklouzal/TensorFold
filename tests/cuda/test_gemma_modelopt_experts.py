@@ -110,7 +110,7 @@ def test_real_26b_layer0_direct_scales_geglu_and_ordered_combine():
         pytest.skip("set TF_GEMMA_MODELOPT_TEST_MODEL to the verified pinned 26B snapshot")
     from tensorfold.checkpoint_metadata import read_config, read_json
     from tensorfold.cuda.direct_read import SafeTensors
-    from tensorfold.cuda.tensor_file import checkpoint_path
+    from tensorfold.tensor_file import checkpoint_path
     from tensorfold.families.gemma4.cuda.modelopt_weights import validate_headers
 
     root = Path(directory)

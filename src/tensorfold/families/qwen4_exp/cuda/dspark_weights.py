@@ -194,7 +194,7 @@ def load_reference(directory, *, target, chunk_bytes=LOAD_CHUNK):
     """Explicit CPU-only load; no remote access or automatic provider selection."""
     import torch
     from safetensors import safe_open
-    from tensorfold.cuda.tensor_file import read_header
+    from tensorfold.tensor_file import read_header
 
     c = DSparkConfig.read(directory)
     c.check_target(target)

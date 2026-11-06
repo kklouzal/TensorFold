@@ -19,7 +19,7 @@ import re
 import threading
 from types import MappingProxyType
 
-from tensorfold.cuda.tensor_file import _metadata_object, _regular_stream, checkpoint_path
+from tensorfold.tensor_file import _metadata_object, _regular_stream, checkpoint_path
 
 SCHEMA = "tensorfold.serving-profile"
 MAX_MANIFEST_BYTES = 1 << 20
@@ -39,7 +39,8 @@ def validate_service_options(model_dir, options):
     """Resolve FIFO/retention against actual source layout before acquisition."""
     from tensorfold.server.request_limits import optional_limit
     from tensorfold.families import read_config
-    from ..gguf import metadata_config, resolve_gguf
+    from tensorfold.gguf_file import resolve_gguf
+    from ..gguf import metadata_config
     from .history_placement import HistoryPlacement
     from .retention_policy import RetentionPolicy
     from . import DEPTH
@@ -194,7 +195,8 @@ def resolve_profile_positions(model_dir, options):
                  else geometry.maximum_proposals)
     pair = get_pair(options.get("kv_dtype", "bf16"), options.get("kv_key_dtype"), options.get("kv_value_dtype"))
     from tensorfold.cuda.capacity import config
-    from ..gguf import metadata_config, resolve_gguf
+    from tensorfold.gguf_file import resolve_gguf
+    from ..gguf import metadata_config
     from .history_placement import HistoryPlacement
 
     text = config(model_dir)
@@ -245,7 +247,8 @@ def _position_document(positions, binding, numerical):
 
 
 def _required_files(model_dir, options, *, positions=_UNRESOLVED_POSITION):
-    from ..gguf import GGUFCheckpoint, resolve_gguf
+    from tensorfold.gguf_file import resolve_gguf
+    from ..gguf import open_checkpoint
 
     from tensorfold.checkpoint_metadata import _path as metadata_path
     from tensorfold.chat_metadata import resolve_chat_templates
@@ -270,7 +273,7 @@ def _required_files(model_dir, options, *, positions=_UNRESOLVED_POSITION):
     elif entrypoint is None:
         raise ValueError("structural profiles require GGUF or an explicit SM70 family manifest")
     if entrypoint is not None:
-        required.extend(GGUFCheckpoint.open(entrypoint).paths)
+        required.extend(open_checkpoint(entrypoint).paths)
     drafts = [(method, options.get(name)) for method, name in (
         ("mtp", "mtp_model_dir"), ("dspark", "dspark_model_dir"), ("dflash2", "dflash2_model_dir"))
         if options.get(name) is not None]

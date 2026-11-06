@@ -12,7 +12,7 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-from tensorfold.cuda.tensor_file import MAX_HEADER_BYTES, read_metadata_json
+from tensorfold.tensor_file import MAX_HEADER_BYTES, read_metadata_json
 from tensorfold.engine.model_identity import ModelIdentity, canonical_runtime_json, capture_model_identity
 
 from .dflash2_config import DFlash2Config

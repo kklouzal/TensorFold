@@ -67,9 +67,10 @@ def check(model_dir: Path) -> None:
 
     config = read_config(model_dir)
     if quant_method(config) == "gguf":
-        from .gguf import GGUFCheckpoint, resolve_gguf
+        from tensorfold.gguf_file import resolve_gguf
+        from .gguf import open_checkpoint
 
-        GGUFCheckpoint.open(resolve_gguf(model_dir))
+        open_checkpoint(resolve_gguf(model_dir))
         return
     if quant_method(config) == EXL3_QUANT:
         # an EXL3 pack (the CUDA engine, any codebook and per-tensor width): only the MTP head to report
@@ -213,7 +214,7 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
     if is_exl3(Path(model_dir)):
         print("[tensorfold] EXL3 packs are experimental: replies are exact; see "
               "docs/recipes/qwen3.8-flash-next.md#exl3-checkpoints-experimental for how they compare", flush=True)
-    from .gguf import resolve_gguf
+    from tensorfold.gguf_file import resolve_gguf
     gguf = resolve_gguf(model_dir) is not None
     family_manifest = options.get("family_manifest")
     sm70 = gguf or family_manifest is not None

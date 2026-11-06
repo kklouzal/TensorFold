@@ -39,7 +39,7 @@ def stdlib_module(name, relative):
 CLEANUP = stdlib_module("mapped_control_cleanup", "src/tensorfold/cleanup.py")
 with patch.dict(sys.modules, {"tensorfold.cleanup": CLEANUP}):
     LIFE = stdlib_module("mapped_control_lifetime", "src/tensorfold/families/qwen4_exp/table_lifetime.py")
-HEADER = stdlib_module("mapped_control_header", "src/tensorfold/cuda/tensor_file.py")
+HEADER = stdlib_module("mapped_control_header", "src/tensorfold/tensor_file.py")
 CORE = stdlib_module("mapped_control_file_core", "src/tensorfold/file_io.py")
 CORE._owned_slot = TransportOwner  # explicitly labeled test substitute
 KINDS = {"U32": 4, "BF16": 2, "U8": 1, "F8_E4M3": 1}

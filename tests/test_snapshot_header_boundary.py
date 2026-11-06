@@ -11,7 +11,7 @@ from unittest.mock import patch
 from snapshot_fd_transport import substitute_owners
 from tensorfold.file_io import _buffered
 
-from tensorfold.cuda.tensor_file import read_header, read_header_stream
+from tensorfold.tensor_file import read_header, read_header_stream
 from tensorfold.engine.snapshot_file import snapshot_header
 
 
@@ -99,7 +99,7 @@ class HeaderControls(unittest.TestCase):
             path, expected, count = self.fixture(root)
             owned = read_header(path, {"U8": 1})
             with path.open("rb") as stream:
-                with patch("tensorfold.cuda.tensor_file._regular_stream", side_effect=AssertionError("reopened")):
+                with patch("tensorfold.tensor_file._regular_stream", side_effect=AssertionError("reopened")):
                     borrowed = read_header_stream(stream, {"U8": 1}, label=path)
                 self.assertFalse(stream.closed)
                 self.assertEqual(stream.tell(), 8 + count)

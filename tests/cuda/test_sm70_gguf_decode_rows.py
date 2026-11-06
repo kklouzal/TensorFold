@@ -7,7 +7,7 @@ import torch
 
 from gguf_fixture import blocks
 from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense, GGUFExperts, GGUFPacked, DECODE_BYTES
-from tensorfold.families.qwen4_exp.gguf import FORMATS
+from tensorfold.gguf_file import FORMATS
 
 pytestmark = pytest.mark.skipif(torch.cuda.get_device_capability() != (7, 0), reason="SM70 packed decode rows")
 

@@ -14,7 +14,7 @@ from pathlib import Path
 import stat
 import types
 
-from tensorfold.cuda.tensor_file import _regular_stream
+from tensorfold.tensor_file import _regular_stream
 
 _ROOT = Path("/opt/tensorfold-pins")
 _PROTECTED = (_ROOT / "v100-source-foundation.json", _ROOT / "source-pins.json",

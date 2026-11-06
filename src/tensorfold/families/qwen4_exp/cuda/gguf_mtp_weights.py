@@ -17,7 +17,8 @@ import torch
 from tensorfold.cleanup import raise_failures
 from tensorfold.cuda.direct_read import Reader
 
-from ..gguf import GGUFCheckpoint, decode_rows, resolve_gguf, token_id_identity
+from tensorfold.gguf_file import resolve_gguf
+from ..gguf import decode_rows, token_id_identity, open_checkpoint
 from .gguf_weights import (
     ConcatPlan, DECODE_BYTES, ExpertPlan, GGUFDense,
     MATMUL_ROWS, Planner, STAGING_BYTES, materializer,
@@ -32,7 +33,7 @@ def model_plan(target, directory, *, tp=(0, 1)):
     entry = resolve_gguf(directory)
     if entry is None:
         raise ValueError("shared GGUF MTP requires a GGUF companion")
-    checkpoint = GGUFCheckpoint.open(entry)
+    checkpoint = open_checkpoint(entry)
     c = target.cfg
     rank, world = tp
     full = target.meta.get("full", c)

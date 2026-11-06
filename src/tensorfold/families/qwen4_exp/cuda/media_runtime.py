@@ -250,7 +250,8 @@ class MediaRuntime:
         from tensorfold.vision.media_frontend import MediaExecutor, ReplayMediaFrontend
         from tensorfold.vision.replay import ReplayStore
         from tensorfold.vision.media_work import MediaWork
-        from ..gguf import GGUFCheckpoint, resolve_gguf
+        from tensorfold.gguf_file import resolve_gguf
+        from ..gguf import open_checkpoint
         from ..media_plan import MediaPlanContract, QwenMediaPlanner
         from .execution_identity import digest
         from .media_requests import MediaRequests
@@ -272,7 +273,7 @@ class MediaRuntime:
             if template is None:
                 raise ValueError("media startup requires the model's selected chat template")
             template_identity = digest({"routes": [template.provenance(tools=route)["sha256"] for route in (False, True)]})
-            checkpoint = GGUFCheckpoint.open(resolve_gguf(self.engine.model_dir))
+            checkpoint = open_checkpoint(resolve_gguf(self.engine.model_dir))
             image_id = checkpoint.metadata.get("qwen4exp.ple.image_token_id")
             if type(image_id) is not int or not 0 <= image_id < weights.cfg.vocab:
                 raise ValueError("media startup requires the actual GGUF image/PLE token role")

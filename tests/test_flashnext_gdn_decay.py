@@ -10,7 +10,7 @@ torch = pytest.importorskip("torch")
 from tensorfold.families.qwen4_exp.cuda import gdn  # noqa: E402 - optional backend guard precedes CUDA imports
 from tensorfold.families.qwen4_exp.cuda.gguf_weights import ArrayPlan, _array  # noqa: E402 - optional backend guard precedes CUDA imports
 from tensorfold.families.qwen4_exp.cuda.weight_types import GDNW  # noqa: E402 - optional backend guard precedes CUDA imports
-from tensorfold.families.qwen4_exp.gguf import PackedTensor  # noqa: E402 - optional backend guard precedes CUDA imports
+from tensorfold.gguf_file import PackedTensor
 from gguf_fixture import tiny_model  # noqa: E402 - optional backend guard precedes CUDA imports
 
 

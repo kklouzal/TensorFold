@@ -12,7 +12,7 @@ import math
 import os
 from pathlib import Path
 
-from tensorfold.cuda.tensor_file import MAX_HEADER_BYTES, _metadata_object, _regular_stream, checkpoint_path, read_header
+from tensorfold.tensor_file import MAX_HEADER_BYTES, _metadata_object, _regular_stream, checkpoint_path, read_header
 
 from .dflash2_config import DFlash2Config, count
 

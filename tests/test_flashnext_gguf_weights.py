@@ -7,7 +7,8 @@ import numpy as np
 import pytest
 
 from gguf_fixture import blocks, scalar_reference, tiny_model
-from tensorfold.families.qwen4_exp.gguf import PackedTensor, decode_rows, metadata_config, resolve_gguf
+from tensorfold.gguf_file import PackedTensor, resolve_gguf
+from tensorfold.families.qwen4_exp.gguf import decode_rows, metadata_config
 
 
 @pytest.mark.parametrize("kind,width", [(0, 33), (1, 33), (30, 33), (8, 96), (7, 96),

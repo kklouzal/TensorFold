@@ -31,7 +31,7 @@ from tensorfold.cuda.b16_sym8_layout import SCHEMA as SYM8_SCHEMA
 from tensorfold.cuda.b16_delta4 import SCHEMA as DELTA4_SCHEMA
 from tensorfold.cuda.direct_read import SafeTensors
 from tensorfold.cuda.requant import Head, TokenFp8Head, prefix, requantize
-from tensorfold.cuda.tensor_file import checkpoint_path
+from tensorfold.tensor_file import checkpoint_path
 from tensorfold.families.qwen3_5.cuda import b16
 
 from ..dflash_metadata import checked_headers, positive

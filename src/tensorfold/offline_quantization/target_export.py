@@ -21,7 +21,7 @@ from tensorfold.checkpoint_metadata import read_config
 from tensorfold.cleanup import raise_failures
 from tensorfold.cuda.capacity import headers
 from tensorfold.cuda.nvfp4.format import LinearMetadata, config_block
-from tensorfold.cuda.tensor_file import MAX_HEADER_BYTES
+from tensorfold.tensor_file import MAX_HEADER_BYTES
 from tensorfold.file_io import FileStreams
 from tensorfold.families.gemma4.cuda.dense_loader import _projection_specs
 from tensorfold.families.gemma4.cuda.e2b_metadata import E2BConfig
@@ -212,7 +212,7 @@ def _unused_hashes(source, records, unused):
     # Only the optional54 discarded donor tensors need new payload hashes. The
     # original16GB source file hashes are REUSED, never reread wholesale here.
     from tensorfold.cuda.capacity import SIZES
-    from tensorfold.cuda.tensor_file import read_header_stream
+    from tensorfold.tensor_file import read_header_stream
     result, observed = {}, {}
     for name in sorted(name for name in records if name.endswith('.safetensors')):
         with _input(source, name, observed) as (stream, _):

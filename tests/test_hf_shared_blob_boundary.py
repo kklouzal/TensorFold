@@ -7,7 +7,7 @@ import struct
 import pytest
 
 from tensorfold.cuda import capacity
-from tensorfold.cuda.tensor_file import checkpoint_path
+from tensorfold.tensor_file import checkpoint_path
 
 
 @pytest.fixture
@@ -159,7 +159,7 @@ def test_shared_authority_is_revalidated_after_marker_or_link_changes(shared_mod
 
 @pytest.mark.parametrize("failure", [PermissionError("marker access denied"), OSError(5, "marker IO failed")])
 def test_marker_access_and_io_failures_keep_their_primary_exception(shared_model, monkeypatch, failure):
-    import tensorfold.cuda.tensor_file as files
+    import tensorfold.tensor_file as files
 
     snapshot, _, _ = shared_model
 
@@ -175,7 +175,7 @@ def test_marker_access_and_io_failures_keep_their_primary_exception(shared_model
 def test_marker_retirement_failure_preserves_owned_scope_context(shared_model, monkeypatch):
     from contextlib import contextmanager
 
-    import tensorfold.cuda.tensor_file as files
+    import tensorfold.tensor_file as files
 
     snapshot, _, _ = shared_model
     failure = OSError(5, "marker retirement failed")

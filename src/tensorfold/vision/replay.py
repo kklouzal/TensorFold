@@ -551,7 +551,7 @@ def open_replay(ref: ReplayRef, envelope: MediaEnvelope):
     """Validate a bounded extent through the existing exact native FD owner."""
     if ref.byte_length > envelope.max_upload_bytes:
         raise ImageInputError("replay exceeds the encoded media bound")
-    from tensorfold.cuda.tensor_file import _regular_stream
+    from tensorfold.tensor_file import _regular_stream
     with _regular_stream(ref.path, no_follow=True) as handle:
         before = os.fstat(handle.fileno())
         if not stat.S_ISREG(before.st_mode) or before.st_size != ref.byte_length or before.st_mode & 0o222:

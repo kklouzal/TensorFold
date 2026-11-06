@@ -11,7 +11,7 @@ import triton
 import triton.language as tl
 
 from tensorfold.cuda.direct_read import SafeTensors
-from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json
+from tensorfold.tensor_file import checkpoint_path, read_metadata_json
 from tensorfold.engine.exact_sampling import Sampling
 
 from .affine_memory import packed_draft

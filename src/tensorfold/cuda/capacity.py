@@ -180,7 +180,7 @@ def headers(model_dir: str | Path, *, rank: int | None = None, files: list[Path]
     but must neither retain nor mutate them. It must own its own accumulated
     scalar result; headers never stores the callback beyond this operation.
     """
-    from .tensor_file import checkpoint_path, read_header, read_metadata_json
+    from tensorfold.tensor_file import checkpoint_path, read_header, read_metadata_json
 
     path = Path(model_dir)
     if observer is not None and not callable(observer):

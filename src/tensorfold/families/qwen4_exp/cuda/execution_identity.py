@@ -21,7 +21,7 @@ import time
 from datetime import timedelta
 from types import SimpleNamespace
 
-from tensorfold.cuda.tensor_file import _metadata_object, _regular_stream, checkpoint_path
+from tensorfold.tensor_file import _metadata_object, _regular_stream, checkpoint_path
 from tensorfold.engine.model_identity import canonical_runtime_json, capture_model_identity
 from tensorfold.cleanup import finish, raise_failures, rollback
 
@@ -92,14 +92,15 @@ def _json(path, *, with_content=False):
 
 def draft_artifact_files(directory, method):
     """The actual selected SM70 draft loader's source inputs, independent of GPU state."""
-    from ..gguf import GGUFCheckpoint, resolve_gguf
+    from tensorfold.gguf_file import resolve_gguf
+    from ..gguf import open_checkpoint
 
     if method not in ("mtp", "dspark", "dflash2"):
         raise ValueError("unsupported speculative source inventory")
     root = Path(directory).resolve(strict=True)
     entry = resolve_gguf(root) if method == "mtp" else None
     if entry is not None:
-        companion = GGUFCheckpoint.open(entry)
+        companion = open_checkpoint(entry)
         return {file.name: checkpoint_path(file.parent, file.name) for file in companion.paths}
     # These providers read the single file directly; a neighbouring shard index
     # does not select a different payload or replace the real consumed file.
@@ -108,12 +109,13 @@ def draft_artifact_files(directory, method):
 
 def artifact_files(engine):
     """Derive the actual loader's complete selected input closure."""
-    from ..gguf import GGUFCheckpoint, resolve_gguf
+    from tensorfold.gguf_file import resolve_gguf
+    from ..gguf import open_checkpoint
 
     entry = resolve_gguf(engine.model_dir)
     if entry is None:
         raise ValueError("execution profile manifests require an actual GGUF target")
-    checkpoint = GGUFCheckpoint.open(entry)
+    checkpoint = open_checkpoint(entry)
     target_root = Path(entry).resolve().parent
     result = {"target/" + p.name: checkpoint_path(target_root, p.name) for p in checkpoint.paths}
     metadata_root = Path(engine.model_dir).resolve()

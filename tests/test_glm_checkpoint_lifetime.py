@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'src'))
-from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json  # noqa: E402
+from tensorfold.tensor_file import checkpoint_path, read_metadata_json  # noqa: E402
 
 WEIGHTS = ROOT / 'src/tensorfold/families/glm5_next/cuda/weights.py'
 SPLIT = ROOT / 'src/tensorfold/families/glm5_next/cuda/split.py'

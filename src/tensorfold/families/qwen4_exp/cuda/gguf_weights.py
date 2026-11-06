@@ -20,7 +20,8 @@ from tensorfold.cuda.direct_read import Reader
 from tensorfold.cuda.sm70 import gguf_ops
 from tensorfold.cleanup import raise_failures
 
-from ..gguf import FORMATS, GGUFCheckpoint, PackedTensor, decode_rows, metadata_config, resolve_gguf
+from tensorfold.gguf_file import FORMATS, PackedTensor, resolve_gguf
+from ..gguf import decode_rows, metadata_config, open_checkpoint
 from ..host_table import PREFETCH_READ, _MappedTable, _prefetch, _random_access
 from ..ple_lifetime import PLETables, _retain_failure
 from ..read_ahead import ReadAhead, row_ids
@@ -553,7 +554,7 @@ def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft
     entry = resolve_gguf(path)
     if entry is None:
         raise ValueError("no GGUF checkpoint was selected")
-    checkpoint = GGUFCheckpoint.open(entry)
+    checkpoint = open_checkpoint(entry)
     raw = metadata_config(entry)
     # Config.read uses the same metadata dispatch for raw GGUF and staged bundles.
     full = Config.read(path, rope=rope, eos_token_ids=eos_token_ids)

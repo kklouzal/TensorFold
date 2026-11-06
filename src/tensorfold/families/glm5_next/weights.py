@@ -8,7 +8,7 @@ from typing import Any
 
 import mlx.core as mx
 
-from tensorfold.cuda.tensor_file import checkpoint_path
+from tensorfold.tensor_file import checkpoint_path
 from tensorfold.families.glm5_next import layouts
 from tensorfold.families.glm5_next.config import BITS, GROUPS, Config, quant_formats, unreadable
 from tensorfold.families.glm5_next.kda import KDA

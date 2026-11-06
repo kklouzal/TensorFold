@@ -21,7 +21,7 @@ def test_external_drafter_uses_its_declared_architecture_before_engine_allocatio
     tmp_path, monkeypatch, architecture, expected, disabled
 ):
     import tensorfold.cuda.exl3.format as exl3
-    import tensorfold.families.qwen4_exp.gguf as gguf
+    import tensorfold.gguf_file as gguf
     import tensorfold.families.qwen4_exp.cuda.engine as engine
 
     monkeypatch.setattr(exl3, "is_exl3", lambda path: False)

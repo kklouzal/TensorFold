@@ -10,7 +10,7 @@ import os
 import stat
 from pathlib import Path
 
-from tensorfold.cuda.tensor_file import MAX_HEADER_BYTES, _regular_stream, checkpoint_path, read_metadata_json
+from tensorfold.tensor_file import MAX_HEADER_BYTES, _regular_stream, checkpoint_path, read_metadata_json
 
 _EXL3_FIELDS = ("quant_method", "version", "bits", "head_bits", "mtp_bits", "vision_bits", "codebook", "out_scales")
 
@@ -75,9 +75,18 @@ def read_config(model_dir: str | Path) -> dict:
     root = Path(model_dir)
     if root.suffix.lower() == ".gguf" or (root.is_dir() and not (root / "config.json").exists()
                                            and any(root.glob("*.gguf"))):
-        from tensorfold.families.qwen4_exp.gguf import metadata_config
+        from tensorfold.gguf_file import GGUFCheckpoint, resolve_gguf
 
-        return metadata_config(root)
+        entry = resolve_gguf(root)
+        if entry is None:
+            raise ValueError("no GGUF checkpoint was selected")
+        checkpoint = GGUFCheckpoint.open(entry)
+        architecture = checkpoint.metadata.get("general.architecture")
+        if architecture != "qwen4exp":
+            raise ValueError(f"unsupported GGUF model architecture: {architecture!r}")
+        from tensorfold.families.qwen4_exp.gguf import metadata_config_from_checkpoint
+
+        return metadata_config_from_checkpoint(checkpoint, entry)
     raw = read_json(model_dir, "config.json", required=True)
     sources = [raw]
     text = raw.get("text_config")

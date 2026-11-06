@@ -14,7 +14,7 @@ from tensorfold.cuda.direct_read import Reader
 from tensorfold.cuda.sampling import _tp_candidates, _tp_choose
 from tensorfold.engine.exact_sampling import Sampling, choose
 from tensorfold.families.qwen4_exp.cuda import gguf_admission, gguf_mtp_weights, gguf_weights
-from tensorfold.families.qwen4_exp.gguf import GGUFCheckpoint
+from tensorfold.gguf_file import GGUFCheckpoint
 
 pytestmark = pytest.mark.torch
 

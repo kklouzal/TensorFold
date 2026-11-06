@@ -116,7 +116,7 @@ def load_shard(directory, *, target, checkpoint_identity, tp=(0, 1), device="cud
     this rank. A CPU device permits loader/oracle tests without exposing a GPU.
     """
     from safetensors import safe_open
-    from tensorfold.cuda.tensor_file import read_header
+    from tensorfold.tensor_file import read_header
 
     c = DSparkConfig.read(directory)
     c.check_target(target)

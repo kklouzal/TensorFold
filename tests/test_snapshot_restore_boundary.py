@@ -9,7 +9,7 @@ import unittest
 
 from snapshot_fd_transport import substitute_owners
 
-from tensorfold.cuda.tensor_file import read_header
+from tensorfold.tensor_file import read_header
 from tensorfold.engine.snapshot_registry import LayerSchema, Registry, TensorSchema
 from tensorfold.engine.snapshot_restore import restore_snapshot
 from tensorfold.engine.snapshot_integrity import FIELD, ZERO, seal_snapshot

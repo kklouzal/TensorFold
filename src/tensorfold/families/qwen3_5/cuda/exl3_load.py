@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json
+from tensorfold.tensor_file import checkpoint_path, read_metadata_json
 
 import torch
 

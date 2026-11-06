@@ -17,7 +17,7 @@ _DT = {"U32": torch.int32, "I32": torch.int32, "BF16": torch.bfloat16, "F16": to
 def checkpoint_inventory(model_dir: Path) -> dict[str, str]:
     """Validated owned tensor inventory for indexed or ordinary unsharded checkpoints."""
     from tensorfold.cuda.capacity import SIZES, headers
-    from tensorfold.cuda.tensor_file import checkpoint_path, read_header, read_metadata_json
+    from tensorfold.tensor_file import checkpoint_path, read_header, read_metadata_json
 
     index = checkpoint_path(model_dir, "model.safetensors.index.json")
     if index.exists():
@@ -126,7 +126,7 @@ class _Reader:
 
     def _path(self, shard: str) -> Path:
         """Index-relative files in this model or its own HF snapshot blob store."""
-        from tensorfold.cuda.tensor_file import checkpoint_path
+        from tensorfold.tensor_file import checkpoint_path
 
         return checkpoint_path(self.dir, shard)
 
@@ -142,7 +142,7 @@ class _Reader:
     def info(self, name: str) -> dict:
         """Validated tensor metadata; copied tuples cannot mutate the cached header."""
         from tensorfold.cuda.capacity import SIZES
-        from tensorfold.cuda.tensor_file import tensor_shape
+        from tensorfold.tensor_file import tensor_shape
 
         shard = self.where[name]
         base, header = self._header(shard)

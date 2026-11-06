@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 import stat
 
-from tensorfold.cuda.tensor_file import checkpoint_path
+from tensorfold.tensor_file import checkpoint_path
 
 
 def _identity(info):

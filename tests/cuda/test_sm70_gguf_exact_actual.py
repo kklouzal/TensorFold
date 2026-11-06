@@ -9,7 +9,8 @@ import torch
 from functools import lru_cache
 import os
 import hashlib
-from tensorfold.families.qwen4_exp.gguf import GGUFCheckpoint, FORMATS, decode_rows
+from tensorfold.gguf_file import GGUFCheckpoint, FORMATS
+from tensorfold.families.qwen4_exp.gguf import decode_rows
 from tensorfold.families.qwen4_exp.cuda.gguf_weights import (
     GGUFPacked,
     GGUFExperts,

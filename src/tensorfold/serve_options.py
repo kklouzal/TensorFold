@@ -68,7 +68,7 @@ def prepare_service_options(args: argparse.Namespace) -> None:
     args._api_record_limits = None
     if record_limits is not None:
         from tensorfold.server.request_limits import optional_limit
-        from tensorfold.cuda.tensor_file import read_metadata_json
+        from tensorfold.tensor_file import read_metadata_json
         from tensorfold.server.api_records import ApiRecordLimits
 
         if optional_limit(getattr(args, "max_http_connections", None), "--max-http-connections") is None:
@@ -83,7 +83,7 @@ def drafter_metadata_source(value: str) -> Path:
     path = Path(value).expanduser()
     if path.suffix.lower() == ".gguf" or (path.is_dir() and not (path / "config.json").exists()
                                            and any(path.glob("*.gguf"))):
-        from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+        from tensorfold.gguf_file import resolve_gguf
 
         selected = resolve_gguf(path)
         if selected is None:
@@ -130,7 +130,7 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         raise ValueError("--max-pending-requests-per-principal currently requires the CUDA server")
     family_manifest = getattr(args, "family_manifest", None)
     if family_manifest is not None:
-        from tensorfold.cuda.tensor_file import read_metadata_json
+        from tensorfold.tensor_file import read_metadata_json
         from tensorfold.families.qwen4_exp.cuda.sm70_weight_manifest import PROFILE
 
         declared = read_metadata_json(family_manifest)
@@ -177,7 +177,7 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
     if history == "ram":
         if backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next"):
             raise ValueError("--indexer-history ram requires Flash Next GGUF on CUDA/SM70")
-        from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+        from tensorfold.gguf_file import resolve_gguf
 
         source = config_dir if config_dir is not None else getattr(args, "model", None)
         if source is None or resolve_gguf(source) is None and family_manifest is None:
@@ -195,7 +195,7 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
     if getattr(args, "no_graphs", False) and (backend != "cuda" or getattr(family, "model_type", "") != "qwen4_exp"):
         raise ValueError("--no-graphs is supported by Flash Next on CUDA")
     if media_manifest is not None:
-        from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+        from tensorfold.gguf_file import resolve_gguf
 
         source = config_dir if config_dir is not None else getattr(args, "model", None)
         if (backend != "cuda" or getattr(family, "model_type", "") != "qwen4_exp"
@@ -208,7 +208,7 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
             raise ValueError("media profile owns all media limits and fixed encoder placement; legacy vision overrides do not apply")
     positions = getattr(args, "position_profile_manifest", None)
     if positions is not None:
-        from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+        from tensorfold.gguf_file import resolve_gguf
 
         source = config_dir if config_dir is not None else getattr(args, "model", None)
         if (backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next")
@@ -232,7 +232,7 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         if history != "gpu" or not HistoryPlacement.supports(getattr(args, "tp", 1), kv_heads):
             raise ValueError("--position-profile-manifest requires supported unique TP8 GPU histories")
     if manifest is not None or serving_root is not None:
-        from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+        from tensorfold.gguf_file import resolve_gguf
 
         source = config_dir if config_dir is not None else getattr(args, "model", None)
         if (backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next")
@@ -244,7 +244,7 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
         if backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next"):
             raise ValueError("--kv-full-windows is supported by Flash Next CUDA only")
         from tensorfold.families.qwen4_exp.ram_experts import check_kv_full_windows
-        from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+        from tensorfold.gguf_file import resolve_gguf
         resident_gguf = family_manifest is not None or config_dir is not None and resolve_gguf(config_dir) is not None
         adaptive_gguf = resident_gguf and history == "gpu" and getattr(args, "vram_experts", None) is None
         if windows == "auto":
@@ -344,7 +344,7 @@ def check(args: argparse.Namespace, family: Any, backend: str, config_dir: Any =
     if kv not in supported:
         raise ValueError(f"{family.title} on CUDA serves a {' or '.join(supported)} KV cache, not --kv-dtype {kv}")
     if "fp16" in (kv, getattr(args, "kv_key_dtype", None), getattr(args, "kv_value_dtype", None)):
-        from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+        from tensorfold.gguf_file import resolve_gguf
 
         if (backend != "cuda" or getattr(family, "model_type", "") != "qwen4_exp"
                 or resolve_gguf(config_dir or args.model) is None and family_manifest is None):
@@ -443,7 +443,7 @@ def _fifo_options(args, family, backend, config_dir):
         if any(value is not None for value in bounds) or policy is not None:
             raise ValueError("FIFO input/deadline and retention options require actual adaptive Flash Next unique TP8 GPU histories")
         return
-    from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+    from tensorfold.gguf_file import resolve_gguf
     from tensorfold.families.qwen4_exp.cuda.serving_profiles import validate_service_options
 
     source = config_dir if config_dir is not None else getattr(args, "model", None)
@@ -475,7 +475,7 @@ def _adaptive_service_limits(args, family, backend, config_dir):
     if (backend != "cuda" or getattr(family, "model_type", "") not in ("qwen4_exp", "qwen3_8_flash_next")
             or getattr(args, "indexer_history", "gpu") != "gpu"):
         return
-    from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+    from tensorfold.gguf_file import resolve_gguf
     from tensorfold.server.request_limits import require_finite_endpoint_limits
 
     source = config_dir if config_dir is not None else getattr(args, "model", None)
@@ -489,7 +489,7 @@ def _cuda_topology(args: argparse.Namespace, family: Any) -> None:
     """Validate rank topology and the selected Flash Next execution envelope before weights are resolved."""
 
     tp, rank = getattr(args, "tp", 1), getattr(args, "rank", 0)
-    from tensorfold.families.qwen4_exp.gguf import resolve_gguf
+    from tensorfold.gguf_file import resolve_gguf
 
     gguf = (getattr(family, "model_type", "") in ("qwen4_exp", "qwen3_8_flash_next")
             and (resolve_gguf(getattr(args, "model", "")) is not None

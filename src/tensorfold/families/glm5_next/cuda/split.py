@@ -13,7 +13,7 @@ from pathlib import Path
 
 import numpy as np
 
-from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json, read_header as validated_header
+from tensorfold.tensor_file import checkpoint_path, read_metadata_json, read_header as validated_header
 
 ROW = (
     r"\.mlp\.experts\.\d+\.(gate|up)_proj\.",

@@ -114,7 +114,7 @@ class DFlash2Config:
 
     @classmethod
     def read(cls, directory, *, block=4):
-        from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json
+        from tensorfold.tensor_file import checkpoint_path, read_metadata_json
         return cls.from_dict(read_metadata_json(checkpoint_path(directory, "config.json")), block=block)
 
     def partition(self, rank, world):

@@ -148,7 +148,7 @@ def test_config_version_binding_refuses_restored_mtime_and_new_missing_file(poli
 
 
 def test_config_read_bound_is_checked_before_open(policy, tmp_path, monkeypatch):
-    from tensorfold.cuda import tensor_file
+    from tensorfold import tensor_file
     monkeypatch.setattr(tensor_file, "MAX_HEADER_BYTES", 8)
     (tmp_path / "user.conf").write_bytes(b"x" * 9)
     monkeypatch.setattr(tensor_file, "_regular_stream", lambda *_a: pytest.fail("oversized config was opened"))
@@ -183,7 +183,7 @@ def test_native_relative_path_buffer_limit_precedes_working_directory_resolution
 
 def test_changed_opened_config_is_refused_before_policy_journal(policy, tmp_path, monkeypatch):
     from contextlib import contextmanager
-    from tensorfold.cuda import tensor_file
+    from tensorfold import tensor_file
     path = tmp_path / "user.conf"
     path.write_text("NCCL_GRAPH_MIXING_SUPPORT=1\n")
     original, changed, records = tensor_file._regular_stream, [], []

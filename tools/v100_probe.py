@@ -15,7 +15,7 @@ from pathlib import Path
 import shutil
 import subprocess
 
-from tensorfold.families.qwen4_exp.gguf import GGUFCheckpoint
+from tensorfold.gguf_file import GGUFCheckpoint
 
 
 def inventory(path):

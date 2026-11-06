@@ -13,7 +13,8 @@ from types import MappingProxyType
 import numpy as np
 import torch
 
-from ..gguf import _shard, decode_rows
+from tensorfold.gguf_file import _shard
+from ..gguf import decode_rows
 
 
 @dataclass(frozen=True)

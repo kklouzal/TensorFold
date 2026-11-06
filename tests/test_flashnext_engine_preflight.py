@@ -69,7 +69,7 @@ def test_invalid_indexer_history_mode_refuses_before_model_or_cuda(monkeypatch, 
 
 def test_ram_indexer_history_requires_gguf_before_model_or_cuda(monkeypatch, tmp_path):
     from tensorfold.cuda import chat_template
-    from tensorfold.families.qwen4_exp import gguf
+    from tensorfold import gguf_file as gguf
     from tensorfold.families.qwen4_exp.cuda import engine
 
     def forbidden(*args, **kwargs):
@@ -85,7 +85,7 @@ def test_ram_indexer_history_requires_gguf_before_model_or_cuda(monkeypatch, tmp
 @pytest.mark.parametrize('key,value', [('fp16', 'fp16'), ('fp16', 'int8'), ('int8', 'fp16'), ('int8', 'int8')])
 def test_sm70_accepts_qualified_cache_sides_before_model_setup(monkeypatch, tmp_path, key, value):
     from tensorfold.cuda import chat_template
-    from tensorfold.families.qwen4_exp import gguf
+    from tensorfold import gguf_file as gguf
     from tensorfold.families.qwen4_exp.cuda import engine
 
     class NextStage(Exception):
@@ -108,7 +108,7 @@ def test_sm70_accepts_qualified_cache_sides_before_model_setup(monkeypatch, tmp_
 ])
 def test_execution_provider_refuses_incompatible_cache_payload_before_cuda(monkeypatch, tmp_path, gguf, options):
     from tensorfold.cuda import chat_template
-    from tensorfold.families.qwen4_exp import gguf as gguf_module
+    from tensorfold import gguf_file as gguf_module
     from tensorfold.families.qwen4_exp.cuda import engine
 
     def forbidden(*args, **kwargs):
@@ -141,7 +141,7 @@ def test_sm70_prompt_replay_scratch_admission_matches_allocated_tensor_payload(w
 def test_compact_codec_rejects_modern_provider_before_target_metadata_or_weights(monkeypatch, tmp_path, options):
     from tensorfold.cuda import chat_template
     from tensorfold.families import qwen4_exp
-    from tensorfold.families.qwen4_exp import gguf
+    from tensorfold import gguf_file as gguf
     from tensorfold.families.qwen4_exp.cuda import engine, weights
 
     def forbidden(*args, **kwargs):
@@ -161,7 +161,7 @@ def test_compact_gguf_refuses_blackwell_before_provider_setup_or_weight_loading(
     from tensorfold.cuda import chat_template, capacity
     from tensorfold.cuda.sm70 import execution_policy
     from tensorfold.families import qwen4_exp
-    from tensorfold.families.qwen4_exp import gguf
+    from tensorfold import gguf_file as gguf
     from tensorfold.families.qwen4_exp.cuda import engine, weights
     from tensorfold.families.qwen4_exp.rope import RopeParameters
     from tests.test_cuda_capacity import small_config

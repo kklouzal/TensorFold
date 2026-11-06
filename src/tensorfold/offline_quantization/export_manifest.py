@@ -17,7 +17,7 @@ import secrets
 
 from tensorfold.cleanup import raise_failures
 from tensorfold.cuda.capacity import SIZES
-from tensorfold.cuda.tensor_file import (
+from tensorfold.tensor_file import (
     MAX_HEADER_BYTES, _metadata_object, _regular_stream, checkpoint_path,
     read_header_stream,
 )

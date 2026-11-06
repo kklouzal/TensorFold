@@ -316,7 +316,7 @@ def load(model_dir, device="cuda", *, vision=False, status=None, lossless_head=F
     from tensorfold.cuda.direct_read import SafeTensors
     from tensorfold.cuda.nvfp4.checkpoint import available
     from tensorfold.cuda.nvfp4.modelopt_experts import load_modelopt_a4
-    from tensorfold.cuda.tensor_file import checkpoint_path
+    from tensorfold.tensor_file import checkpoint_path
     from tensorfold.families.qwen3_5.cuda.weights import Plain
     from .nvfp4_experts import Workspace, geglu
     from .modelopt_experts import ModelOptExperts

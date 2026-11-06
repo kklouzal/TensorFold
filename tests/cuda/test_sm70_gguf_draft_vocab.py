@@ -6,7 +6,7 @@ import torch
 
 from gguf_fixture import scalar_reference, tiny_model
 from tensorfold.families.qwen4_exp.cuda.gguf_weights import load_gguf, weight_byte_plan
-from tensorfold.families.qwen4_exp.gguf import GGUFCheckpoint
+from tensorfold.gguf_file import GGUFCheckpoint
 
 pytestmark = pytest.mark.skipif(torch.cuda.get_device_capability() != (7, 0), reason="SM70 GGUF draft head")
 

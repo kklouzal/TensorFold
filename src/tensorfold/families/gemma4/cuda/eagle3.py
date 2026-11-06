@@ -17,7 +17,7 @@ from transformers import DynamicCache, LlamaConfig
 from transformers.masking_utils import create_sliding_window_causal_mask
 from transformers.models.llama.modeling_llama import LlamaDecoderLayer, LlamaRMSNorm, LlamaRotaryEmbedding
 
-from tensorfold.cuda.tensor_file import checkpoint_path
+from tensorfold.tensor_file import checkpoint_path
 from tensorfold.engine.rejection import ChainPacket, ProbabilityRow
 from ..eagle3_metadata import checked_headers
 

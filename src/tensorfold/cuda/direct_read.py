@@ -11,7 +11,7 @@ import torch
 
 from tensorfold.cleanup import raise_failures
 
-from .tensor_file import byte_range
+from tensorfold.tensor_file import byte_range
 
 PIECE = 64 << 20         # bytes a direct read fills: the size of each pinned staging piece
 ALIGN = 4096             # O_DIRECT's file offset, length and buffer alignment
@@ -154,7 +154,7 @@ def read_header(path: str | Path) -> tuple[int, dict]:
     """(offset of the data, header) of a safetensors file."""
 
     from .capacity import SIZES
-    from .tensor_file import read_header as validated_header
+    from tensorfold.tensor_file import read_header as validated_header
 
     return validated_header(path, {dtype: SIZES[dtype] for dtype in DTYPES})
 

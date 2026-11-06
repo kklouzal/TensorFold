@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from snapshot_fd_transport import TransportOwner
 from tensorfold import file_io
-from tensorfold.cuda import tensor_file
+from tensorfold import tensor_file
 
 
 class StreamControls(unittest.TestCase):

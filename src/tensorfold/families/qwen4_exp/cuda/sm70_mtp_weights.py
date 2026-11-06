@@ -143,7 +143,7 @@ def _validate(target, directory):
 
 def byte_plan(target, directory, *, tp=(0, 1)):
     """Exact retained FP16/F32 arrays; shared target embedding/head are excluded."""
-    from ..gguf import resolve_gguf
+    from tensorfold.gguf_file import resolve_gguf
 
     if resolve_gguf(directory) is not None:
         from .gguf_mtp_weights import byte_plan as gguf_plan
@@ -168,7 +168,7 @@ def byte_plan(target, directory, *, tp=(0, 1)):
 
 def attach(w, directory, *, tp=(0, 1)):
     """Attach the matching declared stock MTP using existing family weight types."""
-    from ..gguf import resolve_gguf
+    from tensorfold.gguf_file import resolve_gguf
 
     if resolve_gguf(directory) is not None:
         from .gguf_mtp_weights import attach as attach_gguf

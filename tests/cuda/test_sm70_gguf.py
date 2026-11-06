@@ -7,7 +7,8 @@ import torch
 from gguf_fixture import blocks, scalar_reference, tiny_model
 from tensorfold.cuda.sm70.gguf_ops import decode
 from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFDense, load_gguf, weight_byte_plan
-from tensorfold.families.qwen4_exp.gguf import GGUFCheckpoint, decode_rows
+from tensorfold.gguf_file import GGUFCheckpoint
+from tensorfold.families.qwen4_exp.gguf import decode_rows
 
 pytestmark = pytest.mark.skipif(torch.cuda.get_device_capability() != (7, 0), reason="SM70-specific GGUF operators")
 

@@ -16,7 +16,7 @@ from .read_ahead import row_ids
 from .table_lifetime import PythonPool, TableLifetime, release_files, _note, _cause
 from .table_file import TableFile
 from tensorfold.cuda.capacity import SIZES
-from tensorfold.cuda.tensor_file import read_header_stream
+from tensorfold.tensor_file import read_header_stream
 
 WORKERS = 16                # reads in flight at once: os.pread releases the GIL
 MAX_READ = 1 << 20          # bytes one read of adjacent rows may cover

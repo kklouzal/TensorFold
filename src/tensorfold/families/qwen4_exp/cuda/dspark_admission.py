@@ -13,7 +13,7 @@ from .dspark_weights import LOAD_CHUNK, SOURCE_BYTES, plan_weights
 
 
 def is_dspark(directory):
-    from tensorfold.cuda.tensor_file import read_metadata_json
+    from tensorfold.tensor_file import read_metadata_json
 
     file = Path(directory) / "config.json"
     return file.is_file() and read_metadata_json(file).get("architectures") == ["DSparkDraftModel"]
@@ -86,7 +86,7 @@ class DSparkPlan:
 
 def inspect(directory, target_text, *, tp=(0, 1), chunk_bytes=LOAD_CHUNK):
     """Strict local plan and actual source digest; no CUDA/weight allocation."""
-    from tensorfold.cuda.tensor_file import _regular_stream, read_header
+    from tensorfold.tensor_file import _regular_stream, read_header
 
     directory = Path(directory).resolve()
     c = DSparkConfig.read(directory)

@@ -16,7 +16,7 @@ import unittest
 
 REPO = Path(__file__).resolve().parents[1]
 SOURCE = REPO / "src/tensorfold/families/qwen3_5/cuda/dflash2.py"
-SPEC = importlib.util.spec_from_file_location("owned_dflash_tensor_file", REPO / "src/tensorfold/cuda/tensor_file.py")
+SPEC = importlib.util.spec_from_file_location("owned_dflash_tensor_file", REPO / "src/tensorfold/tensor_file.py")
 FILES = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(FILES)
 

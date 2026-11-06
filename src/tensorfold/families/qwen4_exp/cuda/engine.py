@@ -166,7 +166,7 @@ class FlashNextEngine:
         from .. import rope_parameters
         from ..kv_formats import get_pair
         self.kv_pair = get_pair(kv_dtype, kv_key_dtype, kv_value_dtype)
-        from ..gguf import resolve_gguf
+        from tensorfold.gguf_file import resolve_gguf
         source_is_gguf = resolve_gguf(model_dir) is not None
         self.model_dir = Path(model_dir)
         media_requested = media_profile_manifest is not None

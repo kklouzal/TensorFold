@@ -14,7 +14,7 @@ from tensorfold.cuda.direct_read import Reader  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda.gguf_weights import (  # noqa: E402
     ArrayPlan, STAGING_BYTES, _array, model_plan, weight_byte_plan,
 )
-from tensorfold.families.qwen4_exp.gguf import PackedTensor  # noqa: E402
+from tensorfold.gguf_file import PackedTensor
 
 
 def test_router_plan_charges_fp32_storage_with_original_half_coefficients(tmp_path):

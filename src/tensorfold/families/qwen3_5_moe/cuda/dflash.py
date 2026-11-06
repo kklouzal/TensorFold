@@ -24,7 +24,7 @@ from tensorfold.cleanup import rollback
 from tensorfold.cuda import speculative
 from tensorfold.cuda.direct_read import SafeTensors
 from tensorfold.cuda.requant import Head, requantize
-from tensorfold.cuda.tensor_file import checkpoint_path
+from tensorfold.tensor_file import checkpoint_path
 from tensorfold.families.qwen3_5.cuda.draft_attention import block_attention
 from tensorfold.families.qwen3_5.cuda.forward import _mm
 from tensorfold.families.qwen3_5.cuda.glue import embedding

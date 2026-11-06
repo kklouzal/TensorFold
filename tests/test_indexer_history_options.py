@@ -25,7 +25,7 @@ def test_archive_rejects_other_providers_before_model_or_accelerator_work(backen
 
 
 def test_archive_requires_local_gguf_at_serve_boundary(monkeypatch, tmp_path):
-    from tensorfold.families.qwen4_exp import gguf
+    from tensorfold import gguf_file as gguf
 
     monkeypatch.setattr(gguf, "resolve_gguf", lambda _: None)
     args = cli.build_parser().parse_args(["serve", str(tmp_path), "--indexer-history", "ram", "--no-drafts"])
@@ -39,7 +39,7 @@ def test_archive_requires_local_gguf_at_serve_boundary(monkeypatch, tmp_path):
 def test_family_factory_forwards_only_the_opt_in_history_mode(monkeypatch, mode):
     import tensorfold.cuda.exl3.format as exl3
     import tensorfold.families.qwen4_exp as family
-    import tensorfold.families.qwen4_exp.gguf as gguf
+    import tensorfold.gguf_file as gguf
     import tensorfold.families.qwen4_exp.cuda.engine as engine
 
     monkeypatch.setattr(exl3, "is_exl3", lambda _: False)
@@ -57,7 +57,7 @@ def test_family_factory_forwards_only_the_opt_in_history_mode(monkeypatch, mode)
 def test_family_rejects_ram_on_other_checkpoint_formats(monkeypatch):
     import tensorfold.cuda.exl3.format as exl3
     import tensorfold.families.qwen4_exp as family
-    import tensorfold.families.qwen4_exp.gguf as gguf
+    import tensorfold.gguf_file as gguf
 
     monkeypatch.setattr(exl3, "is_exl3", lambda _: False)
     monkeypatch.setattr(gguf, "resolve_gguf", lambda _: None)

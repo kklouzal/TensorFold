@@ -13,7 +13,7 @@ import unittest
 
 from tensorfold.cuda.capacity import SIZES
 from tensorfold.cleanup import raise_failures
-from tensorfold.cuda.tensor_file import MAX_HEADER_BYTES, MAX_DIMENSION, byte_range, read_header, tensor_shape
+from tensorfold.tensor_file import MAX_HEADER_BYTES, MAX_DIMENSION, byte_range, read_header, tensor_shape
 from snapshot_fd_transport import substitute_owners
 
 ROOT = Path(__file__).resolve().parents[1]

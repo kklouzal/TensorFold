@@ -18,7 +18,7 @@ from tensorfold.families.qwen4_exp.ssd_table import SSDTable, _span
 from tensorfold.families.qwen4_exp.read_ahead import ReadAhead, row_ids
 from tensorfold.families.qwen4_exp.table_lifetime import PythonPool, TableLifetime, release_files
 from tensorfold.cuda.capacity import SIZES
-from tensorfold.cuda.tensor_file import checkpoint_path, read_header as _header, read_header_stream
+from tensorfold.tensor_file import checkpoint_path, read_header as _header, read_header_stream
 from .table_file import TableFile as _HostFile
 
 _PARTS = ("weight", "scales", "biases")

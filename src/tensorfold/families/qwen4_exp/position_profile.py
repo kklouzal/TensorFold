@@ -16,7 +16,7 @@ import struct
 from typing import Mapping
 
 from tensorfold.checkpoint_metadata import read_config
-from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json
+from tensorfold.tensor_file import checkpoint_path, read_metadata_json
 
 from .rope import RopeParameters
 
@@ -54,7 +54,8 @@ def _digest(value):
 def _source(source, *, mtp=False):
     """Actual configuration plus loader inputs, without rehashing whole weights."""
     source = Path(source)
-    from .gguf import GGUFCheckpoint, metadata_config, resolve_gguf
+    from tensorfold.gguf_file import resolve_gguf
+    from .gguf import metadata_config, open_checkpoint
 
     role = "mtp" if mtp else "target"
     if source.is_file() and source.suffix.lower() == ".json":
@@ -76,7 +77,7 @@ def _source(source, *, mtp=False):
 
     if source.suffix.lower() == ".gguf" or quant_method(raw) == "gguf":
         entry = resolve_gguf(root if source.suffix.lower() == ".json" else source)
-        checkpoint = GGUFCheckpoint.open(entry)
+        checkpoint = open_checkpoint(entry)
         files.update(path.resolve() for path in checkpoint.paths)
         declared = RopeParameters.from_config(metadata_config(entry, role=role))
         selected = RopeParameters.from_config(raw)

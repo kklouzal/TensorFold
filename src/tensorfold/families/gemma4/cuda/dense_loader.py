@@ -27,7 +27,7 @@ from tensorfold.cleanup import rollback, raise_failures
 from tensorfold.cuda.capacity import headers
 from tensorfold.cuda.direct_read import SafeTensors, DTYPES
 from tensorfold.cuda.nvfp4.format import LinearMetadata, config_block
-from tensorfold.cuda.tensor_file import checkpoint_path, _regular_stream, MAX_HEADER_BYTES
+from tensorfold.tensor_file import checkpoint_path, _regular_stream, MAX_HEADER_BYTES
 from ..dense_tensor_contract import text_tensor_contract
 from .dense_packed import PackedProjection, PackedProjectionSpec
 from .e2b_metadata import E2BConfig
@@ -219,7 +219,7 @@ class _VerifiedTensors:
         stale names/offsets from an earlier header cannot relabel payload bytes.
         """
         from tensorfold.cuda.capacity import SIZES
-        from tensorfold.cuda.tensor_file import parse_header_bytes
+        from tensorfold.tensor_file import parse_header_bytes
         chunk = raw = prefix = None
         result = {}
         try:

@@ -8,10 +8,10 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import tensorfold.cuda.tensor_file as metadata_contract
+import tensorfold.tensor_file as metadata_contract
 
 from tensorfold.cuda import capacity
-from tensorfold.cuda.tensor_file import checkpoint_path, read_metadata_json, read_header
+from tensorfold.tensor_file import checkpoint_path, read_metadata_json, read_header
 
 
 def write_tensor(path, entries, payload=b""):

@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from tensorfold.cuda.tensor_file import MAX_HEADER_BYTES, read_header
+from tensorfold.tensor_file import MAX_HEADER_BYTES, read_header
 from tensorfold.engine.snapshot_file import private_snapshot
 from tensorfold.engine.snapshot_registry import Registry
 

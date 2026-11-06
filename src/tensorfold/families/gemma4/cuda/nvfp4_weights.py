@@ -167,7 +167,7 @@ def load(model_dir: str | Path, device: str = "cuda", *, vision: bool = False, s
     from tensorfold.cuda.direct_read import SafeTensors
     from tensorfold.cuda.nvfp4.checkpoint import available
     from tensorfold.cuda.nvfp4.linear import Fp4Linear
-    from tensorfold.cuda.tensor_file import checkpoint_path
+    from tensorfold.tensor_file import checkpoint_path
     from tensorfold.families.qwen3_5.cuda.weights import Plain
     from .nvfp4_experts import Workspace, load_experts
     from .head import select_head

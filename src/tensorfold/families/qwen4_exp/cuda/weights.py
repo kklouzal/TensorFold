@@ -56,7 +56,7 @@ def load(model_dir: str | Path, device: str = "cuda", *, mtp: bool = True, tp: t
                          ple_on_ssd=ple_on_ssd, table_reads=table_reads,
                          position_profile=position_profile, _position_prepared=_position_prepared,
                          vram_experts=vram_experts, expert_loader=expert_loader)
-    from ..gguf import resolve_gguf
+    from tensorfold.gguf_file import resolve_gguf
     if resolve_gguf(model_dir) is not None:
         from .gguf_weights import load_gguf
         return load_gguf(model_dir, device, mtp=mtp, tp=tp, rope=rope, eos_token_ids=eos_token_ids,

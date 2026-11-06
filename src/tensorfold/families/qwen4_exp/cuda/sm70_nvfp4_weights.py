@@ -318,7 +318,7 @@ def _model_plan(directory, manifest, tp=None, *, rope=None, eos_token_ids=None):
                 if info["dtype"] != "I64" or math.prod(info["shape"]) != count:
                     raise ValueError(f"{embed + field}: PLE hash constants require the exact signed64-bit layout")
             from safetensors import safe_open
-            from tensorfold.cuda.tensor_file import checkpoint_path
+            from tensorfold.tensor_file import checkpoint_path
 
             constants = []
             for field in ("layer_multipliers", "ngram_heads_offsets", "ngram_heads_vocab_sizes"):

@@ -17,7 +17,7 @@ from tensorfold.server.prompt_origin import origin_environment, trust_message_ro
 from tensorfold.token_metadata import resolve_token_roles, tokenizer_override
 from tensorfold.checkpoint_metadata import read_json
 
-from .tensor_file import _regular_stream, checkpoint_path
+from tensorfold.tensor_file import _regular_stream, checkpoint_path
 
 
 @dataclass(frozen=True)

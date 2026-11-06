@@ -29,8 +29,8 @@ def regular_fixture(path):
 
 
 def metadata_module():
-    path = ROOT / "src/tensorfold/cuda/tensor_file.py"
-    module = ModuleType("tensorfold.cuda.tensor_file")
+    path = ROOT / "src/tensorfold/tensor_file.py"
+    module = ModuleType("tensorfold.tensor_file")
     module.__file__ = str(path)
     exec(compile(path.read_bytes(), str(path), "exec"), vars(module))
     module._regular_stream = regular_fixture
@@ -63,7 +63,7 @@ class IndexTargets(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.metadata = metadata_module()
         self.headers = header_function()
-        self.modules = patch.dict(sys.modules, {"tensorfold.cuda.tensor_file": self.metadata})
+        self.modules = patch.dict(sys.modules, {"tensorfold.tensor_file": self.metadata})
         self.modules.start()
         self.addCleanup(self.modules.stop)
 

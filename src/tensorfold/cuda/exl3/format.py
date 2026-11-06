@@ -8,7 +8,7 @@ from functools import lru_cache
 from pathlib import Path
 
 from tensorfold.cuda.capacity import SIZES
-from tensorfold.cuda.tensor_file import (_regular_stream, checkpoint_path, read_header as _strict_header,
+from tensorfold.tensor_file import (_regular_stream, checkpoint_path, read_header as _strict_header,
                                        read_header_stream, read_metadata_json)
 from typing import Any, Iterable
 

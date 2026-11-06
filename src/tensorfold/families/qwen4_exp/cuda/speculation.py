@@ -97,7 +97,7 @@ def checkpoint_method(directory: str | Path) -> str:
     device allocation; it must never fall back to a stock MTP loader.
     """
 
-    from tensorfold.cuda.tensor_file import read_metadata_json
+    from tensorfold.tensor_file import read_metadata_json
 
     path = Path(directory) / "config.json"
     if not path.is_file():

@@ -21,7 +21,7 @@ import urllib.parse
 import urllib.request
 
 from tensorfold.cleanup import raise_failures
-from tensorfold.cuda.tensor_file import (
+from tensorfold.tensor_file import (
     MAX_HEADER_BYTES, _metadata_object, _regular_stream, checkpoint_path, parse_header_bytes, read_metadata_json,
 )
 

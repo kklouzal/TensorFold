@@ -12,7 +12,7 @@ from pathlib import Path
 
 import torch
 
-from tensorfold.cuda.tensor_file import checkpoint_path
+from tensorfold.tensor_file import checkpoint_path
 from tensorfold.engine.rejection import ChainPacket, ProbabilityRow
 from ..assistant_metadata import checked_headers
 

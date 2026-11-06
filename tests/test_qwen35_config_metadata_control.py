@@ -20,7 +20,7 @@ from tensorfold.checkpoint_quantization import effective_config
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "src/tensorfold/families/qwen3_5/cuda"
-spec = importlib.util.spec_from_file_location("qwen35_config_real_metadata", ROOT / "src/tensorfold/cuda/tensor_file.py")
+spec = importlib.util.spec_from_file_location("qwen35_config_real_metadata", ROOT / "src/tensorfold/tensor_file.py")
 HEADER = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(HEADER)
 

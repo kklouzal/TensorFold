@@ -233,7 +233,7 @@ class Gemma4Weights:
         from tensorfold.checkpoint_metadata import read_config, read_json
         from tensorfold.cleanup import rollback
         from tensorfold.cuda.direct_read import SafeTensors
-        from tensorfold.cuda.tensor_file import checkpoint_path
+        from tensorfold.tensor_file import checkpoint_path
         from .experts import ExpertLinear, Experts
         from .linear import Linear
 

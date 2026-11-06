@@ -17,7 +17,7 @@ from typing import Any, Sequence
 import mlx.core as mx
 import numpy as np
 
-from tensorfold.cuda.tensor_file import MAX_HEADER_BYTES
+from tensorfold.tensor_file import MAX_HEADER_BYTES
 from tensorfold.engine.snapshot_codec import Codec, SIZES
 from tensorfold.engine.snapshot_file import reject_snapshot_cleanup_failure as _miss, snapshot_header
 from tensorfold.engine.snapshot_integrity import FIELD, ZERO, expected_digest, seal_snapshot, verify_snapshot

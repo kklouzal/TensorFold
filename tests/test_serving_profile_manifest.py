@@ -52,7 +52,7 @@ def profile(tmp_path):
 
 
 def load(root, name="A.json", *, rank=0, waiting_input_bytes=4096, **kwargs):
-    from tensorfold.families.qwen4_exp.gguf import GGUFCheckpoint
+    from tensorfold.gguf_file import GGUFCheckpoint
 
     actual = GGUFCheckpoint.open(root / "target/model.gguf").metadata
     fixed = {"tp": 8, "rank": rank, "adaptive_sessions": True, "indexer_history": "gpu"}

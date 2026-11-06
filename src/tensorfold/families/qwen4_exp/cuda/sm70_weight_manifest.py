@@ -13,7 +13,7 @@ from pathlib import Path
 
 from tensorfold.checkpoint_metadata import read_config
 from tensorfold.cuda.capacity import headers
-from tensorfold.cuda.tensor_file import _regular_stream, checkpoint_path, read_metadata_json
+from tensorfold.tensor_file import _regular_stream, checkpoint_path, read_metadata_json
 from tensorfold.cuda.nvfp4.format import LinearMetadata
 from tensorfold.cuda.sm70.nvfp4_layout import (EXPERT_FAMILIES, EXPERT_REFERENCE, LINEAR_FAMILIES, LINEAR_REFERENCE,
                                              PROFILE)

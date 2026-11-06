@@ -14,7 +14,7 @@ import numpy as np
 import torch
 from torch.nn import functional as F
 
-from tensorfold.cuda.tensor_file import checkpoint_path
+from tensorfold.tensor_file import checkpoint_path
 from tensorfold.engine.rejection import ChainPacket, draw, proposal_row
 from ..e2b_dflash_metadata import E2BDraftConfig, checked_headers
 

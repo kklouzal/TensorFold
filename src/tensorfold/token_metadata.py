@@ -60,7 +60,7 @@ def use_tokenizer(path, model_dir) -> TokenizerOverride:
 
     if _override is not None:
         raise RuntimeError("the tokenizer override is set once, at startup")
-    from tensorfold.cuda.tensor_file import _metadata_object
+    from tensorfold.tensor_file import _metadata_object
 
     path = Path(path).expanduser().resolve()
     text = read_text(path.parent, path.name, required=True)   # one bounded regular read, as for --chat-template FILE

@@ -7,7 +7,8 @@ import struct
 import numpy as np
 import pytest
 
-from tensorfold.families.qwen4_exp.gguf import GGUFCheckpoint, PackedTensor, decode_rows
+from tensorfold.gguf_file import GGUFCheckpoint, PackedTensor
+from tensorfold.families.qwen4_exp.gguf import decode_rows, open_checkpoint
 
 
 def string(text):
@@ -89,7 +90,7 @@ def test_malformed_inventory_fails_before_payload_reads(tmp_path, mutation):
     if mutation == "truncated":
         path.write_bytes(path.read_bytes()[:-64])
     with pytest.raises(ValueError):
-        GGUFCheckpoint.open(path)
+        open_checkpoint(path)
 
 
 def test_huge_string_length_does_not_allocate_from_untrusted_metadata(tmp_path):

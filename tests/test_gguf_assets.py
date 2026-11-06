@@ -50,7 +50,7 @@ def test_preparation_keeps_weights_immutable_and_reuses_completed_assets(tmp_pat
         paths = (checkpoint,)
         metadata = metadata()
 
-    monkeypatch.setattr(gguf_assets.GGUFCheckpoint, "open", lambda _: Inventory())
+    monkeypatch.setattr(gguf_assets, "open_checkpoint", lambda _: Inventory())
     monkeypatch.setattr(gguf_assets, "metadata_config", lambda _: {"model_type": "qwen4_exp",
                         "text_config": {"max_position_embeddings": 4096}})
     prepared = gguf_assets.prepare(checkpoint)
@@ -164,7 +164,7 @@ def test_unknown_token_inventory_never_invents_generation_eos_from_ple_or_paddin
 def actual_gguf_frontend(path):
     import numpy as np
     from gguf_fixture import tiny_model, write
-    from tensorfold.families.qwen4_exp.gguf import GGUFCheckpoint
+    from tensorfold.gguf_file import GGUFCheckpoint
 
     tiny_model(path)
     checkpoint = GGUFCheckpoint.open(path)
@@ -220,7 +220,8 @@ def test_source_change_during_tokenizer_preparation_is_not_published(tmp_path, m
 
 
 def test_missing_generation_eos_is_not_inferred_from_ple_metadata(tmp_path, monkeypatch):
-    from tensorfold.families.qwen4_exp.gguf import GGUFCheckpoint, metadata_config
+    from tensorfold.gguf_file import GGUFCheckpoint
+    from tensorfold.families.qwen4_exp.gguf import metadata_config
     from tensorfold.token_metadata import resolve_eos
 
     path = actual_gguf_frontend(tmp_path / "model.gguf")
@@ -239,7 +240,8 @@ def test_missing_generation_eos_is_not_inferred_from_ple_metadata(tmp_path, monk
 
 
 def test_required_ple_segmentation_is_not_inferred_from_generation_eos(tmp_path, monkeypatch):
-    from tensorfold.families.qwen4_exp.gguf import GGUFCheckpoint, metadata_config
+    from tensorfold.gguf_file import GGUFCheckpoint
+    from tensorfold.families.qwen4_exp.gguf import metadata_config
 
     path = actual_gguf_frontend(tmp_path / "model.gguf")
     checkpoint = GGUFCheckpoint.open(path)

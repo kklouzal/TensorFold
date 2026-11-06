@@ -15,7 +15,7 @@ from pathlib import Path
 import stat
 from typing import Any
 
-from tensorfold.cuda.tensor_file import MAX_HEADER_BYTES, checkpoint_path, read_metadata_json
+from tensorfold.tensor_file import MAX_HEADER_BYTES, checkpoint_path, read_metadata_json
 
 
 def _identity(value: os.stat_result) -> tuple[int, ...]:

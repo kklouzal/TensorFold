@@ -15,9 +15,8 @@ pytestmark = pytest.mark.torch
 
 from tensorfold.families.qwen4_exp.cuda import gguf_mtp_weights as mtp  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda.sm70_mtp_weights import attach, byte_plan  # noqa: E402
-from tensorfold.families.qwen4_exp.gguf import (  # noqa: E402
-    GGUFCheckpoint, _shard, decode_rows, metadata_config, token_id_identity,
-)
+from tensorfold.gguf_file import GGUFCheckpoint, _shard
+from tensorfold.families.qwen4_exp.gguf import decode_rows, metadata_config, token_id_identity
 
 
 def _string(value):

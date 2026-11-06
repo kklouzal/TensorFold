@@ -8,7 +8,7 @@ from typing import Any
 
 import mlx.core as mx
 
-from tensorfold.cuda.tensor_file import checkpoint_path
+from tensorfold.tensor_file import checkpoint_path
 from tensorfold.families.deepseek_v4.attention import Attention
 from tensorfold.families.deepseek_v4.compressor import Compressor, Indexer
 from tensorfold.families.deepseek_v4.config import Config

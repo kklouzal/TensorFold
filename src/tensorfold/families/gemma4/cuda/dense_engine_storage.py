@@ -135,7 +135,7 @@ def inspect_packed_storage(model_dir: Path) -> PackedStorage:
     # META parameter skeleton has no native/head CPU BF16 placeholder. Host
     # owners are bounded read chunks, metadata, and real nonpersistent buffers;
     # Python/runtime overhead still belongs to external host admission.
-    from tensorfold.cuda.tensor_file import MAX_HEADER_BYTES
+    from tensorfold.tensor_file import MAX_HEADER_BYTES
     return PackedStorage(resident+buffers, staging, 8*buffers+2*(64 << 20)+2*MAX_HEADER_BYTES+8192,
                          tuple(spec.shape for spec in specs.values()), buffers,
                          tuple(spec.shape for spec in specs.values() if spec.pre_quant_scale))

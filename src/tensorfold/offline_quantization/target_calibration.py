@@ -26,7 +26,7 @@ import torch
 from tensorfold.checkpoint_metadata import read_config
 from tensorfold.cleanup import rollback
 from tensorfold.cuda.capacity import _meminfo, headers, itemsize
-from tensorfold.cuda.tensor_file import checkpoint_path, _regular_stream, MAX_HEADER_BYTES
+from tensorfold.tensor_file import checkpoint_path, _regular_stream, MAX_HEADER_BYTES
 from tensorfold.families.gemma4.cuda.e2b_metadata import E2BConfig
 from tensorfold.families.gemma4.dense_tensor_contract import text_tensor_contract
 from .calibration_coverage import CalibrationCoverage

@@ -8,7 +8,7 @@ import tempfile
 
 from tensorfold.families.qwen4_exp.cuda.sm70_weight_manifest import prepare
 from tensorfold.cuda.sm70.nvfp4_layout import EXPERT_DEVICE, EXPERT_REFERENCE, LINEAR_REFERENCE, LINEAR_WMMA
-from tensorfold.cuda.tensor_file import read_metadata_json
+from tensorfold.tensor_file import read_metadata_json
 from tensorfold.cleanup import finish, raise_failures
 
 

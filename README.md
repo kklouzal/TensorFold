@@ -15,6 +15,16 @@ a pointer, not a second full contract. Companion experiments remain conditional
 under the governing design. Existing untracked `!` drafts are not maintained
 authority and are not part of this checkpoint.
 
+Shared artifact I/O now has a neutral source boundary: bounded GGUF inventory
+and path resolution live in `tensorfold.gguf_file`; common safetensors/JSON
+file checks live in `tensorfold.tensor_file`. Flash Next still owns its model
+configuration, architecture admission and decode recipes. Reading another GGUF
+architecture's inventory does not add inference support. The move preserves
+existing format and numerical contracts. Focused boundary controls and static
+checks passed; the broad source batch retains disclosed baseline failures, and
+installed-package verification is pending. No new hardware qualification is claimed. See
+[the A1 boundary and remaining gates](docs/v100-adaptive-validation.md#neutral-artifact-io-boundary-a1).
+
 The ordered combine-to-MoE-tail prototype completed exact component59 and
 compiler-resource checks but is **not advanced to model/P3**: its one-process
 synthetic CUDA-graph tail screen had per-M paired geometric latency

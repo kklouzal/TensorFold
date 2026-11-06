@@ -48,7 +48,7 @@ def _graph_file(path, values):
     direct environment, then user file, then system file precedence. Sources
     must stay immutable until native initialization and during serving.
     """
-    from tensorfold.cuda.tensor_file import MAX_HEADER_BYTES, _regular_stream
+    from tensorfold.tensor_file import MAX_HEADER_BYTES, _regular_stream
 
     path = Path(path)
     def stamp(info):

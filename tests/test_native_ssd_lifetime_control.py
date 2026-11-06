@@ -70,7 +70,7 @@ def layout_api():
     cls.body = [n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name in {"_layout", "_opened"}]
     cls.bases = [ast.Name(id="SimpleNamespace", ctx=ast.Load())]
     ast.fix_missing_locations(cls)
-    header_path = SOURCE.parents[2] / "cuda/tensor_file.py"
+    header_path = SOURCE.parents[2] / "tensor_file.py"
     header_spec = importlib.util.spec_from_file_location("ssd_header_control", header_path)
     header = importlib.util.module_from_spec(header_spec)
     header_spec.loader.exec_module(header)

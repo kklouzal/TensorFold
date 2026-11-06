@@ -13,7 +13,7 @@ from types import SimpleNamespace
 import unittest
 
 ROOT = Path(__file__).resolve().parents[1]
-spec = importlib.util.spec_from_file_location("owned_checkpoint_file_contract", ROOT / "src/tensorfold/cuda/tensor_file.py")
+spec = importlib.util.spec_from_file_location("owned_checkpoint_file_contract", ROOT / "src/tensorfold/tensor_file.py")
 files = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(files)
 
