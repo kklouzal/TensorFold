@@ -489,6 +489,24 @@ class GGUFExperts:
             target[start:start + count].copy_(result[:count])
         return self._write_shared(x, picks, out)
 
+    def forward_partitioned_native_candidate(self, x, picks, *, local, activation, out):
+        """Unselected ETP4 operator candidate; caller owns reusable role scratch.
+
+        No automatic dispatch or whole-model graph claim. Native scratch is
+        forecast by gguf_ops.owned_workspace_bytes. Shared Dense allocations use
+        the existing reference policy; integrated target/MTP peak admission and
+        actual SM70/model/quality/performance qualification block selection.
+        """
+        part = self.partition
+        if part is None or part.etp != 4 or part.width != 160 or part.world != 8:
+            raise ValueError("owned native candidate requires an explicit TP8/ETP4 bank")
+        gate, up, down = self.shared
+        shared = down.matmul((torch.nn.functional.silu(gate.matmul(x, f32=True))
+                              * up.matmul(x, f32=True)).half(), f32=True)
+        return gguf_ops.experts_owned(x, picks, self.gate, self.up, self.down,
+            first=part.first, experts=part.experts, width=self.width,
+            shared=shared, local=local, activation=activation, out=out)
+
     def forward_partitioned_reference(self, x, picks, out=None, *, _pairs=None):
         """Only owned global assignments enter the resident bank; all peers still gather.
 

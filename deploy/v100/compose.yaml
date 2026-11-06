@@ -24,6 +24,7 @@ services:
       TF_GGUF_ASSETS_DIR: /cache/gguf_assets
       # Required explicitly for the new FIFO profile; leave unset for legacy DSpark.
       TF_MAX_WAITING_INPUT_BYTES: "${TF_MAX_WAITING_INPUT_BYTES:-}"
+      TF_EXPERT_TENSOR_PARALLEL_SIZE: "${TF_EXPERT_TENSOR_PARALLEL_SIZE:-}"
     entrypoint:
       - /bin/bash
       - -c
@@ -31,6 +32,9 @@ services:
         args=("$$@")
         if [[ -n "$${TF_MAX_WAITING_INPUT_BYTES:-}" ]]; then
           args+=(--max-waiting-input-bytes "$$TF_MAX_WAITING_INPUT_BYTES")
+        fi
+        if [[ -n "$${TF_EXPERT_TENSOR_PARALLEL_SIZE:-}" ]]; then
+          args+=(--expert-tensor-parallel-size "$$TF_EXPERT_TENSOR_PARALLEL_SIZE")
         fi
         exec /opt/venv/bin/python "$${args[@]}"
       - tensorfold-v100

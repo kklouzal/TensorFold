@@ -6,6 +6,16 @@ SC117/V100 is the immediate delivery priority while selected existing profiles,
 including GB10, retain their scoped contracts. The [source-to-contract status map](docs/providerone/implementation-status.md)
 separates requested, source-implemented, qualified and effective behavior.
 
+Current delivery work prioritizes one-server TP8/ETP4 before further PP2 work.
+The V100 Compose profile accepts the explicit
+`TF_EXPERT_TENSOR_PARALLEL_SIZE=4` setting while preserving unset defaults.
+An owned-expert native ETP4 component separates routed and shared widths and
+uses bounded caller-owned scratch; it remains unselected pending target/MTP
+admission and actual SM70/model qualification. The existing reference path stays
+selected. The scoped source controls pass 1,691 CPU tests with one optional
+fixture skip; this does not establish native CUDA execution. See
+[current contracts and limits](docs/v100-adaptive-validation.md#tp8etp4-one-server-native-component).
+
 This is an authority/source-baseline checkpoint, not a package or runtime
 rebrand. Current TensorFold imports, CLI, native names, images and remotes keep
 their actual identities until a coherent, verified transition. Historical

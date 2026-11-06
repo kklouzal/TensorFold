@@ -110,3 +110,28 @@ def dense_wmma(x, weight, out):
     """Optional fixed-partition Volta WMMA provider; separate math qualification required."""
     extension().dense_wmma(x, weight, out)
     return out
+
+
+def owned_workspace_bytes(rows, slots, width=160):
+    """Only reusable native route/activation scratch; shared Dense scratch is separate."""
+    if (any(type(v) is not int or v <= 0 for v in (rows, slots))
+            or type(width) is not int or width != 160 or rows * slots > 65535):
+        raise ValueError("owned ETP4 scratch requires bounded positive rows/slots and width160")
+    return rows * slots * (8 + 2 * width)
+
+
+def experts_owned(x, picks, gate, up, down, *, first, experts, width, shared, local, activation, out):
+    """Explicit unselected ETP4 candidate, with caller-owned fixed native scratch.
+
+    Foreign global slots become zero; invalid global IDs become NaN without any
+    bank read. NaN is a fatal diagnostic result, not recoverable input repair. Shared results come from the original independent TP8 Dense path.
+    """
+    if x.ndim != 2 or picks.ndim != 2 or picks.shape[0] != x.shape[0]:
+        raise ValueError("owned inputs and picks require matching row matrices")
+    owned_workspace_bytes(x.shape[0], picks.shape[1], width)
+    if any(type(v) is not int for v in (first, experts, width)) or not 0 <= first < experts:
+        raise ValueError("owned expert range requires native integer global placement")
+    extension().experts_owned(x, picks, gate.data, gate.ggml_type, gate.column_offset,
+        up.data, up.ggml_type, up.column_offset, down.data, down.ggml_type, down.column_offset,
+        width, first, experts, shared, local, activation, out)
+    return out

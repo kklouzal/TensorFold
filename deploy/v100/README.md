@@ -11,6 +11,24 @@ from this source before using the option; these software checks do not qualify
 an eight-V100 deployment. See
 [A3 qualification status](../../docs/v100-adaptive-validation.md#pp1-expert-partitions-a3).
 
+For the one-server TP8/ETP4 source profile, set
+`TF_EXPERT_TENSOR_PARALLEL_SIZE=4` when using this Compose file. The entrypoint
+passes it as one argument to the existing server option; the CLI validates
+supported degrees and compatible resident-GGUF/GPU-history ownership before
+model loading. Leaving it unset or empty preserves the existing implicit degree
+and legacy arguments. Explicit `8` and `2` are also accepted by the source
+option. This selects the existing reference provider, not the unqualified native
+candidate below, and does not qualify an eight-V100 deployment.
+
+An explicit owned-expert native ETP4 component now separates routed width160
+from shared-expert TP8 width80. It maps global router IDs on device and retains
+the existing FP32 slot/reduction contract, with caller-owned route/activation
+scratch. It is not selected by ordinary serving or this Compose setting.
+Target/MTP peak admission, native SM70 compilation/execution, model quality,
+capacity and matched performance remain required before selection. Whole-model
+graphs remain disabled for the reference ETP4 and unique-history paths. See
+[the current TP8/ETP4 work](../../docs/v100-adaptive-validation.md#tp8etp4-one-server-native-component).
+
 Canonical SM70 TP8 GPU-history startup also requires the basic
 [A4 physical-stage binding](../../docs/v100-adaptive-validation.md#pp1-physical-stage-admission-a4)
 before NCCL/model admission. Expose the intended physical GPU as device zero

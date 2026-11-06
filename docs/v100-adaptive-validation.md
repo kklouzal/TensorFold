@@ -696,6 +696,62 @@ CUDA transfer, SC117 quality, capacity and performance remain unqualified.
 Production is unchanged. No further candidate investigation is part of this
 closeout, following the owner's instruction to finish current work and stop.
 
+## TP8/ETP4 one-server native component
+
+The owner prioritized TP8/PP1/ETP4 before further PP2 work. A3's reference
+target/shared-GGUF MTP path already partitions experts into two groups of four
+ranks. Each group owns 256 experts, with local routed width160; shared experts
+retain TP8 width80. Global router IDs, one representation per expert channel,
+FP32 expert slots and the existing ordered full-TP8 partial gather are preserved.
+
+An explicit `GGUFExperts.forward_partitioned_native_candidate` component now
+uses device-side global-to-resident route mapping and existing packed native
+arithmetic, rather than host scalar checks or dynamic `nonzero` compaction.
+It publishes literal zero for foreign slots and the independently evaluated
+TP8 Dense shared result for global sentinel512. Invalid global IDs produce the
+existing native diagnostic NaN contract without an out-of-range bank read;
+they are not repaired into a valid expert. This is a component candidate, not
+selected serving dispatch or an established speed/quality equivalence result.
+
+Callers supply reusable int64 routes and FP16 activations, separately owned by
+target and MTP roles. The native scratch forecast is
+`rows * slots * (8 + 2 * 160)` bytes, with at most 65,535 slots per call. Caller
+FP32 output and shared Dense temporaries remain separately charged. No per-bank
+resident scratch is introduced. Integrated target/MTP worst-rank peak admission
+and a legal prefill policy beyond that call envelope remain selection gates.
+The component does not enable whole-model graphs: unique-history live-row
+execution has its own independent capture restriction.
+
+The V100 Compose profile now forwards an explicitly set
+`TF_EXPERT_TENSOR_PARALLEL_SIZE=4` through its existing Bash argument array to
+the server's existing option. Unset/empty behavior is preserved, including legacy
+profiles; the CLI remains the authority for supported degrees and ownership
+compatibility. Ten actual Compose-render/argv controls pass, including degree
+8/4/2 forwarding and literal malformed-input rejection without shell execution.
+
+New SM70 component controls cover global boundary IDs, both owner groups,
+int32/int64 routing, foreign-only groups, tails, mixed source formats, poisoned
+outputs/scratch, changed-route graph replay, alias refusal and separate role
+scratch. Their exact native arithmetic comparison reuses the existing packed
+provider to test the new mapping/publication boundary; it is not an independent
+full-model numerical or distributed-collective oracle.
+
+The four-module focused CPU batch passed 128 cases in 1.59 seconds. The scoped
+47-module source batch passed 1,691 cases with one optional pinned-companion/
+target-metadata skip in 32.80 seconds, including all A7 regression modules.
+Required deployment/public-permission controls passed 194 cases. Configured
+Ruff, affected F/py312 checks and Python compilation passed. CUDA stayed
+uninitialized; Python compilation does not compile or qualify the native CUDA
+entrypoint. These are canonical-source checks using the freshly built unchanged
+native FD extension, distinct from a fresh installed application check.
+
+Actual SM70 compilation/execution, canonical SC117/MTP model and media quality,
+complete resource/capacity and matched end-to-end performance remain unrun.
+The current host is GB10; the known dev-01 connection has an RTX PRO2000
+Blackwell. Neither has the selected CUDA12.9.2/Torch04cf V100 SDK installed.
+Target-server access remains unresolved. No guard is relaxed to substitute those
+devices, no native candidate is promoted and production is unchanged.
+
 ## Configuration and capacity
 
 For Flash Next GGUF with GPU indexer history, `--parallel auto` computes a

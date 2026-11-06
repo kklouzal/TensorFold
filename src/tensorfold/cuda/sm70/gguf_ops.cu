@@ -1132,3 +1132,87 @@ void gguf_experts_exact(const at::Tensor& x, const at::Tensor& picks,
                       down, down_kind, down_offset, shared_gate, shared_up, shared_down,
                       output, false, true, true, true);
 }
+
+// The owned-bank candidate reuses the packed operator's arithmetic. Mapping
+// never publishes the local shared sentinel: all non-owned IDs become -1.
+namespace {
+template <typename Index>
+__global__ void owned_routes(const Index* global, int64_t* local, int64_t count,
+                             int first, int experts) {
+    for (int64_t at = int64_t(blockIdx.x) * blockDim.x + threadIdx.x; at < count;
+         at += int64_t(gridDim.x) * blockDim.x) {
+        const auto id = global[at];
+        local[at] = id >= first && id < int64_t(first) + experts ? int64_t(id) - first : -1;
+    }
+}
+template <typename Index>
+__global__ void publish_owned(const Index* global, const int64_t* local, const float* shared,
+                              float* output, int64_t count, int dims, int slots, int global_experts) {
+    for (int64_t at = int64_t(blockIdx.x) * blockDim.x + threadIdx.x; at < count;
+         at += int64_t(gridDim.x) * blockDim.x) {
+        const int64_t pair = at / dims;
+        const auto id = global[pair];
+        if (id == global_experts) output[at] = shared[(pair / slots) * dims + at % dims];
+        else if (id < 0 || id > global_experts) output[at] = __int_as_float(0x7fffffff);
+        else if (local[pair] < 0) output[at] = 0.0f;
+    }
+}
+}
+void gguf_experts_owned(const at::Tensor& x, const at::Tensor& picks,
+    const at::Tensor& gate, int64_t gate_kind, int64_t gate_offset,
+    const at::Tensor& up, int64_t up_kind, int64_t up_offset,
+    const at::Tensor& down, int64_t down_kind, int64_t down_offset,
+    int64_t width, int64_t first, int64_t global_experts, const at::Tensor& shared,
+    at::Tensor local, at::Tensor activation, at::Tensor output) {
+    TORCH_CHECK(x.is_cuda() && x.scalar_type() == at::kHalf && x.dim() == 2 && x.is_contiguous()
+                && x.size(1) > 0 && x.size(1) <= std::numeric_limits<int>::max(),
+                "owned experts require contiguous FP16 CUDA [rows,hidden] inputs");
+    const auto device = x.device();
+    c10::cuda::CUDAGuard guard(device);
+    const auto* prop = at::cuda::getDeviceProperties(x.get_device());
+    TORCH_CHECK(prop->major == 7 && prop->minor == 0, "owned expert candidate requires SM70");
+    TORCH_CHECK(width == 160 && global_experts > 0 && global_experts <= std::numeric_limits<int>::max()
+                && first >= 0 && first < global_experts, "owned candidate requires valid ETP4 width160 placement");
+    TORCH_CHECK(picks.scalar_type() == at::kInt || picks.scalar_type() == at::kLong,
+                "owned picks must be int32 or int64");
+    operand(picks, picks.scalar_type(), device, "owned picks");
+    TORCH_CHECK(picks.dim() == 2 && picks.size(0) == x.size(0) && picks.size(1) > 0
+                && picks.numel() <= 65535, "owned slot geometry exceeds its bounded launch");
+    const int dims = int(x.size(1));
+    auto g = packed_view(gate, gate_kind, gate_offset, dims, device);
+    auto u = packed_view(up, up_kind, up_offset, dims, device);
+    auto d = packed_view(down, down_kind, down_offset, int(width), device);
+    TORCH_CHECK(gate.size(0) % width == 0 && up.size(0) == gate.size(0)
+                && down.size(0) % dims == 0 && down.size(0) / dims == gate.size(0) / width
+                && gate.size(0) / width <= global_experts - first,
+                "owned bank rows exceed the global expert inventory");
+    const int experts = int(gate.size(0) / width);
+    operand(shared, at::kFloat, device, "shared TP8 results");
+    operand(local, at::kLong, device, "owned route scratch");
+    operand(activation, at::kHalf, device, "owned activation scratch");
+    operand(output, at::kFloat, device, "owned output");
+    TORCH_CHECK(shared.sizes() == x.sizes() && local.sizes() == picks.sizes()
+                && activation.sizes() == at::IntArrayRef({picks.numel(), width})
+                && output.sizes() == at::IntArrayRef({x.size(0), picks.size(1), x.size(1)}),
+                "owned output and scratch require exact admitted shapes");
+    tensorfold::check_disjoint(output, {&x, &picks, &gate, &up, &down, &shared, &local, &activation}, "owned output overlap");
+    tensorfold::check_disjoint(local, {&x, &picks, &gate, &up, &down, &shared, &activation}, "owned route scratch overlap");
+    tensorfold::check_disjoint(activation, {&x, &picks, &gate, &up, &down, &shared}, "owned activation scratch overlap");
+    if (!picks.numel()) return;
+    auto stream = at::cuda::getCurrentCUDAStream();
+    const int blocks = int((picks.numel() + 127) / 128);
+    if (picks.scalar_type() == at::kLong)
+        owned_routes<<<blocks, 128, 0, stream>>>(picks.data_ptr<int64_t>(), local.data_ptr<int64_t>(), picks.numel(), int(first), experts);
+    else owned_routes<<<blocks, 128, 0, stream>>>(picks.data_ptr<int32_t>(), local.data_ptr<int64_t>(), picks.numel(), int(first), experts);
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+    // No mapped ID equals experts, so shared pointers are never dereferenced.
+    // Existing FP16 input storage supplies a valid pointer without a dummy bank.
+    run_experts<int64_t>(x, local, g, u, d, x, x, x, output, activation,
+                         dims, int(width), int(picks.size(1)), experts, true, true, dims == 2560);
+    const int64_t count = output.numel();
+    const int publish_blocks = int(std::min<int64_t>((count + 127) / 128, 65535));
+    if (picks.scalar_type() == at::kLong)
+        publish_owned<<<publish_blocks, 128, 0, stream>>>(picks.data_ptr<int64_t>(), local.data_ptr<int64_t>(), shared.data_ptr<float>(), output.data_ptr<float>(), count, dims, int(picks.size(1)), int(global_experts));
+    else publish_owned<<<publish_blocks, 128, 0, stream>>>(picks.data_ptr<int32_t>(), local.data_ptr<int64_t>(), shared.data_ptr<float>(), output.data_ptr<float>(), count, dims, int(picks.size(1)), int(global_experts));
+    C10_CUDA_KERNEL_LAUNCH_CHECK();
+}

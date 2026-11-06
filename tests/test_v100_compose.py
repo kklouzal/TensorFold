@@ -16,7 +16,7 @@ compose = _compose
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy" / "v100"
 
 
-def render(compose, tmp_path, *, waiting=None, method="mtp"):
+def render(compose, tmp_path, *, waiting=None, method="mtp", etp=None):
     env = {name: value for name, value in os.environ.items()
            if not name.startswith(("TF_", "TENSORFOLD_")) and name not in
            ("MODEL_ROOT", "GGUF_FILE", "MTP_DIRECTORY", "DRAFTER_DIRECTORY")}
@@ -25,6 +25,8 @@ def render(compose, tmp_path, *, waiting=None, method="mtp"):
                TF_MAX_PENDING_REQUESTS="3", TF_MAX_HTTP_CONNECTIONS="4", TF_DRAFT_METHOD=method)
     if waiting is not None:
         env["TF_MAX_WAITING_INPUT_BYTES"] = waiting
+    if etp is not None:
+        env["TF_EXPERT_TENSOR_PARALLEL_SIZE"] = etp
     empty = tmp_path / "empty.env"
     empty.write_text("")
     result = subprocess.run([*compose, "--env-file", str(empty), "-f", str(DEPLOY / "compose.yaml"),
@@ -47,7 +49,7 @@ def actual_argv(service):
     # code runs unchanged, without starting a model or an alternate interpreter.
     script = "exec() { printf '%s\\0' \"$@\"; }\n" + entry[2]
     env = {name: value for name, value in os.environ.items()
-           if name not in ("TF_MAX_WAITING_INPUT_BYTES", "BASH_ENV")}
+           if name not in ("TF_MAX_WAITING_INPUT_BYTES", "TF_EXPERT_TENSOR_PARALLEL_SIZE", "BASH_ENV")}
     env.update(service["environment"])
     result = subprocess.run([bash, "--noprofile", "--norc", "-c", script, entry[3], *service["command"]],
                             env=env, capture_output=True, timeout=10, check=False)
@@ -76,4 +78,38 @@ def test_environment_metacharacters_remain_one_literal_argument(compose, tmp_pat
     value = f"8192; touch '{witness}' $(touch '{witness}')"
     service = render(compose, tmp_path, waiting=value)
     assert actual_argv(service) == ["/opt/venv/bin/python", *service["command"], "--max-waiting-input-bytes", value]
+    assert not witness.exists()
+
+
+@pytest.mark.parametrize("etp", [None, ""])
+def test_unspecified_expert_degree_preserves_legacy_argv(compose, tmp_path, etp):
+    service = render(compose, tmp_path, method="dspark", etp=etp)
+    assert actual_argv(service) == ["/opt/venv/bin/python", *service["command"]]
+    assert "--expert-tensor-parallel-size" not in actual_argv(service)
+
+
+@pytest.mark.parametrize("etp", ["8", "4", "2"])
+def test_explicit_expert_degree_reaches_only_the_server_argv(compose, tmp_path, etp):
+    service = render(compose, tmp_path, waiting="8192", etp=etp)
+    argv = actual_argv(service)
+    assert argv == ["/opt/venv/bin/python", *service["command"],
+                    "--max-waiting-input-bytes", "8192", "--expert-tensor-parallel-size", etp]
+    assert argv.count("--expert-tensor-parallel-size") == 1
+    # The launcher consumes only its leading GPU arguments; the degree belongs
+    # after its separator, where the existing CLI validates the model profile.
+    assert argv.index("--expert-tensor-parallel-size") > argv.index("--")
+
+
+def test_expert_degree_metacharacters_are_literal_and_rejected_by_cli(compose, tmp_path, capsys):
+    from tensorfold.cli import build_parser
+
+    witness = tmp_path / "must not be created"
+    value = f"4; touch '{witness}' $(touch '{witness}')"
+    service = render(compose, tmp_path, etp=value)
+    argv = actual_argv(service)
+    assert argv[-2:] == ["--expert-tensor-parallel-size", value]
+    with pytest.raises(SystemExit) as rejected:
+        build_parser().parse_args(["serve", *argv[argv.index("--") + 1:]])
+    assert rejected.value.code == 2
+    assert "argument --expert-tensor-parallel-size: invalid int value" in capsys.readouterr().err
     assert not witness.exists()

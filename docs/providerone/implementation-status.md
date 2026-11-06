@@ -67,6 +67,15 @@ or performance gate is inferred from these repaired CPU controls. See
 
 ## Required SC117 parallelism matrix
 
+Current delivery priority is the one-server TP8/ETP4 profile, ahead of further
+PP2 implementation. The existing reference path remains selected. An explicit
+owned-routed native component now separates ETP4 width160 from shared-expert
+TP8 width80, with device route mapping and caller-owned fixed scratch. It is
+unselected: target/MTP peak admission, actual SM70 build/operator/model quality,
+capacity and matched performance remain pending. The maintained V100 Compose
+entrypoint forwards an explicitly set `TF_EXPERT_TENSOR_PARALLEL_SIZE`, leaving
+unset/empty behavior intact. See [the current component and qualification limits](../v100-adaptive-validation.md#tp8etp4-one-server-native-component).
+
 A4 adds mandatory basic physical-stage admission for canonical SM70 TP8
 GPU-history startup: one kernel host, ordered complete rank coverage, distinct
 canonical GPU UUIDs and the specified V100 SXM2 32GB/SM70 observations before

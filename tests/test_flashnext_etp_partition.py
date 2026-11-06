@@ -228,3 +228,17 @@ def test_equal_routed_width_does_not_make_prefill_providers_interchangeable(chec
     monkeypatch.setattr(gguf_weights, "Reader", lambda: pytest.fail("wrong provider acquired a payload reader"))
     with pytest.raises(ValueError, match="shared width/provider"):
         gguf_weights.load_gguf(checkpoint, device="cpu", tp=(0, 4), _prefill_plan=partitioned)
+
+
+@pytest.mark.torch
+@pytest.mark.parametrize("etp", [8, 2])
+def test_owned_native_candidate_never_selects_for_another_degree(checkpoint, etp):
+    from tensorfold.families.qwen4_exp.cuda.gguf_weights import GGUFExperts, model_plan
+
+    weights, _ = model_plan(checkpoint, (0, 8), expert_tensor_parallel_size=etp)
+    plan = weights.layers[0].moe.experts
+    bank = GGUFExperts(plan.gate, plan.up, plan.down, plan.shared, count=weights.cfg.experts,
+                       width=plan.width, dims=plan.dims, partition=plan.partition)
+    with pytest.raises(ValueError, match="TP8/ETP4"):
+        bank.forward_partitioned_native_candidate(None, None, local=None, activation=None, out=None)
+    assert bank.implementation == "reference"
