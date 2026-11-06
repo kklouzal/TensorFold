@@ -79,6 +79,17 @@ unset/empty behavior intact. Source and fresh installed CPU controls each pass
 the frozen source. These controls do not qualify native CUDA or the complete
 TP8/ETP4 profile. See [the current component and qualification limits](../v100-adaptive-validation.md#tp8etp4-one-server-native-component).
 
+The private prepared-engine path now owns one native route arena per existing
+target/prompt/MTP buffer, reuses their activation/output storage and binds
+exclusive dispatch. Paid routing workspace contains these arenas; no extra
+reservation or measured capacity gain is asserted. Rank agreement, state/cache
+arithmetic identity and independently observed execution/coordinate facts bind
+the native policy. The reference default remains unchanged. This private mode
+passes a scoped 49-module source CPU batch of 1,735 tests with one optional
+fixture skip. It still needs actual SM70/model/resource/performance qualification and later
+method/administrator-transition coverage; it is not a released one-server
+profile. See [prepared execution](../v100-adaptive-validation.md#prepared-tp8etp4-execution-and-workspace).
+
 A4 adds mandatory basic physical-stage admission for canonical SM70 TP8
 GPU-history startup: one kernel host, ordered complete rank coverage, distinct
 canonical GPU UUIDs and the specified V100 SXM2 32GB/SM70 observations before

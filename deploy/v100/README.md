@@ -30,6 +30,18 @@ capacity and matched performance remain required before selection. Whole-model
 graphs remain disabled for the reference ETP4 and unique-history paths. See
 [the current TP8/ETP4 work](../../docs/v100-adaptive-validation.md#tp8etp4-one-server-native-component).
 
+Internal qualification callers can prepare the same engine with
+`_owned_expert_native=True`. This is a constructor-only experimental opt-in,
+not a CLI or Compose setting. It requires adaptive resident GGUF TP8/ETP4,
+an actual SM70 device/build, stock shared-GGUF MTP or no method, and bounded
+prepared row/slot geometry. Administrator profile transitions and DFlash/DSpark
+are not supported by this private mode yet; their normal reference behavior is
+unchanged. Private-policy eligibility checks follow common rank agreement and
+precede payload loading.
+The prepared owner reuses existing slot/activation storage and refuses reference
+fallback; no whole-model graphs are enabled. See
+[workspace ownership and qualification limits](../../docs/v100-adaptive-validation.md#prepared-tp8etp4-execution-and-workspace).
+
 Canonical SM70 TP8 GPU-history startup also requires the basic
 [A4 physical-stage binding](../../docs/v100-adaptive-validation.md#pp1-physical-stage-admission-a4)
 before NCCL/model admission. Expose the intended physical GPU as device zero

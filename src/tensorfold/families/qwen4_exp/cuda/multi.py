@@ -134,6 +134,8 @@ class MultiDecoder:
                                           "dflash2" if getattr(w, "dflash2", None) is not None else "none",
                                           depth)
         self.pbuf = Buffers(w, prefill_rows + (rows if self.converged else 0), capacity, prefill=True)
+        owned = w.meta.get("owned_expert_plan")
+        self.owned_expert_resources = owned.reconcile(self) if owned is not None else None
         self._sample_plan = self._draft_plan = None
         if w.comm is not None:
             self._sample_plan = self.buf.sample_plan = SamplingShard(w, w.head.n, offset=int(w.meta["vocab_offset"]))

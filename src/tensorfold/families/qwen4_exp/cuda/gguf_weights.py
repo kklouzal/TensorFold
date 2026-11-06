@@ -451,6 +451,8 @@ class GGUFExperts:
 
     def forward_reference(self, x, picks, out=None, *, _pairs=None):
         if self.partition is not None:
+            if self.implementation != "reference":
+                raise ValueError("exclusive owned native banks cannot fall back to reference compaction")
             return self.forward_partitioned_reference(x, picks, out, _pairs=_pairs)
         if (x.ndim != 2 or x.shape[1] != self.dims or x.dtype != torch.float16
                 or picks.ndim != 2 or picks.shape[0] != x.shape[0]
@@ -514,6 +516,8 @@ class GGUFExperts:
         scalar-validation synchronization. Its bounded masks/indices belong in
         admission, and it makes no native-kernel or performance claim.
         """
+        if self.implementation != "reference":
+            raise ValueError("exclusive owned native banks cannot execute reference compaction")
         if (x.ndim != 2 or x.shape[1] != self.dims or x.dtype != torch.float16
                 or picks.ndim != 2 or picks.shape[0] != x.shape[0]
                 or picks.dtype not in (torch.int32, torch.int64) or picks.device != x.device):

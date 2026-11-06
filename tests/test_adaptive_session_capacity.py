@@ -257,8 +257,8 @@ def test_actual_sm70_constructor_supplies_owned_full_window_session_geometry(mon
     monkeypatch.setattr(comm, "open_comm", open_cpu_comm)
     def gather_profile(t, g, values, world=2):
         peers = [list(values) for _ in range(world)]
-        if etp == "mismatch" and len(values) == 7:
-            peers[-1][-3] = 4  # Local default8 differs from one peer before model admission.
+        if etp == "mismatch" and len(values) == 9:
+            peers[-1][4] = 4  # Local default8 differs from one peer before model admission.
         return peers
 
     monkeypatch.setattr(capacity, "gather_ints", gather_profile)

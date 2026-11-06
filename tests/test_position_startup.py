@@ -11,9 +11,24 @@ class DeviceBoundary(Exception):
 
 
 def engine_boundary(monkeypatch):
-    from tensorfold.cuda import chat_template
-    from tensorfold.families.qwen4_exp.cuda import weights
+    from tensorfold.cuda import chat_template, comm
+    from tensorfold.families.qwen4_exp.cuda import retention_resources, weights
+    import torch.distributed
 
+    # This fixture ends at set_device. Earlier CPU ownership prerequisites are
+    # explicit stand-ins: they qualify neither the selected x86 ABI nor a socket
+    # transport. Dedicated runtime/topology controls retain those real gates.
+    monkeypatch.setattr(retention_resources, "require_native_payload_runtime", lambda: {"hard_nofile": 1024})
+    class MetadataStore:
+        pass  # Owns no socket/FD and is released by the engine's startup rollback.
+    class MetadataOrigin:
+        adopted_by = None
+        def __init__(self):
+            self.store = MetadataStore()
+        def retire(self):
+            self.store = None  # Model the unadopted metadata owner's explicit retirement.
+    monkeypatch.setattr(torch.distributed, "TCPStore", lambda *a, **kw: MetadataStore())
+    monkeypatch.setattr(comm, "create_owned_tcp_store", lambda *a, **kw: MetadataOrigin())
     events = []
     monkeypatch.setattr(chat_template, "prepare_chat_template", lambda *a, **k: None)
     def device(*a, **k):
@@ -145,7 +160,8 @@ def test_direct_gguf_loader_adopts_checked_target_vector_without_rebuilding(tmp_
 
 
 @pytest.mark.parametrize("malformed", [False, True])
-def test_coordinate_activation_is_shared_fresh_and_retires_owned_cpu_keys(tmp_path, monkeypatch, malformed):
+@pytest.mark.parametrize("owned_transition", [False, True])
+def test_coordinate_activation_is_shared_fresh_and_retires_owned_cpu_keys(tmp_path, monkeypatch, malformed, owned_transition):
     """Eight host control participants, not CUDA/NCCL execution evidence."""
     from concurrent.futures import ThreadPoolExecutor
     from datetime import timedelta
@@ -179,13 +195,21 @@ def test_coordinate_activation_is_shared_fresh_and_retires_owned_cpu_keys(tmp_pa
                 phase_state.stage = None
         return actual_phase(engine, channel, stage, observed, **kwargs)
     monkeypatch.setattr(execution_identity, "_phase", phase)
+    contracts = []
+    original_digest = execution_identity.digest
+    def observe_contract(value):
+        if isinstance(value, dict) and "model_config" in value and "position_profile" in value:
+            contracts.append(value.copy())
+        return original_digest(value)
+    monkeypatch.setattr(execution_identity, "digest", observe_contract)
     class PublishedMeta(dict):
         def __setitem__(self, key, value):
             if key in ("coordinate_profile_identity", "coordinate_profile_binding"):
                 assert getattr(phase_state, "stage", None) == "agreement"
             super().__setitem__(key, value)
     for rank in range(8):
-        model, _ = model_plan(path, (rank, 8), rope=profile.target.rope, position_profile=profile)
+        model, _ = model_plan(path, (rank, 8), rope=profile.target.rope, position_profile=profile,
+                              **({"expert_tensor_parallel_size": 4} if owned_transition else {}))
         prepared = prepare_position_vectors(profile, mtp_active=False)
         model.inv_freq = prepared.target_cpu
         bind_position_profile(model, profile, mtp_active=False, prepared=prepared)
@@ -201,6 +225,17 @@ def test_coordinate_activation_is_shared_fresh_and_retires_owned_cpu_keys(tmp_pa
         owner.execution_provider, owner.sm70_profile = "sm70", "reference"
         owner.kv_pair, owner.method_geometry = get_pair("fp16"), MethodGeometry("none", 0)
         participants.append((owner, model))
+    def attach_owned_metadata():
+        # Observe actual prepared metadata; the request flag alone is not authority.
+        from tensorfold.families.qwen4_exp.expert_partition import ExpertPartition
+        from tensorfold.families.qwen4_exp.cuda.owned_experts import Plan
+        for owner, model in participants:
+            c = model.cfg
+            part = ExpertPartition.bound(model.meta["expert_partition"], world=8, rank=owner.rank,
+                experts=c.experts, full_width=model.meta["full"].moe_width)
+            model.meta["owned_expert_plan"] = Plan(part, c.hidden, c.top_k + 1, 32, 64, False)
+    if malformed and owned_transition:
+        attach_owned_metadata()
     nonces = iter(("bad",) if malformed else ("0" * 64, "1" * 64))
     monkeypatch.setattr(secrets, "token_hex", lambda count: next(nonces))
     def bind(pair):
@@ -218,7 +253,24 @@ def test_coordinate_activation_is_shared_fresh_and_retires_owned_cpu_keys(tmp_pa
             assert all("coordinate_profile_identity" not in model.meta for _, model in participants)
             return
         assert len(set(first)) == 1 and store.data == {}
+        first_local = [owner.coordinate_profile_binding["local_contract_identity"] for owner, _ in participants]
+        assert all("owned_expert_native" not in contract for contract in contracts)
+        first_contracts = {contract["rank"]: contract.copy() for contract in contracts}
+        contracts.clear()
+        if owned_transition:
+            attach_owned_metadata()
         second = list(workers.map(bind, participants))
+    second_local = [owner.coordinate_profile_binding["local_contract_identity"] for owner, _ in participants]
+    assert all((left != right) == owned_transition for left, right in zip(first_local, second_local))
+    for contract in contracts:
+        if owned_transition:
+            plan = participants[contract["rank"]][1].meta["owned_expert_plan"]
+            assert contract["owned_expert_native"] == list(plan.identity)
+            assert type(contract["owned_expert_native"]) is list
+            assert contract == {**first_contracts[contract["rank"]], "owned_expert_native": list(plan.identity)}
+        else:
+            assert "owned_expert_native" not in contract
+            assert contract == first_contracts[contract["rank"]]
     assert len(set(second)) == 1 and second[0] != first[0]
     assert store.data == {} and store.maximum <= 32
     assert all(owner.coordinate_profile_binding["content_certificate"] is False for owner, _ in participants)

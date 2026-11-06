@@ -430,10 +430,16 @@ def moe_block(layer: LayerW, w: Weights, b: Buffers, R: int) -> tuple:
         buf = b.moe
         moe_mod.router(b.mixed[:R], m.router, buf.logits[:R], independent_rows=not b.prefill)
         moe_mod.select_rows(buf.logits[:R], buf, w.cfg.top_k, w.cfg.experts)
-        execute = m.experts.forward
-        if b.prefill:
-            execute = getattr(m.experts, "forward_prefill", execute)
-        execute(b.mixed[:R], buf.pick[:R], out=buf.y[:R])
+        owned = getattr(b, "owned_experts", None)
+        if w.meta.get("owned_expert_plan") is not None:
+            if owned is None:
+                raise ValueError("exclusive owned expert execution lacks its admitted arena")
+            owned.execute(m.experts, b.mixed[:R], buf.pick[:R], buf.y[:R])
+        else:
+            execute = m.experts.forward
+            if b.prefill:
+                execute = getattr(m.experts, "forward_prefill", execute)
+            execute(b.mixed[:R], buf.pick[:R], out=buf.y[:R])
         if w.comm is None:
             return 2, buf.y[:R], buf.wts[:R]
         glue.moe_partial(buf.y[:R], buf.wts[:R], b.part_moe, R)

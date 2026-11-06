@@ -355,6 +355,10 @@ def _runtime(engine, *, previous_topology=None):
                 "mtp_import": engine.w.meta.get("mtp_import"),
                 "expert_partition": engine.w.meta.get("expert_partition"),
                 "proposal_confidence": engine.confidence}
+    owned = engine.w.meta.get("owned_expert_plan")
+    if owned is not None:
+        # The immutable prepared identity has a declared JSON-array encoding.
+        numerics["owned_expert_native"] = list(owned.identity)
     pairing = getattr(engine, "_dflash_pairing", None)
     if pairing is not None:
         numerics["dflash2_pairing"] = pairing.identity

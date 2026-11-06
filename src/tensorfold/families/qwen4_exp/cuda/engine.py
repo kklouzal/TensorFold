@@ -60,7 +60,12 @@ def _expert_authority(cache) -> tuple[str, dict | None]:
 class FlashNextEngine:
     """``eos``, ``generate`` (rank 0 or one GPU) and ``follow`` (peer ranks), as the CUDA server expects."""
 
-    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None, mtp_model_dir: Path | None=None, dspark_model_dir: Path | None=None, dflash2_model_dir: Path | None=None, indexer_history: str="gpu", adaptive_sessions: bool=False, session_ceiling: int | None=None, execution_rows: int | None=None, execution_profile_manifest: Path | None=None, position_profile_manifest: Path | None=None, media_profile_manifest: Path | None=None, family_manifest: Path | None=None, _prepared_family_plan=None, serving_profile_root: Path | None=None, max_waiting_input_bytes: int | None=None, max_waiting_input_bytes_per_principal: int | None=None, output_queue_tokens: int | None=None, queue_timeout_s: float | None=None, retention_policy: RetentionPolicy | None=None, expert_tensor_parallel_size: int | None=None) -> None:
+    def __init__(self, model_dir: Path, *, depth: int=DEPTH, confidence: float=CONFIDENCE, draft_vocab: str | int | None='default', max_len: int | None=None, context_explicit: bool | None=None, tp: int=1, rank: int=0, master: str='', port: int=29551, prefetch: bool=True, graphs: bool=True, streams: int=1, ple_on_ssd: bool=False, kv_dtype: str='bf16', share: float=0.0, vision: bool=False, vision_urls: bool=False, yarn_factor: float | None=None, vram_experts: float | str | None=None, kv_key_dtype: str | None=None, kv_value_dtype: str | None=None, expert_session=None, kv_full_windows: int | None=None, vram_experts_pin: str="off", eos_token_ids=None, chat_template_file=None, chat_template_name=None, mtp_model_dir: Path | None=None, dspark_model_dir: Path | None=None, dflash2_model_dir: Path | None=None, indexer_history: str="gpu", adaptive_sessions: bool=False, session_ceiling: int | None=None, execution_rows: int | None=None, execution_profile_manifest: Path | None=None, position_profile_manifest: Path | None=None, media_profile_manifest: Path | None=None, family_manifest: Path | None=None, _prepared_family_plan=None, serving_profile_root: Path | None=None, max_waiting_input_bytes: int | None=None, max_waiting_input_bytes_per_principal: int | None=None, output_queue_tokens: int | None=None, queue_timeout_s: float | None=None, retention_policy: RetentionPolicy | None=None, expert_tensor_parallel_size: int | None=None, _owned_expert_native: bool=False) -> None:
+        if type(_owned_expert_native) is not bool:
+            raise ValueError("private owned expert selection must be a literal boolean")
+        self._owned_expert_requested = _owned_expert_native
+        self._owned_expert_admin_requested = serving_profile_root is not None
+        self._owned_expert_plan = None
         if serving_profile_root is not None:
             from .serving_profiles import profile_root
 
@@ -71,6 +76,7 @@ class FlashNextEngine:
         profile_options.pop("self")
         profile_options.pop("model_dir")
         profile_options.pop("serving_profile_root")
+        profile_options.pop("_owned_expert_native")
         profile_options.pop("_prepared_family_plan")  # private startup cache is never an administrator option
         self._profile_build = None
         self.serving_profiles = None
@@ -155,6 +161,9 @@ class FlashNextEngine:
             retention_policy.validate_world(tp)
         self.retention_policy = retention_policy
 
+        self._owned_expert_requested = getattr(self, "_owned_expert_requested", False)
+        self._owned_expert_admin_requested = getattr(self, "_owned_expert_admin_requested", False)
+        self._owned_expert_plan = None
         self.position_profile = self.position_method_binding = self._position_prepared = None
         self.coordinate_profile_binding = None
         self._media_inputs_enabled = False  # Only the admitted media-profile parser may enable this.
@@ -609,9 +618,20 @@ class FlashNextEngine:
             modes = gather([int(indexer_history == "ram"), int(adaptive_sessions),
                             -1 if session_ceiling is None else session_ceiling,
                             -1 if execution_rows is None else execution_rows,
-                            *(self.expert_partition.agreement() if self.expert_partition is not None else (0, 0, 0))])
+                            *(self.expert_partition.agreement() if self.expert_partition is not None else (0, 0, 0)),
+                            int(self._owned_expert_requested),
+                            int(self._owned_expert_requested and self._owned_expert_admin_requested)])
             if any(row != modes[0] for row in modes[1:]):
                 raise RuntimeError("tensor-parallel ranks selected different history/session or expert placement policies")
+        if self._owned_expert_requested and self._owned_expert_admin_requested:
+            raise ValueError("private owned expert qualification does not support administrator profile transitions")
+        if self._owned_expert_requested and (not source_is_gguf or tp != 8
+                or expert_tensor_parallel_size != 4 or not adaptive_sessions or indexer_history != "gpu"
+                or dspark_model_dir is not None or dflash2_model_dir is not None):
+            raise ValueError("private owned qualification requires adaptive resident GGUF TP8/ETP4 and stock MTP or no method")
+        if self._owned_expert_requested and (torch.cuda.get_device_capability() != (7, 0)
+                or "sm_70" not in torch.cuda.get_arch_list()):
+            raise ValueError("private owned qualification requires actual SM70 and a Volta-enabled PyTorch build")
         if execution_rows is not None and (type(execution_rows) is not int or execution_rows < each):
             raise ValueError("execution rows must fit one complete speculative verification window")
 
@@ -626,6 +646,12 @@ class FlashNextEngine:
         kv_status = (not self.kv_pair.symmetric or bool(self.kv_pair.key.codec or self.kv_pair.value.codec)
                      or sm70 and self.kv_pair.key.quantized or indexer_history == "ram")
         rows0 = chunk or PREFILL_ROWS
+        if self._owned_expert_requested:
+            from .owned_experts import Plan
+
+            self._owned_expert_plan = Plan(self.expert_partition, int(text["hidden_size"]),
+                int(text["num_experts_per_tok"]) + 1, execution_rows if execution_rows is not None else 32,
+                rows0, bool(stock_mtp))
         history_plan = None
         history_maximum_owners = 0
         history_geometry = {}
@@ -1360,6 +1386,8 @@ class FlashNextEngine:
                  **({"vram_experts_pin": vram_experts_pin, "_pin_future_bytes": self._pin_future_bytes}
                     if vram_experts_pin != "off" else {}))
         self.w = w
+        if self._owned_expert_plan is not None:
+            self._owned_expert_plan.bind(w)
         if self.position_profile is not None:
             from ..position_profile import bind_position_profile
 
@@ -1578,6 +1606,9 @@ class FlashNextEngine:
             if automatic_experts:
                 self.serial = self.e.twin()
                 self._configure_auto_experts(torch, streams, vision_workspace_bytes=workspace)
+        if self._owned_expert_plan is not None:
+            self.capacity_plan["owned_expert_native"] = (
+                self.multi if self.multi is not None else self.e).owned_expert_resources
         if history_plan is not None:
             history_states = list(self.multi.free) if self.multi is not None else [self.e.st]
             if self.serial is not None:
@@ -1989,6 +2020,9 @@ class FlashNextEngine:
                         "media_numerics": None if getattr(self, "_media_numeric_scope", None) is None else self._media_numeric_scope.record(),
                         "media_software": (self.vision.software_binding.record()
                             if getattr(getattr(self, "vision", None), "is_media_runtime", False) else None)}
+            owned = weights.meta.get("owned_expert_plan")
+            if owned is not None:
+                contract["owned_expert_native"] = list(owned.identity)
             local.update(contract_identity=digest(contract), authority=authority)
             return {"rank": self.rank, "contract": local["contract_identity"],
                     "nonce": secrets.token_hex(32) if self.rank == 0 else None}
@@ -2073,6 +2107,7 @@ class FlashNextEngine:
 
             native_policy = [family_ops._NATIVE_FAMILY, family_ops._NATIVE_ATTENTION, padded_linears._ENABLED,
                              routing_native._NATIVE_LOGITS]
+        owned = getattr(self, "_owned_expert_plan", None)
         policy = ["stored-basis-native64-v1", getattr(self, "execution_provider", "cuda"),
                   str(draft_path.resolve()) if draft_path is not None else None,
                   getattr(self, "_sm70_weight_manifest_identity", None),
@@ -2083,6 +2118,8 @@ class FlashNextEngine:
                   getattr(getattr(self, "_dflash_pairing", None), "identity", None),
                   expert_policy, proposal_policy, context_policy, attention_policy,
                   getattr(self, "sm70_profile", None), prefix_policy, getattr(self, "kv_full_windows", None)]
+        if owned is not None:
+            policy.append(["owned-expert-native", owned.identity])
         if getattr(self, "position_profile", None) is not None:
             policy.append(["position-profile", self.position_profile.identity, self.position_profile.epoch,
                            self.position_method_binding])

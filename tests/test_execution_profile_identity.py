@@ -604,7 +604,7 @@ def test_eight_rank_commit_defers_http_migration_between_final_vote_and_publicat
 
 
 @pytest.mark.torch
-@pytest.mark.parametrize("fact", ["fp16-policy", "configured-power", "qsa-policy"])
+@pytest.mark.parametrize("fact", ["fp16-policy", "configured-power", "qsa-policy", "owned-expert-native"])
 @pytest.mark.parametrize("uuid_form", ["torch", "nvidia"])
 def test_registration_observes_uncached_backend_policy_and_fresh_configured_gpu_operation(
         packet, monkeypatch, fact, uuid_form):
@@ -658,9 +658,20 @@ def test_registration_observes_uncached_backend_policy_and_fresh_configured_gpu_
     try:
         cached = authority(engine.w.device)
         assert cached["fp16_reduced_precision"] is False
+        # A requested flag alone is not an observed arithmetic selection.
+        if fact == "owned-expert-native":
+            engine._owned_expert_requested = True
         identity.begin_execution_manifest(engine, path)
         old = identity.bind_execution_manifest(engine, path)["identity"]
-        if fact == "fp16-policy":
+        old_numerics = dict(engine._execution_bind_local["numerics"])
+        assert "owned_expert_native" not in old_numerics
+        if fact == "owned-expert-native":
+            from tensorfold.families.qwen4_exp.expert_partition import ExpertPartition
+            from tensorfold.families.qwen4_exp.cuda.owned_experts import Plan
+
+            plan = Plan(ExpertPartition(8, 0, 512, 640, 4), 2560, 11, 32, 2048, False)
+            engine.w.meta["owned_expert_plan"] = plan
+        elif fact == "fp16-policy":
             monkeypatch.setattr(torch.backends.cuda.matmul, "allow_fp16_reduced_precision_reduction", True)
             assert authority(engine.w.device)["fp16_reduced_precision"] is False
             assert authority.__wrapped__(engine.w.device)["fp16_reduced_precision"] is True
@@ -679,8 +690,15 @@ def test_registration_observes_uncached_backend_policy_and_fresh_configured_gpu_
         body.pop("profiles")
         path.write_text(json.dumps(body))
         result = identity.bind_execution_manifest(engine, path, rebind=True)
-        field = "numerics" if fact in ("fp16-policy", "qsa-policy") else "topology"
+        field = "numerics" if fact in ("fp16-policy", "qsa-policy", "owned-expert-native") else "topology"
         assert result["identity"][field] != old[field]
+        if fact == "owned-expert-native":
+            observed = engine._execution_bind_local["numerics"]
+            assert observed == {**old_numerics, "owned_expert_native": list(plan.identity)}
+            assert type(observed["owned_expert_native"]) is list
+            assert all(type(value) in (str, int, bool) for value in observed["owned_expert_native"])
+            for unchanged in ("target", "draft", "codec", "source", "kernel_build", "runtime", "topology"):
+                assert result["identity"][unchanged] == old[unchanged]
         assert result["bytes_read_this_binding"] == 0
         operating_queries = [argv for argv in queries if any("power.limit" in part for part in argv)]
         assert len(operating_queries) == 3  # Initial capture and both registrations observe configured operation.

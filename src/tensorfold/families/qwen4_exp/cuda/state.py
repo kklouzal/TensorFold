@@ -126,6 +126,8 @@ class Buffers:
         # the experts' prefill arithmetic for decode windows too (``moe_prefill``): their rows can share a pass's launch
         self.moe = moe_mod.MoEBuffers(rows, _MoECfg(c), dev, prefill=prefill if moe_prefill is None else moe_prefill,
                                       tile=grouped.PREFILL_TILE if prefill else (8 if bf == torch.float16 else grouped.window_tile(dev)))
+        owned = w.meta.get("owned_expert_plan")
+        self.owned_experts = owned.arena(self) if owned is not None else None
         # DeltaNet projections and outputs and attention outputs; ``commit`` reads the projections' conv channels
         lin = 1 if prefill else sum(1 for layer in w.layers if layer.linear)     # a prompt chunk commits each layer
         self.proj = row_tensor("proj", (lin, rows, gdn_mod.widths(c.nk, c.nv)[1]), dtype=bf, zero=True)
@@ -349,6 +351,9 @@ class State:
                 experts=c.experts, full_width=w.meta["full"].moe_width)
             self.kv_identity += (("routed-expert-reduction", 1, partition.world, partition.etp,
                                   partition.groups, "reference-owned-rows-f32-v1"),)
+        owned = w.meta.get("owned_expert_plan")
+        if owned is not None:
+            self.kv_identity += (("owned-expert-native", owned.identity),)
         if self.indexer_history_mode == "ram":
             self.kv_identity += (("indexer-history", "lossless-fp16-ram-archive-v1"),)
         self.kv_key_bits = 0 if self.kv_pair.key.bits == 16 else self.kv_pair.key.bits

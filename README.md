@@ -12,9 +12,18 @@ The V100 Compose profile accepts the explicit
 An owned-expert native ETP4 component separates routed and shared widths and
 uses bounded caller-owned scratch; it remains unselected pending target/MTP
 admission and actual SM70/model qualification. The existing reference path stays
-selected. Scoped source and fresh installed-image controls each pass 1,692 CPU
-tests with one optional fixture skip; this does not establish native CUDA execution. See
+selected. At typed-component checkpoint `1066e1cc`, scoped source and fresh
+installed-image controls each passed 1,692 CPU tests with one optional fixture
+skip; this does not establish native CUDA execution. See
 [current contracts and limits](docs/v100-adaptive-validation.md#tp8etp4-one-server-native-component).
+
+A private qualification-only engine path now prepares exclusive native ETP4
+execution across target, prompt and MTP calls. It reuses activation/output
+storage and accounts for the new route arenas within the already-paid routing
+reservation. Reference fallback is refused under this policy; default serving
+keeps the reference path. Its scoped source batch passes 1,735 CPU tests with
+one optional fixture skip. Actual SM70 and full-model qualification remain open.
+See [prepared execution and remaining gates](docs/v100-adaptive-validation.md#prepared-tp8etp4-execution-and-workspace).
 
 This is an authority/source-baseline checkpoint, not a package or runtime
 rebrand. Current TensorFold imports, CLI, native names, images and remotes keep

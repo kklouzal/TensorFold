@@ -35,7 +35,7 @@ def test_custom_expert_prefill_dispatch_uses_phase_not_row_count_or_output_polic
     buf = SimpleNamespace(logits=torch.zeros(rows, 3), pick=torch.zeros(rows, 2, dtype=torch.int32),
                           y=torch.empty(rows, 2, 4), wts=torch.ones(rows, 2), plan=SimpleNamespace(prefill=True))
     b = SimpleNamespace(prefill=prefill, mixed=torch.ones(rows, 4, dtype=torch.float16), moe=buf)
-    w = SimpleNamespace(comm=None, cfg=SimpleNamespace(top_k=1, experts=2))
+    w = SimpleNamespace(comm=None, cfg=SimpleNamespace(top_k=1, experts=2), meta={})
     layer = SimpleNamespace(moe=SimpleNamespace(experts=experts, router=object()))
     def router(*args, independent_rows=False):
         routing_policy.append(independent_rows)

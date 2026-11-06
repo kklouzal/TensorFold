@@ -787,6 +787,74 @@ Blackwell. Neither has the selected CUDA12.9.2/Torch04cf V100 SDK installed.
 Target-server access remains unresolved. No guard is relaxed to substitute those
 devices, no native candidate is promoted and production is unchanged.
 
+## Prepared TP8/ETP4 execution and workspace
+
+The existing engine has a private constructor-only `_owned_expert_native=True`
+qualification path; normal CLI, Compose and administrator JSON do not expose
+or select it. It requires adaptive resident GGUF TP8/ETP4 on actual SM70 with
+stock shared-GGUF MTP or no method. Private native mode with administrator
+profile transitions, DFlash or DSpark remains explicitly unsupported; ordinary
+reference profiles retain their existing contracts. This staged qualification
+scope does not remove those requirements from the governing delivery goal.
+
+Common rank agreement includes the requested private policy and incompatible
+administrator combination before policy-dependent refusal or payload loading.
+The immutable plan validates the actual routed/shared geometry and maximum
+decode/prompt row-slot extents before loading. A native call remains bounded
+at 65,535 pairs; an unsupported private envelope refuses preparation instead of
+truncating work or silently changing providers. Whole-model graphs remain off.
+
+Each existing `Buffers` owns one int64 `[rows,slots]` local-route arena only in
+this private mode. Native activation storage is a contiguous view of the
+already-owned FP16 `moe.act`; output uses the existing FP16 target/prompt `y`
+or FP32 dedicated MTP `y`. The same prompt buffer also serves MTP absorption.
+No per-layer arena, duplicate activation bank or full-slot FP32 copy is added.
+Actual target, prompt and method arena sizes are reconciled before warmup, with
+shared twin/slot storage remaining shared.
+
+Let `S=top_k+1`, `R` be the actual decode-buffer capacity, `P` the actual prompt
+capacity and `m` be one when stock MTP is resident. Local arenas occupy
+`8*S*((1+m)*R+P)` bytes simultaneously. The unchanged target/method reference
+routing reservation is `(1+m)*52*S*max(P,R)`, which contains these allocations
+for both method choices. This reuse is valid because every prepared target,
+prompt and MTP call uses the native owner and bound banks reject reference
+compaction. A reachable fallback would require a new overlap proof or charge.
+Existing decoded/shared Dense, state, recovery, history and floor reservations
+are retained. The resource receipt reports positive materialized local bytes;
+zero additional device bytes means no increment to the already-paid reservation,
+not zero physical allocation. No extra resident session or performance gain is
+inferred from this containment proof.
+
+Rank settings and cache/recovery identities bind the native arithmetic policy.
+Independently observed execution-manifest numerics and the coordinate activation
+contract also record the actual weight-bound policy, so reference qualification
+facts cannot authorize native arithmetic. Default reference facts and identities
+remain unchanged when the private policy is absent. Different prepared native
+envelopes remain separate identities until cross-envelope reuse is qualified.
+
+Final source controls passed 213 focused tests in 2.48 seconds and the complete
+scoped 49-module batch passed 1,735 tests with one optional pinned-companion/
+target-metadata skip in 33.47 seconds. Required deployment/public-permission
+controls passed 194 cases; affected F/py312, configured Ruff and Python compilation
+passed. Canonical Python source used the freshly built unchanged native FD
+extension; CUDA stayed uninitialized. These overlapping batches are not summed
+into a unique-test total and do not establish installed-application or CUDA proof.
+
+Controls cover actual buffer allocations/views, arena reconciliation and default
+identities, explicit mode/rank refusals, exclusive MoE call dispatch, rejection of
+old execution qualification facts and eight-participant coordinate contracts.
+Earlier ABI/store prerequisites in the single-participant positional unit fixture
+are explicit CPU stand-ins; its assertions remain intact. The real selected ABI
+guard and startup transport are not qualified by that fixture. Raw initial
+failures, bounded hang diagnosis, corrections and final command/results remain
+in `tp8-etp4-prepared-v1` and `tp8-etp4-prepared-execution-v1` under the private
+`providerone-alignment-20261106` audit root.
+
+Source-level integration and CPU controls do not qualify actual SM70 execution,
+SC117/MTP numerical quality, visual inputs, worst-rank physical peaks, full-context
+capacity or matched useful performance. V100 access and the selected SDK remain
+unresolved. No native production promotion or other service change is made here.
+
 ## Configuration and capacity
 
 For Flash Next GGUF with GPU indexer history, `--parallel auto` computes a
