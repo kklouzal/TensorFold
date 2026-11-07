@@ -6,8 +6,8 @@ tf_state=${TF_SOURCE_STATE:-/work}
 tf_project=${TF_PROJECT_ROOT:-/src}
 tf_prefix=${TF_SOURCE_PREFIX:-/opt/tensorfold-native}
 tf_jobs=${MAX_JOBS:-4}
-if ! [[ "$tf_jobs" =~ ^[1-4]$ ]]; then
-    echo "source foundation MAX_JOBS must be 1..4" >&2
+if ! [[ "$tf_jobs" =~ ^([1-9]|1[0-9]|2[0-4])$ ]]; then
+    echo "source foundation MAX_JOBS must be 1..24" >&2
     exit 2
 fi
 export MAX_JOBS="$tf_jobs" CMAKE_BUILD_PARALLEL_LEVEL="$tf_jobs" OMP_NUM_THREADS="$tf_jobs"

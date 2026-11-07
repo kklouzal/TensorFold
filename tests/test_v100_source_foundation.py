@@ -45,8 +45,10 @@ def test_precommit_framework_outputs_cannot_be_exported(tmp_path):
         SOURCE.capture_build({}, tmp_path, ROOT)
 
 
-@pytest.mark.parametrize("final_outcome", ["success", "pip-failure", "source-rejection"])
-def test_framework_driver_keeps_native_configuration_and_bootstrap_export_barrier(tmp_path, final_outcome):
+@pytest.mark.parametrize("jobs,final_outcome", [
+    (jobs, outcome) for jobs in ("4", "24") for outcome in ("success", "pip-failure", "source-rejection")
+] + [(jobs, "success") for jobs in (None, "", "1", "9", "10", "19", "20")])
+def test_framework_driver_keeps_native_configuration_and_bootstrap_export_barrier(tmp_path, jobs, final_outcome):
     # Substitute only the external producer/pip boundaries to observe the real
     # shell driver's argument vectors and failures; no SDK build is claimed.
     state, prefix = tmp_path / "state with spaces", tmp_path / "native prefix"
@@ -78,7 +80,9 @@ if args[0] == "-":
     os.execv({sys.executable!r}, [{sys.executable!r}, *args])
 with open(os.environ["TF_TEST_COMMAND_LOG"], "a") as log:
     log.write(json.dumps({{"args": args, "arch": os.environ.get("TORCH_CUDA_ARCH_LIST"),
-                         "nccl": os.environ.get("NCCL_LIB_DIR")}}) + "\\n")
+                         "nccl": os.environ.get("NCCL_LIB_DIR"),
+                         "parallel": {{name: os.environ.get(name) for name in
+                             ("MAX_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL", "OMP_NUM_THREADS")}}}}) + "\\n")
 if args[0].endswith("source_foundation.py"):
     if args[1] == "verify-bootstrap-sources":
         (Path(os.environ["TF_SOURCE_STATE"]) / "receipts/bootstrap-sources.json").write_text(
@@ -94,8 +98,14 @@ else:
     python.chmod(0o755)
     log = tmp_path / "commands.jsonl"
     environment = {**os.environ, "TF_SOURCE_STATE": str(state), "TF_SOURCE_PREFIX": str(prefix),
-                   "TF_PROJECT_ROOT": str(ROOT), "TF_TEST_COMMAND_LOG": str(log), "MAX_JOBS": "4",
+                   "TF_PROJECT_ROOT": str(ROOT), "TF_TEST_COMMAND_LOG": str(log),
                    "GIT_CONFIG_GLOBAL": str(tmp_path / "gitconfig")}
+    if jobs is None:
+        environment.pop("MAX_JOBS", None)
+    else:
+        environment["MAX_JOBS"] = jobs
+    expected_parallel = {name: jobs or "4" for name in
+                         ("MAX_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL", "OMP_NUM_THREADS")}
     driver = ["bash", str(ROOT / "deploy/v100/source_build.sh")]
     bootstrap = subprocess.run([*driver, "framework-bootstrap"], env=environment, capture_output=True, text=True)
     assert bootstrap.returncode == 0, bootstrap.stdout + bootstrap.stderr
@@ -107,11 +117,17 @@ else:
     final = subprocess.run([*driver, "framework"], env=environment, capture_output=True, text=True)
     assert final.returncode == {"success": 0, "source-rejection": 7, "pip-failure": 8}[final_outcome], final.stderr
     assert marker.exists() == (final_outcome != "success")
+    receipts = ["framework-bootstrap-environment.json"] + ([] if final_outcome == "source-rejection"
+                                                          else ["framework-build-environment.json"])
+    for receipt in receipts:
+        actual = json.loads((state / "receipts" / receipt).read_text())
+        assert {name: actual[name] for name in expected_parallel} == expected_parallel
     commands = [json.loads(line) for line in log.read_text().splitlines()]
     pip = [row for row in commands if row["args"][:2] == ["-m", "pip"]]
     assert "install" in pip[0]["args"] and "-e" in pip[0]["args"]
     assert "--no-build-isolation" in pip[0]["args"] and "--no-deps" in pip[0]["args"]
     assert all(row["arch"] == "7.0" and row["nccl"] == str(prefix / "nccl-2.32.3/lib") for row in pip)
+    assert all(row["parallel"] == expected_parallel for row in pip)
     expected = {
         "--config-settings=cmake.args=--fresh;-UNCCL_VERSION_DEFINED",
         "--config-settings=cmake.define.CMAKE_CUDA_ARCHITECTURES=70",
@@ -126,6 +142,18 @@ else:
         assert "wheel" in pip[1]["args"]
         bootstrap_settings = [arg for arg in pip[0]["args"] if arg.startswith("--config-settings=")]
         assert bootstrap_settings == [arg for arg in pip[1]["args"] if arg.startswith("--config-settings=")]
+
+
+@pytest.mark.parametrize("jobs", ["0", "-1", "25", "2147483648", "9" * 1000, "1.5", "04", " 4", "4;false"])
+def test_framework_jobs_refuse_outside_supported_policy_before_side_effects(tmp_path, jobs):
+    state, prefix = tmp_path / "state", tmp_path / "prefix"
+    environment = {**os.environ, "MAX_JOBS": jobs, "TF_SOURCE_STATE": str(state),
+                   "TF_SOURCE_PREFIX": str(prefix), "TF_PROJECT_ROOT": str(tmp_path / "missing-project")}
+    result = subprocess.run(["bash", str(ROOT / "deploy/v100/source_build.sh"), "framework"],
+                            env=environment, capture_output=True, text=True)
+    assert result.returncode == 2
+    assert "MAX_JOBS must be 1..24" in result.stderr
+    assert not state.exists() and not prefix.exists()
 
 
 @pytest.mark.parametrize("provider", ["Torch", "torchvision", "triton", "nvidia_nccl_cu12", "cuda-bindings"])

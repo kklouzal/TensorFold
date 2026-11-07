@@ -233,9 +233,17 @@ symlinks remain within the inventoried closure. CCCL's single IDE-only compile
 commands link is separately declared metadata. Malformed tracked FIFOs refuse
 before blocking. A changed input tree or wrong provider cannot inherit old pins.
 Keep source clones, downloads and object caches outside the project/Docker
-context. The build caps Torch parallelism at four jobs; the current prototype
-container is limited to four CPU cores and 36 GiB RAM. The settings are build
-resource controls, not model-serving capacity or throughput claims.
+context. The producer accepts explicit `MAX_JOBS` values 1..24 and retains 4
+when unset or empty. It propagates the same value to
+`CMAKE_BUILD_PARALLEL_LEVEL` and `OMP_NUM_THREADS`; generated image defaults
+remain 4. The 24-job setting is the supported Supermicro build-resource policy,
+not a universal hardware limit or measured speed result. Select its container
+CPU/memory limits from actual host and build-memory evidence before launch.
+The earlier development prototype used 4 CPU cores and 36 GiB RAM; that historical
+resource envelope does not constrain the larger target. Changing these controls
+requires a new recorded producer snapshot and actual build-environment receipt;
+do not mutate an active build. These are build controls, not model-serving
+capacity or throughput claims.
 
 The fresh-bootstrap repair passed 59 affected tests on native AMD64 tooling.
 The broader five-module producer/input/install batch passed 112 tests and 17
