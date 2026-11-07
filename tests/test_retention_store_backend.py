@@ -119,22 +119,23 @@ def early_factory():
     cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == "FlashNextEngine")
     initialize = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == "_initialize")
     branch = next(n for n in ast.walk(initialize) if isinstance(n, ast.If)
-                  and ast.unparse(n.test) == "dflash_plan is not None or media_requested")
+                  and ast.unparse(n.test) == "dflash_plan is not None or media_requested or stage_identity_cohort")
     prefix = []
     for statement in branch.body:
         if isinstance(statement, ast.Assign) and any(isinstance(t, ast.Name) and t.id == "selected_context"
                                                     for t in statement.targets):
             break
         prefix.append(statement)
-    function = ast.parse("def acquire(self, tp, rank, master, port):\n    pass\n").body[0]
-    function.body = prefix
+    function = ast.parse("def acquire(self, tp, rank, master, port, *, dflash_plan=None, media_requested=False, stage_identity_cohort=False):\n    pass\n").body[0]
+    function.body = [ast.If(test=branch.test, body=prefix, orelse=[])]
     namespace = {"__package__": source.__package__, "timedelta": timedelta}
     exec(compile(ast.fix_missing_locations(ast.Module(body=[function], type_ignores=[])), source.__file__, "exec"), namespace)
     return namespace["acquire"]
 
 
+@pytest.mark.parametrize("trigger", ["dflash", "media", "stage"])
 @pytest.mark.parametrize("implemented,tier", [(False, None), (True, None), (True, "gpu"), (True, "ram")])
-def test_early_factory_preserves_default_and_one_hour_timeout(implemented, tier, monkeypatch):
+def test_early_factory_preserves_default_and_one_hour_timeout(implemented, tier, trigger, monkeypatch):
     owner = prepared(implemented, tier)
     selected = owner._store_use_libuv
     calls = []
@@ -147,7 +148,8 @@ def test_early_factory_preserves_default_and_one_hour_timeout(implemented, tier,
     else:
         monkeypatch.setattr("torch.distributed.TCPStore", lambda *a, **k:
             calls.append((a, k)) or NS(libuvBackend=k.get("use_libuv", True)))
-    early_factory()(owner, 8, 0, "host", 29551)
+    early_factory()(owner, 8, 0, "host", 29551, dflash_plan=object() if trigger == "dflash" else None,
+                    media_requested=trigger == "media", stage_identity_cohort=trigger == "stage")
     expected = {"timeout": timedelta(seconds=3600)}
     if selected is not None:
         expected["use_libuv"] = selected
@@ -159,17 +161,27 @@ def test_early_factory_preserves_default_and_one_hour_timeout(implemented, tier,
         owner._startup_store = None
 
 
+@pytest.mark.parametrize("implemented", [False, True])
+def test_early_factory_without_metadata_cohort_never_acquires_or_publishes_store(implemented, monkeypatch):
+    owner = prepared(implemented, None)
+    monkeypatch.setattr(comm, "create_owned_tcp_store", lambda *_a, **_k: pytest.fail("inactive cohort acquired an owned Store"))
+    monkeypatch.setattr("torch.distributed.TCPStore", lambda *_a, **_k: pytest.fail("inactive cohort opened a listener"))
+    early_factory()(owner, 8, 0, "host", 29551)
+    assert not hasattr(owner, "_startup_store") and not hasattr(owner, "_startup_store_origin")
+    assert not hasattr(owner, "tp") and not hasattr(owner, "rank")
+
+
 def test_early_managed_borrow_requires_the_exact_verified_transport(monkeypatch):
     transport = cpu_owned_cohort()
     matching, wrong = transport.store, NS(libuvBackend=False)
     owner = prepared()
     owner._profile_build, owner.comm = object(), transport
     monkeypatch.setattr("torch.distributed.TCPStore", lambda *_a, **_k: pytest.fail("borrow opened a listener"))
-    early_factory()(owner, 1, 0, "host", 29551)
+    early_factory()(owner, 1, 0, "host", 29551, dflash_plan=object())
     assert owner._startup_store is matching
     transport.store = wrong
     with pytest.raises(ValueError, match="owned TCPStore/cohort origin"):
-        early_factory()(owner, 1, 0, "host", 29551)
+        early_factory()(owner, 1, 0, "host", 29551, dflash_plan=object())
     assert owner._startup_store is wrong  # Failure journal retains the actual borrowed owner.
     transport.store = matching
     transport.close()

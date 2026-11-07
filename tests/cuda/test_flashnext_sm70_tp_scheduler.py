@@ -15,7 +15,7 @@ import torch
 def _requests(rank, world, port, outcomes):
     from test_flashnext_sm70_family import _small_weights
 
-    from tensorfold.cuda.comm import NCCL
+    from tensorfold.cuda.comm import NCCL, validate_store_origin
     from tensorfold.cuda.scheduler import Scheduler
     from tensorfold.families.qwen4_exp.cuda.decode import Engine, prefill, serial_decode
     from tensorfold.families.qwen4_exp.cuda.multi import MultiDecoder
@@ -25,7 +25,15 @@ def _requests(rank, world, port, outcomes):
     failed = False
     try:
         torch.cuda.set_device(rank)
-        owner.open(rank, world, "127.0.0.1", port, timeout_s=90, key="tf_sm70_scheduler_uid")
+        # Match the adaptive engine's owned legacy Store policy on this SDK.
+        owner.open(rank, world, "127.0.0.1", port, timeout_s=90,
+                   key="tf_sm70_scheduler_uid", use_libuv=False)
+        owner.verify_store_cohort()
+        validate_store_origin(owner.store_origin, owner.store, rank, world, verified=True)
+        assert owner.store_origin.record() == {
+            "use_libuv": False, "rank0_owned_server": rank == 0,
+            "cohort_verified": True, "retired": False, "source": "guarded-process-factory",
+        }
         w = _small_weights(include_ple=True)
         width = w.cfg.vocab // world
         w.head.weight = w.head.weight[rank * width:(rank + 1) * width].contiguous()
