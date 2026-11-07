@@ -85,6 +85,17 @@ The subsequent source default is depth 4, preserving explicit overrides; that ne
 default is not relabeled as the successful depth 6 run. See [scope, failure lifetime
 and remaining gates](../v100-adaptive-validation.md#ordinary-http-host-envelope).
 
+The canonical one-loaded-session pilot subsequently completed all 15 generation
+exchanges with baseline-identical output IDs/messages/finishes, including two
+known wrong answers. Five of seven semantic cases pass; cold serial/MTP parity
+and SSE parity do not turn that into a quality pass. Three independent same-GGUF
+CPU llama references match full IDs in both TensorFold modes and reproduce both
+failures. The optional `TF_PREFILL_ROWS=256` setting is selected for the measured
+eager development workflow after A-B-B-A startup controls; mean readiness fell
+from 657.139 s to 172.268 s. Backend defaults, full logical context and all guards
+are preserved; long-prompt inference performance and quality remain unqualified. See [the precise
+pilot scope](../v100-adaptive-validation.md#prefill-row-development-pilot).
+
 ## Required SC117 parallelism matrix
 
 The installed SDK/native-component checkpoint uses source `e90caf58` and

@@ -116,7 +116,72 @@ full-context/multi-session capacity, sustained/performance comparisons, media,
 and the private owned-native expert profile remain unqualified. The source
 now defaults Flash Next CUDA and V100 Compose to MTP depth 4, retaining explicit
 overrides; the successful diagnostic above remains depth 6. MLX and other family
-defaults are unchanged. The new depth 4 default requires its own installed run.
+defaults are unchanged. The subsequent installed depth 4 batch and canonical
+pilot are recorded below.
+
+## Prefill-row development pilot
+
+The canonical correctness pilot ran all 15 generation exchanges on immutable
+image `sha256:05f24dc72f14b8221095f438fe36e8f1105737be78a7d2724dc19fc841b7acc1`
+with tools commit `6d5dba660dc93fbb4719e4493429a957fee175a2`. With
+`TENSORFOLD_PREFILL_ROWS=256`, all generation bodies and output token IDs,
+messages, finishes and token SHAs matched the retained default 4 baseline. All seven
+serial/MTP pairs were cold-serial/exact-parity checks and structured SSE matched
+its nonstream result. The canonical client correctly exited 1: five of seven
+known-answer cases pass, while both modes return `31` for the loop whose oracle
+is `43`, and `fig,kiwi` for the filter whose oracle is `kiwi,pear`. The oracles,
+original failures and full output IDs are preserved.
+
+Independent CPU llama.cpp commit `f2918cabbffe8abf8e2a90c1c089085fa116c2cf`
+using the same acquired GGUF and exact input IDs matched all output IDs for
+three cases in both TensorFold modes, including both wrong answers. This
+supports checkpoint/model behavior for these samples; different arithmetic and
+three short cases do not establish full numerical, model-quality or import
+qualification, or exclude every shared converter/architecture problem.
+The reference gate is
+`sm-v100-sc117-cpu-reference-v1/same-GGUF-cpu-reference-result-v1.json`, SHA256
+`957760acbc3bda1150d8f6dd6282747f2b1b72d407f2f06608822acd3635f4da`.
+
+The recorded dev profile uses `--no-graphs --no-prefill-fp8 --no-thinking`,
+reference routed experts, INT8 KV, configured context 262,144, TP8/PP1/ETP4,
+maximum MTP depth 4, one full window,
+H1/P1, 16 MiB waiting-input credit and all ordinary device/host guards. Only
+prompt-piece rows changed; no image rebuild or reduced context was used.
+The recorded backend plan is 2048 when the override is unset. Fresh-process
+A-B-B-A observations on that same eager profile were:
+
+| Order | Prompt-piece rows | Readiness seconds | Warmup seconds | Validation |
+| --- | ---: | ---: | ---: | --- |
+| A1 | 2048, unset | 660.660 | 520.1 | Original seven-case/15-generation batch |
+| B1 | 256 | 173.279 | 30.8 | Canonical 15-generation batch; exact baseline outputs |
+| B2 | 256 | 171.257 | 30.9 | Frozen arithmetic probe exact |
+| A2 | 2048, unset | 653.617 | 512.4 | Frozen arithmetic probe exact |
+
+Mean readiness was 657.138593432 s for 2048 and 172.267940721 s for 256, a 73.785%
+reduction (ratio of means 3.815). This selects 256 as an opt-in measured eager
+development configuration for the recorded startup/short-validation workload.
+It does not change the global backend default. There are two startup samples
+per geometry; this is not a general latency guarantee. Compiler/frontend caches
+were retained; model-page cache was not flushed or controlled.
+
+The pilot's canonical client took 333.925 s including seven tokenizer reads;
+that duration is not a matched inference benchmark. Its quality-failure exit
+remains primary and its launcher retired normally. The repeat/control probes
+and normal retirement passed. Longer-prompt throughput, full-context/multi-session
+capacity, other codecs/methods/graphs and broader quality remain unqualified.
+
+Evidence:
+
+| Retained gate | SHA256 |
+| --- | --- |
+| `sm-v100-prefill256-candidate-v1/prefill256-pilot-actual-gate-v1.json` | `0617be2f5a1754134a6720d293dc7f42dc3bf35b213d6031d51dbeeaa92131d3` |
+| `sm-v100-startup-repeat-v1/startup-256-repeat-actual-gate-v1.json` | `89c24c34cae9e9969da64efcebc72b36212c5c2a6bdc52a88f1da6eb18d80c30` |
+| `sm-v100-startup-repeat-v1/startup-comparison-actual-gate-v2.json` | `80c49245087901ba444debc736149d59ab402347c4703559120f87d4f6bcaaea` |
+
+The maintained Compose and candidate Bash recipe expose this existing backend
+knob as optional `TF_PREFILL_ROWS`. Unset/empty preserves the engine's own plan;
+there is no new global backend default, runtime flag, entrypoint or hardcoded
+serving budget. See [the opt-in configuration](../deploy/v100/README.md#optional-development-prefill-rows).
 
 ## Neutral artifact I/O boundary (A1)
 

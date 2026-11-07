@@ -16,7 +16,7 @@ compose = _compose
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy" / "v100"
 
 
-def render(compose, tmp_path, *, waiting=None, method="mtp", etp=None, drafts=None):
+def render(compose, tmp_path, *, waiting=None, method="mtp", etp=None, drafts=None, prefill=None):
     env = {name: value for name, value in os.environ.items()
            if not name.startswith(("TF_", "TENSORFOLD_")) and name not in
            ("MODEL_ROOT", "GGUF_FILE", "MTP_DIRECTORY", "DRAFTER_DIRECTORY")}
@@ -25,6 +25,8 @@ def render(compose, tmp_path, *, waiting=None, method="mtp", etp=None, drafts=No
                TF_MAX_PENDING_REQUESTS="3", TF_MAX_HTTP_CONNECTIONS="4", TF_DRAFT_METHOD=method)
     if drafts is not None:
         env["TF_DRAFTS"] = drafts
+    if prefill is not None:
+        env["TF_PREFILL_ROWS"] = prefill
     if waiting is not None:
         env["TF_MAX_WAITING_INPUT_BYTES"] = waiting
     if etp is not None:
@@ -133,3 +135,29 @@ def test_mtp_default_four_and_explicit_overrides_reach_actual_argv(compose, tmp_
     parsed = build_parser().parse_args(["serve", *argv[argv.index("--") + 1:]])
     assert parsed.mtp_drafts == expected
     assert argv[argv.index("--mtp-drafts") + 1] == str(expected)
+
+
+@pytest.mark.parametrize("prefill,expected", [(None, None), ("", None), ("256", 256), ("2048", 2048)])
+def test_prefill_rows_environment_reaches_the_existing_backend_parser(compose, tmp_path, monkeypatch, prefill, expected):
+    from tensorfold.cuda.geometry import indexed_prefill_rows
+
+    service = render(compose, tmp_path, prefill=prefill)
+    forwarded = service["environment"]["TENSORFOLD_PREFILL_ROWS"]
+    assert forwarded == ("" if prefill is None else prefill)
+    assert actual_argv(service) == ["/opt/venv/bin/python", *service["command"]]
+    monkeypatch.setenv("TENSORFOLD_PREFILL_ROWS", forwarded)
+    assert indexed_prefill_rows() == expected
+
+
+def test_prefill_rows_metacharacters_stay_literal_and_backend_refuses(compose, tmp_path, monkeypatch):
+    from tensorfold.cuda.geometry import indexed_prefill_rows
+
+    witness = tmp_path / "must not be created"
+    value = f"256; touch '{witness}' $(touch '{witness}')"
+    service = render(compose, tmp_path, prefill=value)
+    assert service["environment"]["TENSORFOLD_PREFILL_ROWS"] == value
+    assert actual_argv(service) == ["/opt/venv/bin/python", *service["command"]]
+    monkeypatch.setenv("TENSORFOLD_PREFILL_ROWS", service["environment"]["TENSORFOLD_PREFILL_ROWS"])
+    with pytest.raises(ValueError, match="TENSORFOLD_PREFILL_ROWS"):
+        indexed_prefill_rows()
+    assert not witness.exists()

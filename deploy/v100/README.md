@@ -252,6 +252,7 @@ fi
 docker run --rm --gpus all --ipc host \
   -p "127.0.0.1:$TF_PORT:$TF_PORT" \
   -e PYTHONUNBUFFERED=1 -e TENSORFOLD_NO_UPDATE_CHECK=1 \
+  -e TENSORFOLD_PREFILL_ROWS="${TF_PREFILL_ROWS:-}" \
   -e TF_GGUF_ASSETS_DIR=/cache/gguf_assets \
   -e TRITON_CACHE_DIR=/cache/triton \
   -e TORCH_EXTENSIONS_DIR=/cache/sm70-source-cu1292-torch2141-cccl35-nccl2323 \
@@ -454,6 +455,38 @@ roots and actual content/flags cache identity. See the
 [preparation and header binding contract](../../docs/execution-profile-manifest.md#opt-in-native-preparation-and-qualification-trials).
 The wheel-based image described below remains the historical reference build;
 its source/CPU or compile checks do not qualify the new source-built stack.
+
+## Optional development prefill rows
+
+Set `TF_PREFILL_ROWS=256` to forward the existing backend setting
+`TENSORFOLD_PREFILL_ROWS=256` through this Compose profile or the candidate Bash
+recipe. Unset or empty leaves the backend's own plan intact; the recorded
+reference resolved to 2048. The existing backend accepts 256–16,384 rows and
+refuses malformed/out-of-range values. This is prompt-piece geometry, not a
+change to logical context, MTP depth or a serving memory budget. No image build,
+new CLI flag, entrypoint change or global backend default is introduced.
+
+Reproduce the measured profile with the same recorded flags and resources.
+For the Bash recipe, append the existing flags before its Docker invocation:
+
+```bash
+serve_args+=(--no-graphs --no-prefill-fp8 --no-thinking)
+```
+
+The prefill-row passthrough alone does not qualify graph-enabled or other
+profiles. Preserve INT8 KV, full configured context, default MTP depth 4 and the
+H1/resource settings below.
+
+The opt-in 256 pilot used the same immutable 05f24dc7 runtime, eager reference
+experts, INT8 KV, full configured 262,144 context, TP8/PP1/ETP4, MTP depth 4, one stream,
+H1/P1 and 16 MiB input credit. All 15 canonical generation exchanges preserved
+baseline outputs/IDs, including the two known wrong answers; quality remains
+five of seven cases. A-B-B-A startup controls select 256 for this eager development
+workflow: mean readiness 657.139 s at original-unset 2048 versus 172.268 s at 256,
+73.785% less time. Keep `TF_PREFILL_ROWS=256` in the Compose project's `.env` or
+exported launch environment for repeated dev use. The backend default remains
+unchanged when unset/empty. Longer-prompt/inference performance and other
+profiles are not qualified. See [the measured scope](../../docs/v100-adaptive-validation.md#prefill-row-development-pilot).
 
 ## One-loaded-session correctness
 

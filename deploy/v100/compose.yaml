@@ -21,6 +21,7 @@ services:
       PYTHONUNBUFFERED: "1"
       TENSORFOLD_NO_UPDATE_CHECK: "1"
       TENSORFOLD_SM70_PROFILE: "${TF_SM70_PROFILE:-reference}"
+      TENSORFOLD_PREFILL_ROWS: "${TF_PREFILL_ROWS:-}"
       TF_GGUF_ASSETS_DIR: /cache/gguf_assets
       TRITON_CACHE_DIR: /cache/triton
       # Required explicitly for the new FIFO profile; leave unset for legacy DSpark.

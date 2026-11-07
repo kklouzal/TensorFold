@@ -24,8 +24,14 @@ See [the HTTP envelope scope](docs/v100-adaptive-validation.md#ordinary-http-hos
 The maintained [one-loaded-session correctness client](deploy/v100/README.md#one-loaded-session-correctness)
 can run seven bounded known-answer cases, cold serial/MTP token parity and SSE
 checks against one existing service. It records its own tool/case identity
-without rebuilding or reloading that runtime. Its source tests do not qualify
-the pending actual canonical model batch.
+without rebuilding or reloading that runtime. Its canonical pilot completed all
+15 exchanges with baseline-identical outputs/IDs, while preserving the two
+known-answer failures (five of seven cases pass); independent same-GGUF CPU
+llama references reproduce both wrong answers. This is not a quality pass.
+`TF_PREFILL_ROWS=256` now exposes an opt-in measured development configuration;
+unset/empty retains the backend plan. [Pilot observations](docs/v100-adaptive-validation.md#prefill-row-development-pilot)
+and the A-B-B-A control select 256 for the recorded eager development workflow,
+with 73.785% less mean readiness time; no global default or long-prompt claim changes.
 
 Current delivery work prioritizes one-server TP8/ETP4 before further PP2 work.
 The V100 Compose profile accepts the explicit
