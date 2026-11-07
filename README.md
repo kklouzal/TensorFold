@@ -105,6 +105,13 @@ reference behavior across all 15 requests, including cold serial/MTP and SSE
 parity. Known quality remains five of seven; general quality, capacity and
 performance remain open, with no default selection. See [the bounded milestone](docs/v100-adaptive-validation.md#private-native-owned-sc117-functional-milestone).
 
+The same installed private profile subsequently computed and physically allocated
+27 full-context resident slots on every V100 with automatic session/window
+selection. Both arithmetic MTP/cold-serial smoke responses matched exactly and
+retirement was clean. This verifies allocation at context 262,144; simultaneous
+activity, populated near-full histories and throughput remain separate gates.
+See [the resident allocation result](docs/v100-adaptive-validation.md#automatic-resident-allocation-on-eight-v100s).
+
 The V100 source-build workflow can now reacquire its frozen APT/Python inputs
 with verified hashes, durable cache reuse, an explicit Ubuntu snapshot option
 and a staging byte cap.

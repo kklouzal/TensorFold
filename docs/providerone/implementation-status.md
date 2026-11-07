@@ -161,6 +161,15 @@ performance gates remain open. The default reference command/policy is unchanged
 See [the exact functional scope](../v100-adaptive-validation.md#private-native-owned-sc117-functional-milestone).
 See [the guarded procedure](../../deploy/v100/README.md#private-owned-routed-qualification-procedure).
 
+With the same installed private image, automatic session/full-window selection
+then computed 27 resident slots and all eight ranks materialized their full
+262,149 cache extents for configured context 262,144 and default MTP depth 4.
+Both arithmetic MTP/cold-serial smoke responses matched and retirement was clean.
+H1/P1 remained in effect: this is resident allocation evidence, not simultaneous
+27-request, populated near-full-history or throughput qualification. The solver's
+next-count refusal is a resource-model result rather than a physical C28 test.
+See [the allocation scope](../v100-adaptive-validation.md#automatic-resident-allocation-on-eight-v100s).
+
 The installed SDK/native-component checkpoint uses source `e90caf58` and
 immutable image `sha256:a24a579e3ffd2a1ead0def6b0d68947d94796135c00c946e8440ebe1f47c5015`.
 The genuine final SM70 source build/export, protected installed software audit

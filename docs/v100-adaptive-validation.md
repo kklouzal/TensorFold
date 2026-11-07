@@ -219,6 +219,41 @@ their distinct implementations; this is native routed-expert behavior evidence,
 not a fully native model or general numerical/quality/capacity/performance release.
 Normal serving still selects the reference policy. No PP2 claim is made.
 
+## Automatic resident allocation on eight V100s
+
+The same `bd0885e1` source and immutable `540c54b7` image above were tested with
+only `--parallel 1` and `--kv-full-windows 1` changed to `auto`. Context 262,144,
+TP8/PP1/ETP4, INT8 KV, default shared-Q8 MTP depth 4, eager execution, prefill
+256, H1/P1 and 16 MiB input credit were retained. No SDK or application rebuild
+was involved.
+
+The solver selected C27 without an administrator ceiling. All eight physical
+ranks materialized 27 cache extents of 262,149 tokens, including the MTP tail,
+and their actual cache bytes were covered by Torch allocated/reserved readings.
+Each native receipt verified 27 States, 48 target banks plus one MTP bank,
+coordinate/numerical bindings and arena rows `[32,256,32]`. The arenas used
+28,160 bytes per rank within the existing 292,864-byte routing reserve.
+
+The limiting resource was rank device memory. The header model's C28 weight
+plus execution obligation exceeded the 29,073,342,464-byte serving budget on
+every rank. C28 was not physically attempted; this is not a measured OOM limit
+or a claim of maximum qualified useful concurrency.
+
+Both arithmetic smoke requests returned `372`, `finish_reason: stop`, exact IDs
+`[18,22,17,248046]` and independently checked SHA `33bcc7da87c4`; the cold serial
+request used no draft or cached prefix. Launcher/container exit status was 0,
+PID was 0, error/cleanup fields were empty, and health/input identities were
+unchanged. Raw results are retained under
+`tp8-etp4-auto-capacity-v1/actual-auto-capacity-v1/`, particularly
+`stats-before-request.json`, `auto-capacity-result.json`,
+`capacity-smoke-result.json`, `firstload-result.json` and `result-v1.json`.
+
+This establishes resident allocation only. H1/P1 cannot establish C27 simultaneous
+activity, the short prompts do not populate near-full histories, and these two
+requests are not a throughput benchmark. General quality, all-active capacity,
+full-history behavior and performance remain open; prior checkpoint quality
+failures and the unchanged default reference policy remain explicit.
+
 ## Neutral artifact I/O boundary (A1)
 
 The source now separates bounded container/file validation from model and device
