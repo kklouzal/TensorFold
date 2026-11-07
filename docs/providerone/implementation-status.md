@@ -89,6 +89,15 @@ or SC117/MTP/DFlash models, and do not qualify the final SDK or resolve vendor
 issue6111901. The full TP8/ETP4 matrix status remains unqualified. See
 [physical component evidence](../v100-adaptive-validation.md#physical-standalone-component-campaign).
 
+The subsequent communication component gate passed 42 CPU status controls and
+both corrected physical four/eight-rank cases with no skips, using editable
+Torch `04cf2557` and pinned NCCL 2.32.3 on `sm-v100`. The source UID captures held
+`8db10092` plus fixture/documentation WIP, with unchanged application runtime.
+Store provenance, word/status/error agreement and side-stream graph replay are
+covered; the first fixture failure remains preserved. Native ETP4/model,
+throughput/performance and final SDK qualification remain open. See
+[communication evidence](../v100-adaptive-validation.md#collective-fixture-store-backend).
+
 The private prepared-engine path now owns one native route arena per existing
 target/prompt/MTP buffer, reuses their activation/output storage and binds
 exclusive dispatch. Paid routing workspace contains these arenas; no extra

@@ -14,6 +14,7 @@ def states_for(words, world):
     states = []
     for bits, layer in words:
         st = object.__new__(State)
+        st.compact_indexer = None  # Independent noncompact per-sequence/status-cohort oracle.
         st.execution_dtype = torch.float16
         st.kv_key_dtype, st.kv_value_dtype = "fp16", "int8"
         st.kv_status = torch.tensor([bits, layer], dtype=torch.int32)

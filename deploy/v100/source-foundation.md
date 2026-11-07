@@ -90,9 +90,11 @@ Python 3.10.20 interpreter (20260510 build) has separate URL/bytes/SHA256 pins.
 The framework/runtime stays on Python 3.12. The recorded SDK build used a narrow
 immutable release-wheel exception while retaining the lint, detached-HEAD,
 Test Plan and publication rules. That historical record does not establish or
-revoke the scope of authorization for a fresh build. Current final-wheel
-execution is held pending resolution of the fetched editable-only instruction
-versus the owned SDK artifact recipe; editable bootstrap work can proceed.
+revoke the scope of authorization for a fresh build. The owner has now directly
+authorized the necessary pinned builds and tests. The earlier editable-only
+instruction clarification is retained as history, not a current permission
+blocker. Source pins, lint/checks, artifact publication and final SDK
+qualification gates remain; authorization does not establish a completed build.
 
 The final builder installs 124 exact Debian artifacts from the recorded bundle,
 including cuDNN, Nsight Systems and their Ubuntu 24.04 dependencies. The base
@@ -189,8 +191,8 @@ bash /src/deploy/v100/source_build.sh prepare-bootstrap
 bash /src/deploy/v100/source_build.sh nccl-bootstrap
 bash /src/deploy/v100/source_build.sh framework-bootstrap
 bash /src/deploy/v100/source_build.sh finalize
-# The final wheel command requires resolution of the fetched PyTorch
-# editable-only instruction versus this owned SDK artifact recipe.
+# Necessary pinned builds/tests are authorized by the owner.
+# Final artifacts/export still require the maintained validation gates.
 bash /src/deploy/v100/source_build.sh framework
 bash /src/deploy/v100/source_build.sh probes
 bash /src/deploy/v100/source_build.sh export
@@ -258,10 +260,10 @@ the producer created the exact `04cf2557f315a350e7eea7ab064288def65db75a`
 commit and verified all four final source inventories.
 
 Spin regenerates Python version metadata before that commit, so those files
-alone do not establish a postcommit native build. While the release-wheel
-instruction remains unresolved, rerunning the same permitted
-`framework-bootstrap` stage under the finalized commit refreshes genuine CMake,
-Git and CUDA metadata without clearing the bootstrap export barrier. This
+alone do not establish a postcommit native build. At that checkpoint,
+release-wheel execution was held for instruction clarification. Rerunning the
+permitted `framework-bootstrap` stage under the finalized commit refreshed genuine
+CMake, Git and CUDA metadata without clearing the bootstrap export barrier. This
 postcommit editable build completed a 17-step incremental graph in 212.49
 seconds. A separate canonical `capture-sources` then refreshed the actual
 generated-input receipt. Both source and installed version metadata report
@@ -426,6 +428,17 @@ installed image's existing SM70 provider/family/current-stream/graph tests and
 four/eight-rank NCCL tests remain required on this new stack. Old cu126 results
 do not transfer. Full model correctness, quality, resources and representative
 performance remain separate Section 21 gates.
+
+The maintained four/eight-rank collective fixture now passes `use_libuv=False`
+explicitly and verifies the owned Store/cohort through the existing comm API.
+This matches the adaptive SM70 engine: pinned Torch `04cf2557` has
+`USE_LIBUV=OFF`, while its native `TCPStore` constructor defaults to `True`.
+The correction changes no SDK pin, runtime default or oracle. After independent
+status-fixture defaults were repaired, 42 CPU controls and both physical
+four/eight-rank GPU cases passed with no skips using the editable Torch closure.
+The first fixture failure remains preserved. This is communication correctness
+and retirement evidence, not NCCL throughput, model/native ETP4 or final SDK
+qualification. See [fixture evidence and limits](../../docs/v100-adaptive-validation.md#collective-fixture-store-backend).
 
 ### Physical standalone component campaign
 

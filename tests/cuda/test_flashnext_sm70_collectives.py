@@ -19,6 +19,7 @@ def _status_cohort_oracle(owner):
     states = []
     for _ in range(6):
         state = object.__new__(State)
+        state.compact_indexer = None  # Exercise the actual noncompact codec-status State default.
         state.execution_dtype = torch.float16
         state.kv_key_dtype, state.kv_value_dtype = "fp16", "int8"
         state.kv_status = torch.tensor([0, -2], dtype=torch.int32, device="cuda")
@@ -51,13 +52,21 @@ def _status_cohort_oracle(owner):
 
 def _collectives(rank, world, port, outcomes):
     """One process owns each CUDA context and communicator through retirement."""
-    from tensorfold.cuda.comm import NCCL, agree_eos
+    from tensorfold.cuda.comm import NCCL, agree_eos, validate_store_origin
 
     owner = NCCL()
     failed = False
     try:
         torch.cuda.set_device(rank)
-        owner.open(rank, world, "127.0.0.1", port, timeout_s=60, key="tf_sm70_component_uid")
+        # Match the adaptive SM70 engine's explicit legacy Store policy. The
+        # pinned native Torch constructor defaults True even when USE_LIBUV=OFF.
+        owner.open(rank, world, "127.0.0.1", port, timeout_s=60, key="tf_sm70_component_uid", use_libuv=False)
+        owner.verify_store_cohort()
+        validate_store_origin(owner.store_origin, owner.store, rank, world, verified=True)
+        assert owner.store_origin.record() == {
+            "use_libuv": False, "rank0_owned_server": rank == 0,
+            "cohort_verified": True, "retired": False, "source": "guarded-process-factory",
+        }
         for dtype in (torch.float16, torch.float32, torch.int64):
             source = torch.tensor([rank, rank + 11], dtype=dtype, device="cuda")
             destination = torch.empty(2 * world, dtype=dtype, device="cuda")

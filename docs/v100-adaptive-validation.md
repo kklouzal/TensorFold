@@ -835,6 +835,80 @@ qualification and vendor issue6111901 disposition remain open. No runtime
 selection, guard or production setting changed. See the
 [source-foundation gates](../deploy/v100/source-foundation.md#required-primitive-and-library-gates).
 
+### Collective fixture Store backend
+
+The existing four/eight-rank `test_flashnext_sm70_collectives.py` fixture now
+selects `use_libuv=False` explicitly, matching the adaptive SM70 engine. Exact
+pinned Torch `04cf2557` source/configuration evidence shows
+`USE_LIBUV:BOOL=OFF` in the actual CMake cache and `use_libuv=True` in the native
+`TCPStore` constructor binding. Omitting the argument would therefore select an
+unavailable backend before any collective oracle. That backend mismatch was
+established statically; no failed backend execution is claimed.
+
+After opening the communicator, every rank uses the supported
+`verify_store_cohort()` and `validate_store_origin(..., verified=True)` APIs.
+The fixture asserts actual legacy-backend provenance, guarded rank0 daemon
+ownership and completed cohort agreement. This follows the existing Python
+socket/`master_listen_fd` handoff; it does not attribute that handoff to the
+native FD extension. FP16/FP32/int64 exchanges, status/error and EOS agreement,
+side-stream graph replay, world sizes 4/8 and communicator/process retirement
+checks are retained. No fallback, environment default, skip or production guard
+was added or changed.
+
+The private `sm-v100-collectives-plan-v1/store-backend-prerequisite-v1.json`
+receipt has SHA256
+`197be099e618d77b362b71c3d1a3c42a9ceab6c79614ce02bc93b22520187f6c`.
+Its versioned source/cache excerpts and original implicit-backend diagnosis
+remain preserved. That diagnosis alone was not a collective execution pass.
+The first subsequent physical four-rank attempt failed when the synthetic
+`object.__new__(State)` status fixture omitted the constructor's noncompact
+`compact_indexer=None` default. The eight-rank case correctly remained unrun
+under `-x`; no complete four-rank pass was claimed. Raw console, XML and all four
+rank traces are preserved by `collectives-gpu-failure-gate-v1.json`, SHA256
+`6cf4e09b25f4ad41a5fbb7d903a903a5bcf4a88607e892b8e491a9732e1b9aba`.
+
+The GPU fixture and its independent CPU per-sequence/status-cohort oracle now
+each initialize that actual noncompact default. Their assertions and production
+methods remain unchanged; no shared helper or error masking was introduced.
+On the staged native editable SDK, all 42 CPU controls passed with no skips,
+followed by both corrected physical GPU cases at world sizes 4 and 8, also with
+no skips. Across those two cases, 12 worker processes exercised actual guarded
+legacy Store/cohort provenance, FP16/FP32/int64 all-gathers, codec error/status
+and EOS agreement, nondefault streams, graph capture/replay and communicator/
+process retirement. Health counters and recorded inputs remained unchanged.
+
+The accepted diagnostic source UID is
+`dc4a9dd3d11381635d0a23421edae6290353d783936afd66488e06dd30de6dd9`:
+base `8db10092` plus held fixture/documentation WIP, not a clean source commit.
+Application runtime bytes were unchanged. Execution used editable Torch
+`04cf2557f315a350e7eea7ab064288def65db75a` (`2.14.1+tfcu129sm70`, CUDA 12.9),
+NCCL 2.32.3, image
+`sha256:9344978748e6eac9b9323b332b2feadb71e151ed217e0984466161f1a24dc451`
+and `sm-v100` driver 580.178.04. All 12 worker rank/PID NCCL and loader
+initialization traces are retained. Provider files were hashed separately from
+the same immutable application/SDK/prefix; these are not worker memory hashes.
+Host-driver injection sources retain separate identities. No TensorFold native
+JIT test was selected, and loading a driver PTX-JIT library does not establish
+application JIT execution.
+
+| Receipt under `sm-v100-collectives-plan-v1` | SHA256 |
+| --- | --- |
+| `incremental-v2/cpu42-gate-v2.json` | `ca8e504f407752ba6350d4bcf2447dd144eb02d5311bdca2a970a9ffbb842320` |
+| `incremental-v2/collectives-gpu-pass-gate-v2.json` | `7f78a75c26e5816044062ce6acc60b83948c19d1cdf12cdae311e04533ffb51f` |
+
+Retained NCCL logs report unavailable optional plugins, libibverbs/IB, RMA,
+GDRCopy, GIN and NVLS paths. The exercised single-node configuration initialized
+Socket bootstrap and P2P/CUMEM channels, and its component oracles passed.
+These advisories are retained, not suppressed; they establish no IB/RMA/GIN/NVLS
+capability or performance result. No transport override or dependency change
+was made to obtain the pass.
+
+The passing GPU gate binds 49 artifacts, with full input preservation and
+retirement records. This is source/editable communication component evidence,
+not an installed final SDK, NCCL throughput or performance result.
+Native ETP4/model/state/quality/capacity and vendor issue6111901 qualification
+remain separate open gates; no production selection changed.
+
 ## Prepared TP8/ETP4 execution and workspace
 
 The existing engine has a private constructor-only `_owned_expert_native=True`

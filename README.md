@@ -23,6 +23,13 @@ Sanitizer runs on GPU0. These 52 jobs establish the recorded component-fixture
 results; the native expert operator, multi-rank NCCL, model and final SDK gates
 remain separate. See [physical component evidence](docs/v100-adaptive-validation.md#physical-standalone-component-campaign).
 
+The corrected four/eight-rank SM70 collective fixture passed both physical GPU
+cases with no skips on `sm-v100`, following 42 passing CPU status-cohort controls.
+It verifies the explicit legacy Store/origin policy, word/status exchanges and
+side-stream graph replay. The first fixture failure remains preserved; these
+communication checks do not qualify NCCL throughput, native ETP4, models or the
+final SDK. See [communication evidence and limits](docs/v100-adaptive-validation.md#collective-fixture-store-backend).
+
 A private qualification-only engine path now prepares exclusive native ETP4
 execution across target, prompt and MTP calls, and can compose the target with
 the existing dense TP8 DFlash profile. It reuses activation/output
@@ -53,8 +60,10 @@ framework build, full five-path Spin checks, exact source-commit finalization,
 postcommit metadata rebuild and CPU-load readback have also passed. The TP8/ETP4
 native operator separately passed offline SM70 compilation and diagnostic
 loading with unchanged inputs; no GPU kernel was invoked. Final
-release-wheel/export, installed-SDK audit and V100 qualification remain pending;
-the bootstrap export barrier is still active. See the
+release-wheel/export, installed-SDK audit and full-model V100 qualification
+remain pending; the bootstrap export barrier is still active. The owner has
+directly authorized the necessary pinned builds and tests; permission is no
+longer the blocker for that work. See the
 [source-build evidence](deploy/v100/source-foundation.md#executed-fresh-bootstrap).
 
 This is an authority/source-baseline checkpoint, not a package or runtime
