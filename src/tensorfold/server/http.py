@@ -18,7 +18,7 @@ from urllib.parse import unquote
 
 from tensorfold.cleanup import raise_failures
 from tensorfold.engine import grammar
-from tensorfold.server import anthropic, conversations, live, request_body, responses, token_routes
+from tensorfold.server import anthropic, conversations, json_output, live, request_body, responses, token_routes
 from tensorfold.server.tools import (active_tool_specs, parse_tool_calls_from_content, stream_tool_call_deltas,
                                      tool_choice_requires_call)
 from tensorfold.server.decisions import DecisionError
@@ -73,6 +73,7 @@ class Server(ThreadingHTTPServer):
         if max_connections is not None and (type(max_connections) is not int or max_connections <= 0):
             raise ValueError("max_connections must be a positive integer or None")
         handler = args[1] if len(args) > 1 else kwargs.get("RequestHandlerClass")
+        json_output.validate_connections(handler, max_connections)
         if getattr(handler, "requires_finite_limits", False):
             from tensorfold.server.request_limits import require_finite_endpoint_limits
 
@@ -244,7 +245,11 @@ class Server(ThreadingHTTPServer):
                         self.handle_error(request, client_address)
             except BaseException as error:
                 with self._connection_lock:
-                    self._handler_failure = error
+                    if self._handler_failure is not error:
+                        try:
+                            raise_failures(self._handler_failure, [error])
+                        except BaseException as failure:
+                            self._handler_failure = failure
                     self.stopping.set()
             finally:
                 try:
@@ -266,6 +271,30 @@ class Server(ThreadingHTTPServer):
                                 except BaseException as failure:
                                     self._handler_failure = failure
                                 self.stopping.set()
+
+    def begin_json_encoding(self, handler) -> None:
+        """Admit one existing handler's encode, never after fatal publication."""
+        with self._connection_lock:
+            failure = self._handler_failure
+            if failure is not None:
+                handler.close_connection = True
+                raise failure
+
+    def fail_json_encoding(self, handler, primary) -> None:
+        # The proven native tuple-ENOMEM branch can retain its writer. Poison
+        # before any broad HTTP exception handler can try another C encoding.
+        notify = False
+        with self._connection_lock:
+            if self._handler_failure is None:
+                self._handler_failure = primary
+                notify = True
+            self.stopping.set()
+            handler.close_connection = True
+        if notify:
+            try:
+                handler.notify_json_failure(primary)
+            except BaseException as secondary:
+                raise_failures(primary, [secondary])
 
     def service_actions(self) -> None:
         # Reap completed handlers at the server-loop control point. Retiring
@@ -428,12 +457,11 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                      or getattr(getattr(app, "scheduler", None), "max_engine_calls", None) is not None)
     class Handler(RequestIds, Rearming):              # USR1's stack dump armed again after each request
         protocol_version = "HTTP/1.1"
-
         def log_message(self, format: str, *args: Any) -> None:
             print(f"[tensorfold] {self.address_string()} {format % args}")
 
         def _send_json(self, payload: dict[str, Any], status: int = 200) -> None:
-            body = json.dumps(payload).encode("utf-8")
+            body = json_output.dumps(self, payload, as_bytes=True)
             self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -574,7 +602,7 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                 named = requested_model(app, body)      # the id the request asked for, as vLLM names it
                 if _REQUEST_LOG and body.get("priority") != "background":   # batch jobs are not client traffic
                     with open(_REQUEST_LOG, "a") as handle:
-                        handle.write(json.dumps(redact_images(body)) + "\n")
+                        handle.write(json_output.dumps(self, redact_images(body), suffix="\n"))
                 raw_kw: dict[str, Any] = {}
                 if is_chat_completion:
                     messages = normalize_messages(body.get("messages"), allow_images=getattr(app, "vision", None) is not None,
@@ -627,6 +655,7 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                 self._send_json({"error": error_body(exc, field)}, status=status_of(exc))
                 return
             except Exception as exc:
+                json_output.allocation_failed(self, exc)
                 self._send_json({"error": invalid_request(str(exc) or type(exc).__name__)}, status=400)
                 return
 
@@ -704,7 +733,7 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                     def emit(payload: dict[str, Any]) -> None:
                         if not opened:
                             open_stream()
-                        self.wfile.write(f"data: {json.dumps(payload)}\n\n".encode("utf-8"))
+                        self.wfile.write(json_output.dumps(self, payload, prefix="data: ", suffix="\n\n", as_bytes=True))
                         self.wfile.flush()
 
                     def finish_stream(
@@ -802,6 +831,7 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                         self.wfile.flush()
                         return
                     except Exception as exc:
+                        json_output.allocation_failed(self, exc)
                         print(
                             f"[tensorfold] stream error: {type(exc).__name__}: {exc}",
                             flush=True,
@@ -889,6 +919,7 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
             except RequestError as exc:          # a capacity refusal is a 503 here too, as when streaming
                 self._send_json({"error": error_body(exc, field)}, status=status_of(exc))
             except Exception as exc:  # surface runner errors to the client
+                json_output.allocation_failed(self, exc)
                 print(f"[tensorfold] request error: {type(exc).__name__}: {exc}", flush=True)
                 traceback.print_exc()
                 try:
@@ -906,6 +937,7 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                 self._send_json({"error": error_body(exc)}, status=status_of(exc))
                 return
             except Exception as exc:  # noqa: BLE001 - a body the tokenizer cannot read is a client error
+                json_output.allocation_failed(self, exc)
                 self._send_json({"error": invalid_request(str(exc))}, status=400)
                 return
             self._send_json(reply)
@@ -926,6 +958,7 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                 self._send_json({"error": error_body(exc)}, status=status_of(exc))
                 return
             except Exception as exc:  # noqa: BLE001 - a bad body is a client error
+                json_output.allocation_failed(self, exc)
                 self._send_json({"error": invalid_request(str(exc))}, status=400)
                 return
             try:
@@ -937,6 +970,7 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
                 self._send_json({"error": invalid_request(str(exc))}, status=400)
                 return
             except Exception as exc:  # a scoring failure is the server's, not a bad body
+                json_output.allocation_failed(self, exc)
                 print(f"[tensorfold] request error: {type(exc).__name__}: {exc}", flush=True)
                 traceback.print_exc()
                 try:
@@ -947,4 +981,4 @@ def make_handler(app: Any) -> type[BaseHTTPRequestHandler]:
             self._send_json(payload)
 
     from tensorfold.server.auth_http import handler
-    return handler(Handler, app)
+    return handler(json_output.bind_handler(Handler, app), app)

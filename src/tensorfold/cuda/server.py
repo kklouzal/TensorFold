@@ -144,6 +144,7 @@ class App:
                  logical_api_limits=None, startup_owner=None,
                  chat_template_file=None, chat_template_name=None):
         self.engine = engine
+        self._http_payload_failure = None
         self.max_http_connections = optional_limit(max_http_connections, "max_http_connections")
         from tensorfold.cuda.http import GENERATION_BODY_LIMIT
 
@@ -225,6 +226,16 @@ class App:
 
             self._profiles = AppProfiles(self, profiles)
 
+    def _fatal_http_payload(self, primary):
+        """Irrecoverable native encoder allocation failure retires the cohort."""
+        if self._http_payload_failure is not None:
+            return
+        self._http_payload_failure = primary
+        self.engine._abort_comm = True
+        from tensorfold.cuda.cohort import notify_failure
+
+        notify_failure()  # Borrowed launcher capability; no communicator destruction here.
+
     def _finalize_retention_resources(self):
         catalog = getattr(self.engine, "retention_catalog", None)
         if catalog is None:
@@ -232,12 +243,16 @@ class App:
         from tensorfold.families.qwen4_exp.cuda.retention_resources import finalize_retention_resources
 
         scheduler = getattr(self.engine, "scheduler", None)
+        # The HTTP class outlives profile publication. Keep managed endpoints
+        # conservative until their encoder hook can follow that lifetime.
+        fixed_profile = getattr(self.engine, "serving_profiles", None) is None
         return finalize_retention_resources(catalog, tokenizer=self.tok,
             max_pending_requests=None if self._request_limit is None else self._request_limit.maximum,
             max_waiting_input_bytes=getattr(scheduler, "max_waiting_input_bytes", None),
             output_queue_tokens=getattr(scheduler, "output_queue_tokens", None),
             max_http_connections=self.max_http_connections, max_http_body_bytes=self.max_http_body_bytes,
-            logical_api_limits=self.logical_api_limits)
+            logical_api_limits=self.logical_api_limits, scheduler=scheduler if fixed_profile else None,
+            request_limit=self._request_limit if fixed_profile else None)
 
     def _retained_constraint_refusal(self):
         catalog = getattr(self.engine, "retention_catalog", None)

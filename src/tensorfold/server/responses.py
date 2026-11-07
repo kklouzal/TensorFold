@@ -18,6 +18,7 @@ from typing import Any, Callable
 
 from tensorfold.server.errors import RequestError, error_body, invalid_request, retry_headers, server_error, status_of
 from tensorfold.server.request_body import read_body
+from tensorfold.server import json_output
 from tensorfold.server.responses_translate import Reply, _id, messages, translate
 from tensorfold.server.authentication import current_principal
 from tensorfold.server.messages import audio_capable
@@ -185,7 +186,7 @@ def store_for(app: Any) -> Store:
 
 
 def _send(handler: Any, status: int, payload: dict[str, Any]) -> None:
-    data = json.dumps(payload).encode()
+    data = json_output.dumps(handler, payload, as_bytes=True)
     try:
         handler.send_response(status)
         handler.send_header("Content-Type", "application/json")
@@ -204,18 +205,19 @@ def _refuse(handler: Any, message: str, status: int = 400, param: str | None = N
     _send(handler, status, {"error": invalid_request(message, param)})
 
 
-def _health_problem(store):
+def _health_problem(store, handler=None):
     if getattr(store, "durable_conversations", False):
         try:
             store.check_health()
         except Exception as error:
+            json_output.allocation_failed(handler, error)
             traceback.print_exception(error)
             return server_error("logical API operation requires containment")
     return None
 
 
-def _problem(exc, param=None, *, store=None):
-    health = _health_problem(store)
+def _problem(exc, param=None, *, store=None, handler=None):
+    health = _health_problem(store, handler)
     return (500, health) if health is not None else (getattr(exc, "status", status_of(exc)), error_body(exc, param))
 
 
@@ -223,7 +225,7 @@ def _refused(handler: Any, exc: RequestError, param: str | None = None, *, store
     """A refusal's own status and error object (404 for an unknown model); ``param``, the field a context-length
     refusal names."""
 
-    status, problem = _problem(exc, param, store=store)
+    status, problem = _problem(exc, param, store=store, handler=handler)
     _send(handler, status, {"error": problem})
 
 
@@ -308,7 +310,7 @@ def _event_writer(handler: Any) -> Callable[[dict[str, Any]], None]:
     """Write one translated stream event to the client: its ``event:`` type line and JSON ``data:`` line."""
 
     def send(event: dict[str, Any]) -> None:
-        _client_write(handler, f"event: {event['type']}\ndata: {json.dumps(event)}\n\n".encode())
+        _client_write(handler, json_output.dumps(handler, event, prefix=f"event: {event['type']}\ndata: ", suffix="\n\n", as_bytes=True))
 
     return send
 
@@ -331,7 +333,7 @@ def _event_wire(handler: Any, reply: Any, *, store=None) -> Wire:
 
     def event(payload):
         if payload is not None and "error" in payload:
-            health = _health_problem(store)
+            health = _health_problem(store, handler)
             if health is not None:
                 payload = {"error": health}
         reply.chunk(payload)
@@ -342,7 +344,7 @@ def _event_wire(handler: Any, reply: Any, *, store=None) -> Wire:
 def _run_chat(handler: Any, body: dict[str, Any], wire: Wire) -> None:
     """The server's own chat-completions handler on ``body``, over this connection, its response written to ``wire``."""
 
-    data = json.dumps(body).encode()
+    data = json_output.dumps(handler, body, as_bytes=True)
     inner = type(handler).__new__(type(handler))
     inner.__dict__.update(handler.__dict__)
     inner.path, inner.rfile, inner.wfile, inner._headers_buffer = "/v1/chat/completions", io.BytesIO(data), wire, []
@@ -369,6 +371,7 @@ def post(handler: Any, app: Any) -> None:
     except ValueError as exc:
         return _refused(handler, exc, store=store)
     except Exception as error:
+        json_output.allocation_failed(handler, error)
         traceback.print_exception(error)
         return _send(handler, 500, {"error": server_error("logical API operation failed")})
     base = {"id": _id("resp"), "object": "response", "created_at": int(time.time()), "status": "in_progress",
@@ -409,10 +412,11 @@ def post(handler: Any, app: Any) -> None:
                     return
                 except RequestError as error:
                     if wire.stream:
-                        reply.fail(_problem(error, store=store)[1])
+                        reply.fail(_problem(error, store=store, handler=handler)[1])
                         return
                     raise
                 except Exception as error:
+                    json_output.allocation_failed(handler, error)
                     if wire.stream:
                         traceback.print_exception(error)
                         reply.fail(server_error("logical API operation failed"))
@@ -420,13 +424,14 @@ def post(handler: Any, app: Any) -> None:
                     raise
     except RequestError as exc:
         if 'wire' in locals() and wire.stream:
-            reply.fail(_problem(exc, store=store)[1])
+            reply.fail(_problem(exc, store=store, handler=handler)[1])
             return
         return _refused(handler, exc, store=store)
     except OSError as error:
         traceback.print_exception(error)
         return _send(handler, 500, {"error": server_error("logical API operation failed")})
     except Exception as error:
+        json_output.allocation_failed(handler, error)
         traceback.print_exception(error)
         if 'wire' in locals() and wire.stream:
             reply.fail(server_error("logical API operation failed"))
@@ -453,7 +458,7 @@ def _complete(handler, request, reply, wire, *, store=None):
                 problem = payload.get("error") if isinstance(payload, dict) else None
             except (ValueError, UnicodeDecodeError):
                 problem = None
-            reply.fail(_health_problem(store) or problem or server_error("the reply ended before terminal publication"))
+            reply.fail(_health_problem(store, handler) or problem or server_error("the reply ended before terminal publication"))
         return
     if wire.status is None:                           # the client left before the reply
         handler.close_connection = True
@@ -503,6 +508,7 @@ def input_tokens(handler: Any, app: Any) -> None:
     except (ConnectionError, TimeoutError):     # the client has gone or stalled mid-body: the connection closes
         raise
     except Exception as exc:          # noqa: BLE001  a template's own refusal, say: refused, as the chat route does
+        json_output.allocation_failed(handler, exc)
         print(f"[tensorfold] request error: {type(exc).__name__}: {exc}", flush=True)
         traceback.print_exception(exc)
         return _refused(handler, exc, store=store)
@@ -523,6 +529,7 @@ def get(handler: Any, app: Any, rid: str | None) -> None:
         except RequestError as error:
             return _refused(handler, error, store=store)
         except Exception as error:
+            json_output.allocation_failed(handler, error)
             traceback.print_exception(error)
             return _send(handler, 500, {"error": server_error("logical API operation failed")})
         return _send(handler, 200, result)
@@ -531,6 +538,7 @@ def get(handler: Any, app: Any, rid: str | None) -> None:
     except RequestError as error:
         return _refused(handler, error, store=store)
     except Exception as error:
+        json_output.allocation_failed(handler, error)
         traceback.print_exception(error)
         return _send(handler, 500, {"error": server_error("logical API operation failed")})
     if found is None:
@@ -547,6 +555,7 @@ def delete(handler: Any, app: Any, rid: str | None) -> None:
     except RequestError as error:
         return _refused(handler, error, store=store)
     except Exception as error:
+        json_output.allocation_failed(handler, error)
         traceback.print_exception(error)
         return _send(handler, 500, {"error": server_error("logical API operation failed")})
     if not deleted:

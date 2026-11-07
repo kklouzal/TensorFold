@@ -18,6 +18,8 @@ name the serving process, whose prefix cache and counters a restart empties.
 from __future__ import annotations
 
 import json
+
+from tensorfold.server import json_output
 from copy import deepcopy
 import os
 import time
@@ -102,7 +104,7 @@ def send(handler: Any, app: Any, extra: dict[str, Any] | None = None) -> None:
     body = snapshot(app, server=getattr(handler, "server", None))
     if extra:
         body.update(extra)
-    data = json.dumps(body).encode()
+    data = json_output.dumps(handler, body, as_bytes=True)
     try:
         handler.send_response(200)
         handler.send_header("Content-Type", "application/json")

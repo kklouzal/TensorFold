@@ -700,6 +700,8 @@ def _json_payload_policy():
                      "d5d41e2c29049515d295d81a6d40b4890fbec8d8482cfb401630f8ef2f77e4d5"),
         "json-decoder": (Path(json.decoder.__file__).resolve(), 12473,
                          "9f02654649816145bc76f8c210a5fe3ba1de142d4d97a1c93105732e747c285b"),
+        "json-encoder": (Path(json.encoder.__file__).resolve(), 16070,
+                         "af7bd40a0d0d0a3e726a9b4b3a2a543019f6ab97a340d0162a9c29ca9da97869"),
     }
     mapped = {"python": set(), "libpython": set(), "json-native": set()}
     for line in _small("/proc/self/maps", 4 << 20).decode().splitlines():
@@ -843,6 +845,61 @@ def _streamed_json_encoding_payload(encoded_bytes, layout):
             "stringio_header_bytes": stringio_header, "escaped_chunk_bytes": text,
             "total_bytes": metadata + stringio_header + 2 * writer + text,
             "runtime_recursion_limit": recursion, "encoder_frame_header_bytes": frame_header}
+
+
+def _http_json_encoding_payload(encoded_bytes, policy):
+    """Pinned CPython C one-shot ASCII writer, not the RPC StringIO proof.
+
+    _json.c encoder_call uses one overallocated UnicodeWriter and returns one
+    exact str in a tuple. unicodeobject.c grows Linux writers by 1/4; finish
+    resize is covered by the same old/new pair. The tuple's one-string join
+    returns that exact str. UTF8 encoding and socket retention form a later
+    str+bytes phase. Marker ancestors survive failures and remain charged.
+    Native allocator/RSS/C-stack qualification retains its existing scope.
+    """
+    import _json
+    if type(policy) is not _JsonPayloadPolicy:
+        raise ValueError("HTTP encoder projection requires its pinned runtime proof")
+    encoder = json._default_encoder
+    if (type(encoder) is not json.JSONEncoder or json.encoder.c_make_encoder is not _json.make_encoder
+            or encoder.ensure_ascii is not True or encoder.check_circular is not True
+            or encoder.indent is not None or encoder.sort_keys is not False or encoder.skipkeys is not False
+            or encoder.allow_nan is not True or encoder.item_separator != ", " or encoder.key_separator != ": "
+            or getattr(encoder.default, "__func__", None) is not json.JSONEncoder.default):
+        raise ValueError("HTTP encoder differs from the certified default C ASCII dispatch")
+    amount = _size(encoded_bytes, "HTTP encoded output bound", zero=True)
+    layout = _python_layout()
+    depth = min(10000, amount // 2)  # Captured selected pystate.h C_RECURSION_LIMIT, not Python's setting.
+    count = depth + 1
+    capacity = 1 << (max(8, 3 * count) - 1).bit_length()
+    index = 1 if capacity < 256 else 2 if capacity < 65536 else 4 if capacity < 1 << 32 else 8
+    table = 32 + capacity * index + 24 * (2 * capacity // 3)
+    markers = 64 + 2 * table + 36 * count  # Churn/resize plus live pointer integers and insertion temporary.
+    writer = 41 + amount + amount // 4 + 1
+    scalar = 41 + amount
+    # Selected 4300-digit limit: n<=480 binary limbs enter decimal conversion;
+    # decimal scratch has <=1+n+n//99=485 limbs (longobject.c), not _pylong.
+    integer_scratch = 24 + 4 * 485
+    numeric_key = 41 + 4301  # A key's decimal repr and escaped spelling can overlap.
+    # Selected fixed owners: Encoder+GC, constructor/result tuples, bound
+    # encode/iterencode/default and join/wire-encode methods; five conservative
+    # one-argument tuples (including vectorcall-elided ones), the C two-argument
+    # call tuple, floatstr function/defaults/-Infinity, and dumps' **kw dict.
+    # Python frame/error headroom remains separate from these object payloads.
+    fixed = 96 + 112 + 48 + 3 * 64 + 2 * 72 + 5 * 48 + 56 + 160 + 72 + 24 + 64
+    wrappers = policy.frame_work + fixed
+    construction = 2 * writer + scalar + numeric_key + integer_scratch + markers + wrappers
+    # Fixed source-owned SSE event labels/framing fit 128 ASCII bytes. During
+    # prefix+text+suffix, the original and both joined strings may coexist.
+    framed_strings = 3 * (41 + amount + 128)
+    wire = max(framed_strings, (41 + amount + 128) + (layout["bytes"] + amount + 128)) + wrappers
+    return {"schema": "tensorfold.http-c-json-encoder-payload-v1", "runtime_identity": policy.identity,
+        "encoded_bytes": amount, "c_container_depth_bound": depth, "marker_payload_bytes": markers,
+        "writer_old_new_bytes": 2 * writer, "largest_ascii_scalar_bytes": scalar,
+        "integer_decimal_scratch_bytes": integer_scratch, "numeric_key_repr_bytes": numeric_key,
+        "construction_peak_bytes": construction, "completed_str_and_bytes_peak": wire,
+        "total_bytes": max(construction, wire),
+        "scope": "selected source/object payload; native dtoa/allocator/C-stack qualification separate"}
 
 
 def continuation_payload_bytes(*, context, vocab_size, presentation, max_body_bytes, copy_enabled,
@@ -1271,7 +1328,22 @@ def _admit_host_record(catalog, record, materialized):
     old = getattr(catalog, "host_resource_envelope", None)
     if old is not None and old["identity"] != identity:
         raise ValueError("the active retention endpoint resource envelope is immutable")
-    authority = admit_host_commitment(record["global_host_commitment_bytes"], materialized_owned_bytes=materialized)
+    try:
+        authority = admit_host_commitment(record["global_host_commitment_bytes"], materialized_owned_bytes=materialized)
+    except BaseException as primary:
+        from tensorfold.cleanup import raise_failures
+        try:
+            names = ("global_model_cpu_projection_bytes", "global_completed_http_projection_bytes",
+                "global_http_rpc_error_tail_bytes", "global_transport_projection_bytes",
+                "global_logical_api_projection_bytes", "global_rpc_python_working_bytes",
+                "global_http_encoder_payload_bytes", "global_waiting_input_bytes", "global_manifest_projection_bytes",
+                "global_unpaid_native_fixed_payload_bytes", "global_unpaid_native_prefix_payload_bytes")
+            parts = [name + "=" + str(record[name]) for name in names if name in record]
+            parts += ["total=" + str(record["global_host_commitment_bytes"]), "materialized=" + str(materialized)]
+            primary.add_note("host envelope named bytes: " + "; ".join(parts))
+        except BaseException as secondary:
+            raise_failures(primary, [secondary])
+        raise
     result = {**record, "identity": identity, "authority": authority}
     catalog.host_resource_envelope = result
     return result
@@ -1350,9 +1422,44 @@ def finalize_backend_resources(catalog, *, tokenizer, scheduler, request_limit, 
     return _admit_host_record(catalog, record, materialized)
 
 
+def _http_fifo_projection_scope(catalog, tokenizer, scheduler, request_limit, *,
+                                pending, waiting, output, logical_api_limits):
+    """Initial ordinary HTTP ownership; unsupported regions keep their old bound."""
+    if scheduler is None and request_limit is None:
+        return None
+    from tensorfold.cuda.scheduler import Scheduler
+    from tensorfold.server.request_limits import RequestLimit
+    import tokenizers
+
+    if type(scheduler) is not Scheduler or type(request_limit) is not RequestLimit:
+        raise ValueError("HTTP resources require the actual Scheduler and RequestLimit owners")
+    if (request_limit.maximum != pending or scheduler.max_waiting_input_bytes != waiting
+            or scheduler.output_queue_tokens != output):
+        raise ValueError("HTTP resource limits differ from their actual enforced owners")
+    decoder = catalog._cohort.multi
+    if (catalog.policy is not None or getattr(decoder, "media_runtime", None) is not None
+            or logical_api_limits is not None or scheduler.admission_policy != "fifo"
+            or scheduler._submitted or request_limit.used
+            or scheduler._request_limit not in (None, request_limit)):
+        return None
+    if type(tokenizer) is not tokenizers.Tokenizer or tokenizers.__version__ != "0.23.3":
+        return None
+    state = None if tokenizer.decoder is None else json.loads(tokenizer.decoder.__getstate__())
+    if state is None or state.get("type") != "ByteLevel":
+        return None
+    owned = scheduler.decoder.decoder if hasattr(scheduler.decoder, "decoder") else scheduler.decoder
+    if owned.states is not decoder.states or owned.w is not decoder.w:
+        raise ValueError("HTTP resource owners differ from the actual model catalog")
+    return {"schema": "tensorfold.ordinary-http-fifo-owner-v1",
+            "fifo_child_schema": _scheduler_child_schema(scheduler),
+            "logical_requests": pending, "input_credit_bytes": waiting,
+            "scope": "before first publication; actual model owners, default logical cache and plain ByteLevel"}
+
+
 def finalize_retention_resources(catalog, *, tokenizer, max_pending_requests,
                                 max_waiting_input_bytes, max_http_connections, output_queue_tokens=None,
-                                max_http_body_bytes=None, logical_api_limits=None, fifo_child_schema=None):
+                                max_http_body_bytes=None, logical_api_limits=None, fifo_child_schema=None,
+                                scheduler=None, request_limit=None):
     """Freeze actual endpoint obligations before handlers/accepted generation.
 
     Physical admission is a current source-candidate check, not an exclusive OS
@@ -1363,12 +1470,16 @@ def finalize_retention_resources(catalog, *, tokenizer, max_pending_requests,
 
     _size(max_http_connections, "HTTP connection limit")
     body_bytes = LIMIT if max_http_body_bytes is None else max(LIMIT, _size(max_http_body_bytes, "HTTP route body bound"))
-    # The complete tighter HTTP/preparation/cache phase proof is a separate
-    # open region. Preserve its conservative frontend projection while the
-    # finite local caller uses the independently closed model-only boundary.
+    scope = _http_fifo_projection_scope(catalog, tokenizer, scheduler, request_limit,
+        pending=max_pending_requests, waiting=max_waiting_input_bytes, output=output_queue_tokens,
+        logical_api_limits=logical_api_limits)
+    if scope is not None:
+        if fifo_child_schema is not None and fifo_child_schema != scope["fifo_child_schema"]:
+            raise ValueError("HTTP child schema differs from its bound FIFO adapter")
+        fifo_child_schema = scope["fifo_child_schema"]
     core = _model_host_projection(catalog, tokenizer=tokenizer, max_pending_requests=max_pending_requests,
         max_waiting_input_bytes=max_waiting_input_bytes, body_bytes=body_bytes,
-        output_queue_tokens=output_queue_tokens, fifo_child_schema=fifo_child_schema, precise_payloads=False)
+        output_queue_tokens=output_queue_tokens, fifo_child_schema=fifo_child_schema, precise_payloads=scope is not None)
     baseline = core["baseline"]
     copy_enabled = core["copy_enabled"]
     bound = core["bound"]
@@ -1384,8 +1495,17 @@ def finalize_retention_resources(catalog, *, tokenizer, max_pending_requests,
     # App.run's logical RequestLimit ends before the HTTP handler serializes
     # and writes its final response. Slow completed sockets and new model jobs
     # may therefore coexist; the real HTTP connection cap owns that tail.
-    completed_http = max_http_connections * (terms["presentation_strings"] + terms["reply_graph_and_wire"]
-        + terms["continuation_lists"] // len(terms["token_list_roles"]))
+    http_encoding = None
+    if scope is not None:
+        if generation_owners < 1:
+            raise ValueError("HTTP FIFO input credit cannot admit one full-context request commitment")
+        # A slow/error handler can retain the complete leader continuation
+        # after the logical owner ends. Never borrow its RequestLimit credit.
+        completed_http = max_http_connections * terms["project_payload_bytes"]
+        http_encoding = _http_json_encoding_payload(terms["reply_graph_and_wire"], json_policy)
+    else:
+        completed_http = max_http_connections * (terms["presentation_strings"] + terms["reply_graph_and_wire"]
+            + terms["continuation_lists"] // len(terms["token_list_roles"]))
     http_rpc_errors = max_http_connections * rpc_python["per_http_rpc_error_tail_bytes"]
     cpu = model_cpu + completed_http + http_rpc_errors
     layout = _python_layout()
@@ -1421,13 +1541,19 @@ def finalize_retention_resources(catalog, *, tokenizer, max_pending_requests,
             + _append_list_payload(cached // 2) + _append_list_payload(cache_limit))
         cache_wrappers = (None if json_policy is None else
                           _responses_cache_wrappers(cache_limit, max_http_connections))
+        cache_encoding = None if scope is None else _http_json_encoding_payload(cached, json_policy)
+        if scope is not None:
+            # GET/cache serialization is a separate bounded handler phase.
+            http_encoding = {"generated_reply": http_encoding, "cached_reply": cache_encoding,
+                "per_handler_peak_bytes": max(http_encoding["total_bytes"], cache_encoding["total_bytes"])}
         logical_api = cache_current + max_http_connections * cache_copy
         if cache_wrappers is not None:
             logical_api += cache_wrappers["total_bytes"]
         logical_receipt = {"mode": "existing bounded in-memory Responses cache", "encoded_cache_bytes": cached,
             "cached_tree_bytes": cache_current, "per_http_old_source_clone_memo_bytes": cache_copy,
             "cache_entry_limit": cache_limit, "cache_wrappers": cache_wrappers,
-            "projection_status": "existing conservative HTTP baseline; tighter complete HTTP region remains open"}
+            "projection_status": ("certified ordinary HTTP source payload" if scope is not None else
+                                  "conservative HTTP baseline outside the certified owner region")}
     else:
         from tensorfold.server.api_records import ApiRecordLimits
 
@@ -1442,10 +1568,12 @@ def finalize_retention_resources(catalog, *, tokenizer, max_pending_requests,
                            + logical_api_limits.max_operation_bytes) * node)
         logical_receipt = {"mode": "configured standard SQL records", "limits": asdict(logical_api_limits),
                            "native_sqlite_allocator": "qualification pending; not an RSS certificate"}
+    http_encoder_bytes = 0 if http_encoding is None else max_http_connections * http_encoding["per_handler_peak_bytes"]
     fixed = header.global_host_bytes
     native_fixed, native_prefix, unpaid_fixed, unpaid_prefix = _native_host_commitment(catalog, baseline)
     total = _total((baseline.baseline_host_bytes, fixed, max_waiting_input_bytes, cpu, transport, manifests,
-                    logical_api, rpc_python["global_rpc_python_working_bytes"], unpaid_fixed, unpaid_prefix))
+                    logical_api, rpc_python["global_rpc_python_working_bytes"], unpaid_fixed, unpaid_prefix,
+                    http_encoder_bytes))
     materialized = baseline.materialized_host_bytes
     if catalog._buffer is not None and catalog._buffer.is_pinned():
         materialized += catalog.world * catalog._buffer.nbytes
@@ -1477,6 +1605,7 @@ def finalize_retention_resources(catalog, *, tokenizer, max_pending_requests,
         "logical_api": logical_receipt,
         "max_backed_generations": backed,
         "global_host_commitment_bytes": total, "materialized_owned_bytes": materialized,
+        "http_owner_scope": scope, "http_encoder": http_encoding, "global_http_encoder_payload_bytes": http_encoder_bytes,
         "allocator_evidence": "CPython object payload projection; allocator arenas/native RSS unqualified",
         "native_constraints": ("ordinary unretained matcher residency/allocator qualification pending" if catalog.policy is None
                                else "retained/tiered combination refused before compilation"),

@@ -65,6 +65,21 @@ or performance gate is inferred from these repaired CPU controls. See
 | Prepared plans and no-restart control | Fixed maximum envelope, ready-work/prepared-plan selection, FIFO/prefix/tiered state and supported in-process administration | [adaptive controller](../../src/tensorfold/families/qwen4_exp/cuda/adaptive_controller.py), [serving profiles](../../src/tensorfold/families/qwen4_exp/cuda/serving_profiles.py), [profile runtime](../../src/tensorfold/families/qwen4_exp/cuda/serving_runtime.py), retained catalog/host storage | Software tests and bounded source mechanisms exist. Actual burst/load/fairness/backpressure/recovery/resource and no-restart target gates remain required. Online fits, graph replacement during ordinary adaptation and live migration are not assumed requirements. | Only previously admitted profiles retain their effective controls; no new target transition is certified. |
 | Follow-on models/formats/devices | Complete concrete family/recipe/backend/API/state qualification after the SC117 priority, while preserving selected profiles | Existing family implementations and [recipes](../recipes/README.md) are starting points | User-requested labels are not verified artifact identities. No universal model/format/quantization support, inherited SC117 geometry or new-device qualification is claimed. | No new model/format/device profile is activated by this handoff. |
 
+## Ordinary HTTP accounting checkpoint
+
+The source binds a narrowly eligible plain-ByteLevel/FIFO HTTP payload region
+to actual scheduler, logical-request and resident-model owners. Completed
+handler roots, cache copies and pinned CPython C-encoder storage remain distinct
+from logical generation credit. Physical/cgroup admission, full model context,
+MTP, 96 MiB generation bodies and 256 MiB default cache capacity are preserved.
+A certified encoder allocation failure poisons the owning Server and uses the
+existing cohort retirement notification; subsequent encoding is refused.
+Profile-managed Apps retain conservative accounting across initial admission and
+profile staging; administrative functionality is unchanged. Other regions also
+retain conservative accounting. This is source integration,
+not an installed HTTP-ready or model-quality claim. See [scope, failure lifetime
+and remaining gates](../v100-adaptive-validation.md#ordinary-http-host-envelope).
+
 ## Required SC117 parallelism matrix
 
 The latest installed software/component checkpoint uses source `e90caf58` and

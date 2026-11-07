@@ -63,7 +63,10 @@ def configured_app(tmp_path, monkeypatch, policy, *, max_http_body_bytes=None, l
     model_directory(tmp_path)
     engine = ConstraintEngine()
     engine.retention_catalog = catalog(policy)
-    engine.scheduler = Scheduler(NS(), max_streams=1, admission_policy="fifo", max_waiting_input_bytes=16384,
+    decoder = engine.retention_catalog._cohort.multi
+    decoder.states = engine.retention_catalog.states
+    decoder.w.cfg.vocab = selected_tokenizer().get_vocab_size()
+    engine.scheduler = Scheduler(decoder, max_streams=1, admission_policy="fifo", max_waiting_input_bytes=16384,
                                  output_queue_tokens=output_queue_tokens)
     engine.vision = NS(is_media_runtime=True, tokenizer=selected_tokenizer())
     engine.chat_template = server.ChatTemplate(tmp_path)
@@ -325,12 +328,13 @@ def test_actual_cuda_dispatch_and_host_projection_share_existing_body_caps(tmp_p
 
 
 @pytest.mark.parametrize("fails", [False, True])
-def test_actual_profile_stage_finalizes_adopted_frontend_before_publication(tmp_path, monkeypatch, fails):
+@pytest.mark.parametrize("policy", [None, RetentionPolicy("gpu", 1, 10)], ids=["ordinary", "retained"])
+def test_actual_profile_stage_finalizes_adopted_frontend_before_publication(tmp_path, monkeypatch, fails, policy):
     old_dir, new_dir = tmp_path / "old", tmp_path / "new"
     old_dir.mkdir()
     new_dir.mkdir()
-    app, engine, _ = configured_app(old_dir, monkeypatch, RetentionPolicy("gpu", 1, 10),
-                                    output_queue_tokens=3, managed=True)
+    app, engine, _ = configured_app(old_dir, monkeypatch, policy, output_queue_tokens=3, managed=True)
+    assert engine.retention_catalog.host_resource_envelope["http_owner_scope"] is None
     old_tok, old_model = app.tok, app.model_dir
     model_directory(new_dir)  # Deliberately not the adopted ByteLevel frontend.
     selected = selected_tokenizer()
@@ -338,7 +342,7 @@ def test_actual_profile_stage_finalizes_adopted_frontend_before_publication(tmp_
     engine.vision = NS(is_media_runtime=True, tokenizer=selected, check_media_health=lambda: None)
     engine.chat_template = server.ChatTemplate(new_dir)
     engine.context_window = 128
-    engine.retention_catalog = catalog(RetentionPolicy("gpu", 1, 10))
+    engine.retention_catalog = catalog(policy)
     primary = ValueError("host admission refused staged profile")
     calls = []
     def admission(total, *, materialized_owned_bytes):
@@ -357,6 +361,7 @@ def test_actual_profile_stage_finalizes_adopted_frontend_before_publication(tmp_
     else:
         binding = app._profiles.stage(profile)
         assert binding["tok"] is selected
+        assert engine.retention_catalog.host_resource_envelope["http_owner_scope"] is None
         assert engine.retention_catalog.host_resource_envelope["tokenizer"]["tokenizer_identity"] == tokenizer_presentation_bound(selected).tokenizer_identity
         assert engine.retention_catalog.host_resource_envelope["output_queue_tokens"] == 3
         assert app.tok is old_tok  # stage only; publication remains the explicit owner action

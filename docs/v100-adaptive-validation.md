@@ -14,6 +14,65 @@ performance are separate gates. No new session maximum or throughput result is
 claimed. The specification's 20-Q8/32-Q4 figures are geometry reference points,
 not admission promises or capacity ceilings.
 
+## Ordinary HTTP host envelope
+
+The persistent-cache SC117 attempt reached seven ready followers and completed prompt
+warmup, then correctly failed the unchanged host-commitment guard. Its failure
+and the original conservative component totals remain retained. Completing
+warmup does not establish an HTTP-ready service.
+
+The source now closes a bounded ordinary HTTP region: actual Scheduler and
+RequestLimit owners, the resident model catalog, unpublished FIFO admission,
+plain tokenizers 0.23.3 ByteLevel, and the exact pinned CPython JSON runtime.
+Profile-managed Apps retain conservative accounting at construction and stage
+re-finalization because their HTTP class outlives profile publication; admin
+functionality remains available. Other tokenizer, retained/media and configured SQL regions keep their
+conservative accounting. Credit insufficient for one full-context generation
+is refused. The generation body remains 96 MiB, metadata body 32 MiB and default
+Responses cache 256 MiB; model context, shared MTP and physical/cgroup admission
+are unchanged.
+
+The envelope independently pays logical model work, completed accepted-handler
+continuations, pinned/evicted cache generations, deepcopy/memo work, transport
+and RPC ownership. Completed slow sockets cannot borrow a retired logical
+request's credit. C one-shot encoding includes writer resize overlap, markers,
+numeric conversion objects, controlled SSE framing and overlapping strings and
+wire bytes. The selected object-layout/source proof is distinct from native
+allocator, dtoa workspace, C stack and RSS qualification.
+
+Actual pinned `_json` disassembly identified a writer leak if its terminal
+one-element-tuple allocation fails. Source-owned CUDA and shared HTTP encoders
+therefore publish a fatal failure in the existing thread-safe Server journal,
+close keepalive, refuse later encoding and notify the existing CUDA cohort
+failure channel. Calls admitted before publication may coexist and are paid by
+the HTTP connection bound. The real Server cap must be positive and no larger
+than the admitted cap, checked before socket creation; supplied CUDA servers
+must carry the same App handler and satisfy that cap before serving. Responses, SSE, statistics and authentication errors
+use that same owning boundary. This changes no installed library and adds no
+JSON monkeypatch or serialization lock.
+
+The pinned-SDK CPU source composition recorded 302 passed, two failed and
+zero skipped, with CUDA uninitialized. Both failures are unchanged counting
+fixtures (expecting grammar compilation on count and a compiled grammar on a
+count-prepared request); they reproduce on the pre-increment `1b765` baseline and
+old installed runtime. Their assertions and failure evidence are preserved.
+This is a partially passing source gate, not an all-green or installed-runtime
+qualification. The original 22 focused containment controls passed independently. The final
+actual pinned-SDK four-module check then recorded 75 passed and only the same
+two baselined failures, with zero skips/errors and CUDA uninitialized. All new
+managed-profile, accepted-cap, supplied-server and serve-lifetime controls passed.
+The final local boundary composition separately passed 38 controls. These source
+compositions do not qualify the pending installed successor or model request.
+
+Injected source controls cover poison publication, authentic primary and
+secondary failures, concurrent in-flight writers, actual CUDA/shared handlers,
+authentication, Responses and statistics. These are not native OOM experiments.
+Pinned-stack CPU source composition, an installed successor and an actual normal
+HTTP/model request remain separate evidence gates. A lower explicit diagnostic
+connection cap may bound accepted-handler ownership; it does not reduce context,
+MTP or route body limits. Startup still binds the real TP identity and schema
+and must pass its original physical guard before serving.
+
 ## Neutral artifact I/O boundary (A1)
 
 The source now separates bounded container/file validation from model and device

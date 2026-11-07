@@ -6,6 +6,16 @@ SC117/V100 is the immediate delivery priority while selected existing profiles,
 including GB10, retain their scoped contracts. The [source-to-contract status map](docs/providerone/implementation-status.md)
 separates requested, source-implemented, qualified and effective behavior.
 
+Ordinary V100 HTTP admission now binds the actual FIFO scheduler, request-limit
+owner and plain ByteLevel tokenizer before using the pinned CPython payload
+projection. It separately pays completed HTTP continuations, default-cache
+clones and one-shot JSON encoding. Profile-managed Apps keep conservative accounting
+through profile publication. This retains the physical/cgroup guard,
+full context, MTP and existing route limits. A proven native encoder allocation
+failure poisons the HTTP owner and notifies cohort retirement before any encode
+retry. This is a source integration checkpoint; installed HTTP/model request
+qualification remains pending. See [the HTTP envelope scope](docs/v100-adaptive-validation.md#ordinary-http-host-envelope).
+
 Current delivery work prioritizes one-server TP8/ETP4 before further PP2 work.
 The V100 Compose profile accepts the explicit
 `TF_EXPERT_TENSOR_PARALLEL_SIZE=4` setting while preserving unset defaults.

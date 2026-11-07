@@ -1,8 +1,6 @@
 """Shared authentication before either HTTP server dispatches a request."""
 
-import json
-
-from tensorfold.server import metrics
+from tensorfold.server import json_output, metrics
 from tensorfold.server.authentication import principal_scope
 
 
@@ -35,7 +33,7 @@ class Authenticated:
             payload = {"error": {"message": message, "type": "invalid_request_error",
                                  "param": None, "code": "invalid_api_key"}}
         self.close_connection = True
-        blob = json.dumps(payload).encode()
+        blob = json_output.dumps(self, payload, as_bytes=True)
         self.send_response(401)
         self.send_header("WWW-Authenticate", "Bearer")
         self.send_header("Content-Type", "application/json")

@@ -8,7 +8,7 @@ import uuid
 from typing import TYPE_CHECKING, Any
 
 from tensorfold.cuda import health
-from tensorfold.server import anthropic, conversations, metrics, request_body, responses, runtime, stats, token_routes
+from tensorfold.server import anthropic, conversations, json_output, metrics, request_body, responses, runtime, stats, token_routes
 from tensorfold.server.cancellation import RequestCancelled, socket_cancellation
 from tensorfold.server.decisions import DecisionError
 from tensorfold.server.errors import (RequestError, error_body, invalid_request, retry_headers, server_error, status_of,
@@ -58,7 +58,7 @@ def make_handler(app: App):
             # write failure handling remain exactly the native path below.
             if encoded is not None and type(encoded) is not bytes:
                 raise TypeError("preencoded JSON must be owned bytes")
-            data = json.dumps(payload).encode() if encoded is None else encoded
+            data = json_output.dumps(self, payload, as_bytes=True) if encoded is None else encoded
             try:
                 self.send_response(code)
                 self.send_header("Content-Type", "application/json")
@@ -91,7 +91,7 @@ def make_handler(app: App):
             """End an open stream with an error event and ``[DONE]``, as the MLX server does."""
 
             try:
-                self.wfile.write(f"data: {json.dumps({'error': error})}\n\ndata: [DONE]\n\n".encode())
+                self.wfile.write(json_output.dumps(self, {"error": error}, prefix="data: ", suffix="\n\ndata: [DONE]\n\n", as_bytes=True))
                 self.wfile.flush()
             except OSError:
                 pass
@@ -151,6 +151,7 @@ def make_handler(app: App):
                 except (json.JSONDecodeError, UnicodeDecodeError, RecursionError):
                     return self._json(400, {"error": invalid_request("the request body is not JSON")})
                 except Exception as error:
+                    json_output.allocation_failed(self, error)
                     _log_error(error)
                     return self._json(500, {"error": server_error(_error_message(error))})
                 return self._json(200, reply)
@@ -183,6 +184,7 @@ def make_handler(app: App):
                 except RequestError as exc:
                     return self._refuse(exc)
                 except Exception as exc:
+                    json_output.allocation_failed(self, exc)
                     _log_error(exc)
                     return self._json(400, {"error": invalid_request(_error_message(exc))})
                 return self._json(200, reply)
@@ -197,6 +199,7 @@ def make_handler(app: App):
             except RequestError as exc:
                 return self._refuse(exc, field)
             except Exception as exc:        # any other failure to read the request is refused too, as on MLX
+                json_output.allocation_failed(self, exc)
                 _log_error(exc)
                 return self._json(400, {"error": invalid_request(_error_message(exc))})
             rid = f"chatcmpl-{uuid.uuid4().hex[:24]}" if chat else f"cmpl-{uuid.uuid4().hex[:24]}"
@@ -235,9 +238,9 @@ def make_handler(app: App):
                     open_stream()
                     if not said_role:
                         said_role = True
-                        self.wfile.write(f"data: {json.dumps(chunk({'role': 'assistant'}))}\n\n".encode())
+                        self.wfile.write(json_output.dumps(self, chunk({"role": "assistant"}), prefix="data: ", suffix="\n\n", as_bytes=True))
                     if frame is not None:
-                        self.wfile.write(f"data: {json.dumps(frame)}\n\n".encode())
+                        self.wfile.write(json_output.dumps(self, frame, prefix="data: ", suffix="\n\n", as_bytes=True))
                     self.wfile.flush()
 
                 if not defer_headers:
@@ -269,7 +272,7 @@ def make_handler(app: App):
                     frame["prompt_progress"] = progress
                     try:
                         open_stream()
-                        self.wfile.write(f"data: {json.dumps(frame)}\n\n".encode())
+                        self.wfile.write(json_output.dumps(self, frame, prefix="data: ", suffix="\n\n", as_bytes=True))
                         self.wfile.flush()
                         return True
                     except OSError:
@@ -287,6 +290,7 @@ def make_handler(app: App):
                         return self._refuse(exc, field)
                     return self._stream_error(error_body(exc, field))
                 except Exception as exc:
+                    json_output.allocation_failed(self, exc)
                     _log_error(exc)
                     if not opened:
                         return self._json(500, {"error": server_error(_error_message(exc))})
@@ -316,7 +320,7 @@ def make_handler(app: App):
                 else:
                     end["usage"] = usage_of(result)      # every stream, as the Mac server's: clients count from it
                 try:
-                    self.wfile.write("".join(f"data: {json.dumps(frame)}\n\n" for frame in frames).encode()
+                    self.wfile.write("".join(json_output.dumps(self, frame, prefix="data: ", suffix="\n\n") for frame in frames).encode()
                                      + b"data: [DONE]\n\n")
                     self.wfile.flush()
                 except (BrokenPipeError, ConnectionResetError):
@@ -332,6 +336,7 @@ def make_handler(app: App):
             except RequestError as exc:
                 return self._refuse(exc, field)
             except Exception as exc:
+                json_output.allocation_failed(self, exc)
                 _log_error(exc)
                 try:
                     self._json(500, {"error": server_error(_error_message(exc))})
@@ -372,6 +377,7 @@ def make_handler(app: App):
             except RequestError as exc:
                 return self._refuse(exc)
             except Exception as exc:        # noqa: BLE001 - a bad body is a client error
+                json_output.allocation_failed(self, exc)
                 return self._json(400, {"error": invalid_request(_error_message(exc))})
             try:
                 payload = decide(body)
@@ -380,6 +386,7 @@ def make_handler(app: App):
             except DecisionError as exc:
                 return self._json(400, {"error": invalid_request(_error_message(exc))})
             except Exception as exc:        # a scoring failure is the server's, not a bad body
+                json_output.allocation_failed(self, exc)
                 _log_error(exc)
                 try:
                     return self._json(500, {"error": server_error(_error_message(exc))})
@@ -398,7 +405,7 @@ def make_handler(app: App):
 
         bind_http(Handler, app)
     from tensorfold.server.auth_http import handler
-    return handler(Handler, app)
+    return handler(json_output.bind_handler(Handler, app), app)
 
 
 def serve(app: App, host: str, port: int, *, server: Server | None = None) -> None:
@@ -410,7 +417,9 @@ def serve(app: App, host: str, port: int, *, server: Server | None = None) -> No
         raise KeyboardInterrupt
 
     signal.signal(signal.SIGTERM, _terminate)
-    server = server if server is not None else Server((host, port), make_handler(app))
+    server = server if server is not None else Server((host, port), make_handler(app),
+                                                     max_connections=getattr(app, "max_http_connections", None))
+    json_output.validate_server(server, app)
     primary = None
     try:
         from contextlib import nullcontext
