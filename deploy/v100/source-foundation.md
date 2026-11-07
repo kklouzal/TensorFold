@@ -87,9 +87,12 @@ uses Spin 0.18, UV 0.11.15, lintrunner 0.12.7, cmakelint 1.4.1 and the pinned ho
 codegen prerequisites. The supported `spin quicklint -- -a <paths>` dispatches
 actual `lintrunner -a` on the uncommitted patch before a fork commit. Its managed
 Python 3.10.20 interpreter (20260510 build) has separate URL/bytes/SHA256 pins.
-The framework/runtime stays on Python 3.12. The user's narrow immutable
-release-wheel exception permits the release build while retaining the lint,
-detached-HEAD, Test Plan and publication rules.
+The framework/runtime stays on Python 3.12. The recorded SDK build used a narrow
+immutable release-wheel exception while retaining the lint, detached-HEAD,
+Test Plan and publication rules. That historical record does not establish or
+revoke the scope of authorization for a fresh build. Current final-wheel
+execution is held pending resolution of the fetched editable-only instruction
+versus the owned SDK artifact recipe; editable bootstrap work can proceed.
 
 The final builder installs 124 exact Debian artifacts from the recorded bundle,
 including cuDNN, Nsight Systems and their Ubuntu 24.04 dependencies. The base
@@ -181,9 +184,13 @@ docker build --network=none \
   -f deploy/v100/Dockerfile.source-builder -t tensorfold-v100:source-builder-cu1292 .
 # Run in the owned builder with /work state, /src project and /opt/tensorfold-native prefix mounts:
 bash /src/deploy/v100/source_build.sh lint-prepare
-bash /src/deploy/v100/source_build.sh acquire
-bash /src/deploy/v100/source_build.sh prepare
-bash /src/deploy/v100/source_build.sh nccl
+bash /src/deploy/v100/source_build.sh acquire-bootstrap
+bash /src/deploy/v100/source_build.sh prepare-bootstrap
+bash /src/deploy/v100/source_build.sh nccl-bootstrap
+bash /src/deploy/v100/source_build.sh framework-bootstrap
+bash /src/deploy/v100/source_build.sh finalize
+# The final wheel command requires resolution of the fetched PyTorch
+# editable-only instruction versus this owned SDK artifact recipe.
 bash /src/deploy/v100/source_build.sh framework
 bash /src/deploy/v100/source_build.sh probes
 bash /src/deploy/v100/source_build.sh export
@@ -195,10 +202,27 @@ docker run --rm --network none tensorfold-v100:source-development \
   /opt/tensorfold-pins/source_foundation.py audit
 ```
 
-Source acquisition and native NCCL compilation precede the framework stage.
-The acquisition command uses the exact commits from the pins and the complete
-recursive PyTorch gitmodules. The script initializes logs/receipts and captures
-each raw tree before a build stage consumes it. The completed-build producer
+Fresh source acquisition stages the authenticated owned patch before committing
+it. All pinned repositories and recursive submodules are acquired before fork
+finalization. Existing roots and initialized submodules must match their selected
+index/worktree state before any recursive update; staged and intent-to-add extras
+are refused at the inventory boundary. A retry can resume the exact staged
+patch without reapplying it, while unrelated changes are preserved and refused.
+
+The bootstrap prepare/NCCL phases establish the pinned native prerequisites.
+`framework-bootstrap` uses the required real editable build with the shared
+CUDA/provider configuration to generate the actual compilation database and
+headers. `finalize` requires that graph, runs the full recorded Spin checks,
+and only then creates and verifies the deterministic owned commit. There is no
+empty-directory or fabricated compilation-database substitute. Final framework
+configuration uses `--fresh` to regenerate Git/version metadata under the
+committed source. An active bootstrap marker blocks completed-build capture and
+export until the final wheel succeeds. Bootstrap artifacts are not a final SDK.
+
+The existing non-bootstrap acquisition path remains available when its genuine
+build prerequisites already exist. Final captures still require the exact
+effective commits, complete raw byte inventories and selected native providers.
+The script initializes logs/receipts before a build stage consumes inputs. The completed-build producer
 verifies those bytes again, including declared checkout conversions. Ignored and
 nonignored untracked source is refused except for explicit build/generated/cache
 roles; actual generated source bytes are separately recorded. The canonical Ninja
@@ -210,6 +234,17 @@ Keep source clones, downloads and object caches outside the project/Docker
 context. The build caps Torch parallelism at four jobs; the current prototype
 container is limited to four CPU cores and 36 GiB RAM. The settings are build
 resource controls, not model-serving capacity or throughput claims.
+
+The fresh-bootstrap repair passed 59 affected tests on native AMD64 tooling.
+The broader five-module producer/input/install batch passed 112 tests and 17
+subtests, with two selected-SDK-receipt skips; required deployment controls
+passed 194 cases. Ruff and shell syntax checks passed. Real temporary Git
+repositories and a small independently configured CMake/Ninja project exercise
+resume, inventory and finalization contracts; external Spin execution is a test
+boundary stand-in. These controls do not replace the actual upstream editable
+build, lint or final SDK audit. Initial executable-fixture failures on a `noexec`
+test tmpfs and the unchanged-source retry are retained in
+`native-sdk-bootstrap-v1` under the private audit root.
 
 The initial producer bootstrap used the pinned CUDA image and recorded Ubuntu
 24.04 APT inputs to acquire the tool environment. Its exact added package bytes

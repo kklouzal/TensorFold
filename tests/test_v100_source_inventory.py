@@ -175,3 +175,224 @@ def test_fresh_acquire_initializes_receipts_and_captures_inputs_without_manual_s
     assert result.returncode == 0, result.stdout + result.stderr
     assert (state / "logs").is_dir()
     assert json.loads((state / "receipts/demo-source-inventory.json").read_text()) == inventory
+
+
+@pytest.fixture
+def owned_patch(repository, tmp_path):
+    path, git, base = repository
+    (path / "CMakeLists.txt").write_text(
+        "cmake_minimum_required(VERSION 3.24)\nproject(SourceFixture LANGUAGES CXX)\n"
+        "set(CMAKE_EXPORT_COMPILE_COMMANDS ON)\nadd_library(fixture STATIC fixture.cpp)\n")
+    (path / "fixture.cpp").write_text("int fixture() { return 1; }\n")
+    (path / ".gitignore").write_text("build/\nagent_space/\n")
+    git("add", "CMakeLists.txt", "fixture.cpp", ".gitignore")
+    git("commit", "-m", "Declare independent synthetic CMake fixture")
+    base = git("rev-parse", "HEAD").decode().strip()
+    git("remote", "add", "origin", str(path))
+    git("checkout", "--detach", base)
+    (path / "code header.txt").write_text("corrected owned bytes\n")
+    (path / "new test.cpp").write_text("// independent regression fixture\n")
+    git("add", "code header.txt", "new test.cpp")
+    patches = tmp_path / "patches"
+    patches.mkdir()
+    patch = patches / "owned.patch"
+    patch.write_bytes(git("diff", "--cached", "--binary", base))
+    message = "Fix fixture source\n\nTest Plan:\n```bash\nfixture-check\n```\n"
+    date = "1793049855 +0000"
+    environment = {**os.environ, "GIT_AUTHOR_NAME": "TensorFold Source Builder",
+                   "GIT_AUTHOR_EMAIL": "source-builder@tensorfold.invalid",
+                   "GIT_COMMITTER_NAME": "TensorFold Source Builder",
+                   "GIT_COMMITTER_EMAIL": "source-builder@tensorfold.invalid",
+                   "GIT_AUTHOR_DATE": date, "GIT_COMMITTER_DATE": date}
+    final = subprocess.check_output(["git", "-C", str(path), "commit-tree",
+                                     git("write-tree").decode().strip(), "-p", base],
+                                    input=message.encode(), env=environment).decode().strip()
+    git("reset", "--hard", final)
+    inventory = SOURCE.source_inventory(path, final)
+    source = {"commit": base, "effective_commit": final, "repository": str(path),
+              "fork_date": date, "fork_message": message,
+              "owned_patches": [{"artifact": patch.name, **SOURCE.file_identity(patch)}],
+              "source_inventory_sha256": hashlib.sha256(SOURCE.canonical(inventory) + b"\n").hexdigest()}
+    git("reset", "--hard", base)
+    return path, git, source, patches
+
+
+def test_owned_patch_staging_resumes_exact_index_without_reapplying(owned_patch):
+    path, git, source, patches = owned_patch
+    tree = SOURCE.stage_owned_patches(path, source, patches)
+    index = git("ls-files", "--stage", "-z")
+    assert SOURCE.stage_owned_patches(path, source, patches) == tree
+    assert git("ls-files", "--stage", "-z") == index
+    assert git("rev-parse", "HEAD").decode().strip() == source["commit"]
+    with pytest.raises(ValueError, match="immutable revision"):
+        SOURCE.verify_source_heads({"sources": {path.name: source}}, path.parent)
+
+
+@pytest.mark.parametrize("kind", ["unstaged", "staged", "partial", "patch-bytes", "wrong-head"])
+def test_owned_patch_resume_rejects_unknown_states_without_reverting(owned_patch, kind):
+    path, git, source, patches = owned_patch
+    SOURCE.stage_owned_patches(path, source, patches)
+    if kind in ("unstaged", "staged"):
+        (path / "code header.txt").write_text("unknown user bytes\n")
+        if kind == "staged":
+            git("add", "code header.txt")
+    elif kind == "partial":
+        git("restore", "--staged", "--source=HEAD", "code header.txt")
+        git("restore", "code header.txt")
+    elif kind == "patch-bytes":
+        (patches / "owned.patch").write_text("unapproved patch\n")
+    else:
+        git("reset", "--hard", source["effective_commit"])
+    before = git("diff", "HEAD", "--binary")
+    index = git("ls-files", "--stage", "-z")
+    with pytest.raises((ValueError, subprocess.CalledProcessError)):
+        SOURCE.stage_owned_patches(path, source, patches)
+    assert git("diff", "HEAD", "--binary") == before
+    assert git("ls-files", "--stage", "-z") == index
+
+
+def test_bootstrap_inventory_preserves_actual_head_and_final_gate(owned_patch, tmp_path):
+    path, git, source, patches = owned_patch
+    pins = {"sources": {path.name: source}}
+    receipts = tmp_path / "receipts"
+    SOURCE.capture_bootstrap_sources(pins, path.parent, patches, receipts)
+    receipt = json.loads((receipts / "bootstrap-sources.json").read_text())
+    assert receipt["phase"] == "precommit-build-inputs"
+    assert receipt["sources"][path.name]["head"] == source["commit"]
+    assert receipt["sources"][path.name]["staged_tree"] == git("write-tree").decode().strip()
+    with pytest.raises(ValueError, match="immutable revision"):
+        SOURCE.capture_sources(pins, path.parent, receipts)
+    (path / "unapproved.cpp").write_text("// hidden compiler input\n")
+    with pytest.raises(ValueError, match="untracked non-generated"):
+        SOURCE.capture_bootstrap_sources(pins, path.parent, patches, receipts)
+
+
+@pytest.mark.parametrize("capture", ["bootstrap", "final", "finalize", "source"])
+@pytest.mark.parametrize("kind", ["staged", "intent-to-add"])
+def test_effective_checkout_rejects_unrecorded_index_additions(owned_patch, tmp_path, capture, kind):
+    path, git, source, patches = owned_patch
+    git("reset", "--hard", source["effective_commit"])
+    extra = path / "unexpected.cpp"
+    extra.write_text("// staged file must not escape source inventory\n")
+    git("add", *(["-N"] if kind == "intent-to-add" else []), "unexpected.cpp")
+    pins = {"sources": {path.name: source}}
+    receipts = tmp_path / "receipts"
+    index = git("ls-files", "--stage", "-z")
+    with pytest.raises(subprocess.CalledProcessError):
+        if capture == "bootstrap":
+            SOURCE.capture_bootstrap_sources(pins, path.parent, patches, receipts)
+        elif capture == "final":
+            SOURCE.capture_sources(pins, path.parent, receipts)
+        elif capture == "finalize":
+            SOURCE.finalize_sources(pins, path.parent, patches, receipts, tmp_path / "unavailable-spin")
+        else:
+            SOURCE.source_inventory(path, source["effective_commit"])
+    assert extra.read_text() == "// staged file must not escape source inventory\n"
+    assert git("ls-files", "--stage", "-z") == index
+
+
+def test_acquisition_initializes_all_repositories_before_staging(owned_patch, tmp_path, monkeypatch):
+    path, _, source, patches = owned_patch
+    directory = tmp_path / "acquired"
+    pins = {"sources": {"pytorch": source, "native": {"repository": str(path), "commit": source["commit"]}}}
+    original = SOURCE.stage_owned_patches
+    staged = []
+
+    def apply(checkout, selected, patch_directory):
+        assert (directory / "native/.git").is_dir()
+        staged.append(checkout.name)
+        return original(checkout, selected, patch_directory)
+
+    monkeypatch.setattr(SOURCE, "stage_owned_patches", apply)
+    SOURCE.acquire_sources(pins, directory, patches, stage_only=True)
+    SOURCE.acquire_sources(pins, directory, patches, stage_only=True)
+    assert staged == ["pytorch", "pytorch"]
+
+
+def test_default_acquire_rejects_unknown_compiler_inputs_before_fork_commit(owned_patch, monkeypatch):
+    path, git, source, patches = owned_patch
+    extra = path / "unrecorded.cpp"
+    extra.write_text("// unrelated user source\n")
+    finalized = []
+    monkeypatch.setattr(SOURCE, "apply_owned_patches", lambda *args, **kwargs: finalized.append(args))
+    with pytest.raises(ValueError, match="untracked non-generated"):
+        SOURCE.acquire_sources({"sources": {path.name: source}}, path.parent, patches)
+    assert not finalized
+    assert git("rev-parse", "HEAD").decode().strip() == source["commit"]
+    assert extra.read_text() == "// unrelated user source\n"
+
+
+def test_finalization_rejects_missing_real_build_before_lint_or_commit(owned_patch, tmp_path):
+    path, git, source, patches = owned_patch
+    lint = tmp_path / "spin"
+    lint.write_text("#!/bin/sh\nexit 0\n")
+    lint.chmod(0o755)
+    with pytest.raises(ValueError, match="real framework bootstrap build"):
+        SOURCE.apply_owned_patches(path, source, patches, lint_tool=lint)
+    assert git("rev-parse", "HEAD").decode().strip() == source["commit"]
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_dirty_gitmodules_rejected_before_any_submodule_update(repository, tmp_path, monkeypatch, nested):
+    path, git, _ = repository
+    child = tmp_path / "submodule-origin"
+    subprocess.run(["git", "clone", str(path), str(child)], check=True, capture_output=True)
+    git("-c", "protocol.file.allow=always", "submodule", "add", str(child), "module")
+    git("commit", "-m", "Pin synthetic submodule")
+    base = git("rev-parse", "HEAD").decode().strip()
+    git("remote", "add", "origin", str(path))
+    if nested:
+        metadata = path / "module/.gitmodules"
+    else:
+        metadata = path / ".gitmodules"
+    metadata.write_text('[submodule "unapproved"]\npath = unapproved\nurl = https://unapproved.invalid/repo\n')
+    if nested:
+        subprocess.run(["git", "-C", str(path / "module"), "add", ".gitmodules"], check=True)
+    before = metadata.read_bytes()
+    called = []
+    run = SOURCE.subprocess.run
+
+    def guarded(arguments, **kwargs):
+        if "submodule" in arguments and "update" in arguments:
+            called.append(arguments)
+            raise AssertionError("untrusted .gitmodules must be rejected before external acquisition")
+        return run(arguments, **kwargs)
+
+    monkeypatch.setattr(SOURCE.subprocess, "run", guarded)
+    with pytest.raises(subprocess.CalledProcessError):
+        SOURCE.acquire_sources({"sources": {path.name: {"repository": str(path), "commit": base}}},
+                               path.parent, tmp_path, stage_only=True)
+    assert not called
+    assert metadata.read_bytes() == before
+
+
+@pytest.mark.parametrize("lint_exit", [0, 1])
+def test_finalize_uses_real_cmake_graph_and_lint_before_deterministic_commit(owned_patch, tmp_path, monkeypatch, lint_exit):
+    origin, _, source, patches = owned_patch
+    root = tmp_path / "sources/pytorch"
+    subprocess.run(["git", "clone", str(origin), str(root)], check=True, capture_output=True)
+    source = {**source, "repository": str(origin)}
+    SOURCE.stage_owned_patches(root, source, patches)
+    # This is an independent tiny CMake project, not a fabricated compilation
+    # database or a substitute qualification build of the upstream framework.
+    subprocess.run(["cmake", "-S", str(root), "-B", str(root / "build"), "-G", "Ninja"],
+                   check=True, capture_output=True)
+    subprocess.run(["cmake", "--build", str(root / "build"), "--parallel", "1"], check=True, capture_output=True)
+    lint = tmp_path / "spin"
+    lint.write_text('#!/bin/sh\nprintf "%s\\n" "$@" > "$TF_TEST_LINT_LOG"\nexit "$TF_TEST_LINT_EXIT"\n')
+    lint.chmod(0o755)
+    log = tmp_path / "lint-arguments.txt"
+    monkeypatch.setenv("TF_TEST_LINT_LOG", str(log))
+    monkeypatch.setenv("TF_TEST_LINT_EXIT", str(lint_exit))
+    receipts = tmp_path / "receipts"
+    pins = {"sources": {"pytorch": source}}
+    if lint_exit:
+        with pytest.raises(subprocess.CalledProcessError):
+            SOURCE.finalize_sources(pins, root.parent, patches, receipts, lint)
+    else:
+        SOURCE.finalize_sources(pins, root.parent, patches, receipts, lint)
+        SOURCE.finalize_sources(pins, root.parent, patches, receipts, lint)
+        assert (receipts / "pytorch-source-inventory.json").is_file()
+    head = subprocess.check_output(["git", "-C", str(root), "rev-parse", "HEAD"]).decode().strip()
+    assert head == source["commit" if lint_exit else "effective_commit"]
+    assert log.read_text().splitlines() == ["quicklint", "--", "-a", "code header.txt", "new test.cpp"]

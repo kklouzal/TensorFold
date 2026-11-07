@@ -18,6 +18,7 @@ import os
 import shlex
 import stat
 import subprocess
+import tempfile
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -749,6 +750,8 @@ def revise_runtime_policy(pins, prior_audit, policy_path):
 
 def capture_build(pins, state, project):
     """Produce a completed-build receipt from actual outputs, never a success flag."""
+    if (state / "receipts/framework-bootstrap-active.json").exists():
+        raise ValueError("precommit framework bootstrap cannot be exported as a completed SDK")
     source = state / "sources/pytorch"
     cache_path = source / "build/CMakeCache.txt"
     cache = {}
@@ -823,7 +826,7 @@ def verify_source_heads(pins, directory):
             raise ValueError("source checkout does not match its selected immutable revision: " + name)
 
 
-def acquire_sources(pins, directory, patch_directory, lint_tool=None):
+def acquire_sources(pins, directory, patch_directory, lint_tool=None, *, stage_only=False):
     """Acquire immutable commits/submodules without rewriting an existing checkout."""
     directory.mkdir(parents=True, exist_ok=True)
     for name, source in pins["sources"].items():
@@ -844,19 +847,56 @@ def acquire_sources(pins, directory, patch_directory, lint_tool=None):
                                           "remote", "get-url", "origin"]).decode().strip()
         if origin != source["repository"] or head not in (source["commit"], effective_commit(source)):
             raise ValueError("existing source checkout does not match its immutable commit/origin: " + name)
+    trees = {}
+    for name, source in pins["sources"].items():
+        path = (directory / name).resolve(strict=True)
+        head = subprocess.check_output(["git", "-c", "safe.directory=" + str(path), "-C", str(path),
+                                        "rev-parse", "HEAD"]).decode().strip()
         if head != effective_commit(source):
-            apply_owned_patches(path, source, patch_directory, lint_tool=lint_tool)
-        git("submodule", "update", "--init", "--recursive", "--jobs=4")
+            trees[name] = stage_owned_patches(path, source, patch_directory)
+        else:
+            trees[name] = "HEAD"
+        verify_acquired_checkout(path, head, trees[name])
+    # Existing .gitmodules/index/worktree state must be authenticated before
+    # Git can use it to select any recursively acquired external repository.
+    for name in pins["sources"]:
+        path = (directory / name).resolve(strict=True)
+        subprocess.run(["git", "-c", "safe.directory=" + str(path), "-C", str(path),
+                        "submodule", "update", "--init", "--recursive", "--jobs=4"], check=True)
+    if stage_only:
+        return
+    capture_bootstrap_sources(pins, directory, patch_directory)
+    for name, source in pins["sources"].items():
+        if trees[name] != "HEAD":
+            apply_owned_patches((directory / name).resolve(strict=True), source, patch_directory, lint_tool=lint_tool)
     verify_source_heads(pins, directory)
 
 
-def apply_owned_patches(path, source, directory, *, lint_tool=None):
-    """Reproduce the one recorded downstream source fork, before any compilation."""
+def verify_acquired_checkout(root, expected_head, tree="HEAD"):
+    """Preflight existing recursive checkouts without replacing unknown state."""
+    pending = [(root, expected_head, tree)]
+    while pending:
+        path, wanted, selected = pending.pop()
+        base = ["git", "-c", "safe.directory=" + str(path), "-C", str(path)]
+        if subprocess.check_output([*base, "rev-parse", "HEAD"]).decode().strip() != wanted:
+            raise ValueError("existing source/submodule revision differs from its pinned tree: " + str(path))
+        subprocess.run([*base, "diff", "--cached", "--ita-visible-in-index", "--exit-code", selected, "--"], check=True)
+        subprocess.run([*base, "diff", "--exit-code", "--"], check=True)
+        for entry in subprocess.check_output([*base, "ls-tree", "-r", "-z", selected]).split(b"\0"):
+            if not entry:
+                continue
+            header, name = entry.split(b"\t", 1)
+            mode, _, commit = header.decode().split()
+            child = path / name.decode("utf-8")
+            if mode == "160000" and (child / ".git").exists():
+                pending.append((child, commit, "HEAD"))
+
+
+def stage_owned_patches(path, source, directory):
+    """Accept only a clean base or the exact already-staged recorded patch."""
     patches = source.get("owned_patches", [])
     if not isinstance(patches, list) or not 1 <= len(patches) <= 16:
         raise ValueError("effective source fork needs a bounded recorded patch list")
-    if lint_tool is None or not lint_tool.is_file() or not os.access(lint_tool, os.X_OK):
-        raise ValueError("owned source fork requires its prepared Spin/lintrunner environment before committing")
     if "Test Plan" not in source["fork_message"] or "```" not in source["fork_message"]:
         raise ValueError("owned source fork message must preserve its root-cause/fix and fenced Test Plan")
     total, arguments = 0, []
@@ -871,9 +911,39 @@ def apply_owned_patches(path, source, directory, *, lint_tool=None):
             raise ValueError("owned source patch bytes differ from their bounded recorded identity")
         arguments.append(str(patch.resolve(strict=True)))
     base = ["git", "-c", "safe.directory=" + str(path), "-C", str(path)]
-    subprocess.run([*base, "diff", "--exit-code", "HEAD", "--"], check=True)
-    subprocess.run([*base, "apply", "--check", *arguments], check=True)
-    subprocess.run([*base, "apply", "--index", *arguments], check=True)
+    if subprocess.check_output([*base, "rev-parse", "HEAD"]).decode().strip() != source["commit"]:
+        raise ValueError("precommit patch staging requires the exact upstream source revision")
+    scratch = path / "agent_space"
+    scratch.mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="source-index-", dir=scratch) as temporary:
+        environment = {**os.environ, "GIT_INDEX_FILE": str(Path(temporary) / "index")}
+        subprocess.run([*base, "read-tree", source["commit"]], env=environment, check=True)
+        subprocess.run([*base, "apply", "--cached", "--check", *arguments], env=environment, check=True)
+        subprocess.run([*base, "apply", "--cached", *arguments], env=environment, check=True)
+        expected = subprocess.check_output([*base, "write-tree"], env=environment).decode().strip()
+    subprocess.run([*base, "diff", "--exit-code", "--"], check=True)
+    actual = subprocess.check_output([*base, "write-tree"]).decode().strip()
+    original = subprocess.check_output([*base, "rev-parse", source["commit"] + "^{tree}"]).decode().strip()
+    if actual == original:
+        subprocess.run([*base, "apply", "--index", *arguments], check=True)
+        actual = subprocess.check_output([*base, "write-tree"]).decode().strip()
+    if actual != expected:
+        raise ValueError("source index differs from the exact recorded owned patch")
+    return expected
+
+
+def apply_owned_patches(path, source, directory, *, lint_tool=None, stage_only=False):
+    """Stage resumably, then finalize only after actual required precommit lint."""
+    expected = stage_owned_patches(path, source, directory)
+    if stage_only:
+        return expected
+    if lint_tool is None or not lint_tool.is_file() or not os.access(lint_tool, os.X_OK):
+        raise ValueError("owned source fork requires its prepared Spin/lintrunner environment before committing")
+    build = path / "build"
+    if not (build / "compile_commands.json").is_file() or not (build / "build.ninja").is_file():
+        raise ValueError("owned source fork requires the real framework bootstrap build before lint")
+    generated_source_paths(path, build)
+    base = ["git", "-c", "safe.directory=" + str(path), "-C", str(path)]
     environment = os.environ.copy()
     environment["PATH"] = str(lint_tool.parent) + os.pathsep + environment.get("PATH", "")
     changed = subprocess.check_output([*base, "diff", "--name-only", "-z", "HEAD"]).split(b"\0")
@@ -882,6 +952,8 @@ def apply_owned_patches(path, source, directory, *, lint_tool=None):
     # actual uncommitted patch. No formatter change can silently enter a fork.
     subprocess.run([str(lint_tool), "quicklint", "--", "-a", *changed], cwd=path, env=environment, check=True)
     subprocess.run([*base, "diff", "--exit-code"], check=True)
+    if subprocess.check_output([*base, "write-tree"]).decode().strip() != expected:
+        raise ValueError("precommit lint changed the recorded source index")
     environment["GIT_AUTHOR_DATE"] = source["fork_date"]
     environment["GIT_COMMITTER_DATE"] = source["fork_date"]
     subprocess.run([*base, "-c", "user.name=TensorFold Source Builder", "-c",
@@ -891,6 +963,57 @@ def apply_owned_patches(path, source, directory, *, lint_tool=None):
     actual = subprocess.check_output([*base, "rev-parse", "HEAD"]).decode().strip()
     if actual != effective_commit(source):
         raise ValueError("reproduced owned source fork has a different immutable commit")
+
+
+def capture_bootstrap_sources(pins, directory, patch_directory, receipts=None):
+    """Authenticate exact precommit bytes without claiming a finalized fork/build."""
+    if receipts is not None:
+        receipts.mkdir(parents=True, exist_ok=True)
+    observations = {}
+    for name, source in pins["sources"].items():
+        if Path(name).name != name:
+            raise ValueError("source checkout name must stay inside its declared directory")
+        root = (directory / name).resolve(strict=True)
+        base = ["git", "-c", "safe.directory=" + str(root), "-C", str(root)]
+        head = subprocess.check_output([*base, "rev-parse", "HEAD"]).decode().strip()
+        origin = subprocess.check_output([*base, "remote", "get-url", "origin"]).decode().strip()
+        if origin != source["repository"] or head not in (source["commit"], effective_commit(source)):
+            raise ValueError("bootstrap source differs from its pinned origin/revision")
+        tree = stage_owned_patches(root, source, patch_directory) if head != effective_commit(source) else None
+        build = root / "build" if name == "pytorch" and (root / "build/build.ninja").is_file() else None
+        generated = generated_source_paths(root, build) if name == "pytorch" else set()
+        metadata_links = ({"compile_commands.json": directory.parent / "build/cccl/compile_commands.json"}
+                          if name == "cccl" else {})
+        inventory = source_inventory(root, head, root_tree=tree, build_directory=build,
+                                     generated_paths=generated, cache_roots=(".lintbin",) if name == "pytorch" else (),
+                                     metadata_links=metadata_links)
+        verify_source_links(root, inventory)
+        # Compare the same full pinned byte closure while reporting the actual
+        # upstream HEAD and staged tree separately in the bootstrap receipt.
+        selected = {**inventory, "repositories": [
+            {**row, "commit": effective_commit(source)} if row["path"] == "." else row
+            for row in inventory["repositories"]]}
+        if hashlib.sha256(canonical(selected) + b"\n").hexdigest() != source["source_inventory_sha256"]:
+            raise ValueError("bootstrap source bytes differ from the exact selected inventory: " + name)
+        observations[name] = {"head": head, "staged_tree": tree, "owned_patches": source.get("owned_patches", []),
+                              "inventory_sha256": hashlib.sha256(canonical(inventory) + b"\n").hexdigest()}
+    receipt = {"schema": "tensorfold.v100-source-bootstrap", "version": 1,
+               "phase": "precommit-build-inputs", "release_qualified": False,
+               "pins_sha256": hashlib.sha256(canonical(pins)).hexdigest(), "sources": observations}
+    if receipts is not None:
+        (receipts / "bootstrap-sources.json").write_bytes(canonical(receipt) + b"\n")
+    return receipt
+
+
+def finalize_sources(pins, directory, patch_directory, receipts, lint_tool):
+    capture_bootstrap_sources(pins, directory, patch_directory, receipts)
+    for name, source in pins["sources"].items():
+        root = (directory / name).resolve(strict=True)
+        head = subprocess.check_output(["git", "-c", "safe.directory=" + str(root), "-C", str(root),
+                                        "rev-parse", "HEAD"]).decode().strip()
+        if head != effective_commit(source):
+            apply_owned_patches(root, source, patch_directory, lint_tool=lint_tool)
+    capture_sources(pins, directory, receipts)
 
 
 def generated_source_paths(root, build_directory):
@@ -956,7 +1079,7 @@ def capture_sources(pins, directory, receipts):
 
 
 def source_inventory(root, expected_commit, *, build_directory=None, generated_paths=(),
-                     generated_inputs=None, input_prefix="", cache_roots=(), metadata_links=None):
+                     generated_inputs=None, input_prefix="", cache_roots=(), metadata_links=None, root_tree=None):
     """Validate Git's complete recursive input tree and hash actual source bytes.
 
     Generated object/codegen outputs are excluded: their authoritative generators
@@ -973,7 +1096,11 @@ def source_inventory(root, expected_commit, *, build_directory=None, generated_p
         if actual != wanted:
             raise ValueError("source/submodule commit differs from its declared Git tree: " + prefix)
         repositories.append({"path": prefix or ".", "commit": actual})
-        entries = [entry for entry in git("ls-tree", "-r", "-z", "HEAD").split(b"\0") if entry]
+        selected = root_tree if not prefix and root_tree else "HEAD"
+        # write-tree and ordinary cached diffs omit intent-to-add entries;
+        # make them visible so every index-controlled source is authenticated.
+        git("diff", "--cached", "--ita-visible-in-index", "--exit-code", selected, "--")
+        entries = [entry for entry in git("ls-tree", "-r", "-z", selected).split(b"\0") if entry]
         tracked = {entry.split(b"\t", 1)[1].decode("utf-8") for entry in entries}
         # Include ignored files: an ignored C++ file can still enter a CMake
         # GLOB. Only explicit build outputs, source-derived Python caches and
@@ -1103,6 +1230,14 @@ def main():
     acquire.add_argument("--pins", type=Path, required=True)
     acquire.add_argument("--directory", type=Path, required=True)
     acquire.add_argument("--lint-tool", type=Path)
+    acquire.add_argument("--stage-only", action="store_true")
+    for command in ("verify-bootstrap-sources", "finalize-sources"):
+        bootstrap = commands.add_parser(command)
+        bootstrap.add_argument("--pins", type=Path, required=True)
+        bootstrap.add_argument("--directory", type=Path, required=True)
+        bootstrap.add_argument("--receipts", type=Path, required=True)
+        if command == "finalize-sources":
+            bootstrap.add_argument("--lint-tool", type=Path, required=True)
     sources = commands.add_parser("capture-sources")
     sources.add_argument("--pins", type=Path, required=True)
     sources.add_argument("--directory", type=Path, required=True)
@@ -1157,7 +1292,16 @@ def main():
         verify_source_heads(read_json(args.pins)[0], args.directory)
         return
     if args.command == "acquire-sources":
-        acquire_sources(read_json(args.pins)[0], args.directory, args.pins.parent / "framework-patches", args.lint_tool)
+        acquire_sources(read_json(args.pins)[0], args.directory, args.pins.parent / "framework-patches", args.lint_tool,
+                        stage_only=args.stage_only)
+        return
+    if args.command == "verify-bootstrap-sources":
+        capture_bootstrap_sources(read_json(args.pins)[0], args.directory, args.pins.parent / "framework-patches",
+                                  args.receipts)
+        return
+    if args.command == "finalize-sources":
+        finalize_sources(read_json(args.pins)[0], args.directory, args.pins.parent / "framework-patches",
+                         args.receipts, args.lint_tool)
         return
     if args.command == "capture-sources":
         capture_sources(read_json(args.pins)[0], args.directory, args.receipts)

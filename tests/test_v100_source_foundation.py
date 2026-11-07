@@ -6,6 +6,8 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 
@@ -33,6 +35,97 @@ def test_source_build_tools_retain_exact_artifact_bytes_and_resolver_provenance(
     reordered = copy.deepcopy(raw)
     reordered["install"].reverse()
     assert SOURCE.render_build_report(reordered, "b" * 64) == (lock, receipt)
+
+
+def test_precommit_framework_outputs_cannot_be_exported(tmp_path):
+    receipts = tmp_path / "receipts"
+    receipts.mkdir()
+    (receipts / "framework-bootstrap-active.json").write_text('{"phase":"precommit-build-inputs"}\n')
+    with pytest.raises(ValueError, match="bootstrap cannot be exported"):
+        SOURCE.capture_build({}, tmp_path, ROOT)
+
+
+@pytest.mark.parametrize("final_outcome", ["success", "pip-failure", "source-rejection"])
+def test_framework_driver_keeps_native_configuration_and_bootstrap_export_barrier(tmp_path, final_outcome):
+    # Substitute only the external producer/pip boundaries to observe the real
+    # shell driver's argument vectors and failures; no SDK build is claimed.
+    state, prefix = tmp_path / "state with spaces", tmp_path / "native prefix"
+    checkout = state / "sources/pytorch"
+    checkout.mkdir(parents=True)
+    subprocess.run(["git", "init", str(checkout)], check=True, capture_output=True)
+    (checkout / "README").write_text("independent shell-driver fixture\n")
+    subprocess.run(["git", "-C", str(checkout), "add", "README"], check=True)
+    subprocess.run(["git", "-C", str(checkout), "-c", "user.name=Fixture", "-c",
+                    "user.email=fixture@example.invalid", "-c", "commit.gpgsign=false", "commit", "-m", "Fixture"],
+                   check=True, capture_output=True)
+    path = prefix / "cccl-3.5.0/include/cub/version.cuh"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("fixture native prerequisite\n")
+    for name in ("include/nccl.h", "lib/libnccl.so.2.32.3"):
+        path = state / "build/nccl" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("fixture native prerequisite\n")
+    python = state / "venv/bin/python"
+    python.parent.mkdir(parents=True)
+    python.write_text(f'''#!{sys.executable}
+import json
+import os
+from pathlib import Path
+import sys
+
+args = sys.argv[1:]
+if args[0] == "-":
+    os.execv({sys.executable!r}, [{sys.executable!r}, *args])
+with open(os.environ["TF_TEST_COMMAND_LOG"], "a") as log:
+    log.write(json.dumps({{"args": args, "arch": os.environ.get("TORCH_CUDA_ARCH_LIST"),
+                         "nccl": os.environ.get("NCCL_LIB_DIR")}}) + "\\n")
+if args[0].endswith("source_foundation.py"):
+    if args[1] == "verify-bootstrap-sources":
+        (Path(os.environ["TF_SOURCE_STATE"]) / "receipts/bootstrap-sources.json").write_text(
+            '{{"phase":"precommit-build-inputs"}}\\n')
+    if args[1] == "capture-sources" and os.environ.get("TF_TEST_FINAL_OUTCOME") == "source-rejection":
+        sys.exit(7)
+elif args[:2] == ["-m", "pip"]:
+    if "wheel" in args and os.environ.get("TF_TEST_FINAL_OUTCOME") == "pip-failure":
+        sys.exit(8)
+else:
+    raise RuntimeError("unexpected shell boundary: " + repr(args))
+''')
+    python.chmod(0o755)
+    log = tmp_path / "commands.jsonl"
+    environment = {**os.environ, "TF_SOURCE_STATE": str(state), "TF_SOURCE_PREFIX": str(prefix),
+                   "TF_PROJECT_ROOT": str(ROOT), "TF_TEST_COMMAND_LOG": str(log), "MAX_JOBS": "4",
+                   "GIT_CONFIG_GLOBAL": str(tmp_path / "gitconfig")}
+    driver = ["bash", str(ROOT / "deploy/v100/source_build.sh")]
+    bootstrap = subprocess.run([*driver, "framework-bootstrap"], env=environment, capture_output=True, text=True)
+    assert bootstrap.returncode == 0, bootstrap.stdout + bootstrap.stderr
+    marker = state / "receipts/framework-bootstrap-active.json"
+    assert marker.is_file()
+    assert (state / "receipts/framework-bootstrap-environment.json").is_file()
+    assert not (state / "receipts/framework-build-environment.json").exists()
+    environment["TF_TEST_FINAL_OUTCOME"] = final_outcome
+    final = subprocess.run([*driver, "framework"], env=environment, capture_output=True, text=True)
+    assert final.returncode == {"success": 0, "source-rejection": 7, "pip-failure": 8}[final_outcome], final.stderr
+    assert marker.exists() == (final_outcome != "success")
+    commands = [json.loads(line) for line in log.read_text().splitlines()]
+    pip = [row for row in commands if row["args"][:2] == ["-m", "pip"]]
+    assert "install" in pip[0]["args"] and "-e" in pip[0]["args"]
+    assert "--no-build-isolation" in pip[0]["args"] and "--no-deps" in pip[0]["args"]
+    assert all(row["arch"] == "7.0" and row["nccl"] == str(prefix / "nccl-2.32.3/lib") for row in pip)
+    expected = {
+        "--config-settings=cmake.args=--fresh;-UNCCL_VERSION_DEFINED",
+        "--config-settings=cmake.define.CMAKE_CUDA_ARCHITECTURES=70",
+        f"--config-settings=cmake.define.CUB_INCLUDE_DIR={prefix}/cccl-3.5.0/include",
+        f"--config-settings=cmake.define.NCCL_LIBRARIES={prefix}/nccl-2.32.3/lib/libnccl.so",
+    }
+    assert expected <= set(pip[0]["args"])
+    if final_outcome == "source-rejection":
+        assert len(pip) == 1
+        assert commands[-1]["args"][1] == "capture-sources"
+    else:
+        assert "wheel" in pip[1]["args"]
+        bootstrap_settings = [arg for arg in pip[0]["args"] if arg.startswith("--config-settings=")]
+        assert bootstrap_settings == [arg for arg in pip[1]["args"] if arg.startswith("--config-settings=")]
 
 
 @pytest.mark.parametrize("provider", ["Torch", "torchvision", "triton", "nvidia_nccl_cu12", "cuda-bindings"])

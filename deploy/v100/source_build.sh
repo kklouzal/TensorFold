@@ -15,6 +15,15 @@ export PATH="$tf_state/venv/bin:$PATH"
 export UV_CACHE_DIR="$tf_state/lint-cache/uv" UV_PYTHON_INSTALL_DIR="$tf_state/lint-python"
 mkdir -p "$tf_state/build" "$tf_state/logs" "$tf_state/receipts" "$tf_state/wheels"
 
+tf_capture_sources() {
+    local tf_capture=capture-sources
+    if [[ ${1:-} == *-bootstrap ]]; then
+        tf_capture=verify-bootstrap-sources
+    fi
+    python "$tf_project/deploy/v100/source_foundation.py" "$tf_capture" \
+        --pins "$tf_project/deploy/v100/source-pins.json" --directory "$tf_state/sources" --receipts "$tf_state/receipts"
+}
+
 case ${1:-} in
 lint-prepare)
     if [[ ! -x "$tf_state/lint-venv/bin/python" ]]; then
@@ -25,26 +34,31 @@ lint-prepare)
         -r "$tf_project/deploy/v100/requirements-source-lint-offline-amd64.lock"
     "$tf_state/lint-venv/bin/uv" python install 3.10.20
     ;;
-acquire)
+acquire|acquire-bootstrap)
+    tf_acquire_args=()
+    if [[ $1 == acquire-bootstrap ]]; then
+        tf_acquire_args+=(--stage-only)
+    fi
     python "$tf_project/deploy/v100/source_foundation.py" acquire-sources \
         --pins "$tf_project/deploy/v100/source-pins.json" --directory "$tf_state/sources" \
-        --lint-tool "$tf_state/lint-venv/bin/spin"
-    python "$tf_project/deploy/v100/source_foundation.py" capture-sources \
-        --pins "$tf_project/deploy/v100/source-pins.json" --directory "$tf_state/sources" --receipts "$tf_state/receipts"
+        --lint-tool "$tf_state/lint-venv/bin/spin" "${tf_acquire_args[@]}"
+    tf_capture_sources "$1"
     ;;
-prepare)
+finalize)
+    python "$tf_project/deploy/v100/source_foundation.py" finalize-sources \
+        --pins "$tf_project/deploy/v100/source-pins.json" --directory "$tf_state/sources" \
+        --receipts "$tf_state/receipts" --lint-tool "$tf_state/lint-venv/bin/spin"
+    ;;
+prepare|prepare-bootstrap)
     if [[ ! -x "$tf_state/venv/bin/python" ]]; then
         python3.12 -m venv "$tf_state/venv"
     fi
     /opt/source-venv/bin/python -m pip --python "$tf_state/venv" install --no-index \
         --find-links "$tf_state/release/python-wheels" --require-hashes \
         -r "$tf_project/deploy/v100/requirements-source-build-offline-amd64.lock"
-    python "$tf_project/deploy/v100/source_foundation.py" verify-source-heads \
-        --pins "$tf_project/deploy/v100/source-pins.json" --directory "$tf_state/sources"
     python "$tf_project/deploy/v100/source_foundation.py" verify-native \
         --pins "$tf_project/deploy/v100/source-pins.json" --directory "$tf_state/release/build-debs"
-    python "$tf_project/deploy/v100/source_foundation.py" capture-sources \
-        --pins "$tf_project/deploy/v100/source-pins.json" --directory "$tf_state/sources" --receipts "$tf_state/receipts"
+    tf_capture_sources "$1"
     cmake -S "$tf_state/sources/cccl" -B "$tf_state/build/cccl" -DCCCL_SKIP_BUILD_CHECKS=ON \
         -DCMAKE_INSTALL_PREFIX="$tf_prefix/cccl-3.5.0"
     cmake --install "$tf_state/build/cccl"
@@ -59,9 +73,8 @@ prepare)
     cp "$tf_state/sources/nccl/LICENSE.txt" "$tf_prefix/licenses/nccl/"
     cp "$tf_state/sources/cutlass/LICENSE.txt" "$tf_prefix/licenses/cutlass/"
     ;;
-nccl)
-    python "$tf_project/deploy/v100/source_foundation.py" capture-sources \
-        --pins "$tf_project/deploy/v100/source-pins.json" --directory "$tf_state/sources" --receipts "$tf_state/receipts"
+nccl|nccl-bootstrap)
+    tf_capture_sources "$1"
     make -C "$tf_state/sources/nccl" -j"$tf_jobs" src.build \
         BUILDDIR="$tf_state/build/nccl" CUDA_HOME=/usr/local/cuda \
         NVCC_GENCODE='-gencode=arch=compute_70,code=sm_70'
@@ -110,9 +123,9 @@ export)
         -r "$tf_project/deploy/v100/requirements-source-runtime-offline-amd64.lock" \
         --dest "$tf_state/release/python-wheels"
     ;;
-framework)
-    python "$tf_project/deploy/v100/source_foundation.py" capture-sources \
-        --pins "$tf_project/deploy/v100/source-pins.json" --directory "$tf_state/sources" --receipts "$tf_state/receipts"
+framework|framework-bootstrap)
+    tf_capture_sources "$1"
+    tf_framework_phase=$1
     test -f "$tf_prefix/cccl-3.5.0/include/cub/version.cuh"
     test -f "$tf_state/build/nccl/lib/libnccl.so.2.32.3"
     mkdir -p "$tf_prefix/nccl-2.32.3/include" "$tf_prefix/nccl-2.32.3/lib" "$tf_state/wheels"
@@ -132,7 +145,11 @@ framework)
         'git config --global --fixed-value --get-all safe.directory "$PWD" >/dev/null || git config --global --add safe.directory "$PWD"'
     export SOURCE_DATE_EPOCH
     SOURCE_DATE_EPOCH=$(git -C "$tf_state/sources/pytorch" show -s --format=%ct HEAD)
-    python - "$tf_state/receipts/framework-build-environment.json" <<'PY'
+    tf_environment_receipt=framework-build-environment.json
+    if [[ $tf_framework_phase == framework-bootstrap ]]; then
+        tf_environment_receipt=framework-bootstrap-environment.json
+    fi
+    python - "$tf_state/receipts/$tf_environment_receipt" <<'PY'
 import json
 import os
 import sys
@@ -150,22 +167,33 @@ names = (
 Path(sys.argv[1]).write_text(json.dumps({name: os.environ.get(name) for name in names}, sort_keys=True) + "\n")
 PY
     cd "$tf_state/sources/pytorch"
-    python -m pip --log "$tf_state/logs/pytorch-pip-details.log" wheel -v --no-deps --no-build-isolation --wheel-dir "$tf_state/wheels" \
-        --config-settings="cmake.args=-UNCCL_VERSION_DEFINED" \
-        --config-settings="cmake.define.CUB_INCLUDE_DIR=$tf_prefix/cccl-3.5.0/include" \
-        --config-settings="cmake.define.CMAKE_CUDA_FLAGS=-I$tf_prefix/cccl-3.5.0/include" \
-        --config-settings="cmake.define.CMAKE_CUDA_ARCHITECTURES=70" \
-        --config-settings="cmake.define.CMAKE_CXX_FLAGS=-I$tf_prefix/cccl-3.5.0/include" \
-        --config-settings="cmake.define.NCCL_ROOT=$tf_prefix/nccl-2.32.3" \
-        --config-settings="cmake.define.NCCL_VERSION=2.32.3" \
-        --config-settings="cmake.define.NCCL_INCLUDE_DIRS=$tf_prefix/nccl-2.32.3/include" \
-        --config-settings="cmake.define.NCCL_LIBRARIES=$tf_prefix/nccl-2.32.3/lib/libnccl.so" \
-        --config-settings="cmake.define.CMAKE_REQUIRED_INCLUDES=/usr/local/cuda/include" \
-        --config-settings="cmake.define.CMAKE_INSTALL_RPATH=$tf_prefix/nccl-2.32.3/lib;/usr/local/cuda/lib64" \
-        --config-settings="cmake.define.BLAS=OpenBLAS" .
+    tf_framework_args=(
+        --config-settings="cmake.args=--fresh;-UNCCL_VERSION_DEFINED"
+        --config-settings="cmake.define.CUB_INCLUDE_DIR=$tf_prefix/cccl-3.5.0/include"
+        --config-settings="cmake.define.CMAKE_CUDA_FLAGS=-I$tf_prefix/cccl-3.5.0/include"
+        --config-settings="cmake.define.CMAKE_CUDA_ARCHITECTURES=70"
+        --config-settings="cmake.define.CMAKE_CXX_FLAGS=-I$tf_prefix/cccl-3.5.0/include"
+        --config-settings="cmake.define.NCCL_ROOT=$tf_prefix/nccl-2.32.3"
+        --config-settings="cmake.define.NCCL_VERSION=2.32.3"
+        --config-settings="cmake.define.NCCL_INCLUDE_DIRS=$tf_prefix/nccl-2.32.3/include"
+        --config-settings="cmake.define.NCCL_LIBRARIES=$tf_prefix/nccl-2.32.3/lib/libnccl.so"
+        --config-settings="cmake.define.CMAKE_REQUIRED_INCLUDES=/usr/local/cuda/include"
+        --config-settings="cmake.define.CMAKE_INSTALL_RPATH=$tf_prefix/nccl-2.32.3/lib;/usr/local/cuda/lib64"
+        --config-settings="cmake.define.BLAS=OpenBLAS"
+    )
+    if [[ $tf_framework_phase == framework-bootstrap ]]; then
+        cp "$tf_state/receipts/bootstrap-sources.json" "$tf_state/receipts/framework-bootstrap-active.json"
+        python -m pip --log "$tf_state/logs/pytorch-bootstrap-pip-details.log" install -e . -v \
+            --no-build-isolation --no-deps "${tf_framework_args[@]}"
+        tf_capture_sources "$tf_framework_phase"
+    else
+        python -m pip --log "$tf_state/logs/pytorch-pip-details.log" wheel -v --no-deps --no-build-isolation \
+            --wheel-dir "$tf_state/wheels" "${tf_framework_args[@]}" .
+        rm -f "$tf_state/receipts/framework-bootstrap-active.json"
+    fi
     ;;
 *)
-    echo "source_build.sh requires lint-prepare, acquire, prepare, nccl, probes, framework or export" >&2
+    echo "source_build.sh requires lint-prepare, acquire[-bootstrap], prepare[-bootstrap], nccl[-bootstrap], framework[-bootstrap], finalize, probes or export" >&2
     exit 2
     ;;
 esac

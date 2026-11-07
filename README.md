@@ -33,6 +33,13 @@ The offline source-builder image also builds successfully. These are dependency
 preparation results; they do not qualify the SDK or native model
 execution. See [input staging](deploy/v100/source-foundation.md#reacquire-the-frozen-build-inputs).
 
+Fresh SDK bootstrap now stages the exact owned source patch, prepares its native
+prerequisites and produces a genuine editable-build compilation database before
+required lint and commit finalization. Final SDK capture rejects bootstrap-only
+outputs. Native AMD64 checks passed 112 producer/input/install tests and 17
+subtests, with two selected-SDK-receipt skips; actual framework and V100
+qualification remain pending.
+
 This is an authority/source-baseline checkpoint, not a package or runtime
 rebrand. Current TensorFold imports, CLI, native names, images and remotes keep
 their actual identities until a coherent, verified transition. Historical
