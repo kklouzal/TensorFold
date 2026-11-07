@@ -434,6 +434,17 @@ CUDA 12.8 for two or more nested divergence levels where convergence instruction
 were elided. The public statement does not establish SM70 applicability or a
 supported12.x backport. CUDA 13's fix does not restore SM70 offline compilation.
 
+The 2026-11-07 documentation refresh retains a vendor-scope discrepancy.
+[R615 driver notes](https://docs.nvidia.com/datacenter/tesla/tesla-release-notes-615-71-09/index.html)
+describe a Blackwell reconvergence correction and exempt applications built
+with NVCC 13.2.2 or newer, without naming issue 6111901. The
+[current CUDA features archive](https://docs.nvidia.com/cuda/cuda-features-archive/)
+lists a similar description under CUDA 13.3 as issue 6156910. Those statements
+do not explicitly equate the identifiers or resolve NVCC 12.9.86/SM70
+applicability, and do not establish a supported 12.x correction. The driver
+recompilation control described for Blackwell is not an established V100
+mitigation. No compiler pin or driver policy changes on this evidence.
+
 The `reconvergence_6111901` probe covers the actual selected-position control
 class: a partial ten-ID tile, invalid/owned/unowned/partial pages, initialized
 registers, four component branches, and exact integer/count oracles. It compares

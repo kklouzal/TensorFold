@@ -17,6 +17,52 @@ and demuxers, with external auto-detection, hardware acceleration, encoders,
 muxers and devices disabled. No CUDA/NPP or additional encoder dependency is
 introduced. The source Torch, CUDA and NCCL libraries are preserved.
 
+## Independent input acquisition checkpoint
+
+Input acquisition and extraction can run before the final SDK exists. They
+require Python 3.12, `packaging` and curl 8.4 or newer for the
+[in-transfer size limit](https://raw.githubusercontent.com/curl/curl/curl-8_5_0/docs/cmdline-opts/max-filesize.d);
+installation, source compilation and
+installed-media auditing still require their separately specified SDK/builder
+prerequisites. The inspected source-builder and GB10 verification images lacked
+curl. A separate existing acquisition-only image supplied Python 3.12.3 and
+curl 8.5.0, with an exact cached `packaging` 25 wheel mounted read-only on
+`PYTHONPATH`, without installing it or changing the SDK. The actual local tool
+image ID was
+`sha256:944aadd4f84258d1594ed9aa8b08514d664e3a00b46e0dddc6790103d191d70b`;
+this is measured tool provenance, not a registry-pull or target-SDK claim.
+
+Canonical producer/pins from commit
+`9b651b8f456fadadec71d493351c6768b7190058` acquired all 70 exact files:
+eight source/configuration/fixture artifacts, eleven Debian packages and 51
+support wheels, totaling 395,910,778 logical artifact bytes. Forty-one wheels
+were verified copies from the read-only SDK cache; ten new wheels totaled
+13,023,907 bytes, with lengths recorded before transfer. All completed inputs
+and parent directories were rehashed/fsynced. All five extracted source closures
+passed canonical verification and durability checks. Producer/pin files and the
+existing SDK were untouched; no model weights or host-package installation was
+involved.
+
+The first FFmpeg transfer timed out with curl exit 28. Its retained record does
+not establish a more specific network cause. One explicit canonical retry
+succeeded with the original URL, size and hash. A separate instruction-packet
+collector initially rejected Transformers' legitimate `AGENTS.md` symlink to
+`.ai/AGENTS.md`; canonical extraction/source verification had already accepted
+it. Read-only follow-up verified the archive-declared alias and its regular
+target inside the source closure, then completed instruction inspection and
+fsync without changing source bytes or the link. Earlier failed/incomplete
+records remain intact.
+
+The completion receipt is
+`native-media-foundation-v1/acquisition-completion-v2.json`, SHA256
+`917f053a3ae808c7369aa284bd74d54939b111ebca11dcb587d8a91727f9f455`,
+under the private audit root. It records input completion only, with
+`release_qualified=false`. No `prepare`, source build, export, final image or
+installed-media probe ran. Full native media/application controls, physical
+V100/model quality and performance remain separate unfinished gates. Inspect
+the captured applicable source instructions again before the future build;
+input readiness does not waive them or the exact SDK/audit boundary.
+
 ## Reproduce the source build
 
 Use the exact base from `Dockerfile.media`, a Linux AMD64 CPython 3.12 container,
