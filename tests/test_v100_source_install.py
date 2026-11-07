@@ -58,8 +58,9 @@ def test_source_cpu_consumer_extensions_remain_separate_from_bundled_accelerator
         SOURCE.validate_runtime(identity)
 
 
-@pytest.mark.parametrize("change", [None, "old-producer", "sealed-library"])
-def test_audit_policy_revision_preserves_and_checks_original_build_bytes(tmp_path, monkeypatch, change):
+@pytest.mark.parametrize("mapping_policy", ["shared-anonymous-data-v1", SOURCE.MAPPING_POLICY])
+@pytest.mark.parametrize("change", [None, "old-producer", "sealed-library", "mapping-policy"])
+def test_audit_policy_revision_preserves_and_checks_original_build_bytes(tmp_path, monkeypatch, change, mapping_policy):
     prior = tmp_path / "audit-history"
     prior.mkdir()
     original = prior / "source_foundation.py"
@@ -76,7 +77,7 @@ def test_audit_policy_revision_preserves_and_checks_original_build_bytes(tmp_pat
     pins = {"immutable": "source"}
     identity = {"torch_path": str(library), "mapped_libraries": [str(library)]}
     manifest = {"schema": "tensorfold.v100-source-foundation-install", "version": 2,
-                "runtime_policy": SOURCE.RUNTIME_POLICY, "mapping_policy": SOURCE.MAPPING_POLICY,
+                "runtime_policy": SOURCE.RUNTIME_POLICY, "mapping_policy": "unknown" if change == "mapping-policy" else mapping_policy,
                 "pins_sha256": hashlib.sha256(SOURCE.canonical(pins)).hexdigest(),
                 "evidence_class": "source-built-software-identity", "release_qualified": False,
                 "include_roots": dict(SOURCE.INCLUDE_ROOTS), "runtime": identity,
@@ -96,13 +97,15 @@ def test_audit_policy_revision_preserves_and_checks_original_build_bytes(tmp_pat
     elif change == "sealed-library":
         library.write_bytes(b"substituted native provider")
     if change:
-        with pytest.raises(ValueError, match="original framework-build producer|artifact changed"):
+        with pytest.raises(ValueError, match="original framework-build producer|artifact changed|known shared-data mapping policy"):
             SOURCE.revise_audit_policy(pins, prior)
     else:
         result = SOURCE.revise_audit_policy(pins, prior)
         revision = result["audit_policy_revision"]
         assert revision["original_build_producer"] == SOURCE.file_identity(original)
         assert revision["current_audit_producer"] == SOURCE.file_identity(current)
+        assert revision["previous_mapping_policy"] == mapping_policy
+        assert result["mapping_policy"] == SOURCE.MAPPING_POLICY
         assert result["release_qualified"] is False and result["pending_gates"] == ["compiler-6111901"]
         assert build.read_bytes() == old_build_bytes and previous.read_bytes() == old_manifest_bytes
 
@@ -248,6 +251,8 @@ def test_generated_image_recipes_use_only_hash_verified_offline_source_artifacts
     policy = generated["Dockerfile.audit-policy"]
     assert policy == (ROOT / "deploy/v100/Dockerfile.audit-policy").read_text()
     assert "ARG AUDIT_BASE_IMAGE" in policy and "FROM ${AUDIT_BASE_IMAGE}" in policy
+    assert "ARG AUDIT_POLICY_COMMAND=revise-runtime-policy" in policy
+    assert "revise-audit-policy)" in policy and "unsupported owned audit-policy revision" in policy
     assert "audit-history/build-host-v1" in policy and "revise-runtime-policy" in policy
     assert "audit-policy-build-host-v1.json" in policy and "source_foundation.py audit-process" in policy
     assert "--network=none" in policy and "apt-get" not in policy

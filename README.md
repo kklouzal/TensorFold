@@ -615,6 +615,13 @@ wheel and passed 66 affected controls plus an actual shared-memory/software
 authority check. The [policy receipt](docs/verification-v100-portable-policy-cpu-20261027.json)
 separates those scopes; it does not label the full 187-module run as a new-image
 run. Actual successor target acceptance after GPU work remains pending.
+A later source-only audit correction separately classifies validated temporary
+POSIX semaphore mappings as mutable IPC data, retaining retired software and
+executable guards and the maintained host-IPC profile. Its versioned observations
+and explicit successor-image procedure are documented in the
+[source audit policy](deploy/v100/source-foundation.md#portable-build-and-host-audit-policy).
+This does not qualify a rebuilt image, identify the original scheduler mapping,
+or establish new target/model results.
 The later source-built attention metadata fix uses whole application wheel
 `6fac3438` and image `96f69617`. Its [affected software receipt](docs/verification-v100-attention-runtime-cpu-20261027.json)
 records 116 runtime checks plus 24 subtests and 33 new-native-FD checks plus five

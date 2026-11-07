@@ -634,15 +634,54 @@ producer separately from current audit code. Reusing an existing media build
 receipt follows this rebind procedure; a fresh source/media build keeps its
 own actual producer identities.
 
-The `shared-anonymous-data-v1` mapping policy identifies the observed Linux
-shared-anonymous backing as `/dev/zero (deleted)`, exactly `rw-s`, offset zero,
-namespace device `00:01` and a positive native inode. It records mapping count
-and mapped bytes as runtime data observations. These values do not identify
-software code or stale an opaque software authority when allocation changes.
-All other retired mappings, including source inputs, provider DSOs and
-executable mappings, retain the fatal audit guard. Raw runtime identity and CLI
-audits expose these data observations; callable source proofs retain only
-their software identity fields.
+The historical `shared-anonymous-data-v1` policy recognizes `/dev/zero
+(deleted)`, exactly `rw-s`, offset zero, device `00:01` and a positive inode.
+The source-only `shared-runtime-data-v2` correction preserves that predicate
+and additionally classifies the observed glibc temporary semaphore data role:
+`/dev/shm/sem.` plus exactly six ASCII alphanumeric characters and ` (deleted)`,
+exactly `rw-s`, offset zero, a positive inode, and one aligned native page.
+It checks the actual `/dev/shm` directory device against both the map and its
+tmpfs mount. Device numbers are namespace observations, not fixed host constants.
+Counts describe the trusted kernel snapshot, not current liveness or memory
+authority: normal Queue retirement after capture does not invalidate the snapshot. Private, read-only,
+executable, library/provider, unrelated-path and mismatched-shape retired
+mappings remain fatal. This is a data-role classification within the trusted
+owned process, not a general deleted-file exemption or a content signature.
+
+[glibc 2.39 `sem_open`](https://github.com/bminor/glibc/blob/glibc-2.39/sysdeps/pthread/sem_open.c#L111)
+creates, shares and unlinks the temporary name; the object remains valid while
+opens remain, as specified by
+[`sem_unlink`](https://man7.org/linux/man-pages/man3/sem_unlink.3.html).
+No executable-mount assumption, extra privilege or process-memory read is
+required. The maintained host-IPC profile remains supported: the measured V100
+host's `/dev/shm` is tmpfs without `noexec`. A legal semaphore count can contain
+ELF magic, so bytes do not distinguish this mutable data from software.
+
+Host data observation schema `tensorfold.host-shared-data-mappings` version 2
+reports `shared_anonymous` and `posix_semaphores` counts/bytes separately.
+These observations do not identify software or stale its opaque authority when
+allocation changes. Raw runtime identity and CLI audits expose them; callable
+source proofs retain software identity only. The new mapping policy requires
+an explicitly constructed successor manifest; runtime never silently accepts
+the predecessor mapping policy.
+
+For an existing version-2 source SDK whose installed audit is its original
+framework producer, the generated `Dockerfile.audit-policy` accepts explicit
+`--build-arg AUDIT_POLICY_COMMAND=revise-audit-policy`. That existing command
+archives and authenticates the original producer, manifest, build receipt and
+all software/provider bytes before publishing the new mapping-policy identity.
+The default `revise-runtime-policy` remains the historical version-1 migration.
+An unknown predecessor policy, changed original producer or substituted sealed
+library is refused. Reuse an exact verified application-wheel context and base
+image under the existing offline recipe; this does not rebuild Torch or patch
+an installed image. Repeated revisions whose current producer no longer equals
+the original build producer are not authorized by this construction command.
+
+This correction has source/CPU test scope until a successor image and its
+actual current-process/target diagnostics pass. Retain the original Queue
+failure and traceback. The independent Queue diagnostic does not identify the
+unknown original scheduler mapping path retroactively, and no scheduler GPU,
+model, quality or performance result is established by this source change.
 
 The [portable-policy CPU receipt](../../docs/verification-v100-portable-policy-cpu-20261027.json)
 binds the independent 187-module installed result (5,707 passed, nine documented

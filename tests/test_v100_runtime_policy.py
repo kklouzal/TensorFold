@@ -171,8 +171,9 @@ def test_native_shared_anonymous_backing_is_data_not_a_software_artifact():
     try:
         maps = Path("/proc/self/maps").read_text()
         mapped, driver, data = SOURCE.mapped_runtime_artifacts(maps)
-        assert data["mapping_count"] >= 1 and data["mapped_bytes"] >= 2 << 20
-        assert data["schema"] == "tensorfold.host-shared-anonymous-mappings"
+        assert data["shared_anonymous"]["mapping_count"] >= 1
+        assert data["shared_anonymous"]["mapped_bytes"] >= 2 << 20
+        assert data["schema"] == "tensorfold.host-shared-data-mappings" and data["version"] == 2
         assert not any("/dev/zero" in path for path in mapped | driver)
     finally:
         mapping.close()
@@ -201,11 +202,139 @@ def test_data_only_observations_do_not_stale_software_authority(rebind):
     pins, prior, policy, actual, *_rest = rebind
     result = SOURCE.revise_runtime_policy(pins, prior, policy)
     original = SOURCE.audit_process(result, pins)
-    actual["host_data_observations"] = {"schema": "tensorfold.host-shared-anonymous-mappings", "version": 1,
-                                        "backing": "/dev/zero", "mapping_count": 40, "mapped_bytes": 40 * (2 << 20)}
+    actual["host_data_observations"] = {"schema": "tensorfold.host-shared-data-mappings", "version": 2,
+        "shared_anonymous": {"backing": "/dev/zero", "mapping_count": 40, "mapped_bytes": 40 * (2 << 20)},
+        "posix_semaphores": {"backing": "/dev/shm/sem.XXXXXX", "mapping_count": 3, "mapped_bytes": 3 * 4096}}
     observed = SOURCE.audit_process(result, pins)
     assert observed == original
     diagnostic = {}
     SOURCE.audit_install(result, pins, process_mode=True, host_data_observations=diagnostic)
     assert diagnostic == actual["host_data_observations"]
     assert "host_data_observations" not in result["runtime"]
+
+
+@pytest.fixture
+def live_spawn_queue():
+    import multiprocessing
+
+    queue = multiprocessing.get_context("spawn").Queue()
+    try:
+        yield queue
+    finally:
+        queue.close()
+        queue.join_thread()
+
+
+def test_live_spawn_queue_semaphores_are_data_while_the_queue_remains_owned(live_spawn_queue):
+    import os
+
+    maps = Path("/proc/self/maps").read_text()
+    rows = [row for row in maps.splitlines() if "/dev/shm/sem." in row and row.endswith(" (deleted)")]
+    assert len(rows) >= 3
+    mapped, driver, data = SOURCE.mapped_runtime_artifacts(maps)
+    semaphore = data["posix_semaphores"]
+    assert semaphore["mapping_count"] == len(rows)
+    assert semaphore["mapped_bytes"] == len(rows) * os.sysconf("SC_PAGE_SIZE")
+    assert not any("/dev/shm/sem." in path for path in mapped | driver)
+    # Closing a Queue endpoint does not retire its still-owned semaphore data.
+    live_spawn_queue.close()
+    live_spawn_queue.join_thread()
+    assert SOURCE.mapped_runtime_artifacts(Path("/proc/self/maps").read_text())[2]["posix_semaphores"] == semaphore
+
+
+def test_valid_semaphore_counter_equal_to_elf_magic_is_not_software():
+    import multiprocessing
+
+    value = int.from_bytes(b"\x7fELF", "little")
+    semaphore = multiprocessing.get_context("spawn").Semaphore(value)
+    assert semaphore.get_value() == value
+    data = SOURCE.mapped_runtime_artifacts(Path("/proc/self/maps").read_text())[2]
+    assert data["posix_semaphores"]["mapping_count"] >= 1
+    assert semaphore.acquire(False)
+    assert semaphore.get_value() == value - 1
+    semaphore.release()
+    assert semaphore.get_value() == value
+
+
+@pytest.mark.parametrize("fault", ["private", "executable", "readonly", "offset", "device", "inode", "two-pages",
+                                  "unaligned", "library-name", "provider-name", "unrelated-name", "long-name"])
+def test_semaphore_role_requires_exact_mapping_shape(live_spawn_queue, fault):
+    import os
+
+    row = next(row for row in Path("/proc/self/maps").read_text().splitlines() if "/dev/shm/sem." in row)
+    fields = row.split(maxsplit=5)
+    start, end = (int(x, 16) for x in fields[0].split("-"))
+    if fault in ("private", "executable", "readonly"):
+        fields[1] = {"private": "rw-p", "executable": "rwxs", "readonly": "r--s"}[fault]
+    elif fault == "offset":
+        fields[2] = "00000001"
+    elif fault == "device":
+        fields[3] = "ff:ff"
+    elif fault == "inode":
+        fields[4] = "0"
+    elif fault == "two-pages":
+        fields[0] = f"{start:x}-{end + os.sysconf('SC_PAGE_SIZE'):x}"
+    elif fault == "unaligned":
+        fields[0] = f"{start + 1:x}-{end + 1:x}"
+    else:
+        fields[5] = {"library-name": "/dev/shm/sem.lib.so (deleted)",
+                     "provider-name": "/dev/shm/libcuda.so (deleted)",
+                     "unrelated-name": "/tmp/sem.Abc123 (deleted)",
+                     "long-name": "/dev/shm/sem.Abc1234 (deleted)"}[fault]
+    with pytest.raises(ValueError, match="retired mapped artifact|invalid semaphore-data"):
+        SOURCE.mapped_runtime_artifacts(" ".join(fields))
+
+
+@pytest.mark.parametrize("fault", ["filesystem", "mount-device", "mount-path"])
+def test_semaphore_role_requires_actual_tmpfs_provenance(live_spawn_queue, monkeypatch, fault):
+    maps = Path("/proc/self/maps").read_text()
+    row = next(row for row in maps.splitlines() if "/dev/shm/sem." in row)
+    actual = Path.read_text
+    def read(path, *args, **kwargs):
+        result = actual(path, *args, **kwargs)
+        if str(path) == "/proc/self/mountinfo":
+            rows = []
+            for mount in result.splitlines():
+                fields, filesystem = mount.split(" - ", 1)
+                parts = fields.split()
+                if parts[4] == "/dev/shm":
+                    if fault == "filesystem":
+                        filesystem = "ext4" + filesystem[len("tmpfs"):]
+                    elif fault == "mount-device":
+                        parts[2] = "255:255"
+                    elif fault == "mount-path":
+                        parts[4] = "/other-shm"
+                rows.append(" ".join(parts) + " - " + filesystem)
+            return "\n".join(rows)
+        return result
+    monkeypatch.setattr(Path, "read_text", read)
+    with pytest.raises(ValueError, match="invalid semaphore-data"):
+        SOURCE.mapped_runtime_artifacts(row)
+
+
+def test_current_mapping_policy_refuses_the_predecessor_at_runtime(rebind):
+    pins, prior, policy, *_ = rebind
+    result = SOURCE.revise_runtime_policy(pins, prior, policy)
+    result["mapping_policy"] = "shared-anonymous-data-v1"
+    with pytest.raises(ValueError, match="unsupported installed"):
+        SOURCE.audit_process(result, pins)
+
+
+def test_captured_valid_queue_snapshot_remains_data_after_owner_release():
+    import multiprocessing
+
+    def capture():
+        before = set(Path("/proc/self/maps").read_text().splitlines())
+        queue = multiprocessing.get_context("spawn").Queue()
+        try:
+            snapshot = Path("/proc/self/maps").read_text()
+            owned = {row for row in snapshot.splitlines() if row not in before and "/dev/shm/sem." in row}
+            return snapshot, owned
+        finally:
+            queue.close()
+            queue.join_thread()
+    snapshot, owned = capture()  # Normal lexical retirement, no forced collection.
+    assert len(owned) == 3
+    assert not owned.intersection(Path("/proc/self/maps").read_text().splitlines())
+    data = SOURCE.mapped_runtime_artifacts(snapshot)[2]
+    assert data["posix_semaphores"]["mapping_count"] >= len(owned)

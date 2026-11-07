@@ -17,6 +17,7 @@ import io
 import json
 import os
 import platform
+import re
 import shlex
 import shutil
 import stat
@@ -352,6 +353,7 @@ ENTRYPOINT ["/opt/venv/bin/python"]
 # Explicit binary SDK/media candidate; no framework or decoder compilation.
 ARG AUDIT_BASE_IMAGE
 FROM ${AUDIT_BASE_IMAGE}
+ARG AUDIT_POLICY_COMMAND=revise-runtime-policy
 COPY --from=application_artifacts / /portable-app-wheels/
 RUN --network=none cd /portable-app-wheels \
     && sha256sum --strict --check application-wheel.sha256 \
@@ -359,14 +361,25 @@ RUN --network=none cd /portable-app-wheels \
     && python -m pip check
 RUN --network=none mkdir -p /opt/tensorfold-pins/audit-history/build-host-v1 \
     && cp /opt/tensorfold-pins/source_foundation.py /opt/tensorfold-pins/audit-history/build-host-v1/source_foundation.py \
-    && cp /opt/tensorfold-pins/v100-source-foundation.json /opt/tensorfold-pins/audit-history/build-host-v1/v100-source-foundation.json
+    && cp /opt/tensorfold-pins/v100-source-foundation.json /opt/tensorfold-pins/audit-history/build-host-v1/v100-source-foundation.json \
+    && if [ "$AUDIT_POLICY_COMMAND" = revise-audit-policy ]; then \
+         python /opt/tensorfold-pins/source_foundation.py audit-process \
+           > /opt/tensorfold-pins/audit-history/build-host-v1/audit-process.json; \
+       fi
 COPY --chmod=0444 deploy/v100/source_foundation.py /opt/tensorfold-pins/source_foundation.py
 COPY --chmod=0444 deploy/v100/audit-policy-build-host-v1.json /opt/tensorfold-pins/runtime-policy.json
-RUN --network=none python /opt/tensorfold-pins/source_foundation.py revise-runtime-policy \
-      --pins /opt/tensorfold-pins/source-pins.json \
-      --prior-audit /opt/tensorfold-pins/audit-history/build-host-v1 \
-      --policy /opt/tensorfold-pins/runtime-policy.json \
-      --output /opt/tensorfold-pins/v100-source-foundation.json \
+RUN --network=none case "$AUDIT_POLICY_COMMAND" in \
+      revise-runtime-policy) python /opt/tensorfold-pins/source_foundation.py revise-runtime-policy \
+        --pins /opt/tensorfold-pins/source-pins.json \
+        --prior-audit /opt/tensorfold-pins/audit-history/build-host-v1 \
+        --policy /opt/tensorfold-pins/runtime-policy.json \
+        --output /opt/tensorfold-pins/v100-source-foundation.json ;; \
+      revise-audit-policy) python /opt/tensorfold-pins/source_foundation.py revise-audit-policy \
+        --pins /opt/tensorfold-pins/source-pins.json \
+        --prior-audit /opt/tensorfold-pins/audit-history/build-host-v1 \
+        --output /opt/tensorfold-pins/v100-source-foundation.json ;; \
+      *) echo "unsupported owned audit-policy revision" >&2; exit 2 ;; \
+    esac \
     && chmod 0444 /opt/tensorfold-pins/v100-source-foundation.json \
     && find /opt/tensorfold-pins/audit-history/build-host-v1 -type f -exec chmod 0444 {} + \
     && chmod 0555 /opt/tensorfold-pins/audit-history/build-host-v1 \
@@ -378,7 +391,7 @@ RUN --network=none python /opt/tensorfold-pins/source_foundation.py revise-runti
 
 
 RUNTIME_POLICY = "torch2141-build-host-v1"
-MAPPING_POLICY = "shared-anonymous-data-v1"
+MAPPING_POLICY = "shared-runtime-data-v2"
 
 
 def torch_configuration_identity(configuration, cuda_header):
@@ -421,10 +434,44 @@ def torch_configuration_identity(configuration, cuda_header):
 
 
 
+def _semaphore_data_mapping(parts):
+    """Validate the observed glibc temporary sem_t mapping, never a DSO name.
+
+    sem_open unlinks its temporary name after linking the public name. The
+    trusted process's shared, non-executable tmpfs role is data provenance,
+    not an ELF-content test: a valid semaphore counter can contain ELF magic.
+    Library/private/executable mappings never enter this data classification.
+    """
+    if not re.fullmatch(r"/dev/shm/sem\.[A-Za-z0-9]{6} \(deleted\)", parts[5]):
+        return False
+    try:
+        start, end = (int(value, 16) for value in parts[0].split("-", 1))
+        device = tuple(int(value, 16) for value in parts[3].split(":"))
+        page = os.sysconf("SC_PAGE_SIZE")
+        shm = os.stat("/dev/shm", follow_symlinks=False)
+        if (parts[1] != "rw-s" or parts[2] != "00000000"
+                or not parts[4].isascii() or not parts[4].isdecimal() or int(parts[4]) <= 0
+                or start <= 0 or start % page or end - start != page
+                or not stat.S_ISDIR(shm.st_mode) or device != (os.major(shm.st_dev), os.minor(shm.st_dev))):
+            raise ValueError("semaphore mapping differs from its observed glibc data contract")
+        mounts = []
+        for row in Path("/proc/self/mountinfo").read_text().splitlines():
+            fields, filesystem = row.split(" - ", 1)
+            fields = fields.split()
+            if (fields[4] == "/dev/shm" and tuple(map(int, fields[2].split(":"))) == device
+                    and filesystem.split()[0] == "tmpfs"):
+                mounts.append(row)
+        if len(mounts) != 1:
+            raise ValueError("semaphore mapping lacks its tmpfs provenance")
+    except (OSError, ValueError) as error:
+        raise ValueError("foundation audit encountered an invalid semaphore-data mapping") from error
+    return True
+
+
 def mapped_runtime_artifacts(maps):
-    """Separate software artifacts from Linux shared-anonymous data backing."""
+    """Separate sealed software from explicitly validated Linux shared data."""
     mapped, driver = set(), set()
-    shared_count = shared_bytes = 0
+    shared_count = shared_bytes = semaphore_count = semaphore_bytes = 0
     for line in maps.splitlines():
         parts = line.split(maxsplit=5)
         if len(parts) != 6 or not parts[5].startswith("/"):
@@ -441,13 +488,19 @@ def mapped_runtime_artifacts(maps):
                 shared_count += 1
                 shared_bytes += end - start
                 continue
+            if _semaphore_data_mapping(parts):
+                semaphore_count += 1
+                semaphore_bytes += os.sysconf("SC_PAGE_SIZE")
+                continue
             raise ValueError("foundation audit encountered a retired mapped artifact")
         path = Path(name).resolve(strict=True)
         if ".so" in path.name:
             owner = driver if path.name.startswith(("libcuda.so", "libnvidia-")) else mapped
             owner.add(str(path))
-    data = {"schema": "tensorfold.host-shared-anonymous-mappings", "version": 1,
-            "backing": "/dev/zero", "mapping_count": shared_count, "mapped_bytes": shared_bytes}
+    data = {"schema": "tensorfold.host-shared-data-mappings", "version": 2,
+            "shared_anonymous": {"backing": "/dev/zero", "mapping_count": shared_count, "mapped_bytes": shared_bytes},
+            "posix_semaphores": {"backing": "/dev/shm/sem.XXXXXX", "mapping_count": semaphore_count,
+                                 "mapped_bytes": semaphore_bytes}}
     return mapped, driver, data
 
 
@@ -699,7 +752,9 @@ def revise_audit_policy(pins, prior_audit):
         raise ValueError("audit revision requires exactly one original installed producer")
     # Keep the original snapshot unchanged on disk; only its producer location
     # changes in this local verification view, with identical original bytes.
-    audit_process({**previous, "artifacts": rebased}, pins)
+    if previous.get("mapping_policy") not in ("shared-anonymous-data-v1", MAPPING_POLICY):
+        raise ValueError("audit revision requires a known shared-data mapping policy")
+    audit_process({**previous, "mapping_policy": MAPPING_POLICY, "artifacts": rebased}, pins)
     current_runtime = runtime_identity()
     current_runtime.pop("host_data_observations", None)
     previous_paths = {row["path"] for row in previous["artifacts"]}
@@ -707,12 +762,14 @@ def revise_audit_policy(pins, prior_audit):
         raise ValueError("audit revision cannot add code outside the original sealed foundation")
     for path in (producer, previous_path, prior_audit / "audit-process.json"):
         rebased.append({"path": str(path.resolve(strict=True)), **file_identity(path)})
-    result = {**previous, "runtime": current_runtime, "artifacts": sorted(rebased, key=lambda row: row["path"]),
+    result = {**previous, "mapping_policy": MAPPING_POLICY, "runtime": current_runtime,
+              "artifacts": sorted(rebased, key=lambda row: row["path"]),
               "audit_policy_revision": {
                   "original_build_producer": original_identity,
                   "previous_install_manifest": file_identity(previous_path),
                   "current_audit_producer": file_identity(producer),
-                  "scope": "ordinary CPU consumer extensions allowed; bundled accelerator providers remain refused"}}
+                  "previous_mapping_policy": previous.get("mapping_policy"),
+                  "scope": "owned audit revision; original software/provider bytes unchanged"}}
     audit_install(result, pins)
     return result
 
