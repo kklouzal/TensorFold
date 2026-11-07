@@ -19,7 +19,7 @@ import subprocess
 import tarfile
 from urllib.parse import urlsplit
 
-from source_foundation import canonical, expected_identity, file_identity, read_json, runtime_identity as foundation_runtime_identity, ninja_tool_identity
+from source_foundation import canonical, expected_identity, file_identity, read_json, read_document, runtime_identity as foundation_runtime_identity, ninja_tool_identity
 
 
 def source_inventory(row, downloads, sources):
@@ -97,6 +97,111 @@ def prefix_inventory(prefix):
     return result
 
 
+def _durable_bytes(path, payload, *, exclusive=False):
+    def regular(name, flags):
+        fd = os.open(name, flags | os.O_NOFOLLOW | os.O_NONBLOCK)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise ValueError("media receipt publication requires a regular file")
+        except BaseException:
+            os.close(fd)
+            raise
+        return fd
+    with open(path, "xb" if exclusive else "wb", opener=regular) as stream:
+        if stream.write(payload) != len(payload):
+            raise OSError("short media receipt write")
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def _sync_parent(path):
+    fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def begin_build_environment(state, stage, script):
+    """No build effects may begin before both file and directory sync succeed."""
+    pending = state / "receipts" / ("build-environment-" + stage + ".pending")
+    controls = {name: os.environ[name] for name in ("MAX_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL", "OMP_NUM_THREADS")}
+    values = {"schema": "tensorfold.v100-media-build-environment", "version": 1, "stage": stage,
+              "producer_script_sha256": file_identity(script)["sha256"],
+              "producer_helper_sha256": file_identity(Path(__file__))["sha256"], **controls}
+    _durable_bytes(pending, canonical(values) + b"\n", exclusive=True)
+    _sync_parent(pending)
+
+
+def complete_build_environment(state, stage):
+    """Keep the durable intent until completed publication and retirement finish.
+
+    Prior facts have a durable backup. If any publication/retirement step fails,
+    restore the intent gate and prior completed facts; failed restoration is
+    reported with the primary failure and requires explicit owner recovery.
+    """
+    base = state / "receipts" / ("build-environment-" + stage)
+    pending, target = base.with_suffix(".pending"), base.with_suffix(".json")
+    values, raw = read_json(pending)
+    prior = read_document(target) if target.exists() else None
+    if prior is not None:
+        _durable_bytes(base.with_suffix(".previous"), prior)
+        _sync_parent(target)
+    values["source_receipt_sha256"] = file_identity(state / "receipts" / ("source-" + stage + ".json"))["sha256"]
+    try:
+        candidate = base.with_suffix(".publishing")
+        _durable_bytes(candidate, canonical(values) + b"\n")
+        os.replace(candidate, target)
+        _sync_parent(target)
+        pending.unlink()
+        _sync_parent(target)
+    except BaseException as error:
+        recovery = []
+        try:
+            if not pending.exists():
+                _durable_bytes(pending, raw, exclusive=True)
+                _sync_parent(pending)
+        except BaseException as failure:
+            recovery.append(failure)
+        try:
+            if prior is None:
+                if target.exists():
+                    target.unlink()
+                    _sync_parent(target)
+            elif not target.exists() or read_document(target) != prior:
+                rollback = base.with_suffix(".rollback")
+                _durable_bytes(rollback, prior)
+                os.replace(rollback, target)
+                _sync_parent(target)
+        except BaseException as failure:
+            recovery.append(failure)
+        if recovery:
+            raise BaseExceptionGroup("media environment publication and recovery failed; retain pending/previous facts",
+                                     [error, *recovery]) from None
+        raise
+
+def build_environments(state, sources, script_sha256, helper_sha256):
+    """Completed stage resource facts, never inferred from current export env."""
+    result = {}
+    controls = ("MAX_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL", "OMP_NUM_THREADS")
+    fields = {"schema", "version", "stage", "producer_script_sha256", "producer_helper_sha256", "source_receipt_sha256", *controls}
+    for stage, source in sources.items():
+        base = state / "receipts" / ("build-environment-" + stage)
+        if base.with_suffix(".pending").exists() or base.with_suffix(".pending").is_symlink():
+            raise ValueError("media export has an unfinished build-environment attempt: " + stage)
+        value = read_json(base.with_suffix(".json"))[0]
+        if (type(value) is not dict or set(value) != fields
+                or value["schema"] != "tensorfold.v100-media-build-environment"
+                or type(value["version"]) is not int or value["version"] != 1 or value["stage"] != stage
+                or value["producer_script_sha256"] != script_sha256 or value["producer_helper_sha256"] != helper_sha256
+                or value["source_receipt_sha256"] != source["sha256"]
+                or value["MAX_JOBS"] not in tuple(map(str, range(1, 25)))
+                or any(value[name] != value["MAX_JOBS"] for name in controls)):
+            raise ValueError("media build environment differs from its actual stage/source/policy: " + stage)
+        result[stage] = value
+    return result
+
+
 def capture_build(pins, state, project):
     inputs = {}
     for row in pins["artifacts"]:
@@ -115,11 +220,14 @@ def capture_build(pins, state, project):
     ninja = ninja_tool_identity(read_json(project / "deploy/v100/media-build-amd64.json")[0], state / "support-wheels")
     if read_json(state / "receipts/ninja-toolchain.json")[0] != ninja:
         raise ValueError("media build changed its selected Ninja tool identity")
+    producers = {name: file_identity(project / "deploy/v100" / name) for name in owned}
+    environments = build_environments(state, inputs, producers["media_build.sh"]["sha256"],
+                                      producers["media_foundation.py"]["sha256"])
     return {"schema": "tensorfold.v100-media-build", "version": 1,
             "pins_sha256": hashlib.sha256(canonical(pins)).hexdigest(), "source_receipts": inputs,
             "source_wheels": {path.name: file_identity(path) for path in wheels},
             "native_prefix": prefix_inventory(state / "native"), "ninja_toolchain": ninja,
-            "producer_inputs": {name: file_identity(project / "deploy/v100" / name) for name in owned},
+            "producer_inputs": producers, "build_environments": environments,
             "release_qualified": False}
 
 
@@ -345,7 +453,7 @@ def extract_source(row, downloads, sources, receipt=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=("fetch", "fetch-native", "extract", "verify-source", "record-source", "capture-build", "capture-install", "audit"))
+    parser.add_argument("command", choices=("fetch", "fetch-native", "extract", "verify-source", "record-source", "capture-build", "capture-install", "audit", "begin-build-environment", "complete-build-environment"))
     parser.add_argument("--pins", type=Path, required=True)
     parser.add_argument("--downloads", type=Path)
     parser.add_argument("--sources", type=Path)
@@ -356,6 +464,7 @@ def main():
     parser.add_argument("--receipt", type=Path)
     parser.add_argument("--state", type=Path)
     parser.add_argument("--project", type=Path)
+    parser.add_argument("--producer-script", type=Path)
     parser.add_argument("--wheels", type=Path)
     args = parser.parse_args()
     pins = read_json(args.pins)[0]
@@ -369,6 +478,17 @@ def main():
     if (pins.get("schema") != "tensorfold.v100-media-inputs" or type(pins.get("version")) is not int
             or pins["version"] != 1):
         raise ValueError("unsupported media source input manifest")
+    if args.command in ("begin-build-environment", "complete-build-environment"):
+        stages = {row["name"] for row in pins["artifacts"] if row["kind"] == "source-archive"}
+        if args.state is None or args.source_name not in stages:
+            raise ValueError("media environment publication requires its exact owned stage/state")
+        if args.command == "begin-build-environment":
+            if args.producer_script is None:
+                raise ValueError("media environment intent requires the executed producer script")
+            begin_build_environment(args.state, args.source_name, args.producer_script)
+        else:
+            complete_build_environment(args.state, args.source_name)
+        return
     if args.command == "capture-build":
         if args.state is None or args.project is None:
             raise ValueError("media build capture needs its completed state and canonical producer source")

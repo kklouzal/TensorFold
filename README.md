@@ -51,11 +51,14 @@ The offline source-builder image also builds successfully. These are dependency
 preparation results; they do not qualify the SDK or native model
 execution. See [input staging](deploy/v100/source-foundation.md#reacquire-the-frozen-build-inputs).
 
-The V100 source producer supports explicit `MAX_JOBS=1..24`, preserving default
-4 and matching CMake/OMP limits. Larger target builds require recorded container
+The V100 source and CPU media producers support explicit `MAX_JOBS=1..24`,
+preserving default 4 and matching CMake/OMP limits. Larger target builds require recorded container
 CPU/memory budgets and a fresh producer/environment receipt; this does not
 change source pins or imply a measured build-speed gain. See the
 [build resource contract](deploy/v100/source-foundation.md#build-stages).
+Future media stages durably record intent before build effects and atomically
+publish completed job facts, requiring a new producer checkpoint; this does not relabel or restart an already-running SDK build. See
+[media resource receipts](deploy/v100/media-foundation.md#build-resource-contract).
 
 Active V100 producer/media dependencies select fixed Ninja 1.13.2, with pinned
 wheel-to-executable ownership proof and an explicit CMake tool binding. The

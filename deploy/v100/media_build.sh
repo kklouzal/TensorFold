@@ -6,11 +6,11 @@ tf_media=${TF_MEDIA_STATE:-/media}
 tf_project=${TF_PROJECT_ROOT:-/src}
 tf_media_prefix=${TF_MEDIA_PREFIX:-/opt/tensorfold-media}
 tf_jobs=${MAX_JOBS:-4}
-if ! [[ "$tf_jobs" =~ ^[1-4]$ ]]; then
-    echo "media source MAX_JOBS must be 1..4" >&2
+if ! [[ "$tf_jobs" =~ ^([1-9]|1[0-9]|2[0-4])$ ]]; then
+    echo "media source MAX_JOBS must be 1..24" >&2
     exit 2
 fi
-export MAX_JOBS="$tf_jobs" OMP_NUM_THREADS="$tf_jobs"
+export MAX_JOBS="$tf_jobs" CMAKE_BUILD_PARALLEL_LEVEL="$tf_jobs" OMP_NUM_THREADS="$tf_jobs"
 mkdir -p "$tf_media/build" "$tf_media/logs" "$tf_media/receipts" "$tf_media/wheels"
 
 tf_stage=${1:-}
@@ -22,6 +22,11 @@ if [[ "$tf_stage" =~ ^(torchvision|transformers|ffmpeg|pyav|dav1d)$ ]]; then
         --pins "$tf_project/deploy/v100/media-pins.json" --downloads "$tf_media/downloads" \
         --sources "$tf_media/sources" --source-name "$tf_stage" \
         --receipt "$tf_media/receipts/source-$tf_stage.json"
+    # A failed attempt leaves its marker and cannot reuse an older completed
+    # environment receipt. Publication follows the successful source receipt.
+    python "$tf_project/deploy/v100/media_foundation.py" begin-build-environment \
+        --pins "$tf_project/deploy/v100/media-pins.json" --state "$tf_media" --source-name "$tf_stage" \
+        --producer-script "${BASH_SOURCE[0]}"
 fi
 
 case "$tf_stage" in
@@ -69,7 +74,7 @@ ffmpeg)
         --disable-gpl --disable-nonfree --enable-zlib --enable-runtime-cpudetect --enable-libdav1d \
         --extra-ldflags="-Wl,-rpath,$tf_media_prefix/dav1d-1.5.4/lib"
     make -j"$tf_jobs"
-    make install
+    make -j"$tf_jobs" install
     mkdir -p "$tf_media_prefix/licenses/ffmpeg"
     cp "$tf_media/sources/ffmpeg/"COPYING* "$tf_media/sources/ffmpeg/LICENSE.md" \
         "$tf_media_prefix/licenses/ffmpeg/"
@@ -81,7 +86,7 @@ dav1d)
         -Denable_tools=false -Denable_examples=false -Denable_tests=false -Denable_docs=false \
         '-Dc_args=-march=x86-64 -mtune=generic'
     ninja -C "$tf_media/build/dav1d" -j"$tf_jobs"
-    meson install -C "$tf_media/build/dav1d"
+    meson install --no-rebuild -C "$tf_media/build/dav1d"
     mkdir -p "$tf_media_prefix/licenses/dav1d"
     cp "$tf_media/sources/dav1d/COPYING" "$tf_media/sources/dav1d/doc/PATENTS" \
         "$tf_media_prefix/licenses/dav1d/"
@@ -115,4 +120,6 @@ if [[ "$tf_stage" =~ ^(torchvision|transformers|ffmpeg|pyav|dav1d)$ ]]; then
         --pins "$tf_project/deploy/v100/media-pins.json" --downloads "$tf_media/downloads" \
         --sources "$tf_media/sources" --source-name "$tf_stage" \
         --receipt "$tf_media/receipts/source-$tf_stage.json"
+    python "$tf_project/deploy/v100/media_foundation.py" complete-build-environment \
+        --pins "$tf_project/deploy/v100/media-pins.json" --state "$tf_media" --source-name "$tf_stage"
 fi

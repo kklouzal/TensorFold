@@ -117,6 +117,45 @@ at the selected fixed 1.13.2 tool; build stages and export bind its actual wheel
 executable provenance through the shared producer guard. This does not qualify
 media output or a completed SDK. Do not edit generated locks or installed tools.
 
+## Build resource contract
+
+Future media producers accept explicit canonical `MAX_JOBS` values 1..24 and
+retain 4 when unset or empty. The same value is exported as
+`CMAKE_BUILD_PARALLEL_LEVEL` and `OMP_NUM_THREADS`, including Python/PyTorch/
+CMake child builds such as TorchVision. FFmpeg/PyAV Make and dav1d Ninja receive
+explicit `-j` bounds; FFmpeg install also retains that bound. Meson install uses
+`--no-rebuild` after the required explicit Ninja build, avoiding an additional
+implicitly sized rebuild. The option is supported by the pinned
+[Meson 1.12.1 implementation](https://github.com/mesonbuild/meson/blob/1.12.1/mesonbuild/minstall.py).
+No required compile or failure check is skipped.
+
+Before compiler/installer work, each stage creates its exclusive pending
+environment record, fsyncs the file and fsyncs its parent directory. A failed or
+unretired pending attempt blocks a new build and export. After successful work
+and source recording, completed facts are written to a separate file, fsynced,
+atomically renamed and followed by a parent-directory fsync. Only then is the
+pending marker removed and its directory retirement fsynced. Prior completed
+facts have a durable bounded backup; a failed publication restores their
+current path and retains/restores the pending gate. Restoration failures are
+reported alongside the primary failure and require explicit owner recovery;
+no automatic retry or older-receipt borrowing is allowed.
+
+`receipts/build-environment-STAGE.json` binds the actual three job settings,
+executed script/helper hashes and completed source-receipt hash. Export
+validates those facts and embeds them in `media-build.json`; it never infers
+them from the export process's current environment. These settings bound work; they do not
+prove that 24 workers executed or establish a speed gain. Container CPU/memory
+budgets require their separate actual-host/build evidence.
+
+The earlier four-CPU/24 GiB example above retains its historical scope. For a
+new 24-job media invocation, set `-e MAX_JOBS=24` when creating a separately
+resource-budgeted container and retain its actual resource receipt. Use a new
+producer checkpoint and owned state. The active e90 SDK snapshot/build and
+its receipts remain immutable; they are not relabelled or requalified by this
+follow-on. No dependency, model, runtime, generated Dockerfile or framework
+source pin changes are implied, and no actual media build is established by
+shell-driver unit controls.
+
 ## Installed identity and controls
 
 The image retains the protected original source-foundation audit. Its separate
