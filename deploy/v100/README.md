@@ -88,7 +88,7 @@ A failed check poisons the engine and notifies the supervisor before shared CLI
 cleanup, so peers cannot remain stranded. The expert implementation label changes
 only after actual bank binding. Attention and other kernel-family labels retain
 their own meanings; these receipts do not claim a fully native model, correctness,
-quality or performance qualification. The actual private target run remains pending.
+quality or performance qualification. See [the completed bounded functional run](../../docs/v100-adaptive-validation.md#private-native-owned-sc117-functional-milestone).
 
 Canonical SM70 TP8 GPU-history startup also requires the basic
 [A4 physical-stage binding](../../docs/v100-adaptive-validation.md#pp1-physical-stage-admission-a4)

@@ -183,6 +183,42 @@ knob as optional `TF_PREFILL_ROWS`. Unset/empty preserves the engine's own plan;
 there is no new global backend default, runtime flag, entrypoint or hardcoded
 serving budget. See [the opt-in configuration](../deploy/v100/README.md#optional-development-prefill-rows).
 
+## Private native-owned SC117 functional milestone
+
+The guarded private run on `sm-v100` used source
+`bd0885e1c46f27ba19ab366d9934fe636702b12a` and immutable image
+`sha256:540c54b7fe2add056c34656d948be9c6ffa99a81250b4401cbeb3e8e47a6eeb3`.
+Its retained gate, with 383 bound artifacts, is
+`tp8-etp4-private-model-execution-v1/actual-native-functional-gate-v1.json`,
+SHA256 `8c27d7669a1412dbb999dccddaf9a5ba0c150995ffcaea30f727388f86b5cade`.
+
+The profile retained configured context 262,144, one full window, TP8/PP1/ETP4,
+INT8 (Q8) KV, default MTP maximum 4 with shared-Q8 companion, eager execution,
+prefill 256 and H1/P1. All eight genuine pre-API receipts verified the actual
+`owned-etp4-native-slots-v1` plan, 48 target banks plus one MTP bank, coordinate
+and State numerical bindings, and materialized local arenas. Each rank owned
+23,408 bytes in arenas with rows `[5,256,5]` (target/prompt/MTP), contained within
+its previously paid 292,864-byte routing reserve. This is positive actual scratch
+storage, not a claim of zero allocation or additional capacity.
+
+All 15 generation requests matched the selected reference's emitted IDs,
+messages, finishes and independently checked token SHAs. All seven within-native
+MTP/cold-serial pairs and structured SSE/nonstream parity passed. The known
+semantic score remains five of seven: `31` still fails the `43` loop oracle,
+and `fig,kiwi` still fails `kiwi,pear`. The canonical client correctly exited 1;
+those failures are preserved without a waiver. Final stats were captured, the
+normal launcher exited 0, no OOM/cleanup errors occurred, container PID was 0 and
+health/input identities were unchanged after retirement.
+
+This also completes the planner checkpoint `b88ad1dd` target functional check
+in the same main-goal run. Combined new-path timings are descriptive only;
+there was no matched integrated startup or native/reference performance benchmark.
+The corpus's largest prompt was 666 tokens, so the configured full window is
+not a full-context capacity test. Attention and other kernel families retain
+their distinct implementations; this is native routed-expert behavior evidence,
+not a fully native model or general numerical/quality/capacity/performance release.
+Normal serving still selects the reference policy. No PP2 claim is made.
+
 ## Neutral artifact I/O boundary (A1)
 
 The source now separates bounded container/file validation from model and device

@@ -143,8 +143,8 @@ The combined gate is
 `7b4f7f3af5c1bde221a216e57fc8e7d22e9322156b0ae91e3148700a168d6998`.
 Only three new combined trials were needed; the captured inventory-only
 reference was reused. User steering now ends this startup-optimization phase;
-no dedicated startup benchmark is scheduled. Target verification will accompany
-the next main ProviderOne run. No integrated startup speed gain is claimed, and
+no dedicated startup benchmark is scheduled. The private native functional run
+below exercised this planner checkpoint. No integrated startup gain is claimed, and
 no packing, payload I/O, cache or numerical-kernel change is included.
 
 ## Required SC117 parallelism matrix
@@ -154,8 +154,11 @@ and ordinary CLI/frontend/API, with a typed Python-only capability and no public
 flag or hot toggle. Its post-construction boundary requires actual SC117 banks,
 native policy, reconciled arenas and coordinate/State numerical identity before
 all ranks may publish readiness. Receipt/image/tool provenance and qualification
-scope stay separate. The default reference command/policy is unchanged; actual
-private native target execution and quality/performance gates remain pending.
+scope stay separate. The actual SC117 private run now preserved all 15 selected
+reference outputs/IDs/messages/finishes/SHAs, including native cold-serial/MTP and
+SSE parity. Known quality remains five of seven; broader quality/capacity and
+performance gates remain open. The default reference command/policy is unchanged.
+See [the exact functional scope](../v100-adaptive-validation.md#private-native-owned-sc117-functional-milestone).
 See [the guarded procedure](../../deploy/v100/README.md#private-owned-routed-qualification-procedure).
 
 The installed SDK/native-component checkpoint uses source `e90caf58` and

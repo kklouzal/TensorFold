@@ -37,12 +37,12 @@ Source startup diagnostics now separate the existing GGUF target-load interval,
 stock-MTP attachment, vocabulary binding and surrounding engine setup. They
 report host elapsed/submission time without extra device synchronization or
 changing the existing warmup milestone. An installed probe measured substantial
-pre-weight and target-load costs. The next source candidate reuses validated
+pre-weight and target-load costs. The planner reuses validated
 GGUF inventories while preserving authoritative JSON, RoPE and EOS handling.
 Inventory-only and compact-row prepared CPU plans are byte-identical to the
 prior reference. The combined CPU model-plan mean fell from 16.024 s to 6.114 s;
-target verification will accompany the next main-goal run. No integrated startup
-gain is claimed; further startup optimization is deferred for now.
+the private native functional run below also exercised that planner checkpoint.
+No integrated startup gain is claimed; further startup optimization is deferred.
 
 Current delivery work prioritizes one-server TP8/ETP4 before further PP2 work.
 The V100 Compose profile accepts the explicit
@@ -100,8 +100,10 @@ See [prepared execution and remaining gates](docs/v100-adaptive-validation.md#pr
 A [maintained private qualification procedure](deploy/v100/README.md#private-owned-routed-qualification-procedure)
 now connects that constructor policy to the existing rank supervisor and normal
 CLI/frontend/API. Actual per-rank bank, arena and numerical-binding receipts
-must complete before listening. It adds no product flag or default selection;
-actual private SC117 target correctness/quality/performance remain unqualified.
+must complete before listening. The actual SC117 run now matches selected
+reference behavior across all 15 requests, including cold serial/MTP and SSE
+parity. Known quality remains five of seven; general quality, capacity and
+performance remain open, with no default selection. See [the bounded milestone](docs/v100-adaptive-validation.md#private-native-owned-sc117-functional-milestone).
 
 The V100 source-build workflow can now reacquire its frozen APT/Python inputs
 with verified hashes, durable cache reuse, an explicit Ubuntu snapshot option
