@@ -76,13 +76,18 @@ A certified encoder allocation failure poisons the owning Server and uses the
 existing cohort retirement notification; subsequent encoding is refused.
 Profile-managed Apps retain conservative accounting across initial admission and
 profile staging; administrative functionality is unchanged. Other regions also
-retain conservative accounting. This is source integration,
-not an installed HTTP-ready or model-quality claim. See [scope, failure lifetime
+retain conservative accounting. The installed `d48e96a1`/`f4cbd945` successor
+then served one controlled HTTP chat request successfully with configured
+262,144-token context, TP8/PP1/ETP4 and shared-Q8 MTP depth 6, and retired normally.
+This establishes that diagnostic's request and ownership lifecycle; full quality,
+capacity, performance and private owned-native profile qualification remain open.
+The subsequent source default is depth 4, preserving explicit overrides; that new
+default is not relabeled as the successful depth 6 run. See [scope, failure lifetime
 and remaining gates](../v100-adaptive-validation.md#ordinary-http-host-envelope).
 
 ## Required SC117 parallelism matrix
 
-The latest installed software/component checkpoint uses source `e90caf58` and
+The installed SDK/native-component checkpoint uses source `e90caf58` and
 immutable image `sha256:a24a579e3ffd2a1ead0def6b0d68947d94796135c00c946e8440ebe1f47c5015`.
 The genuine final SM70 source build/export, protected installed software audit
 and two runtime CPU tests passed. Normal guarded `gguf_ops` JIT compilation on

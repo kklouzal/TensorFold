@@ -13,8 +13,13 @@ clones and one-shot JSON encoding. Profile-managed Apps keep conservative accoun
 through profile publication. This retains the physical/cgroup guard,
 full context, MTP and existing route limits. A proven native encoder allocation
 failure poisons the HTTP owner and notifies cohort retirement before any encode
-retry. This is a source integration checkpoint; installed HTTP/model request
-qualification remains pending. See [the HTTP envelope scope](docs/v100-adaptive-validation.md#ordinary-http-host-envelope).
+retry. The installed `d48e96a1`/`f4cbd945` diagnostic then served one controlled
+HTTP chat request successfully: `OK`, two completion tokens, `finish_reason: stop`.
+It retained configured context 262,144, TP8/PP1/ETP4 and shared-Q8 MTP depth 6,
+then retired normally. Persistent compiler caches were retained. Whole-profile
+quality, capacity, performance and private owned-native qualification remain open.
+The source default is now MTP depth 4; the successful historical run used depth6.
+See [the HTTP envelope scope](docs/v100-adaptive-validation.md#ordinary-http-host-envelope).
 
 Current delivery work prioritizes one-server TP8/ETP4 before further PP2 work.
 The V100 Compose profile accepts the explicit
@@ -1352,7 +1357,7 @@ Caps bound owner counts, not arbitrary total payload bytes. Generated token buff
 | `--delta4-head` | Gemma CT NVFP4 MoE on CUDA only: lossless tied BF16 Delta4 storage using fixed reuse16, default off. Preserves the existing drafter/vision/template/context selections. Cannot combine with ModelOpt's separate `--lossless-head`; no graph, clipping or cache candidate is enabled. |
 | `--prepare-global-prompt` | Gemma 4 CT NVFP4 or ModelOpt MoE on CUDA: one admitted context-sized shared BF16 global-prompt K/V scratch pair, default off. At the AEON131072 profile this is512 MiB. Does not enable trig, persistent cache, draft graphs or clipping. |
 | `--draft-rows N` | CUDA Gemma4 MoE with DFlash: 2–128 rows, default 16, with `--parallel 1`. E2B DFlash2: 2–8 rows, default 8, one lane; [correctness baseline and validation scope](docs/recipes/gemma-4-e2b.md). CUDA Qwen CT NVFP4: unset uses the secondary's metadata block width. With a secondary, explicit width is 2–128 on one stream, at most 16 with `--parallel`; without one, width 1 is also valid. |
-| `--mtp-drafts N` | Family-specific; Flash Next defaults to 3 on MLX and up to 6 on CUDA. Startup 0 retains legacy structural-disable behavior under `auto`; explicit `--draft-method mtp` requires a positive allocated maximum. Adaptive runtime `proposal_limit: 0` keeps enabled MTP warm. |
+| `--mtp-drafts N` | Family-specific; Flash Next defaults to 3 on MLX and up to 4 on CUDA. Startup 0 retains legacy structural-disable behavior under `auto`; explicit `--draft-method mtp` requires a positive allocated maximum. Adaptive runtime `proposal_limit: 0` keeps enabled MTP warm. |
 | `--mtp-confidence P` | Flash Next CUDA default `0.70`; range 0–1, stops later low-confidence drafts. |
 | `--lane-kernels auto\|on\|off` | `auto`; Qwen dense lane kernels on GPUs with tensor units. |
 | `--decode-share F` | MLX default `0.25`, leaving replies progressing during chunked prefill. Flash Next CUDA shared rounds default 0; a positive share sizes prompt passes to allow decoding inside them. |

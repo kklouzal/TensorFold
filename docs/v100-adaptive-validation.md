@@ -6,7 +6,7 @@ the eight-V100 TP8 path. Historical results in
 original sources and layouts. They do not qualify the adaptive implementation,
 unique histories, a different codec, or a new execution envelope.
 
-This work is developed without the eight-V100 server. The selected SC117 GGUF
+Initial source work preceded access to the eight-V100 server. The selected SC117 GGUF
 payloads and mmproj have been downloaded and verified; source/header/import
 controls do not establish device execution. Source controls, pinned-stack compilation, installed
 CPU checks, physical allocation, model correctness, quality, and measured
@@ -16,7 +16,7 @@ not admission promises or capacity ceilings.
 
 ## Ordinary HTTP host envelope
 
-The persistent-cache SC117 attempt reached seven ready followers and completed prompt
+An earlier persistent-cache SC117 attempt reached seven ready followers and completed prompt
 warmup, then correctly failed the unchanged host-commitment guard. Its failure
 and the original conservative component totals remain retained. Completing
 warmup does not establish an HTTP-ready service.
@@ -62,7 +62,7 @@ actual pinned-SDK four-module check then recorded 75 passed and only the same
 two baselined failures, with zero skips/errors and CUDA uninitialized. All new
 managed-profile, accepted-cap, supplied-server and serve-lifetime controls passed.
 The final local boundary composition separately passed 38 controls. These source
-compositions do not qualify the pending installed successor or model request.
+compositions alone do not qualify an installed successor or model request.
 
 Injected source controls cover poison publication, authentic primary and
 secondary failures, concurrent in-flight writers, actual CUDA/shared handlers,
@@ -72,6 +72,51 @@ HTTP/model request remain separate evidence gates. A lower explicit diagnostic
 connection cap may bound accepted-handler ownership; it does not reduce context,
 MTP or route body limits. Startup still binds the real TP identity and schema
 and must pass its original physical guard before serving.
+
+## First controlled SC117 HTTP success
+
+The subsequent normal installed diagnostic on `sm-v100` passed one HTTP chat
+request using source `d48e96a1fe244335972242dd0902dab8530fc797` and image
+`sha256:f4cbd945b8f2c958522cd49bac29d419614d5b606fe507d8a94524ac4d0213af`.
+Its protected software manifest was
+`491f93dab1f592da675221d60552e19f0ed1aa6b4e803f2eacd082fad19c0e53`.
+The retained gate is
+`sm-v100-http-app-successor-plan-v1/first-controlled-model-HTTP-success-gate-v5.json`,
+SHA256 `0cba3a78d64dd34790fb3ce176c71114da4bed0bf7b775b205cd4a15c42b4a0e`.
+Earlier UUID, cache and host-admission failures remain preserved.
+
+The actual profile was TP8/PP1/ETP4 with reference routed experts, shared-Q8
+MTP configured to maximum depth 6 and QSA 4/2048, INT8 KV, one stream/full window,
+eager execution, one pending request, one accepted HTTP connection and 16 MiB
+waiting-input credit. Logical context remained 262,144; the short request does
+not exercise a full-context workload. Generation/metadata body caps and default
+Responses cache capacity remained unchanged. The normal mandatory final HTTP
+host-admission guard returned before serving, without an override. Its numeric
+catalog envelope was not exported by `/stats`; no header-only or counterfactual
+total is substituted for the unrecorded final authority.
+
+Rank 0 reported serving after 622.2 s, including 491.0 s prompt warmup. The wrapper
+observed readiness after 632.585 s. POST chat returned HTTP 200 with content `OK`,
+15 prompt tokens and two completion tokens, finishing with `stop`. The recorded
+round drafted four tokens and accepted zero; these facts do not establish MTP
+quality or a speed gain. Graceful retirement completed with exit 0, PID 0, no
+cleanup errors and no remaining compute processes; total diagnostic flow was
+667.213 s. These are functional elapsed times, not a matched performance result.
+
+Host-backed `/cache/triton` and `/cache/torch-extensions` remained writable and
+retained across the run. All nine Triton cache files had identical before/after
+hashes; worker mappings identified retained native/helper libraries in those
+cache roots. This records retained/reused artifacts, not cache-hit telemetry or
+a measured startup improvement. Ordinary restart cleanup must preserve the
+cache roots, as described in the [persistent-cache contract](../deploy/v100/README.md#tritonv100-compatibility-and-persistent-caches).
+
+This closes one controlled installed HTTP request and normal retirement on the
+recorded profile. Full-range/model quality, same-weight/BF16 and MTP quality,
+full-context/multi-session capacity, sustained/performance comparisons, media,
+and the private owned-native expert profile remain unqualified. The source
+now defaults Flash Next CUDA and V100 Compose to MTP depth 4, retaining explicit
+overrides; the successful diagnostic above remains depth 6. MLX and other family
+defaults are unchanged. The new depth 4 default requires its own installed run.
 
 ## Neutral artifact I/O boundary (A1)
 

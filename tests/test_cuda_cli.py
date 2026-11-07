@@ -330,7 +330,10 @@ def test_no_cuda_engine_serves_one_token_a_round_by_default(tmp_path, monkeypatc
     assert qwen4_exp.cuda_engine(tmp_path, no_drafts=True).depth == 0
     index["weight_map"]["mtp.fc.weight"] = "model.safetensors"
     (tmp_path / "model.safetensors.index.json").write_text(json.dumps(index))
-    assert qwen4_exp.cuda_engine(tmp_path).depth == 6
+    assert qwen4_exp.cuda_engine(tmp_path).depth == 4
+    for depth in (0, 1, 2, 6, 15):
+        assert qwen4_exp.cuda_engine(tmp_path, mtp_drafts=depth).depth == depth
+    assert qwen4_exp.cuda_engine(tmp_path, no_drafts=True, mtp_drafts=6).depth == 0
     assert made[-1]["confidence"] == 0.7                                   # one stream or many
     assert qwen4_exp.cuda_engine(tmp_path, mtp_confidence=0.6).confidence == 0.6
     assert made[-1]["share"] == 0.0                                        # whole prompt passes unless asked

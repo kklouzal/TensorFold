@@ -11,6 +11,12 @@ from this source before using the option; these software checks do not qualify
 an eight-V100 deployment. See
 [A3 qualification status](../../docs/v100-adaptive-validation.md#pp1-expert-partitions-a3).
 
+Flash Next CUDA and this Compose candidate now default to four MTP drafts
+(`TF_DRAFTS=4`); explicit `--mtp-drafts`/`TF_DRAFTS` values remain overrides.
+MLX and other families retain their own defaults. The first controlled HTTP
+success used explicit depth 6 on source `d48e96a1`, before this default change;
+it does not qualify the new depth 4 profile. See [the installed diagnostic](../../docs/v100-adaptive-validation.md#first-controlled-sc117-http-success).
+
 For the one-server TP8/ETP4 source profile, set
 `TF_EXPERT_TENSOR_PARALLEL_SIZE=4` when using this Compose file. The entrypoint
 passes it as one argument to the existing server option; the CLI validates
@@ -205,8 +211,9 @@ that producer, cancellation and slow-client gates passed on V100.
 
 ### Candidate launch
 
-Supply every resource, context, codec and method choice from the intended
-qualification profile. This Bash recipe introduces no serving-budget values:
+Supply resource budgets, context, codec and remaining method choices from the
+intended qualification profile. Stock MTP depth uses the user-selected default 4
+unless explicitly overridden; this recipe introduces no serving-budget defaults:
 
 ```bash
 : "${TF_V6_IMAGE:?Set the verified local sha256 image ID or actual registry digest reference}"
@@ -219,7 +226,7 @@ qualification profile. This Bash recipe introduces no serving-budget values:
 : "${TF_PARALLEL:?Set auto or an explicitly qualified session ceiling}"
 : "${TF_KV_FULL_WINDOWS:?Set auto or an explicitly qualified full-window ceiling}"
 : "${TF_KV_DTYPE:?Set the selected supported KV codec}"
-: "${TF_DRAFTS:?Set the enabled stock MTP proposal depth}"
+: "${TF_DRAFTS:=4}"
 : "${TF_DRAFT_CONFIDENCE:?Set the declared MTP confidence policy}"
 : "${TF_MAX_PENDING_REQUESTS:?Set the finite unfinished-request limit}"
 : "${TF_MAX_HTTP_CONNECTIONS:?Set the finite HTTP connection limit}"

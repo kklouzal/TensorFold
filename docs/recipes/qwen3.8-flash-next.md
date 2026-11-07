@@ -86,7 +86,7 @@ The new `rotorquant-signed128-4` SM70 path adds packed Q4 with independently
 selectable keys/values; full-model qualification is pending. Other
 cache formats and modern BF16 checkpoint providers retain their own admission.
 Use `--no-drafts` for a baseline, or `--drafter /path/to/matching/stock-mtp` with
-`--mtp-drafts 2` for the matching separate stock head. The original GGUF is never
+`--mtp-drafts 4` for the matching separate stock head. The original GGUF is never
 rewritten. Tokenizer/config sidecars are staged in the runtime cache. See the
 [V100 serving profile](../../deploy/v100/README.md) and its
 [validation scope](../v100-flashnext-validation.md) before selecting a deployment.
@@ -379,7 +379,7 @@ Upstream performance figures elsewhere in this recipe retain their original
 source, device and workload scope; they do not qualify the integrated fork.
 
 
-The default CUDA cap is six MTP drafts, with chains stopping below the configured confidence threshold.
+The default CUDA cap is four MTP drafts, with chains stopping below the configured confidence threshold.
 `--mtp-drafts N` changes the cap; `--no-drafts` or `"draft": false` selects serial decoding.
 Single-request serving uses CUDA graphs for verify windows and draft steps. Two-rank reductions add
 gathered partials in rank order.

@@ -16,13 +16,15 @@ compose = _compose
 DEPLOY = Path(__file__).resolve().parents[1] / "deploy" / "v100"
 
 
-def render(compose, tmp_path, *, waiting=None, method="mtp", etp=None):
+def render(compose, tmp_path, *, waiting=None, method="mtp", etp=None, drafts=None):
     env = {name: value for name, value in os.environ.items()
            if not name.startswith(("TF_", "TENSORFOLD_")) and name not in
            ("MODEL_ROOT", "GGUF_FILE", "MTP_DIRECTORY", "DRAFTER_DIRECTORY")}
     env.update(MODEL_ROOT=str(tmp_path / "model files"), GGUF_FILE="/models/first shard; literal $(not-a-command).gguf",
                TENSORFOLD_V100_IMAGE="tensorfold-v100:controlled-compose-fixture",
                TF_MAX_PENDING_REQUESTS="3", TF_MAX_HTTP_CONNECTIONS="4", TF_DRAFT_METHOD=method)
+    if drafts is not None:
+        env["TF_DRAFTS"] = drafts
     if waiting is not None:
         env["TF_MAX_WAITING_INPUT_BYTES"] = waiting
     if etp is not None:
@@ -121,3 +123,13 @@ def test_expert_degree_metacharacters_are_literal_and_rejected_by_cli(compose, t
     assert rejected.value.code == 2
     assert "argument --expert-tensor-parallel-size: invalid int value" in capsys.readouterr().err
     assert not witness.exists()
+
+
+@pytest.mark.parametrize("drafts,expected", [(None, 4), ("", 4), ("0", 0), ("2", 2), ("6", 6)])
+def test_mtp_default_four_and_explicit_overrides_reach_actual_argv(compose, tmp_path, drafts, expected):
+    from tensorfold.cli import build_parser
+
+    argv = actual_argv(render(compose, tmp_path, drafts=drafts))
+    parsed = build_parser().parse_args(["serve", *argv[argv.index("--") + 1:]])
+    assert parsed.mtp_drafts == expected
+    assert argv[argv.index("--mtp-drafts") + 1] == str(expected)

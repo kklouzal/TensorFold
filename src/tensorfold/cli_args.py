@@ -229,7 +229,7 @@ def build_parser(handlers: dict[str, Callable[[argparse.Namespace], int]]) -> ar
                             "E4B native assistant: 2-8 (default 7), EAGLE3: 2-4 (default 4); "
                             "CUDA Qwen MoE NVFP4: default is the draft model's block size")
     speed.add_argument("--mtp-drafts", type=int, default=None,
-                       help="most proposals a round (MTP, or the selected DSpark block on Flash Next CUDA; Qwen3.8 Flash Next: 3 on Mac; on CUDA 6, stopping under 70%% "
+                       help="most proposals a round (MTP, or the selected DSpark block on Flash Next CUDA; Qwen3.8 Flash Next: 3 on Mac; on CUDA 4, stopping under 70%% "
                             "confidence; Nemotron on CUDA: 3, stopping under 20%% confidence); on Qwen3.6 MoE Mac, "
                             "an explicit value selects included MTP instead of default DFlash; 0 with auto: "
                             "disable startup drafting. Explicit --draft-method mtp requires positive maximum depth; "

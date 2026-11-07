@@ -72,7 +72,7 @@ services:
       - --drafter
       - "${DRAFTER_DIRECTORY:-${MTP_DIRECTORY:-/models/mtp-stock}}"
       - --mtp-drafts
-      - "${TF_DRAFTS:-2}"
+      - "${TF_DRAFTS:-4}"
       - --mtp-confidence
       - "${TF_DRAFT_CONFIDENCE:-0.7}"
       - --no-update-check
