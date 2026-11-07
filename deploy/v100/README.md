@@ -25,19 +25,26 @@ from shared-expert TP8 width80. It maps global router IDs on device and supports
 the caller's FP16 or FP32 slot storage before the existing FP32 partial/reduction
 boundary, with caller-owned route/activation scratch. It is not selected by
 ordinary serving or this Compose setting.
-Target/MTP peak admission, native SM70 compilation/execution, model quality,
-capacity and matched performance remain required before selection. Whole-model
+Target/method peak admission, selected-SDK integrated compilation and native
+SM70 execution, model quality, capacity and matched performance remain required
+before selection. A separate offline component compile/load is recorded in the
+[source-build evidence](source-foundation.md#executed-fresh-bootstrap). Whole-model
 graphs remain disabled for the reference ETP4 and unique-history paths. See
 [the current TP8/ETP4 work](../../docs/v100-adaptive-validation.md#tp8etp4-one-server-native-component).
 
 Internal qualification callers can prepare the same engine with
 `_owned_expert_native=True`. This is a constructor-only experimental opt-in,
 not a CLI or Compose setting. It requires adaptive resident GGUF TP8/ETP4,
-an actual SM70 device/build, stock shared-GGUF MTP or no method, and bounded
-prepared row/slot geometry. Administrator profile transitions and DFlash/DSpark
-are not supported by this private mode yet; their normal reference behavior is
-unchanged. Private-policy eligibility checks follow common rank agreement and
-precede payload loading.
+an actual SM70 device/build, stock shared-GGUF MTP, dense TP8 DFlash or no method,
+and bounded prepared row/slot geometry. Administrator profile transitions and
+DSpark remain unsupported by this private mode; normal reference behavior is
+unchanged. DFlash prepares and votes the native numerical facts inside its
+existing CPU pairing preflight, before CUDA allocation or hashing model payloads.
+It publishes the plan only after successful pairing and phase retirement. An old
+reference pairing cannot authorize the native target. None/MTP preparation still
+follows common rank agreement; actual banks and arenas must match the prepared
+facts before native execution. Dense DFlash retains its own feature/window
+resources and has no expert-parallel axis or native MTP arena.
 The prepared owner reuses existing slot/activation storage and refuses reference
 fallback; no whole-model graphs are enabled. See
 [workspace ownership and qualification limits](../../docs/v100-adaptive-validation.md#prepared-tp8etp4-execution-and-workspace).

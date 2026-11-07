@@ -79,8 +79,9 @@ def test_preload_closure_contract_and_issued_authority_reuse_never_grant_eligibi
     assert binding.contract["features"]["completed_layers"] != [0]
 
 
-@pytest.mark.parametrize("bad_rank", [None, 3])
-def test_cpu_pairing_phase_refusal_cannot_strand_other_ranks_in_content_exchange(packet, monkeypatch, bad_rank):
+@pytest.mark.parametrize("bad_rank,owned_case", [(None, None), (3, None), (None, "native"),
+    (None, "old-reference"), (None, "mixed"), (None, "invalid-plan"), (None, "wrong-rank")])
+def test_cpu_pairing_phase_refusal_cannot_strand_other_ranks_in_content_exchange(packet, monkeypatch, bad_rank, owned_case):
     from tensorfold.families.qwen4_exp.cuda import execution_identity as identity
 
     manifest, params = packet
@@ -113,21 +114,63 @@ def test_cpu_pairing_phase_refusal_cannot_strand_other_ranks_in_content_exchange
                               rope=SimpleNamespace(metadata=lambda: params["target_numerics"]["rope"]))
                for rank in range(8)]
 
+    phase_local = threading.local()
+    actual_phase, actual_retire = identity._phase, identity._retire_store
+    def assert_unpublished():
+        assert getattr(phase_local.engine, "_owned_expert_plan", None) is phase_local.previous
+    def observed_phase(*args, **kwargs):
+        assert_unpublished()
+        result = actual_phase(*args, **kwargs)
+        assert_unpublished()
+        return result
+    def observed_retire(*args, **kwargs):
+        assert_unpublished()
+        result = actual_retire(*args, **kwargs)
+        assert_unpublished()
+        return result
+    monkeypatch.setattr(identity, "_phase", observed_phase)
+    monkeypatch.setattr(identity, "_retire_store", observed_retire)
+    from tensorfold.families.qwen4_exp.expert_partition import ExpertPartition
+    from tensorfold.families.qwen4_exp.cuda.owned_experts import Plan
+    def owned_plan(rank, *, invalid=False):
+        # CPU pairing metadata only, not a loaded/native model fixture.
+        return Plan(ExpertPartition(8, rank, 512, 640, 4), params["draft_plan"].config.hidden,
+                    11, 32, 5958 if invalid else 64, False)
+    native_manifest = copy.deepcopy(manifest)
+    native_manifest["draft_pairing"]["target_numerics"]["owned_expert_native"] = list(owned_plan(0).identity)
     def prepare(engine):
-        return identity.prepare_dflash_pairing(engine, manifest, target_config=params["target_config"],
+        phase_local.engine = engine
+        phase_local.previous = getattr(engine, "_owned_expert_plan", None)
+        body = manifest if owned_case in (None, "old-reference") or (owned_case == "mixed" and engine.rank == 3) else native_manifest
+        def prepare_owned():
+            if owned_case is None or owned_case == "mixed" and engine.rank == 3:
+                return None
+            rank = (engine.rank + 1) % 8 if owned_case == "wrong-rank" and engine.rank == 3 else engine.rank
+            return owned_plan(rank, invalid=owned_case == "invalid-plan" and engine.rank == 3)
+        return identity.prepare_dflash_pairing(engine, body, target_config=params["target_config"],
             plan=replace(params["draft_plan"], tp=(engine.rank, 8)),
-            context=params["context"] + int(engine.rank == bad_rank))
+            context=params["context"] + int(engine.rank == bad_rank),
+            prepare_owned_experts=None if owned_case is None else prepare_owned)
 
     with ThreadPoolExecutor(max_workers=8) as workers:
         tasks = [workers.submit(prepare, engine) for engine in engines]
-        if bad_rank is not None:
+        if bad_rank is not None or owned_case in ("old-reference", "mixed", "invalid-plan", "wrong-rank"):
             for task in tasks:
-                with pytest.raises(ValueError, match="preflight refused"):
+                with pytest.raises(ValueError, match="different pairing" if owned_case == "mixed" else "preflight refused"):
                     task.result(timeout=10)
             assert all(not hasattr(engine, "_dflash_pairing") for engine in engines)
+            assert all(not hasattr(engine, "_owned_expert_plan") for engine in engines)
         else:
             plans = [task.result(timeout=10) for task in tasks]
             assert len({engine._dflash_pairing.identity for engine in engines}) == 1
+            if owned_case == "native":
+                assert all(engine._owned_expert_plan.partition.rank == engine.rank for engine in engines)
+                assert all(engine._owned_expert_plan.mtp is False for engine in engines)
+                assert len({engine._owned_expert_plan.identity for engine in engines}) == 1
+                reference = preflight_pairing(manifest, **params)
+                assert engines[0]._dflash_pairing.identity != reference.identity
+            else:
+                assert all(not hasattr(engine, "_owned_expert_plan") for engine in engines)
             assert all(plan.source_sha256 == manifest["artifacts"]["draft/model.safetensors"]["sha256"] for plan in plans)
             assert sum(engine._dflash_pairing.authority.bytes_read for engine in engines) == params["max_total_bytes"]
             assert all(engine._dflash_pairing.authority.bytes_read == 0 for engine in engines[1:])

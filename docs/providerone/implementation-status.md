@@ -71,10 +71,11 @@ Current delivery priority is the one-server TP8/ETP4 profile, ahead of further
 PP2 implementation. The existing reference path remains selected. An explicit
 owned-routed native component now separates ETP4 width160 from shared-expert
 TP8 width80, with device route mapping and caller-owned fixed scratch. It is
-unselected: target/MTP peak admission, actual SM70 build/operator/model quality,
+unselected: target/method peak admission, selected-SDK integrated build and
+actual SM70 operator/model quality,
 capacity and matched performance remain pending. The maintained V100 Compose
 entrypoint forwards an explicitly set `TF_EXPERT_TENSOR_PARALLEL_SIZE`, leaving
-unset/empty behavior intact. Source and fresh installed CPU controls each pass
+unset/empty behavior intact. At the typed-component checkpoint, source and fresh installed CPU controls each passed
 1,692 tests with one optional fixture skip; 782 installed runtime files match
 the frozen source. These controls do not qualify native CUDA or the complete
 TP8/ETP4 profile. See [the current component and qualification limits](../v100-adaptive-validation.md#tp8etp4-one-server-native-component).
@@ -85,10 +86,17 @@ exclusive dispatch. Paid routing workspace contains these arenas; no extra
 reservation or measured capacity gain is asserted. Rank agreement, state/cache
 arithmetic identity and independently observed execution/coordinate facts bind
 the native policy. The reference default remains unchanged. This private mode
-passes scoped 49-module source and fresh installed CPU batches of 1,735 tests
+passed scoped 49-module source and fresh installed CPU batches of 1,735 tests
 each, with one optional fixture skip; all 783 installed runtime files match the
-frozen source. It still needs actual SM70/model/resource/performance qualification and later
-method/administrator-transition coverage; it is not a released one-server
+frozen source at the MTP/none checkpoint. The native candidate also has a
+separate accepted offline SM70 compile/load result; no kernel was invoked.
+Its DFlash composition binds validated native preparation inside the existing
+voted pairing preflight and uses only target/prompt native arenas, retaining
+independent dense TP8 draft resources. The expanded source CPU batch passed
+1,850 tests with two optional large-artifact skips and 194 required controls.
+Installed-package and native AMD64 checks are separate evidence. It still needs
+actual SM70/model/resource/performance and native administrator-transition
+qualification; it is not a released one-server
 profile. See [prepared execution](../v100-adaptive-validation.md#prepared-tp8etp4-execution-and-workspace).
 
 A4 adds mandatory basic physical-stage admission for canonical SM70 TP8

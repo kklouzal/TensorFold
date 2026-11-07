@@ -780,11 +780,14 @@ verification image:
 `sha256:972e911a4ce282f61f7a05e874a6204dc0da81c9799d30edec4307c89e60b249`.
 Subsequent evidence-only documentation changes do not alter those runtime inputs.
 
-Actual SM70 compilation/execution, canonical SC117/MTP model and media quality,
-complete resource/capacity and matched end-to-end performance remain unrun.
-The current host is GB10; the known dev-01 connection has an RTX PRO2000
-Blackwell. Neither has the selected CUDA12.9.2/Torch04cf V100 SDK installed.
-Target-server access remains unresolved. No guard is relaxed to substitute those
+At that component checkpoint, actual SM70 compilation/execution, canonical
+SC117/MTP model and media quality, complete resource/capacity and matched
+end-to-end performance were unrun. Subsequent native AMD64 editable-build,
+CPU-load and offline SM70 component compile/load evidence is recorded in the
+[fresh-bootstrap report](../deploy/v100/source-foundation.md#executed-fresh-bootstrap).
+The current host is GB10; known dev-01 has an RTX PRO2000 Blackwell. Those
+results do not provide actual V100 execution or a selected final V100 SDK.
+Target-server access remains unresolved. No guard is relaxed to substitute
 devices, no native candidate is promoted and production is unchanged.
 
 ## Prepared TP8/ETP4 execution and workspace
@@ -792,13 +795,16 @@ devices, no native candidate is promoted and production is unchanged.
 The existing engine has a private constructor-only `_owned_expert_native=True`
 qualification path; normal CLI, Compose and administrator JSON do not expose
 or select it. It requires adaptive resident GGUF TP8/ETP4 on actual SM70 with
-stock shared-GGUF MTP or no method. Private native mode with administrator
-profile transitions, DFlash or DSpark remains explicitly unsupported; ordinary
-reference profiles retain their existing contracts. This staged qualification
-scope does not remove those requirements from the governing delivery goal.
+stock shared-GGUF MTP, dense TP8 DFlash or no method. Private native mode with
+administrator profile transitions or DSpark remains explicitly unsupported;
+ordinary reference profiles retain their existing contracts. DFlash composition
+has separate pairing, resource and feature-transaction controls below. This
+staged qualification scope does not remove unimplemented or unqualified
+requirements from the governing delivery goal.
 
-Common rank agreement includes the requested private policy and incompatible
-administrator combination before policy-dependent refusal or payload loading.
+None/MTP requests join common rank-mode agreement before private eligibility
+checks. DFlash prepares private facts and votes failures inside its existing
+matched CPU pairing preflight before loading model payloads.
 The immutable plan validates the actual routed/shared geometry and maximum
 decode/prompt row-slot extents before loading. A native call remains bounded
 at 65,535 pairs; an unsupported private envelope refuses preparation instead of
@@ -816,7 +822,8 @@ Let `S=top_k+1`, `R` be the actual decode-buffer capacity, `P` the actual prompt
 capacity and `m` be one when stock MTP is resident. Local arenas occupy
 `8*S*((1+m)*R+P)` bytes simultaneously. The unchanged target/method reference
 routing reservation is `(1+m)*52*S*max(P,R)`, which contains these allocations
-for both method choices. This reuse is valid because every prepared target,
+for stock MTP and target-only native configurations (no method or dense DFlash).
+This reuse is valid because every prepared target,
 prompt and MTP call uses the native owner and bound banks reject reference
 compaction. A reachable fallback would require a new overlap proof or charge.
 Existing decoded/shared Dense, state, recovery, history and floor reservations
@@ -832,8 +839,8 @@ facts cannot authorize native arithmetic. Default reference facts and identities
 remain unchanged when the private policy is absent. Different prepared native
 envelopes remain separate identities until cross-envelope reuse is qualified.
 
-Final source controls passed 213 focused tests in 2.48 seconds and the complete
-scoped 49-module batch passed 1,735 tests with one optional pinned-companion/
+At the MTP/none checkpoint, source controls passed 213 focused tests in 2.48
+seconds and the complete scoped 49-module batch passed 1,735 tests with one optional pinned-companion/
 target-metadata skip in 33.47 seconds. Required deployment/public-permission
 controls passed 194 cases; affected F/py312, configured Ruff and Python compilation
 passed. Canonical Python source used the freshly built unchanged native FD
@@ -871,9 +878,97 @@ The final evidence-only documentation checkpoint leaves those runtime inputs
 unchanged.
 
 Source-level integration and CPU controls do not qualify actual SM70 execution,
-SC117/MTP numerical quality, visual inputs, worst-rank physical peaks, full-context
+numerical quality for SC117 and its selected method, visual inputs, worst-rank
+physical peaks, full-context
 capacity or matched useful performance. V100 access and the selected SDK remain
 unresolved. No native production promotion or other service change is made here.
+
+### Private native target with dense TP8 DFlash
+
+The existing reference ETP4+DFlash path is preserved. The private native
+candidate now composes with that dense TP8 draft implementation. Native plan
+construction runs inside the existing voted CPU pairing preflight, validating
+the local rank/world, hidden geometry, bounded envelope and target-only method
+role before hashing model payloads or CUDA allocation. Its immutable arithmetic
+facts shared by all ranks enter the pairing numerical contract. Reference pairings and
+mixed/invalid rank facts refuse through the existing matched retirement path;
+the prepared native plan is published only after pairing and retirement succeed.
+Later loaded-bank and arena bindings must still match those prepared facts.
+
+Dense DFlash has no expert axis. The target and prompt buffers own the two
+native route arenas with `m=0`; no MTP arena is added. Draft windows, HC feature
+frames, selector state and their reservations remain separate. CPU integration
+controls exercise actual dense TP8 draft shards, windows, target state and
+feature commit/cancel/restore, with explicit native-expert and collective
+boundaries. These boundary spies provide no CUDA arithmetic proof.
+
+The sealed composition passed 168 focused CPU tests, the expanded 54-module
+batch with 1,850 passes and two optional large-artifact skips, and 194 required
+deployment/public-permission controls. Affected F/py312, configured Ruff and
+Python compilation passed. Source hashes stayed unchanged and CUDA remained
+uninitialized. This run used the existing ARM64/GB10 Torch 2.16/cu134 verifier;
+native AMD64/Torch 2.14 and fresh installed-package results are separate gates.
+The initial AST fixture import-context failure and read-only-cache failure are
+retained. Their corrections supplied real module context and a private bounded
+writable cache without weakening assertions or changing library code.
+
+The source gate is `tp8-etp4-dflash-execution-v1/source-gate-v3.json`, SHA256
+`d3f09fab338aa87376d5f5b927784730b6b086189f152f9ea3a45b31514c3923`.
+No public opt-in, device admission, model pairing quality, capacity or useful
+performance is qualified by these CPU controls.
+
+The subsequent native AMD64 checks used the actual finalized read-only
+Torch `2.14.1+tfcu129sm70` stack: six focused modules passed 168 tests from
+source and 168 from the freshly installed project wheel, in 5.05 and 5.12
+seconds respectively. Python, pytest, isolated dependency, Torch/NumPy and fresh
+native-FD origins were checked; CUDA remained uninitialized. Twelve existing
+hash-locked wheels supplied the isolated test dependencies without replacing
+SDK packages. Full native media coverage remains unfinished: its maintained
+source-pinned media stack cannot be replaced by the older GB10 Transformers
+closure, whose HF Hub requirement conflicts with the selected SDK dependency.
+
+Fresh guarded GB10 runtime and verification images were built. The verification
+image passed the installed 54-module batch: 1,850 tests and the same two optional
+artifact skips in 35.92 seconds. All 779 tracked runtime-file hashes matched before and after, the
+changed modules and native FD loaded from installed `site-packages`, normal
+foundation audits passed, and no runtime source overlay was used. All 2,277
+captured inputs and the fifteen protected baseline files remained unchanged.
+The optional missing large model/companion cases remain unqualified. A retained
+native pytest advisory names the preimported AnyIO provider only; optimization
+was zero and test assertions were not disabled or suppressed.
+
+The historical 783-file package included four untracked `b16_lossless` prototype
+files. The current tracked capture has 782 source runtime files, with the same
+three source README exclusions yielding 779 installed files. Actual membership
+comparison found only those four prototype omissions. They remain unchanged
+in the canonical workspace as protected independent oracles; all four tracked
+Delta4 backend files are included in the new package. No production image was
+replaced.
+
+The immutable runtime input is
+`ae71cbe6+tracked-wip.b7c33f42cf78264a`, source UID
+`b7c33f42cf78264a53e56c916575fdfde2ffb99669f595c09169b8703f65b296`.
+It records the held working-tree bytes rather than claiming a clean commit.
+Runtime image:
+`sha256:fe87f4d5e5ce210991a1780f1601abf46c0c8a0a98f169864b8fbe2cb7f6ee10`;
+verification image:
+`sha256:f3a65e6f33edc806b583a1fbfb82c81c012a29bb7ee6614be6c9a916172da3ce`.
+Inherited `org.tensorfold.*` image labels describe the qualified base lineage;
+the current application uses the recorded deployment source UID/revision.
+The final evidence-only validation-record update changes no packaged runtime
+or root README input.
+
+| Receipt in `tp8-etp4-dflash-native-v1` | SHA256 |
+| --- | --- |
+| `native-focused-gate-v3.json` | `971a2706cdc905d131bf37b726b94aac4884457a5bfa02ef0a52737b3ae09727` |
+| `gb10-application-build-gate-v1.json` | `f090e811fb50f00cf425d34290b9b7197328ba5874d8f78c8ac61354c3ef44ec` |
+| `gb10-installed54-gate-v1.json` | `fa030718fcff2a1a545ae862e28e5b58a333b1d76a62bd4ca49bf97aac35ec40` |
+| `runtime-membership-delta-783-to-779-v1.json` | `fe47f1a09a8d4da99faead39aefb84e829d266e718da381de5a341dd41761e6b` |
+
+These gates establish the stated CPU/source/package contracts, not actual
+SM70 kernel execution, SC117 pairing/visual quality, full-context capacity or
+matched throughput. The final V100 SDK and physical target qualification remain
+separate work; the private native candidate is still unselected.
 
 ## Configuration and capacity
 

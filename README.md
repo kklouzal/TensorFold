@@ -10,7 +10,7 @@ Current delivery work prioritizes one-server TP8/ETP4 before further PP2 work.
 The V100 Compose profile accepts the explicit
 `TF_EXPERT_TENSOR_PARALLEL_SIZE=4` setting while preserving unset defaults.
 An owned-expert native ETP4 component separates routed and shared widths and
-uses bounded caller-owned scratch; it remains unselected pending target/MTP
+uses bounded caller-owned scratch; it remains unselected pending target/method
 admission and actual SM70/model qualification. The existing reference path stays
 selected. At typed-component checkpoint `1066e1cc`, scoped source and fresh
 installed-image controls each passed 1,692 CPU tests with one optional fixture
@@ -18,11 +18,16 @@ skip; this does not establish native CUDA execution. See
 [current contracts and limits](docs/v100-adaptive-validation.md#tp8etp4-one-server-native-component).
 
 A private qualification-only engine path now prepares exclusive native ETP4
-execution across target, prompt and MTP calls. It reuses activation/output
+execution across target, prompt and MTP calls, and can compose the target with
+the existing dense TP8 DFlash profile. It reuses activation/output
 storage and accounts for the new route arenas within the already-paid routing
 reservation. Reference fallback is refused under this policy; default serving
-keeps the reference path. Scoped source and fresh installed-image batches each
-pass 1,735 CPU tests with one optional fixture skip. Actual SM70 and full-model qualification remain open.
+keeps the reference path. At the MTP/none checkpoint, scoped source and fresh
+installed-image batches each passed 1,735 CPU tests with one optional fixture
+skip. The subsequent DFlash composition passed 1,850 scoped source CPU tests
+with two optional large-artifact skips and 194 required controls. Installed
+package and native-target evidence are tracked separately; actual SM70 execution
+and full-model qualification remain open.
 See [prepared execution and remaining gates](docs/v100-adaptive-validation.md#prepared-tp8etp4-execution-and-workspace).
 
 The V100 source-build workflow can now reacquire its frozen APT/Python inputs

@@ -156,7 +156,7 @@ def begin_execution_manifest(engine, path):
     return manifest
 
 
-def prepare_dflash_pairing(engine, manifest, *, target_config, plan, context):
+def prepare_dflash_pairing(engine, manifest, *, target_config, plan, context, prepare_owned_experts=None):
     """Bind actual draft/target/token IDs on the CPU before CUDA allocation.
 
     The startup-owned CPU store is handed to NCCL after this operation retires;
@@ -178,10 +178,18 @@ def prepare_dflash_pairing(engine, manifest, *, target_config, plan, context):
     def preflight():
         files, _checkpoint = artifact_files(engine)
         expected = manifest["artifacts"]
+        owned = None if prepare_owned_experts is None else prepare_owned_experts()
+        numerics = {"execution_dtype": "float16", "recurrent_state_dtype": "float32", "rope": engine.rope.metadata()}
+        if owned is not None:
+            from .owned_experts import Plan
+
+            if (type(owned) is not Plan or owned.mtp or owned.partition.rank != engine.rank
+                    or owned.partition.world != engine.tp or plan.tp != (engine.rank, engine.tp)
+                    or owned.hidden != plan.config.hidden):
+                raise ValueError("dense DFlash pairing requires a validated matching target-only owned expert plan")
+            numerics["owned_expert_native"] = list(owned.identity)
         prepared = prepare_pairing_inputs(manifest, files=files, target_config=target_config, draft_plan=plan,
-            context=context, kv_identity=engine.kv_pair.identity,
-            target_numerics={"execution_dtype": "float16", "recurrent_state_dtype": "float32",
-                             "rope": engine.rope.metadata()})
+            context=context, kv_identity=engine.kv_pair.identity, target_numerics=numerics)
         from tensorfold.token_metadata import tokenizer_override
 
         override = tokenizer_override()
@@ -190,7 +198,7 @@ def prepare_dflash_pairing(engine, manifest, *, target_config, plan, context):
             raise ValueError("DFlash2 pairing must name the actual selected tokenizer content")
         if override is not None and expected[tokenizer_name]["sha256"] != override.sha256:
             raise ValueError("DFlash2 selected tokenizer file changed after its immutable startup snapshot")
-        local.update(prepared=prepared, files=files, expected=expected)
+        local.update(prepared=prepared, files=files, expected=expected, owned=owned)
         return digest({"manifest": manifest, "numerics": json.loads(prepared.numerics_json),
                        "context": context, "kv": engine.kv_pair.identity})
 
@@ -219,6 +227,8 @@ def prepare_dflash_pairing(engine, manifest, *, target_config, plan, context):
         _retire_store(cohort, channel, stages=stages)
         binding = local["binding"]
         engine._dflash_pairing = binding
+        if local["owned"] is not None:
+            engine._owned_expert_plan = local["owned"]
         engine._draft_pairing_manifest_sha = digest(manifest["draft_pairing"])
         engine._dflash_pairing_receipt = {**binding.receipt(), "shared_immutable_same_host": True,
             "leader_payload_bytes_read": receipts[0]["local_payload_bytes_read"],

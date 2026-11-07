@@ -497,6 +497,19 @@ class FlashNextEngine:
         each, mtp = self.method_geometry.target_tail_rows, stock_mtp
         if self.position_profile is not None and self.position_method_binding["method"] != self.method_geometry.method:
             raise RuntimeError("prepared positional role and actual speculative method disagree")
+        def prepare_owned_experts():
+            # DFlash invokes this inside its existing voted CPU preflight. Other
+            # methods invoke it after common rank-mode agreement, before loading.
+            if self._owned_expert_admin_requested:
+                raise ValueError("private owned expert qualification does not support administrator profile transitions")
+            if (not source_is_gguf or tp != 8 or expert_tensor_parallel_size != 4
+                    or not adaptive_sessions or indexer_history != "gpu" or dspark_model_dir is not None):
+                raise ValueError("private owned qualification requires adaptive resident GGUF TP8/ETP4 and stock MTP, DFlash2 or no method")
+            from .owned_experts import Plan
+
+            return Plan(self.expert_partition, int(text["hidden_size"]), int(text["num_experts_per_tok"]) + 1,
+                        execution_rows if execution_rows is not None else 32, chunk or PREFILL_ROWS, bool(stock_mtp))
+
         owner_specification = None
         owner_preparation = None
         nvfp4_preallocated = 0
@@ -544,7 +557,8 @@ class FlashNextEngine:
             selected_context = self.rope.context_limit if max_len in (None, 0) else max_len
             if dflash_plan is not None:
                 dflash_plan = prepare_dflash_pairing(self, manifest, target_config=read_config(model_dir),
-                                                    plan=dflash_plan, context=selected_context)
+                                                    plan=dflash_plan, context=selected_context,
+                                                    prepare_owned_experts=prepare_owned_experts if self._owned_expert_requested else None)
                 self._dflash2_plan = dflash_plan
             if media_requested:
                 from .media_runtime import prepare_media_source
@@ -623,12 +637,8 @@ class FlashNextEngine:
                             int(self._owned_expert_requested and self._owned_expert_admin_requested)])
             if any(row != modes[0] for row in modes[1:]):
                 raise RuntimeError("tensor-parallel ranks selected different history/session or expert placement policies")
-        if self._owned_expert_requested and self._owned_expert_admin_requested:
-            raise ValueError("private owned expert qualification does not support administrator profile transitions")
-        if self._owned_expert_requested and (not source_is_gguf or tp != 8
-                or expert_tensor_parallel_size != 4 or not adaptive_sessions or indexer_history != "gpu"
-                or dspark_model_dir is not None or dflash2_model_dir is not None):
-            raise ValueError("private owned qualification requires adaptive resident GGUF TP8/ETP4 and stock MTP or no method")
+        if self._owned_expert_requested and self._owned_expert_plan is None:
+            self._owned_expert_plan = prepare_owned_experts()
         if self._owned_expert_requested and (torch.cuda.get_device_capability() != (7, 0)
                 or "sm_70" not in torch.cuda.get_arch_list()):
             raise ValueError("private owned qualification requires actual SM70 and a Volta-enabled PyTorch build")
@@ -646,12 +656,6 @@ class FlashNextEngine:
         kv_status = (not self.kv_pair.symmetric or bool(self.kv_pair.key.codec or self.kv_pair.value.codec)
                      or sm70 and self.kv_pair.key.quantized or indexer_history == "ram")
         rows0 = chunk or PREFILL_ROWS
-        if self._owned_expert_requested:
-            from .owned_experts import Plan
-
-            self._owned_expert_plan = Plan(self.expert_partition, int(text["hidden_size"]),
-                int(text["num_experts_per_tok"]) + 1, execution_rows if execution_rows is not None else 32,
-                rows0, bool(stock_mtp))
         history_plan = None
         history_maximum_owners = 0
         history_geometry = {}
