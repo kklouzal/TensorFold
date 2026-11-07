@@ -10,6 +10,11 @@ Use --request short=short.json --request intermediate=middle.json
 requests can populate retained slots. Missing inputs or unobserved conditions
 are reported unsupported, never inferred from allocated slot counts. This tool
 records behavior and timings; it does not grant quality/profile eligibility.
+
+The opt-in correctness scenario needs no request files: its fixed seven cases
+compare cold serial and MTP replies, independent token hashes, known answers
+and SSE. Use --response-mib 1 --sse-line-kib 64 --timeout 300
+--operation-timeout 300 with a fresh --out directory and an already loaded URL.
 """
 from __future__ import annotations
 
@@ -39,7 +44,152 @@ else:
 
 
 SCENARIOS = ("requests", "mixed", "burst", "cancel", "reuse", "retention", "migration",
-             "oscillation", "limits", "zero-proposal", "stop", "eos", "context")
+             "oscillation", "limits", "zero-proposal", "stop", "eos", "context", "correctness")
+
+
+def correctness_cases():
+    """The reviewed seven-case/32-noise-line contract, independent of replies."""
+    system = {"role": "system", "content": "Follow the requested output format exactly. Answer without explanations or markdown fences."}
+
+    def case(name, prompt, **expected):
+        return {"id": name, "messages": [system.copy(), {"role": "user", "content": prompt}], **expected}
+
+    noise = "\n".join(f"noise entry {i:03d}: amber blue cedar; irrelevant code {(i * 37) % 997:03d}" for i in range(32))
+    return [
+        case("integer-arithmetic", "Calculate (17 * 23) - 19. Reply only with the decimal integer.", expected_text="372"),
+        case("loop-reasoning", "Start x=3. For n in [2,5,1], update x = 2*x + n in that order. Reply only with the final decimal integer.", expected_text="43"),
+        case("structured-array", "For the integers [7,3,11,5], return a JSON object with exactly the keys count, sum, and max and their correct integer values. No other text.", expected_json={"count": 4, "sum": 26, "max": 11}),
+        case("string-filter-order", "From [pear, fig, apple, kiwi], retain only words with exactly four letters, sort them alphabetically, then join with a comma and no spaces. Reply only with that string.", expected_text="kiwi,pear"),
+        case("history-turn-1", "Track these labels for our conversation: alpha is KITE-7319 and beta is MOSS-2846. Reply only with the beta label.", expected_text="MOSS-2846"),
+        {"id": "history-turn-2", "history_from_case": "history-turn-1", "append_message": {"role": "user", "content": "Update beta to LIME-5082. Keep alpha unchanged. Reply with alpha then beta, separated by | and no spaces."}, "expected_text": "KITE-7319|LIME-5082"},
+        case("sentinel-context", "The first sentinel is AURORA-6197. Preserve it while reading the unrelated records below.\n" + noise + "\nThe second sentinel is VIOLET-2831. Reply with the first sentinel then the second sentinel, separated by | and no spaces. Ignore all noise entry codes.", expected_text="AURORA-6197|VIOLET-2831"),
+    ]
+
+
+def correctness_reply(reply):
+    selected = live.completion(reply, 64)
+    message, ids = selected["message"], selected["ids"]
+    stats, usage = reply["tensorfold"], reply["usage"]
+    if (not ids or selected["finish"] != "stop" or type(message["content"]) is not str
+            or message.get("reasoning_content")
+            or usage.get("completion_tokens_details", {}).get("reasoning_tokens", 0) != 0):
+        raise ValueError("correctness requires a positive complete text-only answer with stop finish")
+    digest = hashlib.sha256(",".join(map(str, ids)).encode()).hexdigest()[:12]
+    if stats.get("token_sha") != digest:
+        raise ValueError("independent comma-separated token-ID SHA mismatch")
+    return {"content": message["content"], "token_ids": ids, "token_sha": digest,
+            "finish": selected["finish"], "completion_tokens": len(ids),
+            "stats": stats, "usage": usage}
+
+
+def correctness_answer(case, record):
+    if "expected_json" in case:
+        answer = protocol.object_json(record["content"])
+        valid = answer == case["expected_json"] and all(type(value) is int for value in answer.values())
+    else:
+        valid = record["content"].strip() == case["expected_text"]
+    if not valid:
+        raise ValueError("known answer mismatch: " + case["id"])
+
+
+def correctness(suite):
+    """One loaded service; fixed answers, cold serial oracles and SSE parity."""
+    cases = correctness_cases()
+    model = suite.effective["model"]["id"]
+    result = {"schema": "tensorfold.live-correctness-v1", "cases": [], "failures": [],
+              "contract_sha256": hashlib.sha256(json.dumps(cases, sort_keys=True, separators=(",", ":")).encode()).hexdigest(),
+              "runtime_identity": copy.deepcopy(suite.effective), "requests": 0,
+              "request_count_scope": "attempted generation calls; all HTTP exchanges are recorded separately",
+              "scope": "seven bounded known-answer cases; not general quality, full-context capacity or performance qualification",
+              "identity_scope": "observed HTTP service; image/PIDs remain separately bound by the launch operator"}
+    suite.report["correctness"] = result
+    deadline, drafted, records = time.monotonic() + 1800, 0, {}
+
+    def read_control():
+        return live.ReadControl(min(deadline, time.monotonic() + suite.args.operation_timeout))
+
+    def call(label, body=None, **kwargs):
+        return suite.call(label, body, read_control=read_control(), **kwargs)
+
+    def check(case, phase, operation):
+        try:
+            operation()
+        except (ValueError, TypeError) as error:
+            result["failures"].append({"case": case, "phase": phase, "message": str(error)})
+
+    for index, source in enumerate(cases):
+        case = copy.deepcopy(source)
+        if "history_from_case" in case:
+            previous = records[case["history_from_case"]]
+            case["messages"] = [*previous["messages"], {"role": "assistant", "content": previous["mtp"]["content"]}, case["append_message"]]
+        body = {"model": model, "messages": case["messages"], "temperature": 0,
+                "max_tokens": 64, "return_token_ids": True, "stream": False}
+        if len(json.dumps(body).encode()) > 65536:
+            raise ValueError("correctness request exceeds its 64 KiB body contract")
+        tokenized = call(case["id"] + "-tokenize", body, path="/v1/tokenize", object_response=True)
+        count, ids = tokenized.get("count"), tokenized.get("tokens")
+        if (type(count) is not int or count <= 0 or type(ids) is not list or len(ids) != count
+                or any(type(token) is not int or token < 0 for token in ids)
+                or tokenized.get("max_model_len") != suite.effective["context_tokens"]
+                or count + 64 > suite.effective["context_tokens"]):
+            raise ValueError("correctness prompt and full reply allowance must fit the actual tokenizer context")
+        pair = {"id": case["id"], "messages": case["messages"], "prompt_tokens": count,
+                "case_sha256": hashlib.sha256(json.dumps(case, sort_keys=True, separators=(",", ":")).encode()).hexdigest()}
+        wire = {}
+        for mode in (("mtp", "serial") if index % 2 == 0 else ("serial", "mtp")):
+            result["requests"] += 1
+            reply = call(case["id"] + "-" + mode, {**body, "draft": mode == "mtp"})
+            record = correctness_reply(reply)
+            pair[mode], wire[mode] = record, reply
+            if record["usage"]["prompt_tokens"] != count:
+                raise ValueError("correctness generation/tokenizer prompt count mismatch")
+            check(case["id"], mode + "-answer", lambda: correctness_answer(case, record))
+            stats = record["stats"]
+            if stats.get("drafts") is not (mode == "mtp"):
+                raise ValueError("correctness draft dispatch differs from requested mode")
+            for field in ("drafted", "accepted"):
+                if type(stats.get(field, 0)) is not int or stats.get(field, 0) < 0:
+                    raise ValueError("correctness draft counters must be nonnegative integers")
+            if mode == "serial":
+                if (stats.get("drafted", 0) or stats.get("accepted", 0) or stats.get("cached") != 0
+                        or record["usage"].get("prompt_tokens_details", {}).get("cached_tokens") != 0):
+                    raise ValueError("serial oracle must be cold with no proposed or accepted drafts")
+            else:
+                drafted += stats.get("drafted", 0)
+        def parity():
+            if not live.compare(wire["mtp"], wire["serial"], 64)["passed"]:
+                raise ValueError("MTP/serial IDs, message or finish differ")
+        check(case["id"], "parity", parity)
+        records[case["id"]] = {**pair, "wire": wire, "body": body}
+        result["cases"].append(pair)
+        suite.stats(case["id"] + "-stats", read_control=read_control())
+        suite.save()
+    base = records["structured-array"]
+    result["requests"] += 1
+    streamed = call("structured-array-stream", {**base["body"], "draft": True, "stream": True,
+                                               "stream_options": {"include_usage": True}})
+    result["stream"] = correctness_reply(streamed)
+    if result["stream"]["stats"].get("drafts") is not True:
+        raise ValueError("correctness SSE did not report its requested MTP dispatch")
+    exchange = suite.calls[-1]["exchange"]
+    with (suite.out / exchange / "response.raw").open("rb") as source:
+        raw = source.read((1 << 20) + 1)
+    if len(raw) > 1 << 20 or sum(line == b"data: [DONE]" for line in raw.replace(b"\r\n", b"\n").splitlines()) != 1:
+        raise ValueError("exactly one recorded SSE DONE line required")
+    check("structured-array", "stream-answer", lambda: correctness_answer(cases[2], result["stream"]))
+    def stream_parity():
+        if not live.compare(base["wire"]["mtp"], streamed, 64)["passed"]:
+            raise ValueError("SSE/nonstream IDs, message or finish differ")
+    check("structured-array", "stream-parity", stream_parity)
+    result["drafted_total"] = drafted
+    if drafted <= 0:
+        raise ValueError("correctness batch must exercise actual MTP proposals")
+    result["passed"] = not result["failures"]
+    suite.save()
+    if not result["passed"]:
+        raise ValueError("correctness known-answer/parity checks failed; see recorded results")
+    # Keep the case/response record once, including when a scenario fails.
+    return {"record": "correctness", "passed": True, "requests": result["requests"]}
 
 
 class Unsupported(RuntimeError):
@@ -84,6 +234,10 @@ class Suite:
     def __init__(self, args, requests):
         self.args, self.requests, self.out = args, requests, args.out
         self.limits = protocol.from_arguments(args)
+        if "correctness" in args.scenarios and (
+                self.limits.response_bytes > 1 << 20 or self.limits.line_bytes > 65536
+                or args.timeout > 300 or args.operation_timeout > 300):
+            raise ValueError("correctness requires response-mib<=1, sse-line-kib<=64 and timeout/operation-timeout<=300")
         self.client = live.Client(args.url, self.out, timeout=args.timeout, limits=self.limits)
         self.lock, self.calls, self.sequence, self.cleanup_calls = threading.Lock(), [], 0, 0
         self.active_read_control = None  # one caller-owned group, retained through worker drain
@@ -117,7 +271,7 @@ class Suite:
         write_json(self.out / "suite.json", self.report)
 
     def call(self, label, body=None, *, path=None, cancel=False, object_response=False,
-             first=None, cleanup=False, expected_refusal=None):
+             first=None, cleanup=False, expected_refusal=None, read_control=None):
         with self.lock:
             if cleanup:
                 if self.cleanup_calls >= self.args.max_cleanup_calls:
@@ -140,7 +294,8 @@ class Suite:
         receipt = {"exchange": exchange, "started_monotonic_s": started,
                    "scope": "HTTP including recording; SSE text-piece arrivals are not exact token times"}
         primary = None
-        read_control = self.active_read_control or live.ReadControl(time.monotonic() + self.args.operation_timeout)
+        if read_control is None:
+            read_control = self.active_read_control or live.ReadControl(time.monotonic() + self.args.operation_timeout)
         try:
             result = self.client.call(exchange, body, path=path, cancel=cancel,
                                       object_response=object_response, observer=observe, read_control=read_control)
@@ -174,8 +329,8 @@ class Suite:
                 except BaseException as publication:
                     raise_failures(primary, [publication])
 
-    def stats(self, label, *, cleanup=False):
-        stats = self.call(label, cleanup=cleanup)
+    def stats(self, label, *, cleanup=False, read_control=None):
+        stats = self.call(label, cleanup=cleanup, read_control=read_control)
         current = qualification.profile(stats)
         if self.effective is not None and current != self.effective:
             raise ValueError("server instance/model/context/full-window capacity changed during exercise")
@@ -383,6 +538,8 @@ def migration_done(runtime, degree):
 
 
 def exercise_scenario(suite, scenario):
+    if scenario == "correctness":
+        return correctness(suite)
     capacity = suite.effective["resident_capacity"]
     name = suite.choose()
     if scenario == "requests":
@@ -526,7 +683,8 @@ def exercise_scenario(suite, scenario):
 
 
 def run(args):
-    requests = load_requests(args.request, budget_bytes=args.request_mib << 20)
+    requests = ({} if args.scenarios == ["correctness"] and not args.request else
+                load_requests(args.request, budget_bytes=args.request_mib << 20))
     if args.out.exists():
         raise ValueError("fresh exercise output directory required")
     args.out.mkdir(parents=True)
@@ -597,8 +755,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", required=True)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument("--request", action="append", required=True, metavar="NAME=JSON_FILE")
-    parser.add_argument("--scenarios", default=",".join(SCENARIOS), help="comma-separated explicit exercises")
+    parser.add_argument("--request", action="append", default=[], metavar="NAME=JSON_FILE")
+    parser.add_argument("--scenarios", default=",".join(name for name in SCENARIOS if name != "correctness"),
+                        help="comma-separated explicit exercises; correctness uses its fixed seven cases")
     parser.add_argument("--cycles", type=int, default=2)
     parser.add_argument("--request-mib", type=int, default=64)
     parser.add_argument("--max-inflight", type=int, default=256)
@@ -616,6 +775,8 @@ def main(argv=None):
     args.scenarios = args.scenarios.split(",")
     if not args.scenarios or len(set(args.scenarios)) != len(args.scenarios) or set(args.scenarios) - set(SCENARIOS):
         parser.error("unique supported scenario names required")
+    if args.scenarios != ["correctness"] and not args.request:
+        parser.error("--request is required except for the standalone correctness scenario")
     for key in ("cycles", "request_mib", "max_inflight", "batch_response_mib", "max_calls", "max_cleanup_calls", "max_events"):
         qualification.positive(getattr(args, key), key)
     if any(not math.isfinite(value) or value <= 0 for value in (args.timeout, args.operation_timeout,

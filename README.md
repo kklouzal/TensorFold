@@ -21,6 +21,12 @@ quality, capacity, performance and private owned-native qualification remain ope
 The source default is now MTP depth 4; the successful historical run used depth6.
 See [the HTTP envelope scope](docs/v100-adaptive-validation.md#ordinary-http-host-envelope).
 
+The maintained [one-loaded-session correctness client](deploy/v100/README.md#one-loaded-session-correctness)
+can run seven bounded known-answer cases, cold serial/MTP token parity and SSE
+checks against one existing service. It records its own tool/case identity
+without rebuilding or reloading that runtime. Its source tests do not qualify
+the pending actual canonical model batch.
+
 Current delivery work prioritizes one-server TP8/ETP4 before further PP2 work.
 The V100 Compose profile accepts the explicit
 `TF_EXPERT_TENSOR_PARALLEL_SIZE=4` setting while preserving unset defaults.

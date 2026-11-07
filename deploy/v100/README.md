@@ -455,6 +455,46 @@ roots and actual content/flags cache identity. See the
 The wheel-based image described below remains the historical reference build;
 its source/CPU or compile checks do not qualify the new source-built stack.
 
+## One-loaded-session correctness
+
+Keep one admitted immutable service loaded while checking compatible request
+cases. The canonical client scenario attaches to its existing URL; it does not
+build, launch, reload or change model/runtime settings:
+
+```bash
+python tools/v100_adaptive_exercise.py --url "$TF_URL" \
+  --out /path/to/new-correctness-output --scenarios correctness --cycles 1 \
+  --response-mib 1 --sse-line-kib 64 --timeout 300 --operation-timeout 300
+```
+
+Use a fresh output directory for each run. The opt-in scenario preserves the
+reviewed seven cases and 32 distractor lines: arithmetic, ordered updates,
+strict integer JSON, string filtering, actual assistant history and sentinel
+retrieval. It sends 15 generation requests sequentially on the same service,
+alternating MTP/serial pair order, then compares structured SSE with its
+nonstream reply. Every generation has temperature 0 and a 64-token reply
+allowance; tokenizer IDs must prove the entire allowance fits the configured
+context. Text answers allow surrounding whitespace only; JSON keys/values must
+match exactly, including integer types.
+
+Token IDs, messages and stop finishes must agree, and the comma-separated
+ID SHA is recomputed independently. Serial replies must have zero cached prompt
+tokens and no draft work; MTP must actually propose tokens across the batch.
+Positive acceptance is reported without becoming an invented correctness gate.
+Raw exchanges, comments/SSE frames, case/tool hashes and observed service
+identity are retained. Image/PID/provider provenance remains the launch
+operator's separate evidence. The output is a bounded correctness record, not
+general quality, full-context capacity or performance qualification.
+
+The client limits above preserve the reviewed 1 MiB response/64 KiB SSE-line
+contract and cooperative per-call body deadlines capped by an 1800 s batch
+deadline. An in-flight read may last its socket timeout; this is not a whole-wall bound
+on DNS/status/header acquisition. Existing request/call budgets and cleanup
+failure propagation remain active. Unexpected transport/service failures stop
+the affected batch; semantic mismatches remain recorded with their diagnostic
+mates. Other exercise scenarios still require explicit request files and keep
+their existing defaults. No Q4-specific qualification guard is relaxed.
+
 ## Historical cu126 reference
 
 The remaining original build/serve commands and measured host configurations

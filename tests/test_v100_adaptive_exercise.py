@@ -1,5 +1,6 @@
 """Scenario protocol/lifecycle controls with HTTP fixtures; no model qualification."""
 import copy
+import hashlib
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import io
@@ -422,6 +423,189 @@ def actual_client_module():
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
+
+
+@contextmanager
+def correctness_service(fault=None):
+    """Independent HTTP answers; this fixture is not a model/tokenizer oracle."""
+    state = SimpleNamespace(calls=[], stats_calls=0, lock=threading.Lock())
+
+    def answer(body):
+        prompt = body["messages"][-1]["content"]
+        if prompt.startswith("Calculate"):
+            return str(17 * 23 - 19)
+        if prompt.startswith("Start x"):
+            if fault == "loop-31":
+                return "31"  # Retained actual matching serial/MTP semantic failure; the oracle remains43.
+            value = 3
+            for number in [2, 5, 1]:
+                value = 2 * value + number
+            return str(value)
+        if prompt.startswith("For the integers"):
+            values = [7, 3, 11, 5]
+            result = dict(count=len(values), sum=sum(values), max=max(values))
+            if fault == "json-type":
+                result["sum"] = float(result["sum"])
+            return json.dumps(result)
+        if prompt.startswith("From [pear"):
+            return ",".join(sorted(word for word in ["pear", "fig", "apple", "kiwi"] if len(word) == 4))
+        if prompt.startswith("Track these labels"):
+            return "MOSS-2846"
+        if prompt.startswith("Update beta"):
+            return "KITE-7319|LIME-5082"
+        return "AURORA-6197|VIOLET-2831"
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_args):
+            pass
+
+        def respond(self, body, kind="application/json"):
+            raw = json.dumps(body).encode() if isinstance(body, dict) else body
+            self.send_response(200)
+            self.send_header("Content-Type", kind)
+            self.send_header("Content-Length", str(len(raw)))
+            self.end_headers()
+            self.wfile.write(raw)
+
+        def do_GET(self):
+            with state.lock:
+                state.calls.append((self.path, None))
+            if self.path == "/v1/runtime":
+                return self.respond({"object": "tensorfold.runtime", "context_tokens": 4096,
+                    "sessions": {"retained": 0, "active": 0, "decode": 0, "prefill": 0},
+                    "placement": {"slots": []}, "execution": {"effective": {}}})
+            row = statistics(capacity=1)
+            row["model"]["context_length"] = 4096
+            row["capacity_plan"]["session_capacity"]["context_tokens"] = 4096
+            for rank in row["capacity_plan"]["kv_full_windows"]["ranks"]:
+                rank["startup_capacities"] = [4101]
+            row["totals"]["failed"] = 0
+            with state.lock:
+                state.stats_calls += 1
+                if fault == "identity" and state.stats_calls > 1:
+                    row["server"]["instance_id"] = "another-process"
+            self.respond(row)
+
+        def do_POST(self):
+            count = int(self.headers["Content-Length"])
+            if not 0 < count <= 65536:
+                raise ValueError("fixture request boundary")
+            body = json.loads(self.rfile.read(count))
+            with state.lock:
+                state.calls.append((self.path, copy.deepcopy(body)))
+            if self.path == "/v1/tokenize":
+                return self.respond({"count": 12, "tokens": list(range(12)), "max_model_len": 4096})
+            text = answer(body)
+            if fault == "answer" and body["messages"][-1]["content"].startswith("Calculate"):
+                text = "wrong"
+            ids = [ord(char) for char in text]
+            if fault == "ids" and body["draft"] and not body["stream"]:
+                ids[0] += 1
+            sha = hashlib.sha256(",".join(map(str, ids)).encode()).hexdigest()[:12]
+            cached = 1 if fault == "cold" and not body["draft"] else 0
+            stats = {"token_ids": ids, "token_sha": "bad" if fault == "sha" else sha,
+                     "drafts": body["draft"], "drafted": int(body["draft"] and fault != "no-proposals"),
+                     "accepted": 0, "cached": cached}
+            usage = {"prompt_tokens": 12, "completion_tokens": len(ids), "total_tokens": 12 + len(ids),
+                     "prompt_tokens_details": {"cached_tokens": cached},
+                     "completion_tokens_details": {"reasoning_tokens": 0}}
+            finish = "length" if fault == "finish" else "stop"
+            if body["stream"]:
+                if fault == "sse-dispatch":
+                    stats["drafts"] = False
+                frame = {"choices": [{"index": 0, "delta": {"content": text}, "finish_reason": finish}],
+                         "usage": usage, "tensorfold": stats}
+                if fault == "sse-parity":
+                    frame["choices"][0]["delta"]["content"] = "different"
+                raw = b": retained comment\n\ndata: " + json.dumps(frame).encode() + b"\n\n"
+                if fault != "sse-missing-done":
+                    raw += b"data: [DONE]\n\n"
+                if fault == "sse-duplicate-done":
+                    raw += b"data: [DONE]\n\n"
+                return self.respond(raw, "text/event-stream")
+            self.respond({"choices": [{"index": 0, "message": {"role": "assistant", "content": text},
+                                       "finish_reason": finish}], "usage": usage, "tensorfold": stats})
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    worker = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": .01})
+    worker.start()
+    try:
+        yield "http://127.0.0.1:" + str(server.server_port), state
+    finally:
+        server.shutdown()
+        server.server_close()
+        worker.join(timeout=3)
+        assert not worker.is_alive()
+
+
+def test_correctness_uses_one_live_service_and_preserves_seven_case_contract(monkeypatch, tmp_path):
+    monkeypatch.setattr(exercise.live, "Client", actual_client_module().Client)
+    args = arguments(tmp_path, ["correctness"], names=())
+    with correctness_service() as (args.url, state):
+        assert exercise.run(args) == 0
+    report = json.loads((args.out / "suite.json").read_text())
+    result = report["correctness"]
+    assert result["passed"] and result["requests"] == 15 and len(result["cases"]) == 7
+    assert result["drafted_total"] > 0
+    generations = [body for path, body in state.calls if path == "/v1/chat/completions"]
+    assert len(generations) == 15
+    assert [body["draft"] for body in generations[:4]] == [True, False, False, True]
+    assert all(body["max_tokens"] == 64 and body["temperature"] == 0 for body in generations)
+    history = result["cases"][5]["messages"]
+    assert history[-2] == {"role": "assistant", "content": result["cases"][4]["mtp"]["content"]}
+    assert sum(line.startswith("noise entry ") for line in result["cases"][6]["messages"][-1]["content"].splitlines()) == 32
+    assert result["stream"]["token_ids"] == result["cases"][2]["mtp"]["token_ids"]
+    assert any(b"retained comment" in path.read_bytes() for path in args.out.glob("*/response.raw"))
+    assert report["tool_sha256"] and result["contract_sha256"]
+    assert result["runtime_identity"]["instance_id"] == "unchanged"
+    for path in args.out.glob("*-stats/exchange.json"):
+        exchange = json.loads(path.read_text())
+        assert 0 < exchange["read_control"]["deadline_monotonic_s"] - exchange["acquired_monotonic_s"] <= args.operation_timeout
+
+
+@pytest.mark.parametrize("fault", ["answer", "json-type", "ids", "sha", "finish", "cold",
+                                  "sse-missing-done", "sse-duplicate-done", "sse-parity", "sse-dispatch",
+                                  "identity", "no-proposals", "loop-31"])
+def test_correctness_rejects_false_answers_parity_protocol_and_identity(monkeypatch, tmp_path, fault):
+    monkeypatch.setattr(exercise.live, "Client", actual_client_module().Client)
+    args = arguments(tmp_path, ["correctness"], names=())
+    with correctness_service(fault) as (args.url, _state), pytest.raises(ValueError):
+        exercise.run(args)
+    report = json.loads((args.out / "suite.json").read_text())
+    assert not report["passed"] and report["scenarios"][0]["status"] == "failed"
+    assert list(args.out.glob("*/response.raw"))
+    if fault in {"finish", "sha"}:
+        assert report["correctness"]["requests"] == 1
+    if fault == "loop-31":
+        loop = report["correctness"]["cases"][1]
+        assert loop["mtp"]["content"] == loop["serial"]["content"] == "31"
+        assert loop["mtp"]["token_ids"] == loop["serial"]["token_ids"]
+        assert {(row["case"], row["phase"]) for row in report["correctness"]["failures"]} == {
+            ("loop-reasoning", "mtp-answer"), ("loop-reasoning", "serial-answer")}
+
+
+@pytest.mark.parametrize("option,value", [("response_mib", 2), ("sse_line_kib", 65),
+                                         ("timeout", 301), ("operation_timeout", 301)])
+def test_correctness_budget_refusal_precedes_http_client_construction(monkeypatch, tmp_path, option, value):
+    args = arguments(tmp_path, ["correctness"], names=())
+    setattr(args, option, value)
+    monkeypatch.setattr(exercise.live, "Client", lambda *_a, **_k: pytest.fail("invalid budget reached HTTP"))
+    with pytest.raises(ValueError, match="correctness requires"):
+        exercise.run(args)
+
+
+def test_correctness_cli_is_opt_in_and_uses_no_request_files(monkeypatch, tmp_path):
+    seen = []
+    monkeypatch.setattr(exercise, "run", lambda args: seen.append(args) or 0)
+    base = ["--url", "http://unused", "--out", str(tmp_path / "unused")]
+    assert exercise.main([*base, "--scenarios", "correctness", "--response-mib", "1",
+                          "--timeout", "300", "--operation-timeout", "300", "--cycles", "1"]) == 0
+    assert seen[-1].request == [] and seen[-1].scenarios == ["correctness"]
+    with pytest.raises(SystemExit) as missing:
+        exercise.main(base)
+    assert missing.value.code == 2
+    assert exercise.main([*base, "--request", "short=example.json"]) == 0
+    assert "correctness" not in seen[-1].scenarios
 
 
 def test_actual_keepalives_cannot_keep_response_body_alive_past_cooperative_deadline(tmp_path):
