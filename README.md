@@ -17,6 +17,12 @@ installed-image controls each passed 1,692 CPU tests with one optional fixture
 skip; this does not establish native CUDA execution. See
 [current contracts and limits](docs/v100-adaptive-validation.md#tp8etp4-one-server-native-component).
 
+Standalone primitive, library and synthetic reconvergence probes have now passed
+40 single-device runs across all eight V100s on `sm-v100`, plus 12 Compute
+Sanitizer runs on GPU0. These 52 jobs establish the recorded component-fixture
+results; the native expert operator, multi-rank NCCL, model and final SDK gates
+remain separate. See [physical component evidence](docs/v100-adaptive-validation.md#physical-standalone-component-campaign).
+
 A private qualification-only engine path now prepares exclusive native ETP4
 execution across target, prompt and MTP calls, and can compose the target with
 the existing dense TP8 DFlash profile. It reuses activation/output

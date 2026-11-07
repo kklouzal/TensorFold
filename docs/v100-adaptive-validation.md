@@ -785,10 +785,55 @@ SC117/MTP model and media quality, complete resource/capacity and matched
 end-to-end performance were unrun. Subsequent native AMD64 editable-build,
 CPU-load and offline SM70 component compile/load evidence is recorded in the
 [fresh-bootstrap report](../deploy/v100/source-foundation.md#executed-fresh-bootstrap).
-The current host is GB10; known dev-01 has an RTX PRO2000 Blackwell. Those
-results do not provide actual V100 execution or a selected final V100 SDK.
-Target-server access remains unresolved. No guard is relaxed to substitute
-devices, no native candidate is promoted and production is unchanged.
+Those earlier GB10/dev-01 results do not provide actual V100 execution or a
+selected final V100 SDK. Access to `sm-v100` is now available; the subsequent
+standalone component campaign below records its own physical evidence. It does
+not execute the native expert operator or promote a serving candidate.
+
+### Physical standalone component campaign
+
+On 2026-11-07, the maintained primitive/library/reconvergence probes were staged,
+compiled and executed on `sm-v100` (`192.168.1.140`), Ubuntu 26.04.1 with driver
+580.178.04 and eight V100 SXM2 devices. Source checkpoint
+`c0b11f0e3c0db4f9292150f58c4d117db62ee84b` and image
+`sha256:9344978748e6eac9b9323b332b2feadb71e151ed217e0984466161f1a24dc451`
+bind this campaign. The unmodified `source_build.sh probes` stage used
+NVCC 12.9.86/GCC 13.3 and produced these three standalone binaries:
+
+| Binary | SHA256 |
+| --- | --- |
+| `cccl-primitives` | `a13aa016faf3d199f15392b4918d5ba5b7dff4a4f7250d010267efe7396d698e` |
+| `libraries-probe` | `186d8a204d919c82d0ee0691b8eb1abde59f92c0e682243503e4e92ddf287c6c` |
+| `reconvergence-6111901` | `77af74f98098189264ed6e228d8205c1bb4d5b011f7edadc9ed11009ba15db6c` |
+
+Each of the eight devices passed five ordinary runs: CCCL at 1, 33 and 1,048,576
+elements, the library probe and the synthetic reconvergence probe. The CCCL
+runs exercised eager and captured execution with caller scratch of 1,023 bytes
+for the two smaller sizes and 8,485,375 bytes for the largest. The library probe
+passed eager/captured exact integer comparisons with cuBLASLt algorithm 0 and a
+32 MiB workspace ceiling. The reconvergence probe passed 3,072 synthetic cases
+per device. These are fixture correctness observations, with no performance
+claim or vendor-issue applicability inference.
+
+GPU0 additionally passed memcheck, racecheck, initcheck and synccheck on each
+of the three binaries: 12 sanitizer jobs. All 40 ordinary and 12 sanitizer jobs
+exited 0 and retired with PID 0; final checks found no running containers or
+compute applications. Recorded GPU health counters remained unchanged,
+including GPU5's pre-existing single-bit retired-page count of 1. Source/prefix
+identities matched before/after, every job checked the exact binary SHA256,
+and canonical/protected inputs remained unchanged. Actual library initialization
+paths matched GPU0 across all eight library runs; host-driver and container
+provider identities retain their distinct provenance.
+
+The private `sm-v100-component-plan-v1/all8-component-gate-v1.json` receipt has
+SHA256 `3082ccfc0b728bd2db511fcece386af3ebdcb765b78cdb58e5c444c093ebe04e`.
+Its 195 direct artifacts retain commands, raw outputs, before/after identities,
+provider observations, health and retirement evidence. These 52 jobs are serial
+single-device fixtures, not a multi-GPU/NCCL run or native `gguf_ops` execution.
+SC117/MTP/DFlash model/state/quality, resident capacity, performance, final SDK
+qualification and vendor issue6111901 disposition remain open. No runtime
+selection, guard or production setting changed. See the
+[source-foundation gates](../deploy/v100/source-foundation.md#required-primitive-and-library-gates).
 
 ## Prepared TP8/ETP4 execution and workspace
 

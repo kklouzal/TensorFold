@@ -427,6 +427,25 @@ four/eight-rank NCCL tests remain required on this new stack. Old cu126 results
 do not transfer. Full model correctness, quality, resources and representative
 performance remain separate Section 21 gates.
 
+### Physical standalone component campaign
+
+The 2026-11-07 campaign on `sm-v100` (`192.168.1.140`, Ubuntu 26.04.1,
+driver 580.178.04) passed 40 ordinary single-device runs, five on each of eight
+V100s, plus 12 GPU0 sanitizer runs. The three unmodified standalone probes cover
+CCCL sizes 1/33/1,048,576, eager/captured library integer oracles and 3,072
+synthetic reconvergence cases per device. Source `c0b11f0e` and the exact
+`934497` builder image identify these results; full hashes, binary identities,
+commands, scratch sizes and remaining gates are in the
+[component qualification record](../../docs/v100-adaptive-validation.md#physical-standalone-component-campaign).
+
+The accepted `sm-v100-component-plan-v1/all8-component-gate-v1.json` receipt is
+SHA256 `3082ccfc0b728bd2db511fcece386af3ebdcb765b78cdb58e5c444c093ebe04e`.
+All 52 jobs exited 0 and retired; recorded source/prefix bytes, binary identities
+and GPU health counters remained unchanged. This campaign executes standalone
+fixtures, not the Torch/native expert operator, multi-rank NCCL or a full model.
+It does not clear the bootstrap export barrier, final installed-SDK audit or
+the compiler issue below. No performance gain or production selection follows.
+
 ## Compiler issue 6111901 remains a release gate
 
 NVIDIA's CUDA 13.2.2 release notes identify a reconvergence defect introduced in
@@ -451,8 +470,9 @@ registers, four component branches, and exact integer/count oracles. It compares
 ordinary nested control flow with an explicit-warp-convergence candidate.
 This is a synthetic fixture, not NVIDIA's private reproducer. SASS BSSY/BSYNC
 inventory and successful compilation do not prove correct reconvergence or a
-validated mitigation. Actual V100 execution and a justified vendor/toolchain
-disposition are required before release. A concrete unresolved gate remains
+validated mitigation. The recorded standalone V100 campaign passed this
+synthetic fixture; a justified vendor/toolchain disposition is still required
+before release. A concrete unresolved gate remains
 visible; the producer does not silently select an older serving library.
 
 Primary references: [CUDA 12.9.2 components](https://docs.nvidia.com/cuda/archive/12.9.2/cuda-toolkit-release-notes/index.html),

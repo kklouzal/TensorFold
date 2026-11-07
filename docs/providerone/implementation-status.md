@@ -80,6 +80,15 @@ unset/empty behavior intact. At the typed-component checkpoint, source and fresh
 the frozen source. These controls do not qualify native CUDA or the complete
 TP8/ETP4 profile. See [the current component and qualification limits](../v100-adaptive-validation.md#tp8etp4-one-server-native-component).
 
+Physical target access is now available on `sm-v100` (`192.168.1.140`). At
+source `c0b11f0e` with the pinned `934497` builder image, standalone primitive,
+library and synthetic reconvergence probes passed 40 single-device runs across
+all eight V100s and 12 sanitizer runs on GPU0. These 52 jobs are component-fixture
+evidence only; they do not execute the native expert operator, multi-rank NCCL
+or SC117/MTP/DFlash models, and do not qualify the final SDK or resolve vendor
+issue6111901. The full TP8/ETP4 matrix status remains unqualified. See
+[physical component evidence](../v100-adaptive-validation.md#physical-standalone-component-campaign).
+
 The private prepared-engine path now owns one native route arena per existing
 target/prompt/MTP buffer, reuses their activation/output storage and binds
 exclusive dispatch. Paid routing workspace contains these arenas; no extra
