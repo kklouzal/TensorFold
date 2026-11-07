@@ -156,7 +156,7 @@ def model_plan(target, directory, *, tp=(0, 1)):
     gate = matrix("ffn_gate_exps.weight", (c.experts, full.moe_width, d), rows=expert_rows, packed=True)
     up = matrix("ffn_up_exps.weight", (c.experts, full.moe_width, d), rows=expert_rows, packed=True)
     down_rows = (None if partition.groups == 1 else
-                 [e * d + i for e in range(partition.first, partition.stop) for i in range(d)])
+                 range(partition.first * d, partition.stop * d))
     down = matrix("ffn_down_exps.weight", (c.experts, d, full.moe_width), rows=down_rows,
                   columns=((lo, width),), packed=True)
     slo, swidth = rank * c.shared_width, c.shared_width

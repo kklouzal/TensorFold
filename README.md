@@ -36,8 +36,13 @@ with 73.785% less mean readiness time; no global default or long-prompt claim ch
 Source startup diagnostics now separate the existing GGUF target-load interval,
 stock-MTP attachment, vocabulary binding and surrounding engine setup. They
 report host elapsed/submission time without extra device synchronization or
-changing the existing warmup milestone. Actual target phase measurements remain
-pending; this instrumentation is not a new loading-speed result.
+changing the existing warmup milestone. An installed probe measured substantial
+pre-weight and target-load costs. The next source candidate reuses validated
+GGUF inventories while preserving authoritative JSON, RoPE and EOS handling.
+Inventory-only and compact-row prepared CPU plans are byte-identical to the
+prior reference. The combined CPU model-plan mean fell from 16.024 s to 6.114 s;
+target verification will accompany the next main-goal run. No integrated startup
+gain is claimed; further startup optimization is deferred for now.
 
 Current delivery work prioritizes one-server TP8/ETP4 before further PP2 work.
 The V100 Compose profile accepts the explicit

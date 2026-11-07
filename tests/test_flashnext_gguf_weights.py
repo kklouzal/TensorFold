@@ -54,6 +54,154 @@ def test_config_metadata_uses_reply_eos_separately_from_ple(tmp_path):
     assert config["text_config"]["vocab_size"] == 32
 
 
+@pytest.mark.parametrize("prepared", [False, True])
+@pytest.mark.parametrize("override", [False, True])
+def test_model_plan_reuses_inventory_without_changing_json_rope_eos_authority(tmp_path, monkeypatch, prepared, override):
+    import json
+    from dataclasses import replace
+    from tensorfold import gguf_file
+    from tensorfold.families.qwen4_exp.cuda.gguf_weights import model_plan
+    from tensorfold.families.qwen4_exp.cuda.weight_types import Config
+
+    source = tiny_model(tmp_path / "source.gguf")
+    selected = source
+    if prepared:
+        selected = tmp_path / "prepared"
+        selected.mkdir()
+        raw = metadata_config(source)
+        raw["gguf_file"] = str(source)
+        raw["text_config"]["rms_norm_eps"] = 0.125
+        raw["text_config"]["rope_parameters"]["rope_theta"] = 20000.0
+        raw["text_config"]["gguf_ple_eos_token_id"] = 9
+        (selected / "config.json").write_text(json.dumps(raw))
+    native = Config.read(selected)
+    rope = replace(native.rope, theta=30000.0) if override else None
+    expected = Config.read(selected, rope=rope, eos_token_ids=[17])
+    reads, original = [], gguf_file._shard
+    def counted(path):
+        reads.append(path)
+        return original(path)
+    monkeypatch.setattr(gguf_file, "_shard", counted)
+    weights, _planner = model_plan(selected, (3, 8), rope=rope, eos_token_ids=[17],
+                                   expert_tensor_parallel_size=4)
+    assert reads == [source] * (1 if prepared else 2)
+    full = weights.meta["full"]
+    assert full == replace(expected, quant="gguf", execution_dtype="float16", ple_eos=13)
+    assert full.eos == (17,) and full.ple_eos == 13
+    if prepared:
+        assert full.eps == 0.125 and native.rope.theta == 20000.0
+    if override:
+        assert full.rope is rope
+
+
+def test_split_model_plan_reuses_metadata_inventory_and_preserves_selected_second_entry(tmp_path, monkeypatch):
+    from tensorfold import gguf_file
+    from tensorfold.families.qwen4_exp.cuda.gguf_weights import model_plan
+    from gguf_fixture import write
+
+    source = tiny_model(tmp_path / "source.gguf")
+    inventory = gguf_file.GGUFCheckpoint.open(source)
+    groups = [[], []]
+    with source.open("rb") as stream:
+        for index, tensor in enumerate(inventory.tensors.values()):
+            stream.seek(tensor.offset)
+            raw = np.frombuffer(stream.read(tensor.nbytes), dtype=np.uint8)
+            groups[index % 2].append((tensor.name, tensor.shape, tensor.ggml_type, raw))
+    shards = [tmp_path / f"split-{i:05d}-of-00002.gguf" for i in (1, 2)]
+    for index, path in enumerate(shards):
+        write(path, groups[index], {**inventory.metadata, "split.no": index, "split.count": 2,
+                                    "split.tensors.count": len(inventory.tensors)})
+    reads, original = [], gguf_file._shard
+    def counted(path):
+        reads.append(path)
+        return original(path)
+    monkeypatch.setattr(gguf_file, "_shard", counted)
+    weights, _ = model_plan(shards[1], (3, 8), expert_tensor_parallel_size=4)
+    assert reads == shards * 2
+    assert weights.meta["gguf_entrypoint"] == str(shards[1])
+
+
+def row_runs_reference(indices):
+    """Independent integer adjacency oracle, including duplicate/permuted runs."""
+    from itertools import groupby
+
+    return tuple((group[0][1], len(group)) for group in (
+        list(items) for _key, items in groupby(enumerate(map(int, indices)), lambda pair: pair[1] - pair[0])))
+
+
+@pytest.mark.parametrize("indices", [range(2, 9), range(3, 3), range(4, 2), range(-8, -2),
+                                     range(-3, 4), range(8, 1, -1), range(1, 9, 2),
+                                     range(2**70, 2**70 + 3), [3, 1, 1, 2], [2, 3, 8, 9, 8]])
+def test_row_ranges_preserve_order_duplicates_and_non_unit_step_semantics(indices):
+    from tensorfold.families.qwen4_exp.cuda.gguf_weights import _ranges
+
+    expected = row_runs_reference(indices)
+    assert _ranges(indices) == expected
+    assert _ranges(list(indices)) == expected
+    assert _ranges(iter(indices)) == expected
+
+
+@pytest.mark.parametrize("rows", [range(-1, 2), range(7, 9)])
+def test_compact_ranges_keep_the_existing_matrix_bounds(rows):
+    from tensorfold.families.qwen4_exp.cuda.gguf_weights import Planner
+
+    source = PackedTensor("w", (8, 64), 8, Path("unused"), 0, 8 * 68)
+    for values in (rows, list(rows)):
+        planner = Planner(SimpleNamespace(tensors={"w": source}))
+        with pytest.raises(ValueError, match="invalid GGUF matrix row shard"):
+            planner.matrix("w", rows=values, packed=True)
+
+
+@pytest.fixture(scope="module")
+def range_plan_checkpoint(tmp_path_factory):
+    return tiny_model(tmp_path_factory.mktemp("range-plans") / "source.gguf", experts=8)
+
+
+@pytest.mark.parametrize("etp", [2, 4, 8])
+@pytest.mark.parametrize("rank", range(8))
+def test_target_plan_descriptors_and_aliases_match_expanded_row_oracle(range_plan_checkpoint, monkeypatch, etp, rank):
+    from tensorfold.families.qwen4_exp.cuda import gguf_weights as weights
+
+    actual, actual_plan = weights.model_plan(range_plan_checkpoint, (rank, 8), expert_tensor_parallel_size=etp)
+    actual_bytes = weights.weight_byte_plan(range_plan_checkpoint, (rank, 8), expert_tensor_parallel_size=etp)
+    monkeypatch.setattr(weights, "_ranges", row_runs_reference)
+    expected, expected_plan = weights.model_plan(range_plan_checkpoint, (rank, 8), expert_tensor_parallel_size=etp)
+    expected_bytes = weights.weight_byte_plan(range_plan_checkpoint, (rank, 8), expert_tensor_parallel_size=etp)
+    assert actual == expected and actual_bytes == expected_bytes
+    assert actual_plan.matrices == expected_plan.matrices
+    assert actual_plan.arrays == expected_plan.arrays and actual_plan.tables == expected_plan.tables
+    assert [matrix.byte_segments for matrix in actual_plan.matrices] == [matrix.byte_segments for matrix in expected_plan.matrices]
+    for layer in actual.layers:
+        for hc in (layer.attn_hc, layer.mlp_hc):
+            assert hc.down is hc.prefill_down and hc.up is hc.prefill_up
+
+
+@pytest.mark.parametrize("tp", [(0, 1), (0, 2), (1, 2), (0, 4), (3, 4)])
+def test_smaller_world_default_range_callers_match_integer_oracle(range_plan_checkpoint, monkeypatch, tp):
+    from tensorfold.families.qwen4_exp.cuda import gguf_weights as weights
+
+    actual, plan = weights.model_plan(range_plan_checkpoint, tp)
+    monkeypatch.setattr(weights, "_ranges", row_runs_reference)
+    expected, expected_plan = weights.model_plan(range_plan_checkpoint, tp)
+    assert actual == expected and plan.matrices == expected_plan.matrices
+
+
+@pytest.mark.parametrize("malformed", ["config.json", "hf_quant_config.json"])
+def test_model_plan_never_masks_malformed_authoritative_json(tmp_path, malformed):
+    import json
+    from tensorfold.families.qwen4_exp.cuda.gguf_weights import model_plan
+
+    source = tiny_model(tmp_path / "source.gguf")
+    prepared = tmp_path / "prepared"
+    prepared.mkdir()
+    raw = metadata_config(source)
+    raw["gguf_file"] = str(source)
+    (prepared / "config.json").write_text(json.dumps(raw))
+    (prepared / malformed).write_text('{"x":1,"x":2}')
+    with pytest.raises(ValueError, match="duplicate"):
+        model_plan(prepared)
+
+
 def test_gguf_sidecar_retains_canonical_duplicate_key_refusal(tmp_path):
     (tmp_path / "config.json").write_text('{"gguf_file":"first.gguf","gguf_file":"second.gguf"}')
     with pytest.raises(ValueError, match="duplicate"):

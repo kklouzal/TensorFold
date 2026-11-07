@@ -21,7 +21,7 @@ from tensorfold.cuda.sm70 import gguf_ops
 from tensorfold.cleanup import raise_failures
 
 from tensorfold.gguf_file import FORMATS, PackedTensor, resolve_gguf
-from ..gguf import decode_rows, metadata_config, open_checkpoint
+from ..gguf import decode_rows, metadata_config_from_checkpoint, open_checkpoint
 from ..host_table import PREFETCH_READ, _MappedTable, _prefetch, _random_access
 from ..ple_lifetime import PLETables, _retain_failure
 from ..read_ahead import ReadAhead, row_ids
@@ -36,6 +36,8 @@ PLE_PREFETCH_WORKERS = 8
 
 def _ranges(indices):
     """Keep arbitrary converter permutations as a small ordered list of row runs."""
+    if type(indices) is range and indices.step == 1:
+        return ((indices.start, indices.stop - indices.start),) if indices.start < indices.stop else ()
     result = []
     for index in indices:
         if result and result[-1][0] + result[-1][1] == index:
@@ -687,7 +689,7 @@ def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft
     if entry is None:
         raise ValueError("no GGUF checkpoint was selected")
     checkpoint = open_checkpoint(entry)
-    raw = metadata_config(entry)
+    raw = metadata_config_from_checkpoint(checkpoint, entry)
     # Config.read uses the same metadata dispatch for raw GGUF and staged bundles.
     full = Config.read(path, rope=rope, eos_token_ids=eos_token_ids)
     if position_profile is not None:
@@ -757,7 +759,7 @@ def model_plan(path, tp=None, *, rope=None, eos_token_ids=None, mtp=False, draft
         gate = planner.matrix(base + "ffn_gate_exps.weight", rows=rows, packed=True)
         up = planner.matrix(base + "ffn_up_exps.weight", rows=rows, packed=True)
         down_rows = (None if partition.groups == 1 else
-                     [e * full.hidden + i for e in range(partition.first, partition.stop) for i in range(full.hidden)])
+                     range(partition.first * full.hidden, partition.stop * full.hidden))
         down = planner.matrix(base + "ffn_down_exps.weight", rows=down_rows,
                               columns=((lo, hi - lo),), packed=True)
         slo, shi = rank * cfg.shared_width, (rank + 1) * cfg.shared_width

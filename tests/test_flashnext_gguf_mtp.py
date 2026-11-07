@@ -15,8 +15,8 @@ pytestmark = pytest.mark.torch
 
 from tensorfold.families.qwen4_exp.cuda import gguf_mtp_weights as mtp  # noqa: E402
 from tensorfold.families.qwen4_exp.cuda.sm70_mtp_weights import attach, byte_plan  # noqa: E402
-from tensorfold.gguf_file import GGUFCheckpoint, _shard
-from tensorfold.families.qwen4_exp.gguf import decode_rows, metadata_config, token_id_identity
+from tensorfold.gguf_file import GGUFCheckpoint, _shard  # noqa: E402 - keep imports behind the optional Torch guard
+from tensorfold.families.qwen4_exp.gguf import decode_rows, metadata_config, token_id_identity  # noqa: E402
 
 
 def _string(value):
@@ -489,3 +489,23 @@ def test_actual_artifact_plan_when_explicitly_supplied():
     assert torch.isfinite(target.mtp.fc_h.weight).all()
     assert torch.isfinite(target.mtp.fc_e.weight).all()
     print(json.dumps(plan, sort_keys=True))
+
+
+@pytest.mark.parametrize("etp", [2, 4, 8])
+@pytest.mark.parametrize("rank", range(8))
+def test_mtp_descriptors_byteplan_and_hc_aliases_match_expanded_row_oracle(tmp_path, monkeypatch, etp, rank):
+    from tensorfold.families.qwen4_exp.cuda import gguf_weights
+    from test_flashnext_gguf_weights import row_runs_reference
+
+    target, path, _ = fixture(tmp_path, rank=rank, experts=8, etp=etp)
+    actual, plan, receipt = mtp.model_plan(target, path, tp=(rank, 8))
+    actual_bytes = mtp.byte_plan(target, path, tp=(rank, 8))
+    monkeypatch.setattr(gguf_weights, "_ranges", row_runs_reference)
+    expected, expected_plan, expected_receipt = mtp.model_plan(target, path, tp=(rank, 8))
+    expected_bytes = mtp.byte_plan(target, path, tp=(rank, 8))
+    assert actual == expected and receipt == expected_receipt and actual_bytes == expected_bytes
+    assert plan.matrices == expected_plan.matrices and plan.arrays == expected_plan.arrays
+    assert [matrix.byte_segments for matrix in plan.matrices] == [matrix.byte_segments for matrix in expected_plan.matrices]
+    assert all(matrix.packed == reference.packed for matrix, reference in zip(plan.matrices, expected_plan.matrices, strict=True))
+    for hc in (actual.layer.attn_hc, actual.layer.mlp_hc, actual.mixer):
+        assert hc.down is hc.prefill_down and hc.up is hc.prefill_up

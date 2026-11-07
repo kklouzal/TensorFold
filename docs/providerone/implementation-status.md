@@ -96,12 +96,56 @@ from 657.139 s to 172.268 s. Backend defaults, full logical context and all guar
 are preserved; long-prompt inference performance and quality remain unqualified. See [the precise
 pilot scope](../v100-adaptive-validation.md#prefill-row-development-pilot).
 
-The next source-only increment exposes fixed per-rank startup phase diagnostics
-before choosing a loader change. Existing `load_seconds` still ends before MTP
+Fixed per-rank startup phase diagnostics now have one installed probe.
+Existing `load_seconds` still ends before MTP
 payload attachment; separate attachment/vocabulary intervals and surrounding
 engine setup use monotonic host clocks. Diagnostics stay outside prepared
 constructor options and numerical/capacity identities. Existing loading and
-warmup milestones retain their meanings; actual target attribution is pending.
+warmup milestones retain their meanings. The recorded rank 0 host intervals were
+59.700 s before weights, 57.308 s enclosing weights call, 46.390 s target load,
+10.862 s stock-MTP attach, 0.000310 s vocabulary bind and 6.815 s subsequent setup.
+Loader subintervals are contained in the enclosing call, not additional costs
+or GPU-completion timings. The actual gate is
+`sm-v100-startup-timing-app-v1/execution-v1/startup-phase-timing-actual-gate-v1.json`,
+SHA256 `26d0b0cfdd1baad0678867bfabf733888e27f6696dbb11c71b660f0e61edc0d7`.
+
+A CPU profile of the actual prepared-directory caller measured 27.357 s including
+profiling overhead: two target header opens plus one MTP open. Config JSON
+dispatch itself took about 0.002 s. The minimal source candidate reuses the first
+validated inventory for target-derived metadata; `Config.read` and the neutral
+configuration API remain unchanged. This removes one duplicate target parse;
+prepared JSON/sidecar authority and original mapping/RoPE/EOS logic are preserved.
+Raw-entry profiling does not describe the normal JSON branch.
+
+The inventory-only prepared CPU comparison produced six byte-identical
+3,150,610-byte normalized plan/byteplan graphs (including owner aliases), SHA256
+`c3e98d9e2e80744cc04d566ddc0a33a21e37aea0f057cd35fc3b30bad16cac08`.
+Three samples per implementation observed model-plan means 16.0236→14.6616 s
+and byteplan means 15.9619→14.3811 s. These are CPU observations, not end-to-end
+startup gains. The gate is
+`single-inventory-reuse-execution-v1/prepared-inventory-CPU-equality-gate-v1.json`,
+SHA256 `45d0f7e7470b6ef2d9096fd56a76cf6493e521936e51a639ed49492e32443aee`.
+
+The separately measured row-planning candidate replaces expanded contiguous
+expert down-row lists with ranges and gives unit-step ranges an exact run
+representation. Arbitrary permutations, duplicates, descending/strided inputs,
+gate/up selection and matrix bounds retain their existing behavior. Its own
+three prepared CPU descriptor/byteplan graphs match that same full SHA against
+the inventory-only reference. Observed means were:
+
+| CPU operation | Original `4c351a70` | Inventory-only | Combined compact-row |
+| --- | ---: | ---: | ---: |
+| Model plan | 16.0236 s | 14.6616 s | 6.1140 s |
+| Byteplan | 15.9619 s | 14.3811 s | 5.5880 s |
+
+The combined gate is
+`combined-inventory-range-execution-v1/combined-prepared-CPU-gate-v1.json`, SHA256
+`7b4f7f3af5c1bde221a216e57fc8e7d22e9322156b0ae91e3148700a168d6998`.
+Only three new combined trials were needed; the captured inventory-only
+reference was reused. User steering now ends this startup-optimization phase;
+no dedicated startup benchmark is scheduled. Target verification will accompany
+the next main ProviderOne run. No integrated startup speed gain is claimed, and
+no packing, payload I/O, cache or numerical-kernel change is included.
 
 ## Required SC117 parallelism matrix
 
