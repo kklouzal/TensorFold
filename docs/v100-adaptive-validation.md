@@ -833,6 +833,23 @@ binary/SASS/tool/header identities and retirement evidence:
 | `sm-v100-final-sdk-plan-v1/canonical-e90-installed-sdk-cpu-pass-gate-v1.json` | `68e75f62241163ba20f68ac251ce9761b1c7c105b5ab1c3fc44bad2a032a9268` |
 | `sm-v100-native-etp4-plan-v1/native-etp49-actual-pass-gate-v1.json` | `d99d670b2496877f667a663694d03d4cf167f33289a2d808892ecaa9f7529fac` |
 
+The same immutable installed image subsequently passed the unchanged installed
+four- and eight-rank collective fixture: two cases, zero skips/errors/failures,
+14.956 pytest seconds. All 12 actual worker PID/rank tuples matched their raw
+loader traces and NCCL initialization records. The 64 initialized provider paths
+retain separate immutable-image and host-driver provenance. Protected software
+audits, headers, source/image identities and GPU health stayed unchanged; no
+application JIT was produced. Both the test and provider-readback containers
+retired with exit 0/PID 0 and no remaining compute applications. The private
+`sm-v100-protected-collectives-plan-v1/protected-collective-actual-pass-gate-v1.json`
+receipt, SHA256
+`0a2075c465ae74c4d68cba88003384bee3b9eb20478afed7fe8f1c3b14de8f30`,
+binds 46 independently rehashed artifacts. Optional IB/RMA/GDRCopy/GIN/NVLS
+advisories remain recorded; successful Socket bootstrap/P2P-CUMEM execution
+does not qualify those unavailable capabilities or NCCL throughput. Two caught
+prelaunch operator defects were repaired before execution and remain historical
+evidence; they were not GPU test failures. The tiny scheduler is a separate gate.
+
 The native gate binds 30 direct artifacts, independently rehashed during review.
 `release_qualified` remains false. Distributed ETP4, SC117/MTP/DFlash and media
 quality, complete model/state allocations, full-window capacity and matched

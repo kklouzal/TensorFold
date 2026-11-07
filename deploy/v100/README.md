@@ -157,18 +157,28 @@ revision `90a3350cd800ec1fe0d1660a38414ad9e985782f`:
 | --- | ---: | --- |
 | `IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00001-of-00002.gguf` | 55,063,448,064 | `40f369eca301ec6ea318dbb671b3132c26a2f0b89aa5458a7051b33215ee296c` |
 | `IQ3_S/Qwen3.8-Flash-Next-GSQ-RCO-abliterated-IQ3_S-00002-of-00002.gguf` | 28,800,138,432 | `316b46f3a2dbd68c900f43136ab9449f9dcc3725dfd8c794847c204bc161e113` |
-| `mtp-Qwen3.8-Flash-Next-Q8_0.gguf` | 4,137,429,312 | `713b16d7e97246858ebd9a6dec403b1cfc3407d8a539f65401948e20b38b0f91` |
 | `mmproj-Qwen3.8-Flash-Next-BF16.gguf` | 907,542,944 | `2e788f8c511d8093c7b43cb87b2fd7e14228340318057f8fb20c86df2efe2355` |
 
+The governing design's first packed MTP candidate comes from
+[`unsloth/Qwen3.8-Flash-Next-GGUF`](https://huggingface.co/unsloth/Qwen3.8-Flash-Next-GGUF/tree/766911a6b7369840a91dbcd95f9f997acaab6cd6/MTP),
+revision `766911a6b7369840a91dbcd95f9f997acaab6cd6`:
+
+| Companion artifact | File bytes | Expected complete-file SHA256 |
+| --- | ---: | --- |
+| `MTP/mtp-Qwen3.8-Flash-Next-shared-Q8_0.gguf` | 2,786,568,256 | `5ff54097406a905cf3a724c709124ceb0e3e10235ee862298969e91c96fa96e6` |
+
 Verify complete payloads and directories at installation. Both target shards
-are required. The canonical MTP directory has 34 tensors; import only its
-32 core tensors, containing 2,775,621,632 payload bytes. Its two vocabulary
-copies are descriptive source data. Execution uses the actual retained target
+are required. This shared-Q8 companion has 32 core tensors, containing
+2,775,621,632 payload bytes, and no duplicate vocabulary tensors. Execution uses the actual retained target
 embedding and output tensors, without additional persistent vocabulary weights.
 MTP uses the declared QSA compression four and complete-group budget 2,048.
 Ordered token-ID compatibility remains required; the unused companion template
-does not replace the selected target template. Older Unsloth shared-Q8 and
-BF16 artifacts remain comparison controls, with separate evidence.
+does not replace the selected target template. The distinct SC117 companion
+`mtp-Qwen3.8-Flash-Next-Q8_0.gguf` (4,137,429,312 bytes, SHA256
+`713b16d7e97246858ebd9a6dec403b1cfc3407d8a539f65401948e20b38b0f91`)
+contains two additional vocabulary copies; it is not the first candidate pinned
+by the governing design. BF16 and other companion controls need their own
+import, quality and performance evidence; no exclusive winner is implied here.
 
 ### Explicit endpoint and queue policy
 
@@ -202,7 +212,7 @@ qualification profile. This Bash recipe introduces no serving-budget values:
 : "${TF_V6_IMAGE:?Set the verified local sha256 image ID or actual registry digest reference}"
 : "${MODEL_ROOT:?Set the host directory containing the verified local artifacts}"
 : "${GGUF_FILE:?Set the first target shard path under /models}"
-: "${MTP_FILE:?Set the canonical SC117 MTP path under /models}"
+: "${MTP_FILE:?Set the verified shared-Q8 MTP companion path under /models}"
 : "${TF_CACHE_DIR:?Set a dedicated host cache directory}"
 : "${TF_RANK_GPUS:?Set eight physical GPU IDs or UUIDs in rank order}"
 : "${TF_CONTEXT:?Set the declared prompt-plus-reply context}"
@@ -517,16 +527,18 @@ A graph microtest alone does not establish full-model graph readiness.
 For a matching separate stock MTP head, replace `--no-drafts` with
 `--drafter /models/mtp-stock --mtp-drafts 2`. The loader accepts the existing
 floating checkpoint directory or a shared-target GGUF companion entrypoint.
-The current design instead selects `mtp-Qwen3.8-Flash-Next-Q8_0.gguf` from the
-SC117 revision and complete-file identity in the current source recipe above.
-The older Unsloth shared-Q8 artifact remains a comparison control; it does not
-transfer qualification to the canonical SC117 source. Verify size and SHA256 in the
+The current design's first packed candidate is the Unsloth shared-Q8 companion
+at the revision and complete-file identity in the current source recipe above.
+The distinct SC117 companion and BF16-derived controls require independent
+qualification. Verify size and SHA256 in the
 [specification](../../docs/v100-adaptive-inference-design.md#stock-mtp).
 Reads and decode staging are bounded. Routed GGUF banks retain their packed
 bytes, small projections execute in FP16, and the target embedding/head remain
 shared. This importer explicitly selects QSA compression four and token budget
-2,048, matching the canonical companion's final compression entry. Ordered
-target/draft token IDs must match.
+2,048 from the inspected model-config/SGLang policy. The shared companion's
+final MTP compression entry is zero; interpreting it as dense attention would
+select a different algorithm. The declared QSA policy must be verified against
+the reference. Ordered target/draft token IDs must match.
 `/stats.capacity_plan.mtp_import` identifies the import policy. CPU import
 controls are separate from pending SM70 execution, target-conditioned refresh,
 BF16-control comparison, quality, and performance qualification.

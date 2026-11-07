@@ -39,6 +39,13 @@ side-stream graph replay. The first fixture failure remains preserved; these
 communication checks do not qualify NCCL throughput, native ETP4, models or the
 final SDK. See [communication evidence and limits](docs/v100-adaptive-validation.md#collective-fixture-store-backend).
 
+The subsequent protected installed image `a24a579e` also passed both four- and
+eight-rank collective cases with no skips. All 12 worker traces, initialized
+library paths, post-process software audit and retirement checks passed. This
+is communication correctness evidence; scheduler, distributed ETP4 model and
+throughput qualification remain separate. See
+[installed-image results](docs/v100-adaptive-validation.md#installed-sm70-sdk-and-native-etp4-component).
+
 A private qualification-only engine path now prepares exclusive native ETP4
 execution across target, prompt and MTP calls, and can compose the target with
 the existing dense TP8 DFlash profile. It reuses activation/output
@@ -59,6 +66,12 @@ All 197 declared inputs have been staged and verified with the maintained CLI.
 The offline source-builder image also builds successfully. These are dependency
 preparation results; they do not qualify the SDK or native model
 execution. See [input staging](deploy/v100/source-foundation.md#reacquire-the-frozen-build-inputs).
+
+The V100 model recipe now matches the governing design's first packed MTP
+candidate: the pinned Unsloth shared-Q8 companion, sharing the target vocabulary
+weights with explicit QSA 4/2048. This corrects a stale guide reference to a
+different SC117 companion; it does not select a qualified model or drafter
+winner. See [artifact identities](deploy/v100/README.md).
 
 The V100 source and CPU media producers support explicit `MAX_JOBS=1..24`,
 preserving default 4 and matching CMake/OMP limits. Larger target builds require recorded container
