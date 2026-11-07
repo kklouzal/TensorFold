@@ -17,7 +17,7 @@ from tensorfold.cuda.expert_launch import supervise
 from tensorfold.cleanup import raise_failures
 
 
-def main(argv=None) -> int:
+def main(argv=None, *, _command_prefix=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--gpus", required=True, help="Comma-separated visible CUDA device IDs or UUIDs, rank order")
     parser.add_argument("--master-port", type=int, default=29551)
@@ -33,6 +33,13 @@ def main(argv=None) -> int:
         parser.error("supply MODEL and serve options after --, and a valid master port")
     if any(option.split("=", 1)[0] in ("--tp", "--rank", "--master", "--master-port") for option in tail):
         parser.error("the launcher supplies --tp, --rank, --master and --master-port")
+    if _command_prefix is None:
+        prefix = [sys.executable, "-m", "tensorfold", "serve"]
+    else:
+        if (type(_command_prefix) not in (list, tuple) or not _command_prefix
+                or any(type(value) is not str or not value or "\0" in value for value in _command_prefix)):
+            raise ValueError("private rank command prefix must be a nonempty argument sequence")
+        prefix = list(_command_prefix)
     # Keep the failure channel process-owned until every rank/session retires.
     # A fatal worker can wake the supervisor even when another rank is stuck
     # inside a collective and cannot produce a normal operation acknowledgment.
@@ -45,7 +52,7 @@ def main(argv=None) -> int:
         commands, environments = [], []
         for rank in [*range(1, len(devices)), 0]:
             env = dict(os.environ, CUDA_VISIBLE_DEVICES=devices[rank], **{FAILURE_FD_ENV: str(write_fd)})
-            command = [sys.executable, "-m", "tensorfold", "serve", *tail, "--tp", str(len(devices)),
+            command = [*prefix, *tail, "--tp", str(len(devices)),
                        "--rank", str(rank), "--master", "127.0.0.1", "--master-port", str(args.master_port)]
             commands.append(command)
             environments.append(env)

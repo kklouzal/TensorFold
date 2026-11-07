@@ -313,6 +313,13 @@ def cuda_engine(model_dir: str | Path, *, drafter: str = "", tp: int = 1, rank: 
         engine_options["media_profile_manifest"] = Path(media_manifest)
     if "graphs" in options:
         engine_options["graphs"] = options["graphs"]
+    owned = options.get("_owned_expert_native", False)
+    if type(owned) is not bool:
+        raise TypeError("_owned_expert_native must be a literal boolean")
+    if owned:
+        if expert_ranks > 1:
+            raise ValueError("private owned qualification cannot use expert-only follower sessions")
+        engine_options["_owned_expert_native"] = True
     for name in ("max_waiting_input_bytes", "max_waiting_input_bytes_per_principal", "output_queue_tokens", "queue_timeout_s", "retention_policy"):
         if options.get(name) is not None:
             engine_options[name] = options[name]

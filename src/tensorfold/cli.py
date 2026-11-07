@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import argparse
 import functools
+from dataclasses import dataclass
 import os
 from pathlib import Path
 import signal
 import sys
 import time
-from typing import Any
+from typing import Any, Callable
 
 from tensorfold import __version__
 from tensorfold import cli_args
@@ -25,6 +26,23 @@ from tensorfold.serve_options import (
 )
 
 COMMANDS = ("serve", "pull", "models", "info", "update", "service", "tui", "plan", "quantize")
+
+
+@dataclass(frozen=True)
+class _OwnedExpertQualification:
+    """Trusted Python-only entry; never a parser, environment or admin option."""
+    before_listener: Callable[[Any], None]
+
+    def __post_init__(self):
+        if not callable(self.before_listener):
+            raise TypeError("private qualification requires its receipt/containment owner")
+
+
+def _private_owned_qualification(args):
+    request = getattr(args, "_owned_expert_qualification", None)
+    if request is not None and type(request) is not _OwnedExpertQualification:
+        raise TypeError("invalid private owned-expert qualification capability")
+    return request
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -350,6 +368,7 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
     """Serve a CUDA configuration already validated by ``cmd_serve`` before its weight resolution."""
 
     from tensorfold import hub
+    qualification = _private_owned_qualification(args)
 
     sampling = _sampling_defaults(args, model_dir)  # refuse invalid defaults before acquiring the engine
     reply_tokens = _reply_tokens(args, model_dir)
@@ -368,6 +387,8 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
         "master_port": int(args.master_port),
         "no_drafts": no_drafts,
     }
+    if qualification is not None:
+        options["_owned_expert_native"] = True
     options.update(_model_overrides(args))
     if getattr(args, "draft_method", "auto") != "auto":
         options["draft_method"] = args.draft_method
@@ -454,6 +475,8 @@ def _serve_cuda(args: argparse.Namespace, family: Any, model_dir: Path, context:
     owners = {"engine": engine}
     primary = None
     try:
+        if qualification is not None:
+            qualification.before_listener(engine)
         if getattr(args, "expert_ranks", 1) > 1 and args.rank != 0:
             # Expert-only followers have no backbone/HTTP precision factory.
             # The leader validates those options against its actual weights.
@@ -561,6 +584,7 @@ def _parallel(value: Any) -> int:
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
+    qualification = _private_owned_qualification(args)
     _check_serve_numbers(args)
     _prepare_service_options(args)
     from tensorfold.server.authentication import configure
@@ -586,6 +610,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
     if args.ple_on_ssd and not hasattr(family.package, "ple_bytes"):
         raise ValueError(f"--ple-on-ssd: {family.title} has no n-gram (PLE) tables to read from SSD")
     backend = _backend(args.backend, family)
+    if qualification is not None and (backend != "cuda" or getattr(family.package, "__name__", "") != "tensorfold.families.qwen4_exp"):
+        raise ValueError("private owned qualification requires Flash Next CUDA")
     _check_serve_options(args, family, backend, config_dir)
     if backend == "mlx" and getattr(family.package, "MLX_MODEL_FILE", False):
         from tensorfold.families.model_code import authorize_model_code

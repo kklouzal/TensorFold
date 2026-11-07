@@ -149,6 +149,15 @@ no packing, payload I/O, cache or numerical-kernel change is included.
 
 ## Required SC117 parallelism matrix
 
+The source private owned-routed procedure now uses the maintained TP supervisor
+and ordinary CLI/frontend/API, with a typed Python-only capability and no public
+flag or hot toggle. Its post-construction boundary requires actual SC117 banks,
+native policy, reconciled arenas and coordinate/State numerical identity before
+all ranks may publish readiness. Receipt/image/tool provenance and qualification
+scope stay separate. The default reference command/policy is unchanged; actual
+private native target execution and quality/performance gates remain pending.
+See [the guarded procedure](../../deploy/v100/README.md#private-owned-routed-qualification-procedure).
+
 The installed SDK/native-component checkpoint uses source `e90caf58` and
 immutable image `sha256:a24a579e3ffd2a1ead0def6b0d68947d94796135c00c946e8440ebe1f47c5015`.
 The genuine final SM70 source build/export, protected installed software audit

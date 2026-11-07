@@ -39,8 +39,9 @@ graphs remain disabled for the reference ETP4 and unique-history paths. See
 [the current TP8/ETP4 work](../../docs/v100-adaptive-validation.md#tp8etp4-one-server-native-component).
 
 Internal qualification callers can prepare the same engine with
-`_owned_expert_native=True`. This is a constructor-only experimental opt-in,
-not a CLI or Compose setting. It requires adaptive resident GGUF TP8/ETP4,
+`_owned_expert_native=True`. The maintained private procedure below reaches that
+constructor through the ordinary CLI/frontend; it adds no product CLI or
+Compose setting. It requires adaptive resident GGUF TP8/ETP4,
 an actual SM70 device/build, stock shared-GGUF MTP, dense TP8 DFlash or no method,
 and bounded prepared row/slot geometry. Administrator profile transitions and
 DSpark remain unsupported by this private mode; normal reference behavior is
@@ -54,6 +55,40 @@ resources and has no expert-parallel axis or native MTP arena.
 The prepared owner reuses existing slot/activation storage and refuses reference
 fallback; no whole-model graphs are enabled. See
 [workspace ownership and qualification limits](../../docs/v100-adaptive-validation.md#prepared-tp8etp4-execution-and-workspace).
+
+### Private owned-routed qualification procedure
+
+Use an application image containing the private CLI/factory hook. Stage the
+canonical `v100_owned_qualification.py`, `launch_cuda_tp.py` and
+`benchmark_output.py` together as a read-only tool directory. Keep tool source
+hashes/commit separate from the immutable application image and provider
+provenance. Reuse the candidate Docker recipe's model/cache mounts, ordinary
+serve arguments, full context and explicitly admitted resource limits; replace
+only its command with this supervised parent, and provide a writable receipt
+parent directory:
+
+```bash
+python /qualification-tools/v100_owned_qualification.py \
+  --gpus "$TF_RANK_GPUS" --out /qualification-output/new-native-run \
+  -- "${serve_args[@]}" --expert-tensor-parallel-size 4
+```
+
+The output child directory must be new. The parent stays Torch/CUDA-free and
+uses the existing follower-first supervisor, failure pipe, signal handling and
+process retirement. Workers use the shared parser, `cmd_serve`, CUDA factory,
+API and teardown. A typed Python-only capability selects the constructor's
+existing guarded policy; ordinary launcher commands and serving defaults are
+unchanged. There is no hot bank toggle or public native flag.
+
+Before any follower/listener publication, each rank checks its actual SC117
+plan, 48 target banks and optional shared-MTP bank, exclusive native policy,
+post-warm arenas/resource receipt, coordinate/cohort identity and State numerical
+markers. Atomic per-rank JSON receipts precede the existing all-rank ready phase.
+A failed check poisons the engine and notifies the supervisor before shared CLI
+cleanup, so peers cannot remain stranded. The expert implementation label changes
+only after actual bank binding. Attention and other kernel-family labels retain
+their own meanings; these receipts do not claim a fully native model, correctness,
+quality or performance qualification. The actual private target run remains pending.
 
 Canonical SM70 TP8 GPU-history startup also requires the basic
 [A4 physical-stage binding](../../docs/v100-adaptive-validation.md#pp1-physical-stage-admission-a4)

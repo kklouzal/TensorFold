@@ -97,6 +97,12 @@ package and native-target evidence are tracked separately; actual SM70 execution
 and full-model qualification remain open.
 See [prepared execution and remaining gates](docs/v100-adaptive-validation.md#prepared-tp8etp4-execution-and-workspace).
 
+A [maintained private qualification procedure](deploy/v100/README.md#private-owned-routed-qualification-procedure)
+now connects that constructor policy to the existing rank supervisor and normal
+CLI/frontend/API. Actual per-rank bank, arena and numerical-binding receipts
+must complete before listening. It adds no product flag or default selection;
+actual private SC117 target correctness/quality/performance remain unqualified.
+
 The V100 source-build workflow can now reacquire its frozen APT/Python inputs
 with verified hashes, durable cache reuse, an explicit Ubuntu snapshot option
 and a staging byte cap.

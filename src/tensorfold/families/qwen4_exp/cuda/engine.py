@@ -1404,6 +1404,7 @@ class FlashNextEngine:
             }
         if self._owned_expert_plan is not None:
             self._owned_expert_plan.bind(w)
+            self.capacity_plan["expert_parallel"]["implementation"] = w.meta["owned_expert_plan"].identity[0]
         if self.position_profile is not None:
             from ..position_profile import bind_position_profile
 
