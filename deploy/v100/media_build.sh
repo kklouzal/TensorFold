@@ -14,6 +14,10 @@ export MAX_JOBS="$tf_jobs" CMAKE_BUILD_PARALLEL_LEVEL="$tf_jobs" OMP_NUM_THREADS
 mkdir -p "$tf_media/build" "$tf_media/logs" "$tf_media/receipts" "$tf_media/wheels"
 
 tf_stage=${1:-}
+if [[ "$tf_stage" == pyav ]]; then
+    # setuptools consumes this supported final config path in Make and wheel builds.
+    export DIST_EXTRA_CONFIG="$(cd "$tf_media/build" && pwd -P)/pyav-build-ext-$tf_jobs.cfg"
+fi
 if [[ "$tf_stage" =~ ^(torchvision|transformers|ffmpeg|pyav|dav1d)$ ]]; then
     python "$tf_project/deploy/v100/source_foundation.py" verify-ninja \
         --tools "$tf_project/deploy/v100/media-build-amd64.json" \

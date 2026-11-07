@@ -122,15 +122,69 @@ def _sync_parent(path):
         os.close(fd)
 
 
+def _pyav_build_ext_plan(state, jobs):
+    config = state.resolve() / "build" / ("pyav-build-ext-" + jobs + ".cfg")
+    payload = ("[build_ext]\nparallel = " + jobs + "\n").encode("ascii")
+    return config, payload, {"config_path": str(config),
+        "config": {"bytes": len(payload), "sha256": hashlib.sha256(payload).hexdigest()},
+        "setuptools": "80.9.0", "effective_parallel": int(jobs)}
+
+
+def _pyav_build_ext(state, jobs, *, prepare=False, active=False):
+    """Parse supported configuration, without importing or building PyAV.
+
+    Pending facts are intent until this preflight and the build succeed. The
+    completed receipt reports parser selection, never observed worker counts.
+    """
+    config, payload, expected = _pyav_build_ext_plan(state, jobs)
+    if active and os.environ.get("DIST_EXTRA_CONFIG") != str(config):
+        raise ValueError("PyAV requires its exact owned DIST_EXTRA_CONFIG")
+    if prepare:
+        if (config.exists() or config.is_symlink()) and read_document(config) != payload:
+            raise ValueError("existing PyAV build_ext config differs from its immutable policy")
+        # The exclusive pending owner can refresh identical bytes durably; a
+        # previous interrupted fsync must not be mistaken for durable reuse.
+        _durable_bytes(config, payload)
+        _sync_parent(config)
+    # Exact read-back equality establishes the recorded size/hash without a
+    # second unbounded hash pass over an unexpectedly changed config file.
+    if read_document(config) != payload:
+        raise ValueError("PyAV build_ext config changed after preparation")
+    if importlib.metadata.version("setuptools") != expected["setuptools"]:
+        raise ValueError("PyAV build_ext requires pinned setuptools 80.9.0")
+    from setuptools import Distribution
+
+    distribution = Distribution({"script_name": "setup.py",
+        "script_args": ["build_ext", "--inplace", "--debug"]})
+    if active and distribution.find_config_files()[-1:] != [str(config)]:
+        raise ValueError("setuptools did not discover the owned final DIST_EXTRA_CONFIG")
+    # Parse the final override in isolation: this preflight selects build_ext,
+    # it must not execute project metadata hooks from the helper's caller cwd.
+    distribution.parse_config_files([str(config)])
+    distribution.parse_command_line()
+    command = distribution.get_command_obj("build_ext")
+    command.ensure_finalized()
+    if type(command.parallel) is not int or command.parallel != expected["effective_parallel"]:
+        raise ValueError("PyAV effective build_ext parallel differs from its declared jobs")
+    return {**expected, "effective_parallel": command.parallel}
+
+
 def begin_build_environment(state, stage, script):
     """No build effects may begin before both file and directory sync succeed."""
     pending = state / "receipts" / ("build-environment-" + stage + ".pending")
     controls = {name: os.environ[name] for name in ("MAX_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL", "OMP_NUM_THREADS")}
-    values = {"schema": "tensorfold.v100-media-build-environment", "version": 1, "stage": stage,
+    if (controls["MAX_JOBS"] not in tuple(map(str, range(1, 25)))
+            or any(value != controls["MAX_JOBS"] for value in controls.values())):
+        raise ValueError("media build controls require matching canonical jobs 1..24")
+    values = {"schema": "tensorfold.v100-media-build-environment", "version": 2 if stage == "pyav" else 1, "stage": stage,
               "producer_script_sha256": file_identity(script)["sha256"],
               "producer_helper_sha256": file_identity(Path(__file__))["sha256"], **controls}
+    if stage == "pyav":
+        values["pyav_build_ext"] = _pyav_build_ext_plan(state, controls["MAX_JOBS"])[2]
     _durable_bytes(pending, canonical(values) + b"\n", exclusive=True)
     _sync_parent(pending)
+    if stage == "pyav":
+        _pyav_build_ext(state, controls["MAX_JOBS"], prepare=True, active=True)
 
 
 def complete_build_environment(state, stage):
@@ -143,6 +197,8 @@ def complete_build_environment(state, stage):
     base = state / "receipts" / ("build-environment-" + stage)
     pending, target = base.with_suffix(".pending"), base.with_suffix(".json")
     values, raw = read_json(pending)
+    if stage == "pyav" and canonical(_pyav_build_ext(state, values["MAX_JOBS"], active=True)) != canonical(values["pyav_build_ext"]):
+        raise ValueError("PyAV build_ext changed during the build")
     prior = read_document(target) if target.exists() else None
     if prior is not None:
         _durable_bytes(base.with_suffix(".previous"), prior)
@@ -190,14 +246,17 @@ def build_environments(state, sources, script_sha256, helper_sha256):
         if base.with_suffix(".pending").exists() or base.with_suffix(".pending").is_symlink():
             raise ValueError("media export has an unfinished build-environment attempt: " + stage)
         value = read_json(base.with_suffix(".json"))[0]
-        if (type(value) is not dict or set(value) != fields
+        expected_fields = fields | ({"pyav_build_ext"} if stage == "pyav" else set())
+        if (type(value) is not dict or set(value) != expected_fields
                 or value["schema"] != "tensorfold.v100-media-build-environment"
-                or type(value["version"]) is not int or value["version"] != 1 or value["stage"] != stage
+                or type(value["version"]) is not int or value["version"] != (2 if stage == "pyav" else 1) or value["stage"] != stage
                 or value["producer_script_sha256"] != script_sha256 or value["producer_helper_sha256"] != helper_sha256
                 or value["source_receipt_sha256"] != source["sha256"]
                 or value["MAX_JOBS"] not in tuple(map(str, range(1, 25)))
                 or any(value[name] != value["MAX_JOBS"] for name in controls)):
             raise ValueError("media build environment differs from its actual stage/source/policy: " + stage)
+        if stage == "pyav" and canonical(_pyav_build_ext(state, value["MAX_JOBS"])) != canonical(value["pyav_build_ext"]):
+            raise ValueError("PyAV build_ext export differs from its completed stage facts")
         result[stage] = value
     return result
 

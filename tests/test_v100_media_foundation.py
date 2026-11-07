@@ -302,9 +302,11 @@ if name == "python" and args[0].endswith("media_foundation.py") and args[1] in (
 if name == "python" and args[0] == "-":
     os.execv({sys.executable!r}, [{sys.executable!r}, *args])
 with open(os.environ["TF_TEST_LOG"], "a") as sink:
-    sink.write(json.dumps({{"tool": name, "args": args, "time_ns": time.monotonic_ns(), "controls": {{key: os.environ.get(key) for key in
-        ("MAX_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL", "OMP_NUM_THREADS")}}}}) + "\\n")
+    sink.write(json.dumps({{"tool": name, "args": args, "time_ns": time.monotonic_ns(), "dist_extra_config": os.environ.get("DIST_EXTRA_CONFIG"),
+        "controls": {{key: os.environ.get(key) for key in ("MAX_JOBS", "CMAKE_BUILD_PARALLEL_LEVEL", "OMP_NUM_THREADS")}}}}) + "\\n")
 failure = os.environ.get("TF_TEST_FAILURE")
+if failure == "config-after-wheel" and name == "python" and "wheel" in args:
+    Path(os.environ["DIST_EXTRA_CONFIG"]).write_text("[build_ext]" + chr(10) + "parallel = 1" + chr(10))
 if failure == name or failure == "install" and "install" in args or failure == "wheel" and "wheel" in args:
     sys.exit(7)
 if name == "python" and args[0].endswith("source_foundation.py"):
@@ -372,6 +374,15 @@ def test_media_driver_propagates_actual_controls_and_records_success(media_drive
     assert value["producer_helper_sha256"] == MEDIA.file_identity(Path(MEDIA.__file__))["sha256"]
     source = MEDIA.file_identity(state / "receipts" / ("source-" + stage + ".json"))
     assert value["source_receipt_sha256"] == source["sha256"]
+    if stage == "pyav":
+        configuration = state / "build" / ("pyav-build-ext-" + (jobs or "4") + ".cfg")
+        assert value["version"] == 2
+        assert value["pyav_build_ext"] == {"config_path": str(configuration),
+            "config": MEDIA.file_identity(configuration), "setuptools": "80.9.0", "effective_parallel": int(jobs or "4")}
+        assert configuration.read_text() == "[build_ext]\nparallel = " + (jobs or "4") + "\n"
+        assert all(row["dist_extra_config"] == str(configuration) for row in commands)
+    else:
+        assert value["version"] == 1 and "pyav_build_ext" not in value
     assert not completed.with_suffix(".pending").exists()
     assert MEDIA.build_environments(state, {stage: source}, value["producer_script_sha256"],
                                     MEDIA.file_identity(Path(MEDIA.__file__))["sha256"]) == {stage: value}
@@ -553,4 +564,125 @@ def test_media_first_completion_failure_never_leaves_exportable_facts(media_driv
     source = MEDIA.file_identity(state / "receipts/source-ffmpeg.json")
     with pytest.raises(ValueError, match="unfinished"):
         MEDIA.build_environments(state, {"ffmpeg": source}, MEDIA.file_identity(ROOT / "deploy/v100/media_build.sh")["sha256"],
+                                 MEDIA.file_identity(Path(MEDIA.__file__))["sha256"])
+
+
+@pytest.mark.parametrize("jobs", ["1", "4", "24"])
+def test_pyav_extra_config_selects_actual_pinned_setuptools_build_ext(media_driver, monkeypatch, jobs):
+    import importlib.metadata
+    from setuptools import Distribution
+
+    run, state = media_driver
+    result, commands = run("pyav", jobs)
+    assert result.returncode == 0, result.stdout + result.stderr
+    make = next(row for row in commands if row["tool"] == "make")
+    configuration = make["dist_extra_config"]
+    assert configuration == str(state / "build" / ("pyav-build-ext-" + jobs + ".cfg"))
+    assert make["args"] == ["-j" + jobs, "PYAV_PYTHON=python", "PYAV_PIP=python -m pip",
+                            'CFLAGS="-O3 -DNDEBUG"',
+                            'LDFLAGS="-Wl,-rpath,' + str(state / "native/ffmpeg-9.0.2/lib") + '"']
+    monkeypatch.setenv("DIST_EXTRA_CONFIG", configuration)
+    monkeypatch.chdir(state / "sources/pyav")
+    assert importlib.metadata.version("setuptools") == "80.9.0"
+    distribution = Distribution({"script_name": "setup.py", "script_args": ["build_ext", "--inplace", "--debug"]})
+    assert distribution.find_config_files()[-1] == configuration
+    distribution.parse_config_files()
+    assert distribution.parse_command_line()
+    command = distribution.get_command_obj("build_ext")
+    command.ensure_finalized()
+    assert type(command.parallel) is int and command.parallel == int(jobs)
+    assert command.inplace and command.debug
+
+
+@pytest.mark.parametrize("change", ["config", "config-path", "parallel", "setuptools", "old-version"])
+def test_pyav_export_refuses_changed_config_or_forged_parser_facts(media_driver, change):
+    import json
+
+    run, state = media_driver
+    result, _ = run("pyav", "24")
+    assert result.returncode == 0, result.stderr
+    receipt = state / "receipts/build-environment-pyav.json"
+    value = json.loads(receipt.read_text())
+    if change == "config":
+        Path(value["pyav_build_ext"]["config_path"]).write_text("[build_ext]\nparallel = 1\n")
+    elif change == "config-path":
+        value["pyav_build_ext"]["config_path"] = str(state / "foreign.cfg")
+    elif change == "parallel":
+        value["pyav_build_ext"]["effective_parallel"] = 1
+    elif change == "setuptools":
+        value["pyav_build_ext"]["setuptools"] = "81.0.0"
+    else:
+        value["version"] = 1
+    receipt.write_text(json.dumps(value))
+    source = MEDIA.file_identity(state / "receipts/source-pyav.json")
+    with pytest.raises(ValueError, match="PyAV build_ext|stage/source/policy"):
+        MEDIA.build_environments(state, {"pyav": source}, MEDIA.file_identity(ROOT / "deploy/v100/media_build.sh")["sha256"],
+                                 MEDIA.file_identity(Path(MEDIA.__file__))["sha256"])
+
+
+def test_pyav_config_preparation_failure_keeps_pending_before_build_or_old_fact_reuse(media_driver):
+    run, state = media_driver
+    assert run("pyav", "4")[0].returncode == 0
+    receipt = state / "receipts/build-environment-pyav.json"
+    before = receipt.read_bytes()
+    (state / "build/pyav-build-ext-24.cfg").write_text("[build_ext]\nparallel = 1\n")
+    result, commands = run("pyav", "24")
+    assert result.returncode != 0 and "differs from its immutable policy" in result.stderr
+    assert receipt.read_bytes() == before and receipt.with_suffix(".pending").is_file()
+    assert not any(row["controls"]["MAX_JOBS"] == "24" and row["tool"] == "make" for row in commands)
+    source = MEDIA.file_identity(state / "receipts/source-pyav.json")
+    with pytest.raises(ValueError, match="unfinished"):
+        MEDIA.build_environments(state, {"pyav": source}, MEDIA.file_identity(ROOT / "deploy/v100/media_build.sh")["sha256"],
+                                 MEDIA.file_identity(Path(MEDIA.__file__))["sha256"])
+
+
+def test_pyav_pending_and_config_durability_precede_the_canonical_make(media_driver):
+    import json
+
+    run, state = media_driver
+    result, commands = run("pyav", "24")
+    assert result.returncode == 0, result.stderr
+    events = [json.loads(line) for line in (state.parent / "io.jsonl").read_text().splitlines()]
+    begin = [row for row in events if row["phase"] == "begin-build-environment"]
+    pending_file = next(row["time_ns"] for row in begin if row["operation"] == "fsync-done"
+                        and Path(row["path"]).suffix == ".pending")
+    pending_parent = next(row["time_ns"] for row in begin if row["operation"] == "fsync-done"
+                          and row["directory"] and row["time_ns"] > pending_file)
+    config_write = next(row["time_ns"] for row in begin if row["operation"] == "write" and Path(row["path"]).suffix == ".cfg")
+    config_file = next(row["time_ns"] for row in begin if row["operation"] == "fsync-done" and Path(row["path"]).suffix == ".cfg")
+    config_parent = next(row["time_ns"] for row in begin if row["operation"] == "fsync-done"
+                         and row["directory"] and row["time_ns"] > config_file)
+    make = next(row["time_ns"] for row in commands if row["tool"] == "make")
+    assert pending_file < pending_parent < config_write < config_file < config_parent < make
+
+
+@pytest.mark.parametrize("forged", [True, 1.0])
+def test_pyav_serial_parallel_fact_rejects_bool_or_float_coercion(media_driver, forged):
+    import json
+
+    run, state = media_driver
+    result, _ = run("pyav", "1")
+    assert result.returncode == 0, result.stderr
+    receipt = state / "receipts/build-environment-pyav.json"
+    value = json.loads(receipt.read_text())
+    value["pyav_build_ext"]["effective_parallel"] = forged
+    receipt.write_text(json.dumps(value))
+    source = MEDIA.file_identity(state / "receipts/source-pyav.json")
+    with pytest.raises(ValueError, match="PyAV build_ext export"):
+        MEDIA.build_environments(state, {"pyav": source}, MEDIA.file_identity(ROOT / "deploy/v100/media_build.sh")["sha256"],
+                                 MEDIA.file_identity(Path(MEDIA.__file__))["sha256"])
+
+
+def test_pyav_changed_config_during_build_cannot_publish_or_borrow_old_facts(media_driver):
+    run, state = media_driver
+    assert run("pyav", "4")[0].returncode == 0
+    receipt = state / "receipts/build-environment-pyav.json"
+    before = receipt.read_bytes()
+    result, commands = run("pyav", "24", failure="config-after-wheel")
+    assert result.returncode != 0 and "config changed after preparation" in result.stderr
+    assert any(row["tool"] == "make" and row["controls"]["MAX_JOBS"] == "24" for row in commands)
+    assert receipt.read_bytes() == before and receipt.with_suffix(".pending").is_file()
+    source = MEDIA.file_identity(state / "receipts/source-pyav.json")
+    with pytest.raises(ValueError, match="unfinished"):
+        MEDIA.build_environments(state, {"pyav": source}, MEDIA.file_identity(ROOT / "deploy/v100/media_build.sh")["sha256"],
                                  MEDIA.file_identity(Path(MEDIA.__file__))["sha256"])

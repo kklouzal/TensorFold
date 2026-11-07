@@ -81,6 +81,10 @@ change source pins or imply a measured build-speed gain. See the
 Future media stages durably record intent before build effects and atomically
 publish completed job facts, requiring a new producer checkpoint; this does not relabel or restart an already-running SDK build. See
 [media resource receipts](deploy/v100/media-foundation.md#build-resource-contract).
+Future PyAV builds also pass an owned, hashed `DIST_EXTRA_CONFIG` to pinned
+setuptools so `build_ext` selects the declared C/C++ extension job count.
+This preserves the vendor Make command and flags, does not parallelize Cython,
+and does not relabel the completed frozen media build or claim a speed gain.
 
 Active V100 producer/media dependencies select fixed Ninja 1.13.2, with pinned
 wheel-to-executable ownership proof and an explicit CMake tool binding. The

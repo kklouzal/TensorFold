@@ -129,6 +129,18 @@ implicitly sized rebuild. The option is supported by the pinned
 [Meson 1.12.1 implementation](https://github.com/mesonbuild/meson/blob/1.12.1/mesonbuild/minstall.py).
 No required compile or failure check is skipped.
 
+PyAV's pinned Makefile runs one `python setup.py build_ext --inplace --debug`
+recipe. Make's `-j` and the three inherited job variables alone do not set that
+command's extension compiler parallelism. A future producer writes the bounded
+job-specific `build/pyav-build-ext-N.cfg` with `[build_ext] parallel = N`, then
+passes its absolute path through setuptools 80.9.0's supported
+[`DIST_EXTRA_CONFIG` discovery](https://github.com/pypa/setuptools/blob/v80.9.0/setuptools/_distutils/dist.py).
+This variable is set only for the PyAV stage and reaches both canonical Make
+and the subsequent wheel build. The Makefile, vendor source, `--inplace --debug`,
+CFLAGS/LDFLAGS and wheel command stay unchanged. `MAX_JOBS=1` remains an explicit
+serial extension-compiler control. Cython's existing `cythonize` call and its
+thread setting are unchanged; no 24-Cython-worker or build-speed claim follows.
+
 Before compiler/installer work, each stage creates its exclusive pending
 environment record, fsyncs the file and fsyncs its parent directory. A failed or
 unretired pending attempt blocks a new build and export. After successful work
@@ -146,6 +158,23 @@ validates those facts and embeds them in `media-build.json`; it never infers
 them from the export process's current environment. These settings bound work; they do not
 prove that 24 workers executed or establish a speed gain. Container CPU/memory
 budgets require their separate actual-host/build evidence.
+
+PyAV alone uses environment-receipt version 2, adding the actual config
+path/size/SHA256, pinned setuptools version and parsed `effective_parallel`.
+The durable pending record is intent; configuration is then written and fsynced
+before compiler work. Setuptools discovery and the canonical `build_ext` flags
+are parsed before and after the stage; a changed file, wrong parser version or
+mismatched effective setting leaves the pending gate and refuses completion.
+Export verifies the completed config/facts without inferring them from its own
+job environment. These are parser-selection facts, not measured active workers.
+Other stages retain their version-1 environment records.
+
+The completed frozen `8e6c89` media build remains its actual serial-PyAV
+reference: its logged extension command had `parallel=None`, despite inherited
+MAX/CMake/OMP24. Its vendor bytes, wheel/export receipts, warnings and timing
+history are retained. The corrected configuration requires a fresh canonical
+producer/state and separately recorded execution; it is not a hotpatch or
+relabel of that completed build, nor a new installed-media qualification.
 
 The earlier four-CPU/24 GiB example above retains its historical scope. For a
 new 24-job media invocation, set `-e MAX_JOBS=24` when creating a separately
