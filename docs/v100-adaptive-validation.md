@@ -435,6 +435,20 @@ eight-rank coverage, canonical distinct GPU UUIDs, the specified V100 SXM2 32GB
 SKU and SM70 capability. Reported positive memory bytes are observed directly;
 the nominal SKU is not turned into an arbitrary usable-memory floor.
 
+A later source correction handles the pinned Torch 04cf CUDA property binding
+`torch._C._CUuuid` at capture only. The first normal eight-rank SC117 attempt
+refused before weights with `a bounded actual GPU UUID is required`; an actual
+GPU0 property-only probe on image `b9585046` confirmed the exact exported native
+type and its canonical bare UUID string. The adapter uses that formatter only
+when type identity matches the trusted Torch export, then applies the unchanged
+scalar validator. Arbitrary objects, type-name spoofs and native subclasses do
+not gain string coercion. String/stdlib UUID forms and ordered/distinct physical
+rank validation remain intact. These source/CPU controls do not establish a
+successful installed successor admission or model load. The original failure
+and probe are retained in the private `sm-v100-sc117-firstload-plan-v1` and
+`sm-v100-uuid-property-probe-v1` packets; a new application artifact and target
+retry remain necessary.
+
 All SM70 TP8 ranks enter the same bounded CPU Store preflight, independently of
 their local canonical/legacy admission choice. Mixed participation refuses
 before ranks can split into CPU and NCCL waits. Uniform legacy participation

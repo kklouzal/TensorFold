@@ -140,6 +140,14 @@ comparisons retain every failure as a failure. This does not establish the actua
 mesh, full model, resident capacity or performance gates below. See the
 [A4 artifact and proof scope](../v100-adaptive-validation.md#pp1-physical-stage-admission-a4).
 
+The first full SC117 attempt stopped before weight loading because pinned
+Torch exposes `_CUuuid` instead of a string/stdlib UUID. A source-only adapter
+now converts only that exact trusted property type before strict canonical
+validation. Existing str/stdlib UUID inputs, duplicate/rank/host/SKU guards and
+the voted preflight remain unchanged. The original failure and separate GPU0
+property diagnosis are retained; installed successor capture/admission and model
+execution remain pending.
+
 These are six required cases, not six qualified implementations. TP flags,
 smaller-world tests, KV placement degrees or manifest metadata do not establish
 expert ETP/pipeline execution. Each needs explicit target/MTP partition,

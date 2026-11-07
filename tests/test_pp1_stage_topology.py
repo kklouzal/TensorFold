@@ -91,7 +91,8 @@ def test_host_identity_rejects_missing_malformed_or_oversized_input(raw, monkeyp
         stage.host_identity()
 
 
-def test_capture_uses_assigned_device_uuid_and_kernel_identity(monkeypatch):
+@pytest.mark.parametrize("form", ["stdlib", "string", "torch-native"])
+def test_capture_uses_assigned_device_uuid_and_kernel_identity(monkeypatch, form):
     boot = UUID("953e0462-dfab-541a-e631-573d64f8c5ad")
     opened, devices = [], []
 
@@ -99,16 +100,80 @@ def test_capture_uses_assigned_device_uuid_and_kernel_identity(monkeypatch):
         opened.append(path)
         return io.BytesIO((str(boot) + "\n").encode())
 
-    props = NS(uuid=UUID(int=17), name="Tesla V100-SXM2-32GB", major=7, minor=0, total_memory=32 << 30)
+    # Match the recorded binding's bare hyphenated spelling with a synthetic
+    # device ID. This is a CPU provider-boundary stand-in, not a native object.
+    spelling = str(UUID(int=17))
+    class NativeUUID:
+        def __str__(self):
+            return spelling
+    device_uuid = {"stdlib": UUID(spelling), "string": "GPU-" + spelling, "torch-native": NativeUUID()}[form]
+    props = NS(uuid=device_uuid, name="Tesla V100-SXM2-32GB", major=7, minor=0, total_memory=32 << 30)
     def properties(device):
         devices.append(device)
         return props
 
     monkeypatch.setattr(stage, "_regular_stream", source)
-    value = stage.capture_rank(3, NS(cuda=NS(get_device_properties=properties)))
-    assert devices == [0] and value["uuid"] == str(props.uuid)
+    provider = NS(cuda=NS(get_device_properties=properties), _C=NS(_CUuuid=NativeUUID))
+    value = stage.capture_rank(3, provider)
+    assert devices == [0] and value["uuid"] == spelling
     assert value["host"] == hashlib.sha256(boot.bytes).hexdigest()
     assert opened == ["/proc/sys/kernel/random/boot_id"]  # Container machine-id is not a host binding.
+
+
+@pytest.mark.parametrize("spelling", ["", "not-a-uuid", "GPU-invalid", "x" * 65])
+def test_native_property_formatter_still_passes_the_strict_scalar_validator(monkeypatch, spelling):
+    class NativeUUID:
+        def __str__(self):
+            return spelling
+    monkeypatch.setattr(stage, "host_identity", lambda: "a" * 64)
+    provider = NS(cuda=NS(get_device_properties=lambda device: NS(uuid=NativeUUID())),
+                  _C=NS(_CUuuid=NativeUUID))
+    with pytest.raises(ValueError, match="GPU UUID"):
+        stage.capture_rank(0, provider)
+
+
+def test_unknown_and_subclass_uuid_objects_are_not_stringified_or_accepted(monkeypatch):
+    class NativeUUID:
+        def __str__(self):
+            pytest.fail("an unrecognized UUID object was stringified")
+    class Subclass(NativeUUID):
+        pass
+    class Spoof:
+        __module__ = "torch._C"
+        def __str__(self):
+            pytest.fail("a name-only UUID spoof was stringified")
+    Spoof.__name__ = "_CUuuid"
+    monkeypatch.setattr(stage, "host_identity", lambda: "a" * 64)
+    for value in (Subclass(), Spoof(), object(), b"00000000-0000-0000-0000-000000000011"):
+        provider = NS(cuda=NS(get_device_properties=lambda device, value=value: NS(uuid=value)),
+                      _C=NS(_CUuuid=NativeUUID))
+        with pytest.raises(ValueError, match="GPU UUID"):
+            stage.capture_rank(0, provider)
+        with pytest.raises(ValueError, match="GPU UUID"):
+            stage.canonical_gpu_uuid(value)
+    # A raw native-like object is forbidden in an untrusted rank record too.
+    with pytest.raises(ValueError, match="GPU UUID"):
+        stage.canonical_gpu_uuid(NativeUUID())
+
+
+def test_captured_native_identity_retains_duplicate_and_ordered_rank_refusals(monkeypatch):
+    spelling = str(UUID(int=17))
+    class NativeUUID:
+        def __str__(self):
+            return spelling
+    props = NS(uuid=NativeUUID(), name="Tesla V100-SXM2-32GB", major=7, minor=0, total_memory=32 << 30)
+    provider = NS(cuda=NS(get_device_properties=lambda device: props), _C=NS(_CUuuid=NativeUUID))
+    monkeypatch.setattr(stage, "host_identity", lambda: "a" * 64)
+    rows = records()
+    rows[0] = stage.capture_rank(0, provider)
+    stage.validate_pp1(rows)
+    rows[1] = stage.capture_rank(1, provider)
+    with pytest.raises(ValueError, match="distinct physical GPU UUIDs"):
+        stage.validate_pp1(rows)
+    rows = records()
+    rows[0] = stage.capture_rank(1, provider)
+    with pytest.raises(ValueError, match="ordered ranks"):
+        stage.validate_pp1(rows)
 
 
 def test_missing_device_uuid_is_an_agreed_metadata_refusal(monkeypatch):

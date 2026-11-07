@@ -13,7 +13,7 @@ from tensorfold.tensor_file import _regular_stream
 
 
 def canonical_gpu_uuid(value):
-    """CUDA's UUID object and NVIDIA's GPU-prefixed spelling identify one device."""
+    """Accept only stdlib UUIDs and bounded NVIDIA/RFC4122 record spellings."""
     if isinstance(value, UUID):
         return str(value)
     if type(value) is not str or len(value) > 64:
@@ -48,8 +48,13 @@ def capture_rank(rank, torch):
     # All supported rank processes expose their assigned device as device zero;
     # UUID, rather than that process-local ordinal, identifies the physical GPU.
     props = torch.cuda.get_device_properties(0)
+    device_uuid = getattr(props, "uuid", None)
+    # Only Torch's exact trusted binding may use its native string formatter.
+    # Untrusted rank records still pass through the strict scalar validator.
+    if type(device_uuid) is getattr(getattr(torch, "_C", None), "_CUuuid", None):
+        device_uuid = str(device_uuid)
     return {"schema_version": 1, "rank": rank, "host": host_identity(),
-            "uuid": canonical_gpu_uuid(getattr(props, "uuid", None)),
+            "uuid": canonical_gpu_uuid(device_uuid),
             "name": getattr(props, "name", None),
             "capability": [getattr(props, "major", None), getattr(props, "minor", None)],
             "memory_bytes": getattr(props, "total_memory", None)}

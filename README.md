@@ -157,6 +157,10 @@ participation refuses before dependent waits. This basic identity check does
 not qualify the GPU mesh or model performance. Source and fresh installed CPU
 batches each recorded 1,458 passes, 37 inherited fixture failures and one optional
 skip. See [physical stage admission and limits](docs/v100-adaptive-validation.md#pp1-physical-stage-admission-a4).
+A source correction adapts the pinned Torch `_CUuuid` property only at its
+trusted capture boundary; untrusted rank records retain strict UUID validation.
+The first full-model attempt's pre-weight failure is preserved. A rebuilt
+application and actual admission retry remain required before claiming a fix on target.
 
 The A5 fixture repair restores those 37 inherited cases without changing runtime
 code or removing their assertions. The scoped source and installed batches now
