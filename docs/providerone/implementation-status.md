@@ -96,6 +96,13 @@ from 657.139 s to 172.268 s. Backend defaults, full logical context and all guar
 are preserved; long-prompt inference performance and quality remain unqualified. See [the precise
 pilot scope](../v100-adaptive-validation.md#prefill-row-development-pilot).
 
+The next source-only increment exposes fixed per-rank startup phase diagnostics
+before choosing a loader change. Existing `load_seconds` still ends before MTP
+payload attachment; separate attachment/vocabulary intervals and surrounding
+engine setup use monotonic host clocks. Diagnostics stay outside prepared
+constructor options and numerical/capacity identities. Existing loading and
+warmup milestones retain their meanings; actual target attribution is pending.
+
 ## Required SC117 parallelism matrix
 
 The installed SDK/native-component checkpoint uses source `e90caf58` and

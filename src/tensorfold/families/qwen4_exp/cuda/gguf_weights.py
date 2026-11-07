@@ -1196,8 +1196,12 @@ def load_gguf(path, device="cuda", *, tp=None, mtp=False, rope=None, eos_token_i
             result.meta["prefill_experts"] = _prefill_plan.receipt()
         if mtp:
             from .sm70_mtp_weights import attach
+            mtp_started = time.monotonic()
             attach(result, mtp_model_dir, tp=(result.meta["rank"], result.meta["world"]))
+            result.meta["stock_mtp_attach_seconds"] = time.monotonic() - mtp_started
+            vocabulary_started = time.monotonic()
             _bind_mtp_vocabulary(result, prototype, reader, device)
+            result.meta["mtp_vocabulary_bind_seconds"] = time.monotonic() - vocabulary_started
         reader.close()
         return result
     except BaseException as primary:

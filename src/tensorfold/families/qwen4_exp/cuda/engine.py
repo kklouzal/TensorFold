@@ -144,6 +144,7 @@ class FlashNextEngine:
                  output_queue_tokens: int | None = None, queue_timeout_s: float | None = None,
                  retention_policy: RetentionPolicy | None = None,
                  expert_tensor_parallel_size: int | None = None) -> None:
+        initialize_started = time.perf_counter()
         from tensorfold.cuda.chat_template import prepare_chat_template
 
         from ..ram_experts import check_kv_full_windows
@@ -1372,6 +1373,7 @@ class FlashNextEngine:
         reads = self._startup_reads                              # the n-gram tables' pages, read while the weights load
         if managed:
             self._profile_build.phase("loading_weights")
+        weights_started = time.perf_counter() if source_is_gguf else None
         w = load(model_dir, mtp=stock_mtp, tp=(rank, tp) if tp > 1 else None,
                  **expert_geometry,
                  **({"family_manifest": self.family_manifest, "_sm70_plan": self._sm70_import_plan,
@@ -1389,7 +1391,17 @@ class FlashNextEngine:
                     {"vram_experts": vram_experts} if vram_experts is not None else {}),
                  **({"vram_experts_pin": vram_experts_pin, "_pin_future_bytes": self._pin_future_bytes}
                     if vram_experts_pin != "off" else {}))
-        self.w = w
+        self.w = w  # Preserve the original ownership handoff before fallible diagnostics.
+        if source_is_gguf:
+            weights_finished = time.perf_counter()
+            # Diagnostics only: never constructor options, admission or numerical identity.
+            self.startup_timings = {
+                "before_weights_seconds": weights_started - initialize_started,
+                "weights_call_seconds": weights_finished - weights_started,
+                "target_load_seconds": w.meta["load_seconds"],
+                **{key: w.meta[key] for key in ("stock_mtp_attach_seconds", "mtp_vocabulary_bind_seconds")
+                   if key in w.meta},
+            }
         if self._owned_expert_plan is not None:
             self._owned_expert_plan.bind(w)
         if self.position_profile is not None:
@@ -1684,7 +1696,12 @@ class FlashNextEngine:
             pins["all_selected_tables_locked"] = locked
         read_s = time.perf_counter() - started
         captured = self.e.graphs.warm(self.depth + 1) if self.e is not None and self.e.graphs is not None else 0
-        started = time.perf_counter()
+        if source_is_gguf:
+            self.startup_timings["after_weights_setup_seconds"] = time.perf_counter() - weights_finished
+            print(f"[tensorfold] GGUF startup phases rank={rank}/{tp} host_elapsed_seconds="
+                  f"{json.dumps(self.startup_timings, sort_keys=True)}; "
+                  "loader subintervals are contained in weights_call; no added device synchronization", flush=True)
+        started = time.perf_counter()  # Keep diagnostic formatting/IO outside the existing warmup interval.
         if self.concurrent:
             if managed:
                 self._profile_build.phase("warming")

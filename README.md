@@ -33,6 +33,12 @@ unset/empty retains the backend plan. [Pilot observations](docs/v100-adaptive-va
 and the A-B-B-A control select 256 for the recorded eager development workflow,
 with 73.785% less mean readiness time; no global default or long-prompt claim changes.
 
+Source startup diagnostics now separate the existing GGUF target-load interval,
+stock-MTP attachment, vocabulary binding and surrounding engine setup. They
+report host elapsed/submission time without extra device synchronization or
+changing the existing warmup milestone. Actual target phase measurements remain
+pending; this instrumentation is not a new loading-speed result.
+
 Current delivery work prioritizes one-server TP8/ETP4 before further PP2 work.
 The V100 Compose profile accepts the explicit
 `TF_EXPERT_TENSOR_PARALLEL_SIZE=4` setting while preserving unset defaults.
