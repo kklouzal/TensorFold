@@ -47,7 +47,8 @@ def _requests(rank, world, port, outcomes):
             first = prefill(serial, prompt, None, mtp=False)
             expected.append(serial_decode(serial, first, 5, None).tokens)
         del serial
-        decoder = MultiDecoder(w, slots=2, capacity=64, depth=2, prefill_rows=8,
+        # The tiny weights have no MTP; this diagnostic exercises the none method.
+        decoder = MultiDecoder(w, slots=2, capacity=64, depth=0, prefill_rows=8,
                                kv_dtype="fp16", graphs=False, keep=0)
         engine = SimpleNamespace(_abort_comm=False, _closing=False, _lifecycle=threading.Condition())
         control = TensorParallelDecoder(decoder, engine)
